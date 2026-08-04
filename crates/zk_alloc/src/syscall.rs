@@ -55,7 +55,7 @@ pub unsafe fn disable_huge_pages(ptr: *mut u8, size: usize) {
 /// The arena covers the prover's large transient buffers, but the process still
 /// makes hundreds of thousands of ordinary allocations per proof. Left alone,
 /// glibc `mmap`s the bigger ones and trims the heap on free, so those buffers
-/// re-fault their pages every proof — the exact cost the arena removes from the
+/// re-fault their pages every proof, the exact cost the arena removes from the
 /// buffers it does cover. No-op off glibc (macOS has no equivalent knob, and its
 /// zone allocator already caches).
 pub fn retain_system_heap() {

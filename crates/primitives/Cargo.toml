@@ -9,10 +9,17 @@ workspace = true
 [dependencies]
 libc.workspace = true
 parallel.workspace = true
+rand = { workspace = true, optional = true }
 serde.workspace = true
 zk_alloc.workspace = true
 tracing-forest.workspace = true
 tracing-subscriber.workspace = true
 
+[features]
+# Test-only helpers (`test_rng`) used by this and other crates' tests.
+# Kept off the default build so `rand` stays out of the production graph.
+test-util = ["dep:rand"]
+
 [dev-dependencies]
+primitives = { path = ".", features = ["test-util"] }
 bincode.workspace = true

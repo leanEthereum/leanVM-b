@@ -3,7 +3,7 @@
 //!
 //! # Why not a work-stealing pool
 //!
-//! Every parallel site in the prover has the same shape — a known number of
+//! Every parallel site in the prover has the same shape: a known number of
 //! independent items, each writing its own disjoint slice. That needs a counter,
 //! not a deque per worker. Owning the runtime also buys two things a general pool
 //! cannot give: pinned per-worker scratch (see [`map_reduce_with_state`]) and
@@ -13,7 +13,7 @@
 //!
 //! On Apple silicon the pool spans **both** clusters: performance workers at
 //! `USER_INTERACTIVE` and efficiency workers at `UTILITY`, all draining one
-//! shared claim counter. Guided self-scheduling is what makes that safe — a
+//! shared claim counter. Guided self-scheduling is what makes that safe: a
 //! worker takes `remaining / (2·workers)` items at a time, so a slow efficiency
 //! core simply claims fewer batches, and at the join it holds at most one
 //! outstanding item. A pool that instead handed each worker an equal band would
@@ -46,7 +46,8 @@ use std::thread::Thread;
 
 mod topology;
 
-pub use topology::{Qos, Topology, num_threads, set_qos, topology};
+use topology::{Qos, set_qos};
+pub use topology::{Topology, num_threads, topology};
 
 /// Idle spins before a worker parks: long enough to stay hot across back-to-back
 /// dispatches, short enough to yield the core during a sequential stretch.
@@ -56,7 +57,7 @@ const SPIN_LIMIT: u32 = 1 << 12;
 /// while keeping million-item kernels to a few thousand claims.
 const MAX_CLAIM_BATCH: usize = 1 << 12;
 
-/// Chunk size for a flat fan-out: a few chunks per worker — fine enough for the
+/// Chunk size for a flat fan-out: a few chunks per worker, fine enough for the
 /// claim counter to rebalance heterogeneous cores, coarse enough to amortize the
 /// dispatch.
 #[must_use]
@@ -73,10 +74,10 @@ thread_local! {
 }
 
 /// The calling worker's id in `0..num_threads()` (`0` off-pool). Indexes
-/// per-worker state; see [`map_reduce_with_state`].
+/// per-worker state.
 #[must_use]
 #[inline]
-pub fn current_worker_id() -> usize {
+fn current_worker_id() -> usize {
     WORKER_ID.get()
 }
 
@@ -90,7 +91,6 @@ struct Job {
 }
 
 /// Park state for one worker (slot 0, the dispatcher, never parks).
-#[derive(Debug)]
 struct Worker {
     /// "Currently parked", SeqCst-ordered against [`Pool::generation`].
     parked: AtomicBool,
@@ -108,7 +108,7 @@ struct Pool {
     counter: AtomicUsize,
     /// Background workers still draining; the dispatcher spins this to zero.
     working: AtomicUsize,
-    /// Park flag and unpark handle per worker (slot 0 unused).
+    /// Park flag and unpark handle per worker.
     workers: Vec<Worker>,
     /// Serializes dispatchers: one driver at a time.
     dispatch: Mutex<()>,
@@ -118,8 +118,8 @@ struct Pool {
     panic: Mutex<Option<Box<dyn Any + Send>>>,
 }
 
-// SAFETY: `job` is written only by the sole dispatcher — while the workers are
-// parked or before they observe the generation bump — and read only after; the
+// SAFETY: `job` is written only by the sole dispatcher (while the workers are
+// parked or before they observe the generation bump) and read only after; the
 // generation release/acquire plus the SeqCst park protocol order the two phases.
 // The erased `Job` pointer is used only within a dispatch window where the
 // borrow it came from is live.
@@ -133,9 +133,7 @@ pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         let _ = pool();
-        if num_threads() > 1 {
-            for_each(num_threads(), |_| {});
-        }
+        for_each(num_threads(), |_| {});
     });
 }
 
@@ -188,7 +186,7 @@ fn worker_main(pool: &'static Pool, id: usize, qos: Qos) {
 
 /// Block until a new job is published, returning its generation. Spins up to
 /// [`SPIN_LIMIT`], then parks: publish `parked = true`, re-check `generation`,
-/// both SeqCst — the same total order the dispatcher's bump and its `parked` load
+/// both SeqCst, the same total order the dispatcher's bump and its `parked` load
 /// observe, so a wakeup cannot be lost.
 fn wait_for_dispatch(pool: &Pool, id: usize, last_gen: usize) -> usize {
     let mut spins = 0u32;
@@ -226,7 +224,7 @@ fn drain(pool: &Pool) {
     let f = unsafe { job.f.as_ref() };
     let n = job.n_tasks;
     let nt = num_threads();
-    let prev = IN_TASK.replace(true); // catches nested dispatch; see `for_each_chunk`
+    IN_TASK.set(true); // catches nested dispatch; see `for_each_chunk`
     // Catch a task panic so it cannot unwind across `worker_main` (skipping the
     // `working` decrement and hanging the join) or poison the dispatch lock.
     let result = catch_unwind(AssertUnwindSafe(|| {
@@ -245,7 +243,7 @@ fn drain(pool: &Pool) {
             f(start, (start + batch).min(n));
         }
     }));
-    IN_TASK.set(prev);
+    IN_TASK.set(false);
     if let Err(payload) = result {
         pool.panic.lock().unwrap().get_or_insert(payload); // keep the first
     }
@@ -265,7 +263,6 @@ fn drain(pool: &Pool) {
 pub fn for_each_chunk<F: Fn(usize, usize) + Sync>(n_tasks: usize, f: F) {
     assert!(!IN_TASK.get(), "nested parallel dispatch from inside a pool task");
 
-    // Trivial sizes and single-worker builds run inline.
     let nt = num_threads();
     if nt <= 1 || n_tasks <= 1 {
         if n_tasks > 0 {
@@ -285,8 +282,8 @@ pub fn for_each_chunk<F: Fn(usize, usize) + Sync>(n_tasks: usize, f: F) {
     let f_ref: &(dyn Fn(usize, usize) + Sync) = &f;
     let f_erased: NonNull<dyn Fn(usize, usize) + Sync> = unsafe { std::mem::transmute(NonNull::from(f_ref)) };
 
-    // SAFETY: sole writer — the prior dispatch fully drained (`working == 0`) and
-    // the next has not been observed yet.
+    // SAFETY: sole writer, since the prior dispatch fully drained (`working == 0`)
+    // and the next has not been observed yet.
     unsafe { *pool.job.get() = Some(Job { f: f_erased, n_tasks }) };
     pool.counter.store(0, Ordering::Relaxed);
     pool.working.store(nt - 1, Ordering::Release);
@@ -303,7 +300,7 @@ pub fn for_each_chunk<F: Fn(usize, usize) + Sync>(n_tasks: usize, f: F) {
 
     drain(pool); // the dispatcher runs as worker 0
     while pool.working.load(Ordering::Acquire) != 0 {
-        std::hint::spin_loop(); // lock-free completion wait
+        std::hint::spin_loop();
     }
 
     // Re-raise the first task panic after dropping the guard, so the lock
@@ -396,7 +393,7 @@ where
 }
 
 /// A `chunks_mut` view that can be handed to tasks: `chunk(i)` is item `i`'s
-/// slice. Composes to any number of buffers, which the zip-based helpers do not —
+/// slice. Composes to any number of buffers, which the zip-based helpers do not:
 /// a kernel writing four tables at two different widths builds one of these per
 /// table and indexes them all by the same item.
 #[derive(Clone, Copy, Debug)]
@@ -474,7 +471,7 @@ pub fn fill<T: Send, F: Fn(usize) -> T + Sync>(dst: &mut [T], build: F) {
 }
 
 /// Parallel `(0..n_tasks).map(f).collect::<Vec<_>>()`: runs `f(i)` across the
-/// pool and writes each result straight into the output at its own index — one
+/// pool and writes each result straight into the output at its own index: one
 /// allocation, no `Option` slots, no per-worker intermediate vectors.
 pub fn map_collect<T: Send, F: Fn(usize) -> T + Sync>(n_tasks: usize, f: F) -> Vec<T> {
     let mut out: Vec<T> = Vec::with_capacity(n_tasks);

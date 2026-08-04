@@ -7,24 +7,13 @@
 //!
 //! Since these DSL scalars are K-embedded F192 cells, a `StackBuf(2)` written
 //! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
-//! — the reference `compress` below is fed that lane layout.
+//! — the reference `compress` is fed that lane layout.
 
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_vm::cpu::{prove, verify};
+use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
-
-/// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
-/// laid little-endian into 64 bytes, hashed, digest split into four `F64` words.
-fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
-    let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
-        slot.copy_from_slice(&w.0.to_le_bytes());
-    }
-    let d = blake3::hash(&input);
-    let d = d.as_bytes();
-    std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
-}
 
 /// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
 /// hi = word 1/3) — what a `blake3(...)` output `StackBuf(2)` holds cell-by-cell.
@@ -536,6 +525,27 @@ fn heap_hint_slice_oob_rejected() {
 fn heap_blake3_slice_oob_rejected() {
     let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(2)\n    blake3(hb[7:9], hb[7:9], out)\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
+}
+
+/// A heap index that folds to a non-g-power field constant (an integer loop
+/// var leaking in from a StackBuf conversion) can never name a heap cell (cell
+/// k lives at `buf · g^k`) and used to survive to proving time as a
+/// wild-pointer DEREF. It must be a compile-time error.
+#[test]
+#[should_panic(expected = "not a g-power")]
+fn integer_heap_index_is_rejected() {
+    let src = "\
+def main():
+    b = HeapBuf(4)
+    b[1] = 3
+    b[GEN] = 5
+    x = 0
+    for k in unroll(0, 2):
+        p = 1
+        p[GEN ** k] = b[k]
+    return
+";
+    compile(&parse(src).expect("parse"));
 }
 
 /// The last in-bounds index still compiles and runs.

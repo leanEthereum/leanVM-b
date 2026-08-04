@@ -110,7 +110,7 @@ impl Progress {
 /// single sample). Uses the Student-t critical value for `n - 1` degrees of
 /// freedom, so small sample counts are not reported as tighter than they are.
 #[must_use]
-pub fn mean_and_ci(samples: &[f64]) -> (f64, f64) {
+fn mean_and_ci(samples: &[f64]) -> (f64, f64) {
     let n = samples.len();
     assert!(n > 0, "mean_and_ci needs at least one sample");
     let mean = samples.iter().sum::<f64>() / n as f64;
@@ -125,9 +125,6 @@ pub fn mean_and_ci(samples: &[f64]) -> (f64, f64) {
 /// Two-sided 95% Student-t critical value, via the standard Cornish-Fisher
 /// expansion around the normal quantile (exact to <0.5% for `df >= 3`).
 fn t_critical_95(df: usize) -> f64 {
-    if df == 0 {
-        return f64::INFINITY;
-    }
     let z = 1.959_964_f64;
     let df = df as f64;
     z + (z.powi(3) + z) / (4.0 * df) + (5.0 * z.powi(5) + 16.0 * z.powi(3) + 3.0 * z) / (96.0 * df.powi(2))
@@ -154,12 +151,6 @@ impl Timing {
     #[must_use]
     pub fn mean(&self) -> f64 {
         mean_and_ci(&self.samples).0
-    }
-
-    /// 95%-confidence half-width in seconds (`0` for a single sample).
-    #[must_use]
-    pub fn ci(&self) -> f64 {
-        mean_and_ci(&self.samples).1
     }
 
     /// `" ± 0.4%"` when there is more than one sample, else empty — the suffix
@@ -236,15 +227,10 @@ impl Plan {
         }
     }
 
-    /// Run `f` `self.repeat` times with no warmup pass, for a stage an earlier
-    /// stage already warmed (verification after proving, say).
-    pub fn measure<T>(&self, f: impl FnMut() -> T) -> (T, Timing) {
-        self.run(f, Progress::new(), true)
-    }
-
-    /// [`measure`](Self::measure) without the per-pass echo, for a stage whose
-    /// individual passes are not interesting. Verification takes milliseconds and
-    /// nobody tunes it, so echoing every pass would bury the numbers that matter.
+    /// Run `f` `self.repeat` times with no warmup pass and no per-pass echo, for
+    /// a stage an earlier one already warmed (verification after proving, say).
+    /// Verification takes milliseconds and nobody tunes it, so echoing every pass
+    /// would bury the numbers that matter.
     pub fn measure_quiet<T>(&self, f: impl FnMut() -> T) -> (T, Timing) {
         self.run(f, Progress::new(), false)
     }
@@ -308,7 +294,7 @@ mod tests {
         let mut t = Timing::default();
         t.push(1.5);
         assert_eq!(t.mean(), 1.5);
-        assert_eq!(t.ci(), 0.0);
+        assert_eq!(mean_and_ci(t.samples()).1, 0.0);
         assert_eq!(t.spread(), "");
     }
 
@@ -319,7 +305,7 @@ mod tests {
             t.push(2.0);
         }
         assert_eq!(t.mean(), 2.0);
-        assert_eq!(t.ci(), 0.0);
+        assert_eq!(mean_and_ci(t.samples()).1, 0.0);
         assert_eq!(t.spread(), " ± 0.0%");
     }
 
@@ -330,7 +316,7 @@ mod tests {
             for i in 0..n {
                 t.push(if i.is_multiple_of(2) { 1.0 } else { 1.2 });
             }
-            t.ci()
+            mean_and_ci(t.samples()).1
         };
         assert!(spread(16) < spread(4), "more samples must tighten the interval");
     }
@@ -345,13 +331,5 @@ mod tests {
         assert_eq!(calls, 4, "one warmup plus three measured passes");
         assert_eq!(last, 4);
         assert_eq!(timing.samples().len(), 3);
-    }
-
-    #[test]
-    fn measure_skips_the_warmup() {
-        let mut calls = 0;
-        let (_, timing) = Plan::new(2, 0).measure(|| calls += 1);
-        assert_eq!(calls, 2);
-        assert_eq!(timing.samples().len(), 2);
     }
 }

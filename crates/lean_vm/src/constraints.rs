@@ -28,7 +28,7 @@
 //! `weights`, which a verifier may accumulate as it goes or defer wholesale to the
 //! end, as the recursion guest does. That is what a recursive verifier needs.
 //!
-//! The eq point is the caller's, not a fresh one — the bus's GKR point `ζ` — which
+//! The eq point is the caller's, not a fresh one (the bus's GKR point `ζ`), which
 //! is what lets the forms' sums settle the bus. Batching derived in `doc/main.tex`
 //! §sec:air. Both sides take `n = max τ_t` from the announced heights; a recursive
 //! verifier certifies that maximum with one hinted `g`-power (§recursion), so there
@@ -92,6 +92,10 @@ pub fn eta_powers(eta: F192, total: usize) -> Vec<F192> {
 }
 
 /// First active round for a table: evaluate its `K` columns at `{0,1,g}`.
+///
+/// Deliberately a near-copy of [`table_message_e`]: the two differ only in the
+/// three per-column node expressions, and folding them into one generic over the
+/// column type costs measurable prover time in this loop.
 fn table_message_k(
     cols: &[Column],
     eval: &(dyn Fn(&[F192], &[F192]) -> F192 + Sync),

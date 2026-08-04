@@ -7,11 +7,11 @@
   \E=\K[y]/(y^3+y+1),
   \qquad |\E|=2^{192}.
 \]
-A \emph{memory word}, including a cell value, immediate, or hash value, is an element $v=v_0+v_1y+v_2y^2\in\E$ with $v_0,v_1,v_2\in\K$. Each address, program counter $\pc$, frame pointer $\fp$, and read counter is in $\K$. Addition is bitwise \textsc{xor}; multiplication is in $\K$ or $\E$. Protocol randomness is sampled from $\E$ (\S\ref{sec:prelim}). Each physical committed column (\S\ref{sec:rs}) is $\K$-valued, so a data word occupies three columns.
+A \emph{memory word}, including a cell value, immediate, or hash value, is an element $v=v_0+v_1y+v_2y^2\in\E$ with $v_0,v_1,v_2\in\K$. Each memory address, program counter $\pc$, frame pointer $\fp$, and read counter is in $\K$.
 
-\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$. Its successor is one field multiplication: $\gen^{\,i+1}\;=\;\gen\cdot\gen^{\,i}$.
+\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$.
 
-\paragraph{Memory.} Memory is immutable from the program's point of view: an array of $2^{h}$ cells, each holding one $192$-bit word (an $\E$-element), addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$ (the addresses are $\K$-elements). The size exponent $h$ is fixed per execution, with $16\le h\le 32$. Witness generation may initialize an unset cell once; writing an initialized cell asserts that the value is unchanged.
+\paragraph{Memory.} Memory is read-only (equivalently: write-once): an array of $2^{h}$ cells, each holding one $192$-bit word (an $\E$-element), addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$ (the addresses are $\K$-elements). The memory log-size $h$ depends on each VM execution, with the constraint $16\le h\le 32$.
 
 \paragraph{Program.} The program is a fixed, public sequence of instructions, addressed like memory by powers of $\gen$: the program counter $\gen^{\,i}$ selects the $i$-th instruction. An instruction is an opcode together with its operands, described below.
 
@@ -21,7 +21,6 @@ A \emph{memory word}, including a cell value, immediate, or hash value, is an el
 \[
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
-Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen^{\mathrm{base}},\gen^{\mathrm{base}+1},\dots$, and adding the offset $j$ to the base exponent is, in the field, a single multiplication $\fp\cdot o$.
 
 \paragraph{Instruction set.} The machine implements seven instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ an immediate operand.
 \begin{center}
@@ -29,8 +28,8 @@ Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen
 \hline
 Instruction & Operands & Semantics\\
 \hline
-\texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad($192$-bit field addition, \textsc{xor})\\
-\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ in $\E$\\
+\texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad(addition in $\E$)\\
+\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\E$)\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $192$-bit immediate)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
@@ -40,7 +39,7 @@ Instruction & Operands & Semantics\\
 \end{tabularx}
 \end{center}
 
-\texttt{PACK64X2} groups the low limbs of two physical $\E$-valued cells into one canonical $128$-bit cell. Its memory interactions read the sources as $(a_0,0,0)$ and $(b_0,0,0)$ and the destination as $(a_0,b_0,0)$. Bus balance therefore proves that both source words lie in $\K$; this is not merely a witness-generation check. The instruction is useful when a program receives serialized $\K$-limbs through an $\E$-valued interface.
+\texttt{PACK64X2} groups the low limbs of two physical $\E$-valued cells into one canonical $128$-bit cell.
 
 \texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE3 operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\mu$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
 \[
@@ -65,5 +64,5 @@ The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return
 
 \texttt{JUMP} reads a condition $c=\loc{o_c}$, an arbitrary $192$-bit word, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
 
-\paragraph{Words used as addresses.} A memory word is $192$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Three reads produce addresses or registers: the \texttt{DEREF} pointer $\loc{\alpha}$, the \texttt{JUMP} destination $\loc{o_d}$, and the \texttt{JUMP} frame $\loc{o_f}$. Each must have both nonconstant tower limbs zero. The address and selection constraints (\S\ref{sec:tab-deref}, \S\ref{sec:tab-jump}) equate these words, possibly multiplied by a $\K$-operand, to a $\K$ column.
+\paragraph{Words used as addresses.} A memory word is $192$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Some instructions (\texttt{DEREF}, \texttt{JUMP}) interpret memory words as address or registers. The VM then requires those words to be stricly in $\K$ (i.e. the two top lanes are zero).
 

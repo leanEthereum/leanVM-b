@@ -86,13 +86,10 @@ impl Program {
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
         // range-check gadget's unconstrained target cells): `(deref row index,
-        // a2, a3)`, back-filled after the run — write-once memory is
+        // a2, a3)`, back-filled after the run: write-once memory is
         // order-independent, so the value can be decided at the end (leanVM's
         // end-of-execution deref-hint resolution).
         let mut deferred: Vec<(usize, usize, u32)> = Vec::new();
-
-        // Attribution aid: LEANVM_PC_HISTO=1 dumps per-pc execution counts
-        // alongside the disassembly after the run, tying cycles to source.
 
         // Grow the dense vectors so `idx` is in range (keeps mem/written/mem_count in
         // sync). All accessed cells satisfy cell < next_free after their frame's
@@ -138,7 +135,7 @@ impl Program {
         }
         // Bounded discrete log for `hint_decompose_bits_exponent`: find n < 2^nbits
         // with g^n = x, by baby-step giant-step (baby table g^j for j < 2^17,
-        // built once per run; giant step ×g^(-2^17)). Prover-side only — the
+        // built once per run; giant step ×g^(-2^17)). Prover-side only: the
         // guest re-verifies the hinted bits in-circuit.
         fn bounded_dlog(cache: &mut Option<(super::hints::GPowMap, F64)>, x: F64, nbits: u32) -> u128 {
             const LOG_BABY: u32 = 17;
@@ -167,7 +164,7 @@ impl Program {
         }
 
         // Read the running access count and advance it by ×g (the free increment).
-        // ×g is ×x, i.e. `mul_by_g` — a shift+fold, not a PMULL; this runs on every
+        // ×g is ×x, i.e. `mul_by_g`, a shift+fold rather than a PMULL; this runs on every
         // memory access (several million per run), so the cheap form matters.
         fn bump_access_count(mem: &mut Vec<F192>, written: &mut Vec<bool>, mem_count: &mut Vec<F64>, cell: u32) -> F64 {
             ensure(mem, written, mem_count, cell as usize);
@@ -476,7 +473,7 @@ impl Program {
                         Some(&b) => b,
                         None => {
                             // Not indexed yet: grow the g-power index to the minimum
-                            // memory size — range-check touches point anywhere below
+                            // memory size, since range-check touches point anywhere below
                             // their bound (≤ 2^MIN_LOG_MEM), not just at allocated
                             // frames/buffers. A value still absent is no valid
                             // pointer: a wild deref, or a failed range check
@@ -564,7 +561,7 @@ impl Program {
                     let f = get(&mem, &written, af);
                     // `b = [c ≠ 0]` is needed now; `w = c⁻¹` is only recorded into
                     // the trace (never used for control flow), so it is deferred to
-                    // ONE batched Montgomery inversion after the run — computing it
+                    // ONE batched Montgomery inversion after the run; computing it
                     // per-jump here runs a Fermat inverse on every taken branch
                     // (~2^17 of them), which dominated `execute`. Placeholder 0 now;
                     // batch-filled below (bit-identical to `c.inv()`).
@@ -745,7 +742,7 @@ impl Program {
         // Resolve the deferred DEREF touches: a fixpoint, so a touch whose cell is
         // filled by another deferred entry picks up that value; cells nobody ever
         // writes are fixed to ZERO. The rows' values are patched in place (their
-        // access counts were already bumped during the walk — the memory bus is
+        // access counts were already bumped during the walk: the memory bus is
         // order-independent, it only needs every access to agree on the value).
         while {
             let before = deferred.len();

@@ -34,9 +34,10 @@
 //! `current_claim = (1+r_now)·G(0) + r_now·G(1)`.
 
 use crate::zerocheck::PaddingSpec;
-use crate::zerocheck::univariate_skip::{SplitEq, build_eq, pack_bits};
+#[cfg(test)]
+use crate::zerocheck::univariate_skip::pack_bits;
+use crate::zerocheck::univariate_skip::{SplitEq, build_eq};
 use primitives::field::{F192, F192Unreduced, PHI_8_TABLE_192 as PHI_8_TABLE};
-pub use primitives::multilinear::eq_eval;
 use zk_alloc::ArenaVec;
 
 /// Returns `(pair_in_block_mask, useful_pairs_inclusive)` for the round-2
@@ -67,13 +68,24 @@ fn round2_pair_skip(padding: &PaddingSpec, k_skip: usize) -> (usize, usize) {
 // Lagrange weights for the univariate-skip fold at z.
 // ---------------------------------------------------------------------------
 
-/// Lagrange weights `L_i(z)` for `i ∈ 0..2^k_skip` at the fold point `z`.
-///
-/// `L_i(z) = ∏_{j ≠ i} (z + φ_8(j)) / (φ_8(i) + φ_8(j))` — the standard Lagrange
-/// formula, with the nodes being the F_8 elements `0..2^k_skip` embedded into
-/// F_{2^192} via `φ_8`. Subtraction is XOR in characteristic 2.
-///
-pub use primitives::multilinear::lagrange_weights_naive;
+use primitives::multilinear::lagrange_weights_naive;
+
+/// Lagrange weight `L_{node_idx}(z)` over the interpolation nodes `nodes`:
+/// `∏_{j ≠ node_idx} (z + nodes[j]) / (nodes[node_idx] + nodes[j])`. Subtraction
+/// is XOR in characteristic 2.
+fn lagrange_weight_at(node_idx: usize, nodes: &[F192], z: F192) -> F192 {
+    let si = nodes[node_idx];
+    let mut num = F192::ONE;
+    let mut den = F192::ONE;
+    for (j, &sj) in nodes.iter().enumerate() {
+        if j == node_idx {
+            continue;
+        }
+        num *= z + sj;
+        den *= si + sj;
+    }
+    num * den.inv()
+}
 
 /// Lagrange weights `L_i^Λ(z)` for `i ∈ 0..2^k_skip` at the fold point `z`,
 /// where the nodes are the **extension domain** `Λ = {2^k_skip, …, 2^(k_skip+1) − 1}`
@@ -81,25 +93,11 @@ pub use primitives::multilinear::lagrange_weights_naive;
 ///
 /// Used to interpolate the extract_c round-1 output `round1_c` (which carries
 /// the polynomial `P^C` as its 2^k_skip evaluations on Λ) at the URM challenge `z`.
-pub fn lagrange_weights_lambda_naive(k_skip: usize, z: F192) -> Vec<F192> {
+fn lagrange_weights_lambda_naive(k_skip: usize, z: F192) -> Vec<F192> {
     let ell = 1usize << k_skip;
     assert!(2 * ell <= 256, "Λ ∪ S must fit in F_8 (need k_skip ≤ 7)");
-    let mut weights = vec![F192::ZERO; ell];
-    for i in 0..ell {
-        let si = PHI_8_TABLE[ell + i];
-        let mut num = F192::ONE;
-        let mut den = F192::ONE;
-        for j in 0..ell {
-            if j == i {
-                continue;
-            }
-            let sj = PHI_8_TABLE[ell + j];
-            num *= z + sj;
-            den *= si + sj;
-        }
-        weights[i] = num * den.inv();
-    }
-    weights
+    let nodes = &PHI_8_TABLE[ell..2 * ell];
+    (0..ell).map(|i| lagrange_weight_at(i, nodes, z)).collect()
 }
 
 /// Interpolate a degree-`< 2^k_skip` polynomial at z, given its `2^k_skip`
@@ -135,24 +133,11 @@ pub fn interpolate_at_z_combined(values_on_lambda: &[F192], k_skip: usize, z: F1
     let ell = 1usize << k_skip;
     assert_eq!(values_on_lambda.len(), ell);
     assert!(2 * ell <= 256, "Λ ∪ S must fit in F_8 (need k_skip ≤ 7)");
-    let n_total = 2 * ell;
+    let nodes = &PHI_8_TABLE[..2 * ell];
     let mut acc = F192::ZERO;
     for i in 0..ell {
         // i-th Λ node = node index `ell + i` in PHI_8_TABLE.
-        let node_idx = ell + i;
-        let si = PHI_8_TABLE[node_idx];
-        let mut num = F192::ONE;
-        let mut den = F192::ONE;
-        for j in 0..n_total {
-            if j == node_idx {
-                continue;
-            }
-            let sj = PHI_8_TABLE[j];
-            num *= z + sj;
-            den *= si + sj;
-        }
-        let weight = num * den.inv();
-        acc += weight * values_on_lambda[i];
+        acc += lagrange_weight_at(ell + i, nodes, z) * values_on_lambda[i];
     }
     acc
 }
@@ -169,7 +154,8 @@ pub fn interpolate_at_z_combined(values_on_lambda: &[F192], k_skip: usize, z: F1
 ///
 /// `a(s, x_rest)` is the witness bit at index `x_rest * 2^k_skip + s` (low
 /// bits = skip variable, high bits = rest variables).
-pub fn fold_at_z_naive(witness: &[bool], m: usize, k_skip: usize, weights: &[F192]) -> ArenaVec<F192> {
+#[cfg(test)]
+fn fold_at_z_naive(witness: &[bool], m: usize, k_skip: usize, weights: &[F192]) -> ArenaVec<F192> {
     assert!(k_skip <= m);
     let ell = 1usize << k_skip;
     let n_rest = 1usize << (m - k_skip);
@@ -254,7 +240,8 @@ pub fn round_pair_naive(a_mlv: &[F192], b_mlv: &[F192], r: &[F192]) -> (F192, F1
 /// in one pass through the witness.
 ///
 /// Returns `(a_mlv, b_mlv, mlv_challenges[0] · G(1), G(∞))`.
-pub fn uni_skip_fold_and_round_pair_naive(
+#[cfg(test)]
+fn uni_skip_fold_and_round_pair_naive(
     a: &[bool],
     b: &[bool],
     m: usize,
@@ -323,8 +310,7 @@ impl UniSkipFoldTable {
         Self { n_chunks, data }
     }
 
-    /// Scalar one-row fold: `Σ_j table[j][bytes[j]]`. Ports the NEON
-    /// the scalar univariate-skip fold.
+    /// Scalar one-row fold: `Σ_j table[j][bytes[j]]`.
     #[inline]
     pub fn fold_one_row(&self, bytes: &[u8]) -> F192 {
         assert_eq!(bytes.len(), self.n_chunks);
@@ -364,10 +350,28 @@ unsafe fn fold_one_row_neon_unchecked_8(table_data: *const F192, bytes_ptr: *con
     }
 }
 
+/// Fold post-URM row `row` of `packed`: the NEON kernel where it exists, the
+/// scalar table lookup elsewhere. Requires an 8-chunk `table` (the k_skip=6
+/// protocol size) and `row` within `packed`.
+#[inline(always)]
+fn fold_row(table: &UniSkipFoldTable, packed: &[u8], row: usize) -> F192 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: the table has 8 chunks and `row` addresses 8 in-bounds bytes,
+        // both asserted by the caller.
+        unsafe { fold_one_row_neon_unchecked_8(table.data.as_ptr(), packed.as_ptr().add(row * 8)) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let n_chunks = table.n_chunks;
+        table.fold_one_row(&packed[row * n_chunks..(row + 1) * n_chunks])
+    }
+}
+
 /// Optimized fused fold (at the URM challenge `z`, baked into `table`) plus
 /// round-2 prover message. **Packed input** (LSB-first bit packing). **Parallel
-/// by default** via rayon — the outer x_hi loop is distributed across workers,
-/// each writing to a disjoint chunk of `a_folded`/`b_folded`
+/// by default** via the `parallel` pool: the outer x_hi loop is distributed
+/// across workers, each writing to a disjoint chunk of `a_folded`/`b_folded`
 /// and accumulating its own `(sum1_contrib, sum_inf_contrib)`. The final
 /// reduce sums the per-worker contributions (commutative + associative F192
 /// XOR/multiply).
@@ -379,35 +383,15 @@ unsafe fn fold_one_row_neon_unchecked_8(table_data: *const F192, bytes_ptr: *con
 ///    256-bit reduction, reduced once at the end of the worker's x_lo loop.
 /// 3. Outer fold by `eq.hi[x_hi]` into the worker's `(sum1_contrib, sum_inf_contrib)`.
 ///
+/// Pairs whose post-URM chunk indices both fall in the per-block zero padding
+/// are skipped: the fold output is zero and so is the message contribution.
+///
 /// Returns `(a_folded, b_folded, mlv_challenges[0] · G(1), G(∞))` — same
 /// convention as `uni_skip_fold_and_round_pair_naive`.
 ///
 /// To run single-threaded for debugging, set `LEANVM_NUM_THREADS=1`.
 ///
 /// `k_skip = 6` is currently hardcoded (the protocol headline).
-pub fn uni_skip_fold_and_round_pair_optimized_packed(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    m: usize,
-    k_skip: usize,
-    table: &UniSkipFoldTable,
-    mlv_challenges: &[F192],
-) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
-    uni_skip_fold_and_round_pair_optimized_packed_padded(
-        a_packed,
-        b_packed,
-        m,
-        k_skip,
-        table,
-        mlv_challenges,
-        &PaddingSpec::dense(m),
-    )
-}
-
-/// Padding-aware variant of [`uni_skip_fold_and_round_pair_optimized_packed`].
-/// Skips pairs whose post-URM chunk indices both fall in the per-block zero
-/// padding: the fold output is already zero-initialized and the message
-/// contribution would be zero, so we can `continue` past those pairs.
 pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
     a_packed: &[u8],
     b_packed: &[u8],
@@ -455,76 +439,38 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
                 let mut p1_acc = F192Unreduced::ZERO;
                 let mut pinf_acc = F192Unreduced::ZERO;
                 let pair_idx_base = x_hi * lo_size;
+                let base = x_hi * chunk_size;
 
-                #[cfg(target_arch = "aarch64")]
-                unsafe {
-                    let table_ptr = table.data.as_ptr();
-                    let a_pkt_ptr = a_packed.as_ptr();
-                    let b_pkt_ptr = b_packed.as_ptr();
-                    let base = x_hi * chunk_size;
-
-                    for x_lo in 0..lo_size {
-                        let x0l = 2 * x_lo;
-                        let x1l = x0l + 1;
-                        if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                            // Padding hole: write zero (a_folded/b_folded were alloc'd
-                            // uninit, so we have to write every slot we don't fold into).
-                            a_chunk[x0l] = F192::ZERO;
-                            a_chunk[x1l] = F192::ZERO;
-                            b_chunk[x0l] = F192::ZERO;
-                            b_chunk[x1l] = F192::ZERO;
-                            continue;
-                        }
-                        let x0g = base + 2 * x_lo;
-                        let x1g = x0g + 1;
-
-                        let a0 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x0g * 8));
-                        let b0 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x0g * 8));
-                        let a1 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x1g * 8));
-                        let b1 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x1g * 8));
-
-                        a_chunk[x0l] = a0;
-                        a_chunk[x1l] = a1;
-                        b_chunk[x0l] = b0;
-                        b_chunk[x1l] = b1;
-
-                        let eq_l = eq_lo[x_lo];
-                        let g1 = a1 * b1;
-                        p1_acc ^= eq_l.mul_unreduced(g1);
-                        let g_inf = (a0 + a1) * (b0 + b1);
-                        pinf_acc ^= eq_l.mul_unreduced(g_inf);
+                for x_lo in 0..lo_size {
+                    let x0l = 2 * x_lo;
+                    let x1l = x0l + 1;
+                    if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
+                        // Padding hole: write zero (a_folded/b_folded were alloc'd
+                        // uninit, so we have to write every slot we don't fold into).
+                        a_chunk[x0l] = F192::ZERO;
+                        a_chunk[x1l] = F192::ZERO;
+                        b_chunk[x0l] = F192::ZERO;
+                        b_chunk[x1l] = F192::ZERO;
+                        continue;
                     }
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    let base = x_hi * chunk_size;
-                    for x_lo in 0..lo_size {
-                        let x0l = 2 * x_lo;
-                        let x1l = x0l + 1;
-                        if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                            // See aarch64 branch above for why this zero write is needed.
-                            a_chunk[x0l] = F192::ZERO;
-                            a_chunk[x1l] = F192::ZERO;
-                            b_chunk[x0l] = F192::ZERO;
-                            b_chunk[x1l] = F192::ZERO;
-                            continue;
-                        }
-                        let x0g = base + 2 * x_lo;
-                        let x1g = x0g + 1;
-                        let a0 = table.fold_one_row(&a_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
-                        let b0 = table.fold_one_row(&b_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
-                        let a1 = table.fold_one_row(&a_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
-                        let b1 = table.fold_one_row(&b_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
-                        a_chunk[x0l] = a0;
-                        a_chunk[x1l] = a1;
-                        b_chunk[x0l] = b0;
-                        b_chunk[x1l] = b1;
-                        let eq_l = eq_lo[x_lo];
-                        let g1 = a1 * b1;
-                        p1_acc ^= eq_l.mul_unreduced(g1);
-                        let g_inf = (a0 + a1) * (b0 + b1);
-                        pinf_acc ^= eq_l.mul_unreduced(g_inf);
-                    }
+                    let x0g = base + 2 * x_lo;
+                    let x1g = x0g + 1;
+
+                    let a0 = fold_row(table, a_packed, x0g);
+                    let b0 = fold_row(table, b_packed, x0g);
+                    let a1 = fold_row(table, a_packed, x1g);
+                    let b1 = fold_row(table, b_packed, x1g);
+
+                    a_chunk[x0l] = a0;
+                    a_chunk[x1l] = a1;
+                    b_chunk[x0l] = b0;
+                    b_chunk[x1l] = b1;
+
+                    let eq_l = eq_lo[x_lo];
+                    let g1 = a1 * b1;
+                    p1_acc ^= eq_l.mul_unreduced(g1);
+                    let g_inf = (a0 + a1) * (b0 + b1);
+                    pinf_acc ^= eq_l.mul_unreduced(g_inf);
                 }
 
                 let p1 = p1_acc.reduce();
@@ -546,7 +492,8 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
 /// In-place fold of a single multilinear polynomial table at `challenge`.
 /// Pairs `(a[2x], a[2x+1])` collapse to `a[x] = a[2x] + challenge · (a[2x+1] + a[2x])`.
 /// After the call, `a.len()` is halved.
-pub fn fold_in_place_single(a: &mut ArenaVec<F192>, challenge: F192) {
+#[cfg(test)]
+fn fold_in_place_single(a: &mut ArenaVec<F192>, challenge: F192) {
     let n = a.len();
     assert!(n.is_power_of_two() && n >= 2);
     let half = n / 2;
@@ -583,74 +530,27 @@ pub fn fold_in_place_pair(a: &mut ArenaVec<F192>, b: &mut ArenaVec<F192>, challe
 }
 
 /// Fused: bind one variable at `r_fold` AND compute the *next* round's prover
-/// message. Returns the new (folded) `a, b` vectors (half the input size) and
-/// `(r_next[0] · G(1), G(∞))` for the next round.
+/// message, writing the folded `a`/`b` into the caller-provided `a_out`/`b_out`
+/// (each length `a.len() / 2`). Returns `(r_next[0] · G(1), G(∞))`.
 ///
-/// Parallelized via rayon: each worker reads one disjoint 4·lo_size chunk of
-/// the input and writes the corresponding 2·lo_size chunk of the output.
+/// Parallelized via the `parallel` pool: each worker reads one disjoint
+/// 4·lo_size chunk of the input and writes the corresponding 2·lo_size chunk of
+/// the output.
+///
+/// Writing into caller buffers lets the multilinear-sumcheck tail ping-pong
+/// between two persistent scratch buffers, so the ~22 decreasing-size buffers
+/// are allocated/freed once rather than per round. The per-round `munmap` of the
+/// old buffer (64 MB at m=29) runs single-threaded and otherwise caps the tail's
+/// parallel speedup.
 ///
 /// Requires `a.len() = b.len() ≥ 8` so the post-fold polynomial has at least
 /// one bit of x_lo (lo_size ≥ 2). Smaller polynomials should use the
 /// unfused `fold_in_place_pair + round_pair_naive` pair.
-pub fn fold_and_compute_round_pair_optimized(
-    a: &[F192],
-    b: &[F192],
-    r_fold: F192,
-    r_next: &[F192],
-) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
-    let half = a.len() / 2;
-    let mut a_new = zk_alloc::alloc_uninit(half);
-    let mut b_new = zk_alloc::alloc_uninit(half);
-    let (m1, mi) = fold_and_compute_round_pair_into_slots(a, b, &mut a_new, &mut b_new, r_fold, r_next);
-    // SAFETY: the fold writes every slot of both output vectors exactly once.
-    let a_new = unsafe { zk_alloc::assume_init(a_new) };
-    // SAFETY: the fold writes every slot of both output vectors exactly once.
-    let b_new = unsafe { zk_alloc::assume_init(b_new) };
-    (a_new, b_new, m1, mi)
-}
-
-trait OutputSlot {
-    fn put(&mut self, value: F192);
-}
-
-impl OutputSlot for F192 {
-    #[inline(always)]
-    fn put(&mut self, value: F192) {
-        *self = value;
-    }
-}
-
-impl OutputSlot for std::mem::MaybeUninit<F192> {
-    #[inline(always)]
-    fn put(&mut self, value: F192) {
-        self.write(value);
-    }
-}
-
-/// Buffer-reusing variant of [`fold_and_compute_round_pair_optimized`]: writes
-/// the folded `a`/`b` into the caller-provided `a_out`/`b_out` (each length
-/// `a.len() / 2`) instead of allocating. Returns `(r_next[0] · G(1), G(∞))`.
-///
-/// Lets the multilinear-sumcheck tail ping-pong between two persistent scratch
-/// buffers, so the ~22 decreasing-size buffers are allocated/freed once rather
-/// than per round. The per-round `munmap` of the old buffer (64 MB at m=29)
-/// runs single-threaded and otherwise caps the tail's parallel speedup.
 pub fn fold_and_compute_round_pair_into(
     a: &[F192],
     b: &[F192],
     a_out: &mut [F192],
     b_out: &mut [F192],
-    r_fold: F192,
-    r_next: &[F192],
-) -> (F192, F192) {
-    fold_and_compute_round_pair_into_slots(a, b, a_out, b_out, r_fold, r_next)
-}
-
-fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
-    a: &[F192],
-    b: &[F192],
-    a_out: &mut [O],
-    b_out: &mut [O],
     r_fold: F192,
     r_next: &[F192],
 ) -> (F192, F192) {
@@ -695,7 +595,6 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
             // the smallest fused round). 16 independent r_fold muls and 8
             // independent msg muls in flight gives the M4 OoO engine and
             // 2/cy PMULL throughput maximum ILP.
-            assert!(lo_size & 1 == 0, "lo_size must be even");
             let mut x_lo = 0;
             if lo_size.is_multiple_of(4) {
                 while x_lo + 4 <= lo_size {
@@ -763,22 +662,22 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
                     let oi_b = 2 * x_lo_b;
                     let oi_c = 2 * x_lo_c;
                     let oi_d = 2 * x_lo_d;
-                    a_out[oi_a].put(a0_a);
-                    a_out[oi_a + 1].put(a1_a);
-                    b_out[oi_a].put(b0_a);
-                    b_out[oi_a + 1].put(b1_a);
-                    a_out[oi_b].put(a0_b);
-                    a_out[oi_b + 1].put(a1_b);
-                    b_out[oi_b].put(b0_b);
-                    b_out[oi_b + 1].put(b1_b);
-                    a_out[oi_c].put(a0_c);
-                    a_out[oi_c + 1].put(a1_c);
-                    b_out[oi_c].put(b0_c);
-                    b_out[oi_c + 1].put(b1_c);
-                    a_out[oi_d].put(a0_d);
-                    a_out[oi_d + 1].put(a1_d);
-                    b_out[oi_d].put(b0_d);
-                    b_out[oi_d + 1].put(b1_d);
+                    a_out[oi_a] = a0_a;
+                    a_out[oi_a + 1] = a1_a;
+                    b_out[oi_a] = b0_a;
+                    b_out[oi_a + 1] = b1_a;
+                    a_out[oi_b] = a0_b;
+                    a_out[oi_b + 1] = a1_b;
+                    b_out[oi_b] = b0_b;
+                    b_out[oi_b + 1] = b1_b;
+                    a_out[oi_c] = a0_c;
+                    a_out[oi_c + 1] = a1_c;
+                    b_out[oi_c] = b0_c;
+                    b_out[oi_c + 1] = b1_c;
+                    a_out[oi_d] = a0_d;
+                    a_out[oi_d + 1] = a1_d;
+                    b_out[oi_d] = b0_d;
+                    b_out[oi_d + 1] = b1_d;
 
                     // 8 independent msg muls.
                     let eq_l_a = eq_lo[x_lo_a];
@@ -805,8 +704,8 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
                     x_lo += 4;
                 }
             }
-            // 2-wide tail (handles lo_size == 2 case and any remainder when
-            // 4-wide loop is skipped or doesn't cover everything).
+            // 2-wide path. `lo_size` is a power of two, so this runs only when
+            // `lo_size == 2`, the smallest fused round.
             while x_lo + 2 <= lo_size {
                 let x_lo_a = x_lo;
                 let x_lo_b = x_lo + 1;
@@ -841,14 +740,14 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
 
                 let oi_a = 2 * x_lo_a;
                 let oi_b = 2 * x_lo_b;
-                a_out[oi_a].put(a0_a);
-                a_out[oi_a + 1].put(a1_a);
-                b_out[oi_a].put(b0_a);
-                b_out[oi_a + 1].put(b1_a);
-                a_out[oi_b].put(a0_b);
-                a_out[oi_b + 1].put(a1_b);
-                b_out[oi_b].put(b0_b);
-                b_out[oi_b + 1].put(b1_b);
+                a_out[oi_a] = a0_a;
+                a_out[oi_a + 1] = a1_a;
+                b_out[oi_a] = b0_a;
+                b_out[oi_a + 1] = b1_a;
+                a_out[oi_b] = a0_b;
+                a_out[oi_b + 1] = a1_b;
+                b_out[oi_b] = b0_b;
+                b_out[oi_b + 1] = b1_b;
 
                 let eq_l_a = eq_lo[x_lo_a];
                 let eq_l_b = eq_lo[x_lo_b];
@@ -876,8 +775,9 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
 }
 
 /// Serial reference — identical I/O contract to
-/// [`uni_skip_fold_and_round_pair_optimized_packed`], no rayon. Kept under
-/// `#[cfg(test)]` as the cross-check oracle for the parallel version.
+/// [`uni_skip_fold_and_round_pair_optimized_packed_padded`] on a dense witness,
+/// no thread pool. Kept under `#[cfg(test)]` as the cross-check oracle for the
+/// parallel version.
 #[cfg(test)]
 fn uni_skip_fold_and_round_pair_optimized_packed_serial(
     a_packed: &[u8],
@@ -929,25 +829,6 @@ fn uni_skip_fold_and_round_pair_optimized_packed_serial(
     (a_folded, b_folded, mlv_challenges[0] * sum1, sum_inf)
 }
 
-/// `&[bool]` convenience wrapper around
-/// [`uni_skip_fold_and_round_pair_optimized_packed`]. Packs internally, builds
-/// the fold table from `z`.
-pub fn uni_skip_fold_and_round_pair_optimized(
-    a: &[bool],
-    b: &[bool],
-    m: usize,
-    k_skip: usize,
-    z: F192,
-    mlv_challenges: &[F192],
-) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
-    assert_eq!(a.len(), 1usize << m);
-    assert_eq!(b.len(), 1usize << m);
-    let a_packed = pack_bits(a);
-    let b_packed = pack_bits(b);
-    let table = UniSkipFoldTable::new(k_skip, z);
-    uni_skip_fold_and_round_pair_optimized_packed(&a_packed, &b_packed, m, k_skip, &table, mlv_challenges)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -955,7 +836,7 @@ pub fn uni_skip_fold_and_round_pair_optimized(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_rng::Rng;
+    use primitives::test_rng::Rng;
 
     // ----------------------------------------------------------------------
     // Lagrange weights — algebraic properties.
@@ -1058,38 +939,6 @@ mod tests {
         assert!(b_mlv.iter().all(|v| v.is_zero()));
         assert_eq!(msg_1, F192::ZERO);
         assert_eq!(msg_inf, F192::ZERO);
-    }
-
-    #[test]
-    fn deterministic() {
-        let m = 7;
-        let k_skip = 3;
-        let mut rng = Rng::new(33);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let z = rng.ext();
-        let mlv_challenges = rng.ext_vec(m - k_skip);
-        let o1 = uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
-        let o2 = uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
-        assert_eq!(o1, o2);
-    }
-
-    /// Round-pair message is symmetric in a, b: swapping a↔b gives the same
-    /// message. `a · b = b · a` is built-in, and the `r[0]` multiplier doesn't
-    /// distinguish AB.
-    #[test]
-    fn round_pair_symmetric_in_ab() {
-        let m = 6;
-        let k_skip = 3;
-        let mut rng = Rng::new(40);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let z = rng.ext();
-        let mlv_challenges = rng.ext_vec(m - k_skip);
-        let (_, _, m1_ab, minf_ab) = uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
-        let (_, _, m1_ba, minf_ba) = uni_skip_fold_and_round_pair_naive(&b, &a, m, k_skip, z, &mlv_challenges);
-        assert_eq!(m1_ab, m1_ba);
-        assert_eq!(minf_ab, minf_ba);
     }
 
     // ----------------------------------------------------------------------
@@ -1212,7 +1061,7 @@ mod tests {
         }
     }
 
-    /// **The big cross-check**: fused `fold_and_compute_round_pair_optimized`
+    /// **The big cross-check**: fused `fold_and_compute_round_pair_into`
     /// produces the same output as the unfused sequence
     /// `fold_in_place_pair` → `round_pair_naive`.
     #[test]
@@ -1229,8 +1078,10 @@ mod tests {
             let r_next = rng.ext_vec(log_n - 1);
 
             // Fused path.
-            let (a_fused, b_fused, m1_fused, minf_fused) =
-                fold_and_compute_round_pair_optimized(&a, &b, r_fold, &r_next);
+            let mut a_fused = vec![F192::ZERO; n / 2];
+            let mut b_fused = vec![F192::ZERO; n / 2];
+            let (m1_fused, minf_fused) =
+                fold_and_compute_round_pair_into(&a, &b, &mut a_fused, &mut b_fused, r_fold, &r_next);
 
             // Unfused path: clone, in-place fold, naive message.
             let mut a_unf = ArenaVec::from_slice(&a);
@@ -1238,14 +1089,14 @@ mod tests {
             fold_in_place_pair(&mut a_unf, &mut b_unf, r_fold);
             let (m1_unf, minf_unf) = round_pair_naive(&a_unf, &b_unf, &r_next);
 
-            assert_eq!(a_fused, a_unf, "a mismatch at log_n={log_n}");
-            assert_eq!(b_fused, b_unf, "b mismatch at log_n={log_n}");
+            assert_eq!(a_fused.as_slice(), &a_unf[..], "a mismatch at log_n={log_n}");
+            assert_eq!(b_fused.as_slice(), &b_unf[..], "b mismatch at log_n={log_n}");
             assert_eq!(m1_fused, m1_unf, "msg_1 mismatch at log_n={log_n}");
             assert_eq!(minf_fused, minf_unf, "msg_inf mismatch at log_n={log_n}");
         }
     }
 
-    /// Parallel `uni_skip_fold_and_round_pair_optimized_packed` produces
+    /// Parallel `uni_skip_fold_and_round_pair_optimized_packed_padded` produces
     /// byte-identical output to the serial version. F192 XOR + multiply sum
     /// is commutative + associative, so worker scheduling order doesn't
     /// affect the result.
@@ -1265,8 +1116,15 @@ mod tests {
             let b_packed = pack_bits(&b);
             let table = UniSkipFoldTable::new(k_skip, z);
 
-            let par =
-                uni_skip_fold_and_round_pair_optimized_packed(&a_packed, &b_packed, m, k_skip, &table, &mlv_challenges);
+            let par = uni_skip_fold_and_round_pair_optimized_packed_padded(
+                &a_packed,
+                &b_packed,
+                m,
+                k_skip,
+                &table,
+                &mlv_challenges,
+                &PaddingSpec::dense(m),
+            );
             let ser = uni_skip_fold_and_round_pair_optimized_packed_serial(
                 &a_packed,
                 &b_packed,
@@ -1321,8 +1179,15 @@ mod tests {
                 useful_bits_per_block: useful_bits,
             };
 
-            let dense =
-                uni_skip_fold_and_round_pair_optimized_packed(&a_packed, &b_packed, m, K_SKIP, &table, &mlv_challenges);
+            let dense = uni_skip_fold_and_round_pair_optimized_packed_padded(
+                &a_packed,
+                &b_packed,
+                m,
+                K_SKIP,
+                &table,
+                &mlv_challenges,
+                &PaddingSpec::dense(m),
+            );
             let padded = uni_skip_fold_and_round_pair_optimized_packed_padded(
                 &a_packed,
                 &b_packed,
@@ -1351,8 +1216,6 @@ mod tests {
         let table = UniSkipFoldTable::new(k_skip, z);
         let a_packed = pack_bits(&a);
 
-        let n_chunks = 1usize << (k_skip / 8);
-        let _ = n_chunks; // ell/8 = (1<<k_skip)/8
         let n_chunks = table.n_chunks;
 
         for x_rest in 0..(1usize << (m - k_skip)) {
@@ -1388,8 +1251,16 @@ mod tests {
             let mlv_challenges = rng.ext_vec(m - k_skip);
 
             let (a_n, b_n, m1_n, minf_n) = uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
-            let (a_o, b_o, m1_o, minf_o) =
-                uni_skip_fold_and_round_pair_optimized(&a, &b, m, k_skip, z, &mlv_challenges);
+            let table = UniSkipFoldTable::new(k_skip, z);
+            let (a_o, b_o, m1_o, minf_o) = uni_skip_fold_and_round_pair_optimized_packed_padded(
+                &pack_bits(&a),
+                &pack_bits(&b),
+                m,
+                k_skip,
+                &table,
+                &mlv_challenges,
+                &PaddingSpec::dense(m),
+            );
 
             assert_eq!(a_n, a_o, "a_mlv mismatch at m={m}");
             assert_eq!(b_n, b_o, "b_mlv mismatch at m={m}");

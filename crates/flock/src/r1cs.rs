@@ -3,12 +3,13 @@
 //!
 //! The standard R1CS is `(A·z) ⊙ (B·z) ⊕ (C·z) = 0`. We fix `C = I` (the
 //! circuit-R1CS shape `(A·z) ⊙ (B·z) = z`), so the c-claim emitted by
-//! zerocheck is already a `z`-claim — no transformation needed downstream.
+//! zerocheck is already a `z`-claim, no transformation needed downstream.
 //!
 //! We further specialize to **block-diagonal `A` and `B`**:
 //!   `A = I_{2^n_log} ⊗ A_0`, etc. The base matrices are `k × k` sparse
-//! boolean (`k = 2^k_log`). `C_0 = I_k` is implicit (we still carry the
-//! materialized `c_0` matrix for utilities like `satisfies`).
+//! boolean (`k = 2^k_log`). `C_0 = I_k` is implicit, but the materialized
+//! `c_0` matrix is still carried because [`BlockR1cs::family_digest`] absorbs
+//! it.
 
 /// Sparse boolean matrix. `rows[i]` lists the column indices where the entry is 1.
 #[derive(Clone, Debug)]
@@ -60,15 +61,15 @@ pub struct BlockR1cs {
     /// all-zero witness satisfies every homogeneous constraint row.
     pub const_pin: Option<usize>,
     /// Lazily-cached CSC transpose of `(a_0, b_0)` for lincheck's
-    /// `fold_alpha_batched` — see [`Self::csc_lincheck_circuit`]. The matrices
+    /// `fold_alpha_batched`, see [`Self::csc_lincheck_circuit`]. The matrices
     /// are public fields, so mutating them after the cache is populated leaves
-    /// a stale cache — don't do that.
+    /// a stale cache, so don't do that.
     #[doc(hidden)]
     pub csc_cache: std::sync::OnceLock<crate::lincheck::CscCircuit>,
 }
 
-// Manual Clone — std::sync::OnceLock doesn't derive Clone, and a fresh cache
-// after cloning is the right behavior (recomputes lazily on first use).
+// Manual Clone so the clone starts with an empty cache: it recomputes lazily on
+// first use, which is what a copy of the matrices should do.
 impl Clone for BlockR1cs {
     fn clone(&self) -> Self {
         Self {
@@ -87,16 +88,12 @@ impl Clone for BlockR1cs {
 }
 
 impl BlockR1cs {
-    /// Inner dimension = 2^k_log = base-matrix side.
-    pub fn k(&self) -> usize {
-        1usize << self.k_log
-    }
     /// Total witness length = 2^m.
     pub fn n(&self) -> usize {
         1usize << self.m
     }
 
-    /// CSC-transposed `LincheckCircuit` over this R1CS's sparse matrices —
+    /// CSC-transposed `LincheckCircuit` over this R1CS's sparse matrices:
     /// the fastest `fold_alpha_batched` when `a_0`/`b_0` are materialized
     /// (gather per column instead of scatter per row). Built lazily on first
     /// access and cached; call once at setup to keep the build cost (one pass
@@ -109,21 +106,25 @@ impl BlockR1cs {
 
     /// Apply `A = I_{2^n_log} ⊗ A_0` to a Boolean witness `z`. Returns
     /// `a = A · z` ∈ GF(2)^N (length 2^m).
+    #[cfg(test)]
     pub fn apply_a(&self, z: &[bool]) -> Vec<bool> {
         apply_block_diag(&self.a_0, z, self.k_log)
     }
 
     /// Apply `B = I_{2^n_log} ⊗ B_0` to `z`.
+    #[cfg(test)]
     pub fn apply_b(&self, z: &[bool]) -> Vec<bool> {
         apply_block_diag(&self.b_0, z, self.k_log)
     }
 
     /// Apply `C = I_{2^n_log} ⊗ C_0` to `z`.
+    #[cfg(test)]
     pub fn apply_c(&self, z: &[bool]) -> Vec<bool> {
         apply_block_diag(&self.c_0, z, self.k_log)
     }
 
     /// Check whether `(A·z) ⊙ (B·z) = C·z` (over GF(2), Hadamard product).
+    #[cfg(test)]
     pub fn satisfies(&self, z: &[bool]) -> bool {
         assert_eq!(z.len(), self.n());
         let a = self.apply_a(z);
@@ -137,7 +138,7 @@ impl BlockR1cs {
 
     /// BLAKE3 hash of the circuit FAMILY: the per-block matrices and the
     /// shape parameters, explicitly WITHOUT the instance count `m`. The full
-    /// instance is block-diagonal — `m` copies of these matrices — so a
+    /// instance is block-diagonal (`m` copies of these matrices), so a
     /// protocol that binds this digest and `m` separately has bound the whole
     /// statement; embedding protocols (leanVM-b) seed their transcript with it
     /// and announce the count.
@@ -147,7 +148,7 @@ impl BlockR1cs {
         h.update(&(self.k_log as u64).to_le_bytes());
         h.update(&(self.k_skip as u64).to_le_bytes());
         // The layout determines which polynomial a given witness commits
-        // to — it is part of the statement.
+        // to, so it is part of the statement.
         h.update(&[match self.layout {
             WitnessLayout::RowMajor => 0u8,
         }]);
@@ -179,7 +180,8 @@ fn absorb_matrix(h: &mut blake3::Hasher, m: &SparseBinaryMatrix) {
 }
 
 /// Block-diagonal `(I_{2^n_log} ⊗ M_0) · z` over GF(2).
-fn apply_block_diag(m_0: &SparseBinaryMatrix, z: &[bool], k_log: usize) -> Vec<bool> {
+#[cfg(test)]
+pub(crate) fn apply_block_diag(m_0: &SparseBinaryMatrix, z: &[bool], k_log: usize) -> Vec<bool> {
     let k = 1usize << k_log;
     assert_eq!(m_0.num_rows, k);
     assert_eq!(m_0.num_cols, k);
@@ -198,16 +200,7 @@ fn apply_block_diag(m_0: &SparseBinaryMatrix, z: &[bool], k_log: usize) -> Vec<b
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Identity base matrix: `A_0 = I_k`. Each row has exactly one nonzero at
-    /// the diagonal.
-    fn identity(k: usize) -> SparseBinaryMatrix {
-        SparseBinaryMatrix {
-            num_rows: k,
-            num_cols: k,
-            rows: (0..k).map(|i| vec![i]).collect(),
-        }
-    }
+    use crate::blake3_witness::identity;
 
     #[test]
     fn identity_matrices_accept_any_witness() {

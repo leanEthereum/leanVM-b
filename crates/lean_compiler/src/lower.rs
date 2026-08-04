@@ -8,8 +8,8 @@ use super::*;
 type SpecializedBody = (Vec<String>, Vec<Expr>, Vec<Stmt>, usize);
 
 /// A value equal to `pointer(base)·g^exp`, or the pure constant `g^exp` when
-/// `base` is `None`. Heap-address arithmetic — `ptr·gᵏ`, and constant g-power
-/// cursors such as a tweak-table index — is tracked symbolically so a later
+/// `base` is `None`. Heap-address arithmetic (`ptr·gᵏ`, and constant g-power
+/// cursors such as a tweak-table index) is tracked symbolically so a later
 /// access folds the whole offset into `DEREF`'s `β` immediate rather than
 /// emitting a `SET`+`MUL` per step. A cursor read only as an index thus costs
 /// nothing; one used as a value is materialized on demand ([`FnLower::materialize`]).
@@ -34,21 +34,31 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
 
 /// Cap on a `β`-folded exponent: the operand g-power table is sized to the
 /// largest immediate, so beyond this a huge constant index falls back to a
-/// materialized pointer instead of inflating that table.
-const FOLD_MAX: u128 = 1 << 16;
+/// materialized pointer instead of inflating that table. Tied to the smallest
+/// admissible memory, like [`FnLower::try_gpow_index`]'s own cap.
+const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
+
+/// `b^k` for a compile-time exponent (small, so plain repeated multiplication).
+fn field_pow(b: F192, k: u32) -> F192 {
+    let mut acc = F192::ONE;
+    for _ in 0..k {
+        acc *= b;
+    }
+    acc
+}
 
 /// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
 /// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
-/// each use ([`FnLower::word_src`]) — so `BLAKE3`,
-/// which addresses its four two-cell input chunks independently, reads them in
-/// place without assembling copies.
+/// each use ([`FnLower::word_src`]), so `BLAKE3`, which addresses its four
+/// two-cell input chunks independently, reads them in place without assembling
+/// copies.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Alias {
     Cell(Off),
     /// A compile-time constant: forwarded at its uses to the pooled cell
     /// holding that value (`const_cell`), so a constant stored into a
-    /// `blake3` operand cell — the `obs`/`squeeze` tag words, padding
-    /// halves — costs ONE `SET` per distinct value per function, not one
+    /// `blake3` operand cell (the `obs`/`squeeze` tag words, padding
+    /// halves) costs ONE `SET` per distinct value per function, not one
     /// per store. A zero constant routes through the zero pool.
     Const(F192),
 }
@@ -65,7 +75,21 @@ enum RetBind {
     Scalar,
 }
 
-struct FnLower<'a> {
+/// What a name is bound to, i.e. which of [`Scope`]'s maps holds it. The kinds
+/// are mutually exclusive, so binding one clears the others ([`FnLower::rebind`]).
+enum Binding {
+    Scalar(Off),
+    Stack(Off, u32),
+    Gaddr(GAddr),
+    FConst(F192),
+}
+
+/// Everything a runtime branch may not have executed: the name bindings, plus
+/// the lazily materialized cells whose `SET` sits wherever it was first needed.
+/// [`FnLower::scoped`] saves one of these and restores it at the join, so a
+/// cell written on one path is never trusted on another.
+#[derive(Clone, Default)]
+struct Scope {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
     /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
@@ -75,9 +99,37 @@ struct FnLower<'a> {
     stacks: HashMap<String, (Off, u32)>,
     /// Names bound to integer literals (`x = 10`), usable in compile-time
     /// index positions: stack indexes and slice bounds. Cleared on rebind to
-    /// anything else. (Index arithmetic is integer arithmetic — `x + 2` in a
+    /// anything else. (Index arithmetic is integer arithmetic: `x + 2` in a
     /// slice bound is 12, not the field XOR the same syntax means elsewhere.)
     consts: HashMap<String, u32>,
+    /// Variables bound to a symbolic g-address ([`GAddr`]): index cursors and
+    /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
+    gaddrs: HashMap<String, GAddr>,
+    /// Variables bound to a compile-time *field* constant that isn't a g-power
+    /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual: folded through
+    /// constant field arithmetic and materialized (one `SET`) only when used.
+    fconsts: HashMap<String, F192>,
+    /// The cell holding this function's own `fp`, materialized lazily
+    /// ([`FnLower::self_fp`]): local (`if`/`else`) jumps reload the frame
+    /// pointer on the taken branch.
+    self_fp_off: Option<Off>,
+    /// Range-check product-target cells: bound `k` → the frame cell holding
+    /// `g^{k-1}`, set lazily once and shared by every check of that bound.
+    bounds: HashMap<u64, Off>,
+    /// Constant cells: field value (as bits) → the frame cell holding it, SET
+    /// lazily once per distinct constant ([`FnLower::const_cell`]). Cells are
+    /// write-once and read-many, so one `SET` serves every use in scope.
+    const_cells: HashMap<[u64; 3], Off>,
+    /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
+    zero_off: Option<Off>,
+    /// Two consecutive frame cells holding the standard BLAKE3 IV, emitted
+    /// lazily at the first dominating default-IV compression in this
+    /// control-flow scope.
+    blake3_iv: Option<Off>,
+}
+
+struct FnLower<'a> {
+    scope: Scope,
     next: Off,
     n_args: u32,
     /// Source-level return shapes for this function. Their physical cell widths
@@ -90,24 +142,6 @@ struct FnLower<'a> {
     /// aliases resolve to the same base cell through their gaddr, so a
     /// compile-time index checks against the ORIGINAL buffer's bound.
     heap_sizes: HashMap<Off, u128>,
-    /// The cell holding this function's own `fp`, materialized lazily
-    /// ([`Self::self_fp`]) — local (`if`/`else`) jumps reload the frame
-    /// pointer on the taken branch.
-    self_fp_off: Option<Off>,
-    /// Range-check product-target cells: bound `k` → the frame cell holding
-    /// `g^{k-1}`, set lazily once and shared by every check of that bound.
-    bounds: HashMap<u64, Off>,
-    /// Constant cells: field value (as bits) → the frame cell holding it, SET
-    /// lazily once per distinct constant ([`Self::const_cell`]). Cells are
-    /// write-once and read-many, so one `SET` serves every use in scope.
-    const_cells: HashMap<[u64; 3], Off>,
-    /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
-    /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
-    gaddrs: HashMap<String, GAddr>,
-    /// Variables bound to a compile-time *field* constant that isn't a g-power
-    /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual — folded through
-    /// constant field arithmetic and materialized (one `SET`) only when used.
-    fconsts: HashMap<String, F192>,
     /// While inlining an `@inline` call ([`Self::try_inline`]), the destination
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
@@ -119,18 +153,12 @@ struct FnLower<'a> {
     inline_stack_ret: Option<Vec<RetBind>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
-    /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
-    zero_off: Option<Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
     /// but direct or indirect recursion would otherwise recurse forever in
     /// the compiler.
     inline_calls: Vec<String>,
-    /// Two consecutive frame cells holding the standard BLAKE3 IV, emitted
-    /// lazily at the first dominating default-IV compression in this
-    /// control-flow scope. [`Self::scoped`] restores this cache at branch joins.
-    blake3_iv: Option<Off>,
     /// Set by [`lower_func`] just before lowering a statement that sits in tail
     /// position; consumed by the next [`Self::stmt`] call, so nested lowering
     /// never inherits it.
@@ -161,6 +189,41 @@ impl FnLower<'_> {
         self.code.push(LInstr { op, hints });
     }
 
+    /// Bind `name` to `b`, dropping whatever the other three maps held for it:
+    /// they are consulted independently, so a stale binding of another kind
+    /// would shadow this one. `consts` is deliberately NOT touched, since a
+    /// name can keep its compile-time index role across such a rebind; callers
+    /// that must drop it do so themselves.
+    fn rebind(&mut self, name: &str, b: Binding) {
+        self.scope.vars.remove(name);
+        self.scope.stacks.remove(name);
+        self.scope.gaddrs.remove(name);
+        self.scope.fconsts.remove(name);
+        match b {
+            Binding::Scalar(o) => {
+                self.scope.vars.insert(name.to_string(), o);
+            }
+            Binding::Stack(base, size) => {
+                self.scope.stacks.insert(name.to_string(), (base, size));
+            }
+            Binding::Gaddr(ga) => {
+                self.scope.gaddrs.insert(name.to_string(), ga);
+            }
+            Binding::FConst(c) => {
+                self.scope.fconsts.insert(name.to_string(), c);
+            }
+        }
+    }
+
+    /// Bind each of `names` to the join cell holding its value, after a `match`
+    /// dispatch: whichever arm ran wrote them, so they are plain scalars now.
+    fn bind_join(&mut self, names: &[String], cells: &[Off]) {
+        for (name, &cell) in names.iter().zip(cells) {
+            self.scope.consts.remove(name);
+            self.rebind(name, Binding::Scalar(cell));
+        }
+    }
+
     /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
     fn one(&mut self) -> Off {
         if let Some(o) = self.one_off {
@@ -185,19 +248,19 @@ impl FnLower<'_> {
             return self.one();
         }
         let key = [v.c0, v.c1, v.c2];
-        if let Some(&o) = self.const_cells.get(&key) {
+        if let Some(&o) = self.scope.const_cells.get(&key) {
             return o;
         }
         let o = self.fresh();
         self.emit(LOp::Set { o, k: KVal::Const(v) });
-        self.const_cells.insert(key, o);
+        self.scope.const_cells.insert(key, o);
         o
     }
 
-    /// A frame cell holding `0`, set lazily once — the source for forwarded zero
+    /// A frame cell holding `0`, set lazily once: the source for forwarded zero
     /// words (a `BLAKE3` padding half).
     fn zero(&mut self) -> Off {
-        if let Some(o) = self.zero_off {
+        if let Some(o) = self.scope.zero_off {
             return o;
         }
         let o = self.fresh();
@@ -205,15 +268,12 @@ impl FnLower<'_> {
             o,
             k: KVal::Const(F192::ZERO),
         });
-        self.zero_off = Some(o);
+        self.scope.zero_off = Some(o);
         o
     }
 
-    /// Two consecutive frame cells holding the standard BLAKE3 IV, emitted
-    /// lazily at the first dominating default-IV compression in this
-    /// control-flow scope. [`Self::scoped`] restores this cache at branch joins.
     fn default_blake3_cv(&mut self) -> Off {
-        if let Some(o) = self.blake3_iv {
+        if let Some(o) = self.scope.blake3_iv {
             return o;
         }
         let o = self.alloc_stack(2);
@@ -222,9 +282,11 @@ impl FnLower<'_> {
                 o: o + k as u32,
                 k: KVal::Const(value),
             });
-            self.const_cells.insert([value.c0, value.c1, value.c2], o + k as u32);
+            self.scope
+                .const_cells
+                .insert([value.c0, value.c1, value.c2], o + k as u32);
         }
-        self.blake3_iv = Some(o);
+        self.scope.blake3_iv = Some(o);
         o
     }
 
@@ -235,7 +297,7 @@ impl FnLower<'_> {
             // A live var / stack cell aliases to that cell directly (no new
             // material); anything else that is a compile-time constant defers
             // to the pooled const cell.
-            Expr::Var(v) if self.vars.contains_key(v) => self.vars.get(v).map(|&c| Alias::Cell(c)),
+            Expr::Var(v) if self.scope.vars.contains_key(v) => self.scope.vars.get(v).map(|&c| Alias::Cell(c)),
             Expr::Index(arr, idx) if self.stack_of(arr).is_some() => {
                 let (base, _) = self.stack_of(arr)?;
                 Some(Alias::Cell(base + self.try_const_index(idx)?))
@@ -270,7 +332,7 @@ impl FnLower<'_> {
     /// A frame cell holding this function's own `fp` (the g-power element),
     /// materialized lazily once: a taken `JUMP` reloads the frame pointer
     /// from a cell, so local (`if`/`else`) jumps must name it. The ISA has no
-    /// fp-read, so bounce it through a fresh 1-cell heap buffer — a
+    /// fp-read, so bounce it through a fresh 1-cell heap buffer: a
     /// `DEREF`-fp writes it there, a `DEREF`-cell copies it back (2 cycles,
     /// once per function that branches). In `main`, `fp = g^0 = 1`, which is
     /// the [`Self::one`] cell.
@@ -278,7 +340,7 @@ impl FnLower<'_> {
         if self.is_main {
             return self.one();
         }
-        if let Some(o) = self.self_fp_off {
+        if let Some(o) = self.scope.self_fp_off {
             return o;
         }
         let q = self.fresh();
@@ -296,7 +358,7 @@ impl FnLower<'_> {
             gamma: o,
             mode: DerefMode::Cell,
         }); // m[fp·g^o] := m[q]
-        self.self_fp_off = Some(o);
+        self.scope.self_fp_off = Some(o);
         o
     }
 
@@ -311,23 +373,12 @@ impl FnLower<'_> {
 
     /// Run `f` with branch-local scope: bindings AND the lazily cached cells
     /// (`one`, `self_fp`, range-check bounds, default BLAKE3 IV) revert
-    /// afterwards — a cell whose `SET` sits inside a conditionally-executed
+    /// afterwards, since a cell whose `SET` sits inside a conditionally-executed
     /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
         let branch_start = self.next;
         let saved_aliases = self.alias.clone();
-        let saved = (
-            self.vars.clone(),
-            self.stacks.clone(),
-            self.consts.clone(),
-            self.self_fp_off,
-            self.bounds.clone(),
-            self.const_cells.clone(),
-            self.gaddrs.clone(),
-            self.fconsts.clone(),
-            self.zero_off,
-            self.blake3_iv,
-        );
+        let saved = self.scope.clone();
         f(self);
         // A deferred store into a buffer declared outside the branch must be
         // materialized on that path before the branch-local aliases are dropped.
@@ -343,7 +394,7 @@ impl FnLower<'_> {
         }
         // A hint pending at the end of a branch (e.g. a trailing
         // `hint_witness`) must not attach to whatever instruction follows the
-        // join — that would fire it unconditionally. Absorb it with a no-op.
+        // join, which would fire it unconditionally. Absorb it with a no-op.
         if !self.pending.is_empty() {
             let o = self.fresh();
             self.emit(LOp::Set {
@@ -351,18 +402,7 @@ impl FnLower<'_> {
                 k: KVal::Const(F192::ZERO),
             });
         }
-        (
-            self.vars,
-            self.stacks,
-            self.consts,
-            self.self_fp_off,
-            self.bounds,
-            self.const_cells,
-            self.gaddrs,
-            self.fconsts,
-            self.zero_off,
-            self.blake3_iv,
-        ) = saved;
+        self.scope = saved;
         self.alias = saved_aliases;
     }
 
@@ -375,20 +415,20 @@ impl FnLower<'_> {
         });
     }
 
-    /// `match log(x)` — two jumps through a trampoline table (doc §ISA
+    /// `match log(x)`: two jumps through a trampoline table (doc §ISA
     /// programming / Match statements). leanVM's switch jumps to the affine
     /// `pc = a + b·x`; in the exponent the dispatch is multiplicative:
-    /// `d = g^T · x²` lands on slot `j` of the table at bytecode base `T` —
-    /// `n` consecutive two-instruction slots, slot `j` being `SET c =
+    /// `d = g^T · x²` lands on slot `j` of the table at bytecode base `T`,
+    /// which is `n` consecutive two-instruction slots, slot `j` being `SET c =
     /// g^{block_j}; JUMP c`. The case blocks sit anywhere, unaligned; only
     /// the fixed-size slots are consecutive. The slots are two instructions
     /// rather than one because a `JUMP` reads its target from a *cell*: a
     /// one-instruction slot would need its cell pre-`SET`, i.e. `n` `SET`s
-    /// executed before every dispatch — folding the `SET` into the slot puts
+    /// executed before every dispatch. Folding the `SET` into the slot puts
     /// it on the taken path only, and the doubled slot stride is absorbed as
     /// `x²` (one extra `MUL`). Cost ≈ 7 cycles, independent of `n`.
     ///
-    /// Soundness: nothing here bounds `x` — a scrutinee outside `[0, n)`
+    /// Soundness: nothing here bounds `x`, so a scrutinee outside `[0, n)`
     /// dispatches to an arbitrary pc, so hinted values must be range-checked
     /// first (as in leanVM).
     fn lower_match(&mut self, x: &Expr, cases: &[Vec<Stmt>]) {
@@ -396,7 +436,7 @@ impl FnLower<'_> {
         self.lower_match_dispatch(xo, cases.len(), |s, j| s.branch(&cases[j]));
     }
 
-    /// `names = match_range(log(x), …)` — the same dispatch as
+    /// `names = match_range(log(x), …)`: the same dispatch as
     /// [`Self::lower_match`], with generated arms: arm `j` evaluates its
     /// expression (the lambda body at `i = j`) and copies the results into
     /// cells shared by every arm (write-once: exactly one arm executes);
@@ -413,7 +453,7 @@ impl FnLower<'_> {
             }
         }
         // Fusion: when every arm is a direct call to the same function with
-        // identical runtime args (differing only in `Const` args — the usual
+        // identical runtime args (differing only in `Const` args, the usual
         // `lambda k: f(a, b, k)`), set up one shared callee frame and dispatch
         // straight to the specialization's entry, which returns to the join.
         // Collapses each arm from a full call to a two-instruction trampoline
@@ -427,7 +467,7 @@ impl FnLower<'_> {
                 })
                 .collect();
             let rt0 = &specialized[0].1;
-            if specialized.iter().all(|(_, rt)| exprs_eq(rt, rt0)) {
+            if specialized.iter().all(|(_, rt)| rt == rt0) {
                 let callees: Vec<String> = specialized.iter().map(|(c, _)| c.clone()).collect();
                 let rt_args = rt0.clone();
                 self.lower_dispatched_call(names, x, &callees, &rt_args);
@@ -471,20 +511,14 @@ impl FnLower<'_> {
                 }
             });
         });
-        for (name, &cell) in names.iter().zip(&rcells) {
-            self.stacks.remove(name);
-            self.consts.remove(name);
-            self.gaddrs.remove(name);
-            self.fconsts.remove(name);
-            self.vars.insert(name.clone(), cell);
-        }
+        self.bind_join(names, &rcells);
     }
 
     /// `names = match_range(log(x), …, lambda k: f(args, k))` fused: the arms all
     /// call one of `callees` (specializations sharing the arg/return layout) with
     /// the same runtime `args`, so build the callee frame **once** and let the
     /// dispatch jump straight into the selected entry, which returns to the join.
-    /// Each taken arm is then just the trampoline's `SET entry; JUMP` — no
+    /// Each taken arm is then just the trampoline's `SET entry; JUMP`: no
     /// per-arm frame setup, call, or return jump.
     fn lower_dispatched_call(&mut self, names: &[String], x: &Expr, callees: &[String], rt_args: &[Expr]) {
         let n_args = rt_args.len() as u32;
@@ -529,38 +563,12 @@ impl FnLower<'_> {
             mode: DerefMode::Cell,
         }); // retpc = join
 
-        // Dispatch: d = g^T · x² lands on the two-instruction slot for the digit.
-        let kcell = self.fresh();
-        let kset = self.code.len();
-        self.emit(LOp::Set {
-            o: kcell,
-            k: KVal::Local(0),
-        }); // patched: table base T
-        let x2 = self.fresh();
-        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
-        let d = self.fresh();
-        self.emit(LOp::Mul { a: kcell, b: x2, c: d });
-        self.emit(LOp::Jump {
-            oc: one,
-            od: d,
-            of: sfp,
-        });
+        let kset = self.emit_dispatch(xo, one, sfp);
 
         // Trampoline: slot j enters `callees[j]` with fp = nfp; the callee's own
         // `return` jumps to retpc (the join) in the caller frame.
         self.patch_local(kset, self.code.len());
-        for callee in callees {
-            let c = self.fresh();
-            self.emit(LOp::Set {
-                o: c,
-                k: KVal::Entry(callee.clone()),
-            });
-            self.emit(LOp::Jump {
-                oc: one,
-                od: c,
-                of: nfp,
-            });
-        }
+        self.emit_slots(callees.len(), one, nfp, |j| KVal::Entry(callees[j].clone()));
 
         // Join: read the return values (written by whichever callee ran).
         self.patch_local(join_set, self.code.len());
@@ -573,30 +581,14 @@ impl FnLower<'_> {
             });
         }
 
-        for (name, &cell) in names.iter().zip(&rcells) {
-            self.stacks.remove(name);
-            self.consts.remove(name);
-            self.gaddrs.remove(name);
-            self.fconsts.remove(name);
-            self.vars.insert(name.clone(), cell);
-        }
+        self.bind_join(names, &rcells);
     }
 
-    /// The trampoline dispatch shared by `match` and `match_range`: jump to
-    /// `d = g^T · x²` (slot `j` of the two-instruction table at bytecode base
-    /// `T`), then to `body(j)`'s code; every non-final body exits to the
-    /// join. `body` lowers arm `j` — with its own branch-local scope.
-    fn lower_match_dispatch(&mut self, xo: Off, n: usize, mut body: impl FnMut(&mut Self, usize)) {
-        // Hoisted on purpose: these SETs must dominate the join.
-        let sfp = self.self_fp();
-        let one = self.one();
-        let join = self.fresh();
-        let jset = self.code.len();
-        self.emit(LOp::Set {
-            o: join,
-            k: KVal::Local(0),
-        }); // patched: the join
-        // d = g^T · x² — slot j (two instructions) sits at T + 2j.
+    /// The two-jump dispatch itself: `d = g^T · x²` names slot `x` of the
+    /// two-instruction trampoline table at bytecode base `T`. Returns the index
+    /// of the `SET` holding `T`, for the caller to patch once the table's
+    /// position is known.
+    fn emit_dispatch(&mut self, xo: Off, one: Off, of: Off) -> usize {
         let kcell = self.fresh();
         let kset = self.code.len();
         self.emit(LOp::Set {
@@ -607,27 +599,43 @@ impl FnLower<'_> {
         self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
         let d = self.fresh();
         self.emit(LOp::Mul { a: kcell, b: x2, c: d });
-        self.emit(LOp::Jump {
-            oc: one,
-            od: d,
-            of: sfp,
-        });
-        // The trampoline table.
-        self.patch_local(kset, self.code.len());
+        self.emit(LOp::Jump { oc: one, od: d, of });
+        kset
+    }
+
+    /// The `n` trampoline slots themselves, each `SET c = k(j); JUMP c`.
+    /// Returns each slot's `SET` index (a [`KVal::Local`] target still needs
+    /// patching to the block it selects).
+    fn emit_slots(&mut self, n: usize, one: Off, of: Off, k: impl Fn(usize) -> KVal) -> Vec<usize> {
         let mut slots = Vec::new();
-        for _ in 0..n {
+        for j in 0..n {
             let c = self.fresh();
             slots.push(self.code.len());
-            self.emit(LOp::Set {
-                o: c,
-                k: KVal::Local(0),
-            }); // patched: its block
-            self.emit(LOp::Jump {
-                oc: one,
-                od: c,
-                of: sfp,
-            });
+            self.emit(LOp::Set { o: c, k: k(j) });
+            self.emit(LOp::Jump { oc: one, od: c, of });
         }
+        slots
+    }
+
+    /// The trampoline dispatch shared by `match` and `match_range`: jump to
+    /// `d = g^T · x²` (slot `j` of the two-instruction table at bytecode base
+    /// `T`), then to `body(j)`'s code; every non-final body exits to the
+    /// join. `body` lowers arm `j`, with its own branch-local scope.
+    fn lower_match_dispatch(&mut self, xo: Off, n: usize, mut body: impl FnMut(&mut Self, usize)) {
+        // Hoisted on purpose: these SETs must dominate the join.
+        let sfp = self.self_fp();
+        let one = self.one();
+        let join = self.fresh();
+        let jset = self.code.len();
+        self.emit(LOp::Set {
+            o: join,
+            k: KVal::Local(0),
+        }); // patched: the join
+        // Slot j (two instructions) sits at T + 2j.
+        let kset = self.emit_dispatch(xo, one, sfp);
+        // The trampoline table.
+        self.patch_local(kset, self.code.len());
+        let slots = self.emit_slots(n, one, sfp, |_| KVal::Local(0)); // patched: its block
         // The arm blocks, each exiting to the join (the last falls through).
         for (j, &slot) in slots.iter().enumerate() {
             self.patch_local(slot, self.code.len());
@@ -643,7 +651,7 @@ impl FnLower<'_> {
         self.patch_local(jset, self.code.len());
     }
 
-    /// `if` / `else` — one `XOR` and one conditional `JUMP` (taken ⇔ the
+    /// `if` / `else`: one `XOR` and one conditional `JUMP` (taken ⇔ the
     /// sides differ). The taken jump goes to whichever block the test
     /// *doesn't* fall into, so no negation gadget is needed: for `==` the
     /// fall-through is `then`, for `!=` it is `else`. Local jumps keep the
@@ -656,7 +664,7 @@ impl FnLower<'_> {
         // `Const`-argument substitution): fold to the taken branch, emitting no
         // test or jump. Lets `@inline` arms bake per-case control flow. The
         // taken branch is straight-line code (like an unroll iteration), so its
-        // bindings persist — unlike a runtime branch, whose bindings are
+        // bindings persist, unlike a runtime branch, whose bindings are
         // branch-local (a runtime branch may not execute).
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
             for st in if (a == b) == eq { then } else { els } {
@@ -711,11 +719,11 @@ impl FnLower<'_> {
         }
     }
 
-    /// `assert a != b` — one `XOR` and one conditional `JUMP` on `a + b`. When
+    /// `assert a != b`: one `XOR` and one conditional `JUMP` on `a + b`. When
     /// the sides differ (`a + b ≠ 0`) the jump is taken to the continuation, so
     /// execution proceeds; when they are equal it falls through to a `SET` +
     /// unconditional `JUMP` to the poison pc `g^-1` ([`KVal::Poison`]), which
-    /// lies outside the committed bytecode cube — the bytecode bus cannot
+    /// lies outside the committed bytecode cube, so the bytecode bus cannot
     /// balance a read there, so no valid proof continues. Same `JUMP`-nonzero
     /// primitive as [`Self::lower_if`], no prover hint (unlike `(a-b)·inv == 1`).
     /// A compile-time-equal pair is a hard compile error.
@@ -756,10 +764,10 @@ impl FnLower<'_> {
         self.patch_local(cset, self.code.len());
     }
 
-    /// The frame cell holding `g^{k-1}` — the range-check product target — set
+    /// The frame cell holding `g^{k-1}`, the range-check product target, set
     /// lazily once per distinct bound `k` and shared by that bound's checks.
     fn bound_cell(&mut self, k: u64) -> Off {
-        if let Some(&o) = self.bounds.get(&k) {
+        if let Some(&o) = self.scope.bounds.get(&k) {
             return o;
         }
         let o = self.fresh();
@@ -767,11 +775,11 @@ impl FnLower<'_> {
             o,
             k: KVal::Const(g_pow_u128((k - 1) as u128).into()),
         });
-        self.bounds.insert(k, o);
+        self.scope.bounds.insert(k, o);
         o
     }
 
-    /// `hint_witness(dest, "name")` — resolve `dest` to a run of cells and
+    /// `hint_witness(dest, "name")`: resolve `dest` to a run of cells and
     /// queue the witness-fill hint (no instructions: the values are written
     /// by the runner before the next instruction executes, unconstrained).
     /// `dest`: a whole `StackBuf`, a `StackBuf` slice, a `HeapBuf` slice with
@@ -783,14 +791,14 @@ impl FnLower<'_> {
                 let (base, len) = self
                     .stack_of(dest)
                     .expect("hint_witness dest must be a StackBuf or a StackBuf/HeapBuf slice");
-                Hint::WitnessStack { name, base, len }
+                RHint::WitnessStack { name, base, len }
             }
             Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
                 (Some(lo), Some(hi)) => {
                     assert!(lo < hi, "empty hint_witness slice {lo}:{hi}");
                     if let Some((base, size)) = self.stack_of(arr) {
                         assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
-                        Hint::WitnessStack {
+                        RHint::WitnessStack {
                             name,
                             base: base + lo,
                             len: hi - lo,
@@ -799,7 +807,7 @@ impl FnLower<'_> {
                         let len = hi - lo;
                         self.check_heap_bound(arr, lo as u128, len as u128);
                         let (ptr, lo) = self.heap_base(arr, lo as u128);
-                        Hint::WitnessHeap { name, ptr, lo, len }
+                        RHint::WitnessHeap { name, ptr, lo, len }
                     }
                 }
                 _ => {
@@ -813,29 +821,29 @@ impl FnLower<'_> {
                     let len = u32::try_from(k).expect("hint_witness slice length overflows u32");
                     assert!(len > 0, "empty hint_witness slice");
                     let (ptr, lo) = self.heap_addr(arr, lo);
-                    Hint::WitnessHeap { name, ptr, lo, len }
+                    RHint::WitnessHeap { name, ptr, lo, len }
                 }
             },
             other => panic!("hint_witness dest must be a StackBuf or a slice, got `{other:?}`"),
         };
-        self.pending.push(hint);
+        self.pending.push(Hint::Resolved(hint));
     }
 
-    /// `assert log x < log GEN ** k` — the 3-cycle range check *in the
-    /// exponent* (leanVM's DEREF trick, doc `../leanVM/misc/minimal_zkVM.tex`
-    /// §range-checks, transported to g-powers). With `x = g^e`:
+    /// `assert log x < log GEN ** k`: the 3-cycle range check *in the
+    /// exponent* (leanVM's DEREF trick, see
+    /// `doc/body/10-isa-programming.tex` §sec:prog-range-checks, transported to g-powers). With `x = g^e`:
     ///
-    /// 1. `DEREF` through `x` — the dereferenced address `x·g^0` must be one of
+    /// 1. `DEREF` through `x`: the dereferenced address `x·g^0` must be one of
     ///    the memory's `2^h` addresses `{g^0, …, g^{2^h-1}}` (doc §Memory), so
     ///    the bus itself proves `x = g^e` with `e < 2^h`;
-    /// 2. `MUL x·y` into the write-once cell holding `g^{k-1}` — asserts
+    /// 2. `MUL x·y` into the write-once cell holding `g^{k-1}`: asserts
     ///    `x·y = g^{k-1}`. The complement `y = g^{k-1-e}` needs no hint: the
     ///    result cell is already written, so the runner back-solves the one
     ///    unknown operand (leanVM's ADD deduction, multiplicatively);
-    /// 3. `DEREF` through `y` — proves `y = g^f` with `f < 2^h`.
+    /// 3. `DEREF` through `y`: proves `y = g^f` with `f < 2^h`.
     ///
     /// Then `e + f ≡ k-1 (mod 2^64-1)` with `e, f < 2^h`, and since a negative
-    /// `k-1-e` wraps to `≈ 2^64 ≫ 2^h`, this forces `e ≤ k-1` — for ANY memory
+    /// `k-1-e` wraps to `≈ 2^64 ≫ 2^h`, this forces `e ≤ k-1`, for ANY memory
     /// size the prover announces, provided `k ≤ 2^MIN_LOG_MEM`. The two `DEREF`
     /// target cells are unconstrained touches (only the address matters),
     /// back-filled at the end of execution; the constant cell is one amortized
@@ -868,9 +876,6 @@ impl FnLower<'_> {
     }
 
     fn expr(&mut self, e: &Expr) -> Off {
-        if matches!(e, Expr::Call(f, _) if f == "f192") {
-            return self.const_cell(self.try_field_const(e).expect("f192 needs three literal u64 limbs"));
-        }
         match e {
             Expr::Lit(n) => self.const_cell(lit_field(*n)),
             Expr::Gen => self.const_cell(g_pow(1).into()),
@@ -881,27 +886,24 @@ impl FnLower<'_> {
             }
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
-                if self.stacks.contains_key(v) {
+                if self.scope.stacks.contains_key(v) {
                     panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
                 }
-                if let Some(&ga) = self.gaddrs.get(v) {
+                if let Some(&ga) = self.scope.gaddrs.get(v) {
                     return self.materialize(ga);
                 }
-                if let Some(&c) = self.fconsts.get(v) {
+                if let Some(&c) = self.scope.fconsts.get(v) {
                     return self.const_cell(c);
                 }
-                *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`"))
+                *self
+                    .scope
+                    .vars
+                    .get(v)
+                    .unwrap_or_else(|| panic!("unbound variable `{v}`"))
             }
             Expr::Add(a, b) => {
-                // Identity fold: a compile-time 0 operand contributes nothing
-                // (and, being a constant, has no side effect to preserve), so
-                // `x + 0` lowers to just `x` — no cell, no XOR. Kills the
-                // `acc = 0; acc = acc + t` accumulator seed and similar.
-                if self.try_field_const(a) == Some(F192::ZERO) {
-                    return self.expr(b);
-                }
-                if self.try_field_const(b) == Some(F192::ZERO) {
-                    return self.expr(a);
+                if let Some(x) = self.add_identity(a, b) {
+                    return self.expr(x);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
@@ -909,14 +911,8 @@ impl FnLower<'_> {
                 o
             }
             Expr::Mul(a, b) => {
-                // Identity fold: a compile-time 1 operand is a no-op multiply,
-                // so `x * 1` lowers to just `x`. Kills the `acc = GEN ** 0`
-                // (= 1) accumulator seed's first `1 * f` in every product loop.
-                if self.try_field_const(a) == Some(F192::ONE) {
-                    return self.expr(b);
-                }
-                if self.try_field_const(b) == Some(F192::ONE) {
-                    return self.expr(a);
+                if let Some(x) = self.mul_identity(a, b) {
+                    return self.expr(x);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
@@ -928,28 +924,31 @@ impl FnLower<'_> {
                 // with the quotient `q` the unset operand. Witness-gen fills
                 // q = a·b⁻¹, and the MUL constraint pins q·b == a (so b == 0 is
                 // rejected unless a == 0). One MUL, no hint. The dividend cell
-                // `a` must already be written — `self.expr(a)` guarantees it.
+                // `a` must already be written, which `self.expr(a)` guarantees.
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let q = self.fresh();
                 self.emit(LOp::Mul { a: q, b: lb, c: la });
                 q
             }
+            Expr::Call(f, _) if f == "f192" => {
+                self.const_cell(self.try_field_const(e).expect("f192 needs three literal u64 limbs"))
+            }
             Expr::Call(f, args) if f == "hint_log2_ceil" => {
                 // Computed advice: the prover fills g^log2_ceil (base-2 ceil-log) of the value in
                 // `bits` (a `nbits`-bit buffer), floored at `floor`. Returned
-                // UNCONSTRAINED — the caller (log2_ceil) re-verifies it. Same
+                // UNCONSTRAINED, so the caller (log2_ceil) re-verifies it. Same
                 // "prover computes, circuit checks" pattern as `/`.
                 assert_eq!(args.len(), 3, "hint_log2_ceil(bits, nbits, floor)");
                 let bits_ptr = self.expr(&args[0]);
                 let nbits = self.const_index(&args[1]);
                 let floor = self.const_index(&args[2]);
                 let dst = self.fresh();
-                self.pending.push(Hint::Log2Ceil {
+                self.pending.push(Hint::Resolved(RHint::Log2Ceil {
                     bits_ptr,
                     dst,
                     nbits,
                     floor,
-                });
+                }));
                 dst
             }
             Expr::Call(f, args) if f == "pack64x2" => {
@@ -1033,23 +1032,23 @@ impl FnLower<'_> {
     /// If `e` names a `StackBuf` variable, its `(base, size)`.
     fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
         match e {
-            Expr::Var(v) => self.stacks.get(v).copied(),
+            Expr::Var(v) => self.scope.stacks.get(v).copied(),
             _ => None,
         }
     }
 
-    /// A compile-time integer index — a literal, a name bound to a literal,
+    /// A compile-time integer index: a literal, a name bound to a literal,
     /// or `+`/`*`/`//`/`%` of those (evaluated as *integer* arithmetic: this is
     /// index space, not the field). `None` when the expression is a runtime
     /// value (which a heap slice start may be; see [`Self::blake3_operand`]).
     fn try_const_index(&self, idx: &Expr) -> Option<u32> {
         match idx {
             // A literal that fits is an index; a ≥ 2^32 literal is a field value,
-            // not an index (`None` — callers that require an index then error).
+            // not an index (`None`, and callers that require an index error).
             Expr::Lit(k) => u32::try_from(*k).ok(),
-            Expr::Var(v) => self.consts.get(v).copied(),
+            Expr::Var(v) => self.scope.consts.get(v).copied(),
             // Overflow (or a negative `-`) means the expression is not a valid
-            // index — decline (`None`) rather than panic: this evaluator also
+            // index, so decline (`None`) rather than panic: this evaluator also
             // probes `Let` bindings speculatively, where `A * B` may be a
             // perfectly fine *field* expression whose integer product overflows.
             Expr::Add(a, b) => self.try_const_index(a)?.checked_add(self.try_const_index(b)?),
@@ -1085,7 +1084,7 @@ impl FnLower<'_> {
     fn const_index(&self, idx: &Expr) -> u32 {
         self.try_const_index(idx).unwrap_or_else(|| {
             // An oversized literal is an index-shaped mistake, not a runtime
-            // value — diagnose it precisely (`sa[2^32]` must not wrap to `sa[0]`).
+            // value, so diagnose it precisely (`sa[2^32]` must not wrap to `sa[0]`).
             if let Expr::Lit(k) = idx {
                 panic!("stack index {k} does not fit in u32");
             }
@@ -1105,13 +1104,9 @@ impl FnLower<'_> {
         let k = self
             .try_const_index(e)
             .unwrap_or_else(|| panic!("`**` exponent must be a compile-time integer, got `{e:?}`"));
-        // Fully constant → evaluate in the field and emit a single `SET`.
+        // Fully constant: evaluate in the field and emit a single `SET`.
         if let Some(bc) = self.try_field_const(b) {
-            let mut acc = F192::ONE;
-            for _ in 0..k {
-                acc *= bc;
-            }
-            return self.const_cell(acc);
+            return self.const_cell(field_pow(bc, k));
         }
         if k == 0 {
             let o = self.fresh();
@@ -1166,13 +1161,34 @@ impl FnLower<'_> {
         None
     }
 
+    /// The surviving operand of `a + b` when the other is a compile-time zero,
+    /// which contributes nothing and (being a constant) has no side effect to
+    /// preserve. So `x + 0` lowers to just `x`: no cell, no XOR. Kills the
+    /// `acc = 0; acc = acc + t` accumulator seed and similar.
+    fn add_identity<'e>(&self, a: &'e Expr, b: &'e Expr) -> Option<&'e Expr> {
+        if self.try_field_const(a) == Some(F192::ZERO) {
+            return Some(b);
+        }
+        (self.try_field_const(b) == Some(F192::ZERO)).then_some(a)
+    }
+
+    /// The surviving operand of `a * b` when the other is a compile-time one, a
+    /// no-op multiply. Kills the `acc = GEN ** 0` (= 1) accumulator seed's first
+    /// `1 * f` in every product loop.
+    fn mul_identity<'e>(&self, a: &'e Expr, b: &'e Expr) -> Option<&'e Expr> {
+        if self.try_field_const(a) == Some(F192::ONE) {
+            return Some(b);
+        }
+        (self.try_field_const(b) == Some(F192::ONE)).then_some(a)
+    }
+
     /// The field value of `e` when it is a trivial compile-time constant (a
     /// literal, a literal-bound name, or `GEN ** 0`), for the `x*1`/`x+0`
     /// arithmetic identities and the `== 0` test of [`Self::lower_if`].
     fn try_lit(&self, e: &Expr) -> Option<u64> {
         match e {
             Expr::Lit(n) => u64::try_from(*n).ok(),
-            Expr::Var(v) => self.consts.get(v).map(|&n| n as u64),
+            Expr::Var(v) => self.scope.consts.get(v).map(|&n| n as u64),
             Expr::GPow(0) => Some(1),
             _ => None,
         }
@@ -1190,7 +1206,7 @@ impl FnLower<'_> {
         let pow2 = |n: u128| (n.is_power_of_two() && n < (1 << 64)).then(|| n.trailing_zeros());
         match idx {
             Expr::Lit(n) => pow2(*n).and_then(cap),
-            Expr::Var(v) => pow2(*self.consts.get(v)? as u128).and_then(cap),
+            Expr::Var(v) => pow2(*self.scope.consts.get(v)? as u128).and_then(cap),
             Expr::Gen => Some(1),
             Expr::GPow(k) => cap(u32::try_from(*k).ok()?),
             Expr::GenPow(e) => cap(self.try_const_index(e)?),
@@ -1199,9 +1215,9 @@ impl FnLower<'_> {
         }
     }
 
-    /// Resolve a `blake3` operand — a size-2 `StackBuf` name, a 2-cell
+    /// Resolve a `blake3` operand (a size-2 `StackBuf` name, a 2-cell
     /// `StackBuf` slice `buf[lo:hi]`, or a 2-cell `HeapBuf` slice (cells
-    /// `ptr·g^{lo+k}`, `k < 2`) — with compile-time bounds. A 256-bit operand is
+    /// `ptr·g^{lo+k}`, `k < 2`) with compile-time bounds. A 256-bit operand is
     /// two 128-bit cells. Stack operands are used in place; heap operands must be
     /// bridged through the stack, since `BLAKE3` addresses only frame cells (see
     /// [`Self::blake3_input`]).
@@ -1259,7 +1275,7 @@ impl FnLower<'_> {
 
     /// A `blake3` *input* operand as its two independently-addressed 128-bit
     /// chunk bases (each chunk is ONE 128-bit cell): stack runs in place; a heap
-    /// slice is pulled into a fresh stack pair first — one `DEREF` per cell
+    /// slice is pulled into a fresh stack pair first, one `DEREF` per cell
     /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
     /// offset). The heap cells must already be written.
     fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
@@ -1310,7 +1326,7 @@ impl FnLower<'_> {
         }
     }
 
-    /// Evaluate `e` writing its value straight into cell `dst` — no temporary +
+    /// Evaluate `e` writing its value straight into cell `dst`, with no temporary +
     /// copy for the common cases (a heap read DEREFs directly into `dst`; a
     /// constant / arithmetic emits into `dst`). Falls back to `expr` + `copy` for
     /// vars, calls, and stack reads.
@@ -1357,22 +1373,16 @@ impl FnLower<'_> {
                 self.copy(v, dst);
             }
             Expr::Add(a, b) => {
-                // Identity fold (see the `expr` Add arm): `x + 0` copies `x`.
-                if self.try_field_const(a) == Some(F192::ZERO) {
-                    self.expr_into(b, dst);
-                } else if self.try_field_const(b) == Some(F192::ZERO) {
-                    self.expr_into(a, dst);
+                if let Some(x) = self.add_identity(a, b) {
+                    self.expr_into(x, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
                     self.emit(LOp::Xor { a: la, b: lb, c: dst });
                 }
             }
             Expr::Mul(a, b) => {
-                // Identity fold: `x * 1` copies `x`.
-                if self.try_field_const(a) == Some(F192::ONE) {
-                    self.expr_into(b, dst);
-                } else if self.try_field_const(b) == Some(F192::ONE) {
-                    self.expr_into(a, dst);
+                if let Some(x) = self.mul_identity(a, b) {
+                    self.expr_into(x, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
                     self.emit(LOp::Mul { a: la, b: lb, c: dst });
@@ -1398,14 +1408,11 @@ impl FnLower<'_> {
     /// Resolve a heap access `arr[idx]` to a `DEREF`-ready pair: a cell
     /// holding a pointer `p` and a compile-time exponent `beta`, the accessed
     /// cell being `m[p·g^beta]` (heap addressing in the exponent: cell `g^k`
-    /// of the buffer sits at `arr·g^k`). A constant g-power `idx`, or a
-    /// constant g-power *factor* of it, folds into the `beta` immediate, so
-    /// only a runtime factor costs a pointer `MUL` (and a wholly constant
-    /// index costs nothing at all).
+    /// of the buffer sits at `arr·g^k`). The fallback of [`Self::heap_addr`],
+    /// which has already folded away a wholly constant index: here a constant
+    /// g-power *factor* still goes into the `beta` immediate, so only the
+    /// runtime factor costs a pointer `MUL`.
     fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
-        if let Some(k) = self.try_gpow_index(idx) {
-            return (self.expr(arr), k);
-        }
         // `buf[r * GEN ** k]` (either factor order): beta takes the constant,
         // the pointer MUL takes only the runtime factor `r`.
         if let Expr::Mul(a, b) = idx {
@@ -1438,10 +1445,11 @@ impl FnLower<'_> {
                 exp: self.try_const_index(e)? as u128,
             }),
             Expr::Var(v) => self
+                .scope
                 .gaddrs
                 .get(v)
                 .copied()
-                .or_else(|| self.vars.get(v).map(|&c| GAddr { base: Some(c), exp: 0 })),
+                .or_else(|| self.scope.vars.get(v).map(|&c| GAddr { base: Some(c), exp: 0 })),
             Expr::Mul(a, b) => gmul(self.gaddr_of(a)?, self.gaddr_of(b)?),
             _ => None,
         }
@@ -1459,10 +1467,15 @@ impl FnLower<'_> {
             Expr::Gen => Some(g_pow(1).into()),
             Expr::GPow(k) => Some(g_pow_u128(*k).into()),
             Expr::GenPow(e) => Some(g_pow_u128(self.try_const_index(e)? as u128).into()),
-            Expr::Var(v) => self.fconsts.get(v).copied().or_else(|| match self.gaddrs.get(v) {
-                Some(GAddr { base: None, exp }) => Some(g_pow_u128(*exp).into()),
-                _ => None,
-            }),
+            Expr::Var(v) => self
+                .scope
+                .fconsts
+                .get(v)
+                .copied()
+                .or_else(|| match self.scope.gaddrs.get(v) {
+                    Some(GAddr { base: None, exp }) => Some(g_pow_u128(*exp).into()),
+                    _ => None,
+                }),
             Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
             Expr::Mul(a, b) => Some(self.try_field_const(a)? * self.try_field_const(b)?),
             // A constant-array element `NAME[i]` as a field value, or `len(NAME)`.
@@ -1476,15 +1489,7 @@ impl FnLower<'_> {
             }
             Expr::Call(..) => self.const_len(e).map(|n| F192::new(n as u64, 0, 0)),
             // `b ** e` as a field constant (constant base, compile-time exponent).
-            Expr::Pow(b, e) => {
-                let bc = self.try_field_const(b)?;
-                let k = self.try_const_index(e)?;
-                let mut acc = F192::ONE;
-                for _ in 0..k {
-                    acc *= bc;
-                }
-                Some(acc)
-            }
+            Expr::Pow(b, e) => Some(field_pow(self.try_field_const(b)?, self.try_const_index(e)?)),
             _ => None,
         }
     }
@@ -1523,6 +1528,7 @@ impl FnLower<'_> {
         };
         if exp + span > size {
             let name = self
+                .scope
                 .vars
                 .iter()
                 .find(|(_, c)| **c == base)
@@ -1568,21 +1574,22 @@ impl FnLower<'_> {
     fn heap_addr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
         // A compile-time index that is a plain field constant but NOT a
         // g-power (`buf[0]`, `buf[2]`, an integer unroll var) can never name
-        // a heap cell — cell k lives at `buf · g^k` — and would deref a wild
+        // a heap cell (cell k lives at `buf · g^k`) and would deref a wild
         // address at proving time. Reject it here, where the source is known.
         if self.gaddr_of(idx).is_none()
             && let Some(c) = self.try_field_const(idx)
         {
             panic!(
-                "heap index folds to the field constant {:#x}:{:#x}, not a g-power —                  heap cell k is addressed as `buf[GEN ** k]` (did an integer index                  leak in from a StackBuf conversion?)",
+                "heap index folds to the field constant {:#x}:{:#x}, not a g-power: heap cell k is \
+                 addressed as `buf[GEN ** k]` (did an integer index leak in from a StackBuf conversion?)",
                 c.c1, c.c0
             );
         }
         match self.gaddr_of(idx) {
             Some(GAddr { base: None, exp }) => return self.heap_base(arr, exp),
             // A runtime-base index carrying a constant g-power shift
-            // (`buf[cursor * GEN ** k]`): fold the whole constant part — the
-            // index's shift plus `arr`'s own symbolic shift — into `β`, and
+            // (`buf[cursor * GEN ** k]`): fold the whole constant part (the
+            // index's shift plus `arr`'s own symbolic shift) into `β`, and
             // emit ONE pointer multiply instead of materializing g^k.
             Some(GAddr { base: Some(ib), exp }) => {
                 if let Some(ga) = self.gaddr_of(arr)
@@ -1606,7 +1613,7 @@ impl FnLower<'_> {
     /// RHS, a single-target match arm): there is no name to alias-bind, so an
     /// aliased return materializes into a plain cell (free for a var / an
     /// exp-0 g-address; one `MUL` for a shifted pointer). `dst` is the call's
-    /// destination cell — already written by a real call or a plain-scalar
+    /// destination cell, already written by a real call or a plain-scalar
     /// return, so it is the fallback.
     fn take_inline_ret_cell(&mut self, dst: Off) -> Off {
         match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
@@ -1674,7 +1681,7 @@ impl FnLower<'_> {
         logical
     }
 
-    /// Evaluate `callee(args)` into `dsts` — inlining the callee when it is
+    /// Evaluate `callee(args)` into `dsts`, inlining the callee when it is
     /// `@inline` ([`Self::try_inline`]), else a real call.
     fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
         assert!(callee != "blake3", "blake3 is a statement, not a value-returning call");
@@ -1696,8 +1703,22 @@ impl FnLower<'_> {
         }
     }
 
+    /// The value a `Const` parameter takes, as the literal that substitutes for
+    /// it: a `GEN ** k` argument stays a g-power, everything else must fold to a
+    /// compile-time integer (a bound name, a const-array element `DEPTH[lvl]`,
+    /// `len(...)`, index arithmetic over other `Const` params). `None` when it
+    /// does not fold.
+    fn const_arg(&self, a: &Expr) -> Option<Expr> {
+        Some(match a {
+            Expr::Lit(n) => Expr::Lit(*n),
+            Expr::Gen => Expr::GPow(1),
+            Expr::GPow(k) => Expr::GPow(*k),
+            other => Expr::Lit(self.try_const_index(other)? as u128),
+        })
+    }
+
     /// The runtime params, runtime args, and `Const`-substituted body of a call
-    /// to a user function — the ingredients for inlining. `None` for a builtin/
+    /// to a user function: the ingredients for inlining. `None` for a builtin or
     /// unknown callee, an arity mismatch, or an unresolved `Const` argument.
     fn specialized_body(&self, callee: &str, args: &[Expr]) -> Option<SpecializedBody> {
         let def = self.defs.get(callee)?;
@@ -1712,23 +1733,14 @@ impl FnLower<'_> {
                 rt_args.push(a.clone());
                 continue;
             }
-            let c = match a {
-                Expr::Lit(n) => Expr::Lit(*n),
-                Expr::Gen => Expr::GPow(1),
-                Expr::GPow(k) => Expr::GPow(*k),
-                Expr::Var(v) => Expr::Lit(*self.consts.get(v)? as u128),
-                // Any other compile-time integer expression (const-array
-                // element, arithmetic over Const params) is a valid Const
-                // argument — e.g. `foldyr(yr, w, 0, YRLOG2[mi])`.
-                other => Expr::Lit(self.try_const_index(other)? as u128),
-            };
+            let c = self.const_arg(a)?;
             body = subst_stmts(&body, p, &c);
         }
         Some((rt_params, rt_args, body, def.n_ret))
     }
 
     /// Inline an `@inline` `callee(args)` into the current frame, binding its
-    /// return values straight into `dsts` — no frame setup, no argument/return
+    /// return values straight into `dsts`: no frame setup, no argument/return
     /// plumbing, no call/return jumps. Returns `false` for a non-`@inline`
     /// callee (the caller emits a real call). Panics if an `@inline` function
     /// isn't inlinable ([`body_inlinable`]) or its `Const` args don't resolve.
@@ -1757,7 +1769,7 @@ impl FnLower<'_> {
         // Bind the params from the caller-scope arguments (symbolically where we
         // can, so a shifted-pointer arg keeps folding into `β`; a `StackBuf` arg
         // aliases its cell run), then lower the body in a fresh variable
-        // environment — a function sees only its params. The frame, `one`,
+        // environment, since a function sees only its params. The frame, `one`,
         // `self_fp`, and range-check bounds stay the caller's: the inlined code
         // runs in the caller's frame, so they fit.
         enum Bind {
@@ -1776,23 +1788,26 @@ impl FnLower<'_> {
             };
             binds.push((p.clone(), b));
         }
+        // Only the name bindings reset: the inlined body runs in the caller's
+        // frame, so the caller's `one`, `self_fp`, constant and bound cells all
+        // still name valid cells and stay live.
         let saved = (
-            std::mem::take(&mut self.vars),
-            std::mem::take(&mut self.stacks),
-            std::mem::take(&mut self.consts),
-            std::mem::take(&mut self.gaddrs),
-            std::mem::take(&mut self.fconsts),
+            std::mem::take(&mut self.scope.vars),
+            std::mem::take(&mut self.scope.stacks),
+            std::mem::take(&mut self.scope.consts),
+            std::mem::take(&mut self.scope.gaddrs),
+            std::mem::take(&mut self.scope.fconsts),
         );
         for (p, b) in binds {
             match b {
                 Bind::Stack(base, size) => {
-                    self.stacks.insert(p, (base, size));
+                    self.scope.stacks.insert(p, (base, size));
                 }
                 Bind::Addr(ga) => {
-                    self.gaddrs.insert(p, ga);
+                    self.scope.gaddrs.insert(p, ga);
                 }
                 Bind::Cell(cell) => {
-                    self.vars.insert(p, cell);
+                    self.scope.vars.insert(p, cell);
                 }
             }
         }
@@ -1804,32 +1819,20 @@ impl FnLower<'_> {
         let popped = self.inline_calls.pop();
         debug_assert_eq!(popped.as_deref(), Some(callee));
         self.inline_ret = saved_ret;
-        (self.vars, self.stacks, self.consts, self.gaddrs, self.fconsts) = saved;
+        (
+            self.scope.vars,
+            self.scope.stacks,
+            self.scope.consts,
+            self.scope.gaddrs,
+            self.scope.fconsts,
+        ) = saved;
         true
     }
 
-    /// A *conditional* tail call: transfer to `callee(args)` iff `cond != 0`,
-    /// else fall through (`JUMP`'s nonzero test, doc §JUMP (sec:tab-jump)). The frame setup runs
-    /// either way; when not taken the callee frame is just never entered. Binds
-    /// no return values, so the not-taken path continues straight after it.
-    fn call_cond(&mut self, callee: &str, args: &[Expr], cond: Off) {
-        self.lower_call(callee, args, 0, Some(cond), None, false);
-    }
-
-    /// [`Self::call_cond`] in TAIL position: the callee inherits THIS frame's
-    /// `retpc`/`retfp` instead of returning here, so a `mul_range` loop stops
-    /// building an unwind chain — only the final iteration executes the
-    /// trailing `Return`, and it returns straight to the loop's original
-    /// caller. Saves the two unwind instructions on every iteration but the
-    /// last.
-    fn call_cond_tail(&mut self, callee: &str, args: &[Expr], cond: Off) {
-        self.lower_call(callee, args, 0, Some(cond), None, true);
-    }
-
     /// If `callee` declares `Const` parameters, monomorphize: the constant
-    /// arguments (literals, `GEN ** k`, or literal-bound names) substitute
-    /// into a copy of the callee — queued once per distinct constant tuple,
-    /// named `callee__L5_G3`-style — and only the runtime arguments remain.
+    /// arguments (literals, `GEN ** k`, or literal-bound names) substitute into
+    /// a copy of the callee, queued once per distinct constant tuple and named
+    /// `callee__L5_G3`-style, and only the runtime arguments remain.
     fn specialize(&mut self, callee: &str, args: &[Expr]) -> (String, Vec<Expr>) {
         let defs: &HashMap<String, Func> = self.defs;
         let Some(def) = defs.get(callee) else {
@@ -1847,20 +1850,12 @@ impl FnLower<'_> {
                 rt_args.push(a.clone());
                 continue;
             }
-            let c = match a {
-                Expr::Lit(n) => Expr::Lit(*n),
-                Expr::Gen => Expr::GPow(1),
-                Expr::GPow(k) => Expr::GPow(*k),
-                // Any compile-time integer expression (a bound name, a constant-
-                // array element `DEPTH[lvl]`, `len(...)`, index arithmetic).
-                other => match self.try_const_index(other) {
-                    Some(k) => Expr::Lit(k as u128),
-                    None => panic!(
-                        "argument for Const parameter `{p}` of `{callee}` must be a compile-time \
-                         constant, got `{other:?}`"
-                    ),
-                },
-            };
+            let c = self.const_arg(a).unwrap_or_else(|| {
+                panic!(
+                    "argument for Const parameter `{p}` of `{callee}` must be a compile-time \
+                     constant, got `{a:?}`"
+                )
+            });
             tag.push_str(&match &c {
                 Expr::Lit(n) => format!("_L{n}"),
                 Expr::GPow(k) => format!("_G{k}"),
@@ -1894,7 +1889,7 @@ impl FnLower<'_> {
 
     /// Lower a call. Return values land in `dsts_in` when given (write-once, so
     /// distinct arms of a `match_range` may share the same cells), else in fresh
-    /// cells — sparing the caller a temp-then-copy.
+    /// cells, sparing the caller a temp-then-copy.
     fn lower_call(
         &mut self,
         callee: &str,
@@ -1982,22 +1977,15 @@ impl FnLower<'_> {
     fn stmt(&mut self, s: &Stmt) {
         let tail = std::mem::take(&mut self.tail_call);
         match s {
-            // A `let` rebinds the name's kind; clear the OTHER map so a stale
-            // binding (e.g. a former StackBuf now rebound to a scalar) can't
-            // shadow the new one. `vars`/`stacks` are consulted independently, so
-            // both must be kept in sync on every rebind.
             Stmt::Let(name, e) => match e {
                 // `x = StackBuf(n)`: bind a run of `n` consecutive frame cells.
                 Expr::StackBuf(n) => {
                     let base = self.alloc_stack(*n as u32);
-                    self.vars.remove(name);
-                    self.consts.remove(name);
-                    self.gaddrs.remove(name);
-                    self.fconsts.remove(name);
-                    self.stacks.insert(name.clone(), (base, *n as u32));
+                    self.scope.consts.remove(name);
+                    self.rebind(name, Binding::Stack(base, *n as u32));
                 }
-                // `x = [a, b, …]`: an initialized StackBuf — allocate the run
-                // and write each element in place (each write is the stack-store
+                // `x = [a, b, …]`: an initialized StackBuf. Allocate the run and
+                // write each element in place (each write is the stack-store
                 // path, so copies/constants defer as aliases). Elements are
                 // lowered before `name` rebinds, so they may read its old
                 // binding (`fs = [fs[1], fs[0]]`).
@@ -2012,65 +2000,51 @@ impl FnLower<'_> {
                             self.expr_into(el, dst);
                         }
                     }
-                    self.vars.remove(name);
-                    self.consts.remove(name);
-                    self.gaddrs.remove(name);
-                    self.fconsts.remove(name);
-                    self.stacks.insert(name.clone(), (base, es.len() as u32));
+                    self.scope.consts.remove(name);
+                    self.rebind(name, Binding::Stack(base, es.len() as u32));
                 }
                 // `x = other_stackbuf`: a compile-time alias of the same cell
-                // run (zero instructions) — the chaining-state idiom
-                // `st = sn` of an MD loop.
-                Expr::Var(v) if self.stacks.contains_key(v) => {
-                    let bs = self.stacks[v];
-                    self.vars.remove(name);
-                    self.consts.remove(name);
-                    self.gaddrs.remove(name);
-                    self.fconsts.remove(name);
-                    self.stacks.insert(name.clone(), bs);
+                // run (zero instructions), the chaining-state idiom `st = sn`
+                // of an MD loop.
+                Expr::Var(v) if self.scope.stacks.contains_key(v) => {
+                    let (base, size) = self.scope.stacks[v];
+                    self.scope.consts.remove(name);
+                    self.rebind(name, Binding::Stack(base, size));
                 }
                 _ => {
                     // NOTE: `name`'s old binding stays visible while the RHS is
                     // lowered (the MD-chain idiom `cvb = obs(cvb, x)` reads it);
                     // each terminal path below unbinds/rebinds afterwards.
                     // A compile-time integer binding (a literal, or an expression
-                    // that folds — `FOLDBASE[lvl] + j`, `n // 2`, `len(A) - 1`) is
-                    // usable as a compile-time index / bound / exponent.
+                    // that folds: `FOLDBASE[lvl] + j`, `n // 2`, `len(A) - 1`) is
+                    // usable as a compile-time index / bound / exponent, and that
+                    // role survives the value binding chosen below.
                     let k_idx = self.try_const_index(e);
                     match k_idx {
                         Some(k) => {
-                            self.consts.insert(name.clone(), k);
+                            self.scope.consts.insert(name.clone(), k);
                         }
                         None => {
-                            self.consts.remove(name);
+                            self.scope.consts.remove(name);
                         }
                     }
                     // A symbolic g-address (a constant g-power or a shifted
                     // pointer) or a compile-time field constant stays virtual:
                     // no instruction here, folded / materialized only on demand.
                     if let Some(ga) = self.gaddr_of(e) {
-                        self.vars.remove(name);
-                        self.stacks.remove(name);
-                        self.fconsts.remove(name);
-                        self.gaddrs.insert(name.clone(), ga);
+                        self.rebind(name, Binding::Gaddr(ga));
                     } else if let Some(c) = self.try_field_const(e) {
-                        self.vars.remove(name);
-                        self.stacks.remove(name);
-                        self.gaddrs.remove(name);
-                        self.fconsts.insert(name.clone(), c);
+                        self.rebind(name, Binding::FConst(c));
                     } else if let Some(k) = k_idx {
                         // Integer-only fold (`//`, `-`, `%` of constants): a
-                        // compile-time value too — as a scalar it is the field
+                        // compile-time value too, and as a scalar it is the field
                         // element with those 128 bits, materialized on demand.
-                        self.vars.remove(name);
-                        self.stacks.remove(name);
-                        self.gaddrs.remove(name);
-                        self.fconsts.insert(name.clone(), lit_field(k as u128));
+                        self.rebind(name, Binding::FConst(lit_field(k as u128)));
                     } else if let Expr::Call(cf, cargs) = e
                         && self.defs.contains_key(cf)
                     {
                         // A bare `name = call(...)` of a user function: bind per
-                        // the inlined return's RetBind — alias its StackBuf run
+                        // the inlined return's RetBind, aliasing its StackBuf run
                         // or folded g-address at zero copies (the `cvb = obs(...)`
                         // / advanced-cursor idiom), else (a plain scalar, or a
                         // real call) bind the dst cell. Embedded calls do NOT
@@ -2078,28 +2052,15 @@ impl FnLower<'_> {
                         // ([`Self::take_inline_ret_cell`]).
                         self.inline_stack_ret = None;
                         let o = self.call(cf, cargs, 1)[0];
-                        self.vars.remove(name);
-                        self.stacks.remove(name);
-                        self.gaddrs.remove(name);
-                        self.fconsts.remove(name);
-                        match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
-                            Some(RetBind::Stack(base, size)) => {
-                                self.stacks.insert(name.clone(), (base, size));
-                            }
-                            Some(RetBind::Gaddr(ga)) => {
-                                self.gaddrs.insert(name.clone(), ga);
-                            }
-                            _ => {
-                                self.vars.insert(name.clone(), o);
-                            }
-                        }
+                        let b = match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
+                            Some(RetBind::Stack(base, size)) => Binding::Stack(base, size),
+                            Some(RetBind::Gaddr(ga)) => Binding::Gaddr(ga),
+                            _ => Binding::Scalar(o),
+                        };
+                        self.rebind(name, b);
                     } else {
                         let o = self.expr(e);
-                        self.vars.remove(name);
-                        self.stacks.remove(name);
-                        self.gaddrs.remove(name);
-                        self.fconsts.remove(name);
-                        self.vars.insert(name.clone(), o);
+                        self.rebind(name, Binding::Scalar(o));
                     }
                 }
             },
@@ -2110,22 +2071,13 @@ impl FnLower<'_> {
                 // leaves the field None, so every name binds its scalar dst.
                 let binds = self.inline_stack_ret.take();
                 for (i, (n, d)) in names.iter().zip(&dsts).enumerate() {
-                    self.consts.remove(n);
-                    self.vars.remove(n);
-                    self.stacks.remove(n);
-                    self.gaddrs.remove(n);
-                    self.fconsts.remove(n);
-                    match binds.as_ref().and_then(|b| b.get(i).copied()) {
-                        Some(RetBind::Stack(base, size)) => {
-                            self.stacks.insert(n.clone(), (base, size));
-                        }
-                        Some(RetBind::Gaddr(ga)) => {
-                            self.gaddrs.insert(n.clone(), ga);
-                        }
-                        _ => {
-                            self.vars.insert(n.clone(), *d);
-                        }
-                    }
+                    let b = match binds.as_ref().and_then(|b| b.get(i).copied()) {
+                        Some(RetBind::Stack(base, size)) => Binding::Stack(base, size),
+                        Some(RetBind::Gaddr(ga)) => Binding::Gaddr(ga),
+                        _ => Binding::Scalar(*d),
+                    };
+                    self.scope.consts.remove(n);
+                    self.rebind(n, b);
                 }
             }
             Stmt::AssertEq(a, b) => {
@@ -2145,10 +2097,10 @@ impl FnLower<'_> {
                 // a Print hint on a no-op anchor so it fires exactly here (and
                 // only on this path), at witness generation. No constraints.
                 let cell = self.expr(value);
-                self.pending.push(Hint::Print {
+                self.pending.push(Hint::Resolved(RHint::Print {
                     label: label.clone(),
                     cell,
-                });
+                }));
                 let o = self.fresh();
                 self.emit(LOp::Set {
                     o,
@@ -2165,163 +2117,9 @@ impl FnLower<'_> {
             Stmt::Match { x, cases } => self.lower_match(x, cases),
             Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
             Stmt::Call(f, args) => {
-                // Computed advice fills (prover-side, re-checked by the caller):
-                // `hint_decompose_bits(bits, value, nbits)` writes value's bits into the
-                // buffer; `hint_decompose_bits_exponent(bits, x, nbits)` writes the
-                // bits of n where x = g^n (a bounded dlog at witness generation).
-                if f == "hint_decompose_bits" {
-                    assert_eq!(args.len(), 3, "hint_decompose_bits(bits, value, nbits)");
-                    let bits_ptr = self.expr(&args[0]);
-                    let value = self.expr(&args[1]);
-                    let nbits = self.const_index(&args[2]);
-                    self.pending.push(Hint::BitDecompose { value, bits_ptr, nbits });
-                    return;
+                if !self.lower_builtin(f, args) {
+                    self.call(f, args, 0);
                 }
-                if f == "hint_decompose_bits_exponent" {
-                    assert_eq!(args.len(), 3, "hint_decompose_bits_exponent(bits, x, nbits)");
-                    let bits_ptr = self.expr(&args[0]);
-                    let value = self.expr(&args[1]);
-                    let nbits = self.const_index(&args[2]);
-                    self.pending.push(Hint::BitDecomposeExp { value, bits_ptr, nbits });
-                    return;
-                }
-                // `blake3(a, b, out)`: the digest of the two 256-bit operands
-                // lands in the existing 2-cell run `out` (write-once: if `out`
-                // was already written, this asserts the digest equals it). A
-                // heap `out` slice takes the digest via a fresh stack pair and
-                // two `DEREF`s after the hash (the store direction is the same
-                // instruction as the load — write-once fills the unset side).
-                if f == "blake3" {
-                    let first_kw = args
-                        .iter()
-                        .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
-                        .unwrap_or(args.len());
-                    assert_eq!(first_kw, 3, "{f} takes three positional arguments: (a, b, out)");
-                    assert!(
-                        args[first_kw..]
-                            .iter()
-                            .all(|a| matches!(a, Expr::Call(name, v) if name.starts_with("__kw_") && v.len() == 1)),
-                        "keyword arguments must follow the three positional {f} arguments"
-                    );
-                    let mut kwargs: HashMap<&str, &Expr> = HashMap::new();
-                    for kw in &args[first_kw..] {
-                        let Expr::Call(name, value) = kw else { unreachable!() };
-                        let key = name.strip_prefix("__kw_").unwrap();
-                        assert!(kwargs.insert(key, &value[0]).is_none(), "duplicate {f} keyword `{key}`");
-                    }
-                    let allowed = [
-                        "cv",
-                        "counter",
-                        "chunk",
-                        "block_len",
-                        "flags",
-                        "step",
-                        "end",
-                        "root",
-                        "parent",
-                    ];
-                    assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown {f} keyword");
-                    let customized = kwargs
-                        .keys()
-                        .any(|k| matches!(*k, "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent"));
-                    assert!(
-                        !kwargs.contains_key("cv") || customized,
-                        "blake3 with cv= requires step=, flags=, or another structured metadata keyword"
-                    );
-
-                    let a = self.blake3_input(&args[0]);
-                    let b = self.blake3_input(&args[1]);
-                    let (c, heap_out) = match self.blake3_operand(&args[2]) {
-                        B3Operand::Stack(o) => (o, None),
-                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
-                    };
-                    let cv = if let Some(value) = kwargs.get("cv") {
-                        self.blake3_cv(value)
-                    } else {
-                        self.default_blake3_cv()
-                    };
-                    let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
-                        kwargs.get(name).map(|e| this.const_index(e) as u128).unwrap_or(default)
-                    };
-                    assert!(
-                        !(kwargs.contains_key("counter") && kwargs.contains_key("chunk")),
-                        "use either counter= or chunk=, not both"
-                    );
-                    let counter = if kwargs.contains_key("chunk") {
-                        const_kw(self, "chunk", 0)
-                    } else {
-                        const_kw(self, "counter", 0)
-                    };
-                    assert!(counter <= u64::MAX as u128, "BLAKE3 counter does not fit in u64");
-                    let block_len = const_kw(self, "block_len", 64);
-                    assert!(block_len <= 64, "BLAKE3 block_len must be at most 64");
-                    let step = kwargs.get("step").map(|e| self.const_index(e));
-                    if let Some(step) = step {
-                        assert!(step < 16, "BLAKE3 step must be in 0..16");
-                    }
-                    let mut flags = if kwargs.contains_key("flags") {
-                        const_kw(self, "flags", 0)
-                    } else if customized {
-                        if step == Some(0) { 1 } else { 0 }
-                    } else {
-                        lean_vm::blake3_flock::FLAGS as u128
-                    };
-                    if const_kw(self, "end", 0) != 0 {
-                        flags |= 1 << 1;
-                    }
-                    if const_kw(self, "parent", 0) != 0 {
-                        flags |= 1 << 2;
-                    }
-                    if const_kw(self, "root", 0) != 0 {
-                        flags |= 1 << 3;
-                    }
-                    assert!(flags <= u32::MAX as u128, "BLAKE3 flags do not fit in u32");
-                    let metadata = lean_vm::blake3_flock::metadata(counter as u64, block_len as u32, flags as u32);
-                    // Each operand is two 128-bit chunk cells; the flexible opcode
-                    // addresses the four input cells independently (`blake3_input`
-                    // forwards the real chunk sources where it can). The digest
-                    // occupies the two consecutive output cells `c, g·c`.
-                    self.emit(LOp::Blake3 {
-                        ins: [a[0], a[1], b[0], b[1]],
-                        cv,
-                        c,
-                        metadata,
-                    });
-                    if let Some((ptr, lo)) = heap_out {
-                        for k in 0..2 {
-                            self.emit(LOp::Deref {
-                                alpha: ptr,
-                                beta: lo + k,
-                                gamma: c + k,
-                                mode: DerefMode::Cell,
-                            });
-                        }
-                    }
-                    return;
-                }
-                if f == "pack64x2_into" {
-                    assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
-                    let a = self.expr(&args[0]);
-                    let b = self.expr(&args[1]);
-                    let c = self.expr(&args[2]);
-                    self.emit(LOp::Pack64x2 { a, b, c });
-                    return;
-                }
-                if f == "hint_f192_limbs" {
-                    assert_eq!(args.len(), 2, "hint_f192_limbs(dest, value)");
-                    let (base, len) = self
-                        .stack_of(&args[0])
-                        .expect("hint_f192_limbs destination must be a StackBuf");
-                    assert!(
-                        (1..=3).contains(&len),
-                        "hint_f192_limbs destination must have 1..=3 cells"
-                    );
-                    let value = self.expr(&args[1]);
-                    let value = self.word_src(value);
-                    self.pending.push(Hint::FieldLimbs { value, base, len });
-                    return;
-                }
-                self.call(f, args, 0);
             }
             Stmt::Store(arr, idx, val) => {
                 // Stack write `sa[k] = val`: place `val` straight into cell `base+k`.
@@ -2330,7 +2128,7 @@ impl FnLower<'_> {
                     assert!(k < size, "stack store index {k} out of bounds (size {size})");
                     let dst = base + k;
                     // A plain copy / zero is deferred as an alias and forwarded at
-                    // its uses (write-once, so the source cell keeps its value) —
+                    // its uses (write-once, so the source cell keeps its value):
                     // the assembling `MUL`/`SET` is never emitted.
                     if let Some(a) = self.copy_alias(val) {
                         self.alias.insert(dst, a);
@@ -2352,20 +2150,22 @@ impl FnLower<'_> {
             }
             Stmt::Return(es) => self.lower_return(es),
             Stmt::CallIfNe(lhs, rhs, callee, args) => {
+                // A conditional call: the frame setup runs either way, and the
+                // `JUMP`'s nonzero test decides whether the callee is entered,
+                // so the not-taken path continues straight after it. In tail
+                // position the callee inherits THIS frame's `retpc`/`retfp`, so
+                // a `mul_range` loop builds no unwind chain: only the final
+                // iteration returns, straight to the loop's original caller.
                 let (la, lb) = (self.expr(lhs), self.expr(rhs));
                 let x = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs − rhs; x != 0 ⇔ lhs != rhs
-                if tail {
-                    self.call_cond_tail(callee, args, x);
-                } else {
-                    self.call_cond(callee, args, x);
-                }
+                self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs; x != 0 ⇔ lhs != rhs
+                self.lower_call(callee, args, 0, Some(x), None, tail);
             }
             Stmt::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
             // Compile-time unrolling: emit the body per integer, the counter
             // substituted as its literal. Every copy executes (this is
-            // straight-line code, not a branch), so bindings simply rebind —
-            // a fresh binding per iteration — and lazy caches persist.
+            // straight-line code, not a branch), so bindings simply rebind (a
+            // fresh binding per iteration) and lazy caches persist.
             Stmt::Unroll { var, lo, hi, body } => {
                 let bound = |s: &Self, e: &Expr| {
                     s.try_const_index(e)
@@ -2382,13 +2182,158 @@ impl FnLower<'_> {
         }
     }
 
+    /// The statement-position builtins, `true` if `f` was one of them (else the
+    /// caller emits an ordinary call). The `hint_*` ones queue prover-side
+    /// advice, re-checked in-circuit by their caller: `hint_decompose_bits`
+    /// writes a value's bits into a buffer, `hint_decompose_bits_exponent` the
+    /// bits of `n` where the value is `g^n` (a bounded dlog at witness
+    /// generation), `hint_f192_limbs` a value's coordinate limbs.
+    fn lower_builtin(&mut self, f: &str, args: &[Expr]) -> bool {
+        match f {
+            "hint_decompose_bits" | "hint_decompose_bits_exponent" => {
+                assert_eq!(args.len(), 3, "{f}(bits, value, nbits)");
+                let bits_ptr = self.expr(&args[0]);
+                let value = self.expr(&args[1]);
+                let nbits = self.const_index(&args[2]);
+                self.pending.push(Hint::Resolved(if f == "hint_decompose_bits" {
+                    RHint::BitDecompose { value, bits_ptr, nbits }
+                } else {
+                    RHint::BitDecomposeExp { value, bits_ptr, nbits }
+                }));
+            }
+            "blake3" => self.lower_blake3(args),
+            "pack64x2_into" => {
+                assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
+                let a = self.expr(&args[0]);
+                let b = self.expr(&args[1]);
+                let c = self.expr(&args[2]);
+                self.emit(LOp::Pack64x2 { a, b, c });
+            }
+            "hint_f192_limbs" => {
+                assert_eq!(args.len(), 2, "hint_f192_limbs(dest, value)");
+                let (base, len) = self
+                    .stack_of(&args[0])
+                    .expect("hint_f192_limbs destination must be a StackBuf");
+                assert!(
+                    (1..=3).contains(&len),
+                    "hint_f192_limbs destination must have 1..=3 cells"
+                );
+                let value = self.expr(&args[1]);
+                let value = self.word_src(value);
+                self.pending
+                    .push(Hint::Resolved(RHint::FieldLimbs { value, base, len }));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// `blake3(a, b, out)`: the digest of the two 256-bit operands lands in the
+    /// existing 2-cell run `out` (write-once: if `out` was already written, this
+    /// asserts the digest equals it). A heap `out` slice takes the digest via a
+    /// fresh stack pair and two `DEREF`s after the hash, the store direction
+    /// being the same instruction as the load (write-once fills the unset side).
+    /// Keyword arguments set the compile-time metadata.
+    fn lower_blake3(&mut self, args: &[Expr]) {
+        let first_kw = args
+            .iter()
+            .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
+            .unwrap_or(args.len());
+        assert_eq!(first_kw, 3, "blake3 takes three positional arguments: (a, b, out)");
+        assert!(
+            args[first_kw..]
+                .iter()
+                .all(|a| matches!(a, Expr::Call(name, v) if name.starts_with("__kw_") && v.len() == 1)),
+            "keyword arguments must follow the three positional blake3 arguments"
+        );
+        let mut kwargs: HashMap<&str, &Expr> = HashMap::new();
+        for kw in &args[first_kw..] {
+            let Expr::Call(name, value) = kw else { unreachable!() };
+            let key = name.strip_prefix("__kw_").unwrap();
+            assert!(
+                kwargs.insert(key, &value[0]).is_none(),
+                "duplicate blake3 keyword `{key}`"
+            );
+        }
+        let allowed = ["cv", "counter", "block_len", "flags", "step", "end", "root", "parent"];
+        assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown blake3 keyword");
+        let customized = kwargs
+            .keys()
+            .any(|k| matches!(*k, "counter" | "flags" | "step" | "end" | "root" | "parent"));
+        assert!(
+            !kwargs.contains_key("cv") || customized,
+            "blake3 with cv= requires step=, flags=, or another structured metadata keyword"
+        );
+
+        let a = self.blake3_input(&args[0]);
+        let b = self.blake3_input(&args[1]);
+        let (c, heap_out) = match self.blake3_operand(&args[2]) {
+            B3Operand::Stack(o) => (o, None),
+            B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
+        };
+        let cv = if let Some(value) = kwargs.get("cv") {
+            self.blake3_cv(value)
+        } else {
+            self.default_blake3_cv()
+        };
+        let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
+            kwargs.get(name).map(|e| this.const_index(e) as u128).unwrap_or(default)
+        };
+        let counter = const_kw(self, "counter", 0);
+        assert!(counter <= u64::MAX as u128, "BLAKE3 counter does not fit in u64");
+        let block_len = const_kw(self, "block_len", 64);
+        assert!(block_len <= 64, "BLAKE3 block_len must be at most 64");
+        let step = kwargs.get("step").map(|e| self.const_index(e));
+        if let Some(step) = step {
+            assert!(step < 16, "BLAKE3 step must be in 0..16");
+        }
+        let mut flags = if kwargs.contains_key("flags") {
+            const_kw(self, "flags", 0)
+        } else if customized {
+            if step == Some(0) { 1 } else { 0 }
+        } else {
+            lean_vm::blake3_flock::FLAGS as u128
+        };
+        if const_kw(self, "end", 0) != 0 {
+            flags |= 1 << 1;
+        }
+        if const_kw(self, "parent", 0) != 0 {
+            flags |= 1 << 2;
+        }
+        if const_kw(self, "root", 0) != 0 {
+            flags |= 1 << 3;
+        }
+        assert!(flags <= u32::MAX as u128, "BLAKE3 flags do not fit in u32");
+        let metadata = lean_vm::blake3_flock::metadata(counter as u64, block_len as u32, flags as u32);
+        // Each operand is two 128-bit chunk cells; the flexible opcode addresses
+        // the four input cells independently (`blake3_input` forwards the real
+        // chunk sources where it can). The digest occupies the two consecutive
+        // output cells `c, g·c`.
+        self.emit(LOp::Blake3 {
+            ins: [a[0], a[1], b[0], b[1]],
+            cv,
+            c,
+            metadata,
+        });
+        if let Some((ptr, lo)) = heap_out {
+            for k in 0..2 {
+                self.emit(LOp::Deref {
+                    alpha: ptr,
+                    beta: lo + k,
+                    gamma: c + k,
+                    mode: DerefMode::Cell,
+                });
+            }
+        }
+    }
+
     fn lower_return(&mut self, exprs: &[Expr]) {
         // Inlined (`@inline`): bind the return values into the caller's cells
-        // and fall through — the body's tail return, so no jump is needed.
+        // and fall through: this is the body's tail return, so no jump is needed.
         if let Some(dsts) = self.inline_ret.clone() {
             // Each returned value is bound into the caller independently, exactly
             // as a `let name = <that expr>` would: a `StackBuf` or a folded
-            // g-address hands over its run/pointer (alias, not copies — allocated
+            // g-address hands over its run/pointer (alias, not copies: allocated
             // in the caller's frame, so it outlives the inline scope), a scalar is
             // copied into its dst cell. The per-slot record lets the caller's
             // `let`/tuple pick the right binding, so a fused
@@ -2492,18 +2437,18 @@ impl FnLower<'_> {
                 continue;
             }
             // A StackBuf is a run of cells, not a single scalar arg, and the
-            // tail-recursive loop helper can't thread one across iterations — so a
+            // tail-recursive loop helper can't thread one across iterations, so a
             // StackBuf from the enclosing scope can't be captured. Reject with a
             // clear error (not the misleading "unbound variable" the capture drop
             // would otherwise trigger). Keep it inside the loop body, or carry
             // state through a `HeapBuf`.
-            if self.stacks.contains_key(r) {
+            if self.scope.stacks.contains_key(r) {
                 panic!(
                     "StackBuf `{r}` cannot be captured into a `for` loop; \
                      define it inside the loop body or carry state via a `HeapBuf`"
                 );
             }
-            if (self.vars.contains_key(r) || self.gaddrs.contains_key(r)) && seen.insert(r.clone()) {
+            if (self.scope.vars.contains_key(r) || self.scope.gaddrs.contains_key(r)) && seen.insert(r.clone()) {
                 captures.push(r.clone());
             }
         }
@@ -2528,7 +2473,7 @@ impl FnLower<'_> {
 
         // loop(i, [bound,] caps): run the body, advance to j = i·g, and
         // tail-recurse while j != stop. The exit test is the recursive call's
-        // own condition (`JUMP`'s nonzero check on j − stop) — no is-zero
+        // own condition (`JUMP`'s nonzero check on j − stop): no is-zero
         // gadget, no inverse hint, and no extra call beyond the one a loop
         // iteration already makes.
         let next_var = format!("__next{id}");
@@ -2579,15 +2524,8 @@ impl FnLower<'_> {
     }
 }
 
-/// Structural equality of two argument lists (small expressions, no interning),
-/// via the derived `Debug` form — used to check `match_range` arms share their
-/// runtime arguments ([`FnLower::lower_match_range`] fusion).
-fn exprs_eq(a: &[Expr], b: &[Expr]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| format!("{x:?}") == format!("{y:?}"))
-}
-
 /// A body safe to inline: a single **tail** `return`, and no construct whose
-/// lowering needs its own frame or a dispatch — a non-inline user call, a
+/// lowering needs its own frame or a dispatch: a non-inline user call, a
 /// runtime loop, or a match (which would reload a frame pointer that is no
 /// longer the callee's). Builtins and nested `@inline` calls are fine;
 /// `unroll`/`if` are compile-time / same-frame and recurse into.
@@ -2616,15 +2554,13 @@ fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
     }
 }
 
-/// The literal `k` when `hi` is syntactically `lo + k` (either operand
-/// order) — the shape of a runtime slice, whose bounds cannot be evaluated at
-/// compile time. Structural comparison via the derived `Debug` form
-/// (expressions are small and have no interning).
+/// The literal `k` when `hi` is syntactically `lo + k` (either operand order):
+/// the shape of a runtime slice, whose bounds cannot be evaluated at compile
+/// time.
 fn plus_k(lo: &Expr, hi: &Expr) -> Option<u128> {
-    let eq = |a: &Expr, b: &Expr| format!("{a:?}") == format!("{b:?}");
     match hi {
         Expr::Add(a, b) => match (a.as_ref(), b.as_ref()) {
-            (Expr::Lit(k), other) | (other, Expr::Lit(k)) if eq(other, lo) => Some(*k),
+            (Expr::Lit(k), other) | (other, Expr::Lit(k)) if other == lo => Some(*k),
             _ => None,
         },
         _ => None,
@@ -2743,9 +2679,10 @@ pub(crate) fn lower_func(
     let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
     let next = 2 + f.params.len() as u32 + n_ret_cells;
     let mut lowerer = FnLower {
-        vars,
-        stacks: HashMap::new(),
-        consts: HashMap::new(),
+        scope: Scope {
+            vars,
+            ..Default::default()
+        },
         next,
         n_args: f.params.len() as u32,
         return_shapes: f.return_shapes.clone(),
@@ -2755,18 +2692,11 @@ pub(crate) fn lower_func(
         code: Vec::new(),
         one_off: None,
         heap_sizes: HashMap::new(),
-        self_fp_off: None,
-        bounds: HashMap::new(),
-        const_cells: HashMap::new(),
-        gaddrs: HashMap::new(),
-        fconsts: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
         alias: HashMap::new(),
-        zero_off: None,
         pending: Vec::new(),
         inline_calls: Vec::new(),
-        blake3_iv: None,
         queue,
         loop_ctr,
         defs,

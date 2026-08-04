@@ -201,40 +201,28 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     });
 
-    // 181 fixed blocks + per signature: 1 (pk absorb) + 145 (the native
-    // verifier's constant).
     assert_eq!(stats.counts[5], 181 + 146 * n, "BLAKE3 instruction count");
     let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
-    let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
     let per = |x: usize| pretty_f64(x as f64 / n as f64);
-    let pow = |x: usize| {
-        if x == 0 {
-            "     -".into()
-        } else {
-            format!("2^{}", pretty_f64((x as f64).log2()))
-        }
-    };
-    // tracing-forest renders the tree when its root span closes. Close it
-    // before printing the benchmark report so the complete trace appears first.
     drop(trace_span);
 
     println!("\nXMSS aggregation, {} signatures", pretty_integer(n));
     println!(
         "  cycles (VM steps)           : {} = {}   ({} / XMSS)",
         pretty_integer(stats.cycles),
-        pow(stats.cycles),
+        crate::report::pow(stats.cycles),
         per(stats.cycles)
     );
     println!("    details                   : {}", stats.details());
-    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    crate::report::print_proof_size(&proof);
     println!(
         "  proving                     : {} s{}   {} XMSS/s      peak memory {} GiB",
         pretty_f64(prove_time.mean()),
         prove_time.spread(),
         pretty_f64(n as f64 / prove_time.mean()),
-        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
+        crate::report::peak_gib()
     );
     println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
 }

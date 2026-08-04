@@ -18,8 +18,8 @@ use lean_compiler::{compile, parse, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
-use pcs::ligerito::log2_ceil;
 use primitives::bench::Plan;
+use primitives::log2_ceil_usize;
 use primitives::multilinear::mle_eval;
 use primitives::{
     field::{F64, F192, G, g_pow},
@@ -282,6 +282,28 @@ fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
     (g1, gi)
 }
 
+/// One round of a batching sumcheck, in the transcript order the guest mirrors
+/// word for word: observe `(g1, g_inf)`, squeeze the fold challenge, record
+/// both, and advance the running claim through the compressed round polynomial.
+/// Returns the challenge, which the caller folds its tables with.
+fn absorb_round(
+    h: &mut Sponge,
+    msgs: &mut Vec<F192>,
+    points: &mut Vec<F192>,
+    run: &mut F192,
+    (g1, gi): (F192, F192),
+) -> F192 {
+    h.observe(g1);
+    h.observe(gi);
+    let r = h.sample();
+    msgs.extend([g1, gi]);
+    points.push(r);
+    let g0 = *run + g1;
+    let c1 = g0 + g1 + gi;
+    *run = (gi * r + c1) * r + g0;
+    r
+}
+
 /// The stacked bytecode polynomial of the inner program (leaf's canonical
 /// table, built from the real layout).
 fn stacked_bytecode(program: &Program) -> Vec<F64> {
@@ -369,15 +391,8 @@ fn aggregate_deferred_claims(
     let mut bscr = Vec::new();
     let mut r_bc = Vec::new();
     for _ in 0..kbcv {
-        let (g1, gi) = round_msg(&[(&bt, &wt, F192::ONE)]);
-        h.observe(g1);
-        h.observe(gi);
-        let r = h.sample();
-        bscr.extend([g1, gi]);
-        r_bc.push(r);
-        let g0 = brun + g1;
-        let c1 = g0 + g1 + gi;
-        brun = (gi * r + c1) * r + g0;
+        let msg = round_msg(&[(&bt, &wt, F192::ONE)]);
+        let r = absorb_round(&mut h, &mut bscr, &mut r_bc, &mut brun, msg);
         fold_lsb(&mut bt, r);
         fold_lsb(&mut wt, r);
     }
@@ -424,6 +439,7 @@ fn aggregate_deferred_claims(
         .map(|t| gmt[t] * subs[t].matrix_claim)
         .fold(F192::ZERO, |a, x| a + x);
     // sanity: the deferred matpart equals the bilinear form over the matrices.
+    #[cfg(debug_assertions)]
     for (t, d) in subs.iter().enumerate() {
         let direct = d.matrix_a_coefficient
             * ms[2 * t]
@@ -449,15 +465,8 @@ fn aggregate_deferred_claims(
                 ]
             })
             .collect();
-        let (g1, gi) = round_msg(&pairs);
-        h.observe(g1);
-        h.observe(gi);
-        let r = h.sample();
-        mscr.extend([g1, gi]);
-        r_row.push(r);
-        let g0 = mrun + g1;
-        let c1 = g0 + g1 + gi;
-        mrun = (gi * r + c1) * r + g0;
+        let msg = round_msg(&pairs);
+        let r = absorb_round(&mut h, &mut mscr, &mut r_row, &mut mrun, msg);
         for u in us.iter_mut() {
             fold_lsb(u, r);
         }
@@ -490,15 +499,8 @@ fn aggregate_deferred_claims(
     let mut r_col = Vec::new();
     for _ in 0..klog {
         let pairs: Vec<(&[F192], &[F192], F192)> = vec![(&acol, &wa, F192::ONE), (&bcol, &wb, F192::ONE)];
-        let (g1, gi) = round_msg(&pairs);
-        h.observe(g1);
-        h.observe(gi);
-        let r = h.sample();
-        mscr.extend([g1, gi]);
-        r_col.push(r);
-        let g0 = mrun + g1;
-        let c1 = g0 + g1 + gi;
-        mrun = (gi * r + c1) * r + g0;
+        let msg = round_msg(&pairs);
+        let r = absorb_round(&mut h, &mut mscr, &mut r_col, &mut mrun, msg);
         for tb in [&mut acol, &mut bcol, &mut wa, &mut wb] {
             fold_lsb(tb, r);
         }
@@ -506,6 +508,7 @@ fn aggregate_deferred_claims(
     let (v_a, v_b) = (acol[0], bcol[0]);
     assert_eq!(mrun, v_a * wa[0] + v_b * wb[0], "matrix sumcheck terminal");
     // sanity for the GUEST's succinct terminal-weight formulas.
+    #[cfg(debug_assertions)]
     {
         let eqr = pcs::ligerito::build_eq_table_ext(&r_row[..6]);
         let eqc = pcs::ligerito::build_eq_table_ext(&r_col[..6]);
@@ -599,6 +602,43 @@ fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(
     Ok(())
 }
 
+/// The verifier-side Ligerito config for one committed size and rate, plus the
+/// query packing derived from it. The hint builder needs it for the real
+/// opening and the placeholder map for every candidate size, so it lives here:
+/// a candidate whose shape differed from the real one would compile a guest
+/// that cannot open the proof it is handed.
+struct LigeritoShape {
+    config: pcs::ligerito::VerifierConfig,
+    levels: pcs::ligerito::LevelShapes,
+    /// Merkle tree depth per level.
+    depth: Vec<usize>,
+    /// Query positions carried by one squeezed F192 word, per level.
+    per_squeeze: Vec<usize>,
+}
+
+fn ligerito_shape(mu: usize, log_inv_rate: usize) -> LigeritoShape {
+    let config =
+        pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(mu + pcs::LOG_PACKING, log_inv_rate)
+            .and_then(|s| s.to_prover_verifier_configs())
+            .expect("stacked ligerito config")
+            .1;
+    let levels = config.level_shapes(mu);
+    let depth: Vec<usize> = levels.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
+    let per_squeeze = depth.iter().map(|&d| 192 / d).collect();
+    LigeritoShape {
+        config,
+        levels,
+        depth,
+        per_squeeze,
+    }
+}
+
+/// The BLAKE3 table's virtual value columns, in `blake3_flock::SLOTS` order.
+fn blake3_value_columns() -> Vec<usize> {
+    let base = lean_vm::cpu::schema().base[5];
+    lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| base + c).collect()
+}
+
 /// Config + hints for the recursion guest (`guests/recursion.py`), built
 /// from the REAL `cpu::layout` of the inner program and the transcript trace of
 /// a real `cpu::verify` run (zero hand-mirroring drift).
@@ -667,22 +707,12 @@ fn gen_verify(
     let lrr = summary.lc_claim.r_rounds.clone();
 
     // ---- the stacked opening: config + the opening summary ----
-    let stack_mu = l.m;
-    let vcfg = pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(
-        stack_mu + pcs::LOG_PACKING,
-        summary.log_inv_rate,
-    )
-    .and_then(|s| s.to_prover_verifier_configs())
-    .expect("stack ligerito config")
-    .1;
-    let log_n = stack_mu;
-    let shapes = vcfg.level_shapes(log_n);
+    let stack = ligerito_shape(l.m, summary.log_inv_rate);
+    let (vcfg, shapes) = (&stack.config, &stack.levels);
     let (nlev, r) = (shapes.levels, vcfg.level_steps);
-    let (klvl, lmc, _yr_log_n) = (shapes.ks, shapes.log_msg_cols, shapes.yr_log_n);
-    let queries = vcfg.queries.clone();
-    // Query packing: each squeezed F192 word carries 192/depth positions.
-    let depth: Vec<usize> = shapes.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
-    let per: Vec<usize> = depth.iter().map(|&d| 192 / d).collect();
+    let klvl = &shapes.ks;
+    let queries = &vcfg.queries;
+    let (depth, per) = (&stack.depth, &stack.per_squeeze);
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
     // The K stacked opening lives ENTIRELY in `proof.openings` (structs,
@@ -741,7 +771,6 @@ fn gen_verify(
     assert_eq!(kbc2, kbc);
     assert_eq!(bcv.len(), nbcv / 2);
     let bytecode_value = lean_vm::leaf::stacked_bytecode_value(&bcv, &sb);
-    // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
     // Per side, the kappa-descending packing order (as in leaf.rs::layout):
@@ -838,7 +867,7 @@ fn gen_verify(
     }
     let mut svk_flat = Vec::new();
     let mut ivk_flat = Vec::new();
-    for &lmc_lv in lmc.iter().take(nlev) {
+    for &lmc_lv in shapes.log_msg_cols.iter().take(nlev) {
         let s2 = pcs::ligerito::eval_sk_at_vks(lmc_lv);
         for &v in &s2 {
             svk_flat.push(F192::new(v.0, 0, 0));
@@ -988,11 +1017,6 @@ fn gen_verify(
     (hints, deferred)
 }
 
-/// Everything needed to run one N→1 recursion batch EXCEPT compiling the
-/// guest: the placeholder map (identical for every shape of the fixed inner
-/// program), the merged per-sub witness entries, the outer statement, and the
-/// data to discharge the reduced claims. Splitting the build from the compile
-/// lets one compiled guest serve many batches (see `recursion_generic_many`).
 /// The guest's stacked-size dispatch ceiling: one `match_range` opening arm
 /// per candidate `mu` in [`mu_range`].
 const MU_MAX: usize = 28;
@@ -1006,12 +1030,16 @@ fn mu_range(kbc: usize) -> (usize, usize) {
     (lean_vm::pcs::MIN_MU.max(lean_vm::cpu::MIN_LOG_MEM).max(kbc), MU_MAX)
 }
 
+/// Everything needed to run one N→1 recursion batch EXCEPT compiling the
+/// guest: the placeholder map (identical for every shape of the fixed inner
+/// program), the merged per-sub witness entries, the outer statement, and the
+/// data to discharge the reduced claims. Splitting the build from the compile
+/// lets one compiled guest serve many batches (see `recursion_generic_many`).
 struct Batch {
     merged: Vec<(String, Vec<Vec<F192>>)>,
     program0: Program,
     statement: RecursiveStatement,
-    nsub: usize,
-    total_inner_cycles: usize,
+    /// Per inner proof, in transcript order: (guest cycles, committed witness size).
     inner_stats: Vec<(usize, usize)>,
     outer_log_inv_rate: usize,
 }
@@ -1045,9 +1073,7 @@ impl Batch {
 fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_rate: usize) -> Batch {
     assert!(!inner.is_empty(), "a recursion batch cannot be empty");
     assert_eq!(inner.len(), log_inv_rates.len(), "one PCS rate per inner proof");
-    let nsub = inner.len();
-    let mut total_inner_cycles = 0usize;
-    let mut inner_stats = Vec::with_capacity(nsub);
+    let mut inner_stats = Vec::with_capacity(inner.len());
     let mut protos = Vec::new();
     for (k, (&(hashes, iters), &log_inv_rate)) in inner.iter().zip(log_inv_rates).enumerate() {
         let pi = [
@@ -1055,7 +1081,6 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
             F192::new(0x5555_6666, 0x7777_8888 + k as u64, 0),
         ];
         let (program, proof, inner_cycles, inner_committed) = prove_inner(pi, hashes, iters, log_inv_rate);
-        total_inner_cycles += inner_cycles;
         inner_stats.push((inner_cycles, inner_committed));
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
@@ -1104,8 +1129,6 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         merged,
         program0,
         statement,
-        nsub,
-        total_inner_cycles,
         inner_stats,
         outer_log_inv_rate,
     }
@@ -1229,8 +1252,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- claim descriptor buffer ids (structural) ----
     let sch = lean_vm::cpu::schema();
-    let b3base = sch.base[5];
-    let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
+    let valcols = blake3_value_columns();
     let block_index: std::collections::HashMap<usize, usize> = l
         .jagged_blocks
         .iter()
@@ -1408,12 +1430,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     };
     ps("STREAM_CAP", stream_cap.to_string());
     ps("INV_GEN", u(F192::new(G.inv().0, 0, 0)).to_string());
-    ps("LAGRANGE_INV_0", u(F192::new(G.inv().0, 0, 0)).to_string());
-    ps("LAGRANGE_INV_1", f192_literal((F192::ONE + F192::new(G.0, 0, 0)).inv()));
-    ps(
-        "LAGRANGE_INV_2",
-        f192_literal((F192::new(G.0, 0, 0) * (F192::ONE + F192::new(G.0, 0, 0))).inv()),
-    );
     // The batched zerocheck sends its round polynomial WHOLE, at {0, 1, g, g^2}, so
     // it interpolates a cubic: one baked inverse denominator per node.
     {
@@ -1559,17 +1575,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
-        let vc =
-            pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(m + pcs::LOG_PACKING, log_inv_rate)
-                .and_then(|s| s.to_prover_verifier_configs())
-                .expect("candidate ligerito config")
-                .1;
-        let sh = vc.level_shapes(m);
+        let shape = ligerito_shape(m, log_inv_rate);
+        let (vc, sh) = (&shape.config, &shape.levels);
         let (cn, cr) = (sh.levels, vc.level_steps);
         let (ck, cl, cyr) = (sh.ks.clone(), sh.log_msg_cols.clone(), sh.yr_log_n);
         let cq = vc.queries.clone();
-        let cd: Vec<usize> = sh.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
-        let cp: Vec<usize> = cd.iter().map(|&d| 192 / d).collect();
+        let (cd, cp) = (&shape.depth, &shape.per_squeeze);
         let cs: Vec<usize> = (0..cn).map(|i| cq[i].div_ceil(cp[i])).collect();
         let cni: Vec<usize> = ck.iter().map(|&k| 1usize << k).collect();
         let cqb: Vec<usize> = (0..cn).map(|lvl| vc.grinding_bits[lvl]).collect();
@@ -1625,8 +1636,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             folds: ck,
             log_message_columns: cl,
             queries: cq,
-            tree_depths: cd,
-            positions_per_squeeze: cp,
+            tree_depths: cd.clone(),
+            positions_per_squeeze: cp.clone(),
             squeezes: cs,
             interleaving: cni,
             query_grinding_bits: cqb,
@@ -1639,7 +1650,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             residual_fold_offsets: c_risstart,
             vanish_values: c_svk,
             vanish_inverses: c_ivk,
-            ood_samples: vc.ood_samples,
+            ood_samples: vc.ood_samples.clone(),
         }
     };
     let (minm, maxm) = mu_range(kbc);
@@ -1763,10 +1774,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_MAX_QUERIES", ints(&scal(&|c| *c.queries.iter().max().unwrap())));
         ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.squeezes.iter().max().unwrap())));
         ps(
-            "LIG_MAX_LOG_MSG_COLS",
-            ints(&scal(&|c| *c.log_message_columns.iter().max().unwrap())),
-        );
-        ps(
             "LIG_MAX_INTERLEAVE",
             ints(&scal(&|c| *c.interleaving.iter().max().unwrap())),
         );
@@ -1800,15 +1807,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     .map(|level| c.squeezes[level] * c.positions_per_squeeze[level])
                     .sum()
             })),
-        );
-        ps(
-            "LIG_SUMCHECK_LEN",
-            ints(
-                &cands
-                    .iter()
-                    .map(|c| 2 * (c.folds.iter().sum::<usize>() + c.n_levels + c.ood_samples.iter().sum::<usize>()))
-                    .collect::<Vec<_>>(),
-            ),
         );
         ps(
             "LIG_ROWS_LEN",
@@ -1881,7 +1879,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps(
             "LIG_LOG_QUERIES",
             ints(&flat(
-                &|c| c.queries.iter().map(|&queries| log2_ceil(queries)).collect(),
+                &|c| c.queries.iter().map(|&queries| log2_ceil_usize(queries)).collect(),
                 maxlev,
             )),
         );
@@ -1953,11 +1951,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("JAGGED_BATCH_BASE", ints(&batch_base));
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
-    // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
+    // log2_ceil_usize(cols) selector bits. The defer region is 2*kbc points + sel
     // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
     // + 1 matpart.
     let bc_cols = nbcv / 2;
-    let log2_bc_cols = log2_ceil(bc_cols);
+    let log2_bc_cols = log2_ceil_usize(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
@@ -1971,8 +1969,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let statement_state = pack_state(Sponge::new(RECURSION_STATEMENT_LABEL, &[]).state());
     ps("STATEMENT_SEED_0", u(statement_state[0]).to_string());
     ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
-    // Closed-form ring-switch coefficients: the guest bakes both Frobenius
-    // orbits in, so it needs neither a runtime orbit table nor a 63-term
     rep
 }
 
@@ -2068,8 +2064,8 @@ fn run_recursion_with_rates(
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
     // 3: prove the inner proofs and extract the recursion witness (hints).
     let batch = build_batch(inner, log_inv_rates, outer_log_inv_rate);
-    let nsub = batch.nsub;
-    let total_inner_cycles = batch.total_inner_cycles;
+    let nsub = batch.inner_stats.len();
+    let total_inner_cycles: usize = batch.inner_stats.iter().map(|&(cycles, _)| cycles).sum();
     if enable_tracing {
         primitives::init_tracing();
     }
@@ -2081,8 +2077,6 @@ fn run_recursion_with_rates(
             .verify(&batch.program0)
             .expect("complete recursive proof verifies");
     });
-    // tracing-forest renders a tree when its root span closes. Close it before
-    // printing any benchmark/status output so the complete trace appears first.
     drop(trace_span);
 
     println!(
@@ -2098,14 +2092,6 @@ fn run_recursion_with_rates(
             pretty_f64((committed as f64).log2())
         );
     }
-    let proof_bytes = bincode::serialized_size(&recursive_proof).expect("recursive proof is serializable");
-    let pow = |x: usize| {
-        if x == 0 {
-            "     -".into()
-        } else {
-            format!("2^{}", pretty_f64((x as f64).log2()))
-        }
-    };
     let nsub_pretty = pretty_integer(nsub);
     println!(
         "\nrecursion {nsub_pretty}\u{2192}1: {nsub_pretty} inner proofs of {} cycles each",
@@ -2114,16 +2100,16 @@ fn run_recursion_with_rates(
     let guest_cycles = pretty_integer(stats.cycles);
     println!(
         "  guest cycles (VM steps)     : {guest_cycles} = {}   ({} / inner cycle)",
-        pow(stats.cycles),
+        crate::report::pow(stats.cycles),
         pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
     println!("    details                   : {}", stats.details());
-    println!("proof size                : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    crate::report::print_proof_size(&recursive_proof);
     println!(
         "recursion proving         : {} s{}      peak memory {} GiB",
         pretty_f64(prove_time.mean()),
         prove_time.spread(),
-        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
+        crate::report::peak_gib()
     );
     println!("verification              : {} s", pretty_f64(verify_time.mean()));
     recursive_proof

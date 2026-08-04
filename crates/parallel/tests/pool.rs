@@ -137,14 +137,6 @@ fn nested_dispatch_panics_rather_than_deadlocking() {
 }
 
 #[test]
-fn topology_is_at_least_one_worker() {
-    let topo = parallel::topology();
-    assert!(topo.perf >= 1);
-    assert_eq!(topo.total(), parallel::num_threads());
-    assert!(parallel::recommended_chunk_size(1_000_000) >= 1);
-}
-
-#[test]
 fn find_first_returns_the_global_minimum() {
     for n in SIZES {
         // Every multiple of 7 matches, so the answer is 0 whenever n > 0.
@@ -159,21 +151,18 @@ fn find_first_returns_the_global_minimum() {
 }
 
 /// The default holds back one performance worker exactly when there are
-/// efficiency workers to absorb its share (see `default_topology`).
+/// efficiency workers to absorb its share (see `default_topology`), so a
+/// homogeneous host must field every core it reports.
 #[test]
-fn default_topology_reserves_a_worker_only_on_heterogeneous_hosts() {
+fn default_topology_reserves_no_worker_on_a_homogeneous_host() {
     // The env vars this binary may have inherited would pin the count and defeat
     // the check, so only assert when nothing is pinned.
     if std::env::var_os("LEANVM_NUM_THREADS").is_some() || std::env::var_os("RAYON_NUM_THREADS").is_some() {
         return;
     }
     let topo = parallel::topology();
-    assert!(topo.perf >= 1, "at least the dispatcher");
-    if topo.efficiency > 0 {
-        // Heterogeneous: the reserved core shows up as perf < the cluster width.
-        assert!(
-            topo.total() >= 2,
-            "a heterogeneous host must still field several workers: {topo:?}"
-        );
+    if topo.efficiency == 0 {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        assert_eq!(topo.perf, cores, "nothing may be reserved without efficiency workers");
     }
 }

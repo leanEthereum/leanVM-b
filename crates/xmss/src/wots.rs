@@ -7,7 +7,7 @@ use crate::*;
 
 #[derive(Debug)]
 pub struct WotsSecretKey {
-    pub pre_images: [Digest; V],
+    pre_images: [Digest; V],
     public_key: WotsPublicKey,
 }
 
@@ -81,19 +81,19 @@ impl WotsPublicKey {
         for (chunk, tip) in data.chunks_exact_mut(DIGEST_LEN).zip(&self.0) {
             chunk.copy_from_slice(tip);
         }
-        tweak_hash_many(public_param, TWEAK_TYPE_WOTS_PK, 0, slot, &data)
+        tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, slot, &data)
     }
 }
 
 /// One chain step (1 compression). The position `chain_index * CHAIN_LENGTH +
 /// step` identifies the edge from chain value `step` to `step + 1`.
-pub fn chain_step(public_param: &PublicParam, slot: u32, chain_index: usize, step: usize, x: &Digest) -> Digest {
+fn chain_step(public_param: &PublicParam, slot: u32, chain_index: usize, step: usize, x: &Digest) -> Digest {
     let position = (chain_index * CHAIN_LENGTH + step) as u32;
     tweak_hash(public_param, TWEAK_TYPE_CHAIN, position, slot, x)
 }
 
 /// Walk chain `chain_index` for `n` steps starting at chain value `start_step`.
-pub fn iterate_hash(
+fn iterate_hash(
     a: &Digest,
     n: usize,
     public_param: &PublicParam,
@@ -124,17 +124,16 @@ pub fn find_randomness_for_wots_encoding(
 
 /// The target-sum encoding. `D = MD(msg | randomness | zeros)` under the
 /// encoding tweak, truncated to 16 bytes: 2 standard BLAKE3 compressions over
-/// the 96-byte exact input. `D`'s two
-/// little-endian 64-bit words each hold 21 chunks of 3 bits (the VM's word
-/// width budgets the monomial encoding at 64 bits per word: `g^k = x^k` only
-/// for `k < 64`): digit `i < 21` sits at bits `3i` of word 0, digit `i >= 21`
-/// at bits `3(i-21)` of word 1. The encoding is valid iff the leftover top
-/// bit of EACH word (bits 63 and 127) is zero AND the chunks sum to
-/// [`TARGET_SUM`]. Grinding the top bits to zero makes each digest word
-/// exactly `sum(e_i * 2^{3i})` of its 21 digits, so both words decompose into
-/// the chunks with no slack term — in-circuit this is checked over GF(2^64)
-/// per word by accumulating the dispatched digit literals against `8^i`
-/// monomial weights (see `tests/xmss_aggregate.py`).
+/// the 96-byte exact input. `D`'s two little-endian 64-bit words each hold 21
+/// chunks of 3 bits (the VM's word width budgets the monomial encoding at 64
+/// bits per word: `g^k = x^k` only for `k < 64`): digit `i < 21` sits at bits
+/// `3i` of word 0, digit `i >= 21` at bits `3(i-21)` of word 1. The encoding is
+/// valid iff the leftover top bit of EACH word (bits 63 and 127) is zero AND
+/// the chunks sum to [`TARGET_SUM`]. Grinding the top bits to zero makes each
+/// digest word exactly `sum(e_i * 2^{3i})` of its 21 digits, so both words
+/// decompose into the chunks with no slack term. In-circuit this is checked
+/// over GF(2^64) per word by accumulating the dispatched digit literals against
+/// `8^i` monomial weights (see `tests/xmss_aggregate.py`).
 pub fn wots_encode(
     message: &Message,
     slot: u32,
@@ -144,7 +143,7 @@ pub fn wots_encode(
     let mut data = [0u8; 2 * STATE_LEN];
     data[..MESSAGE_LEN].copy_from_slice(message);
     data[MESSAGE_LEN..][..RANDOMNESS_LEN].copy_from_slice(randomness);
-    let digest = tweak_hash_many(public_param, TWEAK_TYPE_ENCODING, 0, slot, &data);
+    let digest = tweak_hash(public_param, TWEAK_TYPE_ENCODING, 0, slot, &data);
 
     if digest[7] >> 7 != 0 || digest[DIGEST_LEN - 1] >> 7 != 0 {
         return None; // the leftover top bit of each 64-bit word must be zero

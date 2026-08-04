@@ -1,7 +1,7 @@
 //! Bump-and-reset arena for the prover's transient buffers.
 //!
-//! One proof allocates tens of gigabytes of short-lived buffers — codewords,
-//! folded halves, packed witnesses, Merkle levels — and frees them all before
+//! One proof allocates tens of gigabytes of short-lived buffers (codewords,
+//! folded halves, packed witnesses, Merkle levels) and frees them all before
 //! returning. The system allocator hands the big ones out as fresh mappings and
 //! returns them on free, so every proof re-pays a soft page fault per page on
 //! first touch plus a single-threaded unmap on drop. Measured at the
@@ -12,18 +12,18 @@
 //! [`ArenaVec`] allocates from it, so a library using it does not impose it on
 //! the rest of the process. One reservation is split into per-thread slabs;
 //! allocation bumps a thread-local cursor, freeing is a no-op, and
-//! [`begin_phase`] resets every slab at once.
+//! [`enter_phase`] resets every slab at once.
 //!
 //! # Lifetime rule
 //!
 //! An `ArenaVec` allocated during a phase is **invalidated by the next
-//! [`begin_phase`]**. Anything that must outlive a phase — a proof, a cache, a
-//! precomputed table — must use the system allocator: a plain `Vec`, or an
+//! [`enter_phase`]**. Anything that must outlive a phase (a proof, a cache, a
+//! precomputed table) must use the system allocator: a plain `Vec`, or an
 //! `ArenaVec` built while no phase is active (which transparently falls back to
 //! the system allocator, so `ArenaVec` is safe to use anywhere).
 //!
 //! Phases must not nest, and only one proof may be in flight per process;
-//! [`begin_phase`] asserts both.
+//! [`enter_phase`] asserts both.
 //!
 //! # Usage
 //!
@@ -43,17 +43,9 @@ mod syscall;
 
 pub use arena_vec::{ArenaVec, alloc_uninit, assume_init};
 
-/// Build an [`ArenaVec`], mirroring [`std::vec!`].
-#[macro_export]
-macro_rules! arena_vec {
-    () => { $crate::ArenaVec::new() };
-    ($elem:expr; $n:expr) => { $crate::ArenaVec::filled($elem, $n) };
-    ($($x:expr),+ $(,)?) => { $crate::ArenaVec::from_iter([$($x),+]) };
-}
-
 /// Address space reserved per thread. Apart from the LIFO pop in
 /// [`raw_dealloc`], a phase does not reuse a slab byte, so this caps one thread's
-/// *cumulative* allocation within one phase rather than its live set — hence the
+/// *cumulative* allocation within one phase rather than its live set, hence the
 /// generous size. Address space is free; only touched pages are ever backed, and
 /// overflow is not an error (it falls back to the system allocator, and [`stats`]
 /// reports how much did).
@@ -67,6 +59,24 @@ const SLACK: usize = 8;
 /// buffer off a split cache line, which the system allocator gives for free at
 /// these sizes and a byte-exact bump pointer would not.
 const CACHE_LINE: usize = 64;
+
+/// The alignment a `size`-byte request is actually served at. [`raw_alloc`] and
+/// [`raw_dealloc`] must agree on it, or a system buffer would be freed under a
+/// layout it was not allocated with.
+const fn effective_align(size: usize, align: usize) -> usize {
+    if size >= CACHE_LINE && align < CACHE_LINE {
+        CACHE_LINE
+    } else {
+        align
+    }
+}
+
+/// Round `addr` up to `align`, always a power of two here, so the mask beats the
+/// divide `next_multiple_of` would emit on the allocation hot path.
+#[inline(always)]
+const fn align_up(addr: usize, align: usize) -> usize {
+    (addr + align - 1) & !(align - 1)
+}
 
 fn max_threads() -> usize {
     static N: OnceLock<usize> = OnceLock::new();
@@ -132,7 +142,7 @@ fn region() -> usize {
 /// Opt into the arena. Call once at startup, before any proving.
 ///
 /// Until this is called, phases are inert and [`ArenaVec`] is a plain
-/// system-allocated vector — which is the right configuration for a
+/// system-allocated vector, which is the right configuration for a
 /// memory-constrained host, at the cost of the page-fault churn described in the
 /// module docs.
 pub fn enable_arena() {
@@ -150,9 +160,9 @@ pub fn is_enabled() -> bool {
 /// slab's contents from the previous phase. No-op until [`enable_arena`].
 ///
 /// # Panics
-/// If a phase is already open — whether nested on this thread or opened by
+/// If a phase is already open, whether nested on this thread or opened by
 /// another, since only one proof may be in flight per process.
-pub fn begin_phase() {
+pub(crate) fn begin_phase() {
     if !is_enabled() {
         return;
     }
@@ -167,7 +177,7 @@ pub fn begin_phase() {
 
 /// Close the phase. Pointers into the arena stay valid until the next
 /// [`begin_phase`], which is what makes an early return or a panic safe.
-pub fn end_phase() {
+pub(crate) fn end_phase() {
     if !is_enabled() {
         return;
     }
@@ -184,8 +194,11 @@ impl Drop for PhaseGuard {
     }
 }
 
-/// [`begin_phase`] plus a guard that [`end_phase`]s on drop. Bind it *before*
-/// the phase's buffers so it is dropped after them.
+/// Open a phase and close it on drop. Bind the guard *before* the phase's
+/// buffers so it is dropped after them.
+///
+/// # Panics
+/// If a phase is already open: only one proof may be in flight per process.
 #[must_use = "the phase ends as soon as the guard is dropped"]
 pub fn enter_phase() -> PhaseGuard {
     begin_phase();
@@ -202,7 +215,7 @@ pub struct Stats {
     pub threads: usize,
     /// Bytes served from a slab, over all threads and phases. Divided by
     /// [`Stats::phases`] this is the allocation traffic the arena absorbed per
-    /// proof — compare it against the workload's total to see what is still
+    /// proof; compare it against the workload's total to see what is still
     /// going to the system allocator.
     pub arena_bytes: usize,
     /// Largest single-thread slab use seen at a phase boundary, in bytes.
@@ -217,7 +230,7 @@ pub struct Stats {
 
 /// Snapshot the arena's accounting. Both `arena_bytes` and `high_water` are
 /// updated when a thread resets its slab, so read them after at least one
-/// [`begin_phase`] has followed the phase of interest.
+/// [`enter_phase`] has followed the phase of interest.
 #[must_use]
 pub fn stats() -> Stats {
     Stats {
@@ -278,7 +291,7 @@ unsafe fn alloc_slow(size: usize, align: usize) -> *mut u8 {
         }
         PTR.set(base);
         GEN.set(generation);
-        let aligned = base.next_multiple_of(align);
+        let aligned = align_up(base, align);
         let bumped = aligned + size;
         if bumped <= END.get() {
             PTR.set(bumped);
@@ -300,7 +313,7 @@ unsafe fn system_alloc(size: usize, align: usize) -> *mut u8 {
 /// [`ArenaVec`]'s allocator: bump this thread's slab inside a phase, else use
 /// the system allocator.
 ///
-/// The cursor is thread-local, so the relaxed loads cannot race — a stale
+/// The cursor is thread-local, so the relaxed loads cannot race: a stale
 /// `GENERATION` read only sends this call down [`alloc_slow`].
 ///
 /// # Safety
@@ -309,14 +322,10 @@ unsafe fn system_alloc(size: usize, align: usize) -> *mut u8 {
 /// [`begin_phase`].
 #[inline(always)]
 pub(crate) unsafe fn raw_alloc(size: usize, align: usize) -> *mut u8 {
-    let align = if size >= CACHE_LINE {
-        align.max(CACHE_LINE)
-    } else {
-        align
-    };
+    let align = effective_align(size, align);
     if ARENA_ACTIVE.load(Ordering::Relaxed) {
         if GEN.get() == GENERATION.load(Ordering::Relaxed) {
-            let aligned = (PTR.get() + align - 1) & !(align - 1);
+            let aligned = align_up(PTR.get(), align);
             let bumped = aligned + size;
             if bumped <= END.get() {
                 PTR.set(bumped);
@@ -334,7 +343,7 @@ pub(crate) unsafe fn raw_alloc(size: usize, align: usize) -> *mut u8 {
 /// system free.
 ///
 /// Which one applies is decided by address range, not by a flag stored beside
-/// the buffer — that is what lets [`ArenaVec`] carry no allocator parameter and
+/// the buffer, which is what lets [`ArenaVec`] carry no allocator parameter and
 /// stay a single type whether or not a phase was open when it was built.
 ///
 /// The LIFO pop matters more than it looks. A bump cursor's high-water mark is a
@@ -361,11 +370,7 @@ pub(crate) unsafe fn raw_dealloc(ptr: *mut u8, size: usize, align: usize) {
         }
         return;
     }
-    let align = if size >= CACHE_LINE {
-        align.max(CACHE_LINE)
-    } else {
-        align
-    };
+    let align = effective_align(size, align);
     // SAFETY: the caller guarantees this pointer/layout pair came from
     // `raw_alloc`, and the range check above ruled out the arena.
     unsafe { System.dealloc(ptr, Layout::from_size_align_unchecked(size, align)) };

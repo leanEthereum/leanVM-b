@@ -162,6 +162,7 @@ impl LeafVector {
         Self { leaves, pads }
     }
 
+    #[cfg(test)]
     pub fn dense(leaves: ArenaVec<F192>) -> Self {
         Self::new(leaves, Vec::new())
     }

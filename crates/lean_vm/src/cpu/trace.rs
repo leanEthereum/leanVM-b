@@ -44,8 +44,8 @@ pub(crate) struct Drow {
 pub(crate) struct Jrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) npc: F64, // next pc — a K-valued address
-    pub(crate) nfp: F64, // next fp — a K-valued address
+    pub(crate) npc: F64, // next pc, a K-valued address
+    pub(crate) nfp: F64, // next fp, a K-valued address
     pub(crate) oc: u32,
     pub(crate) od: u32,
     pub(crate) of: u32,
@@ -67,7 +67,7 @@ pub(crate) struct Jrow {
 /// ab1` (each a canonical 128-bit chunk in one 192-bit cell), the
 /// chaining-value base `acv`, and the output base `ac` (CV and output each
 /// span two consecutive cells); the eighteen flock words (message `a`/`b`,
-/// chaining value `cv`, output `c`, metadata — two 64-bit lanes per chunk),
+/// chaining value `cv`, output `c`, metadata; two 64-bit lanes per chunk),
 /// and the eight per-cell memory access counts.
 pub(crate) struct Brow {
     pub(crate) pc: u32,

@@ -1,5 +1,5 @@
 //! A compiler from a Python-like zkDSL (see `zkDSL.md`) to the ISA (`cpu::Op`).
-//! Produces a [`lean_vm::cpu::Program`] — bytecode plus the prover's allocation hints.
+//! Produces a [`lean_vm::cpu::Program`]: bytecode plus the prover's allocation hints.
 //!
 //! ## Calling convention
 //!
@@ -7,8 +7,8 @@
 //!
 //! | offset | contents |
 //! |--------|----------|
-//! | 0      | `retpc` — return program counter |
-//! | 1      | `retfp` — caller frame pointer |
+//! | 0      | `retpc`, the return program counter |
+//! | 1      | `retfp`, the caller frame pointer |
 //! | 2 .. 2+nargs            | arguments |
 //! | 2+nargs .. 2+nargs+nretcells | flattened return cells |
 //! | rest                    | locals / temporaries / frame-pointer hints |
@@ -44,10 +44,6 @@ pub(crate) use ir::*;
 use lower::lower_func;
 pub(crate) use parser::subst_stmts;
 pub use parser::{parse, parse_const, parse_file_with_replacements, parse_with_replacements};
-
-// ----------------------------------------------------------------------------
-// Layout, resolution, witness generation
-// ----------------------------------------------------------------------------
 
 /// Compile an [`Ast`] to a provable [`Program`]. Panics on a malformed program
 /// (unbound variable, missing `main`, address overflow).
@@ -156,47 +152,7 @@ pub fn compile(ast: &Ast) -> Program {
                         },
                         Hint::AllocBuffer { ptr, size } => RHint::Alloc { ptr: *ptr, size: *size },
                         Hint::AllocBufferDyn { ptr, size } => RHint::AllocDyn { ptr: *ptr, size: *size },
-                        Hint::WitnessStack { name, base, len } => RHint::WitnessStack {
-                            name: name.clone(),
-                            base: *base,
-                            len: *len,
-                        },
-                        Hint::WitnessHeap { name, ptr, lo, len } => RHint::WitnessHeap {
-                            name: name.clone(),
-                            ptr: *ptr,
-                            lo: *lo,
-                            len: *len,
-                        },
-                        Hint::Print { label, cell } => RHint::Print {
-                            label: label.clone(),
-                            cell: *cell,
-                        },
-                        Hint::Log2Ceil {
-                            bits_ptr,
-                            dst,
-                            nbits,
-                            floor,
-                        } => RHint::Log2Ceil {
-                            bits_ptr: *bits_ptr,
-                            dst: *dst,
-                            nbits: *nbits,
-                            floor: *floor,
-                        },
-                        Hint::BitDecompose { value, bits_ptr, nbits } => RHint::BitDecompose {
-                            value: *value,
-                            bits_ptr: *bits_ptr,
-                            nbits: *nbits,
-                        },
-                        Hint::BitDecomposeExp { value, bits_ptr, nbits } => RHint::BitDecomposeExp {
-                            value: *value,
-                            bits_ptr: *bits_ptr,
-                            nbits: *nbits,
-                        },
-                        Hint::FieldLimbs { value, base, len } => RHint::FieldLimbs {
-                            value: *value,
-                            base: *base,
-                            len: *len,
-                        },
+                        Hint::Resolved(r) => r.clone(),
                     })
                     .collect();
                 hints.insert(here, rhs);

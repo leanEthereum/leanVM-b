@@ -26,7 +26,7 @@ impl Topology {
 /// invocations keep their meaning) sets the **performance**-worker count; the
 /// efficiency workers are added on top either way, because that count has always
 /// meant "how wide is the fast cluster" here and not "how many threads exist".
-/// `1` is the exception and means strictly sequential — no workers at all — so a
+/// `1` is the exception and means strictly sequential (no workers at all), so a
 /// single-threaded debugging run really is one thread.
 #[must_use]
 pub fn topology() -> Topology {
@@ -64,7 +64,7 @@ pub fn num_threads() -> usize {
 /// deschedules a worker mid-dispatch, and every barrier then waits for it.
 ///
 /// Measured at the 820-signature XMSS workload, M4 Max (12 P + 4 E):
-/// 11 performance workers prove in 1.373 s, 12 in 1.578 s — a 13% penalty for
+/// 11 performance workers prove in 1.373 s, 12 in 1.578 s, a 13% penalty for
 /// using one more core. On a homogeneous 16-thread Zen 4 host the same
 /// reservation is a wash (4.331 s vs 4.319 s, inside the ±0.5% interval): there
 /// are no efficiency workers to take over the reserved core's share, so the
@@ -125,16 +125,16 @@ fn sysctl_usize(name: &core::ffi::CStr) -> Option<usize> {
 /// core cluster: the scheduler keeps `USER_INTERACTIVE` work off the efficiency
 /// cores and places `UTILITY` work on them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Qos {
+pub(crate) enum Qos {
     /// Latency-critical: performance cores.
     Interactive,
     /// Background-ish: efficiency cores.
     Utility,
 }
 
-/// Tag the calling thread with `qos`. Best-effort — QoS is a scheduling hint and
-/// a failure must not affect correctness, only placement. No-op off macOS.
-pub fn set_qos(qos: Qos) {
+/// Tag the calling thread with `qos`. Best-effort, since QoS is a scheduling hint
+/// and a failure must not affect correctness, only placement. No-op off macOS.
+pub(crate) fn set_qos(qos: Qos) {
     #[cfg(target_os = "macos")]
     {
         const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;

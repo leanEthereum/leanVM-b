@@ -1,10 +1,10 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
-//! Monolithic BLAKE3 compression-function R1CS — one R1CS instance per
+//! Monolithic BLAKE3 compression-function R1CS: one R1CS instance per
 //! `compress(cv, m, counter, block_len, flags) → state[16]` call. Encodes
 //! the 16-word state init, all 7 rounds (8 G's per round + the message
 //! permutation), and the final output XORs in one big sparse system.
 //!
-//! ## Encoding choice — "Option D" (minimum-slot)
+//! ## Encoding choice: "Option D" (minimum-slot)
 //!
 //! BLAKE3 has no AND-based Ch/Maj; the only nonlinear constraints are the
 //! carry_aux bits of 32-bit ADDs. Per compression: 7 rounds × 8 G × 6 ADDs
@@ -13,15 +13,15 @@
 //!
 //! - **No sum-bit slots**. Each ADD's 32 sum bits expand into lin_funcs at
 //!   the use site (`s[i] = X[i] ⊕ Y[i] ⊕ ⊕_{j<i} carry_aux[j]`).
-//! - **No `a_new` / `c_new` lin-id slots**. Lanes 0–3 ("a" positions) and
-//!   8–11 ("c" positions) cascade — every read of these lanes inlines the
+//! - **No `a_new` / `c_new` lin-id slots**. Lanes 0 to 3 ("a" positions) and
+//!   8 to 11 ("c" positions) cascade: every read of these lanes inlines the
 //!   full chain of carry_aux references from prior G's that touched the
 //!   lane. After 7 rounds this chain is deep, but the slot count stays
 //!   tight enough to fit `k_log = 14`.
-//! - **`b_new` / `d_new` lin-id slots only**. Lanes 4–7 ("b" positions) and
-//!   12–15 ("d" positions) are materialized as 32-bit lin-id slots per G,
+//! - **`b_new` / `d_new` lin-id slots only**. Lanes 4 to 7 ("b" positions) and
+//!   12 to 15 ("d" positions) are materialized as 32-bit lin-id slots per G,
 //!   so the next G's read of these lanes is a single-slot lookup. This
-//!   breaks the cascade for half the lanes — without it, `prove`-time
+//!   breaks the cascade for half the lanes; without it, `prove`-time
 //!   matrix density would blow up further.
 //!
 //! Trade-off: matrix is **substantially denser** than a "materialize all
@@ -63,7 +63,7 @@
 //! ```
 //!
 //! `tmp_0`, `a_1`, `c_1`, `tmp_1`, `a_2 (a_new)`, `c_2 (c_new)`, `d_1`,
-//! `b_1`, `d_2` are NEVER materialized as slots — they're lin_funcs
+//! `b_1`, `d_2` are NEVER materialized as slots: they're lin_funcs
 //! evaluated at row-build time and threaded forward in the state cascade.
 //!
 //! ## Constraint shape (`C = I`)
@@ -110,7 +110,7 @@ use zk_alloc::ArenaVec;
 pub const K_LOG: usize = 14;
 /// `k = 2^K_LOG`.
 pub const K: usize = 1 << K_LOG;
-/// Univariate-skip dim — must match [`crate::zerocheck::K_SKIP`].
+/// Univariate-skip dim, must match [`crate::zerocheck::K_SKIP`].
 pub const K_SKIP: usize = 6;
 
 /// Number of BLAKE3 rounds.
@@ -129,7 +129,7 @@ pub const CARRY_BITS_PER_ADD: usize = WORD_BITS - 1; // 31
 pub const ADDS_PER_G: usize = 6;
 /// Lin-id 32-bit words per G (b_new, d_new).
 pub const LIN_WORDS_PER_G: usize = 2;
-/// Bits per G block (no sum-bit slots — see module docs).
+/// Bits per G block (no sum-bit slots, see module docs).
 pub const G_STRIDE: usize = ADDS_PER_G * CARRY_BITS_PER_ADD + LIN_WORDS_PER_G * WORD_BITS; // 250
 
 /// BLAKE3 initial hash values (identical to SHA-256 IV).
@@ -164,12 +164,12 @@ pub const G_MSG_IDX: [[usize; 2]; N_G_PER_ROUND] =
 
 // **I/O-aligned layout** for the hash chain (forked from `blake3`): the input
 // chaining value `cv` lives in aligned slot 0 and the output chaining value
-// `out_lo` (= state[0..8] ^ state[8..16]) in aligned slot 1 — each a clean
+// `out_lo` (= state[0..8] ^ state[8..16]) in aligned slot 1, each a clean
 // 256-bit (`2^8`) window, so the chain shift argument folds them via a single
 // tensor opening. cv/out_lo are *exactly* 256 bits, so the slots have NO
 // interior padding. Everything else (const, m, counters, flags, G-blocks,
 // out_hi) packs after the two slots. The re-layout is purely a change of these
-// base offsets — all bit placement goes through the `*_bit` accessors below.
+// base offsets; all bit placement goes through the `*_bit` accessors below.
 pub const SLOT_BITS: usize = 256; // 2^8, one 256-bit chaining value
 pub const CV_BASE: usize = 0; // input region, slot 0: [0, 256)
 pub const OUT_LO_BASE: usize = SLOT_BITS; // output region, slot 1: [256, 512)
@@ -226,7 +226,7 @@ fn out_hi_bit(w: usize, b: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Reference BLAKE3 compression — the witness oracle. Cross-checked against
+// Reference BLAKE3 compression, the witness oracle. Cross-checked against
 // the `blake3` crate in tests.
 // ---------------------------------------------------------------------------
 
@@ -243,22 +243,29 @@ fn g_fn(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, 
 }
 
 fn round_fn(state: &mut [u32; 16], block: &[u32; 16]) {
-    g_fn(state, 0, 4, 8, 12, block[0], block[1]);
-    g_fn(state, 1, 5, 9, 13, block[2], block[3]);
-    g_fn(state, 2, 6, 10, 14, block[4], block[5]);
-    g_fn(state, 3, 7, 11, 15, block[6], block[7]);
-    g_fn(state, 0, 5, 10, 15, block[8], block[9]);
-    g_fn(state, 1, 6, 11, 12, block[10], block[11]);
-    g_fn(state, 2, 7, 8, 13, block[12], block[13]);
-    g_fn(state, 3, 4, 9, 14, block[14], block[15]);
+    for g in 0..N_G_PER_ROUND {
+        let [a, b, c, d] = G_LANES[g];
+        let [mx, my] = G_MSG_IDX[g];
+        g_fn(state, a, b, c, d, block[mx], block[my]);
+    }
 }
 
 fn permute(m: &mut [u32; 16]) {
-    let mut permuted = [0u32; 16];
-    for i in 0..16 {
-        permuted[i] = m[MSG_PERMUTATION[i]];
-    }
-    *m = permuted;
+    let p = MSG_PERMUTATION.map(|i| m[i]);
+    *m = p;
+}
+
+/// The 16-word state a compression starts from: the chaining value, the first
+/// four IV words, and the four metadata words.
+fn initial_state(cv: &[u32; 8], counter_lo: u32, counter_hi: u32, block_len: u32, flags: u32) -> [u32; 16] {
+    let mut state = [0u32; 16];
+    state[..8].copy_from_slice(cv);
+    state[8..12].copy_from_slice(&BLAKE3_IV[..4]);
+    state[12] = counter_lo;
+    state[13] = counter_hi;
+    state[14] = block_len;
+    state[15] = flags;
+    state
 }
 
 /// BLAKE3 compression function. Returns the full 16-word output state
@@ -266,24 +273,7 @@ fn permute(m: &mut [u32; 16]) {
 pub fn blake3_compress(cv: &[u32; 8], block_words: &[u32; 16], counter: u64, block_len: u32, flags: u32) -> [u32; 16] {
     let counter_low = counter as u32;
     let counter_high = (counter >> 32) as u32;
-    let mut state = [
-        cv[0],
-        cv[1],
-        cv[2],
-        cv[3],
-        cv[4],
-        cv[5],
-        cv[6],
-        cv[7],
-        BLAKE3_IV[0],
-        BLAKE3_IV[1],
-        BLAKE3_IV[2],
-        BLAKE3_IV[3],
-        counter_low,
-        counter_high,
-        block_len,
-        flags,
-    ];
+    let mut state = initial_state(cv, counter_low, counter_high, block_len, flags);
     let mut block = *block_words;
     for r in 0..N_ROUNDS {
         round_fn(&mut state, &block);
@@ -298,8 +288,8 @@ pub fn blake3_compress(cv: &[u32; 8], block_words: &[u32; 16], counter: u64, blo
     state
 }
 
-/// `per_round_msg_idx()[r][g] = (mx_idx, my_idx)` for round `r`, G index `g`
-/// — i.e., `PERM^r [G_MSG_IDX[g]]`.
+/// `per_round_msg_idx()[r][g] = (mx_idx, my_idx)` for round `r`, G index `g`,
+/// i.e. `PERM^r [G_MSG_IDX[g]]`.
 fn per_round_msg_idx() -> [[[usize; 2]; N_G_PER_ROUND]; N_ROUNDS] {
     let mut perm = [0usize; 16];
     for i in 0..16 {
@@ -321,7 +311,7 @@ fn per_round_msg_idx() -> [[[usize; 2]; N_G_PER_ROUND]; N_ROUNDS] {
 }
 
 // ---------------------------------------------------------------------------
-// Lin_func cascade — per-bit lists of slot indices XOR'd to evaluate one bit.
+// Lin_func cascade: per-bit lists of slot indices XOR'd to evaluate one bit.
 //
 // In Option D, sum bits aren't materialized as slots; instead, the "value" of
 // any intermediate bit is a `LinBits[i] = Vec<usize>` whose XOR equals that
@@ -349,7 +339,7 @@ impl Word {
             bits: std::array::from_fn(|i| vec![base + i]),
         }
     }
-    /// Construct from a 32-bit constant — bit `i` is `[Z_CONST]` if set,
+    /// Construct from a 32-bit constant: bit `i` is `[Z_CONST]` if set,
     /// `[]` otherwise.
     fn from_const(val: u32) -> Self {
         Self {
@@ -371,7 +361,7 @@ impl Word {
         }
         out
     }
-    /// `rotr(n)` — pure index permutation; doesn't touch slot lists.
+    /// `rotr(n)`: pure index permutation, doesn't touch slot lists.
     fn rotr(&self, n: usize) -> Word {
         Word {
             bits: std::array::from_fn(|i| self.bits[(i + n) % WORD_BITS].clone()),
@@ -466,7 +456,7 @@ pub fn matrices() -> &'static (SparseBinaryMatrix, SparseBinaryMatrix) {
 
 /// Build the per-block base matrices `(A_0, B_0)`. `C_0 = I_k` (circuit-shape
 /// R1CS: every z slot is the output of its row).
-pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
+fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     let mut a_rows: Vec<Vec<usize>> = vec![Vec::new(); K];
     let mut b_rows: Vec<Vec<usize>> = vec![Vec::new(); K];
 
@@ -499,8 +489,8 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
             let [la, lb, lc, ld] = G_LANES[g_in_round];
             let [mx_idx, my_idx] = msg_idx[r][g_in_round];
 
-            // Snapshot inputs before any state mutation. Cloning is cheap
-            // (lane Words point at the same slot lists — we never alias).
+            // Snapshot the four input lanes: the G writes back into `state[la]`
+            // .. `state[ld]` below, and every step reads the pre-G values.
             let a = state[la].clone();
             let b = state[lb].clone();
             let c = state[lc].clone();
@@ -520,11 +510,11 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
             let b_1 = b.xor(&c_1).dedup().rotr(12);
             // tmp_1 = a_1 + b_1
             let tmp_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
-            // a_2 = tmp_1 + my   (= a_new — cascades)
+            // a_2 = tmp_1 + my   (= a_new, cascades)
             let a_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
             // d_2 = rotr8(d_1 ^ a_2)
             let d_2 = d_1.xor(&a_2).dedup().rotr(8);
-            // c_2 = c_1 + d_2    (= c_new — cascades)
+            // c_2 = c_1 + d_2    (= c_new, cascades)
             let c_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
             // b_new = rotr7(b_1 ^ c_2)    (materialized lin-id)
             let b_new_word = b_1.xor(&c_2).dedup().rotr(7);
@@ -594,7 +584,7 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
 // `u[i]·⟨A_i, w⟩` / `u[i]·⟨B_i, w⟩` is accumulated exactly where
 // `build_matrices` would emit that row, with `⟨row, w⟩` read off the threaded
 // wire values. Cost: O(circuit) field ops (~50K muls), never the ~21M
-// substituted nonzeros — and the matrices need not be materialized at all.
+// substituted nonzeros, and the matrices need not be materialized at all.
 // This is what lets a verifier evaluate the matrix MLEs directly instead of
 // paying the sparse-matrix cost (or deferring the claim).
 // ---------------------------------------------------------------------------
@@ -632,7 +622,7 @@ fn wire_rotr(x: &WireWord, n: usize) -> WireWord {
 
 /// Pair of accumulators for the A-side and B-side bilinear forms, plus the
 /// running sum of `u` over rows whose B-side is the single `[Z_CONST]` entry
-/// (lin-id / free-input rows) — factored so those rows cost one B-side
+/// (lin-id / free-input rows), factored so those rows cost one B-side
 /// F-addition instead of a multiplication each.
 struct WalkAcc {
     a: F192,
@@ -675,7 +665,7 @@ fn walk_lin_rows(acc: &mut WalkAcc, u: &[F192], vals: &WireWord, base: usize) {
     }
 }
 
-/// `(uᵀ A_0 w, uᵀ B_0 w)` by the forward circuit walk — the exact matrices
+/// `(uᵀ A_0 w, uᵀ B_0 w)` by the forward circuit walk, over the exact matrices
 /// [`build_matrices`] emits, never materialized.
 pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
     assert_eq!(u.len(), K);
@@ -699,7 +689,7 @@ pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
     }
 
     // Free-input rows for the 256 chaining-value bits and the 128 metadata
-    // bits (counter lo/hi, block_len, flags): A = [slot], B = [Z_CONST] — the
+    // bits (counter lo/hi, block_len, flags): A = [slot], B = [Z_CONST], the
     // same shape as the message bits (the generalized circuit no longer pins
     // them to constants; the embedding protocol binds them instead).
     for j in 0..8 * WORD_BITS {
@@ -772,7 +762,7 @@ pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
     (acc.a + wc * u_abconst, acc.b + wc * (acc.u_bconst + u_abconst))
 }
 
-/// `α·(uᵀ A_0 w) + (uᵀ B_0 w)` — the α-batched form lincheck's verifier
+/// `α·(uᵀ A_0 w) + (uᵀ B_0 w)`, the α-batched form lincheck's verifier
 /// consumes, by one circuit walk.
 pub fn bilinear_walk(alpha: F192, u: &[F192], w: &[F192]) -> F192 {
     let (va, vb) = bilinear_walk_pair(u, w);
@@ -783,7 +773,7 @@ pub fn bilinear_walk(alpha: F192, u: &[F192], w: &[F192]) -> F192 {
 /// `bilinear_form` answers lincheck's verifier in O(circuit) field ops via
 /// [`bilinear_walk`], so `lincheck::verify` never materializes the
 /// ~21M-nonzero substituted matrices' column marginal. The prover-side
-/// `fold_alpha_batched` delegates to the (lazily built) CSC fold — the
+/// `fold_alpha_batched` delegates to the (lazily built) CSC fold; the
 /// verifier's fast path never calls it.
 pub struct WalkLincheckCircuit<'a> {
     r1cs: &'a BlockR1cs,
@@ -813,7 +803,7 @@ impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit<'_> {
 /// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
 /// recomputing it means building and hashing ~21M matrix entries (~300 ms),
 /// which embedding protocols would otherwise pay inside their first prove.
-/// The `family_digest_matches_baked` test recomputes and compares — a circuit
+/// The `family_digest_matches_baked` test recomputes and compares: a circuit
 /// change fails it until this constant is updated alongside.
 pub const FAMILY_DIGEST: [u8; 32] = [
     0xaf, 0xed, 0x74, 0x72, 0xc6, 0xf7, 0x71, 0xa8, 0x57, 0x59, 0x92, 0x72, 0xff, 0x33, 0xa4, 0xda, 0x86, 0xb2, 0x1f,
@@ -823,21 +813,25 @@ pub const FAMILY_DIGEST: [u8; 32] = [
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE3
 /// compressions. `n_blocks_log ≥ 3` is required (lincheck needs `n_outer ≥ 8`).
 pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
+    assert!(n_blocks_log >= 3, "lincheck needs n_outer ≥ 8, pick n_blocks_log ≥ 3");
     // Clone the cached matrices (~ms) instead of re-running the symbolic
     // builder (~200 ms): setups, family digests and const-pin lookups all
     // share one build per process.
     let (a_0, b_0) = matrices().clone();
-    crate::blake3_witness::build_block_r1cs_with_matrices(
-        n_blocks_log,
-        K_LOG,
-        K_SKIP,
-        USEFUL_BITS,
+    BlockR1cs {
+        m: K_LOG + n_blocks_log,
+        k_log: K_LOG,
+        k_skip: K_SKIP,
+        useful_bits: USEFUL_BITS,
         a_0,
         b_0,
+        c_0: crate::blake3_witness::identity(K),
+        layout: crate::r1cs::WitnessLayout::RowMajor,
         // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): forces z[Z_CONST_POS] = 1
         // in every block. Requires padding blocks filled with valid compressions.
-        Some(Z_CONST_POS),
-    )
+        const_pin: Some(Z_CONST_POS),
+        csc_cache: std::sync::OnceLock::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -846,23 +840,23 @@ pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
 
 /// Compute one 32-bit ADD, writing 31 carry_aux bits into `z` at `carry_base`.
 /// Returns `x.wrapping_add(y)` (sum bits are NOT materialized in this
-/// encoding — see module docs).
+/// encoding, see module docs).
+#[cfg(test)]
 fn add_with_witness_carry_only(x: u32, y: u32, z: &mut [bool], carry_base: usize) -> u32 {
     let mut cin: u32 = 0;
-    for i in 0..WORD_BITS {
-        if i < CARRY_BITS_PER_ADD {
-            let xi = (x >> i) & 1;
-            let yi = (y >> i) & 1;
-            let ci = (cin >> i) & 1;
-            let carry_aux = (xi ^ ci) & (yi ^ ci);
-            z[carry_base + i] = carry_aux == 1;
-            let real_carry = carry_aux ^ ci;
-            cin |= real_carry << (i + 1);
-        }
+    for i in 0..CARRY_BITS_PER_ADD {
+        let xi = (x >> i) & 1;
+        let yi = (y >> i) & 1;
+        let ci = (cin >> i) & 1;
+        let carry_aux = (xi ^ ci) & (yi ^ ci);
+        z[carry_base + i] = carry_aux == 1;
+        let real_carry = carry_aux ^ ci;
+        cin |= real_carry << (i + 1);
     }
     x.wrapping_add(y)
 }
 
+#[cfg(test)]
 #[inline]
 fn write_word(z: &mut [bool], base: usize, val: u32) {
     for i in 0..WORD_BITS {
@@ -871,6 +865,7 @@ fn write_word(z: &mut [bool], base: usize, val: u32) {
 }
 
 /// Build the witness block for ONE compression. Length = `K`.
+#[cfg(test)]
 pub fn build_block_witness(cv: &[u32; 8], m: &[u32; 16], counter: u64, block_len: u32, flags: u32) -> Vec<bool> {
     let mut z = vec![false; K];
     z[Z_CONST_POS] = true;
@@ -890,24 +885,7 @@ pub fn build_block_witness(cv: &[u32; 8], m: &[u32; 16], counter: u64, block_len
 
     // Internal state evolution (matches the matrix builder's symbolic
     // cascade by construction).
-    let mut state: [u32; 16] = [
-        cv[0],
-        cv[1],
-        cv[2],
-        cv[3],
-        cv[4],
-        cv[5],
-        cv[6],
-        cv[7],
-        BLAKE3_IV[0],
-        BLAKE3_IV[1],
-        BLAKE3_IV[2],
-        BLAKE3_IV[3],
-        counter_lo,
-        counter_hi,
-        block_len,
-        flags,
-    ];
+    let mut state = initial_state(cv, counter_lo, counter_hi, block_len, flags);
     let msg_idx = per_round_msg_idx();
 
     for r in 0..N_ROUNDS {
@@ -966,7 +944,7 @@ pub type Compression = ([u32; 8], [u32; 16], u64, u32, u32);
 
 /// The default one-block hash length: one full 64-byte block.
 pub const PINNED_BLOCK_LEN: u32 = 64;
-/// The default flags: `CHUNK_START(1) | CHUNK_END(2) | ROOT(8)` — the single
+/// The default flags: `CHUNK_START(1) | CHUNK_END(2) | ROOT(8)`, the single
 /// 64-byte root block, under which the compression output equals
 /// `blake3::hash` of the input.
 pub const PINNED_FLAGS: u32 = (1 << 0) | (1 << 1) | (1 << 3);
@@ -979,8 +957,8 @@ pub fn pinned_compression(m: [u32; 16]) -> Compression {
 }
 
 /// The padding instance: a default compression of the all-zero message,
-/// i.e. `blake3(0^64)`. Fills unused trailing slots so every batched block —
-/// padding included — is a valid instance with constant wire 1, as the
+/// i.e. `blake3(0^64)`. Fills unused trailing slots so every batched block
+/// (padding included) is a valid instance with constant wire 1, as the
 /// lincheck const-wire pin requires.
 pub fn padding_block() -> Compression {
     pinned_compression([0u32; 16])
@@ -989,6 +967,7 @@ pub fn padding_block() -> Compression {
 /// Generate the boolean witness vector for `blocks.len()` independent BLAKE3
 /// compressions, padded to `2^n_blocks_log` slots. Padding blocks run
 /// [`padding_block`] (constant wire = 1). Parallel across instances.
+#[cfg(test)]
 pub fn generate_witness(blocks: &[Compression], n_blocks_log: usize) -> Vec<bool> {
     let n_total = 1usize << n_blocks_log;
     let n_blocks = blocks.len();
@@ -1007,7 +986,7 @@ pub fn generate_witness(blocks: &[Compression], n_blocks_log: usize) -> Vec<bool
 }
 
 // ---------------------------------------------------------------------------
-// Fast witness generation with (a, b, c) — emits the R1CS row-witnesses
+// Fast witness generation with (a, b, c): emits the R1CS row-witnesses
 // directly from the BLAKE3 computation, as 128-bit packed values embedded in F192. Skips the
 // `apply_block_diag_packed` pass downstream.
 //
@@ -1020,24 +999,6 @@ pub fn generate_witness(blocks: &[Compression], n_blocks_log: usize) -> Vec<bool
 // - Padding row:         all zero (already zero on entry).
 // ---------------------------------------------------------------------------
 
-/// One 32-bit ADD: returns `(sum, left, right, carry_aux)` for the caller to
-/// place into the per-G records. Sum bits are NOT materialized in this
-/// encoding (Option D).
-///
-/// **c is not written.** Since `C = I` in this R1CS, `c == z` byte-for-byte,
-/// so callers can use `z_packed` directly as the c-side input to zerocheck —
-/// no separate c buffer is needed.
-///
-/// Word-level derivation:
-/// ```text
-///   sum       = x + y (mod 2^32)
-///   cin       = sum ⊕ x ⊕ y          (since sum[i] = x[i] ⊕ y[i] ⊕ cin[i])
-///   left      = x ⊕ cin              (per-bit X ⊕ cin → operand_x of carry row)
-///   right     = y ⊕ cin              (per-bit Y ⊕ cin → operand_y of carry row)
-///   carry_aux = left ∧ right
-/// ```
-/// Bit 31 is the discarded mod-2³² carry-out and is masked off so the
-/// record push doesn't spill into the next slot.
 // Record-relative positions: carries at 31·i, lin words after all carries.
 const REC_C0: usize = 0;
 const REC_C1: usize = CARRY_BITS_PER_ADD;
@@ -1049,7 +1010,7 @@ const REC_LIN0: usize = ADDS_PER_G * CARRY_BITS_PER_ADD;
 const REC_LIN1: usize = REC_LIN0 + WORD_BITS;
 
 /// Write a 32-bit lin-id (or input) slot: (z, a) = val, b = all-ones.
-/// **c is not written** — same `c == z` aliasing trick as above.
+/// **c is not written**: since `C = I`, `c == z` byte-for-byte.
 #[inline]
 fn write_lin_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [u64], b: &mut [u64]) {
     or_u32_at_bit(z, bit_off, val);
@@ -1098,24 +1059,7 @@ fn build_block_witness_ab_packed_into(
     write_lin_word_ab_packed(FLAGS_BASE, flags, z, a, b);
 
     // BLAKE3 state evolution.
-    let mut state: [u32; 16] = [
-        cv[0],
-        cv[1],
-        cv[2],
-        cv[3],
-        cv[4],
-        cv[5],
-        cv[6],
-        cv[7],
-        BLAKE3_IV[0],
-        BLAKE3_IV[1],
-        BLAKE3_IV[2],
-        BLAKE3_IV[3],
-        counter_lo,
-        counter_hi,
-        block_len,
-        flags,
-    ];
+    let mut state = initial_state(cv, counter_lo, counter_hi, block_len, flags);
     let msg_idx = per_round_msg_idx();
     for r in 0..N_ROUNDS {
         for g_in_round in 0..N_G_PER_ROUND {
@@ -1185,11 +1129,12 @@ fn build_block_witness_ab_packed_into(
 
 /// **The fast path.** Produces `(z, a, b)` directly as 128-bit packed values
 /// embedded in F192
-/// vectors — no bool intermediates, no `pack_witness` step, no
+/// vectors: no bool intermediates, no `pack_witness` step, no
 /// `apply_block_diag_packed`. Parallel across compression instances.
 ///
-/// **No c buffer** — since `C = I` (circuit-shape R1CS), `c == z`
+/// **No c buffer**: since `C = I` (circuit-shape R1CS), `c == z`
 /// byte-for-byte; callers wrap `z_packed` as the c-side input to zerocheck.
+#[cfg(test)]
 pub fn generate_witness_with_ab_packed(
     blocks: &[Compression],
     n_blocks_log: usize,
@@ -1224,21 +1169,19 @@ pub fn generate_witness_with_ab_packed(
         // SAFETY: instance `idx` takes chunk `idx` of each table exactly once,
         // and all three stay borrowed for the whole dispatch.
         let (z_c, a_c, b_c) = unsafe { (z_chunks.get(idx), a_chunks.get(idx), b_chunks.get(idx)) };
-        {
-            let (cv, m, t, bl, fl) = if idx < n_blocks { &blocks[idx] } else { &padding };
-            let mut z_u64 = vec![0u64; z_c.len() * 2];
-            let mut a_u64 = vec![0u64; a_c.len() * 2];
-            let mut b_u64 = vec![0u64; b_c.len() * 2];
-            build_block_witness_ab_packed_into(cv, m, *t, *bl, *fl, &mut z_u64, &mut a_u64, &mut b_u64);
-            for (dst, words) in z_c.iter_mut().zip(z_u64.chunks_exact(2)) {
-                *dst = F192::new(words[0], words[1], 0);
-            }
-            for (dst, words) in a_c.iter_mut().zip(a_u64.chunks_exact(2)) {
-                *dst = F192::new(words[0], words[1], 0);
-            }
-            for (dst, words) in b_c.iter_mut().zip(b_u64.chunks_exact(2)) {
-                *dst = F192::new(words[0], words[1], 0);
-            }
+        let (cv, m, t, bl, fl) = if idx < n_blocks { &blocks[idx] } else { &padding };
+        let mut z_u64 = vec![0u64; z_c.len() * 2];
+        let mut a_u64 = vec![0u64; a_c.len() * 2];
+        let mut b_u64 = vec![0u64; b_c.len() * 2];
+        build_block_witness_ab_packed_into(cv, m, *t, *bl, *fl, &mut z_u64, &mut a_u64, &mut b_u64);
+        for (dst, words) in z_c.iter_mut().zip(z_u64.chunks_exact(2)) {
+            *dst = F192::new(words[0], words[1], 0);
+        }
+        for (dst, words) in a_c.iter_mut().zip(a_u64.chunks_exact(2)) {
+            *dst = F192::new(words[0], words[1], 0);
+        }
+        for (dst, words) in b_c.iter_mut().zip(b_u64.chunks_exact(2)) {
+            *dst = F192::new(words[0], words[1], 0);
         }
     });
 
@@ -1339,8 +1282,7 @@ impl Blake3Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_rng::Rng;
-    use primitives::pretty_integer;
+    use primitives::test_rng::Rng;
 
     #[test]
     fn family_digest_matches_baked() {
@@ -1348,67 +1290,6 @@ mod tests {
             build_block_r1cs(3).family_digest(),
             FAMILY_DIGEST,
             "circuit family changed - update FAMILY_DIGEST"
-        );
-    }
-
-    /// Timing: the three ways the native verifier can evaluate the A_0/B_0
-    /// bilinear forms. Run with
-    /// `cargo test --release -p flock bench_bilinear -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn bench_bilinear_walk_vs_matrices() {
-        let mut rng = Rng::new(0xBE9C);
-        let u: Vec<F192> = rng.ext_vec(K);
-        let w: Vec<F192> = rng.ext_vec(K);
-        let alpha = rng.ext();
-
-        // One-time setup costs the sparse paths pay (process-cached in prod,
-        // but real for a one-shot native verifier).
-        let t = std::time::Instant::now();
-        let (ma, mb) = (build_matrices().0, build_matrices().1);
-        println!("build_matrices (×2 redundant here): {:?}", t.elapsed());
-        let nnz: usize =
-            ma.rows.iter().map(|r| r.len()).sum::<usize>() + mb.rows.iter().map(|r| r.len()).sum::<usize>();
-        println!("total nonzeros (A_0 + B_0): {}", pretty_integer(nnz));
-        let r1cs = build_block_r1cs(3);
-        let t = std::time::Instant::now();
-        let csc = r1cs.csc_lincheck_circuit();
-        println!("CSC transpose build: {:?}", t.elapsed());
-
-        // (a) check_reduced-style naive contraction, both matrices.
-        let contract = |m: &SparseBinaryMatrix| -> F192 {
-            let mut acc = F192::ZERO;
-            for (i, row) in m.rows.iter().enumerate() {
-                let s = row.iter().map(|&j| w[j]).fold(F192::ZERO, |a, x| a + x);
-                acc += u[i] * s;
-            }
-            acc
-        };
-        let t = std::time::Instant::now();
-        let (da, db) = (contract(&ma), contract(&mb));
-        let t_naive = t.elapsed();
-        println!("naive sparse contraction (A + B): {t_naive:?}");
-
-        // (b) lincheck-verifier-style CSC marginal + inner product.
-        use crate::lincheck::LincheckCircuit;
-        let t = std::time::Instant::now();
-        let marginal = csc.fold_alpha_batched(alpha, &u);
-        let form_csc = pcs::ring_switch::inner_product_ext(&marginal, &w);
-        let t_csc = t.elapsed();
-        println!("CSC marginal fold + inner product: {t_csc:?}");
-
-        // (c) the circuit walk.
-        let t = std::time::Instant::now();
-        let (wa, wb) = bilinear_walk_pair(&u, &w);
-        let t_walk = t.elapsed();
-        println!("bilinear_walk_pair: {t_walk:?}");
-
-        assert_eq!((wa, wb), (da, db));
-        assert_eq!(alpha * wa + wb, form_csc);
-        println!(
-            "speedup: {:.1}× vs naive, {:.1}× vs CSC",
-            t_naive.as_secs_f64() / t_walk.as_secs_f64(),
-            t_csc.as_secs_f64() / t_walk.as_secs_f64()
         );
     }
 
@@ -1449,19 +1330,14 @@ mod tests {
 
     #[test]
     fn layout_constants() {
-        // I/O-aligned layout: cv in slot 0, out_lo in slot 1 (both 256-bit).
-        assert_eq!(CV_BASE, 0);
-        assert_eq!(OUT_LO_BASE, 256);
-        assert_eq!(Z_CONST_POS, 512);
-        assert_eq!(M_BASE, 640);
-        assert_eq!(GS_BASE, 1280);
         assert_eq!(G_STRIDE, 250);
         assert_eq!(N_G, 56);
         assert_eq!(OUT_HI_BASE, 15_280);
         assert_eq!(USEFUL_BITS, 15_536);
-        assert!(USEFUL_BITS <= K);
-        assert_eq!(CV_BASE % SLOT_BITS, 0);
-        assert_eq!(OUT_LO_BASE % SLOT_BITS, 0);
+        #[allow(clippy::assertions_on_constants)]
+        {
+            assert!(USEFUL_BITS <= K);
+        }
     }
 
     /// Reference compression matches the `blake3` crate for empty input

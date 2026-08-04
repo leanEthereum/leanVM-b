@@ -50,8 +50,8 @@ jobs:
       - name: Publish PDF as release asset
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: spec-latest
-          name: Latest leanVM-b PDF
+          tag_name: doc-latest
+          name: leanVM-b documentation
           body: |
             Auto-built from `doc/main.tex` on every push to `main`.
             Contains the specification, Annex A (ring switching) and Annex B (the PCS).

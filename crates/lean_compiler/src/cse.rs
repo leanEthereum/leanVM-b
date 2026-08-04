@@ -1,7 +1,7 @@
 //! Value numbering over one function's lowered code.
 //!
 //! leanVM's frame cells are **write-once**: a cell holds one value for the whole
-//! run, so "which value does `fp[k]` hold" needs no dataflow analysis — the
+//! run, so "which value does `fp[k]` hold" needs no dataflow analysis: the
 //! defining instruction is the only one there will ever be. That makes common
 //! subexpression elimination on the pure operations (`SET` of a constant, `XOR`,
 //! `MUL`) a local rewrite: if an identical `(op, operands)` was already computed
@@ -14,10 +14,10 @@
 //! materialized per use inside a fresh frame). Roughly 5% of the recursion
 //! guest's instructions were exact repeats.
 //!
-//! The three rules that keep this sound:
+//! The four rules that keep this sound:
 //! 1. **Only pure ops are eliminated.** `DEREF` unifies two memory cells (and
 //!    bumps the bus read counts), `BLAKE3`/`PACK64X2` carry bus effects, `JUMP`
-//!    is control flow — all are left alone. They still get their operands
+//!    is control flow, so all are left alone. They still get their operands
 //!    rewritten.
 //! 2. **Only single-write targets.** An instruction is a candidate only if its
 //!    destination cell is written exactly once in the function, counting hint
@@ -26,7 +26,7 @@
 //!    both instructions write `fp[t]`, so neither is touched and neither is
 //!    offered as a replacement. It also means every cell in the substitution map
 //!    is written by exactly one (dropped) instruction, so every *other*
-//!    occurrence of it is a read — which is why operand rewriting can be blanket.
+//!    occurrence of it is a read, which is why operand rewriting can be blanket.
 //! 3. **Locals only.** A candidate's destination must be a local temporary, not
 //!    an argument or return slot: the caller writes the arguments and reads the
 //!    returns straight out of this frame, so a write there is live even though no
@@ -35,9 +35,10 @@
 //!    every `JUMP`, so a duplicate is only ever folded into an earlier
 //!    computation from the same straight-line run. Folding across a branch could
 //!    redirect a read to a cell that the taken path never wrote, and an unwritten
-//!    cell is a prover-chosen free variable — a soundness hole, not just a bug.
+//!    cell is a prover-chosen free variable, a soundness hole and not just a bug.
 
 use super::ir::{Hint, KVal, LInstr, LOp, Off};
+use lean_vm::cpu::hints::RHint;
 use std::collections::HashMap;
 
 /// A pure operation's identity: the opcode plus its operand cells (commutative
@@ -143,17 +144,20 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
                 | Hint::AllocFrameMax { ptr, .. }
                 | Hint::AllocBuffer { ptr, .. }
                 | Hint::AllocBufferDyn { ptr, .. } => bump(*ptr),
-                Hint::WitnessStack { base, len, .. } | Hint::FieldLimbs { base, len, .. } => {
-                    for k in 0..*len {
-                        bump(*base + k);
+                Hint::Resolved(r) => match r {
+                    RHint::Alloc { ptr, .. } | RHint::AllocDyn { ptr, .. } => bump(*ptr),
+                    RHint::WitnessStack { base, len, .. } | RHint::FieldLimbs { base, len, .. } => {
+                        for k in 0..*len {
+                            bump(*base + k);
+                        }
                     }
-                }
-                Hint::Log2Ceil { dst, .. } => bump(*dst),
-                // These write HEAP cells through a pointer, not frame cells.
-                Hint::WitnessHeap { .. }
-                | Hint::BitDecompose { .. }
-                | Hint::BitDecomposeExp { .. }
-                | Hint::Print { .. } => {}
+                    RHint::Log2Ceil { dst, .. } => bump(*dst),
+                    // These write HEAP cells through a pointer, not frame cells.
+                    RHint::WitnessHeap { .. }
+                    | RHint::BitDecompose { .. }
+                    | RHint::BitDecomposeExp { .. }
+                    | RHint::Print { .. } => {}
+                },
             }
         }
     }
@@ -210,16 +214,19 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
     for h in &mut ins.hints {
         match h {
             Hint::AllocBufferDyn { size, .. } => map(size),
-            Hint::WitnessHeap { ptr, .. } => map(ptr),
-            Hint::Log2Ceil { bits_ptr, .. } => map(bits_ptr),
-            Hint::BitDecompose { value, bits_ptr, .. } | Hint::BitDecomposeExp { value, bits_ptr, .. } => {
-                map(value);
-                map(bits_ptr);
-            }
-            Hint::FieldLimbs { value, .. } => map(value),
-            Hint::Print { cell, .. } => map(cell),
             Hint::AllocFrame { .. } | Hint::AllocFrameMax { .. } | Hint::AllocBuffer { .. } => {}
-            Hint::WitnessStack { .. } => {}
+            Hint::Resolved(r) => match r {
+                RHint::AllocDyn { size, .. } => map(size),
+                RHint::WitnessHeap { ptr, .. } => map(ptr),
+                RHint::Log2Ceil { bits_ptr, .. } => map(bits_ptr),
+                RHint::BitDecompose { value, bits_ptr, .. } | RHint::BitDecomposeExp { value, bits_ptr, .. } => {
+                    map(value);
+                    map(bits_ptr);
+                }
+                RHint::FieldLimbs { value, .. } => map(value),
+                RHint::Print { cell, .. } => map(cell),
+                RHint::Alloc { .. } | RHint::WitnessStack { .. } => {}
+            },
         }
     }
 }

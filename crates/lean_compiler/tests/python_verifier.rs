@@ -1,3 +1,8 @@
+//! Pins `python-verifier/verifier.py` against `lean_vm::cpu::verify`: the same
+//! protocol is written out in Rust, in Python, and in zkDSL, so any protocol
+//! change must land in all three, and this is what catches the Python one
+//! drifting.
+
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{DerefMode, Op, Program, prove, verify};
 use primitives::field::{F64, F192, g_pow};

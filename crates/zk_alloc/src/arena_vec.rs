@@ -1,4 +1,4 @@
-//! [`ArenaVec<T>`] — an owning, growable buffer backed by the proving arena.
+//! [`ArenaVec<T>`]: an owning, growable buffer backed by the proving arena.
 //!
 //! Allocation goes through [`raw_alloc`](crate::raw_alloc) (a slab bump inside a
 //! phase, the system allocator outside one) and growth and `Drop` through
@@ -8,12 +8,12 @@
 //! outside one can be freed normally.
 //!
 //! Growing leaks the old allocation for the rest of the phase (freeing is a
-//! no-op there), so size the buffer up front — [`ArenaVec::with_capacity`],
-//! [`ArenaVec::zeroed`], [`ArenaVec::uninitialized`] — and reserve for
+//! no-op there), so size the buffer up front ([`ArenaVec::with_capacity`],
+//! [`ArenaVec::zeroed`], [`ArenaVec::uninitialized`]) and reserve for
 //! [`push`](ArenaVec::push) loops.
 //!
 //! See the crate docs for the rule that governs every use: an `ArenaVec`
-//! allocated in a phase dies at the next [`begin_phase`](crate::begin_phase).
+//! allocated in a phase dies at the next [`enter_phase`](crate::enter_phase).
 
 use std::alloc::{Layout, handle_alloc_error};
 use std::cmp;
@@ -74,7 +74,7 @@ impl<T> ArenaVec<T> {
         v
     }
 
-    /// `n` elements, each a clone of `value` — the arena's `vec![value; n]`.
+    /// `n` elements, each a clone of `value`, the arena's `vec![value; n]`.
     /// Prefer [`zeroed`](Self::zeroed) when the value is all-zero bytes.
     #[inline]
     #[must_use]
@@ -95,7 +95,7 @@ impl<T> ArenaVec<T> {
     /// is real work. It is still far cheaper than the page faults it replaces.
     ///
     /// # Safety
-    /// The all-zero bit pattern must be a valid, fully initialized `T` — true of
+    /// The all-zero bit pattern must be a valid, fully initialized `T`, true of
     /// the field types here and their SIMD packings, whose zero is all-zero bytes.
     #[inline]
     #[must_use]
@@ -166,11 +166,6 @@ impl<T> ArenaVec<T> {
     #[inline]
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
-        self
-    }
-
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
         self
     }
 
@@ -260,22 +255,11 @@ impl<T> ArenaVec<T> {
         self.truncate(0);
     }
 
-    /// Copy into a system-allocated `Vec`, for a value that must outlive the
-    /// phase (a proof field, a cache entry).
-    #[inline]
-    #[must_use]
-    pub fn to_vec(&self) -> Vec<T>
-    where
-        T: Clone,
-    {
-        self.as_slice().to_vec()
-    }
-
     /// Decompose into raw parts, leaking the buffer. Inverse of
     /// [`from_raw_parts`](Self::from_raw_parts).
     #[inline]
     #[must_use]
-    pub fn into_raw_parts(self) -> (*mut T, usize, usize) {
+    pub(crate) fn into_raw_parts(self) -> (*mut T, usize, usize) {
         let me = ManuallyDrop::new(self);
         (me.ptr.as_ptr(), me.len, me.cap)
     }
@@ -290,7 +274,7 @@ impl<T> ArenaVec<T> {
     /// Exactly one `ArenaVec` may own a given pointer.
     #[inline]
     #[must_use]
-    pub unsafe fn from_raw_parts(ptr: *mut T, len: usize, cap: usize) -> Self {
+    pub(crate) unsafe fn from_raw_parts(ptr: *mut T, len: usize, cap: usize) -> Self {
         Self {
             // SAFETY: the caller guarantees `ptr` is non-null.
             ptr: unsafe { NonNull::new_unchecked(ptr) },
@@ -397,20 +381,6 @@ impl<T> DerefMut for ArenaVec<T> {
     }
 }
 
-impl<T> AsRef<[T]> for ArenaVec<T> {
-    #[inline]
-    fn as_ref(&self) -> &[T] {
-        self
-    }
-}
-
-impl<T> AsMut<[T]> for ArenaVec<T> {
-    #[inline]
-    fn as_mut(&mut self) -> &mut [T] {
-        self
-    }
-}
-
 impl<T> Default for ArenaVec<T> {
     #[inline]
     fn default() -> Self {
@@ -444,8 +414,8 @@ impl<T: PartialEq> PartialEq<[T]> for ArenaVec<T> {
     }
 }
 
-// Cross-comparison with `Vec`, both ways: a converted buffer is routinely
-// checked against a `Vec`-producing reference implementation.
+// Cross-comparison with `Vec`, both ways: reference implementations in the
+// test suites produce a `Vec` where the real path produces an `ArenaVec`.
 impl<T: PartialEq> PartialEq<Vec<T>> for ArenaVec<T> {
     #[inline]
     fn eq(&self, other: &Vec<T>) -> bool {

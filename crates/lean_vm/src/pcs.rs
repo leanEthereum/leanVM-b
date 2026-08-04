@@ -3,7 +3,7 @@
 //! opening proves `Σ_x q(x)·W(x) = C` against any verifier-evaluable `E`-valued
 //! weight `W` (a point evaluation `q̂(r)` is `W = eq(r,·)`). A batch of claims
 //! `q̂(point_j) = value_j` folds with random `γ`s into one weight and target,
-//! opened in a single Ligerito run — the verifier evaluates the weight itself,
+//! opened in a single Ligerito run: the verifier evaluates the weight itself,
 //! so it never travels. flock's ring-switched `q_pkd` claims join the same batch
 //! ([`::pcs::stack_open`]).
 //!
@@ -25,11 +25,8 @@ pub use ::pcs::stack_open::{
 };
 use ::pcs::stack_open::{open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 
-/// The bit-packing width of `q_pkd` (`2^6` bits per committed `F64` word); only
-/// bookkeeping here, since the K configs take the witness log-size directly.
-pub const LOG_PACKING: usize = ::pcs::pack::LOG_PACKING;
 /// Row-batch lanes `2^LOG_BATCH`: the Merkle leaf width (`2^LOG_BATCH` F64
-/// = 512 bytes/leaf) IS Ligerito's INITIAL folding factor — the L0 commit is
+/// = 512 bytes/leaf) IS Ligerito's INITIAL folding factor: the L0 commit is
 /// reused, so the two are one knob ([`::pcs::ligerito::INITIAL_FOLDING_FACTOR`]).
 /// Larger ⇒ far fewer Merkle nodes to hash at the cost of fatter query openings.
 const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_FOLDING_FACTOR;
@@ -38,10 +35,10 @@ pub const LOG_INV_RATE: usize = ::pcs::ligerito::LOG_INV_RATE_0;
 // The PCS and the unground F192 bus argument both target `SECURITY_BITS`.
 const _: () = assert!(::pcs::ligerito::SECURITY_BITS == crate::SECURITY_BITS as usize);
 /// Minimum committed-witness log-size: Ligerito's level ladder needs every level's
-/// block length to accommodate its Johnson-radius query count — feasible from
+/// block length to accommodate its Johnson-radius query count, feasible from
 /// `μ = 14`; we set `μ = 15` for a
 /// one-level margin. `witness::placements_of` zero-pads smaller stacks up to
-/// this floor (256 KB of F64 — negligible; real workloads are far above it).
+/// this floor (256 KB of F64, negligible; real workloads are far above it).
 pub const MIN_MU: usize = 15;
 
 /// The Ligerito (prover, verifier) config pair for a `2^μ`-word witness,
@@ -106,7 +103,7 @@ pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Com
 }
 
 // The batching challenges are just `sample()`d inside the stacked opener: every
-// claim they combine is already bound — the values rode the stream
+// claim they combine is already bound: the values rode the stream
 // (`add_scalar`) during the bus / constraint / public-input sub-protocols, the
 // points are prior challenges, and the offsets are public (reconstructed
 // identically from the announced layout).

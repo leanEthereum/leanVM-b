@@ -1,4 +1,4 @@
-//! leanVM-b — arithmetization of a minimal zkVM (see `doc/main.tex`).
+//! leanVM-b: arithmetization of a minimal zkVM (see `doc/main.tex`).
 //!
 //! Machine words are `c0 + c1*y + c2*y² ∈ E = K[y]/(y³ + y + 1)`.
 //! Addresses, pc/fp, read counters, and logical indices live in
@@ -8,16 +8,16 @@
 //! committed directly by a dense multilinear PCS. Challenges and transcript
 //! scalars live in `E = GF(2^192)`, leaving ample margin for 128-bit soundness.
 //!
-//! - [`transcript`] — the shared Fiat–Shamir transcript (re-exported from `fiat_shamir`).
-//! - [`pcs`] — `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
-//! - [`witness`] — `K`-valued columns stacked into one committed witness.
-//! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
-//! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).
-//! - [`constraints`] — one back-loaded batched zerocheck over all seven tables'
+//! - [`transcript`]: the shared Fiat-Shamir transcript (re-exported from `fiat_shamir`).
+//! - [`pcs`]: `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
+//! - [`witness`]: `K`-valued columns stacked into one committed witness.
+//! - [`gkr`]: the grand product via GKR (§4.3), balancing the bus.
+//! - [`leaf`]: the shared bus: grand-product balance, decomposed to per-column claims (§4.2-§4.4, §5).
+//! - [`constraints`]: one back-loaded batched zerocheck over all seven tables'
 //!   degree-2 identities plus their three bus forms (§4.1).
-//! - [`tables`] — the seven instruction tables (columns, flushes, constraints).
-//! - [`cpu`] — whole-program assembly, control flow, and the prove/verify entry points.
-//! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
+//! - [`tables`]: the seven instruction tables (columns, flushes, constraints).
+//! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
+//! - [`blake3_flock`]: the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE3 slice hashing).
 
 pub mod blake3_flock;
@@ -44,7 +44,7 @@ pub mod witness;
 ///
 /// # Contract
 /// The arena has one region per process, so two proofs must never run
-/// concurrently in one process — [`zk_alloc::begin_phase`] asserts this. Use
+/// concurrently in one process; [`zk_alloc::enter_phase`] asserts this. Use
 /// separate processes to parallelize across proofs.
 pub fn init_prover() {
     init_prover_pool();
@@ -58,8 +58,8 @@ pub fn init_prover() {
 ///
 /// Thread placement is the pool's own business: performance-core workers run at
 /// `USER_INTERACTIVE` and (on Apple silicon) efficiency-core workers at `UTILITY`,
-/// all drawing from one claim counter. `LEANVM_NUM_THREADS` — or
-/// `RAYON_NUM_THREADS`, still honored — sets the performance-worker count. See the
+/// all drawing from one claim counter. `LEANVM_NUM_THREADS` (or
+/// `RAYON_NUM_THREADS`, still honored) sets the performance-worker count. See the
 /// `parallel` crate.
 pub fn init_prover_pool() {
     parallel::init();
@@ -73,5 +73,28 @@ pub const SECURITY_BITS: u32 = 128;
 /// Below this many parallelizable items a pass runs serially: the fan-out
 /// overhead is not worth it for small inputs. Shared by [`constraints`], [`gkr`], [`leaf`].
 pub(crate) const PAR_THRESHOLD: usize = 1 << 11;
+
+/// Run one prover stage inside its `tracing` span and, under `LEANVM_PROFILE`,
+/// report its wall time. Called through [`stage!`], which spells the stage's name
+/// once for both.
+pub(crate) fn stage_impl<T>(name: &str, span: tracing::Span, f: impl FnOnce() -> T) -> T {
+    static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let t = std::time::Instant::now();
+    let out = span.in_scope(f);
+    if *PROFILE.get_or_init(|| std::env::var_os("LEANVM_PROFILE").is_some()) {
+        eprintln!("[profile] {name:<20}: {:>8.2} ms", t.elapsed().as_secs_f64() * 1e3);
+    }
+    out
+}
+
+/// `stage!("Commit", || …)`: one named prover stage, a `tracing` span plus an
+/// optional `LEANVM_PROFILE` timing line. A disabled span carries no metadata, so
+/// the name has to travel separately from `info_span!`.
+macro_rules! stage {
+    ($name:literal, $f:expr) => {
+        $crate::stage_impl($name, tracing::info_span!($name), $f)
+    };
+}
+pub(crate) use stage;
 
 pub(crate) use primitives::{log2_ceil_usize, log2_strict_usize};

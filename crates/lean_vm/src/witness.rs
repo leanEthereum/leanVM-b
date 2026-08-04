@@ -53,6 +53,26 @@ pub(crate) struct Stacked {
     pub placements: Vec<Placement>,
 }
 
+/// Lay `2^kappa`-sized items end to end, largest first at aligned offsets and ties
+/// broken by index, returning the per-item offset and `⌈log2 Σ 2^kappa⌉`. A `None`
+/// kappa takes no space and its offset is meaningless. Depends only on the sizes, so
+/// the verifier reconstructs the same tiling. This is the aligned layout the bus
+/// leaf cube still uses ([`crate::leaf`]); committed columns go through the Jagged
+/// placement below instead.
+pub(crate) fn stack_offsets(kappas: &[Option<usize>]) -> (Vec<usize>, usize) {
+    let n = kappas.len();
+    let mut order: Vec<usize> = (0..n).filter(|&i| kappas[i].is_some()).collect();
+    order.sort_by(|&a, &b| kappas[b].unwrap().cmp(&kappas[a].unwrap()).then(a.cmp(&b)));
+
+    let mut offsets = vec![0usize; n];
+    let mut off = 0usize;
+    for &i in &order {
+        offsets[i] = off;
+        off += 1 << kappas[i].unwrap();
+    }
+    (offsets, crate::log2_ceil_usize(off.max(1)))
+}
+
 /// Per-column Jagged placements and dense commitment length `2^m`.
 ///
 /// `heights[i]` is the real prefix length (at most `2^kappas[i]`). A `None`
@@ -128,8 +148,8 @@ pub fn placements_of_blocks(
 
 /// Copy the real column prefixes into the Jagged dense vector `q` of length
 /// `2^m` (zero in the final PCS pad). Virtual columns are skipped. Large
-/// columns (e.g. `q_pkd`, ~1 GB at scale) copy in parallel — the `2^m` stack
-/// is memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
+/// columns (e.g. `q_pkd`, ~1 GB at scale) copy in parallel: the `2^m` stack is
+/// memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
 ///
 /// What is committed is the column OFFSET BY ITS PAD VALUE, `P_c + pad[c]`. The
