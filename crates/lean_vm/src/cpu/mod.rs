@@ -345,6 +345,7 @@ fn airs<'a>(
         .enumerate()
         .map(|(t, (&table, &tau))| {
             let bus: Vec<&leaf::BusForm> = (0..3).map(|s| &forms[s][t]).collect();
+            let bus_k = bus.clone();
             constraints::Air {
                 tau,
                 n_cols: table.n_committed_columns(),
@@ -352,6 +353,15 @@ fn airs<'a>(
                 eval: Box::new(move |p, vals| {
                     let air = table.eval_constraint(p, vals);
                     bus.iter()
+                        .zip(form_pows)
+                        .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
+                }),
+                // The same expression over K columns: the identity's K-only products
+                // stay 64-bit and each bus form becomes a mixed dot product.
+                eval_k: Box::new(move |p, vals| {
+                    let air = table.eval_constraint_k(p, vals);
+                    bus_k
+                        .iter()
                         .zip(form_pows)
                         .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
                 }),

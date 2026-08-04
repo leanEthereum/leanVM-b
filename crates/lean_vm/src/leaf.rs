@@ -8,6 +8,7 @@
 //! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
 use crate::PAR_THRESHOLD;
+use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
@@ -218,11 +219,8 @@ impl BusForm {
 
     /// `Σ_c coeffs[c]·evals[c] + constant`: the form at one row, or at a point when
     /// `evals` are column evaluations there.
-    pub fn eval(&self, evals: &[F192]) -> F192 {
-        self.coeffs
-            .iter()
-            .zip(evals)
-            .fold(self.constant, |acc, (&w, &v)| acc + w * v)
+    pub fn eval<T: ColVal>(&self, evals: &[T]) -> F192 {
+        T::dot(&self.coeffs, evals, self.constant)
     }
 }
 

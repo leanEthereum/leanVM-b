@@ -13,6 +13,7 @@
 //! the `JUMP` selection) are written as `E`-relations, still degree 2 in the
 //! lane columns.
 
+use crate::colval::ColVal;
 use crate::cpu::Trace;
 use crate::leaf::Coord::{self, Col, Const, GCol};
 use crate::witness::Column;
@@ -24,11 +25,90 @@ fn map_rows<R: Sync, T: Send>(rows: &[R], f: impl Fn(&R) -> T + Sync) -> Vec<T> 
     parallel::map_collect(rows.len(), |i| f(&rows[i]))
 }
 
-/// Reassemble a 192-bit machine word from its three `K`-limbs (as folded
-/// `E`-column values).
-#[inline]
-fn e192(c0: F192, c1: F192, c2: F192) -> F192 {
-    c0 + F192::Y * (c1 + F192::Y * c2)
+// ---- the identities ----------------------------------------------------------
+//
+// Each is written ONCE, generic over the column type: `F64` in the round a table
+// joins the batch, `F192` afterwards (see [`ColVal`]). Products of two `K`
+// columns stay 64-bit, an `η`-power or a word multiplies through `mul_e`, and a
+// machine word from three `K` lanes costs nothing to assemble.
+
+fn arith_identity<T: ColVal>(is_xor: bool, pows: &[F192], cols: &[T]) -> F192 {
+    use arith::*;
+    let va = T::word(cols[VA_LO], cols[VA_HI], cols[VA_TOP]);
+    let vb = T::word(cols[VB_LO], cols[VB_HI], cols[VB_TOP]);
+    let vc = T::word(cols[VC_LO], cols[VC_HI], cols[VC_TOP]);
+    let third = if is_xor { va + vb } else { va * vb };
+    (cols[AA] + cols[FP] * cols[OA]).mul_e(pows[0])
+        + (cols[AB] + cols[FP] * cols[OB]).mul_e(pows[1])
+        + (cols[AC] + cols[FP] * cols[OC]).mul_e(pows[2])
+        + pows[3] * (vc + third)
+}
+
+fn set_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
+    use set::*;
+    // The address a = fp·o.
+    (cols[A] + cols[FP] * cols[O]).mul_e(pows[0])
+}
+
+fn deref_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
+    use deref::*;
+    // The pointer is K-valued; the target and local words are full 192-bit values.
+    let p = cols[P]; // single K-lane pointer; extension limbs are zero
+    let v2 = T::word(cols[V2_LO], cols[V2_HI], cols[V2_TOP]);
+    let v3 = T::word(cols[V3_LO], cols[V3_HI], cols[V3_TOP]);
+    // Three addresses (a2 = p·obe is pointer-relative: with a2 a single K
+    // column, this forces the pointer word `p` into K) plus the flag-selected
+    // store `v2 = src`, where `src = (1+f_pc+f_fp)·v3 + f_pc·(g²·pc) + f_fp·fp`
+    // over the two boolean store-mode flags. The `pc` source is the virtual
+    // return target g²·pc (a free ×g² of the committed pc), so no column.
+    let src = (T::ONE + cols[FPC] + cols[FFP]).mul_e(v3)
+        + (cols[FPC] * cols[PC].mul_k(G * G)).to_e()
+        + (cols[FFP] * cols[FP]).to_e();
+    (cols[A1] + cols[FP] * cols[OAL]).mul_e(pows[0])
+        + (cols[A2] + p * cols[OBE]).mul_e(pows[1])
+        + (cols[A3] + cols[FP] * cols[OGA]).mul_e(pows[2])
+        + pows[3] * (v2 + src)
+}
+
+fn jump_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
+    use jump::*;
+    let c = T::word(cols[C_LO], cols[C_HI], cols[C_TOP]);
+    let d = T::word(cols[D_LO], cols[D_HI], cols[D_TOP]);
+    let ff = T::word(cols[F_LO], cols[F_HI], cols[F_TOP]);
+    let w = T::word(cols[W_LO], cols[W_HI], cols[W_TOP]);
+    let fall_through = cols[PC].mul_k(G);
+    let b1 = cols[B] + T::ONE;
+    let addrs = (cols[AC] + cols[FP] * cols[OC]).mul_e(pows[0])
+        + (cols[AD] + cols[FP] * cols[OD]).mul_e(pows[1])
+        + (cols[AF] + cols[FP] * cols[OF]).mul_e(pows[2]);
+    // `b = cond·w` and `cond·(b+1) = 0` together force `b = [cond ≠ 0]`:
+    // when `cond ≠ 0` the second gives `b = 1` (and the first `w = cond⁻¹`);
+    // when `cond = 0` the first gives `b = 0`.
+    let ind_def = pows[3] * (cols[B].to_e() + c * w);
+    let ind_nz = pows[4] * b1.mul_e(c);
+    let sel_pc = pows[5] * (cols[NPC].to_e() + cols[B].mul_e(d) + (b1 * fall_through).to_e());
+    let sel_fp = pows[6] * (cols[NFP].to_e() + cols[B].mul_e(ff) + (b1 * cols[FP]).to_e());
+    addrs + ind_def + ind_nz + sel_pc + sel_fp
+}
+
+fn pack64_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
+    use pack64::*;
+    (cols[AA] + cols[FP] * cols[OA]).mul_e(pows[0])
+        + (cols[AB] + cols[FP] * cols[OB]).mul_e(pows[1])
+        + (cols[AC] + cols[FP] * cols[OC]).mul_e(pows[2])
+}
+
+fn blake3_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
+    use blake3t::*;
+    // The six address bindings a_X = fp·o_X (degree 2). The compression carries no
+    // table constraint here: flock's R1CS validity proves it via q_pkd.
+    let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
+    bind(AA0, OA0).mul_e(pows[0])
+        + bind(AA1, OA1).mul_e(pows[1])
+        + bind(AB0, OB0).mul_e(pows[2])
+        + bind(AB1, OB1).mul_e(pows[3])
+        + bind(ACV, OCV).mul_e(pows[4])
+        + bind(AC, OC).mul_e(pows[5])
 }
 
 // ---- shared bus vocabulary ---------------------------------------------------
@@ -181,6 +261,10 @@ pub trait Table: Sync {
     /// range. The batched zerocheck carries every committed column of a table, in
     /// local order, so `cols` is indexed directly. Returns `0` on every valid row (§4.1).
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192;
+    /// The same identity over `K`-valued columns, for the round a table joins the
+    /// batch, before its columns have been folded into `E` (§5.1). Both entry
+    /// points delegate to one generic definition per table, so they cannot drift.
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192;
     /// Declare the table's bus interactions.
     fn flushes(&self, f: &mut FlushBuilder);
     /// Fill this table's columns (`out[i]` is local column `i`) from the trace.
@@ -290,15 +374,10 @@ impl Table for Arith {
         4 // three addresses + the third-operand identity
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        use arith::*;
-        let va = e192(cols[VA_LO], cols[VA_HI], cols[VA_TOP]);
-        let vb = e192(cols[VB_LO], cols[VB_HI], cols[VB_TOP]);
-        let vc = e192(cols[VC_LO], cols[VC_HI], cols[VC_TOP]);
-        let third = if self.is_xor { va + vb } else { va * vb };
-        pows[0] * (cols[AA] + cols[FP] * cols[OA])
-            + pows[1] * (cols[AB] + cols[FP] * cols[OB])
-            + pows[2] * (cols[AC] + cols[FP] * cols[OC])
-            + pows[3] * (vc + third)
+        arith_identity(self.is_xor, pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        arith_identity(self.is_xor, pows, cols)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith::*;
@@ -370,9 +449,10 @@ impl Table for SetTable {
         1 // the single address binding
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        use set::*;
-        // The address a = fp·o.
-        pows[0] * (cols[A] + cols[FP] * cols[O])
+        set_identity(pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        set_identity(pows, cols)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use set::*;
@@ -448,22 +528,10 @@ impl Table for DerefTable {
         4 // three addresses + the flag-selected store
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        use deref::*;
-        // The pointer is K-valued; the target and local words are full F192 values.
-        let p = cols[P]; // single K-lane pointer; extension limbs are zero
-        let v2 = e192(cols[V2_LO], cols[V2_HI], cols[V2_TOP]);
-        let v3 = e192(cols[V3_LO], cols[V3_HI], cols[V3_TOP]);
-        // Three addresses (a2 = p·obe is pointer-relative: with a2 a single K
-        // column, this forces the pointer word `p` into K) plus the flag-selected
-        // store `v2 = src`, where `src = (1+f_pc+f_fp)·v3 + f_pc·(g²·pc) + f_fp·fp`
-        // over the two boolean store-mode flags. The `pc` source is the virtual
-        // return target g²·pc (a free ×g² of the committed pc), so no column.
-        let src =
-            (F192::ONE + cols[FPC] + cols[FFP]) * v3 + cols[FPC] * cols[PC].mul_base(G * G) + cols[FFP] * cols[FP];
-        pows[0] * (cols[A1] + cols[FP] * cols[OAL])
-            + pows[1] * (cols[A2] + p * cols[OBE])
-            + pows[2] * (cols[A3] + cols[FP] * cols[OGA])
-            + pows[3] * (v2 + src)
+        deref_identity(pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        deref_identity(pows, cols)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
@@ -556,24 +624,10 @@ impl Table for JumpTable {
         7 // three addresses + two indicator identities + the pc/fp selections
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        use jump::*;
-        let one = F192::ONE;
-        let c = e192(cols[C_LO], cols[C_HI], cols[C_TOP]);
-        let d = e192(cols[D_LO], cols[D_HI], cols[D_TOP]);
-        let ff = e192(cols[F_LO], cols[F_HI], cols[F_TOP]);
-        let w = e192(cols[W_LO], cols[W_HI], cols[W_TOP]);
-        let fall_through = cols[PC].mul_base(G);
-        let addrs = pows[0] * (cols[AC] + cols[FP] * cols[OC])
-            + pows[1] * (cols[AD] + cols[FP] * cols[OD])
-            + pows[2] * (cols[AF] + cols[FP] * cols[OF]);
-        // `b = cond·w` and `cond·(b+1) = 0` together force `b = [cond ≠ 0]`:
-        // when `cond ≠ 0` the second gives `b = 1` (and the first `w = cond⁻¹`);
-        // when `cond = 0` the first gives `b = 0`.
-        let ind_def = pows[3] * (cols[B] + c * w);
-        let ind_nz = pows[4] * (c * (cols[B] + one));
-        let sel_pc = pows[5] * (cols[NPC] + cols[B] * d + (cols[B] + one) * fall_through);
-        let sel_fp = pows[6] * (cols[NFP] + cols[B] * ff + (cols[B] + one) * cols[FP]);
-        addrs + ind_def + ind_nz + sel_pc + sel_fp
+        jump_identity(pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        jump_identity(pows, cols)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use jump::*;
@@ -663,10 +717,10 @@ impl Table for Pack64x2Table {
     }
 
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        use pack64::*;
-        pows[0] * (cols[AA] + cols[FP] * cols[OA])
-            + pows[1] * (cols[AB] + cols[FP] * cols[OB])
-            + pows[2] * (cols[AC] + cols[FP] * cols[OC])
+        pack64_identity(pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        pack64_identity(pows, cols)
     }
 
     fn flushes(&self, f: &mut FlushBuilder) {
@@ -772,17 +826,10 @@ impl Table for Blake3Table {
         6 // the six address bindings
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        use blake3t::*;
-        // The six address bindings a_X = fp·o_X (degree 2). The compression
-        // carries no table constraint here: flock's R1CS validity proves it
-        // via q_pkd (§blake3_flock).
-        let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
-        pows[0] * bind(AA0, OA0)
-            + pows[1] * bind(AA1, OA1)
-            + pows[2] * bind(AB0, OB0)
-            + pows[3] * bind(AB1, OB1)
-            + pows[4] * bind(ACV, OCV)
-            + pows[5] * bind(AC, OC)
+        blake3_identity(pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        blake3_identity(pows, cols)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;

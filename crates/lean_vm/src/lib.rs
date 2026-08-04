@@ -21,6 +21,7 @@
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE3 slice hashing).
 
 pub mod blake3_flock;
+pub mod colval;
 pub mod constraints;
 pub mod cpu;
 pub mod gkr;

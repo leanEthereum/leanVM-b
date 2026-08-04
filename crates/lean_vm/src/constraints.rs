@@ -37,7 +37,7 @@
 use crate::PAR_THRESHOLD;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
-use primitives::field::{F192, F192Unreduced, mul_by_g, mul_by_g_e};
+use primitives::field::{F64, F192, F192Unreduced, mul_by_g, mul_by_g_e};
 use primitives::multilinear::{
     add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
 };
@@ -59,6 +59,8 @@ pub enum Error {
 
 /// One table's row constraint: identity `i` is weighted by `pows[i]`.
 pub type Constraint<'a> = Box<dyn Fn(&[F192], &[F192]) -> F192 + Sync + 'a>;
+/// The same form over `K`-valued columns, for the round a table joins the batch.
+pub type ConstraintK<'a> = Box<dyn Fn(&[F192], &[F64]) -> F192 + Sync + 'a>;
 
 /// One table's place in the shared batch.
 pub struct Air<'a> {
@@ -66,6 +68,7 @@ pub struct Air<'a> {
     pub n_cols: usize,
     pub n_constraints: usize,
     pub eval: Constraint<'a>,
+    pub eval_k: ConstraintK<'a>,
 }
 
 /// Start of each table's disjoint range of `η`-powers.
@@ -98,21 +101,21 @@ pub fn eta_powers(eta: F192, total: usize) -> Vec<F192> {
 /// column type costs measurable prover time in this loop.
 fn table_message_k(
     cols: &[Column],
-    eval: &(dyn Fn(&[F192], &[F192]) -> F192 + Sync),
+    eval: &(dyn Fn(&[F192], &[F64]) -> F192 + Sync),
     pows: &[F192],
     half: usize,
     eqr: &[F192],
 ) -> [F192; 3] {
     let ncols = cols.len();
-    let summand = |i: usize, scratch: &mut [F192]| -> [F192Unreduced; 3] {
+    let summand = |i: usize, scratch: &mut [F64]| -> [F192Unreduced; 3] {
         let e = eqr[i];
         let (v0, rest) = scratch.split_at_mut(ncols);
         let (v1, v2) = rest.split_at_mut(ncols);
         for (ci, c) in cols.iter().enumerate() {
             let (lo, hi) = (c[i], c[i + half]);
-            v0[ci] = F192::from(lo);
-            v1[ci] = F192::from(hi);
-            v2[ci] = F192::from(lo + mul_by_g(lo + hi));
+            v0[ci] = lo;
+            v1[ci] = hi;
+            v2[ci] = lo + mul_by_g(lo + hi);
         }
         [
             e.mul_unreduced(eval(pows, v0)),
@@ -125,13 +128,13 @@ fn table_message_k(
         // creates it once and threads it through every row that worker claims.
         parallel::map_reduce_with_state(
             half,
-            || vec![F192::ZERO; 3 * ncols],
+            || vec![F64::ZERO; 3 * ncols],
             || [F192Unreduced::ZERO; 3],
             |scratch, acc, i| *acc = xor3(*acc, summand(i, scratch)),
             xor3,
         )
     } else {
-        let mut scratch = vec![F192::ZERO; 3 * ncols];
+        let mut scratch = vec![F64::ZERO; 3 * ncols];
         (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
     };
     [acc[0].reduce(), acc[1].reduce(), acc[2].reduce()]
@@ -226,7 +229,7 @@ pub fn prove(
                 let p = if let Some(table) = &folded[t] {
                     table_message_e(table, &*air.eval, w, 1 << m, &eqr)
                 } else {
-                    table_message_k(&cols[t], &*air.eval, w, 1 << m, &eqr)
+                    table_message_k(&cols[t], &*air.eval_k, w, 1 << m, &eqr)
                 };
                 msg = add3(msg, p.map(|x| weights[t] * x));
             }
@@ -346,8 +349,8 @@ mod tests {
     use crate::transcript::{Proof, ProverState, VerifierState};
     use primitives::field::F64;
 
-    fn synth_eval(pows: &[F192], v: &[F192]) -> F192 {
-        pows[0] * (v[0] * v[1] + v[2]) + pows[1] * (v[0] + v[3])
+    fn synth_eval<T: crate::colval::ColVal>(pows: &[F192], v: &[T]) -> F192 {
+        (v[0] * v[1] + v[2]).mul_e(pows[0]) + (v[0] + v[3]).mul_e(pows[1])
     }
 
     fn good_table(tau: usize, salt: u64) -> Vec<Column> {
@@ -360,8 +363,8 @@ mod tests {
 
     /// A third, attached "identity": the linear form `vals[1]`, whose claimed sum
     /// is an evaluation of column 1 rather than zero.
-    fn synth_eval_attached(pows: &[F192], v: &[F192]) -> F192 {
-        synth_eval(pows, v) + pows[2] * v[1]
+    fn synth_eval_attached<T: crate::colval::ColVal>(pows: &[F192], v: &[T]) -> F192 {
+        synth_eval(pows, v) + v[1].mul_e(pows[2])
     }
 
     fn airs_for(taus: &[usize], attached: bool) -> Vec<Air<'static>> {
@@ -370,7 +373,16 @@ mod tests {
                 tau,
                 n_cols: 4,
                 n_constraints: if attached { 3 } else { 2 },
-                eval: Box::new(if attached { synth_eval_attached } else { synth_eval }),
+                eval: Box::new(if attached {
+                    synth_eval_attached::<F192>
+                } else {
+                    synth_eval::<F192>
+                }),
+                eval_k: Box::new(if attached {
+                    synth_eval_attached::<F64>
+                } else {
+                    synth_eval::<F64>
+                }),
             })
             .collect()
     }
