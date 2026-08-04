@@ -10,7 +10,7 @@
 use crate::ligerito::log2_pow2;
 use crate::ntt::AdditiveNttF64;
 use primitives::field::{F64, F192};
-use primitives::log2_ceil_usize as log2_ceil;
+use primitives::log2_ceil_usize;
 
 // ===================================================================
 // Interleaved forward additive NTT over E with K-twiddles
@@ -86,7 +86,7 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
 
     // Target sub-group ~2 MB; each position is `num_ntts` F192 elements.
     const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
-    let log_bytes_per_position = log2_ceil(num_ntts * core::mem::size_of::<F192>());
+    let log_bytes_per_position = log2_ceil_usize(num_ntts * core::mem::size_of::<F192>());
     let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
     let cache_n_top = log_d.saturating_sub(target_log_positions);
 

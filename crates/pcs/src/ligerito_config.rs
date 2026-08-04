@@ -27,7 +27,7 @@
 //! MAX of the entries, not their sum.
 //!
 
-use primitives::log2_ceil_usize as log2_ceil;
+use primitives::log2_ceil_usize;
 
 // ===================================================================
 // Config
@@ -551,7 +551,7 @@ fn johnson_interleaved_list_log2(log_inv_rate: usize, log_msg_cols: usize, eta: 
 fn johnson_algebraic_bits_for(log_inv_rate: usize, log_msg_cols: usize, eta: f64, queries: usize) -> f64 {
     let log2_l = johnson_interleaved_list_log2(log_inv_rate, log_msg_cols, eta);
     let degree = crate::ring_switch::RING_SWITCH_SOUNDNESS_DEGREE
-        .max(log2_ceil(queries))
+        .max(log2_ceil_usize(queries))
         .max(2);
     ANALYSIS_LOG_Q - (degree as f64).log2() - log2_l
 }

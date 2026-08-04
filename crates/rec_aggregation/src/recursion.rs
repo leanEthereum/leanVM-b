@@ -18,8 +18,8 @@ use lean_compiler::{compile, parse, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
-use pcs::ligerito::log2_ceil;
 use primitives::bench::Plan;
+use primitives::log2_ceil_usize;
 use primitives::multilinear::mle_eval;
 use primitives::{
     field::{F64, F192, G, g_pow},
@@ -1819,7 +1819,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps(
             "LIG_LOG_QUERIES",
             ints(&flat(
-                &|c| c.queries.iter().map(|&queries| log2_ceil(queries)).collect(),
+                &|c| c.queries.iter().map(|&queries| log2_ceil_usize(queries)).collect(),
                 maxlev,
             )),
         );
@@ -1882,11 +1882,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("QPKD_VARS_CAP", (33 + slot_stride_log).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
-    // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
+    // log2_ceil_usize(cols) selector bits. The defer region is 2*kbc points + sel
     // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
     // + 1 matpart.
     let bc_cols = nbcv / 2;
-    let log2_bc_cols = log2_ceil(bc_cols);
+    let log2_bc_cols = log2_ceil_usize(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());

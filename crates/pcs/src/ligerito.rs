@@ -37,6 +37,7 @@ use crate::ntt::AdditiveNttF64;
 use fiat_shamir::sponge::Sponge;
 use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
+    log2_ceil_usize,
     multilinear::eq_eval,
     pretty_integer,
 };
@@ -51,9 +52,6 @@ pub use super::ligerito_config::{
 };
 #[cfg(test)]
 pub use super::ligerito_config::{default_config, default_verifier_config, udr_queries};
-// Transitional: `rec_aggregation` still imports `pcs::ligerito::log2_ceil`.
-// Drop this alias once it moves to `primitives::log2_ceil_usize`.
-pub use primitives::log2_ceil_usize as log2_ceil;
 
 pub use crate::ligerito_induce::*;
 use crate::ligerito_ntt_ext::*;
@@ -1115,7 +1113,7 @@ pub fn recursive_prover_with_basis(
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
     let queries_0 = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0).0;
-    let alpha_0 = sponge.sample_vec(log2_ceil(num_queries_0));
+    let alpha_0 = sponge.sample_vec(log2_ceil_usize(num_queries_0));
     let _t = std::time::Instant::now();
     // Ordered (dup-possible) rows for the local induce math ...
     let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
@@ -1199,7 +1197,7 @@ pub fn recursive_prover_with_basis(
             let queries_last = sample_queries_ordered_with_raw(sponge, wtns_prev.block_len, num_queries_last).0;
             // The final commitment's basis challenge is drawn only after `yr`
             // and its queries are bound, matching the verifier exactly.
-            let alpha_last = sponge.sample_vec(log2_ceil(num_queries_last));
+            let alpha_last = sponge.sample_vec(log2_ceil_usize(num_queries_last));
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
             // verifier fans these to ordered for its last-level induce.
@@ -1311,7 +1309,7 @@ pub fn recursive_prover_with_basis(
         grinding_nonces.push(nonce_i);
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered_with_raw(sponge, wtns_prev.block_len, num_queries_i).0;
-        let alpha_i = sponge.sample_vec(log2_ceil(num_queries_i));
+        let alpha_i = sponge.sample_vec(log2_ceil_usize(num_queries_i));
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
         let opened_rows_i: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
@@ -1655,7 +1653,7 @@ pub fn recursive_verifier_with_basis(
 
     let num_queries_0 = config.queries[0];
     let queries_0 = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0).0;
-    let alpha_0 = sponge.sample_vec(log2_ceil(num_queries_0));
+    let alpha_0 = sponge.sample_vec(log2_ceil_usize(num_queries_0));
     let sq_0 = sorted_unique_queries(&queries_0);
     if !verify_level_opens(
         expected_initial_root,
@@ -1765,7 +1763,7 @@ pub fn recursive_verifier_with_basis(
             // Final-level basis-induction challenge: sampled AFTER `yr` was
             // observed and the queries are fixed, so a forged `yr` cannot be
             // adapted to it (mirror of the original).
-            let alpha_last = sponge.sample_vec(log2_ceil(num_queries_last));
+            let alpha_last = sponge.sample_vec(log2_ceil_usize(num_queries_last));
             let sq_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
                 &prev.root,
@@ -1883,7 +1881,7 @@ pub fn recursive_verifier_with_basis(
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_i).0;
         let sq_i = sorted_unique_queries(&queries_i);
-        let alpha_i = sponge.sample_vec(log2_ceil(num_queries_i));
+        let alpha_i = sponge.sample_vec(log2_ceil_usize(num_queries_i));
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
         }
@@ -2095,7 +2093,7 @@ where
     let num_queries_0 = config.queries[0];
     let (queries_0, raw_0) = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0);
     query_squeezes_out.push(raw_0);
-    let alpha_0 = sponge.sample_vec(log2_ceil(num_queries_0));
+    let alpha_0 = sponge.sample_vec(log2_ceil_usize(num_queries_0));
     let sq_0 = sorted_unique_queries(&queries_0);
     if !verify_level_opens(
         expected_initial_root,
@@ -2204,7 +2202,7 @@ where
             // Basis-induction challenge for the LAST commitment, sampled after
             // `yr` was observed and the queries are fixed (mirror of the
             // dense verifier, so both stay in lockstep).
-            let alpha_last = sponge.sample_vec(log2_ceil(num_queries_last));
+            let alpha_last = sponge.sample_vec(log2_ceil_usize(num_queries_last));
             let sq_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
                 &prev.root,
@@ -2341,7 +2339,7 @@ where
         let (queries_i, raw_i) = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_i);
         query_squeezes_out.push(raw_i);
         let sq_i = sorted_unique_queries(&queries_i);
-        let alpha_i = sponge.sample_vec(log2_ceil(num_queries_i));
+        let alpha_i = sponge.sample_vec(log2_ceil_usize(num_queries_i));
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
         }
@@ -2728,7 +2726,7 @@ mod tests {
                 .map(|_| (0..lanes).map(|_| F64(rng.next_u64())).collect())
                 .collect();
             let v_challenges: Vec<F192> = (0..lanes_log).map(|_| rng.ext()).collect();
-            let alpha: Vec<F192> = (0..log2_ceil(n_queries)).map(|_| rng.ext()).collect();
+            let alpha: Vec<F192> = (0..log2_ceil_usize(n_queries)).map(|_| rng.ext()).collect();
 
             let sks_vks = eval_sk_at_vks(log_msg_cols);
             let dense = induce_sumcheck_poly(log_msg_cols, &sks_vks, &rows, &v_challenges, &qs, &alpha);
