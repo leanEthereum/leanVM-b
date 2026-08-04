@@ -40,7 +40,7 @@ Instruction & Operands & Semantics\\
 \end{tabularx}
 \end{center}
 
-\texttt{PACK64X2} groups the low limbs of two physical $\E$-valued cells into one canonical $128$-bit cell.
+\texttt{PACK64X2} groups the low limbs of two $\E$-valued memory cells into one canonical $128$-bit cell.
 
 \texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE3 operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\mu$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
 \[

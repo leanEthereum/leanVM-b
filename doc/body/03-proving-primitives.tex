@@ -1,30 +1,40 @@
 % !TeX root = ../drafts/03-proving-primitives.tex
 \section{Proving primitives}\label{sec:prelim}
 
-Every committed column is in $\K$, while every random challenge is in $\E$, for soundness.
-
-\begin{definition}[Table, column, virtual column]\label{def:column}
-A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$, and a \emph{table} is a group of columns of equal height. Each column is either \emph{committed} or \emph{virtual}: a virtual column is a fixed $\K$-linear function of the committed columns of its own table, and carries no commitment. A $192$-bit \emph{value} is carried by three columns read as $V=V_0+V_1y+V_2y^{2}$; addresses, registers and counters are single columns.
+\begin{definition}[Iverson bracket]\label{def:iverson}
+For a proposition $P$, \ $[P]=1$ if $P$ holds and $[P]=0$ otherwise.
 \end{definition}
 
 \begin{definition}[Multilinear extension]\label{def:mle}
-The \emph{multilinear extension} of $f:\cube{\kappa}\to\E$ is the unique $\mle{f}:\E^{\kappa}\to\E$ of degree at most one in each variable that agrees with $f$ on $\cube{\kappa}$. Both a column (Definition~\ref{def:column}, $\K$-valued) and a product-tree layer (\S\ref{sec:gkr}, $\E$-valued) are such an $f$.
+The \emph{multilinear extension} of $f:\cube{\kappa}\to\E$ is the unique $\mle{f}:\E^{\kappa}\to\E$ of degree at most one in each variable that agrees with $f$ on $\cube{\kappa}$.
 \end{definition}
+
 
 \begin{definition}[Equality indicator]\label{def:eq}
-For $r,X\in\E^{\kappa}$, \ $\eq(r,X)=\prod_{i}\bigl(1+r_i+X_i\bigr)$, the characteristic-two form of $\prod_i\bigl(r_iX_i+(1+r_i)(1+X_i)\bigr)$.
+For $X,Y\in\E^{\kappa}$,
+\[
+  \eq(X,Y)= \prod_i\bigl(X_iY_i+(1+X_i)(1+Y_i)\bigr) = \prod_{i=1}^{\kappa}\bigl(1+X_i+Y_i\bigr).
+\]
 \end{definition}
 
+$\eq$ is multilinear, and $\eq(X,Y)=[X=Y]$ on the boolean hypercube $\cube{2\kappa}$.
+
 \begin{fact}[$\eq$ carries the interpolation weights]\label{fact:eq}
-On Boolean arguments $\eq$ is the equality indicator: $\eq(r,x)=1$ if $r=x$ and $0$ otherwise, for $r,x\in\cube{\kappa}$. For an arbitrary point $r\in\E^{\kappa}$,
+For an arbitrary point $r\in\E^{\kappa}$,
 \[
-  \mle{f}(r)=\sum_{x\in\cube{\kappa}}f(x)\,\eq(r,x),
+  \mle{f}(r)=\sum_{x\in\cube{\kappa}}f(x)\,\eq(r,x).
 \]
-so an evaluation of $\mle{f}$ is a weighted sum over the table of $f$, with weights the verifier can compute in $O(\kappa)$ operations.
 \end{fact}
 
+
+Every committed column is in $\K$, while every random challenge is in $\E$, for soundness.
+
+\begin{definition}[Table, column, virtual column]\label{def:column}
+A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$, and a \emph{table} is a group of columns of equal height. Each column is either \emph{committed} or \emph{virtual}: a virtual column is a fixed $\K$-linear combination of the committed columns of its own table. A $192$-bit \emph{value} (such as memory words) is indirectly committed by three columns, read as $V=V_0+V_1y+V_2y^{2}$. Addresses, registers and counters are single columns.
+\end{definition}
+
 \begin{fact}[Virtual columns are free]\label{fact:virtual}
-Let $V=L(C)$ be virtual, $L$ a $\K$-linear map of the committed columns $C$ of its table. Extending $L$ $\E$-linearly, it commutes with the multilinear extension: $\mle{V}(\zeta)=L\bigl(\mle{C}(\zeta)\bigr)$ for every $\zeta\in\E^{\kappa}$. One opening of the committed columns therefore evaluates every virtual column of the table, which is why the free increments $\gen\cdot\pc$ and $\gen\cdot\cnt$ cost nothing (\S\ref{sec:m3}).
+Let $V=L(C)$ be virtual, $L$ a $\K$-linear map of the committed columns $C$ of its table, so $V$ is $\K$-valued like any other column. Extended $\E$-linearly, which is what evaluating at an $\E$-point asks of it, $L$ commutes with the multilinear extension: $\mle{V}(\zeta)=L\bigl(\mle{C}(\zeta)\bigr)$ for every $\zeta\in\E^{\kappa}$. One opening of the committed columns therefore evaluates every virtual column of the table, which is why the free increments $\gen\cdot\pc$ and $\gen\cdot\cnt$ cost nothing (\S\ref{sec:m3}).
 \end{fact}
 
 Two reductions turn statements about tables into evaluations of them.

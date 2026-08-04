@@ -76,7 +76,7 @@ which gives $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings (in c
 
 \subsection{\texttt{JUMP}}\label{sec:tab-jump}
 
-A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary $192$-bit word. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a committed boolean indicator $b=[\,c\neq0\,]$, which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
+A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary $192$-bit word. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a committed boolean indicator $b=[\,c\neq0\,]$ (Definition~\ref{def:iverson}), which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
 \[
   b=c\cdot w,\qquad c\,(b+1)=0 .
 \]

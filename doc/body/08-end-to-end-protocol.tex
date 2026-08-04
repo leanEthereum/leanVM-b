@@ -13,7 +13,7 @@ Fixed once, public, and shared by prover and verifier: the fields, the bus shape
 \E=\K[y]/(y^3+y+1),\qquad
 \gen=x,\qquad \operatorname{ord}(\gen)=2^{64}-1.
 \]
-Committed columns are $\K$-valued; machine words and challenges are $\E$-valued (\S\ref{sec:prelim}). Every bus tuple has width $m=12$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
+Every column is $\K$-valued, committed or virtual, and so is every constraint on them (\S\ref{sec:prelim}); a machine word is an $\E$-element only in the sense that its three $\K$-lanes are read as one, and challenges are $\E$-valued for soundness. Every bus tuple has width $m=12$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
 
 \paragraph{Domain separators.} Coordinate $0$ of every tuple is a domain separator, naming the interaction it belongs to (\S\ref{sec:m3}):
 \[
