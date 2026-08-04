@@ -19,28 +19,55 @@ For $X,Y\in\E^{\kappa}$,
 
 $\eq$ is multilinear, and $\eq(X,Y)=[X=Y]$ on the boolean hypercube $\cube{2\kappa}$.
 
+\begin{definition}[Inner product over the boolean hypercube]\label{def:inner}
+For $a,b$ on $\cube{\kappa}$, \ $\inner{a}{b}=\sum_{x\in\cube{\kappa}}a(x)\,b(x)$.
+\end{definition}
+
 \begin{fact}[$\eq$ carries the interpolation weights]\label{fact:eq}
 For an arbitrary point $r\in\E^{\kappa}$,
 \[
-  \mle{f}(r)=\sum_{x\in\cube{\kappa}}f(x)\,\eq(r,x).
+  \mle{f}(r)=\sum_{x\in\cube{\kappa}}f(x)\,\eq(r,x)=\inner{f}{\eq(r,\cdot)}.
 \]
 \end{fact}
 
-
-Every committed column is in $\K$, while every random challenge is in $\E$, for soundness.
 
 \begin{definition}[Table, column, virtual column]\label{def:column}
 A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$, and a \emph{table} is a group of columns of equal height. Each column is either \emph{committed} or \emph{virtual}: a virtual column is a fixed $\K$-linear combination of the committed columns of its own table. A $192$-bit \emph{value} (such as memory words) is indirectly committed by three columns, read as $V=V_0+V_1y+V_2y^{2}$. Addresses, registers and counters are single columns.
 \end{definition}
 
-\begin{fact}[Virtual columns are free]\label{fact:virtual}
-Let $V=L(C)$ be virtual, $L$ a $\K$-linear map of the committed columns $C$ of its table, so $V$ is $\K$-valued like any other column. Extended $\E$-linearly, which is what evaluating at an $\E$-point asks of it, $L$ commutes with the multilinear extension: $\mle{V}(\zeta)=L\bigl(\mle{C}(\zeta)\bigr)$ for every $\zeta\in\E^{\kappa}$. One opening of the committed columns therefore evaluates every virtual column of the table, which is why the free increments $\gen\cdot\pc$ and $\gen\cdot\cnt$ cost nothing (\S\ref{sec:m3}).
+\begin{fact}[Opening virtual column claims]\label{fact:virtual}
+Let $V=\sum_c\lambda_c C_c$ be a virtual column, the $C_c$ being committed columns and $\lambda_c\in\K$ (Definition~\ref{def:column}). For any weight $W$,
+\[
+  \inner{W}{V}=\sum_c\lambda_c\,\inner{W}{C_c},
+\]
+so a claim on $V$ is that same $\K$-combination of claims on the $C_c$, against the same $W$.
 \end{fact}
 
-Two reductions turn statements about tables into evaluations of them.
+To prove $\inner{W}{V}=v$, the prover sends a $v_c$ per committed column, claiming $\inner{W}{C_c}=v_c$. The verifier checks $v=\sum_c\lambda_c v_c$ from the public $\lambda_c$, and the $v_c$ form new claims (that remain to be discharged).
+
+\begin{lemma}[Schwartz--Zippel]\label{lem:sz}
+A nonzero $P\in\E[X_1,\dots,X_{\kappa}]$ of total degree at most $d$ satisfies
+\[
+  \Pr_{r\leftarrow\E^{\kappa}}\bigl[P(r)=0\bigr]\;\le\;\frac{d}{|\E|}.
+\]
+A nonzero multilinear has total degree at most $\kappa$, so it vanishes at a random point with probability at most $\kappa/|\E|$.
+\end{lemma}
+
+\begin{proof}
+Induction on $\kappa$. For $\kappa=1$ a nonzero univariate of degree at most $d$ has at most $d$ roots, so a uniform $r_1$ is one of them with probability at most $d/|\E|$. For $\kappa>1$ write $P$ in its last variable,
+\[
+  P(X_1,\dots,X_{\kappa})=\sum_{k=0}^{d}X_{\kappa}^{\,k}\,Q_k(X_1,\dots,X_{\kappa-1}),
+\]
+and let $k^{\ast}$ be the largest $k$ with $Q_k\neq0$. Then $Q_{k^{\ast}}$ is nonzero in $\kappa-1$ variables of total degree at most $d-k^{\ast}$, so by induction $Q_{k^{\ast}}(r_{<\kappa})=0$ with probability at most $(d-k^{\ast})/|\E|$. Fix $r_{<\kappa}$ with $Q_{k^{\ast}}(r_{<\kappa})\neq0$: then $X_{\kappa}\mapsto P(r_{<\kappa},X_{\kappa})$ has degree exactly $k^{\ast}$, hence at most $k^{\ast}$ roots, and a uniform $r_{\kappa}$ is one with probability at most $k^{\ast}/|\E|$. Adding the two bounds gives $d/|\E|$.
+\end{proof}
+
 
 \begin{fact}[Sumcheck~\cite{LFKN92}]\label{fact:sumcheck}
-Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$ on a polynomial $P$ in $\kappa$ variables to a single evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$. A false claim survives with probability at most $\deg P\cdot\kappa/|\E|$.
+Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$, on a $P$ of degree at most $d$ in each variable, to one evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$. Round $j$ carries a claim $s_{j-1}$, with $s_0=s$: the prover sends the univariate
+\[
+  h_j(Y)=\sum_{x\in\cube{\kappa-j}}P(\rho_1,\dots,\rho_{j-1},Y,x)
+\]
+of degree at most $d$, the verifier checks $h_j(0)+h_j(1)=s_{j-1}$, samples $\rho_j\leftarrow\E$ and takes $s_j=h_j(\rho_j)$. It ends holding $s_{\kappa}=P(\rho)$, for the caller to settle. A false $s$ survives with probability at most $d\kappa/|\E|$.
 \end{fact}
 
 \begin{definition}[Zerocheck]\label{def:zerocheck}
@@ -48,7 +75,7 @@ To prove that $P$ vanishes on $\cube{\kappa}$, the verifier samples $r\in\E^{\ka
 \[
   \sum_{x\in\cube{\kappa}}P(x)\,\eq(r,x)=0 .
 \]
-By Fact~\ref{fact:eq} that sum is the multilinear extension of $P|_{\cube{\kappa}}$ evaluated at $r$, so it vanishes identically in $r$ exactly when $P$ vanishes on the cube, and a $P$ that does not survives the random $r$ with probability at most $\kappa/|\E|$.
+By Fact~\ref{fact:eq} that sum is $\mle{g}(r)$, for $g$ the table of $P$'s values on the boolean hypercube: the zero polynomial if $P$ vanishes there, and otherwise a nonzero multilinear, which a random $r$ sends to $0$ with probability at most $\kappa/|\E|$ (Lemma~\ref{lem:sz}).
 \end{definition}
 
 \begin{definition}[Inner-product commitment scheme]\label{def:ipcs}
@@ -57,7 +84,8 @@ An \emph{inner-product commitment scheme} commits to a multilinear $g:\cube{M}\t
   \sum_{w\in\cube{M}}W(w)\,g(w)=c,
   \qquad c\in\E .
 \]
-The commitment is over $\K$, the opening over $\E$. A point evaluation $\mle{g}(r)=c$ is the special case $W=\eq(r,\cdot)$, by Fact~\ref{fact:eq}.
+The commitment is over $\K$, the opening over $\E$.
 \end{definition}
 
-WHIR~\cite{ACFY25} and BaseFold~\cite{ZCF23}/Ligerito~\cite{NA25} are such schemes. \S\ref{sec:rs-dense} fixes the one used here, and Annex~\ref{annex:pcs} specifies it with its round-by-round soundness, where Definition~\ref{def:ipcs} appears over a generic binary field as Definition~\ref{def:claim}.
+WHIR~\cite{ACFY25} is such a scheme.
+

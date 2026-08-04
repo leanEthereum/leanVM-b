@@ -37,7 +37,7 @@ Instruction fetch is the same as the memory construction (\S\ref{sec:memchan}) w
 
 The memory seed and finalize tuples (\S\ref{sec:memchan}) run over every address $\gen^{i}$, $i=0,\dots,2^{h}-1$. Settling the grand product leaves the verifier evaluating, at a random $\zeta\in\E^{h}$, the MLE of this \emph{index column} $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$. It is not committed: as $\gen$-powers the MLE factors, costing $O(h)$.
 
-Place address $\gen^{i}$ at the cube point $w\in\cube h$ of $i$'s bits, so $i=\sum_k 2^{k}w_k$ and
+Place address $\gen^{i}$ at the boolean hypercube point $w\in\cube h$ of $i$'s bits, so $i=\sum_k 2^{k}w_k$ and
 \[
   \gen^{\,i}\;=\;\prod_{k=0}^{h-1}\bigl(\gen^{\,2^{k}}\bigr)^{w_k}.
 \]

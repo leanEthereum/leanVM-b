@@ -15,7 +15,7 @@ The arithmetization follows the M3 model (multi-multiset matching)~\cite{m3}. Th
 
 \subsection{Proving the local constraints}\label{sec:air}
 
-Each table must satisfy its own constraints on every one of its own rows. Instead of one zerocheck per table, over cubes of different sizes, we batch them into a single sumcheck.
+Each table must satisfy its own constraints on every one of its own rows. Instead of one zerocheck per table, over boolean hypercubes of different sizes, we batch them into a single sumcheck.
 
 Table $T_j$ has $2^{\tau_j}$ rows and constraints $C_{j,1},\dots,C_{j,s_j}$: polynomials of degree at most $d$ in a row's column values, required to vanish on every row ($d=2$ throughout). Write $\sigma=\sum_j s_j$ for the total number of constraints and $n=\max_j\tau_j$ for the tallest table's height.
 
@@ -25,13 +25,13 @@ Table $T_j$ has $2^{\tau_j}$ rows and constraints $C_{j,1},\dots,C_{j,s_j}$: pol
   \qquad
   S_j\;=\;\widetilde{C_j}\bigl(r_{<\tau_j}\bigr)\;=\;\sum_{x\in\cube{\tau_j}}C_j(x)\,\eq(r_{<\tau_j},x).
 \]
-The ranges of $\eta$-powers are \emph{disjoint}, so no table's violation can be cancelled by another's, and proving $\sum_j S_j=0$ proves every $C_{j,i}$ vanishes on every row of its own table, up to Schwartz--Zippel error $(n+\sigma)/|\E|$ over $r$ and $\eta$. (The identities keep disjoint ranges throughout. \S\ref{sec:leafstack} appends three more entries per table that deliberately \emph{share} their powers, since only their total over tables has to be pinned; that lengthens the $\eta$-degree, and the error, by $3$.)
+The ranges of $\eta$-powers are \emph{disjoint}, so no table's violation can be cancelled by another's, and proving $\sum_j S_j=0$ proves every $C_{j,i}$ vanishes on every row of its own table, up to Schwartz--Zippel error $(n+\sigma)/|\E|$ over $r$ and $\eta$ (Lemma~\ref{lem:sz}). (The identities keep disjoint ranges throughout. \S\ref{sec:leafstack} appends three more entries per table that deliberately \emph{share} their powers, since only their total over tables has to be pinned; that lengthens the $\eta$-degree, and the error, by $3$.)
 
-\paragraph{One sumcheck.} The $S_j$ are sumcheck claims of different lengths. Lift each onto the common cube $\cube n$ by attaching the indicator of the all-ones assignment on the $n-\tau_j$ variables $T_j$ does not use:
+\paragraph{One sumcheck.} The $S_j$ are sumcheck claims of different lengths. Lift each onto the common boolean hypercube $\cube n$ by attaching the indicator of the all-ones assignment on the $n-\tau_j$ variables $T_j$ does not use:
 \[
   f_j(X_0,\dots,X_{n-1})\;=\;\bigl(C_j\,\eq(r_{<\tau_j},\cdot)\bigr)(X_0,\dots,X_{\tau_j-1})\cdot\prod_{i\ge\tau_j}X_i .
 \]
-Because $\sum_x\prod_i x_i=1$ on any cube, $\sum_{x\in\cube n}f_j(x)=S_j$, so with $F=\sum_j f_j$ the whole statement is the single claim $\sum_{x\in\cube n}F(x)=0$, proven by $n$ rounds of sumcheck on $F$.
+Because $\sum_x\prod_i x_i=1$ on any boolean hypercube, $\sum_{x\in\cube n}f_j(x)=S_j$, so with $F=\sum_j f_j$ the whole statement is the single claim $\sum_{x\in\cube n}F(x)=0$, proven by $n$ rounds of sumcheck on $F$.
 
 The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far (the same for every table that is waiting) and $S_j=0$. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. This is back-loaded batching: a short claim waits, then joins weighted by the rounds it sat out.
 
@@ -63,7 +63,7 @@ each coordinate $\sigma_i$ a committed column value, a virtual column value, or 
 \prod_{\sigma\ \text{pulled}}\bigl(\gamma-\pi_\alpha(\sigma)\bigr).
 \label{eq:gp}
 \end{equation}
-\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\sigma\bigl(X-\pi_\alpha(\sigma)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When they differ, Schwartz--Zippel applies jointly to the tuple-fingerprinting challenge $\alpha$, the product challenge $\gamma$, the padding correction, and the GKR reductions. If each side has at most $2^\mu$ factors and tuples have width $m$, a conservative total degree bound is
+\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\sigma\bigl(X-\pi_\alpha(\sigma)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When they differ, Lemma~\ref{lem:sz} applies jointly to the tuple-fingerprinting challenge $\alpha$, the product challenge $\gamma$, the padding correction, and the GKR reductions. If each side has at most $2^\mu$ factors and tuples have width $m$, a conservative total degree bound is
 \[
   2m\,2^\mu+8(\mu+1)^2.
 \]

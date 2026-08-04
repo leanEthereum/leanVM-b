@@ -57,7 +57,7 @@ Each table is padded to a power of two. Padding rows are a fixed default, not al
 
 \subsection{Public input}\label{sec:e2e-pi}
 
-The public input is the first two memory cells $\mem[0],\mem[1]$, each a $192$-bit word, fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address cube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so on \emph{each} committed memory limb $M_\ell$ ($\ell\in\{0,1,2\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1-r)\,\mem[0]_\ell+r\,\mem[1]_\ell$, which the verifier forms itself from the public words. It samples $r_m\in\E$ and checks all three limbs,
+The public input is the first two memory cells $\mem[0],\mem[1]$, each a $192$-bit word, fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address hypercube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so on \emph{each} committed memory limb $M_\ell$ ($\ell\in\{0,1,2\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1-r)\,\mem[0]_\ell+r\,\mem[1]_\ell$, which the verifier forms itself from the public words. It samples $r_m\in\E$ and checks all three limbs,
 \[
   \widetilde M_\ell(r_m,0,\dots,0)\;=\;\widetilde{\mathrm{PI}}_\ell(r_m),\qquad \ell\in\{0,1,2\}.
 \]
