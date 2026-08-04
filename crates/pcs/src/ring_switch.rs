@@ -14,7 +14,7 @@
 //!
 //! With f = 64 (packing degree over F_2) and e = 192 (opening degree), this
 //! converts one evaluation claim on
-//! the bit-witness MLE at an E-point into a Ligerito sumcheck claim on the
+//! the bit-witness MLE at an E-point into a WHIR sumcheck claim on the
 //! packed multilinear (a `Vec<F64>`, one word per 64 bits, see
 //! [`super::pack`]) against a transparent E-valued weight vector
 //! `rs_eq_ind`.
@@ -53,11 +53,11 @@
 //!    `rs_eq_ind[y] = Phi(eq(r_suffix, y))` where `Phi : E -> E` is the
 //!    composed map above. Completeness:
 //!    `sum_y rs_eq_ind[y] * packed[y] == sumcheck_claim`, which is exactly
-//!    the claim shape [`super::ligerito::recursive_prover_with_basis`]
+//!    the claim shape [`super::whir::recursive_prover_with_basis`]
 //!    proves (with `b_initial = rs_eq_ind`, `target = sumcheck_claim`).
 //!    A nonzero discrepancy gives a nonzero polynomial in the six challenges;
 //!    its total degree is below `2^32`, hence its failure probability is below
-//!    `2^-160` before the Ligerito list-size factor.
+//!    `2^-160` before the WHIR list-size factor.
 //!
 //! ## Prover vs. verifier paths for `rs_eq_ind`
 //!
@@ -65,7 +65,7 @@
 //!   small byte table, and combines the claims directly into one dense PCS
 //!   weight. It never materializes a dense vector per claim.
 //! - [`eval_rs_eq`] lets the verifier avoid materializing the vector entirely:
-//!   its MLE at the Ligerito final point is evaluated in
+//!   its MLE at the WHIR final point is evaluated in
 //!   `O((m-6) * 192^2)` bit-ops plus `O((m-6) * 192)` E-multiplications via
 //!   the DP24 tensor-algebra iterative algorithm (DP24 section 1.3 Figure 3).
 //!
@@ -76,12 +76,12 @@ use primitives::bits::transpose_8x8_bits;
 use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
-use super::ligerito::{build_eq_table_ext, inner_product_base_ext};
 use super::pack::PACKING_WIDTH;
 use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
+use super::whir::{build_eq_table_ext, inner_product_base_ext};
 
 /// Total degree of the six-challenge composed batching map. This is the
-/// conservative degree used by the Ligerito list-size soundness accounting.
+/// conservative degree used by the WHIR list-size soundness accounting.
 pub const RING_SWITCH_SOUNDNESS_DEGREE: usize =
     (1usize << 31) + (1usize << 15) + (1usize << 7) + (1usize << 3) + (1usize << 1) + 1;
 
@@ -534,7 +534,7 @@ pub struct RingSwitchProof {
 }
 
 /// What both prover and (dense) verifier compute as a result of the
-/// reduction: the transparent weight vector and the Ligerito target.
+/// reduction: the transparent weight vector and the WHIR target.
 #[cfg(test)]
 #[derive(Clone, Debug)]
 pub struct RingSwitchOutput {
@@ -543,12 +543,12 @@ pub struct RingSwitchOutput {
 }
 
 /// Verifier-side output of [`verify_finish`]: everything needed to drive
-/// the Ligerito consistency check without materializing `rs_eq_ind`.
+/// the WHIR consistency check without materializing `rs_eq_ind`.
 #[derive(Clone, Debug)]
 pub struct RingSwitchVerifierOutput {
     pub sumcheck_claim: F192,
     /// Images of the coordinate basis under the batching map; feed them to
-    /// [`eval_rs_eq`] at the Ligerito final point.
+    /// [`eval_rs_eq`] at the WHIR final point.
     pub coordinate_weights: Vec<F192>,
 }
 
@@ -571,7 +571,7 @@ pub enum VerifyError {
 ///   consistent claim, so this is a cheap integration check, 64 E-mults).
 /// - `sponge` for sampling the row-batching map challenges.
 ///
-/// Output: the proof message `s_hat_v` (64 E values) plus the Ligerito
+/// Output: the proof message `s_hat_v` (64 E values) plus the WHIR
 /// inputs `(rs_eq_ind, sumcheck_claim)`; open with
 /// `recursive_prover_with_basis(config, packed, rs_eq_ind, sumcheck_claim, ..)`.
 #[cfg(test)]
@@ -712,7 +712,7 @@ pub fn verify(
 }
 
 /// Polylog-cost verifier: same transcript as [`verify`] but does NOT build
-/// the dense `rs_eq_ind`. Pair with [`eval_rs_eq`] at the Ligerito final
+/// the dense `rs_eq_ind`. Pair with [`eval_rs_eq`] at the WHIR final
 /// point (e.g. inside `recursive_verifier_with_basis_succinct`'s terminal
 /// weight closure).
 #[cfg(test)]
@@ -763,7 +763,7 @@ pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> Ri
 // Polylog evaluation of MLE(rs_eq_ind)
 // ---------------------------------------------------------------------------
 
-/// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the Ligerito final
+/// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the WHIR final
 /// challenge point, following DP24 section 1.3 Figure 3.
 ///
 /// ## Derivation
@@ -794,7 +794,7 @@ pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> Ri
 ///
 /// * `z_vals`: the ring-switch suffix point,
 ///   length L = m - 6.
-/// * `query`: the Ligerito final challenges, length L, same coordinate order.
+/// * `query`: the WHIR final challenges, length L, same coordinate order.
 /// * `coordinate_weights`: the 192 coordinate batching weights (from
 ///   [`RingSwitchVerifierOutput`]).
 pub fn eval_rs_eq(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) -> F192 {
@@ -822,14 +822,14 @@ pub fn eval_rs_eq(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{
-        LigeritoProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
-        recursive_verifier_with_basis_succinct,
-    };
-    use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
     use crate::merkle::Hash;
     use crate::pack::LOG_PACKING;
     use crate::pack::pack_witness;
+    use crate::whir::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
+    use crate::whir::{
+        WhirProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
+        recursive_verifier_with_basis_succinct,
+    };
     use primitives::test_rng::Rng;
 
     /// Number of Frobenius terms the composed batching map expands to: the
@@ -1121,12 +1121,12 @@ mod tests {
         assert_eq!(eval_rs_eq(&z, &query, &coordinate_weights), dense);
     }
 
-    // -- end-to-end: reduction + ligerito opening --------------------------
+    // -- end-to-end: reduction + whir opening --------------------------
 
     /// Configs for a K-witness of `2^log_n` words: prefer the production
     /// Secure-profile derivation; fall back to the ad-hoc default_config
     /// shape at test sizes below its feasibility floor (same fallback the
-    /// ligerito tests use).
+    /// whir tests use).
     fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
         if let Ok(pv) = configs_for(log_n) {
             return pv;
@@ -1141,7 +1141,7 @@ mod tests {
                 }
             }
         }
-        panic!("no feasible ligerito config at log_n = {log_n}");
+        panic!("no feasible whir config at log_n = {log_n}");
     }
 
     struct E2e {
@@ -1152,14 +1152,14 @@ mod tests {
         claim: F192,
         root: Hash,
         rs_proof: RingSwitchProof,
-        lig_proof: LigeritoProof,
+        whir_proof: WhirProof,
     }
 
     const E2E_DOMAIN: &[u8] = b"ring-switch-e2e-test";
 
     /// Full prover pipeline: random bit witness, pack, commit, ring switch
     /// (plain-point eq weights or a caller-supplied generalized weight
-    /// vector), then the ligerito opening on (rs_eq_ind, sumcheck_claim),
+    /// vector), then the whir opening on (rs_eq_ind, sumcheck_claim),
     /// all over one continuous transcript.
     fn prove_e2e(m: usize, seed: u64, generalized_weights: bool) -> E2e {
         let mut rng = Rng::new(seed);
@@ -1182,7 +1182,7 @@ mod tests {
         let mut ch = Sponge::new(E2E_DOMAIN, &[]);
         let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ch);
         assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
-        let lig_proof = recursive_prover_with_basis(
+        let whir_proof = recursive_prover_with_basis(
             &pc,
             &packed,
             zk_alloc::ArenaVec::from_slice(&out.rs_eq_ind),
@@ -1199,12 +1199,12 @@ mod tests {
             claim,
             root: cm.root,
             rs_proof,
-            lig_proof,
+            whir_proof,
         }
     }
 
     /// Dense verification: ring-switch verify (rebuilds rs_eq_ind), then the
-    /// dense ligerito verifier with b_initial = rs_eq_ind.
+    /// dense whir verifier with b_initial = rs_eq_ind.
     fn verify_e2e_dense(e: &E2e) -> bool {
         let mut ch = Sponge::new(E2E_DOMAIN, &[]);
         let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &e.rs_proof, &mut ch) {
@@ -1213,7 +1213,7 @@ mod tests {
         };
         recursive_verifier_with_basis(
             &e.vc,
-            &e.lig_proof,
+            &e.whir_proof,
             &out.rs_eq_ind,
             out.sumcheck_claim,
             &e.root,
@@ -1222,7 +1222,7 @@ mod tests {
     }
 
     /// Succinct verification: verify_succinct (no rs_eq_ind), then the
-    /// succinct Ligerito verifier whose terminal closure evaluates
+    /// succinct WHIR verifier whose terminal closure evaluates
     /// MLE(rs_eq_ind) once via `eval_rs_eq`.
     fn verify_e2e_succinct(e: &E2e) -> bool {
         let mut ch = Sponge::new(E2E_DOMAIN, &[]);
@@ -1234,7 +1234,7 @@ mod tests {
         let coordinate_weights = out.coordinate_weights.clone();
         recursive_verifier_with_basis_succinct(
             &e.vc,
-            &e.lig_proof,
+            &e.whir_proof,
             e.log_n,
             out.sumcheck_claim,
             &e.root,
@@ -1262,7 +1262,7 @@ mod tests {
     /// Tampering: a bit-flip in s_hat_v breaks the claim check; a
     /// claim-preserving forgery (two entries adjusted so the weighted sum is
     /// unchanged) passes the claim check but diverges the FS transcript, so
-    /// the ligerito opening must reject it. A tampered claim value is
+    /// the whir opening must reject it. A tampered claim value is
     /// rejected outright. Dense and succinct paths must agree throughout.
     #[test]
     fn end_to_end_rejects_tampering() {
@@ -1271,7 +1271,7 @@ mod tests {
         // Plain bit flip: caught by the claim check.
         let mut bad = E2e {
             rs_proof: e.rs_proof.clone(),
-            lig_proof: e.lig_proof.clone(),
+            whir_proof: e.whir_proof.clone(),
             vc: e.vc.clone(),
             log_n: e.log_n,
             prefix_weights: e.prefix_weights.clone(),
@@ -1286,7 +1286,7 @@ mod tests {
         // Claim-preserving forgery: s'_1 = s_1 + d, s'_0 = s_0 + w_1*d/w_0
         // keeps sum_i w_i s'_i = claim, so the claim check passes; the
         // downstream opening must still reject (the batching weights and
-        // target diverge from what the ligerito proof was built for).
+        // target diverge from what the whir proof was built for).
         let mut rng = Rng::new(99);
         let d = rng.ext();
         let w0 = e.prefix_weights[0];

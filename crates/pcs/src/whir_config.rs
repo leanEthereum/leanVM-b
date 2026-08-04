@@ -5,13 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 // Ported from bolt-rs (https://github.com/bcc-research/bolt-rs,
-// `ligerito_recursive.rs`).
+// `whir_recursive.rs`).
 
-//! Field-independent configuration and soundness analysis for Ligerito.
+//! Field-independent configuration and soundness analysis for WHIR.
 //!
-//! Source of truth: `doc/body/b-polynomial-commitment-scheme.tex` ("A note on WHIR/Ligerito over binary
-//! fields"), Theorem `thm:rbr`. Its per-verifier-message error table maps
-//! onto the per-level checks in [`LigeritoSecurityConfig::validate`]:
+//! Source of truth: `doc/body/b-polynomial-commitment-scheme.tex`, annex B of
+//! the spec ("The polynomial commitment scheme"), Theorem `thm:rbr`. Its
+//! per-verifier-message error table maps onto the per-level checks in
+//! [`WhirSecurityConfig::validate`]:
 //!
 //! - batching challenges -> `johnson_algebraic_bits` (this implementation
 //!   batches with an eq-vector challenge plus scalar glue challenges instead
@@ -33,7 +34,7 @@ use primitives::log2_ceil_usize;
 // Config
 // ===================================================================
 
-// The production Ligerito configuration: rate-1/2 Johnson list decoding with
+// The production WHIR configuration: rate-1/2 Johnson list decoding with
 // OOD binding and 128-bit round-by-round soundness over F192.
 
 /// Round-by-round soundness target (bits): every verifier-challenge transition
@@ -47,7 +48,7 @@ pub const LOG_INV_RATE_0: usize = 1;
 pub const MIN_LOG_INV_RATE: usize = 1;
 pub const MAX_LOG_INV_RATE: usize = 4;
 
-/// Validate a production Ligerito inverse-rate logarithm.
+/// Validate a production WHIR inverse-rate logarithm.
 pub fn validate_log_inv_rate(log_inv_rate: usize) -> Result<(), String> {
     if !(MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE).contains(&log_inv_rate) {
         return Err(format!(
@@ -88,7 +89,7 @@ const _: () = assert!(RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR <= SUBSEQUENT_FOLDIN
 /// clear instead of committed and folded further.
 pub const RESIDUAL_MAX_LOG: usize = 5;
 
-/// Shape plus per-level soundness parameters for one Ligerito opening. Prover
+/// Shape plus per-level soundness parameters for one WHIR opening. Prover
 /// and verifier read exactly the same numbers, hence the single struct and the
 /// [`VerifierConfig`] alias.
 #[derive(Clone, Debug)]
@@ -98,7 +99,7 @@ pub struct ProverConfig {
     pub initial_k: usize,
     pub level_ks: Vec<usize>,
     /// Per-level query counts (L0, L1, ..., L_r). Length = level_steps + 1.
-    /// [`LigeritoSecurityConfig::derive_config_with_log_inv_rate`] fills these
+    /// [`WhirSecurityConfig::derive_config_with_log_inv_rate`] fills these
     /// from the per-level soundness analysis.
     pub queries: Vec<usize>,
     /// Per-level **query-phase** PoW grinding bits (L0, L1, ..., L_r), ground
@@ -182,9 +183,9 @@ pub fn udr_queries(log_inv_rate: usize) -> usize {
     (UDR_TARGET_BITS / per_q).ceil() as usize
 }
 
-/// Build an ad-hoc Ligerito config from the raw PCS shape, WITHOUT the
+/// Build an ad-hoc WHIR config from the raw PCS shape, WITHOUT the
 /// per-level soundness derivation of
-/// [`LigeritoSecurityConfig::derive_config_with_log_inv_rate`].
+/// [`WhirSecurityConfig::derive_config_with_log_inv_rate`].
 /// `log_n` is the packed-witness log size (= `m - LOG_PACKING`).
 ///
 /// Strategy: 3-bit recursive folds (`k_i = 3`) with **decreasing rate** (one
@@ -308,7 +309,7 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
 // Security configuration schema
 // ===================================================================
 //
-// Auditable, per-level spec for a Ligerito instance: query count, grinding
+// Auditable, per-level spec for a WHIR instance: query count, grinding
 // bits, slack-from-Johnson, and the proximity-gap analysis the parameters were
 // derived under.
 //
@@ -328,12 +329,12 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
 // Grinding always lands after the level's Merkle root is observed and before
 // its query positions are sampled, the standard FRI/STARK placement.
 
-/// Parameters for a single level in the multilevel Ligerito ladder.
+/// Parameters for a single level in the multilevel WHIR ladder.
 /// L0 = the upstream `pcs::commit` output (reused, not re-committed);
 /// L1 .. L_{r−1} are the level commits; the final residual `yr` block
 /// is described separately in [`FinalBlockConfig`].
 #[derive(Clone, Debug)]
-pub struct LigeritoLevelConfig {
+pub struct WhirLevelConfig {
     /// PCS rate at this level: codeword expansion factor = 2^log_inv_rate.
     pub log_inv_rate: usize,
     /// Message dimension at this level (log of the number of field columns in
@@ -378,7 +379,7 @@ pub struct FinalBlockConfig {
     pub yr_log_n: usize,
 }
 
-/// Complete security spec for one Ligerito instance, covering a single
+/// Complete security spec for one WHIR instance, covering a single
 /// `(hash, m)` pair.
 ///
 /// **Validation invariants** (checked by [`Self::validate`]):
@@ -392,7 +393,7 @@ pub struct FinalBlockConfig {
 ///    level-shape constraint (each level's input dim equals the
 ///    previous level's `log_msg_cols`).
 #[derive(Clone, Debug)]
-pub struct LigeritoSecurityConfig {
+pub struct WhirSecurityConfig {
     /// Block-encoder log size: m = log₂(witness bit count).
     pub m: usize,
     /// Committed-witness log dimension.
@@ -410,7 +411,7 @@ pub struct LigeritoSecurityConfig {
     /// `"ben_sasson_2025_thm_4_6"`.
     pub analysis_version: String,
     /// Per-level parameters, in order L0, L1, L2, ....
-    pub levels: Vec<LigeritoLevelConfig>,
+    pub levels: Vec<WhirLevelConfig>,
     /// Final residual block descriptor.
     pub final_block: FinalBlockConfig,
 }
@@ -521,7 +522,7 @@ fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
 ///
 /// The general GGR (Gopalan-Guruswami-Raghavendra, Thm 2.5) interleaved bound
 /// `L_int ≤ C(b+r, r)·L_base^r` is only needed to push the list-decoding
-/// radius *past* the Johnson bound toward `δ`. Ligerito deliberately sits at
+/// radius *past* the Johnson bound toward `δ`. WHIR deliberately sits at
 /// `θ = 1 − √ρ − η`, strictly below the Johnson radius by slack `η > 0`, so
 /// that regime never applies and the plain Johnson bound is both correct and
 /// far tighter (it dominates GGR throughout the regime RS can reach).
@@ -556,7 +557,7 @@ fn johnson_algebraic_bits_for(log_inv_rate: usize, log_msg_cols: usize, eta: f64
     ANALYSIS_LOG_Q - (degree as f64).log2() - log2_l
 }
 
-fn johnson_algebraic_bits(level: &LigeritoLevelConfig) -> f64 {
+fn johnson_algebraic_bits(level: &WhirLevelConfig) -> f64 {
     johnson_algebraic_bits_for(level.log_inv_rate, level.log_msg_cols, level.eta, level.queries)
 }
 
@@ -682,7 +683,7 @@ fn optimize_johnson_level(
     })
 }
 
-impl LigeritoLevelConfig {
+impl WhirLevelConfig {
     /// Proximity-gap and per-query soundness bits this level delivers:
     ///   eps_pg_bits    = log₂(q/a) under the Johnson threshold-a formula
     ///   eps_query_bits = Q · log₂(1/(1−γ))
@@ -708,7 +709,7 @@ impl LigeritoLevelConfig {
     }
 }
 
-impl LigeritoSecurityConfig {
+impl WhirSecurityConfig {
     /// Validate that the config is internally consistent and matches the
     /// declared analysis. Returns the first violation found, if any.
     pub fn validate(&self) -> Result<(), String> {
@@ -920,7 +921,7 @@ impl LigeritoSecurityConfig {
             let ilv = shape.log_num_interleaved[i];
             let optimized = optimize_johnson_level(i, rate, cols, ilv, target_bits, query_grind)?;
 
-            levels.push(LigeritoLevelConfig {
+            levels.push(WhirLevelConfig {
                 log_inv_rate: rate,
                 log_msg_cols: cols,
                 log_num_interleaved: ilv,
@@ -992,7 +993,7 @@ mod tests {
         let mut min_pg_bits = f64::INFINITY;
         for log_inv_rate in MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE {
             for m in 22 + crate::LOG_PACKING..=28 + crate::LOG_PACKING {
-                let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(m, log_inv_rate).unwrap();
+                let cfg = WhirSecurityConfig::derive_config_with_log_inv_rate(m, log_inv_rate).unwrap();
                 assert_eq!(cfg.target_security_bits, 128);
                 assert_eq!(cfg.levels[0].log_inv_rate, log_inv_rate);
                 assert_eq!(cfg.levels[0].ood_samples, 0);
@@ -1021,7 +1022,7 @@ mod tests {
 
     #[test]
     fn optimized_eta_query_and_rate_profile_is_stable() {
-        let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(22 + crate::LOG_PACKING, 1).unwrap();
+        let cfg = WhirSecurityConfig::derive_config_with_log_inv_rate(22 + crate::LOG_PACKING, 1).unwrap();
         assert_eq!(
             cfg.levels.iter().map(|level| level.log_inv_rate).collect::<Vec<_>>(),
             [1, 4, 6, 8, 10]
@@ -1040,20 +1041,20 @@ mod tests {
     }
 
     /// Parameter-report helper:
-    /// `LIGERITO_LOG_INV_RATE=2 LIGERITO_NUM_VARS=22 cargo test --release -p pcs print_ligerito_query_counts -- --ignored --nocapture`
+    /// `WHIR_LOG_INV_RATE=2 WHIR_NUM_VARS=22 cargo test --release -p pcs print_whir_query_counts -- --ignored --nocapture`
     #[test]
     #[ignore = "manual parameter report; configure it through environment variables"]
-    fn print_ligerito_query_counts() {
+    fn print_whir_query_counts() {
         let env_usize = |name: &str| {
             std::env::var(name)
                 .unwrap_or_else(|_| panic!("missing {name}"))
                 .parse::<usize>()
                 .unwrap_or_else(|_| panic!("{name} must be a non-negative integer"))
         };
-        let log_inv_rate = env_usize("LIGERITO_LOG_INV_RATE");
-        let num_vars = env_usize("LIGERITO_NUM_VARS");
-        let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(num_vars + crate::LOG_PACKING, log_inv_rate)
-            .unwrap();
+        let log_inv_rate = env_usize("WHIR_LOG_INV_RATE");
+        let num_vars = env_usize("WHIR_NUM_VARS");
+        let cfg =
+            WhirSecurityConfig::derive_config_with_log_inv_rate(num_vars + crate::LOG_PACKING, log_inv_rate).unwrap();
 
         println!(
             "num_vars={}, rate=1/{}",

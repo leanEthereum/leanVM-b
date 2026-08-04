@@ -378,7 +378,7 @@ fn aggregate_deferred_claims(
         })
         .collect();
     for (t, p) in points.iter().enumerate() {
-        let eqt = pcs::ligerito::build_eq_table_ext(p);
+        let eqt = pcs::whir::build_eq_table_ext(p);
         for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
             *w += gbc[t] * e;
         }
@@ -472,7 +472,7 @@ fn aggregate_deferred_claims(
             fold_lsb(m, r);
         }
     }
-    let eq_rstar = pcs::ligerito::build_eq_table_ext(&r_row);
+    let eq_rstar = pcs::whir::build_eq_table_ext(&r_row);
     let contract_rows = |m: &flock::r1cs::SparseBinaryMatrix| -> Vec<F192> {
         let mut out = vec![F192::ZERO; 1 << klog];
         for (i, row) in m.rows.iter().enumerate() {
@@ -508,8 +508,8 @@ fn aggregate_deferred_claims(
     // sanity for the GUEST's succinct terminal-weight formulas.
     #[cfg(debug_assertions)]
     {
-        let eqr = pcs::ligerito::build_eq_table_ext(&r_row[..6]);
-        let eqc = pcs::ligerito::build_eq_table_ext(&r_col[..6]);
+        let eqr = pcs::whir::build_eq_table_ext(&r_row[..6]);
+        let eqc = pcs::whir::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F192::ZERO, F192::ZERO);
         for (t, d) in subs.iter().enumerate() {
             let lam = primitives::multilinear::lagrange_weights_naive(6, d.skip_point);
@@ -588,8 +588,8 @@ fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(
     if claims.matrix_point.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
-    let eq_r = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[..klog]);
-    let eq_c = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[klog..]);
+    let eq_r = pcs::whir::build_eq_table_ext(&claims.matrix_point[..klog]);
+    let eq_c = pcs::whir::build_eq_table_ext(&claims.matrix_point[klog..]);
     let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
     if v_a != claims.matrix_a_value {
         return Err(RecursiveVerifyError::MatrixAClaim);
@@ -600,30 +600,29 @@ fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(
     Ok(())
 }
 
-/// The verifier-side Ligerito config for one committed size and rate, plus the
+/// The verifier-side WHIR config for one committed size and rate, plus the
 /// query packing derived from it. The hint builder needs it for the real
 /// opening and the placeholder map for every candidate size, so it lives here:
 /// a candidate whose shape differed from the real one would compile a guest
 /// that cannot open the proof it is handed.
-struct LigeritoShape {
-    config: pcs::ligerito::VerifierConfig,
-    levels: pcs::ligerito::LevelShapes,
+struct WhirShape {
+    config: pcs::whir::VerifierConfig,
+    levels: pcs::whir::LevelShapes,
     /// Merkle tree depth per level.
     depth: Vec<usize>,
     /// Query positions carried by one squeezed F192 word, per level.
     per_squeeze: Vec<usize>,
 }
 
-fn ligerito_shape(mu: usize, log_inv_rate: usize) -> LigeritoShape {
-    let config =
-        pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(mu + pcs::LOG_PACKING, log_inv_rate)
-            .and_then(|s| s.to_prover_verifier_configs())
-            .expect("stacked ligerito config")
-            .1;
+fn whir_shape(mu: usize, log_inv_rate: usize) -> WhirShape {
+    let config = pcs::whir::WhirSecurityConfig::derive_config_with_log_inv_rate(mu + pcs::LOG_PACKING, log_inv_rate)
+        .and_then(|s| s.to_prover_verifier_configs())
+        .expect("stacked whir config")
+        .1;
     let levels = config.level_shapes(mu);
     let depth: Vec<usize> = levels.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
     let per_squeeze = depth.iter().map(|&d| 192 / d).collect();
-    LigeritoShape {
+    WhirShape {
         config,
         levels,
         depth,
@@ -798,7 +797,7 @@ fn gen_verify(
     let ncl = nclaims + evtot_e + 3; // bus + constraint + the three PI memory-limb claims
 
     // ---- the stacked opening: config + the opening summary ----
-    let stack = ligerito_shape(l.m, summary.log_inv_rate);
+    let stack = whir_shape(l.m, summary.log_inv_rate);
     let (vcfg, shapes) = (&stack.config, &stack.levels);
     let (nlev, r) = (shapes.levels, vcfg.level_steps);
     let klvl = &shapes.ks;
@@ -835,7 +834,7 @@ fn gen_verify(
     pinw *= lcz[pincol % 64];
     let matpart = lrun + pinw;
 
-    let lig_raw = summary.opening.lig.query_squeezes.clone();
+    let whir_raw = summary.opening.lig.query_squeezes.clone();
     // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
     // per the config schedule) then ONE query-phase
     // grind. The nonces themselves ride the shared stream now (raw words);
@@ -901,7 +900,7 @@ fn gen_verify(
         .collect();
     let log_mem = proof.stream[0].c0 as usize;
 
-    // ---- Phase E2 hints (the stacked Ligerito opening) ----
+    // ---- Phase E2 hints (the stacked WHIR opening) ----
     let lig = &proof.openings[0];
     let numinter: Vec<usize> = klvl.iter().map(|&k| 1usize << k).collect();
     let lenris: usize = klvl.iter().sum();
@@ -910,7 +909,7 @@ fn gen_verify(
         .map(|lv| {
             let d = depth[lv];
             let mut out = Vec::with_capacity(queries[lv]);
-            for v in &lig_raw[lv] {
+            for v in &whir_raw[lv] {
                 for j in 0..per[lv].min(queries[lv] - out.len()) {
                     let off = j * d;
                     let limbs = [v.c0, v.c1, v.c2];
@@ -927,11 +926,11 @@ fn gen_verify(
         .collect();
     let path_of = |lv: usize| -> &Vec<[u8; 32]> {
         if lv == 0 {
-            &lig.ligerito.initial_proof.merkle_proof
+            &lig.whir.initial_proof.merkle_proof
         } else if lv == r {
-            &lig.ligerito.final_proof.merkle_proof
+            &lig.whir.final_proof.merkle_proof
         } else {
-            &lig.ligerito.recursive_proofs[lv - 1].merkle_proof
+            &lig.whir.recursive_proofs[lv - 1].merkle_proof
         }
     };
     // Level 0 rows are embedded F64 values. For levels ≥1, each F192 word is
@@ -940,10 +939,10 @@ fn gen_verify(
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
         let path_exp = if lv == 0 {
-            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_base(
+            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_base(
                 shapes.block_len[lv],
                 &positions[lv],
-                &lig.ligerito.initial_proof.opened_rows,
+                &lig.whir.initial_proof.opened_rows,
                 numinter[lv],
                 path_of(lv),
             )
@@ -956,11 +955,11 @@ fn gen_verify(
             path_exp
         } else {
             let rows_ref = if lv == r {
-                &lig.ligerito.final_proof.opened_rows
+                &lig.whir.final_proof.opened_rows
             } else {
-                &lig.ligerito.recursive_proofs[lv - 1].opened_rows
+                &lig.whir.recursive_proofs[lv - 1].opened_rows
             };
-            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_ext(
+            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_ext(
                 shapes.block_len[lv],
                 &positions[lv],
                 rows_ref,
@@ -1020,8 +1019,8 @@ fn gen_verify(
     let hints = vec![
         ("stream".to_string(), {
             let mut v = proof.stream.clone();
-            // Append the Ligerito opening's msg-cursor sequence, in EXACT
-            // F64-verifier order (see ligerito::recursive_verifier_with_basis_
+            // Append the WHIR opening's msg-cursor sequence, in EXACT
+            // F64-verifier order (see whir::recursive_verifier_with_basis_
             // succinct): the interleaved raw grind nonces + observed scalars
             // (start_msg, per-fold [grind-nonce?, msg u0/u2], level roots as two
             // hash_to_scalars, query-grind nonce, every level's intro msg,
@@ -1029,7 +1028,7 @@ fn gen_verify(
             // The guest's open_stacked reads these via `msg_cursor = cursor`,
             // which sits at proof.stream.len() after the flock reduction — the
             // ring-switch is struct-observed and no longer advances the cursor.
-            let lp = &proof.openings[0].ligerito;
+            let lp = &proof.openings[0].whir;
             let fb = |lvl: usize| -> u32 { vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
             let (mut tx, mut fni, mut qi, mut rri, mut oi) = (0usize, 0usize, 0usize, 0usize, 0usize);
             let msg = |tx: &mut usize| -> [F192; 2] {
@@ -1096,22 +1095,22 @@ fn gen_verify(
             assert_eq!(
                 tx,
                 lp.sumcheck_transcript.len(),
-                "lig_msgs: sumcheck_transcript not fully consumed"
+                "whir_msgs: sumcheck_transcript not fully consumed"
             );
             assert_eq!(
                 fni,
                 lp.fold_grinding_nonces.len(),
-                "lig_msgs: fold nonces not fully consumed"
+                "whir_msgs: fold nonces not fully consumed"
             );
             assert_eq!(
                 rri,
                 lp.recursive_roots.len(),
-                "lig_msgs: recursive_roots not fully consumed"
+                "whir_msgs: recursive_roots not fully consumed"
             );
-            assert_eq!(oi, lp.ood_values.len(), "lig_msgs: OOD values not fully consumed");
+            assert_eq!(oi, lp.ood_values.len(), "whir_msgs: OOD values not fully consumed");
             assert!(
                 v.len() <= stream_cap,
-                "stream+lig_msgs {} exceeds stream_cap {stream_cap}",
+                "stream+whir_msgs {} exceeds stream_cap {stream_cap}",
                 v.len()
             );
             v.resize(stream_cap, F192::ZERO);
@@ -1585,7 +1584,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
-        let shape = ligerito_shape(m, log_inv_rate);
+        let shape = whir_shape(m, log_inv_rate);
         let (vc, sh) = (&shape.config, &shape.levels);
         let (cn, cr) = (sh.levels, vc.level_steps);
         let (ck, cl, cyr) = (sh.ks.clone(), sh.log_msg_cols.clone(), sh.yr_log_n);
@@ -1603,7 +1602,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 };
                 bytes <= 1024 && whole_blocks
             }),
-            "recursive Ligerito guest supports whole-block Merkle rows of at most one 1024-byte BLAKE3 chunk"
+            "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE3 chunk"
         );
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
@@ -1630,7 +1629,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let mut c_svk = Vec::new();
         let mut c_ivk = Vec::new();
         for &cl_lv in cl.iter().take(cn) {
-            for &v in &pcs::ligerito::eval_sk_at_vks(cl_lv) {
+            for &v in &pcs::whir::eval_sk_at_vks(cl_lv) {
                 c_svk.push(F192::new(v.0, 0, 0));
                 c_ivk.push(if v == F64::ZERO {
                     F192::ZERO
@@ -1664,7 +1663,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     };
     let (minm, maxm) = (MU_MIN, MU_MAX);
-    let rates = pcs::ligerito::MIN_LOG_INV_RATE..=pcs::ligerito::MAX_LOG_INV_RATE;
+    let rates = pcs::whir::MIN_LOG_INV_RATE..=pcs::whir::MAX_LOG_INV_RATE;
     let cands: Vec<_> = rates
         .clone()
         .flat_map(|r| (minm..=maxm).map(move |m| oshape(m, r)))
@@ -1865,7 +1864,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_VANISH_INVS", flds(&ivk2));
     }
     let n_log_sizes = maxm - minm + 1;
-    let n_rates = pcs::ligerito::MAX_LOG_INV_RATE - pcs::ligerito::MIN_LOG_INV_RATE + 1;
+    let n_rates = pcs::whir::MAX_LOG_INV_RATE - pcs::whir::MIN_LOG_INV_RATE + 1;
     ps("LIG_N_LOG_SIZES", n_log_sizes.to_string());
     ps("LIG_N_RATES", n_rates.to_string());
     ps("LIG_N_CANDIDATES", (n_log_sizes * n_rates).to_string());

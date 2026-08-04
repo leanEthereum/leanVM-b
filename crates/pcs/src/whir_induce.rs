@@ -7,13 +7,13 @@
 //! dense per-query expansion, its succinct residual evaluator, and the sparse
 //! transposed-NTT fast path with the dispatch between them.
 
-use crate::ligerito::build_eq_table_ext;
 use crate::ntt::AdditiveNttF64;
+use crate::whir::build_eq_table_ext;
 use primitives::field::{F64, F192};
 use zk_alloc::ArenaVec;
 
 // ===================================================================
-// LCH novel-basis evaluations over K (mirror of ligerito's extension-field block)
+// LCH novel-basis evaluations over K (mirror of whir's extension-field block)
 // ===================================================================
 //
 // The subspace-polynomial recurrence runs entirely over the K evaluation
@@ -26,7 +26,7 @@ fn next_s(s: F64, s_at_root: F64) -> F64 {
 }
 
 /// `sks_vks[k] = s_k(v_k)` for `k = 0..=log_n`, over K. Mirror of
-/// `ligerito::eval_sk_at_vks`. Public for the recursion harness, which dumps
+/// `whir::eval_sk_at_vks`. Public for the recursion harness, which dumps
 /// these vanishing-polynomial values as guest hints (base-field, embedded into
 /// the tower with both extension limbs zero).
 pub fn eval_sk_at_vks(log_n: usize) -> Vec<F64> {
@@ -141,7 +141,7 @@ fn invert_sks(sks_vks: &[F64]) -> Vec<F64> {
 
 /// Dense induce: `basis_poly[j] = Σ_i eq(α, i) · W-hat_j(q_i)`,
 /// `enforced_sum = Σ_i eq(α, i) · <row_i, eq(v_challenges, ·)>`. Mirror of the
-/// dense `ligerito::induce_sumcheck_poly` (per-thread chunked accumulation).
+/// dense `whir::induce_sumcheck_poly` (per-thread chunked accumulation).
 pub(crate) fn induce_sumcheck_poly<T: RowElem>(
     log_msg_cols: usize,
     sks_vks: &[F64],
@@ -227,7 +227,7 @@ pub(crate) fn induce_sumcheck_enforced_sum<T: RowElem>(
 }
 
 /// SUCCINCT evaluator for the induced basis poly's MLE at residual points
-/// (mirror of `ligerito::induce_sumcheck_evaluate_at_residual`). Replaces the
+/// (mirror of `whir::induce_sumcheck_evaluate_at_residual`). Replaces the
 /// dense basis + `partial_eval_lsb` in the verifier via the closed form:
 ///   `MLE(basis_poly)(p) = Σ_i eq(α, i) · Π_k (1 + p[k] · (1 + W-hat_k(q_i)))`
 /// where `q_i = F64(queries[i])` and the K-valued `W-hat_k(q_i)` lifts into E
@@ -305,7 +305,7 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
 /// with K-twiddles. Forward butterfly is `M = [[1, t], [1, t+1]]`; transpose
 /// `M^T = [[1, 1], [t, t+1]]` is `s = a + b; top = s; bot = t*s + b` (here
 /// `s.mul_base(t) + b`), applied in reverse layer order. Mirror of
-/// `ligerito::transpose_forward_ntt` (one parallel sweep per layer).
+/// `whir::transpose_forward_ntt` (one parallel sweep per layer).
 fn transpose_forward_ntt_ext(ntt: &AdditiveNttF64, data: &mut [F192], log_d: usize) {
     debug_assert_eq!(data.len(), 1usize << log_d);
     debug_assert!(log_d <= ntt.log_domain_size());
@@ -354,7 +354,7 @@ fn transpose_layers_ext(ntt: &AdditiveNttF64, data: &mut [F192], log_d: usize, l
 /// nonzero (a dense `2^k` transpose each, disjoint so window-parallel),
 /// densify, then run the remaining steps as full dense sweeps. Output is
 /// identical to `transpose_forward_ntt_ext` on the scattered input. Mirror
-/// of `ligerito::transpose_forward_ntt_sparse`.
+/// of `whir::transpose_forward_ntt_sparse`.
 fn transpose_forward_ntt_sparse_ext(
     ntt: &AdditiveNttF64,
     positions: &[usize],
@@ -433,7 +433,7 @@ fn transpose_forward_ntt_sparse_ext(
 /// E-weights into the codeword domain, apply `F^T` with K-twiddles, keep the
 /// low `2^log_msg_cols` outputs. Byte-identical output to the dense path
 /// (pinned by `induce_via_ntt_matches_dense`). Mirror of
-/// `ligerito::induce_sumcheck_poly_via_ntt` with the L0 mixed row dot.
+/// `whir::induce_sumcheck_poly_via_ntt` with the L0 mixed row dot.
 pub(crate) fn induce_sumcheck_poly_via_ntt_base(
     log_msg_cols: usize,
     log_inv_rate: usize,
@@ -485,7 +485,7 @@ pub(crate) fn induce_use_ntt_heuristic(log_msg_cols: usize, log_inv_rate: usize,
 
 /// Dispatch between the dense [`induce_sumcheck_poly`] and the sparse
 /// [`induce_sumcheck_poly_via_ntt_base`] for L0 (base-field rows). Mirror of
-/// `ligerito::induce_sumcheck_poly_auto`: in the recursive PCS this fires
+/// `whir::induce_sumcheck_poly_auto`: in the recursive PCS this fires
 /// only at the top level (large message domain, many queries); deeper levels
 /// stay dense. Both paths produce identical output, so a mis-dispatch only
 /// costs time.

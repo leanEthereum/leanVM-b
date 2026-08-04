@@ -1553,7 +1553,7 @@ mod tests {
 }
 
 // The zerocheck, lincheck, and ring-switch scalars use the shared transcript;
-// the caller carries the Ligerito opening.
+// the caller carries the WHIR opening.
 
 /// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
 /// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`

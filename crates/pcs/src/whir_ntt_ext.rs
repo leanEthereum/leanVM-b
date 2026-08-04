@@ -4,11 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Interleaved forward additive NTT over `E = GF(2^192)` with K-twiddles,
-//! split out of `ligerito` because it shares nothing with the rest of the
+//! split out of `whir` because it shares nothing with the rest of the
 //! opener beyond the two log helpers.
 
-use crate::ligerito::log2_pow2;
 use crate::ntt::AdditiveNttF64;
+use crate::whir::log2_pow2;
 use primitives::field::{F64, F192};
 use primitives::log2_ceil_usize;
 
@@ -16,7 +16,7 @@ use primitives::log2_ceil_usize;
 // Interleaved forward additive NTT over E with K-twiddles
 // ===================================================================
 //
-// Deeper Ligerito levels RS-encode an E-valued (folded) witness on the SAME
+// Deeper WHIR levels RS-encode an E-valued (folded) witness on the SAME
 // K-domain: the twiddles are F64, and each butterfly multiply is the mixed
 // product `v.mul_base(twiddle)` (3 PMULL). Structure copied from
 // `ntt::additive_ntt_f64`'s interleaved transform, with constants re-derived

@@ -1,7 +1,7 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Additive NTTs (Lin-Chung-Han novel polynomial basis).
 //!
-//! Two transforms live here: [`AdditiveNttF64`] for Ligerito commitments, and
+//! Two transforms live here: [`AdditiveNttF64`] for WHIR commitments, and
 //! [`AdditiveNttGf8`] (this file) plus [`inv_table`] for a small GF(2^8) NTT
 //! used by flock's univariate-skip zerocheck round.
 

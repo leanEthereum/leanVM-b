@@ -130,7 +130,7 @@ SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the
 # Phase E: the stacked mixed opening. The two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
-# Phase E2: the Ligerito opening over the stacked commitment, dispatched by
+# Phase E2: the WHIR opening over the stacked commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
 # below carry one row per (rate, m), with rate in 1..=4 and m in the
 # supported committed-size interval,
@@ -302,7 +302,7 @@ def sponge_compress(state, scalar, tail, out):
 @inline
 def hash_state_to_words(cell_0, cell_1):
     # Convert canonical BLAKE3 cells (d0,d1,0), (d2,d3,0) to the two scalar
-    # words used when Ligerito observes a Merkle root: (d0,d1,d2), (d3,0,0).
+    # words used when WHIR observes a Merkle root: (d0,d1,d2), (d3,0,0).
     lo = StackBuf(2)
     hi = StackBuf(2)
     hint_f192_limbs(lo, cell_0)
@@ -398,7 +398,7 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
 
 
 def grind_check(state_0, state_1, nonce, nbits_g):
-    # Ligerito fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
+    # WHIR fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
     # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
     # check_field_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
     # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
@@ -671,7 +671,7 @@ def eqtree(point_ptr, out, n_coords: Const):
 
 
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
-    # The stacked Ligerito opening. m_idx is the flattened (rate, committed
+    # The stacked WHIR opening. m_idx is the flattened (rate, committed
     # log-size) configuration index, and every LIG_* table below reads row
     # m_idx (the match_range dispatch bakes one
     # specialization of this function per candidate). All opening proof data is hinted HERE, so
@@ -1025,7 +1025,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #      evaluation deferred);
     #   8. ring-switch fronts (shared linear map, transpose in-circuit);
     #   9. gamma-combine everything, certify the committed size m, dispatch
-    #      the stacked Ligerito opening (open_stacked), and assert its
+    #      the stacked WHIR opening (open_stacked), and assert its
     #      eval_b terminal;
     #  10. export the deferred-claim region for the aggregation.
     # Claim pool: values of every committed-coordinate claim, in decompose order
@@ -1911,9 +1911,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         gamma_pool[GEN ** j] = gv
         target += gv * claim_pool[GEN ** j]
 
-    # ================= the Ligerito opening core (stacked, m = STACK) ========
+    # ================= the WHIR opening core (stacked, m = STACK) ========
 
-    # ---- stacked Ligerito opening: dispatch on the committed log-size ----
+    # ---- stacked WHIR opening: dispatch on the committed log-size ----
     # ---- reconstruct the native committed-column placement ----
     # placements_of sorts committed columns by descending kappa and then by
     # ascending column index. The hinted order is only transport: range checks,

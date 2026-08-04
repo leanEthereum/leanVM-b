@@ -68,7 +68,7 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
             None => Placement::VIRTUAL,
         })
         .collect();
-    // Floor at the PCS minimum (Ligerito's level ladder needs room); tiny
+    // Floor at the PCS minimum (WHIR's level ladder needs room); tiny
     // witnesses zero-pad up. Both sides derive this identically from the kappas.
     (placements, mu.max(crate::pcs::MIN_MU))
 }

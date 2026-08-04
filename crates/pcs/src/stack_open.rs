@@ -2,7 +2,7 @@
 //! Stacked batch-mixed opening for the F64-committed PCS.
 //!
 //! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
-//! [`super::ligerito::commit`]), and one Ligerito run discharges
+//! [`super::whir::commit`]), and one WHIR run discharges
 //!
 //! - **point claims** ([`StackClaim`]): plain multilinear evaluations of
 //!   aligned sub-slices of the stack (a `Point` claim's weight is
@@ -18,10 +18,10 @@
 //!
 //! All claims are gamma-folded into ONE combined weight `b_stack` over the
 //! whole stack plus one `target`, then proved by
-//! [`super::ligerito::recursive_prover_with_basis`]. The verifier replays
+//! [`super::whir::recursive_prover_with_basis`]. The verifier replays
 //! the ring-switch reductions succinctly ([`super::ring_switch::verify_observe`]
 //! and [`super::ring_switch::verify_finish`], with no dense `rs_eq_ind`) and drives
-//! [`super::ligerito::recursive_verifier_with_basis_succinct`] with a
+//! [`super::whir::recursive_verifier_with_basis_succinct`] with a
 //! terminal evaluator that reconstructs `MLE(b_stack)` once, at the final fold
 //! point, using closed-form eq / stride selectors and
 //! [`super::ring_switch::eval_rs_eq`].
@@ -31,7 +31,7 @@
 //! label -> per ring-switched claim ([`super::ring_switch`]'s own label +
 //! `s_hat_v_i` observed + shared linear map sampled) -> gamma_rs (one per claim) ->
 //! per point claim (label + value observed) -> gamma_pd (one per claim) ->
-//! Ligerito, with domain-separated labels for every phase.
+//! WHIR, with domain-separated labels for every phase.
 //!
 //! ## The combined weight
 //!
@@ -55,13 +55,13 @@ use primitives::field::{F64, F192};
 use primitives::multilinear::eq_eval;
 use serde::{Deserialize, Serialize};
 
-use super::ligerito::{
-    LigeritoProof, ProverData, build_eq_table_ext, recursive_prover_with_basis,
-    recursive_verifier_with_basis_succinct_with_squeezes,
-};
-use super::ligerito::{ProverConfig, VerifierConfig};
 use super::pack::PACKING_WIDTH;
 use super::ring_switch::{self, RingSwitchProof};
+use super::whir::{ProverConfig, VerifierConfig};
+use super::whir::{
+    ProverData, WhirProof, build_eq_table_ext, recursive_prover_with_basis,
+    recursive_verifier_with_basis_succinct_with_squeezes,
+};
 
 // ---------------------------------------------------------------------------
 // Claim types
@@ -150,15 +150,15 @@ pub struct RingSwitchVerify {
 }
 
 /// Batched stacked opening proof: one ring-switch message per ring-switched
-/// claim plus one Ligerito proof over the combined claim.
+/// claim plus one WHIR proof over the combined claim.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOpeningProof {
     pub ring_switches: Vec<RingSwitchProof>,
-    pub ligerito: LigeritoProof,
+    pub whir: WhirProof,
 }
 
 /// What the stacked-opening verifier hands back on accept: the recursion
-/// harness's hook for the Ligerito fold/query data.
+/// harness's hook for the WHIR fold/query data.
 #[derive(Clone, Debug, Default)]
 pub struct StackedOpeningSummary {
     pub lig: LigVerifierSummary,
@@ -215,7 +215,7 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
                     offset % len == 0,
                     "StackClaim::Point: offset must be 2^|low_point|-aligned"
                 );
-                super::ligerito::build_eq_table_ext_seeded_uninit(low_point, g, &mut scratch[..len]);
+                super::whir::build_eq_table_ext_seeded_uninit(low_point, g, &mut scratch[..len]);
                 // SAFETY: the seeded eq build initialized this entire prefix.
                 let eq = unsafe { std::slice::from_raw_parts(scratch.as_ptr().cast::<F192>(), len) };
                 let dst = &mut b_stack[*offset..*offset + len];
@@ -301,14 +301,14 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F192]) -> F192 {
 // ---------------------------------------------------------------------------
 
 /// Open the committed `F64` stack: discharge every `point_claims` slice
-/// evaluation AND the ring-switched q_pkd claims (`ring`) in ONE Ligerito
-/// run, reusing the caller's [`super::ligerito::commit`] output as L0.
+/// evaluation AND the ring-switched q_pkd claims (`ring`) in ONE WHIR
+/// run, reusing the caller's [`super::whir::commit`] output as L0.
 ///
 /// `stack` is the committed message (the caller retains it; it is not stored
 /// in [`ProverData`]); `config.initial_k` / `config.log_inv_rates[0]` must
 /// match the commit's `log_batch_size` / `log_inv_rate` (enforced by shape
-/// asserts inside the Ligerito prover).
-pub fn open_batch_mixed_ligerito_stacked(
+/// asserts inside the WHIR prover).
+pub fn open_batch_mixed_whir_stacked(
     sponge: &mut Sponge,
     stack: &[F64],
     prover_data: &ProverData,
@@ -329,9 +329,9 @@ pub fn open_batch_mixed_ligerito_stacked(
         !ring.claims.is_empty(),
         "stacked PCS opening carries at least one ring-switched claim"
     );
-    // Optional phase timing, answering to the same env var as the Ligerito
+    // Optional phase timing, answering to the same env var as the WHIR
     // prover/commit tracing (one env lookup per open, no work when unset).
-    let trace = std::env::var_os("LIGERITO_TRACE").is_some();
+    let trace = std::env::var_os("WHIR_TRACE").is_some();
     let mut t = std::time::Instant::now();
     let mark = |label: &str, t: &mut std::time::Instant| {
         if trace {
@@ -406,9 +406,9 @@ pub fn open_batch_mixed_ligerito_stacked(
     fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd);
     mark("point-claim folds", &mut t);
 
-    // 4. One Ligerito over the full stack against the combined claim (the
+    // 4. One WHIR over the full stack against the combined claim (the
     //    stack is borrowed by the prover; no copy).
-    let ligerito = recursive_prover_with_basis(
+    let whir = recursive_prover_with_basis(
         config,
         stack,
         b_stack,
@@ -419,7 +419,7 @@ pub fn open_batch_mixed_ligerito_stacked(
     );
     BatchOpeningProof {
         ring_switches: rs_proofs,
-        ligerito,
+        whir,
     }
 }
 
@@ -427,12 +427,12 @@ pub fn open_batch_mixed_ligerito_stacked(
 // Verifier
 // ---------------------------------------------------------------------------
 
-/// Verifier mirror of [`open_batch_mixed_ligerito_stacked`]: replay the
+/// Verifier mirror of [`open_batch_mixed_whir_stacked`]: replay the
 /// ring-switch reductions succinctly, recompute the combined target, then
-/// drive the succinct Ligerito verifier with one terminal evaluation of the
+/// drive the succinct WHIR verifier with one terminal evaluation of the
 /// lifted weight. `log_n` is the committed stack's log size in F64 words and
-/// `root` the L0 commitment root ([`super::ligerito::Commitment::root`]).
-pub fn verify_opening_batch_mixed_ligerito_stacked(
+/// `root` the L0 commitment root ([`super::whir::Commitment::root`]).
+pub fn verify_opening_batch_mixed_whir_stacked(
     sponge: &mut Sponge,
     config: &VerifierConfig,
     log_n: usize,
@@ -512,7 +512,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     let mut query_squeezes: Vec<Vec<F192>> = Vec::new();
     let ok = recursive_verifier_with_basis_succinct_with_squeezes(
         config,
-        &proof.ligerito,
+        &proof.whir,
         log_n,
         target,
         root,
@@ -532,10 +532,10 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{commit, configs_for, inner_product_base_ext};
-    use crate::ligerito::{default_config, default_verifier_config};
     use crate::pack::{LOG_PACKING, pack_witness};
     use crate::ring_switch::{claim_check, fold_1b_rows};
+    use crate::whir::{commit, configs_for, inner_product_base_ext};
+    use crate::whir::{default_config, default_verifier_config};
     use primitives::test_rng::Rng;
 
     /// Configs for a K-stack of `2^log_n` words: prefer the production
@@ -657,7 +657,7 @@ mod tests {
         );
         let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
         let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_ligerito_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let proof = open_batch_mixed_whir_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
             vc,
@@ -681,16 +681,8 @@ mod tests {
             claims: ring_claims.to_vec(),
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
-        verify_opening_batch_mixed_ligerito_stacked(
-            &mut ch,
-            &inst.vc,
-            inst.log_n,
-            &inst.root,
-            point_claims,
-            &ring,
-            proof,
-        )
-        .is_some()
+        verify_opening_batch_mixed_whir_stacked(&mut ch, &inst.vc, inst.log_n, &inst.root, point_claims, &ring, proof)
+            .is_some()
     }
 
     #[test]
@@ -741,15 +733,15 @@ mod tests {
             "tampered s_hat_v accepted"
         );
 
-        // Tampered Ligerito proof scalars.
+        // Tampered WHIR proof scalars.
         let mut bad_proof = inst.proof.clone();
-        bad_proof.ligerito.sumcheck_transcript[0].u_0.c0 ^= 1;
+        bad_proof.whir.sumcheck_transcript[0].u_0.c0 ^= 1;
         assert!(
             !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof),
             "tampered sumcheck u_0 accepted"
         );
         let mut bad_proof = inst.proof.clone();
-        bad_proof.ligerito.final_proof.yr[0].c1 ^= 1;
+        bad_proof.whir.final_proof.yr[0].c1 ^= 1;
         assert!(
             !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof),
             "tampered final yr accepted"
@@ -834,7 +826,7 @@ mod tests {
             claims,
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_ligerito_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let proof = open_batch_mixed_whir_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
 
         let ring_v = RingSwitchVerify {
             offset: qpkd_offset,
@@ -843,7 +835,7 @@ mod tests {
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
         assert!(
-            verify_opening_batch_mixed_ligerito_stacked(&mut ch, &vc, log_n, &cm.root, &point_claims, &ring_v, &proof,)
+            verify_opening_batch_mixed_whir_stacked(&mut ch, &vc, log_n, &cm.root, &point_claims, &ring_v, &proof,)
                 .is_some(),
             "honest crossing-regime opening rejected"
         );
@@ -853,16 +845,8 @@ mod tests {
         bad_ring.claims[0].value += F192::ONE;
         let mut ch = Sponge::new(DOMAIN, &[]);
         assert!(
-            verify_opening_batch_mixed_ligerito_stacked(
-                &mut ch,
-                &vc,
-                log_n,
-                &cm.root,
-                &point_claims,
-                &bad_ring,
-                &proof,
-            )
-            .is_none(),
+            verify_opening_batch_mixed_whir_stacked(&mut ch, &vc, log_n, &cm.root, &point_claims, &bad_ring, &proof,)
+                .is_none(),
             "tampered crossing-regime ring value accepted"
         );
     }

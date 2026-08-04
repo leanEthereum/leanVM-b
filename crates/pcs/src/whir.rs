@@ -3,7 +3,7 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Ligerito with `K = GF(2)[x]/(x^64+x^4+x^3+x+1)` and
+//! WHIR with `K = GF(2)[x]/(x^64+x^4+x^3+x+1)` and
 //! `E = K[y]/(y^3+y+1)`.
 //!
 //! The committed message is a
@@ -21,7 +21,7 @@
 //! Deliberate divergences from the original (each noted inline too):
 //! - Buffers use plain `Vec` allocation where the original recycles through
 //!   `crate::scratch` (no F64/F192 pool exists yet).
-//! - The prover/commit timing instrumentation answers to `LIGERITO_TRACE`
+//! - The prover/commit timing instrumentation answers to `WHIR_TRACE`
 //!   (instead of the original's `LIG_PROVE_TRACE` / `FLOCK_COMMIT_TIMING`).
 //!
 //! Basis induction mirrors the original's two strategies: the dense
@@ -29,7 +29,7 @@
 //! (`induce_sumcheck_poly_via_ntt_base`), with the SAME auto-dispatch size
 //! heuristic at L0 (deeper levels stay dense, exactly like the original).
 //!
-//! Soundness note: [`LigeritoSecurityConfig`] analyzes the actual challenge
+//! Soundness note: [`WhirSecurityConfig`] analyzes the actual challenge
 //! field size `q = 2^192`; the committed alphabet remains `K = GF(2^64)`.
 
 use crate::merkle::{self, Hash};
@@ -44,17 +44,16 @@ use primitives::{
 use serde::{Deserialize, Serialize};
 use zk_alloc::ArenaVec;
 
-pub use super::ligerito_config::{
-    FinalBlockConfig, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0, LevelShapes, LigeritoLevelConfig, LigeritoSecurityConfig,
-    MAX_LOG_INV_RATE, MIN_LOG_INV_RATE, ProverConfig, QUERY_GRINDING_BITS, RESIDUAL_MAX_LOG,
-    RS_DOMAIN_INITIAL_REDUCTION_FACTOR, SECURITY_BITS, SUBSEQUENT_FOLDING_FACTOR, VerifierConfig,
-    validate_log_inv_rate,
+pub use super::whir_config::{
+    FinalBlockConfig, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0, LevelShapes, MAX_LOG_INV_RATE, MIN_LOG_INV_RATE,
+    ProverConfig, QUERY_GRINDING_BITS, RESIDUAL_MAX_LOG, RS_DOMAIN_INITIAL_REDUCTION_FACTOR, SECURITY_BITS,
+    SUBSEQUENT_FOLDING_FACTOR, VerifierConfig, WhirLevelConfig, WhirSecurityConfig, validate_log_inv_rate,
 };
 #[cfg(test)]
-pub use super::ligerito_config::{default_config, default_verifier_config, udr_queries};
+pub use super::whir_config::{default_config, default_verifier_config, udr_queries};
 
-pub use crate::ligerito_induce::*;
-use crate::ligerito_ntt_ext::*;
+pub use crate::whir_induce::*;
+use crate::whir_ntt_ext::*;
 
 /// Bind a Merkle root into the transcript as two `F192` scalars rather than
 /// as a byte string. Binds the root before any challenge exactly as `absorb_bytes`
@@ -197,7 +196,7 @@ fn build_eq_table_ext_seeded<S: EqTableSlot + Send>(point: &[F192], seed: F192, 
 }
 
 /// Partially evaluate the multilinear extension of `evals` at the first
-/// `rs.len()` (LSB) variables. Mirror of `ligerito::partial_eval_lsb`.
+/// `rs.len()` (LSB) variables. Mirror of `whir::partial_eval_lsb`.
 #[cfg(test)]
 pub(crate) fn partial_eval_lsb_ext(evals: &[F192], rs: &[F192]) -> Vec<F192> {
     let mut cur = evals.to_vec();
@@ -247,12 +246,12 @@ pub(crate) fn log2_pow2(n: usize) -> usize {
 /// elements, using the production 128-bit Johnson/OOD profile at
 /// `m = log_n + LOG_PACKING`.
 pub fn configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), String> {
-    configs_for_rate(log_n, crate::ligerito::LOG_INV_RATE_0)
+    configs_for_rate(log_n, crate::whir::LOG_INV_RATE_0)
 }
 
 /// As [`configs_for`], with an explicit L0 inverse-rate logarithm.
 pub fn configs_for_rate(log_n: usize, log_inv_rate: usize) -> Result<(ProverConfig, VerifierConfig), String> {
-    let sec = LigeritoSecurityConfig::derive_config_with_log_inv_rate(log_n + crate::LOG_PACKING, log_inv_rate)?;
+    let sec = WhirSecurityConfig::derive_config_with_log_inv_rate(log_n + crate::LOG_PACKING, log_inv_rate)?;
     sec.to_prover_verifier_configs()
 }
 
@@ -318,9 +317,9 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     // SAFETY: the replicate fill initializes every codeword element.
     let mut codeword = unsafe { zk_alloc::assume_init(codeword) };
 
-    // Optional phase timing (LIGERITO_TRACE): one env lookup per commit, no
+    // Optional phase timing (WHIR_TRACE): one env lookup per commit, no
     // work when unset.
-    let trace = std::env::var_os("LIGERITO_TRACE").is_some();
+    let trace = std::env::var_os("WHIR_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
     tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = num_ntts).in_scope(|| {
         let ntt = AdditiveNttF64::standard(k_code);
@@ -355,7 +354,7 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     (Commitment { root }, ProverData { codeword, merkle_tree })
 }
 
-/// Codeword + Merkle tree for one deeper Ligerito commitment level.
+/// Codeword + Merkle tree for one deeper WHIR commitment level.
 /// `mat[pos * num_interleaved + lane]`; each row (one `pos` across all lanes)
 /// is one Merkle leaf of `num_interleaved * 16` bytes.
 pub(crate) struct LigeroWitness {
@@ -401,9 +400,9 @@ pub(crate) fn ligero_commit_ext(
     // SAFETY: the replicate fill initializes every matrix element.
     let mut mat = unsafe { zk_alloc::assume_init(mat) };
 
-    // Optional per-level NTT/Merkle split (LIGERITO_TRACE): one env lookup per
+    // Optional per-level NTT/Merkle split (WHIR_TRACE): one env lookup per
     // commit level, no work when unset.
-    let trace = std::env::var_os("LIGERITO_TRACE").is_some();
+    let trace = std::env::var_os("WHIR_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
     tracing::info_span!(
         "NTT",
@@ -543,7 +542,7 @@ impl RoundWitness for F192 {
 }
 
 /// Round message over a witness `f` and an E basis `b`. Mirror of
-/// `ligerito::round_msg_lsb`.
+/// `whir::round_msg_lsb`.
 ///
 /// Deferred reduction: XOR-accumulate the raw lane products (no reduction tail
 /// per term) and reduce once per accumulator. Reduction commutes with XOR, so
@@ -660,7 +659,7 @@ fn fold_msg_terms(nf: &[F192], nb: &[F192]) -> (F192Unreduced, F192Unreduced) {
 
 /// Fused fold + next-round message: the witness folds into E, the basis folds
 /// in E, and the next-round message is built over the freshly folded E values
-/// in the same pass. Mirror of `ligerito::fold_and_msg_lsb`.
+/// in the same pass. Mirror of `whir::fold_and_msg_lsb`.
 fn fold_and_msg_lsb<T: RoundWitness>(
     f: &[T],
     b: &[F192],
@@ -745,7 +744,7 @@ enum Witness<'a> {
     Ext(ArenaVec<F192>),
 }
 
-/// Mirror of `ligerito::SumcheckProver` with the two-phase witness.
+/// Mirror of `whir::SumcheckProver` with the two-phase witness.
 struct SumcheckProver<'a> {
     f: Witness<'a>,
     /// Single combined basis poly: after every `glue(beta)` the introduced
@@ -888,7 +887,7 @@ pub struct FinalProof {
 
 /// The L0 root is the caller's statement, not proof data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LigeritoProof {
+pub struct WhirProof {
     pub initial_proof: InitialProof,
     pub recursive_roots: Vec<Hash>,
     pub recursive_proofs: Vec<RecursiveProof>,
@@ -907,7 +906,7 @@ pub struct LigeritoProof {
 /// Sample `count` query positions in transcript order: no dedup, no sort.
 /// `block_len = 2^d`; each squeezed field element yields `⌊192/d⌋` positions as
 /// its disjoint d-bit chunks (low bits first). Mirror of
-/// `ligerito::sample_queries_ordered` so the K opener uses the exact
+/// `whir::sample_queries_ordered` so the K opener uses the exact
 /// recursion-friendly scheme the harness/guest re-derive (fixed `192/d` per
 /// squeeze, dup-tolerant: soundness matches the deployed PCS with the same
 /// `config.queries`). Duplicates are harmless, a repeated position re-opens the
@@ -1010,7 +1009,7 @@ pub fn recursive_prover_with_basis(
     l0_codeword: &[F64],
     l0_tree: &[Hash],
     sponge: &mut Sponge,
-) -> LigeritoProof {
+) -> WhirProof {
     let log_n = witness.len().trailing_zeros() as usize;
     let r = config.level_steps;
     let initial_k = config.initial_k;
@@ -1030,10 +1029,10 @@ pub fn recursive_prover_with_basis(
     assert_eq!(l0_codeword.len(), block_len_0 * num_interleaved_0);
     assert_eq!(l0_tree.len(), 2 * block_len_0 - 1);
 
-    // Optional per-phase timing (LIGERITO_TRACE): mirror of the original's
+    // Optional per-phase timing (WHIR_TRACE): mirror of the original's
     // LIG_PROVE_TRACE. One env lookup per prove; the Instant reads are
     // negligible and the accumulation/printing is gated on `trace`.
-    let trace = std::env::var_os("LIGERITO_TRACE").is_some();
+    let trace = std::env::var_os("WHIR_TRACE").is_some();
     let mut t_init_sumcheck = std::time::Duration::ZERO;
     let mut t_commits = std::time::Duration::ZERO;
     let mut t_opens = std::time::Duration::ZERO;
@@ -1264,7 +1263,7 @@ pub fn recursive_prover_with_basis(
                     t_intro_glue.as_secs_f64()
                 );
             }
-            return LigeritoProof {
+            return WhirProof {
                 initial_proof,
                 recursive_roots,
                 recursive_proofs,
@@ -1480,7 +1479,7 @@ impl PrevLevel {
 /// transcript or PoW mismatch.
 fn replay_fold_rounds(
     sponge: &mut Sponge,
-    proof: &LigeritoProof,
+    proof: &WhirProof,
     k: usize,
     level_fold_bits: u32,
     fold_nonce_idx: &mut usize,
@@ -1523,7 +1522,7 @@ struct OodReplay {
 /// the prover's [`absorb_ood`], operation for operation.
 fn replay_ood(
     sponge: &mut Sponge,
-    proof: &LigeritoProof,
+    proof: &WhirProof,
     n_vars: usize,
     ood_idx: &mut usize,
     tx_idx: &mut usize,
@@ -1546,7 +1545,7 @@ fn replay_ood(
 }
 
 /// Dense verifier for [`recursive_prover_with_basis`] (mirror of
-/// `ligerito::recursive_verifier_with_basis`): materializes `b_initial` and
+/// `whir::recursive_verifier_with_basis`): materializes `b_initial` and
 /// every induced basis poly, replays the transcript, and checks the residual
 /// inner product against the running sum-claim. Production callers should
 /// prefer [`recursive_verifier_with_basis_succinct`]; this one exists for
@@ -1554,7 +1553,7 @@ fn replay_ood(
 #[cfg(test)]
 pub fn recursive_verifier_with_basis(
     config: &VerifierConfig,
-    proof: &LigeritoProof,
+    proof: &WhirProof,
     b_initial: &[F192],
     target: F192,
     expected_initial_root: &Hash,
@@ -1946,7 +1945,7 @@ pub fn recursive_verifier_with_basis(
 /// uses.
 pub fn recursive_verifier_with_basis_succinct<F>(
     config: &VerifierConfig,
-    proof: &LigeritoProof,
+    proof: &WhirProof,
     log_n: usize,
     target: F192,
     expected_initial_root: &Hash,
@@ -1970,7 +1969,7 @@ where
 }
 
 /// Succinct verifier for [`recursive_prover_with_basis`] (mirror of
-/// `ligerito::recursive_verifier_with_basis_succinct`): instead of a dense
+/// `whir::recursive_verifier_with_basis_succinct`): instead of a dense
 /// `b_initial` (2^log_n E-values) it takes a closure `eval_b_at` that evaluates
 /// b's multilinear extension once, at the final fold point.
 ///
@@ -1986,7 +1985,7 @@ where
 /// only on `true`.
 pub fn recursive_verifier_with_basis_succinct_with_squeezes<F>(
     config: &VerifierConfig,
-    proof: &LigeritoProof,
+    proof: &WhirProof,
     log_n: usize,
     target: F192,
     expected_initial_root: &Hash,
@@ -2400,7 +2399,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{QUERY_GRINDING_BITS, default_config, default_verifier_config};
+    use crate::whir::{QUERY_GRINDING_BITS, default_config, default_verifier_config};
     use primitives::test_rng::Rng;
 
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
@@ -2464,7 +2463,7 @@ mod tests {
         b_initial: Vec<F192>,
         target: F192,
         root: Hash,
-        proof: LigeritoProof,
+        proof: WhirProof,
     }
 
     fn prove_instance(log_n: usize, seed: u64) -> Instance {
@@ -2475,7 +2474,7 @@ mod tests {
         let point: Vec<F192> = (0..log_n).map(|_| rng.ext()).collect();
         let b_initial = build_eq_table_ext(&point);
         let target = inner_product_base_ext(&witness, &b_initial);
-        let mut ch = Sponge::new(b"ligerito-test", &[]);
+        let mut ch = Sponge::new(b"whir-test", &[]);
         let proof = recursive_prover_with_basis(
             &pc,
             &witness,
@@ -2496,14 +2495,14 @@ mod tests {
         }
     }
 
-    fn verify_instance(inst: &Instance, proof: &LigeritoProof) -> bool {
-        let mut ch = Sponge::new(b"ligerito-test", &[]);
+    fn verify_instance(inst: &Instance, proof: &WhirProof) -> bool {
+        let mut ch = Sponge::new(b"whir-test", &[]);
         recursive_verifier_with_basis(&inst.vc, proof, &inst.b_initial, inst.target, &inst.root, &mut ch)
     }
 
     /// Succinct verify with the eq weight evaluated at the terminal fold point.
-    fn verify_succinct_instance(inst: &Instance, proof: &LigeritoProof) -> bool {
-        let mut ch = Sponge::new(b"ligerito-test", &[]);
+    fn verify_succinct_instance(inst: &Instance, proof: &WhirProof) -> bool {
+        let mut ch = Sponge::new(b"whir-test", &[]);
         let point = &inst.point;
         recursive_verifier_with_basis_succinct(
             &inst.vc,
@@ -2518,7 +2517,7 @@ mod tests {
 
     /// Both verifiers on the same proof, asserting they agree; returns the
     /// shared verdict.
-    fn verify_both_agree(inst: &Instance, proof: &LigeritoProof, what: &str) -> bool {
+    fn verify_both_agree(inst: &Instance, proof: &WhirProof, what: &str) -> bool {
         let dense = verify_instance(inst, proof);
         let succinct = verify_succinct_instance(inst, proof);
         assert_eq!(dense, succinct, "dense/succinct verdict split on {what}");
@@ -2609,7 +2608,7 @@ mod tests {
             assert!(verify_both_agree(&inst, &inst.proof, "honest proof"));
 
             let mut rng = Rng::new(seed ^ 0xABCD);
-            type Tamper = fn(&mut LigeritoProof, u64);
+            type Tamper = fn(&mut WhirProof, u64);
             let tampers: &[(&str, Tamper)] = &[
                 ("L0 opened row", |p, r| {
                     let row = (r as usize) % p.initial_proof.opened_rows.len();

@@ -9,7 +9,7 @@
 //! scalars live in `E = GF(2^192)`, leaving ample margin for 128-bit soundness.
 //!
 //! - [`transcript`]: the shared Fiat-Shamir transcript (re-exported from `fiat_shamir`).
-//! - [`pcs`]: `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
+//! - [`pcs`]: `K`-committed witness, `E`-opened, via the stacked WHIR (§3).
 //! - [`witness`]: `K`-valued columns stacked into one committed witness.
 //! - [`gkr`]: the grand product via GKR (§4.3), balancing the bus.
 //! - [`leaf`]: the shared bus: grand-product balance, decomposed to per-column claims (§4.2-§4.4, §5).
@@ -67,7 +67,7 @@ pub fn init_prover_pool() {
 }
 
 /// Target soundness of the whole proof, in bits. Every algebraic challenge is
-/// sampled in F192, and the PCS derives a Ligerito configuration whose query,
+/// sampled in F192, and the PCS derives a WHIR configuration whose query,
 /// proximity-gap, and OOD-binding terms each clear this target.
 pub const SECURITY_BITS: u32 = 128;
 

@@ -2,7 +2,7 @@
 //!
 //! This exercises only Flock's BLAKE3 path over `N` compressions: witness
 //! generation, F64 commitment, zerocheck + lincheck reduction, the stacked
-//! ring-switch/Ligerito opening, and verification. Circuit construction is
+//! ring-switch/WHIR opening, and verification. Circuit construction is
 //! outside the timed region, matching the VM's warmed-setup convention.
 //!
 //! Run with the XMSS-sized workload:
@@ -24,13 +24,13 @@ use flock::blake3::{
     min_n_blocks_log, pinned_compression,
 };
 use flock::proof::ZClaim;
-use pcs::ligerito::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
-use pcs::ligerito::{commit, configs_for};
 use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use pcs::stack_open::{
-    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_ligerito_stacked,
-    verify_opening_batch_mixed_ligerito_stacked,
+    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_whir_stacked,
+    verify_opening_batch_mixed_whir_stacked,
 };
+use pcs::whir::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
+use pcs::whir::{commit, configs_for};
 use primitives::bench::{Plan, Timing};
 use primitives::multilinear::lagrange_weights_naive;
 use primitives::{
@@ -125,7 +125,7 @@ fn blake3_batch_prove_verify() {
     let setup = Blake3Setup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    let (prover_config, verifier_config) = configs_for(mu).expect("Ligerito configuration");
+    let (prover_config, verifier_config) = configs_for(mu).expect("WHIR configuration");
 
     // One full prove pass: witness generation, commitment, and the reduction +
     // stacked opening. Deterministic in `blocks`, so every pass is the same work
@@ -156,8 +156,7 @@ fn blake3_batch_prove_verify() {
         let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
         drop((z_packed, a_packed, b_packed, z_lincheck));
         let ring = prover_ring(&reduced, mu);
-        let opening =
-            open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
+        let opening = open_batch_mixed_whir_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 
@@ -189,7 +188,7 @@ fn blake3_batch_prove_verify() {
         let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = verifier_ring(&replay.ab, &replay.c, mu);
-        verify_opening_batch_mixed_ligerito_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
+        verify_opening_batch_mixed_whir_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
             .expect("stacked PCS opening verifies");
         vs.finish().expect("transcript fully consumed");
     });

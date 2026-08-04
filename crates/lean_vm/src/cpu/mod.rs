@@ -192,7 +192,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
         || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
-        || ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).is_err()
+        || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
     }
@@ -492,7 +492,7 @@ impl Stats {
 /// Fiat-Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
-    ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
+    ::pcs::whir::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     // One proof is one arena phase: every transient buffer below is bump-allocated
     // and reclaimed wholesale here, rather than faulted in and unmapped again per
     // proof. Bound first so it outlives them; inert unless `init_prover` opted in.
@@ -535,7 +535,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // `w.q` (≥1 instance, a program with no BLAKE3 carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-BLAKE3 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
-    // Ligerito over this commitment (below). The input/output words bind via the
+    // WHIR over this commitment (below). The input/output words bind via the
     // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let l = &w.layout;
@@ -582,7 +582,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
     // layouts retained from the fused q_pkd build pass; it returns the `(ab, c)`
     // validity claims on the committed `q_pkd`, discharged by the PCS below in the
-    // SAME Ligerito as every leanVM point claim (the point claims become the
+    // SAME WHIR as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
     let flock_reduction = w
         .flock_reduction
@@ -667,7 +667,7 @@ fn bind_pi_claim(
 /// Everything a recursion harness needs from an accepting verify run, named
 /// and typed: the deferred bytecode claims, the count-channel root, flock's
 /// reduction claims, and the stacked-opening summary (ring-switch challenges +
-/// Ligerito fold/query data). The sub-proof scalars themselves live on
+/// WHIR fold/query data). The sub-proof scalars themselves live on
 /// `proof.stream` at fixed offsets from its tail. Ordinary callers just
 /// `?`-discard it.
 pub struct VerifySummary {
@@ -691,7 +691,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
     // BLAKE3 ↔ flock (single PCS): flock's R1CS validity and every leanVM point
-    // claim are verified together by ONE Ligerito opening at the end. The executed-
+    // claim are verified together by ONE WHIR opening at the end. The executed-
     // BLAKE3 count is public (announced); its flock sub-proof rides the shared
     // `stream`/`openings`, and presence is enforced by consumption below plus
     // `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice versa,
@@ -728,7 +728,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 
     // Replay flock's reduction straight off the shared stream (each scalar bound
     // as it is read) to recover its `(ab, c)` validity claims on q_pkd, then
-    // verify them alongside every point claim in the ONE Ligerito opening
+    // verify them alongside every point claim in the ONE WHIR opening
     // (mirroring `prove`). `n_blocks = max(n_b3, 1)`, always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
@@ -811,7 +811,7 @@ mod tests {
     /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
     /// there. The flock validity sub-proof plus the memory / state / bytecode bus
-    /// interactions are verified end-to-end (the proof carries the Ligerito
+    /// interactions are verified end-to-end (the proof carries the WHIR
     /// opening they assert on).
     fn blake3_program(a: [F64; 4], b: [F64; 4]) -> Program {
         // a → cells 2,3 and b → cells 4,5 (two flock lanes per BLAKE3 cell).
@@ -882,9 +882,9 @@ mod tests {
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
-        // flock's sub-proof rides the shared channels: its Ligerito is the proof's
+        // flock's sub-proof rides the shared channels: its WHIR is the proof's
         // one opening, its scalar reduction trails the `stream`.
-        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a Ligerito opening");
+        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a WHIR opening");
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
     }
 
@@ -953,7 +953,7 @@ mod tests {
         verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
     }
 
-    /// Tampering flock's validity sub-proof (its Ligerito, opened over the same
+    /// Tampering flock's validity sub-proof (its WHIR, opened over the same
     /// stacked commitment) must make verification fail.
     #[test]
     fn blake3_rejects_tampered_validity() {
@@ -967,8 +967,8 @@ mod tests {
 
         // The stacked opening is the proof's one hint; tamper a sumcheck
         // round message (the inner-product transcript); must be rejected.
-        let lig = proof.openings.last_mut().expect("stacked Ligerito opening");
-        lig.ligerito.sumcheck_transcript[0].u_0 += F192::ONE;
+        let lig = proof.openings.last_mut().expect("stacked WHIR opening");
+        lig.whir.sumcheck_transcript[0].u_0 += F192::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
             "tampered BLAKE3 validity proof must be rejected"
@@ -980,7 +980,7 @@ mod tests {
     /// the verifier's reduction/opening replay, so tampering a transport word
     /// diverges the recovered `(ab, c)` claims (or breaks decoding) and
     /// verification must reject. (Complements `blake3_rejects_tampered_validity`,
-    /// which tampers the Ligerito opening.)
+    /// which tampers the WHIR opening.)
     #[test]
     fn blake3_rejects_tampered_reduction() {
         let program = blake3_program(
@@ -1019,7 +1019,7 @@ mod tests {
         let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
-        // The proof still carries exactly one Ligerito opening (over the padding).
+        // The proof still carries exactly one WHIR opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
     }

@@ -21,7 +21,7 @@ Dependency order, leaves first:
 | `zk_alloc`        | proving arena (below)                                    |
 | `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, `bench` |
 | `fiat_shamir`     | VM-native sponge + prover/verifier transcript                          |
-| `pcs`             | additive NTT, Merkle, ring switch, stacked Ligerito                    |
+| `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
 | `flock`           | batched R1CS over GF(2) for BLAKE3: zerocheck + lincheck               |
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
@@ -41,7 +41,7 @@ cargo clippy --release --all-targets
 cargo fmt --all                   # max_width = 120
 ```
 
-Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_ligerito_query_counts`, `encoding_grinding_bits`.
+Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_whir_query_counts`, `encoding_grinding_bits`.
 
 ## Benchmarking
 
@@ -112,5 +112,5 @@ The third is worth understanding before touching the verifier. `guests/recursion
 | `LEANVM_XMSS_N`, `LEANVM_HASH_N`, `LEANVM_HASH_UNROLL`                                                  | workload sizes in tests                          |
 | `FLOCK_N_LOG`, `FLOCK_PROVE_TRACE`, `FLOCK_ZC_TIMING`, `LINCHECK_TRACE`                                 | flock batch size, stage traces                   |
 | `PCS_LOG_N`, `PCS_LOG_INV_RATE`, `PCS_MIN_MU`, `PCS_SAMPLES`                                            | PCS throughput bench                             |
-| `LIGERITO_TRACE`, `LIGERITO_NUM_VARS`, `LIGERITO_LOG_INV_RATE`                                          | Ligerito NTT/Merkle split                        |
+| `WHIR_TRACE`, `WHIR_NUM_VARS`, `WHIR_LOG_INV_RATE`                                          | WHIR NTT/Merkle split                        |
 | `DBG_PROF{,_DUMP}`, `DBG_LOOPS`, `DBG_DISASM`, `DBG_LOWER`, `DBG_CSE`, `DBG_NO_CSE`, `DBG_PLACEHOLDERS` | compiler / guest-cycle attribution               |

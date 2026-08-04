@@ -4,7 +4,7 @@
 //! as a column in leanVM-b's ONE stacked `F64` witness (§3.1), with no separate flock
 //! commitment. The VM's `BLAKE3` table binds to it by point-eval equality (its
 //! value columns and `q_pkd`'s slots are point-evals of the same committed
-//! stack), and flock's R1CS validity is discharged by the same stacked Ligerito:
+//! stack), and flock's R1CS validity is discharged by the same stacked WHIR:
 //! the reduction's two tower-field claims pass through
 //! [`ring_switch_open`] / [`ring_switch_verify`] and join the batch-mixed
 //! opening ([`::pcs::stack_open`]).
@@ -530,7 +530,7 @@ mod tests {
         }
     }
 
-    /// flock's validity claims, discharged by ONE stacked Ligerito over a
+    /// flock's validity claims, discharged by ONE stacked WHIR over a
     /// hand-stacked witness containing `q_pkd` (plus a dummy column) together
     /// with an ordinary point claim: the full prove_reduction → ring-switch →
     /// stack_open seam without the VM pipeline. Proves and verifies on the

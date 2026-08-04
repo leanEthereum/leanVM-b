@@ -129,8 +129,8 @@ pub fn init_tracing() {
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
 
-    let forest = ForestLayer::from(PrettyPrinter::new().formatter(format_trace_tree))
-        .with_filter(dynamic_filter_fn(|_, _| {
+    let forest =
+        ForestLayer::from(PrettyPrinter::new().formatter(format_trace_tree)).with_filter(dynamic_filter_fn(|_, _| {
             !TRACE_SUPPRESSED.load(std::sync::atomic::Ordering::Relaxed)
         }));
 

@@ -62,7 +62,7 @@ const N_MEDIUM: usize = 4;
 /// four medium constants returned by [`medium_challenges`] — must be
 /// **F₂-linearly independent** in F₁₉₂. Zerocheck soundness relies on this
 /// (a witness aligned with the friendly subspace would otherwise let the
-/// prover cancel the URM message), and so does Ligerito's L0 list-collapse
+/// prover cancel the URM message), and so does WHIR's L0 list-collapse
 /// argument (the SZ bound `(m−7)/|F|` for MLE collisions at `r` requires
 /// the seven friendly coords to span a 7-dim F₂-subspace). Asserted by
 /// `tests::friendly_challenges_f2_independent`.
@@ -1101,7 +1101,7 @@ mod tests {
         }
     }
 
-    /// **Soundness assumption.** Zerocheck and the Ligerito PCS opening at
+    /// **Soundness assumption.** Zerocheck and the WHIR PCS opening at
     /// L0 both depend on the seven "friendly" constants — three small
     /// (`φ_8(SMALL_CHAL_F8[k])`, k ∈ 0..3) and four medium
     /// (`γ^{2^i}/(1+γ^{2^i})`, i ∈ 0..4) — being **F₂-linearly independent**
@@ -1109,7 +1109,7 @@ mod tests {
     ///
     /// Zerocheck needs this so that the prover's URM message can't be
     /// trivially canceled by a malicious witness aligned with the friendly
-    /// subspace. Ligerito's L0 list-collapse argument (which leans on the
+    /// subspace. WHIR's L0 list-collapse argument (which leans on the
     /// zerocheck `(r, v)` claim as an OOD-equivalent) also depends on it
     /// — see the soundness writeup. If any subset of these seven values is
     /// F₂-dependent, the SZ bound `(m−7)/|F|` for collisions between
@@ -1153,7 +1153,7 @@ mod tests {
         assert_eq!(
             rank, 7,
             "friendly challenges must be F₂-linearly independent in F₁₉₂; \
-             zerocheck and Ligerito L0 soundness depend on it"
+             zerocheck and WHIR L0 soundness depend on it"
         );
     }
 

@@ -22,10 +22,6 @@ a weighted sum over $\widetilde q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),
   \sum_{w\in\cube{M}} W_\lambda(w)\,\widetilde q(w)=C_\lambda
 \]
 
-\subsection{Inner-product PCS}\label{sec:rs-dense}
-
-It is Ligerito~\cite{NA25}, specified in Annex~\ref{annex:pcs} and instantiated here by default at rate $1/2$ in the Johnson list-decoding regime with a per-level optimized slack $\slack$ and $128$-bit round-by-round soundness. A proof may instead select rate $1/2^{\rexp}$ for $1\le\rexp\le4$; the verifier checks and transcript-binds this choice. The level-zero opening claim is sampled after its commitment and therefore also binds one element of the nearby-codeword list; no separate out-of-domain evaluation is needed there. Each recursive commitment is bound by one fresh out-of-domain evaluation. Since all challenges lie in $\E=\F_{2^{192}}$, the proximity-gap and binding errors clear $128$ bits without proof-of-work grinding; the query phase grinds $17$ bits per level, so queries only close the remaining $111$. The witness is Reed--Solomon encoded over $\K$; level-zero symbols are $8$ bytes and $2^6$ interleaved symbols form each $512$-byte Merkle leaf. Openings are over $\E$: the level-zero fold pairs $\K$-symbols with $\E$-challenges, and all deeper levels are $\E$-valued.
-
 \subsection{Packing the Boolean witness}\label{sec:ringswitch}
 
 Flock's BLAKE3 argument (\S\ref{sec:tab-blake3}) produces claims about Boolean multilinears. The VM packs them into $\K$-words for commitment and opens the resulting claims over $\E$, the specialization

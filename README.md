@@ -63,7 +63,12 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
 
 ## Security
 
-- 128-bit proven (LDR Johnson)
+- 128-bit (LDR Johnson, no proximity gaps conjecture)
+
+## Snark machinery
+
+- Binary field of 192 bits
+- PCS: [WHIR](https://eprint.iacr.org/2024/1586) (aka [Ligerito](https://eprint.iacr.org/2025/1187))
 
 ## Credits
 
