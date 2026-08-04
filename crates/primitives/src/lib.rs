@@ -81,23 +81,60 @@ fn rewrite_trace_percentages(rendered: &str, percentages: &[f64]) -> String {
     output
 }
 
+/// Set while [`suppress_tracing`]'s guard is alive; read by the trace tree's
+/// filter on every span and event.
+static TRACE_SUPPRESSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Suppress trace-tree output until the returned guard is dropped.
+///
+/// A benchmark pass is run several times ([`bench::Plan`]: one warmup plus
+/// `repeat` measured passes), so with `--tracing` the tree would carry one
+/// subtree per pass and say nothing extra. Wrapping every pass but the final
+/// measured one in this guard leaves exactly one tree, for the proof the report's
+/// timings are about. A span created while suppressed is never recorded, so it
+/// cannot reappear inside the surviving tree either.
+///
+/// Only that pass then pays the tree's recording cost, which is immaterial against
+/// a multi-second proof and is anyway why `--tracing` is a diagnostic mode rather
+/// than the one to quote timings from.
+#[must_use = "tracing resumes as soon as the guard is dropped"]
+pub fn suppress_tracing() -> TraceSuppressed {
+    TRACE_SUPPRESSED.store(true, std::sync::atomic::Ordering::Relaxed);
+    TraceSuppressed
+}
+
+/// Guard returned by [`suppress_tracing`].
+pub struct TraceSuppressed;
+
+impl Drop for TraceSuppressed {
+    fn drop(&mut self) {
+        TRACE_SUPPRESSED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Install the hierarchical tracing subscriber used by benchmark binaries.
 ///
 /// The default level is `INFO`; `RUST_LOG` can override it. Repeated calls are
 /// harmless: if another global subscriber is already installed, this leaves it
-/// unchanged.
+/// unchanged. Output pauses while a [`suppress_tracing`] guard is alive; the
+/// filter is dynamic (never cached per callsite) so the same callsite can be
+/// recorded on one pass and skipped on the next.
 pub fn init_tracing() {
     use tracing_forest::{ForestLayer, PrettyPrinter, util::LevelFilter};
-    use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{
+        EnvFilter, Layer, Registry, filter::dynamic_filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
+    };
 
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
 
-    let _ = Registry::default()
-        .with(env_filter)
-        .with(ForestLayer::from(PrettyPrinter::new().formatter(format_trace_tree)))
-        .try_init();
+    let forest = ForestLayer::from(PrettyPrinter::new().formatter(format_trace_tree))
+        .with_filter(dynamic_filter_fn(|_, _| {
+            !TRACE_SUPPRESSED.load(std::sync::atomic::Ordering::Relaxed)
+        }));
+
+    let _ = Registry::default().with(env_filter).with(forest).try_init();
 }
 
 /// Format an integer with comma-separated groups of three decimal digits.

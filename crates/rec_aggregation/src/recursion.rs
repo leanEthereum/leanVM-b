@@ -2002,8 +2002,14 @@ fn run_recursion_with_rates(
     }
     let trace_span =
         tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
-    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|| batch.prove(&mut guest));
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+    // Only the final measured pass of each stage is traced: the tree describes the
+    // proof the reported timings are about, instead of repeating itself per pass.
+    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
+        batch.prove(&mut guest)
+    });
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
         recursive_proof
             .verify(&batch.program0)
             .expect("complete recursive proof verifies");

@@ -592,9 +592,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
     let offset = w.layout.placements[QPKD].offset;
-    let ring = crate::stage!("Package ring switch", || {
-        crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced)
-    });
+    let ring = crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced);
     let mixed_open = crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     // flock's scalar sub-proof already rode the shared stream (add_scalar at its
     // protocol points); only the Merkle-bearing stacked opening needs the hint

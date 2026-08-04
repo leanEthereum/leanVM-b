@@ -168,7 +168,7 @@ fn blake3_batch_prove_verify() {
     // the warmup, the cooldown, and the repetition for all four of them.
     let plan = Plan::from_env();
     let mut stages: [Timing; 4] = std::array::from_fn(|_| Timing::default());
-    let ((transcript, opening), _) = plan.warm_then_measure(|| {
+    let ((transcript, opening), _) = plan.warm_then_measure(|_final_pass| {
         let (out, secs) = prove_pass();
         for (timing, s) in stages.iter_mut().zip(secs) {
             timing.push(s);
@@ -184,7 +184,7 @@ fn blake3_batch_prove_verify() {
         kept
     });
 
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
         let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
         let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
