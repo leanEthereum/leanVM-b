@@ -1,0 +1,111 @@
+\section{End-to-end protocol}\label{sec:e2e}
+
+This section assembles the primitives into the executable protocol, beginning with the constants, encodings, and padding fixed in advance.
+
+\subsection{Constants}\label{sec:e2e-const}
+
+Fixed once, public, and shared by prover and verifier: the fields, the bus shape, and the tags naming interactions and instructions on it.
+
+\paragraph{Fields, generator, and bus.}
+\[
+\K=\F_2[x]/(x^{64}+x^4+x^3+x+1),\qquad
+\E=\K[y]/(y^3+y+1),\qquad
+\gen=x,\qquad \operatorname{ord}(\gen)=2^{64}-1.
+\]
+Committed columns are $\K$-valued; machine words and challenges are $\E$-valued (\S\ref{sec:prelim}). Every bus tuple has width $m=12$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
+
+\paragraph{Domain separators.} Coordinate $0$ of every tuple is a domain separator, naming the interaction it belongs to (\S\ref{sec:m3}):
+\[
+  \dsep{ST}=1,\qquad \dsep{MEM}=\gen,\qquad \dsep{BC}=\gen^{2}.
+\]
+
+\paragraph{Opcodes.} Coordinate $3$ of every bytecode tuple is an opcode, naming the instruction stored at that program counter (\S\ref{sec:bytecode}):
+\[
+  \opc{XOR}=1,\quad \opc{MUL}=\gen,\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4},\quad \opc{B3}=\gen^{5},\quad \opc{PACK}=\gen^{6}.
+\]
+
+\subsection{Bytecode encoding}\label{sec:e2e-bc}
+
+The program is public. Instruction $\pc$ fills coordinates $3$ through $11$ of its bytecode tuple
+\[
+  \tup{\dsep{BC},\pc,\cnt,\cdot}.
+\]
+Coordinate $3$ holds the opcode and coordinates $4,\ldots,11$ hold eight operands or immediate lanes. Each reference operand is a $\gen$-power. Immediates occupy their $\K$-lanes: $k_0,k_1,k_2$ for \texttt{SET\_CONSTANT}, and $\mu_0,\mu_1$ for \texttt{BLAKE3}.
+\begin{center}
+\begin{tabular}{llllllllll}
+\hline
+Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$ & $11$\\
+\hline
+\texttt{XOR}           & $\opc{XOR}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{MUL\_NATIVE}   & $\opc{MUL}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k_0$ & $k_1$ & $k_2$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$ & $0$\\
+\texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{PACK64X2}      & $\opc{PACK}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_V$ & $o_C$ & $\mu_0$ & $\mu_1$\\
+\hline
+\end{tabular}
+\end{center}
+So the program is nine public columns (opcode plus eight slots), whose MLEs the verifier forms itself. Writing $\mathit{instr}$ for the nine, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces every operand, flag, and immediate to match the program at its $\pc$.
+
+The program is padded to a power of two (\S\ref{sec:idxcol}). A padding entry is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
+
+\subsection{Padding rows}\label{sec:e2e-pad}
+
+Each table is padded to a power of two. Padding rows are a fixed default, not all zeros (a zero count would self-cancel a read, \S\ref{sec:memchan}): every column zero but the read counts $\gen^{0}=1$, satisfying every constraint. The prover announces each table's real row count and the verifier divides the default surplus out of the bus product (\S\ref{sec:gp}).
+
+\subsection{Public input}\label{sec:e2e-pi}
+
+The public input is the first two memory cells $\mem[0],\mem[1]$, each a $192$-bit word, fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address cube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so on \emph{each} committed memory limb $M_\ell$ ($\ell\in\{0,1,2\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1-r)\,\mem[0]_\ell+r\,\mem[1]_\ell$, which the verifier forms itself from the public words. It samples $r_m\in\E$ and checks all three limbs,
+\[
+  \widetilde M_\ell(r_m,0,\dots,0)\;=\;\widetilde{\mathrm{PI}}_\ell(r_m),\qquad \ell\in\{0,1,2\}.
+\]
+Writing $P=P_0+P_1y+P_2y^2$ for the public-input evaluation, the implementation transmits $P_0,P_1$ and computes
+\[
+P_2=(P+P_0+P_1y)(y^2)^{-1}.
+\]
+The final stacked opening discharges all three limb claims.
+
+\subsection{The unrolled protocol}\label{sec:e2e-unrolled}
+
+We lay out the whole protocol as one ordered sequence. Each reduction below adds evaluation claims on committed columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
+
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE3 circuit family. The prover then announces $h$ and the seven real opcode-row counts; the verifier checks them against the caps and derives every table, stack, and leaf shape. Thus neither a different program nor an adaptively chosen shape can reuse the proof's later challenges.
+
+\paragraph{Commitment.}
+\begin{enumerate}
+\item \textbf{Prover.} Builds the $\K$-valued committed columns: each table's state, operands, addresses, read-value limbs, and counts; the three memory limbs; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}). A program with no \texttt{BLAKE3} execution carries one padding instance so the proof shape remains uniform. A $192$-bit value occupies three $\K$-limb columns (\S\ref{sec:prelim}). The \texttt{JUMP} table additionally commits $w,b,\mathit{next\_pc},\mathit{next\_fp}$. Counts are committed $\gen$-powers (\S\ref{sec:memchan}); the public program and virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. The prover stacks these columns into $q$, sends the commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's real row count. The verifier checks the instance caps and derives the power-of-two table, stack, and leaf shapes (\S\ref{sec:leafstack}). The sizes also fix the default-row surplus later divided out of the grand product (\S\ref{sec:e2e-pad}, \S\ref{sec:gp}).
+\end{enumerate}
+
+\paragraph{Bus.}
+\begin{enumerate}
+\item \textbf{Verifier.} Sends the fingerprint challenge $\alpha$ and the multiset challenge $\gamma$.
+\item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:memchan}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the push/pull product after the default surplus is removed (\S\ref{sec:gp}).
+\item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). The pass yields three leaf claims $\widetilde V^{t}_0(\zeta)$ at one shared $\zeta$.
+\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. For the table-less blocks the prover supplies the committed-column evaluations (one $\E$-element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source, and these evaluations enter the claim pool. It sends nothing for the other blocks: what they owe the side is $\widetilde V_0(\zeta)$ less the part just formed, so the verifier forms that too, and the batch below settles it. The count channel decomposes likewise; none of its blocks is table-less, so its whole share falls to the batch.
+\end{enumerate}
+
+\paragraph{Local constraints.} One run for all seven tables (\S\ref{sec:air}).
+\begin{enumerate}
+\item \textbf{Verifier.} Sends the constraint-batch challenge $\eta$. Table $T_j$ takes a disjoint range of its powers, one per constraint; the bus forms absorbed above take three further powers, one per side and shared by every table. No point is drawn, the batch running at the bus point with $T_j$ tested at $\zeta_{<\tau_j}$.
+\item \textbf{Prover \& Verifier.} Run the back-loaded batched zerocheck, an $n$-round sumcheck with $n=\max_j\tau_j$, a table of $2^{\tau}$ rows joining at round $n-\tau$. It starts from a target the verifier derives from the three leaf claims, and each round is four $\E$-elements, the round polynomial itself at four nodes. Its end needs every column of every table, \texttt{BLAKE3}'s eighteen value columns included, whose claims route to $q_{\mathrm{pkd}}$; each at that table's own reduced point $\rho_{<\tau_j}$, all of them prefixes of one $\rho$; these enter the pool, and they are also what the bus forms are read off.
+\end{enumerate}
+
+\paragraph{Public input.}
+\begin{enumerate}
+\item \textbf{Verifier.} Sends $r_m$, forms $\widetilde{\mathrm{PI}}_\ell(r_m)$ from the public input, and adds to the pool the three memory-limb claims $\widetilde M_\ell(r_m,0,\dots,0)=\widetilde{\mathrm{PI}}_\ell(r_m)$, $\ell\in\{0,1,2\}$ (\S\ref{sec:e2e-pi}).
+\end{enumerate}
+
+\paragraph{BLAKE3 validity.}
+\begin{enumerate}
+\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $q_\pkd$ (\S\ref{sec:tab-blake3}).
+\item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $q_\pkd$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
+\end{enumerate}
+
+\paragraph{Opening.}
+\begin{enumerate}
+\item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a committed column at a point, its value already supplied; via the stacking selectors (\S\ref{sec:stacking}) it becomes a weighted sum $\sum_w W_j(w)\,\widetilde q(w)=c_j$ over the stacked witness. (The ring-switched claims arrive already in this form, their weights supported on the $q_\pkd$ region.)
+\item \textbf{Verifier.} Sends the batching coefficients $\lambda_1,\dots,\lambda_J\in\E$, one per claim.
+\item \textbf{Prover \& Verifier.} Fold the $J$ claims into $W_\lambda=\sum_j\lambda_j W_j$ and $C_\lambda=\sum_j\lambda_j c_j$, and run the inner-product PCS opening on $\sum_w W_\lambda(w)\,\widetilde q(w)=C_\lambda$ (\S\ref{sec:rs-dense}), the verifier evaluating $W_\lambda$ itself. This one opening discharges every pooled claim; there is no separate reduction sumcheck.
+\item \textbf{Verifier.} Accepts iff the announced sizes passed the caps, the two roots agreed after the surplus division, the count root was nonzero, every sumcheck's rounds were consistent (the batch's against the target derived from the three leaf claims) and its final value matched the supplied evaluations, flock's reduction verified, the public-input claim held, and the PCS opening verified.
+\end{enumerate}

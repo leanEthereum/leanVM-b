@@ -2,7 +2,7 @@
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
 //! their deferred claims with the two aggregation sumchecks, and binds the sub
 //! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
-//! public input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
+//! public input (`doc/main.tex` §Recursive aggregation, §Deferred evaluation claims).
 //!
 //! The transcript trace of a real `cpu::verify` run
 //! (`transcript::trace_start`/`trace_take`) keeps the native and guest verifiers
@@ -155,7 +155,7 @@ fn prove_inner(
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
-/// verifier checks each claim natively (doc.tex §Deferred evaluation claims;
+/// verifier checks each claim natively (`doc/main.tex` §Deferred evaluation claims;
 /// n_rec = 1 forwards fresh claims without batching).
 struct DeferredSubproof {
     public_input: [F192; 2],
@@ -173,7 +173,7 @@ struct DeferredSubproof {
 
 /// The deferred claims the aggregation exports: one point and value on
 /// the stacked bytecode polynomial, one point + two values on the flock
-/// matrices (doc.tex §Deferred evaluation claims).
+/// matrices (`doc/main.tex` §Deferred evaluation claims).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct DeferredClaims {
     bytecode_point: Vec<F192>,

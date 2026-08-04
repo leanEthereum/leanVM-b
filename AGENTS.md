@@ -4,7 +4,7 @@
 
 A minimal (zero-knowledge Virtual Machine, which is actually not ZK in the real sense, i.e. it's only a snark, not a zk-snark).
 
-- `misc/doc.tex` describes the machine ISA, the snark that proves it.
+- `doc/` is one LaTeX project (root `doc/main.tex`, build with `latexmk -pdf main.tex`, output in `doc/.build/`) describing the machine ISA and the snark that proves it. Sections live in `doc/body/`, ring switching and the PCS are annexes in `doc/annex/`, and every symbol is defined once in `doc/preamble/macros.tex`.
 - `crates/lean_compiler/zkDSL.md` documents the (pythonic) zkDSL (that compiles to the ISA that our VM runs, and that our snark proves).
 
 Primary goal:
@@ -78,7 +78,7 @@ The same verification algorithm is written out three times, in three languages. 
 The third is worth understanding before touching the verifier. `guests/recursion.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~500k instructions and why its opcode mix is what the recursion benchmark reports. Two consequences:
 
 - The guest is **generic in the inner proof**: its placeholder map depends only on the inner bytecode size, so one compiled bytecode verifies inner proofs of different sizes and PCS rates (`recursion_2to1_mixed`, `recursion_generic_many`).
-- It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, and flock's A0/B0) are deferred, bound to the guest's public input, and discharged natively by `RecursiveProof::verify`. Sumcheck is used to merge and further deref those 'postponed' claims in recursion, moving `n` such inner claims to a single outer one (explained in doc.tex).
+- It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, and flock's A0/B0) are deferred, bound to the guest's public input, and discharged natively by `RecursiveProof::verify`. Sumcheck is used to merge and further deref those 'postponed' claims in recursion, moving `n` such inner claims to a single outer one (explained in `doc/`).
 
 `recursion_2to1` is the fast end-to-end check; `recursion_soundness_binds` is the adversarial one, tampering each hint stream in turn and requiring rejection.
 

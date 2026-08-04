@@ -1,0 +1,41 @@
+% leanVM-b: the machine, its arithmetization, the protocol, and the two
+% notes it rests on (ring switching, the polynomial commitment scheme).
+%
+%   build:   latexmk -pdf main.tex        % output in .build/, see latexmkrc
+%   clean:   latexmk -c
+%
+% One notion, one symbol: all notation is defined in preamble/macros.tex.
+\documentclass[11pt]{article}
+
+\input{preamble/packages}
+\input{preamble/macros}
+\input{preamble/theorems}
+
+\title{\bf leanVM-b}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\newpage
+
+\input{body/01-vm-specification}
+\input{body/02-proving-primitives}
+\input{body/03-committing-the-witness}
+\input{body/04-m3-model}
+\input{body/05-memory-and-bytecode-lookups}
+\input{body/06-instruction-tables}
+\input{body/07-end-to-end-protocol}
+\input{body/08-recursive-aggregation}
+\input{body/09-isa-programming}
+
+\appendix
+\input{annex/a-ring-switching}
+\input{annex/b-polynomial-commitment-scheme}
+
+\bibliographystyle{alphaurl}
+\bibliography{refs}
+
+\end{document}

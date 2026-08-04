@@ -1,0 +1,137 @@
+% References for the leanVM-b document.
+%
+% Merged from the three source notes.  Where the same work carried two keys
+% (Diamond--Posen, Ligerito, WHIR), the duplicates were folded into one
+% entry.  Flock appears twice on purpose: Flock26 is the paper, flock-impl
+% is the implementation the BLAKE3 table wires into.
+
+@inproceedings{DP26,
+  author    = {Benjamin E. Diamond and Jim Posen},
+  title     = {Polylogarithmic Proofs for Multilinears over Binary Towers},
+  booktitle = {Advances in Cryptology -- EUROCRYPT 2026},
+  pages     = {3--32},
+  publisher = {Springer},
+  year      = {2026},
+  doi       = {10.1007/978-3-032-25336-1_1},
+  url       = {https://eprint.iacr.org/2024/504},
+  note      = {Cryptology ePrint Archive, Paper 2024/504},
+}
+
+@inproceedings{ACFY25,
+  author    = {Gal Arnon and Alessandro Chiesa and Giacomo Fenzi and Eylon Yogev},
+  title     = {{WHIR}: Reed--Solomon Proximity Testing with Super-Fast Verification},
+  booktitle = {Advances in Cryptology -- EUROCRYPT 2025},
+  year      = {2025},
+  url       = {https://eprint.iacr.org/2024/1586},
+  note      = {Cryptology ePrint Archive, Paper 2024/1586},
+}
+
+@misc{NA25,
+  author = {Andrija Novakovic and Guillermo Angeris},
+  title  = {Ligerito: A Small and Concretely Fast Polynomial Commitment Scheme},
+  year   = {2025},
+  howpublished = {Cryptology ePrint Archive, Paper 2025/1187},
+  url    = {https://eprint.iacr.org/2025/1187},
+}
+
+@misc{Flock26,
+  author = {Benedikt B{\"u}nz and Ron Rothblum and William Wang},
+  title  = {Flock: Fast Proving for Batch Boolean Computations},
+  year   = {2026},
+  howpublished = {Cryptology ePrint Archive, Paper 2026/1329},
+  url    = {https://eprint.iacr.org/2026/1329},
+}
+
+@misc{flock-impl,
+  author = {{Succinct Labs}},
+  title  = {flock: a batched-R1CS proving system for hash circuits over binary towers},
+  howpublished = {\url{https://github.com/succinctlabs/flock}},
+}
+
+@misc{BCHKS25,
+  author = {Eli Ben-Sasson and Dan Carmon and Ulrich Hab{\"o}ck and
+            Swastik Kopparty and Shubhangi Saraf},
+  title  = {On Proximity Gaps for Reed--Solomon Codes},
+  year   = {2025},
+  howpublished = {Cryptology ePrint Archive, Paper 2025/2055},
+  url    = {https://eprint.iacr.org/2025/2055},
+}
+
+@inproceedings{BCS16,
+  author    = {Eli Ben-Sasson and Alessandro Chiesa and Nicholas Spooner},
+  title     = {Interactive Oracle Proofs},
+  booktitle = {Theory of Cryptography (TCC 2016-B)},
+  year      = {2016},
+}
+
+@inproceedings{BGKS20,
+  author    = {Eli Ben-Sasson and Lior Goldberg and Swastik Kopparty and
+               Shubhangi Saraf},
+  title     = {{DEEP-FRI}: Sampling Outside the Box Improves Soundness},
+  booktitle = {Innovations in Theoretical Computer Science (ITCS 2020)},
+  year      = {2020},
+}
+
+@inproceedings{CCHLRR19,
+  author    = {Ran Canetti and Yilei Chen and Justin Holmgren and
+               Alex Lombardi and Guy N. Rothblum and Ron D. Rothblum and
+               Daniel Wichs},
+  title     = {Fiat--Shamir: From Practice to Theory},
+  booktitle = {Symposium on Theory of Computing (STOC 2019)},
+  year      = {2019},
+}
+
+@inproceedings{LCH14,
+  author    = {Sian-Jheng Lin and Wei-Ho Chung and Yunghsiang S. Han},
+  title     = {Novel Polynomial Basis and its Application to
+               Reed--Solomon Erasure Codes},
+  booktitle = {Foundations of Computer Science (FOCS 2014)},
+  year      = {2014},
+}
+
+@article{LFKN92,
+  author  = {Carsten Lund and Lance Fortnow and Howard Karloff and Noam Nisan},
+  title   = {Algebraic Methods for Interactive Proof Systems},
+  journal = {Journal of the ACM},
+  volume  = {39},
+  number  = {4},
+  year    = {1992},
+}
+
+@misc{Gru24,
+  author = {Angus Gruen},
+  title  = {Some Improvements for the PIOP for ZeroCheck},
+  year   = {2024},
+  howpublished = {Cryptology ePrint Archive, Paper 2024/108},
+  url    = {https://eprint.iacr.org/2024/108},
+}
+
+@misc{ZCF23,
+  author = {Hadas Zeilberger and Binyi Chen and Benjamin Fisch},
+  title  = {BaseFold: Efficient Field-Agnostic Polynomial Commitment Schemes
+            from Foldable Codes},
+  year   = {2023},
+  howpublished = {Cryptology ePrint Archive, Paper 2023/1705},
+  url    = {https://eprint.iacr.org/2023/1705},
+}
+
+@misc{GRS23,
+  author = {Venkatesan Guruswami and Atri Rudra and Madhu Sudan},
+  title  = {Essential Coding Theory},
+  year   = {2023},
+  note   = {Draft textbook},
+}
+
+@misc{m3,
+  author = {Irreducible},
+  title  = {Multi-Multiset Matching ({M3})},
+  note   = {Binius documentation},
+  howpublished = {\url{https://www.binius.xyz/basics/binius-v0/m3/}},
+}
+
+@misc{leanVM,
+  author = {leanEthereum},
+  title  = {leanVM: a minimal zkVM},
+  note   = {\texttt{misc/minimal\_zkVM.tex}, \S Range checks, \S Switch statements},
+  howpublished = {\url{https://github.com/leanEthereum/leanVM}},
+}

@@ -2281,7 +2281,7 @@ def main():
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
     # samples the RLC coefficients, and verifies the two batching sumchecks of
-    # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
+    # doc/main.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
     agg_fs = [AGG_SEED_0, AGG_SEED_1]
     agg_fs = obs(agg_fs, NSUB)
