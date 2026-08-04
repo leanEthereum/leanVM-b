@@ -1,19 +1,53 @@
+% !TeX root = ../drafts/03-proving-primitives.tex
 \section{Proving primitives}\label{sec:prelim}
 
-Every physical committed column is $\K$-valued (\S\ref{sec:vm}); every challenge, sumcheck, zerocheck, GKR value, and evaluation claim is $\E$-valued, for the two fields $\K\subset\E\cong\F_{2^{192}}$ fixed in \S\ref{sec:vm}, so $|\E|=2^{192}$. The embedding and mixed product are
+Every committed column is in $\K$, while every random challenge is in $\E$, for soundness.
+
+\begin{definition}[Table, column, virtual column]\label{def:column}
+A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$, and a \emph{table} is a group of columns of equal height. Each column is either \emph{committed} or \emph{virtual}: a virtual column is a fixed $\K$-linear function of the committed columns of its own table, and carries no commitment. A $192$-bit \emph{value} is carried by three columns read as $V=V_0+V_1y+V_2y^{2}$; addresses, registers and counters are single columns.
+\end{definition}
+
+\begin{definition}[Multilinear extension]\label{def:mle}
+The \emph{multilinear extension} of $f:\cube{\kappa}\to\E$ is the unique $\mle{f}:\E^{\kappa}\to\E$ of degree at most one in each variable that agrees with $f$ on $\cube{\kappa}$. Both a column (Definition~\ref{def:column}, $\K$-valued) and a product-tree layer (\S\ref{sec:gkr}, $\E$-valued) are such an $f$.
+\end{definition}
+
+\begin{definition}[Equality indicator]\label{def:eq}
+For $r,X\in\E^{\kappa}$, \ $\eq(r,X)=\prod_{i}\bigl(1+r_i+X_i\bigr)$, the characteristic-two form of $\prod_i\bigl(r_iX_i+(1+r_i)(1+X_i)\bigr)$.
+\end{definition}
+
+\begin{fact}[$\eq$ carries the interpolation weights]\label{fact:eq}
+On Boolean arguments $\eq$ is the equality indicator: $\eq(r,x)=1$ if $r=x$ and $0$ otherwise, for $r,x\in\cube{\kappa}$. For an arbitrary point $r\in\E^{\kappa}$,
 \[
-  \K\hookrightarrow\E,\quad e\mapsto e+0\cdot y+0\cdot y^2,
-  \qquad
-  k(e_0+e_1y+e_2y^2)=ke_0+(ke_1)y+(ke_2)y^2.
+  \mle{f}(r)=\sum_{x\in\cube{\kappa}}f(x)\,\eq(r,x),
 \]
-Committed columns and their truth tables are $\K$-valued; extensions are evaluated at $\E$-points; protocol randomness is sampled from $\E$. A $192$-bit \emph{value} column is represented by $V_0,V_1,V_2:\cube\kappa\to\K$ with $V=V_0+V_1y+V_2y^2$. Address, register, and counter columns are single $\K$-columns.
+so an evaluation of $\mle{f}$ is a weighted sum over the table of $f$, with weights the verifier can compute in $O(\kappa)$ operations.
+\end{fact}
 
-\textbf{Multilinear extension (MLE).} A function $f:\cube{\kappa}\to\K$ (a committed column) or $f:\cube{\kappa}\to\E$ (a product-tree layer of \S\ref{sec:gkr}) has a unique multilinear extension $\widetilde f:\E^{\kappa}\to\E$, the polynomial of degree at most $1$ in each variable that agrees with $f$ on the boolean hypercube. Define $\eq(r,X)=\prod_i(1+r_i+X_i)$. For Boolean $r$, this is $1$ at $X=r$ and $0$ at the other Boolean points. For arbitrary $r\in\E^\kappa$, it gives the interpolation weights: $\widetilde f(r)=\sum_{x\in\cube\kappa}f(x)\eq(r,x)$.
+\begin{fact}[Virtual columns are free]\label{fact:virtual}
+Let $V=L(C)$ be virtual, $L$ a $\K$-linear map of the committed columns $C$ of its table. Extending $L$ $\E$-linearly, it commutes with the multilinear extension: $\mle{V}(\zeta)=L\bigl(\mle{C}(\zeta)\bigr)$ for every $\zeta\in\E^{\kappa}$. One opening of the committed columns therefore evaluates every virtual column of the table, which is why the free increments $\gen\cdot\pc$ and $\gen\cdot\cnt$ cost nothing (\S\ref{sec:m3}).
+\end{fact}
 
-\textbf{Tables and columns.} A \emph{table} is a group of columns of the same size. Each column is \emph{committed} or \emph{virtual}: a virtual column is a $\K$-linear function of the committed columns of its table, carried with no commitment of its own. Such a map, extended $\E$-linearly, commutes with the multilinear extension, $\widetilde{L(x)}(\zeta)=L\bigl(\widetilde x(\zeta)\bigr)$, so one opening of the committed columns evaluates the virtual one.
+Two reductions turn statements about tables into evaluations of them.
 
-\textbf{Sumcheck.} Sumcheck reduces a claim $\sum_{x\in\cube\kappa}P(x)=s$ to a single evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$, over $\kappa$ rounds; a false claim passes with probability at most $\deg P\cdot\kappa/|\E|$.
+\begin{fact}[Sumcheck~\cite{LFKN92}]\label{fact:sumcheck}
+Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$ on a polynomial $P$ in $\kappa$ variables to a single evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$. A false claim survives with probability at most $\deg P\cdot\kappa/|\E|$.
+\end{fact}
 
-\textbf{Zerocheck.} To prove $P$ vanishes on $\cube\kappa$, the verifier samples $r\in\E^{\kappa}$ and runs sumcheck on $\sum_{x}P(x)\,\eq(r,x)=0$.
+\begin{definition}[Zerocheck]\label{def:zerocheck}
+To prove that $P$ vanishes on $\cube{\kappa}$, the verifier samples $r\in\E^{\kappa}$ and the two parties run sumcheck on
+\[
+  \sum_{x\in\cube{\kappa}}P(x)\,\eq(r,x)=0 .
+\]
+By Fact~\ref{fact:eq} that sum is the multilinear extension of $P|_{\cube{\kappa}}$ evaluated at $r$, so it vanishes identically in $r$ exactly when $P$ vanishes on the cube, and a $P$ that does not survives the random $r$ with probability at most $\kappa/|\E|$.
+\end{definition}
 
-\textbf{Inner-product PCS.} An \emph{inner-product commitment scheme} lets a prover commit to a multilinear $g:\cube{M}\to\K$ and later prove a weighted sum $\sum_{w\in\cube M} W(w)\,\widetilde g(w)=c$ against any weight $W:\cube{M}\to\E$ the verifier can evaluate: the commitment is over $\K$, the opening over $\E$. A point evaluation $\widetilde g(\mathbf r)$ at $\mathbf r\in\E^{M}$ is the special case $W=\eq(\mathbf r,\cdot)$. WHIR~\cite{ACFY25} and BaseFold~\cite{ZCF23}/Ligerito~\cite{NA25} are such schemes; we use one (\S\ref{sec:rs-dense}), specified with its soundness analysis in Annex~\ref{annex:pcs}, where such a claim is Definition~\ref{def:claim}.
+\begin{definition}[Inner-product commitment scheme]\label{def:ipcs}
+An \emph{inner-product commitment scheme} commits to a multilinear $g:\cube{M}\to\K$ and later proves, against any weight $W:\cube{M}\to\E$ whose extension the verifier can evaluate in $\mathrm{poly}(M)$ operations, a claim
+\[
+  \sum_{w\in\cube{M}}W(w)\,g(w)=c,
+  \qquad c\in\E .
+\]
+The commitment is over $\K$, the opening over $\E$. A point evaluation $\mle{g}(r)=c$ is the special case $W=\eq(r,\cdot)$, by Fact~\ref{fact:eq}.
+\end{definition}
+
+WHIR~\cite{ACFY25} and BaseFold~\cite{ZCF23}/Ligerito~\cite{NA25} are such schemes. \S\ref{sec:rs-dense} fixes the one used here, and Annex~\ref{annex:pcs} specifies it with its round-by-round soundness, where Definition~\ref{def:ipcs} appears over a generic binary field as Definition~\ref{def:claim}.

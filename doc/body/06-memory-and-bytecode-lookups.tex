@@ -1,3 +1,4 @@
+% !TeX root = ../drafts/06-memory-and-bytecode-lookups.tex
 \section{Memory and bytecode lookups}\label{sec:omc}
 
 Both a memory read and a bytecode read are indexed lookups into an array: the committed memory, or the public program. We realize each as an interaction on the shared bus (\S\ref{sec:m3}), balanced by \eqref{eq:gp}, using offline memory checking with a read count per index.
