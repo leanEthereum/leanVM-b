@@ -1153,6 +1153,33 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
     yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
 
     # ---- per-level induced bases at the single terminal point ----
+    # Every query of a level runs the SAME product shape over the level's
+    # message-column coordinates, and only the novel-basis chain (the query
+    # position's subspace-vanishing walk) differs. The coordinate's factor
+    #     1 + c_t * (1 + chain_t * inv_t) == (1 + c_t) + (c_t * inv_t) * chain_t
+    # so its two coefficients depend on the challenge and the baked vanishing
+    # inverse alone: hoist them out of the query loop into one row per level
+    # (the fold coords, then the tail coords, which together are exactly the
+    # level's LIG_LOG_MSG_COLS coordinates). Each query then folds in one
+    # MUL_192 multiply-add per coordinate against the running chain, with no
+    # per-query basis vector stored at all: the chain recurrence and the
+    # accumulation fuse into a single pass over t.
+    basis_a = HeapBuf(GEN ** (3 * LIG_N_LEVELS[m_idx] * LIG_LOG_MSG_COLS_CAP))
+    basis_b = HeapBuf(GEN ** (3 * LIG_N_LEVELS[m_idx] * LIG_LOG_MSG_COLS_CAP))
+    for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
+        for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
+            fold_c = eload(fold_challenges * GEN ** (3 * (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)))
+            inv_idx = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t
+            vanish_inv = [LIG_VANISH_INVS[3 * inv_idx], LIG_VANISH_INVS[3 * inv_idx + 1], LIG_VANISH_INVS[3 * inv_idx + 2]]
+            estore(basis_a * GEN ** (3 * (lvl * LIG_LOG_MSG_COLS_CAP + t)), eadd_base(1, fold_c))
+            estore(basis_b * GEN ** (3 * (lvl * LIG_LOG_MSG_COLS_CAP + t)), emul(fold_c, vanish_inv))
+        for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+            slot = lvl * LIG_LOG_MSG_COLS_CAP + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j
+            tail_c = eload(tail_challenges * GEN ** (3 * j))
+            inv_idx = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j
+            vanish_inv = [LIG_VANISH_INVS[3 * inv_idx], LIG_VANISH_INVS[3 * inv_idx + 1], LIG_VANISH_INVS[3 * inv_idx + 2]]
+            estore(basis_a * GEN ** (3 * slot), eadd_base(1, tail_c))
+            estore(basis_b * GEN ** (3 * slot), emul(tail_c, vanish_inv))
     inner_chain = HeapBuf(GEN ** (3 * (LIG_N_LEVELS[m_idx] + 1)))
     estore(inner_chain, [0, 0, 0])
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
@@ -1160,11 +1187,12 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
         estore(residual_chain, [0, 0, 0])
         for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
             xr3 = xr ** 3
-            basis_w = StackBuf(3 * LIG_LOG_MSG_COLS_CAP)
             basis_scalar = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
-            inv_idx = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl]
-            vanish_inv = [LIG_VANISH_INVS[3 * inv_idx], LIG_VANISH_INVS[3 * inv_idx + 1], LIG_VANISH_INVS[3 * inv_idx + 2]]
-            sstore(basis_w, 0, emul_base(basis_scalar, vanish_inv))
+            # t = 0: the chain IS the base-field query position, so the
+            # multiply-add takes the cheaper base-scalar mode.
+            basis_a0 = eload(basis_a * GEN ** (3 * lvl * LIG_LOG_MSG_COLS_CAP))
+            basis_b0 = eload(basis_b * GEN ** (3 * lvl * LIG_LOG_MSG_COLS_CAP))
+            prefix_eq = eadd(basis_a0, emul_base(basis_scalar, basis_b0))
             for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
                 val_idx = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1
                 vanish_val = [LIG_VANISH_VALS[3 * val_idx], LIG_VANISH_VALS[3 * val_idx + 1], LIG_VANISH_VALS[3 * val_idx + 2]]
@@ -1172,18 +1200,9 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
                     basis_chain = emul_base(basis_scalar, eadd_base(basis_scalar, vanish_val))
                 else:
                     basis_chain = emul(basis_chain, eadd(basis_chain, vanish_val))
-                inv_idx = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t
-                vanish_inv = [LIG_VANISH_INVS[3 * inv_idx], LIG_VANISH_INVS[3 * inv_idx + 1], LIG_VANISH_INVS[3 * inv_idx + 2]]
-                sstore(basis_w, t, emul(basis_chain, vanish_inv))
-            prefix_eq = [1, 0, 0]
-            for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
-                fold_c = eload(fold_challenges * GEN ** (3 * (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)))
-                basis = sload(basis_w, t)
-                prefix_eq = emul(prefix_eq, eadd([1, 0, 0], emul(fold_c, eadd([1, 0, 0], basis))))
-            for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                tail_c = eload(tail_challenges * GEN ** (3 * j))
-                basis = sload(basis_w, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j)
-                prefix_eq = emul(prefix_eq, eadd([1, 0, 0], emul(tail_c, eadd([1, 0, 0], basis))))
+                basis_at = eload(basis_a * GEN ** (3 * (lvl * LIG_LOG_MSG_COLS_CAP + t)))
+                basis_bt = eload(basis_b * GEN ** (3 * (lvl * LIG_LOG_MSG_COLS_CAP + t)))
+                prefix_eq = emul(prefix_eq, eadd(basis_at, emul(basis_bt, basis_chain)))
             prev_residual = eload(residual_chain * xr3)
             alpha_weight = eload(alpha_weights * GEN ** (3 * lvl * LIG_MAX_QUERIES[m_idx]) * xr3)
             estore(residual_chain * xr3 * GEN ** 3, eadd(prev_residual, emul(alpha_weight, prefix_eq)))
@@ -1632,7 +1651,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             g_delta = GEN ** 0
             for j in unroll(0, COUNT_BITS):
                 pad_bit = pad_bits[GEN ** j]
-                assert pad_bit * pad_bit == pad_bit
+                pad_bits[GEN ** j] = pad_bit * pad_bit  # booleanity as a write-once pin
                 ladder = emul(ladder, eadd([1, 0, 0], emul_base(pad_bit, eadd(ladder_square, [1, 0, 0]))))
                 g_delta *= (1 + pad_bit * gsq_plus[j])  # g^DELTA
                 ladder_square = emul(ladder_square, ladder_square)
@@ -1691,7 +1710,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
                 for xk in mul_range(1, sel_len_g):
                     xk3 = xk ** 3
                     sbit = sel_bits[xk]
-                    assert sbit * sbit == sbit
+                    sel_bits[xk] = sbit * sbit  # booleanity as a write-once pin
                     prev_eq = eload(eq_chain * xk3)
                     zeta_v = eload(zeta_hi * xk3)
                     estore(eq_chain * xk3 * GEN ** 3, emul(prev_eq, eadd_base(1 + sbit, zeta_v)))
