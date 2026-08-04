@@ -9,7 +9,7 @@
 
 //! Field-independent configuration and soundness analysis for Ligerito.
 //!
-//! Source of truth: `misc/pcs.tex` ("A note on WHIR/Ligerito over binary
+//! Source of truth: `doc/annex/b-polynomial-commitment-scheme.tex` ("A note on WHIR/Ligerito over binary
 //! fields"), Theorem `thm:rbr`. Its per-verifier-message error table maps
 //! onto the per-level checks in [`LigeritoSecurityConfig::validate`]:
 //!
@@ -371,7 +371,7 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
 #[serde(rename_all = "snake_case")]
 pub enum SoundnessRegime {
     /// Johnson radius with explicit slack `η` (γ = (1 − √ρ) − η) **with
-    /// out-of-domain binding** (`misc/pcs.tex`, Thm `thm:rbr`). The MCA
+    /// out-of-domain binding** (`doc/annex/b-polynomial-commitment-scheme.tex`, Thm `thm:rbr`). The MCA
     /// theorem (`thm:mca-johnson` = BCHKS25 Thm 4.6) gives the proximity-gap
     /// exceptional set `a = O_ρ(n / η^5)`; the level's `fold_grinding_bits`
     /// should be ≥ (target_bits − log₂(q/a)).
@@ -534,7 +534,7 @@ fn round1(x: f64) -> f64 {
 const PAPER_COMPAT_TOL_BITS: f64 = 0.6;
 
 /// Proximity-gap exceptional set for the list-decoding (Johnson) regime, per
-/// `misc/pcs.tex` Thm `thm:mca-johnson` = BCHKS25 Theorem 4.6 (list
+/// `doc/annex/b-polynomial-commitment-scheme.tex` Thm `thm:mca-johnson` = BCHKS25 Theorem 4.6 (list
 /// correlated agreement). For a Reed–Solomon code of (slightly reduced) rate
 /// `ρ`, codeword length `n`, and Johnson slack `η` (proximity radius
 /// `γ = 1 − √ρ − η`), the MCA error is `a/|F|` with
@@ -545,7 +545,7 @@ const PAPER_COMPAT_TOL_BITS: f64 = 0.6;
 ///
 /// This is the per-fold-step MCA error, stated for a two-row interleaved word
 /// (`C ∈ F^{2×n}`). The ℓ-round lane fold of a `2^ℓ`-interleaved word adds a
-/// row-union factor via `pcs.tex` Lemma `lem:fold-list`; see
+/// row-union factor via the PCS annex, Lemma `lem:fold-list`; see
 /// [`paper_johnson_log_a`].
 fn paper_thm_ca_johnson_log_a(log_inv_rate: usize, eta: f64, log_msg_cols: usize) -> f64 {
     let rho = reduced_rate(log_inv_rate, log_msg_cols);
@@ -566,7 +566,7 @@ fn paper_thm_ca_johnson_log_a(log_inv_rate: usize, eta: f64, log_msg_cols: usize
 /// correlated agreement), represented as `f64` for the bound. Beware: the
 /// plain, non-list Thm 1.5 has the factor-two-smaller `⌈√ρ/(2η)⌉`, and
 /// Flock's Thm 8 quotes Thm 4.6 with that non-list parameter; the list form
-/// costs a factor 2 of slack (see the footnote in `pcs.tex`
+/// costs a factor 2 of slack (see the footnote in the PCS annex
 /// Thm `thm:mca-johnson`).
 fn johnson_m_param(log_inv_rate: usize, log_msg_cols: usize, eta: f64) -> f64 {
     let sqrt_rho = reduced_rate(log_inv_rate, log_msg_cols).sqrt();
@@ -574,7 +574,7 @@ fn johnson_m_param(log_inv_rate: usize, log_msg_cols: usize, eta: f64) -> f64 {
 }
 
 /// Johnson-regime proximity-gap `log₂ a` for a level, including the row-union
-/// factor from `pcs.tex` Lemma `lem:fold-list` ("Folding preserves lists").
+/// factor from the PCS annex, Lemma `lem:fold-list` ("Folding preserves lists").
 ///
 /// The base MCA error `ε = a_RLC/|F|` from [`paper_thm_ca_johnson_log_a`] is
 /// stated for a two-row interleaved word (one fold step). Folding a
@@ -669,13 +669,13 @@ fn johnson_algebraic_bits(level: &LigeritoLevelConfig) -> f64 {
 /// OOD binding bits for a level. `mu_vars` is the level's multilinear
 /// variable count (`log_msg_cols + log_num_interleaved`).
 ///
-/// - `ood_samples ≥ 1` (explicit samples): `pcs.tex` Lemma `lem:ood` /
+/// - `ood_samples ≥ 1` (explicit samples): the PCS annex, Lemma `lem:ood` /
 ///   `thm:rbr`'s OOD row `binom(L,2)·μ/|F|`, generalized to `s` samples: the
 ///   bad event is two distinct list elements agreeing on all `s` random
 ///   points of `F^μ` (Schwartz–Zippel, total degree ≤ μ), union over pairs:
 ///   `bits = s·(192 − log₂ μ) − (2·log₂ L_int − 1)`.
 /// - `ood_samples = 0` (L0): the protocol takes no OOD sample at commitment,
-///   so the PCS itself is only list binding (`pcs.tex`, abstract). What this
+///   so the PCS itself is only list binding (the PCS annex, opening paragraph). What this
 ///   term materializes is the OUTER protocol's binding: the opening's own
 ///   evaluation claim sits at a post-commit random point, so at most one
 ///   list member matches it except with `L·μ/|F|` (union over the list, not
@@ -1038,7 +1038,7 @@ impl LigeritoSecurityConfig {
             ));
         }
 
-        // Round-by-round soundness (misc/pcs.tex, Thm `thm:rbr`): each
+        // Round-by-round soundness (doc/annex/b-polynomial-commitment-scheme.tex, Thm `thm:rbr`): each
         // verifier-challenge transition is checked against
         // `target_security_bits` in the per-level loop above, so the
         // Fiat--Shamir error per random-oracle query is their MAX; ordinary

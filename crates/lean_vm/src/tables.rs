@@ -1,4 +1,4 @@
-//! Per-instruction tables (`misc/doc.tex`, “The instruction tables”). Each opcode is one [`Table`] impl that declares,
+//! Per-instruction tables (`doc/body/06-instruction-tables.tex`). Each opcode is one [`Table`] impl that declares,
 //! in one place, its committed columns, how to fill them from the trace, its bus
 //! interactions (flushes), the read-count columns that feed the count channel,
 //! and its degree-2 constraint. Column indices here are *local* (`0..n_committed_columns`);
@@ -642,7 +642,7 @@ mod jump {
     pub const RBC: usize = 22;
     // Local witness columns (committed, never flushed): the inverse hint `w`
     // (192-bit: c⁻¹ in E) and the taken indicator `b = [c ≠ 0]` it certifies
-    // (the `JUMP` table in `misc/doc.tex`). `b` is a single K-lane (0/1).
+    // (the `JUMP` table in `doc/body/06-instruction-tables.tex`). `b` is a single K-lane (0/1).
     pub const W_LO: usize = 23;
     pub const W_HI: usize = 24;
     pub const W_TOP: usize = 25;
@@ -818,7 +818,7 @@ impl Table for Pack64x2Table {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (“BLAKE3” in `misc/doc.tex`): one standard compression. The four 128-bit message
+/// `BLAKE3` (“BLAKE3” in `doc/body/06-instruction-tables.tex`): one standard compression. The four 128-bit message
 /// chunks are addressed *independently* at `aa0, aa1, ab0, ab1`
 /// (`= fp·g^{ins[i]}`), each a single cell — no forced contiguity between
 /// chunks, so a caller hashing e.g. `(tweak, pp)` need not copy them into

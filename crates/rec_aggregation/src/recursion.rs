@@ -2,7 +2,7 @@
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
 //! their deferred claims with the two aggregation sumchecks, and binds the sub
 //! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
-//! public input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
+//! public input (`doc/main.tex` §Recursive aggregation, §Deferred evaluation claims).
 //!
 //! The transcript trace of a real `cpu::verify` run
 //! (`transcript::trace_start`/`trace_take`) keeps the native and guest verifiers
@@ -155,7 +155,7 @@ fn prove_inner(
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
-/// verifier checks each claim natively (doc.tex §Deferred evaluation claims;
+/// verifier checks each claim natively (`doc/main.tex` §Deferred evaluation claims;
 /// n_rec = 1 forwards fresh claims without batching).
 struct DeferredSubproof {
     public_input: [F192; 2],
@@ -173,7 +173,7 @@ struct DeferredSubproof {
 
 /// The deferred claims the aggregation exports: one point and value on
 /// the stacked bytecode polynomial, one point + two values on the flock
-/// matrices (doc.tex §Deferred evaluation claims).
+/// matrices (`doc/main.tex` §Deferred evaluation claims).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct DeferredClaims {
     bytecode_point: Vec<F192>,
@@ -2267,4 +2267,27 @@ fn recursion_generic_many() {
         "all {} shapes verified by the SAME guest bytecode",
         pretty_integer(configs.len())
     );
+}
+
+/// Guest cycle profile WITHOUT proving the recursion: build one sub-proof's hints,
+/// then just execute the guest. Runs in about a second, which makes it the loop for
+/// attributing (and reducing) the guest's ~470k cycles:
+///
+/// ```text
+/// DBG_PROF=1 DBG_PROF_DUMP=/tmp/prof DBG_DISASM=/tmp/disasm \
+///   cargo test --release -p rec_aggregation recursion_guest_profile -- --ignored --nocapture
+/// ```
+///
+/// `DBG_PROF=1` prints cycles by function (each lowered `for` body is its own
+/// entry); the dumps tie a hot function's pc range back to its instructions.
+#[test]
+#[ignore]
+fn recursion_guest_profile() {
+    let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
+    let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
+    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    for (name, entries) in &batch.merged {
+        guest.set_witness(name, entries.clone());
+    }
+    let _ = guest.execute(batch.public_input());
 }

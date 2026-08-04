@@ -1,21 +1,19 @@
-name: Spec PDF
+name: Documentation PDF
 
 on:
   push:
     branches: [ "main" ]
     paths:
-      - 'misc/doc.tex'
-      - 'misc/images/**'
-      - '.github/workflows/pdf.yml'
+      - 'doc/**'
+      - '.github/workflows/doc.yml'
   pull_request:
     paths:
-      - 'misc/doc.tex'
-      - 'misc/images/**'
-      - '.github/workflows/pdf.yml'
+      - 'doc/**'
+      - '.github/workflows/doc.yml'
   workflow_dispatch:
 
 concurrency:
-  group: pdf-${{ github.ref }}
+  group: doc-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,8 +27,11 @@ jobs:
       - name: Compile LaTeX
         uses: xu-cheng/latex-action@v3
         with:
-          working_directory: misc
-          root_file: doc.tex
+          working_directory: doc
+          root_file: main.tex
+      - name: Fail on an undefined reference or citation
+        run: |
+          ! grep -qE 'Reference .* undefined|Citation .* undefined|multiply defined' doc/.build/main.log
 
   build-pdf:
     if: github.event_name != 'pull_request'
@@ -42,13 +43,17 @@ jobs:
       - name: Compile LaTeX
         uses: xu-cheng/latex-action@v3
         with:
-          working_directory: misc
-          root_file: doc.tex
+          working_directory: doc
+          root_file: main.tex
+      - name: Name the artifact
+        run: cp doc/.build/main.pdf leanVM-b.pdf
       - name: Publish PDF as release asset
         uses: softprops/action-gh-release@v2
         with:
           tag_name: spec-latest
-          name: Latest spec PDF
-          body: Auto-built from `misc/doc.tex` on every push to `main`.
+          name: Latest leanVM-b PDF
+          body: |
+            Auto-built from `doc/main.tex` on every push to `main`.
+            Contains the specification, Annex A (ring switching) and Annex B (the PCS).
           make_latest: false
-          files: misc/doc.pdf
+          files: leanVM-b.pdf

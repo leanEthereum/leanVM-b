@@ -1,11 +1,11 @@
 <h1 align="center">leanVM-b</h1>
 
 <p align="center">
-  <img src="./misc/images/banner-b.svg" alt="leanVM-b">
+  <img src="./doc/images/banner-b.svg" alt="leanVM-b">
 </p>
 
 <p align="center">
-  <a href="./misc/doc.tex"><img src="https://img.shields.io/badge/Specification-source-blue?style=for-the-badge&logo=latex&logoColor=white" alt="Specification source"></a>
+  <a href="./doc/main.tex"><img src="https://img.shields.io/badge/Specification-source-blue?style=for-the-badge&logo=latex&logoColor=white" alt="Specification source"></a>
   <a href="https://github.com/leanEthereum/leanVM-b/releases/download/spec-latest/doc.pdf"><img src="https://img.shields.io/badge/main-PDF-blue?style=for-the-badge&logo=latex&logoColor=white" alt="Latest main-branch PDF"></a>
 </p>
 

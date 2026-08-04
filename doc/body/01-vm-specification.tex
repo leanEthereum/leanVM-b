@@ -1,0 +1,69 @@
+\section{VM specification}\label{sec:vm}
+
+\paragraph{Field.}
+\[
+  \K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1),
+  \qquad
+  \E=\K[y]/(y^3+y+1),
+  \qquad |\E|=2^{192}.
+\]
+A \emph{memory word}, including a cell value, immediate, or hash value, is an element $v=v_0+v_1y+v_2y^2\in\E$ with $v_0,v_1,v_2\in\K$. Each address, program counter $\pc$, frame pointer $\fp$, and read counter is in $\K$. Addition is bitwise \textsc{xor}; multiplication is in $\K$ or $\E$. Protocol randomness is sampled from $\E$ (\S\ref{sec:prelim}). Each physical committed column (\S\ref{sec:rs}) is $\K$-valued, so a data word occupies three columns.
+
+\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$. Its successor is one field multiplication: $\gen^{\,i+1}\;=\;\gen\cdot\gen^{\,i}$.
+
+\paragraph{Memory.} Memory is immutable from the program's point of view: an array of $2^{h}$ cells, each holding one $192$-bit word (an $\E$-element), addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$ (the addresses are $\K$-elements). The size exponent $h$ is fixed per execution, with $16\le h\le 32$. Witness generation may initialize an unset cell once; writing an initialized cell asserts that the value is unchanged.
+
+\paragraph{Program.} The program is a fixed, public sequence of instructions, addressed like memory by powers of $\gen$: the program counter $\gen^{\,i}$ selects the $i$-th instruction. An instruction is an opcode together with its operands, described below.
+
+\paragraph{Registers.} The machine state is two registers, the program counter $\pc$ and the frame pointer $\fp$, each a power of $\gen$. Every instruction except \texttt{JUMP} advances the state by $\pc\gets\gen\cdot\pc$ (fetching the next instruction) and leaves $\fp$ unchanged; \texttt{JUMP} may set both.
+
+\paragraph{Operands and addressing.} An operand is either an \emph{immediate}, a literal field element used as given, or an \emph{fp-relative reference}: an offset $j$ into the current frame, encoded as the $\gen$-power $o=\gen^{\,j}$. With the frame based at $\fp=\gen^{\mathrm{base}}$, the reference names the cell
+\[
+  \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
+\]
+Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen^{\mathrm{base}},\gen^{\mathrm{base}+1},\dots$, and adding the offset $j$ to the base exponent is, in the field, a single multiplication $\fp\cdot o$.
+
+\paragraph{Instruction set.} The machine implements seven instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ an immediate operand.
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\hline
+Instruction & Operands & Semantics\\
+\hline
+\texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad($192$-bit field addition, \textsc{xor})\\
+\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ in $\E$\\
+\texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $192$-bit immediate)\\
+\texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
+\texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
+\texttt{PACK64X2}      & $[o_A,o_B,o_C]$ & $\loc{o_C}=a_0+b_0y$ for $\loc{o_A}=a_0,\loc{o_B}=b_0\in\K$\\
+\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\mu]$ & standard BLAKE3 compression (below)\\
+\hline
+\end{tabularx}
+\end{center}
+
+\texttt{PACK64X2} groups the low limbs of two physical $\E$-valued cells into one canonical $128$-bit cell. Its memory interactions read the sources as $(a_0,0,0)$ and $(b_0,0,0)$ and the destination as $(a_0,b_0,0)$. Bus balance therefore proves that both source words lie in $\K$; this is not merely a witness-generation check. The instruction is useful when a program receives serialized $\K$-limbs through an $\E$-valued interface.
+
+\texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE3 operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\mu$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
+\[
+  \mu=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
+\]
+For a one-block $64$-byte hash, the chaining value is the standard IV and
+\[
+  \mu=(0,64,\textsc{chunk-start}\mathbin{|}\textsc{chunk-end}\mathbin{|}\textsc{root}).
+\]
+Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_V$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock-impl} R1CS proof.
+
+\texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
+\[
+  \srcsel{s}\;=\;
+  \begin{cases}
+    \loc{\gamma} & s=\texttt{deref\_cell}[\gamma] \quad(\text{the local cell at offset }\gamma),\\
+    \gen^{2}\cdot\pc & s=\texttt{deref\_pc} \quad(\text{a return address: the program counter advanced by two}),\\
+    \fp & s=\texttt{deref\_fp} \quad(\text{the current frame pointer}).
+  \end{cases}
+\]
+The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return address and frame so a callee can later return and restore them, the basis for function calls. The skip of two is the call's return target: place the \texttt{DEREF} that saves $\gen^{2}\cdot\pc$ immediately before the \texttt{JUMP} that transfers control, and $\gen^{2}\cdot\pc$ names the instruction just after that \texttt{JUMP}.
+
+\texttt{JUMP} reads a condition $c=\loc{o_c}$, an arbitrary $192$-bit word, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
+
+\paragraph{Words used as addresses.} A memory word is $192$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Three reads produce addresses or registers: the \texttt{DEREF} pointer $\loc{\alpha}$, the \texttt{JUMP} destination $\loc{o_d}$, and the \texttt{JUMP} frame $\loc{o_f}$. Each must have both nonconstant tower limbs zero. The address and selection constraints (\S\ref{sec:tab-deref}, \S\ref{sec:tab-jump}) equate these words, possibly multiplied by a $\K$-operand, to a $\K$ column.
+

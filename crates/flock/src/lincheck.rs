@@ -483,14 +483,6 @@ pub fn partial_fold_packed_z_fast_padded(
 /// `NEON_TILE_T × 4 KB` and must stay L1-resident.
 const NEON_TILE_T: usize = 8;
 
-/// Single-matrix NEON inner kernel — sweep TILE_T=8 stripes of a stripe-tile
-/// for one BLOCK_K=8 block of i_inner positions, keeping all 8 accumulators
-/// in NEON Q-registers.
-///
-/// # Safety
-/// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes.
-/// - `tables_ptr` must point to at least `TILE_T * 256` F192 entries.
-/// - `out_ptr` must point to at least 8 F192 entries of mutable storage.
 /// x86-64 twin of the tiled gather kernel below.
 ///
 /// `VPTERNLOGQ` is the exact counterpart of AArch64's `EOR3`: an arbitrary
@@ -567,6 +559,14 @@ unsafe fn process_block_neon_single(
     }
 }
 
+/// Single-matrix NEON inner kernel — sweep TILE_T=8 stripes of a stripe-tile
+/// for one BLOCK_K=8 block of i_inner positions, keeping all 8 accumulators
+/// in NEON Q-registers.
+///
+/// # Safety
+/// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes.
+/// - `tables_ptr` must point to at least `TILE_T * 256` F192 entries.
+/// - `out_ptr` must point to at least 8 F192 entries of mutable storage.
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 #[allow(unsafe_op_in_unsafe_fn)]

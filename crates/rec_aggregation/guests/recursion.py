@@ -1214,25 +1214,36 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
 
     # ---- per-level induced bases at the single terminal point ----
+    # Every query of a level runs the SAME product shape over the level's
+    # message-column coordinates, and only the novel-basis chain (the query
+    # position's subspace-vanishing walk) differs. The coordinate's factor
+    #     1 + c_t * (1 + chain_t * inv_t) == (1 + c_t) + (c_t * inv_t) * chain_t
+    # so its two coefficients depend on the challenge and the baked vanishing
+    # inverse alone: hoist them out of the query loop (one row per level, the
+    # fold coords then the tail coords), and each query multiplies in one
+    # multiply-add per coordinate with no stored basis vector at all.
+    basis_a = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_LOG_MSG_COLS_CAP))
+    basis_b = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_LOG_MSG_COLS_CAP))
+    for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
+        for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
+            fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
+            basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] = 1 + fold_c
+            basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] = fold_c * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
+        for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+            tail_c = tail_challenges[GEN ** j]
+            basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j)] = 1 + tail_c
+            basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j)] = tail_c * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
     inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] + 1))
     inner_chain[GEN ** 0] = 0
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         residual_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         residual_chain[GEN ** 0] = 0
         for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            basis_w = StackBuf(LIG_LOG_MSG_COLS_CAP)
             basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
-            basis_w[0] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl]]
+            prefix_eq = basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP)] + basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP)] * basis_chain
             for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
                 basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
-                basis_w[t] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
-            prefix_eq = GEN ** 0
-            for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
-                fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
-                prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
-            for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                tail_c = tail_challenges[GEN ** j]
-                prefix_eq *= (1 + tail_c * (1 + basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]))
+                prefix_eq *= basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] + basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] * basis_chain
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
 
@@ -1636,7 +1647,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             g_delta = GEN ** 0
             for j in unroll(0, COUNT_BITS):
                 pad_bit = pad_bits[GEN ** j]
-                assert pad_bit * pad_bit == pad_bit
+                pad_bits[GEN ** j] = pad_bit * pad_bit  # booleanity as a write-once pin
                 ladder *= (1 + pad_bit * (ladder_square + 1))
                 g_delta *= (1 + pad_bit * gsq_plus[j])  # g^DELTA
                 ladder_square *= ladder_square
@@ -1693,7 +1704,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 goff_chain[GEN ** 0] = 1
                 for xk in mul_range(1, sel_len_g):
                     sbit = sel_bits[xk]
-                    assert sbit * sbit == sbit
+                    sel_bits[xk] = sbit * sbit  # booleanity as a write-once pin
                     eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])  # eq(sel_bit, zeta) = 1 + sel_bit + zeta over GF(2)
                     goff_chain[xk * GEN] = goff_chain[xk] * (1 + sbit * (g_squares[kappa_g * xk] + 1))  # weight g^(2^(κ+k))
                 eq_hi = eq_chain[sel_len_g]
@@ -2455,7 +2466,7 @@ def main():
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
     # samples the RLC coefficients, and verifies the two batching sumchecks of
-    # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
+    # doc/main.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
     agg_fs = [AGG_SEED_0, AGG_SEED_1]
     agg_fs = obs(agg_fs, NSUB)

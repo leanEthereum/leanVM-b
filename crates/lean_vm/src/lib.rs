@@ -1,4 +1,4 @@
-//! leanVM-b — arithmetization of a minimal zkVM (see `misc/doc.tex`).
+//! leanVM-b — arithmetization of a minimal zkVM (see `doc/main.tex`).
 //!
 //! Machine words are `c0 + c1*y + c2*y² ∈ E = K[y]/(y³ + y + 1)`.
 //! Addresses, pc/fp, read counters, and logical indices live in

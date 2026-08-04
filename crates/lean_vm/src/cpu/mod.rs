@@ -1,4 +1,4 @@
-//! Whole-program assembly over GF(2^64) (`misc/doc.tex`): the instruction tables
+//! Whole-program assembly over GF(2^64) (`doc/main.tex`): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
@@ -50,7 +50,7 @@ const MAX_LOG_MEM: usize = 32;
 
 /// Each per-opcode table holds at most `2^MAX_LOG_ROWS` rows (executed
 /// instructions of that opcode). Together with `MAX_LOG_MEM` and the bytecode
-/// cap these are the instance caps from “Counts must not wrap” in `misc/doc.tex`: at `ord(g) = 2^64−1`
+/// cap these are the instance caps from “Counts must not wrap” in `doc/body/05-memory-and-bytecode-lookups.tex`: at `ord(g) = 2^64−1`
 /// the memory-soundness and count-non-wrap counting arguments are theorems only
 /// for instances whose total read-flush count stays far below `2^64`, so the
 /// verifier rejects any announcement exceeding them before running a reduction.

@@ -1,0 +1,47 @@
+\section{Memory and bytecode lookups}\label{sec:omc}
+
+Both a memory read and a bytecode read are indexed lookups into an array: the committed memory, or the public program. We realize each as an interaction on the shared bus (\S\ref{sec:m3}), balanced by \eqref{eq:gp}, using offline memory checking with a read count per index.
+
+\subsection{Memory interaction}\label{sec:memchan}
+
+The interaction carries $\tup{\dsep{MEM},\addr,\cnt,\val}$: the address and count are $\gen$-powers ($\K$-elements), the value a $192$-bit word. The word rides \emph{three} tuple coordinates, its $\K$-limbs $(\val_0,\val_1,\val_2)$, matching the three-limb committed memory image $M_0,M_1,M_2$; all three are seeded and pulled, so balance forces the whole word to match (below I write $\val$ for the triple). The tuple width is unchanged: the widest tuple is still the bytecode one (\S\ref{sec:bytecode}). The prover commits the memory $\mem$ ($2^{h}$ cells, three $\K$-limb columns) and the counts ("in the exponent", i.e. powers of $\gen$). With $A[i]$ the number of reads of address $i$, the flushes are:
+\begin{itemize}
+\item \textbf{Initialize:} for each address $i$, \push\ $\tup{\dsep{MEM},\gen^{i},1,\mem[i]}$ (seed count $\gen^{0}=1$).
+\item \textbf{Read} (value $v$ at address $a$, count $\cnt=\gen^{t}$): \pull\ $\tup{\dsep{MEM},a,\cnt,v}$ and \push\ $\tup{\dsep{MEM},a,\gen\cdot\cnt,v}$.
+\item \textbf{Finalize:} for each address $i$, \pull\ $\tup{\dsep{MEM},\gen^{i},\gen^{A[i]},\mem[i]}$, the committed final count $\gen^{A[i]}$.
+\end{itemize}
+\paragraph{Counts must be nonzero.} A read multiplies its count by $\gen$, pulling $\tup{\dsep{MEM},a,\cnt,v}$ and pushing $\tup{\dsep{MEM},a,\gen\cdot\cnt,v}$. If $\cnt=0$ these coincide (as $\gen\cdot0=0$) and cancel, so the read disappears from the bus and its $v$ is never checked against $\mem[a]$. Every count must therefore be nonzero, i.e.\ a power of $\gen$. A third grand product, over all count columns (memory and bytecode), enforces this: its root is nonzero iff every count is (\S\ref{sec:gkr}).
+
+\paragraph{Counts must not wrap.} A count is the power $\gen^{t}$ after $t$ reads, so the total number of reads must stay below $\operatorname{ord}(\gen)=2^{64}-1$. At $64$ bits this is not waved through as automatic. The protocol fixes public \emph{instance caps}, and the verifier checks the announced instance against them before running any reduction (\S\ref{sec:e2e-unrolled}): memory size $16\le h\le 32$ (\S\ref{sec:vm}), each table has at most $2^{32}$ rows, and bytecode length is at most $2^{32}$. A row makes at most $9$ reads (the \texttt{BLAKE3} row: eight memory, one bytecode), so the seven instruction tables perform
+\[
+  R\;\le\;9\cdot 7\cdot 2^{32}\;<\;2^{38}
+\]
+read flushes in total, far below $2^{64}-1$: the powers $\gen^{0},\gen^{1},\dots$ occurring in one address's history are pairwise distinct, and the counting arguments of this section are exact, with no probabilistic term. The caps cost no completeness ($2^{32}$ rows per table is far beyond any provable trace).
+
+\paragraph{What balance certifies.} Fix an address $i$. Its only non-read flushes are the seed, a push of count $\gen^{0}$ with value $\mem[i]$, and the finalize, a pull of the committed final count with value $\mem[i]$.
+
+\emph{Completeness.} An honest prover gives the $A[i]$ reads of $i$ the counts $\gen^{0},\dots,\gen^{A[i]-1}$ and the finalize the count $\gen^{A[i]}$. The read at count $\gen^{t}$ pulls $\gen^{t}$ and pushes $\gen^{t+1}$, so both sides are the multiset $\{\gen^{0},\dots,\gen^{A[i]}\}$ at value $\mem[i]$, and the bus balances.
+
+\emph{Soundness.} Conversely, suppose the bus balances; we show every read of $i$ returns $\mem[i]$. Take any value $v\neq\mem[i]$. The seed and finalize carry $\mem[i]$, so the value-$v$ tuples come only from reads returning $v$, each pulling its count $\cnt$ and pushing $\gen\cdot\cnt$. Restricted to value $v$, balance equates the pulled with the pushed counts:
+\[
+  \{\,\cnt : \text{reads returning } v\,\}\;=\;\{\,\gen\cdot\cnt : \text{reads returning } v\,\}.
+\]
+This multiset of counts is thus invariant under multiplication by $\gen$. But the counts are powers of $\gen$, and $\times\gen$ cycles through all $2^{64}-1$ of them, so an invariant multiset weights every power equally: its size is a multiple of $2^{64}-1$. Under the instance caps its size is at most $R<2^{39}$, hence it is empty. So no read returns $v$, and every read of $i$ returns $\mem[i]$.
+
+\subsection{Bytecode interaction}\label{sec:bytecode}
+
+Instruction fetch is the same as the memory construction (\S\ref{sec:memchan}) with the \emph{public} program for the committed memory and the program counter for the address. The tuple is $\tup{\dsep{BC},\pc,\cnt,\mathit{instr}}$, where $\mathit{instr}$ is the encoded instruction: an opcode and eight operand/immediate slots. Shorter instructions zero their unused high slots.
+
+\subsection{The index column}\label{sec:idxcol}
+
+The memory seed and finalize tuples (\S\ref{sec:memchan}) run over every address $\gen^{i}$, $i=0,\dots,2^{h}-1$. Settling the grand product leaves the verifier evaluating, at a random $\zeta\in\E^{h}$, the MLE of this \emph{index column} $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$. It is not committed: as $\gen$-powers the MLE factors, costing $O(h)$.
+
+Place address $\gen^{i}$ at the cube point $w\in\cube h$ of $i$'s bits, so $i=\sum_k 2^{k}w_k$ and
+\[
+  \gen^{\,i}\;=\;\prod_{k=0}^{h-1}\bigl(\gen^{\,2^{k}}\bigr)^{w_k}.
+\]
+Its MLE is the same product with each bit $w_k$ relaxed to $\zeta_k$,
+\[
+  \widetilde{\mathrm{idx}}(\zeta)\;=\;\prod_{k=0}^{h-1}\bigl(1+\zeta_k\,(1+\gen^{\,2^{k}})\bigr),
+\]
+each factor $1$ at $\zeta_k=0$ and $\gen^{2^{k}}$ at $\zeta_k=1$. The verifier evaluates it in $O(h)$ from the squares $\gen^{2^{0}},\gen^{2^{1}},\dots$. (Bytecode is the same, with the program counter for the address.)
