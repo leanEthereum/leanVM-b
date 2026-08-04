@@ -2226,3 +2226,26 @@ fn recursion_generic_many() {
         pretty_integer(configs.len())
     );
 }
+
+/// Guest cycle profile WITHOUT proving the recursion: build one sub-proof's hints,
+/// then just execute the guest. Runs in about a second, which makes it the loop for
+/// attributing (and reducing) the guest's ~470k cycles:
+///
+/// ```text
+/// DBG_PROF=1 DBG_PROF_DUMP=/tmp/prof DBG_DISASM=/tmp/disasm \
+///   cargo test --release -p rec_aggregation recursion_guest_profile -- --ignored --nocapture
+/// ```
+///
+/// `DBG_PROF=1` prints cycles by function (each lowered `for` body is its own
+/// entry); the dumps tie a hot function's pc range back to its instructions.
+#[test]
+#[ignore]
+fn recursion_guest_profile() {
+    let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
+    let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
+    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    for (name, entries) in &batch.merged {
+        guest.set_witness(name, entries.clone());
+    }
+    let _ = guest.execute(batch.public_input());
+}

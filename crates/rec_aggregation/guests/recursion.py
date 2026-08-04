@@ -163,6 +163,13 @@ LIG_MAX_OOD_SAMPLES = LIG_MAX_OOD_SAMPLES_PLACEHOLDER
 # Global maxima (StackBuf frame sizes are parse-time).
 LIG_LOG_MSG_COLS_CAP = LIG_LOG_MSG_COLS_CAP_PLACEHOLDER
 YR_LOG_CAP = YR_LOG_CAP_PLACEHOLDER
+# The committed size is dispatch-bounded: m <= LIG_MIN_LOG_SIZE + LIG_N_LOG_SIZES - 1,
+# certified by the range check that picks the opening arm. So a placement offset
+# (< 2^m) fits MAX_STACK_LOG bits, which is what the offset rows below decompose
+# and certify; their YR_LOG_CAP extra cells cover the residual coordinates at and
+# above m, which every reader zero-pins.
+MAX_STACK_LOG = LIG_MIN_LOG_SIZE + LIG_N_LOG_SIZES - 1
+COL_BITS_STRIDE = MAX_STACK_LOG + YR_LOG_CAP
 LIG_N_LEVELS = LIG_N_LEVELS_PLACEHOLDER
 LIG_YR_LEVEL = LIG_YR_LEVEL_PLACEHOLDER
 LIG_YR_LOG_LEN = LIG_YR_LOG_LEN_PLACEHOLDER
@@ -948,25 +955,36 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
 
     # ---- per-level induced bases at the single terminal point ----
+    # Every query of a level runs the SAME product shape over the level's
+    # message-column coordinates, and only the novel-basis chain (the query
+    # position's subspace-vanishing walk) differs. The coordinate's factor
+    #     1 + c_t * (1 + chain_t * inv_t) == (1 + c_t) + (c_t * inv_t) * chain_t
+    # so its two coefficients depend on the challenge and the baked vanishing
+    # inverse alone: hoist them out of the query loop (one row per level, the
+    # fold coords then the tail coords), and each query multiplies in one
+    # multiply-add per coordinate with no stored basis vector at all.
+    basis_a = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_LOG_MSG_COLS_CAP))
+    basis_b = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_LOG_MSG_COLS_CAP))
+    for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
+        for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
+            fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
+            basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] = 1 + fold_c
+            basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] = fold_c * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
+        for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+            tail_c = tail_challenges[GEN ** j]
+            basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j)] = 1 + tail_c
+            basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j)] = tail_c * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
     inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] + 1))
     inner_chain[GEN ** 0] = 0
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         residual_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         residual_chain[GEN ** 0] = 0
         for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            basis_w = StackBuf(LIG_LOG_MSG_COLS_CAP)
             basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
-            basis_w[0] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl]]
+            prefix_eq = basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP)] + basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP)] * basis_chain
             for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
                 basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
-                basis_w[t] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
-            prefix_eq = GEN ** 0
-            for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
-                fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
-                prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
-            for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                tail_c = tail_challenges[GEN ** j]
-                prefix_eq *= (1 + tail_c * (1 + basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]))
+                prefix_eq *= basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] + basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] * basis_chain
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
 
@@ -1368,7 +1386,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             g_delta = GEN ** 0
             for j in unroll(0, COUNT_BITS):
                 pad_bit = pad_bits[GEN ** j]
-                assert pad_bit * pad_bit == pad_bit
+                pad_bits[GEN ** j] = pad_bit * pad_bit  # booleanity as a write-once pin
                 ladder *= (1 + pad_bit * (ladder_square + 1))
                 g_delta *= (1 + pad_bit * gsq_plus[j])  # g^DELTA
                 ladder_square *= ladder_square
@@ -1425,7 +1443,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 goff_chain[GEN ** 0] = 1
                 for xk in mul_range(1, sel_len_g):
                     sbit = sel_bits[xk]
-                    assert sbit * sbit == sbit
+                    sel_bits[xk] = sbit * sbit  # booleanity as a write-once pin
                     eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])  # eq(sel_bit, zeta) = 1 + sel_bit + zeta over GF(2)
                     goff_chain[xk * GEN] = goff_chain[xk] * (1 + sbit * (g_squares[kappa_g * xk] + 1))  # weight g^(2^(κ+k))
                 eq_hi = eq_chain[sel_len_g]
@@ -1956,20 +1974,28 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         prev_col = col
         prev_kappa = kappa_g
 
-    # Exact bit decompositions of every certified offset. Extra zero cells cover
-    # residual coordinates beyond the real stack log when dispatch candidates
-    # have different residual caps.
-    col_offset_bits = HeapBuf(N_COMMITTED_COLS * (SIZE_BITS + YR_LOG_CAP))
+    # Exact bit decompositions of every certified offset, over the MAX_STACK_LOG
+    # bits an offset can have. The window is tight in both directions: an offset is
+    # < 2^m <= 2^MAX_STACK_LOG, so the rebuild below pins it exactly, and conversely
+    # the rebuild IS a range check (only one exponent below the generator's order
+    # reproduces g^offset). Every coordinate a reader touches is therefore either
+    # rebuilt here or, being at or above m, zero-pinned at its use site. Extra zero
+    # cells cover residual coordinates beyond the bound, which arise when dispatch
+    # candidates have different residual caps.
+    col_offset_bits = HeapBuf(N_COMMITTED_COLS * COL_BITS_STRIDE)
     for c in unroll(0, N_COMMITTED_COLS):
-        offset_row = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * c)
-        hint_decompose_bits_exponent(offset_row, col_off_g[GEN ** c], SIZE_BITS)
+        offset_row = col_offset_bits * GEN ** (COL_BITS_STRIDE * c)
+        hint_decompose_bits_exponent(offset_row, col_off_g[GEN ** c], MAX_STACK_LOG)
         rebuilt_offset = GEN ** 0
-        for k in unroll(0, SIZE_BITS):
+        for k in unroll(0, MAX_STACK_LOG):
             offset_bit = offset_row[GEN ** k]
-            assert offset_bit * offset_bit == offset_bit
+            # Booleanity as a write-once pin: the cell already holds the bit, so
+            # storing bit*bit back IS the assert (one instruction shorter than a
+            # separate equality, as in decode_query_bits).
+            offset_row[GEN ** k] = offset_bit * offset_bit
             rebuilt_offset *= (1 + offset_bit * gsq_plus[k])
         assert rebuilt_offset == col_off_g[GEN ** c]
-        for k in unroll(SIZE_BITS, SIZE_BITS + YR_LOG_CAP):
+        for k in unroll(MAX_STACK_LOG, COL_BITS_STRIDE):
             offset_row[GEN ** k] = 0
 
     # ---- certify g^m: m = max(log2_ceil(sum_cols 2^kappa), PCS_MIN_MU) ----
@@ -2040,7 +2066,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         rho_slot_eq_chain[xk * GEN] = rho_slot_eq_chain[xk] * (1 + rho[xk] + ris_slot[xk])
     claim_weights = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
-        claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
+        claim_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * CLAIM_COMMITTED_COL[j])
         # EXACT lengths: cplen is certified, nover (the residual-overlap count)
         # is the ONE hinted branch choice; low_len = cplen - nover and
         # seln = lenris + nover - nlow are divisions off it, and the range
@@ -2165,7 +2191,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_len_g = fold_cap_g / qpkdv_g
     assert log(rs_len_g) < SIZE_BITS
     ris_q = fold_challenges * qpkdv_g
-    qpkd_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * QPKD_COMMITTED_COL)
+    qpkd_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * QPKD_COMMITTED_COL)
     rs_sel_bits = qpkd_offset_bits * qpkdv_g
     rsw_chain = HeapBuf(SIZE_BITS + 1)
     rsw_chain[GEN ** 0] = rs_weight
@@ -2192,7 +2218,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # the sumcheck a linear knob (a full opening forgery) - the point-reuse
         # analog of the hole b7b470c closed on the direct y-slot path.
         mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
-        claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
+        claim_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * CLAIM_COMMITTED_COL[j])
         residual_offset_bits = claim_offset_bits * fold_cap_g
         tail_eq = GEN ** 0
         for k in unroll(0, YR_LOG_CAP):
