@@ -1,11 +1,14 @@
-# Import this in zkDSL .py files (`from snark_lib import *`) to make them
-# valid Python for editors and linters. The leanVM-b compiler skips the
-# import; it does not include other source files (single-file programs only).
+# Import this in zkDSL .py files (`from snark_lib import *`) so editors and
+# linters resolve the builtins. The compiler skips the import; it does not
+# include other source files (single-file programs only). Resolved through
+# `extraPaths` in the root pyrightconfig.json; see zkDSL.md. A guest is not a
+# runnable Python file: its `*_PLACEHOLDER` names are filled in at compile time,
+# so `import`ing one raises NameError.
 
 from typing import Any, Optional
 
 Const = Any
-"""Parameter annotation: `def f(k: Const, x):` — `k` is a compile-time
+"""Parameter annotation: `def f(k: Const, x):`, where `k` is a compile-time
 argument; the compiler specializes the function per distinct constant."""
 
 Ext = Any
@@ -13,7 +16,7 @@ Ext = Any
 
 
 class _Elt:
-    """A 64-bit machine word in K = GF(2^64). Indices and addresses are powers of GEN —
+    """A 64-bit machine word in K = GF(2^64). Indices and addresses are powers of GEN,
     "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its successor.
     A heap pointer is K-valued too; `buf[i]` is the write-once cell at `buf * i`."""
 
@@ -53,7 +56,7 @@ GEN = _Elt()
 
 def hint_decompose_bits(bits, value, nbits: int) -> None:
     """Computed advice: the prover writes the `nbits` bits of `value` into the
-    `bits` buffer. UNCONSTRAINED — the caller must check booleanity and that the
+    `bits` buffer. UNCONSTRAINED: the caller must check booleanity and that the
     bits reconstruct `value` (a range check that `value < 2^nbits`)."""
     _ = bits, value, nbits
 
@@ -61,7 +64,7 @@ def hint_decompose_bits(bits, value, nbits: int) -> None:
 def hint_decompose_bits_exponent(bits, x, nbits: int) -> None:
     """Computed advice: the prover writes the `nbits` bits of n, where x = g^n
     (recovered by a bounded discrete log at witness generation), into `bits`.
-    UNCONSTRAINED — the caller checks booleanity and Π g^(bit_j 2^j) == x."""
+    UNCONSTRAINED: the caller checks booleanity and Π g^(bit_j 2^j) == x."""
     _ = bits, x, nbits
 
 
@@ -77,8 +80,8 @@ def hint_log2_ceil(bits, nbits: int, floor: int) -> _Elt:
 
 def log(x) -> int:
     """The discrete log base GEN: `x = GEN ** log(x)`. Only meaningful inside
-    a range-check assert — `assert log(x) < log(GEN ** k)` (equivalently
-    `assert log(x) < k`) proves `x ∈ {GEN**0, …, GEN**(k-1)}` in 3 cycles —
+    a range-check assert (`assert log(x) < log(GEN ** k)`, equivalently
+    `assert log(x) < k`, proves `x ∈ {GEN**0, …, GEN**(k-1)}` in 3 cycles),
     or as the scrutinee of `match` / `match_range`."""
     _ = x
     return 0
@@ -103,8 +106,9 @@ def match_range(value: int, *args):
 
 def mul_range(start, stop) -> list:
     """The loop counter walked in the exponent: from element `start` to `stop`
-    (exclusive), ×GEN each iteration. Both bounds are compile-time powers of
-    GEN (`1`, `GEN`, or `GEN ** k`)."""
+    (exclusive), ×GEN each iteration. `start` is a compile-time power of GEN
+    (`1`, `GEN`, or `GEN ** k`); `stop` is one too, or else a runtime g-power
+    element the walk must be able to reach."""
     _ = start, stop
     return []
 
@@ -112,7 +116,7 @@ def mul_range(start, stop) -> list:
 def unroll(a: int, b: int) -> range:
     """Compile-time unrolling: the body is replicated for i = a, …, b-1, the
     counter substituted as an integer literal (usable as a stack index, slice
-    bound, or `Const` argument). Bounds are compile-time integers — including
+    bound, or `Const` argument). Bounds are compile-time integers, including
     `Const` parameters."""
     return range(a, b)
 
@@ -120,7 +124,7 @@ def unroll(a: int, b: int) -> range:
 def HeapBuf(n) -> _Elt:
     """Allocate a fresh, disjoint heap buffer; evaluates to its pointer (a
     fresh g-power). `n` is either an integer literal (compile-time size), or a
-    runtime value carrying the cell count *in the exponent* — `g^k` allocates
+    runtime value carrying the cell count *in the exponent*: `g^k` allocates
     `k` cells, so a size derived from a g-power count is plain field arithmetic
     (`HeapBuf(cnt * cnt)` is `2·log(cnt)` cells). Allocation is a prover
     convenience, so an under-size only trips write-once."""
@@ -136,7 +140,7 @@ def StackBuf(n: int) -> _Elt:
 
 
 def hint_witness(dest, name: str) -> None:
-    """Fill `dest` — a StackBuf, or a StackBuf/HeapBuf slice of any length —
+    """Fill `dest` (a StackBuf, or a StackBuf/HeapBuf slice of any length)
     with the next ENTRY (a slice of values) of the named prover witness
     stream; the same symbol may be hinted many times, each call popping the
     next entry (`Program::set_witness`; test programs declare one
@@ -179,7 +183,6 @@ def blake3(
     *,
     cv=None,
     counter: Optional[int] = None,
-    chunk: Optional[int] = None,
     block_len: int = 64,
     flags: Optional[int] = None,
     step: Optional[int] = None,
@@ -191,7 +194,15 @@ def blake3(
 
     The digest, optional chaining value, and each message half occupy four
     consecutive 64-bit words. With no keywords this hashes exactly 64 bytes
-    using the standard IV and one-block-root metadata. The remaining keywords
-    expose the VM's structured BLAKE3 modes; they are compile-time values.
-    """
+    using the standard IV, counter zero, block length 64, and
+    CHUNK_START | CHUNK_END | ROOT. `cv` selects an explicit chaining value and
+    requires a structured-mode keyword such as `step` or `flags`; `counter`,
+    `block_len`, and `flags` set the compile-time metadata directly. In
+    inferred-flag mode, `step=0` marks CHUNK_START, while `end`, `root`, and
+    `parent` add the corresponding BLAKE3 flags. Bytes after `block_len` must be
+    zero-filled by the program.
+
+    Message, chaining-value, and output operands are size-4 StackBufs or
+    4-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
+    bridged through the stack, one DEREF per cell)."""
     _ = a, b, out, cv, counter, chunk, block_len, flags, step, end, root, parent

@@ -6,15 +6,10 @@
 //! the digest into the pre-allocated four-word run `out`.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake3_flock::{FLAGS, IV, compression, digest, metadata, warm_setup};
+use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{Op, prove, verify};
+use lean_vm::vmhash::compress;
 use primitives::field::F64;
-
-/// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
-/// laid little-endian into 64 bytes, hashed, digest split into four `F64` words.
-fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
-    digest(&compression(a, b, IV, metadata(0, 64, FLAGS)))
-}
 
 fn pi2(a: F64, b: F64) -> [F64; 4] {
     [a, b, F64::ZERO, F64::ZERO]
@@ -503,6 +498,27 @@ fn heap_hint_slice_oob_rejected() {
 fn heap_blake3_slice_oob_rejected() {
     let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(4)\n    blake3(hb[5:9], hb[5:9], out)\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
+}
+
+/// A heap index that folds to a non-g-power field constant (an integer loop
+/// var leaking in from a StackBuf conversion) can never name a heap cell (cell
+/// k lives at `buf · g^k`) and used to survive to proving time as a
+/// wild-pointer DEREF. It must be a compile-time error.
+#[test]
+#[should_panic(expected = "not a g-power")]
+fn integer_heap_index_is_rejected() {
+    let src = "\
+def main():
+    b = HeapBuf(4)
+    b[1] = 3
+    b[GEN] = 5
+    x = 0
+    for k in unroll(0, 2):
+        p = 1
+        p[GEN ** k] = b[k]
+    return
+";
+    compile(&parse(src).expect("parse"));
 }
 
 /// The last in-bounds index still compiles and runs.

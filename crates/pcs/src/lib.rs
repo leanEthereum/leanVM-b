@@ -5,20 +5,18 @@
 //! over its cubic extension `E = GF(2^192)`.
 
 pub mod ligerito;
-mod ligerito_config;
+pub mod ligerito_config;
+mod ligerito_induce;
+mod ligerito_ntt_ext;
 pub mod merkle;
 pub mod ntt;
 pub mod pack;
 pub mod ring_switch;
 pub mod stack_open;
-pub mod tensor_algebra;
-
-#[cfg(test)]
-pub(crate) mod test_rng;
+pub(crate) mod tensor_algebra;
 
 pub use pack::{LOG_PACKING, PaddingSpec, pack_witness};
 
-/// Transcript aliases used by Flock's reduction-only tests.
-pub type Proof = fiat_shamir::transcript::Proof<ligerito::LigeritoProof>;
+/// Transcript state aliases used by Flock's reduction-only tests.
 pub type ProverState = fiat_shamir::transcript::ProverState<ligerito::LigeritoProof>;
 pub type VerifierState<'a> = fiat_shamir::transcript::VerifierState<'a, ligerito::LigeritoProof>;

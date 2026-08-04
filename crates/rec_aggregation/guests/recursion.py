@@ -7,9 +7,6 @@ STREAM_CAP = STREAM_CAP_PLACEHOLDER
 FLOORS = [0, 0, 0, 0, 0, 0, 0, 0, 3]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
-LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
-LAGRANGE_INV_1 = LAGRANGE_INV_1_PLACEHOLDER
-LAGRANGE_INV_2 = LAGRANGE_INV_2_PLACEHOLDER
 # The batched zerocheck's round polynomial arrives WHOLE, as a cubic at {0,1,g,g^2}:
 # one baked inverse denominator per node.
 LAG4_INV_0 = LAG4_INV_0_PLACEHOLDER
@@ -165,6 +162,13 @@ LIG_MAX_OOD_SAMPLES = LIG_MAX_OOD_SAMPLES_PLACEHOLDER
 # Global maxima (StackBuf frame sizes are parse-time).
 LIG_LOG_MSG_COLS_CAP = LIG_LOG_MSG_COLS_CAP_PLACEHOLDER
 YR_LOG_CAP = YR_LOG_CAP_PLACEHOLDER
+# The committed size is dispatch-bounded: m <= LIG_MIN_LOG_SIZE + LIG_N_LOG_SIZES - 1,
+# certified by the range check that picks the opening arm. So a placement offset
+# (< 2^m) fits MAX_STACK_LOG bits, which is what the offset rows below decompose
+# and certify; their YR_LOG_CAP extra cells cover the residual coordinates at and
+# above m, which every reader zero-pins.
+MAX_STACK_LOG = LIG_MIN_LOG_SIZE + LIG_N_LOG_SIZES - 1
+COL_BITS_STRIDE = MAX_STACK_LOG + YR_LOG_CAP
 LIG_N_LEVELS = LIG_N_LEVELS_PLACEHOLDER
 LIG_YR_LEVEL = LIG_YR_LEVEL_PLACEHOLDER
 LIG_YR_LOG_LEN = LIG_YR_LOG_LEN_PLACEHOLDER
@@ -172,10 +176,8 @@ LIG_YR_LEN = LIG_YR_LEN_PLACEHOLDER
 LIG_TOTAL_FOLDS = LIG_TOTAL_FOLDS_PLACEHOLDER
 LIG_MAX_QUERIES = LIG_MAX_QUERIES_PLACEHOLDER
 LIG_MAX_SQUEEZES = LIG_MAX_SQUEEZES_PLACEHOLDER
-LIG_MAX_LOG_MSG_COLS = LIG_MAX_LOG_MSG_COLS_PLACEHOLDER
 LIG_MAX_INTERLEAVE = LIG_MAX_INTERLEAVE_PLACEHOLDER
 LIG_POSITIONS_LEN = LIG_POSITIONS_LEN_PLACEHOLDER
-LIG_SUMCHECK_LEN = LIG_SUMCHECK_LEN_PLACEHOLDER
 LIG_ROWS_LEN = LIG_ROWS_LEN_PLACEHOLDER
 LIG_PATHS_LEN = LIG_PATHS_LEN_PLACEHOLDER
 LIG_QUERY_GRIND_BITS = LIG_QUERY_GRIND_BITS_PLACEHOLDER
@@ -247,8 +249,6 @@ STATEMENT_SEED_2 = STATEMENT_SEED_2_PLACEHOLDER
 STATEMENT_SEED_3 = STATEMENT_SEED_3_PLACEHOLDER
 
 DS_SCALAR = 1
-DS_BYTE = 2
-DS_LEN = 3
 DS_SQ = 4
 DS_POW = 5
 
@@ -651,34 +651,6 @@ def verify_merkle_path(leaf_0, leaf_1, leaf_2, leaf_3, path_ptr, direction_bits,
         node_prefix = [parent[0], parent[1], parent[2]]
         node_3 = parent[3]
     return node_prefix[0], node_prefix[1], node_prefix[2], node_3
-
-
-def sumcheck_round3(state_0, state_1, state_2, state_3, msg_cursor, claim: Ext, eq_acc: Ext, prev_challenge: Ext):
-    # One eq_acc-trick sumcheck round: observe the three round messages off the
-    # stream, check the running claim at the previous challenge, squeeze the
-    # round challenge round_challenge, and evaluate the round polynomial at round_challenge through the
-    # {0, 1, g} Lagrange basis (baked inverse denominators). Shared by the
-    # GKR layers and the AIR zerocheck rounds.
-    fs = [state_0, state_1, state_2, state_3]
-    fs, m0, msg_cursor = fs_next(fs, msg_cursor)
-    fs, m1, msg_cursor = fs_next(fs, msg_cursor)
-    fs, m2, msg_cursor = fs_next(fs, msg_cursor)
-    one = [1, 0, 0]
-    one_plus_prev = eadd(one, prev_challenge)
-    lhs_inner = eadd(emul(one_plus_prev, m0), emul(prev_challenge, m1))
-    lhs = emul(eq_acc, lhs_inner)
-    ext_assert_eq(lhs, claim)
-    fs, round_challenge = squeeze(fs)
-    new_eq = emul(eq_acc, eadd(one_plus_prev, round_challenge))
-    gen = [GEN, 0, 0]
-    l0 = emul(emul(eadd(round_challenge, one), eadd(round_challenge, gen)), [LAGRANGE_INV_0, 0, 0])
-    lag1 = [LAGRANGE_INV_1[0], LAGRANGE_INV_1[1], LAGRANGE_INV_1[2]]
-    lag2 = [LAGRANGE_INV_2[0], LAGRANGE_INV_2[1], LAGRANGE_INV_2[2]]
-    l1 = emul(emul(round_challenge, eadd(round_challenge, gen)), lag1)
-    l2 = emul(emul(round_challenge, eadd(round_challenge, one)), lag2)
-    weighted = eadd(eadd(emul(m0, l0), emul(m1, l1)), emul(m2, l2))
-    new_claim = emul(new_eq, weighted)
-    return fs[0], fs[1], fs[2], fs[3], msg_cursor, new_claim, new_eq, round_challenge
 
 
 @inline
@@ -2299,20 +2271,28 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         prev_col = col
         prev_kappa = kappa_g
 
-    # Exact bit decompositions of every certified offset. Extra zero cells cover
-    # residual coordinates beyond the real stack log when dispatch candidates
-    # have different residual caps.
-    col_offset_bits = HeapBuf(N_COMMITTED_COLS * (SIZE_BITS + YR_LOG_CAP))
+    # Exact bit decompositions of every certified offset, over the MAX_STACK_LOG
+    # bits an offset can have. The window is tight in both directions: an offset is
+    # < 2^m <= 2^MAX_STACK_LOG, so the rebuild below pins it exactly, and conversely
+    # the rebuild IS a range check (only one exponent below the generator's order
+    # reproduces g^offset). Every coordinate a reader touches is therefore either
+    # rebuilt here or, being at or above m, zero-pinned at its use site. Extra zero
+    # cells cover residual coordinates beyond the bound, which arise when dispatch
+    # candidates have different residual caps.
+    col_offset_bits = HeapBuf(N_COMMITTED_COLS * COL_BITS_STRIDE)
     for c in unroll(0, N_COMMITTED_COLS):
-        offset_row = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * c)
-        hint_decompose_bits_exponent(offset_row, col_off_g[GEN ** c], SIZE_BITS)
+        offset_row = col_offset_bits * GEN ** (COL_BITS_STRIDE * c)
+        hint_decompose_bits_exponent(offset_row, col_off_g[GEN ** c], MAX_STACK_LOG)
         rebuilt_offset = GEN ** 0
-        for k in unroll(0, SIZE_BITS):
+        for k in unroll(0, MAX_STACK_LOG):
             offset_bit = offset_row[GEN ** k]
-            assert offset_bit * offset_bit == offset_bit
+            # Booleanity as a write-once pin: the cell already holds the bit, so
+            # storing bit*bit back IS the assert (one instruction shorter than a
+            # separate equality, as in decode_query_bits).
+            offset_row[GEN ** k] = offset_bit * offset_bit
             rebuilt_offset *= (1 + offset_bit * gsq_plus[k])
         assert rebuilt_offset == col_off_g[GEN ** c]
-        for k in unroll(SIZE_BITS, SIZE_BITS + YR_LOG_CAP):
+        for k in unroll(MAX_STACK_LOG, COL_BITS_STRIDE):
             offset_row[GEN ** k] = 0
 
     # ---- certify g^m: m = max(log2_ceil(sum_cols 2^kappa), PCS_MIN_MU) ----
@@ -2402,7 +2382,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     for k in unroll(2, SIZE_BITS):
         estore(pi_point * GEN ** (3 * k), [0, 0, 0])
     for j in unroll(0, N_CLAIMS):
-        claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
+        claim_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * CLAIM_COMMITTED_COL[j])
         # EXACT lengths: cplen is certified, nover (the residual-overlap count)
         # is the ONE hinted branch choice; low_len = cplen - nover and
         # seln = lenris + nover - nlow are divisions off it, and the range
@@ -2533,7 +2513,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     rs_len_g = fold_cap_g / qpkdv_g
     assert log(rs_len_g) < SIZE_BITS
     ris_q = fold_challenges * qpkdv_g ** 3
-    qpkd_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * QPKD_COMMITTED_COL)
+    qpkd_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * QPKD_COMMITTED_COL)
     rs_sel_bits = qpkd_offset_bits * qpkdv_g
     rsw_chain = HeapBuf(3 * (SIZE_BITS + 1))
     estore(rsw_chain, rs_weight)
@@ -2562,7 +2542,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         # the sumcheck a linear knob (a full opening forgery) - the point-reuse
         # analog of the hole b7b470c closed on the direct y-slot path.
         mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
-        claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
+        claim_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * CLAIM_COMMITTED_COL[j])
         residual_offset_bits = claim_offset_bits * fold_cap_g
         tail_eq = [1, 0, 0]
         for k in unroll(0, YR_LOG_CAP):
@@ -2655,7 +2635,7 @@ def main():
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
     # samples the RLC coefficients, and verifies the two batching sumchecks of
-    # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
+    # doc/main.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
     agg_fs = [AGG_SEED_0, AGG_SEED_1, AGG_SEED_2, AGG_SEED_3]
     agg_fs = obs_base(agg_fs, NSUB)

@@ -28,7 +28,6 @@ LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER  # Merkle tree height
 # ---- derived structural sizes (compile-time integer arithmetic) ----
 CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
 CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
-WOTS_PK_PAIRS = V / 2               # tip pairs hashed into the WOTS leaf
 
 WORDS_PER_VALUE = 2                 # a 16-byte native value = two machine words …
 WORDS_PER_BLOCK = 4                 # … and a 32-byte accumulator block = four

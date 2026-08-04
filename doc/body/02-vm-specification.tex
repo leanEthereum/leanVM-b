@@ -1,0 +1,73 @@
+\section{VM specification}\label{sec:vm}
+
+\paragraph{Field.}
+\[
+  \K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1),
+  \qquad
+  \E=\K[y]/(y^3+y+1),
+  \qquad |\E|=2^{192}.
+\]
+A \emph{memory word}, immediate, hash lane, memory address, program counter $\pc$, frame pointer $\fp$, and read counter is one element of $\K$. Base addition is bitwise \textsc{xor} and base multiplication is in $\K$. An extension value $v=v_0+v_1y+v_2y^2\in\E$ is stored as three consecutive $\K$ words; the explicit extension instructions reassemble those coordinates inside their constraints. Protocol randomness is sampled from $\E$ (\S\ref{sec:prelim}), while every physical committed column remains $\K$-valued.
+
+\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$.
+
+\paragraph{Memory.} Memory is read-only (equivalently: write-once): an array of $2^{h}$ cells, each holding one $64$-bit $\K$ word, addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$. The memory log-size $h$ depends on each VM execution, with the constraint $16\le h\le 32$. Each cell is set once; every access thereafter reads it. An extension value beginning at address $a$ therefore occupies $\mem[a],\mem[\gen a],\mem[\gen^2a]$.
+
+\paragraph{Program.} The program is a fixed, public sequence of instructions, addressed like memory by powers of $\gen$: the program counter $\gen^{\,i}$ selects the $i$-th instruction. An instruction is an opcode together with its operands, described below.
+
+\paragraph{Registers.} The machine state is two registers, the program counter $\pc$ and the frame pointer $\fp$, each a power of $\gen$. Every instruction except \texttt{JUMP} advances the state by $\pc\gets\gen\cdot\pc$ (fetching the next instruction) and leaves $\fp$ unchanged; \texttt{JUMP} may set both.
+
+\paragraph{Operands and addressing.} An operand is either an \emph{immediate}, a literal field element used as given, or an \emph{fp-relative reference}: an offset $j$ into the current frame, encoded as the $\gen$-power $o=\gen^{\,j}$. With the frame based at $\fp=\gen^{\mathrm{base}}$, the reference names the cell
+\[
+  \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
+\]
+
+\paragraph{Instruction set.} The machine implements nine instruction-table families; two of them have bytecode-bound narrow/scalar modes used by the 64-bit representation. Below, $o,o_A,\dots$ are fp-relative references and $k$ a base-field immediate.
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\hline
+Instruction & Operands & Semantics\\
+\hline
+\texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ in $\K$ (bitwise \textsc{xor})\\
+\texttt{MUL}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ in $\K$\\
+\texttt{XOR\_192}      & $[o_A,o_B,o_C]$ & three-word extension addition\\
+\texttt{MUL\_192}      & $[o_A,o_B,o_C;m]$ & extension multiplication; $m=1$ embeds a scalar $A$\\
+\texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k\in\K$)\\
+\texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
+\texttt{DEREF\_WIDE}   & $[\alpha,\beta,\gamma;w]$ & equality of $2+w$ consecutive words\\
+\texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
+\texttt{BLAKE3}        & $[o_{A,0},o_{A,1},o_{B,0},o_{B,1},o_{CV},o_C;m_0,m_1]$ & $c=\mathrm{BLAKE3}(a,b)$ (below)\\
+\hline
+\end{tabularx}
+\end{center}
+
+For \texttt{XOR\_192} and \texttt{MUL\_192}, each operand reference names its first coordinate. If $a_A=\fp o_A$, the other two addresses are the virtual columns $\gen a_A$ and $\gen^2a_A$; only $a_A$ is committed. The same convention applies to $B$ and $C$.
+
+\texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each 256-bit input is split into two independently addressed 128-bit chunks: $a$ begins at $\loc{o_{A,0}}$ and $\loc{o_{A,1}}$, and $b$ at $\loc{o_{B,0}}$ and $\loc{o_{B,1}}$. Each chunk holds two consecutive $\K$ words, so its second address is the virtual multiple by $\gen$. The chaining value and the digest are four consecutive words beginning at $\loc{o_{CV}}$ and $\loc{o_C}$, their remaining addresses the virtual multiples by $\gen,\gen^2,\gen^3$. Each row therefore commits six starting addresses and accesses sixteen memory words. The two metadata words carry the standard compression metadata in little-endian order,
+\[
+  m_0=\mathit{counter}_{64},\qquad
+  m_1=\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
+\]
+For a one-block $64$-byte hash, the chaining value is the standard IV and
+\[
+  (m_0,m_1)=(0,\;64\;\Vert\;\textsc{chunk-start}\mathbin{|}\textsc{chunk-end}\mathbin{|}\textsc{root}).
+\]
+Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_{CV}$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock-impl} R1CS proof.
+
+\texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
+\[
+  \srcsel{s}\;=\;
+  \begin{cases}
+    \loc{\gamma} & s=\texttt{deref\_cell}[\gamma] \quad(\text{the local cell at offset }\gamma),\\
+    \gen^{2}\cdot\pc & s=\texttt{deref\_pc} \quad(\text{a return address: the program counter advanced by two}),\\
+    \fp & s=\texttt{deref\_fp} \quad(\text{the current frame pointer}).
+  \end{cases}
+\]
+The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return address and frame so a callee can later return and restore them, the basis for function calls. The skip of two is the call's return target: place the \texttt{DEREF} that saves $\gen^{2}\cdot\pc$ immediately before the \texttt{JUMP} that transfers control, and $\gen^{2}\cdot\pc$ names the instruction just after that \texttt{JUMP}.
+
+\texttt{DEREF\_WIDE} equates the two-word ($w=0$, internally \texttt{DEREF\_128}) or three-word ($w=1$, \texttt{DEREF\_192}) heap run beginning at $\loc{\alpha}\beta$ with the local run beginning at $\loc{\gamma}$. The width is read from the public bytecode. Only the base addresses are committed; the successors are the virtual multiples by $\gen$ and $\gen^2$. In two-word mode the third accesses remain read-only memory-bus accesses but are excluded from the equality. Write-once witness generation fills whichever active run is unset.
+
+\texttt{JUMP} reads a condition $c=\loc{o_c}\in\K$ and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
+
+\paragraph{Words used as addresses.} Memory words, pointers, $\pc$, and $\fp$ all share $\K$, so the instructions that interpret a memory word as an address or a register (\texttt{DEREF}, \texttt{JUMP}) need no separate tower-limb range condition.
+

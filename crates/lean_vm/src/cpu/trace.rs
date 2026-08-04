@@ -64,8 +64,8 @@ pub(crate) struct EDrow {
 pub(crate) struct Jrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) npc: F64, // next pc — a K-valued address
-    pub(crate) nfp: F64, // next fp — a K-valued address
+    pub(crate) npc: F64, // next pc, a K-valued address
+    pub(crate) nfp: F64, // next fp, a K-valued address
     pub(crate) oc: u32,
     pub(crate) od: u32,
     pub(crate) of: u32,
@@ -99,7 +99,8 @@ pub(crate) struct Erow {
 }
 
 /// `BLAKE3` row: four two-word message chunks, a four-word chaining value,
-/// a four-word output, and their per-cell memory counts.
+/// a four-word output, and their per-word memory counts. The four chunk
+/// addresses are independent; the CV and output runs commit only their base.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,

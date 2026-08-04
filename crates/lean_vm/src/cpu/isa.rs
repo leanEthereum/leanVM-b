@@ -67,7 +67,10 @@ pub enum Op {
     },
     /// One standard BLAKE3 compression. Each independently addressed 128-bit
     /// message chunk occupies two consecutive base-field memory words. The
-    /// chaining value and output occupy four consecutive words each.
+    /// chaining value and output occupy four consecutive words each. The four
+    /// chunks are addressed independently, with no forced contiguity, so the
+    /// caller need not assemble its operands into adjacent runs. The
+    /// compression relation is proven by flock.
     Blake3 {
         ins: [u32; 4],
         cv: u32,
@@ -79,7 +82,7 @@ pub enum Op {
 
 /// The source `DEREF` stores at `mem[loc_α·β]`: a local cell, the return
 /// address `g²·pc`, or the frame pointer. Encoded as two boolean flags `(f_pc,
-/// f_fp)` — `Cell=(0,0)`, `Pc=(1,0)`, `Fp=(0,1)` — keeping the store constraint degree 2.
+/// f_fp)`: `Cell=(0,0)`, `Pc=(1,0)`, `Fp=(0,1)`, keeping the store constraint degree 2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DerefMode {
     Cell,

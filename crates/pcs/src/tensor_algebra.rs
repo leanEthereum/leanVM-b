@@ -5,9 +5,8 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
-// Adapted from [`super::tensor_algebra`] (itself a port of binius64's
-// `crates/math/src/tensor_algebra.rs`) for the 64-bit transition:
-// K = F_{2^64} packing, E = GF(2^192) tower opening field.
+// Port of binius64's `crates/math/src/tensor_algebra.rs` for the 64-bit
+// transition: K = F_{2^64} packing, E = GF(2^192) tower opening field.
 
 //! Tensor-algebra helpers for the rectangular (f = 64, e = 192) ring switch.
 //!
@@ -36,11 +35,10 @@
 //! "Bit w" of an E element means: bit w of `c0` for `w < 64`, bit `w - 64`
 //! of `c1` for `w < 128`, and bit `w - 128` of `c2` otherwise.
 
-use core::ops::{Add, AddAssign};
+use core::ops::AddAssign;
 use primitives::field::{F64, F192};
 
-/// The degree of K = F_{2^64} over F_2 (the packing degree f).
-pub const DEGREE: usize = 64;
+use crate::pack::PACKING_WIDTH;
 
 /// The degree of E = GF(2^192) over F_2 (the opening degree e).
 pub const DEGREE_E: usize = 192;
@@ -65,14 +63,13 @@ fn ext_bit(e: F192, w: usize) -> u64 {
 ///     bit i of s_hat_u[w]  ==  bit w of s_hat_v[i],   i in 0..64, w in 0..192
 /// ```
 ///
-/// `s_hat_u[w] = t_w` in the ring-switching-generalized note. Mirror of
-/// the legacy tensor-algebra transpose, generalized to the 64x192 shape.
+/// `s_hat_u[w] = t_w` in the ring-switching-generalized note.
 /// Naive O(64 * 192) bit-scan; the input is a fixed 1.5 KiB, so this is never
 /// on a hot path.
 pub fn transpose_s_hat(s_hat_v: &[F192]) -> Vec<F64> {
     assert_eq!(
         s_hat_v.len(),
-        DEGREE,
+        PACKING_WIDTH,
         "transpose_s_hat: s_hat_v must have one entry per packing bit (64)"
     );
     let mut s_hat_u = vec![F64::ZERO; DEGREE_E];
@@ -111,14 +108,8 @@ pub struct TensorAlgebraE {
 }
 
 impl TensorAlgebraE {
-    /// All-zero element.
-    pub fn zero() -> Self {
-        Self {
-            elems: vec![F192::ZERO; DEGREE_E],
-        }
-    }
-
     /// Multiplicative identity: `1 (x) 1`.
+    #[cfg(test)]
     pub fn one() -> Self {
         let mut elems = vec![F192::ZERO; DEGREE_E];
         elems[0] = F192::ONE;
@@ -171,14 +162,6 @@ impl TensorAlgebraE {
     }
 }
 
-impl Add<&TensorAlgebraE> for TensorAlgebraE {
-    type Output = TensorAlgebraE;
-    fn add(mut self, rhs: &TensorAlgebraE) -> TensorAlgebraE {
-        self += rhs;
-        self
-    }
-}
-
 impl AddAssign<&TensorAlgebraE> for TensorAlgebraE {
     fn add_assign(&mut self, rhs: &TensorAlgebraE) {
         for (a, b) in self.elems.iter_mut().zip(rhs.elems.iter()) {
@@ -191,8 +174,7 @@ impl AddAssign<&TensorAlgebraE> for TensorAlgebraE {
 ///
 /// On input: `elems[i]` viewed as a 192-bit row; bit `j` (tower basis) is the
 /// F_2 coefficient at position `(i, j)`. On output: bit `j` of `elems[i]`
-/// becomes the old bit `i` of `elems[j]`. Mirror of
-/// `tensor_algebra::square_transpose`, extended to `(c0, c1, c2)`.
+/// becomes the old bit `i` of `elems[j]`.
 fn square_transpose_ext(elems: &mut [F192]) {
     assert_eq!(elems.len(), DEGREE_E, "square_transpose_ext: input must be length 192");
 
@@ -218,26 +200,15 @@ fn square_transpose_ext(elems: &mut [F192]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn splitmix64(state: &mut u64) -> u64 {
-        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = *state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn rand_ext(s: &mut u64) -> F192 {
-        F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
-    }
+    use primitives::test_rng::Rng;
 
     #[test]
     fn rect_transpose_bit_relation() {
-        let mut s = 1u64;
-        let s_hat_v: Vec<F192> = (0..DEGREE).map(|_| rand_ext(&mut s)).collect();
+        let mut rng = Rng::new(1);
+        let s_hat_v = rng.ext_vec(PACKING_WIDTH);
         let s_hat_u = transpose_s_hat(&s_hat_v);
         assert_eq!(s_hat_u.len(), DEGREE_E);
-        for i in 0..DEGREE {
+        for i in 0..PACKING_WIDTH {
             for w in 0..DEGREE_E {
                 assert_eq!(
                     (s_hat_u[w].0 >> i) & 1,
@@ -250,8 +221,8 @@ mod tests {
 
     #[test]
     fn square_transpose_is_involution() {
-        let mut s = 2u64;
-        let orig: Vec<F192> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
+        let mut rng = Rng::new(2);
+        let orig = rng.ext_vec(DEGREE_E);
         let t = TensorAlgebraE { elems: orig.clone() };
         let tt = t.clone().transpose();
         // Bit relation on a spot-check diagonal band plus full involution.
@@ -268,9 +239,9 @@ mod tests {
     /// is the map the ring switch uses to define `rs_eq_ind`.
     #[test]
     fn fold_vertical_is_phi() {
-        let mut s = 3u64;
-        let coeffs: Vec<F192> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
-        let x = rand_ext(&mut s);
+        let mut rng = Rng::new(3);
+        let coeffs = rng.ext_vec(DEGREE_E);
+        let x = rng.ext();
         let folded = TensorAlgebraE::from_vertical(x).fold_vertical(&coeffs);
         let mut expected = F192::ZERO;
         for (w, &c) in coeffs.iter().enumerate() {
@@ -284,8 +255,8 @@ mod tests {
     /// `scale_horizontal(1 (x) 1, s) == s (x) 1 == transpose(1 (x) s)`.
     #[test]
     fn scale_horizontal_semantics() {
-        let mut s = 4u64;
-        let x = rand_ext(&mut s);
+        let mut rng = Rng::new(4);
+        let x = rng.ext();
         let lhs = TensorAlgebraE::one().scale_horizontal(x);
         let rhs = TensorAlgebraE::from_vertical(x).transpose();
         assert_eq!(lhs, rhs);

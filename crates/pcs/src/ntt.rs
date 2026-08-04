@@ -1,9 +1,9 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Additive NTTs (Lin–Chung–Han novel polynomial basis).
+//! Additive NTTs (Lin-Chung-Han novel polynomial basis).
 //!
-//! Two transforms live here: [`AdditiveNttF64`] for Ligerito commitments and
+//! Two transforms live here: [`AdditiveNttF64`] for Ligerito commitments, and
 //! [`AdditiveNttGf8`] (this file) plus [`inv_table`] for a small GF(2^8) NTT
-//!   used by flock's univariate-skip zerocheck round.
+//! used by flock's univariate-skip zerocheck round.
 
 use primitives::field::F8;
 
@@ -23,37 +23,32 @@ fn next_s(s: F8, s_at_root: F8) -> F8 {
 ///
 /// Layout: level-L twiddles live at offset (2^L − 1).
 /// Level 0 has 2^{k-1} twiddles, level 1 has 2^{k-2}, …, level k−1 has 1.
-pub fn compute_twiddles(k: usize, beta: F8) -> Vec<F8> {
+fn compute_twiddles(k: usize, beta: F8) -> Vec<F8> {
     if k == 0 {
         return Vec::new();
     }
     let n = 1usize << k;
     let mut twiddles = vec![F8::ZERO; n - 1];
 
-    // Layer 0: 2^{k-1} points beta + {0, 2, 4, ..., 2(len-1)}.
-    let mut len = 1usize << (k - 1);
-    let mut layer: Vec<F8> = (0..len).map(|i| beta + F8((2 * i) as u8)).collect();
+    // Layer 0: 2^{k-1} points beta + {0, 2, 4, ..., 2(write_at-1)}.
+    let mut write_at = 1usize << (k - 1);
+    let mut layer: Vec<F8> = (0..write_at).map(|i| beta + F8((2 * i) as u8)).collect();
     let mut s_at_root = F8::ONE;
 
     // Write layer 0 directly (s_at_root = 1 ⇒ no scaling needed).
-    let mut write_at = len;
-    for i in 0..len {
-        twiddles[write_at - 1 + i] = layer[i];
-    }
+    twiddles[write_at - 1..2 * write_at - 1].copy_from_slice(&layer[..write_at]);
 
     // Subsequent layers: halve the size, advance the recurrence, scale by s⁻¹.
     for _ in 1..k {
         write_at >>= 1;
         let next_s_root = next_s(layer[1] + layer[0], s_at_root);
-        let new_len = write_at;
-        for i in 0..new_len {
+        for i in 0..write_at {
             layer[i] = next_s(layer[2 * i], s_at_root);
         }
-        len = new_len;
         s_at_root = next_s_root;
 
         let s_inv = s_at_root.inv();
-        for j in 0..len {
+        for j in 0..write_at {
             twiddles[write_at - 1 + j] = s_inv * layer[j];
         }
     }
@@ -113,7 +108,7 @@ fn ifft_rec(v: &mut [F8], tw: &[F8], idx: usize) {
 /// exhaust all 256 elements of F_{2^8}.
 ///
 /// Internal LCH basis: the forward transform maps coefficients in the
-/// Lin–Chung–Han basis to evaluations at the 2^k points of the domain.
+/// Lin-Chung-Han basis to evaluations at the 2^k points of the domain.
 /// `inverse` is the exact reverse.
 #[derive(Clone, Debug)]
 pub struct AdditiveNttGf8 {
@@ -133,11 +128,8 @@ impl AdditiveNttGf8 {
     pub fn k(&self) -> usize {
         self.k
     }
-    pub fn domain_size(&self) -> usize {
+    fn domain_size(&self) -> usize {
         1usize << self.k
-    }
-    pub fn twiddles(&self) -> &[F8] {
-        &self.twiddles
     }
 
     pub fn forward(&self, v: &mut [F8]) {
@@ -160,18 +152,10 @@ impl AdditiveNttGf8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_rng::Rng;
+    use primitives::test_rng::Rng;
 
     fn rand_vec(rng: &mut Rng, n: usize) -> Vec<F8> {
         (0..n).map(|_| F8((rng.next_u64() & 0xff) as u8)).collect()
-    }
-
-    #[test]
-    fn twiddles_size() {
-        for k in 1..=7 {
-            let ntt = AdditiveNttGf8::new(k, F8::ZERO);
-            assert_eq!(ntt.twiddles().len(), (1usize << k) - 1);
-        }
     }
 
     #[test]

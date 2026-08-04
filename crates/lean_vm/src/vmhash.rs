@@ -8,9 +8,9 @@
 use primitives::field::F64;
 
 /// The historical one-block helper: standard BLAKE3 of exactly 64 bytes (two
-/// 256-bit halves laid out little-endian — the `Blake3` opcode's default
+/// 256-bit halves laid out little-endian, the `Blake3` opcode's default
 /// metadata). This remains useful for Merkle parent nodes and existing callers.
-/// Lives in [`fiat_shamir::sponge`] (the shared Fiat–Shamir sponge is built on it).
+/// Lives in [`fiat_shamir::sponge`] (the shared Fiat-Shamir sponge is built on it).
 pub use fiat_shamir::sponge::compress;
 
 /// Standard BLAKE3 of the little-endian byte encoding of a K-word slice,
@@ -37,7 +37,7 @@ mod tests {
 
     /// `hash_slice` is exactly standard BLAKE3 of the words' little-endian
     /// bytes, and the PCS Merkle leaf hash (`::pcs::merkle::hash_leaf`) equals
-    /// it on the same field words — the invariant that lets a recursive
+    /// it on the same field words, the invariant that lets a recursive
     /// verifier reuse ONE routine for the transcript/leaf hashing and the PCS
     /// tree. Covers empty, single-word, odd, multi-block, and multi-chunk
     /// slices.
@@ -58,7 +58,7 @@ mod tests {
     }
 
     /// Standard BLAKE3 binds the length, so a slice and the same slice with an
-    /// extra trailing zero word hash differently — no padding ambiguity.
+    /// extra trailing zero word hash differently, so there is no padding ambiguity.
     #[test]
     fn hash_slice_binds_length() {
         assert_ne!(hash_slice(&[e(7)]), hash_slice(&[e(7), F64::ZERO]));
