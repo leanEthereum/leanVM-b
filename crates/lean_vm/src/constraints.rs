@@ -35,9 +35,10 @@
 //! are no rounds in which no table has joined.
 
 use crate::PAR_THRESHOLD;
+use crate::colval::ColVal;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
-use primitives::field::{F64, F192, F192Unreduced, mul_by_g, mul_by_g_e};
+use primitives::field::{F64, F192, F192Unreduced};
 use primitives::multilinear::{
     add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
 };
@@ -94,20 +95,25 @@ pub fn eta_powers(eta: F192, total: usize) -> Vec<F192> {
     pows
 }
 
-/// First active round for a table: evaluate its `K` columns at `{0,1,g}`.
+/// An active round for a table: evaluate its columns at the three nodes `{0,1,g}`.
 ///
-/// Deliberately a near-copy of [`table_message_e`]: the two differ only in the
-/// three per-column node expressions, and folding them into one generic over the
-/// column type costs measurable prover time in this loop.
-fn table_message_k(
-    cols: &[Column],
-    eval: &(dyn Fn(&[F192], &[F64]) -> F192 + Sync),
+/// Generic twice over: in the column element, `K` before a table's columns are
+/// folded and `E` after ([`ColVal`]), and in the container, `Vec` for the former
+/// and `ArenaVec` for the latter. `#[inline(always)]` matters here, on this and on
+/// every `ColVal` method: this is the body of the constraint sumcheck's innermost
+/// loop, and without it the generic stops inlining and costs measurable prover
+/// time. Nothing is lifted into `E`, so a `K` round evaluates the identity and the
+/// bus forms in 64-bit arithmetic, and its scratch is a third the size.
+#[inline(always)]
+fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
+    cols: &[C],
+    eval: &(dyn Fn(&[F192], &[T]) -> F192 + Sync),
     pows: &[F192],
     half: usize,
     eqr: &[F192],
 ) -> [F192; 3] {
     let ncols = cols.len();
-    let summand = |i: usize, scratch: &mut [F64]| -> [F192Unreduced; 3] {
+    let summand = |i: usize, scratch: &mut [T]| -> [F192Unreduced; 3] {
         let e = eqr[i];
         let (v0, rest) = scratch.split_at_mut(ncols);
         let (v1, v2) = rest.split_at_mut(ncols);
@@ -115,7 +121,7 @@ fn table_message_k(
             let (lo, hi) = (c[i], c[i + half]);
             v0[ci] = lo;
             v1[ci] = hi;
-            v2[ci] = lo + mul_by_g(lo + hi);
+            v2[ci] = T::at_g(lo, hi);
         }
         [
             e.mul_unreduced(eval(pows, v0)),
@@ -128,55 +134,13 @@ fn table_message_k(
         // creates it once and threads it through every row that worker claims.
         parallel::map_reduce_with_state(
             half,
-            || vec![F64::ZERO; 3 * ncols],
+            || vec![T::ZERO; 3 * ncols],
             || [F192Unreduced::ZERO; 3],
             |scratch, acc, i| *acc = xor3(*acc, summand(i, scratch)),
             xor3,
         )
     } else {
-        let mut scratch = vec![F64::ZERO; 3 * ncols];
-        (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
-    };
-    [acc[0].reduce(), acc[1].reduce(), acc[2].reduce()]
-}
-
-/// Later active rounds after the table has been lifted into `E`.
-fn table_message_e(
-    cols: &[ArenaVec<F192>],
-    eval: &(dyn Fn(&[F192], &[F192]) -> F192 + Sync),
-    pows: &[F192],
-    half: usize,
-    eqr: &[F192],
-) -> [F192; 3] {
-    let ncols = cols.len();
-    let summand = |i: usize, scratch: &mut [F192]| -> [F192Unreduced; 3] {
-        let e = eqr[i];
-        let (v0, rest) = scratch.split_at_mut(ncols);
-        let (v1, v2) = rest.split_at_mut(ncols);
-        for (ci, c) in cols.iter().enumerate() {
-            let (lo, hi) = (c[i], c[i + half]);
-            v0[ci] = lo;
-            v1[ci] = hi;
-            v2[ci] = lo + mul_by_g_e(lo + hi);
-        }
-        [
-            e.mul_unreduced(eval(pows, v0)),
-            e.mul_unreduced(eval(pows, v1)),
-            e.mul_unreduced(eval(pows, v2)),
-        ]
-    };
-    let acc = if half >= PAR_THRESHOLD {
-        // The `3 * ncols` scratch is per-worker, not per-row: `map_reduce_with_state`
-        // creates it once and threads it through every row that worker claims.
-        parallel::map_reduce_with_state(
-            half,
-            || vec![F192::ZERO; 3 * ncols],
-            || [F192Unreduced::ZERO; 3],
-            |scratch, acc, i| *acc = xor3(*acc, summand(i, scratch)),
-            xor3,
-        )
-    } else {
-        let mut scratch = vec![F192::ZERO; 3 * ncols];
+        let mut scratch = vec![T::ZERO; 3 * ncols];
         (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
     };
     [acc[0].reduce(), acc[1].reduce(), acc[2].reduce()]
@@ -227,9 +191,9 @@ pub fn prove(
             if air.tau > m {
                 let w = &pows[offsets[t]..offsets[t] + air.n_constraints];
                 let p = if let Some(table) = &folded[t] {
-                    table_message_e(table, &*air.eval, w, 1 << m, &eqr)
+                    table_message(table, &*air.eval, w, 1 << m, &eqr)
                 } else {
-                    table_message_k(&cols[t], &*air.eval_k, w, 1 << m, &eqr)
+                    table_message(&cols[t], &*air.eval_k, w, 1 << m, &eqr)
                 };
                 msg = add3(msg, p.map(|x| weights[t] * x));
             }

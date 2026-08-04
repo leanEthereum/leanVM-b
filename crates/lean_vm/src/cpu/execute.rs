@@ -41,14 +41,17 @@ impl Program {
 
         // Dense write-once data memory (read path stays a vector for speed), the
         // per-cell access count (g^{count}, default g^0 = 1), and a written mask.
-        let mut mem: Vec<F192> = vec![F192::ZERO; self.main_frame.max(2) as usize];
-        let mut written: Vec<bool> = vec![false; mem.len()];
-        let mut mem_count: Vec<F64> = vec![F64::ONE; mem.len()];
+        let n0 = self.main_frame.max(2) as usize;
+        let mut m = Mem {
+            cells: vec![F192::ZERO; n0],
+            written: vec![false; n0],
+            count: vec![F64::ONE; n0],
+        };
         // Seed the public input into m[0], m[1] (addresses g^0, g^1, §e2e-pi).
-        mem[0] = public_input[0];
-        mem[1] = public_input[1];
-        written[0] = true;
-        written[1] = true;
+        m.cells[0] = public_input[0];
+        m.cells[1] = public_input[1];
+        m.written[0] = true;
+        m.written[1] = true;
 
         // Per-pc bytecode execution count (g^{count}).
         let mut bytecode_count: Vec<F64> = vec![F64::ONE; self.prog.len()];
@@ -91,46 +94,69 @@ impl Program {
         // end-of-execution deref-hint resolution).
         let mut deferred: Vec<(usize, usize, u32)> = Vec::new();
 
-        // Grow the dense vectors so `idx` is in range (keeps mem/written/mem_count in
-        // sync). All accessed cells satisfy cell < next_free after their frame's
-        // allocation, so this only ever extends.
-        fn ensure(mem: &mut Vec<F192>, written: &mut Vec<bool>, mem_count: &mut Vec<F64>, idx: usize) {
-            if idx >= mem.len() {
-                let n = idx + 1;
-                mem.resize(n, F192::ZERO);
-                written.resize(n, false);
-                mem_count.resize(n, F64::ONE);
-            }
+        // The three dense per-cell vectors, kept in lockstep. Every method is
+        // `#[inline(always)]`: they sit in the interpreter's hot opcode loop.
+        struct Mem {
+            cells: Vec<F192>,
+            written: Vec<bool>,
+            count: Vec<F64>,
         }
-        // Read a cell; an unwritten cell reads as ZERO.
-        fn get(mem: &[F192], written: &[bool], cell: u32) -> F192 {
-            let c = cell as usize;
-            if c < written.len() && written[c] {
-                mem[c]
-            } else {
-                F192::ZERO
+        impl Mem {
+            // Grow the dense vectors so `idx` is in range. All accessed cells
+            // satisfy cell < next_free after their frame's allocation, so this
+            // only ever extends.
+            #[inline(always)]
+            fn ensure(&mut self, idx: usize) {
+                if idx >= self.cells.len() {
+                    let n = idx + 1;
+                    self.cells.resize(n, F192::ZERO);
+                    self.written.resize(n, false);
+                    self.count.resize(n, F64::ONE);
+                }
             }
-        }
-        // Write-once store: writing a different value to an already-set cell panics.
-        fn put(mem: &mut Vec<F192>, written: &mut Vec<bool>, mem_count: &mut Vec<F64>, cell: u32, v: F192) {
-            ensure(mem, written, mem_count, cell as usize);
-            let c = cell as usize;
-            if written[c] {
-                assert!(
-                    mem[c] == v,
-                    "write-once conflict at cell {cell} (pc {}, hint {:?}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
-                    DBG_PC.with(|p| p.get()),
-                    DBG_HINT.with(|h| h.get()),
-                    mem[c].c2,
-                    mem[c].c1,
-                    mem[c].c0,
-                    v.c2,
-                    v.c1,
-                    v.c0
-                );
-            } else {
-                mem[c] = v;
-                written[c] = true;
+            // Read a cell; an unwritten cell reads as ZERO.
+            #[inline(always)]
+            fn get(&self, cell: u32) -> F192 {
+                let c = cell as usize;
+                if c < self.written.len() && self.written[c] {
+                    self.cells[c]
+                } else {
+                    F192::ZERO
+                }
+            }
+            // Write-once store: writing a different value to an already-set cell panics.
+            #[inline(always)]
+            fn put(&mut self, cell: u32, v: F192) {
+                self.ensure(cell as usize);
+                let c = cell as usize;
+                if self.written[c] {
+                    assert!(
+                        self.cells[c] == v,
+                        "write-once conflict at cell {cell} (pc {}, hint {:?}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
+                        DBG_PC.with(|p| p.get()),
+                        DBG_HINT.with(|h| h.get()),
+                        self.cells[c].c2,
+                        self.cells[c].c1,
+                        self.cells[c].c0,
+                        v.c2,
+                        v.c1,
+                        v.c0
+                    );
+                } else {
+                    self.cells[c] = v;
+                    self.written[c] = true;
+                }
+            }
+            // Read the running access count and advance it by ×g (the free increment).
+            // ×g is ×x, i.e. `mul_by_g`, a shift+fold rather than a PMULL; this runs on every
+            // memory access (several million per run), so the cheap form matters.
+            #[inline(always)]
+            fn bump_access_count(&mut self, cell: u32) -> F64 {
+                self.ensure(cell as usize);
+                let cell_idx = cell as usize;
+                let count = self.count[cell_idx];
+                self.count[cell_idx] = mul_by_g(count);
+                count
             }
         }
         // Bounded discrete log for `hint_decompose_bits_exponent`: find n < 2^nbits
@@ -161,17 +187,6 @@ impl Program {
                 y *= *giant;
             }
             panic!("hint_decompose_bits_exponent: value is not g^n for n < 2^{nbits}")
-        }
-
-        // Read the running access count and advance it by ×g (the free increment).
-        // ×g is ×x, i.e. `mul_by_g`, a shift+fold rather than a PMULL; this runs on every
-        // memory access (several million per run), so the cheap form matters.
-        fn bump_access_count(mem: &mut Vec<F192>, written: &mut Vec<bool>, mem_count: &mut Vec<F64>, cell: u32) -> F64 {
-            ensure(mem, written, mem_count, cell as usize);
-            let cell_idx = cell as usize;
-            let count = mem_count[cell_idx];
-            mem_count[cell_idx] = mul_by_g(count);
-            count
         }
 
         while pc != ending_pc {
@@ -233,8 +248,7 @@ impl Program {
                                 // the cell holds g^k, allocate k cells (reverse
                                 // g-power lookup, growing the index if needed).
                                 RHint::AllocDyn { ptr, size } => {
-                                    let sz = as_addr(get(&mem, &written, fp + size))
-                                        .expect("HeapBuf size is not a K-valued g-power");
+                                    let sz = as_addr(m.get(fp + size)).expect("HeapBuf size is not a K-valued g-power");
                                     let cells = gmap.get(&sz).copied().unwrap_or_else(|| {
                                         grow_gpow(&mut gpow, &mut gmap, 1 << 20);
                                         *gmap
@@ -246,21 +260,21 @@ impl Program {
                                 _ => unreachable!(),
                             };
                             let cell = fp + ptr;
-                            ensure(&mut mem, &mut written, &mut mem_count, cell as usize);
-                            if !written[cell as usize] {
+                            m.ensure(cell as usize);
+                            if !m.written[cell as usize] {
                                 let base = next_free;
                                 next_free += size;
                                 grow_gpow(&mut gpow, &mut gmap, (base + size) as usize);
-                                ensure(&mut mem, &mut written, &mut mem_count, next_free as usize);
-                                mem[cell as usize] = F192::from(gpow[base as usize]);
-                                written[cell as usize] = true;
+                                m.ensure(next_free as usize);
+                                m.cells[cell as usize] = F192::from(gpow[base as usize]);
+                                m.written[cell as usize] = true;
                             }
                         }
                         RHint::Print { label, cell } => {
                             let c = fp + cell;
-                            ensure(&mut mem, &mut written, &mut mem_count, c as usize);
-                            if written[c as usize] {
-                                let v = mem[c as usize];
+                            m.ensure(c as usize);
+                            if m.written[c as usize] {
+                                let v = m.cells[c as usize];
                                 // Small integers and small g-powers overlap (8 = x^3
                                 // = g^3): show every reading that applies. Only a
                                 // K-valued word (extension limbs 0) can be a g-power.
@@ -289,18 +303,18 @@ impl Program {
                         RHint::WitnessStack { name, base, len } => {
                             let vals = pop_witness(&mut wit_pos, name, *len);
                             for (k, v) in vals.into_iter().enumerate() {
-                                put(&mut mem, &mut written, &mut mem_count, fp + base + k as u32, v);
+                                m.put(fp + base + k as u32, v);
                             }
                         }
                         RHint::WitnessHeap { name, ptr, lo, len } => {
-                            let p = as_addr(get(&mem, &written, fp + ptr))
-                                .expect("hint_witness heap pointer is not a K-valued g-power");
+                            let p =
+                                as_addr(m.get(fp + ptr)).expect("hint_witness heap pointer is not a K-valued g-power");
                             let b = *gmap
                                 .get(&p)
                                 .unwrap_or_else(|| panic!("hint_witness heap pointer is not a g-power"));
                             let vals = pop_witness(&mut wit_pos, name, *len);
                             for (k, v) in vals.into_iter().enumerate() {
-                                put(&mut mem, &mut written, &mut mem_count, b + lo + k as u32, v);
+                                m.put(b + lo + k as u32, v);
                             }
                         }
                         RHint::Log2Ceil {
@@ -309,14 +323,14 @@ impl Program {
                             nbits,
                             floor,
                         } => {
-                            let p = as_addr(get(&mem, &written, fp + bits_ptr))
+                            let p = as_addr(m.get(fp + bits_ptr))
                                 .expect("log2_ceil bits pointer is not a K-valued g-power");
                             let b = *gmap
                                 .get(&p)
                                 .unwrap_or_else(|| panic!("log2_ceil bits pointer is not a g-power"));
                             let mut word: u128 = 0;
                             for j in 0..*nbits {
-                                if !get(&mem, &written, b + j).is_zero() {
+                                if !m.get(b + j).is_zero() {
                                     word |= 1u128 << j;
                                 }
                             }
@@ -326,54 +340,42 @@ impl Program {
                                 u128::BITS - (word - 1).leading_zeros()
                             };
                             let mu = cl.max(*floor);
-                            put(
-                                &mut mem,
-                                &mut written,
-                                &mut mem_count,
-                                fp + dst,
-                                F192::from(primitives::field::g_pow(mu as usize)),
-                            );
+                            m.put(fp + dst, F192::from(primitives::field::g_pow(mu as usize)));
                         }
                         RHint::BitDecompose { value, bits_ptr, nbits } => {
                             assert!(*nbits <= 192, "a machine word has 192 bits");
-                            let v = get(&mem, &written, fp + value);
+                            let v = m.get(fp + value);
                             let limbs = [v.c0, v.c1, v.c2];
-                            let bp = as_addr(get(&mem, &written, fp + bits_ptr))
+                            let bp = as_addr(m.get(fp + bits_ptr))
                                 .expect("decompose bits pointer is not a K-valued g-power");
                             let bb = *gmap
                                 .get(&bp)
                                 .unwrap_or_else(|| panic!("decompose bits pointer is not a g-power"));
                             for j in 0..*nbits {
                                 let bit = (limbs[j as usize / 64] >> (j % 64)) & 1;
-                                put(&mut mem, &mut written, &mut mem_count, bb + j, F192::new(bit, 0, 0));
+                                m.put(bb + j, F192::new(bit, 0, 0));
                             }
                         }
                         RHint::BitDecomposeExp { value, bits_ptr, nbits } => {
-                            let x = as_addr(get(&mem, &written, fp + value))
+                            let x = as_addr(m.get(fp + value))
                                 .expect("hint_decompose_bits_exponent value is not a K-valued g-power");
                             let n = bounded_dlog(&mut dlog_cache, x, *nbits);
-                            let bp = as_addr(get(&mem, &written, fp + bits_ptr))
+                            let bp = as_addr(m.get(fp + bits_ptr))
                                 .expect("hint_decompose_bits_exponent bits pointer is not a K-valued g-power");
                             let bb = *gmap.get(&bp).unwrap_or_else(|| {
                                 panic!("hint_decompose_bits_exponent bits pointer is not a g-power")
                             });
                             for j in 0..*nbits {
                                 let bit = ((n >> j) & 1) as u64;
-                                put(&mut mem, &mut written, &mut mem_count, bb + j, F192::new(bit, 0, 0));
+                                m.put(bb + j, F192::new(bit, 0, 0));
                             }
                         }
                         RHint::FieldLimbs { value, base, len } => {
                             assert!((1..=3).contains(len), "an F192 value has three K limbs");
-                            let v = get(&mem, &written, fp + value);
+                            let v = m.get(fp + value);
                             let limbs = [v.c0, v.c1, v.c2];
                             for j in 0..*len {
-                                put(
-                                    &mut mem,
-                                    &mut written,
-                                    &mut mem_count,
-                                    fp + base + j,
-                                    F192::new(limbs[j as usize], 0, 0),
-                                );
+                                m.put(fp + base + j, F192::new(limbs[j as usize], 0, 0));
                             }
                         }
                     }
@@ -395,33 +397,33 @@ impl Program {
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
                     // The row is the equality `m[c] = m[a] op m[b]` over write-once
                     // memory. Normally the operands are known and the result is
-                    // computed forward; with the result already written and exactly
+                    // computed forward; with the result already m.written and exactly
                     // one operand unwritten, the runner back-solves the operand
                     // (leanVM's ADD deduction, multiplicatively: this is what
                     // produces the range-check complement `y = g^{k-1}·x^{-1}` from
                     // `MUL x·y = g^{k-1}`, with no dedicated hint).
                     let is_set = |w: &[bool], cell: u32| (cell as usize) < w.len() && w[cell as usize];
-                    if is_set(&written, ac) {
-                        let (ha, hb) = (is_set(&written, aa), is_set(&written, ab));
+                    if is_set(&m.written, ac) {
+                        let (ha, hb) = (is_set(&m.written, aa), is_set(&m.written, ab));
                         if ha ^ hb {
-                            let vc = get(&mem, &written, ac);
-                            let vk = get(&mem, &written, if ha { aa } else { ab });
+                            let vc = m.get(ac);
+                            let vk = m.get(if ha { aa } else { ab });
                             let v = if is_xor {
                                 vc + vk
                             } else {
                                 assert!(!vk.is_zero(), "cannot back-solve MUL through a zero operand");
                                 vc * vk.inv()
                             };
-                            put(&mut mem, &mut written, &mut mem_count, if ha { ab } else { aa }, v);
+                            m.put(if ha { ab } else { aa }, v);
                         }
                     }
-                    let va = get(&mem, &written, aa);
-                    let vb = get(&mem, &written, ab);
+                    let va = m.get(aa);
+                    let vb = m.get(ab);
                     let vc = if is_xor { va + vb } else { va * vb };
-                    put(&mut mem, &mut written, &mut mem_count, ac, vc);
-                    let ra = bump_access_count(&mut mem, &mut written, &mut mem_count, aa);
-                    let rb = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
-                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
+                    m.put(ac, vc);
+                    let ra = m.bump_access_count(aa);
+                    let rb = m.bump_access_count(ab);
+                    let rc = m.bump_access_count(ac);
                     let row = Xrow {
                         pc,
                         fp,
@@ -442,8 +444,8 @@ impl Program {
                 }
                 Op::Set { o, k } => {
                     let a = fp + o;
-                    put(&mut mem, &mut written, &mut mem_count, a, k);
-                    let r = bump_access_count(&mut mem, &mut written, &mut mem_count, a);
+                    m.put(a, k);
+                    let r = m.bump_access_count(a);
                     set.push(Srow {
                         pc,
                         fp,
@@ -462,7 +464,7 @@ impl Program {
                     mode,
                 } => {
                     let a1 = fp + alpha;
-                    let p = get(&mem, &written, a1);
+                    let p = m.get(a1);
                     let p_addr = as_addr(p).unwrap_or_else(|| {
                         panic!(
                             "DEREF pointer is not a K-valued g-power at pc {pc}: {:x}:{:x}",
@@ -494,20 +496,20 @@ impl Program {
                     match mode {
                         DerefMode::Cell => {
                             // Equality m[a2] == m[a3]: fill the unset side.
-                            ensure(&mut mem, &mut written, &mut mem_count, a2);
-                            let has2 = written[a2];
-                            let has3 = (a3 as usize) < written.len() && written[a3 as usize];
+                            m.ensure(a2);
+                            let has2 = m.written[a2];
+                            let has3 = (a3 as usize) < m.written.len() && m.written[a3 as usize];
                             match (has2, has3) {
                                 (true, true) => {
-                                    assert!(mem[a2] == get(&mem, &written, a3), "DEREF mismatch")
+                                    assert!(m.cells[a2] == m.get(a3), "DEREF mismatch")
                                 }
                                 (true, false) => {
-                                    let v = mem[a2];
-                                    put(&mut mem, &mut written, &mut mem_count, a3, v);
+                                    let v = m.cells[a2];
+                                    m.put(a3, v);
                                 }
                                 (false, true) => {
-                                    let v = get(&mem, &written, a3);
-                                    put(&mut mem, &mut written, &mut mem_count, a2 as u32, v);
+                                    let v = m.get(a3);
+                                    m.put(a2 as u32, v);
                                 }
                                 (false, false) => {
                                     // Both sides still unwritten: a range-check
@@ -522,18 +524,18 @@ impl Program {
                         }
                         DerefMode::Pc => {
                             let v = F192::from(gpow[pc as usize + 2]);
-                            put(&mut mem, &mut written, &mut mem_count, a2 as u32, v);
+                            m.put(a2 as u32, v);
                         }
                         DerefMode::Fp => {
                             let v = F192::from(gpow[fp as usize]);
-                            put(&mut mem, &mut written, &mut mem_count, a2 as u32, v);
+                            m.put(a2 as u32, v);
                         }
                     }
-                    let v2 = get(&mem, &written, a2 as u32);
-                    let v3 = get(&mem, &written, a3);
-                    let r1 = bump_access_count(&mut mem, &mut written, &mut mem_count, a1);
-                    let r2 = bump_access_count(&mut mem, &mut written, &mut mem_count, a2 as u32);
-                    let r3 = bump_access_count(&mut mem, &mut written, &mut mem_count, a3);
+                    let v2 = m.get(a2 as u32);
+                    let v3 = m.get(a3);
+                    let r1 = m.bump_access_count(a1);
+                    let r2 = m.bump_access_count(a2 as u32);
+                    let r3 = m.bump_access_count(a3);
                     deref.push(Drow {
                         pc,
                         fp,
@@ -556,9 +558,9 @@ impl Program {
                 }
                 Op::Jump { oc, od, of } => {
                     let (ac, ad, af) = (fp + oc, fp + od, fp + of);
-                    let c = get(&mem, &written, ac);
-                    let d = get(&mem, &written, ad);
-                    let f = get(&mem, &written, af);
+                    let c = m.get(ac);
+                    let d = m.get(ad);
+                    let f = m.get(af);
                     // `b = [c ≠ 0]` is needed now; `w = c⁻¹` is only recorded into
                     // the trace (never used for control flow), so it is deferred to
                     // ONE batched Montgomery inversion after the run; computing it
@@ -567,9 +569,9 @@ impl Program {
                     // batch-filled below (bit-identical to `c.inv()`).
                     let b = if c.is_zero() { F64::ZERO } else { F64::ONE };
                     let w = F192::ZERO;
-                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
-                    let rd = bump_access_count(&mut mem, &mut written, &mut mem_count, ad);
-                    let rf = bump_access_count(&mut mem, &mut written, &mut mem_count, af);
+                    let rc = m.bump_access_count(ac);
+                    let rd = m.bump_access_count(ad);
+                    let rf = m.bump_access_count(af);
                     let taken = !c.is_zero();
                     let (npc, nfp) = if taken {
                         let dpc = as_addr(d).expect("JUMP target is not a K-valued g-power");
@@ -608,14 +610,14 @@ impl Program {
                 }
                 Op::Pack64x2 { a, b, c } => {
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
-                    let va = get(&mem, &written, aa);
-                    let vb = get(&mem, &written, ab);
+                    let va = m.get(aa);
+                    let vb = m.get(ab);
                     assert_eq!((va.c1, va.c2), (0, 0), "PACK64X2 first input must be K-valued");
                     assert_eq!((vb.c1, vb.c2), (0, 0), "PACK64X2 second input must be K-valued");
-                    put(&mut mem, &mut written, &mut mem_count, ac, F192::new(va.c0, vb.c0, 0));
-                    let ra = bump_access_count(&mut mem, &mut written, &mut mem_count, aa);
-                    let rb = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
-                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
+                    m.put(ac, F192::new(va.c0, vb.c0, 0));
+                    let ra = m.bump_access_count(aa);
+                    let rb = m.bump_access_count(ab);
+                    let rc = m.bump_access_count(ac);
                     pack64x2.push(Xrow {
                         pc,
                         fp,
@@ -636,7 +638,7 @@ impl Program {
                     let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
                     let acv = fp + cv;
                     let ac = fp + out;
-                    let words = [aa0, aa1, ab0, ab1, acv, acv + 1].map(|a| get(&mem, &written, a));
+                    let words = [aa0, aa1, ab0, ab1, acv, acv + 1].map(|a| m.get(a));
                     assert!(
                         words.iter().all(|w| w.c2 == 0),
                         "BLAKE3 input cell must be a canonical 128-bit embedding"
@@ -651,24 +653,12 @@ impl Program {
                     // cells are consistent for any later read.
                     let vc = blake3_compress(va, vb, vcv, metadata);
                     let outputs = [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)];
-                    put(&mut mem, &mut written, &mut mem_count, ac, outputs[0]);
-                    put(&mut mem, &mut written, &mut mem_count, ac + 1, outputs[1]);
-                    let ra = [
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, aa0),
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, aa1),
-                    ];
-                    let rb = [
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, ab0),
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, ab1),
-                    ];
-                    let rcv = [
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, acv),
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, acv + 1),
-                    ];
-                    let rc = [
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, ac),
-                        bump_access_count(&mut mem, &mut written, &mut mem_count, ac + 1),
-                    ];
+                    m.put(ac, outputs[0]);
+                    m.put(ac + 1, outputs[1]);
+                    let ra = [m.bump_access_count(aa0), m.bump_access_count(aa1)];
+                    let rb = [m.bump_access_count(ab0), m.bump_access_count(ab1)];
+                    let rcv = [m.bump_access_count(acv), m.bump_access_count(acv + 1)];
+                    let rc = [m.bump_access_count(ac), m.bump_access_count(ac + 1)];
                     blake3.push(Brow {
                         pc,
                         fp,
@@ -727,7 +717,7 @@ impl Program {
                     path
                 };
                 std::fs::write(&path, out).expect("write DBG_PROF_DUMP");
-                eprintln!("== DBG_PROF: per-pc counts written to {path}");
+                eprintln!("== DBG_PROF: per-pc counts m.written to {path}");
             }
             eprintln!("== DBG_PROF: cycles by function ({} total) ==", pretty_integer(steps));
             for (name, c) in rows.iter().filter(|(_, c)| *c > 0) {
@@ -747,9 +737,9 @@ impl Program {
         while {
             let before = deferred.len();
             deferred.retain(|&(i, a2, a3)| {
-                if written[a2] {
-                    let v = mem[a2];
-                    put(&mut mem, &mut written, &mut mem_count, a3, v);
+                if m.written[a2] {
+                    let v = m.cells[a2];
+                    m.put(a3, v);
                     deref[i].v2 = v;
                     deref[i].v3 = v;
                     false
@@ -762,8 +752,8 @@ impl Program {
         for (_, a2, a3) in deferred {
             // Never written: the cells are genuinely unconstrained; fix them (and
             // the rows, already ZERO) to ZERO.
-            put(&mut mem, &mut written, &mut mem_count, a2 as u32, F192::ZERO);
-            put(&mut mem, &mut written, &mut mem_count, a3, F192::ZERO);
+            m.put(a2 as u32, F192::ZERO);
+            m.put(a3, F192::ZERO);
         }
 
         // Fill the deferred JUMP inverse hints `w = c⁻¹` (the is-nonzero witness)
@@ -793,11 +783,11 @@ impl Program {
 
         // Pad memory to a power of two (the boundary tables read a dense image),
         // at least 2^MIN_LOG_MEM cells (doc §Memory).
-        let mem_used = mem.len();
-        let cells = mem.len().next_power_of_two().max(1 << MIN_LOG_MEM);
+        let mem_used = m.cells.len();
+        let cells = m.cells.len().next_power_of_two().max(1 << MIN_LOG_MEM);
         assert!(cells <= 1 << MAX_LOG_MEM, "data memory exceeds 2^{MAX_LOG_MEM} cells");
-        mem.resize(cells, F192::ZERO);
-        mem_count.resize(cells, F64::ONE);
+        m.cells.resize(cells, F192::ZERO);
+        m.count.resize(cells, F64::ONE);
         let trace = Trace {
             xor,
             mul,
@@ -806,11 +796,11 @@ impl Program {
             jump,
             blake3,
             pack64x2,
-            mem_count,
+            mem_count: m.count,
             bytecode_count,
         };
         Execution {
-            mem,
+            mem: m.cells,
             cycles: steps,
             mem_used,
             trace,

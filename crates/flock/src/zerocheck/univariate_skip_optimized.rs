@@ -77,7 +77,7 @@ pub fn c_s() -> F192 {
     phi8(F8(C_S_F8))
 }
 
-/// The three F192 small challenges (embeddings of [`SMALL_CHAL_F8`]) — caller
+/// The three F192 small challenges (embeddings of `SMALL_CHAL_F8`): caller
 /// must place these at `r[k_skip..k_skip+3]` for the naive cross-check to
 /// produce a result related to the optimized output by exactly `C_s`.
 pub fn small_challenges() -> [F192; 3] {
@@ -851,7 +851,7 @@ fn build_b_med_counts(padding: &PaddingSpec) -> (usize, Vec<u8>) {
     (within_outer_mask, counts)
 }
 
-/// Packed-input variant of [`round1_shift_reduce_extract_c`]. **Parallel by
+/// Packed-input variant of `round1_shift_reduce_extract_c`. **Parallel by
 /// default** via the `parallel` pool: the outer x_hi loop is distributed across
 /// workers, each with its own scratch + local accumulator. Reduction is a
 /// per-lane F192 XOR across workers (commutative + associative).
