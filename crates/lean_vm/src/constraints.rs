@@ -37,7 +37,6 @@
 use crate::PAR_THRESHOLD;
 use crate::colval::ColVal;
 use crate::transcript::{ProverState, VerifierState};
-use crate::witness::Column;
 use primitives::field::{F64, F192, F192Unreduced};
 use primitives::multilinear::{
     add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
@@ -152,7 +151,7 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
 /// order, on the nested points `ρ[..τ_t]`.
 pub fn prove(
     airs: &[Air<'_>],
-    cols: &mut [Vec<Column>],
+    cols: &[Vec<&[F64]>],
     eta: F192,
     zeta: &[F192],
     sigma: &[F192],
@@ -317,7 +316,7 @@ mod tests {
         (v[0] * v[1] + v[2]).mul_e(pows[0]) + (v[0] + v[3]).mul_e(pows[1])
     }
 
-    fn good_table(tau: usize, salt: u64) -> Vec<Column> {
+    fn good_table(tau: usize, salt: u64) -> Vec<Vec<F64>> {
         let n = 1usize << tau;
         let a: Vec<F64> = (0..n).map(|i| F64(i as u64 + salt)).collect();
         let b: Vec<F64> = (0..n).map(|i| F64(3 * i as u64 + 1 + salt)).collect();
@@ -363,12 +362,13 @@ mod tests {
         (eta, zeta)
     }
 
-    fn run(taus: &[usize], mut cols: Vec<Vec<Column>>) -> (Proof, Result<Vec<Claims>, Error>) {
+    fn run(taus: &[usize], cols: Vec<Vec<Vec<F64>>>) -> (Proof, Result<Vec<Claims>, Error>) {
         let airs = airs_for(taus, false);
         let (eta, zeta) = eta_zeta(taus);
         let zeros = vec![F192::ZERO; taus.len()];
         let mut ps = ProverState::new(b"zc-test", &SEED);
-        let pclaims = prove(&airs, &mut cols, eta, &zeta, &zeros, &mut ps);
+        let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
+        let pclaims = prove(&airs, &views, eta, &zeta, &zeros, &mut ps);
         let proof = ps.into_proof();
         let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
         let vclaims = verify(&airs, eta, &zeta, F192::ZERO, &mut vs);
@@ -394,7 +394,7 @@ mod tests {
         let taus = [5usize, 3, 5, 0, 1];
         for bad in 0..taus.len() {
             for col in [2usize, 3] {
-                let mut cols: Vec<Vec<Column>> =
+                let mut cols: Vec<Vec<Vec<F64>>> =
                     taus.iter().enumerate().map(|(i, &t)| good_table(t, i as u64)).collect();
                 cols[bad][col][(1usize << taus[bad]) - 1] += F64::ONE;
                 assert!(run(&taus, cols).1.is_err());
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn attached_eval_claims_verify_and_bind() {
         let taus = [5usize, 3, 5, 0, 1];
-        let cols: Vec<Vec<Column>> = taus.iter().enumerate().map(|(i, &t)| good_table(t, i as u64)).collect();
+        let cols: Vec<Vec<Vec<F64>>> = taus.iter().enumerate().map(|(i, &t)| good_table(t, i as u64)).collect();
         let (eta, zeta) = eta_zeta(&taus);
         let pows = eta_powers(eta, 3 * taus.len());
         // σ_t = η^{offset_t + 2} · col_1(ζ[..τ_t]): the attached identity is `vals[1]`,
@@ -421,11 +421,12 @@ mod tests {
             .map(|(t, &tau)| pows[3 * t + 2] * primitives::multilinear::mle_eval(&cols[t][1], &zeta[..tau]))
             .collect();
 
-        let settle = |sig: &[F192], mut cols: Vec<Vec<Column>>| -> Result<Vec<Claims>, Error> {
+        let settle = |sig: &[F192], cols: Vec<Vec<Vec<F64>>>| -> Result<Vec<Claims>, Error> {
             let airs = airs_for(&taus, true);
             let target = sig.iter().fold(F192::ZERO, |a, &b| a + b);
             let mut ps = ProverState::new(b"zc-test", &SEED);
-            let pclaims = prove(&airs, &mut cols, eta, &zeta, sig, &mut ps);
+            let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
+            let pclaims = prove(&airs, &views, eta, &zeta, sig, &mut ps);
             let proof = ps.into_proof();
             let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
             let out = verify(&airs, eta, &zeta, target, &mut vs);

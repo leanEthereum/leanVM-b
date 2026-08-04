@@ -11,7 +11,6 @@ use crate::PAR_THRESHOLD;
 use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
-use crate::witness::Column;
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval};
 use zk_alloc::ArenaVec;
@@ -132,7 +131,7 @@ enum Term<'a> {
 /// followed implicitly by the identity `1` up to `2^μ`. The row-invariant
 /// `α`-power chain and constant coordinates are folded once per block into
 /// `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192, gamma: F192) -> gkr::LeafVector {
+pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192, gamma: F192) -> gkr::LeafVector {
     let explicit = blocks
         .iter()
         .enumerate()
@@ -332,7 +331,7 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F19
 fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
-    cols: &[Column],
+    cols: &[&[F64]],
     zeta: &[F192],
     alpha: F192,
     gamma: F192,
@@ -361,7 +360,7 @@ fn decompose_prove(
     }
     let vals: Vec<F192> = parallel::map_collect(jobs.len(), |i| {
         let (col, kappa) = jobs[i];
-        mle_eval(&cols[col], &zeta[..kappa])
+        mle_eval(cols[col], &zeta[..kappa])
     });
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
@@ -380,7 +379,7 @@ fn decompose_prove(
                 .next()
                 .expect("job enumeration matches decompose_formula's col_val order");
             debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
-            debug_assert_eq!(v, mle_eval(&cols[col], zeta_lo), "job/coord order drift");
+            debug_assert_eq!(v, mle_eval(cols[col], zeta_lo), "job/coord order drift");
             ps.add_scalar(v);
             Ok(v)
         },
@@ -609,7 +608,7 @@ pub fn prove_balance(
     push: &[Block],
     pull: &[Block],
     count: &[Block],
-    cols: &[Column],
+    cols: &[&[F64]],
     owners: &[Vec<Option<(usize, usize)>>; 3],
     tables: &[(usize, usize)],
     ps: &mut ProverState,
@@ -691,12 +690,12 @@ pub fn prove_balance(
 
 /// Every table's committed columns at `ζ[..τ_t]`: one `eq` table per table, then an
 /// inner product per column. `tables[t] = (base, n_cols)` in the global schema.
-fn tables_at(cols: &[Column], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<Vec<F192>> {
+fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<Vec<F192>> {
     tables
         .iter()
         .map(|&(base, n_cols)| {
             let tau = crate::log2_strict_usize(cols[base].len());
-            parallel::map_collect(n_cols, |c| mle_eval(&cols[base + c], &zeta[..tau]))
+            parallel::map_collect(n_cols, |c| mle_eval(cols[base + c], &zeta[..tau]))
         })
         .collect()
 }

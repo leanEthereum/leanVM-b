@@ -86,16 +86,52 @@ pub struct Layout {
     pub row_counts: [usize; tables::N_TABLES],
 }
 
-/// The prover's witness bundle: the committed column values + their stacked
-/// multilinear `q` + the public [`Layout`] (plus the sizes needed to announce it).
+/// The prover's witness: the stacked multilinear `q`, which holds every committed
+/// column at its placed offset, plus the public [`Layout`] (and the sizes needed to
+/// announce it).
 pub(crate) struct Witness {
-    pub(crate) cols: Vec<Column>,
-    pub(crate) q: Vec<F64>,
+    pub(crate) q: zk_alloc::ArenaVec<F64>,
+    /// The virtual columns' values as `(global column index, values)`. They carry
+    /// data for the bus but are not committed, so they are not in `q`.
+    pub(crate) virt: Vec<(usize, zk_alloc::ArenaVec<F64>)>,
     pub(crate) layout: Layout,
     pub(crate) log_mem: usize,
     /// `Option` lets `prove` take and free the large reduction-only buffers
     /// immediately after reduction, before the mixed PCS opening.
     pub(crate) flock_reduction: Option<crate::blake3_flock::PreparedReductionWitness>,
+}
+
+impl Witness {
+    /// One read-only view per column, in global column order: the window into the
+    /// stack for a committed column, the private buffer for a virtual one.
+    pub(crate) fn columns(&self) -> Vec<&[F64]> {
+        let mut cols: Vec<&[F64]> = self
+            .layout
+            .placements
+            .iter()
+            .map(|p| {
+                if p.is_virtual() {
+                    &[][..]
+                } else {
+                    &self.q[p.offset..p.offset + (1 << p.n_vars)]
+                }
+            })
+            .collect();
+        for (i, buf) in &self.virt {
+            cols[*i] = buf;
+        }
+        cols
+    }
+
+    /// Committed data before the zero-pad to `2^m`: the real witness size.
+    pub(crate) fn committed_size(&self) -> usize {
+        self.layout
+            .placements
+            .iter()
+            .filter(|p| !p.is_virtual())
+            .map(|p| 1usize << p.n_vars)
+            .sum()
+    }
 }
 
 /// The committed columns' kappa SOURCES, for the recursion guest's
@@ -440,37 +476,89 @@ impl Program {
         let log_mem = crate::log2_strict_usize(cells);
 
         let sch = schema();
-        let mut cols = vec![Column::new(); sch.n];
         // Precompute g^0..g^{span-1} once so every address/pc/operand fill is an
         // O(1) lookup instead of an O(log) power.
         let span = cells.max(bytecode_size);
         let gpow = primitives::field::g_powers(span);
 
+        // The public layout (flush/count blocks, per-column padding, placements,
+        // boundary, taus) is a pure function of the program + announced sizes +
+        // public input, with no committed witness; reconstruct it here so the
+        // prover and verifier share exactly the same structure. It comes before the
+        // fill because it fixes each table's padded row count `2^tau`, which lets
+        // every column be allocated at its final length and padded in the same
+        // pass. Count columns pad with g^0 = 1, every other column with 0 (§4.4,
+        // §e2e-pad): a default padding row flushes tuples that do not self-cancel,
+        // and the verifier divides them out of the bus product (§sec:gp). The shared
+        // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode
+        // lengths and take no padding.
+        let row_counts = [
+            tr.xor.len(),
+            tr.mul.len(),
+            tr.set.len(),
+            tr.deref.len(),
+            tr.jump.len(),
+            tr.blake3.len(),
+            tr.pack64x2.len(),
+        ];
+        assert!(
+            row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
+            "a table exceeds 2^{MAX_LOG_ROWS} rows"
+        );
+        let pi = [exec.mem[0], exec.mem[1]];
+        let l = layout(&self.prog, log_mem, row_counts, pi);
+
+        // The stacked witness is written exactly ONCE: allocate it, carve one window
+        // per committed column, and have every fill write its column straight into
+        // place. Copying columns in afterwards would move the whole witness a second
+        // time, a gigabyte at this scale, for no gain: nothing folds the K-columns
+        // in place, so the stack can be their only home.
+        //
+        // SAFETY: the allocation is uninitialized. `split_stack` zeroes the pad tail
+        // and hands out windows tiling the rest; `fill_table` checks that each table
+        // wrote every window it was given, and the shared columns below write theirs.
+        let mut q = unsafe { witness::alloc_stack(l.m) };
+        // A virtual column is not in the stack, so its values need storage of their
+        // own: it carries data for the bus, and only its evaluation claims route
+        // elsewhere (to `q_pkd`).
+        let mut virt: Vec<(usize, zk_alloc::ArenaVec<F64>)> = Vec::new();
+        for (t, table) in tables::tables().iter().enumerate() {
+            for c in 0..table.n_committed_columns() {
+                let i = sch.base[t] + c;
+                if l.placements[i].is_virtual() {
+                    virt.push((i, zk_alloc::ArenaVec::filled(F64::ZERO, 1 << l.taus[t])));
+                }
+            }
+        }
+        let mut windows = witness::split_stack(&mut q, &l.placements);
+        for (i, buf) in virt.iter_mut() {
+            windows[*i] = buf;
+        }
+
         // Each table fills its own columns from the trace (local indices, offset
         // into its global block).
-        let ctx = FillCtx {
-            trace: tr,
-            mem: &exec.mem,
-            gpow: &gpow,
-            prog: &self.prog,
-        };
         crate::stage!("Fill columns", || {
             for (t, table) in tables::tables().iter().enumerate() {
                 let (base, n) = (sch.base[t], table.n_committed_columns());
-                table.fill(&ctx, &mut cols[base..base + n]);
+                let ctx = FillCtx::new(tr, &exec.mem, &gpow, &self.prog, &l.pad[base..base + n], 1 << l.taus[t]);
+                tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
             // Shared columns. The 192-bit memory image splits into three K-limbs.
-            cols[MEM_LO] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c0));
-            cols[MEM_HI] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c1));
-            cols[MEM_TOP] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c2));
-            cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
-            cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
+            // These five plus `QPKD` below are every shared column, and each has to
+            // be written: the stack is uninitialized, so one left out would be read
+            // as indeterminate bytes rather than caught by a length mismatch.
+            const _: () = assert!(N_SHARED == 6, "a new shared column needs a fill here");
+            parallel::fill(windows[MEM_LO], |i| F64(exec.mem[i].c0));
+            parallel::fill(windows[MEM_HI], |i| F64(exec.mem[i].c1));
+            parallel::fill(windows[MEM_TOP], |i| F64(exec.mem[i].c2));
+            parallel::fill(windows[MFCNT], |i| tr.mem_count[i]); // counts ended at g^{A[i]}
+            parallel::fill(windows[BFCNT], |i| tr.bytecode_count[i]); // … at g^{A[pc]}
         });
         // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:
         // built from the executed BLAKE3 rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances, so a
         // program with no BLAKE3 still carries a single padding instance.
-        let (q_pkd, flock_reduction) = crate::stage!("Build q_pkd", || {
+        let flock_reduction = crate::stage!("Build q_pkd", || {
             // The rows carry only their access counts; the compression's input
             // words are the eight cells they read, in the finished (write-once)
             // memory image.
@@ -492,50 +580,15 @@ impl Program {
                     tables::blake3_metadata(&self.prog, r.pc),
                 )
             });
-            crate::blake3_flock::build_qpkd_prepared(&blocks)
+            crate::blake3_flock::build_qpkd_prepared(&blocks, windows[QPKD])
         });
-        cols[QPKD] = q_pkd;
 
-        // The public layout (flush/count blocks, per-column padding, placements,
-        // boundary, taus) is a pure function of the program + announced sizes +
-        // public input, with no committed witness; reconstruct it here so the
-        // prover and verifier share exactly the same structure.
-        let row_counts = [
-            tr.xor.len(),
-            tr.mul.len(),
-            tr.set.len(),
-            tr.deref.len(),
-            tr.jump.len(),
-            tr.blake3.len(),
-            tr.pack64x2.len(),
-        ];
-        assert!(
-            row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
-            "a table exceeds 2^{MAX_LOG_ROWS} rows"
-        );
-        let pi = [exec.mem[0], exec.mem[1]];
-        let l = layout(&self.prog, log_mem, row_counts, pi);
-
-        // Pad each per-opcode table to its power-of-two row count: count columns
-        // with g^0 = 1, every other column with 0 (§4.4, §e2e-pad). A default padding
-        // row (counts 1, else 0) flushes tuples that do not self-cancel; the
-        // verifier divides them out of the bus product (§sec:gp). The shared
-        // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode lengths.
-        // Pad to `2^taus[t]` (= `next_pow2(row_counts[t])` for every table except
-        // BLAKE3, which `layout` rounds up to flock's `2^n_log`).
-        for (t, table) in tables::tables().iter().enumerate() {
-            let n = 1usize << l.taus[t];
-            let base = sch.base[t];
-            for (i, col) in cols[base..base + table.n_committed_columns()].iter_mut().enumerate() {
-                col.resize(n, l.pad[base + i]);
-            }
-        }
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
         // (g^{B-1}, 0), exactly the boundary the public layout derives.)
-        let q = crate::stage!("Stack witness", || { witness::stack_q(&cols, &l.placements, l.m) });
+        drop(windows); // release the borrow of `q` and of the virtual buffers
         Witness {
-            cols,
             q,
+            virt,
             layout: l,
             log_mem,
             flock_reduction: Some(flock_reduction),

@@ -17,7 +17,7 @@ use crate::tables::{
     self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
 };
 use crate::transcript::{ProverState, VerifierState};
-use crate::witness::{self, Column};
+use crate::witness;
 use primitives::field::{F64, F192, g_pow};
 
 mod execute;
@@ -514,15 +514,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let cycles = exec.cycles;
     let mut w = crate::stage!("Build witness", || program.build(&exec));
     let counts = w.layout.row_counts;
-    // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
-    // value columns) carry data for the bus but are NOT committed, so exclude them.
-    let committed_size: usize = w
-        .cols
-        .iter()
-        .zip(&w.layout.placements)
-        .filter(|(_, p)| !p.is_virtual())
-        .map(|(c, _)| c.len())
-        .sum();
+    let committed_size = w.committed_size();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
     let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
@@ -538,34 +530,39 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // WHIR over this commitment (below). The input/output words bind via the
     // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
+    let (owners, spans) = bus_wiring(program, &w.layout);
+    // The columns are windows into `w.q`, so both stages read them in place: the
+    // batched zerocheck lifts each K-column into a fresh `E` copy on the round it
+    // joins and never writes the K-columns back.
+    let (bus, table_claims) = {
+        let l = &w.layout;
+        let cols = w.columns();
+        let bus = crate::stage!("Prove bus", || {
+            leaf::prove_balance(&l.push, &l.pull, &l.count, &cols, &owners, &spans, &mut ps)
+        });
+        let table_claims = crate::stage!("Prove constraints", || {
+            // One sumcheck for all seven tables (§constraints).
+            let table_cols: Vec<Vec<&[F64]>> = spans
+                .iter()
+                .map(|&(base, n)| (0..n).map(|c| cols[base + c]).collect())
+                .collect();
+            // The eq point is the bus GKR's ζ, not a fresh one: that is what lets the
+            // batch settle the bus forms alongside the constraints.
+            let eta = ps.sample();
+            let form_pows = eta_form_pows(eta);
+            let sigma = sigmas(&bus.sigmas, form_pows);
+            constraints::prove(
+                &airs(&l.taus, &bus.forms, form_pows),
+                &table_cols,
+                eta,
+                &bus.point,
+                &sigma,
+                &mut ps,
+            )
+        });
+        (bus, table_claims)
+    };
     let l = &w.layout;
-    let (owners, spans) = bus_wiring(program, l);
-    let bus = crate::stage!("Prove bus", || {
-        leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps)
-    });
-    let table_claims = crate::stage!("Prove constraints", || {
-        // One sumcheck for all seven tables (§constraints).
-        // MOVE the columns out: the batch folds them destructively and nothing
-        // reads them again (`prove_balance` is done, and `QPKD < N_SHARED` is never
-        // a table column), so copying them would be ~300 MB for nothing.
-        let mut cols: Vec<Vec<Column>> = spans
-            .iter()
-            .map(|&(base, n)| (0..n).map(|c| std::mem::take(&mut w.cols[base + c])).collect())
-            .collect();
-        // The eq point is the bus GKR's ζ, not a fresh one: that is what lets the
-        // batch settle the bus forms alongside the constraints.
-        let eta = ps.sample();
-        let form_pows = eta_form_pows(eta);
-        let sigma = sigmas(&bus.sigmas, form_pows);
-        constraints::prove(
-            &airs(&l.taus, &bus.forms, form_pows),
-            &mut cols,
-            eta,
-            &bus.point,
-            &sigma,
-            &mut ps,
-        )
-    });
 
     // The PI binding transmits the low/high memory-limb evaluations. The full
     // F192 public-input interpolation then determines the top-limb evaluation.

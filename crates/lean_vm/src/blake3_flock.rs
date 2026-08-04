@@ -202,14 +202,19 @@ fn padding_compression() -> Compression {
 /// position `i`) into the committed `F64` packing (64 bits per word): word `j`
 /// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
 /// 64..128), which is exactly `pack_witness`'s convention on the same bit string.
-fn flatten_packed(packed: &[F192]) -> Vec<F64> {
-    let mut out = Vec::with_capacity(packed.len() * 2);
-    for w in packed {
-        debug_assert_eq!(w.c2, 0, "Flock's 128-bit packed witness escaped its subspace");
-        out.push(F64(w.c0));
-        out.push(F64(w.c1));
-    }
-    out
+fn flatten_packed_into(packed: &[F192], out: &mut [F64]) {
+    debug_assert!(
+        packed.iter().all(|w| w.c2 == 0),
+        "Flock's 128-bit packed witness escaped its subspace"
+    );
+    assert_eq!(out.len(), packed.len() * 2, "q_pkd's window is the wrong size");
+    // In parallel, straight into the committed column's window: at scale this reads
+    // 400 MB and writes 270 MB, so neither a push loop nor an intermediate buffer
+    // that is copied again afterwards is affordable.
+    parallel::fill(out, |i| {
+        let w = packed[i / 2];
+        F64(if i % 2 == 0 { w.c0 } else { w.c1 })
+    });
 }
 
 /// Build the committed `q_pkd` column (flock's packed witness) for `blocks`, padded
@@ -218,21 +223,18 @@ fn flatten_packed(packed: &[F192]) -> Vec<F64> {
 /// reduction does not regenerate them later. Deterministic, so it matches what the
 /// reduction regenerates. An empty `blocks` yields one padding cube (all instances are
 /// padding).
-pub(crate) fn build_qpkd_prepared(blocks: &[Compression]) -> (Vec<F64>, PreparedReductionWitness) {
+pub(crate) fn build_qpkd_prepared(blocks: &[Compression], q_pkd: &mut [F64]) -> PreparedReductionWitness {
     let n_blocks = blocks.len().max(1);
     let (z_packed, a_packed, b_packed, z_lincheck) =
         generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(n_blocks));
-    let q_pkd = flatten_packed(&z_packed);
-    (
-        q_pkd,
-        PreparedReductionWitness {
-            n_blocks,
-            z_packed,
-            a_packed,
-            b_packed,
-            z_lincheck,
-        },
-    )
+    flatten_packed_into(&z_packed, q_pkd);
+    PreparedReductionWitness {
+        n_blocks,
+        z_packed,
+        a_packed,
+        b_packed,
+        z_lincheck,
+    }
 }
 
 /// The digest `(c0..c3)` of `padding_compression`, i.e. `blake3(0^64)`. It is
@@ -309,7 +311,17 @@ pub fn family_digest() -> [u8; 32] {
 #[cfg(test)]
 fn prove_reduction(blocks: &[Compression], ps: &mut ProverState) -> (Vec<F64>, PackedWitnessClaims) {
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
-    (flatten_packed(&z_packed), reduced)
+    let mut q_pkd = vec![F64::ZERO; z_packed.len() * 2];
+    flatten_packed_into(&z_packed, &mut q_pkd);
+    (q_pkd, reduced)
+}
+
+/// `q_pkd` on its own, for the tests that only need the committed column.
+#[cfg(test)]
+fn build_qpkd(blocks: &[Compression]) -> Vec<F64> {
+    let mut q_pkd = vec![F64::ZERO; 1 << qpkd_kappa(blocks.len())];
+    build_qpkd_prepared(blocks, &mut q_pkd);
+    q_pkd
 }
 
 /// **Flock reduction only** (verifier): mirror of `prove_reduction`. Replay
@@ -455,7 +467,7 @@ mod tests {
             .iter()
             .map(|&(a, b)| compression(a, b, IV, metadata(0, 64, FLAGS)))
             .collect();
-        let q_pkd = build_qpkd_prepared(&blocks).0;
+        let q_pkd = build_qpkd(&blocks);
         assert_eq!(q_pkd.len(), 1 << qpkd_kappa(blocks.len()));
 
         let slot = |j: usize, s: usize| q_pkd[j * (1 << SLOT_STRIDE_LOG) + s];
@@ -494,7 +506,7 @@ mod tests {
     #[test]
     fn reduction_roundtrip() {
         let blocks = sample_blocks(4);
-        let q_pkd = build_qpkd_prepared(&blocks).0;
+        let q_pkd = build_qpkd(&blocks);
         let dummy = vec![f(7); 8];
         let stacked = crate::witness::stack(&[q_pkd.clone(), dummy]);
         let offset = stacked.placements[0].offset;
@@ -539,7 +551,7 @@ mod tests {
     #[test]
     fn validity_stacked_roundtrip() {
         let blocks = sample_blocks(4);
-        let q_pkd = build_qpkd_prepared(&blocks).0;
+        let q_pkd = build_qpkd(&blocks);
         let dummy: Vec<F64> = (0..8u64).map(|i| f(0x9000 + i)).collect();
         let stacked = crate::witness::stack(&[q_pkd.clone(), dummy.clone()]);
         let offset = stacked.placements[0].offset;
