@@ -28,16 +28,13 @@ impl Program {
     /// first two memory cells `m[0], m[1]` (§e2e-pi). Compilation yields the
     /// `Program`; executing it (here) and proving it are separate later phases.
     pub fn execute(&self, public_input: [F192; 2]) -> Execution {
-        use super::hints::{RHint, grow_gpow};
+        use super::hints::{GPow, RHint};
 
         let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot, g^{B-1}
 
-        // g^j and its reverse index g^j ↦ j, grown lazily (deep recursion is
-        // unbounded). Seed enough for the program counters / return targets.
-        let mut gpow: Vec<F64> = vec![F64::ONE];
-        let mut gmap = super::hints::GPowMap::default();
-        gmap.insert(F64::ONE, 0u32);
-        grow_gpow(&mut gpow, &mut gmap, self.prog.len() + 2);
+        // g^j and its reverse index g^j ↦ j, seeded for the program counters and
+        // return targets and grown on demand past that.
+        let mut g = GPow::new(self.prog.len() + 2);
 
         // Dense write-once data memory (read path stays a vector for speed), the
         // per-cell access count (g^{count}, default g^0 = 1), and a written mask.
@@ -46,6 +43,8 @@ impl Program {
             cells: vec![F192::ZERO; n0],
             written: vec![false; n0],
             count: vec![F64::ONE; n0],
+            dbg_pc: 0,
+            dbg_hint: None,
         };
         // Seed the public input into m[0], m[1] (addresses g^0, g^1, §e2e-pi).
         m.cells[0] = public_input[0];
@@ -59,13 +58,15 @@ impl Program {
         let mut next_free = self.main_frame;
         let (mut pc, mut fp) = (self.pc0, self.fp0);
         let mut steps = 0usize;
-        thread_local! {
-            /// Debug: the pc of the currently executing instruction, so the
-            /// write-once panic can report where the conflict happened.
-            static DBG_PC: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-            /// Name of the currently executing computed-advice hint, if the
-            /// conflicting write came from a hint rather than an instruction.
-            static DBG_HINT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+        // Per-pc hint index. `self.hints` is keyed by pc, so probing it each step
+        // costs a hash of the counter for what is almost always a miss; the
+        // program has one bytecode slot per pc, so flatten the map into a dense
+        // table: 0 = no hints, otherwise the 1-based index into `hint_lists`.
+        let mut hint_at = vec![0u32; self.prog.len()];
+        let mut hint_lists: Vec<&[RHint]> = Vec::with_capacity(self.hints.len());
+        for (&hpc, hs) in &self.hints {
+            hint_lists.push(hs.as_slice());
+            hint_at[hpc as usize] = hint_lists.len() as u32;
         }
         // `DBG_PROF=1`: per-pc step counts, printed as a per-function cycle
         // profile after the run (needs `fn_ranges`, i.e. a compiled program).
@@ -75,7 +76,7 @@ impl Program {
         // sequentially).
         let mut wit_pos: HashMap<String, usize> = HashMap::new();
         // Baby-step table for `hint_decompose_bits_exponent`, built on first use.
-        let mut dlog_cache: Option<(super::hints::GPowMap, F64)> = None;
+        let mut dlog_cache: Option<(GPow, F64)> = None;
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
@@ -88,11 +89,11 @@ impl Program {
         let mut pack64x2: Vec<Xrow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
-        // range-check gadget's unconstrained target cells): `(deref row index,
-        // a2, a3)`, back-filled after the run: write-once memory is
-        // order-independent, so the value can be decided at the end (leanVM's
-        // end-of-execution deref-hint resolution).
-        let mut deferred: Vec<(usize, usize, u32)> = Vec::new();
+        // range-check gadget's unconstrained target cells), as `(a2, a3)`,
+        // resolved after the run: write-once memory is order-independent, so the
+        // value can be decided at the end (leanVM's end-of-execution deref-hint
+        // resolution).
+        let mut deferred: Vec<(usize, u32)> = Vec::new();
 
         // The three dense per-cell vectors, kept in lockstep. Every method is
         // `#[inline(always)]`: they sit in the interpreter's hot opcode loop.
@@ -100,6 +101,13 @@ impl Program {
             cells: Vec<F192>,
             written: Vec<bool>,
             count: Vec<F64>,
+            /// The pc of the currently executing instruction, and the name of the
+            /// computed-advice hint if the write comes from one, so the
+            /// write-once panic can report where the conflict happened. Plain
+            /// fields rather than thread-locals: this is written on every step,
+            /// and a thread-local costs a lazy-init check each time.
+            dbg_pc: u32,
+            dbg_hint: Option<&'static str>,
         }
         impl Mem {
             // Grow the dense vectors so `idx` is in range. All accessed cells
@@ -133,8 +141,8 @@ impl Program {
                     assert!(
                         self.cells[c] == v,
                         "write-once conflict at cell {cell} (pc {}, hint {:?}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
-                        DBG_PC.with(|p| p.get()),
-                        DBG_HINT.with(|h| h.get()),
+                        self.dbg_pc,
+                        self.dbg_hint,
                         self.cells[c].c2,
                         self.cells[c].c1,
                         self.cells[c].c0,
@@ -163,16 +171,13 @@ impl Program {
         // with g^n = x, by baby-step giant-step (baby table g^j for j < 2^17,
         // built once per run; giant step ×g^(-2^17)). Prover-side only: the
         // guest re-verifies the hinted bits in-circuit.
-        fn bounded_dlog(cache: &mut Option<(super::hints::GPowMap, F64)>, x: F64, nbits: u32) -> u128 {
+        fn bounded_dlog(cache: &mut Option<(GPow, F64)>, x: F64, nbits: u32) -> u128 {
             const LOG_BABY: u32 = 17;
             let (baby, giant) = cache.get_or_insert_with(|| {
-                let mut table = super::hints::GPowMap::default();
-                let mut p = F64::ONE;
-                for j in 0..(1u32 << LOG_BABY) {
-                    table.insert(p, j);
-                    p = mul_by_g(p);
-                }
-                (table, p.inv()) // p = g^(2^17); its inverse is the giant step
+                let baby = GPow::new((1usize << LOG_BABY) - 1);
+                // g^(2^17), one past the table; its inverse is the giant step.
+                let giant = mul_by_g(baby.pow((1usize << LOG_BABY) - 1)).inv();
+                (baby, giant)
             });
             let mut y = x;
             let max_giant = if nbits > LOG_BABY {
@@ -181,7 +186,7 @@ impl Program {
                 1
             };
             for a in 0..max_giant {
-                if let Some(&j) = baby.get(&y) {
+                if let Some(j) = baby.log(y) {
                     return (a as u128) << LOG_BABY | j as u128;
                 }
                 y *= *giant;
@@ -191,13 +196,14 @@ impl Program {
 
         while pc != ending_pc {
             assert!(steps < 100_000_000, "step limit exceeded (runaway recursion?)");
-            DBG_PC.with(|p| p.set(pc));
+            m.dbg_pc = pc;
             if let Some(p) = prof.as_mut() {
                 p[pc as usize] += 1;
             }
 
             // Apply the hints scheduled before this instruction.
-            if let Some(hs) = self.hints.get(&pc) {
+            if hint_at[pc as usize] != 0 {
+                let hs = hint_lists[hint_at[pc as usize] as usize - 1];
                 // Pop the next entry of witness stream `name`; it must hold
                 // exactly `len` values (the destination run's length).
                 let pop_witness = |wit_pos: &mut HashMap<String, usize>, name: &str, len: u32| {
@@ -224,18 +230,16 @@ impl Program {
                     entry.clone()
                 };
                 for h in hs {
-                    DBG_HINT.with(|slot| {
-                        slot.set(Some(match h {
-                            RHint::Alloc { .. } => "Alloc",
-                            RHint::AllocDyn { .. } => "AllocDyn",
-                            RHint::WitnessStack { .. } => "WitnessStack",
-                            RHint::WitnessHeap { .. } => "WitnessHeap",
-                            RHint::Log2Ceil { .. } => "Log2Ceil",
-                            RHint::BitDecompose { .. } => "BitDecompose",
-                            RHint::BitDecomposeExp { .. } => "BitDecomposeExp",
-                            RHint::FieldLimbs { .. } => "FieldLimbs",
-                            RHint::Print { .. } => "Print",
-                        }))
+                    m.dbg_hint = Some(match h {
+                        RHint::Alloc { .. } => "Alloc",
+                        RHint::AllocDyn { .. } => "AllocDyn",
+                        RHint::WitnessStack { .. } => "WitnessStack",
+                        RHint::WitnessHeap { .. } => "WitnessHeap",
+                        RHint::Log2Ceil { .. } => "Log2Ceil",
+                        RHint::BitDecompose { .. } => "BitDecompose",
+                        RHint::BitDecomposeExp { .. } => "BitDecomposeExp",
+                        RHint::FieldLimbs { .. } => "FieldLimbs",
+                        RHint::Print { .. } => "Print",
                     });
                     match h {
                         // A fresh region: write its base `g^{next_free}` into the
@@ -249,10 +253,9 @@ impl Program {
                                 // g-power lookup, growing the index if needed).
                                 RHint::AllocDyn { ptr, size } => {
                                     let sz = as_addr(m.get(fp + size)).expect("HeapBuf size is not a K-valued g-power");
-                                    let cells = gmap.get(&sz).copied().unwrap_or_else(|| {
-                                        grow_gpow(&mut gpow, &mut gmap, 1 << 20);
-                                        *gmap
-                                            .get(&sz)
+                                    let cells = g.log(sz).unwrap_or_else(|| {
+                                        g.grow_to(1 << 20);
+                                        g.log(sz)
                                             .unwrap_or_else(|| panic!("HeapBuf size is not a g-power below 2^20 cells"))
                                     });
                                     (ptr, cells)
@@ -264,9 +267,11 @@ impl Program {
                             if !m.written[cell as usize] {
                                 let base = next_free;
                                 next_free += size;
-                                grow_gpow(&mut gpow, &mut gmap, (base + size) as usize);
+                                g.grow_to((base + size) as usize);
+                                // The base is about to become a pointer in memory.
+                                g.note(base as usize);
                                 m.ensure(next_free as usize);
-                                m.cells[cell as usize] = F192::from(gpow[base as usize]);
+                                m.cells[cell as usize] = F192::from(g.pow(base as usize));
                                 m.written[cell as usize] = true;
                             }
                         }
@@ -278,7 +283,7 @@ impl Program {
                                 // Small integers and small g-powers overlap (8 = x^3
                                 // = g^3): show every reading that applies. Only a
                                 // K-valued word (extension limbs 0) can be a g-power.
-                                let k = as_addr(v).and_then(|lo| gmap.get(&lo).copied());
+                                let k = as_addr(v).and_then(|lo| g.log(lo));
                                 let small = v.c2 == 0 && v.c1 == 0 && v.c0 < 1 << 32;
                                 match (k, small) {
                                     (Some(k), true) => eprintln!(
@@ -309,8 +314,8 @@ impl Program {
                         RHint::WitnessHeap { name, ptr, lo, len } => {
                             let p =
                                 as_addr(m.get(fp + ptr)).expect("hint_witness heap pointer is not a K-valued g-power");
-                            let b = *gmap
-                                .get(&p)
+                            let b = g
+                                .log(p)
                                 .unwrap_or_else(|| panic!("hint_witness heap pointer is not a g-power"));
                             let vals = pop_witness(&mut wit_pos, name, *len);
                             for (k, v) in vals.into_iter().enumerate() {
@@ -325,8 +330,8 @@ impl Program {
                         } => {
                             let p = as_addr(m.get(fp + bits_ptr))
                                 .expect("log2_ceil bits pointer is not a K-valued g-power");
-                            let b = *gmap
-                                .get(&p)
+                            let b = g
+                                .log(p)
                                 .unwrap_or_else(|| panic!("log2_ceil bits pointer is not a g-power"));
                             let mut word: u128 = 0;
                             for j in 0..*nbits {
@@ -348,8 +353,8 @@ impl Program {
                             let limbs = [v.c0, v.c1, v.c2];
                             let bp = as_addr(m.get(fp + bits_ptr))
                                 .expect("decompose bits pointer is not a K-valued g-power");
-                            let bb = *gmap
-                                .get(&bp)
+                            let bb = g
+                                .log(bp)
                                 .unwrap_or_else(|| panic!("decompose bits pointer is not a g-power"));
                             for j in 0..*nbits {
                                 let bit = (limbs[j as usize / 64] >> (j % 64)) & 1;
@@ -362,7 +367,7 @@ impl Program {
                             let n = bounded_dlog(&mut dlog_cache, x, *nbits);
                             let bp = as_addr(m.get(fp + bits_ptr))
                                 .expect("hint_decompose_bits_exponent bits pointer is not a K-valued g-power");
-                            let bb = *gmap.get(&bp).unwrap_or_else(|| {
+                            let bb = g.log(bp).unwrap_or_else(|| {
                                 panic!("hint_decompose_bits_exponent bits pointer is not a g-power")
                             });
                             for j in 0..*nbits {
@@ -379,11 +384,15 @@ impl Program {
                             }
                         }
                     }
-                    DBG_HINT.with(|slot| slot.set(None));
+                    m.dbg_hint = None;
                 }
             }
             // Cover the g-powers this step may index (g²·pc return target, g^fp).
-            grow_gpow(&mut gpow, &mut gmap, (pc as usize + 2).max(fp as usize));
+            // Guarded so the steady state is a length compare, not a call.
+            let need = (pc as usize + 2).max(fp as usize);
+            if g.covered() <= need {
+                g.grow_to(need);
+            }
 
             let bytecode_read = {
                 let v = bytecode_count[pc as usize];
@@ -391,9 +400,12 @@ impl Program {
                 v
             };
 
-            match self.prog[pc as usize] {
+            // Loaded once: the shared Xor/Mul arm needs the discriminant again,
+            // and `Op` is wide enough that re-reading it costs a second load.
+            let op = self.prog[pc as usize];
+            match op {
                 Op::Xor { a, b, c } | Op::Mul { a, b, c } => {
-                    let is_xor = matches!(self.prog[pc as usize], Op::Xor { .. });
+                    let is_xor = matches!(op, Op::Xor { .. });
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
                     // The row is the equality `m[c] = m[a] op m[b]` over write-once
                     // memory. Normally the operands are known and the result is
@@ -427,9 +439,6 @@ impl Program {
                     let row = Xrow {
                         pc,
                         fp,
-                        aa,
-                        ab,
-                        ac,
                         ra,
                         rb,
                         rc,
@@ -449,9 +458,6 @@ impl Program {
                     set.push(Srow {
                         pc,
                         fp,
-                        o,
-                        a,
-                        k,
                         r,
                         bytecode_read,
                     });
@@ -471,8 +477,8 @@ impl Program {
                             p.c1, p.c0
                         )
                     });
-                    let base = match gmap.get(&p_addr) {
-                        Some(&b) => b,
+                    let base = match g.log(p_addr) {
+                        Some(b) => b,
                         None => {
                             // Not indexed yet: grow the g-power index to the minimum
                             // memory size, since range-check touches point anywhere below
@@ -480,8 +486,8 @@ impl Program {
                             // frames/buffers. A value still absent is no valid
                             // pointer: a wild deref, or a failed range check
                             // (`assert log _ < _`) surfacing honestly.
-                            grow_gpow(&mut gpow, &mut gmap, 1 << MIN_LOG_MEM);
-                            *gmap.get(&p_addr).unwrap_or_else(|| {
+                            g.grow_to(1 << MIN_LOG_MEM);
+                            g.log(p_addr).unwrap_or_else(|| {
                                 panic!(
                                     "DEREF pointer is not a small g-power at pc {pc}: a wild \
                                      pointer, or a failed range check \
@@ -514,41 +520,35 @@ impl Program {
                                 (false, false) => {
                                     // Both sides still unwritten: a range-check
                                     // touch (only the address validity of `a2`
-                                    // matters, not its value). Defer: the row is
-                                    // pushed with ZERO values and patched after
-                                    // the run, once `m[a2]`'s final value (a later
-                                    // program write, or ZERO) is known.
-                                    deferred.push((deref.len(), a2, a3));
+                                    // matters, not its value). Defer the equality
+                                    // to after the run, once `m[a2]`'s final value
+                                    // (a later program write, or ZERO) is known;
+                                    // the row itself needs no patch, since the
+                                    // fill reads both values out of that image.
+                                    deferred.push((a2, a3));
                                 }
                             }
                         }
                         DerefMode::Pc => {
-                            let v = F192::from(gpow[pc as usize + 2]);
+                            // The return target and the frame base are stored as
+                            // addresses, and JUMP reads them back.
+                            g.note(pc as usize + 2);
+                            let v = F192::from(g.pow(pc as usize + 2));
                             m.put(a2 as u32, v);
                         }
                         DerefMode::Fp => {
-                            let v = F192::from(gpow[fp as usize]);
+                            g.note(fp as usize);
+                            let v = F192::from(g.pow(fp as usize));
                             m.put(a2 as u32, v);
                         }
                     }
-                    let v2 = m.get(a2 as u32);
-                    let v3 = m.get(a3);
                     let r1 = m.bump_access_count(a1);
                     let r2 = m.bump_access_count(a2 as u32);
                     let r3 = m.bump_access_count(a3);
                     deref.push(Drow {
                         pc,
                         fp,
-                        alpha,
-                        beta,
-                        gamma,
-                        mode,
-                        a1,
-                        p,
-                        a2,
-                        a3,
-                        v2,
-                        v3,
+                        a2: a2 as u32,
                         r1,
                         r2,
                         r3,
@@ -561,49 +561,27 @@ impl Program {
                     let c = m.get(ac);
                     let d = m.get(ad);
                     let f = m.get(af);
-                    // `b = [c ≠ 0]` is needed now; `w = c⁻¹` is only recorded into
-                    // the trace (never used for control flow), so it is deferred to
-                    // ONE batched Montgomery inversion after the run; computing it
-                    // per-jump here runs a Fermat inverse on every taken branch
-                    // (~2^17 of them), which dominated `execute`. Placeholder 0 now;
-                    // batch-filled below (bit-identical to `c.inv()`).
-                    let b = if c.is_zero() { F64::ZERO } else { F64::ONE };
-                    let w = F192::ZERO;
+                    // The is-nonzero witness `w = c⁻¹` is never used for control
+                    // flow, only recorded as a witness column, so it is not
+                    // computed here at all: `JumpTable::fill` batch-inverts every
+                    // row's condition at once (§the trace rows in `cpu::trace`).
                     let rc = m.bump_access_count(ac);
                     let rd = m.bump_access_count(ad);
                     let rf = m.bump_access_count(af);
                     let taken = !c.is_zero();
-                    let (npc, nfp) = if taken {
-                        let dpc = as_addr(d).expect("JUMP target is not a K-valued g-power");
-                        let ffp = as_addr(f).expect("JUMP fp is not a K-valued g-power");
-                        (dpc, ffp)
-                    } else {
-                        (mul_by_g(gpow[pc as usize]), gpow[fp as usize])
-                    };
                     jump.push(Jrow {
                         pc,
                         fp,
-                        npc,
-                        nfp,
-                        oc,
-                        od,
-                        of,
-                        ac,
-                        ad,
-                        af,
-                        c,
-                        d,
-                        f,
-                        w,
-                        b,
                         rc,
                         rd,
                         rf,
                         bytecode_read,
                     });
                     if taken {
-                        pc = *gmap.get(&npc).expect("JUMP target not a g-power");
-                        fp = *gmap.get(&nfp).expect("JUMP fp not a g-power");
+                        let dpc = as_addr(d).expect("JUMP target is not a K-valued g-power");
+                        let ffp = as_addr(f).expect("JUMP fp is not a K-valued g-power");
+                        pc = g.log(dpc).expect("JUMP target not a g-power");
+                        fp = g.log(ffp).expect("JUMP fp not a g-power");
                     } else {
                         pc += 1;
                     }
@@ -621,9 +599,6 @@ impl Program {
                     pack64x2.push(Xrow {
                         pc,
                         fp,
-                        aa,
-                        ab,
-                        ac,
                         ra,
                         rb,
                         rc,
@@ -662,17 +637,6 @@ impl Program {
                     blake3.push(Brow {
                         pc,
                         fp,
-                        aa0,
-                        aa1,
-                        ab0,
-                        ab1,
-                        acv,
-                        ac,
-                        va,
-                        vb,
-                        vcv,
-                        vc,
-                        metadata,
                         ra,
                         rb,
                         rcv,
@@ -731,17 +695,16 @@ impl Program {
 
         // Resolve the deferred DEREF touches: a fixpoint, so a touch whose cell is
         // filled by another deferred entry picks up that value; cells nobody ever
-        // writes are fixed to ZERO. The rows' values are patched in place (their
-        // access counts were already bumped during the walk: the memory bus is
-        // order-independent, it only needs every access to agree on the value).
+        // writes are fixed to ZERO. The rows need no patch: the fill reads both
+        // sides out of the finished image, and their access counts were already
+        // bumped during the walk (the memory bus is order-independent, it only
+        // needs every access to agree on the value).
         while {
             let before = deferred.len();
-            deferred.retain(|&(i, a2, a3)| {
+            deferred.retain(|&(a2, a3)| {
                 if m.written[a2] {
                     let v = m.cells[a2];
                     m.put(a3, v);
-                    deref[i].v2 = v;
-                    deref[i].v3 = v;
                     false
                 } else {
                     true
@@ -749,36 +712,10 @@ impl Program {
             });
             deferred.len() < before
         } {}
-        for (_, a2, a3) in deferred {
-            // Never written: the cells are genuinely unconstrained; fix them (and
-            // the rows, already ZERO) to ZERO.
+        for (a2, a3) in deferred {
+            // Never written: the cells are genuinely unconstrained; fix them to ZERO.
             m.put(a2 as u32, F192::ZERO);
             m.put(a3, F192::ZERO);
-        }
-
-        // Fill the deferred JUMP inverse hints `w = c⁻¹` (the is-nonzero witness)
-        // in ONE batched Montgomery inversion: a single field inverse plus ~2·#jumps
-        // multiplies, instead of a full inverse per taken branch. `w` is only
-        // recorded into the trace, so this reproduces exactly the per-jump `c.inv()`
-        // (0 for the c = 0 rows). `prefix[i]` is the running product of the nonzero
-        // conditions before row `i`; `acc` ends as the product of all nonzero
-        // conditions (nonzero, so invertible).
-        {
-            let mut acc = F192::ONE;
-            let mut prefix: Vec<F192> = Vec::with_capacity(jump.len());
-            for r in &jump {
-                prefix.push(acc);
-                if !r.c.is_zero() {
-                    acc *= r.c;
-                }
-            }
-            let mut inv = acc.inv();
-            for (i, r) in jump.iter_mut().enumerate().rev() {
-                if !r.c.is_zero() {
-                    r.w = inv * prefix[i];
-                    inv *= r.c;
-                }
-            }
         }
 
         // Pad memory to a power of two (the boundary tables read a dense image),

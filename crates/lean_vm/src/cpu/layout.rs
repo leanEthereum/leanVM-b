@@ -452,6 +452,7 @@ impl Program {
             trace: tr,
             mem: &exec.mem,
             gpow: &gpow,
+            prog: &self.prog,
         };
         crate::stage!("Fill columns", || {
             for (t, table) in tables::tables().iter().enumerate() {
@@ -470,11 +471,27 @@ impl Program {
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances, so a
         // program with no BLAKE3 still carries a single padding instance.
         let (q_pkd, flock_reduction) = crate::stage!("Build q_pkd", || {
-            let blocks: Vec<_> = tr
-                .blake3
-                .iter()
-                .map(|r| crate::blake3_flock::compression(r.va, r.vb, r.vcv, r.metadata))
-                .collect();
+            // The rows carry only their access counts; the compression's input
+            // words are the eight cells they read, in the finished (write-once)
+            // memory image.
+            let blocks: Vec<_> = parallel::map_collect(tr.blake3.len(), |i| {
+                let r = &tr.blake3[i];
+                let a = tables::blake3_addresses(&self.prog, r);
+                let pair = |c: u32| {
+                    let (lo, hi) = (exec.mem[c as usize], exec.mem[c as usize + 1]);
+                    [F64(lo.c0), F64(lo.c1), F64(hi.c0), F64(hi.c1)]
+                };
+                let chunk = |c0: u32, c1: u32| {
+                    let (w0, w1) = (exec.mem[c0 as usize], exec.mem[c1 as usize]);
+                    [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
+                };
+                crate::blake3_flock::compression(
+                    chunk(a[0], a[1]),
+                    chunk(a[2], a[3]),
+                    pair(a[4]),
+                    tables::blake3_metadata(&self.prog, r.pc),
+                )
+            });
             crate::blake3_flock::build_qpkd_prepared(&blocks)
         });
         cols[QPKD] = q_pkd;

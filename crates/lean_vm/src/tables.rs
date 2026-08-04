@@ -14,7 +14,7 @@
 //! lane columns.
 
 use crate::colval::ColVal;
-use crate::cpu::Trace;
+use crate::cpu::{Brow, Drow, Jrow, Op, Srow, Trace, Xrow};
 use crate::leaf::Coord::{self, Col, Const, GCol};
 use crate::witness::Column;
 use primitives::field::{F64, F192, G, mul_by_g};
@@ -230,11 +230,23 @@ pub struct FillCtx<'a> {
     pub(crate) trace: &'a Trace,
     pub(crate) mem: &'a [F192],
     pub(crate) gpow: &'a [F64],
+    pub(crate) prog: &'a [Op],
 }
 
 impl FillCtx<'_> {
     fn g_at(&self, i: u32) -> F64 {
         self.gpow[i as usize]
+    }
+
+    /// The three frame offsets of an `XOR`/`MUL`/`PACK64X2` row. A row records
+    /// only its `(pc, fp)`; the operands are the instruction's, so they are read
+    /// back from the bytecode rather than copied into every row (§the trace rows
+    /// in `cpu::trace`).
+    fn ternary_operands(&self, pc: u32) -> (u32, u32, u32) {
+        match self.prog[pc as usize] {
+            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::Pack64x2 { a, b, c } => (a, b, c),
+            op => unreachable!("a three-operand row's pc {pc} holds {op:?}"),
+        }
     }
 }
 
@@ -289,6 +301,37 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
 
 /// Index of the BLAKE3 table in [`tables`].
 pub(crate) const BLAKE3_TABLE: usize = 5;
+
+/// The six base addresses a `BLAKE3` row reads: the four message cells, the
+/// chaining-value base and the output base (each of the last two spans that cell
+/// and its successor). Recovered from the instruction, not stored per row.
+pub(crate) fn blake3_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
+    match prog[r.pc as usize] {
+        Op::Blake3 { ins, cv, out, .. } => [
+            r.fp + ins[0],
+            r.fp + ins[1],
+            r.fp + ins[2],
+            r.fp + ins[3],
+            r.fp + cv,
+            r.fp + out,
+        ],
+        op => unreachable!("a BLAKE3 row's pc {} holds {op:?}", r.pc),
+    }
+}
+
+/// A `BLAKE3` row's metadata immediate (`counter | block_len‖flags`).
+pub(crate) fn blake3_metadata(prog: &[Op], pc: u32) -> F192 {
+    match prog[pc as usize] {
+        Op::Blake3 { metadata, .. } => metadata,
+        op => unreachable!("a BLAKE3 row's pc {pc} holds {op:?}"),
+    }
+}
+
+/// Lane `lane` (0 = lo, 1 = hi) of the 128-bit word in memory cell `addr`.
+fn blake3_lane(mem: &[F192], addr: u32, lane: usize) -> F64 {
+    let w = mem[addr as usize];
+    F64(if lane == 0 { w.c0 } else { w.c1 })
+}
 
 /// BLAKE3 value-column LOCAL indices in canonical slot order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
@@ -395,23 +438,27 @@ impl Table for Arith {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use arith::*;
         let rows = if self.is_xor { &ctx.trace.xor } else { &ctx.trace.mul };
+        let addrs = |r: &Xrow| {
+            let (a, b, c) = ctx.ternary_operands(r.pc);
+            (r.fp + a, r.fp + b, r.fp + c)
+        };
         out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
         out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
-        out[OA] = map_rows(rows, |r| ctx.g_at(r.aa - r.fp));
-        out[OB] = map_rows(rows, |r| ctx.g_at(r.ab - r.fp));
-        out[OC] = map_rows(rows, |r| ctx.g_at(r.ac - r.fp));
-        out[AA] = map_rows(rows, |r| ctx.g_at(r.aa));
-        out[AB] = map_rows(rows, |r| ctx.g_at(r.ab));
-        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
-        out[VA_LO] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c0));
-        out[VA_HI] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c1));
-        out[VA_TOP] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c2));
-        out[VB_LO] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c0));
-        out[VB_HI] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c1));
-        out[VB_TOP] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c2));
-        out[VC_LO] = map_rows(rows, |r| F64(ctx.mem[r.ac as usize].c0));
-        out[VC_HI] = map_rows(rows, |r| F64(ctx.mem[r.ac as usize].c1));
-        out[VC_TOP] = map_rows(rows, |r| F64(ctx.mem[r.ac as usize].c2));
+        out[OA] = map_rows(rows, |r| ctx.g_at(ctx.ternary_operands(r.pc).0));
+        out[OB] = map_rows(rows, |r| ctx.g_at(ctx.ternary_operands(r.pc).1));
+        out[OC] = map_rows(rows, |r| ctx.g_at(ctx.ternary_operands(r.pc).2));
+        out[AA] = map_rows(rows, |r| ctx.g_at(addrs(r).0));
+        out[AB] = map_rows(rows, |r| ctx.g_at(addrs(r).1));
+        out[AC] = map_rows(rows, |r| ctx.g_at(addrs(r).2));
+        out[VA_LO] = map_rows(rows, |r| F64(ctx.mem[addrs(r).0 as usize].c0));
+        out[VA_HI] = map_rows(rows, |r| F64(ctx.mem[addrs(r).0 as usize].c1));
+        out[VA_TOP] = map_rows(rows, |r| F64(ctx.mem[addrs(r).0 as usize].c2));
+        out[VB_LO] = map_rows(rows, |r| F64(ctx.mem[addrs(r).1 as usize].c0));
+        out[VB_HI] = map_rows(rows, |r| F64(ctx.mem[addrs(r).1 as usize].c1));
+        out[VB_TOP] = map_rows(rows, |r| F64(ctx.mem[addrs(r).1 as usize].c2));
+        out[VC_LO] = map_rows(rows, |r| F64(ctx.mem[addrs(r).2 as usize].c0));
+        out[VC_HI] = map_rows(rows, |r| F64(ctx.mem[addrs(r).2 as usize].c1));
+        out[VC_TOP] = map_rows(rows, |r| F64(ctx.mem[addrs(r).2 as usize].c2));
         out[RA] = map_rows(rows, |r| r.ra);
         out[RB] = map_rows(rows, |r| r.rb);
         out[RC] = map_rows(rows, |r| r.rc);
@@ -470,13 +517,18 @@ impl Table for SetTable {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use set::*;
         let rows = &ctx.trace.set;
+        // The offset and the stored immediate are the instruction's.
+        let imm = |r: &Srow| match ctx.prog[r.pc as usize] {
+            Op::Set { o, k } => (o, k),
+            op => unreachable!("a SET row's pc {} holds {op:?}", r.pc),
+        };
         out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
         out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
-        out[O] = map_rows(rows, |r| ctx.g_at(r.o));
-        out[K_LO] = map_rows(rows, |r| F64(r.k.c0));
-        out[K_HI] = map_rows(rows, |r| F64(r.k.c1));
-        out[K_TOP] = map_rows(rows, |r| F64(r.k.c2));
-        out[A] = map_rows(rows, |r| ctx.g_at(r.a));
+        out[O] = map_rows(rows, |r| ctx.g_at(imm(r).0));
+        out[K_LO] = map_rows(rows, |r| F64(imm(r).1.c0));
+        out[K_HI] = map_rows(rows, |r| F64(imm(r).1.c1));
+        out[K_TOP] = map_rows(rows, |r| F64(imm(r).1.c2));
+        out[A] = map_rows(rows, |r| ctx.g_at(r.fp + imm(r).0));
         out[R] = map_rows(rows, |r| r.r);
         out[RBC] = map_rows(rows, |r| r.bytecode_read);
     }
@@ -544,27 +596,42 @@ impl Table for DerefTable {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use deref::*;
         let rows = &ctx.trace.deref;
+        // Offsets and store mode are the instruction's; the pointer cell and the
+        // local cell sit at `fp` plus two of them. Only the store target `a2`,
+        // which needs the pointer's discrete log, rides the row.
+        let ins = |r: &Drow| match ctx.prog[r.pc as usize] {
+            Op::Deref {
+                alpha,
+                beta,
+                gamma,
+                mode,
+            } => (alpha, beta, gamma, mode),
+            op => unreachable!("a DEREF row's pc {} holds {op:?}", r.pc),
+        };
         out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
         out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
-        out[OAL] = map_rows(rows, |r| ctx.g_at(r.alpha));
-        out[OBE] = map_rows(rows, |r| ctx.g_at(r.beta));
-        out[OGA] = map_rows(rows, |r| ctx.g_at(r.gamma));
-        out[FPC] = map_rows(rows, |r| r.mode.f_pc());
-        out[FFP] = map_rows(rows, |r| r.mode.f_fp());
-        out[A1] = map_rows(rows, |r| ctx.g_at(r.a1));
-        out[A2] = map_rows(rows, |r| ctx.gpow[r.a2]); // a2 is a full memory index
-        out[A3] = map_rows(rows, |r| ctx.g_at(r.a3));
+        out[OAL] = map_rows(rows, |r| ctx.g_at(ins(r).0));
+        out[OBE] = map_rows(rows, |r| ctx.g_at(ins(r).1));
+        out[OGA] = map_rows(rows, |r| ctx.g_at(ins(r).2));
+        out[FPC] = map_rows(rows, |r| ins(r).3.f_pc());
+        out[FFP] = map_rows(rows, |r| ins(r).3.f_fp());
+        out[A1] = map_rows(rows, |r| ctx.g_at(r.fp + ins(r).0));
+        out[A2] = map_rows(rows, |r| ctx.g_at(r.a2));
+        out[A3] = map_rows(rows, |r| ctx.g_at(r.fp + ins(r).2));
         debug_assert!(
-            rows.iter().all(|r| r.p.c1 == 0 && r.p.c2 == 0),
+            rows.iter().all(|r| {
+                let p = ctx.mem[(r.fp + ins(r).0) as usize];
+                p.c1 == 0 && p.c2 == 0
+            }),
             "deref pointer must be K-valued"
         );
-        out[P] = map_rows(rows, |r| F64(r.p.c0));
-        out[V2_LO] = map_rows(rows, |r| F64(r.v2.c0));
-        out[V2_HI] = map_rows(rows, |r| F64(r.v2.c1));
-        out[V2_TOP] = map_rows(rows, |r| F64(r.v2.c2));
-        out[V3_LO] = map_rows(rows, |r| F64(r.v3.c0));
-        out[V3_HI] = map_rows(rows, |r| F64(r.v3.c1));
-        out[V3_TOP] = map_rows(rows, |r| F64(r.v3.c2));
+        out[P] = map_rows(rows, |r| F64(ctx.mem[(r.fp + ins(r).0) as usize].c0));
+        out[V2_LO] = map_rows(rows, |r| F64(ctx.mem[r.a2 as usize].c0));
+        out[V2_HI] = map_rows(rows, |r| F64(ctx.mem[r.a2 as usize].c1));
+        out[V2_TOP] = map_rows(rows, |r| F64(ctx.mem[r.a2 as usize].c2));
+        out[V3_LO] = map_rows(rows, |r| F64(ctx.mem[(r.fp + ins(r).2) as usize].c0));
+        out[V3_HI] = map_rows(rows, |r| F64(ctx.mem[(r.fp + ins(r).2) as usize].c1));
+        out[V3_TOP] = map_rows(rows, |r| F64(ctx.mem[(r.fp + ins(r).2) as usize].c2));
         out[R1] = map_rows(rows, |r| r.r1);
         out[R2] = map_rows(rows, |r| r.r2);
         out[R3] = map_rows(rows, |r| r.r3);
@@ -645,29 +712,75 @@ impl Table for JumpTable {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use jump::*;
         let rows = &ctx.trace.jump;
+        let ins = |r: &Jrow| match ctx.prog[r.pc as usize] {
+            Op::Jump { oc, od, of } => (oc, od, of),
+            op => unreachable!("a JUMP row's pc {} holds {op:?}", r.pc),
+        };
+        let cell = |r: &Jrow, o: u32| ctx.mem[(r.fp + o) as usize];
+        let cond = |r: &Jrow| cell(r, ins(r).0);
         out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
         out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
-        out[NPC] = map_rows(rows, |r| r.npc);
-        out[NFP] = map_rows(rows, |r| r.nfp);
-        out[OC] = map_rows(rows, |r| ctx.g_at(r.oc));
-        out[OD] = map_rows(rows, |r| ctx.g_at(r.od));
-        out[OF] = map_rows(rows, |r| ctx.g_at(r.of));
-        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
-        out[AD] = map_rows(rows, |r| ctx.g_at(r.ad));
-        out[AF] = map_rows(rows, |r| ctx.g_at(r.af));
-        out[C_LO] = map_rows(rows, |r| F64(r.c.c0));
-        out[C_HI] = map_rows(rows, |r| F64(r.c.c1));
-        out[C_TOP] = map_rows(rows, |r| F64(r.c.c2));
-        out[D_LO] = map_rows(rows, |r| F64(r.d.c0));
-        out[D_HI] = map_rows(rows, |r| F64(r.d.c1));
-        out[D_TOP] = map_rows(rows, |r| F64(r.d.c2));
-        out[F_LO] = map_rows(rows, |r| F64(r.f.c0));
-        out[F_HI] = map_rows(rows, |r| F64(r.f.c1));
-        out[F_TOP] = map_rows(rows, |r| F64(r.f.c2));
-        out[W_LO] = map_rows(rows, |r| F64(r.w.c0));
-        out[W_HI] = map_rows(rows, |r| F64(r.w.c1));
-        out[W_TOP] = map_rows(rows, |r| F64(r.w.c2));
-        out[B] = map_rows(rows, |r| r.b);
+        // The successor state: a taken branch goes to the destination/frame words
+        // it read, an untaken one falls through to `(g·pc, fp)`.
+        out[NPC] = map_rows(rows, |r| {
+            if cond(r).is_zero() {
+                mul_by_g(ctx.g_at(r.pc))
+            } else {
+                F64(cell(r, ins(r).1).c0)
+            }
+        });
+        out[NFP] = map_rows(rows, |r| {
+            if cond(r).is_zero() {
+                ctx.g_at(r.fp)
+            } else {
+                F64(cell(r, ins(r).2).c0)
+            }
+        });
+        out[OC] = map_rows(rows, |r| ctx.g_at(ins(r).0));
+        out[OD] = map_rows(rows, |r| ctx.g_at(ins(r).1));
+        out[OF] = map_rows(rows, |r| ctx.g_at(ins(r).2));
+        out[AC] = map_rows(rows, |r| ctx.g_at(r.fp + ins(r).0));
+        out[AD] = map_rows(rows, |r| ctx.g_at(r.fp + ins(r).1));
+        out[AF] = map_rows(rows, |r| ctx.g_at(r.fp + ins(r).2));
+        out[C_LO] = map_rows(rows, |r| F64(cond(r).c0));
+        out[C_HI] = map_rows(rows, |r| F64(cond(r).c1));
+        out[C_TOP] = map_rows(rows, |r| F64(cond(r).c2));
+        out[D_LO] = map_rows(rows, |r| F64(cell(r, ins(r).1).c0));
+        out[D_HI] = map_rows(rows, |r| F64(cell(r, ins(r).1).c1));
+        out[D_TOP] = map_rows(rows, |r| F64(cell(r, ins(r).1).c2));
+        out[F_LO] = map_rows(rows, |r| F64(cell(r, ins(r).2).c0));
+        out[F_HI] = map_rows(rows, |r| F64(cell(r, ins(r).2).c1));
+        out[F_TOP] = map_rows(rows, |r| F64(cell(r, ins(r).2).c2));
+        // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in ONE
+        // batched Montgomery inversion: a single field inverse plus ~2 multiplies
+        // per row, instead of an inverse per taken branch. `prefix[i]` is the
+        // running product of the nonzero conditions before row `i`, so `acc` ends
+        // as their full product (nonzero, hence invertible).
+        let w = {
+            let mut acc = F192::ONE;
+            let mut prefix: Vec<F192> = Vec::with_capacity(rows.len());
+            for r in rows {
+                prefix.push(acc);
+                let c = cond(r);
+                if !c.is_zero() {
+                    acc *= c;
+                }
+            }
+            let mut inv = acc.inv();
+            let mut w = vec![F192::ZERO; rows.len()];
+            for (i, r) in rows.iter().enumerate().rev() {
+                let c = cond(r);
+                if !c.is_zero() {
+                    w[i] = inv * prefix[i];
+                    inv *= c;
+                }
+            }
+            w
+        };
+        out[W_LO] = w.iter().map(|w| F64(w.c0)).collect();
+        out[W_HI] = w.iter().map(|w| F64(w.c1)).collect();
+        out[W_TOP] = w.iter().map(|w| F64(w.c2)).collect();
+        out[B] = map_rows(rows, |r| if cond(r).is_zero() { F64::ZERO } else { F64::ONE });
         out[RC] = map_rows(rows, |r| r.rc);
         out[RD] = map_rows(rows, |r| r.rd);
         out[RF] = map_rows(rows, |r| r.rf);
@@ -740,16 +853,20 @@ impl Table for Pack64x2Table {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use pack64::*;
         let rows = &ctx.trace.pack64x2;
+        let addrs = |r: &Xrow| {
+            let (a, b, c) = ctx.ternary_operands(r.pc);
+            (r.fp + a, r.fp + b, r.fp + c)
+        };
         out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
         out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
-        out[OA] = map_rows(rows, |r| ctx.g_at(r.aa - r.fp));
-        out[OB] = map_rows(rows, |r| ctx.g_at(r.ab - r.fp));
-        out[OC] = map_rows(rows, |r| ctx.g_at(r.ac - r.fp));
-        out[AA] = map_rows(rows, |r| ctx.g_at(r.aa));
-        out[AB] = map_rows(rows, |r| ctx.g_at(r.ab));
-        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
-        out[VA] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c0));
-        out[VB] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c0));
+        out[OA] = map_rows(rows, |r| ctx.g_at(ctx.ternary_operands(r.pc).0));
+        out[OB] = map_rows(rows, |r| ctx.g_at(ctx.ternary_operands(r.pc).1));
+        out[OC] = map_rows(rows, |r| ctx.g_at(ctx.ternary_operands(r.pc).2));
+        out[AA] = map_rows(rows, |r| ctx.g_at(addrs(r).0));
+        out[AB] = map_rows(rows, |r| ctx.g_at(addrs(r).1));
+        out[AC] = map_rows(rows, |r| ctx.g_at(addrs(r).2));
+        out[VA] = map_rows(rows, |r| F64(ctx.mem[addrs(r).0 as usize].c0));
+        out[VB] = map_rows(rows, |r| F64(ctx.mem[addrs(r).1 as usize].c0));
         out[RA] = map_rows(rows, |r| r.ra);
         out[RB] = map_rows(rows, |r| r.rb);
         out[RC] = map_rows(rows, |r| r.rc);
@@ -866,28 +983,25 @@ impl Table for Blake3Table {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use blake3t::*;
         let rows = &ctx.trace.blake3;
+        let ad = |r: &Brow| blake3_addresses(ctx.prog, r);
         out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
         out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
-        out[OA0] = map_rows(rows, |r| ctx.g_at(r.aa0 - r.fp));
-        out[OA1] = map_rows(rows, |r| ctx.g_at(r.aa1 - r.fp));
-        out[OB0] = map_rows(rows, |r| ctx.g_at(r.ab0 - r.fp));
-        out[OB1] = map_rows(rows, |r| ctx.g_at(r.ab1 - r.fp));
-        out[OCV] = map_rows(rows, |r| ctx.g_at(r.acv - r.fp));
-        out[OC] = map_rows(rows, |r| ctx.g_at(r.ac - r.fp));
-        out[AA0] = map_rows(rows, |r| ctx.g_at(r.aa0));
-        out[AA1] = map_rows(rows, |r| ctx.g_at(r.aa1));
-        out[AB0] = map_rows(rows, |r| ctx.g_at(r.ab0));
-        out[AB1] = map_rows(rows, |r| ctx.g_at(r.ab1));
-        out[ACV] = map_rows(rows, |r| ctx.g_at(r.acv));
-        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
-        for k in 0..4 {
-            out[VA0 + k] = map_rows(rows, |r| r.va[k]);
-            out[VB0 + k] = map_rows(rows, |r| r.vb[k]);
-            out[VC0 + k] = map_rows(rows, |r| r.vc[k]);
-            out[VCV0 + k] = map_rows(rows, |r| r.vcv[k]);
+        for (k, col) in [OA0, OA1, OB0, OB1, OCV, OC].into_iter().enumerate() {
+            out[col] = map_rows(rows, |r| ctx.g_at(ad(r)[k] - r.fp));
         }
-        out[MD0] = map_rows(rows, |r| F64(r.metadata.c0));
-        out[MD1] = map_rows(rows, |r| F64(r.metadata.c1));
+        for (k, col) in [AA0, AA1, AB0, AB1, ACV, AC].into_iter().enumerate() {
+            out[col] = map_rows(rows, |r| ctx.g_at(ad(r)[k]));
+        }
+        // The sixteen memory-borne flock words are the eight cells' lo/hi lanes:
+        // the four message cells, then the cv pair and the output pair.
+        for k in 0..4 {
+            out[VA0 + k] = map_rows(rows, |r| blake3_lane(ctx.mem, ad(r)[k / 2], k % 2));
+            out[VB0 + k] = map_rows(rows, |r| blake3_lane(ctx.mem, ad(r)[2 + k / 2], k % 2));
+            out[VCV0 + k] = map_rows(rows, |r| blake3_lane(ctx.mem, ad(r)[4] + (k / 2) as u32, k % 2));
+            out[VC0 + k] = map_rows(rows, |r| blake3_lane(ctx.mem, ad(r)[5] + (k / 2) as u32, k % 2));
+        }
+        out[MD0] = map_rows(rows, |r| F64(blake3_metadata(ctx.prog, r.pc).c0));
+        out[MD1] = map_rows(rows, |r| F64(blake3_metadata(ctx.prog, r.pc).c1));
         out[RA0] = map_rows(rows, |r| r.ra[0]);
         out[RA1] = map_rows(rows, |r| r.ra[1]);
         out[RB0] = map_rows(rows, |r| r.rb[0]);
