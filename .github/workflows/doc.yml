@@ -1,0 +1,59 @@
+name: Documentation PDF
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'doc/**'
+      - '.github/workflows/doc.yml'
+  pull_request:
+    paths:
+      - 'doc/**'
+      - '.github/workflows/doc.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: doc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-pdf:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile LaTeX
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: doc
+          root_file: main.tex
+      - name: Fail on an undefined reference or citation
+        run: |
+          ! grep -qE 'Reference .* undefined|Citation .* undefined|multiply defined' doc/.build/main.log
+
+  build-pdf:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile LaTeX
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: doc
+          root_file: main.tex
+      - name: Name the artifact
+        run: cp doc/.build/main.pdf leanVM-b.pdf
+      - name: Publish PDF as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: doc-latest
+          name: leanVM-b documentation
+          body: |
+            Auto-built from `doc/main.tex` on every push to `main`.
+            Contains the specification, Annex A (ring switching) and Annex B (the PCS).
+          make_latest: false
+          files: leanVM-b.pdf

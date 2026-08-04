@@ -1,16 +1,14 @@
 <h1 align="center">leanVM-b</h1>
 
 <p align="center">
-  <img src="./misc/images/banner-b.svg" alt="leanVM-b">
+  <img src="./doc/images/banner-b.svg" alt="leanVM-b">
 </p>
 
 <p align="center">
-  <a href="./misc/doc.tex"><img src="https://img.shields.io/badge/Specification-source-blue?style=for-the-badge&logo=latex&logoColor=white" alt="Specification source"></a>
-  <a href="https://github.com/leanEthereum/leanVM-b/releases/download/spec-latest/doc.pdf"><img src="https://img.shields.io/badge/main-PDF-blue?style=for-the-badge&logo=latex&logoColor=white" alt="Latest main-branch PDF"></a>
+  <a href="https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/leanVM-b.pdf"><img src="https://img.shields.io/badge/Documentation-PDF-blue?style=for-the-badge&logo=latex&logoColor=white" alt="Documentation"></a>
 </p>
 
-- Warning: highly experimental.
-- The proving architecture is intentionally kept simple.
+Warning: highly experimental.
 
 # Benchmarks
 
@@ -19,7 +17,7 @@ Machine: Mac M4 Max
 ### XMSS aggregation
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1
+cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3
 ```
 
 ```
@@ -44,7 +42,7 @@ XMSS aggregation, 890 signatures
 
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- recursion --n 2 --log-inv-rate 2
+cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
 ```
 
 ```
@@ -68,7 +66,7 @@ recursion 2→1: 2 inner proofs of 1,472,224 cycles each
 
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- fibonacci --n 2000000  --log-inv-rate 1
+cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 ```
 
 ```

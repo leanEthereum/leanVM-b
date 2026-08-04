@@ -1,13 +1,13 @@
-//! Shared primitives: field kernels, bit transposes,
-//! multilinear helpers, the scratch buffer pool, and small integer utilities.
+//! Shared primitives: field kernels, bit transposes, multilinear helpers,
+//! benchmark timing, and small integer utilities.
 
+pub mod bench;
 pub mod bits;
-pub mod epool;
 pub mod field;
 pub mod multilinear;
-pub mod scratch;
 
-pub use field::{F64, F192, G, g_pow, g_powers, x_pow};
+#[cfg(feature = "test-util")]
+pub mod test_rng;
 
 fn format_trace_tree(tree: &tracing_forest::tree::Tree) -> Result<String, std::fmt::Error> {
     use tracing_forest::Formatter;
@@ -253,80 +253,26 @@ pub fn log2_strict_usize(n: usize) -> usize {
     n.trailing_zeros() as usize
 }
 
-/// `ceil(log2(n))` for `n ≥ 1`.
+/// `ceil(log2(n))`, defined as 0 for `n <= 1`.
 pub fn log2_ceil_usize(n: usize) -> usize {
-    assert!(n >= 1);
-    usize::BITS as usize - (n - 1).leading_zeros() as usize
+    if n <= 1 { 0 } else { (n - 1).ilog2() as usize + 1 }
 }
 
-/// Allocate a zero-filled `Vec<T>` through the global allocator's zeroed path.
-/// Large allocations can therefore start as demand-zero pages instead of
-/// paying an eager single-threaded fill before parallel work begins.
-///
-/// # Safety
-///
-/// The all-zero byte pattern must be a valid value of `T`.
-pub unsafe fn alloc_zeroed_vec<T: Copy>(n: usize) -> Vec<T> {
-    if n == 0 {
-        return Vec::new();
+/// Arena-backed parallel collects. This lives here rather than in `zk_alloc` so
+/// the allocator itself stays free of a thread-pool dependency.
+pub trait ParCollectArena<T>: Sized {
+    /// Parallel `(0..n).map(build).collect()`: one allocation on the calling
+    /// thread, filled in place by the workers — no per-worker intermediate
+    /// vectors to allocate and copy out of.
+    fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self;
+}
+
+impl<T: Send> ParCollectArena<T> for zk_alloc::ArenaVec<T> {
+    fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self {
+        // SAFETY: the fill below writes every slot in `0..n` exactly once, and
+        // the dispatch joins before the buffer is observable.
+        let mut out = unsafe { Self::uninitialized(n) };
+        parallel::fill(&mut out, build);
+        out
     }
-    let layout = std::alloc::Layout::array::<T>(n).expect("allocation size overflow");
-    // SAFETY: `layout` is non-empty and was constructed for exactly `n`
-    // elements of `T`.
-    let ptr = unsafe { std::alloc::alloc_zeroed(layout) } as *mut T;
-    if ptr.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
-    // SAFETY: the global allocator returned storage for exactly `n` elements;
-    // the caller guarantees that the zero bytes are valid initialized `T`s.
-    unsafe { Vec::from_raw_parts(ptr, n, n) }
-}
-
-/// Allocate `n` slots without initializing `T` values.
-pub fn alloc_uninit<T>(n: usize) -> Vec<std::mem::MaybeUninit<T>> {
-    let mut values = Vec::with_capacity(n);
-    values.resize_with(n, std::mem::MaybeUninit::uninit);
-    values
-}
-
-/// Convert a vector after every slot has been initialized.
-///
-/// # Safety
-///
-/// Every element of `values` must contain a valid `T`.
-pub unsafe fn assume_init<T>(values: Vec<std::mem::MaybeUninit<T>>) -> Vec<T> {
-    let mut values = std::mem::ManuallyDrop::new(values);
-    // SAFETY: `MaybeUninit<T>` has the same layout as `T`; the caller guarantees
-    // that all elements are initialized, and ManuallyDrop transfers ownership.
-    unsafe { Vec::from_raw_parts(values.as_mut_ptr().cast(), values.len(), values.capacity()) }
-}
-
-/// Cached `perf_core_count`. The uncached version may spawn `sysctl`; this
-/// memoizes it so hot paths can cheaply ask "is the current rayon pool the
-/// homogeneous P-core pool?" (i.e. `current_num_threads() <= this`).
-#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))] // caller is aarch64-only
-pub fn perf_core_count_cached() -> usize {
-    use std::sync::OnceLock;
-    static N: OnceLock<usize> = OnceLock::new();
-    *N.get_or_init(perf_core_count)
-}
-
-/// Best-effort count of performance cores. On macOS, queries
-/// `hw.perflevel0.physicalcpu` (= P-core count on Apple silicon, =
-/// physical CPU count on Intel). Elsewhere, falls back to
-/// `std::thread::available_parallelism()`.
-fn perf_core_count() -> usize {
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(out) = std::process::Command::new("sysctl")
-            .args(["-n", "hw.perflevel0.physicalcpu"])
-            .output()
-            && let Ok(s) = std::str::from_utf8(&out.stdout)
-            && let Ok(n) = s.trim().parse::<usize>()
-            && n > 0
-        {
-            return n;
-        }
-    }
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }

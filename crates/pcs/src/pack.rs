@@ -36,7 +36,6 @@ pub const PACKING_WIDTH: usize = 1 << LOG_PACKING;
 /// - if `z.len() != 1 << m`
 /// - if `m < LOG_PACKING`
 pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
-    use rayon::prelude::*;
     assert_eq!(z.len(), 1usize << m, "z length must be 2^m");
     assert!(
         m >= LOG_PACKING,
@@ -67,7 +66,7 @@ pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
     // Parallel for real witnesses; sequential below the dispatch-overhead
     // floor (tiny test instances).
     if n_packed >= (1 << 12) {
-        (0..n_packed).into_par_iter().map(one).collect()
+        parallel::map_collect(n_packed, one)
     } else {
         (0..n_packed).map(one).collect()
     }
@@ -91,21 +90,30 @@ pub fn unpack_witness(packed: &[F64], m: usize) -> Vec<bool> {
     out
 }
 
+/// Describes zero padding within each logical witness block.
+#[derive(Clone, Copy, Debug)]
+pub struct PaddingSpec {
+    pub k_log: usize,
+    pub useful_bits_per_block: usize,
+}
+
+impl PaddingSpec {
+    /// Treat every bit as useful.
+    pub fn dense(m: usize) -> Self {
+        Self {
+            k_log: m,
+            useful_bits_per_block: 1usize << m,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn splitmix64(state: &mut u64) -> u64 {
-        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = *state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
+    use primitives::test_rng::Rng;
 
     fn rand_bits(m: usize, seed: u64) -> Vec<bool> {
-        let mut s = seed;
-        (0..1usize << m).map(|_| splitmix64(&mut s) & 1 == 1).collect()
+        Rng::new(seed).bits(1usize << m)
     }
 
     #[test]
@@ -132,23 +140,6 @@ mod tests {
                     "bit ({i_rest}, {i}) disagrees with the flat layout"
                 );
             }
-        }
-    }
-}
-
-/// Describes zero padding within each logical witness block.
-#[derive(Clone, Copy, Debug)]
-pub struct PaddingSpec {
-    pub k_log: usize,
-    pub useful_bits_per_block: usize,
-}
-
-impl PaddingSpec {
-    /// Treat every bit as useful.
-    pub fn dense(m: usize) -> Self {
-        Self {
-            k_log: m,
-            useful_bits_per_block: 1usize << m,
         }
     }
 }

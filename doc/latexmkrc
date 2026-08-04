@@ -1,0 +1,4 @@
+$pdf_mode = 1;                 # pdflatex
+$out_dir  = '.build';          # keep every artifact out of the source tree
+$bibtex_use = 2;               # run bibtex, and clean its output with -c
+$clean_ext = 'bbl synctex.gz';

@@ -53,6 +53,26 @@ pub(crate) struct Stacked {
     pub placements: Vec<Placement>,
 }
 
+/// Lay `2^kappa`-sized items end to end, largest first at aligned offsets and ties
+/// broken by index, returning the per-item offset and `⌈log2 Σ 2^kappa⌉`. A `None`
+/// kappa takes no space and its offset is meaningless. Depends only on the sizes, so
+/// the verifier reconstructs the same tiling. This is the aligned layout the bus
+/// leaf cube still uses ([`crate::leaf`]); committed columns go through the Jagged
+/// placement below instead.
+pub(crate) fn stack_offsets(kappas: &[Option<usize>]) -> (Vec<usize>, usize) {
+    let n = kappas.len();
+    let mut order: Vec<usize> = (0..n).filter(|&i| kappas[i].is_some()).collect();
+    order.sort_by(|&a, &b| kappas[b].unwrap().cmp(&kappas[a].unwrap()).then(a.cmp(&b)));
+
+    let mut offsets = vec![0usize; n];
+    let mut off = 0usize;
+    for &i in &order {
+        offsets[i] = off;
+        off += 1 << kappas[i].unwrap();
+    }
+    (offsets, crate::log2_ceil_usize(off.max(1)))
+}
+
 /// Per-column Jagged placements and dense commitment length `2^m`.
 ///
 /// `heights[i]` is the real prefix length (at most `2^kappas[i]`). A `None`
@@ -128,8 +148,8 @@ pub fn placements_of_blocks(
 
 /// Copy the real column prefixes into the Jagged dense vector `q` of length
 /// `2^m` (zero in the final PCS pad). Virtual columns are skipped. Large
-/// columns (e.g. `q_pkd`, ~1 GB at scale) copy in parallel — the `2^m` stack
-/// is memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
+/// columns (e.g. `q_pkd`, ~1 GB at scale) copy in parallel: the `2^m` stack is
+/// memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
 ///
 /// What is committed is the column OFFSET BY ITS PAD VALUE, `P_c + pad[c]`. The
@@ -142,11 +162,10 @@ pub fn placements_of_blocks(
 /// `pad[c] == 0`, which is all but the read counts and the two finalize-count
 /// columns, keep the plain `memcpy` path.
 pub fn stack_q(cols: &[Column], placements: &[Placement], pads: &[F64], m: usize) -> Vec<F64> {
-    use rayon::prelude::*;
     // `alloc_zeroed`-backed for the all-zero pad tail; only the copied ranges are
     // touched. (F64 is all-zero bytes at ZERO, so the pad needs no explicit write.)
     let mut q = vec![F64::ZERO; 1 << m];
-    // Copy chunk width: big enough that per-chunk `copy_from_slice` amortizes rayon
+    // Copy chunk width: big enough that per-chunk `copy_from_slice` amortizes the
     // dispatch, small enough to spread the largest column across cores.
     const COPY_CHUNK: usize = 1 << 16;
     for (i, placement) in placements.iter().enumerate() {
@@ -154,7 +173,7 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], pads: &[F64], m: usize
             continue;
         }
         // A row-major block is written once, by slot zero. Writing complete
-        // rows gives the CPU contiguous stores (and lets rayon split disjoint
+        // rows gives the CPU contiguous stores (and lets the pool split disjoint
         // chunks); walking one physical column at a time would be a strided,
         // cache-hostile transpose.
         if placement.slot != 0 {
@@ -166,7 +185,11 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], pads: &[F64], m: usize
         if width == 1 && pad != F64::ZERO {
             let dst = &mut q[placement.offset..placement.offset + placement.height];
             if dst.len() >= crate::PAR_THRESHOLD {
-                dst.par_iter_mut().zip(src.par_iter()).for_each(|(d, s)| *d = *s + pad);
+                parallel::chunks_mut_zip(dst, src, COPY_CHUNK, |_, d, s| {
+                    for (d, s) in d.iter_mut().zip(s) {
+                        *d = *s + pad;
+                    }
+                });
             } else {
                 for (d, s) in dst.iter_mut().zip(src) {
                     *d = *s + pad;
@@ -174,9 +197,7 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], pads: &[F64], m: usize
             }
         } else if width == 1 && src.len() >= crate::PAR_THRESHOLD {
             let dst = &mut q[placement.offset..placement.offset + placement.height];
-            dst.par_chunks_mut(COPY_CHUNK)
-                .zip(src.par_chunks(COPY_CHUNK))
-                .for_each(|(d, s)| d.copy_from_slice(s));
+            parallel::chunks_mut_zip(dst, src, COPY_CHUNK, |_, d, s| d.copy_from_slice(s));
         } else if width == 1 {
             q[placement.offset..placement.offset + placement.height].copy_from_slice(src);
         } else {
@@ -200,9 +221,7 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], pads: &[F64], m: usize
                 }
             };
             if dst.len() >= crate::PAR_THRESHOLD {
-                dst.par_chunks_mut(width)
-                    .enumerate()
-                    .for_each(|(row, out)| write_row(row, out));
+                parallel::chunks_mut(dst, width, |row, out| write_row(row, out));
             } else {
                 for (row, out) in dst.chunks_mut(width).enumerate() {
                     write_row(row, out);

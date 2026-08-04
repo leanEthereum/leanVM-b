@@ -8,6 +8,7 @@
 //! These agree by distributivity in characteristic 2, and F192 stores a
 //! canonical reduced `(c0, c1, c2)`, so the bit patterns must match exactly.
 use primitives::field::F192;
+use primitives::test_rng::Rng;
 
 /// Verbatim copy of the pre-change implementation.
 fn eq_table_old(r: &[F192]) -> Vec<F192> {
@@ -26,30 +27,12 @@ fn eq_table_old(r: &[F192]) -> Vec<F192> {
     eq
 }
 
-struct Rng(u64);
-impl Rng {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-    fn f192(&mut self) -> F192 {
-        F192 {
-            c0: self.next_u64(),
-            c1: self.next_u64(),
-            c2: self.next_u64(),
-        }
-    }
-}
-
 #[test]
 fn eq_table_is_bit_identical_to_two_multiply_form() {
-    let mut rng = Rng(0xE0_1D_5E_ED);
+    let mut rng = Rng::new(0xE0_1D_5E_ED);
     for n in [0usize, 1, 2, 3, 6, 7, 11, 12, 13, 14] {
         for _ in 0..4 {
-            let r: Vec<F192> = (0..n).map(|_| rng.f192()).collect();
+            let r: Vec<F192> = (0..n).map(|_| rng.ext()).collect();
             let want = eq_table_old(&r);
             let got = primitives::multilinear::eq_table(&r);
             assert_eq!(got.len(), want.len(), "length differs at n={n}");

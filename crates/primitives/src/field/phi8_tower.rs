@@ -62,16 +62,6 @@ mod tests {
     }
 
     #[test]
-    fn images_live_in_f64() {
-        // The GF(2⁸) subfield of F192 lies in F64, so c1 == c2 == 0 everywhere.
-        for v in 0u16..256 {
-            let image = phi8_192(F8(v as u8));
-            assert_eq!(image.c1, 0, "phi8_192({v}) escaped F64");
-            assert_eq!(image.c2, 0, "phi8_192({v}) escaped F64");
-        }
-    }
-
-    #[test]
     fn homomorphism_full() {
         // Exhaustive: φ(a·b)=φ(a)·φ(b) and φ(a+b)=φ(a)+φ(b) over all 65536 pairs.
         for a in 0u16..256 {

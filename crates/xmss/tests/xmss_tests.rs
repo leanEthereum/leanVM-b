@@ -93,6 +93,13 @@ fn tampered_signatures_rejected() {
     );
 }
 
+/// The signer grinds the randomness until `wots_encode` accepts, so the cost of
+/// producing a signature is set by how rare a valid encoding is. Measure it: the
+/// two leftover digest bits contribute 2 bits, and `sum(e_i) == TARGET_SUM` at
+/// 194 (3.2 sd above the mean of 147, over 42 uniform 3-bit digits) contributes
+/// ~12.5, matching the ~2^14 quoted in the crate docs. The band is ~10 sigma for
+/// 200 samples, so only a real change to the predicate (a dropped validity bit,
+/// a different TARGET_SUM, a different digit layout) moves it out.
 #[test]
 #[ignore]
 fn encoding_grinding_bits() {
@@ -105,5 +112,7 @@ fn encoding_grinding_bits() {
         let (_, _, num_iters) = find_randomness_for_wots_encoding(&message, i as u32, &pp, &mut rng);
         total_iters += num_iters;
     }
-    println!("Average grinding bits: {:.1}", (total_iters as f64 / n as f64).log2());
+    let bits = (total_iters as f64 / n as f64).log2();
+    println!("Average grinding bits: {bits:.1}");
+    assert!((13.5..15.5).contains(&bits), "grinding cost moved: {bits:.2} bits");
 }

@@ -3,33 +3,30 @@
 //! bind the wrong thing (mirrors leanVM's `FSProver`/`FSVerifier`):
 //!
 //! - **`add_scalar(s)`** (prover) / **`next_scalar(s)`** (verifier): the *only*
-//!   way a scalar enters the proof. It transmits AND absorbs, in one call — so
+//!   way a scalar enters the proof. It transmits AND absorbs, in one call, so
 //!   transmitted data is **always** bound, and the two sides cannot drift. This is
 //!   the workhorse (GKR layers, constraint round polys, evaluation values, the
 //!   commitment root).
 //! - **The public statement** (the public input) is seeded into the sponge at
 //!   construction ([`Sponge::new`]) by BOTH sides, so it is bound before any
-//!   challenge. There is deliberately **no `observe` method**: the only data a
-//!   caller can put into the sponge is via `add_*` (which also transmits), so you
-//!   cannot bind-without-transmitting or transmit-without-binding by mistake. A
-//!   challenge is just `sample()`d, bound to everything seeded/sent so far.
+//!   challenge. `add_*` transmits AND binds; `observe_scalar` binds WITHOUT
+//!   transmitting, and is only for values both sides derive independently. Never
+//!   re-observe data that already rode the stream: it is bound once already, and
+//!   binding it twice silently desynchronizes the two sides. A challenge is just
+//!   `sample()`d, bound to everything seeded/sent so far.
 //! - **`hint_*` (prover) / `next_*` (verifier)**: transport that is NOT absorbed
-//!   here — hash-bearing data (the Ligerito `openings`, like leanVM's
+//!   here, hash-bearing data (the Ligerito `openings`, like leanVM's
 //!   `merkle_paths`) whose binding is the Merkle structure itself.
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
 //! The [`Sponge`] itself (the VM-native Merkle–Damgård chaining value, its
 //! domain tags, grinding, and the diagnostic trace) lives in [`crate::sponge`].
-//! This module wraps it with the proof transport channels; the flock protocol
-//! functions take these SAME states (`ps`/`vs`), drawing their challenges from
-//! the one shared sponge while their proof data rides its own structs.
 
-use crate::sponge::trace;
-pub use crate::sponge::{Sponge, TraceOp, trace_start, trace_take};
+use crate::sponge::{Sponge, TraceOp, trace};
 use primitives::field::{F64, F192};
 
 /// A complete proof: the scalar transcript stream plus the Ligerito opening hint
-/// channel — **two** channels, no bolted-on side field. The commitment root and
+/// channel: **two** channels, no bolted-on side field. The commitment root and
 /// every transmitted scalar ride `stream`; the hash-bearing Ligerito openings
 /// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its
 /// zerocheck / lincheck / ring-switch scalars are ordinary `add_scalar` words on
@@ -82,7 +79,7 @@ impl<O> ProverState<O> {
     }
 
     /// Transmit a scalar into the proof AND bind it into the sponge (the two are
-    /// inseparable — you cannot send without binding).
+    /// inseparable: you cannot send without binding).
     #[inline]
     pub fn add_scalar(&mut self, x: F192) {
         self.sponge.observe(x);
@@ -105,7 +102,7 @@ impl<O> ProverState<O> {
     }
 
     pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        (0..n).map(|_| self.sponge.sample()).collect()
+        self.sponge.sample_vec(n)
     }
 
     pub fn hint_opening(&mut self, opening: O) {
@@ -115,26 +112,12 @@ impl<O> ProverState<O> {
     /// Proof-of-work grind of `bits` before the next challenge, raising that
     /// challenge's Schwartz–Zippel soundness by `bits` (the prover must redo
     /// the PoW to re-roll the challenge). Grinds, binds the nonce into the
-    /// sponge, and transmits it on the stream as raw transport — already bound
-    /// by the grind, so it is NOT re-absorbed. `bits = 0` is the canonical
+    /// sponge, and transmits it on the stream as raw transport (already bound
+    /// by the grind, so it is NOT re-absorbed). `bits = 0` is the canonical
     /// no-work nonce `0`.
     pub fn grind(&mut self, bits: u32) {
         let nonce = self.sponge.grind_pow(bits);
         self.stream.push(F192::new(nonce, 0, 0));
-    }
-
-    /// Absorb a byte string (a sub-protocol label, a Merkle root) — data both
-    /// sides know or that is bound elsewhere, never transmitted here.
-    pub fn absorb_bytes(&mut self, bytes: &[u8]) {
-        self.sponge.absorb_bytes(bytes);
-    }
-
-    /// Raw sponge grind for sub-protocols that carry the nonce in their OWN
-    /// proof structs (the Ligerito fold/query grinds): grinds and binds, and
-    /// returns the nonce for the caller to transport — unlike [`Self::grind`],
-    /// nothing is pushed on this stream.
-    pub fn grind_pow(&mut self, bits: u32) -> u64 {
-        self.sponge.grind_pow(bits)
     }
 
     /// The raw sponge, for side-agnostic sub-steps shared by prover and
@@ -162,8 +145,8 @@ pub struct VerifierState<'a, O> {
 }
 
 impl<'a, O> VerifierState<'a, O> {
-    /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`])
-    /// — must match the prover's, or the sponges diverge and verification fails.
+    /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
+    /// It must match the prover's, or the sponges diverge and verification fails.
     pub fn new(label: &[u8], proof: &'a Proof<O>, statement: &[F192]) -> Self {
         Self {
             sponge: Sponge::new(label, statement),
@@ -172,17 +155,6 @@ impl<'a, O> VerifierState<'a, O> {
             openings: &proof.openings,
             oi: 0,
         }
-    }
-
-    /// A verifier state with EMPTY transport channels — a challenge source for
-    /// unit tests that drive sub-protocols without a transmitted stream (leaks
-    /// one small allocation; do not use outside tests).
-    pub fn detached(label: &[u8], statement: &[F192]) -> VerifierState<'static, O> {
-        let empty = Box::leak(Box::new(Proof {
-            stream: Vec::new(),
-            openings: Vec::new(),
-        }));
-        VerifierState::new(label, empty, statement)
     }
 
     /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
@@ -198,7 +170,7 @@ impl<'a, O> VerifierState<'a, O> {
         (0..n).map(|_| self.next_scalar()).collect()
     }
 
-    /// Advance the stream cursor by one **without** binding into the sponge — the
+    /// Advance the stream cursor by one **without** binding into the sponge: the
     /// read counterpart of the raw nonce push in [`ProverState::grind`].
     fn take_raw(&mut self) -> Result<F192, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
@@ -212,7 +184,7 @@ impl<'a, O> VerifierState<'a, O> {
     }
 
     pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        (0..n).map(|_| self.sample()).collect()
+        self.sponge.sample_vec(n)
     }
 
     /// Absorb a value both parties compute themselves (never transmitted):
@@ -247,23 +219,9 @@ impl<'a, O> VerifierState<'a, O> {
         self.sponge.state()
     }
 
-    /// Absorb a byte string (a sub-protocol label, a Merkle root) — mirror of
-    /// [`ProverState::absorb_bytes`].
-    pub fn absorb_bytes(&mut self, bytes: &[u8]) {
-        self.sponge.absorb_bytes(bytes);
-    }
-
     /// The raw sponge (mirror of [`ProverState::sponge_mut`]).
     pub fn sponge_mut(&mut self) -> &mut Sponge {
         &mut self.sponge
-    }
-
-    /// Raw PoW check for sub-protocols that carry the nonce in their OWN proof
-    /// structs (mirror of [`ProverState::grind_pow`]): checks and binds; the
-    /// caller rejects on `false`. Unlike [`Self::grind_check`], the nonce does
-    /// not come from this stream.
-    pub fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
-        self.sponge.verify_pow(nonce, bits)
     }
 
     /// Assert the whole proof was consumed (no trailing/extra data).

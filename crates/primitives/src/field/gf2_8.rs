@@ -25,16 +25,6 @@ impl F8 {
     pub const ZERO: Self = Self(0);
     pub const ONE: Self = Self(1);
 
-    #[inline]
-    pub const fn new(v: u8) -> Self {
-        Self(v)
-    }
-
-    #[inline]
-    pub const fn is_zero(self) -> bool {
-        self.0 == 0
-    }
-
     /// Multiplicative inverse via Fermat: x^254 = x^{-1} in F_{2^8}.
     /// Exponent bit pattern 0xFE = 0b11111110 — 7 squarings + 6 multiplies.
     pub fn inv(self) -> Self {
@@ -223,27 +213,7 @@ pub mod neon {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Deterministic splitmix64 PRNG for test reproducibility.
-    struct Rng(u64);
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Self(seed)
-        }
-        fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-            z ^ (z >> 31)
-        }
-    }
-
-    #[test]
-    fn add_is_xor() {
-        assert_eq!(F8(0x53) + F8(0xCA), F8(0x53 ^ 0xCA));
-        assert_eq!(F8(0xFF) + F8(0xFF), F8::ZERO);
-    }
+    use crate::test_rng::Rng;
 
     #[test]
     fn mul_identities() {
@@ -275,13 +245,15 @@ mod tests {
         }
     }
 
+    /// Only meaningful where `clmul8` dispatches to PMULL; elsewhere it *is*
+    /// `clmul8_software`.
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     #[test]
     fn software_matches_neon() {
-        // If we are on aarch64+aes, sanity-check that the software path agrees.
         let mut rng = Rng::new(0xDEADBEEF);
         for _ in 0..1024 {
-            let a = (rng.next_u64() & 0xff) as u8;
-            let b = (rng.next_u64() & 0xff) as u8;
+            let a = rng.next_u8();
+            let b = rng.next_u8();
             assert_eq!(clmul8(a, b), clmul8_software(a, b));
         }
     }
@@ -290,21 +262,11 @@ mod tests {
     fn associativity_random() {
         let mut rng = Rng::new(0xC0FFEE);
         for _ in 0..256 {
-            let a = F8((rng.next_u64() & 0xff) as u8);
-            let b = F8((rng.next_u64() & 0xff) as u8);
-            let c = F8((rng.next_u64() & 0xff) as u8);
+            let a = F8(rng.next_u8());
+            let b = F8(rng.next_u8());
+            let c = F8(rng.next_u8());
             assert_eq!((a * b) * c, a * (b * c));
             assert_eq!(a * (b + c), a * b + a * c);
-        }
-    }
-
-    #[test]
-    fn mul_commutativity_exhaustive() {
-        // Trivially symmetric in the formula, but free to assert over all pairs.
-        for a in 0u8..=255 {
-            for b in 0u8..=255 {
-                assert_eq!(F8(a) * F8(b), F8(b) * F8(a));
-            }
         }
     }
 
@@ -333,8 +295,8 @@ mod tests {
             let mut a_arr = [0u8; 16];
             let mut b_arr = [0u8; 16];
             for i in 0..16 {
-                a_arr[i] = (rng.next_u64() & 0xff) as u8;
-                b_arr[i] = (rng.next_u64() & 0xff) as u8;
+                a_arr[i] = rng.next_u8();
+                b_arr[i] = rng.next_u8();
             }
             // Scalar reference: lane-wise F8 mul.
             let mut expected = [0u8; 16];

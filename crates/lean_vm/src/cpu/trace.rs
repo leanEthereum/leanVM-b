@@ -64,8 +64,8 @@ pub(crate) struct EDrow {
 pub(crate) struct Jrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) npc: F64, // next pc — a K-valued address
-    pub(crate) nfp: F64, // next fp — a K-valued address
+    pub(crate) npc: F64, // next pc, a K-valued address
+    pub(crate) nfp: F64, // next fp, a K-valued address
     pub(crate) oc: u32,
     pub(crate) od: u32,
     pub(crate) of: u32,

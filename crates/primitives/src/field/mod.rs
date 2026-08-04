@@ -28,8 +28,6 @@ pub use phi8_tower::{PHI_8_TABLE_192, phi8_192};
 // index encoding (§1, §8).
 // ---------------------------------------------------------------------------
 
-use rayon::prelude::*;
-
 /// Multiply by `x = g` in `K`, where `x^64 = x^4 + x^3 + x + 1` and
 /// `0x1B = x^4 + x^3 + x + 1`.
 /// `const` so table constants (`g^k` separators, opcodes) evaluate at compile time.
@@ -56,7 +54,7 @@ pub const fn mul_by_g_e(a: F192) -> F192 {
 pub fn g_powers(n: usize) -> Vec<F64> {
     const CHUNK: usize = 1 << 12;
     let mut v = vec![F64::ZERO; n];
-    v.par_chunks_mut(CHUNK).enumerate().for_each(|(ci, chunk)| {
+    parallel::chunks_mut(&mut v, CHUNK, |ci, chunk| {
         let mut acc = x_pow(ci * CHUNK);
         for slot in chunk.iter_mut() {
             *slot = acc;

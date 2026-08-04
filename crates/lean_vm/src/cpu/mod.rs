@@ -1,4 +1,4 @@
-//! Whole-program assembly over GF(2^64) (`misc/doc.tex`): the instruction tables
+//! Whole-program assembly over GF(2^64) (`doc/main.tex`): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine words and the
@@ -9,8 +9,6 @@
 //! Challenges and transcript scalars live in the same tower E.
 
 use std::collections::HashMap;
-
-use rayon::prelude::*;
 
 use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
@@ -53,7 +51,7 @@ const MAX_LOG_MEM: usize = 32;
 
 /// Each per-opcode table holds at most `2^MAX_LOG_ROWS` rows (executed
 /// instructions of that opcode). Together with `MAX_LOG_MEM` and the bytecode
-/// cap these are the instance caps from “Counts must not wrap” in `misc/doc.tex`: at `ord(g) = 2^64−1`
+/// cap these are the instance caps from “Counts must not wrap” in `doc/body/06-memory-and-bytecode-lookups.tex`: at `ord(g) = 2^64−1`
 /// the memory-soundness and count-non-wrap counting arguments are theorems only
 /// for instances whose total read-flush count stays far below `2^64`, so the
 /// verifier rejects any announcement exceeding them before running a reduction.
@@ -71,11 +69,11 @@ const MAX_LOG_BYTECODE: usize = 32;
 ///
 /// Without this the program's instruction content would enter verification only
 /// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
-/// `ζ` — a single point an attacker recovers from a finished proof. It could then
+/// `ζ`, a single point an attacker recovers from a finished proof. It could then
 /// craft a different program `P'` agreeing with `P`'s bytecode columns at that one
 /// `ζ` and re-present the same proof for `P'` (adaptive-statement forgery). Seeding
-/// `H(program)` before any challenge makes the whole statement — (program, public
-/// input) — bound up front, so a different program yields a different sponge from
+/// `H(program)` before any challenge makes the whole statement (program, public
+/// input) bound up front, so a different program yields a different sponge from
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
 fn program_digest(prog: &[Op], bytecode_used: usize) -> [F64; 4] {
@@ -121,8 +119,8 @@ fn program_digest(prog: &[Op], bytecode_used: usize) -> [F64; 4] {
     crate::vmhash::hash_slice(&words)
 }
 
-/// The Fiat–Shamir seed: ONE 32-byte digest, as two field words, committing
-/// to everything fixed about the proving environment — the flock circuit
+/// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
+/// to everything fixed about the proving environment: the flock circuit
 /// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
 /// and the program's bytecode digest. It leads every transcript, so all
 /// challenges depend on the circuit version and the program before anything
@@ -331,7 +329,22 @@ pub enum Error {
 /// Per side, which table (if any) owns each bus block, as `(table, column base)`.
 /// Blocks sourced from a table's height belong to it; the boundary, memory and
 /// bytecode blocks belong to none and keep their own column claims at ζ.
-fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> [Vec<Option<(usize, usize)>>; 3] {
+/// Per side, which table (if any) owns each bus block, as `(table, column base)`.
+type BlockOwners = [Vec<Option<(usize, usize)>>; 3];
+/// Each table's `(column base, committed column count)` in the global schema.
+type TableSpans = Vec<(usize, usize)>;
+
+/// The bus wiring both sides derive identically: which table owns each flush
+/// block, and each table's committed-column span.
+fn bus_wiring(program: &Program, l: &Layout) -> (BlockOwners, TableSpans) {
+    let owners = block_owners(
+        crate::log2_strict_usize(program.prog.len()),
+        [l.push.len(), l.pull.len(), l.count.len()],
+    );
+    (owners, table_spans())
+}
+
+fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> BlockOwners {
     let sch = schema();
     let src = block_kappa_sources(log_bytecode);
     let mut it = src
@@ -343,7 +356,7 @@ fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> [Vec<Option<(usize, u
 /// Each table's `(column base, committed column count)`. The batched zerocheck now
 /// carries every committed column of a table, because its bus forms reference the
 /// flushed ones and its constraint the rest.
-fn table_spans() -> Vec<(usize, usize)> {
+fn table_spans() -> TableSpans {
     let sch = schema();
     tables::tables()
         .iter()
@@ -456,26 +469,65 @@ pub struct Stats {
     pub committed: usize,
     /// Data memory is `2^log_mem` cells (the padded write-once image).
     pub log_mem: usize,
-    /// Cells actually touched, before the pad to `2^log_mem` — the real memory
+    /// Cells actually touched, before the pad to `2^log_mem`: the real memory
     /// footprint (`log2` is fractional).
     pub mem_used: usize,
+}
+
+impl Stats {
+    /// Table names in `counts` order.
+    pub const TABLES: [&'static str; tables::N_TABLES] = [
+        "XOR", "MUL", "ADD_EXT", "MUL_EXT", "SET", "DEREF", "DEREF_EXT", "JUMP", "BLAKE3",
+    ];
+
+    /// One line of run sizes, every one a power of two: the per-table instruction
+    /// counts with their share of the run, largest first, then the data memory and
+    /// the committed witness. Reads as
+    /// `"DEREF 2^18.838 (33.6%)  SET 2^18.265 (22.6%)  …  MEMORY 2^21.701  TOTAL_COMMITTED 2^26.364"`.
+    ///
+    /// The per-table counts sum to `cycles`, so the percentages are shares of the
+    /// whole run. Every exponent is an actual count, never a padded one, so the
+    /// figures are directly comparable; `log_mem` holds the padded memory size the
+    /// commitment covers. Zero-count tables are omitted.
+    #[must_use]
+    pub fn details(&self) -> String {
+        if self.cycles == 0 {
+            return "-".to_string();
+        }
+        let mut shares: Vec<(&str, usize)> = Self::TABLES
+            .iter()
+            .zip(&self.counts)
+            .filter(|&(_, &c)| c > 0)
+            .map(|(&name, &c)| (name, c))
+            .collect();
+        shares.sort_unstable_by_key(|&(_, c)| std::cmp::Reverse(c));
+        let mut parts: Vec<String> = shares
+            .iter()
+            .map(|&(name, c)| {
+                let pct = 100.0 * c as f64 / self.cycles as f64;
+                format!("{name} 2^{} ({pct:.1}%)", primitives::pretty_f64((c as f64).log2()))
+            })
+            .collect();
+        let log2 = |n: usize| primitives::pretty_f64((n.max(1) as f64).log2());
+        parts.push(format!("MEMORY 2^{}", log2(self.mem_used)));
+        parts.push(format!("TOTAL_COMMITTED 2^{}", log2(self.committed)));
+        parts.join("  ")
+    }
 }
 
 /// Prove the program on the given public input: run it (witness generation),
 /// then emit everything the verifier needs through the returned [`Proof`]
 /// (scalar stream + PCS commitment / opening hints). Returns the proof and the
 /// run [`Stats`]. `log_inv_rate` selects the PCS rate and is announced in the
-/// Fiat–Shamir transcript before the commitment.
+/// Fiat-Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> (Proof, Stats) {
     ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
-    let prof = std::env::var("LEANVM_PROFILE").is_ok();
-    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
-    let t = std::time::Instant::now();
-    let exec = tracing::info_span!("Execute program").in_scope(|| program.execute(public_input));
-    if prof {
-        eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
-    }
+    // ONE arena phase for the whole proof: every `ArenaVec` bumps a per-thread slab
+    // and the next phase reclaims it wholesale. Nothing that outlives this scope may
+    // be arena-backed (see `zk_alloc`), which is why the `Proof` below is plain.
+    let _phase = zk_alloc::enter_phase();
+    let exec = crate::stage!("Execute program", || program.execute(public_input));
     // The BLAKE3 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
     // depends only on the compression count (the circuit *shape*), not the witness
     // — but it is otherwise built synchronously inside the final reduction, adding
@@ -488,8 +540,8 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     let n_b3_warm = exec.trace.blake3.len().max(1);
     std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
-    let mut w = tracing::info_span!("Build witness").in_scope(|| program.build(&exec));
-    let counts = w.row_counts;
+    let mut w = crate::stage!("Build witness", || program.build(&exec));
+    let counts = w.layout.row_counts;
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
     let committed_size: usize = w
@@ -504,12 +556,8 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
-    announce_public(&mut ps, exec.mem_used, w.row_counts, log_inv_rate);
-    let t = std::time::Instant::now();
-    let committed = tracing::info_span!("Commit").in_scope(|| pcs::commit(&mut ps, &w.q, log_inv_rate));
-    if prof {
-        eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
-    }
+    announce_public(&mut ps, exec.mem_used, w.layout.row_counts, log_inv_rate);
+    let committed = crate::stage!("Commit", || pcs::commit(&mut ps, &w.q, log_inv_rate));
 
     // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is ALWAYS a column in
     // `w.q` (≥1 instance — a program with no BLAKE3 carries one padding instance,
@@ -518,13 +566,9 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     // Ligerito over this commitment (below). The input/output words bind via the
     // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
-    let t = std::time::Instant::now();
     let l = &w.layout;
-    let owners = block_owners(
-        crate::log2_strict_usize(program.prog.len()),
-        [l.push.len(), l.pull.len(), l.count.len()],
-    );
-    if prof {
+    let (owners, spans) = bus_wiring(program, l);
+    if crate::profiling() {
         let describe = |name: &str, blocks: &[crate::leaf::Block]| {
             let entries: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
             eprintln!(
@@ -548,8 +592,8 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
             "blake3",
         ];
         for (side, blocks) in [&l.push, &l.pull, &l.count].into_iter().enumerate() {
-            let mut entries = vec![0usize; tables::N_TABLES + 1];
-            let mut nblocks = vec![0usize; tables::N_TABLES + 1];
+            let mut entries = [0usize; tables::N_TABLES + 1];
+            let mut nblocks = [0usize; tables::N_TABLES + 1];
             for (block, owner) in blocks.iter().zip(&owners[side]) {
                 let bucket = owner.map_or(tables::N_TABLES, |(table, _)| table);
                 entries[bucket] += 1usize << block.kappa;
@@ -567,14 +611,10 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
             }
         }
     }
-    let spans = table_spans();
-    let bus = tracing::info_span!("Prove bus")
-        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps));
-    if prof {
-        eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
-    }
-    let t = std::time::Instant::now();
-    let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
+    let bus = crate::stage!("Prove bus", || {
+        leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps)
+    });
+    let table_claims = crate::stage!("Prove constraints", || {
         // One sumcheck for all seven tables (§constraints).
         // MOVE the columns out: the batch folds them destructively and nothing
         // reads them again (`prove_balance` is done, and `QPKD < N_SHARED` is never
@@ -597,9 +637,6 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
             &mut ps,
         )
     });
-    if prof {
-        eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
-    }
 
     let mut claims = bus.claims;
     claims.extend(constraint_claims(&table_claims));
@@ -615,36 +652,22 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     // validity claims on the committed `q_pkd`, discharged by the PCS below in the
     // SAME Ligerito as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
-    let t = std::time::Instant::now();
     let flock_reduction = w
         .flock_reduction
         .take()
         .expect("prepared flock reduction witness is present");
-    let reduced = tracing::info_span!("Flock reduction").in_scope(|| flock_reduction.prove(&mut ps));
+    let reduced = crate::stage!("Flock reduction", || flock_reduction.prove(&mut ps));
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
-    if prof {
-        eprintln!("[prove]   reduction : {:>7.2} ms", ms(t));
-    }
-    let t = std::time::Instant::now();
     let offset = w.layout.placements[QPKD].offset;
-    let ring = tracing::info_span!("Package ring switch")
-        .in_scope(|| crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced));
-    if prof {
-        eprintln!("[prove]   ring pkg  : {:>7.2} ms", ms(t));
-    }
-    let t = std::time::Instant::now();
-    let mixed_open = tracing::info_span!("PCS open").in_scope(|| pcs::open(&mut ps, &committed, &w.q, &slots, &ring));
-    if prof {
-        eprintln!("[prove]   stack open: {:>7.2} ms", ms(t));
-    }
+    let ring = crate::stage!("Package ring switch", || {
+        crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced)
+    });
+    let mixed_open = crate::stage!("PCS open", || pcs::open(&mut ps, &committed, &w.q, &slots, &ring));
     // flock's scalar sub-proof already rode the shared stream (add_scalar at its
     // protocol points); only the Merkle-bearing stacked opening needs the hint
     // channel.
     ps.hint_opening(mixed_open);
-    if prof {
-        eprintln!("[prove] open        : {:>7.2} ms", ms(t));
-    }
     (
         ps.into_proof(),
         Stats {
@@ -709,11 +732,7 @@ pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Resu
     // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let owners = block_owners(
-        crate::log2_strict_usize(program.prog.len()),
-        [l.push.len(), l.pull.len(), l.count.len()],
-    );
-    let spans = table_spans();
+    let (owners, spans) = bus_wiring(program, &l);
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &owners, &spans, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
 
@@ -750,7 +769,7 @@ pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Resu
     // (mirroring `prove`). `n_blocks = max(n_b3, 1)` — always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
-    let replay = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &mut vs).map_err(Error::Blake3)?;
+    let replay = crate::blake3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake3)?;
     let checkpoint_flock = vs.sponge_state();
     let open = vs.next_opening().map_err(Error::Transcript)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);

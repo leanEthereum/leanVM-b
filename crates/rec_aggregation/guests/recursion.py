@@ -1793,7 +1793,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             g_delta = GEN ** 0
             for j in unroll(0, COUNT_BITS):
                 pad_bit = pad_bits[GEN ** j]
-                assert pad_bit * pad_bit == pad_bit
+                pad_bits[GEN ** j] = pad_bit * pad_bit  # booleanity as a write-once pin
                 ladder = emul(ladder, eadd([1, 0, 0], emul_base(pad_bit, eadd(ladder_square, [1, 0, 0]))))
                 g_delta *= (1 + pad_bit * gsq_plus[j])  # g^DELTA
                 ladder_square = emul(ladder_square, ladder_square)
@@ -1852,7 +1852,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
                 for xk in mul_range(1, sel_len_g):
                     xk3 = xk ** 3
                     sbit = sel_bits[xk]
-                    assert sbit * sbit == sbit
+                    sel_bits[xk] = sbit * sbit  # booleanity as a write-once pin
                     prev_eq = eload(eq_chain * xk3)
                     zeta_v = eload(zeta_hi * xk3)
                     estore(eq_chain * xk3 * GEN ** 3, emul(prev_eq, eadd_base(1 + sbit, zeta_v)))

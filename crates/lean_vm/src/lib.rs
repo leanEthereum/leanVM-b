@@ -1,4 +1,4 @@
-//! leanVM-b — arithmetization of a minimal zkVM (see `misc/doc.tex`).
+//! leanVM-b: arithmetization of a minimal zkVM (see `doc/main.tex`).
 //!
 //! Machine words are `c0 + c1*y + c2*y² ∈ E = K[y]/(y³ + y + 1)`.
 //! Addresses, pc/fp, read counters, and logical indices live in
@@ -8,16 +8,16 @@
 //! committed directly by a dense multilinear PCS. Challenges and transcript
 //! scalars live in `E = GF(2^192)`, leaving ample margin for 128-bit soundness.
 //!
-//! - [`transcript`] — the shared Fiat–Shamir transcript (re-exported from `fiat_shamir`).
-//! - [`pcs`] — `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
-//! - [`witness`] — `K`-valued columns stacked into one committed witness.
-//! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
-//! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).
-//! - [`constraints`] — one back-loaded batched zerocheck over all seven tables'
+//! - [`transcript`]: the shared Fiat-Shamir transcript (re-exported from `fiat_shamir`).
+//! - [`pcs`]: `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
+//! - [`witness`]: `K`-valued columns stacked into one committed witness.
+//! - [`gkr`]: the grand product via GKR (§4.3), balancing the bus.
+//! - [`leaf`]: the shared bus: grand-product balance, decomposed to per-column claims (§4.2-§4.4, §5).
+//! - [`constraints`]: one back-loaded batched zerocheck over all seven tables'
 //!   degree-2 identities plus their three bus forms (§4.1).
-//! - [`tables`] — the seven instruction tables (columns, flushes, constraints).
-//! - [`cpu`] — whole-program assembly, control flow, and the prove/verify entry points.
-//! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
+//! - [`tables`]: the seven instruction tables (columns, flushes, constraints).
+//! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
+//! - [`blake3_flock`]: the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE3 slice hashing).
 
 pub mod blake3_flock;
@@ -31,45 +31,38 @@ pub mod transcript;
 pub mod vmhash;
 pub mod witness;
 
-/// Build rayon's global thread pool with every worker pinned to a **performance
-/// core** (macOS QoS `USER_INTERACTIVE`), so the prover's fork-join stages are not
-/// dragged by efficiency-core stragglers at their barriers. The thread *count*
-/// still follows `RAYON_NUM_THREADS` (or rayon's default); this only fixes which
-/// cores the workers are scheduled on.
+/// Prepare the process for proving: the worker pool ([`init_prover_pool`]) plus
+/// the proving arena ([`zk_alloc::enable_arena`]), which recycles the prover's
+/// large transient buffers across proofs instead of re-faulting them.
 ///
-/// Idempotent and best-effort: call it **once at program/test start, before any
-/// other rayon use** (rayon's global pool is built on first use — once built, this
-/// is a no-op and the QoS hint does not apply). On non-macOS it is a plain pool.
-pub fn init_prover_pool() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let builder = rayon::ThreadPoolBuilder::new().spawn_handler(|thread| {
-            std::thread::Builder::new().spawn(move || {
-                #[cfg(target_os = "macos")]
-                set_qos_user_interactive();
-                thread.run();
-            })?;
-            Ok(())
-        });
-        // Fails only if the global pool is already built — then we silently keep it.
-        let _ = builder.build_global();
-    });
+/// Call once at program or test start.
+///
+/// Set `LEANVM_NO_ARENA` (or call only [`init_prover_pool`]) on a
+/// memory-constrained host: every [`ArenaVec`](zk_alloc::ArenaVec) then falls back
+/// to the system allocator, which is slower but holds only the live working set
+/// instead of a phase's cumulative allocation.
+///
+/// # Contract
+/// The arena has one region per process, so two proofs must never run
+/// concurrently in one process; [`zk_alloc::enter_phase`] asserts this. Use
+/// separate processes to parallelize across proofs.
+pub fn init_prover() {
+    init_prover_pool();
+    if std::env::var_os("LEANVM_NO_ARENA").is_none() {
+        zk_alloc::enable_arena();
+    }
 }
 
-/// Pin the calling thread to a performance core by requesting the
-/// `USER_INTERACTIVE` QoS class (macOS): the scheduler keeps `USER_INTERACTIVE`
-/// work off the efficiency cores. `QOS_CLASS_USER_INTERACTIVE = 0x21`.
-#[cfg(target_os = "macos")]
-fn set_qos_user_interactive() {
-    const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
-    unsafe extern "C" {
-        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
-    }
-    // SAFETY: a libSystem call that only adjusts this thread's scheduling class.
-    unsafe {
-        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-    }
+/// Spawn the worker pool up front, so no kernel pays the spawn cost inside a
+/// timed region. Idempotent.
+///
+/// Thread placement is the pool's own business: performance-core workers run at
+/// `USER_INTERACTIVE` and (on Apple silicon) efficiency-core workers at `UTILITY`,
+/// all drawing from one claim counter. `LEANVM_NUM_THREADS` (or
+/// `RAYON_NUM_THREADS`, still honored) sets the performance-worker count. See the
+/// `parallel` crate.
+pub fn init_prover_pool() {
+    parallel::init();
 }
 
 /// Target soundness of the whole proof, in bits. Every algebraic challenge is
@@ -77,8 +70,38 @@ fn set_qos_user_interactive() {
 /// proximity-gap, and OOD-binding terms each clear this target.
 pub const SECURITY_BITS: u32 = 128;
 
-/// Below this many parallelizable items a pass runs serially: rayon's fan-out
+/// Below this many parallelizable items a pass runs serially: the fan-out
 /// overhead is not worth it for small inputs. Shared by [`constraints`], [`gkr`], [`leaf`].
 pub(crate) const PAR_THRESHOLD: usize = 1 << 11;
+
+/// Whether `LEANVM_PROFILE` asked for prover diagnostics, decided once. [`stage!`]
+/// gates its per-stage timing on this; `cpu::prove` gates its bus-shape report on
+/// the same flag, so one env var turns the whole picture on.
+pub(crate) fn profiling() -> bool {
+    static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PROFILE.get_or_init(|| std::env::var_os("LEANVM_PROFILE").is_some())
+}
+
+/// Run one prover stage inside its `tracing` span and, under `LEANVM_PROFILE`,
+/// report its wall time. Called through [`stage!`], which spells the stage's name
+/// once for both.
+pub(crate) fn stage_impl<T>(name: &str, span: tracing::Span, f: impl FnOnce() -> T) -> T {
+    let t = std::time::Instant::now();
+    let out = span.in_scope(f);
+    if profiling() {
+        eprintln!("[profile] {name:<20}: {:>8.2} ms", t.elapsed().as_secs_f64() * 1e3);
+    }
+    out
+}
+
+/// `stage!("Commit", || …)`: one named prover stage, a `tracing` span plus an
+/// optional `LEANVM_PROFILE` timing line. A disabled span carries no metadata, so
+/// the name has to travel separately from `info_span!`.
+macro_rules! stage {
+    ($name:literal, $f:expr) => {
+        $crate::stage_impl($name, tracing::info_span!($name), $f)
+    };
+}
+pub(crate) use stage;
 
 pub(crate) use primitives::{log2_ceil_usize, log2_strict_usize};

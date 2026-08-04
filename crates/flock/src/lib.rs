@@ -14,16 +14,13 @@
 //! [`blake3`] is the one circuit: the BLAKE3 compression encoded as a
 //! per-block R1CS (`build_block_r1cs`), with the pinned root-block
 //! configuration baked into constant rows, plus its witness generation
-//! ([`blake3_witness`]) and the leanVM-facing reduction entry points
+//! (`blake3_witness`) and the leanVM-facing reduction entry points
 //! (`Blake3Setup::{prove_reduction, verify_reduction, …}`).
 
 pub mod blake3;
-pub mod blake3_witness;
+mod blake3_witness;
 pub mod lincheck;
 pub mod proof;
 pub mod r1cs;
 pub mod verifier;
 pub mod zerocheck;
-
-#[cfg(test)]
-pub(crate) mod test_rng;

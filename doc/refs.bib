@@ -1,0 +1,183 @@
+% References for the leanVM-b document.
+%
+% Merged from the three source notes.  Where the same work carried two keys
+% (Diamond--Posen, Ligerito, WHIR), the duplicates were folded into one
+% entry.  Flock appears twice on purpose: Flock26 is the paper, flock-impl
+% is the implementation the BLAKE3 table wires into.
+
+@inproceedings{DP26,
+  author    = {Benjamin E. Diamond and Jim Posen},
+  title     = {Polylogarithmic Proofs for Multilinears over Binary Towers},
+  booktitle = {Advances in Cryptology -- EUROCRYPT 2026},
+  pages     = {3--32},
+  publisher = {Springer},
+  year      = {2026},
+  doi       = {10.1007/978-3-032-25336-1_1},
+  url       = {https://eprint.iacr.org/2024/504},
+  note      = {Cryptology ePrint Archive, Paper 2024/504},
+}
+
+@inproceedings{ACFY25,
+  author    = {Gal Arnon and Alessandro Chiesa and Giacomo Fenzi and Eylon Yogev},
+  title     = {{WHIR}: Reed--Solomon Proximity Testing with Super-Fast Verification},
+  booktitle = {Advances in Cryptology -- EUROCRYPT 2025},
+  year      = {2025},
+  url       = {https://eprint.iacr.org/2024/1586},
+  note      = {Cryptology ePrint Archive, Paper 2024/1586},
+}
+
+@misc{NA25,
+  author = {Andrija Novakovic and Guillermo Angeris},
+  title  = {Ligerito: A Small and Concretely Fast Polynomial Commitment Scheme},
+  year   = {2025},
+  howpublished = {Cryptology ePrint Archive, Paper 2025/1187},
+  url    = {https://eprint.iacr.org/2025/1187},
+}
+
+@misc{Flock26,
+  author = {Benedikt B{\"u}nz and Ron Rothblum and William Wang},
+  title  = {Flock: Fast Proving for Batch Boolean Computations},
+  year   = {2026},
+  howpublished = {Cryptology ePrint Archive, Paper 2026/1329},
+  url    = {https://eprint.iacr.org/2026/1329},
+}
+
+@misc{Jagged26,
+  author = {Tamir Hemo and Kevin Jue and Eugene Rabinovich and Gyumin Roh and Ron D. Rothblum},
+  title  = {Jagged Polynomial Commitments (or: How to Stack Multilinears)},
+  year   = {2026},
+  howpublished = {Manuscript, April 2026},
+}
+
+@misc{flock-impl,
+  author = {{Succinct Labs}},
+  title  = {flock: a batched-R1CS proving system for hash circuits over binary towers},
+  howpublished = {\url{https://github.com/succinctlabs/flock}},
+}
+
+@misc{BCHKS25,
+  author = {Eli Ben-Sasson and Dan Carmon and Ulrich Hab{\"o}ck and
+            Swastik Kopparty and Shubhangi Saraf},
+  title  = {On Proximity Gaps for Reed--Solomon Codes},
+  year   = {2025},
+  howpublished = {Cryptology ePrint Archive, Paper 2025/2055},
+  url    = {https://eprint.iacr.org/2025/2055},
+}
+
+@inproceedings{BCS16,
+  author    = {Eli Ben-Sasson and Alessandro Chiesa and Nicholas Spooner},
+  title     = {Interactive Oracle Proofs},
+  booktitle = {Theory of Cryptography (TCC 2016-B)},
+  year      = {2016},
+}
+
+@inproceedings{BGKS20,
+  author    = {Eli Ben-Sasson and Lior Goldberg and Swastik Kopparty and
+               Shubhangi Saraf},
+  title     = {{DEEP-FRI}: Sampling Outside the Box Improves Soundness},
+  booktitle = {Innovations in Theoretical Computer Science (ITCS 2020)},
+  year      = {2020},
+}
+
+@inproceedings{CCHLRR19,
+  author    = {Ran Canetti and Yilei Chen and Justin Holmgren and
+               Alex Lombardi and Guy N. Rothblum and Ron D. Rothblum and
+               Daniel Wichs},
+  title     = {Fiat--Shamir: From Practice to Theory},
+  booktitle = {Symposium on Theory of Computing (STOC 2019)},
+  year      = {2019},
+}
+
+@inproceedings{LCH14,
+  author    = {Sian-Jheng Lin and Wei-Ho Chung and Yunghsiang S. Han},
+  title     = {Novel Polynomial Basis and its Application to
+               Reed--Solomon Erasure Codes},
+  booktitle = {Foundations of Computer Science (FOCS 2014)},
+  year      = {2014},
+}
+
+@article{LFKN92,
+  author  = {Carsten Lund and Lance Fortnow and Howard Karloff and Noam Nisan},
+  title   = {Algebraic Methods for Interactive Proof Systems},
+  journal = {Journal of the ACM},
+  volume  = {39},
+  number  = {4},
+  year    = {1992},
+}
+
+@misc{Gru24,
+  author = {Angus Gruen},
+  title  = {Some Improvements for the PIOP for ZeroCheck},
+  year   = {2024},
+  howpublished = {Cryptology ePrint Archive, Paper 2024/108},
+  url    = {https://eprint.iacr.org/2024/108},
+}
+
+@misc{ZCF23,
+  author = {Hadas Zeilberger and Binyi Chen and Benjamin Fisch},
+  title  = {BaseFold: Efficient Field-Agnostic Polynomial Commitment Schemes
+            from Foldable Codes},
+  year   = {2023},
+  howpublished = {Cryptology ePrint Archive, Paper 2023/1705},
+  url    = {https://eprint.iacr.org/2023/1705},
+}
+
+@misc{GRS23,
+  author = {Venkatesan Guruswami and Atri Rudra and Madhu Sudan},
+  title  = {Essential Coding Theory},
+  year   = {2023},
+  note   = {Draft textbook},
+}
+
+@misc{stark,
+  author = {Eli Ben-Sasson and Iddo Bentov and Yinon Horesh and Michael Riabzev},
+  title  = {Scalable, Transparent, and Post-Quantum Secure Computational Integrity},
+  year   = {2018},
+  howpublished = {Cryptology ePrint Archive, Paper 2018/046},
+  url    = {https://eprint.iacr.org/2018/046},
+}
+
+@misc{rfc8391,
+  author = {Andreas H{\"u}lsing and Denis Butin and Stefan-Lukas Gazdag and
+            Joost Rijneveld and Aziz Mohaisen},
+  title  = {{XMSS}: e{X}tended {M}erkle {S}ignature {S}cheme},
+  year   = {2018},
+  howpublished = {RFC 8391},
+  url    = {https://datatracker.ietf.org/doc/html/rfc8391},
+}
+
+@inproceedings{sphincs,
+  author    = {Daniel J. Bernstein and Andreas H{\"u}lsing and Stefan K{\"o}lbl and
+               Ruben Niederhagen and Joost Rijneveld and Peter Schwabe},
+  title     = {The {SPHINCS+} Signature Framework},
+  booktitle = {ACM Conference on Computer and Communications Security (CCS 2019)},
+  year      = {2019},
+  url       = {https://sphincs.org/},
+}
+
+@article{shor,
+  author  = {Peter W. Shor},
+  title   = {Polynomial-Time Algorithms for Prime Factorization and Discrete
+             Logarithms on a Quantum Computer},
+  journal = {SIAM Journal on Computing},
+  volume  = {26},
+  number  = {5},
+  pages   = {1484--1509},
+  year    = {1997},
+}
+
+@misc{m3,
+  author = {Irreducible},
+  title  = {Multi-Multiset Matching ({M3})},
+  note   = {Binius documentation},
+  howpublished = {\url{https://www.binius.xyz/basics/binius-v0/m3/}},
+}
+
+@inproceedings{blake3,
+  author = {Aumasson, Jean-Philippe and O'Connor, Jack and Neves, Samuel and Wilcox-O'Hearn, Zooko},
+  title = {The BLAKE3 Hashing Framework},
+  type = {Internet-Draft},
+  institution = {Internet Engineering Task Force},
+  year = {2024},
+  url = {https://www.ietf.org/archive/id/draft-aumasson-blake3-00.html}
+}

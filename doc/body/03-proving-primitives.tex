@@ -1,0 +1,19 @@
+\section{Proving primitives}\label{sec:prelim}
+
+Every physical committed column is $\K$-valued (\S\ref{sec:vm}); every challenge, sumcheck, zerocheck, GKR value, and evaluation claim is $\E$-valued, for the two fields $\K\subset\E\cong\F_{2^{192}}$ fixed in \S\ref{sec:vm}, so $|\E|=2^{192}$. The embedding and mixed product are
+\[
+  \K\hookrightarrow\E,\quad e\mapsto e+0\cdot y+0\cdot y^2,
+  \qquad
+  k(e_0+e_1y+e_2y^2)=ke_0+(ke_1)y+(ke_2)y^2.
+\]
+Committed columns and their truth tables are $\K$-valued; extensions are evaluated at $\E$-points; protocol randomness is sampled from $\E$. A $192$-bit \emph{value} column is represented by $V_0,V_1,V_2:\cube\kappa\to\K$ with $V=V_0+V_1y+V_2y^2$. Address, register, and counter columns are single $\K$-columns.
+
+\textbf{Multilinear extension (MLE).} A function $f:\cube{\kappa}\to\K$ (a committed column) or $f:\cube{\kappa}\to\E$ (a product-tree layer of \S\ref{sec:gkr}) has a unique multilinear extension $\widetilde f:\E^{\kappa}\to\E$, the polynomial of degree at most $1$ in each variable that agrees with $f$ on the boolean hypercube. Define $\eq(r,X)=\prod_i(1+r_i+X_i)$. For Boolean $r$, this is $1$ at $X=r$ and $0$ at the other Boolean points. For arbitrary $r\in\E^\kappa$, it gives the interpolation weights: $\widetilde f(r)=\sum_{x\in\cube\kappa}f(x)\eq(r,x)$.
+
+\textbf{Tables and columns.} A \emph{table} is a group of columns of the same size. Each column is \emph{committed} or \emph{virtual}: a virtual column is a $\K$-linear function of the committed columns of its table, carried with no commitment of its own. Such a map, extended $\E$-linearly, commutes with the multilinear extension, $\widetilde{L(x)}(\zeta)=L\bigl(\widetilde x(\zeta)\bigr)$, so one opening of the committed columns evaluates the virtual one.
+
+\textbf{Sumcheck.} Sumcheck reduces a claim $\sum_{x\in\cube\kappa}P(x)=s$ to a single evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$, over $\kappa$ rounds; a false claim passes with probability at most $\deg P\cdot\kappa/|\E|$.
+
+\textbf{Zerocheck.} To prove $P$ vanishes on $\cube\kappa$, the verifier samples $r\in\E^{\kappa}$ and runs sumcheck on $\sum_{x}P(x)\,\eq(r,x)=0$.
+
+\textbf{Inner-product PCS.} An \emph{inner-product commitment scheme} lets a prover commit to a multilinear $g:\cube{M}\to\K$ and later prove a weighted sum $\sum_{w\in\cube M} W(w)\,\widetilde g(w)=c$ against any weight $W:\cube{M}\to\E$ the verifier can evaluate: the commitment is over $\K$, the opening over $\E$. A point evaluation $\widetilde g(\mathbf r)$ at $\mathbf r\in\E^{M}$ is the special case $W=\eq(\mathbf r,\cdot)$. WHIR~\cite{ACFY25} and BaseFold~\cite{ZCF23}/Ligerito~\cite{NA25} are such schemes; we use one (\S\ref{sec:rs-dense}), specified with its soundness analysis in Annex~\ref{annex:pcs}, where such a claim is Definition~\ref{def:claim}.

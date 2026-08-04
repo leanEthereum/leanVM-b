@@ -22,14 +22,14 @@
 //!
 //!   `v  =  Σ_{i_inner}  Â_0(i_inner, x_inner) · ẑ(i_inner, x_outer)`
 //!
-//! — a sum over only `2^k_log` terms, with `ẑ(·, x_outer)` being the
+//! This is a sum over only `2^k_log` terms, with `ẑ(·, x_outer)` being the
 //! partial fold of `z` at the outer half of the claim point.
 //!
 //! ## Protocol shape (circuit R1CS: C = I, A & B share a claim point)
 //!
 //! For R1CS coming from circuits, `C = I` (identity), so `c = Cz = z` and
 //! the zerocheck's c-claim `ĉ(point_c) = v_c` IS a direct `z`-claim
-//! `ẑ(point_c) = v_c` — handled by the PCS without going through lincheck.
+//! `ẑ(point_c) = v_c`, handled by the PCS without going through lincheck.
 //! Likewise the zerocheck's `â` and `b̂` claims live at the **same** point
 //! `(z, ρ-values)`, so lincheck only needs to fold `z` **once** at that
 //! shared point.
@@ -56,7 +56,7 @@
 //! ## Soundness
 //!
 //! - The two scalar checks tie `z_vec` to `v_a` and `v_b` from the upstream
-//!   layer — without them a malicious prover could send any vector.
+//!   layer; without them a malicious prover could send any vector.
 //! - The post-vector random `(r_inner_skip, r_inner_rest)` plus Schwartz-Zippel
 //!   ensures that if `z_vec_claimed` differs from the true partial fold of `z`,
 //!   the derived `w` differs from the true `ẑ((r_inner_skip, r_inner_rest), x_outer)`
@@ -81,7 +81,7 @@
 //! Lagrange weights at `z_skip` for the `k_skip` skip dims (see
 //! [`build_quirky_eq_table`]).
 //!
-//! The prover's partial fold `ẑ(·, x_outer)` is unchanged — it only depends
+//! The prover's partial fold `ẑ(·, x_outer)` is unchanged: it only depends
 //! on `x_outer` (still pure multilinear). The verifier-side eq tables and
 //! the final-sample reduction are the only changes.
 //!
@@ -92,7 +92,7 @@
 //!   to outer vars.
 //! - **Eq table layout.** `eq_table[i]` where `i = Σ b_j · 2^j` is
 //!   `Π_j eq(point[j], b_j) = Π_j (1 + point[j] + b_j)`.
-//! - **`z_packed` byte layout (specific to lincheck — enables column-scan
+//! - **`z_packed` byte layout (specific to lincheck, enabling column-scan
 //!   lookup tables without an explicit transpose).** Writing `i_outer = 8·byte_idx + r`
 //!   with `r ∈ {0,..,7}` and `byte_idx ∈ {0,..,n_outer/8 − 1}`, the bit
 //!   `z[i_inner, i_outer]` lives at:
@@ -111,7 +111,7 @@
 //!   MSB:  (n_log − 3) bits = byte_idx (= upper bits of i_outer)
 //!   ```
 //!
-//!   This layout makes the partial-fold column scan sequential — for each
+//!   This layout makes the partial-fold column scan sequential: for each
 //!   `byte_idx`, all `k` per-i_inner bytes are at consecutive byte positions,
 //!   so we build a 256-entry sum table for the 8 outer values once per
 //!   `byte_idx` and apply it across all `i_inner` with one lookup + one XOR
@@ -122,6 +122,7 @@ use fiat_shamir::transcript::{ProverState, VerifierState};
 use pcs::ring_switch::inner_product_ext;
 use primitives::field::F192;
 use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
+use zk_alloc::ArenaVec;
 
 // ---------------------------------------------------------------------------
 // LincheckCircuit: the per-block linear structure lincheck consumes
@@ -132,12 +133,12 @@ use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
 //   `comb_vec[c] = α · ξ_A(c) + ξ_B(c)`
 //
 // where `ξ_M(c) = Σ_r eq_inner[r] · M[r, c]` is the eq-weighted column
-// marginal of base matrix `M ∈ {A_0, B_0}` — cost ∝ NNZ.
+// marginal of base matrix `M ∈ {A_0, B_0}`, at cost ∝ NNZ.
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
 // `&dyn LincheckCircuit` instead of a pair of matrices. Two live impls:
 // [`CscCircuit`] (the cached column-major transpose of BLAKE3's `(A_0, B_0)`,
-// see `BlockR1cs::csc_lincheck_circuit`) — the prover's marginal fold — and
+// see `BlockR1cs::csc_lincheck_circuit`), the prover's marginal fold, and
 // `blake3::WalkLincheckCircuit`, whose `bilinear_form` lets the verifier skip
 // the marginal entirely via the circuit walk (flock.tex §Circuit walking).
 
@@ -157,7 +158,7 @@ pub trait LincheckCircuit: Sync {
     /// comb so the sumcheck also proves that the committed constant column is the
     /// all-ones vector (whose MLE is the constant `1`), closing the all-zero
     /// witness soundness gap. This REQUIRES the witness to set that wire to `1`
-    /// in *every* batched instance — padding included. Default `None` keeps the transcript unchanged
+    /// in *every* batched instance, padding included. Default `None` keeps the transcript unchanged
     /// for circuits without a constant wire.
     fn const_pin_col(&self) -> Option<usize> {
         None
@@ -172,7 +173,7 @@ pub trait LincheckCircuit: Sync {
     /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
     /// [`verify`] only ever consumes the marginal through one inner product
     /// against a column-weight vector, so an implementation that can walk its
-    /// circuit (O(circuit) field ops — see `blake3::bilinear_walk`) answers
+    /// circuit (O(circuit) field ops, see `blake3::bilinear_walk`) answers
     /// here and never pays the ∝ NNZ marginal. Default `None`: the verifier
     /// falls back to `fold_alpha_batched`.
     fn bilinear_form(&self, _alpha: F192, _u: &[F192], _w: &[F192]) -> Option<F192> {
@@ -181,18 +182,16 @@ pub trait LincheckCircuit: Sync {
 }
 
 /// Column-major (CSC) `LincheckCircuit`: `(A_0, B_0)` transposed once into
-/// flat `col_ptr`/`row_idx` arrays. `fold_alpha_batched` becomes a gather —
+/// flat `col_ptr`/`row_idx` arrays. `fold_alpha_batched` becomes a gather:
 /// each column reads its own row list and sums `eq_inner[r]`, so columns are
 /// independent (parallel with no per-thread accumulator copies and no write
 /// scatter) and the α-mul amortizes to one per column:
 ///
 ///   `comb[c] = α · Σ_{r ∈ colA(c)} eq_inner[r] + Σ_{r ∈ colB(c)} eq_inner[r]`
 ///
-/// On the SHA-256 hybrid matrices (k = 2^15, ~1.3M nonzeros) this measures
-/// ~7× faster than the row-scatter fold and ~100× faster than the symbolic
-/// per-hash walkers; on BLAKE3 (~21M nonzeros) ~1.7× faster than row-scatter.
-/// Construction costs one pass over the nonzeros (~4 ms / ~40 ms for the
-/// above) — do it once at setup, e.g. via
+/// On BLAKE3's matrices (k = 2^14, ~21M nonzeros) this measures ~1.7× faster
+/// than the row-scatter fold. Construction costs one pass over the nonzeros
+/// (~40 ms), so do it once at setup, e.g. via
 /// [`crate::r1cs::BlockR1cs::csc_lincheck_circuit`].
 #[derive(Clone)]
 pub struct CscCircuit {
@@ -230,7 +229,7 @@ fn csc_from_rows(m: &SparseBinaryMatrix) -> (Vec<u32>, Vec<u32>) {
     (col_ptr, rows_flat)
 }
 
-// Compact Debug — the row arrays run to millions of entries.
+// Compact Debug: the row arrays run to millions of entries.
 impl std::fmt::Debug for CscCircuit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CscCircuit")
@@ -272,7 +271,6 @@ impl LincheckCircuit for CscCircuit {
         self.const_pin
     }
     fn fold_alpha_batched(&self, alpha: F192, eq_inner: &[F192]) -> Vec<F192> {
-        use rayon::prelude::*;
         assert_eq!(eq_inner.len(), self.n_cols);
         let one_col = |c: usize| {
             let mut sa = F192::ZERO;
@@ -288,9 +286,7 @@ impl LincheckCircuit for CscCircuit {
         if self.n_cols < SUMCHECK_PAR_THRESHOLD {
             return (0..self.n_cols).map(one_col).collect();
         }
-        let mut out = vec![F192::ZERO; self.n_cols];
-        out.par_iter_mut().enumerate().for_each(|(c, slot)| *slot = one_col(c));
-        out
+        parallel::map_collect(self.n_cols, one_col)
     }
 }
 
@@ -318,7 +314,7 @@ pub struct QuirkyPoint {
 // Lincheck prover message: a partial product-sumcheck that proves the two
 // scalar consistency equations against `z` partially folded at the shared
 // outer half `x_ab.x_outer`, without sending the full length-`2^k_log` vector.
-// (No LincheckProof struct: every scalar rides the shared transcript stream —
+// (No LincheckProof struct: every scalar rides the shared transcript stream:
 // the high multilinear rounds' messages, then `z_partial`, the post-sumcheck
 // length-2^k_skip collapse handled by a fresh-z_skip φ8 Lagrange combination.)
 
@@ -338,7 +334,7 @@ pub struct LincheckClaim {
     pub r_inner_skip: F192,
     /// Multilinear post-vector random sample, length `k_log − k_skip`.
     pub r_inner_rest: Vec<F192>,
-    /// `ẑ((r_inner_skip, r_inner_rest), x_ab.x_outer)` — the single
+    /// `ẑ((r_inner_skip, r_inner_rest), x_ab.x_outer)`, the single
     /// `z`-claim derived from the A and B consistency checks.
     pub w: F192,
 }
@@ -346,12 +342,6 @@ pub struct LincheckClaim {
 /// Reasons the verifier may reject.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
-    /// One of the proof vectors has the wrong length (expected `2^k_log`).
-    BadVectorLength {
-        which: &'static str,
-        expected: usize,
-        got: usize,
-    },
     /// One of the input quirky points has wrong `x_inner_rest` length
     /// (expected `k_log − k_skip`).
     BadInnerRestLength {
@@ -386,7 +376,7 @@ pub enum VerifyError {
 // Core kernels
 // ---------------------------------------------------------------------------
 
-/// Partial fold of `z` at the outer half of a claim point — single-matrix,
+/// Partial fold of `z` at the outer half of a claim point, single-matrix,
 /// **scalar reference**. Uses the lincheck `z_packed` stripe layout
 /// (see module docs).
 ///
@@ -425,18 +415,16 @@ pub fn partial_fold_packed_z(z_packed: &[u8], m: usize, k_log: usize, eq_outer: 
 }
 
 /// Padding-aware variant of `partial_fold_packed_z_fast`. Skips rows
-/// `i_inner ∈ [useful_bits, k)` — those rows hold zero in every block of an
+/// `i_inner ∈ [useful_bits, k)`, since those rows hold zero in every block of an
 /// honestly padded witness, so the fold over the outer dim is zero. Output
 /// is byte-identical to the dense path on such witnesses.
-pub fn partial_fold_packed_z_fast_padded(
+fn partial_fold_packed_z_fast_padded(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
     useful_bits: usize,
     eq_outer: &[F192],
 ) -> Vec<F192> {
-    use rayon::prelude::*;
-
     let n_log = m - k_log;
     let k = 1usize << k_log;
     let n_outer = 1usize << n_log;
@@ -449,37 +437,34 @@ pub fn partial_fold_packed_z_fast_padded(
     let stripes_per_chunk = (n_stripes / 256).max(1);
     let bytes_per_chunk = stripes_per_chunk * k;
 
-    // fold(): one length-k accumulator per WORKER rather than per chunk —
-    // at large k the per-chunk accumulators of map().reduce() dominate MT
-    // time with allocation + tree-reduce XOR traffic (keccak3: k = 2^17
-    // means 2 MB per chunk across ~128 chunks).
-    z_packed
-        .par_chunks(bytes_per_chunk)
-        .enumerate()
-        .fold(
-            || vec![F192::ZERO; k],
-            |mut acc, (chunk_idx, chunk_bytes)| {
-                let stripe_start = chunk_idx * stripes_per_chunk;
-                let mut table = vec![F192::ZERO; 256];
-                for (rel_stripe, stripe) in chunk_bytes.chunks(k).enumerate() {
-                    let byte_idx = stripe_start + rel_stripe;
-                    build_sum_table(&eq_outer[8 * byte_idx..8 * byte_idx + 8], &mut table);
-                    for (i_inner, &z_byte) in stripe[..useful_bits].iter().enumerate() {
-                        acc[i_inner] += table[z_byte as usize];
-                    }
+    // fold_reduce(): one length-k accumulator per WORKER rather than per chunk.
+    // At large k the per-chunk accumulators of a map/reduce dominate MT time
+    // with allocation plus tree-reduce XOR traffic (BLAKE3's k = 2^14 is
+    // 384 KB of accumulator per chunk, across ~128 chunks).
+    let n_chunks = z_packed.len().div_ceil(bytes_per_chunk);
+    parallel::fold_reduce(
+        n_chunks,
+        || vec![F192::ZERO; k],
+        |acc, chunk_idx| {
+            let lo = chunk_idx * bytes_per_chunk;
+            let chunk_bytes = &z_packed[lo..(lo + bytes_per_chunk).min(z_packed.len())];
+            let stripe_start = chunk_idx * stripes_per_chunk;
+            let mut table = vec![F192::ZERO; 256];
+            for (rel_stripe, stripe) in chunk_bytes.chunks(k).enumerate() {
+                let byte_idx = stripe_start + rel_stripe;
+                build_sum_table(&eq_outer[8 * byte_idx..8 * byte_idx + 8], &mut table);
+                for (i_inner, &z_byte) in stripe[..useful_bits].iter().enumerate() {
+                    acc[i_inner] += table[z_byte as usize];
                 }
-                acc
-            },
-        )
-        .reduce(
-            || vec![F192::ZERO; k],
-            |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b.iter()) {
-                    *x += *y;
-                }
-                a
-            },
-        )
+            }
+        },
+        |mut a, b| {
+            for (x, y) in a.iter_mut().zip(b.iter()) {
+                *x += *y;
+            }
+            a
+        },
+    )
 }
 
 /// Stripes swept per accumulator touch in the NEON tiled partial fold.
@@ -488,23 +473,12 @@ pub fn partial_fold_packed_z_fast_padded(
 /// `NEON_TILE_T × 4 KB` and must stay L1-resident.
 const NEON_TILE_T: usize = 8;
 
-/// Single-matrix NEON inner kernel — sweep TILE_T=8 stripes of a stripe-tile
-/// for one BLOCK_K=8 block of i_inner positions, keeping all 8 accumulators
-/// in NEON Q-registers.
-///
-/// # Safety
-/// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes.
-/// - `tables_ptr` must point to at least `TILE_T * 256` F192 entries.
-/// - `out_ptr` must point to at least 8 F192 entries of mutable storage.
 /// x86-64 twin of the tiled gather kernel below.
 ///
 /// `VPTERNLOGQ` is the exact counterpart of AArch64's `EOR3`: an arbitrary
 /// three-input bitwise function in one instruction, so immediate `0x96`
 /// (`a ^ b ^ c`) folds a paired-stripe accumulate the same way. Only the
-/// `c0`/`c1` limbs ride in the vector — `c2` is scalar and takes two XORs.
-///
-/// Before this, x86 had no tiled kernel at all: the dispatcher sent every
-/// non-AArch64 target to the generic `partial_fold_packed_z_fast_padded`.
+/// `c0`/`c1` limbs ride in the vector: `c2` is scalar and takes two XORs.
 ///
 /// # Safety
 /// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes, with `bs + 8`
@@ -514,7 +488,7 @@ const NEON_TILE_T: usize = 8;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
 #[inline(never)]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn process_block_neon_single(
+unsafe fn process_block_avx512_single(
     tile_bytes_ptr: *const u8,
     k: usize,
     bs: usize,
@@ -572,6 +546,20 @@ unsafe fn process_block_neon_single(
     }
 }
 
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
+use self::process_block_avx512_single as process_block_single;
+/// The two architectures' inner kernels are interchangeable at the call site.
+#[cfg(target_arch = "aarch64")]
+use self::process_block_neon_single as process_block_single;
+
+/// Single-matrix NEON inner kernel: sweep TILE_T=8 stripes of a stripe-tile
+/// for one BLOCK_K=8 block of i_inner positions, keeping all 8 accumulators
+/// in NEON Q-registers.
+///
+/// # Safety
+/// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes.
+/// - `tables_ptr` must point to at least `TILE_T * 256` F192 entries.
+/// - `out_ptr` must point to at least 8 F192 entries of mutable storage.
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -635,18 +623,54 @@ unsafe fn process_block_neon_single(
     }
 }
 
+/// Shared shape validation for the two tiled NEON folds. Returns
+/// `(k, n_tiles, useful)`, where `useful` is `useful_bits` rounded up to a
+/// `BLOCK_K` multiple: padded rows fold to zero, and a boundary block's padding
+/// bytes are 0 ⇒ `table[0] = 0` ⇒ they contribute nothing.
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
+))]
+fn neon_fold_params(
+    z_packed: &[u8],
+    m: usize,
+    k_log: usize,
+    useful_bits: usize,
+    eq_outer: &[F192],
+) -> (usize, usize, usize) {
+    const TILE_T: usize = NEON_TILE_T;
+    const BLOCK_K: usize = 8;
+
+    let n_log = m - k_log;
+    let k = 1usize << k_log;
+    let n_outer = 1usize << n_log;
+    assert_eq!(z_packed.len(), (1usize << m) / 8);
+    assert_eq!(eq_outer.len(), n_outer);
+    assert!(
+        n_log >= 3 + TILE_T.trailing_zeros() as usize,
+        "need n_outer ≥ 8·TILE_T stripes"
+    );
+    assert!(k_log >= 3, "need k ≥ 8");
+    assert!(useful_bits <= k);
+    let n_stripes = n_outer / 8;
+    assert_eq!(n_stripes % TILE_T, 0);
+    assert_eq!(k % BLOCK_K, 0);
+    let useful = (useful_bits.div_ceil(BLOCK_K) * BLOCK_K).min(k);
+    (k, n_stripes / TILE_T, useful)
+}
+
 /// **i_inner-partitioned** NEON partial fold: parallelizes over the
 /// **output** (`i_inner`) instead of over z stripes.
 ///
 /// Why: the stripe-parallel kernel gives every worker its own full length-`k`
 /// accumulator (2 MB at k = 2¹⁷). With P workers that's `P · 2 MB` of live
-/// accumulators — past ~3 workers it exceeds L2, so each worker's accumulator
+/// accumulators. Past ~3 workers it exceeds L2, so each worker's accumulator
 /// spills and gets re-streamed from **main memory** once per stripe-tile
 /// (≈ `n_tiles · 2·k` F192 of memory traffic). Measured: scaling saturates at
 /// ~5× on 10 cores (memory-bound), not ~10×.
 ///
 /// Here the workers own **disjoint** slices of a single shared `out`, so the
-/// total live accumulator is just `k` F192 = 2 MB — it stays L2-resident, never
+/// total live accumulator is just `k` F192 = 2 MB: it stays L2-resident, never
 /// re-streamed from memory, and there is **no final reduction**. Main-memory
 /// traffic drops to one pass over z plus one write of `out`. Each worker still
 /// uses the register-tiled inner kernel (8 accumulators across `TILE_T`
@@ -656,39 +680,19 @@ unsafe fn process_block_neon_single(
     target_arch = "aarch64",
     all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
 ))]
-pub fn partial_fold_packed_z_neon_iblock_padded(
+fn partial_fold_packed_z_iblock_padded(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
     useful_bits: usize,
     eq_outer: &[F192],
 ) -> Vec<F192> {
-    use rayon::prelude::*;
-
     const TILE_T: usize = NEON_TILE_T;
     const BLOCK_K: usize = 8;
 
-    let n_log = m - k_log;
-    let k = 1usize << k_log;
-    let n_outer = 1usize << n_log;
-    assert_eq!(z_packed.len(), (1usize << m) / 8);
-    assert_eq!(eq_outer.len(), n_outer);
-    assert!(
-        n_log >= 3 + TILE_T.trailing_zeros() as usize,
-        "need n_outer ≥ 8·TILE_T stripes"
-    );
-    assert!(k_log >= 3, "need k ≥ 8");
-    assert!(useful_bits <= k);
-    let n_stripes = n_outer / 8;
-    assert_eq!(n_stripes % TILE_T, 0);
-    assert_eq!(k % BLOCK_K, 0);
-    let n_tiles = n_stripes / TILE_T;
+    let (k, n_tiles, useful) = neon_fold_params(z_packed, m, k_log, useful_bits, eq_outer);
 
-    // Only i_inner < useful_bits can be nonzero (padded rows fold to 0). Round
-    // up to BLOCK_K; the boundary block's padding bytes are 0 ⇒ table[0] = 0 ⇒
-    // contribute nothing. Rows [useful, k) stay zero from the vec init.
-    let useful = (useful_bits.div_ceil(BLOCK_K) * BLOCK_K).min(k);
-
+    // Rows [useful, k) stay zero from the vec init.
     let mut out = vec![F192::ZERO; k];
     if useful == 0 {
         return out;
@@ -696,66 +700,54 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
 
     // Partition the useful i_inner range across workers. Each chunk independently
     // rebuilds the per-tile sum tables, so chunk count drives redundant table
-    // work — work that does NOT scale with cores and dominates the residual at
-    // m=30 (≈3.3 ms/core at 3 chunks/worker). On the homogeneous pinned P-core
-    // pool, 1 chunk/worker is perfectly balanced (par_chunks_mut → exactly `p`
-    // equal chunks) and cuts that residual ~3×: partial-fold MT 6.2 → 4.5 ms,
-    // no ST change. Oversubscribe (3/worker) only when the pool is larger than
-    // the P-core count — i.e. likely includes slower E-cores — so rayon can
-    // steal from a straggler. Each chunk is a BLOCK_K multiple.
-    let p = rayon::current_num_threads().max(1);
-    let chunks_per_worker = if p <= primitives::perf_core_count_cached() {
-        1
-    } else {
-        3
-    };
-    let i_chunk = (useful / (p * chunks_per_worker))
-        .max(BLOCK_K)
-        .next_multiple_of(BLOCK_K);
+    // work that does NOT scale with cores and dominates the residual at
+    // m=30 (≈3.3 ms/core at 3 chunks/worker). One chunk per worker minimizes that
+    // redundancy; the pool's claim counter then rebalances a straggler (an
+    // efficiency core, say) without needing extra chunks to steal from. Each
+    // chunk is a BLOCK_K multiple.
+    let p = parallel::num_threads();
+    let i_chunk = (useful / p).max(BLOCK_K).next_multiple_of(BLOCK_K);
 
-    out[..useful]
-        .par_chunks_mut(i_chunk)
-        .enumerate()
-        .for_each(|(ci, out_slice)| {
-            let i_base = ci * i_chunk;
-            let n_block = out_slice.len() / BLOCK_K;
-            // TILE_T × 256 F192 = 32 KB tables, L1-resident, rebuilt per tile.
-            let mut tables = vec![F192::ZERO; TILE_T * 256];
-            for tile in 0..n_tiles {
-                let stripe_base = tile * TILE_T;
-                for t in 0..TILE_T {
-                    let eq_off = 8 * (stripe_base + t);
-                    build_sum_table(&eq_outer[eq_off..eq_off + 8], &mut tables[t * 256..(t + 1) * 256]);
-                }
-                let tables_ptr = tables.as_ptr();
-                // Base of this (tile, i_base): process_block reads
-                // z_base[t·k + bs] = z[(stripe_base+t)·k + i_base + bs].
-                let z_base = unsafe { z_packed.as_ptr().add(stripe_base * k + i_base) };
-                for b in 0..n_block {
-                    let i = b * BLOCK_K;
-                    unsafe {
-                        process_block_neon_single(z_base, k, i, tables_ptr, out_slice.as_mut_ptr().add(i));
-                    }
+    parallel::chunks_mut(&mut out[..useful], i_chunk, |ci, out_slice| {
+        let i_base = ci * i_chunk;
+        let n_block = out_slice.len() / BLOCK_K;
+        // TILE_T × 256 F192 = 32 KB tables, L1-resident, rebuilt per tile.
+        let mut tables = vec![F192::ZERO; TILE_T * 256];
+        for tile in 0..n_tiles {
+            let stripe_base = tile * TILE_T;
+            for t in 0..TILE_T {
+                let eq_off = 8 * (stripe_base + t);
+                build_sum_table(&eq_outer[eq_off..eq_off + 8], &mut tables[t * 256..(t + 1) * 256]);
+            }
+            let tables_ptr = tables.as_ptr();
+            // Base of this (tile, i_base): process_block reads
+            // z_base[t·k + bs] = z[(stripe_base+t)·k + i_base + bs].
+            let z_base = unsafe { z_packed.as_ptr().add(stripe_base * k + i_base) };
+            for b in 0..n_block {
+                let i = b * BLOCK_K;
+                unsafe {
+                    process_block_single(z_base, k, i, tables_ptr, out_slice.as_mut_ptr().add(i));
                 }
             }
-        });
+        }
+    });
     out
 }
 
-/// Outer(tile)-partitioned sibling of [`partial_fold_packed_z_neon_iblock_padded`]
-/// — same result, parallelized to remove the redundant per-worker sum-table
+/// Outer(tile)-partitioned sibling of [`partial_fold_packed_z_iblock_padded`]
+/// with the same result, parallelized to remove the redundant per-worker sum-table
 /// rebuilds that cap iblock's multicore scaling. **This is the default fold**
 /// (`partial_fold_packed_z_best`).
 ///
 /// iblock partitions the length-k **output** across workers, so every worker
-/// rebuilds **all** `n_stripes` tile tables — table work is done `p`× and does not
+/// rebuilds **all** `n_stripes` tile tables: table work is done `p`× and does not
 /// shrink with cores (≈44 % of the MT wall at m=32). Here we partition the **tiles**
 /// (outer/stripe dim): each worker owns a contiguous tile band, builds each of its
 /// tile tables exactly **once**, folds them into a private length-k partial, and the
 /// `p` partials are XOR-reduced at the end. The partial is the full length-k
 /// (256 KB at k_log=14 ⇒ spills L1 to L2), but the register-tiled inner kernel keeps
-/// 8 F192 accumulators in NEON registers, so the L2 traffic is mild — measured ≈2 %
-/// ST cost at m=32, none at m=30 — and far cheaper than iblock's redundant tables:
+/// 8 F192 accumulators in NEON registers, so the L2 traffic is mild (measured ≈2 %
+/// ST cost at m=32, none at m=30), and far cheaper than iblock's redundant tables:
 /// the fold scales ~8.5× vs iblock's ~6.5× on 10 P-cores at m=32, and the margin
 /// grows with the outer dim (the redundant-table cost it removes is ∝ `n_stripes`).
 ///
@@ -764,49 +756,31 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
     target_arch = "aarch64",
     all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
 ))]
-pub fn partial_fold_packed_z_neon_oblock_padded(
+fn partial_fold_packed_z_oblock_padded(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
     useful_bits: usize,
     eq_outer: &[F192],
 ) -> Vec<F192> {
-    use rayon::prelude::*;
-
     const TILE_T: usize = NEON_TILE_T;
     const BLOCK_K: usize = 8;
 
-    let n_log = m - k_log;
-    let k = 1usize << k_log;
-    let n_outer = 1usize << n_log;
-    assert_eq!(z_packed.len(), (1usize << m) / 8);
-    assert_eq!(eq_outer.len(), n_outer);
-    assert!(
-        n_log >= 3 + TILE_T.trailing_zeros() as usize,
-        "need n_outer ≥ 8·TILE_T stripes"
-    );
-    assert!(k_log >= 3, "need k ≥ 8");
-    assert!(useful_bits <= k);
-    let n_stripes = n_outer / 8;
-    assert_eq!(n_stripes % TILE_T, 0);
-    assert_eq!(k % BLOCK_K, 0);
-    let n_tiles = n_stripes / TILE_T;
+    let (k, n_tiles, useful) = neon_fold_params(z_packed, m, k_log, useful_bits, eq_outer);
 
-    // Only i_inner < useful_bits can be nonzero (padded rows fold to 0). Rounded
-    // up to BLOCK_K; columns [useful, k) stay zero from the partial init.
-    let useful = (useful_bits.div_ceil(BLOCK_K) * BLOCK_K).min(k);
+    // Columns [useful, k) stay zero from the partial init.
     if useful == 0 {
         return vec![F192::ZERO; k];
     }
 
     // One private length-k partial per worker; workers own contiguous tile bands,
     // so each tile's sum-tables are built exactly once (not once per worker).
-    let p = rayon::current_num_threads().max(1);
+    let p = parallel::num_threads();
     let tiles_per_worker = n_tiles.div_ceil(p);
     let n_workers = n_tiles.div_ceil(tiles_per_worker); // ≤ p, every band non-empty
 
     let mut partials = vec![F192::ZERO; n_workers * k];
-    partials.par_chunks_mut(k).enumerate().for_each(|(w, partial)| {
+    parallel::chunks_mut(&mut partials, k, |w, partial| {
         let tile_lo = w * tiles_per_worker;
         let tile_hi = ((w + 1) * tiles_per_worker).min(n_tiles);
         // TILE_T × 256 F192 = 32 KB tables, L1-resident, built once per tile.
@@ -822,7 +796,7 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
             let mut bs = 0usize;
             while bs < useful {
                 unsafe {
-                    process_block_neon_single(z_base, k, bs, tables_ptr, partial.as_mut_ptr().add(bs));
+                    process_block_single(z_base, k, bs, tables_ptr, partial.as_mut_ptr().add(bs));
                 }
                 bs += BLOCK_K;
             }
@@ -833,8 +807,13 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
     // workers so each 256 KB partial is streamed once (cache-friendly).
     let (first, rest) = partials.split_at(k);
     let mut out = first.to_vec();
+    let col_chunk = parallel::recommended_chunk_size(k);
     for chunk in rest.chunks(k) {
-        out.par_iter_mut().zip(chunk.par_iter()).for_each(|(o, s)| *o += *s);
+        parallel::chunks_mut_zip(&mut out, chunk, col_chunk, |_, o, s| {
+            for (o_i, s_i) in o.iter_mut().zip(s) {
+                *o_i += *s_i;
+            }
+        });
     }
     out
 }
@@ -859,15 +838,15 @@ fn partial_fold_packed_z_best(
             // Pick the partition that wins for this size. The outer(tile)-partitioned
             // `oblock` builds each tile's sum-tables once instead of once per worker,
             // so it scales the fold far better (≈8.5× vs iblock's ≈6.5× on 10 P-cores
-            // at m=32) — BUT its private-partial alloc + XOR-reduce overhead makes it
+            // at m=32), BUT its private-partial alloc + XOR-reduce overhead makes it
             // up to ~1.7× SLOWER on small folds. Empirically (M4 Max, 10 P-cores) the
-            // crossover sits at n_log ≈ 15–16 across k_log ∈ {11,14}, so gate oblock at
+            // crossover sits at n_log ≈ 15 to 16 across k_log ∈ {11,14}, so gate oblock at
             // n_log ≥ 16; below that the L1-resident `iblock` wins.
             let n_log = m - k_log;
             if n_log >= OBLOCK_MIN_N_LOG {
-                return partial_fold_packed_z_neon_oblock_padded(z_packed, m, k_log, useful_bits, eq_outer);
+                return partial_fold_packed_z_oblock_padded(z_packed, m, k_log, useful_bits, eq_outer);
             }
-            partial_fold_packed_z_neon_iblock_padded(z_packed, m, k_log, useful_bits, eq_outer)
+            partial_fold_packed_z_iblock_padded(z_packed, m, k_log, useful_bits, eq_outer)
         }
         #[cfg(not(any(
             target_arch = "aarch64",
@@ -929,7 +908,7 @@ fn build_sum_table(eq8: &[F192], table: &mut [F192]) {
 ///
 /// See the module-level docs for the full bit-position decomposition.
 #[cfg(test)]
-pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
+pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> ArenaVec<u8> {
     let k = 1usize << k_log;
     let n_total = 1usize << m;
     assert_eq!(z_logical.len(), n_total);
@@ -937,7 +916,7 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
     let n_stripes = n_outer / 8;
 
-    let mut z_packed = primitives::alloc_uninit(n_total / 8);
+    let mut z_packed = zk_alloc::alloc_uninit(n_total / 8);
     for byte_idx in 0..n_stripes {
         for i_inner in 0..k {
             let mut byte = 0u8;
@@ -952,24 +931,23 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
         }
     }
     // SAFETY: the nested loops write every output byte exactly once.
-    unsafe { primitives::assume_init(z_packed) }
+    unsafe { zk_alloc::assume_init(z_packed) }
 }
 
 /// Same output as `pack_z_lincheck`, but reads bits from a 128-bit packed
 /// witness embedded in F192. In the polynomial basis, logical bit `i` is bit
 /// `i % 128` of `z_packed_words[i / 128]`.
-pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> Vec<u8> {
-    use rayon::prelude::*;
+pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> ArenaVec<u8> {
     let k = 1usize << k_log;
     let n_total = 1usize << m;
     assert_eq!(z_packed_words.len(), n_total / 128);
     let n_outer = n_total / k;
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
 
-    let mut z_packed = primitives::alloc_uninit(n_total / 8);
-    // Each stripe (byte_idx) writes a disjoint k-byte chunk — process them in
+    let mut z_packed = zk_alloc::alloc_uninit(n_total / 8);
+    // Each stripe (byte_idx) writes a disjoint k-byte chunk, so process them in
     // parallel. Inside one stripe, k independent output bytes.
-    z_packed.par_chunks_mut(k).enumerate().for_each(|(byte_idx, chunk)| {
+    parallel::chunks_mut(&mut z_packed, k, |byte_idx, chunk| {
         for i_inner in 0..k {
             let mut byte = 0u8;
             for r in 0..8 {
@@ -990,7 +968,7 @@ pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m
         }
     });
     // SAFETY: every parallel chunk writes each of its output bytes exactly once.
-    unsafe { primitives::assume_init(z_packed) }
+    unsafe { zk_alloc::assume_init(z_packed) }
 }
 
 /// Build the **quirky eq table** for a claim point on the inner half:
@@ -1008,31 +986,32 @@ pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m
 ///
 /// Cost: 64 (Lagrange) + 32 (eq) + 2048 outer products ≈ tiny.
 pub fn build_quirky_eq_table(z_skip: F192, x_inner_rest: &[F192], k_skip: usize) -> Vec<F192> {
-    let ell_skip = 1usize << k_skip;
-    let ell_rest = 1usize << x_inner_rest.len();
     let lambda_skip = lagrange_weights_naive(k_skip, z_skip);
     let eq_rest = build_eq(x_inner_rest);
-    let total = ell_skip * ell_rest;
-    let mut out = Vec::with_capacity(total);
     // Layout: index = i_skip + i_inner_rest · 2^k_skip  ⇒  i_skip is low bits.
-    for &er in &eq_rest {
-        for &ls in &lambda_skip {
-            out.push(ls * er);
+    outer_product(&eq_rest, &lambda_skip)
+}
+
+/// `out[i_lo + i_hi · lo.len()] = lo[i_lo] · hi[i_hi]`: the `lo` dims vary
+/// fastest, so `lo` occupies the low bits of the output index.
+fn outer_product(hi: &[F192], lo: &[F192]) -> Vec<F192> {
+    let mut out = Vec::with_capacity(hi.len() * lo.len());
+    for &h in hi {
+        for &l in lo {
+            out.push(l * h);
         }
     }
-    debug_assert_eq!(out.len(), total);
     out
 }
 
-/// Length above which the inner product / element-wise kernels split via
-/// rayon. Below it, sequential beats dispatch overhead.
+/// Length above which the inner product / element-wise kernels fan out to the
+/// pool. Below it, sequential beats dispatch overhead.
 const SUMCHECK_PAR_THRESHOLD: usize = 1usize << 12;
 
 /// One round of product-sumcheck on `(c, z)`: compute `(q(1), q(∞))` =
 /// `(Σ c_hi·z_hi, Σ (c_hi+c_lo)·(z_hi+z_lo))` over the top-bit split. The
 /// `len()` of `c` and `z` is even; `half = len/2`.
 fn sumcheck_round_eval_par(c: &[F192], z: &[F192]) -> (F192, F192) {
-    use rayon::prelude::*;
     let half = c.len() / 2;
     debug_assert_eq!(z.len(), c.len());
     let (clo, chi) = c.split_at(half);
@@ -1046,20 +1025,21 @@ fn sumcheck_round_eval_par(c: &[F192], z: &[F192]) -> (F192, F192) {
         }
         return (e1, einf);
     }
-    (0..half)
-        .into_par_iter()
-        .map(|i| {
+    parallel::map_reduce(
+        half,
+        || (F192::ZERO, F192::ZERO),
+        |i| {
             let e1_i = chi[i] * zhi[i];
             let einf_i = (chi[i] + clo[i]) * (zhi[i] + zlo[i]);
             (e1_i, einf_i)
-        })
-        .reduce(|| (F192::ZERO, F192::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
+        },
+        |a, b| (a.0 + b.0, a.1 + b.1),
+    )
 }
 
 /// Bind the top remaining variable of `v` at challenge `r`: `v[i] ← v[i] +
 /// r·(v[i+half] + v[i])` for `i ∈ [0, half)`, then truncate to `half`. In-place.
-pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F192>, r: F192) {
-    use rayon::prelude::*;
+fn sumcheck_bind_top_in_place_par(v: &mut Vec<F192>, r: F192) {
     let half = v.len() / 2;
     if half < SUMCHECK_PAR_THRESHOLD {
         for i in 0..half {
@@ -1068,26 +1048,11 @@ pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F192>, r: F192) {
     } else {
         let (lo, hi) = v.split_at_mut(half);
         let hi = &hi[..half];
-        lo.par_iter_mut().zip(hi.par_iter()).for_each(|(lo_i, &hi_i)| {
-            *lo_i = *lo_i + r * (hi_i + *lo_i);
-        });
-    }
-    v.truncate(half);
-}
-
-/// Tower (`F192`) twin of [`sumcheck_bind_top_in_place_par`], for the verifier.
-pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F192>, r: F192) {
-    use rayon::prelude::*;
-    let half = v.len() / 2;
-    if half < SUMCHECK_PAR_THRESHOLD {
-        for i in 0..half {
-            v[i] = v[i] + r * (v[i + half] + v[i]);
-        }
-    } else {
-        let (lo, hi) = v.split_at_mut(half);
-        let hi = &hi[..half];
-        lo.par_iter_mut().zip(hi.par_iter()).for_each(|(lo_i, &hi_i)| {
-            *lo_i = *lo_i + r * (hi_i + *lo_i);
+        let chunk = parallel::recommended_chunk_size(half);
+        parallel::chunks_mut_zip(lo, hi, chunk, |_, lo_c, hi_c| {
+            for (lo_i, &hi_i) in lo_c.iter_mut().zip(hi_c) {
+                *lo_i = *lo_i + r * (hi_i + *lo_i);
+            }
         });
     }
     v.truncate(half);
@@ -1095,7 +1060,7 @@ pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F192>, r: F192) {
 
 /// **Fused fold + next-round evaluation.** Binds the top variable of *both*
 /// `comb` and `z` at `r` (in place, each length halves) AND returns the next
-/// product-sumcheck round's message `(q(1), q(∞))` over the just-bound tables —
+/// product-sumcheck round's message `(q(1), q(∞))` over the just-bound tables,
 /// all in a single pass over the data.
 ///
 /// Why it fuses: round `t`'s message must be sent before `r_t` is sampled, so
@@ -1115,11 +1080,10 @@ pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F192>, r: F192) {
 /// In-place is safe: each `i` reads its 4 quarter-entries before writing the 2
 /// low-half slots, and writes across distinct `i` are disjoint. Requires
 /// `comb.len() == z.len()`, a power of two ≥ 4 (so the bound length ≥ 2 has a
-/// well-defined next round — the caller guarantees this by only fusing when a
+/// well-defined next round; the caller guarantees this by only fusing when a
 /// later round exists). The returned message is bit-identical to
 /// `sumcheck_round_eval_par` run on the bound tables.
 fn sumcheck_bind_both_and_eval_next(comb: &mut Vec<F192>, z: &mut Vec<F192>, r: F192) -> (F192, F192) {
-    use rayon::prelude::*;
     let len = comb.len();
     debug_assert_eq!(z.len(), len);
     let half = len / 2;
@@ -1151,26 +1115,39 @@ fn sumcheck_bind_both_and_eval_next(comb: &mut Vec<F192>, z: &mut Vec<F192>, r: 
         }
         (e1, einf)
     } else {
-        cq0.par_iter_mut()
-            .zip(cq1.par_iter_mut())
-            .zip(cq2.par_iter())
-            .zip(cq3.par_iter())
-            .zip(zq0.par_iter_mut())
-            .zip(zq1.par_iter_mut())
-            .zip(zq2.par_iter())
-            .zip(zq3.par_iter())
-            .map(|(((((((c0, c1), c2), c3), z0), z1), z2), z3)| {
-                let lo = *c0 + r * (*c2 + *c0);
-                let hi = *c1 + r * (*c3 + *c1);
-                let zlo = *z0 + r * (*z2 + *z0);
-                let zhi = *z1 + r * (*z3 + *z1);
+        // The two written quarters are indexed rather than zipped: eight-way
+        // `zip` of four mutable and four shared slices has no counterpart here,
+        // and index `i` of each quarter is written by exactly one task.
+        let cq0_p = parallel::SendPtr(cq0.as_mut_ptr());
+        let cq1_p = parallel::SendPtr(cq1.as_mut_ptr());
+        let zq0_p = parallel::SendPtr(zq0.as_mut_ptr());
+        let zq1_p = parallel::SendPtr(zq1.as_mut_ptr());
+        parallel::map_reduce(
+            half2,
+            || (F192::ZERO, F192::ZERO),
+            |i| {
+                // SAFETY: distinct `i` touch distinct slots of four disjoint
+                // quarters (`split_at_mut` above), all borrowed for the dispatch.
+                let (c0, c1, z0, z1) = unsafe {
+                    (
+                        &mut *cq0_p.add(i),
+                        &mut *cq1_p.add(i),
+                        &mut *zq0_p.add(i),
+                        &mut *zq1_p.add(i),
+                    )
+                };
+                let lo = *c0 + r * (cq2[i] + *c0);
+                let hi = *c1 + r * (cq3[i] + *c1);
+                let zlo = *z0 + r * (zq2[i] + *z0);
+                let zhi = *z1 + r * (zq3[i] + *z1);
                 *c0 = lo;
                 *c1 = hi;
                 *z0 = zlo;
                 *z1 = zhi;
                 (hi * zhi, (hi + lo) * (zhi + zlo))
-            })
-            .reduce(|| (F192::ZERO, F192::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
+            },
+            |a, b| (a.0 + b.0, a.1 + b.1),
+        )
     };
 
     comb.truncate(half);
@@ -1182,13 +1159,14 @@ fn sumcheck_bind_both_and_eval_next(comb: &mut Vec<F192>, z: &mut Vec<F192>, r: 
 // API
 // ---------------------------------------------------------------------------
 
-/// Variant of the prover that also returns the **pre-sumcheck** z_vec
+/// The lincheck prover. Also returns the **pre-sumcheck** z_vec
 /// (`output[i_inner] = ẑ(i_inner, x_ab.x_outer)`, length `2^k_log`). The
 /// downstream PCS reuses this vector to compute the AB-claim's ring-switch
 /// `s_hat_v` via [`pcs::ring_switch::s_hat_v_from_z_vec`], skipping a
 /// `fold_1b_rows` pass at open time.
 ///
-/// Pays one extra `2^k_log` F192 clone (~2 MB at k_log=17) before the
+/// Pays one extra `2^k_log` F192 clone (~2 MB at k_log=17), taken before the
+/// sumcheck folds `z_vec` down in place.
 pub fn prove_padded_capture_z_vec<O>(
     z_packed: &[u8],
     m: usize,
@@ -1199,22 +1177,6 @@ pub fn prove_padded_capture_z_vec<O>(
     x_ab: &QuirkyPoint,
     ps: &mut ProverState<O>,
 ) -> (LincheckClaim, Vec<F192>) {
-    let (claim, captured) = prove_padded_inner(z_packed, m, k_log, k_skip, useful_bits, circuit, x_ab, true, ps);
-    (claim, captured.expect("capture=true must produce z_vec"))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn prove_padded_inner<O>(
-    z_packed: &[u8],
-    m: usize,
-    k_log: usize,
-    k_skip: usize,
-    useful_bits: usize,
-    circuit: &dyn LincheckCircuit,
-    x_ab: &QuirkyPoint,
-    capture_z_vec: bool,
-    ps: &mut ProverState<O>,
-) -> (LincheckClaim, Option<Vec<F192>>) {
     let k = 1usize << k_log;
     let n_log = m - k_log;
     assert!(m >= k_log);
@@ -1226,11 +1188,11 @@ fn prove_padded_inner<O>(
     assert_eq!(x_ab.x_outer.len(), n_log);
 
     let trace = std::env::var("LINCHECK_TRACE").is_ok();
-
-    // Keep local copies of the tower-valued claim point used throughout the fold.
-    let z_skip_g = x_ab.z_skip;
-    let x_inner_rest_g = x_ab.x_inner_rest.to_vec();
-    let x_outer_g = x_ab.x_outer.to_vec();
+    let stage = |name: &str, t: std::time::Instant| {
+        if trace {
+            eprintln!("[lc] {name:<26} {:>7.2} ms", t.elapsed().as_secs_f64() * 1e3);
+        }
+    };
 
     // 1. Sample α (matches verifier's order). Used to batch the two scalar
     //    consistency checks v_a, v_b into a single sumcheck.
@@ -1240,54 +1202,36 @@ fn prove_padded_inner<O>(
     //    the sparse-matrix default this is the fused single-pass row-fold;
     //    per-hash circuit walkers compute the same `comb_vec` directly from
     //    the constraint graph.
-    let t = if trace { Some(std::time::Instant::now()) } else { None };
-    let eq_inner = build_quirky_eq_table(z_skip_g, &x_inner_rest_g, k_skip);
-    if let Some(t) = t {
-        eprintln!(
-            "[lc] {:<26} {:>7.2} ms",
-            "build_quirky_eq",
-            t.elapsed().as_secs_f64() * 1e3
-        );
-    }
-    let t = if trace { Some(std::time::Instant::now()) } else { None };
+    let t = std::time::Instant::now();
+    let eq_inner = build_quirky_eq_table(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
+    stage("build_quirky_eq", t);
+    let t = std::time::Instant::now();
     let mut comb_vec = circuit.fold_alpha_batched(alpha, &eq_inner);
-    if let Some(t) = t {
-        eprintln!(
-            "[lc] {:<26} {:>7.2} ms",
-            "fold_alpha_batched",
-            t.elapsed().as_secs_f64() * 1e3
-        );
-    }
+    stage("fold_alpha_batched", t);
 
-    // 2b. Constant-wire pin. Fold β·eq(j*, ·) into the comb so the same sumcheck
-    //     also proves z_vec[j*] = 1 (the all-ones constant column). Since j* is a
-    //     boolean index, eq(j*, ·) is the one-hot vector and this is a single
-    //     entry update. β is sampled after α; the verifier mirrors both. See
-    //     lincheck's `LincheckCircuit::const_pin_col`.
+    // 3. Constant-wire pin. Fold β·eq(j*, ·) into the comb so the same sumcheck
+    //    also proves z_vec[j*] = 1 (the all-ones constant column). Since j* is a
+    //    boolean index, eq(j*, ·) is the one-hot vector and this is a single
+    //    entry update. β is sampled after α; the verifier mirrors both. See
+    //    lincheck's `LincheckCircuit::const_pin_col`.
     let mut beta = F192::ZERO;
     if let Some(col) = circuit.const_pin_col() {
         beta = ps.sample();
         comb_vec[col] += beta;
     }
 
-    // 3. Partial fold of z at the shared outer half (length-k F192 vector).
-    let t = if trace { Some(std::time::Instant::now()) } else { None };
-    let eq_x_outer = build_eq(&x_outer_g);
+    // 4. Partial fold of z at the shared outer half (length-k F192 vector).
+    let t = std::time::Instant::now();
+    let eq_x_outer = build_eq(&x_ab.x_outer);
     let mut z_vec = partial_fold_packed_z_best(z_packed, m, k_log, useful_bits, &eq_x_outer);
-    if let Some(t) = t {
-        eprintln!(
-            "[lc] {:<26} {:>7.2} ms",
-            "partial_fold_z",
-            t.elapsed().as_secs_f64() * 1e3
-        );
-    }
-    // 3b. Optional capture: clone the pre-sumcheck z_vec for downstream reuse
-    //     (PCS open's AB-claim s_hat_v skipping fold_1b_rows). Only pay the
-    //     clone when explicitly requested.
-    let captured_z_vec: Option<Vec<F192>> = if capture_z_vec { Some(z_vec.clone()) } else { None };
-    let t_sumcheck_start = if trace { Some(std::time::Instant::now()) } else { None };
+    stage("partial_fold_z", t);
 
-    // 5. Standard multilinear product-sumcheck over the high `inner_rest_len`
+    // 5. Capture the pre-sumcheck z_vec for downstream reuse (PCS open's
+    //    AB-claim s_hat_v, skipping fold_1b_rows).
+    let captured_z_vec = z_vec.clone();
+    let t_sumcheck = std::time::Instant::now();
+
+    // 6. Standard multilinear product-sumcheck over the high `inner_rest_len`
     //    bits of `i`. Each round binds the TOP remaining bit. After `inner_rest_len` rounds, both
     //    tables collapse to length `2^k_skip`. Per-round work is parallel via
     //    rayon when the residual table is large enough.
@@ -1295,7 +1239,7 @@ fn prove_padded_inner<O>(
     if inner_rest_len > 0 {
         // Round 0's message is the only standalone evaluation pass; every later
         // round's message falls out of binding the previous round (fold +
-        // next-eval fused into one pass — see `sumcheck_bind_both_and_eval_next`).
+        // next-eval fused into one pass, see `sumcheck_bind_both_and_eval_next`).
         let (mut e1, mut einf) = sumcheck_round_eval_par(&comb_vec, &z_vec);
         for t in 0..inner_rest_len {
             ps.add_scalar(e1);
@@ -1314,35 +1258,29 @@ fn prove_padded_inner<O>(
             }
         }
     }
-    if let Some(t) = t_sumcheck_start {
-        eprintln!(
-            "[lc] {:<26} {:>7.2} ms",
-            "sumcheck (all rounds)",
-            t.elapsed().as_secs_f64() * 1e3
-        );
-    }
+    stage("sumcheck (all rounds)", t_sumcheck);
 
-    // 6. Send `z_partial` (the post-sumcheck collapsed z_vec). Length 2^k_skip.
-    let z_partial = z_vec.clone();
+    // 7. Send `z_partial` (the post-sumcheck collapsed z_vec). Length 2^k_skip.
+    let z_partial = z_vec;
     for &x in z_partial.iter() {
         ps.add_scalar(x);
     }
 
-    // 7. Sample fresh z_skip AFTER observing z_partial — gives Schwartz-Zippel
+    // 8. Sample fresh z_skip AFTER observing z_partial, which gives Schwartz-Zippel
     //    soundness on the φ8 (univariate-skip) dim.
     let r_inner_skip = ps.sample();
 
-    // 8. Output claim's value: φ8 Lagrange combination of z_partial at z_skip.
+    // 9. Output claim's value: φ8 Lagrange combination of z_partial at z_skip.
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest; the
     //    PCS catches mismatches downstream.
     let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
     let w = inner_product_ext(&lambda, &z_partial);
 
-    // 9. Convert sumcheck challenges to LSB-first `x_inner_rest` order. The
-    //    loop binds the TOP bit each round, so r_rounds[0] bound bit
-    //    (inner_rest_len − 1) of the i_rest part (= bit (k_log − 1) of i).
-    //    LSB-first: x_inner_rest[j] binds bit (k_skip + j) of i — i.e.,
-    //    r_inner_rest[j] = r_rounds[inner_rest_len − 1 − j].
+    // 10. Convert sumcheck challenges to LSB-first `x_inner_rest` order. The
+    //     loop binds the TOP bit each round, so r_rounds[0] bound bit
+    //     (inner_rest_len − 1) of the i_rest part (= bit (k_log − 1) of i).
+    //     LSB-first: x_inner_rest[j] binds bit (k_skip + j) of i, i.e.,
+    //     r_inner_rest[j] = r_rounds[inner_rest_len − 1 − j].
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
@@ -1402,33 +1340,16 @@ pub fn verify<O>(
         });
     }
 
-    let trace = std::env::var("VERIFY_TRACE").is_ok();
-    let fmt = |s: f64| -> String {
-        let ms = s * 1000.0;
-        if ms < 1.0 {
-            format!("{:>8.2} µs", s * 1e6)
-        } else {
-            format!("{:>8.2} ms", ms)
-        }
-    };
-
     // 1. Sample α (matches prover's order).
     let alpha = vs.sample();
 
-    // 2. Row weights: the quirky eq table over the inner claim point — `u` in
+    // 2. Row weights: the quirky eq table over the inner claim point, `u` in
     //    the final bilinear form. The α-batched column marginal the prover
     //    materializes (`fold_alpha_batched`, cost ∝ NNZ) is NOT built here:
     //    the verifier only ever consumes it through one inner product, so
     //    that work is deferred to step 5 (and walk-capable circuits answer it
     //    in O(circuit) ops without the marginal at all).
-    let t = std::time::Instant::now();
     let eq_inner = build_quirky_eq_table(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
-    if trace {
-        eprintln!(
-            "        [lcv] build_quirky_eq_table (2^{k_log}): {}",
-            fmt(t.elapsed().as_secs_f64())
-        );
-    }
 
     // 3. Replay the multilinear product-sumcheck (inner_rest_len rounds).
     //    Only the transcript messages drive the running claim; the prover's
@@ -1436,7 +1357,7 @@ pub fn verify<O>(
     //    in step 5 as column weights instead of being folded here.
     // Constant-wire pin (mirror of prove): β sampled after α, the comb's +β
     // at the constant column surfaces in step 5 as `+β·w_col[col]`, and the
-    // initial target gains +β·1 — the honest all-ones constant column folds
+    // initial target gains +β·1, since the honest all-ones constant column folds
     // to 1. See lincheck's `LincheckCircuit::const_pin_col`.
     let mut target = alpha * v_a + v_b;
     let mut beta = F192::ZERO;
@@ -1465,8 +1386,8 @@ pub fn verify<O>(
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
-    // 5. Final sumcheck consistency. The prover's comb_partial — comb_vec
-    //    bound MSB-first at r_rounds — satisfies
+    // 5. Final sumcheck consistency. The prover's comb_partial (comb_vec
+    //    bound MSB-first at r_rounds) satisfies
     //
     //      ⟨comb_partial, z_partial⟩ = Σ_c comb_vec[c] · w_col[c],
     //      w_col[i_skip + i_rest·2^k_skip] = z_partial[i_skip] · eq(r_inner_rest, i_rest),
@@ -1476,15 +1397,9 @@ pub fn verify<O>(
     //    claim. Ties z_partial to the upstream v_a, v_b. Walk-capable circuits
     //    (`bilinear_form`) evaluate it in O(circuit) field ops; the fallback
     //    materializes the marginal and takes the inner product (identical
-    //    value — exact field arithmetic).
-    let t = std::time::Instant::now();
+    //    value, exact field arithmetic).
     let eq_rest = build_eq(&r_inner_rest);
-    let mut w_col = Vec::with_capacity(k);
-    for &er in &eq_rest {
-        for &zp in &z_partial {
-            w_col.push(zp * er);
-        }
-    }
+    let w_col = outer_product(&eq_rest, &z_partial);
     debug_assert_eq!(w_col.len(), k);
     let mut final_sum = match circuit.bilinear_form(alpha, &eq_inner, &w_col) {
         Some(v) => v,
@@ -1493,33 +1408,20 @@ pub fn verify<O>(
     if let Some(col) = circuit.const_pin_col() {
         final_sum += beta * w_col[col];
     }
-    if trace {
-        eprintln!(
-            "        [lcv] final bilinear form (walk or marginal): {}",
-            fmt(t.elapsed().as_secs_f64())
-        );
-    }
     if running != final_sum {
         return Err(VerifyError::ConsistencyFailed {
             which: "sumcheck-final",
         });
     }
 
-    // 6. Sample fresh z_skip AFTER z_partial — gives SZ on the φ8 dim.
+    // 6. Sample fresh z_skip AFTER z_partial, which gives SZ on the φ8 dim.
     let r_inner_skip = vs.sample();
 
     // 7. Derive output claim value via φ8 Lagrange on z_partial at z_skip.
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest;
     //    PCS catches mismatches downstream.
-    let t = std::time::Instant::now();
     let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
     let w = inner_product_ext(&lambda, &z_partial);
-    if trace {
-        eprintln!(
-            "        [lcv] final consistency + lagrange_weights_naive: {}",
-            fmt(t.elapsed().as_secs_f64())
-        );
-    }
 
     Ok(LincheckClaim {
         alpha,
@@ -1538,7 +1440,8 @@ pub fn verify<O>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_rng::Rng;
+    use crate::r1cs::apply_block_diag;
+    use primitives::test_rng::Rng;
 
     /// Test shim for the old dense-prove entry: the capture variant with a
     /// dense block and the captured `z_vec` discarded.
@@ -1577,21 +1480,6 @@ mod tests {
             }
         }
         out
-    }
-
-    /// Naive MLE evaluation: `f̂(point) = Σ_i eq(point, i) · f[i]` where i ∈
-    /// {0,1}^d and f[i] is given as a bool slice.
-    fn mle_eval_bool(f: &[bool], point: &[F192]) -> F192 {
-        let d = point.len();
-        assert_eq!(f.len(), 1 << d);
-        let eq = build_eq(point);
-        let mut acc = F192::ZERO;
-        for (i, &b) in f.iter().enumerate() {
-            if b {
-                acc += eq[i];
-            }
-        }
-        acc
     }
 
     /// Sample a random `QuirkyPoint` for testing: z_skip ∈ F₁₉₂,
@@ -1642,39 +1530,6 @@ mod tests {
         acc
     }
 
-    /// Naive sparse matrix · bool-vector product: `out[i] = ⊕_{j: M[i,j]=1} z[j]`.
-    fn matrix_vector_product(m: &SparseBinaryMatrix, z: &[bool]) -> Vec<bool> {
-        assert_eq!(z.len(), m.num_cols);
-        m.rows
-            .iter()
-            .map(|row| {
-                let mut acc = false;
-                for &col in row {
-                    acc ^= z[col];
-                }
-                acc
-            })
-            .collect()
-    }
-
-    /// Build a block-diagonal full witness vector from a base matrix and the
-    /// outer dimension: full[i_inner + i_outer · k] for the i_outer-th block.
-    /// Used to construct `a = (I_{2^n_log} ⊗ A_0) · z` directly for tests.
-    fn apply_block_diag(m_0: &SparseBinaryMatrix, z: &[bool], k_log: usize) -> Vec<bool> {
-        let k = 1usize << k_log;
-        assert_eq!(m_0.num_rows, k);
-        assert_eq!(m_0.num_cols, k);
-        assert_eq!(z.len() % k, 0);
-        let n_outer = z.len() / k;
-        let mut out = vec![false; z.len()];
-        for i_outer in 0..n_outer {
-            let z_block = &z[i_outer * k..(i_outer + 1) * k];
-            let a_block = matrix_vector_product(m_0, z_block);
-            out[i_outer * k..(i_outer + 1) * k].copy_from_slice(&a_block);
-        }
-        out
-    }
-
     /// Build a sparse boolean matrix with `nnz` random nonzero entries among
     /// `k × k` slots. Used for tests.
     fn random_sparse_matrix(k: usize, nnz: usize, rng: &mut Rng) -> SparseBinaryMatrix {
@@ -1700,48 +1555,6 @@ mod tests {
     }
 
     // ---- Unit tests for the kernels ----
-
-    /// `build_eq` produces eq(point, i) for all boolean i.
-    #[test]
-    fn eq_table_matches_direct_formula() {
-        for &d in &[1usize, 2, 3, 5, 8] {
-            let mut rng = Rng::new(11 + d as u64);
-            let point = rng.ext_vec(d);
-            let table = build_eq(&point);
-            assert_eq!(table.len(), 1 << d);
-            for i in 0..(1 << d) {
-                let mut expected = F192::ONE;
-                for j in 0..d {
-                    let bit = ((i >> j) & 1) as u64;
-                    // eq(r, bit) = (1 + r) if bit = 0 else r
-                    let factor = if bit == 0 { F192::ONE + point[j] } else { point[j] };
-                    expected *= factor;
-                }
-                assert_eq!(table[i], expected, "mismatch at d={d}, i={i}");
-            }
-        }
-    }
-
-    /// `sparse_row_fold` matches a brute-force dense implementation.
-    #[test]
-    fn sparse_row_fold_matches_dense() {
-        let mut rng = Rng::new(22);
-        let k = 16;
-        let nnz = 40;
-        let matrix = random_sparse_matrix(k, nnz, &mut rng);
-        let eq_table: Vec<F192> = rng.ext_vec(k);
-
-        let got = sparse_row_fold(&matrix, &eq_table);
-
-        // Brute force: for each col j, sum eq[i] over rows i where M[i,j] = 1.
-        let mut expected = vec![F192::ZERO; k];
-        for (i, row) in matrix.rows.iter().enumerate() {
-            for &j in row {
-                expected[j] += eq_table[i];
-            }
-        }
-        assert_eq!(got, expected);
-    }
 
     /// `partial_fold_packed_z` matches the direct sum.
     #[test]
@@ -1805,13 +1618,13 @@ mod tests {
             let eq = build_eq(&p);
 
             let serial = partial_fold_packed_z(&z_packed, m, k_log, &eq);
-            let iblock = partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, 1usize << k_log, &eq);
+            let iblock = partial_fold_packed_z_iblock_padded(&z_packed, m, k_log, 1usize << k_log, &eq);
             assert_eq!(serial, iblock, "iblock at m={m}, k_log={k_log}");
         }
     }
 
     /// The default outer(tile)-partitioned fold is **bit-identical** to the legacy
-    /// i_inner-partitioned iblock kernel — dense (useful=k) and padded (useful<k,
+    /// i_inner-partitioned iblock kernel, dense (useful=k) and padded (useful<k,
     /// including a non-byte-aligned shape) across tile-eligible sizes. GF(2¹²⁸) add
     /// is XOR (associative + commutative), so the two partition strategies must
     /// produce the exact same length-k vector.
@@ -1841,8 +1654,8 @@ mod tests {
             }
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let eq = build_eq(&rng.ext_vec(n_log));
-            let want = partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, useful_bits, &eq);
-            let got = partial_fold_packed_z_neon_oblock_padded(&z_packed, m, k_log, useful_bits, &eq);
+            let want = partial_fold_packed_z_iblock_padded(&z_packed, m, k_log, useful_bits, &eq);
+            let got = partial_fold_packed_z_oblock_padded(&z_packed, m, k_log, useful_bits, &eq);
             assert_eq!(want, got, "m={m} k_log={k_log} useful={useful_bits}");
         }
     }
@@ -1850,21 +1663,21 @@ mod tests {
     /// **Padding skip is byte-identical to the dense partial fold.** On a
     /// witness with honest zeros at rows `[useful_bits, 2^k_log)` of every
     /// block, the padded kernels (fast + NEON single) must produce the
-    /// exact same `z_vec` as the dense kernels — and the dense scalar
+    /// exact same `z_vec` as the dense kernels, and the dense scalar
     /// reference is the ground truth.
     ///
-    /// Covers the three hash padding shapes plus a non-byte-aligned
-    /// `useful_bits` to exercise the NEON's boundary block (rounded up to
-    /// `BLOCK_K = 8`).
+    /// Covers a `useful_bits` that is not byte-aligned (exercising the NEON
+    /// boundary block, rounded up to `BLOCK_K = 8`) at two block sizes, plus one
+    /// that lands exactly on a byte boundary.
     #[test]
     fn partial_fold_padded_matches_dense() {
         // (m, k_log, useful_bits)
         let cases: &[(usize, usize, usize)] = &[
-            // BLAKE3 (k_log=14, useful=15409 — boundary not byte-aligned).
+            // BLAKE3's own shape: k_log = 14, useful = 15409, not byte-aligned.
             (17, 14, 15_409),
-            // SHA-2  (k_log=15, useful=31401 — boundary not byte-aligned).
+            // A larger block, also not byte-aligned.
             (18, 15, 31_401),
-            // Keccak (k_log=16, useful=42560 — exact byte boundary).
+            // Exact byte boundary.
             (19, 16, 42_560),
         ];
         for &(m, k_log, useful_bits) in cases {
@@ -1875,7 +1688,7 @@ mod tests {
             let n_blocks = 1usize << n_log;
 
             // Random witness with bits [useful_bits, block_size) of every block
-            // zeroed — mirrors the hash-module layout.
+            // zeroed, mirroring the hash-module layout.
             let mut z = rng.bits(total_bits);
             for blk in 0..n_blocks {
                 for j in useful_bits..block_size {
@@ -1895,57 +1708,13 @@ mod tests {
 
             #[cfg(target_arch = "aarch64")]
             if n_log_ok_for_tile(m, k_log, NEON_TILE_T) {
-                let dense_neon =
-                    partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, 1usize << k_log, &eq_outer);
-                let padded_neon = partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, useful_bits, &eq_outer);
+                let dense_neon = partial_fold_packed_z_iblock_padded(&z_packed, m, k_log, 1usize << k_log, &eq_outer);
+                let padded_neon = partial_fold_packed_z_iblock_padded(&z_packed, m, k_log, useful_bits, &eq_outer);
                 assert_eq!(
                     dense_neon, padded_neon,
                     "neon: m={m}, k_log={k_log}, useful={useful_bits}"
                 );
-                // i_inner-partitioned kernel: dense and padded must both match.
-                let dense_iblock =
-                    partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, 1usize << k_log, &eq_outer);
-                let padded_iblock =
-                    partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, useful_bits, &eq_outer);
-                assert_eq!(
-                    dense_neon, dense_iblock,
-                    "iblock dense: m={m}, k_log={k_log}, useful={useful_bits}"
-                );
-                assert_eq!(
-                    dense_neon, padded_iblock,
-                    "iblock padded: m={m}, k_log={k_log}, useful={useful_bits}"
-                );
             }
-        }
-    }
-
-    /// `partial_fold_packed_z(eq_outer) ↦ ẑ(·, x_outer)` matches direct MLE
-    /// evaluation of z at `(i_inner, x_outer)` for boolean i_inner.
-    #[test]
-    fn partial_fold_is_mle_at_outer_point() {
-        let m = 14;
-        let k_log = 5;
-        let k = 1 << k_log;
-        let mut rng = Rng::new(44);
-        let z = rng.bits(1 << m);
-        let z_packed = pack_z_lincheck(&z, m, k_log);
-        let x_outer = rng.ext_vec(m - k_log);
-        let eq_outer = build_eq(&x_outer);
-
-        let z_partial = partial_fold_packed_z(&z_packed, m, k_log, &eq_outer);
-
-        // For each boolean i_inner ∈ {0,1}^k_log, the partial fold should
-        // equal ẑ(i_inner, x_outer).
-        for i_inner in 0..k {
-            // Construct the m-dim point: first k_log coords from i_inner (boolean lifted),
-            // then m-k_log coords from x_outer.
-            let mut point = Vec::with_capacity(m);
-            for j in 0..k_log {
-                point.push(if (i_inner >> j) & 1 == 1 { F192::ONE } else { F192::ZERO });
-            }
-            point.extend_from_slice(&x_outer);
-            let z_eval = mle_eval_bool(&z, &point);
-            assert_eq!(z_partial[i_inner], z_eval, "i_inner={i_inner}");
         }
     }
 
@@ -1958,9 +1727,9 @@ mod tests {
     #[test]
     fn prove_verify_roundtrip_honest() {
         // Exercise a range of k_skip values:
-        //   k_skip = 0 (no skip)     — reduces to multilinear lincheck
-        //   k_skip = k_log (max)     — only univariate inner
-        //   k_skip < k_log (typical) — protocol-realistic case
+        //   k_skip = 0 (no skip)     : reduces to multilinear lincheck
+        //   k_skip = k_log (max)     : only univariate inner
+        //   k_skip < k_log (typical) : protocol-realistic case
         for &(m, k_log, k_skip) in &[
             (10usize, 4, 0),
             (10, 4, 2),
@@ -2023,7 +1792,7 @@ mod tests {
     }
 
     /// Verify must reject byte-mutated proofs. Mutation positions are picked
-    /// where the corresponding matrix row-vector entry is **nonzero** —
+    /// where the corresponding matrix row-vector entry is **nonzero**;
     /// otherwise the inner-product delta vanishes and the mutation is
     /// undetectable (a property of the random sparse matrix, not a verifier
     /// bug). The verifier's consistency check is sound for *any* mutation in
@@ -2059,7 +1828,7 @@ mod tests {
         let row_b = sparse_row_fold(&b_0, &eq_inner);
         let idx = (0..k)
             .find(|&i| row_a[i] != F192::ZERO || row_b[i] != F192::ZERO)
-            .expect("no row-vector slot is nonzero in either A or B — test degenerate");
+            .expect("no row-vector slot is nonzero in either A or B; test degenerate");
 
         // Mutations target `z_partial` (the post-sumcheck length-2^k_skip
         // vector), which rides the stream right after the 2·(k_log − k_skip)
@@ -2141,7 +1910,7 @@ mod tests {
     #[test]
     fn s_hat_v_from_z_vec_matches_fold_1b_rows_ab() {
         const K_SKIP: usize = 6;
-        // (m, k_log) — K_SKIP fixed at 6 (so x_inner_rest has k_log − 6 coords;
+        // (m, k_log), with K_SKIP fixed at 6 (so x_inner_rest has k_log − 6 coords;
         // x_inner_rest[0] becomes ring-switch's prefix0 because
         // K_SKIP + 1 = LOG_PACKING = 7). n_log = m − k_log must be ≥ 3 for
         // partial_fold_packed_z's stripe layout.
