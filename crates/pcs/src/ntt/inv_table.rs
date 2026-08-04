@@ -103,14 +103,14 @@ impl InvNttTableByteSingleGf8 {
         if self.ell >= 16 {
             // SAFETY: aarch64 statically guarantees NEON; ell ≥ 16 ⇒ at least
             // one 128-bit chunk; method validates slice lengths.
-            unsafe { self.apply_neon_unchecked(bytes, out) };
+            unsafe { self.apply_v128::<Neon>(bytes, out) };
             return;
         }
         #[cfg(target_arch = "x86_64")]
         if self.ell >= 16 {
             // SAFETY: x86_64 statically guarantees SSE2; ell ≥ 16 ⇒ at least
             // one 128-bit chunk; method validates slice lengths.
-            unsafe { self.apply_sse2_unchecked(bytes, out) };
+            unsafe { self.apply_v128::<Sse2>(bytes, out) };
             return;
         }
         self.apply_scalar(bytes, out);
@@ -132,7 +132,7 @@ impl InvNttTableByteSingleGf8 {
         }
     }
 
-    /// NEON variant of `apply`, operating in 16-byte chunks.
+    /// SIMD variant of `apply`, operating in 16-byte chunks.
     ///
     /// For each output chunk `c ∈ 0..ell/16`:
     ///   * `b = 0`: straight 16-byte copy from `row0[c]`
@@ -142,17 +142,17 @@ impl InvNttTableByteSingleGf8 {
     /// implement the `π_b(i') = i' ⊕ 8b` permutation that the §2.1 collapse
     /// requires.
     ///
-    /// Written out per arch rather than shared behind a lane trait: this is the
-    /// URM round-1 inner loop, and the trait version stopped inlining into
-    /// flock's `shift_reduce_inner_ab_gfni`, costing 2% of end-to-end proving.
+    /// This is the URM round-1 inner loop and it must inline into flock's
+    /// `shift_reduce_inner_ab_gfni`, hence `#[inline(always)]` here and on
+    /// every [`Vec128`] method.
     ///
     /// # Safety
-    /// Caller must be on aarch64 (statically true at the dispatch site). The
-    /// method validates slice lengths.
-    #[cfg(target_arch = "aarch64")]
-    #[inline]
-    pub unsafe fn apply_neon_unchecked(&self, bytes: &[u8], out: &mut [F8]) {
-        use core::arch::aarch64::*;
+    /// `V`'s target features must be available (statically true at the
+    /// dispatch site for both NEON on aarch64 and SSE2 on x86_64). The method
+    /// validates slice lengths.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[inline(always)]
+    unsafe fn apply_v128<V: Vec128>(&self, bytes: &[u8], out: &mut [F8]) {
         assert_eq!(bytes.len(), self.n_chunks);
         assert_eq!(out.len(), self.ell);
         let n128 = self.ell / 16; // 4 for ell = 64
@@ -163,7 +163,7 @@ impl InvNttTableByteSingleGf8 {
             // b = 0: identity permutation, a straight copy from row 0.
             let row0 = base.add(bytes[0] as usize * self.ell);
             for c in 0..n128 {
-                vst1q_u8(out_ptr.add(c * 16), vld1q_u8(row0.add(c * 16)));
+                V::store(out_ptr.add(c * 16), V::load(row0.add(c * 16)));
             }
 
             // b ≥ 1: XOR with table row[bytes[b]], permuted.
@@ -173,74 +173,84 @@ impl InvNttTableByteSingleGf8 {
                 let row_b = base.add(bytes[b] as usize * self.ell);
                 if b_odd {
                     for c in 0..n128 {
-                        let sc = c ^ b_high;
-                        let v = vld1q_u8(row_b.add(sc * 16));
-                        let v_swapped = vextq_u8::<8>(v, v);
+                        let v = V::load(row_b.add((c ^ b_high) * 16)).swap64();
                         let dst = out_ptr.add(c * 16);
-                        vst1q_u8(dst, veorq_u8(vld1q_u8(dst), v_swapped));
+                        V::store(dst, V::load(dst).xor(v));
                     }
                 } else {
                     for c in 0..n128 {
-                        let sc = c ^ b_high;
-                        let v = vld1q_u8(row_b.add(sc * 16));
+                        let v = V::load(row_b.add((c ^ b_high) * 16));
                         let dst = out_ptr.add(c * 16);
-                        vst1q_u8(dst, veorq_u8(vld1q_u8(dst), v));
+                        V::store(dst, V::load(dst).xor(v));
                     }
                 }
             }
         }
     }
+}
 
-    /// SSE2 variant of `apply`, the x86 twin of `apply_neon_unchecked`.
-    /// Same 16-byte-chunk structure; the odd-`b` within-chunk half-swap is
-    /// `_mm_shuffle_epi32::<0b01_00_11_10>` (swap the two 64-bit halves).
-    ///
+/// The four 128-bit primitives `apply_v128` needs. Every method is
+/// `#[inline(always)]`: the generic kernel is one loop body of a function that
+/// runs 16 times per `shift_reduce_inner_ab_gfni` call, so an out-of-line call
+/// here is a measurable end-to-end regression.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+trait Vec128: Copy {
     /// # Safety
-    /// Caller must be on x86_64 (SSE2 is baseline there; statically true at
-    /// the dispatch site). The method validates slice lengths.
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    pub unsafe fn apply_sse2_unchecked(&self, bytes: &[u8], out: &mut [F8]) {
-        use core::arch::x86_64::*;
-        assert_eq!(bytes.len(), self.n_chunks);
-        assert_eq!(out.len(), self.ell);
-        let n128 = self.ell / 16; // 4 for ell = 64
-        let base = self.data.as_ptr() as *const u8;
-        let out_ptr = out.as_mut_ptr() as *mut u8;
+    /// `p` must be readable for 16 bytes (alignment not required).
+    unsafe fn load(p: *const u8) -> Self;
+    /// # Safety
+    /// `p` must be writable for 16 bytes (alignment not required).
+    unsafe fn store(p: *mut u8, v: Self);
+    fn xor(self, other: Self) -> Self;
+    /// Swap the two 64-bit halves.
+    fn swap64(self) -> Self;
+}
 
-        unsafe {
-            // b = 0: identity permutation, a straight copy from row 0.
-            let row0 = base.add(bytes[0] as usize * self.ell);
-            for c in 0..n128 {
-                _mm_storeu_si128(
-                    out_ptr.add(c * 16) as *mut __m128i,
-                    _mm_loadu_si128(row0.add(c * 16) as *const __m128i),
-                );
-            }
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct Neon(core::arch::aarch64::uint8x16_t);
 
-            // b ≥ 1: XOR with table row[bytes[b]], permuted.
-            for b in 1..self.n_chunks {
-                let b_high = b >> 1;
-                let b_odd = (b & 1) != 0;
-                let row_b = base.add(bytes[b] as usize * self.ell);
-                if b_odd {
-                    for c in 0..n128 {
-                        let sc = c ^ b_high;
-                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
-                        let v_swapped = _mm_shuffle_epi32::<0b01_00_11_10>(v);
-                        let dst = out_ptr.add(c * 16) as *mut __m128i;
-                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v_swapped));
-                    }
-                } else {
-                    for c in 0..n128 {
-                        let sc = c ^ b_high;
-                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
-                        let dst = out_ptr.add(c * 16) as *mut __m128i;
-                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v));
-                    }
-                }
-            }
-        }
+#[cfg(target_arch = "aarch64")]
+impl Vec128 for Neon {
+    #[inline(always)]
+    unsafe fn load(p: *const u8) -> Self {
+        Self(unsafe { core::arch::aarch64::vld1q_u8(p) })
+    }
+    #[inline(always)]
+    unsafe fn store(p: *mut u8, v: Self) {
+        unsafe { core::arch::aarch64::vst1q_u8(p, v.0) }
+    }
+    #[inline(always)]
+    fn xor(self, other: Self) -> Self {
+        Self(unsafe { core::arch::aarch64::veorq_u8(self.0, other.0) })
+    }
+    #[inline(always)]
+    fn swap64(self) -> Self {
+        Self(unsafe { core::arch::aarch64::vextq_u8::<8>(self.0, self.0) })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct Sse2(core::arch::x86_64::__m128i);
+
+#[cfg(target_arch = "x86_64")]
+impl Vec128 for Sse2 {
+    #[inline(always)]
+    unsafe fn load(p: *const u8) -> Self {
+        Self(unsafe { core::arch::x86_64::_mm_loadu_si128(p as *const core::arch::x86_64::__m128i) })
+    }
+    #[inline(always)]
+    unsafe fn store(p: *mut u8, v: Self) {
+        unsafe { core::arch::x86_64::_mm_storeu_si128(p as *mut core::arch::x86_64::__m128i, v.0) }
+    }
+    #[inline(always)]
+    fn xor(self, other: Self) -> Self {
+        unsafe { Self(core::arch::x86_64::_mm_xor_si128(self.0, other.0)) }
+    }
+    #[inline(always)]
+    fn swap64(self) -> Self {
+        unsafe { Self(core::arch::x86_64::_mm_shuffle_epi32::<0b01_00_11_10>(self.0)) }
     }
 }
 

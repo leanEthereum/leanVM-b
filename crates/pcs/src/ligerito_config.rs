@@ -13,13 +13,13 @@
 //! fields"), Theorem `thm:rbr`. Its per-verifier-message error table maps
 //! onto the per-level checks in [`LigeritoSecurityConfig::validate`]:
 //!
-//! - batching challenges -> [`johnson_algebraic_bits`] (this implementation
+//! - batching challenges -> `johnson_algebraic_bits` (this implementation
 //!   batches with an eq-vector challenge plus scalar glue challenges instead
 //!   of the doc's powers of a single alpha; see that function),
 //! - fold challenge `s_j` -> `2 L/|F| + 2^(l-j) eps`: the MCA part via
-//!   [`paper_johnson_log_a`] (worst round `j = 1`), the `2 L/|F|` part
-//!   under [`johnson_algebraic_bits`],
-//! - OOD challenge -> [`paper_ood_bits`],
+//!   `paper_johnson_log_a` (worst round `j = 1`), the `2 L/|F|` part
+//!   under `johnson_algebraic_bits`,
+//! - OOD challenge -> `paper_ood_bits`,
 //! - query message -> `(1 - gamma)^t`, plus [`QUERY_GRINDING_BITS`].
 //!
 //! Round-by-round (RBR) soundness means every entry individually clears

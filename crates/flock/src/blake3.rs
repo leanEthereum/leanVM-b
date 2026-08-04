@@ -666,7 +666,7 @@ fn walk_lin_rows(acc: &mut WalkAcc, u: &[F192], vals: &WireWord, base: usize) {
 }
 
 /// `(uᵀ A_0 w, uᵀ B_0 w)` by the forward circuit walk, over the exact matrices
-/// [`build_matrices`] emits, never materialized.
+/// `build_matrices` emits, never materialized.
 pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
     assert_eq!(u.len(), K);
     assert_eq!(w.len(), K);
@@ -1188,7 +1188,7 @@ pub fn generate_witness_with_ab_packed(
     (z, a, b)
 }
 
-/// Like [`generate_witness_with_ab_packed`] but also emits the lincheck
+/// Like `generate_witness_with_ab_packed` but also emits the lincheck
 /// byte-stripe layout in the same parallel pass. Replaces the separate
 /// `pack_z_lincheck_from_packed` call entirely.
 ///
