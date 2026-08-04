@@ -4,8 +4,12 @@
 
 A minimal (zero-knowledge Virtual Machine, which is actually not ZK in the real sense, i.e. it's only a snark, not a zk-snark).
 
-- `misc/doc.tex` describes the machine, the arithmetization and the protocol
-- `crates/lean_compiler/zkDSL.md` documents the zkDSL.
+- `misc/doc.tex` describes the machine ISA, the snark that proves it.
+- `crates/lean_compiler/zkDSL.md` documents the (pythonic) zkDSL (that compiles to the ISA that our VM runs, and that our snark proves).
+
+Primary goal:
+- Aggregate XMSS (stateful hash based signatures), via a snark proving knowledge soundness of the signatures, against a common message and a lust of public keys
+- Further aggregate n previously aggregated signatures, which is performed by a recursive snark, that proves "I know n sub-proofs that are valid and the union of the public keys they handle contains the list of public keys I am given in public input". 
 
 ## Layout
 
@@ -26,9 +30,10 @@ Dependency order, leaves first:
 
 `src/main.rs` is the CLI; guests are zkDSL under `crates/rec_aggregation/guests/`.
 
-## Build and test
+## Building / Testing / Formatting
 
-`.cargo/config.toml` pins `-C target-cpu=native`. Always run in `--release` mode any test/benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode).
+- `.cargo/config.toml` pins `-C target-cpu=native`
+- always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
 
 ```bash
 cargo testall                     # = test --all --release; 314 tests, seconds
@@ -40,20 +45,17 @@ Heavy benches are `#[ignore]`d; run by name with `-- --ignored --nocapture` (`bl
 
 ## Benchmarking
 
-See README.md -> the benchmarks we care about are:
-- XMSS aggregation troughput
-- recursion time
-
-`LEANVM_PROFILE=1` gives per-stage prover timings.
---tracing can also be used in the `main.rs` benchmarks, for human readable breakdown
+The benchmarks we care about:
+- `cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3`
 
 ## The proving arena (`zk_alloc`)
 
-One proof is one **phase**, opened by `cpu::prove`. `ArenaVec` bumps a per-thread slab, freeing is a no-op, and the next `begin_phase()` reclaims everything. Worth 14% of prove time on M4 Max, 30% on Zen 4. Not a `#[global_allocator]`: `raw_dealloc` picks arena-vs-system by address range, so with no phase open `ArenaVec` is an ordinary system vector, which is what makes it safe in the verifier and in tests.
+One proof is one **phase**, opened by `cpu::prove`. `ArenaVec` bumps a per-thread slab, freeing is a no-op, and the next `begin_phase()` reclaims everything. Not a `#[global_allocator]`: `raw_dealloc` picks arena-vs-system by address range, so with no phase open `ArenaVec` is an ordinary system vector (used in particular by the verifier, where correctness and simplicity matters much more than performance).
 
-**The rule, and the only silent-corruption footgun in the repo:** an `ArenaVec` allocated in a phase dies at the next `begin_phase()`. A reset neither clears nor unmaps, so a buffer that outlives its phase reads the previous proof's plausible bytes, so the symptom is a proof that stops verifying, never a crash. Anything outliving a phase (a `Proof`, a cache, a table) must be a plain `Vec`. `rec_aggregation/tests/arena_prove.rs` guards this; it needs its own test binary because phases are process-global and refuse to nest.
+**The rule:** an `ArenaVec` allocated in a phase dies at the next `begin_phase()`. A reset neither clears nor unmaps, so a buffer that outlives its phase reads the previous proof's plausible bytes, so the symptom is a proof that stops verifying, never a crash. Anything outliving a phase (a `Proof`, a cache, a table) must be a plain `Vec`.
 
-`ZK_ALLOC_STATS=1` reports bytes/phase, per-slab high water, and overflow to the system allocator (nonzero ⇒ `SLAB_SIZE` undersized). `LEANVM_NO_ARENA=1` halves resident memory but is unoptmized (not our concern for now, we assume we have enough RAM).
+`LEANVM_NO_ARENA=1` halves resident memory but is unoptmized (not our concern for now, we assume we have enough RAM).
 
 ## The thread pool (`parallel`)
 
@@ -67,11 +69,11 @@ No rayon. Every parallel site is "N independent items, each writing its own disj
 
 ## Three verifiers, one protocol
 
-The same verification algorithm is written out three times, in three languages, against one transcript. Any change to the transcript order, the layout derivation, or a challenge derivation has to land in all three or the other two start rejecting valid proofs.
+The same verification algorithm is written out three times, in three languages. Any change to snark protocol has to land in all three.
 
-1. **Rust**, `lean_vm::cpu::verify`. The reference and the one every test calls.
-2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). An independent re-derivation from the spec rather than a port, which is what makes it a real cross-check: it consumes only the public statement as JSON plus the bincode proof, never prover-side data. Pinned by `lean_compiler/tests/python_verifier.rs`, which proves a program, verifies it with `python3`, then corrupts the announcement and the commitment root and requires Python to reject both.
-3. **In-circuit**, `crates/rec_aggregation/guests/recursion.py` (~2.4k lines of zkDSL). This one is the recursion: it replays `cpu::verify` for `NSUB` inner proofs *inside the VM*, so proving it yields one proof attesting that the inner proofs verified.
+1. **Rust**, `lean_vm::cpu::verify`. The performant verifier implem.
+2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_compiler/tests/python_verifier.rs`.
+3. **Recursive verifier**, `crates/rec_aggregation/guests/recursion.py` (~2.4k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
 The third is worth understanding before touching the verifier. `guests/recursion.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~500k instructions and why its opcode mix is what the recursion benchmark reports. Two consequences:
 
