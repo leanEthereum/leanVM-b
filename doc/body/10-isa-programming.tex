@@ -28,7 +28,7 @@ A taken \texttt{JUMP} reloads $\fp$ from a cell, and the ISA has no $\fp$-read; 
 
 \subsection{Range checks}\label{sec:prog-range-checks}
 
-The range check \emph{in the exponent} proves $x\in\{\gen^{0},\dots,\gen^{k-1}\}$, i.e.\ $\log_{\gen}x<k$, in 3 cycles (leanVM's \texttt{DEREF} trick \cite{leanVM}, transported to $\gen$-powers):
+The range check \emph{in the exponent} proves $x\in\{\gen^{0},\dots,\gen^{k-1}\}$, i.e.\ $\log_{\gen}x<k$, in 3 cycles (leanVM's \texttt{DEREF} trick, transported to $\gen$-powers):
 \begin{enumerate}
 \item \texttt{DEREF} through $x$: the dereferenced address $x\cdot\gen^{0}$ rides the memory interaction, which balances only for the $2^{h}$ addresses $\gen^{0},\dots,\gen^{2^{h}-1}$ (\S\ref{sec:memchan}): the bus itself proves $x=\gen^{e}$ with $e<2^{h}$;
 \item \texttt{MUL} $x\cdot y$ into a write-once cell holding the constant $\gen^{k-1}$: the runner back-solves the complement $y=\gen^{k-1-e}$ (\S\ref{sec:prog-hints}), and the double write asserts $x\cdot y=\gen^{k-1}$;

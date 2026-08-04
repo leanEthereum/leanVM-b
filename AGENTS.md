@@ -4,7 +4,7 @@
 
 A minimal (zero-knowledge Virtual Machine, which is actually not ZK in the real sense, i.e. it's only a snark, not a zk-snark).
 
-- `doc/` is one LaTeX project (root `doc/main.tex`, build with `latexmk -pdf main.tex`, output in `doc/.build/`) describing the machine ISA and the snark that proves it. Sections live in `doc/body/`, ring switching and the PCS are annexes in `doc/annex/`, and every symbol is defined once in `doc/preamble/macros.tex`.
+- `doc/` is one LaTeX project (root `doc/main.tex`, build with `cd doc && latexmk -pdf main.tex`, output in the gitignored `doc/.build/`) describing the machine ISA and the snark that proves it. Sections live in `doc/body/`, ring switching and the PCS are annexes in `doc/annex/`, and every symbol is defined once in `doc/preamble/macros.tex`. If latexmk fails oddly (a bibtex error, or a missing `main.log`) right after inputs are renamed or `refs.bib` is edited, `rm -rf doc/.build` and rerun; it has not reproduced on unchanged inputs.
 - `crates/lean_compiler/zkDSL.md` documents the (pythonic) zkDSL (that compiles to the ISA that our VM runs, and that our snark proves).
 
 Primary goal:
@@ -88,6 +88,8 @@ The third is worth understanding before touching the verifier. `guests/recursion
 - **Prover and verifier derive the layout identically** from announced sizes. Changes to `placements_of`, `col_kappas` or the schema land on both sides, and `col_kappa_sources` stays in lockstep with `col_kappas`.
 - **A failed guest `assert` surfaces as a write-once memory conflict**, not an assertion message, so disassemble around the reported `pc` (`DBG_DISASM`).
 - Guests are single-file; the compiler skips `from snark_lib import *`, which exists only so editors accept the file as Python.
+- **One symbol, one meaning, across the whole document.** All notation is defined in `doc/preamble/macros.tex`; define a new macro there rather than inline, and check the letter is free first. Annex B's symbols were deliberately renamed away from the letters WHIR/Ligerito/BCHKS25 use (rate is `\rate`, not `\rho`, which is a sumcheck point) and its "Symbols" table is the map back, so reintroducing a paper's letter silently collides with the main matter.
+- **Doc labels are an API.** `crates/pcs` cites `thm:rbr` and `thm:mca-johnson` by name and several crates cite `doc/main.tex` sections, so renaming a label breaks those pointers with nothing to catch it. `doc/body/NN-*.tex` prefixes match section numbers, so inserting a section renumbers the rest.
 - **No em-dashes or en-dashes in prose**, anywhere a human reads it: docs, LaTeX, comments, commit messages. Restructure with a comma, colon, parentheses, or two sentences.
 - **Never hard-wrap prose in Markdown or LaTeX.** One paragraph is one line; let the editor wrap it. Artificial line breaks make every later edit a reflow, so diffs show rewrapped lines instead of changed words. Applies to `.md` and `.tex` alike; code blocks, tables and list items keep their own line.
 
