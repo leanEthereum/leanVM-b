@@ -9,7 +9,7 @@
 
 //! Field-independent configuration and soundness analysis for Ligerito.
 //!
-//! Source of truth: `doc/annex/b-polynomial-commitment-scheme.tex` ("A note on WHIR/Ligerito over binary
+//! Source of truth: `doc/body/b-polynomial-commitment-scheme.tex` ("A note on WHIR/Ligerito over binary
 //! fields"), Theorem `thm:rbr`. Its per-verifier-message error table maps
 //! onto the per-level checks in [`LigeritoSecurityConfig::validate`]:
 //!
@@ -313,7 +313,7 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
 // derived under.
 //
 // That analysis is always the Johnson radius with explicit slack `eta`
-// (gamma = (1 - sqrt(rho)) - eta) WITH out-of-domain binding (`doc/annex/b-polynomial-commitment-scheme.tex`,
+// (gamma = (1 - sqrt(rho)) - eta) WITH out-of-domain binding (`doc/body/b-polynomial-commitment-scheme.tex`,
 // Thm `thm:rbr`). The MCA theorem (`thm:mca-johnson` = BCHKS25 Thm 4.6) gives
 // the proximity-gap exceptional set `a = O_rho(n / eta^5)`, so a level's
 // `fold_grinding_bits` must be at least `target_bits - log2(q/a)`. Binding to a
@@ -428,7 +428,7 @@ fn reduced_rate(log_inv_rate: usize, log_msg_cols: usize) -> f64 {
 }
 
 /// Proximity-gap exceptional set for the list-decoding (Johnson) regime, per
-/// `doc/annex/b-polynomial-commitment-scheme.tex` Thm `thm:mca-johnson` = BCHKS25 Theorem 4.6 (list
+/// `doc/body/b-polynomial-commitment-scheme.tex` Thm `thm:mca-johnson` = BCHKS25 Theorem 4.6 (list
 /// correlated agreement). For a Reed-Solomon code of (slightly reduced) rate
 /// `ρ`, codeword length `n`, and Johnson slack `η` (proximity radius
 /// `γ = 1 − √ρ − η`), the MCA error is `a/|F|` with
@@ -878,7 +878,7 @@ impl LigeritoSecurityConfig {
             ));
         }
 
-        // Round-by-round soundness (doc/annex/b-polynomial-commitment-scheme.tex, Thm `thm:rbr`): each
+        // Round-by-round soundness (doc/body/b-polynomial-commitment-scheme.tex, Thm `thm:rbr`): each
         // verifier-challenge transition is checked against
         // `target_security_bits` in the per-level loop above, so the
         // Fiat--Shamir error per random-oracle query is their MAX; ordinary
