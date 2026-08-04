@@ -368,6 +368,8 @@ dependencies = [
  "bincode",
  "libc",
  "parallel",
+ "primitives",
+ "rand",
  "serde",
  "tracing-forest",
  "tracing-subscriber",

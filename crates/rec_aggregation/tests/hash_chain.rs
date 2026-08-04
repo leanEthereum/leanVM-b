@@ -20,23 +20,11 @@ use std::time::Instant;
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
+use lean_vm::vmhash::compress;
 use primitives::{
     field::{F64, F192},
     pretty_f64, pretty_integer,
 };
-
-/// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the eight
-/// input words are laid little-endian into 64 bytes, BLAKE3-hashed, and the
-/// 32-byte digest split into four `F64` words. Matches `cpu::blake3_compress`.
-fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
-    let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
-        slot.copy_from_slice(&w.0.to_le_bytes());
-    }
-    let d = blake3::hash(&input);
-    let d = d.as_bytes();
-    std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
-}
 
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain

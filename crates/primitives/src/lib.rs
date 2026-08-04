@@ -6,7 +6,8 @@ pub mod bits;
 pub mod field;
 pub mod multilinear;
 
-pub use field::{F64, F192, G, g_pow, g_powers, x_pow};
+#[cfg(feature = "test-util")]
+pub mod test_rng;
 
 fn format_trace_tree(tree: &tracing_forest::tree::Tree) -> Result<String, std::fmt::Error> {
     use tracing_forest::Formatter;
@@ -252,10 +253,9 @@ pub fn log2_strict_usize(n: usize) -> usize {
     n.trailing_zeros() as usize
 }
 
-/// `ceil(log2(n))` for `n ≥ 1`.
+/// `ceil(log2(n))`, defined as 0 for `n <= 1`.
 pub fn log2_ceil_usize(n: usize) -> usize {
-    assert!(n >= 1);
-    usize::BITS as usize - (n - 1).leading_zeros() as usize
+    if n <= 1 { 0 } else { (n - 1).ilog2() as usize + 1 }
 }
 
 /// Arena-backed parallel collects. This lives here rather than in `zk_alloc` so
@@ -275,46 +275,4 @@ impl<T: Send> ParCollectArena<T> for zk_alloc::ArenaVec<T> {
         parallel::fill(&mut out, build);
         out
     }
-}
-
-/// Allocate a zero-filled `Vec<T>` through the global allocator's zeroed path.
-/// Large allocations can therefore start as demand-zero pages instead of
-/// paying an eager single-threaded fill before parallel work begins.
-///
-/// # Safety
-///
-/// The all-zero byte pattern must be a valid value of `T`.
-pub unsafe fn alloc_zeroed_vec<T: Copy>(n: usize) -> Vec<T> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let layout = std::alloc::Layout::array::<T>(n).expect("allocation size overflow");
-    // SAFETY: `layout` is non-empty and was constructed for exactly `n`
-    // elements of `T`.
-    let ptr = unsafe { std::alloc::alloc_zeroed(layout) } as *mut T;
-    if ptr.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
-    // SAFETY: the global allocator returned storage for exactly `n` elements;
-    // the caller guarantees that the zero bytes are valid initialized `T`s.
-    unsafe { Vec::from_raw_parts(ptr, n, n) }
-}
-
-/// Allocate `n` slots without initializing `T` values.
-pub fn alloc_uninit<T>(n: usize) -> Vec<std::mem::MaybeUninit<T>> {
-    let mut values = Vec::with_capacity(n);
-    values.resize_with(n, std::mem::MaybeUninit::uninit);
-    values
-}
-
-/// Convert a vector after every slot has been initialized.
-///
-/// # Safety
-///
-/// Every element of `values` must contain a valid `T`.
-pub unsafe fn assume_init<T>(values: Vec<std::mem::MaybeUninit<T>>) -> Vec<T> {
-    let mut values = std::mem::ManuallyDrop::new(values);
-    // SAFETY: `MaybeUninit<T>` has the same layout as `T`; the caller guarantees
-    // that all elements are initialized, and ManuallyDrop transfers ownership.
-    unsafe { Vec::from_raw_parts(values.as_mut_ptr().cast(), values.len(), values.capacity()) }
 }

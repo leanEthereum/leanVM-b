@@ -1,11 +1,11 @@
 //! The arena is driven explicitly: the process keeps its own allocator, and only
 //! [`ArenaVec`] buffers live in a slab. Everything else must be untouched by a
-//! phase reset — that is the property that lets a library use the arena without
+//! phase reset, which is the property that lets a library use the arena without
 //! imposing it on its consumers.
 
 use std::sync::{Mutex, MutexGuard};
 
-use zk_alloc::{ArenaVec, arena_vec, begin_phase, enable_arena, end_phase, enter_phase, stats};
+use zk_alloc::{ArenaVec, enable_arena, enter_phase};
 
 const N: usize = 4096;
 
@@ -22,29 +22,31 @@ fn phase_reset_recycles_the_slab_and_spares_the_system_heap() {
     let _serial = exclusive();
 
     // One arena allocation on this thread claims its slab at the base.
-    begin_phase();
-    let mut first: ArenaVec<u64> = ArenaVec::with_capacity(N);
-    first.resize(N, 0xABCD); // fits the reservation, so the pointer stays put
-    let p1 = first.as_ptr() as usize;
-    end_phase();
+    let p1 = {
+        let _phase = enter_phase();
+        let mut first: ArenaVec<u64> = ArenaVec::with_capacity(N);
+        first.resize(N, 0xABCD); // fits the reservation, so the pointer stays put
+        first.as_ptr() as usize
+    };
 
     // Allocated with the arena closed: goes to the system allocator and must
     // survive the next reset.
     let canary = vec![0xAB_u8; 8192];
 
     // The slab resets, so an identically shaped buffer lands at the same address.
-    begin_phase();
-    let mut second: ArenaVec<u64> = ArenaVec::with_capacity(N);
-    second.resize(N, 0x1234);
-    let p2 = second.as_ptr() as usize;
-    end_phase();
+    let p2 = {
+        let _phase = enter_phase();
+        let mut second: ArenaVec<u64> = ArenaVec::with_capacity(N);
+        second.resize(N, 0x1234);
+        assert!(second.iter().all(|&x| x == 0x1234));
+        second.as_ptr() as usize
+    };
 
     assert_eq!(p1, p2, "a phase reset must recycle the slab");
     assert!(
         canary.iter().all(|&b| b == 0xAB),
         "the reset corrupted a system allocation"
     );
-    assert!(second.iter().all(|&x| x == 0x1234));
 
     // With no phase open, ArenaVec is an ordinary system-allocated vector.
     let mut outside: ArenaVec<u64> = ArenaVec::new();
@@ -129,30 +131,4 @@ fn zero_sized_elements_never_allocate() {
     }
     assert_eq!(v.len(), 1000);
     assert_eq!(v.capacity(), usize::MAX);
-}
-
-#[test]
-fn macro_matches_vec() {
-    let _serial = exclusive();
-    let _phase = enter_phase();
-    let empty: ArenaVec<u8> = arena_vec![];
-    assert!(empty.is_empty());
-    assert_eq!(*arena_vec![9u8; 3], [9, 9, 9]);
-    assert_eq!(*arena_vec![1u8, 2, 3], [1, 2, 3]);
-}
-
-#[test]
-fn stats_report_a_bounded_slab() {
-    let _serial = exclusive();
-    {
-        let _phase = enter_phase();
-        let _v: ArenaVec<u64> = ArenaVec::with_capacity(1 << 16);
-    }
-    // The high-water mark is recorded when a thread resets, so take a second phase.
-    let _phase = enter_phase();
-    let _v: ArenaVec<u64> = ArenaVec::with_capacity(8);
-    let s = stats();
-    assert!(s.threads >= 1);
-    assert!(s.high_water <= s.slab_size, "high water must fit the slab");
-    assert_eq!(s.overflow, 0, "this test allocates far too little to overflow");
 }

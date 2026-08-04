@@ -45,7 +45,7 @@ pub fn transpose_8_u64s_to_64_bytes(lanes: &[u64; 8], out: &mut [u8]) {
 // So `out[lane]`'s 8 bits are the inner_K-direction polynomial of c at lane.
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn bit_transpose_64bytes_scalar(input: &[u8; 64], output: &mut [u8; 64]) {
     output.iter_mut().for_each(|x| *x = 0);
     for byte_idx in 0..64 {
@@ -60,20 +60,20 @@ fn bit_transpose_64bytes_scalar(input: &[u8; 64], output: &mut [u8; 64]) {
     }
 }
 
-/// Portable u64 64-byte bit-transpose (Hacker's Delight `transpose8`, the
-/// same 3-round masked bit-swap the NEON path uses, on scalar registers).
+/// Portable u64 64-byte bit-transpose, the scalar-register twin of the NEON
+/// path.
 ///
-/// Per byte-chunk `b`: gather the 8 strided bytes `input[x*8 + b]` into a
-/// u64 (little-endian, byte x = lane x), transpose the 8×8 bit matrix via
-/// swaps at distances 7/14/28, and store the result contiguously at
-/// `output[b*8..]`. Bit `(x, t)` of the gathered word lands at `(t, x)` —
-/// exactly `output[b*8 + t] bit x = input[x*8 + b] bit t`.
+/// Per byte-chunk `b`: gather the 8 strided bytes `input[x*8 + b]` into a u64
+/// (little-endian, byte x = lane x), run [`transpose_8x8_bits`] on it, and
+/// store the result contiguously at `output[b*8..]`. Bit `(x, t)` of the
+/// gathered word lands at `(t, x)`, which is exactly
+/// `output[b*8 + t] bit x = input[x*8 + b] bit t`.
 #[cfg(not(target_arch = "aarch64"))]
 #[cfg_attr(all(target_arch = "x86_64", target_feature = "avx512vbmi"), allow(dead_code))]
 #[inline]
 fn bit_transpose_64bytes_u64(input: &[u8; 64], output: &mut [u8; 64]) {
     for b_chunk in 0..8 {
-        let mut y = u64::from_le_bytes([
+        let y = transpose_8x8_bits(u64::from_le_bytes([
             input[b_chunk],
             input[8 + b_chunk],
             input[16 + b_chunk],
@@ -82,13 +82,7 @@ fn bit_transpose_64bytes_u64(input: &[u8; 64], output: &mut [u8; 64]) {
             input[40 + b_chunk],
             input[48 + b_chunk],
             input[56 + b_chunk],
-        ]);
-        let t = (y ^ (y >> 7)) & 0x00AA00AA00AA00AA;
-        y ^= t ^ (t << 7);
-        let t = (y ^ (y >> 14)) & 0x0000CCCC0000CCCC;
-        y ^= t ^ (t << 14);
-        let t = (y ^ (y >> 28)) & 0x00000000F0F0F0F0;
-        y ^= t ^ (t << 28);
+        ]));
         output[b_chunk * 8..b_chunk * 8 + 8].copy_from_slice(&y.to_le_bytes());
     }
 }
@@ -221,23 +215,7 @@ pub fn bit_transpose_64bytes(input: &[u8; 64], output: &mut [u8; 64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// splitmix64 test PRNG (same helper as the former_field_module/gf2_8 test modules).
-    #[cfg(target_arch = "aarch64")]
-    struct Rng(u64);
-    #[cfg(target_arch = "aarch64")]
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Self(seed)
-        }
-        fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-            z ^ (z >> 31)
-        }
-    }
+    use crate::test_rng::Rng;
 
     /// Scalar reference for [`transpose_8_u64s_to_64_bytes`] — test oracle only.
     #[allow(clippy::erasing_op, clippy::identity_op)]
@@ -263,16 +241,9 @@ mod tests {
     /// bit-for-bit on varied inputs.
     #[test]
     fn transpose_8_u64s_matches_scalar() {
-        let mut state = 0x1234_5678_9ABC_DEF0u64;
-        let mut next = || {
-            state = state.wrapping_add(0x9E3779B97F4A7C15);
-            let mut z = state;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-            z ^ (z >> 31)
-        };
+        let mut rng = Rng::new(0x1234_5678_9ABC_DEF0);
         for _ in 0..100 {
-            let lanes: [u64; 8] = std::array::from_fn(|_| next());
+            let lanes: [u64; 8] = std::array::from_fn(|_| rng.next_u64());
             let mut fast = [0u8; 64];
             let mut oracle = [0u8; 64];
             transpose_8_u64s_to_64_bytes(&lanes, &mut fast);
@@ -320,14 +291,10 @@ mod tests {
     #[cfg(not(target_arch = "aarch64"))]
     #[test]
     fn bit_transpose_u64_matches_scalar() {
-        let mut seed = 0x12345678u64;
-        let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (seed >> 33) as u8
-        };
+        let mut rng = Rng::new(0x12345678);
         for _ in 0..64 {
             let mut input = [0u8; 64];
-            input.iter_mut().for_each(|b| *b = next());
+            input.iter_mut().for_each(|b| *b = rng.next_u8());
             let mut out_scalar = [0u8; 64];
             let mut out_u64 = [0u8; 64];
             bit_transpose_64bytes_scalar(&input, &mut out_scalar);
@@ -339,14 +306,10 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512vbmi"))]
     #[test]
     fn avx512vbmi_bit_transpose_matches_scalar() {
-        let mut seed = 0xB17_BB17u64;
-        let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (seed >> 33) as u8
-        };
+        let mut rng = Rng::new(0xB17_BB17);
         for _ in 0..64 {
             let mut input = [0u8; 64];
-            input.iter_mut().for_each(|b| *b = next());
+            input.iter_mut().for_each(|b| *b = rng.next_u8());
             let mut out_scalar = [0u8; 64];
             let mut out_avx512vbmi = [0u8; 64];
             bit_transpose_64bytes_scalar(&input, &mut out_scalar);
@@ -363,7 +326,7 @@ mod tests {
         for _ in 0..64 {
             let mut input = [0u8; 64];
             for byte in input.iter_mut() {
-                *byte = (rng.next_u64() & 0xff) as u8;
+                *byte = rng.next_u8();
             }
             let mut out_scalar = [0u8; 64];
             let mut out_neon = [0u8; 64];

@@ -80,49 +80,26 @@ pub(crate) enum LOp {
     },
 }
 
+/// A prover hint attached to an instruction. Most are already the runtime's own
+/// [`RHint`] and pass straight through; the allocation ones are compiler-side,
+/// since their size is only known once every function's frame is laid out.
 #[derive(Clone, Debug)]
 pub(crate) enum Hint {
-    /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint frame for `callee`.
+    /// `m[fp·g^ptr] = g^{fresh base}`: a fresh, disjoint frame for `callee`.
     AllocFrame { ptr: Off, callee: String },
-    /// `AllocFrame` sized to the **largest** of several callees — a shared frame
+    /// `AllocFrame` sized to the **largest** of several callees, a shared frame
     /// for a dispatched call (all `callees` share the arg/return layout; only
     /// their local count, hence frame size, differs). See [`FnLower::lower_dispatched_call`].
     AllocFrameMax { ptr: Off, callees: Vec<String> },
-    /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint heap region of `size`
+    /// `m[fp·g^ptr] = g^{fresh base}`: a fresh, disjoint heap region of `size`
     /// cells (a `HeapBuf(size)`), addressed by g-power offsets from the pointer.
     AllocBuffer { ptr: Off, size: u32 },
     /// `AllocBuffer` with a *runtime* size in the exponent: the cell count is
     /// the g-power exponent of `m[fp·g^size]` (a `HeapBuf(size_expr)`).
     AllocBufferDyn { ptr: Off, size: Off },
-    /// Pop stream `name`'s next entry (`len` values) into the frame cells
-    /// `m[fp·g^{base+k}]`, `k < len`.
-    WitnessStack { name: String, base: Off, len: u32 },
-    /// Pop stream `name`'s next entry (`len` values) into the heap cells
-    /// `m[p·g^{lo+k}]`, `k < len`, where `p = m[fp·g^ptr]`.
-    WitnessHeap { name: String, ptr: Off, lo: u32, len: u32 },
-    /// Computed advice for `log2_ceil`: read the `nbits` bits already in the
-    /// buffer `m[fp·g^bits_ptr]`, reconstruct their integer value, and write
-    /// `g^max(log2_ceil(value), floor)` into `m[fp·g^dst]`. Nondeterministic
-    /// (prover-side); the emitting code re-verifies the result in-circuit.
-    Log2Ceil {
-        bits_ptr: Off,
-        dst: Off,
-        nbits: u32,
-        floor: u32,
-    },
-    /// Prover-side debug print of `fp+cell` (witness generation only).
-    Print { label: String, cell: Off },
-    /// Computed advice: write the `nbits` bits of the value in `m[fp+value]`
-    /// into the buffer `m[fp·g^bits_ptr]` (bit `j` at offset `j`). The emitting
-    /// code re-checks booleanity + reconstruction in-circuit.
-    BitDecompose { value: Off, bits_ptr: Off, nbits: u32 },
-    /// Computed advice: write the `nbits` bits of `n`, where `m[fp·g^value] = g^n`
-    /// (recovered by a bounded discrete log at witness generation), into the
-    /// buffer `m[fp·g^bits_ptr]`. The emitting code re-checks it in-circuit.
-    BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
-    /// Computed advice: write the first `len` K-coordinate limbs of an F192
-    /// value into consecutive frame cells. The guest must constrain them.
-    FieldLimbs { value: Off, base: Off, len: u32 },
+    /// A hint that needs nothing from the layout: witness fills, computed
+    /// advice, debug prints.
+    Resolved(RHint),
 }
 
 pub(crate) struct Lowered {
@@ -131,17 +108,16 @@ pub(crate) struct Lowered {
     pub(crate) frame_size: u32,
     /// One past the last frame cell the CALLER touches: `2 + n_args +
     /// n_ret_cells` (retpc/retfp, the arguments, then the flattened return
-    /// area). Cells below it cross the frame boundary — the caller writes the
-    /// arguments and reads the returns — so a write to one of them is
+    /// area). Cells below it cross the frame boundary (the caller writes the
+    /// arguments and reads the returns), so a write to one of them is
     /// observable outside this function even when no instruction here reads it.
     /// Everything at or above it is a local temporary.
     pub(crate) abi_end: u32,
 }
 
 /// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
-/// heap slice — the buffer pointer's cell plus the first g-power offset —
-/// which must be bridged through the stack (`BLAKE3` addresses only frame
-/// cells).
+/// heap slice (the buffer pointer's cell plus the first g-power offset), which
+/// must be bridged through the stack (`BLAKE3` addresses only frame cells).
 pub(crate) enum B3Operand {
     Stack(Off),
     Heap { ptr: Off, lo: u32 },

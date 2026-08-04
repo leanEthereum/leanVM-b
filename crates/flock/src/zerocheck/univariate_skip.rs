@@ -1,5 +1,17 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Round-1 prover message (univariate skip).
+//! Round-1 (univariate skip): live helpers, plus the reference oracles the optimized kernels are
+//! checked against.
+//!
+//! The module is two disjoint halves:
+//!
+//! - **Live in production**: the [`build_eq`] re-export, [`pack_bits`], [`SplitEq`] and
+//!   [`ntt_extend_vec`]. The optimized round-1 kernel
+//!   ([`super::univariate_skip_optimized`]) and the round-2 kernel ([`super::multilinear`])
+//!   are built on these.
+//! - **Test-only oracles**, below the banner and all `#[cfg(test)]`: `round1_naive`,
+//!   `round1_extract_c`, `round1_extract_c_packed`, `round1_extract_c_packed_with_s_hat_v` and
+//!   `round1_evals_on_s`. They translate the protocol formula directly, so the optimized kernels
+//!   can be diffed against something obviously correct.
 //!
 //! The round-1 message is `(P^{AB}, P^C)`, each a length-`2^k_skip` vector
 //! of F192 values. They are evaluations on the NTT domain `Λ` of the
@@ -14,104 +26,20 @@
 //! recovered via `inv_NTT_S`; we then evaluate on `Λ = {2^k_skip, …}` via
 //! `fwd_NTT_Λ`.
 //!
-//! Unoptimized reference: returns the AB and C polynomials separately (the
-//! extract_c variant). The optimized variant in
-//! [`super::univariate_skip_optimized`] drops a constant F₈ factor
-//! `C_s = φ₈(0x1C)` from the eq-on-S weights; this one keeps it.
+//! The oracles keep the constant F₈ factor `C_s = φ₈(0x1C)` in the eq-on-S weights;
+//! [`super::univariate_skip_optimized`] drops it and the caller restores it before the message
+//! goes on the wire.
 
-use pcs::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
+#[cfg(test)]
+use pcs::ntt::AdditiveNttGf8;
+use pcs::ntt::InvNttTableByteSingleGf8;
 use primitives::field::{F8, F192, phi8_192 as phi8};
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Live helpers.
 // ---------------------------------------------------------------------------
 
 pub use primitives::multilinear::eq_table as build_eq;
-
-// ---------------------------------------------------------------------------
-// Naive round-1 prover message (extract_c form)
-// ---------------------------------------------------------------------------
-
-/// Compute the round-1 prover message naively (no shift-reduce, no fused
-/// inner, no deferred reduction — direct algorithmic translation of the
-/// protocol formula).
-///
-/// Returns `(p_ab, p_c)`, each a length-`2^k_skip` F192 vector of evaluations
-/// on Λ.
-///
-/// Preconditions:
-/// - `a.len() == b.len() == c.len() == 2^m`
-/// - `r.len() == m`
-/// - `k_skip <= m`
-///
-/// Index convention: for index `i ∈ 0..2^m`, the low `k_skip` bits address
-/// the *skip* variables (`y_skip ∈ S`), the high `m - k_skip` bits address
-/// the *rest* variables (`y_rest`).
-pub fn round1_naive(a: &[bool], b: &[bool], c: &[bool], m: usize, k_skip: usize, r: &[F192]) -> (Vec<F192>, Vec<F192>) {
-    assert!(k_skip <= m, "k_skip must be ≤ m");
-    assert_eq!(a.len(), 1usize << m);
-    assert_eq!(b.len(), 1usize << m);
-    assert_eq!(c.len(), 1usize << m);
-    assert_eq!(r.len(), m);
-
-    let ell = 1usize << k_skip;
-    let n_chunks_x = 1usize << (m - k_skip);
-
-    // NTT for evaluating-on-Λ via inv-on-S then fwd-on-Λ.
-    let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
-    let ntt_l = AdditiveNttGf8::new(k_skip, F8(ell as u8));
-
-    // eq table over the rest-of-r challenges; only r[k_skip..] is used here
-    // (the skip portion r[0..k_skip] is consumed by the verifier later).
-    let eq_full = build_eq(&r[k_skip..]);
-
-    let mut p_ab = vec![F192::ZERO; ell];
-    let mut p_c = vec![F192::ZERO; ell];
-
-    let mut a_col = vec![F8::ZERO; ell];
-    let mut b_col = vec![F8::ZERO; ell];
-    let mut c_col = vec![F8::ZERO; ell];
-
-    for x_rest in 0..n_chunks_x {
-        let base = x_rest * ell;
-        for s in 0..ell {
-            a_col[s] = F8(a[base + s] as u8);
-            b_col[s] = F8(b[base + s] as u8);
-            c_col[s] = F8(c[base + s] as u8);
-        }
-        // Extend the row polynomial from S to Λ.
-        ntt_s.inverse(&mut a_col);
-        ntt_l.forward(&mut a_col);
-        ntt_s.inverse(&mut b_col);
-        ntt_l.forward(&mut b_col);
-        ntt_s.inverse(&mut c_col);
-        ntt_l.forward(&mut c_col);
-
-        let eq_x = eq_full[x_rest];
-        for i in 0..ell {
-            let ab = a_col[i] * b_col[i];
-            p_ab[i] += eq_x * phi8(ab);
-            p_c[i] += eq_x * phi8(c_col[i]);
-        }
-    }
-
-    (p_ab, p_c)
-}
-
-// ---------------------------------------------------------------------------
-// Algorithmically-structured optimized round-1 (extract_c form, scalar)
-// ---------------------------------------------------------------------------
-//
-// Same output as `round1_naive`, but:
-//   * uses `InvNttTableByteSingleGf8::apply` (one L1 lookup pass) instead of
-//     two F8 NTT calls per row;
-//   * splits the eq table into lo/hi halves (cache-friendly outer/inner);
-//   * processes C in extract_c form — accumulates on S, NTT-extends to Λ once
-//     at the end, instead of NTT-extending per row.
-//
-// The geometric-eq shift_reduce + convert-table tricks (which give the C++ its
-// final ~5× win) are a follow-up; they change the output by the C_s factor,
-// so doing them on a separately-validated scaffold is cleaner.
 
 /// Pack a bit vector LSB-first into bytes.
 pub fn pack_bits(bits: &[bool]) -> Vec<u8> {
@@ -148,12 +76,6 @@ impl SplitEq {
     pub fn new(r: &[F192]) -> Self {
         let n = r.len();
         let n_hi = n.min(Self::MAX_N_HI);
-        Self::with_n_hi(r, n_hi)
-    }
-
-    pub fn with_n_hi(r: &[F192], n_hi: usize) -> Self {
-        let n = r.len();
-        let n_hi = n_hi.min(n);
         let n_lo = n - n_hi;
         Self {
             n_lo,
@@ -215,12 +137,91 @@ pub fn ntt_extend_vec(in_s: &[F192], inv_table: &InvNttTableByteSingleGf8) -> Ve
     out
 }
 
+// ===========================================================================
+// Test-only oracles. Everything below is `#[cfg(test)]`: direct translations of
+// the protocol formula, kept only so the optimized kernels have something
+// obviously correct to be diffed against.
+// ===========================================================================
+
+/// Compute the round-1 prover message naively (no shift-reduce, no fused
+/// inner, no deferred reduction — direct algorithmic translation of the
+/// protocol formula).
+///
+/// Returns `(p_ab, p_c)`, each a length-`2^k_skip` F192 vector of evaluations
+/// on Λ.
+///
+/// Preconditions:
+/// - `a.len() == b.len() == c.len() == 2^m`
+/// - `r.len() == m`
+/// - `k_skip <= m`
+///
+/// Index convention: for index `i ∈ 0..2^m`, the low `k_skip` bits address
+/// the *skip* variables (`y_skip ∈ S`), the high `m - k_skip` bits address
+/// the *rest* variables (`y_rest`).
+#[cfg(test)]
+pub fn round1_naive(a: &[bool], b: &[bool], c: &[bool], m: usize, k_skip: usize, r: &[F192]) -> (Vec<F192>, Vec<F192>) {
+    assert!(k_skip <= m, "k_skip must be ≤ m");
+    assert_eq!(a.len(), 1usize << m);
+    assert_eq!(b.len(), 1usize << m);
+    assert_eq!(c.len(), 1usize << m);
+    assert_eq!(r.len(), m);
+
+    let ell = 1usize << k_skip;
+    let n_chunks_x = 1usize << (m - k_skip);
+
+    // NTT for evaluating-on-Λ via inv-on-S then fwd-on-Λ.
+    let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
+    let ntt_l = AdditiveNttGf8::new(k_skip, F8(ell as u8));
+
+    // eq table over the rest-of-r challenges; only r[k_skip..] is used here
+    // (the skip portion r[0..k_skip] is consumed by the verifier later).
+    let eq_full = build_eq(&r[k_skip..]);
+
+    let mut p_ab = vec![F192::ZERO; ell];
+    let mut p_c = vec![F192::ZERO; ell];
+
+    let mut a_col = vec![F8::ZERO; ell];
+    let mut b_col = vec![F8::ZERO; ell];
+    let mut c_col = vec![F8::ZERO; ell];
+
+    for x_rest in 0..n_chunks_x {
+        let base = x_rest * ell;
+        for s in 0..ell {
+            a_col[s] = F8(a[base + s] as u8);
+            b_col[s] = F8(b[base + s] as u8);
+            c_col[s] = F8(c[base + s] as u8);
+        }
+        // Extend the row polynomial from S to Λ.
+        ntt_s.inverse(&mut a_col);
+        ntt_l.forward(&mut a_col);
+        ntt_s.inverse(&mut b_col);
+        ntt_l.forward(&mut b_col);
+        ntt_s.inverse(&mut c_col);
+        ntt_l.forward(&mut c_col);
+
+        let eq_x = eq_full[x_rest];
+        for i in 0..ell {
+            let ab = a_col[i] * b_col[i];
+            p_ab[i] += eq_x * phi8(ab);
+            p_c[i] += eq_x * phi8(c_col[i]);
+        }
+    }
+
+    (p_ab, p_c)
+}
+
 /// Round-1 prover message (extract_c form, scalar, algorithmically optimized
 /// but without the geometric-eq shift_reduce trick).
+///
+/// Same output as [`round1_naive`], but it uses `InvNttTableByteSingleGf8::apply`
+/// (one L1 lookup pass) instead of two F8 NTT calls per row, splits the eq table
+/// into lo/hi halves, and accumulates C on S so it NTT-extends to Λ once at the
+/// end rather than per row.
 ///
 /// Output: `(res_AB, res_C_lifted)`, each length `2^k_skip` F192 vector.
 /// Both are evaluations on Λ. Output equals `round1_naive(..)` byte-for-byte
 /// (no C_s factor — see module-level comment).
+#[cfg(test)]
 pub fn round1_extract_c(
     a: &[bool],
     b: &[bool],
@@ -243,6 +244,7 @@ pub fn round1_extract_c(
 /// caller passes pre-packed bytes (LSB-first within each byte, as produced
 /// by [`pack_bits`]). Use this when the caller already has packed witnesses
 /// or wants to factor packing out of timed work.
+#[cfg(test)]
 pub fn round1_extract_c_packed(
     a_packed: &[u8],
     b_packed: &[u8],
@@ -252,70 +254,8 @@ pub fn round1_extract_c_packed(
     r: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
 ) -> (Vec<F192>, Vec<F192>) {
-    assert!(k_skip <= m);
-    let total_bytes = (1usize << m) / 8;
-    assert_eq!(a_packed.len(), total_bytes);
-    assert_eq!(b_packed.len(), total_bytes);
-    assert_eq!(c_packed.len(), total_bytes);
-    assert_eq!(r.len(), m);
-    assert_eq!(inv_table.k, k_skip);
-
-    let ell = 1usize << k_skip;
-    let n_chunks = ell / 8;
-
-    let eq = SplitEq::new(&r[k_skip..]);
-    let lo_size = 1usize << eq.n_lo;
-    let hi_size = 1usize << eq.n_hi;
-
-    let mut res_ab = vec![F192::ZERO; ell];
-    // C accumulator stays in S-domain; we NTT-extend once at the end.
-    let mut res_c_s = vec![F192::ZERO; ell];
-
-    let mut partial_ab = vec![F192::ZERO; ell];
-    let mut partial_c = vec![F192::ZERO; ell];
-
-    let mut a_col = vec![F8::ZERO; ell];
-    let mut b_col = vec![F8::ZERO; ell];
-
-    for x_hi in 0..hi_size {
-        partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
-        partial_c.iter_mut().for_each(|p| *p = F192::ZERO);
-
-        for x_lo in 0..lo_size {
-            let x_rest = (x_hi << eq.n_lo) | x_lo;
-            let chunk_offset = x_rest * n_chunks;
-
-            // A, B → Λ-domain via table lookup.
-            inv_table.apply(&a_packed[chunk_offset..chunk_offset + n_chunks], &mut a_col);
-            inv_table.apply(&b_packed[chunk_offset..chunk_offset + n_chunks], &mut b_col);
-
-            let eq_lo = eq.lo[x_lo];
-
-            // AB on Λ.
-            for lambda in 0..ell {
-                let ab = a_col[lambda] * b_col[lambda];
-                partial_ab[lambda] += eq_lo * phi8(ab);
-            }
-
-            // C on S — read original bits, no NTT yet.
-            for s in 0..ell {
-                let c_bit = (c_packed[chunk_offset + s / 8] >> (s % 8)) & 1;
-                if c_bit != 0 {
-                    partial_c[s] += eq_lo;
-                }
-            }
-        }
-
-        let eq_hi = eq.hi[x_hi];
-        for lambda in 0..ell {
-            res_ab[lambda] += eq_hi * partial_ab[lambda];
-            res_c_s[lambda] += eq_hi * partial_c[lambda];
-        }
-    }
-
-    // Lift C from S to Λ via bit-plane NTT extension.
-    let res_c_lifted = ntt_extend_vec(&res_c_s, inv_table);
-
+    let (res_ab, res_c_lifted, _) =
+        round1_extract_c_packed_with_s_hat_v(a_packed, b_packed, c_packed, m, k_skip, r, inv_table);
     (res_ab, res_c_lifted)
 }
 
@@ -350,6 +290,7 @@ pub fn round1_extract_c_packed(
 /// Output layout (matches `fold_1b_rows`): `s_hat_v_c[lane | (b_7 << k_skip)]`
 /// for `lane ∈ [0, 2^k_skip)`, `b_7 ∈ {0, 1}`. Length = `2 · 2^k_skip` =
 /// `2^LOG_PACKING = 128` when `k_skip = 6`.
+#[cfg(test)]
 pub fn round1_extract_c_packed_with_s_hat_v(
     a_packed: &[u8],
     b_packed: &[u8],
@@ -453,11 +394,7 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     (res_ab, res_c_lifted, s_hat_v_c)
 }
 
-// ---------------------------------------------------------------------------
-// Test oracle: round-1 polynomial values evaluated AT S
-// ---------------------------------------------------------------------------
-
-/// **Test oracle, not part of the protocol.**
+/// Round-1 polynomial values evaluated AT S.
 ///
 /// Returns `(P^{AB} at S, P^C at S)` — i.e. evaluations of the same round-1
 /// polynomial on the input domain S instead of the extension domain Λ.
@@ -465,6 +402,7 @@ pub fn round1_extract_c_packed_with_s_hat_v(
 ///
 /// For an honest prover (`a·b = c` everywhere on the hypercube),
 /// `P^{AB}(λ) + P^C(λ) = 0` for every `λ ∈ S`.
+#[cfg(test)]
 pub fn round1_evals_on_s(
     a: &[bool],
     b: &[bool],
@@ -509,7 +447,7 @@ pub fn round1_evals_on_s(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_rng::Rng;
+    use primitives::test_rng::Rng;
 
     #[test]
     fn build_eq_basic() {
@@ -531,21 +469,6 @@ mod tests {
     }
 
     #[test]
-    fn round1_output_shape() {
-        let m = 8;
-        let k_skip = 3;
-        let ell = 1usize << k_skip;
-        let mut rng = Rng::new(1);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m);
-        let (p_ab, p_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
-        assert_eq!(p_ab.len(), ell);
-        assert_eq!(p_c.len(), ell);
-    }
-
-    #[test]
     fn round1_all_zero_witness_gives_zero_message() {
         let m = 7;
         let k_skip = 3;
@@ -555,20 +478,6 @@ mod tests {
         let (p_ab, p_c) = round1_naive(&zeros, &zeros, &zeros, m, k_skip, &r);
         assert!(p_ab.iter().all(|v| v.is_zero()));
         assert!(p_c.iter().all(|v| v.is_zero()));
-    }
-
-    #[test]
-    fn round1_deterministic() {
-        let m = 6;
-        let k_skip = 3;
-        let mut rng = Rng::new(3);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m);
-        let out1 = round1_naive(&a, &b, &c, m, k_skip, &r);
-        let out2 = round1_naive(&a, &b, &c, m, k_skip, &r);
-        assert_eq!(out1, out2);
     }
 
     #[test]
@@ -653,57 +562,6 @@ mod tests {
         InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l)
     }
 
-    #[test]
-    fn extract_c_output_shape() {
-        let m = 7;
-        let k_skip = 3;
-        let mut rng = Rng::new(10);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m);
-        let table = make_inv_table(k_skip);
-        let (ab, c_l) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
-        assert_eq!(ab.len(), 1usize << k_skip);
-        assert_eq!(c_l.len(), 1usize << k_skip);
-    }
-
-    #[test]
-    fn extract_c_deterministic() {
-        let m = 6;
-        let k_skip = 3;
-        let mut rng = Rng::new(11);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m);
-        let table = make_inv_table(k_skip);
-        let out1 = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
-        let out2 = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
-        assert_eq!(out1, out2);
-    }
-
-    /// `round1_extract_c_packed_with_s_hat_v` produces the same `res_ab` and
-    /// `res_c_lifted` as `round1_extract_c_packed` (the wire output is
-    /// reconstructed from the two banks via summation).
-    #[test]
-    fn extract_c_with_s_hat_v_matches_original_wire() {
-        for &(m, k_skip) in &[(4, 3), (5, 3), (6, 3), (7, 4), (8, 3), (9, 6)] {
-            let mut rng = Rng::new(0xBEEF + m as u64 * 7 + k_skip as u64);
-            let a = pack_bits(&rng.bits(1 << m));
-            let b = pack_bits(&rng.bits(1 << m));
-            let c = pack_bits(&rng.bits(1 << m));
-            let r = rng.ext_vec(m);
-            let table = make_inv_table(k_skip);
-
-            let (ab_old, c_old) = round1_extract_c_packed(&a, &b, &c, m, k_skip, &r, &table);
-            let (ab_new, c_new, _) = round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, k_skip, &r, &table);
-
-            assert_eq!(ab_old, ab_new, "res_ab mismatch m={m} k_skip={k_skip}");
-            assert_eq!(c_old, c_new, "res_c_lifted mismatch m={m} k_skip={k_skip}");
-        }
-    }
-
     /// The `s_hat_v_c` output is byte-identical to what ring-switch's
     /// `fold_1b_rows` would produce on the C-witness against the canonical
     /// suffix `r[k_skip + 1 ..]` (everything past `prefix0 = r[k_skip]`).
@@ -765,29 +623,6 @@ mod tests {
         }
     }
 
-    /// Honest-witness check at extract_c level: when c = a AND b, the
-    /// combined polynomial `res_AB + res_C_lifted` at every λ ∈ Λ should be
-    /// the same as the naive `p_ab + p_c` (which is also zero on S after
-    /// inverse-NTT — but at Λ it can be nonzero in general).
-    #[test]
-    fn extract_c_honest_witness_combined_matches_naive() {
-        let m = 8;
-        let k_skip = 3;
-        let mut rng = Rng::new(200);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
-        let r = rng.ext_vec(m);
-        let table = make_inv_table(k_skip);
-
-        let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
-        let (opt_ab, opt_c) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
-
-        for i in 0..naive_ab.len() {
-            assert_eq!(naive_ab[i] + naive_c[i], opt_ab[i] + opt_c[i]);
-        }
-    }
-
     #[test]
     fn split_eq_basic() {
         // Building the lo and hi tables separately should produce the same
@@ -803,31 +638,6 @@ mod tests {
             let x_hi = x >> eq.n_lo;
             assert_eq!(eq.lo[x_lo] * eq.hi[x_hi], full[x]);
         }
-    }
-
-    #[test]
-    fn ntt_extend_round_trips_naive_c_path() {
-        // Sanity for the F192 NTT extension: build a length-ell F192 vector by
-        // applying the naive (eq-weighted) C accumulation at S, then
-        // NTT-extending it. Compare to running the naive C path (which does
-        // the NTT-extend per row). These must agree because both are linear.
-        let m = 6;
-        let k_skip = 3;
-        let mut rng = Rng::new(400);
-        let a = rng.bits(1 << m); // unused for C
-        let b = rng.bits(1 << m); // unused for C
-        let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m);
-        let table = make_inv_table(k_skip);
-        let _ = (&a, &b); // silence unused-var lints
-
-        // Naive p_c: NTT-extends per row.
-        let (_, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
-
-        // Extract_c path: accumulate on S, then NTT-extend once.
-        let (_, opt_c) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
-
-        assert_eq!(naive_c, opt_c);
     }
 
     #[test]

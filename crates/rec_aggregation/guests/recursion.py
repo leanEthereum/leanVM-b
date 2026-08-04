@@ -7,9 +7,6 @@ STREAM_CAP = STREAM_CAP_PLACEHOLDER
 FLOORS = [0, 0, 0, 0, 0, 3, 0]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
-LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
-LAGRANGE_INV_1 = LAGRANGE_INV_1_PLACEHOLDER
-LAGRANGE_INV_2 = LAGRANGE_INV_2_PLACEHOLDER
 # The batched zerocheck's round polynomial arrives WHOLE, as a cubic at {0,1,g,g^2}:
 # one baked inverse denominator per node.
 LAG4_INV_0 = LAG4_INV_0_PLACEHOLDER
@@ -177,10 +174,8 @@ LIG_YR_LEN = LIG_YR_LEN_PLACEHOLDER
 LIG_TOTAL_FOLDS = LIG_TOTAL_FOLDS_PLACEHOLDER
 LIG_MAX_QUERIES = LIG_MAX_QUERIES_PLACEHOLDER
 LIG_MAX_SQUEEZES = LIG_MAX_SQUEEZES_PLACEHOLDER
-LIG_MAX_LOG_MSG_COLS = LIG_MAX_LOG_MSG_COLS_PLACEHOLDER
 LIG_MAX_INTERLEAVE = LIG_MAX_INTERLEAVE_PLACEHOLDER
 LIG_POSITIONS_LEN = LIG_POSITIONS_LEN_PLACEHOLDER
-LIG_SUMCHECK_LEN = LIG_SUMCHECK_LEN_PLACEHOLDER
 LIG_ROWS_LEN = LIG_ROWS_LEN_PLACEHOLDER
 LIG_PATHS_LEN = LIG_PATHS_LEN_PLACEHOLDER
 LIG_QUERY_GRIND_BITS = LIG_QUERY_GRIND_BITS_PLACEHOLDER
@@ -246,8 +241,6 @@ STATEMENT_SEED_0 = STATEMENT_SEED_0_PLACEHOLDER
 STATEMENT_SEED_1 = STATEMENT_SEED_1_PLACEHOLDER
 
 DS_SCALAR = 1
-DS_BYTE = 2
-DS_LEN = 3
 DS_SQ = 4
 DS_POW = 5
 
@@ -273,6 +266,8 @@ def f192_from_limbs(c0, c1, c2):
 
 @inline
 def challenge_from_state(state):
+    # `hash_state_to_words` with the second word dropped, written out because a
+    # tuple-unpacking call is not inlinable and `squeeze` is @inline.
     # Exact lowering for state = [(d0,d1,0), (d2,d3,0)]:
     #   hints lo=[d0,d1], hi=[d2,d3]
     #   PACK64X2(lo[0],lo[1]) -> state[0]  (in-place equality check)
@@ -518,27 +513,6 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
         node_0 = parent[0]
         node_1 = parent[1]
     return node_0, node_1
-
-
-def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge):
-    # One eq_acc-trick sumcheck round: observe the three round messages off the
-    # stream, check the running claim at the previous challenge, squeeze the
-    # round challenge round_challenge, and evaluate the round polynomial at round_challenge through the
-    # {0, 1, g} Lagrange basis (baked inverse denominators). Shared by the
-    # GKR layers and the AIR zerocheck rounds.
-    fs = [state_0, state_1]
-    fs, m0, msg_cursor = fs_next(fs, msg_cursor)
-    fs, m1, msg_cursor = fs_next(fs, msg_cursor)
-    fs, m2, msg_cursor = fs_next(fs, msg_cursor)
-    lhs = eq_acc * ((1 + prev_challenge) * m0 + prev_challenge * m1)
-    assert lhs == claim
-    fs, round_challenge = squeeze(fs)
-    new_eq = eq_acc * (1 + prev_challenge + round_challenge)
-    l0 = ((round_challenge + 1) * (round_challenge + GEN)) * LAGRANGE_INV_0
-    l1 = (round_challenge * (round_challenge + GEN)) * LAGRANGE_INV_1
-    l2 = (round_challenge * (round_challenge + 1)) * LAGRANGE_INV_2
-    new_claim = new_eq * (m0 * l0 + m1 * l1 + m2 * l2)
-    return fs[0], fs[1], msg_cursor, new_claim, new_eq, round_challenge
 
 
 @inline

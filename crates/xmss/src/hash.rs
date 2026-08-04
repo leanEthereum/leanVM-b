@@ -1,10 +1,6 @@
-//! The XMSS hash layer, built from standard BLAKE3:
-//!
-//! - [`tweak_hash`]: BLAKE3 of `tweak | pp | payload`, used for chain steps
-//!   and Merkle nodes;
-//! - [`tweak_hash_many`]: the same exact-length construction for the WOTS
-//!   public-key and message-encoding inputs, which span multiple compression
-//!   blocks.
+//! The XMSS hash layer: [`tweak_hash`] is standard BLAKE3 of the exact byte
+//! string `tweak | pp | payload`, for chain steps, Merkle nodes, WOTS public
+//! keys, and message encodings alike.
 //!
 //! The 16-byte tweak makes every call site a distinct hash function
 //! (multi-target separation, as in leanVM) and the public parameter separates
@@ -41,22 +37,14 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
     tweak
 }
 
-/// Standard BLAKE3 of `tweak | pp | payload`. This is one compression for
-/// chain steps (48 bytes total) and Merkle nodes (64 bytes total).
+/// Standard BLAKE3 of the exact-length `tweak | pp | payload` byte string. One
+/// compression for chain steps (48 bytes total) and Merkle nodes (64 bytes
+/// total), more for the multi-block WOTS public-key and encoding inputs.
 pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, payload: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&make_tweak(tweak_type, sub_position, index));
     hasher.update(pp);
     hasher.update(payload);
-    hasher.finalize().as_bytes()[..DIGEST_LEN].try_into().unwrap()
-}
-
-/// Standard BLAKE3 of the exact-length `tweak | pp | data` byte string.
-pub fn tweak_hash_many(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, data: &[u8]) -> Digest {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&make_tweak(tweak_type, sub_position, index));
-    hasher.update(pp);
-    hasher.update(data);
     hasher.finalize().as_bytes()[..DIGEST_LEN].try_into().unwrap()
 }
 
@@ -90,7 +78,7 @@ mod tests {
         input.extend_from_slice(&data);
         let expected = blake3::hash(&input);
         assert_eq!(
-            tweak_hash_many(&pp, TWEAK_TYPE_WOTS_PK, 0, 42, &data),
+            tweak_hash(&pp, TWEAK_TYPE_WOTS_PK, 0, 42, &data),
             expected.as_bytes()[..DIGEST_LEN]
         );
     }

@@ -36,21 +36,8 @@ use primitives::multilinear::lagrange_weights_naive;
 use primitives::{
     field::{F64, F192},
     pretty_integer,
+    test_rng::Rng,
 };
-
-/// Tiny deterministic xorshift RNG: reproducible inputs without another dep.
-struct Rng(u64);
-
-impl Rng {
-    fn next_u32(&mut self) -> u32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
-    }
-}
 
 /// Split the two K coefficients of each packed tower element. Flock's fused
 /// witness generator uses 128-bit containers; the PCS commits 64 bits/word.
@@ -129,7 +116,7 @@ fn blake3_batch_prove_verify() {
         "FLOCK_N_LOG too small: need a committed witness with mu >= 15"
     );
 
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ n as u64);
+    let mut rng = Rng::new(0x9E37_79B9_7F4A_7C15 ^ n as u64);
     let blocks: Vec<Compression> = (0..n)
         .map(|_| pinned_compression(std::array::from_fn(|_| rng.next_u32())))
         .collect();
@@ -180,31 +167,22 @@ fn blake3_batch_prove_verify() {
     // The per-stage timings ride alongside the pass result, so one `Plan` drives
     // the warmup, the cooldown, and the repetition for all four of them.
     let plan = Plan::from_env();
-    let ((transcript, opening), stage_samples) = {
-        let mut stages: Vec<Timing> = vec![Timing::default(); 4];
-        let (out, _) = plan.warm_then_measure(|| {
-            let (out, secs) = prove_pass();
-            for (timing, s) in stages.iter_mut().zip(secs) {
-                timing.push(s);
-            }
-            out
-        });
-        // The warmup pass also pushed a sample; drop the leading one per stage.
-        (out, stages)
-    };
-    let [witness, commit_stage, open, prove] = <[Timing; 4]>::try_from(
-        stage_samples
-            .into_iter()
-            .map(|t| {
-                let mut kept = Timing::default();
-                for &s in &t.samples()[1..] {
-                    kept.push(s);
-                }
-                kept
-            })
-            .collect::<Vec<_>>(),
-    )
-    .expect("four stages");
+    let mut stages: [Timing; 4] = std::array::from_fn(|_| Timing::default());
+    let ((transcript, opening), _) = plan.warm_then_measure(|| {
+        let (out, secs) = prove_pass();
+        for (timing, s) in stages.iter_mut().zip(secs) {
+            timing.push(s);
+        }
+        out
+    });
+    // The warmup pass also pushed a sample; drop the leading one per stage.
+    let [witness, commit_stage, open, prove] = stages.map(|t| {
+        let mut kept = Timing::default();
+        for &s in &t.samples()[1..] {
+            kept.push(s);
+        }
+        kept
+    });
 
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
         let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);

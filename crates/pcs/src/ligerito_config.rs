@@ -26,7 +26,8 @@
 //! [`SECURITY_BITS`]: the Fiat--Shamir error per random-oracle query is the
 //! MAX of the entries, not their sum.
 //!
-use serde::{Deserialize, Serialize};
+
+use primitives::log2_ceil_usize as log2_ceil;
 
 // ===================================================================
 // Config
@@ -87,18 +88,18 @@ const _: () = assert!(RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR <= SUBSEQUENT_FOLDIN
 /// clear instead of committed and folded further.
 pub const RESIDUAL_MAX_LOG: usize = 5;
 
+/// Shape plus per-level soundness parameters for one Ligerito opening. Prover
+/// and verifier read exactly the same numbers, hence the single struct and the
+/// [`VerifierConfig`] alias.
 #[derive(Clone, Debug)]
 pub struct ProverConfig {
     pub log_inv_rates: Vec<usize>,
     pub level_steps: usize,
-    pub initial_log_msg_cols: usize,
-    pub initial_log_num_interleaved: usize,
     pub initial_k: usize,
-    pub level_log_msg_cols: Vec<usize>,
     pub level_ks: Vec<usize>,
     /// Per-level query counts (L0, L1, ..., L_r). Length = level_steps + 1.
-    /// [`LigeritoSecurityConfig::derive_config`] fills these from the
-    /// per-level soundness analysis.
+    /// [`LigeritoSecurityConfig::derive_config_with_log_inv_rate`] fills these
+    /// from the per-level soundness analysis.
     pub queries: Vec<usize>,
     /// Per-level **query-phase** PoW grinding bits (L0, L1, ..., L_r), ground
     /// post-commit/pre-queries. Length = level_steps + 1. Each bit here
@@ -117,8 +118,10 @@ pub struct ProverConfig {
     pub ood_samples: Vec<usize>,
 }
 
+pub type VerifierConfig = ProverConfig;
+
 /// The per-level shape table a [`VerifierConfig`] implies for a
-/// `log_n`-variable opening — the numbers every consumer of the multilevel
+/// `log_n`-variable opening: the numbers every consumer of the multilevel
 /// protocol (the verifier itself, recursion harnesses) otherwise re-derives.
 #[derive(Clone, Debug)]
 pub struct LevelShapes {
@@ -135,27 +138,7 @@ pub struct LevelShapes {
     pub yr_log_n: usize,
 }
 
-#[derive(Clone, Debug)]
-pub struct VerifierConfig {
-    pub log_inv_rates: Vec<usize>,
-    pub level_steps: usize,
-    pub initial_log_msg_cols: usize,
-    pub initial_log_num_interleaved: usize,
-    pub initial_k: usize,
-    pub level_log_msg_cols: Vec<usize>,
-    pub level_ks: Vec<usize>,
-    /// Per-level query counts. Length = level_steps + 1.
-    pub queries: Vec<usize>,
-    /// Per-level query-phase PoW grinding bits. Length = level_steps + 1.
-    pub grinding_bits: Vec<usize>,
-    /// Per-level fold-challenge PoW grinding bits (one grind per fold
-    /// challenge of the level). Length = level_steps + 1.
-    pub fold_grinding_bits: Vec<usize>,
-    /// Per-commit-level OOD samples. Length = level_steps + 1.
-    pub ood_samples: Vec<usize>,
-}
-
-impl VerifierConfig {
+impl ProverConfig {
     /// See [`LevelShapes`].
     pub fn level_shapes(&self, log_n: usize) -> LevelShapes {
         let r = self.level_steps;
@@ -166,10 +149,9 @@ impl VerifierConfig {
         for i in 0..r {
             log_msg_cols.push(log_msg_cols[i] - self.level_ks[i]);
         }
-        let mut block_len = vec![1usize << (self.initial_log_msg_cols + self.log_inv_rates[0])];
-        for i in 0..r {
-            block_len.push(1usize << (self.level_log_msg_cols[i] + self.log_inv_rates[i + 1]));
-        }
+        let block_len: Vec<usize> = (0..=r)
+            .map(|i| 1usize << (log_msg_cols[i] + self.log_inv_rates[i]))
+            .collect();
         LevelShapes {
             levels: r + 1,
             ks,
@@ -189,7 +171,7 @@ const UDR_TARGET_BITS: f64 = 100.0;
 /// at rate `2^(-log_inv_rate)`: `γ = δ/2 = (1−ρ)/2`, per-query soundness
 /// `log₂(1/(1−γ))` (see [`udr_per_query_bits`]). Within the unique decoding
 /// radius the prover is pinned to a single codeword, so there is no list and
-/// no union-bound term — queries close the full target by themselves.
+/// no union-bound term: queries close the full target by themselves.
 /// Per-query soundness saturates below 1 bit (`γ < 1/2`), so slimmer codes
 /// bottom out near `UDR_TARGET_BITS` queries: 243 at rate 1/2, 148 at 1/4,
 /// 121 at 1/8, 110 at 1/16, 105 at 1/32.
@@ -201,7 +183,8 @@ pub fn udr_queries(log_inv_rate: usize) -> usize {
 }
 
 /// Build an ad-hoc Ligerito config from the raw PCS shape, WITHOUT the
-/// per-level soundness derivation of [`LigeritoSecurityConfig::derive_config`].
+/// per-level soundness derivation of
+/// [`LigeritoSecurityConfig::derive_config_with_log_inv_rate`].
 /// `log_n` is the packed-witness log size (= `m - LOG_PACKING`).
 ///
 /// Strategy: 3-bit recursive folds (`k_i = 3`) with **decreasing rate** (one
@@ -209,73 +192,36 @@ pub fn udr_queries(log_inv_rate: usize) -> usize {
 /// `block_len ≥ udr_queries(rate)` at every level. Returns `Err` when no
 /// feasible config exists (e.g. `log_n` too small for the chosen rate).
 ///
-/// Test-support only: the small F64 PCS tests exercise sizes below `derive_config`'s
-/// feasibility floor, where they fall back to this shape. Production callers
-/// use `derive_config` (the audited, per-level-sound path).
+/// Test-support only: the small F64 PCS tests exercise sizes below the
+/// production derivation's feasibility floor, where they fall back to this
+/// shape. Production callers use the audited, per-level-sound path.
 #[cfg(test)]
-pub fn default_config(log_n: usize, log_batch_size: usize, log_inv_rate: usize) -> Result<ProverConfig, &'static str> {
+pub fn default_config(log_n: usize, log_batch_size: usize, log_inv_rate: usize) -> Result<ProverConfig, String> {
     let initial_k = log_batch_size;
-    if log_n <= initial_k {
-        return Err("log_n must be > initial_k");
+    if log_n > initial_k && (1usize << (log_n - initial_k + log_inv_rate)) < udr_queries(log_inv_rate) {
+        return Err("L0 block_len < udr_queries: log_n too small for chosen rate".into());
     }
-
-    let mut log_inv_rates = vec![log_inv_rate];
-    let mut level_ks = Vec::new();
-    let mut level_log_msg_cols = Vec::new();
-
-    let mut n_running = log_n - initial_k;
-    let mut rate_running = log_inv_rate;
-
-    // L0 feasibility check.
-    {
-        let block_len_log = n_running + rate_running;
-        let qs = udr_queries(rate_running);
-        if (1usize << block_len_log) < qs {
-            return Err("L0 block_len < udr_queries — log_n too small for chosen rate");
-        }
-    }
-
-    while n_running > 5 {
-        let k = 3.min(n_running);
-        let log_msg_cols_next = n_running - k;
-        // Pick the smallest rate ≥ rate_running+1 such that block_len ≥ queries.
+    // Smallest rate strictly above the previous one that still fits the level's
+    // query count inside its block length.
+    let shape = derive_ladder(log_n, initial_k, log_inv_rate, |rate_running, _fold, cols_next| {
         let mut next_rate = rate_running + 1;
-        loop {
-            let bl = 1usize << (log_msg_cols_next + next_rate);
-            let qs = udr_queries(next_rate);
-            if bl >= qs {
-                break;
-            }
+        while (1usize << (cols_next + next_rate)) < udr_queries(next_rate) {
             next_rate += 1;
             if next_rate > 20 {
-                return Err("could not find feasible recursive rate (level too deep)");
+                return Err("could not find feasible recursive rate (level too deep)".into());
             }
         }
-        level_log_msg_cols.push(log_msg_cols_next);
-        level_ks.push(k);
-        log_inv_rates.push(next_rate);
-        n_running -= k;
-        rate_running = next_rate;
-    }
+        Ok(next_rate)
+    })?;
 
-    if level_ks.is_empty() {
-        return Err("log_n too small — no recursive levels needed (use BaseFold directly)");
-    }
-
-    let queries: Vec<usize> = log_inv_rates.iter().map(|&r| udr_queries(r)).collect();
-    let n_levels = log_inv_rates.len();
-    let grinding_bits = vec![0usize; n_levels];
-
+    let n_levels = shape.log_inv_rates.len();
     Ok(ProverConfig {
-        log_inv_rates: log_inv_rates.clone(),
-        level_steps: level_ks.len(),
-        initial_log_msg_cols: log_n - initial_k,
-        initial_log_num_interleaved: initial_k,
+        queries: shape.log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
+        log_inv_rates: shape.log_inv_rates,
+        level_steps: shape.k_levels.len() - 1,
         initial_k,
-        level_log_msg_cols,
-        level_ks,
-        queries,
-        grinding_bits,
+        level_ks: shape.k_levels[1..].to_vec(),
+        grinding_bits: vec![0usize; n_levels],
         fold_grinding_bits: vec![0usize; n_levels],
         ood_samples: vec![0usize; n_levels],
     })
@@ -287,21 +233,8 @@ pub fn default_verifier_config(
     log_n: usize,
     log_batch_size: usize,
     log_inv_rate: usize,
-) -> Result<VerifierConfig, &'static str> {
-    let p = default_config(log_n, log_batch_size, log_inv_rate)?;
-    Ok(VerifierConfig {
-        log_inv_rates: p.log_inv_rates,
-        level_steps: p.level_steps,
-        initial_log_msg_cols: p.initial_log_msg_cols,
-        initial_log_num_interleaved: p.initial_log_num_interleaved,
-        initial_k: p.initial_k,
-        level_log_msg_cols: p.level_log_msg_cols,
-        level_ks: p.level_ks,
-        queries: p.queries,
-        grinding_bits: p.grinding_bits,
-        fold_grinding_bits: p.fold_grinding_bits,
-        ood_samples: p.ood_samples,
-    })
+) -> Result<VerifierConfig, String> {
+    default_config(log_n, log_batch_size, log_inv_rate)
 }
 
 /// Level-ladder shape: per-level dims (index 0 = L0) plus the residual.
@@ -313,11 +246,17 @@ struct LadderShape {
     yr_log_n: usize,
 }
 
-/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_config`].
-/// The total RS domain loses [`RS_DOMAIN_INITIAL_REDUCTION_FACTOR`] bits after
-/// the initial fold, then exactly one bit per subsequent fold. Consequently a
-/// fold of `k` variables raises the inverse-rate logarithm by `k - reduction`.
-fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> Result<LadderShape, String> {
+/// Descend the level ladder, folding [`SUBSEQUENT_FOLDING_FACTOR`] variables per
+/// level until at most [`RESIDUAL_MAX_LOG`] remain. `next_rate` picks each new
+/// level's inverse-rate logarithm from `(previous rate, fold just taken, message
+/// dimension the new level carries)`, which is the only thing that separates the
+/// production ladder from the test-support one.
+fn derive_ladder(
+    log_n: usize,
+    initial_k: usize,
+    log_inv_rate: usize,
+    mut next_rate: impl FnMut(usize, usize, usize) -> Result<usize, String>,
+) -> Result<LadderShape, String> {
     if log_n <= initial_k {
         return Err("log_n must be > initial_k".into());
     }
@@ -331,22 +270,17 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
     let mut n_running = log_n - initial_k;
     let mut rate_running = log_inv_rate;
     let mut fold_running = initial_k;
-    let mut domain_reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR;
     while n_running > RESIDUAL_MAX_LOG {
         let k = SUBSEQUENT_FOLDING_FACTOR.min(n_running);
         let log_msg_cols_next = n_running - k;
-        let rate_increase = fold_running.checked_sub(domain_reduction).ok_or_else(|| {
-            format!("folding factor {fold_running} is smaller than RS domain reduction {domain_reduction}")
-        })?;
-        let next_rate = rate_running + rate_increase;
-        shape.log_inv_rates.push(next_rate);
+        let rate = next_rate(rate_running, fold_running, log_msg_cols_next)?;
+        shape.log_inv_rates.push(rate);
         shape.log_msg_cols.push(log_msg_cols_next);
         shape.log_num_interleaved.push(k);
         shape.k_levels.push(k);
         n_running -= k;
-        rate_running = next_rate;
+        rate_running = rate;
         fold_running = k;
-        domain_reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR;
     }
     if shape.k_levels.len() < 2 {
         return Err("log_n too small: needs at least 2 fold levels".into());
@@ -355,53 +289,50 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
     Ok(shape)
 }
 
+/// Production ladder: the total RS domain loses
+/// [`RS_DOMAIN_INITIAL_REDUCTION_FACTOR`] bits after the initial fold, then
+/// exactly one bit per subsequent fold, so a fold of `k` variables raises the
+/// inverse-rate logarithm by `k - reduction`.
+fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> Result<LadderShape, String> {
+    let mut domain_reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR;
+    derive_ladder(log_n, initial_k, log_inv_rate, |rate_running, fold_running, _cols| {
+        let rate_increase = fold_running.checked_sub(domain_reduction).ok_or_else(|| {
+            format!("folding factor {fold_running} is smaller than RS domain reduction {domain_reduction}")
+        })?;
+        domain_reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR;
+        Ok(rate_running + rate_increase)
+    })
+}
+
 // ===================================================================
 // Security configuration schema
 // ===================================================================
 //
 // Auditable, per-level spec for a Ligerito instance: query count, grinding
-// bits, slack-from-Johnson, and the proximity-gap analysis the parameters
-// were derived under. Designed to be (de)serializable so it can live in a
-// TOML/JSON file alongside the prover/verifier code.
-
-/// Which proximity-gap analysis a level's parameters were derived under.
-/// Single-variant by design: it self-documents the analysis in serialized
-/// configs and rejects configs claiming an analysis this code cannot check.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SoundnessRegime {
-    /// Johnson radius with explicit slack `η` (γ = (1 − √ρ) − η) **with
-    /// out-of-domain binding** (`doc/annex/b-polynomial-commitment-scheme.tex`, Thm `thm:rbr`). The MCA
-    /// theorem (`thm:mca-johnson` = BCHKS25 Thm 4.6) gives the proximity-gap
-    /// exceptional set `a = O_ρ(n / η^5)`; the level's `fold_grinding_bits`
-    /// should be ≥ (target_bits − log₂(q/a)).
-    /// Binding to a single codeword of the (Johnson-bounded) interleaved list
-    /// is via `ood_samples` explicit multilinear OOD evaluations — except at
-    /// L0, where the opening's own post-commit random evaluation claim plays
-    /// the OOD role (union over the list, `L·μ/q`), so `ood_samples = 0`.
-    ///
-    /// Note there is deliberately no plain `Johnson` variant: without OOD
-    /// binding the query phase pays a union bound over the interleaved list
-    /// (≈ 19–52 bits here), which our query counts do not include. A config
-    /// claiming Johnson soundness without OOD accounting would be unsound.
-    JohnsonOod,
-}
-
-/// Where in a level's Fiat-Shamir transcript the grinding step lands.
-/// Currently only one choice; reserved for future protocol variants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GrindingStep {
-    /// Grind happens after the level's Merkle root is observed but before
-    /// query positions are sampled. Standard FRI/STARK pattern.
-    PostCommitPreQueries,
-}
+// bits, slack-from-Johnson, and the proximity-gap analysis the parameters were
+// derived under.
+//
+// That analysis is always the Johnson radius with explicit slack `eta`
+// (gamma = (1 - sqrt(rho)) - eta) WITH out-of-domain binding (`doc/annex/b-polynomial-commitment-scheme.tex`,
+// Thm `thm:rbr`). The MCA theorem (`thm:mca-johnson` = BCHKS25 Thm 4.6) gives
+// the proximity-gap exceptional set `a = O_rho(n / eta^5)`, so a level's
+// `fold_grinding_bits` must be at least `target_bits - log2(q/a)`. Binding to a
+// single codeword of the (Johnson-bounded) interleaved list is via
+// `ood_samples` explicit multilinear OOD evaluations, except at L0, where the
+// opening's own post-commit random evaluation claim plays the OOD role (union
+// over the list, `L*mu/q`), so `ood_samples = 0`. Plain Johnson without OOD
+// binding would be unsound at these parameters: the query phase would pay a
+// union bound over the interleaved list (19 to 52 bits here) that the query
+// counts do not include.
+//
+// Grinding always lands after the level's Merkle root is observed and before
+// its query positions are sampled, the standard FRI/STARK placement.
 
 /// Parameters for a single level in the multilevel Ligerito ladder.
 /// L0 = the upstream `pcs::commit` output (reused, not re-committed);
 /// L1 .. L_{r−1} are the level commits; the final residual `yr` block
 /// is described separately in [`FinalBlockConfig`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct LigeritoLevelConfig {
     /// PCS rate at this level: codeword expansion factor = 2^log_inv_rate.
     pub log_inv_rate: usize,
@@ -414,71 +345,53 @@ pub struct LigeritoLevelConfig {
     /// Number of sumcheck folds taken at this level. For L0 = `initial_k`
     /// (the lane fold); for L_i (i ≥ 1) = the level fold k_{i−1}.
     pub k: usize,
-    /// Which proximity-gap analysis the (eta, queries, grinding_bits)
-    /// tuple was derived under. Determines the formulas the implementation
-    /// validates against.
-    pub regime: SoundnessRegime,
     /// Slack from the Johnson radius: γ = (1 − √ρ) − η.
     pub eta: f64,
     /// Number of codeword position queries opened at this level (the FRI
     /// query phase). Bounds the per-query soundness term `(1−γ)^Q`.
     pub queries: usize,
-    /// **Query-phase** PoW grinding bits, ground post-commit/pre-queries
-    /// (see [`GrindingStep`]). Each bit substitutes for
-    /// ~1/log₂(1/(1−γ)) queries at this level.
+    /// **Query-phase** PoW grinding bits, ground post-commit/pre-queries.
+    /// Each bit substitutes for ~1/log₂(1/(1−γ)) queries at this level.
     pub grinding_bits: usize,
     /// **Fold-challenge** PoW grinding bits, ground immediately before EACH
     /// of this level's `k` fold challenges. Boosts the
     /// proximity-gap term (which lives on the fold challenges):
     /// `eps_pg + fold_grinding_bits ≥ target`.
-    #[serde(default)]
     pub fold_grinding_bits: usize,
     /// Out-of-domain samples taken right after this level's commit enters
     /// the transcript. Each binds the prover to a single codeword of the
     /// interleaved list via a multilinear evaluation claim.
     /// Must be 0 at L0 (bound by the opening's own post-commit evaluation
     /// claim) and ≥ 1 at deeper levels.
-    #[serde(default)]
     pub ood_samples: usize,
     /// Security target this level guarantees, post-grinding.
     pub target_security_bits: usize,
-    /// Diagnostic — `log₂(q/a)` under the chosen regime. The implementation
-    /// should assert this matches the formula at startup, modulo rounding.
-    pub expected_eps_pg_bits: f64,
-    /// Diagnostic — `Q · log₂(1/(1−γ))`. Should be ≥
-    /// `target_security_bits − grinding_bits`.
-    pub expected_eps_query_bits: f64,
-    /// Diagnostic — OOD binding bits:
-    /// `s·(192 − log₂μ) − (2·log₂L − 1)` for explicit samples, or
-    /// `192 − log₂L − log₂μ` for the implicit L0 binding, where `L` is the
-    /// Johnson interleaved list size and `μ` the level's variable count.
-    pub expected_eps_ood_bits: f64,
 }
 
 /// Descriptor for the final-residual block (`yr`) sent in the clear at the
 /// end of the last fold level. It has no commit and no queries, so the
 /// only meaningful parameter is its dimension.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct FinalBlockConfig {
-    /// `log_2(|yr|)` — number of extension-field values sent in the clear. The last
-    /// fold level's sumcheck stops at this dim instead of folding to 1.
+    /// `log_2(|yr|)`: number of extension-field values sent in the clear. The
+    /// last fold level's sumcheck stops at this dim instead of folding to 1.
     pub yr_log_n: usize,
 }
 
 /// Complete security spec for one Ligerito instance, covering a single
-/// `(hash, m)` pair. Designed to round-trip cleanly via serde (TOML/JSON).
+/// `(hash, m)` pair.
 ///
 /// **Validation invariants** (checked by [`Self::validate`]):
 /// 1. `initial_k + Σ levels[1..].k + final_block.yr_log_n == log_n`.
-/// 2. Each level's `expected_eps_pg_bits` is consistent with the declared
-///    regime and `eta` (within tolerance).
-/// 3. Each level's `expected_eps_query_bits ≥ target_security_bits −
+/// 2. Each level's proximity-gap bits plus its `fold_grinding_bits` reach
+///    `target_security_bits`.
+/// 3. Each level's query soundness reaches `target_security_bits −
 ///    grinding_bits` (queries cover what grinding doesn't).
 /// 4. `eta` is finite and inside the Johnson range for the level's rate.
 /// 5. `log_msg_cols`, `log_num_interleaved`, `k` match the
 ///    level-shape constraint (each level's input dim equals the
 ///    previous level's `log_msg_cols`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct LigeritoSecurityConfig {
     /// Block-encoder log size: m = log₂(witness bit count).
     pub m: usize,
@@ -496,12 +409,6 @@ pub struct LigeritoSecurityConfig {
     /// theorem the per-level parameters were derived from. Example:
     /// `"ben_sasson_2025_thm_4_6"`.
     pub analysis_version: String,
-    /// Field of the protocol. Example: `"f192"`.
-    pub field: String,
-    /// Hash function used by Merkle + FS sponge. Example: `"blake3"`.
-    pub hash: String,
-    /// Where in the per-level FS transcript grinding is placed.
-    pub grinding_step: GrindingStep,
     /// Per-level parameters, in order L0, L1, L2, ....
     pub levels: Vec<LigeritoLevelConfig>,
     /// Final residual block descriptor.
@@ -520,22 +427,9 @@ fn reduced_rate(log_inv_rate: usize, log_msg_cols: usize) -> f64 {
     (dimension - 1.0) / ((log_msg_cols + log_inv_rate) as f64).exp2()
 }
 
-/// Round a float to one decimal place. Used to round paper-predicted
-/// soundness diagnostics so the generated TOMLs stay readable.
-fn round1(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
-}
-
-/// Bit-level tolerance when comparing declared diagnostics
-/// (`expected_eps_pg_bits` / `expected_eps_query_bits`) against the value
-/// computed from the regime's formulas. Set generously enough that rounding
-/// in the TOML doesn't cause spurious failures, but tightly enough that an
-/// incorrect declaration of η, Q, or grinding can't slip through.
-const PAPER_COMPAT_TOL_BITS: f64 = 0.6;
-
 /// Proximity-gap exceptional set for the list-decoding (Johnson) regime, per
 /// `doc/annex/b-polynomial-commitment-scheme.tex` Thm `thm:mca-johnson` = BCHKS25 Theorem 4.6 (list
-/// correlated agreement). For a Reed–Solomon code of (slightly reduced) rate
+/// correlated agreement). For a Reed-Solomon code of (slightly reduced) rate
 /// `ρ`, codeword length `n`, and Johnson slack `η` (proximity radius
 /// `γ = 1 − √ρ − η`), the MCA error is `a/|F|` with
 ///
@@ -615,8 +509,8 @@ fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
 /// Johnson-bound list size of the *interleaved* RS code at radius
 /// `θ = 1 − √ρ − η`, in log₂. Independent of the interleaving factor.
 ///
-/// Interleaving preserves relative distance — `V^{⊙m}` has the base code's
-/// distance `δ = 1 − ρ` — and only enlarges the alphabet (to `q^m`). The
+/// Interleaving preserves relative distance (`V^{⊙m}` has the base code's
+/// distance `δ = 1 − ρ`) and only enlarges the alphabet (to `q^m`). The
 /// Johnson bound depends solely on (distance, radius, alphabet size), so the
 /// interleaved list size at any radius *below* the Johnson radius `1 − √ρ`
 /// is bounded by the very same single-code Johnson list size
@@ -625,7 +519,7 @@ fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
 ///
 /// with no dependence on `m` and, crucially, no `L_base^r` blow-up.
 ///
-/// The general GGR (Gopalan–Guruswami–Raghavendra, Thm 2.5) interleaved bound
+/// The general GGR (Gopalan-Guruswami-Raghavendra, Thm 2.5) interleaved bound
 /// `L_int ≤ C(b+r, r)·L_base^r` is only needed to push the list-decoding
 /// radius *past* the Johnson bound toward `δ`. Ligerito deliberately sits at
 /// `θ = 1 − √ρ − η`, strictly below the Johnson radius by slack `η > 0`, so
@@ -639,7 +533,7 @@ fn johnson_interleaved_list_log2(log_inv_rate: usize, log_msg_cols: usize, eta: 
     l_base.log2()
 }
 
-/// Worst algebraic verifier-challenge transition in the production opening —
+/// Worst algebraic verifier-challenge transition in the production opening:
 /// the implementation's counterpart of `thm:rbr`'s batch row (`(T−1)·L/|F|`
 /// for powers-of-alpha batching) and of the `2L/|F|` part of its fold row.
 /// This codebase batches differently from the doc: the per-level query
@@ -672,7 +566,7 @@ fn johnson_algebraic_bits(level: &LigeritoLevelConfig) -> f64 {
 /// - `ood_samples ≥ 1` (explicit samples): the PCS annex, Lemma `lem:ood` /
 ///   `thm:rbr`'s OOD row `binom(L,2)·μ/|F|`, generalized to `s` samples: the
 ///   bad event is two distinct list elements agreeing on all `s` random
-///   points of `F^μ` (Schwartz–Zippel, total degree ≤ μ), union over pairs:
+///   points of `F^μ` (Schwartz-Zippel, total degree ≤ μ), union over pairs:
 ///   `bits = s·(192 − log₂ μ) − (2·log₂ L_int − 1)`.
 /// - `ood_samples = 0` (L0): the protocol takes no OOD sample at commitment,
 ///   so the PCS itself is only list binding (the PCS annex, opening paragraph). What this
@@ -697,9 +591,6 @@ struct OptimizedJohnsonLevel {
     eta: f64,
     queries: usize,
     ood_samples: usize,
-    eps_pg: f64,
-    eps_query: f64,
-    eps_ood: f64,
 }
 
 /// Eta at the lower boundary for a fixed BCHKS25 theorem parameter
@@ -758,7 +649,6 @@ fn optimize_johnson_level(
         if queries > block_len {
             continue;
         }
-        let eps_query = queries as f64 * per_q;
 
         let ood_samples = if level == 0 {
             0
@@ -779,9 +669,6 @@ fn optimize_johnson_level(
             eta,
             queries,
             ood_samples,
-            eps_pg,
-            eps_query,
-            eps_ood,
         };
         if best.as_ref().is_none_or(|current| candidate.queries < current.queries) {
             best = Some(candidate);
@@ -796,33 +683,26 @@ fn optimize_johnson_level(
 }
 
 impl LigeritoLevelConfig {
-    /// Compute the proximity-gap and per-query soundness bits this level is
-    /// expected to deliver under its declared regime. Returns
-    /// `(eps_pg_bits, eps_query_bits)` where:
-    ///   eps_pg_bits   = log₂(q/a) under the regime's threshold-a formula
+    /// Proximity-gap and per-query soundness bits this level delivers:
+    ///   eps_pg_bits    = log₂(q/a) under the Johnson threshold-a formula
     ///   eps_query_bits = Q · log₂(1/(1−γ))
-    ///
-    /// Used by [`LigeritoSecurityConfig::validate`] to assert the declared
-    /// `expected_*_bits` diagnostics are consistent with the regime's
-    /// canonical formulas (i.e., the config is compatible with the paper).
-    pub fn paper_predicted_bits(&self) -> (f64, f64) {
+    fn paper_predicted_bits(&self) -> (f64, f64) {
         // Fold row of `thm:rbr`, MCA part: the ℓ-round fold of a
         // 2^ℓ-interleaved word (ℓ = log_num_interleaved) pays a row-union
         // factor 2^{ℓ-j} at round j (`lem:fold-list`); the worst round (j=1)
         // gives 2^{ℓ-1}, on top of the base Thm 4.6 MCA error.
         let log_a = paper_johnson_log_a(self.log_inv_rate, self.eta, self.log_msg_cols, self.log_num_interleaved);
         let eps_pg = ANALYSIS_LOG_Q - log_a;
-        // Per-query soundness WITHOUT a list union bound — the OOD
-        // binding (see `paper_ood_bits`) pins the prover to a single
-        // codeword of the interleaved list before queries are drawn.
+        // Per-query soundness WITHOUT a list union bound: the OOD binding (see
+        // `paper_ood_bits`) pins the prover to a single codeword of the
+        // interleaved list before queries are drawn.
         let per_q = paper_per_query_bits(self.log_inv_rate, self.log_msg_cols, self.eta);
         let eps_query = self.queries as f64 * per_q;
         (eps_pg, eps_query)
     }
 
-    /// OOD binding bits this level is expected to deliver.
-    /// See `paper_ood_bits`.
-    pub fn paper_predicted_ood_bits(&self) -> f64 {
+    /// OOD binding bits this level delivers. See `paper_ood_bits`.
+    fn paper_predicted_ood_bits(&self) -> f64 {
         let mu = self.log_msg_cols + self.log_num_interleaved;
         paper_ood_bits(self.log_inv_rate, self.log_msg_cols, self.eta, mu, self.ood_samples)
     }
@@ -936,19 +816,8 @@ impl LigeritoSecurityConfig {
                 ));
             }
 
-            // OOD diagnostic matches the formula and clears the target.
-            let declared = lv.expected_eps_ood_bits;
-            if !declared.is_finite() {
-                return Err(format!("L{i}: expected_eps_ood_bits must be finite, got {declared}"));
-            }
+            // OOD binding clears the target.
             let ood_pred = lv.paper_predicted_ood_bits();
-            if (declared - ood_pred).abs() > PAPER_COMPAT_TOL_BITS {
-                return Err(format!(
-                    "L{i}: expected_eps_ood_bits ({declared:.2}) doesn't \
-                     match prediction ({ood_pred:.2}); tolerance ±{:.2} bits.",
-                    PAPER_COMPAT_TOL_BITS
-                ));
-            }
             if ood_pred + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(
                     "L{i}: OOD binding ({ood_pred:.2} bits) < target ({})",
@@ -956,36 +825,7 @@ impl LigeritoSecurityConfig {
                 ));
             }
 
-            // Paper-compatibility: the declared expected_*_bits must agree
-            // with what the regime's formula predicts (within tolerance).
-            // Asserts the config was actually derived from the paper, not
-            // hand-waved into compliance.
             let (pg_pred, q_pred) = lv.paper_predicted_bits();
-            if !lv.expected_eps_pg_bits.is_finite() || !lv.expected_eps_query_bits.is_finite() {
-                return Err(format!("L{i}: expected soundness diagnostics must be finite"));
-            }
-            if (lv.expected_eps_pg_bits - pg_pred).abs() > PAPER_COMPAT_TOL_BITS {
-                return Err(format!(
-                    "L{i}: expected_eps_pg_bits ({:.2}) doesn't match \
-                     {analysis} prediction ({:.2}); tolerance ±{:.2} bits. \
-                     Re-derive Q, eta, or grinding so the declared diagnostic \
-                     matches the formula.",
-                    lv.expected_eps_pg_bits,
-                    pg_pred,
-                    PAPER_COMPAT_TOL_BITS,
-                    analysis = self.analysis_version,
-                ));
-            }
-            if (lv.expected_eps_query_bits - q_pred).abs() > PAPER_COMPAT_TOL_BITS {
-                return Err(format!(
-                    "L{i}: expected_eps_query_bits ({:.2}) doesn't match \
-                     {analysis} prediction ({:.2}); tolerance ±{:.2} bits.",
-                    lv.expected_eps_query_bits,
-                    q_pred,
-                    PAPER_COMPAT_TOL_BITS,
-                    analysis = self.analysis_version,
-                ));
-            }
 
             // Security: queries cover the gap left by grinding.
             if lv.target_security_bits > lv.grinding_bits
@@ -1001,7 +841,7 @@ impl LigeritoSecurityConfig {
 
             // Per-application proximity gap + fold-challenge grinding must
             // reach target. (The pg bad event lives on the fold challenges,
-            // so only the fold grind — done before each fold challenge —
+            // so only the fold grind (done before each fold challenge)
             // boosts it; the query-phase grind does not.)
             if pg_pred + lv.fold_grinding_bits as f64 + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(
@@ -1046,19 +886,12 @@ impl LigeritoSecurityConfig {
         Ok(())
     }
 
-    /// Derive the production security config at witness size `m`: Johnson
-    /// list decoding with OOD binding, rate `2^-LOG_INV_RATE_0`, and
-    /// [`SECURITY_BITS`] bits per round under
-    /// **round-by-round soundness** — every verifier-challenge error term (pg
-    /// + fold grinding, query + query grinding, OOD, and algebraic checks)
-    ///   clears the target individually.
-    pub fn derive_config(m: usize) -> Result<Self, String> {
-        Self::derive_config_with_log_inv_rate(m, LOG_INV_RATE_0)
-    }
-
-    /// Derive a configuration for an explicit L0 rate `2^-log_inv_rate`.
-    /// This side-effect-free entry point is used by parameter tooling and
-    /// tests and production callers that accept a transcript-bound rate.
+    /// Derive the production security config at witness size `m` for an
+    /// explicit L0 rate `2^-log_inv_rate`: Johnson list decoding with OOD
+    /// binding and [`SECURITY_BITS`] bits per round under **round-by-round
+    /// soundness**, i.e. every verifier-challenge error term (pg + fold
+    /// grinding, query + query grinding, OOD, and algebraic checks) clears the
+    /// target individually.
     pub fn derive_config_with_log_inv_rate(m: usize, log_inv_rate: usize) -> Result<Self, String> {
         validate_log_inv_rate(log_inv_rate)?;
         let target_bits = SECURITY_BITS;
@@ -1092,16 +925,12 @@ impl LigeritoSecurityConfig {
                 log_msg_cols: cols,
                 log_num_interleaved: ilv,
                 k: shape.k_levels[i],
-                regime: SoundnessRegime::JohnsonOod,
                 eta: optimized.eta,
                 queries: optimized.queries,
                 grinding_bits: query_grind,
                 fold_grinding_bits: 0,
                 ood_samples: optimized.ood_samples,
                 target_security_bits: target_bits,
-                expected_eps_pg_bits: round1(optimized.eps_pg),
-                expected_eps_query_bits: round1(optimized.eps_query),
-                expected_eps_ood_bits: round1(optimized.eps_ood),
             });
         }
 
@@ -1112,9 +941,6 @@ impl LigeritoSecurityConfig {
             initial_k,
             target_security_bits: target_bits,
             analysis_version: analysis_version.into(),
-            field: "f192".into(),
-            hash: "blake3".into(),
-            grinding_step: GrindingStep::PostCommitPreQueries,
             levels,
             final_block: FinalBlockConfig {
                 yr_log_n: shape.yr_log_n,
@@ -1124,53 +950,23 @@ impl LigeritoSecurityConfig {
         Ok(cfg)
     }
 
-    /// Build a `(ProverConfig, VerifierConfig)` pair from this security config.
-    /// Drops the security-only fields (eta, queries, grinding, expected_*) but
-    /// preserves the level shape so the existing prover/verifier code path
-    /// works unchanged.
+    /// Build the `(ProverConfig, VerifierConfig)` pair from this security
+    /// config. Drops the security-only fields (eta, grinding derivation inputs)
+    /// but preserves the level shape the prover/verifier code path reads.
     pub fn to_prover_verifier_configs(&self) -> Result<(ProverConfig, VerifierConfig), String> {
         self.validate()?;
-        let log_inv_rates: Vec<usize> = self.levels.iter().map(|lv| lv.log_inv_rate).collect();
-        let level_ks: Vec<usize> = self.levels.iter().skip(1).map(|lv| lv.k).collect();
-        let level_log_msg_cols: Vec<usize> = self.levels.iter().skip(1).map(|lv| lv.log_msg_cols).collect();
-        let queries: Vec<usize> = self.levels.iter().map(|lv| lv.queries).collect();
-        let grinding_bits: Vec<usize> = self.levels.iter().map(|lv| lv.grinding_bits).collect();
-        let fold_grinding_bits: Vec<usize> = self.levels.iter().map(|lv| lv.fold_grinding_bits).collect();
-        let ood_samples: Vec<usize> = self.levels.iter().map(|lv| lv.ood_samples).collect();
-        let prover = ProverConfig {
-            log_inv_rates: log_inv_rates.clone(),
-            level_steps: level_ks.len(),
-            initial_log_msg_cols: self.levels[0].log_msg_cols,
-            initial_log_num_interleaved: self.initial_k,
+        let config = ProverConfig {
+            log_inv_rates: self.levels.iter().map(|lv| lv.log_inv_rate).collect(),
+            level_steps: self.levels.len() - 1,
             initial_k: self.initial_k,
-            level_log_msg_cols: level_log_msg_cols.clone(),
-            level_ks: level_ks.clone(),
-            queries: queries.clone(),
-            grinding_bits: grinding_bits.clone(),
-            fold_grinding_bits: fold_grinding_bits.clone(),
-            ood_samples: ood_samples.clone(),
+            level_ks: self.levels.iter().skip(1).map(|lv| lv.k).collect(),
+            queries: self.levels.iter().map(|lv| lv.queries).collect(),
+            grinding_bits: self.levels.iter().map(|lv| lv.grinding_bits).collect(),
+            fold_grinding_bits: self.levels.iter().map(|lv| lv.fold_grinding_bits).collect(),
+            ood_samples: self.levels.iter().map(|lv| lv.ood_samples).collect(),
         };
-        let verifier = VerifierConfig {
-            log_inv_rates: log_inv_rates.clone(),
-            level_steps: level_ks.len(),
-            initial_log_msg_cols: self.levels[0].log_msg_cols,
-            initial_log_num_interleaved: self.initial_k,
-            initial_k: self.initial_k,
-            level_log_msg_cols,
-            level_ks,
-            queries,
-            grinding_bits,
-            fold_grinding_bits,
-            ood_samples,
-        };
-        Ok((prover, verifier))
+        Ok((config.clone(), config))
     }
-}
-
-/// `ceil(log2(n))`, used to size per-query batching challenges.
-#[inline]
-pub fn log2_ceil(n: usize) -> usize {
-    if n <= 1 { 0 } else { (n - 1).ilog2() as usize + 1 }
 }
 
 #[cfg(test)]
@@ -1241,31 +1037,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [216, 80, 18, 35, 7]
         );
-    }
-
-    #[test]
-    fn recursive_rs_domain_reduction_schedule_is_stable() {
-        for starting_rate in MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE {
-            let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(27 + crate::LOG_PACKING, starting_rate)
-                .unwrap();
-            let mut dim_in = cfg.log_n;
-            let mut previous_domain_log = dim_in + cfg.levels[0].log_inv_rate;
-            for (i, level) in cfg.levels.iter().enumerate() {
-                dim_in -= level.k;
-                if let Some(next) = cfg.levels.get(i + 1) {
-                    let next_domain_log = dim_in + next.log_inv_rate;
-                    let expected_reduction = if i == 0 { RS_DOMAIN_INITIAL_REDUCTION_FACTOR } else { 1 };
-                    assert_eq!(
-                        previous_domain_log - next_domain_log,
-                        expected_reduction,
-                        "transition L{i} -> L{} at starting rate 1/{}",
-                        i + 1,
-                        1usize << starting_rate,
-                    );
-                    previous_domain_log = next_domain_log;
-                }
-            }
-        }
     }
 
     /// Parameter-report helper:

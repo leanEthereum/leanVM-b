@@ -21,20 +21,20 @@
 //!
 //! ## Rectangular shape
 //!
-//! - **Rectangular shape**: `s_hat_v` has 64 entries (one per packing bit),
-//!   each an E element; its tensor-algebra transpose `s_hat_u = (t_i)` has
-//!   192 K-entries. A random `F_2`-linear map batches all coordinates directly,
-//!   without padding them to a 256-entry Boolean cube.
+//! - `s_hat_v` has 64 entries (one per packing bit), each an E element; its
+//!   tensor-algebra transpose `s_hat_u = (t_i)` has 192 K-entries. A random
+//!   `F_2`-linear map batches all coordinates directly, without padding them
+//!   to a 256-entry Boolean cube.
 //! - **No "7 = 6 + 1" prefix split**: with 64-bit packing the packed prefix
-//!   is exactly the 6-bit skip domain, and the old 7th bit is an ordinary
-//!   suffix coordinate of the packed witness (which has `2^(m-6)` words).
+//!   is exactly the 6-bit skip domain, so every coordinate outside it is an
+//!   ordinary suffix coordinate of the packed witness (which has `2^(m-6)`
+//!   words).
 //! - **Generalized prefix weights**: the consumed claim is
 //!   `claim == sum_{i in 0..64} prefix_weights[i] * s_hat_v[i]`. For a plain
 //!   multilinear point claim the weights are the eq tensor of the 6 prefix
-//!   coords ([`eq_prefix_weights`]); for flock's univariate-skip claim (whose
-//!   first coordinate ranges over the phi_8 Lagrange domain, not the boolean
-//!   cube) the caller passes the 64 phi_8 Lagrange weights
-//!   `lagrange_weights_naive(6, z_skip)`.
+//!   coords; for flock's univariate-skip claim (whose first coordinate ranges
+//!   over the phi_8 Lagrange domain, not the boolean cube) the caller passes
+//!   the 64 phi_8 Lagrange weights `lagrange_weights_naive(6, z_skip)`.
 //!   This module never looks inside the weights, so flock's `z_skip` flows
 //!   through unchanged.
 //!
@@ -47,7 +47,7 @@
 //!    `v <- v + f_t v^(2^d_t)` for `d_t = 32, 16, 8, 4, 2, 1`. For the
 //!    coordinate basis `(b_i)`, define `coord_weights[i] = Phi(b_i)`. Transpose
 //!    `s_hat_v` to `t_i = s_hat_u[i] in K` (see
-//!    [`super::tensor_algebra::transpose_s_hat`]); the batched target is
+//!    `super::tensor_algebra::transpose_s_hat`); the batched target is
 //!    `sumcheck_claim = sum_i Phi(b_i) * t_i` (K x E via `mul_base`).
 //! 4. Both sides define the transparent weights
 //!    `rs_eq_ind[y] = Phi(eq(r_suffix, y))` where `Phi : E -> E` is the
@@ -71,13 +71,13 @@
 //!
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 
-use fiat_shamir::Sponge;
+use fiat_shamir::sponge::Sponge;
 use primitives::bits::transpose_8x8_bits;
 use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{build_eq_table_ext, inner_product_base_ext};
-use super::pack::{LOG_PACKING, PACKING_WIDTH};
+use super::pack::PACKING_WIDTH;
 use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
 /// Total degree of the six-challenge composed batching map. This is the
@@ -89,16 +89,8 @@ pub const RING_SWITCH_SOUNDNESS_DEGREE: usize =
 /// Descending order bounds every challenge's exponent by `2^31`.
 pub const COMPOSITION_SHIFTS: [usize; 6] = [32, 16, 8, 4, 2, 1];
 
-/// Number of Frobenius terms in the batching map [`build_coordinate_weights`]
-/// builds. It is the F_2-dimension of `K`, and that is the floor: the weights
-/// must separate any nonzero error on the 192 transposed `K`-columns, which is
-/// `|S|` `E`-equations, i.e. `3·|S|` `K`-equations, in `192` `K`-unknowns — with
-/// `3·|S| < 192` a nonzero error lies in the kernel for EVERY coefficient
-/// choice and passes with probability one. See [`build_coordinate_weights`].
-pub const LINEARIZED_TERMS: usize = PACKING_WIDTH;
-
 /// The coordinate batching weights: `weights[w] = Phi(b_w)`, where `b_w` is the
-/// `w`-th `F_2`-coordinate basis element of `E` (the order [`transpose_s_hat`]
+/// `w`-th `F_2`-coordinate basis element of `E` (the order `transpose_s_hat`
 /// produces). Starting from `v`, the map composes
 ///
 /// ```text
@@ -137,17 +129,12 @@ pub const LINEARIZED_TERMS: usize = PACKING_WIDTH;
 /// The 64 `C_k` are distinct monomials, so the discrepancy is a nonzero
 /// polynomial in the challenges. In descending shift order its total degree is
 /// [`RING_SWITCH_SOUNDNESS_DEGREE`], below `2^32`.
-fn apply_composed_map(mut value: F192, challenges: &[F192; COMPOSITION_SHIFTS.len()]) -> F192 {
-    for (&challenge, &shift) in challenges.iter().zip(COMPOSITION_SHIFTS.iter()) {
-        let mut frobenius = value;
-        for _ in 0..shift {
-            frobenius = frobenius.square();
-        }
-        value += challenge * frobenius;
-    }
-    value
-}
-
+///
+/// The 64 terms are also the floor: the weights must separate any nonzero
+/// error on the 192 transposed `K`-columns, which is `|S|` `E`-equations, i.e.
+/// `3·|S|` `K`-equations, in `192` `K`-unknowns, and with `3·|S| < 192` a
+/// nonzero error lies in the kernel for EVERY coefficient choice and passes
+/// with probability one.
 pub fn build_coordinate_weights(challenges: &[F192; COMPOSITION_SHIFTS.len()]) -> Vec<F192> {
     // b_w has only bit w set: bits 0..64 are K's power basis, and bits 64/128
     // shift it by Y / Y^2.
@@ -159,6 +146,18 @@ pub fn build_coordinate_weights(challenges: &[F192; COMPOSITION_SHIFTS.len()]) -
     (0..DEGREE_E)
         .map(|w| apply_composed_map(basis(w), challenges))
         .collect()
+}
+
+/// Applies the composed map `Phi` of [`build_coordinate_weights`] to one value.
+fn apply_composed_map(mut value: F192, challenges: &[F192; COMPOSITION_SHIFTS.len()]) -> F192 {
+    for (&challenge, &shift) in challenges.iter().zip(COMPOSITION_SHIFTS.iter()) {
+        let mut frobenius = value;
+        for _ in 0..shift {
+            frobenius = frobenius.square();
+        }
+        value += challenge * frobenius;
+    }
+    value
 }
 
 /// Sample the composed map's challenges after every ring-switch message has
@@ -181,22 +180,6 @@ fn observe_ext_slice(sponge: &mut Sponge, values: &[F192]) {
 // Building blocks
 // ---------------------------------------------------------------------------
 
-/// Prefix weights for a plain multilinear point claim: the eq tensor of the
-/// 6 intra-word coordinates,
-/// `weights[i] = prod_j (bit_j(i) ? r_prefix[j] : 1 + r_prefix[j])`.
-///
-/// The prefix here is a plain boolean 6-cube (the bit index inside a K
-/// word), so plain eq weights are correct; the old module needed phi_8
-/// Lagrange weights only because its prefix was the univariate-skip domain.
-pub fn eq_prefix_weights(r_prefix: &[F192]) -> Vec<F192> {
-    assert_eq!(
-        r_prefix.len(),
-        LOG_PACKING,
-        "eq_prefix_weights: prefix must have LOG_PACKING = 6 coords"
-    );
-    build_eq_table_ext(r_prefix)
-}
-
 /// Standard inner product `sum_i a[i] * b[i]` over E.
 pub fn inner_product_ext(a: &[F192], b: &[F192]) -> F192 {
     assert_eq!(a.len(), b.len());
@@ -210,69 +193,6 @@ pub fn inner_product_ext(a: &[F192], b: &[F192]) -> F192 {
 /// The verifier's claim check: `sum_i prefix_weights[i] * s_hat_v[i]`.
 pub fn claim_check(prefix_weights: &[F192], s_hat_v: &[F192]) -> F192 {
     inner_product_ext(prefix_weights, s_hat_v)
-}
-
-/// Tower (`F192`) trace-dual basis: `TRACE_DUAL_BASIS[i]` is the unique element
-/// with `bit_i(y) = Tr(TRACE_DUAL_BASIS[i] · y)` for the coordinate bit `i` of
-/// `y ∈ F192` (c0 bits 0..64, c1 bits 64..128, c2 bits 128..192), where `Tr` is the absolute
-/// trace `F192 → F2`, using the tower's coordinate basis and trace form.
-/// The recursion guest replays bit extraction with these.
-pub fn trace_dual_basis() -> &'static [F192; 192] {
-    use std::sync::OnceLock;
-    static DUAL: OnceLock<[F192; 192]> = OnceLock::new();
-    DUAL.get_or_init(|| {
-        let basis = |j: usize| {
-            if j < 64 {
-                F192::new(1u64 << j, 0, 0)
-            } else if j < 128 {
-                F192::new(0, 1u64 << (j - 64), 0)
-            } else {
-                F192::new(0, 0, 1u64 << (j - 128))
-            }
-        };
-        // Absolute trace to F2: Tr(x) = Σ_{k=0}^{191} x^{2^k}.
-        let tr = |x: F192| {
-            let (mut acc, mut p) = (F192::ZERO, x);
-            for _ in 0..192 {
-                acc += p;
-                p = p.square();
-            }
-            acc
-        };
-        // Invert the 192x192 trace Gram matrix over F2. This runs once and is
-        // deliberately simple; protocol hot paths only read the cached basis.
-        let mut aug = vec![vec![0u8; 2 * DEGREE_E]; DEGREE_E];
-        for i in 0..DEGREE_E {
-            for j in 0..DEGREE_E {
-                if tr(basis(i) * basis(j)) == F192::ONE {
-                    aug[i][j] = 1;
-                }
-            }
-            aug[i][DEGREE_E + i] = 1;
-        }
-        for col in 0..DEGREE_E {
-            let piv = (col..DEGREE_E)
-                .find(|&r| aug[r][col] == 1)
-                .expect("trace Gram matrix is invertible");
-            aug.swap(col, piv);
-            for r in 0..DEGREE_E {
-                if r != col && aug[r][col] == 1 {
-                    for j in col..2 * DEGREE_E {
-                        aug[r][j] ^= aug[col][j];
-                    }
-                }
-            }
-        }
-        let mut out = [F192::ZERO; 192];
-        for (i, o) in out.iter_mut().enumerate() {
-            for j in 0..DEGREE_E {
-                if aug[i][DEGREE_E + j] == 1 {
-                    *o += basis(j);
-                }
-            }
-        }
-        out
-    })
 }
 
 /// Compute the slice-MLE vector `s_hat_v` (length 64) from a packed witness
@@ -328,19 +248,24 @@ pub fn s_hat_v_from_z_vec(z_vec: &[F192], inner_rest_tail: &[F192]) -> Vec<F192>
     )
 }
 
-/// Scalar reference path of [`fold_1b_rows`]: mirror of
-/// `ring_switch::fold_1b_rows_naive` at 64-bit width, a parallel bit-scan with
+/// XOR-reduce two per-worker partial accumulators of the bit-slice folds
+/// (E addition is XOR, so the reduction order does not matter).
+fn xor_accs(mut a: Vec<F192>, b: Vec<F192>) -> Vec<F192> {
+    for (av, bv) in a.iter_mut().zip(b.iter()) {
+        *av += *bv;
+    }
+    a
+}
+
+/// Scalar reference path of [`fold_1b_rows`]: a parallel bit-scan with
 /// per-thread length-64 partial accumulators XOR-reduced at the end.
 /// Data-dependent cost: `trailing_zeros` + RMW + branch per set bit
 /// (~32/word on a random witness).
 fn fold_1b_rows_scalar(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
     assert_eq!(packed_witness.len(), suffix_tensor.len());
-    let n = PACKING_WIDTH;
-    let zero_acc = || vec![F192::ZERO; n];
-
     parallel::fold_reduce(
         packed_witness.len(),
-        zero_acc,
+        || vec![F192::ZERO; PACKING_WIDTH],
         |acc, i| {
             let w = suffix_tensor[i];
             let mut bits = packed_witness[i].0;
@@ -350,19 +275,13 @@ fn fold_1b_rows_scalar(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F1
                 bits &= bits - 1;
             }
         },
-        |mut a, b| {
-            for (av, bv) in a.iter_mut().zip(b.iter()) {
-                *av += *bv;
-            }
-            a
-        },
+        xor_accs,
     )
 }
 
 /// Build the 16-entry subset-sum lookup table over 4 E elements:
 /// `sums[mask] = sum_{k in 0..4 : bit_k(mask) = 1} elems[k]`. 15 additions
-/// via the standard doubling pattern (mirror of
-/// `ring_switch::subset_sums_4` retyped to the tower).
+/// via the standard doubling pattern.
 #[inline(always)]
 fn subset_sums_4_ext(elems: [F192; 4]) -> [F192; 16] {
     let mut sums = [F192::ZERO; 16];
@@ -391,14 +310,11 @@ fn subset_sums_4_ext(elems: [F192; 4]) -> [F192; 16] {
 /// per word vs the scalar path's ~32 data-dependent conditional adds.
 /// Per-worker accumulators via `parallel::fold_reduce` (no shared cache lines).
 fn fold_1b_rows_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
-    let n = PACKING_WIDTH;
     assert_eq!(packed_witness.len(), suffix_tensor.len());
     assert!(packed_witness.len().is_multiple_of(8));
-    let zero_acc = || vec![F192::ZERO; n];
-
     parallel::fold_reduce(
         packed_witness.len() / 8,
-        zero_acc,
+        || vec![F192::ZERO; PACKING_WIDTH],
         |acc, c| {
             let m_chunk = &packed_witness[8 * c..8 * c + 8];
             let t_chunk = &suffix_tensor[8 * c..8 * c + 8];
@@ -426,12 +342,7 @@ fn fold_1b_rows_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec
                 }
             }
         },
-        |mut a, b| {
-            for (av, bv) in a.iter_mut().zip(b.iter()) {
-                *av += *bv;
-            }
-            a
-        },
+        xor_accs,
     )
 }
 
@@ -500,8 +411,7 @@ fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Vec<F192> {
 
 /// One folded output slot: `sum_{k=0..24} tables[k * 256 + byte_k(elem)]`,
 /// tree-reduced (depth 4) so the XORs pipeline. `tables` MUST be a
-/// [`build_fold_byte_table_ext`] output (length 24 * 256). Mirror of
-/// `ring_switch::fold_one_slot` with `(c0, c1)` in place of `(lo, hi)`.
+/// [`build_fold_byte_table_ext`] output (length 24 * 256).
 #[inline(always)]
 fn fold_one_slot_ext(elem: F192, tables: &[F192]) -> F192 {
     debug_assert_eq!(tables.len(), FOLD_N_BYTES * FOLD_TABLE_SIZE);
@@ -574,14 +484,9 @@ pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &
     });
 }
 
-/// Bytewise-table accelerated `fold_ext_elems_naive`: 24 lookup tables of
-/// 256 E entries each;
-/// per position 24 lookups + 23 XORs, no
-/// data-dependent bit-scan. Rayon across positions.
 /// Split point for the factored eq build: low half sized ~n/2 (min 4, the
-/// point where two factor tables beat one full build). Mirror of the extension-field
-/// layer's `ring_switch::split_n_lo`.
-pub fn split_n_lo(n: usize) -> usize {
+/// point where two factor tables beat one full build).
+fn split_n_lo(n: usize) -> usize {
     (n / 2).clamp(4.min(n), n)
 }
 
@@ -589,14 +494,13 @@ pub fn split_n_lo(n: usize) -> usize {
 /// (LSB-first indexing, matching `build_eq_table_ext`). Materializes
 /// `2^n_lo + 2^(n - n_lo)` entries instead of `2^n`; field multiplication is
 /// exact, so the reconstructed entries are bit-identical to the full build.
-/// Mirror of the extension-field layer's `ring_switch::build_eq_split`.
-pub fn build_eq_split_ext(point: &[F192]) -> (Vec<F192>, Vec<F192>) {
+fn build_eq_split_ext(point: &[F192]) -> (Vec<F192>, Vec<F192>) {
     let n_lo = split_n_lo(point.len());
     (build_eq_table_ext(&point[..n_lo]), build_eq_table_ext(&point[n_lo..]))
 }
 
 /// [`fold_ext_elems`] over the FACTORED tensor: each entry is reconstructed on
-/// the fly (`eq_lo[a] * eq_hi[b]`, one multiply) and folded — the full
+/// the fly (`eq_lo[a] * eq_hi[b]`, one multiply) and folded: the full
 /// `2^n`-entry tensor is never materialized. Bit-identical output.
 #[cfg(test)]
 pub fn fold_ext_elems_split(eq_lo: &[F192], eq_hi: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
@@ -610,6 +514,9 @@ pub fn fold_ext_elems_split(eq_lo: &[F192], eq_hi: &[F192], coordinate_weights: 
     })
 }
 
+/// Bytewise-table accelerated [`fold_ext_elems_naive`]: 24 lookup tables of
+/// 256 E entries each, so a position costs 24 lookups + 23 XORs with no
+/// data-dependent bit-scan. Parallel across positions.
 #[cfg(test)]
 pub fn fold_ext_elems(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
     let tables = build_fold_byte_table_ext(coordinate_weights);
@@ -656,8 +563,8 @@ pub enum VerifyError {
 /// - `packed_witness`: `2^L` K words (L = m - 6), from
 ///   [`super::pack::pack_witness`].
 /// - `prefix_weights`: the 64 per-bit-column weights of the consumed claim
-///   ([`eq_prefix_weights`] for a plain point; phi_8 Lagrange weights mapped
-///   directly in the tower for flock's skip claim).
+///   (the eq tensor of the 6 prefix coords for a plain point; phi_8 Lagrange
+///   weights mapped directly in the tower for flock's skip claim).
 /// - `suffix_point`: the L outer coords (in E) addressing words.
 /// - `claim`: the claimed value `sum_i prefix_weights[i] * s_hat_v[i]`;
 ///   asserted against the witness (an honest caller always passes a
@@ -711,7 +618,7 @@ pub struct RingSwitchProveState {
 }
 
 /// Phase 1 of the ring-switch prover: compute + observe `s_hat_v` (NO domain
-/// label — matches the extension-field opener). Returns the proof and the scratch for
+/// label, matching the extension-field opener). Returns the proof and the scratch for
 /// the finalization step. The caller samples the possibly shared map afterwards.
 pub fn prove_observe(
     packed_witness: &[F64],
@@ -823,8 +730,8 @@ pub fn verify_succinct(
     Ok(verify_finish(proof, &coordinate_weights))
 }
 
-/// Phase 1 of the ring-switch verifier: observe `s_hat_v` (NO domain label —
-/// matches the extension-field opener) and check the prefix-weight claim. The caller
+/// Phase 1 of the ring-switch verifier: observe `s_hat_v` (NO domain label,
+/// matching the extension-field opener) and check the prefix-weight claim. The caller
 /// samples the possibly shared map afterwards.
 pub fn verify_observe(
     claim: F192,
@@ -857,8 +764,7 @@ pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> Ri
 // ---------------------------------------------------------------------------
 
 /// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the Ligerito final
-/// challenge point, following DP24 section 1.3 Figure 3 (mirror of
-/// `ring_switch::eval_rs_eq` retyped to the tower).
+/// challenge point, following DP24 section 1.3 Figure 3.
 ///
 /// ## Derivation
 ///
@@ -913,45 +819,6 @@ pub fn eval_rs_eq(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) 
     eval.fold_vertical(coordinate_weights)
 }
 
-/// Prefix-only variant of [`eval_rs_eq`]: walks `query_prefix.len()` of
-/// the (z, query) pairs and returns the partially-evolved tensor element.
-/// Pair with [`eval_rs_eq_finish_from_prefix_binary_q`] to share the
-/// prefix across many residual positions (the succinct Ligerito closure).
-pub fn eval_rs_eq_prefix(z_vals: &[F192], query_prefix: &[F192]) -> TensorAlgebraE {
-    assert!(query_prefix.len() <= z_vals.len());
-    let mut eval = TensorAlgebraE::from_vertical(F192::ONE);
-    for (&z_i, &q_i) in z_vals.iter().zip(query_prefix.iter()) {
-        let vert_scaled = eval.clone().scale_vertical(z_i);
-        let hztl_scaled = eval.clone().scale_horizontal(q_i);
-        eval += &vert_scaled;
-        eval += &hztl_scaled;
-    }
-    eval
-}
-
-/// Finish [`eval_rs_eq`] from a precomputed prefix when the query suffix
-/// is **binary** (bit j of `y_bits` is the j-th suffix coord). With
-/// `q_j in {0, 1}` the general step collapses (char 2) to a single vertical
-/// scale: `q_j = 0` gives `(1 + z_j) * eval`, `q_j = 1` gives `z_j * eval`.
-/// Mirror of `ring_switch::eval_rs_eq_finish_from_prefix_binary_q`.
-pub fn eval_rs_eq_finish_from_prefix_binary_q(
-    prefix: &TensorAlgebraE,
-    z_vals_suffix: &[F192],
-    y_bits: u32,
-    coordinate_weights: &[F192],
-) -> F192 {
-    assert_eq!(coordinate_weights.len(), DEGREE_E);
-    debug_assert!(z_vals_suffix.len() <= 32, "y_bits is u32; suffix > 32 not supported");
-    let mut eval = prefix.clone();
-    for (j, &z_i) in z_vals_suffix.iter().enumerate() {
-        let scalar = if (y_bits >> j) & 1 == 1 { z_i } else { F192::ONE + z_i };
-        for e in eval.elems.iter_mut() {
-            *e *= scalar;
-        }
-    }
-    eval.fold_vertical(coordinate_weights)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -961,36 +828,25 @@ mod tests {
     };
     use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
     use crate::merkle::Hash;
+    use crate::pack::LOG_PACKING;
     use crate::pack::pack_witness;
+    use primitives::test_rng::Rng;
 
-    fn splitmix64(state: &mut u64) -> u64 {
-        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = *state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
+    /// Number of Frobenius terms the composed batching map expands to: the
+    /// F_2-dimension of `K`.
+    const LINEARIZED_TERMS: usize = PACKING_WIDTH;
 
     #[test]
     fn deferred_batch_matches_materialized_weights() {
-        let mut seed = 0xdec0_de01_2345_6789;
-        let point = (0..10)
-            .map(|_| F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)))
-            .collect::<Vec<_>>();
-        let coordinate_weights = (0..DEGREE_E)
-            .map(|_| F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)))
-            .collect::<Vec<_>>();
-        let gammas = [
-            F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)),
-            F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)),
-        ];
+        let mut rng = Rng::new(0xdec0_de01_2345_6789);
+        let point = rng.ext_vec(10);
+        let coordinate_weights = rng.ext_vec(DEGREE_E);
+        let gammas = [rng.ext(), rng.ext()];
         let states = (0..2)
             .map(|_| {
                 let (eq_lo, eq_hi) = build_eq_split_ext(&point);
                 RingSwitchProveState {
-                    s_hat_v: (0..PACKING_WIDTH)
-                        .map(|_| F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)))
-                        .collect(),
+                    s_hat_v: rng.ext_vec(PACKING_WIDTH),
                     eq_lo,
                     eq_hi,
                 }
@@ -1024,59 +880,6 @@ mod tests {
         assert_eq!(deferred_basis, expected_basis);
     }
 
-    #[test]
-    fn trace_dual_basis_is_dual() {
-        // Tr(dual[i]·basis(j)) == δ_ij, and bit_i(y) = Tr(dual[i]·y) recovers
-        // coordinate bits of a few random elements.
-        let dual = trace_dual_basis();
-        let basis = |j: usize| {
-            if j < 64 {
-                F192::new(1u64 << j, 0, 0)
-            } else if j < 128 {
-                F192::new(0, 1u64 << (j - 64), 0)
-            } else {
-                F192::new(0, 0, 1u64 << (j - 128))
-            }
-        };
-        let tr = |x: F192| {
-            let (mut acc, mut p) = (F192::ZERO, x);
-            for _ in 0..192 {
-                acc += p;
-                p = p * p;
-            }
-            acc
-        };
-        for i in 0..DEGREE_E {
-            for j in 0..DEGREE_E {
-                let want = if i == j { F192::ONE } else { F192::ZERO };
-                assert_eq!(tr(dual[i] * basis(j)), want, "duality fails at i={i}, j={j}");
-            }
-        }
-        let mut s = 0xDEAD_BEEF_u64;
-        for _ in 0..8 {
-            let y = F192::new(splitmix64(&mut s), splitmix64(&mut s), splitmix64(&mut s));
-            for i in 0..DEGREE_E {
-                let bit = if i < 64 {
-                    (y.c0 >> i) & 1
-                } else if i < 128 {
-                    (y.c1 >> (i - 64)) & 1
-                } else {
-                    (y.c2 >> (i - 128)) & 1
-                };
-                let want = if bit == 1 { F192::ONE } else { F192::ZERO };
-                assert_eq!(tr(dual[i] * y), want, "bit {i} extraction wrong");
-            }
-        }
-    }
-
-    fn rand_ext(s: &mut u64) -> F192 {
-        F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
-    }
-
-    fn rand_bits(m: usize, s: &mut u64) -> Vec<bool> {
-        (0..1usize << m).map(|_| splitmix64(s) & 1 == 1).collect()
-    }
-
     /// The contract between the native opener and every verifier that batches
     /// from `Phi`'s coefficients (the recursion guest, the Python reference
     /// verifier): weighting the COLUMN view by `build_coordinate_weights` must
@@ -1084,10 +887,10 @@ mod tests {
     /// drifts, the guest computes a different opening target than the prover.
     #[test]
     fn column_weights_match_the_row_side_linearized_map() {
-        let mut s = 0xF00D_BEEF_1234_5678;
+        let mut rng = Rng::new(0xF00D_BEEF_1234_5678);
         for _ in 0..4 {
-            let challenges = std::array::from_fn(|_| rand_ext(&mut s));
-            let s_hat_v: Vec<F192> = (0..PACKING_WIDTH).map(|_| rand_ext(&mut s)).collect();
+            let challenges = std::array::from_fn(|_| rng.ext());
+            let s_hat_v = rng.ext_vec(PACKING_WIDTH);
 
             // Column side: sum_w weights[w] * t_w over the transposed K columns.
             let columns = transpose_s_hat(&s_hat_v);
@@ -1133,8 +936,8 @@ mod tests {
             Some(RING_SWITCH_SOUNDNESS_DEGREE as u64)
         );
 
-        let mut s = 0x1234_5678_9abc_def0;
-        let challenges: [F192; COMPOSITION_SHIFTS.len()] = std::array::from_fn(|_| rand_ext(&mut s));
+        let mut rng = Rng::new(0x1234_5678_9abc_def0);
+        let challenges: [F192; COMPOSITION_SHIFTS.len()] = std::array::from_fn(|_| rng.ext());
         let mut coefficients = [F192::ZERO; LINEARIZED_TERMS];
         coefficients[0] = F192::ONE;
         for (&challenge, &shift) in challenges.iter().zip(COMPOSITION_SHIFTS.iter()) {
@@ -1151,7 +954,7 @@ mod tests {
         }
         assert!(coefficients.iter().all(|coefficient| *coefficient != F192::ZERO));
 
-        let value = rand_ext(&mut s);
+        let value = rng.ext();
         let mut expanded = F192::ZERO;
         let mut frobenius = value;
         for coefficient in coefficients {
@@ -1184,10 +987,10 @@ mod tests {
     #[test]
     fn s_hat_v_matches_bruteforce() {
         let m = 9;
-        let mut s = 1u64;
-        let bits = rand_bits(m, &mut s);
+        let mut rng = Rng::new(1);
+        let bits = rng.bits(1usize << m);
         let packed = pack_witness(&bits, m);
-        let suffix_point: Vec<F192> = (0..m - LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
+        let suffix_point = rng.ext_vec(m - LOG_PACKING);
         let eq_suffix = build_eq_table_ext(&suffix_point);
 
         let s_hat_v = fold_1b_rows(&packed, &eq_suffix);
@@ -1212,19 +1015,19 @@ mod tests {
     /// scalar path).
     #[test]
     fn fold_1b_rows_mfr_matches_scalar() {
-        let mut s = 31u64;
+        let mut rng = Rng::new(31);
         for log_len in [3usize, 4, 7, 11] {
             let len = 1usize << log_len;
-            let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
-            let tensor: Vec<F192> = (0..len).map(|_| rand_ext(&mut s)).collect();
+            let packed: Vec<F64> = (0..len).map(|_| F64(rng.next_u64())).collect();
+            let tensor = rng.ext_vec(len);
             let mfr = fold_1b_rows_mfr_8wide(&packed, &tensor);
             let scalar = fold_1b_rows_scalar(&packed, &tensor);
             assert_eq!(mfr, scalar, "MFR/scalar split at len={len}");
             assert_eq!(fold_1b_rows(&packed, &tensor), mfr, "dispatcher at len={len}");
         }
         for len in [1usize, 2, 4] {
-            let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
-            let tensor: Vec<F192> = (0..len).map(|_| rand_ext(&mut s)).collect();
+            let packed: Vec<F64> = (0..len).map(|_| F64(rng.next_u64())).collect();
+            let tensor = rng.ext_vec(len);
             assert_eq!(
                 fold_1b_rows(&packed, &tensor),
                 fold_1b_rows_scalar(&packed, &tensor),
@@ -1238,11 +1041,11 @@ mod tests {
     #[test]
     fn claim_check_completeness_and_soundness() {
         let m = 10;
-        let mut s = 2u64;
-        let bits = rand_bits(m, &mut s);
+        let mut rng = Rng::new(2);
+        let bits = rng.bits(1usize << m);
         let packed = pack_witness(&bits, m);
-        let point: Vec<F192> = (0..m).map(|_| rand_ext(&mut s)).collect();
-        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING]);
+        let point = rng.ext_vec(m);
+        let prefix_weights = build_eq_table_ext(&point[..LOG_PACKING]);
         let suffix_point = &point[LOG_PACKING..];
 
         // Honest claim from the reference partials; sanity: it equals the
@@ -1291,9 +1094,9 @@ mod tests {
     /// arbitrary (not necessarily eq-structured) input.
     #[test]
     fn rs_eq_ind_fast_matches_naive() {
-        let mut s = 3u64;
-        let tensor: Vec<F192> = (0..1usize << 8).map(|_| rand_ext(&mut s)).collect();
-        let coordinate_weights: Vec<F192> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
+        let mut rng = Rng::new(3);
+        let tensor = rng.ext_vec(1usize << 8);
+        let coordinate_weights = rng.ext_vec(DEGREE_E);
         assert_eq!(
             fold_ext_elems(&tensor, &coordinate_weights),
             fold_ext_elems_naive(&tensor, &coordinate_weights)
@@ -1302,60 +1105,20 @@ mod tests {
 
     /// eval_rs_eq must agree with the dense evaluation: materialize
     /// rs_eq_ind, evaluate its MLE at a random query with the eq table.
-    /// Also pins the prefix + binary-q variant against the full path.
     #[test]
     fn eval_rs_eq_matches_dense() {
         let l = 6;
-        let mut s = 4u64;
-        let z: Vec<F192> = (0..l).map(|_| rand_ext(&mut s)).collect();
-        let challenges = std::array::from_fn(|_| rand_ext(&mut s));
+        let mut rng = Rng::new(4);
+        let z = rng.ext_vec(l);
+        let challenges = std::array::from_fn(|_| rng.ext());
         let coordinate_weights = build_coordinate_weights(&challenges);
         let rs_eq_ind = fold_ext_elems(&build_eq_table_ext(&z), &coordinate_weights);
 
-        let query: Vec<F192> = (0..l).map(|_| rand_ext(&mut s)).collect();
+        let query = rng.ext_vec(l);
         let eq_query = build_eq_table_ext(&query);
         let dense = inner_product_ext(&rs_eq_ind, &eq_query);
 
         assert_eq!(eval_rs_eq(&z, &query, &coordinate_weights), dense);
-
-        // Prefix + binary-q path: replace the last 3 query coords by the
-        // bits of y and compare against the general path.
-        let split = l - 3;
-        let prefix = eval_rs_eq_prefix(&z, &query[..split]);
-        for y in 0..8u32 {
-            let mut q_bin = query[..split].to_vec();
-            for j in 0..3 {
-                q_bin.push(if (y >> j) & 1 == 1 { F192::ONE } else { F192::ZERO });
-            }
-            assert_eq!(
-                eval_rs_eq_finish_from_prefix_binary_q(&prefix, &z[split..], y, &coordinate_weights),
-                eval_rs_eq(&z, &q_bin, &coordinate_weights),
-                "binary-q finish mismatch at y={y}"
-            );
-        }
-    }
-
-    /// The core algebraic identity of the reduction: the honest packed
-    /// witness satisfies the output claim,
-    /// `sum_y rs_eq_ind[y] * packed[y] == sumcheck_claim`.
-    #[test]
-    fn sumcheck_claim_matches_inner_product() {
-        let m = 12;
-        let mut s = 5u64;
-        let bits = rand_bits(m, &mut s);
-        let packed = pack_witness(&bits, m);
-        let point: Vec<F192> = (0..m).map(|_| rand_ext(&mut s)).collect();
-        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING]);
-        let suffix_point = &point[LOG_PACKING..];
-        let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, suffix_point));
-
-        let mut ch = Sponge::new(b"rs-identity-test", &[]);
-        let (_proof, out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
-        assert_eq!(
-            inner_product_base_ext(&packed, &out.rs_eq_ind),
-            out.sumcheck_claim,
-            "reduction output claim must hold for the honest witness"
-        );
     }
 
     // -- end-to-end: reduction + ligerito opening --------------------------
@@ -1399,21 +1162,20 @@ mod tests {
     /// vector), then the ligerito opening on (rs_eq_ind, sumcheck_claim),
     /// all over one continuous transcript.
     fn prove_e2e(m: usize, seed: u64, generalized_weights: bool) -> E2e {
-        let mut s = seed;
-        let bits = rand_bits(m, &mut s);
+        let mut rng = Rng::new(seed);
+        let bits = rng.bits(1usize << m);
         let packed = pack_witness(&bits, m);
         let log_n = m - LOG_PACKING;
         let (pc, vc) = test_configs_for(log_n);
         let (cm, pd) = commit(&packed, pc.initial_k, pc.log_inv_rates[0]);
 
-        let suffix_point: Vec<F192> = (0..log_n).map(|_| rand_ext(&mut s)).collect();
+        let suffix_point = rng.ext_vec(log_n);
         let prefix_weights: Vec<F192> = if generalized_weights {
             // Synthetic non-eq weights (e.g. standing in for phi_8 Lagrange
             // weights): any 64 E-values work.
-            (0..PACKING_WIDTH).map(|_| rand_ext(&mut s)).collect()
+            rng.ext_vec(PACKING_WIDTH)
         } else {
-            let r_prefix: Vec<F192> = (0..LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
-            eq_prefix_weights(&r_prefix)
+            build_eq_table_ext(&rng.ext_vec(LOG_PACKING))
         };
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
 
@@ -1525,8 +1287,8 @@ mod tests {
         // keeps sum_i w_i s'_i = claim, so the claim check passes; the
         // downstream opening must still reject (the batching weights and
         // target diverge from what the ligerito proof was built for).
-        let mut s = 99u64;
-        let d = rand_ext(&mut s);
+        let mut rng = Rng::new(99);
+        let d = rng.ext();
         let w0 = e.prefix_weights[0];
         let w1 = e.prefix_weights[1];
         assert!(!w0.is_zero() && !d.is_zero());

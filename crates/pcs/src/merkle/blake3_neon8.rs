@@ -4,7 +4,7 @@
 //! chunks through all sixteen dependent compression blocks before starting
 //! the next four. Within one 4-lane state the sixteen `v[]` vectors form a
 //! single dependency chain of add/xor/rotate, and a 4-lane state uses only
-//! half of AArch64's 32 vector registers — so the chain, not the issue width,
+//! half of AArch64's 32 vector registers, so the chain, not the issue width,
 //! sets the pace.
 //!
 //! This kernel keeps **two** independent 4-lane states in flight and
@@ -14,7 +14,7 @@
 //!
 //! The contract is fixed to a PCS Merkle leaf: eight contiguous unkeyed
 //! leaves of `LEAF` bytes, counter zero, `CHUNK_START` on the first block and
-//! `CHUNK_END | ROOT` on the last — i.e. byte-identical to
+//! `CHUNK_END | ROOT` on the last, i.e. byte-identical to
 //! `blake3::hash(leaf)` for each of the eight leaves, exactly like
 //! [`super::hash_many_oneshot_uninit`]. `LEAF` must be a positive multiple of
 //! 64 no greater than 1024, so that a leaf is exactly one whole chunk.
@@ -258,7 +258,7 @@ pub(super) fn hash_complete_groups<const LEAF: usize>(
                 transpose_block4(lanes_hi, block_offset, &mut m1);
 
                 // CHUNK_START on the first block; CHUNK_END | ROOT on the
-                // last — a whole 1 KiB leaf is exactly one chunk and is its
+                // last. A whole 1 KiB leaf is exactly one chunk and is its
                 // own root, so this reproduces `blake3::hash(leaf)`.
                 let flags = u32::from(block == 0) | if block == blocks - 1 { 2 | 8 } else { 0 };
                 let mut v0 = init_state(&h0, flags);

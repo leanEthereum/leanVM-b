@@ -64,6 +64,26 @@ def main():
     verify(&program, &want, &proof).expect("deferred-fill program verifies");
 }
 
+/// The largest allowed bound, `2^16` = the minimum prover memory, end to end:
+/// the complement cell is `g^65535`, the last cell of that memory, so an
+/// off-by-one in the bound check or in the deferred fill shows up here.
+#[test]
+fn range_check_max_bound() {
+    let src = "\
+def main():
+    x = GEN ** 5
+    assert log x < 65536
+    p = 1
+    p[1] = x
+    p[GEN] = x
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let want = [F192::from(g_pow(5)); 2];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("max-bound range check verifies");
+}
+
 /// Range checks inside a `mul_range` body: the check runs once per iteration in
 /// a fresh helper frame (its own `g^{k-1}` constant cell each time), and the
 /// touched low cells mix already-written ones (`m[0]`, `m[1]`: the public

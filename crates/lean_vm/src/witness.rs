@@ -27,11 +27,6 @@ impl Placement {
     pub fn is_virtual(&self) -> bool {
         self.n_vars == usize::MAX
     }
-
-    /// The high-bit selector of the column's offset (`offset / 2^{n_vars}`).
-    pub fn sel(&self) -> usize {
-        self.offset >> self.n_vars
-    }
 }
 
 /// The stacked witness and the per-column placements (in input order).
@@ -42,30 +37,45 @@ pub(crate) struct Stacked {
     pub placements: Vec<Placement>,
 }
 
-/// Per-column placements (offset + n_vars) and stack length `2^m` from the columns'
-/// log-sizes alone, largest-first at aligned offsets. A `None` kappa marks a virtual
-/// (uncommitted) column. Depends only on lengths, so the verifier can reconstruct it.
-pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
+/// Lay `2^kappa`-sized items end to end, largest first at aligned offsets and ties
+/// broken by index, returning the per-item offset and `⌈log2 Σ 2^kappa⌉`. A `None`
+/// kappa takes no space and its offset is meaningless. Depends only on the sizes, so
+/// the verifier reconstructs the same tiling.
+pub(crate) fn stack_offsets(kappas: &[Option<usize>]) -> (Vec<usize>, usize) {
     let n = kappas.len();
     let mut order: Vec<usize> = (0..n).filter(|&i| kappas[i].is_some()).collect();
     order.sort_by(|&a, &b| kappas[b].unwrap().cmp(&kappas[a].unwrap()).then(a.cmp(&b)));
 
-    let mut placements = vec![Placement::VIRTUAL; n];
+    let mut offsets = vec![0usize; n];
     let mut off = 0usize;
     for &i in &order {
-        let k = kappas[i].unwrap();
-        placements[i] = Placement { n_vars: k, offset: off };
-        off += 1 << k;
+        offsets[i] = off;
+        off += 1 << kappas[i].unwrap();
     }
+    (offsets, crate::log2_ceil_usize(off.max(1)))
+}
+
+/// Per-column placements (offset + n_vars) and stack length `2^m` from the columns'
+/// log-sizes alone, largest-first at aligned offsets. A `None` kappa marks a virtual
+/// (uncommitted) column. Depends only on lengths, so the verifier can reconstruct it.
+pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
+    let (offsets, mu) = stack_offsets(kappas);
+    let placements = kappas
+        .iter()
+        .zip(&offsets)
+        .map(|(k, &offset)| match *k {
+            Some(n_vars) => Placement { n_vars, offset },
+            None => Placement::VIRTUAL,
+        })
+        .collect();
     // Floor at the PCS minimum (Ligerito's level ladder needs room); tiny
     // witnesses zero-pad up. Both sides derive this identically from the kappas.
-    let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
-    (placements, m)
+    (placements, mu.max(crate::pcs::MIN_MU))
 }
 
 /// Copy the committed columns into one multilinear `q` of length `2^m` at their
 /// placed offsets (zero elsewhere). Virtual columns are skipped. Large columns
-/// (e.g. `q_pkd`, ~1 GB at scale) copy in parallel — the `2^m` stack is
+/// (e.g. `q_pkd`, ~1 GB at scale) copy in parallel: the `2^m` stack is
 /// memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
 pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> {

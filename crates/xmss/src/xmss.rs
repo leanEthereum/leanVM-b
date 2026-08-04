@@ -85,7 +85,7 @@ fn gen_random_node(seed: &[u8; 32], level: usize, index: u64) -> Digest {
 }
 
 /// Merkle parent at `level` (1 compression: both children fill one block).
-pub fn merkle_node(public_param: &PublicParam, level: usize, index: u64, left: &Digest, right: &Digest) -> Digest {
+fn merkle_node(public_param: &PublicParam, level: usize, index: u64, left: &Digest, right: &Digest) -> Digest {
     let mut data = [0u8; 2 * DIGEST_LEN];
     data[..DIGEST_LEN].copy_from_slice(left);
     data[DIGEST_LEN..].copy_from_slice(right);

@@ -61,7 +61,7 @@ fn offset_coords(base: usize, coords: Vec<Coord>) -> Vec<Coord> {
 }
 
 /// The public proof structure: everything the verifier reconstructs from the
-/// program, the announced sizes, and the public input — no witness values. The
+/// program, the announced sizes, and the public input, with no witness values. The
 /// flush blocks reference columns by INDEX (see [`crate::leaf::Coord`]), so they
 /// are pure public structure.
 pub struct Layout {
@@ -93,7 +93,6 @@ pub(crate) struct Witness {
     pub(crate) q: Vec<F64>,
     pub(crate) layout: Layout,
     pub(crate) log_mem: usize,
-    pub(crate) row_counts: [usize; tables::N_TABLES],
     /// `Option` lets `prove` take and free the large reduction-only buffers
     /// immediately after reduction, before the mixed PCS opening.
     pub(crate) flock_reduction: Option<crate::blake3_flock::PreparedReductionWitness>,
@@ -105,8 +104,8 @@ pub(crate) struct Witness {
 /// kappa = value(source) + adj, where source 0 is the constant 0 (kappa =
 /// adj; used for the fixed-size columns and the program bytecode length,
 /// which the caller passes as `log_bytecode`), source 1 is log_mem, and
-/// source 2 + t is tau_t. `None` = virtual (never committed). Mirrors
-/// `col_kappas` exactly; keep the two in lockstep.
+/// source 2 + t is tau_t. `None` = virtual (never committed). [`col_kappas`]
+/// is derived from this, so the two cannot drift apart.
 pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
     let mut k = vec![Some((0usize, 0usize)); sch.n];
@@ -115,13 +114,20 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k[MEM_TOP] = Some((1, 0));
     k[MFCNT] = Some((1, 0));
     k[BFCNT] = Some((0, log_bytecode));
-    // qpkd_kappa(n) = K_LOG + n_blocks_log - LOG_PACKING, and tau_5 IS
-    // n_blocks_log (the announced-size certification uses the same floor).
+    // q_pkd is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
+    // instance (a no-BLAKE3 program commits one padding instance), and tau_5 IS
+    // n_blocks_log (the announced-size certification uses the same floor), so this
+    // reproduces `qpkd_kappa`.
     k[QPKD] = Some((2 + tables::BLAKE3_TABLE, flock::blake3::K_LOG - ::pcs::LOG_PACKING));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
     }
+    // The BLAKE3 value columns are ALWAYS virtual: `q_pkd` already holds those
+    // words at fixed packed slots, so committing them again is redundant. Their
+    // memory-bus claims route directly to `q_pkd` slot evaluations (`slot_claims`),
+    // which both binds them to the proven witness AND removes the separate
+    // value-binding sub-protocol.
     let b3 = sch.base[tables::BLAKE3_TABLE];
     for &c in &tables::BLAKE3_VALUE_COLS {
         k[b3 + c] = None;
@@ -151,49 +157,24 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
     push
 }
 
-/// Column → log-size (`kappa`) map: the shared MEM/MFCNT columns are `2^log_mem`,
-/// the bytecode finalize count is `2^log_bytecode`, and every column of table `t`
-/// is `2^taus[t]` (its padded log-row-count). `None` marks a **virtual**
+/// Column → log-size (`kappa`) map, derived from [`col_kappa_sources`] by
+/// substituting the announced sizes: source 0 is the constant 0, source 1 is
+/// `log_mem`, source `2 + t` is `tau_t`. `None` marks a **virtual**
 /// (uncommitted) column. Depends only on the public sizes, so the verifier can
 /// reconstruct the placements.
-///
-/// The BLAKE3 value columns (`va0..vc3`) are always virtual: `q_pkd`
-/// already holds those words at fixed packed slots, so committing them again is
-/// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
-/// (see [`slot_claims`]), which both binds them to
-/// the proven witness AND eliminates the separate value-binding sub-protocol.
-fn col_kappas(
-    log_mem: usize,
-    log_bytecode: usize,
-    taus: [usize; tables::N_TABLES],
-    n_blake3: usize,
-) -> Vec<Option<usize>> {
-    let sch = schema();
-    let mut k = vec![Some(0usize); sch.n];
-    k[MEM_LO] = Some(log_mem);
-    k[MEM_HI] = Some(log_mem);
-    k[MEM_TOP] = Some(log_mem);
-    k[MFCNT] = Some(log_mem);
-    k[BFCNT] = Some(log_bytecode);
-    // q_pkd: `2^(K_LOG+n_log-6)` F64 words, always ≥ 1 instance (`qpkd_kappa`
-    // floors `n_blake3` at 1 — padding instance for a no-BLAKE3 program).
-    k[QPKD] = Some(crate::blake3_flock::qpkd_kappa(n_blake3));
-    for (t, table) in tables::tables().iter().enumerate() {
-        let base = sch.base[t];
-        k[base..base + table.n_committed_columns()].fill(Some(taus[t]));
-    }
-    // BLAKE3 value columns are ALWAYS virtual (read from q_pkd, never committed).
-    let b3 = sch.base[tables::BLAKE3_TABLE];
-    for &c in &tables::BLAKE3_VALUE_COLS {
-        k[b3 + c] = None;
-    }
-    k
+fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLES]) -> Vec<Option<usize>> {
+    let mut values = vec![0usize, log_mem];
+    values.extend(taus);
+    col_kappa_sources(log_bytecode)
+        .iter()
+        .map(|s| s.map(|(source, adj)| values[source] + adj))
+        .collect()
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
 /// instruction tables' real row counts `row_counts`, and the public input `pi`. The flush
 /// blocks reference columns only by INDEX and the program only through its
-/// public columns, so this needs no committed witness — both prover and verifier
+/// public columns, so this needs no committed witness: both prover and verifier
 /// reconstruct exactly the same structure.
 pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
     let bytecode_size = prog.len();
@@ -209,7 +190,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     }
     // The BLAKE3 table is ALWAYS sized to flock's `2^n_log` instance count
     // (`max(count,1)`, lincheck floor ≥ 8) so its per-instance (virtual) value
-    // columns share `q_pkd`'s instance cube — a value-column bus claim at instance
+    // columns share `q_pkd`'s instance cube: a value-column bus claim at instance
     // point `r` maps to a strided `q_pkd` slot claim at `r` (`slot_claims`).
     taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
 
@@ -223,7 +204,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
 
     let one = F64::ONE;
     // The public program columns map operand *offsets* (small, ≤ frame size) to
-    // g-powers — not memory addresses — so precompute only up to the largest
+    // g-powers (not memory addresses), so precompute only up to the largest
     // operand, an O(1) lookup each, rather than over the whole 2^log_mem memory.
     let max_op = prog
         .iter()
@@ -417,7 +398,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     }
     // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
     // compression): zero inputs but a NONZERO output `out_lo`. So the four output
-    // value columns pad with that digest, not 0 — the memory bus flushes these
+    // value columns pad with that digest, not 0: the memory bus flushes these
     // (virtual) columns, and their padding rows must equal `q_pkd`'s padding slots
     // so the default-padding surplus divides out and the routed claims agree.
     // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
@@ -434,12 +415,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         pad[b3 + tables::BLAKE3_VALUE_COLS[17]] = F64(md.c1); // metadata blen‖flags lane
     }
 
-    let (placements, m) = witness::placements_of(&col_kappas(
-        log_mem,
-        log_bytecode,
-        taus,
-        row_counts[tables::BLAKE3_TABLE],
-    ));
+    let (placements, m) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
     Layout {
         push,
         pull,
@@ -457,19 +433,11 @@ impl Program {
     pub(crate) fn build(&self, exec: &Execution) -> Witness {
         assert!(self.prog.len().is_power_of_two());
         assert!(exec.mem.len().is_power_of_two());
-        let prof = std::env::var("LEANVM_PROFILE").is_ok();
         // The trace was emitted in the same walk as the memory image (no re-walk).
         let tr = &exec.trace;
-        let t_fill = std::time::Instant::now();
         let cells = exec.mem.len();
         let bytecode_size = self.prog.len();
         let log_mem = crate::log2_strict_usize(cells);
-
-        // Each table is padded up to a power-of-two row count (§4.4, §e2e-pad):
-        // the appended rows are all-zero, so on every domain their push and pull
-        // are the identical tuple and self-cancel on the bus, and the all-zero
-        // assignment satisfies every degree-≤2 constraint. (Padding is applied to
-        // the filled columns below, after the real rows, to `2^taus[t]`.)
 
         let sch = schema();
         let mut cols = vec![Column::new(); sch.n];
@@ -485,37 +453,31 @@ impl Program {
             mem: &exec.mem,
             gpow: &gpow,
         };
-        for (t, table) in tables::tables().iter().enumerate() {
-            let (base, n) = (sch.base[t], table.n_committed_columns());
-            table.fill(&ctx, &mut cols[base..base + n]);
-        }
-        // Shared columns. The 192-bit memory image splits into three K-limbs.
-        cols[MEM_LO] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c0));
-        cols[MEM_HI] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c1));
-        cols[MEM_TOP] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c2));
-        cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
-        cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
+        crate::stage!("Fill columns", || {
+            for (t, table) in tables::tables().iter().enumerate() {
+                let (base, n) = (sch.base[t], table.n_committed_columns());
+                table.fill(&ctx, &mut cols[base..base + n]);
+            }
+            // Shared columns. The 192-bit memory image splits into three K-limbs.
+            cols[MEM_LO] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c0));
+            cols[MEM_HI] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c1));
+            cols[MEM_TOP] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c2));
+            cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
+            cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
+        });
         // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:
         // built from the executed BLAKE3 rows in order (row j = flock instance j),
-        // padded to `2^n_blocks_log(max(count,1))` all-padding instances — so a
+        // padded to `2^n_blocks_log(max(count,1))` all-padding instances, so a
         // program with no BLAKE3 still carries a single padding instance.
-        let fill_ms = t_fill.elapsed().as_secs_f64() * 1e3;
-        let t_qpkd = std::time::Instant::now();
-        let (q_pkd, flock_reduction) = {
+        let (q_pkd, flock_reduction) = crate::stage!("Build q_pkd", || {
             let blocks: Vec<_> = tr
                 .blake3
                 .iter()
                 .map(|r| crate::blake3_flock::compression(r.va, r.vb, r.vcv, r.metadata))
                 .collect();
             crate::blake3_flock::build_qpkd_prepared(&blocks)
-        };
+        });
         cols[QPKD] = q_pkd;
-        let qpkd_ms = t_qpkd.elapsed().as_secs_f64() * 1e3;
-
-        if prof {
-            eprintln!("[build] fill cols   : {fill_ms:>7.2} ms");
-            eprintln!("[build] build q_pkd : {qpkd_ms:>7.2} ms");
-        }
 
         // The public layout (flush/count blocks, per-column padding, placements,
         // boundary, taus) is a pure function of the program + announced sizes +
@@ -538,7 +500,7 @@ impl Program {
         let l = layout(&self.prog, log_mem, row_counts, pi);
 
         // Pad each per-opcode table to its power-of-two row count: count columns
-        // with g^0 = 1, every other column with 0 (§e2e-pad). A default padding
+        // with g^0 = 1, every other column with 0 (§4.4, §e2e-pad). A default padding
         // row (counts 1, else 0) flushes tuples that do not self-cancel; the
         // verifier divides them out of the bus product (§sec:gp). The shared
         // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode lengths.
@@ -553,20 +515,12 @@ impl Program {
         }
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
         // (g^{B-1}, 0), exactly the boundary the public layout derives.)
-        let t_stack = std::time::Instant::now();
-        let q = witness::stack_q(&cols, &l.placements, l.m);
-        if prof {
-            eprintln!(
-                "[build] stack_q     : {:>7.2} ms",
-                t_stack.elapsed().as_secs_f64() * 1e3
-            );
-        }
+        let q = crate::stage!("Stack witness", || { witness::stack_q(&cols, &l.placements, l.m) });
         Witness {
             cols,
             q,
             layout: l,
             log_mem,
-            row_counts,
             flock_reduction: Some(flock_reduction),
         }
     }

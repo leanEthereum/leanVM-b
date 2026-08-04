@@ -51,11 +51,9 @@ pub fn interp_k(lo: F64, hi: F64, t: F192) -> F192 {
 /// of `x = r`; for arbitrary `r`, it is the multilinear interpolation weight.
 pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
     debug_assert_eq!(r.len(), x.len());
-    let mut acc = F192::ONE;
-    for i in 0..r.len() {
-        acc *= F192::ONE + r[i] + x[i];
-    }
-    acc
+    r.iter()
+        .zip(x)
+        .fold(F192::ONE, |acc, (&ri, &xi)| acc * (F192::ONE + ri + xi))
 }
 
 /// The `eq(r, ·)` table over `n = r.len()` variables, expanded a level at a
@@ -64,9 +62,9 @@ pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
 ///
 /// One multiply per pair, not two. In characteristic 2,
 /// `e · (1 + r) = e + e · r`, so the low child is the high child XOR the
-/// parent — the second product is redundant. (This is orthogonal to batching:
-/// `rk` is loop-invariant, and the scalar product still beats `F192::mul2`
-/// here, 3.37 vs 3.73 ns/entry.)
+/// parent, making the second product redundant. This is orthogonal to lane
+/// batching: `rk` is loop-invariant, and the scalar product still measured
+/// faster than a two-lane one, 3.37 vs 3.73 ns/entry.
 ///
 /// A level's pairs are independent, so levels wide enough to cover the
 /// dispatch are split across threads.
@@ -113,7 +111,7 @@ fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
 /// The mixed fold: bind the lowest variable of a `K`-table to an
 /// `E`-challenge, producing the `E`-table the remaining rounds fold. One
 /// `mul_base` per output entry.
-pub fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
+fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
     debug_assert_eq!(table.len() % 2, 0);
     (0..table.len() / 2)
         .map(|i| interp_k(table[2 * i], table[2 * i + 1], rho))
@@ -161,26 +159,36 @@ pub fn shrink_eq_high<B: Shrink<F192>>(table: &mut B) {
     table.shrink_to(half);
 }
 
+/// The barycentric weights of distinct `nodes` at `p`: `weights[i] =
+/// ∏_{k≠i} (p + nodes[k]) / ∏_{k≠i} (nodes[i] + nodes[k])`. `O(n²)` multiplies
+/// plus one inverse per node.
+fn lagrange_weights(nodes: &[F192], p: F192) -> Vec<F192> {
+    let n = nodes.len();
+    (0..n)
+        .map(|i| {
+            let mut num = F192::ONE;
+            let mut den = F192::ONE;
+            for k in 0..n {
+                if k == i {
+                    continue;
+                }
+                num *= p + nodes[k];
+                den *= nodes[i] + nodes[k];
+            }
+            num * den.inv()
+        })
+        .collect()
+}
+
 /// Lagrange evaluation: given distinct `nodes` and a polynomial's `values` there,
 /// evaluate the interpolant at `p`. Reads a sumcheck round's univariate (sent as
 /// evaluations) at the verifier's challenge.
 pub fn lagrange_eval(nodes: &[F192], values: &[F192], p: F192) -> F192 {
     debug_assert_eq!(nodes.len(), values.len());
-    let n = nodes.len();
-    let mut acc = F192::ZERO;
-    for i in 0..n {
-        let mut num = F192::ONE;
-        let mut den = F192::ONE;
-        for k in 0..n {
-            if k == i {
-                continue;
-            }
-            num *= p + nodes[k];
-            den *= nodes[i] + nodes[k];
-        }
-        acc += values[i] * num * den.inv();
-    }
-    acc
+    lagrange_weights(nodes, p)
+        .iter()
+        .zip(values)
+        .fold(F192::ZERO, |acc, (&w, &v)| acc + v * w)
 }
 
 /// The 3 nodes {0, 1, g} at which a degree-2 sumcheck round univariate is sent
@@ -239,7 +247,7 @@ pub fn xor3(mut x: [F192Unreduced; 3], y: [F192Unreduced; 3]) -> [F192Unreduced;
 
 /// Evaluate the MLE of a `K`-valued truth table at an `E`-point (length
 /// `log2(len)`), binding variables LSB-first: the first fold is mixed
-/// ([`fold_low_k`]), the rest pure `E` in place.
+/// (`fold_low_k`), the rest pure `E` in place.
 pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     debug_assert_eq!(table.len(), 1 << point.len());
     if point.is_empty() {
@@ -249,9 +257,9 @@ pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     let mut len = cur.len();
     for &p in &point[1..] {
         len /= 2;
-        // Deliberately scalar: the fold's mul has the loop-invariant `p` on
-        // one side, and pairing outputs through `F192::mul2` measures slower
-        // (1.75 vs 2.14 ns/output, same shape as the GKR `par_fold`).
+        // Deliberately scalar: the fold's mul has the loop-invariant `p` on one
+        // side, and pairing outputs through a two-lane multiply measured slower,
+        // 1.75 vs 2.14 ns/output.
         for i in 0..len {
             cur[i] = interp(cur[2 * i], cur[2 * i + 1], p);
         }
@@ -259,25 +267,11 @@ pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     cur[0]
 }
 
-/// O(2^{2·k_skip}) field multiplies — one-time cost.
+/// Barycentric weights over the first `2^k_skip` nodes of the GF(2^8) subfield.
+/// O(2^{2·k_skip}) field multiplies, a one-time cost.
 pub fn lagrange_weights_naive(k_skip: usize, z: F192) -> Vec<F192> {
     use crate::field::PHI_8_TABLE_192 as PHI_8_TABLE;
     let ell = 1usize << k_skip;
     assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
-    let mut weights = vec![F192::ZERO; ell];
-    for i in 0..ell {
-        let si = PHI_8_TABLE[i];
-        let mut num = F192::ONE;
-        let mut den = F192::ONE;
-        for j in 0..ell {
-            if j == i {
-                continue;
-            }
-            let sj = PHI_8_TABLE[j];
-            num *= z + sj;
-            den *= si + sj;
-        }
-        weights[i] = num * den.inv();
-    }
-    weights
+    lagrange_weights(&PHI_8_TABLE[..ell], z)
 }

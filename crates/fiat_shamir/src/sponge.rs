@@ -1,8 +1,5 @@
 // CREDIT: https://github.com/signalapp/libsignal/blob/main/rust/poksho/src/shosha256.rs, AGPL-3.0-only.
-//! The VM-native Fiat–Shamir sponge: THE verifier-randomness source for the
-//! whole stack — flock's zerocheck / lincheck, the Ligerito PCS, and
-//! leanVM-b's own protocol (whose `ProverState` / `VerifierState` wrap this
-//! sponge with the proof transport channels).
+//! The VM-native Fiat–Shamir sponge.
 //!
 //! A 256-bit chaining value evolved only by the fixed 64→32 BLAKE3 compression
 //! the VM's `Blake3` opcode computes, so prover, verifier, and a recursive
@@ -20,8 +17,8 @@
 //! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
 //! AGPL-3.0-only): a chaining value advanced by domain-separated absorb /
 //! squeeze steps. Here the underlying hash is the VM's BLAKE3 compression
-//! rather than SHA-256, inputs are `K = GF(2^64)` field words, and — because
-//! every absorb is domain-tagged per compression — no explicit double-hash
+//! rather than SHA-256, inputs are `K = GF(2^64)` field words, and, because
+//! every absorb is domain-tagged per compression, no explicit double-hash
 //! ratchet is needed.
 //!
 //! Each challenge is the random-oracle image of the whole prior transcript;
@@ -32,7 +29,7 @@
 use primitives::field::{F64, F192};
 
 /// `f(a, b) = BLAKE3(a‖b)` on two 256-bit halves laid out little-endian into 64
-/// bytes — *exactly* the VM's `Blake3` opcode: 64 input bytes → 32-byte digest,
+/// bytes, *exactly* the VM's `Blake3` opcode: 64 input bytes → 32-byte digest,
 /// split back into four field words. THE primitive; the sponge is a chain of
 /// these, so a zkDSL program replays it with one `blake3(...)` per step.
 pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
@@ -55,10 +52,9 @@ const DS_SQUEEZE: F64 = F64(4);
 const DS_POW: F64 = F64(5);
 
 /// `compress(base, (nonce.c0, nonce.c1, nonce.c2, DS_POW))` has its low `bits`
-/// bits zero — the
-/// grinding predicate over the VM compression. A CONTIGUOUS low-bit window
-/// (rather than byte-wise leading zeros) so a recursive verifier re-checks it
-/// with a single loop over the bit decomposition of the digest word
+/// bits zero: the grinding predicate over the VM compression. A CONTIGUOUS
+/// low-bit window (rather than byte-wise leading zeros) so a recursive verifier
+/// re-checks it with a single loop over the bit decomposition of the digest word
 /// (`grind_check` in `guests/recursion.py`). `bits` is always `< 64`.
 #[inline]
 fn pow_bits_ok(base: [F64; 4], nonce: F192, bits: u32) -> bool {
@@ -79,7 +75,7 @@ pub struct Sponge {
 impl Sponge {
     /// Seed with the domain `label` and the PUBLIC `statement` scalars (the public
     /// input). Both sides seed identically, so the whole statement is bound before
-    /// any challenge — there is no mid-protocol "observe public data" step to get
+    /// any challenge; there is no mid-protocol "observe public data" step to get
     /// wrong (or forget). (Untraced: the seed is the replay STARTING state, not an
     /// op of the recorded transcript.)
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
@@ -90,12 +86,6 @@ impl Sponge {
             s.observe_untraced(x);
         }
         s
-    }
-
-    /// A fresh chain at the zero state: the guest-side aggregation and export
-    /// transcripts start here (no label), and the harness mirrors them.
-    pub fn empty() -> Self {
-        Self { cv: [F64::ZERO; 4] }
     }
 
     /// Absorb one 24-byte scalar (three little-endian `K` limbs):
@@ -130,7 +120,7 @@ impl Sponge {
 
     /// Squeeze a challenge and ratchet: the challenge's three limbs are the
     /// first three words of `compress(cv, (0, 0, DS_SQUEEZE, 0))`, whose full output
-    /// becomes the new state — domain-separated from absorbs, so a challenge
+    /// becomes the new state, domain-separated from absorbs, so a challenge
     /// cannot be confused with a continued absorb. In Fiat–Shamir everything is
     /// public; soundness comes from each challenge being a random-oracle image
     /// of the entire prior transcript.
@@ -164,12 +154,12 @@ impl Sponge {
 
     /// The grinding digest word this state yields for `nonce` (read-only preview;
     /// [`Self::verify_pow`] is the mutating check).
-    pub fn pow_digest(&self, nonce: F192) -> F64 {
+    fn pow_digest(&self, nonce: F192) -> F64 {
         compress(self.pow_base(), [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW])[0]
     }
 
     /// Re-run recorded verifier transcript ops through this sponge, asserting
-    /// every recorded sample (and grind) matches what this state re-derives —
+    /// every recorded sample (and grind) matches what this state re-derives;
     /// any prefix of a real verify trace yields the exact state reached there.
     /// (Untraced throughout: a replay must never re-record.)
     pub fn replay(&mut self, ops: &[TraceOp]) {
@@ -233,7 +223,7 @@ impl Sponge {
 
     /// Verifier-side mirror of [`Self::grind_pow`]: check `nonce` clears the `bits`
     /// PoW against the current state, then bind it regardless (so the sponge stays
-    /// in lockstep with an honest prover — a failed check rejects at the call
+    /// in lockstep with an honest prover; a failed check rejects at the call
     /// site). `bits = 0` accepts only the canonical nonce `0`, which keeps proofs
     /// non-malleable at zero-bit grinding sites.
     pub fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
@@ -276,7 +266,7 @@ impl Sponge {
 pub enum TraceOp {
     /// A stream word consumed without binding (grinding nonces).
     StreamRaw(F192),
-    /// An absorbed scalar (transmitted or derived — the sponge cannot tell).
+    /// An absorbed scalar (transmitted or derived: the sponge cannot tell).
     Observe(F192),
     /// `absorb_bytes` (labels, roots).
     AbsorbBytes(Vec<u8>),
@@ -359,11 +349,11 @@ mod tests {
         bytes[..8].copy_from_slice(&x.c0.to_le_bytes());
         bytes[8..16].copy_from_slice(&x.c1.to_le_bytes());
         bytes[16..].copy_from_slice(&x.c2.to_le_bytes());
-        b.absorb_bytes(&bytes);
+        b.absorb_bytes_untraced(&bytes);
         assert_ne!(a.sample(), b.sample());
     }
 
-    /// A grind clears its own PoW; a nonce that does not is rejected.
+    /// A grind clears its own PoW, and returns the SMALLEST nonce that does.
     #[test]
     fn pow_predicate() {
         let sp = Sponge::new(b"t", &[f(1)]);
@@ -373,8 +363,12 @@ mod tests {
             clone.grind_pow(8)
         };
         assert!(pow_bits_ok(base, F192::new(good, 0, 0), 8));
-        // A random wrong nonce almost surely fails an 8-bit grind.
-        assert!(!pow_bits_ok(base, F192::new(good.wrapping_add(1).wrapping_mul(3) | 1, 0, 0), 8,) || good != 0);
+        for n in 0..good {
+            assert!(
+                !pow_bits_ok(base, F192::new(n, 0, 0), 8),
+                "nonce {n} < {good} also clears"
+            );
+        }
     }
 
     /// Recursive proofs transport the nonce as one field word. Its high limb is

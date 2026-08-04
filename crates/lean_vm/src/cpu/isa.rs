@@ -45,7 +45,7 @@ pub enum Op {
     /// message chunks `ins` (each a canonical 128-bit chunk in ONE 192-bit cell,
     /// top limb zero) form the 64-byte block; the digest lands in the TWO
     /// consecutive cells `out, out+1`. Each message chunk is addressed
-    /// independently — no forced contiguity, so the caller need not assemble
+    /// independently, with no forced contiguity, so the caller need not assemble
     /// its operands into adjacent cells. The compression relation is proven by
     /// flock.
     Blake3 {
@@ -62,7 +62,7 @@ pub enum Op {
 
 /// The source `DEREF` stores at `mem[loc_α·β]`: a local cell, the return
 /// address `g²·pc`, or the frame pointer. Encoded as two boolean flags `(f_pc,
-/// f_fp)` — `Cell=(0,0)`, `Pc=(1,0)`, `Fp=(0,1)` — keeping the store constraint degree 2.
+/// f_fp)`: `Cell=(0,0)`, `Pc=(1,0)`, `Fp=(0,1)`, keeping the store constraint degree 2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DerefMode {
     Cell,

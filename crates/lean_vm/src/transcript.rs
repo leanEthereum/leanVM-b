@@ -1,4 +1,4 @@
-//! The shared Fiat–Shamir transcript, concretized with the VM's stacked
+//! The shared Fiat-Shamir transcript, concretized with the VM's stacked
 //! Ligerito opening type (see [`fiat_shamir`] for the sponge and the wrapper
 //! states): flock's protocol functions take these same `ps`/`vs` states, so
 //! the whole stack shares ONE transcript.

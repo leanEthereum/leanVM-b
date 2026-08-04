@@ -4,7 +4,7 @@
 //! Background: the URM round-1 needs to map each `ell`-bit row of the boolean
 //! witness (packed as `n_chunks = ell/8` bytes) to `ell` evaluations on the
 //! NTT domain `Λ`. The naive way computes inv_NTT on S then fwd_NTT on Λ for
-//! every row — too slow.
+//! every row, which is too slow.
 //!
 //! The optimization (§2.1 of the paper): `M = α · M̃` with `M̃` Cauchy and `α`
 //! a scalar. The columns of `M` satisfy a XOR-shift relation, so the `n_chunks`
@@ -15,7 +15,7 @@
 //! Per-byte-chunk b contributes `π_b(T_0[byte_b])` to the output, where
 //! `π_b(i') = i' ⊕ 8b`.
 //!
-//! Storage: 256 × ell bytes (16 KB at k=6, 32 KB at k=7) — fits in L1.
+//! Storage: 256 × ell bytes (16 KB at k=6, 32 KB at k=7), which fits in L1.
 //! Lookups per row: n_chunks (= ell/8), each load is `ell` contiguous bytes.
 
 use crate::ntt::AdditiveNttGf8;
@@ -93,8 +93,10 @@ impl InvNttTableByteSingleGf8 {
     /// `bytes` is `n_chunks` bytes (the LCH-coefficient bits of the row);
     /// `out` will be filled with the `ell` evaluations on Λ.
     ///
-    /// Dispatches: NEON on aarch64 / SSE2 on x86_64 when `ell ≥ 16` (true for
-    /// the protocol path k_skip=6 ⇒ ell=64), scalar otherwise.
+    /// Dispatches: NEON on aarch64 / SSE2 on x86_64 when `ell ≥ 16`, which
+    /// covers every supported arch at the protocol size (k_skip=6 ⇒ ell=64).
+    /// The scalar arm is reachable only at `ell < 16`, i.e. k=3, which occurs
+    /// only in tests.
     #[inline]
     pub fn apply(&self, bytes: &[u8], out: &mut [F8]) {
         #[cfg(target_arch = "aarch64")]
@@ -130,7 +132,7 @@ impl InvNttTableByteSingleGf8 {
         }
     }
 
-    /// NEON variant of `apply` — operates in 16-byte chunks.
+    /// NEON variant of `apply`, operating in 16-byte chunks.
     ///
     /// For each output chunk `c ∈ 0..ell/16`:
     ///   * `b = 0`: straight 16-byte copy from `row0[c]`
@@ -140,10 +142,15 @@ impl InvNttTableByteSingleGf8 {
     /// implement the `π_b(i') = i' ⊕ 8b` permutation that the §2.1 collapse
     /// requires.
     ///
+    /// Written out per arch rather than shared behind a lane trait: this is the
+    /// URM round-1 inner loop, and the trait version stopped inlining into
+    /// flock's `shift_reduce_inner_ab_gfni`, costing 2% of end-to-end proving.
+    ///
     /// # Safety
     /// Caller must be on aarch64 (statically true at the dispatch site). The
     /// method validates slice lengths.
     #[cfg(target_arch = "aarch64")]
+    #[inline]
     pub unsafe fn apply_neon_unchecked(&self, bytes: &[u8], out: &mut [F8]) {
         use core::arch::aarch64::*;
         assert_eq!(bytes.len(), self.n_chunks);
@@ -153,7 +160,7 @@ impl InvNttTableByteSingleGf8 {
         let out_ptr = out.as_mut_ptr() as *mut u8;
 
         unsafe {
-            // b = 0: identity permutation — straight copy from row 0.
+            // b = 0: identity permutation, a straight copy from row 0.
             let row0 = base.add(bytes[0] as usize * self.ell);
             for c in 0..n128 {
                 vst1q_u8(out_ptr.add(c * 16), vld1q_u8(row0.add(c * 16)));
@@ -184,7 +191,7 @@ impl InvNttTableByteSingleGf8 {
         }
     }
 
-    /// SSE2 variant of `apply` — the x86 twin of `apply_neon_unchecked`.
+    /// SSE2 variant of `apply`, the x86 twin of `apply_neon_unchecked`.
     /// Same 16-byte-chunk structure; the odd-`b` within-chunk half-swap is
     /// `_mm_shuffle_epi32::<0b01_00_11_10>` (swap the two 64-bit halves).
     ///
@@ -192,6 +199,7 @@ impl InvNttTableByteSingleGf8 {
     /// Caller must be on x86_64 (SSE2 is baseline there; statically true at
     /// the dispatch site). The method validates slice lengths.
     #[cfg(target_arch = "x86_64")]
+    #[inline]
     pub unsafe fn apply_sse2_unchecked(&self, bytes: &[u8], out: &mut [F8]) {
         use core::arch::x86_64::*;
         assert_eq!(bytes.len(), self.n_chunks);
@@ -201,7 +209,7 @@ impl InvNttTableByteSingleGf8 {
         let out_ptr = out.as_mut_ptr() as *mut u8;
 
         unsafe {
-            // b = 0: identity permutation — straight copy from row 0.
+            // b = 0: identity permutation, a straight copy from row 0.
             let row0 = base.add(bytes[0] as usize * self.ell);
             for c in 0..n128 {
                 _mm_storeu_si128(
@@ -239,7 +247,7 @@ impl InvNttTableByteSingleGf8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_rng::Rng;
+    use primitives::test_rng::Rng;
 
     /// Naive reference: unpack `bytes` into `ell` GF(2)-valued F8 elements
     /// (one per coefficient bit), apply inv_NTT_S, then fwd_NTT_Λ.
@@ -314,59 +322,26 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    /// The dispatched SIMD `apply` must reproduce `apply_scalar`. `ell ≥ 16` at
+    /// every k here, so this exercises the vector body: k=4 (n_chunks=2,
+    /// n128=1) through k=6 (n_chunks=8, n128=4, the headline protocol size).
     #[test]
-    fn apply_neon_matches_apply_scalar() {
-        // Cover both k=4 (n_chunks=2, n128=1) and k=6 (n_chunks=8, n128=4 —
-        // the headline protocol size).
+    fn apply_simd_matches_apply_scalar() {
         for &k in &[4usize, 5, 6] {
             let ntt_s = AdditiveNttGf8::new(k, F8::ZERO);
             let ntt_l = AdditiveNttGf8::new(k, F8(1u8 << k));
             let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-            let n_chunks = table.n_chunks;
-            let ell = table.ell;
 
             let mut rng = Rng::new(100 + k as u64);
             for _ in 0..32 {
-                let bytes: Vec<u8> = (0..n_chunks).map(|_| (rng.next_u64() & 0xff) as u8).collect();
-                let mut out_scalar = vec![F8::ZERO; ell];
-                let mut out_neon = vec![F8::ZERO; ell];
+                let bytes: Vec<u8> = (0..table.n_chunks).map(|_| (rng.next_u64() & 0xff) as u8).collect();
+                let mut out_scalar = vec![F8::ZERO; table.ell];
+                let mut out_simd = vec![F8::ZERO; table.ell];
                 table.apply_scalar(&bytes, &mut out_scalar);
-                // SAFETY: on aarch64.
-                unsafe { table.apply_neon_unchecked(&bytes, &mut out_neon) };
+                table.apply(&bytes, &mut out_simd);
                 assert_eq!(
-                    out_scalar, out_neon,
-                    "scalar/neon apply disagree at k={k}, bytes={:02x?}",
-                    bytes
-                );
-            }
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
-    fn apply_sse2_matches_apply_scalar() {
-        // Cover both k=4 (n_chunks=2, n128=1) and k=6 (n_chunks=8, n128=4 —
-        // the headline protocol size).
-        for &k in &[4usize, 5, 6] {
-            let ntt_s = AdditiveNttGf8::new(k, F8::ZERO);
-            let ntt_l = AdditiveNttGf8::new(k, F8(1u8 << k));
-            let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-            let n_chunks = table.n_chunks;
-            let ell = table.ell;
-
-            let mut rng = Rng::new(100 + k as u64);
-            for _ in 0..32 {
-                let bytes: Vec<u8> = (0..n_chunks).map(|_| (rng.next_u64() & 0xff) as u8).collect();
-                let mut out_scalar = vec![F8::ZERO; ell];
-                let mut out_sse2 = vec![F8::ZERO; ell];
-                table.apply_scalar(&bytes, &mut out_scalar);
-                // SAFETY: on x86_64.
-                unsafe { table.apply_sse2_unchecked(&bytes, &mut out_sse2) };
-                assert_eq!(
-                    out_scalar, out_sse2,
-                    "scalar/sse2 apply disagree at k={k}, bytes={:02x?}",
-                    bytes
+                    out_scalar, out_simd,
+                    "scalar/simd apply disagree at k={k}, bytes={bytes:02x?}"
                 );
             }
         }

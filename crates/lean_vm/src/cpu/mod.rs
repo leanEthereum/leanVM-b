@@ -50,7 +50,7 @@ const MAX_LOG_MEM: usize = 32;
 
 /// Each per-opcode table holds at most `2^MAX_LOG_ROWS` rows (executed
 /// instructions of that opcode). Together with `MAX_LOG_MEM` and the bytecode
-/// cap these are the instance caps from “Counts must not wrap” in `doc/body/05-memory-and-bytecode-lookups.tex`: at `ord(g) = 2^64−1`
+/// cap these are the instance caps from “Counts must not wrap” in `doc/body/06-memory-and-bytecode-lookups.tex`: at `ord(g) = 2^64−1`
 /// the memory-soundness and count-non-wrap counting arguments are theorems only
 /// for instances whose total read-flush count stays far below `2^64`, so the
 /// verifier rejects any announcement exceeding them before running a reduction.
@@ -61,17 +61,17 @@ const MAX_LOG_ROWS: usize = 32;
 const MAX_LOG_BYTECODE: usize = 32;
 
 /// A binding digest of the program bytecode (BLAKE3 of every instruction's
-/// canonical encoding — opcode, operands, and the DEREF store-mode), as two field
+/// canonical encoding: opcode, operands, and the DEREF store-mode), as two field
 /// elements. Seeded into the transcript alongside the public input, so EVERY
 /// challenge depends on the exact program.
 ///
 /// Without this the program's instruction content would enter verification only
 /// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
-/// `ζ` — a single point an attacker recovers from a finished proof. It could then
+/// `ζ`, a single point an attacker recovers from a finished proof. It could then
 /// craft a different program `P'` agreeing with `P`'s bytecode columns at that one
 /// `ζ` and re-present the same proof for `P'` (adaptive-statement forgery). Seeding
-/// `H(program)` before any challenge makes the whole statement — (program, public
-/// input) — bound up front, so a different program yields a different sponge from
+/// `H(program)` before any challenge makes the whole statement (program, public
+/// input) bound up front, so a different program yields a different sponge from
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
 fn program_digest(prog: &[Op]) -> [F64; 4] {
@@ -120,8 +120,8 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
     crate::vmhash::hash_slice(&words)
 }
 
-/// The Fiat–Shamir seed: ONE 32-byte digest, as two field words, committing
-/// to everything fixed about the proving environment — the flock circuit
+/// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
+/// to everything fixed about the proving environment: the flock circuit
 /// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
 /// and the program's bytecode digest. It leads every transcript, so all
 /// challenges depend on the circuit version and the program before anything
@@ -149,7 +149,7 @@ fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
 /// Announce the prover's per-table log-sizes (`log_mem` + all `row_counts`) by
 /// writing them onto the scalar stream (which binds them into the sponge and lets
 /// the verifier reconstruct the layout). The public statement (program + input) is
-/// not announced here — it seeds the transcript at construction (see
+/// not announced here; it seeds the transcript at construction (see
 /// [`transcript_seed`]). The boundary states and per-table log-sizes (`taus`) are
 /// derived (constants from the program, and `padlen(row_counts)`), so they need no
 /// separate binding.
@@ -185,8 +185,8 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
     // are theorems only when the announced instance keeps the total read-flush
     // count provably below `2^64 − 1`, so reject any announcement exceeding the
     // caps BEFORE running any reduction. (A table's row count is the number of
-    // times its opcode runs — unbounded by the bytecode size, since a small loop
-    // body runs many times — so it gets its own cap, not `bytecode_size`.)
+    // times its opcode runs, unbounded by the bytecode size since a small loop
+    // body runs many times, so it gets its own cap, not `bytecode_size`.)
     let bytecode_size = prog.prog.len();
     if !bytecode_size.is_power_of_two()
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
@@ -207,18 +207,18 @@ pub struct Program {
     pub fp0: u32,
     /// A binding digest of `prog` ([`program_digest`]), computed once at assembly
     /// and seeded into the transcript so every challenge depends on the exact
-    /// program. Trusted to match `prog` — always set by [`Program::assemble`] from
+    /// program. Trusted to match `prog`: always set by [`Program::assemble`] from
     /// the bytecode, so a `Program` value cannot carry a digest inconsistent with
     /// its own `prog`.
     pub(crate) digest: [F64; 4],
     /// Prover-side frame/buffer allocation hints (keyed by global pc) and the
-    /// size of `main`'s frame — the nondeterminism [`Program::execute`] needs to
+    /// size of `main`'s frame: the nondeterminism [`Program::execute`] needs to
     /// run the program. Public verification (§ `verify`) ignores them.
     pub(crate) hints: HashMap<u32, Vec<hints::RHint>>,
     pub(crate) main_frame: u32,
     /// Named prover witness streams for the program's `hint_witness` calls
     /// ([`Program::set_witness`]): a stream is a sequence of *entries* (one
-    /// slice of values per `hint_witness` call — the same symbol may be
+    /// slice of values per `hint_witness` call; the same symbol may be
     /// hinted many times); each call pops the next entry, whose length must
     /// match its destination. Prover-side only; verification ignores them.
     pub(crate) witness: HashMap<String, Vec<Vec<F192>>>,
@@ -259,15 +259,14 @@ impl Program {
     pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F192>>) {
         self.witness.insert(name.into(), entries);
     }
-}
 
-impl Program {
     /// Assemble a program directly from a fixed bytecode vector, starting at
     /// `(pc, fp) = (0, 0)` with no allocation hints. Suitable for straight-line
     /// programs that never change the frame pointer and touch only the first
     /// `main_frame` memory cells (so the prover needs no nondeterministic frame
     /// allocation). `prog.len()` must be a power of two with a never-executed
-    /// sentinel in its last slot — the run halts on reaching `g^{len-1}` (§state).
+    /// sentinel in its last slot: the run halts on reaching `g^{len-1}` (§state).
+    #[cfg(test)]
     pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
         Self::assemble(prog, 0, 0, HashMap::new(), main_frame)
     }
@@ -291,9 +290,13 @@ pub enum Error {
 }
 
 /// Per side, which table (if any) owns each bus block, as `(table, column base)`.
+type BlockOwners = [Vec<Option<(usize, usize)>>; 3];
+/// Each table's `(column base, committed column count)` in the global schema.
+type TableSpans = Vec<(usize, usize)>;
+
 /// Blocks sourced from a table's height belong to it; the boundary, memory and
 /// bytecode blocks belong to none and keep their own column claims at ζ.
-fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> [Vec<Option<(usize, usize)>>; 3] {
+fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> BlockOwners {
     let sch = schema();
     let src = block_kappa_sources(log_bytecode);
     let mut it = src
@@ -302,10 +305,20 @@ fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> [Vec<Option<(usize, u
     sides.map(|n| it.by_ref().take(n).collect())
 }
 
-/// Each table's `(column base, committed column count)`. The batched zerocheck now
-/// carries every committed column of a table, because its bus forms reference the
-/// flushed ones and its constraint the rest.
-fn table_spans() -> Vec<(usize, usize)> {
+/// The bus's public wiring: per side which table owns each block, and each table's
+/// column span. Derived from the program and the announced layout alone, so prover
+/// and verifier build it identically.
+fn bus_wiring(program: &Program, l: &Layout) -> (BlockOwners, TableSpans) {
+    let owners = block_owners(
+        crate::log2_strict_usize(program.prog.len()),
+        [l.push.len(), l.pull.len(), l.count.len()],
+    );
+    (owners, table_spans())
+}
+
+/// The batched zerocheck carries every committed column of a table, because its bus
+/// forms reference the flushed ones and its constraint the rest.
+fn table_spans() -> TableSpans {
     let sch = schema();
     tables::tables()
         .iter()
@@ -317,7 +330,7 @@ fn table_spans() -> Vec<(usize, usize)> {
 /// The per-table inputs to the batched zerocheck (§constraints), in schema order.
 /// Prover and verifier both call this, so their column order and constraint
 /// closures agree by construction.
-/// The airs carry every committed column of their table, so `Cols` indexes the
+/// The airs carry every committed column of their table, so a constraint indexes the
 /// value array directly and each table's three bus forms can be
 /// evaluated on the same values. The identities take the air's own `η`-range; the
 /// three forms take the shared powers at [`eta_form_base`].
@@ -337,7 +350,7 @@ fn airs<'a>(
                 n_cols: table.n_committed_columns(),
                 n_constraints: table.n_constraints(),
                 eval: Box::new(move |p, vals| {
-                    let air = table.eval_constraint(p, &tables::Cols::new(vals));
+                    let air = table.eval_constraint(p, vals);
                     bus.iter()
                         .zip(form_pows)
                         .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
@@ -397,7 +410,7 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
 
 /// If `col` is a BLAKE3 **value** column (global index), its `q_pkd` packed slot.
 /// These columns are virtual (uncommitted): their memory-bus evaluation claims
-/// are re-routed to `q_pkd` slot evaluations, which is the whole binding — the
+/// are re-routed to `q_pkd` slot evaluations, which is the whole binding: the
 /// bus-tied value IS the proven `q_pkd` word, no separate check needed.
 fn blake3_value_slot(col: usize) -> Option<usize> {
     let base = schema().base[tables::BLAKE3_TABLE];
@@ -410,7 +423,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
 /// `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
-/// committed witness size — the sum of the column lengths, i.e. the real data
+/// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
     pub cycles: usize,
@@ -466,7 +479,7 @@ impl Stats {
 /// then emit everything the verifier needs through the returned [`Proof`]
 /// (scalar stream + PCS commitment / opening hints). Returns the proof and the
 /// run [`Stats`]. `log_inv_rate` selects the PCS rate and is announced in the
-/// Fiat–Shamir transcript before the commitment.
+/// Fiat-Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
     ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
@@ -476,27 +489,21 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // The returned `Proof` is system-allocated (`ps.into_proof()` builds `Vec`s),
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
-    let prof = std::env::var("LEANVM_PROFILE").is_ok();
-    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
-    let t = std::time::Instant::now();
-    let exec = tracing::info_span!("Execute program").in_scope(|| program.execute(public_input));
-    if prof {
-        eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
-    }
+    let exec = crate::stage!("Execute program", || program.execute(public_input));
     // The BLAKE3 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
-    // depends only on the compression count (the circuit *shape*), not the witness
-    // — but it is otherwise built synchronously inside the final reduction, adding
+    // depends only on the compression count (the circuit *shape*), not the witness,
+    // but it is otherwise built synchronously inside the final reduction, adding
     // that latency serially with nothing overlapping it. Now that `execute` has
     // told us the count, build it on a background thread: it constructs
     // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
     // lands in the shared setup cache, so the reduction's `setup_for` is a cache
-    // hit. Pure warm-up — the result is fetched from the cache, nothing here joins
+    // hit. Pure warm-up: the result is fetched from the cache, nothing here joins
     // the handle. (A no-BLAKE3 program still warms the size-1 padding shape.)
     let n_b3_warm = exec.trace.blake3.len().max(1);
     std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
-    let mut w = tracing::info_span!("Build witness").in_scope(|| program.build(&exec));
-    let counts = w.row_counts;
+    let mut w = crate::stage!("Build witness", || program.build(&exec));
+    let counts = w.layout.row_counts;
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
     let committed_size: usize = w
@@ -511,34 +518,22 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
-    announce_public(&mut ps, w.log_mem, w.row_counts, log_inv_rate);
-    let t = std::time::Instant::now();
-    let committed = tracing::info_span!("Commit").in_scope(|| pcs::commit(&mut ps, &w.q, log_inv_rate));
-    if prof {
-        eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
-    }
+    announce_public(&mut ps, w.log_mem, w.layout.row_counts, log_inv_rate);
+    let committed = crate::stage!("Commit", || { pcs::commit(&mut ps, &w.q, log_inv_rate) });
 
-    // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is ALWAYS a column in
-    // `w.q` (≥1 instance — a program with no BLAKE3 carries one padding instance,
+    // BLAKE3 to flock (§blake3_flock), single PCS: q_pkd is ALWAYS a column in
+    // `w.q` (≥1 instance, a program with no BLAKE3 carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-BLAKE3 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
     // Ligerito over this commitment (below). The input/output words bind via the
     // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
-    let t = std::time::Instant::now();
     let l = &w.layout;
-    let owners = block_owners(
-        crate::log2_strict_usize(program.prog.len()),
-        [l.push.len(), l.pull.len(), l.count.len()],
-    );
-    let spans = table_spans();
-    let bus = tracing::info_span!("Prove bus")
-        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps));
-    if prof {
-        eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
-    }
-    let t = std::time::Instant::now();
-    let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
+    let (owners, spans) = bus_wiring(program, l);
+    let bus = crate::stage!("Prove bus", || {
+        leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps)
+    });
+    let table_claims = crate::stage!("Prove constraints", || {
         // One sumcheck for all seven tables (§constraints).
         // MOVE the columns out: the batch folds them destructively and nothing
         // reads them again (`prove_balance` is done, and `QPKD < N_SHARED` is never
@@ -561,60 +556,40 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             &mut ps,
         )
     });
-    if prof {
-        eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
-    }
 
-    let mut claims = bus.claims;
-    claims.extend(constraint_claims(&table_claims));
     // The PI binding transmits the low/high memory-limb evaluations. The full
     // F192 public-input interpolation then determines the top-limb evaluation.
     let r_pi = ps.sample();
-    let pi_lo = primitives::multilinear::interp_k(F64(w.layout.pi[0].c0), F64(w.layout.pi[1].c0), r_pi);
-    let pi_hi = primitives::multilinear::interp_k(F64(w.layout.pi[0].c1), F64(w.layout.pi[1].c1), r_pi);
+    let pi_lo = primitives::multilinear::interp_k(F64(l.pi[0].c0), F64(l.pi[1].c0), r_pi);
+    let pi_hi = primitives::multilinear::interp_k(F64(l.pi[0].c1), F64(l.pi[1].c1), r_pi);
     ps.add_scalar(pi_lo);
     ps.add_scalar(pi_hi);
-    claims.extend(bind_pi_claim(r_pi, &w.layout.placements, &w.layout.pi, pi_lo, pi_hi));
     // The input/output words bind via the memory bus (value columns are virtual and
     // route to q_pkd, see `slot_claims`); cv/counter/blen/flags are constants baked
     // into flock's per-block matrices, so no pin claims are needed.
-    let slots = slot_claims(&w.layout, &claims);
+    let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_lo, pi_hi);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
     // layouts retained from the fused q_pkd build pass; it returns the `(ab, c)`
     // validity claims on the committed `q_pkd`, discharged by the PCS below in the
     // SAME Ligerito as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
-    let t = std::time::Instant::now();
     let flock_reduction = w
         .flock_reduction
         .take()
         .expect("prepared flock reduction witness is present");
-    let reduced = tracing::info_span!("Flock reduction").in_scope(|| flock_reduction.prove(&mut ps));
+    let reduced = crate::stage!("Flock reduction", || { flock_reduction.prove(&mut ps) });
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
-    if prof {
-        eprintln!("[prove]   reduction : {:>7.2} ms", ms(t));
-    }
-    let t = std::time::Instant::now();
     let offset = w.layout.placements[QPKD].offset;
-    let ring = tracing::info_span!("Package ring switch")
-        .in_scope(|| crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced));
-    if prof {
-        eprintln!("[prove]   ring pkg  : {:>7.2} ms", ms(t));
-    }
-    let t = std::time::Instant::now();
-    let mixed_open = tracing::info_span!("PCS open").in_scope(|| pcs::open(&mut ps, &committed, &w.q, &slots, &ring));
-    if prof {
-        eprintln!("[prove]   stack open: {:>7.2} ms", ms(t));
-    }
+    let ring = crate::stage!("Package ring switch", || {
+        crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced)
+    });
+    let mixed_open = crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     // flock's scalar sub-proof already rode the shared stream (add_scalar at its
     // protocol points); only the Merkle-bearing stacked opening needs the hint
     // channel.
     ps.hint_opening(mixed_open);
-    if prof {
-        eprintln!("[prove] open        : {:>7.2} ms", ms(t));
-    }
     (
         ps.into_proof(),
         Stats {
@@ -625,6 +600,24 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             mem_used: exec.mem_used,
         },
     )
+}
+
+/// Everything the PCS has to open, in the ORDER that feeds the batch's weights:
+/// the bus's framework claims, then the zerocheck's per-table column claims, then
+/// the three public-input limb claims, each located in its committed slot. Both
+/// sides assemble it here, so a claim can never shift by one element.
+fn finish_claims(
+    l: &Layout,
+    bus_claims: Vec<ColumnClaim>,
+    table_claims: &[constraints::Claims],
+    r_pi: F192,
+    pi_lo: F192,
+    pi_hi: F192,
+) -> Vec<pcs::SlotClaim> {
+    let mut claims = bus_claims;
+    claims.extend(constraint_claims(table_claims));
+    claims.extend(bind_pi_claim(r_pi, &l.placements, &l.pi, pi_lo, pi_hi));
+    slot_claims(l, &claims)
 }
 
 /// The public-input binding (§8): the committed `MEM` at `(r, 0,…,0)` must equal
@@ -664,19 +657,16 @@ fn bind_pi_claim(
 }
 
 /// Everything a recursion harness needs from an accepting verify run, named
-/// and typed: the deferred bytecode claims, the count-channel root, the sponge
-/// states at the phase boundaries (guest debug checkpoints), flock's reduction
-/// claims, and the stacked-opening summary (ring-switch challenges + Ligerito
-/// fold/query data). The sub-proof scalars themselves live on `proof.stream`
-/// at fixed offsets from its tail. Ordinary callers just `?`-discard it.
+/// and typed: the deferred bytecode claims, the count-channel root, flock's
+/// reduction claims, and the stacked-opening summary (ring-switch challenges +
+/// Ligerito fold/query data). The sub-proof scalars themselves live on
+/// `proof.stream` at fixed offsets from its tail. Ordinary callers just
+/// `?`-discard it.
 pub struct VerifySummary {
     /// Transcript-bound inverse-rate logarithm used by this proof's PCS.
     pub log_inv_rate: usize,
     pub bytecode_claims: Vec<leaf::BytecodeClaim>,
     pub count_root: F192,
-    /// Sponge states after: the bus, the zerochecks, the PI sample, and the
-    /// flock reduction.
-    pub checkpoints: [[F64; 4]; 4],
     pub zc_claim: flock::zerocheck::ZerocheckClaim,
     pub lc_claim: flock::lincheck::LincheckClaim,
     pub opening: pcs::StackedOpeningSummary,
@@ -685,7 +675,7 @@ pub struct VerifySummary {
 /// Verify a proof against the public statement (program + public input): replay
 /// the transcript, reconstruct the public layout from the announced sizes, read
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
-/// was fully consumed. Takes only public inputs — never the prover's witness.
+/// was fully consumed. Takes only public inputs, never the prover's witness.
 #[tracing::instrument(name = "Verify", skip_all)]
 pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, Error> {
     let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
@@ -701,13 +691,8 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let owners = block_owners(
-        crate::log2_strict_usize(program.prog.len()),
-        [l.push.len(), l.pull.len(), l.count.len()],
-    );
-    let spans = table_spans();
+    let (owners, spans) = bus_wiring(program, &l);
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &owners, &spans, &mut vs).map_err(Error::Bus)?;
-    let checkpoint_bus = vs.sponge_state();
 
     let zc_eta = vs.sample();
     let form_pows = eta_form_pows(zc_eta);
@@ -727,25 +712,19 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
         &mut vs,
     )
     .map_err(Error::Constraint)?;
-    let checkpoint_zerochecks = vs.sponge_state();
 
-    let mut claims = bus.claims;
-    claims.extend(constraint_claims(&table_claims));
     let r_pi = vs.sample();
     let pi_lo = vs.next_scalar().map_err(Error::Transcript)?;
     let pi_hi = vs.next_scalar().map_err(Error::Transcript)?;
-    claims.extend(bind_pi_claim(r_pi, &l.placements, &l.pi, pi_lo, pi_hi));
-    let checkpoint_pi = vs.sponge_state();
-    let slots = slot_claims(&l, &claims);
+    let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_lo, pi_hi);
 
     // Replay flock's reduction straight off the shared stream (each scalar bound
     // as it is read) to recover its `(ab, c)` validity claims on q_pkd, then
     // verify them alongside every point claim in the ONE Ligerito opening
-    // (mirroring `prove`). `n_blocks = max(n_b3, 1)` — always ≥ 1 instance.
+    // (mirroring `prove`). `n_blocks = max(n_b3, 1)`, always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
-    let replay = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &mut vs).map_err(Error::Blake3)?;
-    let checkpoint_flock = vs.sponge_state();
+    let replay = crate::blake3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake3)?;
     let open = vs.next_opening().map_err(Error::Transcript)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
     let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, log_inv_rate, &root).map_err(Error::Open)?;
@@ -753,7 +732,6 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
         count_root: bus.count_root,
-        checkpoints: [checkpoint_bus, checkpoint_zerochecks, checkpoint_pi, checkpoint_flock],
         zc_claim: replay.zc_claim,
         lc_claim: replay.lc_claim,
         opening,
@@ -764,18 +742,18 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in
 /// the slot at `placements[c].offset`, with the claim's point as the low point.
 ///
-/// BLAKE3 value columns are virtual — they have no committed placement. A bus
+/// BLAKE3 value columns are virtual: they have no committed placement. A bus
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
 /// to the equal `q_pkd` slot evaluation: an ordinary claim on the committed
 /// `QPKD` column at the point freezing the low 8 coords to the slot's bits and
-/// the high coords to `r`. No downstream special-casing — it folds into the
+/// the high coords to `r`. No downstream special-casing: it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
     claims
         .iter()
         .map(|c| {
             // A virtual BLAKE3 value column (always virtual): its bus claim at
-            // instance point `c.point` is the q_pkd slot value — a boolean-selector
+            // instance point `c.point` is the q_pkd slot value, a boolean-selector
             // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(8+n_log)
             // dense QPKD block).
             if let Some(slot) = blake3_value_slot(c.col) {
@@ -821,7 +799,7 @@ mod tests {
     }
 
     /// A hand-built straight-line program with one BLAKE3 row: set up the two
-    /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5 — one 128-bit word per
+    /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5, one 128-bit word per
     /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
     /// there. The flock validity sub-proof plus the memory / state / bytecode bus
@@ -980,7 +958,7 @@ mod tests {
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
         // The stacked opening is the proof's one hint; tamper a sumcheck
-        // round message (the inner-product transcript) — must be rejected.
+        // round message (the inner-product transcript); must be rejected.
         let lig = proof.openings.last_mut().expect("stacked Ligerito opening");
         lig.ligerito.sumcheck_transcript[0].u_0 += F192::ONE;
         assert!(
@@ -991,7 +969,7 @@ mod tests {
 
     /// flock's REDUCTION sub-proof (zerocheck / lincheck / ring-switch) rides the
     /// `stream` as raw transport, but its VALUES still re-enter the sponge through
-    /// the verifier's reduction/opening replay — so tampering a transport word
+    /// the verifier's reduction/opening replay, so tampering a transport word
     /// diverges the recovered `(ab, c)` claims (or breaks decoding) and
     /// verification must reject. (Complements `blake3_rejects_tampered_validity`,
     /// which tampers the Ligerito opening.)
@@ -1006,7 +984,7 @@ mod tests {
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
         // The reduction is serialized onto the stream tail (after the last bound
-        // scalar). Flip a full transport word there — the second-to-last word is
+        // scalar). Flip a full transport word there: the second-to-last word is
         // always meaningful bytes (only the final word may be zero-padded).
         let mut tampered = proof.clone();
         let n = tampered.stream.len();
@@ -1020,7 +998,7 @@ mod tests {
     /// A program with no BLAKE3 instructions still proves and verifies through the
     /// unified path: `q_pkd` carries a single padding instance and the flock
     /// sub-proof (over that padding) rides the shared channels like any BLAKE3
-    /// program — there is no separate no-BLAKE3 code path.
+    /// program, and there is no separate no-BLAKE3 code path.
     #[test]
     fn non_blake3_program_verifies() {
         let prog = vec![
@@ -1060,7 +1038,7 @@ mod tests {
 
     /// A proof is bound to its exact program: presenting it against a *different*
     /// program (same sizes/layout, one instruction constant changed) must be
-    /// rejected — the program digest seeds the transcript, so a modified program
+    /// rejected: the program digest seeds the transcript, so a modified program
     /// diverges the sponge from the first squeeze. Guards the adaptive-statement
     /// forgery the bytecode-bus single-point MLE check does not, on its own, prevent.
     #[test]
@@ -1092,7 +1070,7 @@ mod tests {
 
     /// Out-of-process verification: a BLAKE3 proof (whose flock sub-proof rides
     /// the shared `stream` + `openings`, no side field) serializes to bytes,
-    /// deserializes on the other side, and verifies — everything travels in the two
+    /// deserializes on the other side, and verifies: everything travels in the two
     /// channels, nothing out of band. A flipped encoded byte must not verify.
     #[test]
     fn proof_roundtrips_through_bytes_and_verifies() {

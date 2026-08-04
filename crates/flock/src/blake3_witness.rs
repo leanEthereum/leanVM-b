@@ -2,9 +2,7 @@
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
 //! (only `blake3` in this vendored subset).
 
-use std::sync::OnceLock;
-
-use crate::r1cs::{BlockR1cs, SparseBinaryMatrix, WitnessLayout};
+use crate::r1cs::SparseBinaryMatrix;
 use primitives::bits::transpose_8_u64s_to_64_bytes;
 use primitives::field::F192;
 use zk_alloc::ArenaVec;
@@ -88,10 +86,6 @@ pub(crate) fn add_carry_parts(x: u32, y: u32) -> (u32, u32, u32, u32) {
     (sum, left, right, carry_aux)
 }
 
-// ---------------------------------------------------------------------------
-// Shared R1CS helpers: identity matrix, BlockR1cs builder.
-// ---------------------------------------------------------------------------
-
 /// K × K identity sparse matrix.
 pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
     SparseBinaryMatrix {
@@ -101,53 +95,8 @@ pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
     }
 }
 
-/// Build a `BlockR1cs` with caller-supplied A_0, B_0 sparse matrices and
-/// C_0 = I_K. Used by BLAKE3 (it materializes real A_0/B_0 via
-/// `build_matrices`).
-///
-/// `useful_bits ≤ 2^k_log` declares how many rows of each block carry real
-/// data; the remainder is zero padding (URM can skip work over those).
-///
-/// `const_pin` is the column of the constant-one wire to pin to 1 across all
-/// blocks (closing the all-zero soundness gap — see `lincheck's `LincheckCircuit::const_pin_col``),
-/// or `None`. It is propagated into the CSC / sparse `LincheckCircuit` this
-/// R1CS builds. Encoders that set it MUST fill padding blocks with valid
-/// (constant = 1) computations.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_block_r1cs_with_matrices(
-    n_blocks_log: usize,
-    k_log: usize,
-    k_skip: usize,
-    useful_bits: usize,
-    a_0: SparseBinaryMatrix,
-    b_0: SparseBinaryMatrix,
-    const_pin: Option<usize>,
-) -> BlockR1cs {
-    assert!(n_blocks_log >= 3, "lincheck needs n_outer ≥ 8 — pick n_blocks_log ≥ 3");
-    let k = 1usize << k_log;
-    assert!(useful_bits <= k, "useful_bits ({useful_bits}) must be ≤ 2^k_log ({k})");
-    BlockR1cs {
-        m: k_log + n_blocks_log,
-        k_log,
-        k_skip,
-        useful_bits,
-        a_0,
-        b_0,
-        c_0: identity(k),
-        layout: WitnessLayout::RowMajor,
-        const_pin,
-        csc_cache: OnceLock::new(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Generic witness packing driver.
-//
-// All three hash encoders (keccak, blake3, sha2) had identical chunked
-// parallel iteration + bit-transpose-to-stripe boilerplate around their
-// per-block witness builder. This driver captures that shape; each hash
-// passes its `per_block` closure that fills 3 length-`U64_PER_BLOCK`
-// buffers (z, a, b) from one input.
 // ---------------------------------------------------------------------------
 
 /// Drive the parallel chunked witness build for `n_blocks` instances padded
@@ -155,14 +104,14 @@ pub(crate) fn build_block_r1cs_with_matrices(
 /// F192 form (z/a/b) and byte-stripe form (z_lincheck).
 ///
 /// `per_block(initial, z_u64, a_u64, b_u64)` populates one block's worth of
-/// `(z, a, b)` data — 3 zero-initialized `u64`-buffers of length `K / 64`.
+/// `(z, a, b)` data: 3 zero-initialized `u64`-buffers of length `K / 64`.
 /// `K` is derived from `k_log`. `initial_states.len()` may be less than
 /// `2^n_blocks_log`.
 ///
 /// `padding` controls what fills the trailing `2^n_blocks_log −
 /// initial_states.len()` slots:
-/// - `None` — leave them all-zero (trivial constraint satisfaction).
-/// - `Some(p)` — build a real block from `p` in every padding slot. Encoders
+/// - `None`: leave them all-zero (trivial constraint satisfaction).
+/// - `Some(p)`: build a real block from `p` in every padding slot. Encoders
 ///   that pin a constant wire need this so the constant column is all-ones
 ///   across *every* batched instance (see `lincheck's `LincheckCircuit::const_pin_col``).
 pub(crate) fn drive_witness_packed_and_lincheck<S: Sync, F>(
@@ -195,9 +144,9 @@ where
     // thread count instead of running serially on the main thread before the
     // parallel build. The per-block builders OR 1-bits into pre-zeroed words,
     // so each group must be zeroed before its `per_block` calls. `z_lincheck`
-    // stays `vec![0u8; _]` (lazy `alloc_zeroed`/mmap — no eager memset).
+    // stays `vec![0u8; _]` (lazy `alloc_zeroed`/mmap, no eager memset).
     // SAFETY (x3): the parallel loop below writes every element of z/a/b before
-    // any is read — each group memsets its own slice, then ORs bits into it.
+    // any is read: each group memsets its own slice, then ORs bits into it.
     let mut z = unsafe { ArenaVec::<F192>::uninitialized(total_packed) };
     let mut a = unsafe { ArenaVec::<F192>::uninitialized(total_packed) };
     let mut b = unsafe { ArenaVec::<F192>::uninitialized(total_packed) };
@@ -218,57 +167,55 @@ where
         // all four tables stay borrowed for the whole dispatch.
         let (z_grp, a_grp, b_grp, stripe) =
             unsafe { (z_chunks.get(g), a_chunks.get(g), b_chunks.get(g), stripe_chunks.get(g)) };
-        {
-            // The circuit witness remains 128-bit packed even though protocol
-            // scalars are F192. Build contiguous u64 pairs, then embed each
-            // pair as (lo, hi, 0); F192's 24-byte stride cannot be viewed as a
-            // contiguous u64-pair array.
-            let mut z_words = vec![0u64; 8 * u64_per_block];
-            let mut a_words = vec![0u64; 8 * u64_per_block];
-            let mut b_words = vec![0u64; 8 * u64_per_block];
-            for k_in in 0..8 {
-                let global_idx = 8 * g + k_in;
-                let init: &S = if global_idx < n_blocks {
-                    &initial_states[global_idx]
-                } else if let Some(p) = padding {
-                    // Fill the padding slot with a real block so its constant
-                    // wire is set (see `padding` docs above).
-                    p
-                } else {
-                    // No padding block — leave this slot zero.
-                    continue;
-                };
-                let range = k_in * u64_per_block..(k_in + 1) * u64_per_block;
-                let z_u64 = &mut z_words[range.clone()];
-                let a_u64 = &mut a_words[range.clone()];
-                let b_u64 = &mut b_words[range];
-                per_block(init, z_u64, a_u64, b_u64);
-            }
+        // The circuit witness remains 128-bit packed even though protocol
+        // scalars are F192. Build contiguous u64 pairs, then embed each
+        // pair as (lo, hi, 0); F192's 24-byte stride cannot be viewed as a
+        // contiguous u64-pair array.
+        let mut z_words = vec![0u64; 8 * u64_per_block];
+        let mut a_words = vec![0u64; 8 * u64_per_block];
+        let mut b_words = vec![0u64; 8 * u64_per_block];
+        for k_in in 0..8 {
+            let global_idx = 8 * g + k_in;
+            let init: &S = if global_idx < n_blocks {
+                &initial_states[global_idx]
+            } else if let Some(p) = padding {
+                // Fill the padding slot with a real block so its constant
+                // wire is set (see `padding` docs above).
+                p
+            } else {
+                // No padding block, leave this slot zero.
+                continue;
+            };
+            let range = k_in * u64_per_block..(k_in + 1) * u64_per_block;
+            let z_u64 = &mut z_words[range.clone()];
+            let a_u64 = &mut a_words[range.clone()];
+            let b_u64 = &mut b_words[range];
+            per_block(init, z_u64, a_u64, b_u64);
+        }
 
-            for (dst, words) in z_grp.iter_mut().zip(z_words.chunks_exact(2)) {
-                *dst = F192::new(words[0], words[1], 0);
-            }
-            for (dst, words) in a_grp.iter_mut().zip(a_words.chunks_exact(2)) {
-                *dst = F192::new(words[0], words[1], 0);
-            }
-            for (dst, words) in b_grp.iter_mut().zip(b_words.chunks_exact(2)) {
-                *dst = F192::new(words[0], words[1], 0);
-            }
+        for (dst, words) in z_grp.iter_mut().zip(z_words.chunks_exact(2)) {
+            *dst = F192::new(words[0], words[1], 0);
+        }
+        for (dst, words) in a_grp.iter_mut().zip(a_words.chunks_exact(2)) {
+            *dst = F192::new(words[0], words[1], 0);
+        }
+        for (dst, words) in b_grp.iter_mut().zip(b_words.chunks_exact(2)) {
+            *dst = F192::new(words[0], words[1], 0);
+        }
 
-            // Bit-transpose 8 z chunks into the lincheck stripe.
-            for i in 0..u64_per_block {
-                let lanes: [u64; 8] = [
-                    z_words[i],
-                    z_words[u64_per_block + i],
-                    z_words[2 * u64_per_block + i],
-                    z_words[3 * u64_per_block + i],
-                    z_words[4 * u64_per_block + i],
-                    z_words[5 * u64_per_block + i],
-                    z_words[6 * u64_per_block + i],
-                    z_words[7 * u64_per_block + i],
-                ];
-                transpose_8_u64s_to_64_bytes(&lanes, &mut stripe[i * 64..i * 64 + 64]);
-            }
+        // Bit-transpose 8 z chunks into the lincheck stripe.
+        for i in 0..u64_per_block {
+            let lanes: [u64; 8] = [
+                z_words[i],
+                z_words[u64_per_block + i],
+                z_words[2 * u64_per_block + i],
+                z_words[3 * u64_per_block + i],
+                z_words[4 * u64_per_block + i],
+                z_words[5 * u64_per_block + i],
+                z_words[6 * u64_per_block + i],
+                z_words[7 * u64_per_block + i],
+            ];
+            transpose_8_u64s_to_64_bytes(&lanes, &mut stripe[i * 64..i * 64 + 64]);
         }
     });
 

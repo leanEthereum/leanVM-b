@@ -3,44 +3,20 @@
 use super::*;
 use std::collections::BTreeMap;
 
-/// Parse Python-like source into an [`Ast`]. Supports `def`, immutable
-/// assignment (`x = …`, `a, b = f(…)`), `assert a == b`, `for i in
-/// mul_range(GEN**lo, GEN**hi):`, `return`, calls, and `+`/`*` arithmetic over
-/// integer literals and variables. Top level also accepts **global constant**
-/// declarations `NAME = <const-expr>` (see [`parse_with_replacements`]).
-///
-/// A DSL source is a valid Python file: `import snark_lib` / `from snark_lib
-/// import *` pulls the stub definitions (`crates/lean_compiler/snark_lib.py`) that
-/// make editors and linters happy, and is skipped here. Importing anything
-/// else is an error — the compiler does not include other source files.
+/// Parse zkDSL source (the Python-shaped surface syntax of `zkDSL.md`) into an
+/// [`Ast`]. The `snark_lib` import is skipped; any other import is an error,
+/// since a program is a single file.
 pub fn parse(src: &str) -> Result<Ast, String> {
     parse_with_replacements(src, &BTreeMap::new())
 }
 
-/// Like [`parse`], but first applies compile-time **placeholder** replacements
-/// (identifier-level text substitution — see `apply_replacements`). This is
-/// how a host injects sizes/flags into a program without editing it: write a
-/// placeholder identifier in source and map it to a value at compile time. The
-/// idiom is a placeholder feeding a named constant:
-///
-/// ```text
-/// V = V_PLACEHOLDER          # with replacement  "V_PLACEHOLDER" ↦ "128"
-/// def main():
-///     buf = StackBuf(V)      # V is now the constant 128 everywhere
-/// ```
-///
-/// **Global constants.** Between the (optional) `snark_lib` import and the
-/// `def`s, the top level accepts constant declarations `NAME = <int-expr>`,
-/// where `<int-expr>` is a compile-time **integer** — decimal literals combined
-/// with `+ - * / **` and parentheses (ordinary integer arithmetic, not runtime
-/// field arithmetic), and references to *earlier* constants. So a
-/// derived size like `N_TWEAKS = 2 + (W - 1) * V + LOG_LIFETIME` comes out
-/// right. Each constant is evaluated and substituted, as a single decimal
-/// literal, everywhere its name appears in the functions below — so a constant
-/// is usable anywhere a literal is: arithmetic operand, `StackBuf` / `HeapBuf`
-/// size, stack index, slice bound, `**` exponent, loop bound, range-check
-/// bound, `Const` argument. Constants are resolved before variables, so a
-/// constant name is **reserved**: do not reuse it as a parameter or local name.
+/// Like [`parse`], but first substitutes compile-time **placeholders**: an
+/// identifier that is a key of `replacements` becomes its value everywhere it
+/// appears, which is how a host bakes sizes and flags into a program without
+/// editing it. The top level then peels off the **global constants**, each
+/// evaluated as a compile-time integer (or an `f192` literal / constant array)
+/// and substituted into the `def`s below. See the "Placeholders" and "Global
+/// constants" sections of `zkDSL.md`.
 pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String>) -> Result<Ast, String> {
     let src = apply_replacements(src, replacements);
     // (indent, content) for each significant line.
@@ -66,7 +42,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // Peel off the leading top-level constant declarations (before any `def`),
     // each evaluated to a field value and rendered as a single decimal literal.
     // Building a `name → literal` map lets later constants and the functions
-    // reference them by plain text substitution — so a constant works even in
+    // reference them by plain text substitution, so a constant works even in
     // positions that demand a parse-time literal (`StackBuf`, `**`, `assert log
     // _ < _`).
     let mut consts: BTreeMap<String, String> = BTreeMap::new();
@@ -100,7 +76,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
         let rhs = rhs.trim();
         if let Some(inner) = rhs.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             // A constant array `NAME = [a, b, c]`: each element a compile-time
-            // integer / field value. Not textually substituted — carried to
+            // integer / field value. Not textually substituted, but carried to
             // lowering, indexed/measured there.
             let mut elems = Vec::new();
             for part in split_top(inner, ',') {
@@ -142,7 +118,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     while p.i < p.lines.len() {
         funcs.push(p.func()?);
     }
-    infer_return_shapes(&mut funcs);
+    infer_return_shapes(&mut funcs)?;
     Ok(Ast { funcs, const_arrays })
 }
 
@@ -151,16 +127,17 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
 /// one-cell pointer: its allocation hint already ran in the creating function,
 /// so no allocation metadata needs to cross the call. Iterate to a fixed point
 /// so a wrapper may return a stack buffer produced by a later function.
-fn infer_return_shapes(funcs: &mut [Func]) {
+fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
     fn expr_shape(
         e: &Expr,
         locals: &HashMap<String, ReturnShape>,
         known: &HashMap<String, Vec<ReturnShape>>,
-    ) -> ReturnShape {
-        match e {
+    ) -> Result<ReturnShape, String> {
+        let fits = |n: u64| u32::try_from(n).map_err(|_| format!("StackBuf size {n} does not fit in u32"));
+        Ok(match e {
             Expr::Var(v) => locals.get(v).copied().unwrap_or(ReturnShape::Scalar),
-            Expr::StackBuf(n) => ReturnShape::StackBuf((*n).try_into().expect("StackBuf size does not fit in u32")),
-            Expr::ListLit(es) => ReturnShape::StackBuf(es.len().try_into().expect("StackBuf size does not fit in u32")),
+            Expr::StackBuf(n) => ReturnShape::StackBuf(fits(*n)?),
+            Expr::ListLit(es) => ReturnShape::StackBuf(fits(es.len() as u64)?),
             Expr::Call(f, _) => known
                 .get(f)
                 .filter(|r| r.len() == 1)
@@ -168,7 +145,7 @@ fn infer_return_shapes(funcs: &mut [Func]) {
                 .copied()
                 .unwrap_or(ReturnShape::Scalar),
             _ => ReturnShape::Scalar,
-        }
+        })
     }
 
     fn scan(
@@ -176,14 +153,15 @@ fn infer_return_shapes(funcs: &mut [Func]) {
         params: &[String],
         known: &HashMap<String, Vec<ReturnShape>>,
         n_ret: usize,
-    ) -> Vec<ReturnShape> {
+    ) -> Result<Vec<ReturnShape>, String> {
         let mut locals: HashMap<String, ReturnShape> =
             params.iter().map(|p| (p.clone(), ReturnShape::Scalar)).collect();
         let mut returns = vec![ReturnShape::Scalar; n_ret];
         for stmt in body {
             match stmt {
                 Stmt::Let(name, e) => {
-                    locals.insert(name.clone(), expr_shape(e, &locals, known));
+                    let shape = expr_shape(e, &locals, known)?;
+                    locals.insert(name.clone(), shape);
                 }
                 Stmt::LetTuple(names, f, _) => {
                     let shapes = known.get(f);
@@ -199,17 +177,21 @@ fn infer_return_shapes(funcs: &mut [Func]) {
                     locals.insert(var.clone(), ReturnShape::Scalar);
                     for inner in body {
                         if let Stmt::Let(name, e) = inner {
-                            locals.insert(name.clone(), expr_shape(e, &locals, known));
+                            let shape = expr_shape(e, &locals, known)?;
+                            locals.insert(name.clone(), shape);
                         }
                     }
                 }
                 Stmt::Return(es) => {
-                    returns = es.iter().map(|e| expr_shape(e, &locals, known)).collect();
+                    returns = es
+                        .iter()
+                        .map(|e| expr_shape(e, &locals, known))
+                        .collect::<Result<_, _>>()?;
                 }
                 _ => {}
             }
         }
-        returns
+        Ok(returns)
     }
 
     let mut known: HashMap<String, Vec<ReturnShape>> = funcs
@@ -222,10 +204,9 @@ fn infer_return_shapes(funcs: &mut [Func]) {
     for _ in 0..=funcs.len() {
         let next: HashMap<String, Vec<ReturnShape>> = funcs
             .iter()
-            .map(|f| (f.name.clone(), scan(&f.body, &f.params, &known, f.n_ret)))
-            .collect();
+            .map(|f| Ok((f.name.clone(), scan(&f.body, &f.params, &known, f.n_ret)?)))
+            .collect::<Result<_, String>>()?;
         if next == known {
-            known = next;
             break;
         }
         known = next;
@@ -235,6 +216,7 @@ fn infer_return_shapes(funcs: &mut [Func]) {
             .remove(&f.name)
             .unwrap_or_else(|| vec![ReturnShape::Scalar; f.n_ret]);
     }
+    Ok(())
 }
 
 fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
@@ -255,10 +237,10 @@ fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
 
 /// Apply identifier-level **placeholder** replacements to source text before
 /// parsing: each maximal run of identifier characters (`[A-Za-z0-9_]`) that
-/// equals a key of `replacements` is replaced by its value; other text —
-/// including substrings of longer identifiers — is untouched. Mirrors leanVM's
+/// equals a key of `replacements` is replaced by its value; other text,
+/// including substrings of longer identifiers, is untouched. Mirrors leanVM's
 /// `CompilationFlags::replacements`. An empty map returns the source unchanged.
-pub fn apply_replacements(src: &str, replacements: &BTreeMap<String, String>) -> String {
+fn apply_replacements(src: &str, replacements: &BTreeMap<String, String>) -> String {
     if replacements.is_empty() {
         return src.to_string();
     }
@@ -292,158 +274,22 @@ fn is_ident(s: &str) -> bool {
 }
 
 /// Evaluate a compile-time **integer** constant expression: decimal literals
-/// combined with `+`, `-`, `*`, `/` (truncating), `**` (power), and
-/// parentheses. This is ordinary integer arithmetic — a global constant is a
-/// count / size / exponent — deliberately *distinct* from runtime field
-/// arithmetic, so derived sizes like `2 + (W - 1) * V +
-/// LOG_LIFETIME` come out right. All references to earlier constants have
-/// already been substituted to their decimal values, so the input is pure
-/// arithmetic. Overflow, division by zero, and a negative intermediate are
-/// errors.
+/// combined with `+ - * / // % **` and parentheses. This is ordinary integer
+/// arithmetic (a global constant is a count, a size, an exponent), deliberately
+/// distinct from runtime field arithmetic, so a derived size like `2 + (W - 1) *
+/// V + LOG_LIFETIME` comes out right; a single `/` divides like `//` here.
+/// References to earlier constants are already substituted to their decimal
+/// values, so the input is pure arithmetic. Overflow, division by zero, and a
+/// negative intermediate are errors.
 fn eval_const_int(s: &str) -> Result<u128, String> {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Tok {
-        Num(u128),
-        Add,
-        Sub,
-        Mul,
-        Div,
-        Pow,
-        LParen,
-        RParen,
-    }
-    let bytes = s.as_bytes();
-    let mut toks = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b' ' | b'\t' => i += 1,
-            b'+' => {
-                toks.push(Tok::Add);
-                i += 1;
-            }
-            b'-' => {
-                toks.push(Tok::Sub);
-                i += 1;
-            }
-            b'/' => {
-                toks.push(Tok::Div);
-                i += 1;
-            }
-            b'(' => {
-                toks.push(Tok::LParen);
-                i += 1;
-            }
-            b')' => {
-                toks.push(Tok::RParen);
-                i += 1;
-            }
-            b'*' => {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-                    toks.push(Tok::Pow);
-                    i += 2;
-                } else {
-                    toks.push(Tok::Mul);
-                    i += 1;
-                }
-            }
-            c if c.is_ascii_digit() => {
-                let start = i;
-                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-                let n = s[start..i]
-                    .parse::<u128>()
-                    .map_err(|_| format!("integer literal out of range: `{}`", &s[start..i]))?;
-                toks.push(Tok::Num(n));
-            }
-            c => {
-                return Err(format!(
-                    "unexpected `{}` in integer constant expression `{}`",
-                    c as char,
-                    s.trim()
-                ));
-            }
-        }
-    }
-    if toks.is_empty() {
-        return Err("empty constant expression".into());
-    }
-    // Recursive descent: expr → term (('+'|'-') term)*, term → power
-    // (('*'|'/') power)*, power → atom ('**' power)?, atom → num | '(' expr ')'.
-    fn atom(t: &[Tok], p: &mut usize) -> Result<u128, String> {
-        match t.get(*p) {
-            Some(Tok::Num(n)) => {
-                *p += 1;
-                Ok(*n)
-            }
-            Some(Tok::LParen) => {
-                *p += 1;
-                let v = expr(t, p)?;
-                if t.get(*p) != Some(&Tok::RParen) {
-                    return Err("expected `)` in constant expression".into());
-                }
-                *p += 1;
-                Ok(v)
-            }
-            _ => Err("expected a number or `(` in constant expression".into()),
-        }
-    }
-    fn power(t: &[Tok], p: &mut usize) -> Result<u128, String> {
-        let base = atom(t, p)?;
-        if t.get(*p) == Some(&Tok::Pow) {
-            *p += 1;
-            let exp = power(t, p)?; // right-associative
-            let exp = u32::try_from(exp).map_err(|_| "`**` exponent too large".to_string())?;
-            base.checked_pow(exp)
-                .ok_or_else(|| "constant overflow in `**`".to_string())
-        } else {
-            Ok(base)
-        }
-    }
-    fn term(t: &[Tok], p: &mut usize) -> Result<u128, String> {
-        let mut acc = power(t, p)?;
-        while let Some(op @ (Tok::Mul | Tok::Div)) = t.get(*p).copied() {
-            *p += 1;
-            let rhs = power(t, p)?;
-            acc = if op == Tok::Mul {
-                acc.checked_mul(rhs)
-                    .ok_or_else(|| "constant overflow in `*`".to_string())?
-            } else {
-                acc.checked_div(rhs)
-                    .ok_or_else(|| "division by zero in constant expression".to_string())?
-            };
-        }
-        Ok(acc)
-    }
-    fn expr(t: &[Tok], p: &mut usize) -> Result<u128, String> {
-        let mut acc = term(t, p)?;
-        while let Some(op @ (Tok::Add | Tok::Sub)) = t.get(*p).copied() {
-            *p += 1;
-            let rhs = term(t, p)?;
-            acc = if op == Tok::Add {
-                acc.checked_add(rhs)
-                    .ok_or_else(|| "constant overflow in `+`".to_string())?
-            } else {
-                acc.checked_sub(rhs)
-                    .ok_or_else(|| "constant is negative (underflow in `-`)".to_string())?
-            };
-        }
-        Ok(acc)
-    }
-    let mut pos = 0;
-    let value = expr(&toks, &mut pos)?;
-    if pos != toks.len() {
-        return Err(format!(
-            "unexpected trailing tokens in constant expression `{}`",
-            s.trim()
-        ));
-    }
-    Ok(value)
+    parse_expr(s)
+        .ok()
+        .and_then(|e| const_int_expr(&e))
+        .ok_or_else(|| format!("not a compile-time integer constant expression: `{}`", s.trim()))
 }
 
-/// Evaluate a compile-time constant expression — integer literals, `GEN`,
-/// `GEN ** k`, and `+`/`*` combinations of those — to its field element.
+/// Evaluate a compile-time constant expression (integer literals, `GEN`,
+/// `GEN ** k`, and `+`/`*` combinations of those) to its field element.
 /// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
 /// programs (see `tests/py_source.rs`).
 pub fn parse_const(s: &str) -> Result<F192, String> {
@@ -461,7 +307,7 @@ pub fn parse_const(s: &str) -> Result<F192, String> {
     eval(&parse_expr(s)?)
 }
 
-/// Parse a zkDSL source file (a `.py` file — the DSL is Python-shaped, see
+/// Parse a zkDSL source file (a `.py` file, since the DSL is Python-shaped, see
 /// [`parse`]) with compile-time **placeholder** replacements (see
 /// [`parse_with_replacements`]).
 pub fn parse_file_with_replacements(
@@ -567,11 +413,10 @@ impl Parser {
             // elements (powers of GEN), so the multiplicative walk is explicit.
             let rest = rest.strip_suffix(':').ok_or("`for` needs `:`")?;
             let (var, iter) = rest.split_once(" in ").ok_or("`for` needs `in`")?;
-            // `for i in unroll(a, b):` — compile-time replication; the bounds
+            // `for i in unroll(a, b):` is compile-time replication; the bounds
             // are integer expressions, evaluated at lowering (so a `Const`
             // parameter works as a bound).
-            if let Some(inner) = iter.trim().strip_prefix("unroll(").and_then(|s| s.strip_suffix(')')) {
-                let parts = split_top(inner, ',');
+            if let Some(parts) = call_args(iter, "unroll") {
                 if parts.len() != 2 {
                     return Err("unroll needs `a, b` (compile-time integers)".into());
                 }
@@ -585,17 +430,12 @@ impl Parser {
                     body,
                 });
             }
-            let inner = iter
-                .trim()
-                .strip_prefix("mul_range(")
-                .and_then(|s| s.strip_suffix(')'))
-                .ok_or("`for` needs `mul_range(start, stop)` or `unroll(a, b)`")?;
-            let parts = split_top(inner, ',');
+            let parts = call_args(iter, "mul_range").ok_or("`for` needs `mul_range(start, stop)` or `unroll(a, b)`")?;
             if parts.len() != 2 {
                 return Err("mul_range needs `start, stop`".into());
             }
             let lo = parse_gpow_bound(&parts[0])?;
-            // The stop bound: a compile-time power of GEN, or any expression —
+            // The stop bound: a compile-time power of GEN, or any expression,
             // a runtime g-power element the walk must be able to reach.
             let hi = match parse_gpow_bound(&parts[1]) {
                 Ok(hi) => {
@@ -635,17 +475,12 @@ impl Parser {
                     .collect::<Result<_, _>>()?,
             ));
         }
-        // `print(expr)` / `print("label", expr)` — prover-side debug print;
+        // `print(expr)` / `print("label", expr)`: prover-side debug print;
         // the label defaults to the argument's source text.
-        if let Some(inner) = line.strip_prefix("print(").and_then(|s| s.strip_suffix(')')) {
-            let parts = split_top(inner, ',');
+        if let Some(parts) = call_args(&line, "print") {
             let (label, value) = match parts.as_slice() {
                 [l, v] if l.trim().starts_with('"') => {
-                    let l = l
-                        .trim()
-                        .strip_prefix('"')
-                        .and_then(|s| s.strip_suffix('"'))
-                        .ok_or("print's label is a string literal: print(\"label\", expr)")?;
+                    let l = string_lit(l).ok_or("print's label is a string literal: print(\"label\", expr)")?;
                     (l.to_string(), v.trim())
                 }
                 [v] => (v.trim().to_string(), v.trim()),
@@ -656,18 +491,13 @@ impl Parser {
                 value: parse_expr(value)?,
             });
         }
-        // `hint_witness(dest, "name")` — the string literal is not an
+        // `hint_witness(dest, "name")`: the string literal is not an
         // expression; parsed here.
-        if let Some(inner) = line.strip_prefix("hint_witness(").and_then(|s| s.strip_suffix(')')) {
-            let parts = split_top(inner, ',');
+        if let Some(parts) = call_args(&line, "hint_witness") {
             let [dest, name] = parts.as_slice() else {
                 return Err("hint_witness(dest, \"name\") takes two arguments".into());
             };
-            let name = name
-                .trim()
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .ok_or("hint_witness's second argument is a string literal: \"name\"")?;
+            let name = string_lit(name).ok_or("hint_witness's second argument is a string literal: \"name\"")?;
             return Ok(Stmt::HintWitness {
                 dest: parse_expr(dest)?,
                 name: name.to_string(),
@@ -681,7 +511,7 @@ impl Parser {
                 return Ok(Stmt::AssertNe(parse_expr(&a)?, parse_expr(&b)?));
             }
             // `assert log X < log Y` (`Y` a compile-time g-power) or
-            // `assert log X < k` (`k` an integer exponent) — a range check in
+            // `assert log X < k` (`k` an integer exponent) is a range check in
             // the exponent: proves `log_g(X) < k`.
             if let Some((a, b)) = split_once_top(rest, "<") {
                 let x =
@@ -711,7 +541,7 @@ impl Parser {
         // Assignment or bare call.
         if let Some((lhs, rhs)) = split_assign(&line) {
             // `names = match_range(…)` carries lambdas, which `parse_expr`
-            // does not speak — expanded by its own parser.
+            // does not speak, so it gets its own parser.
             if rhs.trim_start().starts_with("match_range(") {
                 return parse_match_range(&lhs, &rhs);
             }
@@ -744,8 +574,8 @@ impl Parser {
 
     /// `if a == b:` / `if a != b:` (the current line, its `if `/`elif `
     /// prefix already stripped into `header`), with an optional `elif`/`else`
-    /// tail at the same indent — an `elif` is sugar for an `else` holding a
-    /// nested `if`.
+    /// tail at the same indent (an `elif` is sugar for an `else` holding a
+    /// nested `if`).
     fn if_stmt(&mut self, header: &str, indent: usize) -> Result<Stmt, String> {
         let cond = header.strip_suffix(':').ok_or("`if` needs `:`")?;
         let (eq, l, r) = if let Some((l, r)) = split_once_top(cond, "==") {
@@ -779,7 +609,7 @@ impl Parser {
         })
     }
 
-    /// `match log(x):` with `case 0:` … `case n-1:` bodies — the cases must
+    /// `match log(x):` with `case 0:` … `case n-1:` bodies. The cases must
     /// be consecutive integers from 0 (the trampoline table is dense; there
     /// is no `case _`). Matching is on the *log*: `x = GEN ** j` runs case `j`.
     fn match_stmt(&mut self, header: &str, indent: usize) -> Result<Stmt, String> {
@@ -821,78 +651,71 @@ impl Parser {
     }
 }
 
-/// Split on a top-level (paren-depth-0) single `=` that is not `==`.
+/// The bytes of `s` that sit outside every `(…)` / `[…]` group, with their
+/// index: the one scanner behind all the top-level splits below. Brackets
+/// themselves are never yielded, so a separator that is a bracket never splits.
+fn depth0(s: &str) -> impl Iterator<Item = (usize, u8)> + '_ {
+    let mut depth = 0i32;
+    s.as_bytes().iter().enumerate().filter_map(move |(i, &c)| match c {
+        b'(' | b'[' => {
+            depth += 1;
+            None
+        }
+        b')' | b']' => {
+            depth -= 1;
+            None
+        }
+        _ => (depth == 0).then_some((i, c)),
+    })
+}
+
 /// A top-level augmented assignment `lhs OP= rhs` -> `(lhs, "OP", rhs)`, for
 /// OP in `+ - * // %`. Returns `None` for a plain `=`, a comparison (`==`,
 /// `!=`, `<=`, `>=`), or `**=` (unused). The operator's `=` must sit at depth
 /// 0 and be immediately preceded by exactly the operator characters.
 fn split_aug(s: &str) -> Option<(String, &'static str, String)> {
     let b = s.as_bytes();
-    let mut depth = 0i32;
-    for i in 0..b.len() {
-        match b[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            b'=' if depth == 0 => {
-                // not `==` and not a comparison tail (`<=`, `>=`, `!=`)
-                if b.get(i + 1) == Some(&b'=') || matches!(b.get(i.wrapping_sub(1)), Some(b'=' | b'<' | b'>' | b'!')) {
-                    return None;
-                }
-                let (op, plen): (&str, usize) = match b[i - 1] {
-                    b'+' => ("+", 1),
-                    b'-' => ("-", 1),
-                    b'%' => ("%", 1),
-                    b'*' if b[i - 2] != b'*' => ("*", 1),
-                    b'/' if b[i - 2] == b'/' => ("//", 2),
-                    _ => return None,
-                };
-                return Some((s[..i - plen].trim().to_string(), op, s[i + 1..].trim().to_string()));
-            }
-            _ => {}
+    for (i, c) in depth0(s) {
+        if c != b'=' {
+            continue;
         }
+        // not `==` and not a comparison tail (`<=`, `>=`, `!=`)
+        if b.get(i + 1) == Some(&b'=') || matches!(b.get(i.wrapping_sub(1)), Some(b'=' | b'<' | b'>' | b'!')) {
+            return None;
+        }
+        let (op, plen): (&str, usize) = match b[i - 1] {
+            b'+' => ("+", 1),
+            b'-' => ("-", 1),
+            b'%' => ("%", 1),
+            b'*' if b[i - 2] != b'*' => ("*", 1),
+            b'/' if b[i - 2] == b'/' => ("//", 2),
+            _ => return None,
+        };
+        return Some((s[..i - plen].trim().to_string(), op, s[i + 1..].trim().to_string()));
     }
     None
 }
 
+/// Split on a top-level single `=` that is not part of `==`.
 fn split_assign(s: &str) -> Option<(String, String)> {
     let b = s.as_bytes();
-    let mut depth = 0i32;
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            b'=' if depth == 0 => {
-                let next_eq = i + 1 < b.len() && b[i + 1] == b'=';
-                let prev_eq = i > 0 && b[i - 1] == b'=';
-                if !next_eq && !prev_eq {
-                    return Some((s[..i].to_string(), s[i + 1..].to_string()));
-                }
-                if next_eq {
-                    i += 1; // skip `==`
-                }
-            }
-            _ => {}
+    for (i, c) in depth0(s) {
+        if c == b'=' && b.get(i + 1) != Some(&b'=') && (i == 0 || b[i - 1] != b'=') {
+            return Some((s[..i].to_string(), s[i + 1..].to_string()));
         }
-        i += 1;
     }
     None
 }
 
-/// Split `s` on every top-level occurrence of `sep` (a single char).
+/// Split `s` on every top-level occurrence of the ASCII char `sep`.
 fn split_top(s: &str, sep: char) -> Vec<String> {
+    let sep = sep as u8;
     let mut parts = Vec::new();
-    let mut depth = 0i32;
     let mut start = 0;
-    for (i, c) in s.char_indices() {
-        match c {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth -= 1,
-            _ if c == sep && depth == 0 => {
-                parts.push(s[start..i].to_string());
-                start = i + 1;
-            }
-            _ => {}
+    for (i, c) in depth0(s) {
+        if c == sep {
+            parts.push(s[start..i].to_string());
+            start = i + 1;
         }
     }
     parts.push(s[start..].to_string());
@@ -903,19 +726,13 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
 /// operators between them. Left-associative; parenthesised/bracketed sub-terms
 /// are left intact.
 fn split_add(s: &str) -> (Vec<String>, Vec<u8>) {
-    let b = s.as_bytes();
     let (mut segs, mut ops) = (Vec::new(), Vec::new());
-    let (mut depth, mut start) = (0i32, 0usize);
-    for i in 0..b.len() {
-        match b[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            b'+' | b'-' if depth == 0 => {
-                segs.push(s[start..i].to_string());
-                ops.push(b[i]);
-                start = i + 1;
-            }
-            _ => {}
+    let mut start = 0usize;
+    for (i, c) in depth0(s) {
+        if c == b'+' || c == b'-' {
+            segs.push(s[start..i].to_string());
+            ops.push(c);
+            start = i + 1;
         }
     }
     segs.push(s[start..].to_string());
@@ -923,43 +740,29 @@ fn split_add(s: &str) -> (Vec<String>, Vec<u8>) {
 }
 
 /// Split `s` at the top-level multiplicative tier: the operands and the
-/// operators between them (`*`, `//` for floor-division, `%` for remainder).
-/// A `**` power is left intact (bound tighter). Left-associative.
+/// operators between them (`*`, `//` for floor-division, `/` for runtime field
+/// division, `%` for remainder). A `**` power is left intact (bound tighter).
+/// Left-associative.
 fn split_mul(s: &str) -> (Vec<String>, Vec<u8>) {
     let b = s.as_bytes();
     let (mut segs, mut ops) = (Vec::new(), Vec::new());
-    let (mut depth, mut start, mut i) = (0i32, 0usize, 0usize);
-    while i < b.len() {
-        match b[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            b'*' if depth == 0 => {
-                let double = (i + 1 < b.len() && b[i + 1] == b'*') || (i > 0 && b[i - 1] == b'*');
-                if !double {
-                    segs.push(s[start..i].to_string());
-                    ops.push(b'*');
-                    start = i + 1;
-                }
-            }
-            b'/' if depth == 0 && b.get(i + 1) == Some(&b'/') => {
-                segs.push(s[start..i].to_string());
-                ops.push(b'/'); // `//` compile-time floor-division
-                i += 1; // consume the second `/`
-                start = i + 1;
-            }
-            b'/' if depth == 0 => {
-                segs.push(s[start..i].to_string());
-                ops.push(b'd'); // `/` runtime field division
-                start = i + 1;
-            }
-            b'%' if depth == 0 => {
-                segs.push(s[start..i].to_string());
-                ops.push(b'%');
-                start = i + 1;
-            }
-            _ => {}
+    let (mut start, mut next) = (0usize, 0usize);
+    for (i, c) in depth0(s) {
+        if i < next {
+            continue; // the second `/` of a `//`, already consumed
         }
-        i += 1;
+        let (op, len) = match c {
+            b'*' if b.get(i + 1) == Some(&b'*') || (i > 0 && b[i - 1] == b'*') => continue, // `**`
+            b'*' => (b'*', 1),
+            b'/' if b.get(i + 1) == Some(&b'/') => (b'/', 2), // `//` compile-time floor-division
+            b'/' => (b'd', 1),                                // `/` runtime field division
+            b'%' => (b'%', 1),
+            _ => continue,
+        };
+        segs.push(s[start..i].to_string());
+        ops.push(op);
+        next = i + len;
+        start = next;
     }
     segs.push(s[start..].to_string());
     (segs, ops)
@@ -968,20 +771,25 @@ fn split_mul(s: &str) -> (Vec<String>, Vec<u8>) {
 /// Split `s` once on a top-level multi-char operator `op`.
 fn split_once_top(s: &str, op: &str) -> Option<(String, String)> {
     let b = s.as_bytes();
-    let mut depth = 0i32;
-    let mut i = 0;
-    while i + op.len() <= b.len() {
-        match b[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            _ if depth == 0 && &s[i..i + op.len()] == op => {
-                return Some((s[..i].to_string(), s[i + op.len()..].to_string()));
-            }
-            _ => {}
+    for (i, _) in depth0(s) {
+        if b[i..].starts_with(op.as_bytes()) {
+            return Some((s[..i].to_string(), s[i + op.len()..].to_string()));
         }
-        i += 1;
     }
     None
+}
+
+/// The top-level arguments of a `name(a, b, …)` call, or `None` when `line` is
+/// not one. Zero arguments come back as one empty string, as [`split_top`]
+/// gives them.
+fn call_args(line: &str, name: &str) -> Option<Vec<String>> {
+    let inner = line.trim().strip_prefix(name)?.strip_prefix('(')?.strip_suffix(')')?;
+    Some(split_top(inner, ','))
+}
+
+/// The contents of a `"…"` string literal.
+fn string_lit(s: &str) -> Option<&str> {
+    s.trim().strip_prefix('"')?.strip_suffix('"')
 }
 
 /// Fold a compile-time INTEGER expression (literals combined with the usual
@@ -994,7 +802,9 @@ fn const_int_expr(e: &Expr) -> Option<u128> {
         Expr::Add(a, b) => const_int_expr(a)?.checked_add(const_int_expr(b)?),
         Expr::Sub(a, b) => const_int_expr(a)?.checked_sub(const_int_expr(b)?),
         Expr::Mul(a, b) => const_int_expr(a)?.checked_mul(const_int_expr(b)?),
-        Expr::Div(a, b) => match const_int_expr(b)? {
+        // A single `/` between compile-time integers is integer division: in a
+        // constant (a count, a size), there is no field to divide in.
+        Expr::Div(a, b) | Expr::FieldDiv(a, b) => match const_int_expr(b)? {
             0 => None,
             d => Some(const_int_expr(a)? / d),
         },
@@ -1008,13 +818,13 @@ fn const_int_expr(e: &Expr) -> Option<u128> {
 }
 
 /// A range bound (`mul_range` bounds and `assert log _ < log _` bounds): a
-/// compile-time power of the generator — `1` (= `g^0`), `GEN` (= `g^1`), or
-/// `GEN ** k` — returning the exponent `k`. Both uses walk/compare exponents,
+/// compile-time power of the generator (`1` = `g^0`, `GEN` = `g^1`, or
+/// `GEN ** k`), returning the exponent `k`. Both uses walk/compare exponents,
 /// so the bound must name `g^k` explicitly (an element that is not a known
 /// power of `g` has no usable exponent).
 fn gpow_bound(e: &Expr) -> Result<u64, String> {
     match e {
-        // `1` is the multiplicative identity g^0 — the natural loop start.
+        // `1` is the multiplicative identity g^0, the natural loop start.
         Expr::Lit(1) => Ok(0),
         Expr::Gen => Ok(1),
         Expr::GPow(k) => u64::try_from(*k).map_err(|_| format!("bound exponent {k} does not fit in u64")),
@@ -1037,7 +847,7 @@ fn strip_log(s: &str) -> Option<&str> {
 
 /// Substitute `Var(name)` → `to` through a statement list, stopping at a
 /// statement that rebinds `name` (later uses refer to the new binding).
-/// Nested blocks recurse independently — their bindings are branch-local,
+/// Nested blocks recurse independently, since their bindings are branch-local,
 /// matching the lowering's scoping. Used by `Const`-parameter specialization.
 pub(crate) fn subst_stmts(stmts: &[Stmt], name: &str, to: &Expr) -> Vec<Stmt> {
     let mut out = Vec::with_capacity(stmts.len());
@@ -1158,7 +968,7 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
     }
 }
 
-/// `e` with every `Var(name)` replaced by `to` — the `match_range` arm
+/// `e` with every `Var(name)` replaced by `to`: the `match_range` arm
 /// expansion, where the lambda parameter becomes the arm's integer literal.
 fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
     let s = |b: &Expr| Box::new(subst_var(b, name, to));
@@ -1181,23 +991,18 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
     }
 }
 
-/// `names = match_range(log(x), range(a, b), lambda i: expr, …)` — leanVM's
+/// `names = match_range(log(x), range(a, b), lambda i: expr, …)`: leanVM's
 /// `match_range`, expanded at parse time: one arm per integer of the
 /// contiguous `(range, lambda)` pairs, arm `j` being the lambda body with the
 /// parameter substituted by the literal `j`. The union of the ranges must be
 /// gapless and start at 0 (this compiler's `match` rule). Everything sits on
-/// one line — there is no line continuation.
+/// one line, since there is no line continuation.
 fn parse_match_range(lhs: &str, rhs: &str) -> Result<Stmt, String> {
     if lhs.trim_end().ends_with(']') {
         return Err("bind `match_range` results to names, not a store target".into());
     }
     let names: Vec<String> = split_top(lhs, ',').iter().map(|t| t.trim().to_string()).collect();
-    let inner = rhs
-        .trim()
-        .strip_prefix("match_range(")
-        .and_then(|s| s.strip_suffix(')'))
-        .ok_or("malformed `match_range(…)`")?;
-    let chunks = split_top(inner, ',');
+    let chunks = call_args(rhs, "match_range").ok_or("malformed `match_range(…)`")?;
     let (first, pairs) = chunks.split_first().ok_or("match_range needs arguments")?;
     let x = strip_log(first).ok_or("`match_range` matches logs: `match_range(log(x), …)`")?;
     let x = parse_expr(x)?;
@@ -1232,6 +1037,17 @@ fn parse_match_range(lhs: &str, rhs: &str) -> Result<Stmt, String> {
     Ok(Stmt::LetMatchRange { names, x, arms })
 }
 
+/// Combine one tier's operands left-associatively: `node` builds the AST node
+/// for each operator (as [`split_add`] / [`split_mul`] tag it).
+fn fold_ops(segs: &[String], ops: &[u8], node: impl Fn(u8, Box<Expr>, Box<Expr>) -> Expr) -> Result<Expr, String> {
+    let mut acc = parse_expr(&segs[0])?;
+    for (&op, seg) in ops.iter().zip(&segs[1..]) {
+        let rhs = Box::new(parse_expr(seg)?);
+        acc = node(op, Box::new(acc), rhs);
+    }
+    Ok(acc)
+}
+
 /// Parse an expression with `+` (lowest) then `*`, atoms being integer literals,
 /// variables, calls `f(args)`, and parenthesised sub-expressions.
 fn parse_expr(s: &str) -> Result<Expr, String> {
@@ -1240,33 +1056,20 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     // compile-time integer subtraction (field subtraction is `+` = XOR).
     let (segs, ops) = split_add(s);
     if !ops.is_empty() {
-        let mut acc = parse_expr(&segs[0])?;
-        for (op, seg) in ops.iter().zip(&segs[1..]) {
-            let rhs = Box::new(parse_expr(seg)?);
-            let lhs = Box::new(acc);
-            acc = if *op == b'+' {
-                Expr::Add(lhs, rhs)
-            } else {
-                Expr::Sub(lhs, rhs)
-            };
-        }
-        return Ok(acc);
+        return fold_ops(&segs, &ops, |op, l, r| match op {
+            b'+' => Expr::Add(l, r),
+            _ => Expr::Sub(l, r),
+        });
     }
-    // `*`, `//`, `%` (bind tighter than `+`), skipping the two-char `**`.
+    // `*`, `/`, `//`, `%` (bind tighter than `+`), skipping the two-char `**`.
     let (segs, ops) = split_mul(s);
-    if segs.len() > 1 {
-        let mut acc = parse_expr(&segs[0])?;
-        for (op, seg) in ops.iter().zip(&segs[1..]) {
-            let rhs = Box::new(parse_expr(seg)?);
-            let lhs = Box::new(acc);
-            acc = match op {
-                b'*' => Expr::Mul(lhs, rhs),
-                b'/' => Expr::Div(lhs, rhs),
-                b'd' => Expr::FieldDiv(lhs, rhs),
-                _ => Expr::Mod(lhs, rhs),
-            };
-        }
-        return Ok(acc);
+    if !ops.is_empty() {
+        return fold_ops(&segs, &ops, |op, l, r| match op {
+            b'*' => Expr::Mul(l, r),
+            b'/' => Expr::Div(l, r),
+            b'd' => Expr::FieldDiv(l, r),
+            _ => Expr::Mod(l, r),
+        });
     }
     // `**` (compile-time power), tightest binding: `base ** k` with `k` an
     // integer literal (possibly large), or a parenthesised compile-time
@@ -1298,7 +1101,7 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     if let Ok(n) = s.parse::<u128>() {
         return Ok(Expr::Lit(n));
     }
-    // List literal `[a, b, …]` — an initialized StackBuf (only meaningful as
+    // List literal `[a, b, …]`: an initialized StackBuf (only meaningful as
     // the RHS of an assignment; top-level constant arrays are parsed earlier).
     if s.starts_with('[') && s.ends_with(']') {
         let inner = s[1..s.len() - 1].trim();
@@ -1353,21 +1156,24 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         // `HeapBuf(n)` / `StackBuf(n)` are allocations, not ordinary calls. A size
         // that folds as parse-time integer arithmetic (`MAXQ + 1`, constants
         // already substituted) is a static size like a bare literal.
+        // A cell count is a frame/heap size: reject one that does not fit rather
+        // than wrapping it into a plausible small buffer.
+        let cells = |n: u128| u64::try_from(n).map_err(|_| format!("{name} size {n} does not fit in u64"));
         if name == "HeapBuf" {
             if let Ok(n) = eval_const_int(args_str) {
-                return Ok(Expr::HeapBuf(n as u64));
+                return Ok(Expr::HeapBuf(cells(n)?));
             }
             return match args.as_slice() {
                 // A literal size is baked into the bytecode; any other
                 // expression is a runtime size (its low word is the count).
-                [Expr::Lit(n)] => Ok(Expr::HeapBuf(*n as u64)),
+                [Expr::Lit(n)] => Ok(Expr::HeapBuf(cells(*n)?)),
                 [e] => Ok(Expr::HeapBufDyn(Box::new(e.clone()))),
                 _ => Err("HeapBuf(size) takes one argument".into()),
             };
         }
         if name == "StackBuf" {
             if let Ok(n) = eval_const_int(args_str) {
-                return Ok(Expr::StackBuf(n as u64));
+                return Ok(Expr::StackBuf(cells(n)?));
             }
             return Err("StackBuf(n) needs a parse-time integer size".into());
         }

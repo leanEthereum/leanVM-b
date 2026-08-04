@@ -81,13 +81,9 @@ enum Command {
 }
 
 fn parse_log_inv_rate(value: &str) -> Result<usize, String> {
-    let rate = value
-        .parse::<usize>()
-        .map_err(|_| "log_inv_rate must be one of 1, 2, 3, or 4".to_string())?;
-    if (1..=4).contains(&rate) {
-        Ok(rate)
-    } else {
-        Err("log_inv_rate must be one of 1, 2, 3, or 4".to_string())
+    match value.parse::<usize>() {
+        Ok(rate) if (1..=4).contains(&rate) => Ok(rate),
+        _ => Err("log_inv_rate must be one of 1, 2, 3, or 4".to_string()),
     }
 }
 
@@ -105,15 +101,6 @@ fn main() {
     // library entry points.
     lean_vm::init_prover();
     let plan = primitives::bench::Plan::new(cli.repeat, cli.cooldown);
-    run(&cli, plan);
-    // What the proving arena absorbed, for sizing its slabs and checking that the
-    // buffers meant to be arena-backed are.
-    if std::env::var_os("ZK_ALLOC_STATS").is_some() {
-        eprintln!("{}", zk_alloc::stats());
-    }
-}
-
-fn run(cli: &Cli, plan: primitives::bench::Plan) {
     match &cli.command {
         Command::Xmss { n_signatures } => {
             if cli.tracing {
@@ -121,6 +108,8 @@ fn run(cli: &Cli, plan: primitives::bench::Plan) {
             }
             rec_aggregation::run_xmss_aggregation(*n_signatures, cli.log_inv_rate, plan);
         }
+        // `run_recursion` initializes tracing itself, after the guest compile it
+        // does not want traced.
         Command::Recursion { n, hashes, iters } => {
             let inner: Vec<(usize, usize)> = (0..*n).map(|_| (*hashes, *iters)).collect();
             rec_aggregation::run_recursion(&inner, cli.log_inv_rate, cli.tracing, plan);
@@ -131,5 +120,10 @@ fn run(cli: &Cli, plan: primitives::bench::Plan) {
             }
             rec_aggregation::run_fibonacci(*n, cli.log_inv_rate, plan);
         }
+    }
+    // What the proving arena absorbed, for sizing its slabs and checking that the
+    // buffers meant to be arena-backed are.
+    if std::env::var_os("ZK_ALLOC_STATS").is_some() {
+        eprintln!("{}", zk_alloc::stats());
     }
 }

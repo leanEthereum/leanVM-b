@@ -21,22 +21,15 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use fiat_shamir::Sponge;
+use fiat_shamir::sponge::Sponge;
 use pcs::ligerito::{
     build_eq_table_ext, commit, configs_for, configs_for_rate, inner_product_base_ext, recursive_prover_with_basis,
 };
 use primitives::{
     field::{F64, F192},
     pretty_integer,
+    test_rng::Rng,
 };
-
-fn splitmix64(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
 
 fn env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok().map(|s| {
@@ -68,12 +61,10 @@ fn pcs_throughput() {
     let trace_span = tracing::info_span!("PCS throughput", log_n, log_inv_rate, samples).entered();
 
     // Random F64 witness (the committed polynomial) and a random E evaluation point.
-    let mut s = 0x0192_0000u64 ^ log_n as u64;
+    let mut rng = Rng::new(0x0192_0000 ^ log_n as u64);
     let n = 1usize << log_n;
-    let witness: Vec<F64> = (0..n).map(|_| F64(splitmix64(&mut s))).collect();
-    let point: Vec<F192> = (0..log_n)
-        .map(|_| F192::new(splitmix64(&mut s), splitmix64(&mut s), splitmix64(&mut s)))
-        .collect();
+    let witness: Vec<F64> = (0..n).map(|_| F64(rng.next_u64())).collect();
+    let point: Vec<F192> = rng.ext_vec(log_n);
     let b_initial = build_eq_table_ext(&point);
     let target = inner_product_base_ext(&witness, &b_initial);
 
@@ -121,7 +112,7 @@ fn pcs_throughput() {
     drop(trace_span);
 
     println!(
-        "\nPCS throughput — 2^{log_n} variables, rate 1/2^{log_inv_rate}, median of {}",
+        "\nPCS throughput: 2^{log_n} variables, rate 1/2^{log_inv_rate}, median of {}",
         pretty_integer(samples)
     );
     println!(

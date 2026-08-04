@@ -28,9 +28,6 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     let ((proof, stats), prove_time) = plan.warm_then_measure(|| prove(&program, pi, log_inv_rate));
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| verify(&program, &pi, &proof).unwrap());
 
-    let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
-    // tracing-forest renders the tree when its root span closes. Close it
-    // before printing the benchmark report so the complete trace appears first.
     drop(trace_span);
 
     println!(
@@ -39,14 +36,14 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     println!("    details                   : {}", stats.details());
-    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    crate::report::print_proof_size(&proof);
     let cycles_per_second = (stats.cycles as f64 / prove_time.mean()).round() as u64;
     println!(
         "  proving                     : {} s{}   {} cycles/s      peak memory {} GiB",
         pretty_f64(prove_time.mean()),
         prove_time.spread(),
         pretty_integer(cycles_per_second),
-        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
+        crate::report::peak_gib()
     );
     println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
 }

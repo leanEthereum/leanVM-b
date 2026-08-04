@@ -25,7 +25,7 @@ Dependency order, leaves first:
 | `flock`           | batched R1CS over GF(2) for BLAKE3: zerocheck + lincheck               |
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
-| `xmss`            | XMSS over BLAKE3                     |
+| `xmss`            | XMSS over BLAKE3; an independent leaf, consumed only by `rec_aggregation` |
 | `rec_aggregation` | the three workloads + the N→1 recursion harness                        |
 
 `src/main.rs` is the CLI; guests are zkDSL under `crates/rec_aggregation/guests/`.
@@ -36,12 +36,12 @@ Dependency order, leaves first:
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
 
 ```bash
-cargo testall                     # = test --all --release; 314 tests, seconds
+cargo testall                     # = test --all --release; whole suite in seconds
 cargo clippy --release --all-targets
 cargo fmt --all                   # max_width = 120
 ```
 
-Heavy benches are `#[ignore]`d; run by name with `-- --ignored --nocapture` (`blake3_batch`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`).
+Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_ligerito_query_counts`, `encoding_grinding_bits`.
 
 ## Benchmarking
 
@@ -84,14 +84,21 @@ The third is worth understanding before touching the verifier. `guests/recursion
 
 ## Conventions that bite
 
+- Use comments only when necessary: uncommented but readable and simple code is better than commented slop.
+- Commit tests only that are useful in the future, to prevent regressions / failures. Don't add trivial tests that will always pass.
+- Simpler is better.
 - **Fiat-Shamir:** `add_scalar`/`next_scalar` bind into the sponge as a side effect. `observe_*` is only for the public statement. Never re-observe data that rode the stream, which silently desynchronizes the two sides.
-- **Prover and verifier derive the layout identically** from announced sizes. Changes to `placements_of`, `col_kappas` or the schema land on both sides, and `col_kappa_sources` stays in lockstep with `col_kappas`.
+- **Prover and verifier derive the layout identically** from announced sizes. Changes to `placements_of` or the schema land on both sides. `col_kappas` is derived from `col_kappa_sources` rather than written out twice, so the two can no longer drift; keep it that way.
 - **A failed guest `assert` surfaces as a write-once memory conflict**, not an assertion message, so disassemble around the reported `pc` (`DBG_DISASM`).
 - Guests are single-file; the compiler skips `from snark_lib import *`, which exists only so editors accept the file as Python.
 - **One symbol, one meaning, across the whole document.** All notation is defined in `doc/preamble/macros.tex`; define a new macro there rather than inline, and check the letter is free first. Annex B's symbols were deliberately renamed away from the letters WHIR/Ligerito/BCHKS25 use (rate is `\rate`, not `\rho`, which is a sumcheck point) and its "Symbols" table is the map back, so reintroducing a paper's letter silently collides with the main matter.
 - **Doc labels are an API.** `crates/pcs` cites `thm:rbr` and `thm:mca-johnson` by name and several crates cite `doc/main.tex` sections, so renaming a label breaks those pointers with nothing to catch it. `doc/body/NN-*.tex` prefixes match section numbers, so inserting a section renumbers the rest.
 - **No em-dashes or en-dashes in prose**, anywhere a human reads it: docs, LaTeX, comments, commit messages. Restructure with a comma, colon, parentheses, or two sentences.
 - **Never hard-wrap prose in Markdown or LaTeX.** One paragraph is one line; let the editor wrap it. Artificial line breaks make every later edit a reflow, so diffs show rewrapped lines instead of changed words. Applies to `.md` and `.tex` alike; code blocks, tables and list items keep their own line.
+
+## Soundness
+
+- in the recursion program, the prover transmits advice to the verifier, called "hints". These advice should not be truster (a malicious prover should never be able to prove an invalid witness), and carefully checked by the verifier.
 
 ## Env knobs
 
@@ -103,7 +110,7 @@ The third is worth understanding before touching the verifier. `guests/recursion
 | `ZK_ALLOC_STATS`                                                                                        | arena bytes/phase, high water, overflow          |
 | `BENCH_REPEAT`, `BENCH_COOLDOWN`                                                                        | `--repeat`/`--cooldown` for `#[ignore]`d benches |
 | `LEANVM_XMSS_N`, `LEANVM_HASH_N`, `LEANVM_HASH_UNROLL`                                                  | workload sizes in tests                          |
-| `FLOCK_N_LOG`, `FLOCK_PROVE_TRACE`, `FLOCK_ZC_TIMING`                                                   | flock batch size, stage traces                   |
+| `FLOCK_N_LOG`, `FLOCK_PROVE_TRACE`, `FLOCK_ZC_TIMING`, `LINCHECK_TRACE`                                 | flock batch size, stage traces                   |
 | `PCS_LOG_N`, `PCS_LOG_INV_RATE`, `PCS_MIN_MU`, `PCS_SAMPLES`                                            | PCS throughput bench                             |
 | `LIGERITO_TRACE`, `LIGERITO_NUM_VARS`, `LIGERITO_LOG_INV_RATE`                                          | Ligerito NTT/Merkle split                        |
 | `DBG_PROF{,_DUMP}`, `DBG_LOOPS`, `DBG_DISASM`, `DBG_LOWER`, `DBG_CSE`, `DBG_NO_CSE`, `DBG_PLACEHOLDERS` | compiler / guest-cycle attribution               |

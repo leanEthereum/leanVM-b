@@ -67,36 +67,21 @@ fn compute_signer(index: usize) -> CachedSignature {
     (pk, sig)
 }
 
-/// A known-answer fingerprint of the *hash construction* the signers are built
-/// from. The declared constants below can stay fixed while the digests change
-/// underneath: changing the exact encoded input leaves V, W, DIGEST_LEN, ...
-/// untouched yet makes
-/// every signer incompatible. Folding a fixed test vector of the real primitives
-/// into [`footprint`] lands such a change in a *different* cache file, so a run
-/// on one branch never loads (and then panics on) another branch's signers — the
-/// two caches simply coexist. Two BLAKE3 compressions; negligible next to
-/// generating even one signer.
+/// A known-answer of the *hash construction*, over both tweak-hash paths: the
+/// declared constants can stay fixed while the digests change underneath.
 fn hash_fingerprint() -> [Digest; 2] {
     let pp = [0xA5u8; PUBLIC_PARAM_LEN];
     [
         // Single-block path (chain steps, Merkle nodes).
         tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
         // Multi-block standard BLAKE3 path.
-        tweak_hash_many(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
+        tweak_hash(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
     ]
 }
 
-/// A known-answer of the WOTS encoding *predicate*. [`hash_fingerprint`]
-/// covers the digests but not what `wots_encode` builds on top of them: two
-/// branches can share every constant and every hash byte-for-byte yet slice
-/// the digest into digits differently (e.g. 42 contiguous 3-bit chunks of a
-/// 128-bit digest vs 21 chunks per 64-bit word with the top bit of each word
-/// ground to zero). A randomness ground on one branch then almost never
-/// encodes on the other, and every cached signature is invalid. Grinding a
-/// deterministic counter randomness until it encodes captures the layout,
-/// the validity bits, and the target-sum rule in one value. ~2^14 attempts
-/// of 2 compressions each — on the order of generating one signer's chains,
-/// still negligible against a whole pool.
+/// A known-answer of the WOTS encoding *predicate*, which [`hash_fingerprint`]
+/// does not cover: grinding a counter randomness until it encodes captures the
+/// digit layout, the validity bits, and the target-sum rule in one value.
 fn encoding_fingerprint() -> (u64, [u8; V]) {
     let pp = [0xA5u8; PUBLIC_PARAM_LEN];
     let msg = message();

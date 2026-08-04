@@ -44,6 +44,9 @@ def main():
     assert challenge == challenge
     return
 "#;
+    // `assert challenge == challenge` is the zkDSL keep-alive idiom: it forces
+    // the value to be materialized. The assertion under test is that `execute`
+    // runs the lowered helpers without a write-once memory conflict.
     let program = compile(&parse(src).expect("parse transcript helpers"));
     program.execute([F192::ZERO; 2]);
 }

@@ -10,7 +10,7 @@ pub type Off = u32;
 
 /// A fast [`std::hash::Hasher`] for the g-power reverse index (`g^k ↦ k`). The
 /// keys are 64-bit field elements that are effectively uniform, so one
-/// multiplicative mix distributes well — far cheaper than the default
+/// multiplicative mix distributes well, far cheaper than the default
 /// SipHash across the interpreter's millions of reverse-index lookups/inserts
 /// (e.g. growing the index to `2^20` on a dynamic allocation).
 #[derive(Default)]
