@@ -9,12 +9,12 @@
 //! scalars live in `E = GF(2^192)`, leaving ample margin for 128-bit soundness.
 //!
 //! - [`transcript`]: the shared Fiat-Shamir transcript (re-exported from `fiat_shamir`).
-//! - [`pcs`]: `K`-committed witness, `E`-opened, via the stacked WHIR (§3).
+//! - [`pcs`]: `K`-committed witness, `E`-opened, via the stacked WHIR (§sec:stacking, §annex:pcs).
 //! - [`witness`]: `K`-valued columns stacked into one committed witness.
-//! - [`gkr`]: the grand product via GKR (§4.3), balancing the bus.
-//! - [`leaf`]: the shared bus: grand-product balance, decomposed to per-column claims (§4.2-§4.4, §5).
+//! - [`gkr`]: the grand product via GKR (§sec:gkr), balancing the bus.
+//! - [`leaf`]: the shared bus: grand-product balance, decomposed to per-column claims (§sec:gp through §sec:leafstack, §sec:omc).
 //! - [`constraints`]: one back-loaded batched zerocheck over all seven tables'
-//!   degree-2 identities plus their three bus forms (§4.1).
+//!   degree-2 identities plus their three bus forms (§sec:air).
 //! - [`tables`]: the seven instruction tables (columns, flushes, constraints).
 //! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
 //! - [`blake3_flock`]: the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.

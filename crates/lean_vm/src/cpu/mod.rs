@@ -265,7 +265,7 @@ impl Program {
     /// programs that never change the frame pointer and touch only the first
     /// `main_frame` memory cells (so the prover needs no nondeterministic frame
     /// allocation). `prog.len()` must be a power of two with a never-executed
-    /// sentinel in its last slot: the run halts on reaching `g^{len-1}` (§state).
+    /// sentinel in its last slot: the run halts on reaching `g^{len-1}` (§sec:state).
     #[cfg(test)]
     pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
         Self::assemble(prog, 0, 0, HashMap::new(), main_frame)
@@ -625,7 +625,7 @@ fn finish_claims(
     slot_claims(l, &claims)
 }
 
-/// The public-input binding (§8): the committed `MEM` at `(r, 0,…,0)` must equal
+/// The public-input binding (§sec:e2e-pi): the committed `MEM` at `(r, 0,…,0)` must equal
 /// `interp(pi[0], pi[1], r)`, split into its three physical `K` limbs. The
 /// prover transmits `MEM_LO(r)` and `MEM_HI(r)`; both sides derive `MEM_TOP(r)`
 /// from the full F192 interpolation. The opening discharges all three claims.

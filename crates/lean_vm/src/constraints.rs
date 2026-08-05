@@ -1,4 +1,4 @@
-//! The tables' local constraints (§4.1), proven by one sumcheck for all tables.
+//! The tables' local constraints (§sec:air), proven by one sumcheck for all tables.
 //!
 //! Each table folds its identities with a DISJOINT range of one `η`'s powers, so
 //! the batch is a polynomial in `η` whose coefficients are the individual sums and

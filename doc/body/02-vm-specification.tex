@@ -10,7 +10,7 @@
 \]
 A \emph{memory word}, including a cell value, immediate, or hash value, is an element $v=v_0+v_1y+v_2y^2\in\E$ with $v_0,v_1,v_2\in\K$. Each memory address, program counter $\pc$, frame pointer $\fp$, and read counter is in $\K$.
 
-\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$.
+\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the $\K$-element $\gen^{\,i}$.
 
 \paragraph{Memory.} Memory is read-only (equivalently: write-once): an array of $2^{h}$ cells, each holding one $192$-bit word (an $\E$-element), addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$ (the addresses are $\K$-elements). The memory log-size $h$ depends on each VM execution, with the constraint $16\le h\le 32$.
 
@@ -18,7 +18,7 @@ A \emph{memory word}, including a cell value, immediate, or hash value, is an el
 
 \paragraph{Registers.} The machine state is two registers, the program counter $\pc$ and the frame pointer $\fp$, each a power of $\gen$. Every instruction except \texttt{JUMP} advances the state by $\pc\gets\gen\cdot\pc$ (fetching the next instruction) and leaves $\fp$ unchanged; \texttt{JUMP} may set both.
 
-\paragraph{Operands and addressing.} An operand is either an \emph{immediate}, a literal field element used as given, or an \emph{fp-relative reference}: an offset $j$ into the current frame, encoded as the $\gen$-power $o=\gen^{\,j}$. With the frame based at $\fp=\gen^{\mathrm{base}}$, the reference names the cell
+\paragraph{Operands and addressing.} An operand is either an \emph{immediate}, a literal $\E$-element used as given, or an \emph{fp-relative reference}: an offset $j$ into the current frame, encoded as the $\gen$-power $o=\gen^{\,j}$. With the frame based at $\fp=\gen^{\mathrm{base}}$, the reference names the cell
 \[
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]

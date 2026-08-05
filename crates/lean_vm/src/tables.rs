@@ -226,7 +226,7 @@ pub struct FillCtx<'a> {
     pub(crate) prog: &'a [Op],
     /// This table's per-column padding values, in local index order: `1 = g^0` for
     /// a count column, else 0, except for the `BLAKE3` output words, which pad with
-    /// the padding block's digest (§4.4, §e2e-pad).
+    /// the padding block's digest (§sec:e2e-pad).
     pub(crate) pad: &'a [F64],
     /// This table's padded row count `2^tau`, the length of every window in `out`.
     pub(crate) rows_padded: usize,
@@ -363,10 +363,10 @@ pub trait Table: Sync {
     /// is exactly [`n_constraints`](Table::n_constraints) long: an identity indexed
     /// past its end panics rather than silently reaching into the next table's
     /// range. The batched zerocheck carries every committed column of a table, in
-    /// local order, so `cols` is indexed directly. Returns `0` on every valid row (§4.1).
+    /// local order, so `cols` is indexed directly. Returns `0` on every valid row (§sec:air).
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192;
     /// The same identity over `K`-valued columns, for the round a table joins the
-    /// batch, before its columns have been folded into `E` (§5.1). Both entry
+    /// batch, before its columns have been folded into `E` (§sec:air). Both entry
     /// points delegate to one generic definition per table, so they cannot drift.
     fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192;
     /// Declare the table's bus interactions.

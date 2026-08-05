@@ -1,4 +1,4 @@
-//! The bus: a single shared channel balanced by a grand product (§4.2-§4.4). Each
+//! The bus: a single shared channel balanced by a grand product (§sec:gp through §sec:leafstack). Each
 //! interaction wires a table's columns into width-`m` tuples and flushes them in a
 //! direction; the bus balances when pushed and pulled tuples form the same
 //! multiset, proven by two GKR passes over the leaf vectors `γ − π_α(σ)`. Each pass
@@ -22,19 +22,19 @@ pub enum Coord {
     Const(F64),
     /// A committed column, value `col[z]`.
     Col(usize),
-    /// The free increment `g^k · col[z]` (a virtual column, §1): `k = 1` for the
+    /// The free increment `g^k · col[z]` (a virtual column, §sec:vm): `k = 1` for the
     /// count/state steps, `k ∈ {1,2,3}` for BLAKE3's consecutive-word successors.
     GCol(usize, u32),
-    /// The index column `g^z` (§5.3), free via the factored MLE.
+    /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
     Index,
-    /// A public column (the bytecode program, §8): not committed; both parties form
+    /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
     /// its MLE directly, so it raises no claim.
     Public(Vec<F64>),
 }
 
 /// A flushing rule: `2^kappa` rows, each a tuple of coordinates. `real` is the
 /// number of meaningful rows; the rest are padding (every column zero but the read
-/// counts, which are `1`), a fixed default the verifier divides out (§e2e-pad).
+/// counts, which are `1`), a fixed default the verifier divides out (§sec:e2e-pad).
 #[derive(Clone, Debug)]
 pub struct Block {
     pub kappa: usize,
@@ -584,7 +584,7 @@ fn bytecode_claim(blocks: &[Block], point: &[F192], t: &mut impl Absorb) -> Byte
     }
 }
 
-/// Prove the bus balances; returns the per-column claims to open (§4.4). `alpha`/
+/// Prove the bus balances; returns the per-column claims to open (§sec:leafstack). `alpha`/
 /// `gamma` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
 /// Everything the bus hands on: the framework blocks' column claims, the reduced

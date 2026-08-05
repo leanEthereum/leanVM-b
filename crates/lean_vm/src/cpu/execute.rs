@@ -25,7 +25,7 @@ fn as_addr(v: F192) -> Option<F64> {
 impl Program {
     /// Run the program in write-once *fill* mode to produce its [`Execution`]:
     /// the final memory image and the step count. The public input seeds the
-    /// first two memory cells `m[0], m[1]` (§e2e-pi). Compilation yields the
+    /// first two memory cells `m[0], m[1]` (§sec:e2e-pi). Compilation yields the
     /// `Program`; executing it (here) and proving it are separate later phases.
     pub fn execute(&self, public_input: [F192; 2]) -> Execution {
         use super::hints::{GPow, RHint};
@@ -46,7 +46,7 @@ impl Program {
             dbg_pc: 0,
             dbg_hint: None,
         };
-        // Seed the public input into m[0], m[1] (addresses g^0, g^1, §e2e-pi).
+        // Seed the public input into m[0], m[1] (addresses g^0, g^1, §sec:e2e-pi).
         m.cells[0] = public_input[0];
         m.cells[1] = public_input[1];
         m.written[0] = true;

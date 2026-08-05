@@ -78,7 +78,7 @@ pub struct Layout {
     /// `log2` of the stacked witness length.
     pub m: usize,
     /// Public input: the first two memory cells `m[0], m[1]` (each a 192-bit
-    /// word), bound to the committed memory at verification (§8).
+    /// word), bound to the committed memory at verification (§sec:e2e-pi).
     pub pi: [F192; 2],
     pub taus: [usize; tables::N_TABLES],
     /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
@@ -487,8 +487,8 @@ impl Program {
         // prover and verifier share exactly the same structure. It comes before the
         // fill because it fixes each table's padded row count `2^tau`, which lets
         // every column be allocated at its final length and padded in the same
-        // pass. Count columns pad with g^0 = 1, every other column with 0 (§4.4,
-        // §e2e-pad): a default padding row flushes tuples that do not self-cancel,
+        // pass. Count columns pad with g^0 = 1, every other column with 0
+        // (§sec:e2e-pad): a default padding row flushes tuples that do not self-cancel,
         // and the verifier divides them out of the bus product (§sec:gp). The shared
         // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode
         // lengths and take no padding.

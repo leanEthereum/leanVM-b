@@ -25,7 +25,7 @@ pub use phi8_tower::{PHI_8_TABLE_192, phi8_192};
 
 // ---------------------------------------------------------------------------
 // leanVM g-power helpers: domain separators / opcodes as x^k, and the g-power
-// index encoding (§1, §8).
+// index encoding (§sec:vm, §sec:e2e-bc).
 // ---------------------------------------------------------------------------
 
 /// Multiply by `x = g` in `K`, where `x^64 = x^4 + x^3 + x + 1` and
@@ -98,14 +98,14 @@ pub fn x_pow(k: usize) -> F64 {
 /// the monomial `x^k` (bit `k`), which the XMSS encoding check relies on.
 pub const G: F64 = F64::G;
 
-/// `g^i`, the g-power encoding of index `i` (§1).
+/// `g^i`, the g-power encoding of index `i` (§sec:vm).
 #[inline]
 pub fn g_pow(i: usize) -> F64 {
     x_pow(i)
 }
 
 /// MLE of the index column `[g^0, …, g^{2^n−1}]` over the `n`-variable cube,
-/// evaluated at an `E`-point: `∏_k (1 + ζ_k·(1 + g^{2^k}))` in `O(n)` (§5.3).
+/// evaluated at an `E`-point: `∏_k (1 + ζ_k·(1 + g^{2^k}))` in `O(n)` (§sec:idxcol).
 /// The `g^{2^k}` factors are `K`-constants, so each term is one mixed product.
 pub fn index_mle(zeta: &[F192]) -> F192 {
     let mut acc = F192::ONE;

@@ -1,4 +1,4 @@
-//! `K`-valued columns stacked into one committed witness (§3.1): columns laid
+//! `K`-valued columns stacked into one committed witness (§sec:stacking): columns laid
 //! end to end, largest first at aligned offsets, into one multilinear `q` over
 //! `F64`. An evaluation claim on column `i` at `ζ ∈ E` becomes the claim
 //! `q̂(ζ, sel_i) = c` on the stack, where `sel_i` is the high-bit selector of

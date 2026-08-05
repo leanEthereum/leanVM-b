@@ -1,7 +1,7 @@
 //! One column value, `K` while a table is unfolded and `E` once it is not.
 //!
-//! A table's columns are `K`-valued (`F64`, §3.1). The batched zerocheck folds
-//! them against an `E` challenge in the round the table joins (§5.1), so from the
+//! A table's columns are `K`-valued (`F64`, §def:column). The batched zerocheck folds
+//! them against an `E` challenge in the round the table joins (§sec:air), so from the
 //! next round on they are `E`-valued. Both phases evaluate the SAME identities,
 //! so each identity is written once against this trait and instantiated twice.
 //! There is no second copy to drift, which matters: the verifier evaluates the
