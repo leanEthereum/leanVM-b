@@ -36,6 +36,7 @@ use primitives::{
 
 mod ast;
 mod cse;
+pub mod filler;
 mod ir;
 mod lower;
 mod parser;
@@ -48,6 +49,19 @@ pub use parser::{parse, parse_const, parse_file_with_replacements, parse_with_re
 /// Compile an [`Ast`] to a provable [`Program`]. Panics on a malformed program
 /// (unbound variable, missing `main`, address overflow).
 pub fn compile(ast: &Ast) -> Program {
+    // Every program carries, past `main`'s halt, the fill blocks that bring each table's
+    // row count up to a power of two, so that no table needs padding rows (see `filler`).
+    compile_inner(ast, true)
+}
+
+/// [`compile`] without the fill blocks, so the program's own instruction mix is what
+/// runs. For tests that measure that mix: a proof of such a program still verifies, its
+/// tables padding as they did before the blocks existed.
+pub fn compile_without_filler(ast: &Ast) -> Program {
+    compile_inner(ast, false)
+}
+
+fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
     // Lower main first (entry pc 0), then the rest, expanding loop helpers.
     let mut queue: Vec<Func> = Vec::new();
     let main = ast
@@ -82,15 +96,20 @@ pub fn compile(ast: &Ast) -> Program {
         if f.const_params.contains(&true) || f.inline {
             continue;
         }
-        let mut low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);
+        let mut low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays, with_filler);
         // Fold away the pure instructions the lowerer emitted twice. Runs before
         // entry pcs are assigned, so only this function's own `KVal::Local`
         // targets need renumbering (`cse::compact` does that).
         let dropped = if std::env::var("DBG_NO_CSE").is_ok() {
             0
         } else {
-            cse::cse(&mut low.code, low.abi_end)
+            cse::cse(&mut low.code, low.abi_end, low.filler_start)
         };
+        // CSE never drops an instruction at or after `filler_start`, so every fill block
+        // moves down by exactly the number it did drop.
+        for b in &mut low.filler {
+            b.pc -= dropped as u32;
+        }
         cse_dropped += dropped;
         if dbg_lower {
             eprintln!("== fn {} (frame {}) ==", low.name, pretty_integer(low.frame_size));
@@ -167,6 +186,17 @@ pub fn compile(ast: &Ast) -> Program {
     program.fn_ranges = lowered
         .iter()
         .map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32))
+        .collect();
+    // The blocks are `main`'s, and `main` is lowered first, so its entry pc is 0 and the
+    // block pcs are already the global ones.
+    program.filler = lowered
+        .iter()
+        .flat_map(|l| {
+            l.filler.iter().map(|b| lean_vm::cpu::filler::Block {
+                pc: entry[&l.name] + b.pc,
+                ..b.clone()
+            })
+        })
         .collect();
     program
 }

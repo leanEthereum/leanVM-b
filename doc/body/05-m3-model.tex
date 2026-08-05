@@ -3,48 +3,15 @@
 
 The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{m3}. Rows are unordered, and an instance is accepted exactly when every table's constraints hold and the bus balances.
 
-\paragraph{Tables and columns.} Recall that a column of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$ and a table is a group of columns of equal height, each column either committed or virtual (Definition~\ref{def:column}). The arithmetization fixes the number of tables $\ntab$ and, for each table $T_j$, its number of columns $\ncol{j}$, its $\ncons{j}$ constraints and its $\nfl{j}$ bus flushes. The table heights are not fixed, and are annonced by the prover at the beginning of the proof, padded to the next power of two $2^{\tau_j}$.
+\paragraph{Tables and columns.} Recall that a column of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$ and a table is a group of columns of equal height, each column either committed or virtual (Definition~\ref{def:column}). The arithmetization fixes the number of tables $\ntab$ and, for each table $T_j$, its number of columns $\ncol{j}$, its $\ncons{j}$ constraints and its $\nfl{j}$ bus flushes. The table heights are not fixed: the prover announces each table's log height $\tau_j$ at the beginning of the proof, and every one of its $2^{\tau_j}$ rows is a row the program really executed (\S\ref{sec:e2e-pad}).
 
-\paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial of degree at most $d$ in the $\ncol{j}$ columns ($d=2$ throughout), required to vanish on every row, including the padding rows.
+\paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial of degree at most $d$ in the $\ncol{j}$ columns ($d=2$ throughout), required to vanish on every row.
 
 \paragraph{The bus.} All interactions (between tables) share a single \emph{bus}, a channel carrying tuples of up to $m=12$ $\K$-elements (shorter ones are zero-padded). Table $T_j$ has $\nfl{j}$ flushes $\btup_{j,1},\dots,\btup_{j,\nfl{j}}$, each is either a \emph{push} or a \emph{pull}. Each one of the $m$ coordinate in each tuple is a fixed polynomial of degree at most $d$ in the table committed columns. A few fixed \emph{boundary} tuples, belonging to no table, are pushed or pulled directly.
 
 \paragraph{Balance.} The bus balances when its pushed tuples and its pulled tuples form the same multiset: the same tuples with the same multiplicities, in any order.
 
 \paragraph{Domain separation.} The first coordinate of every tuple is a \emph{domain separator}, a fixed constant naming its interaction, the three lowest $\gen$-powers: $\dsep{ST}=\gen^{0}$ for state, $\dsep{MEM}=\gen^{1}$ for memory, $\dsep{BC}=\gen^{2}$ for bytecode. Since everything shares the one bus, the separators are what keep the three kinds of tuple from cancelling against one another: a memory tuple can never meet a bytecode tuple. The interactions below are three uses of this one channel, told apart by this coordinate.
-
-\subsection{Proving the local constraints}\label{sec:air}
-
-Each table must satisfy its own constraints on every one of its own rows. Instead of one zerocheck per table, over boolean hypercubes of different sizes, we batch them into a single sumcheck.
-
-Table $T_j$, for $1\le j\le\ntab$, has $2^{\tau_j}$ rows and $\ncons{j}$ constraints of degree at most $d$. Write $\sigma=\sum_j\ncons{j}$ for the total number of constraints and $n=\max_j\tau_j$ for the tallest table's height.
-
-\paragraph{One challenge and one point.} The verifier samples $\eta\in\E$ and fixes a point $r\in\E^{n}$ (in the assembled protocol $r$ is not freshly sampled but taken from the bus, see \emph{Nonzero claims} below and \S\ref{sec:leafstack}). Table $T_j$ mixes its constraints with the powers of $\eta$ from $o_j=\ncons{1}+\dots+\ncons{j-1}$ on, and is tested at the length-$\tau_j$ prefix of $r$:
-\[
-  C_j\;=\;\sum_{i=1}^{\ncons{j}}\eta^{\,o_j+i-1}\,C_{j,i},
-  \qquad
-  S_j\;=\;\widetilde{C_j}\bigl(r_{<\tau_j}\bigr)\;=\;\sum_{x\in\cube{\tau_j}}C_j(x)\,\eq(r_{<\tau_j},x).
-\]
-The ranges of $\eta$-powers are \emph{disjoint}, so no table's violation can be cancelled by another's, and proving $\sum_j S_j=0$ proves every $C_{j,i}$ vanishes on every row of its own table, up to Schwartz--Zippel error $(n+\sigma)/|\E|$ over $r$ and $\eta$ (Lemma~\ref{lem:sz}). (The identities keep disjoint ranges throughout. \S\ref{sec:leafstack} appends three more entries per table that deliberately \emph{share} their powers, since only their total over tables has to be pinned; that lengthens the $\eta$-degree, and the error, by $3$.)
-
-\paragraph{One sumcheck.} The $S_j$ are sumcheck claims of different lengths. Lift each onto the common boolean hypercube $\cube n$ by attaching the indicator of the all-ones assignment on the $n-\tau_j$ variables $T_j$ does not use:
-\[
-  f_j(X_0,\dots,X_{n-1})\;=\;\bigl(C_j\,\eq(r_{<\tau_j},\cdot)\bigr)(X_0,\dots,X_{\tau_j-1})\cdot\prod_{i\ge\tau_j}X_i .
-\]
-Because $\sum_x\prod_i x_i=1$ on any boolean hypercube, $\sum_{x\in\cube n}f_j(x)=S_j$, so with $F=\sum_j f_j$ the whole statement is the single claim $\sum_{x\in\cube n}F(x)=0$, proven by $n$ rounds of sumcheck on $F$.
-
-The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far (the same for every table that is waiting) and $S_j=0$. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. This is back-loaded batching: a short claim waits, then joins weighted by the rounds it sat out.
-
-\paragraph{Nonzero claims.} Nothing above needs $S_j=0$, nor $r$ to be a fresh challenge. Any polynomial in $T_j$'s columns whose $\eq$-weighted sum over the rows is a value the verifier knows is batched exactly like a constraint, becoming one more entry of $C_j$ with a power of $\eta$ of its own; only $S_j$ changes, from $0$ to that value. And any point fixed at random after the trace commitment serves as $r$. \S\ref{sec:leafstack} does both, running the batch at $r=\zeta$, the point GKR leaves behind, and handing each table three such polynomials. What is proven is then
-\[
-  \sum_{x\in\cube n}F(x)\;=\;\sum_j S_j .
-\]
-
-The one consequence for the rounds is that a waiting table's line $Y\,k\,S_j$ no longer vanishes. Write $X_\ell$ for the variable a round binds, $Y$ for it while still an unknown, and $k$ for the product of the challenges drawn so far, which is common to every waiting table. They therefore sum to $Y\,u$ for the single scalar $u=k\sum_{\tau_j\le\ell}S_j$, and with $p$ the joined tables' cofactor, of degree at most $2$, the round polynomial is the cubic
-\[
-  h(Y)\;=\;\eq(r_\ell,Y)\,p(Y)+Y\,u .
-\]
-The prover sends $h$ whole, at $\{0,1,\gen,\gen^{2}\}$: four $\E$-elements a round, one more than \S\ref{sec:gkr}'s $\eq$-trick. That one is the price of the nonzero claims rather than of sending $h$ whole, for the trick cannot save it: the verifier has no way to form $u$, so $u$ would travel beside the cofactor instead. The rounds are then vanilla sumcheck, checking $h(0)+h(1)=c$ against the running claim $c$ and folding $c\leftarrow h(\rho_\ell)$, with no $\eq$ reapplied to the message. Prover work is unchanged: $p$ is quadratic, so its fourth value interpolates from the other three rather than costing another pass over the rows.
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
@@ -54,28 +21,45 @@ The bus balances when its pushed and pulled tuples form the same multiset (\S\re
 \[
 \pi_\alpha(\btup)\;=\;\sum_{i=0}^{m-1}\alpha^{i}\,\btup_i ,
 \]
-every coordinate $\btup_i$ being a $\K$-element, so each summand is a mixed $\K\times\E$ product.
 
-\emph{Product check.} The verifier samples $\gamma\in\E$ and the prover proves
+\emph{Product check.} Both sides carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$. The verifier samples $\gamma\in\E$ and the prover proves
 \begin{equation}
 \prod_{\btup\ \text{pushed}}\bigl(\gamma-\pi_\alpha(\btup)\bigr)
 \;=\;
 \prod_{\btup\ \text{pulled}}\bigl(\gamma-\pi_\alpha(\btup)\bigr).
 \label{eq:gp}
 \end{equation}
-\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\btup\bigl(X-\pi_\alpha(\btup)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When they differ, Lemma~\ref{lem:sz} applies jointly to the tuple-fingerprinting challenge $\alpha$, the product challenge $\gamma$, the padding correction, and the GKR reductions. If each side has at most $2^\mu$ factors and tuples have width $m$, a conservative total degree bound is
+\emph{Why this is equivalent.} For a multiset $P$ of tuples write
 \[
-  2m\,2^\mu+8(\mu+1)^2.
+  \Pi_P(A,X)\;=\;\prod_{\btup\in P}\bigl(X-\pi_A(\btup)\bigr),
+\]
+a polynomial in two formal variables with coefficients in $\K$. The two sides of \eqref{eq:gp} are $\Pi_P(\alpha,\gamma)$ for $P$ the pushed multiset and the pulled one.
+
+\begin{lemma}[A product identity is a multiset identity]\label{lem:gp}
+For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and only if $P=Q$.
+\end{lemma}
+
+\begin{proof}
+Easy
+\end{proof}
+
+\emph{Completeness and soundness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\gamma$, so completeness is immediate. An unbalanced one makes $\Pi_P-\Pi_Q$ a nonzero polynomial, by the lemma, and \eqref{eq:gp} evaluates it at a single random point, so Lemma~\ref{lem:sz} bounds a false accept by its total degree over $|\E|$. Each factor $X-\pi_A(\btup)$ has total degree $m-1$ and a side has $2^{\mu}$ of them, so $m\,2^{\mu}$ bounds that degree. The GKR reductions that prove the two products contribute their own challenges, all covered by $8(\mu+1)^2$, for a conservative total
+\[
+  m\,2^\mu+8(\mu+1)^2 .
 \]
 The verifier checks that this bound over $|\E|=2^{192}$ leaves at least $128$ bits of soundness. The count product is verified by the same GKR argument, and its root is checked directly for nonzero; it introduces no separate root-at-random test. No Fiat--Shamir grinding is needed for the grand-product phase.
 
 Each side's product is proven by a GKR pass over a product tree (\S\ref{sec:gkr}).
 
-\paragraph{Padding.} Every table is padded past its real rows to a power of two. Each padding row is a fixed default: every column zero but the read counts, set to $\gen^{0}=1$. Its memory and bytecode flushes are then default tuples that do not self-cancel, so the prover announces each table's real row count and the verifier divides the surplus out of \eqref{eq:gp}: a default tuple $d$ in surplus $\delta_d$ on a side divides that side by $(\gamma-\pi_\alpha(d))^{\delta_d}$.
+\paragraph{Every row is a real row.} A table is proven over a power-of-two number of rows, and a program whose execution needs fewer runs the difference off in loops that sit beside it: per table, the compiler appends blocks of $1,2,\dots,128$ dummy instructions of that table's opcode, each ending in a jump back to its own start, and the prover traverses whichever of them bring each count to a power of two. Nothing enters those loops, so they are disjoint cycles of the kind the state interaction already tolerates, and they balance on their own (\S\ref{sec:e2e-pad}). So a table's height is its row count, no row is padding, and \eqref{eq:gp} is tested as it stands.
+
+This is what the announcement of \S\ref{sec:e2e-unrolled} carries: each table's log height, nothing more. The alternative is to pad the tables and let the prover announce how many rows are real, so that the verifier can divide the padding tuples back out of \eqref{eq:gp}. That works, but it costs a soundness argument of its own, that the announced counts are the true ones, which holds for reasons scattered across the machine: no real flush can forge a padding row's tuple, a padding push differs from the matching pull, and the row caps rule out the alternative. None of that is needed here. The bus balances or it does not.
+
+Memory and bytecode need nothing either way. A cell never read, or a program entry never executed, is seeded and finalized at the same count $\gen^{0}$, so its two tuples cancel (\S\ref{sec:memchan}, \S\ref{sec:bytecode}).
 
 \subsection{Proving the grand product (GKR)}\label{sec:gkr}
 
-Take one side of \eqref{eq:gp}. Its tuples give leaves $v_k=\gamma-\pi_\alpha(\btup_k)$, padded with $1$s to a power of two, $2^\mu$ in all. Their product $P=\prod_kv_k$ is the root of a binary product tree: layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is $P$. Let $\widetilde V_i:\E^{\mu-i}\to\E$ denote the multilinear extension of layer $i$.
+Take one side of \eqref{eq:gp}. Its tuples give its $2^{\mu}$ leaves $v_k=\gamma-\pi_\alpha(\btup_k)$, the ones past the last tuple being $1$. Their product $P=\prod_kv_k$ is the root of a binary product tree: layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is $P$. Let $\widetilde V_i:\E^{\mu-i}\to\E$ denote the multilinear extension of layer $i$.
 
 GKR contracts two binary levels at a time. Four grandchildren satisfy
 \[
@@ -124,20 +108,55 @@ All of $T_j$'s blocks are $2^{\tau_j}$ rows tall, so they read its columns at th
   \sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\Bigl(\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,c_{b,i}(x)\Bigr)
   \;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B_j(x),
 \]
-where $B_j(x)=\sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\bigl(\gamma-\sum_i\alpha^{i}c_{b,i}(x)\bigr)$, a polynomial of degree at most $d$ in $T_j$'s columns, as every bus coordinate is (\S\ref{sec:m3}) every coefficient of which the verifier forms itself (on the counts side $\alpha=1$ and $\gamma=0$, \S\ref{sec:memchan}, so it is a bare sum of count columns). The right-hand side is exactly a claim of \S\ref{sec:air}'s kind, with a nonzero value; its degree is the $d=2$ the batch already pays for the identities. So hand the three $B_j$, one per side, to the batch and run it at $r=\zeta$. They take three powers of $\eta$ placed after all $\sigma=\sum_j\ncons{j}$ identity powers of \S\ref{sec:air} and \emph{shared} by every table, so with a table's real constraints vanishing,
-\[
-  S_j\;=\;\eta^{\,\sigma}\,\widetilde B^{\mathrm{push}}_j+\eta^{\,\sigma+1}\,\widetilde B^{\mathrm{pull}}_j+\eta^{\,\sigma+2}\,\widetilde B^{\mathrm{cnt}}_j ,
-\]
-all at $\zeta_{<\tau_j}$.
+where $B_j(x)=\sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\bigl(\gamma-\sum_i\alpha^{i}c_{b,i}(x)\bigr)$, a polynomial of degree at most $d$ in $T_j$'s columns, as every bus coordinate is (\S\ref{sec:m3}), and every coefficient of which the verifier forms itself (on the counts side $\alpha=1$ and $\gamma=0$, \S\ref{sec:memchan}, so it is a bare sum of count columns).
 
-Sharing those powers is what ties the batch to the bus. Summing over the tables,
+So each side leaves, per table, one $\eq$-weighted sum over that table's own rows, all at the one point $\zeta_{<\tau_j}$, three in all: push, pull and counts. Their individual values stay unknown to the verifier. What it does know is the three totals
+\[
+  R_{\mathrm{side}}\;=\;\sum_j\widetilde B^{\mathrm{side}}_j\bigl(\zeta_{<\tau_j}\bigr),
+\]
+each being that side's leaf claim less its table-less blocks and the leaf vector's pad to $2^{\mu}$, both of which it just formed itself. Nothing is opened and nothing is sent for a table's blocks: \S\ref{sec:air} discharges the three sums per table against these three totals, in the sumcheck it already runs for the constraints.
+
+\subsection{Proving the rows}\label{sec:air}
+
+Two things are now owed about rows, and they have one shape. A constraint $C_{j,i}$ must vanish on every row of $T_j$, for which it is enough that its $\eq$-weighted sum over the rows vanishes at a single point fixed after the commitment (Lemma~\ref{lem:sz}). And each table owes the three bus sums of \S\ref{sec:leafstack}. Both read
+\[
+  \sum_{x\in\cube{\tau_j}}\eq(r_{<\tau_j},x)\,g(x)\;=\;\text{a target},
+\]
+for $g$ a polynomial of degree at most $d$ in $T_j$'s columns: the constraints with target $0$, the bus forms with targets the verifier knows only through their totals $R_{\mathrm{side}}$. One sumcheck proves all of them, for all tables at once. It runs at $r=\zeta$, the point GKR left behind (\S\ref{sec:gkr}): no fresh point is needed, only one fixed after the commitment. Write $\sigma=\sum_j\ncons{j}$ for the total number of constraints and $n=\max_j\tau_j$ for the tallest table's height.
+
+\paragraph{One challenge.} The verifier samples $\eta\in\E$, after the totals are fixed, and each table mixes everything it owes into one polynomial in its own columns, tested at the length-$\tau_j$ prefix of $r$:
+\[
+  C_j\;=\;\sum_{i=1}^{\ncons{j}}\eta^{\,o_j+i-1}\,C_{j,i}
+  \;+\;\eta^{\,\sigma}B^{\mathrm{push}}_j+\eta^{\,\sigma+1}B^{\mathrm{pull}}_j+\eta^{\,\sigma+2}B^{\mathrm{cnt}}_j,
+  \qquad
+  S_j\;=\;\widetilde{C_j}\bigl(r_{<\tau_j}\bigr),
+\]
+with $o_j=\ncons{1}+\dots+\ncons{j-1}$. The constraint ranges are \emph{disjoint} across tables, so no table's violation can be cancelled by another's. The three bus powers are the opposite, \emph{shared} by every table, which is what the bus needs: only the totals have to be pinned. With every real constraint vanishing, summing over the tables leaves
 \[
   \sum_j S_j\;=\;\eta^{\,\sigma}R_{\mathrm{push}}+\eta^{\,\sigma+1}R_{\mathrm{pull}}+\eta^{\,\sigma+2}R_{\mathrm{cnt}} ,
 \]
-each $R_{\mathrm{side}}$ being that side's leaf claim less its table-less blocks and padding, which the verifier forms for itself. The batch therefore starts from a target it derived, and $\eta$ is drawn only afterwards, so reaching that one number forces the three bus equations $\sum_j\widetilde B^{\mathrm{side}}_j=R_{\mathrm{side}}$ at once, and zero in every identity slot besides. Per-table powers would not factor this way: the verifier would need three shares per table transmitted, which is sound but costly, and a transmitted aggregate would settle nothing at all, appearing in no other check.
+a target the verifier derived before $\eta$ was drawn. Reaching that one number therefore forces the three bus equations $\sum_j\widetilde B^{\mathrm{side}}_j=R_{\mathrm{side}}$ at once, and zero in every constraint slot besides, up to Schwartz--Zippel error $(n+\sigma+3)/|\E|$ over $r$ and $\eta$ (Lemma~\ref{lem:sz}). Per-table bus powers would not factor this way: the verifier would need three shares per table transmitted, which is sound but costly, and a transmitted aggregate would settle nothing at all, appearing in no other check.
 
-So the bus sends nothing for a table's blocks, and no column of a table is opened at $\zeta$: no such evaluation travels at all. The batch leaves one claim per column of $T_j$ instead, at its own output point $\rho_{<\tau_j}$, settled as above.
+\paragraph{One sumcheck.} The $S_j$ are sumcheck claims of different lengths. Lift each onto the common boolean hypercube $\cube n$ by attaching the indicator of the all-ones assignment on the $n-\tau_j$ variables $T_j$ does not use:
+\[
+  f_j(X_0,\dots,X_{n-1})\;=\;\bigl(C_j\,\eq(r_{<\tau_j},\cdot)\bigr)(X_0,\dots,X_{\tau_j-1})\cdot\prod_{i\ge\tau_j}X_i .
+\]
+Because $\sum_x\prod_i x_i=1$ on any boolean hypercube, $\sum_{x\in\cube n}f_j(x)=S_j$, so with $F=\sum_j f_j$ the whole statement is the single claim
+\[
+  \sum_{x\in\cube n}F(x)\;=\;\sum_j S_j ,
+\]
+proven by $n$ rounds of sumcheck on $F$.
+
+The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far, the same for every table that is waiting. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. This is back-loaded batching: a short claim waits, then joins weighted by the rounds it sat out.
+
+\paragraph{The round polynomial.} Write $X_\ell$ for the variable a round binds and $Y$ for it while still an unknown. The waiting tables' lines sum to $Y\,u$ for the single scalar $u=k\sum_{\tau_j\le\ell}S_j$, and with $p$ the joined tables' cofactor, of degree at most $2$, the round polynomial is the cubic
+\[
+  h(Y)\;=\;\eq(r_\ell,Y)\,p(Y)+Y\,u .
+\]
+The prover sends $h$ whole, at $\{0,1,\gen,\gen^{2}\}$: four $\E$-elements a round, one more than \S\ref{sec:gkr}'s $\eq$-trick. That one is the price of the nonzero targets rather than of sending $h$ whole, for the trick cannot save it: the verifier has no way to form $u$, so $u$ would travel beside the cofactor instead. The rounds are then vanilla sumcheck, checking $h(0)+h(1)=c$ against the running claim $c$ and folding $c\leftarrow h(\rho_\ell)$, with no $\eq$ reapplied to the message. Prover work is unchanged: $p$ is quadratic, so its fourth value interpolates from the other three rather than costing another pass over the rows.
+
+The batch ends with one claim per column of $T_j$, at that table's own output point $\rho_{<\tau_j}$, every one of them a prefix of the one $\rho$. Those are what the opening settles (\S\ref{sec:stacking}). No column of a table is ever opened at $\zeta$.
 
 \subsection{State interaction}\label{sec:state}
 
-The state interaction carries $\tup{\dsep{ST},\pc,\fp}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$; the bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_0,\fp_0}$ and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}}}$. When the bus balances, the per-row transitions form a chain from $(\pc_0,\fp_0)$ to $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$, possibly alongside disjoint cycles. The chain is the execution; a stray cycle is a closed loop of rows that still satisfies every constraint and reads the same committed memory and bytecode, so it cannot affect the start-to-final claim. By convention execution halts at a fixed sentinel: the last bytecode instruction. Writing $\nprog$ for the program length (a power of two, \S\ref{sec:e2e-bc}), the instructions sit at $\gen^{0},\dots,\gen^{\,\nprog-1}$, so $\pc_{\mathrm{final}}=\gen^{\,\nprog-1}$, with $\fp_{\mathrm{final}}=\gen^{0}$. A compiled \texttt{main} ends by jumping there. Both boundary states are then public, so the verifier forms them itself.
+The state interaction carries $\tup{\dsep{ST},\pc,\fp}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$; the bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_0,\fp_0}$ and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}}}$. When the bus balances, the per-row transitions form a chain from $(\pc_0,\fp_0)$ to $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$, possibly alongside disjoint cycles. The chain is the execution; a cycle is a closed loop of rows that still satisfies every constraint and reads the same committed memory and bytecode, so it cannot affect the start-to-final claim. That tolerance is not merely harmless, it is used: the rows that bring each table to a power of two are exactly such cycles (\S\ref{sec:e2e-pad}). By convention execution halts at a fixed sentinel: the last bytecode instruction. Writing $\nprog$ for the program length (a power of two, \S\ref{sec:e2e-bc}), the instructions sit at $\gen^{0},\dots,\gen^{\,\nprog-1}$, so $\pc_{\mathrm{final}}=\gen^{\,\nprog-1}$, with $\fp_{\mathrm{final}}=\gen^{0}$. A compiled \texttt{main} ends by jumping there. Both boundary states are then public, so the verifier forms them itself.

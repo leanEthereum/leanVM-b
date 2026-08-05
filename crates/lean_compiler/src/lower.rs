@@ -2,6 +2,8 @@
 //! [`LOp`] instructions (fp-relative offsets, backpatched jump targets).
 
 use super::*;
+use crate::filler::FillerOp;
+use lean_vm::cpu::filler::Block;
 
 /// [`FnLower::specialized_body`]'s pieces: runtime param names, runtime args,
 /// the `Const`-substituted body, and the callee's return arity.
@@ -161,6 +163,8 @@ struct FnLower<'a> {
     inline_stack_ret: Option<Vec<RetBind>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
+    /// Where the fill blocks begin in `code`, once emitted.
+    filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
@@ -377,6 +381,107 @@ impl FnLower<'_> {
             od: dest,
             of: one,
         });
+    }
+
+    /// Emit the fill blocks: per table and per size in `lean_vm::cpu::filler::SIZES`,
+    /// that many dummy instructions of the table's opcode, then a `JUMP` back to the
+    /// block's own first instruction, in the same frame.
+    ///
+    /// So a block is a cycle, and nothing jumps into one. They sit past `main`'s halt,
+    /// unreachable from any program code, and the interpreter enters them itself once the
+    /// program has stopped: the state tuples a traversal pushes are the ones it pulls, so
+    /// the cycle balances on its own for any number of traversals, whatever else the run
+    /// did (`lean_vm::cpu::filler`).
+    ///
+    /// The closing jump is always taken, its destination being a g-power and so nonzero,
+    /// and it reads that destination and its frame from cells the interpreter writes. A
+    /// traversal therefore costs the block's rows plus that one jump, and nothing else:
+    /// nothing here counts, tests, or allocates.
+    ///
+    /// A dummy uses one scratch cell as each of its operands, so the value it writes
+    /// there is the value already there, which write-once memory permits however many
+    /// traversals run: a block costs one cell for its dummies whatever its size. CSE
+    /// leaves the copies alone (a cell written more than once is not a candidate) and
+    /// there is no dead-code pass.
+    fn lower_filler_blocks(&mut self) -> Vec<Block> {
+        use lean_vm::cpu::filler::{SIZES, frame as fr};
+
+        // A block runs in a frame the interpreter carves out, so the cells it reads are at
+        // fixed offsets in *that* frame rather than allocated from this function's
+        // counter, and nothing here touches `main`'s frame at all.
+        self.filler_start = Some(self.code.len());
+        let mut blocks = Vec::new();
+        for (table, op) in crate::filler::TABLES {
+            for size in SIZES {
+                blocks.push(Block {
+                    pc: self.code.len() as u32,
+                    size: size as u32,
+                    table,
+                });
+                for _ in 0..size {
+                    self.emit(match op {
+                        FillerOp::Xor => LOp::Xor {
+                            a: fr::SCRATCH,
+                            b: fr::SCRATCH,
+                            c: fr::SCRATCH,
+                        },
+                        FillerOp::Mul => LOp::Mul {
+                            a: fr::SCRATCH,
+                            b: fr::SCRATCH,
+                            c: fr::SCRATCH,
+                        },
+                        FillerOp::Set => LOp::Set {
+                            o: fr::SCRATCH,
+                            k: KVal::Const(F64::ZERO),
+                        },
+                        FillerOp::AddExt => LOp::AddExt {
+                            a: fr::SCRATCH,
+                            b: fr::SCRATCH,
+                            c: fr::SCRATCH,
+                        },
+                        FillerOp::MulExt => LOp::MulExt {
+                            a: fr::SCRATCH,
+                            b: fr::SCRATCH,
+                            c: fr::SCRATCH,
+                        },
+                        FillerOp::DerefExt => LOp::DerefExt {
+                            alpha: fr::PTR,
+                            beta: 0,
+                            gamma: fr::SCRATCH,
+                        },
+                        FillerOp::Deref => LOp::Deref {
+                            alpha: fr::PTR,
+                            beta: 0,
+                            gamma: fr::SCRATCH,
+                            mode: DerefMode::Cell,
+                        },
+                        // Its condition is a cell nothing ever writes, so it reads as
+                        // zero: the dummy is not taken and falls through to the next
+                        // instruction of the block instead of closing the cycle early.
+                        FillerOp::Jump => LOp::Jump {
+                            oc: fr::ZERO,
+                            od: fr::ZERO,
+                            of: fr::ZERO,
+                        },
+                        FillerOp::Blake3 => LOp::Blake3 {
+                            ins: [fr::MSG, fr::MSG + 2, fr::MSG + 4, fr::MSG + 6],
+                            cv: fr::SCRATCH,
+                            out: fr::DIGEST,
+                            metadata: [F64::ZERO; 2],
+                        },
+                    });
+                }
+                // Back to the top, closing the cycle. For the `JUMP` table this is one
+                // more row of its own, which is why the solver decomposes that table over
+                // `size + 1`.
+                self.emit(LOp::Jump {
+                    oc: fr::DEST,
+                    od: fr::DEST,
+                    of: fr::NEXT_FP,
+                });
+            }
+        }
+        blocks
     }
 
     /// `dst = src` (no MOV: multiply by `1`).
@@ -3165,6 +3270,7 @@ pub(crate) fn lower_func(
     loop_ctr: &mut usize,
     defs: &HashMap<String, Func>,
     const_arrays: &HashMap<String, Vec<F64>>,
+    with_filler: bool,
 ) -> Lowered {
     // `main` shares the global memory image with the four public-input words,
     // so its frame starts after m[0..4]. Ordinary call frames retain their
@@ -3188,6 +3294,7 @@ pub(crate) fn lower_func(
     let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
     let next = prefix + param_cells + n_ret_cells;
     let mut lowerer = FnLower {
+        filler_start: None,
         scope: Scope {
             vars,
             stacks: param_stacks,
@@ -3223,17 +3330,26 @@ pub(crate) fn lower_func(
             && matches!(f.body.get(i + 1), Some(Stmt::Return(r)) if r.is_empty());
         lowerer.stmt(s);
     }
+    let mut filler = Vec::new();
     if lowerer.is_main {
         lowerer.halt(); // main terminates at the sentinel pc, not by falling off
+        if with_filler {
+            // Past the halt, so no program code reaches them: the fill blocks are cycles
+            // the interpreter enters on its own ([`FnLower::lower_filler_blocks`]).
+            filler = lowerer.lower_filler_blocks();
+        }
     } else if !matches!(f.body.last(), Some(Stmt::Return(_))) {
         // A function must never fall off its end into whatever code the
         // layout placed next: append the implicit bare return.
         lowerer.stmt(&Stmt::Return(vec![]));
     }
+    let filler_start = lowerer.filler_start.unwrap_or(lowerer.code.len());
     Lowered {
         name: f.name.clone(),
         code: lowerer.code,
         frame_size: lowerer.next,
         abi_end: 2 + f.params.len() as u32 + n_ret_cells,
+        filler_start,
+        filler,
     }
 }

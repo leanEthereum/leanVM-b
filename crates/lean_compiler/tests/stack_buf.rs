@@ -5,7 +5,7 @@
 //! `blake3(h, h, out)` aliases one run into both input operands) and writes
 //! the digest into the pre-allocated four-word run `out`.
 
-use lean_compiler::{compile, parse};
+use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{Op, prove, verify};
 use lean_vm::vmhash::compress;
@@ -13,6 +13,14 @@ use primitives::field::F64;
 
 fn pi2(a: F64, b: F64) -> [F64; 4] {
     [a, b, F64::ZERO, F64::ZERO]
+}
+
+/// The program's own instruction mix: a build without the fill blocks, executed but not
+/// proven. Proving needs them, since a table's height has to be a power of two with no
+/// padding rows, but their dummy rows would drown out exactly what these counts are
+/// measuring.
+fn mix(src: &str, pi: [F64; 4]) -> [usize; lean_vm::tables::N_TABLES] {
+    compile_without_filler(&parse(src).expect("parse")).execute(pi).base_counts
 }
 
 /// A size-4 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then its
@@ -44,8 +52,8 @@ def main():
     let h = [F64(5), F64(7), F64(11), F64(13)];
     let want = compress(h, h);
 
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[8], 1, "one BLAKE3 instruction");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[lean_vm::tables::BLAKE3_TABLE], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
@@ -68,7 +76,7 @@ def main():
     blake3(t, t, out)
     return
 ";
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     let hashes: Vec<Op> = program
         .prog
         .iter()
@@ -104,7 +112,7 @@ def hash_pair(a, b):
     blake3([a, b, 0, 0], [a, b, 0, 0], out)
     return
 ";
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     let hash = program
         .prog
         .iter()
@@ -137,7 +145,7 @@ def main():
     blake3(a[0:4], a[0:4], out[0:4])
     return
 ";
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     assert_eq!(
         program
             .prog
@@ -178,8 +186,8 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
     let want = pi2(F64(7), F64(4));
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[8], 0, "no BLAKE3 here");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[lean_vm::tables::BLAKE3_TABLE], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
@@ -328,8 +336,8 @@ def step(state, v):
     let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
     let want = s2;
 
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[8], 2, "two BLAKE3 instructions (one per inlined step)");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[lean_vm::tables::BLAKE3_TABLE], 2, "two BLAKE3 instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
@@ -452,8 +460,8 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
     let want = compress([F64(7), F64(5), F64(13), F64(11)], [F64(2), F64(3), F64(6), F64(17)]);
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[8], 1, "one BLAKE3 instruction");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[lean_vm::tables::BLAKE3_TABLE], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
 

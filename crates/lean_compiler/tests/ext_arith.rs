@@ -1,4 +1,4 @@
-use lean_compiler::{compile, parse};
+use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::cpu::{Op, prove, verify};
 use primitives::field::{F64, F192};
 
@@ -35,8 +35,8 @@ def main():
     let p = words(a * b);
     let want = [s[0], s[1], s[2], p[0]];
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[2], 1);
-    assert_eq!(stats.counts[3], 2);
+    assert_eq!(stats.base_counts[2], 1);
+    assert_eq!(stats.base_counts[3], 2);
     verify(&program, &want, &proof).expect("extension arithmetic verifies");
 }
 
@@ -87,7 +87,7 @@ def check_ext(value: Ext):
     assert value[2] == 24
     return
 "#;
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     program.execute([F64::ZERO; 4]);
     assert_eq!(
         program
@@ -120,7 +120,7 @@ def main():
 def roundtrip(a, b, c, d):
     return a, b, c, d
 "#;
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     program.execute([F64(5), F64(7), F64(11), F64(13)]);
     assert_eq!(
         program
@@ -155,7 +155,7 @@ def make():
     xor_192(x, a, b)
     return a, b
 "#;
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     program.execute([F64::ZERO; 4]);
     assert_eq!(
         program
@@ -181,7 +181,7 @@ def main():
     xor_192(alias, first, second)
     return
 "#;
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     program.execute([F64::ZERO; 4]);
 
     // Both literal inputs are pooled constant extension runs, and the alias of
@@ -206,7 +206,7 @@ def main():
     out[GEN ** 2] = square[2]
     return
 "#;
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     let expected = words(F192::new(5, 7, 11) * F192::new(5, 7, 11));
     program.execute([expected[0], expected[1], expected[2], F64::ZERO]);
     assert_eq!(
@@ -239,7 +239,7 @@ def main():
     out[GEN ** 2] = product[2]
     return
 "#;
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile_without_filler(&parse(src).expect("parse"));
     let expected = words(F192::from(F64(5)) * F192::new(7, 11, 13));
     program.execute([expected[0], expected[1], expected[2], F64::ZERO]);
     assert!(
@@ -268,7 +268,7 @@ def main():
 "#;
     let program = compile(&parse(src).expect("parse"));
     let (proof, stats) = prove(&program, [F64::ZERO; 4], lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[6], 2);
+    assert_eq!(stats.base_counts[6], 2);
     verify(&program, &[F64::ZERO; 4], &proof).expect("extension dereference verifies");
 }
 
@@ -287,6 +287,7 @@ def main():
 "#;
     let program = compile(&parse(src).expect("parse"));
     let (proof, stats) = prove(&program, [F64::ZERO; 4], lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[6], 3);
+    assert_eq!(stats.base_counts[6], 3);
     verify(&program, &[F64::ZERO; 4], &proof).expect("deferred extension chain verifies");
 }
+

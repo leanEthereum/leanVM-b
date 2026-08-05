@@ -6,12 +6,22 @@
 //! range-check trick, transported to g-powers; the only nondeterminism is the
 //! end-of-run resolution of the two touched cells.
 
-use lean_compiler::{compile, parse};
+use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, g_pow};
 
 fn pi2(a: F64, b: F64) -> [F64; 4] {
     [a, b, F64::ZERO, F64::ZERO]
+}
+
+/// The program's own instruction mix: a build without the fill blocks, executed but not
+/// proven. Proving needs them, since a table's height has to be a power of two with no
+/// padding rows, but their dummy rows would drown out exactly what these counts are
+/// measuring.
+fn mix(src: &str, pi: [F64; 4]) -> [usize; lean_vm::tables::N_TABLES] {
+    compile_without_filler(&parse(src).expect("parse"))
+        .execute(pi)
+        .base_counts
 }
 
 /// Both bound forms (`log GEN ** k` and a plain integer exponent) with the
@@ -36,9 +46,9 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = pi2(g_pow(12), g_pow(5));
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 2 DEREFs per range check (4 checks) + 2 publishing stores.
-    assert_eq!(stats.counts[5], 10, "DEREF count");
+    assert_eq!(mix(src, want)[lean_vm::tables::DEREF_TABLE], 10, "DEREF count");
     verify(&program, &want, &proof).expect("range-checked program verifies");
 
     let bad = pi2(g_pow(12), g_pow(6));
@@ -105,9 +115,9 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = pi2(F64(5), F64(7));
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 6 iterations × 2 range-check DEREFs, plus call/publish plumbing.
-    assert!(stats.counts[5] >= 12, "at least the 12 range-check DEREFs");
+    assert!(mix(src, want)[lean_vm::tables::DEREF_TABLE] >= 12, "at least the 12 range-check DEREFs");
     verify(&program, &want, &proof).expect("loop range checks verify");
 }
 

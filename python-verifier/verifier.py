@@ -694,11 +694,7 @@ class Coordinate:
 class BusBlock:
     log_rows: int
     coordinates: tuple[Coordinate, ...]
-    real_rows: int
     owner: tuple[int, int] | None = None
-
-    def __post_init__(self) -> None:
-        require(0 <= self.real_rows <= 1 << self.log_rows, "invalid bus block row count")
 
 
 @dataclass(frozen=True)
@@ -846,40 +842,6 @@ def _decompose_bus_side(
     return result + ONE + selector_sum
 
 
-def _padding_fingerprint(block: BusBlock, padding: Sequence[F192], alpha: F192) -> F192:
-    result = ZERO
-    coefficient = ONE
-    for coordinate in block.coordinates:
-        if coordinate.constant is not None:
-            value = coordinate.constant
-        elif coordinate.column is not None:
-            value = padding[coordinate.column]
-        elif coordinate.generator_column is not None:
-            value = (GEN ** coordinate.generator_power) * padding[coordinate.generator_column]
-        elif coordinate.product is not None:
-            a, b, exponent = coordinate.product
-            value = _gpow(exponent) * padding[a] * padding[b]
-        else:
-            value = ZERO
-        result += coefficient * value
-        coefficient *= alpha
-    return result
-
-
-def _padding_surplus(
-    blocks: Sequence[BusBlock],
-    padding: Sequence[F192],
-    alpha: F192,
-    gamma: F192,
-) -> F192:
-    result = ONE
-    for block in blocks:
-        surplus_rows = (1 << block.log_rows) - block.real_rows
-        if surplus_rows:
-            result *= (gamma + _padding_fingerprint(block, padding, alpha)) ** surplus_rows
-    return result
-
-
 def _public_evaluations(
     blocks: Sequence[BusBlock], point: Sequence[F192]
 ) -> tuple[int, list[F192]]:
@@ -918,7 +880,6 @@ def verify_bus_balance(
     push: Sequence[BusBlock],
     pull: Sequence[BusBlock],
     count: Sequence[BusBlock],
-    padding: Sequence[F192],
     transcript: Transcript,
 ) -> BusResult:
     push_layout = bus_layout(push)
@@ -934,9 +895,10 @@ def verify_bus_balance(
     push_root, pull_root, count_root = product.roots
     require(count_root != ZERO, "a bus read count is zero")
 
-    push_surplus = _padding_surplus(push, padding, alpha, gamma)
-    pull_surplus = _padding_surplus(pull, padding, alpha, gamma)
-    require(push_root * pull_surplus == pull_root * push_surplus, "bus is unbalanced")
+    # Every row of every table is a real row: the prover's fill blocks bring each
+    # table's count up to a power of two, so the two sides balance outright with no
+    # padding surplus to divide back out.
+    require(push_root == pull_root, "bus is unbalanced")
 
     claims: list[ColumnClaim] = []
     forms = tuple(
@@ -1240,7 +1202,6 @@ class Layout:
     push: tuple[BusBlock, ...]
     pull: tuple[BusBlock, ...]
     count: tuple[BusBlock, ...]
-    padding: tuple[F192, ...]
     placements: tuple[Placement, ...]
     stack_log: int
     table_logs: tuple[int, ...]
@@ -1414,24 +1375,25 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
     return tuple(tuple(column) for column in columns)
 
 
-def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -> Layout:
+def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
-        and len(row_counts) == N_TABLES
-        and all(0 <= count < 1 << 32 for count in row_counts),
+        and len(table_logs) == N_TABLES
+        and all(0 <= height <= 32 for height in table_logs)
+        # flock sizes its argument to at least 2^3 instances and the BLAKE3 table's value
+        # columns share that instance cube, so a smaller height is not expressible.
+        and table_logs[BLAKE3_TABLE] >= 3,
         "invalid announced table sizes",
     )
-    table_logs = [_ceil_log(max(1, count)) for count in row_counts]
-    table_logs[BLAKE3_TABLE] = max(3, table_logs[BLAKE3_TABLE])
+    table_logs = list(table_logs)
     bytecode_log = len(program.operations).bit_length() - 1
     public_columns = _program_columns(program)
 
     push = [
-        BusBlock(0, (_const(ONE), _const(ONE), _const(ONE)), 1),
+        BusBlock(0, (_const(ONE), _const(ONE), _const(ONE))),
         BusBlock(
             log_memory,
             (_const(GEN), Coordinate(index=True), _const(ONE), _col(MEM_COLUMN)),
-            1 << log_memory,
         ),
         BusBlock(
             bytecode_log,
@@ -1441,15 +1403,13 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
                 _const(ONE),
                 *(_public(column) for column in public_columns),
             ),
-            len(program.operations),
         ),
     ]
     pull = [
-        BusBlock(0, (_const(ONE), _const(_gpow(len(program.operations) - 1)), _const(ONE)), 1),
+        BusBlock(0, (_const(ONE), _const(_gpow(len(program.operations) - 1)), _const(ONE))),
         BusBlock(
             log_memory,
             (_const(GEN), Coordinate(index=True), _col(1), _col(MEM_COLUMN)),
-            1 << log_memory,
         ),
         BusBlock(
             bytecode_log,
@@ -1459,31 +1419,19 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
                 _col(2),
                 *(_public(column) for column in public_columns),
             ),
-            len(program.operations),
         ),
     ]
     count: list[BusBlock] = []
-    padding = [ZERO] * (4 + sum(WIDTHS))
-    for table, (base, height, real) in enumerate(zip(BASES, table_logs, row_counts)):
+    for table, (base, height) in enumerate(zip(BASES, table_logs)):
         flushes = _table_flushes(table)
         for coordinates in flushes.push:
             shifted = tuple(_offset_coordinate(c, base) for c in coordinates)
-            push.append(BusBlock(height, shifted, real, (table, base)))
+            push.append(BusBlock(height, shifted, (table, base)))
         for coordinates in flushes.pull:
             shifted = tuple(_offset_coordinate(c, base) for c in coordinates)
-            pull.append(BusBlock(height, shifted, real, (table, base)))
+            pull.append(BusBlock(height, shifted, (table, base)))
         for local in COUNT_COLUMNS[table]:
-            count.append(BusBlock(height, (_col(base + local),), real, (table, base)))
-            padding[base + local] = ONE
-
-    zero_digest = blake3_hash(bytes(64))
-    b3 = BASES[BLAKE3_TABLE]
-    digest_words = [int.from_bytes(zero_digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24)]
-    for index, value in enumerate(digest_words):
-        padding[b3 + 16 + index] = F192(value)
-        padding[b3 + 20 + index] = F192(VM_IV[index])
-    padding[b3 + 24] = ZERO
-    padding[b3 + 25] = F192(64 | 11 << 32)
+            count.append(BusBlock(height, (_col(base + local),), (table, base)))
 
     kappas: list[int | None] = [0] * (4 + sum(WIDTHS))
     kappas[MEM_COLUMN] = kappas[1] = log_memory
@@ -1492,7 +1440,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_VALUES:
-        kappas[b3 + local] = None
+        kappas[BASES[BLAKE3_TABLE] + local] = None
     order = sorted(
         (
             (index, variables)
@@ -1507,7 +1455,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
         placements[index] = Placement(variables, offset)
         offset += 1 << variables
     stack_log = max(15, _ceil_log(max(1, offset)))
-    return Layout(tuple(push), tuple(pull), tuple(count), tuple(padding), tuple(placements),
+    return Layout(tuple(push), tuple(pull), tuple(count), tuple(placements),
                   stack_log, tuple(table_logs))
 
 
@@ -2482,10 +2430,10 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     announced = transcript.scalars(N_TABLES + 2)
     require(all(value.c1 == value.c2 == 0 for value in announced), "announced size has a nonzero high limb")
     log_memory = announced[0].c0
-    row_counts = tuple(value.c0 for value in announced[1 : 1 + N_TABLES])
-    log_inverse_rate = announced[-1].c0
+    table_logs = tuple(value.c0 for value in announced[1 : 1 + N_TABLES])
+    log_inverse_rate = announced[1 + N_TABLES].c0
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
-    layout = build_layout(program, log_memory, row_counts)
+    layout = build_layout(program, log_memory, table_logs)
 
     root_words = transcript.scalars(2)
     require(root_words[1].c1 == root_words[1].c2 == 0,
@@ -2494,7 +2442,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         limb.to_bytes(8, "little")
         for limb in (root_words[0].c0, root_words[0].c1, root_words[0].c2, root_words[1].c0)
     )
-    bus = verify_bus_balance(layout.push, layout.pull, layout.count, layout.padding, transcript)
+    bus = verify_bus_balance(layout.push, layout.pull, layout.count, transcript)
     for claim in bus.claims:
         if virtual_slot(claim.column) is None:
             require(
