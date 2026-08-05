@@ -3,7 +3,7 @@
 
 \subsection{Stacking}\label{sec:stacking}
 
-No column is committed on its own. The columns are $\K$-valued multilinears over boolean hypercubes of various sizes, concatenated into one witness $q$; one region of the stack is flock's packed Boolean witness $q_\pkd$, $64$ bits per $\K$-word (\S\ref{sec:tab-blake3}). Order the $T$ columns $\widetilde P_1,\dots,\widetilde P_T$ by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and lay their truth tables end to end,
+Suppose we want to commit to $T$ multilinears $P_1,\dots,P_T$ over boolean hypercubes of various sizes. We could commit to each independently, at the cost of a large cumulative opening proof. Instead they are concatenated into a large multilinear polynomial $q$, which we commit to with an inner-product commitment scheme (Definition~\ref{def:ipcs}), with a protocol to reduce opening claims on $P_i$ to a claim on $q$. Order them by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and concatenate their tables end to end,
 \[
   q \;=\; P_1 \,\Vert\, P_2 \,\Vert\,\dots\,\Vert\, P_T \,\Vert\, 0,
 \]
@@ -17,7 +17,7 @@ An evaluation claim $\widetilde P_i(\zeta)=c$ is therefore a claim on the stack,
 \]
 a weighted sum over $\widetilde q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)$.
 
-\paragraph{Batching.} Every claim the protocol raises against a column is a weighted sum $\langle W_j,\widetilde q\rangle=c_j$ with $\E$-valued weight and target. After the claimed values are bound, the verifier samples independent $\lambda_j\in\E$ and defines $W_\lambda=\sum_j\lambda_jW_j$ and $C_\lambda=\sum_j\lambda_jc_j$. The inner-product PCS (\S\ref{sec:rs-dense}) proves
+\paragraph{Batching.} Every claim the protocol raises against a column is a weighted sum $\langle W_j,\widetilde q\rangle=c_j$ with $\E$-valued weight and target. After the claimed values are bound, the verifier samples independent $\lambda_j\in\E$ and defines $W_\lambda=\sum_j\lambda_jW_j$ and $C_\lambda=\sum_j\lambda_jc_j$. The inner-product PCS (Annex~\ref{annex:pcs}) proves
 \[
   \sum_{w\in\cube{M}} W_\lambda(w)\,\widetilde q(w)=C_\lambda
 \]

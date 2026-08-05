@@ -5,7 +5,7 @@
 \fbox{\textbf{Warning: AI-assisted writing, some parts have not been properly reviewed yet.}}
 \end{center}
 
-A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime (nothing new). The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes described here. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, so the PCS is only list binding. \S\ref{sec:rs-dense} fixes the instantiation this VM uses.
+A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime (nothing new). The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes described here. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, so the PCS is only list binding.
 
 \paragraph{Symbols.} Each symbol means one thing across the whole document, so where the main matter had already spent a letter, the object below carries a free one. The papers this annex follows use the middle column; \path{crates/pcs} uses those names too.
 
@@ -35,7 +35,7 @@ $\orc^{(i)}$   & $C^{(i)}$    & oracle, an interleaved word ($C_j$ is a constrai
 $\lst_{\rad}$  & $\lambda_\gamma$ & list of codewords within $\rad$\\
 $\kdim$        & $k$          & message dimension\\
 $W$, $c$       & $w$, $v$     & weight and value of a claim, as in \S\ref{sec:stacking}\\
-$\ffinal$      & $p$          & final plaintext table\\
+$\ffinal$      & $p$          & final plaintext multilinear\\
 $\cood$        & $y$          & out-of-domain answer ($y$ generates $\E$ over $\K$)\\
 $\mcanum$      & $a$          & numerator of the MCA error\\
 $\vansub_i$, $\Wn{i}$ & $W_i$, $\widehat W_i$ & subspace vanishing polynomial, normalized\\
@@ -56,34 +56,18 @@ $\beta$        & $b$          & bit width of $\F$ ($b$ is a \texttt{JUMP} column
 %=====================================================================
 
 \paragraph{Notation.}
-Throughout, $\F = \F_{2^{\beta}}$ is a binary field; $\log$ is base $2$; $[\blen] := \{1,\dots,\blen\}$. Query indices are sampled i.i.d.\ uniformly (with replacement).
-
-\subsubsection{Multilinear extensions}
-
-Every $f : \cube{\nv} \to \F$ has a unique multilinear extension $\mle{f}(x) = \sum_{u \in \cube{\nv}} f(u) \cdot \eq(u, x)$, where $\eq(u, x) := \prod_{i}(u_i x_i + (1-u_i)(1-x_i))$; we call $f$ the \emph{table} of $\mle{f}$ and freely identify a multilinear polynomial with its table.
-
-\begin{fact}[Partial evaluation is a fold of the table]\label{fact:fold}
-For every $f : \cube{\nv} \to \F$, $1 \le \ell \le \nv$, $\fc \in \F^{\ell}$, and $x \in \cube{\nv - \ell}$: $\ \mle{f}(\fc, x) = \sum_{u \in \cube{\ell}} \eq(\fc, u) \cdot f(u, x)$. That is, the table of $\mle{f}(\fc, \cdot)$ is the $\eq(\fc, \cdot)$-weighted combination of the rows $f(u, \cdot)$.
-\end{fact}
-
-\begin{fact}[Schwartz--Zippel for multilinears]\label{fact:sz}
-Distinct multilinear $\mle{f} \neq \mle{g}$ in $\nv$ variables satisfy $\Pr_{z \leftarrow \F^{\nv}}[\mle{f}(z) = \mle{g}(z)] \le \nv / |\F|$.
-\end{fact}
-
-\begin{definition}[Weighted claim]\label{def:claim}
-A \emph{weighted claim} about $g : \cube{\nv} \to \F$ is a pair $(W, c)$ asserting $\inner{W}{g} := \sum_{x \in \cube{\nv}} W(x)\, g(x) = c$; the weight $W$ is \emph{MLE-friendly} if $\mle{W}$ is evaluable anywhere in $\mathrm{poly}(\nv)$ operations. An evaluation claim $\mle{g}(r) = c$ is the case $W = \eq(r, \cdot)$.
-\end{definition}
+Throughout, $\F = \F_{2^{\beta}}$ is a binary field; $\log$ is base $2$; $[\blen] := \{1,\dots,\blen\}$. Query indices are sampled i.i.d.\ uniformly (with replacement). The multilinear vocabulary is that of \S\ref{sec:prelim}, read with $\F$ in place of $\E$: multilinears and their extensions (Definition~\ref{def:mle}), $\eq$ and its interpolation weights (Definition~\ref{def:eq}, Fact~\ref{fact:eq}), the inner product $\inner{\cdot}{\cdot}$ (Definition~\ref{def:inner}), weighted claims and MLE-friendliness (Definition~\ref{def:ipcs}), and Schwartz--Zippel (Lemma~\ref{lem:sz}).
 
 \subsubsection{Codes, interleaving, and list decoding}\label{sec:codes}
 
 For a domain $\dom \subseteq \F$, $|\dom| = \blen$, and $\kdim \le \blen$, let $\RS[\F, \dom, \kdim] := \{ (p(x))_{x \in \dom} : \deg p < \kdim \}$, of rate $\rate := \kdim/\blen$. Message lengths are powers of two, $\kdim = 2^{\kappa}$, messages are indexed by $\cube{\kappa}$, and an \emph{encoder} is a linear injection $\Enc : \F^{\cube{\kappa}} \to \F^{\dom}$ onto the code (fixed concretely in \S\ref{sec:binary-rs}).
 
 \begin{definition}[Interleaved words, lists, folds]\label{def:interleaved}
-An \emph{interleaved word} is a matrix $\orc \in \F^{\cube{\ell} \times \dom}$; it is an \emph{interleaved codeword} if every row $\orc[u, \cdot]$ is a codeword. $\orc$ \emph{agrees} with an interleaved codeword $U$ on $\aset \subseteq \dom$ if $\orc[u,x] = U[u,x]$ for all $u$ and all $x \in \aset$; it is \emph{$\rad$-close} to $U$ if they agree on some $\aset$ with $|\aset| \ge (1-\rad)\blen$; and $\lst_\rad(\orc)$ is the set of interleaved codewords $\rad$-close to $\orc$. An interleaved codeword $U$ \emph{decodes} to the table $g_U : \cube{\ell + \kappa} \to \F$ with $U[u, \cdot] = \Enc(g_U(u, \cdot))$; distinct $U$ decode to distinct $g_U$, hence distinct $\mle{g_U}$. For $\fc \in \F^{j}$, $j \le \ell$, the \emph{fold} $\orc_\fc \in \F^{\cube{\ell - j} \times \dom}$ is $\orc_\fc[u, x] := \sum_{\iota \in \cube{j}} \eq(\fc, \iota)\, \orc[(\iota, u), x]$ (for $j = \ell$, a single word in $\F^{\dom}$).
+An \emph{interleaved word} is a matrix $\orc \in \F^{\cube{\ell} \times \dom}$; it is an \emph{interleaved codeword} if every row $\orc[u, \cdot]$ is a codeword. $\orc$ \emph{agrees} with an interleaved codeword $U$ on $\aset \subseteq \dom$ if $\orc[u,x] = U[u,x]$ for all $u$ and all $x \in \aset$; it is \emph{$\rad$-close} to $U$ if they agree on some $\aset$ with $|\aset| \ge (1-\rad)\blen$; and $\lst_\rad(\orc)$ is the set of interleaved codewords $\rad$-close to $\orc$. An interleaved codeword $U$ \emph{decodes} to the multilinear $g_U : \cube{\ell + \kappa} \to \F$ with $U[u, \cdot] = \Enc(g_U(u, \cdot))$; distinct $U$ decode to distinct $g_U$, hence distinct $\mle{g_U}$. For $\fc \in \F^{j}$, $j \le \ell$, the \emph{fold} $\orc_\fc \in \F^{\cube{\ell - j} \times \dom}$ is $\orc_\fc[u, x] := \sum_{\iota \in \cube{j}} \eq(\fc, \iota)\, \orc[(\iota, u), x]$ (for $j = \ell$, a single word in $\F^{\dom}$).
 \end{definition}
 
 \begin{fact}[Folding commutes with decoding]\label{fact:fold-decode}
-If $U$ is an interleaved codeword then so is $U_\fc$, with $\mle{g_{U_\fc}} = \mle{g_U}(\fc, \cdot)$ (linearity of $\Enc$ plus Fact~\ref{fact:fold}).
+If $U$ is an interleaved codeword then so is $U_\fc$, with $\mle{g_{U_\fc}} = \mle{g_U}(\fc, \cdot)$ (linearity of $\Enc$ plus Fact~\ref{fact:eq}).
 \end{fact}
 
 \begin{theorem}[Johnson bound]\label{thm:johnson-interleaved}
@@ -134,7 +118,7 @@ For $\rexp \ge 1$ and $\kappa + \rexp \le \beta$, \S\ref{app:ntt} constructs, fo
 \begin{enumerate}[itemsep=0.5pt,topsep=2pt]
 \item \emph{(batch)} $\mathbf{V}$ sends $\lambda \leftarrow \F$; the \emph{batched claim} is $(W, \rc{0}) := \bigl(\sum_{\tau \in [J_i]} \lambda^{\tau-1} W_\tau,\; \sum_{\tau} \lambda^{\tau-1} c_\tau\bigr)$.
 \item \emph{(sumcheck~\cite{LFKN92})} For $j = 1, \dots, \ell_i$: $\mathbf{P}$ sends $h_j \in \F[X]$ with $\deg h_j \le 2$, honestly $h_j(X) = \sum_{x} \mle{W}(\fc^{<j}, X, x)\, \mle{f^{(i)}}(\fc^{<j}, X, x)$ where $\fc^{<j} := (\fc_1, \dots, \fc_{j-1})$; $\mathbf{V}$ checks $h_j(0) + h_j(1) = \rc{j-1}$ and sends $\fc_j \leftarrow \F$; both set $\rc{j} := h_j(\fc_j)$.\\
-Set $\fc := (\fc_1, \dots, \fc_{\ell_i})$, $c' := \rc{\ell_i}$, and, for $x \in \cube{\nv_{i+1}}$: \ $f^{(i+1)}(x) := \mle{f^{(i)}}(\fc, x)$, \ $W'(x) := \mle{W}(\fc, x)$. The \emph{residual claim} $(W', c')$ is a weighted claim about the folded table $f^{(i+1)}$.
+Set $\fc := (\fc_1, \dots, \fc_{\ell_i})$, $c' := \rc{\ell_i}$, and, for $x \in \cube{\nv_{i+1}}$: \ $f^{(i+1)}(x) := \mle{f^{(i)}}(\fc, x)$, \ $W'(x) := \mle{W}(\fc, x)$. The \emph{residual claim} $(W', c')$ is a weighted claim about the folded multilinear $f^{(i+1)}$.
 \item If $i < \nlev - 1$:
 \begin{enumerate}[itemsep=0.5pt,topsep=1pt,label=(\alph*)]
 \item \emph{(commit)} $\mathbf{P}$ sends the oracle $\orc^{(i+1)}[u, \cdot] := \Enc_{i+1}(f^{(i+1)}(u, \cdot))$, $u \in \cube{\ell_{i+1}}$.
@@ -142,7 +126,7 @@ Set $\fc := (\fc_1, \dots, \fc_{\ell_i})$, $c' := \rc{\ell_i}$, and, for $x \in 
 \item \emph{(query)} $\mathbf{V}$ sends $\nq_i$ i.i.d.\ columns $\qset_i = (x_q)_{q \in [\nq_i]} \leftarrow \dom_i$; it reads $\orc^{(i)}[\cdot, x_q]$ and computes $c_q := \sum_{u} \eq(\fc, u)\, \orc^{(i)}[u, x_q] = \orc^{(i)}_\fc[x_q]$; honestly $c_q = \Enc_i(f^{(i+1)})[x_q]$, by Fact~\ref{fact:fold-decode}.
 \item Claims for level $i+1$ (so $J_{i+1} := \nq_i + 2$): the residual claim $(W', c')$, the OOD claim $(\eq(z, \cdot), \cood)$, and the $\nq_i$ \emph{consistency claims} $(W^{(i)}_{x_q}, c_q)$, where $W^{(i)}_x$ are the column weights of $\Enc_i$ (\S\ref{sec:binary-rs}): the $q$-th asserts $\Enc_i(f^{(i+1)})[x_q] = c_q$.
 \end{enumerate}
-\item If $i = \nlev - 1$: \emph{(final)} $\mathbf{P}$ sends the table $\ffinal : \cube{\nv_\nlev} \to \F$; $\mathbf{V}$ sends $\nq_{\nlev-1}$ i.i.d.\ columns $\qset_{\nlev-1} \leftarrow \dom_{\nlev-1}$, computes $c_q$ from $\orc^{(\nlev-1)}$ as in 3(c), and checks $\sum_{x \in \cube{\nv_\nlev}} W'(x)\, \ffinal(x) = c'$ and $\Enc_{\nlev-1}(\ffinal)[x_q] = c_q$ for all $q \in [\nq_{\nlev-1}]$.
+\item If $i = \nlev - 1$: \emph{(final)} $\mathbf{P}$ sends the multilinear $\ffinal : \cube{\nv_\nlev} \to \F$; $\mathbf{V}$ sends $\nq_{\nlev-1}$ i.i.d.\ columns $\qset_{\nlev-1} \leftarrow \dom_{\nlev-1}$, computes $c_q$ from $\orc^{(\nlev-1)}$ as in 3(c), and checks $\sum_{x \in \cube{\nv_\nlev}} W'(x)\, \ffinal(x) = c'$ and $\Enc_{\nlev-1}(\ffinal)[x_q] = c_q$ for all $q \in [\nq_{\nlev-1}]$.
 \end{enumerate}
 $\mathbf{V}$ accepts iff every check above passed.
 \end{protocol}
@@ -222,20 +206,20 @@ $\supseteq$ holds always: $U \in \lst_\rad(\orc)$ agreeing with $\orc$ on $\aset
 \end{proof}
 
 \begin{lemma}[OOD separation]\label{lem:ood}
-Let $\orc$ be an interleaved word with $|\lst_\rad(\orc)| \le L$, decoding to $\nv$-variable tables. Then $\Pr_{z \leftarrow \F^{\nv}}[\exists \text{ distinct } U, U' \in \lst_\rad(\orc) : \mle{g_U}(z) = \mle{g_{U'}}(z)] \le \binom{L}{2} \nv / |\F|$.
+Let $\orc$ be an interleaved word with $|\lst_\rad(\orc)| \le L$, decoding to $\nv$-variable multilinears. Then $\Pr_{z \leftarrow \F^{\nv}}[\exists \text{ distinct } U, U' \in \lst_\rad(\orc) : \mle{g_U}(z) = \mle{g_{U'}}(z)] \le \binom{L}{2} \nv / |\F|$.
 \end{lemma}
 
 \begin{proof}
-Distinct interleaved codewords have distinct multilinear extensions; apply Fact~\ref{fact:sz} to each pair and union bound.
+Distinct interleaved codewords have distinct multilinear extensions; apply Lemma~\ref{lem:sz} to each difference and union bound.
 \end{proof}
 
 \subsubsection{Proof of the main theorem}\label{pcs:proof}
 
 At level $i$, abbreviate $\fc^{\le j} := (\fc_1, \dots, \fc_j)$ and $\fc^{<j} := \fc^{\le j-1}$; thus $\fc^{\le 0}$ is empty and $\orc^{(i)}_{\fc^{\le 0}} = \orc^{(i)}$. For $0 \le j \le \ell_i$, the \emph{round-$j$ claim} is the weighted claim
 \[
-\bigl(\, \mle{W}(\fc^{\le j}, \cdot),\; \rc{j} \,\bigr) \qquad \text{about tables } g : \cube{\nv_i - j} \to \F,
+\bigl(\, \mle{W}(\fc^{\le j}, \cdot),\; \rc{j} \,\bigr) \qquad \text{about multilinears } g : \cube{\nv_i - j} \to \F,
 \]
-where $W$, $\rc{0}$, and $\rc{j} = h_j(\fc_j)$ are read off the transcript as in Protocol~\ref{fig:protocol}; an interleaved codeword satisfies a claim if its decoded table does. The round-$0$ claim is the batched claim, and the round-$\ell_i$ claim is the residual claim $(W', c')$.
+where $W$, $\rc{0}$, and $\rc{j} = h_j(\fc_j)$ are read off the transcript as in Protocol~\ref{fig:protocol}; an interleaved codeword satisfies a claim if its decoded multilinear does. The round-$0$ claim is the batched claim, and the round-$\ell_i$ claim is the residual claim $(W', c')$.
 
 We now define the invariant required by Definition~\ref{def:rbr}, a condition on the partial transcripts of the opening. In one phrase: \emph{every codeword close to the current fold violates the current claim}. Precisely, the list below gives the condition just after each verifier message; a transcript ending with prover messages inherits the condition of its last verifier message. Every condition also includes one implicit disjunct, the \emph{escape clause}: \emph{``some verifier check has already failed''} (such transcripts are rejected no matter what follows).
 \begin{itemize}[itemsep=1pt]
@@ -261,7 +245,7 @@ Assume that every $U \in \lst := \lst_{\rad_i}(\orc^{(i)}_{\fc^{<j}})$ violates 
 \[
 H_U(X) \;:=\; \sum_{x \in \cube{\nv_i - j}} \mle{W}(\fc^{<j}, X, x)\, \mle{g_U}(X, x)
 \]
-be the honest round polynomial for $U$; it has degree at most $2$, since $\mle{W}$ and $\mle{g_U}$ are multilinear. Summing over $X \in \{0, 1\}$ turns the multilinear evaluations back into table values, so
+be the honest round polynomial for $U$; it has degree at most $2$, since $\mle{W}$ and $\mle{g_U}$ are multilinear. Summing over $X \in \{0, 1\}$ turns the multilinear evaluations back into values, so
 \[
 H_U(0) + H_U(1) \;=\; \bigl\langle\, \mle{W}(\fc^{<j}, \cdot),\; g_U \,\bigr\rangle \;\neq\; \rc{j-1} \;=\; h_j(0) + h_j(1),
 \]
@@ -285,7 +269,7 @@ After the last fold challenge of level $i < \nlev - 1$, we know: every codeword 
 After $z$, two properties must hold: the one above, which does not involve $z$; and pairwise distinctness at $z$ of the multilinear extensions decoded from $\lst_{\rad_{i+1}}(\orc^{(i+1)})$, a list already determined by the prover's message. The latter fails with probability at most $\binom{L_{i+1}}{2} \nv_{i+1} / |\F|$ over $z$, by Lemma~\ref{lem:ood}.
 
 \medskip\noindent\emph{Query message $\qset_i$.}
-Assume both properties of the previous step; the prover has since sent its answer $\cood$. The values $\mle{g_U}(z)$ are pairwise distinct across $\lst_{\rad_{i+1}}(\orc^{(i+1)})$, so at most one member $U^\ast$ can satisfy $\mle{g_{U^\ast}}(z) = \cood$: every other member violates the OOD claim $(\eq(z, \cdot),\, \cood)$, whatever $\qset_i$ is. If no such $U^\ast$ exists, we are done. Otherwise write $g^\ast := g_{U^\ast}$, a table on $\cube{\nv_{i+1}}$, and distinguish two cases.
+Assume both properties of the previous step; the prover has since sent its answer $\cood$. The values $\mle{g_U}(z)$ are pairwise distinct across $\lst_{\rad_{i+1}}(\orc^{(i+1)})$, so at most one member $U^\ast$ can satisfy $\mle{g_{U^\ast}}(z) = \cood$: every other member violates the OOD claim $(\eq(z, \cdot),\, \cood)$, whatever $\qset_i$ is. If no such $U^\ast$ exists, we are done. Otherwise write $g^\ast := g_{U^\ast}$, a multilinear on $\cube{\nv_{i+1}}$, and distinguish two cases.
 \begin{itemize}[itemsep=1pt]
 \item \emph{$\Enc_i(g^\ast)$ agrees with $c$ on at least $(1 - \rad_i) \blen_i$ coordinates.} Then the codeword $\Enc_i(g^\ast)$ lies in $\lst_{\rad_i}(c)$, hence violates the residual claim by assumption: $\inner{W'}{g^\ast} \neq c'$, whatever $\qset_i$ is.
 \item \emph{Otherwise.} A uniform column $x \leftarrow \dom_i$ satisfies $\Enc_i(g^\ast)[x] = c[x]$ with probability less than $1 - \rad_i$, so all $\nq_i$ i.i.d.\ queries do so simultaneously with probability less than $(1 - \rad_i)^{\nq_i}$; and any disagreeing query $x_q$ makes $U^\ast$ violate the consistency claim $(W^{(i)}_{x_q},\, c_q)$, since $c_q = c[x_q]$.
@@ -293,7 +277,7 @@ Assume both properties of the previous step; the prover has since sent its answe
 Except with probability $(1 - \rad_i)^{\nq_i}$, every member of $\lst_{\rad_{i+1}}(\orc^{(i+1)})$ thus violates at least one of the $J_{i+1}$ claims, which is exactly the assumption of the batching step at level $i + 1$.
 
 \medskip\noindent\emph{Final level.}
-At level $\nlev - 1$ the fold challenges end as above: every codeword within $\rad_{\nlev-1}$ of $c := \orc^{(\nlev-1)}_\fc$ violates the residual claim. The prover sends the plaintext table $\ffinal$. If $\Enc_{\nlev-1}(\ffinal)$ agrees with $c$ on at least $(1 - \rad_{\nlev-1}) \blen_{\nlev-1}$ coordinates, then $\Enc_{\nlev-1}(\ffinal) \in \lst_{\rad_{\nlev-1}}(c)$, so $\inner{W'}{\ffinal} \neq c'$: the check $\sum_{x \in \cube{\nv_\nlev}} W'(x)\, \ffinal(x) = c'$ fails whatever $\qset_{\nlev-1}$ is, i.e.\ the escape clause holds and rejection is certain. Otherwise the checks $\Enc_{\nlev-1}(\ffinal)[x_q] = c_q$ can all pass only if every one of the $\nq_{\nlev-1}$ i.i.d.\ queries lands in the agreement set, an event of probability less than $(1 - \rad_{\nlev-1})^{\nq_{\nlev-1}}$.
+At level $\nlev - 1$ the fold challenges end as above: every codeword within $\rad_{\nlev-1}$ of $c := \orc^{(\nlev-1)}_\fc$ violates the residual claim. The prover sends the plaintext multilinear $\ffinal$. If $\Enc_{\nlev-1}(\ffinal)$ agrees with $c$ on at least $(1 - \rad_{\nlev-1}) \blen_{\nlev-1}$ coordinates, then $\Enc_{\nlev-1}(\ffinal) \in \lst_{\rad_{\nlev-1}}(c)$, so $\inner{W'}{\ffinal} \neq c'$: the check $\sum_{x \in \cube{\nv_\nlev}} W'(x)\, \ffinal(x) = c'$ fails whatever $\qset_{\nlev-1}$ is, i.e.\ the escape clause holds and rejection is certain. Otherwise the checks $\Enc_{\nlev-1}(\ffinal)[x_q] = c_q$ can all pass only if every one of the $\nq_{\nlev-1}$ i.i.d.\ queries lands in the agreement set, an event of probability less than $(1 - \rad_{\nlev-1})^{\nq_{\nlev-1}}$.
 
 \end{proof}
 
@@ -323,14 +307,14 @@ where the middle step recognizes the second product as $\vansub_i$ evaluated at 
 \]
 \end{proof}
 
-Let $\Wn{i} := \vansub_i / \vansub_i(e_i)$ (the hat on $W$ denotes normalization, not multilinear extension), so $\Wn{i}(e_i) = 1$ and $\Wn{0} = X$ (using $e_0 = 1$). By linearity, $\Wn{i}(x) = \sum_c x_c \Wn{i}(e_c)$ for $x = \sum_c x_c e_c$, so given the table of values $\Wn{i}(e_c)$ (precomputed via the recursion (i)), $\Wn{i}$ is evaluated anywhere in $O(b)$ additions.
+Let $\Wn{i} := \vansub_i / \vansub_i(e_i)$ (the hat on $W$ denotes normalization, not multilinear extension), so $\Wn{i}(e_i) = 1$ and $\Wn{0} = X$ (using $e_0 = 1$). By linearity, $\Wn{i}(x) = \sum_c x_c \Wn{i}(e_c)$ for $x = \sum_c x_c e_c$, so given the values $\Wn{i}(e_c)$ (precomputed via the recursion (i)), $\Wn{i}$ is evaluated anywhere in $O(b)$ additions.
 
 \begin{definition}[Novel basis and encoder~\cite{LCH14}]\label{def:enc}
 For $0 \le j < 2^{\kappa}$ with bits $j_i$, let $\novel_j(X) := \prod_i \Wn{i}(X)^{j_i}$; then $\deg \novel_j = j$, so $(\novel_j)_{j < 2^\kappa}$ is a (triangular) basis of the polynomials of degree less than $2^{\kappa}$. Let $\dom := \langle e_0, \dots, e_{\kappa+\rexp-1} \rangle_{\Ftwo}$ and, for a message $g : \cube{\kappa} \to \F$,
 \[
 \mpoly_g(X) := \sum_{u \in \cube{\kappa}} g(u) \cdot \novel_{\langle u \rangle}(X), \qquad \Enc_{\kappa,\rexp}(g) := \bigl(\mpoly_g(x)\bigr)_{x \in \dom},
 \]
-a linear injection onto $\RS[\F, \dom, 2^{\kappa}]$ of rate $\rate = 2^{-\rexp}$. (The table is read \emph{directly} as novel-basis coefficients; no conversion is applied.)
+a linear injection onto $\RS[\F, \dom, 2^{\kappa}]$ of rate $\rate = 2^{-\rexp}$. (The message is read \emph{directly} as novel-basis coefficients; no conversion is applied.)
 \end{definition}
 
 \begin{lemma}[Column weights are tensors]\label{lem:colweight}

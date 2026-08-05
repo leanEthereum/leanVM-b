@@ -6,7 +6,7 @@ For a proposition $P$, \ $[P]=1$ if $P$ holds and $[P]=0$ otherwise.
 \end{definition}
 
 \begin{definition}[Multilinear extension]\label{def:mle}
-The \emph{multilinear extension} of $f:\cube{\kappa}\to\E$ is the unique $\mle{f}:\E^{\kappa}\to\E$ of degree at most one in each variable that agrees with $f$ on $\cube{\kappa}$.
+A \emph{multilinear} is given by its $2^{\kappa}$ values on the boolean hypercube, a function $f:\cube{\kappa}\to\E$. Its \emph{multilinear extension} $\mle{f}:\E^{\kappa}\to\E$ is the unique polynomial of degree at most one in each variable agreeing with $f$ on $\cube{\kappa}$; we identify the two freely.
 \end{definition}
 
 
@@ -28,6 +28,11 @@ For an arbitrary point $r\in\E^{\kappa}$,
 \[
   \mle{f}(r)=\sum_{x\in\cube{\kappa}}f(x)\,\eq(r,x)=\inner{f}{\eq(r,\cdot)}.
 \]
+Binding only the first $\ell\le\kappa$ variables gives the same identity with the rest left free: for $r\in\E^{\ell}$ and $x\in\cube{\kappa-\ell}$,
+\[
+  \mle{f}(r,x)=\sum_{u\in\cube{\ell}}\eq(r,u)\,f(u,x),
+\]
+so a partial evaluation is again a multilinear, its values the $\eq(r,\cdot)$-weighted combination of the rows $f(u,\cdot)$.
 \end{fact}
 
 
@@ -75,17 +80,16 @@ To prove that $P$ vanishes on $\cube{\kappa}$, the verifier samples $r\in\E^{\ka
 \[
   \sum_{x\in\cube{\kappa}}P(x)\,\eq(r,x)=0 .
 \]
-By Fact~\ref{fact:eq} that sum is $\mle{g}(r)$, for $g$ the table of $P$'s values on the boolean hypercube: the zero polynomial if $P$ vanishes there, and otherwise a nonzero multilinear, which a random $r$ sends to $0$ with probability at most $\kappa/|\E|$ (Lemma~\ref{lem:sz}).
+By Fact~\ref{fact:eq} that sum is $\mle{g}(r)$, for $g$ the restriction of $P$ to the boolean hypercube: the zero polynomial if $P$ vanishes there, and otherwise a nonzero multilinear, which a random $r$ sends to $0$ with probability at most $\kappa/|\E|$ (Lemma~\ref{lem:sz}).
 \end{definition}
 
 \begin{definition}[Inner-product commitment scheme]\label{def:ipcs}
-An \emph{inner-product commitment scheme} commits to a multilinear $g:\cube{M}\to\K$ and later proves, against any weight $W:\cube{M}\to\E$ whose extension the verifier can evaluate in $\mathrm{poly}(M)$ operations, a claim
+A \emph{weighted claim} about a multilinear $g:\cube{M}\to\K$ is a pair $(W,c)$ asserting $\inner{W}{g}=c$, with $c\in\E$ and the weight $W:\cube{M}\to\E$ \emph{MLE-friendly}: the verifier can evaluate $\mle{W}$ anywhere in $\mathrm{poly}(M)$ operations. An \emph{inner-product commitment scheme} commits to $g$ and later proves any such claim,
 \[
-  \sum_{w\in\cube{M}}W(w)\,g(w)=c,
-  \qquad c\in\E .
+  \inner{W}{g}=\sum_{w\in\cube{M}}W(w)\,g(w)=c .
 \]
-The commitment is over $\K$, the opening over $\E$.
+The commitment is over $\K$, the opening over $\E$. An evaluation claim $\mle{g}(r)=c$ is the case $W=\eq(r,\cdot)$, by Fact~\ref{fact:eq}.
 \end{definition}
 
-We use WHIR~\cite{ACFY25} / Ligerito~\cite{NA25} as inner-product commitment scheme (see annex \ref{annex:pcs}). The two are essentially the same scheme when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes.
+We use WHIR~\cite{ACFY25} / Ligerito~\cite{NA25} as inner-product commitment scheme (see annex \ref{annex:pcs}). The two are essentially the same scheme when WHIR is instantiated with an interleaved code and Ligerito with a Reed--Solomon code.
 
