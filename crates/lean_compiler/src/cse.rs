@@ -54,7 +54,13 @@ enum Key {
 /// the first purely-local frame cell (see [`super::ir::Lowered::abi_end`]);
 /// writes below it are visible to the caller and are never eliminated. Returns
 /// the number of instructions dropped (for the `DBG_CSE` report).
-pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off) -> usize {
+/// `frozen_from` marks instructions CSE must not touch: the fill blocks
+/// (`FnLower::lower_filler_blocks`), whose operands are offsets into the frames the
+/// interpreter gives them, not into this function's frame. Rewriting one to an
+/// "equivalent" cell of this frame silently changes which cell a block reads, and the
+/// cells they read are written by a hint rather than by any instruction, so nothing else
+/// would catch it.
+pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> usize {
     let writes = write_counts(code);
     let labels = label_targets(code);
 
@@ -64,6 +70,9 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off) -> usize {
     let mut ends_block = false;
 
     for (i, ins) in code.iter_mut().enumerate() {
+        if i >= frozen_from {
+            break;
+        }
         // A jump target starts a new block; so does the instruction after a jump.
         if ends_block || labels.contains(&(i as u32)) {
             seen.clear();

@@ -113,6 +113,13 @@ pub(crate) struct Lowered {
     /// observable outside this function even when no instruction here reads it.
     /// Everything at or above it is a local temporary.
     pub(crate) abi_end: u32,
+    /// Where the fill blocks start, so CSE can leave them alone: their operands are
+    /// offsets into the frames the interpreter gives them, not this function's
+    /// ([`crate::cse::cse`]). `code.len()` when there are none.
+    pub(crate) filler_start: usize,
+    /// The fill blocks this function carries, with `code`-relative pcs; only `main` has
+    /// any ([`crate::lower::FnLower::lower_filler_blocks`]).
+    pub(crate) filler: Vec<lean_vm::cpu::filler::Block>,
 }
 
 /// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a

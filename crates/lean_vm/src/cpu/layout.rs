@@ -70,9 +70,6 @@ pub struct Layout {
     pub pull: Vec<Block>,
     /// Count channel: read-count columns whose product must be nonzero (§sec:memchan).
     pub count: Vec<Block>,
-    /// Per-column padding value (count columns pad with 1, else 0), so the verifier
-    /// can form the default-padding surplus it divides out of the bus (§sec:gp).
-    pub pad: Vec<F64>,
     /// Per-column placement (offset + n_vars) in the stacked witness; from the
     /// columns' log-sizes alone, so reconstructable by the verifier.
     pub placements: Vec<witness::Placement>,
@@ -82,9 +79,6 @@ pub struct Layout {
     /// word), bound to the committed memory at verification (§sec:e2e-pi).
     pub pi: [F192; 2],
     pub taus: [usize; tables::N_TABLES],
-    /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
-    /// the executed `BLAKE3` count, which gates the flock sub-proof.
-    pub row_counts: [usize; tables::N_TABLES],
 }
 
 /// The prover's witness: the stacked multilinear `q`, which holds every committed
@@ -209,27 +203,17 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLE
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
-/// instruction tables' real row counts `row_counts`, and the public input `pi`. The flush
-/// blocks reference columns only by INDEX and the program only through its
-/// public columns, so this needs no committed witness: both prover and verifier
-/// reconstruct exactly the same structure.
-pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
+/// instruction tables' log heights `taus`, and the public input `pi`. The flush blocks
+/// reference columns only by INDEX and the program only through its public columns, so
+/// this needs no committed witness: both prover and verifier reconstruct exactly the same
+/// structure.
+///
+/// A table's height is its row count: the fill blocks bring every count up to a power of
+/// two (`cpu::filler`), so `2^taus[t]` rows were all executed and no flush has padding
+/// tuples to divide back out of the bus.
+pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
-    let cells = 1usize << log_mem;
-
-    // Per-table padded log-row-counts (the boundary block is fixed). The real
-    // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
-    // are padding (default rows divided out of the bus, §sec:gp).
-    let mut taus = [0usize; tables::N_TABLES];
-    for (i, &r) in row_counts.iter().enumerate() {
-        taus[i] = crate::log2_ceil_usize(r.max(1));
-    }
-    // The BLAKE3 table is ALWAYS sized to flock's `2^n_log` instance count
-    // (`max(count,1)`, lincheck floor ≥ 8) so its per-instance (virtual) value
-    // columns share `q_flock`'s instance cube: a value-column bus claim at instance
-    // point `r` maps to a strided `q_flock` slot claim at `r` (`slot_claims`).
-    taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
     // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
@@ -323,9 +307,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
-    // `real` is the block's non-padded row count (= 2^kappa for the full
-    // boundary/seed/finalize blocks; the table's real row count for a flush).
-    let blk = |kappa: usize, real: usize, coords: Vec<Coord>| Block { kappa, coords, real };
+    let blk = |kappa: usize, coords: Vec<Coord>| Block { kappa, coords };
 
     let mut push: Vec<Block> = Vec::new();
     let mut pull: Vec<Block> = Vec::new();
@@ -334,12 +316,10 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     // boundary state.
     push.push(blk(
         0,
-        1,
         vec![Const(SEP_STATE), Const(g_pow(pc0 as usize)), Const(g_pow(fp0 as usize))],
     ));
     pull.push(blk(
         0,
-        1,
         vec![
             Const(SEP_STATE),
             Const(g_pow(final_pc as usize)),
@@ -350,7 +330,6 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     // full three-limb 192-bit word.
     push.push(blk(
         log_mem,
-        cells,
         vec![
             Const(SEP_MEM),
             Index,
@@ -362,7 +341,6 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     ));
     pull.push(blk(
         log_mem,
-        cells,
         vec![
             Const(SEP_MEM),
             Index,
@@ -376,7 +354,6 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     // self-cancel at count 1, so the whole 2^log_bytecode is "real").
     push.push(blk(
         log_bytecode,
-        bytecode_size,
         vec![
             Const(SEP_BYTECODE),
             Index,
@@ -394,7 +371,6 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     ));
     pull.push(blk(
         log_bytecode,
-        bytecode_size,
         vec![
             Const(SEP_BYTECODE),
             Index,
@@ -412,44 +388,23 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     ));
 
     // Per-table blocks: each table declares its flushes and read-count columns in
-    // local indices; offset them to the table's global columns. The count columns
-    // also fix the per-column padding to `1` (so they never zero the bus product).
+    // local indices; offset them to the table's global columns.
     let sch = schema();
     let mut count_blocks: Vec<Block> = Vec::new();
-    let mut pad = vec![F64::ZERO; sch.n];
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
-        let (kappa, real) = (taus[t], row_counts[t]);
+        let kappa = taus[t];
         let mut fb = FlushBuilder::new();
         table.flushes(&mut fb);
         for coords in fb.push {
-            push.push(blk(kappa, real, offset_coords(base, coords)));
+            push.push(blk(kappa, offset_coords(base, coords)));
         }
         for coords in fb.pull {
-            pull.push(blk(kappa, real, offset_coords(base, coords)));
+            pull.push(blk(kappa, offset_coords(base, coords)));
         }
         for &c in table.count_columns() {
-            count_blocks.push(blk(kappa, real, vec![Col(base + c)]));
-            pad[base + c] = F64::ONE;
+            count_blocks.push(blk(kappa, vec![Col(base + c)]));
         }
-    }
-    // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
-    // compression): zero inputs but a NONZERO output `out_lo`. So the four output
-    // value columns pad with that digest, not 0: the memory bus flushes these
-    // (virtual) columns, and their padding rows must equal `q_flock`'s padding slots
-    // so the default-padding surplus divides out and the routed claims agree.
-    // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
-    // always present, all-padding for a no-BLAKE3 program).
-    {
-        let b3 = sch.base[tables::BLAKE3_TABLE];
-        let pc = crate::blake3_flock::padding_digest();
-        let md = crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS);
-        for k in 0..4 {
-            pad[b3 + tables::BLAKE3_VALUE_COLS[8 + k]] = pc[k]; // c0..c3
-            pad[b3 + tables::BLAKE3_VALUE_COLS[12 + k]] = crate::blake3_flock::IV[k]; // cv0..cv3
-        }
-        pad[b3 + tables::BLAKE3_VALUE_COLS[16]] = F64(md.c0); // metadata counter lane
-        pad[b3 + tables::BLAKE3_VALUE_COLS[17]] = F64(md.c1); // metadata blen‖flags lane
     }
 
     let (placements, m) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
@@ -457,12 +412,10 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         push,
         pull,
         count: count_blocks,
-        pad,
         placements,
         m,
         pi,
         taus,
-        row_counts,
     }
 }
 
@@ -482,32 +435,34 @@ impl Program {
         let span = cells.max(bytecode_size);
         let gpow = primitives::field::g_powers(span);
 
-        // The public layout (flush/count blocks, per-column padding, placements,
-        // boundary, taus) is a pure function of the program + announced sizes +
-        // public input, with no committed witness; reconstruct it here so the
-        // prover and verifier share exactly the same structure. It comes before the
-        // fill because it fixes each table's padded row count `2^tau`, which lets
-        // every column be allocated at its final length and padded in the same
-        // pass. Count columns pad with g^0 = 1, every other column with 0
-        // (§sec:e2e-pad): a default padding row flushes tuples that do not self-cancel,
-        // and the verifier divides them out of the bus product (§sec:gp). The shared
-        // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode
-        // lengths and take no padding.
-        let row_counts = [
-            tr.xor.len(),
-            tr.mul.len(),
-            tr.set.len(),
-            tr.deref.len(),
-            tr.jump.len(),
-            tr.blake3.len(),
-            tr.pack64x2.len(),
-        ];
+        // The public layout (flush/count blocks, placements, boundary, taus) is a pure
+        // function of the program + announced sizes + public input, with no committed
+        // witness; reconstruct it here so the prover and verifier share exactly the same
+        // structure. It comes before the fill because it fixes each table's height
+        // `2^tau`, which lets every column be allocated at its final length in one pass.
+        let row_counts = exec.trace.row_counts();
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
         );
+        // Every table's rows are real rows, so its height IS its row count: the fill
+        // blocks ran each count up to a power of two, and BLAKE3 up to flock's instance
+        // floor as well (`cpu::filler`).
+        let taus = row_counts.map(|r| {
+            assert!(
+                r.is_power_of_two(),
+                "a table has {r} rows, not a power of two: the fill blocks did not fill \
+                 it (cpu::filler)"
+            );
+            crate::log2_strict_usize(r)
+        });
+        assert_eq!(
+            taus[tables::BLAKE3_TABLE],
+            crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE]),
+            "the BLAKE3 table must be filled to flock's instance floor"
+        );
         let pi = [exec.mem[0], exec.mem[1]];
-        let l = layout(&self.prog, log_mem, row_counts, pi);
+        let l = layout(&self.prog, log_mem, taus, pi);
 
         // The stacked witness is written exactly ONCE: allocate it, carve one window
         // per committed column, and have every fill write its column straight into
@@ -541,7 +496,7 @@ impl Program {
         crate::stage!("Fill columns", || {
             for (t, table) in tables::tables().iter().enumerate() {
                 let (base, n) = (sch.base[t], table.n_committed_columns());
-                let ctx = FillCtx::new(tr, &exec.mem, &gpow, &self.prog, &l.pad[base..base + n], 1 << l.taus[t]);
+                let ctx = FillCtx::new(tr, &exec.mem, &gpow, &self.prog, 1 << l.taus[t]);
                 tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
             // Shared columns. The 192-bit memory image splits into three K-limbs.

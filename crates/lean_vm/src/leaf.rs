@@ -28,7 +28,7 @@ pub enum Coord {
     /// The product `g^k · col_a[z] · col_b[z]` of two committed columns. An address
     /// is `fp·g^o`, so this carries one on the bus without committing it: the
     /// coordinate IS the product, so no column can disagree with it and the binding
-    /// constraint that used to say so is unnecessary (§sec:m3-addr).
+    /// constraint that used to say so is unnecessary (§sec:m3).
     Prod(usize, usize, u32),
     /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
     Index,
@@ -37,14 +37,13 @@ pub enum Coord {
     Public(Vec<F64>),
 }
 
-/// A flushing rule: `2^kappa` rows, each a tuple of coordinates. `real` is the
-/// number of meaningful rows; the rest are padding (every column zero but the read
-/// counts, which are `1`), a fixed default the verifier divides out (§sec:e2e-pad).
+/// A flushing rule: `2^kappa` rows, each a tuple of coordinates. Every one of them is a
+/// row the program executed, since a table's height is its row count (§sec:e2e-pad), so a
+/// block has no padding rows to divide back out of the product.
 #[derive(Clone, Debug)]
 pub struct Block {
     pub kappa: usize,
     pub coords: Vec<Coord>,
-    pub real: usize,
 }
 
 /// Placement of each block in the stacked leaf vector (input order).
@@ -73,13 +72,12 @@ pub enum Error {
 }
 
 /// Conservative sum of the degree bounds for every random-challenge failure in
-/// the bus argument. A side contains at most `2^mu` leaf factors; multiplying by
-/// the other side's padding surplus can double that count. Each factor has total
+/// the bus argument. A side contains at most `2^mu` leaf factors, each of total
 /// `(alpha, gamma)` degree at most the tuple width. The second term covers all
 /// radix-four GKR batching and sumcheck challenges.
 fn soundness_degree_bound(mu: usize, tuple_width: usize) -> u128 {
     assert!(mu < u128::BITS as usize, "bus layout is too large to bound");
-    let fingerprint = 2u128 * tuple_width as u128 * (1u128 << mu);
+    let fingerprint = tuple_width as u128 * (1u128 << mu);
     let gkr = 8u128 * (mu as u128 + 1).pow(2);
     fingerprint + gkr
 }
@@ -146,7 +144,6 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
         .unwrap_or(1);
     debug_assert!(explicit <= 1usize << lay.mu);
     let mut leaves = ArenaVec::filled(F192::ONE, explicit);
-    let mut pads = Vec::new();
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
@@ -181,9 +178,10 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
             const_part + acc.reduce()
         };
         let off = lay.offsets[b];
-        let rows = 1usize << blk.kappa;
-        assert!(blk.real <= rows, "a block's real rows must fit its cube");
-        let dst = &mut leaves[off..off + blk.real];
+        // Every row of every block is a real row: a table's height is exactly the
+        // number of rows it executed (`cpu::filler`), so no block has padding rows
+        // whose tuples would have to be divided back out of the product.
+        let dst = &mut leaves[off..off + (1usize << blk.kappa)];
         if dst.len() >= PAR_THRESHOLD {
             parallel::fill(dst, row);
         } else {
@@ -191,17 +189,8 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
                 *slot = row(z);
             }
         }
-        if blk.real < rows {
-            let default = row(blk.real);
-            debug_assert!(
-                (blk.real..rows).all(|z| row(z) == default),
-                "a padded block's rows past `real` must be one fixed default"
-            );
-            leaves[off + blk.real..off + rows].fill(default);
-            pads.push(gkr::PadRun::new(off + blk.real, off + rows, default));
-        }
     }
-    gkr::LeafVector::new(leaves, pads)
+    gkr::LeafVector::new(leaves)
 }
 
 /// One table's bus contribution on one side, as a form over that table's committed
@@ -448,51 +437,6 @@ fn decompose_verify(
     decompose_formula(blocks, lay, zeta, alpha, gamma, owners, forms, claims, |_, _| {
         vs.next_scalar().map_err(|_| Error::Truncated)
     })
-}
-
-/// `base^e` by repeated squaring.
-fn fpow(base: F192, mut e: usize) -> F192 {
-    let (mut r, mut b) = (F192::ONE, base);
-    while e > 0 {
-        if e & 1 == 1 {
-            r *= b;
-        }
-        b *= b;
-        e >>= 1;
-    }
-    r
-}
-
-/// `π_α` of a block's padding-row tuple (every column zero but the read counts,
-/// value `1`). Only padded blocks are queried, and those carry no virtual coordinate.
-fn default_fingerprint(block: &Block, pad: &[F64], alpha: F192) -> F192 {
-    let mut fingerprint = F192::ZERO;
-    let mut alpha_pow = F192::ONE;
-    for c in &block.coords {
-        let coord_val = match c {
-            Coord::Const(v) => *v,
-            Coord::Col(i) => pad[*i],
-            Coord::GCol(i, k) => g_pow(*k as usize) * pad[*i],
-            Coord::Prod(i, j, k) => g_pow(*k as usize) * pad[*i] * pad[*j],
-            Coord::Index | Coord::Public(_) => F64::ZERO,
-        };
-        fingerprint += alpha_pow.mul_base(coord_val);
-        alpha_pow *= alpha;
-    }
-    fingerprint
-}
-
-/// The default-padding surplus on one side: `∏_b (γ − π_α(default_b))^{2^{κ_b} −
-/// real_b}`. The verifier divides it out before comparing the two sides (§sec:gp).
-fn default_surplus(blocks: &[Block], pad: &[F64], alpha: F192, gamma: F192) -> F192 {
-    let mut acc = F192::ONE;
-    for b in blocks {
-        let delta = (1usize << b.kappa) - b.real;
-        if delta != 0 {
-            acc *= fpow(gamma + default_fingerprint(b, pad, alpha), delta);
-        }
-    }
-    acc
 }
 
 /// One reduced claim on the bytecode polynomial. The nine public encoding
@@ -806,7 +750,6 @@ pub fn verify_balance(
     push: &[Block],
     pull: &[Block],
     count: &[Block],
-    pad: &[F64],
     owners: &[Vec<Option<(usize, usize)>>; 3],
     tables: &[(usize, usize)],
     vs: &mut VerifierState,
@@ -827,11 +770,10 @@ pub fn verify_balance(
     if count_root == F192::ZERO {
         return Err(Error::ZeroCount);
     }
-    // The two sides differ by the default-padding surplus; divide each out
-    // (cross-multiplied) before comparing.
-    let d_push = default_surplus(push, pad, alpha, gamma);
-    let d_pull = default_surplus(pull, pad, alpha, gamma);
-    if push_root * d_pull != pull_root * d_push {
+    // Every row of every table is a real row (`cpu::filler`), so the two sides
+    // balance outright: no padding tuples to divide back out, and no announced row
+    // counts whose truthfulness the soundness argument would have to establish.
+    if push_root != pull_root {
         return Err(Error::Unbalanced);
     }
 
@@ -875,11 +817,15 @@ pub fn verify_balance(
 mod tests {
     use super::soundness_bits;
 
+    /// The bound is `tuple_width · 2^mu` plus the GKR terms, so a wider tuple or a
+    /// deeper bus costs bits. One factor of two more than before this test was
+    /// written: a side's factors are no longer doubled by the other side's padding
+    /// surplus, there being none.
     #[test]
     fn bus_soundness_accounts_for_tuple_width() {
         assert!(soundness_bits(38, 12) >= crate::SECURITY_BITS);
-        assert!(soundness_bits(59, 12) >= crate::SECURITY_BITS);
-        assert!(soundness_bits(60, 12) < crate::SECURITY_BITS);
+        assert!(soundness_bits(60, 12) >= crate::SECURITY_BITS);
+        assert!(soundness_bits(61, 12) < crate::SECURITY_BITS);
         assert!(soundness_bits(58, 16) < soundness_bits(58, 1));
     }
 }

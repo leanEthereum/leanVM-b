@@ -190,14 +190,6 @@ pub fn qflock_kappa(n: usize) -> usize {
     K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
 }
 
-/// The padding instance: the pinned compression of the all-zero message, i.e.
-/// `blake3(0^64)`, what flock's witness generation fills unused slots with.
-/// Synthesized as the sole block when a program executes no BLAKE3, so `q_flock`
-/// and the reduction always have ≥ 1 instance.
-fn padding_compression() -> Compression {
-    flock::blake3::padding_block()
-}
-
 /// Flatten flock's packed witness (128 bits per `F192` word, bit `i` at
 /// position `i`) into the committed `F64` packing (64 bits per word): word `j`
 /// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
@@ -218,8 +210,8 @@ fn flatten_packed_into(packed: &[F192], out: &mut [F64]) {
 }
 
 /// Build the committed `q_flock` column (flock's packed witness) for `blocks`, padded
-/// to `2^n_blocks_log(max(blocks.len(),1))` instances (the unused ones `padding_compression`
-/// blocks), and retain the Flock-native layouts produced by that same fused pass so
+/// to `2^n_blocks_log(max(blocks.len(),1))` instances (the unused ones flock's own
+/// `padding_block`), and retain the Flock-native layouts produced by that same fused pass so
 /// reduction does not regenerate them later. Deterministic, so it matches what the
 /// reduction regenerates. An empty `blocks` yields one padding cube (all instances are
 /// padding).
@@ -235,12 +227,6 @@ pub(crate) fn build_qflock_prepared(blocks: &[Compression], q_flock: &mut [F64])
         b_packed,
         z_lincheck,
     }
-}
-
-/// The digest `(c0..c3)` of `padding_compression`, i.e. `blake3(0^64)`. It is
-/// NONZERO, so the VM pads its BLAKE3 output value columns with this.
-pub fn padding_digest() -> [F64; 4] {
-    digest(&padding_compression())
 }
 
 /// `log2` of the within-instance packed span (`2^8` words): the

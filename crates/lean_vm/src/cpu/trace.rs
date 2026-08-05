@@ -72,3 +72,18 @@ pub(crate) struct Trace {
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
 }
+
+impl Trace {
+    /// Rows per instruction table, in [`crate::cpu::Stats::TABLES`] order.
+    pub(crate) fn row_counts(&self) -> [usize; crate::tables::N_TABLES] {
+        [
+            self.xor.len(),
+            self.mul.len(),
+            self.set.len(),
+            self.deref.len(),
+            self.jump.len(),
+            self.blake3.len(),
+            self.pack64x2.len(),
+        ]
+    }
+}

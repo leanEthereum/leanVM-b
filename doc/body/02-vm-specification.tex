@@ -35,20 +35,20 @@ Instruction & Operands & Semantics\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
 \texttt{PACK64X2}      & $[o_A,o_B,o_C]$ & $\loc{o_C}=a_0+b_0y$ for $\loc{o_A}=a_0,\loc{o_B}=b_0\in\K$\\
-\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\mu]$ & standard BLAKE3 compression (below)\\
+\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\md]$ & standard BLAKE3 compression (below)\\
 \hline
 \end{tabularx}
 \end{center}
 
 \texttt{PACK64X2} groups the low limbs of two $\E$-valued memory cells into one canonical $128$-bit cell.
 
-\texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE3 operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\mu$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
+\texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE3 operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\md$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
 \[
-  \mu=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
+  \md=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
 \]
 For a one-block $64$-byte hash, the chaining value is the standard IV and
 \[
-  \mu=(0,64,\textsc{chunk-start}\mathbin{|}\textsc{chunk-end}\mathbin{|}\textsc{root}).
+  \md=(0,64,\textsc{chunk-start}\mathbin{|}\textsc{chunk-end}\mathbin{|}\textsc{root}).
 \]
 Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_V$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock-impl} R1CS proof.
 

@@ -1,7 +1,17 @@
-use lean_compiler::{compile, parse};
+use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192};
+
+/// The program's own instruction mix: a build without the fill blocks, executed but not
+/// proven. Proving needs them, since a table's height has to be a power of two with no
+/// padding rows, but their dummy rows would drown out exactly what these counts are
+/// measuring.
+fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
+    compile_without_filler(&parse(src).expect("parse"))
+        .execute(pi)
+        .base_counts
+}
 
 #[test]
 fn pack64x2_proves_and_verifies() {
@@ -18,8 +28,8 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     warm_setup(1);
     let want = [F192::new(5, 7, 0), F192::new(5, 7, 0)];
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[6], 1, "one PACK64X2 instruction");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[6], 1, "one PACK64X2 instruction");
     verify(&program, &want, &proof).expect("PACK64X2 program verifies");
 }
 

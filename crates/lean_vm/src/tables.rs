@@ -7,7 +7,7 @@
 //! Columns are `K`-valued (`F64`). The pc/fp, operands, counts, opcodes and
 //! separators are single `K`-columns; a **machine word** (memory value) is
 //! 192-bit (`E = F192`), committed as THREE `K`-lane columns. An operand address
-//! is no column at all: the bus carries it as the product `fp·o` (§sec:m3-addr). A
+//! is no column at all: the bus carries it as the product `fp·o` (§sec:m3). A
 //! constraint is evaluated at an `E`-point, so `eval_constraint` receives
 //! `E`-values; a word is reassembled as `c0 + c1·y + c2·y²`, and value
 //! relations (`XOR`, `MUL`, the `DEREF` store,
@@ -44,7 +44,7 @@ fn deref_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     // f_pc·(g²·pc) + f_fp·fp` over the two boolean store-mode flags. The `pc`
     // source is the virtual return target g²·pc (a free ×g² of the committed pc),
     // so no column. The three addresses need no binding: the bus reads each as its
-    // own product (§sec:m3-addr).
+    // own product (§sec:m3).
     let src = (T::ONE + cols[FPC] + cols[FFP]).mul_e(v3)
         + (cols[FPC] * cols[PC].mul_k(G * G)).to_e()
         + (cols[FFP] * cols[FP]).to_e();
@@ -184,12 +184,9 @@ pub struct FillCtx<'a> {
     pub(crate) mem: &'a [F192],
     pub(crate) gpow: &'a [F64],
     pub(crate) prog: &'a [Op],
-    /// This table's per-column padding values, in local index order: `1 = g^0` for
-    /// a count column, else 0, except for the `BLAKE3` output words, which pad with
-    /// the padding block's digest (§sec:e2e-pad).
-    pub(crate) pad: &'a [F64],
-    /// This table's padded row count `2^tau`, the length of every window in `out`.
-    pub(crate) rows_padded: usize,
+    /// This table's height `2^tau`, the length of every window in `out`, and its row
+    /// count too: every row is a row the program executed (`cpu::filler`).
+    pub(crate) rows: usize,
     /// Which local columns [`Self::col`] / [`Self::cols`] have written. A fill that
     /// misses one would leave the stacked witness holding uninitialized slots, so
     /// [`fill_table`] checks the whole set was covered.
@@ -201,21 +198,13 @@ pub struct FillCtx<'a> {
 pub type ColumnOut<'a> = &'a mut [F64];
 
 impl<'a> FillCtx<'a> {
-    pub(crate) fn new(
-        trace: &'a Trace,
-        mem: &'a [F192],
-        gpow: &'a [F64],
-        prog: &'a [Op],
-        pad: &'a [F64],
-        rows_padded: usize,
-    ) -> Self {
+    pub(crate) fn new(trace: &'a Trace, mem: &'a [F192], gpow: &'a [F64], prog: &'a [Op], rows: usize) -> Self {
         Self {
             trace,
             mem,
             gpow,
             prog,
-            pad,
-            rows_padded,
+            rows,
             written: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -264,16 +253,18 @@ impl<'a> FillCtx<'a> {
         at: usize,
         f: impl Fn(usize) -> [F64; N] + Sync,
     ) {
-        let n = self.rows_padded;
+        let n = self.rows;
         let dst: [parallel::SendPtr<F64>; N] = std::array::from_fn(|k| {
             assert_eq!(out[at + k].len(), n, "column {} has the wrong window length", at + k);
             self.written
                 .fetch_or(1 << (at + k), std::sync::atomic::Ordering::Relaxed);
             parallel::SendPtr(out[at + k].as_mut_ptr())
         });
-        let pad: [F64; N] = std::array::from_fn(|k| self.pad[at + k]);
+        // Every row is a row the program executed: a table's height is its row
+        // count (`cpu::filler`), so there is nothing to pad with.
+        assert_eq!(n_rows, n, "a table's rows must fill its cube");
         parallel::for_each(n, |i| {
-            let v = if i < n_rows { f(i) } else { pad };
+            let v = f(i);
             for (k, p) in dst.iter().enumerate() {
                 // SAFETY: distinct `i` write disjoint in-bounds slots of each of the
                 // `N` windows, each exactly once, and the dispatch blocks until
@@ -435,7 +426,7 @@ mod arith {
     pub const OB: usize = 3;
     pub const OC: usize = 4;
     // No absolute-address columns: the memory bus carries `fp·o` as a product
-    // coordinate (§sec:m3-addr), which is why there is no address binding below.
+    // coordinate (§sec:m3), which is why there is no address binding below.
     // The three read words, each three K-limbs.
     pub const VA_LO: usize = 5;
     pub const VA_HI: usize = 6;
@@ -887,7 +878,7 @@ impl Table for Pack64x2Table {
 /// `(tweak, pp)` need not copy them into adjacent cells. The chaining value and the
 /// 32-byte output each occupy two consecutive cells, based at `fp·o_cv` and
 /// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
-/// (§sec:m3-addr). The compression relating output words to input words carries no
+/// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
 /// (§blake3_flock), which leaves this table with no identity of its own.
 ///

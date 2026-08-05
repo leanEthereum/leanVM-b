@@ -206,7 +206,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     });
 
-    assert_eq!(stats.counts[5], 181 + 146 * n, "BLAKE3 instruction count");
+    assert_eq!(stats.base_counts[5], 181 + 146 * n, "BLAKE3 instruction count");
     let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
@@ -214,11 +214,20 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     drop(trace_span);
 
     println!("\nXMSS aggregation, {} signatures", pretty_integer(n));
+    // The program's own work, then what gets proven: the fill blocks bring each table
+    // to a power of two so that none needs padding rows, so the proven total is the sum
+    // of those powers.
+    let base_cycles: usize = stats.base_counts.iter().sum();
     println!(
         "  cycles (VM steps)           : {} = {}   ({} / XMSS)",
+        pretty_integer(base_cycles),
+        crate::report::pow(base_cycles),
+        per(base_cycles)
+    );
+    println!(
+        "    proven rows               : {} = {}  (filled to powers of two)",
         pretty_integer(stats.cycles),
-        crate::report::pow(stats.cycles),
-        per(stats.cycles)
+        crate::report::pow(stats.cycles)
     );
     println!("    details                   : {}", stats.details());
     crate::report::print_proof_size(&proof);

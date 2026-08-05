@@ -31,11 +31,10 @@ GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 # protocol-fixed and baked: each block's coord range [BLOCK_COORD_OFF,
 # +BLOCK_COORD_COUNT), per coord COORD_TYPE (0=const, 1=col, 2=gcol, 3=index,
 # 4=public bytecode, 5=product; named COORD_KIND_* below), COORD_CONST (the const
-# value, a product's or gcol's g^k, else 0), COORD_PAD_VAL
-# (its default-padding fingerprint value), and the kappa SOURCE map
-# (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block SHAPES
-# are all reconstructed at runtime from the certified logs: kappa directly,
-# the padding delta and selector bits by pinned advice-decompositions.
+# value, a product's or gcol's g^k, else 0), and the kappa SOURCE map
+# (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block SHAPES are all
+# reconstructed at runtime from the certified logs: kappa directly, the selector bits
+# by pinned advice-decompositions.
 # Coord kinds (COORD_TYPE codes, mirroring leaf.rs::Coord):
 COORD_KIND_CONST = 0
 COORD_KIND_COL = 1
@@ -43,22 +42,21 @@ COORD_KIND_GCOL = 2
 COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
 COORD_KIND_PROD = 5
-# BLOCK_REAL_TABLE: the table whose count is the block's real row count, or
-# REAL_IS_FULL_CUBE for the framework blocks (real = 2^kappa, no padding). It is
+# BLOCK_TABLE: the table a block's flush belongs to, or NO_TABLE for the framework
+# blocks (boundary, memory seed/finalize, bytecode seed/finalize). It is
 # also what marks a block as owned: an owned block's fingerprint is settled by the
 # batched zerocheck, off its table's column evaluations.
-REAL_IS_FULL_CUBE = REAL_IS_FULL_CUBE_PLACEHOLDER
+NO_TABLE = NO_TABLE_PLACEHOLDER
 SIDE_BLOCK_START = SIDE_BLOCK_START_PLACEHOLDER
 N_BLOCKS = N_BLOCKS_PLACEHOLDER
 BLOCK_KAPPA_SRC = BLOCK_KAPPA_SRC_PLACEHOLDER
 BLOCK_KAPPA_ADJ = BLOCK_KAPPA_ADJ_PLACEHOLDER
-BLOCK_REAL_TABLE = BLOCK_REAL_TABLE_PLACEHOLDER
+BLOCK_TABLE = BLOCK_TABLE_PLACEHOLDER
 BLOCK_SIDE = BLOCK_SIDE_PLACEHOLDER
 BLOCK_COORD_OFF = BLOCK_COORD_OFF_PLACEHOLDER
 BLOCK_COORD_COUNT = BLOCK_COORD_COUNT_PLACEHOLDER
 COORD_TYPE = COORD_TYPE_PLACEHOLDER
 COORD_CONST = COORD_CONST_PLACEHOLDER
-COORD_PAD_VAL = COORD_PAD_VAL_PLACEHOLDER
 # Claim dedup: push/pull share their GKR point, so a column read by two blocks
 # with the same kappa (across OR within the sides) is streamed and opened ONCE.
 # Per coord: COORD_FRESH = 1 on the first occurrence (read the stream, fill
@@ -459,18 +457,6 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
             word_vs_2logprev = word + g_logs_pow2[g_log * INV_GEN]  # 0 iff word == 2^(log-1)
             assert high_bits_prev * word_vs_2logprev != 0  # word > 2^(log-1): minimal
     return g_log, word, exp_prod
-
-
-def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
-    # g^log2_ceil(value) for a concrete integer `value` < 2^(nbits - 1). The bits
-    # are hinted HERE (hint_decompose_bits), not by the caller, then tied back to
-    # `value`. The zero top bit mirrors the native strict 32-bit row-count bound.
-    bits = HeapBuf(GEN ** nbits)
-    hint_decompose_bits(bits, value, nbits)
-    g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
-    assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
-    assert bits[GEN ** (nbits - 1)] == 0
-    return g_log, g_value
 
 
 def g_power_of_word(value, g_squares, nbits: Const):
@@ -1015,11 +1001,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # Flow (mirrors cpu::verify):
     #   1. seed the Fiat-Shamir sponge from the statement + program digest;
     #   2. announced sizes, then certify every structural log against them
-    #      (count gadget log2_ceil: tau per table, log_mem);
+    #      (announced as logs: tau per table, log_mem);
     #   3. bind the commitment root; ONE RLC-batched GKR for all three trees (count padded
     #      to the pair's depth) at runtime depth, ONE shared point zeta;
-    #   4. derive the block kappas, certify the GKR side depths; balance check
-    #      with advice-decomposed padding ladders; 3x leaf decomposition, DERIVING
+    #   4. derive the block kappas, certify the GKR side depths; balance check (the two
+    #      roots outright); 3x leaf decomposition, DERIVING
     #      each side's table share from its GKR claim (pooling the
     #      committed-coordinate claims); the stacked-bytecode reduction (deferred);
     #   5. ONE batched zerocheck for all seven tables, n = max_t tau_t rounds at the
@@ -1035,7 +1021,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # Claim pool: values of every committed-coordinate claim, in decompose order
     # (their points are the GKR ζ's, resolvable from the baked block structure).
     # `1 + g^(2^k)` per bit position, in FRAME cells: the bit-ladder rebuilds
-    # below (padding surplus, placement offsets) each need this factor once per
+    # below (placement offsets, the bus depth) each need this factor once per
     # bit, and a StackBuf entry is an instruction operand, where the g_squares
     # HeapBuf costs a load and an add every time.
     gsq_plus = StackBuf(SIZE_BITS)
@@ -1081,13 +1067,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     mem_floor_slack = g_log_mem / GEN ** MIN_LOG_MEM
     assert log(mem_floor_slack) < COUNT_BITS  # native MIN_LOG_MEM <= log_mem
     dims_g[GEN ** 0] = g_log_mem
-    # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
-    # g^count_t (for the padding-surplus certification).
-    count_gpows = HeapBuf(N_TABLES)
+    # Each tau is announced AS a log, like log_mem: g^tau from the word's
+    # advice-decomposed bits, with no hint and no g^j -> j lookup. Every table's rows
+    # are real rows (the prover's fill blocks bring each count up to a power of two),
+    # so a height is all there is to announce, and the log2_ceil gadget
+    # that used to turn a count into one is gone from here.
     for t in unroll(0, N_TABLES):
-        g_tau, g_count = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
+        g_tau = g_power_of_word(sizes[t + 1], g_squares, COUNT_BITS)
+        assert log(g_tau) < COUNT_BITS
+        # A table's floor: flock sizes its BLAKE3 argument to at least 2^3 instances.
+        assert log(g_tau / GEN ** FLOORS[t]) < COUNT_BITS
         dims_g[GEN ** (t + 1)] = g_tau
-        count_gpows[GEN ** t] = g_count
     # kappa_base maps a kappa source index to its certified announced log
     # (source 0 = const via the baked adj); the taus are now in dims_g.
     kappa_base = HeapBuf(N_TABLES + 2)
@@ -1287,10 +1277,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
 
     # ---- per-block shape data ----
-    # kappa and the bus depth were derived above; the padding-surplus and
-    # selector bits are advice-decomposed at their use sites (balance and
-    # decompose sections) and pinned there — never left to a single aggregate
-    # identity, which does not bind a high-entropy hint in this smooth field.
+    # kappa and the bus depth were derived above; the selector bits are
+    # advice-decomposed at their use site (the decompose section) and pinned there —
+    # never left to a single aggregate identity, which does not bind a high-entropy
+    # hint in this smooth field.
     idxc_tab = HeapBuf(SIZE_BITS)
     for t in unroll(0, SIZE_BITS):
         idxc_tab[GEN ** t] = INDEX_MLE_FACTORS[t]
@@ -1323,57 +1313,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             g_off *= g_squares[block_kappa[global_g]]  # an omission fails the
     #                                              # decompose's offset read.
 
-    # ---- balance: push_root · d_pull == pull_root · d_push ----
-    # Each side's grand product includes its padding rows: block b contributes
-    # (γ + fp_b)^DELTA_b, where fp_b is the padding row's fingerprint and
-    # DELTA_b = 2^κ − real its row count. Multiplying each root by the OTHER
-    # side's padding product cancels the padding, so the REAL rows must balance.
-    # DELTA's bits (advice-decomposed from g^DELTA = g^(2^κ) / g^real) drive the
-    # (γ+fp)^DELTA ladder and are pinned by g^real · g^DELTA == g^(2^κ); real is
-    # count_t for table blocks, 2^κ for shared blocks (DELTA = 0). An unpinned
-    # DELTA would forge the balance (dlog is cheap in this field).
-    # ONE ladder per (side, table), not per block: every flush block of table t
-    # takes its kappa from the same certified source (tau_t) and its real row
-    # count from the same count_t, so the whole group shares one DELTA, and
-    #     prod_b (gamma + fp_b)^DELTA == (prod_b (gamma + fp_b))^DELTA.
-    # The framework blocks are REAL_IS_FULL_CUBE (= N_TABLES, so the table loop
-    # skips them): real = 2^kappa makes DELTA = 0 by construction, and the ladder
-    # they run today is forced to return 1 anyway -- g^DELTA == g^(2^kappa)/g^real
-    # == 1 with COUNT_BITS bits far below the group order pins every bit to zero.
-    # Dropping it removes a hint, not a constraint.
-    pad_products = HeapBuf(2)
-    for s in unroll(0, 2):
-        side_pad_product = GEN ** 0
-        for t in unroll(0, N_TABLES):
-            group_base = GEN ** 0
-            for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-                if BLOCK_REAL_TABLE[b] == t:
-                    pad_fp = 0
-                    alpha_pow = GEN ** 0
-                    for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                        pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
-                        alpha_pow *= alpha
-                    group_base *= (gamma + pad_fp)
-            g_two_kappa = g_squares[dims_g[GEN ** (t + 1)]]  # g^(2^tau_t), the group's kappa
-            g_real = count_gpows[GEN ** t]                   # g^count_t
-            g_delta_want = g_two_kappa / g_real  # g^DELTA (feeds the advice below)
-            pad_bits = HeapBuf(GEN ** COUNT_BITS)
-            hint_decompose_bits_exponent(pad_bits, g_delta_want, COUNT_BITS)
-            ladder = GEN ** 0
-            ladder_square = group_base
-            g_delta = GEN ** 0
-            for j in unroll(0, COUNT_BITS):
-                pad_bit = pad_bits[GEN ** j]
-                pad_bits[GEN ** j] = pad_bit * pad_bit  # booleanity as a write-once pin
-                ladder *= (1 + pad_bit * (ladder_square + 1))
-                g_delta *= (1 + pad_bit * gsq_plus[j])  # g^DELTA
-                ladder_square *= ladder_square
-            assert g_real * g_delta == g_two_kappa  # count_t + DELTA_t == 2^tau_t
-            side_pad_product *= ladder
-        pad_products[GEN ** s] = side_pad_product
-    lhsb = gkr_roots[PUSH_SIDE] * pad_products[GEN ** PULL_SIDE]  # balance: push_root * d_pull == pull_root * d_push (padding cancels)
-    rhsb = gkr_roots[PULL_SIDE] * pad_products[GEN ** PUSH_SIDE]
-    assert lhsb == rhsb
+    # ---- balance: push_root == pull_root ----
+    # Every row of every table is a real row, so the two sides balance outright:
+    # there is no padding surplus to divide back out, and with it went a bit-ladder
+    # per side and table, each pinning a padding delta against an advice-decomposed
+    # exponent.
+    assert gkr_roots[PUSH_SIDE] == gkr_roots[PULL_SIDE]
 
     # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
     bytecode_vals = HeapBuf(BYTECODE_COLS)
@@ -1430,11 +1375,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                     block_eq_hi[GEN ** b] = eq_hi
             selector_sum += eq_hi
             block_eq_all[GEN ** b] = eq_hi
-            # A TABLE's block contributes only its padding mass here: the batched
-            # zerocheck settles its fingerprint from that table's column evaluations,
-            # so no value is streamed for it. Only the framework blocks (boundary,
-            # memory, bytecode) still decompose.
-            if BLOCK_REAL_TABLE[b] == REAL_IS_FULL_CUBE:
+            # A TABLE's block streams no value here: the batched zerocheck settles its
+            # fingerprint from that table's column evaluations. Only the framework blocks
+            # (boundary, memory, bytecode) still decompose.
+            if BLOCK_TABLE[b] == NO_TABLE:
                 # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
                 inner_sum = 0
                 alpha_pow = GEN ** 0
@@ -1629,7 +1573,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             form = 0
             for b in unroll(0, N_BLOCKS):
                 if BLOCK_SIDE[b] == sd:
-                    if BLOCK_REAL_TABLE[b] == t:
+                    if BLOCK_TABLE[b] == t:
                         inner = 0
                         apow = GEN ** 0
                         for i in unroll(0, BLOCK_COORD_COUNT[b]):

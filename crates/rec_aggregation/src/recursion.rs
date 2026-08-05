@@ -150,8 +150,10 @@ fn prove_inner(
     program.set_witness("n_hash", vec![vec![F192::new(g_pow(hashes).0, 0, 0)]]);
     program.set_witness("iters", vec![vec![F192::new(g_pow(iters).0, 0, 0)]]);
     let (proof, stats) = prove(&program, pi, log_inv_rate);
-    // Reported once, by `run_recursion_with_rates` from `Batch::inner_stats`.
-    (program, proof, stats.cycles, stats.committed)
+    // Reported once, by `run_recursion_with_rates` from `Batch::inner_stats`. The
+    // inner guest's own work, not its filled row count, so the figure means the same
+    // thing as the outer one.
+    (program, proof, stats.base_counts.iter().sum(), stats.committed)
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -1313,7 +1315,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
-    let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
+    let (mut ct, mut cval) = (vec![], vec![]);
     let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
@@ -1366,30 +1368,19 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 coord_slot.push(slot);
                 coord_local.push(local);
                 coord_local_b.push(local_b);
-                let (t, v, f) = match c {
-                    Coord::Const(v) => (0u128, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
-                    Coord::Col(i) => (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
-                    Coord::GCol(i, k) => {
-                        let gk = g_pow(*k as usize);
-                        (2, F192::new(gk.0, 0, 0), F192::new((gk * l.pad[*i]).0, 0, 0))
-                    }
-                    Coord::Index => (3, F192::ZERO, F192::ZERO),
+                let (t, v) = match c {
+                    Coord::Const(v) => (0u128, F192::new(v.0, 0, 0)),
+                    Coord::Col(_) => (1, F192::ZERO),
+                    Coord::GCol(_, k) => (2, F192::new(g_pow(*k as usize).0, 0, 0)),
+                    Coord::Index => (3, F192::ZERO),
                     Coord::Public(_) => {
                         nbcv += 1;
-                        (4, F192::ZERO, F192::ZERO)
+                        (4, F192::ZERO)
                     }
-                    Coord::Prod(i, j, k) => {
-                        let gk = g_pow(*k as usize);
-                        (
-                            5,
-                            F192::new(gk.0, 0, 0),
-                            F192::new((gk * l.pad[*i] * l.pad[*j]).0, 0, 0),
-                        )
-                    }
+                    Coord::Prod(_, _, k) => (5, F192::new(g_pow(*k as usize).0, 0, 0)),
                 };
                 ct.push(t);
                 cval.push(u(v));
-                fpv.push(u(f));
             }
         }
         sblk.push(nblocks);
@@ -1468,7 +1459,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     }
     ps("MU_CAP", mumax.to_string());
-    ps("REAL_IS_FULL_CUBE", l.taus.len().to_string());
+    ps("NO_TABLE", l.taus.len().to_string());
     ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
     ps("SIDE_BLOCK_START", ints(&sblk));
@@ -1491,7 +1482,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ints(&bks.iter().map(|&(_, a)| a).collect::<Vec<_>>()),
     );
     ps(
-        "BLOCK_REAL_TABLE",
+        "BLOCK_TABLE",
         ints(
             &bks.iter()
                 .map(|&(s, _)| if s >= 2 { s - 2 } else { l.taus.len() })
@@ -1507,7 +1498,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("BLOCK_COORD_COUNT", ints(&bcn));
     ps("COORD_TYPE", us(&ct));
     ps("COORD_CONST", us(&cval));
-    ps("COORD_PAD_VAL", us(&fpv));
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
     ps("COORD_COL_LOCAL", ints(&coord_local));
@@ -2053,11 +2043,19 @@ fn run_recursion_with_rates(
         "\nrecursion {nsub_pretty}\u{2192}1: {nsub_pretty} inner proofs of {} cycles each",
         pretty_integer(total_inner_cycles / nsub)
     );
-    let guest_cycles = pretty_integer(stats.cycles);
+    // The guest's own work, then what gets proven: each table is filled to a power of
+    // two so that none needs padding rows (`lean_vm::cpu::filler`).
+    let base_cycles: usize = stats.base_counts.iter().sum();
     println!(
-        "  guest cycles (VM steps)     : {guest_cycles} = {}   ({} / inner cycle)",
-        crate::report::pow(stats.cycles),
-        pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
+        "  guest cycles (VM steps)     : {} = {}   ({} / inner cycle)",
+        pretty_integer(base_cycles),
+        crate::report::pow(base_cycles),
+        pretty_f64(base_cycles as f64 / total_inner_cycles as f64)
+    );
+    println!(
+        "    proven rows               : {} = {}  (filled to powers of two)",
+        pretty_integer(stats.cycles),
+        crate::report::pow(stats.cycles)
     );
     println!("    details                   : {}", stats.details());
     crate::report::print_proof_size(&recursive_proof);

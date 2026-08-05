@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-use lean_compiler::{compile, parse};
+use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use lean_vm::vmhash::compress;
@@ -25,6 +25,16 @@ use primitives::{
     field::{F64, F192},
     pretty_f64, pretty_integer,
 };
+
+/// The program's own instruction mix: a build without the fill blocks, executed but not
+/// proven. Proving needs them, since a table's height has to be a power of two with no
+/// padding rows, but their dummy rows would drown out exactly what these counts are
+/// measuring.
+fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
+    compile_without_filler(&parse(src).expect("parse"))
+        .execute(pi)
+        .base_counts
+}
 
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
@@ -109,7 +119,7 @@ fn blake3_hash_chain() {
     verify(&program, &pi, &proof).expect("hash-chain proof verifies");
     let t_verify = t.elapsed();
 
-    assert_eq!(stats.counts[5], n, "one BLAKE3 row per chain step");
+    assert_eq!(mix(&chain_source(n, unroll), pi)[5], n, "one BLAKE3 row per chain step");
 
     println!(
         "\nBLAKE3 hash chain, N = {}, unroll = {}",

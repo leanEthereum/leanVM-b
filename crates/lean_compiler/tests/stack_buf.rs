@@ -9,11 +9,21 @@
 //! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
 //! — the reference `compress` is fed that lane layout.
 
-use lean_compiler::{compile, parse};
+use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_vm::cpu::{prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
+
+/// The program's own instruction mix: a build without the fill blocks, executed but not
+/// proven. Proving needs them, since a table's height has to be a power of two with no
+/// padding rows, but their dummy rows would drown out exactly what these counts are
+/// measuring.
+fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
+    compile_without_filler(&parse(src).expect("parse"))
+        .execute(pi)
+        .base_counts
+}
 
 /// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
 /// hi = word 1/3) — what a `blake3(...)` output `StackBuf(2)` holds cell-by-cell.
@@ -47,8 +57,8 @@ def main():
     let h = [F64(5), F64(0), F64(7), F64(0)];
     let want = digest_cells(h, h);
 
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[5], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
@@ -83,8 +93,8 @@ def main():
     let d = blake3::hash(&input);
     let word = |o: usize| u64::from_le_bytes(d.as_bytes()[o..o + 8].try_into().unwrap());
     let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 2);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[5], 2);
     verify(&program, &want, &proof).expect("standard two-block BLAKE3 verifies");
 }
 
@@ -213,8 +223,8 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
     let want = [F192::from(F64(7)), F192::from(F64(4))];
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 0, "no BLAKE3 here");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[5], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
@@ -359,8 +369,8 @@ def step(state, v):
     let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
     let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
 
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 2, "two BLAKE3 instructions (one per inlined step)");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[5], 2, "two BLAKE3 instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
@@ -477,8 +487,8 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
     let want = digest_cells([F64(7), F64(0), F64(5), F64(0)], [F64(2), F64(0), F64(3), F64(0)]);
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[5], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
 

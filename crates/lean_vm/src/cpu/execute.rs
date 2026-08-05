@@ -10,9 +10,12 @@ use primitives::{
 };
 
 pub struct Execution {
-    pub mem: Vec<F192>,      // data memory after the run, write-once (size cells, power of two)
-    pub cycles: usize,       // number of instructions the run executed (trace length)
-    pub mem_used: usize,     // cells actually touched, before the power-of-two pad of `mem`
+    pub mem: Vec<F192>,  // data memory after the run, write-once (size cells, power of two)
+    pub cycles: usize,   // number of instructions the run executed (trace length)
+    pub mem_used: usize, // cells actually touched, before the power-of-two pad of `mem`
+    /// Rows per table before the fill blocks ran: the work the program itself does, as
+    /// against the power-of-two heights that get proven. Cost measurements want this one.
+    pub base_counts: [usize; crate::tables::N_TABLES],
     pub(crate) trace: Trace, // rows + final access-count columns, emitted in the same walk
 }
 
@@ -28,6 +31,11 @@ impl Program {
     /// first two memory cells `m[0], m[1]` (§sec:e2e-pi). Compilation yields the
     /// `Program`; executing it (here) and proving it are separate later phases.
     pub fn execute(&self, public_input: [F192; 2]) -> Execution {
+        // One interpretation of the program, then the fill. The blocks that bring every
+        // table to a power of two are cycles no program code enters (`cpu::filler`), so
+        // they run after the chain has halted, by which point the program's own row
+        // counts are final; a traversal costs exactly its block's size plus its closing
+        // jump, so the solve is exact and no second run is needed to correct it.
         use super::hints::{GPow, RHint};
 
         let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot, g^{B-1}
@@ -77,6 +85,9 @@ impl Program {
         let mut wit_pos: HashMap<String, usize> = HashMap::new();
         // Baby-step table for `hint_decompose_bits_exponent`, built on first use.
         let mut dlog_cache: Option<(GPow, F64)> = None;
+
+        // Rows per table before the fill runs, captured when the chain halts.
+        let mut base_counts: Option<[usize; crate::tables::N_TABLES]> = None;
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
@@ -194,7 +205,71 @@ impl Program {
             panic!("hint_decompose_bits_exponent: value is not g^n for n < 2^{nbits}")
         }
 
-        while pc != ending_pc {
+        // The program's own chain runs to the halt sentinel; the fill blocks then run, one
+        // cycle at a time. A cycle is entered at its block's first instruction, in a frame
+        // of its own, and traversed for the rows `filler::solve` asks of it, always a whole
+        // number of traversals, so the state tuples it pushes are exactly the ones it pulls
+        // (doc §Filling the tables). `left` is the rows still to run in the current cycle,
+        // and `None` while the chain runs.
+        let mut cycles: std::vec::IntoIter<(u32, u32, usize)> = Vec::new().into_iter();
+        let mut left: Option<usize> = None;
+        loop {
+            // The chain reached the sentinel, or a cycle has run its rows.
+            let switch = match left {
+                None => pc == ending_pc,
+                Some(n) => n == 0,
+            };
+            if switch {
+                if left.is_none() {
+                    assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
+                    let counts = [
+                        xor.len(),
+                        mul.len(),
+                        set.len(),
+                        deref.len(),
+                        jump.len(),
+                        blake3.len(),
+                        pack64x2.len(),
+                    ];
+                    base_counts = Some(counts);
+                    // A frame per cycle, from the same bump allocator that serves `Alloc`
+                    // but never below the memory floor: a range check's `DEREF` writes the
+                    // absolute cell its bound names, which can be any cell under
+                    // `2^MIN_LOG_MEM` and so is nobody's to reserve (`lower_assert_lt`).
+                    use super::filler::frame as fr;
+                    let mut runs: Vec<(u32, u32, usize)> = Vec::new();
+                    // A hand-assembled program carries no blocks and has to land on
+                    // powers of two by itself, which `Layout` checks.
+                    if !self.filler.is_empty() {
+                        let mut frame = (1u32 << crate::cpu::MIN_LOG_MEM).max(next_free);
+                        for (block_pc, size, n) in super::filler::cycles(&self.filler, counts) {
+                            g.grow_to(frame as usize);
+                            g.note(frame as usize);
+                            // What the closing jump reads: back to the block's own first
+                            // instruction, in this same frame. Then the pointer the `DEREF`
+                            // dummy follows, memory cell `0`.
+                            m.put(frame + fr::DEST, F192::from(g.pow(block_pc as usize)));
+                            m.put(frame + fr::NEXT_FP, F192::from(g.pow(frame as usize)));
+                            m.put(frame + fr::PTR, F192::ONE);
+                            runs.push((block_pc, frame, n * (size as usize + 1)));
+                            frame += fr::CELLS;
+                        }
+                        next_free = frame;
+                    }
+                    cycles = runs.into_iter();
+                }
+                match cycles.next() {
+                    Some((p, f, rows)) => {
+                        pc = p;
+                        fp = f;
+                        left = Some(rows);
+                    }
+                    None => break,
+                }
+            }
+            if let Some(n) = &mut left {
+                *n -= 1;
+            }
             assert!(steps < 100_000_000, "step limit exceeded (runaway recursion?)");
             m.dbg_pc = pc;
             if let Some(p) = prof.as_mut() {
@@ -507,7 +582,17 @@ impl Program {
                             let has3 = (a3 as usize) < m.written.len() && m.written[a3 as usize];
                             match (has2, has3) {
                                 (true, true) => {
-                                    assert!(m.cells[a2] == m.get(a3), "DEREF mismatch")
+                                    assert!(
+                                        m.cells[a2] == m.get(a3),
+                                        "DEREF mismatch at pc {pc}: m[{a2}] = {:x}:{:x}:{:x} but \
+                                         m[fp+{gamma}] = {:x}:{:x}:{:x}",
+                                        m.cells[a2].c2,
+                                        m.cells[a2].c1,
+                                        m.cells[a2].c0,
+                                        m.get(a3).c2,
+                                        m.get(a3).c1,
+                                        m.get(a3).c0,
+                                    )
                                 }
                                 (true, false) => {
                                     let v = m.cells[a2];
@@ -649,8 +734,6 @@ impl Program {
             steps += 1;
         }
 
-        assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
-
         if let Some(p) = &prof {
             let mut rows: Vec<(String, u64)> = self
                 .fn_ranges
@@ -740,6 +823,9 @@ impl Program {
             mem: m.cells,
             cycles: steps,
             mem_used,
+            // Taken when the chain halted, which every run does before it can leave the
+            // loop at all.
+            base_counts: base_counts.expect("the run halted, so its own counts were taken"),
             trace,
         }
     }
