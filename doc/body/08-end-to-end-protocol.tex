@@ -47,9 +47,9 @@ Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$ & $11$\\
 \hline
 \end{tabular}
 \end{center}
-So the program is nine public columns (opcode plus eight slots), whose MLEs the verifier forms itself. Writing $\mathit{instr}$ for the nine, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces every operand, flag, and immediate to match the program at its $\pc$.
+By convention the bytecode is a single multilinear over $\K$. The program is padded to $\nprog=2^{\kbc}$ instructions (\S\ref{sec:idxcol}) and its slots to a power of two as well, so the bytecode is a multilinear in $\kbc+4$ variables: the low $\kbc$ index the instruction and the high four select one of sixteen slots, nine of them carrying the encoding above and seven zero. It is public, so the verifier forms its multilinear extension itself. Writing $\mathit{instr}$ for the nine used slots at $\pc$, the bytecode seed pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces every operand, flag, and immediate to match the program at its $\pc$.
 
-The program is padded to a power of two (\S\ref{sec:idxcol}). A padding entry is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
+A padding instruction is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
 
 \subsection{Padding rows}\label{sec:e2e-pad}
 
