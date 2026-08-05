@@ -507,7 +507,17 @@ impl Program {
                             let has3 = (a3 as usize) < m.written.len() && m.written[a3 as usize];
                             match (has2, has3) {
                                 (true, true) => {
-                                    assert!(m.cells[a2] == m.get(a3), "DEREF mismatch")
+                                    assert!(
+                                        m.cells[a2] == m.get(a3),
+                                        "DEREF mismatch at pc {pc}: m[{a2}] = {:x}:{:x}:{:x} but \
+                                         m[fp+{gamma}] = {:x}:{:x}:{:x}",
+                                        m.cells[a2].c2,
+                                        m.cells[a2].c1,
+                                        m.cells[a2].c0,
+                                        m.get(a3).c2,
+                                        m.get(a3).c1,
+                                        m.get(a3).c0,
+                                    )
                                 }
                                 (true, false) => {
                                     let v = m.cells[a2];
