@@ -7,7 +7,7 @@
 //! Columns are `K`-valued (`F64`). The pc/fp, operands, counts, opcodes and
 //! separators are single `K`-columns; a **machine word** (memory value) is
 //! 192-bit (`E = F192`), committed as THREE `K`-lane columns. An operand address
-//! is no column at all: the bus carries it as the product `fp·o` (§sec:m3-addr). A
+//! is no column at all: the bus carries it as the product `fp·o` (§sec:m3). A
 //! constraint is evaluated at an `E`-point, so `eval_constraint` receives
 //! `E`-values; a word is reassembled as `c0 + c1·y + c2·y²`, and value
 //! relations (`XOR`, `MUL`, the `DEREF` store,
@@ -44,7 +44,7 @@ fn deref_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     // f_pc·(g²·pc) + f_fp·fp` over the two boolean store-mode flags. The `pc`
     // source is the virtual return target g²·pc (a free ×g² of the committed pc),
     // so no column. The three addresses need no binding: the bus reads each as its
-    // own product (§sec:m3-addr).
+    // own product (§sec:m3).
     let src = (T::ONE + cols[FPC] + cols[FFP]).mul_e(v3)
         + (cols[FPC] * cols[PC].mul_k(G * G)).to_e()
         + (cols[FFP] * cols[FP]).to_e();
@@ -435,7 +435,7 @@ mod arith {
     pub const OB: usize = 3;
     pub const OC: usize = 4;
     // No absolute-address columns: the memory bus carries `fp·o` as a product
-    // coordinate (§sec:m3-addr), which is why there is no address binding below.
+    // coordinate (§sec:m3), which is why there is no address binding below.
     // The three read words, each three K-limbs.
     pub const VA_LO: usize = 5;
     pub const VA_HI: usize = 6;
@@ -887,7 +887,7 @@ impl Table for Pack64x2Table {
 /// `(tweak, pp)` need not copy them into adjacent cells. The chaining value and the
 /// 32-byte output each occupy two consecutive cells, based at `fp·o_cv` and
 /// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
-/// (§sec:m3-addr). The compression relating output words to input words carries no
+/// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
 /// (§blake3_flock), which leaves this table with no identity of its own.
 ///

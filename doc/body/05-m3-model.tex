@@ -33,18 +33,24 @@ The ranges of $\eta$-powers are \emph{disjoint}, so no table's violation can be 
 \]
 Because $\sum_x\prod_i x_i=1$ on any boolean hypercube, $\sum_{x\in\cube n}f_j(x)=S_j$, so with $F=\sum_j f_j$ the whole statement is the single claim $\sum_{x\in\cube n}F(x)=0$, proven by $n$ rounds of sumcheck on $F$.
 
-The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far (the same for every table that is waiting) and $S_j=0$. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. This is back-loaded batching: a short claim waits, then joins weighted by the rounds it sat out.
+The rounds bind $X_0$ first and $X_{n-1}$ last, so every table is active from the start and $T_j$ \emph{departs} after round $\tau_j$, having bound $X_0,\dots,X_{\tau_j-1}$. The last $n-\tau_j$ rounds touch only variables it does not use, where $f_j$ contributes the line $Y\,w_j\,S_j$ with $w_j$ its accumulated weight and $S_j=0$. Either direction gives $T_j$ the same weight,
+\[
+  w_j\;=\;\prod_{i<\tau_j}\eq(r_i,\rho_i)\cdot\prod_{i\ge\tau_j}\rho_i ,
+\]
+and lands its claim on the nested point $\rho_{<\tau_j}$; only the order in which the factors accumulate differs. Binding upward is what makes a table's padding rows a constant run in every round, not just before the first fold: see \emph{Padding} in \S\ref{sec:gp}.
 
 \paragraph{Nonzero claims.} Nothing above needs $S_j=0$, nor $r$ to be a fresh challenge. Any polynomial in $T_j$'s columns whose $\eq$-weighted sum over the rows is a value the verifier knows is batched exactly like a constraint, becoming one more entry of $C_j$ with a power of $\eta$ of its own; only $S_j$ changes, from $0$ to that value. And any point fixed at random after the trace commitment serves as $r$. \S\ref{sec:leafstack} does both, running the batch at $r=\zeta$, the point GKR leaves behind, and handing each table three such polynomials. What is proven is then
 \[
   \sum_{x\in\cube n}F(x)\;=\;\sum_j S_j .
 \]
 
-The one consequence for the rounds is that a waiting table's line $Y\,k\,S_j$ no longer vanishes. Write $X_\ell$ for the variable a round binds, $Y$ for it while still an unknown, and $k$ for the product of the challenges drawn so far, which is common to every waiting table. They therefore sum to $Y\,u$ for the single scalar $u=k\sum_{\tau_j\le\ell}S_j$, and with $p$ the joined tables' cofactor, of degree at most $2$, the round polynomial is the cubic
+The one consequence for the rounds is that a departed table's line $Y\,w_j\,S_j$ no longer vanishes. Write $X_\ell$ for the variable a round binds and $Y$ for it while still an unknown. The departed tables' lines sum to $Y\,u$ for the single scalar $u=\sum_{\tau_j\le\ell}w_j\,S_j$, and with $p$ the active tables' cofactor, of degree at most $2$, the round polynomial is the cubic
 \[
   h(Y)\;=\;\eq(r_\ell,Y)\,p(Y)+Y\,u .
 \]
 The prover sends $h$ whole, at $\{0,1,\gen,\gen^{2}\}$: four $\E$-elements a round, one more than \S\ref{sec:gkr}'s $\eq$-trick. That one is the price of the nonzero claims rather than of sending $h$ whole, for the trick cannot save it: the verifier has no way to form $u$, so $u$ would travel beside the cofactor instead. The rounds are then vanilla sumcheck, checking $h(0)+h(1)=c$ against the running claim $c$ and folding $c\leftarrow h(\rho_\ell)$, with no $\eq$ reapplied to the message. Prover work is unchanged: $p$ is quadratic, so its fourth value interpolates from the other three rather than costing another pass over the rows.
+
+Departing rather than waiting also means the prover is never told what a table sums to: $S_j$ enters $u$ only once $T_j$ has bound all of its own variables, at which point $w_j\,S_j$ is a value it has just computed. Only the total $\sum_j S_j$, the batch's target, is formed in advance, and \S\ref{sec:leafstack} has the verifier derive that from the bus.
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
@@ -72,6 +78,8 @@ The verifier checks that this bound over $|\E|=2^{192}$ leaves at least $128$ bi
 Each side's product is proven by a GKR pass over a product tree (\S\ref{sec:gkr}).
 
 \paragraph{Padding.} Every table is padded past its real rows to a power of two. Each padding row is a fixed default: every column zero but the read counts, set to $\gen^{0}=1$. Its memory and bytecode flushes are then default tuples that do not self-cancel, so the prover announces each table's real row count and the verifier divides the surplus out of \eqref{eq:gp}: a default tuple $d$ in surplus $\delta_d$ on a side divides that side by $(\gamma-\pi_\alpha(d))^{\delta_d}$.
+
+Being one fixed row is also what keeps the padding out of the prover's costs. The leaves of \eqref{eq:gp} past a block's real rows are that one factor, so \S\ref{sec:gkr}'s tree is built from the real rows alone. The same holds in \S\ref{sec:air}'s batch once the rounds bind upward: the padding occupies the tail of the row index and a round pairs \emph{adjacent} rows, so the tail's pairs have that one row on both sides. Binding a variable sends a pair $(v_{\mathrm{lo}},v_{\mathrm{hi}})$ to $v_{\mathrm{lo}}+\rho\,(v_{\mathrm{lo}}+v_{\mathrm{hi}})$ (Fact~\ref{fact:eq}), which in characteristic $2$ is $v$ again when both halves are $v$, so the tail is still that row after every fold. Its entire contribution to a round is therefore $C_j(\mathrm{pad})$, one evaluation for the whole proof, times the $\eq$ mass of the tail, which is $O(\tau_j)$ multiplies from the binary expansion of the boundary. The prover sums and folds the real prefix only, so both \S\ref{sec:gp} and \S\ref{sec:air} cost what the trace holds rather than what it is padded to. Note that pairing $x$ with $x+2^{\tau_j-1}$ instead, which is what binding downward does, would isolate nothing: $\tau_j=\lceil\log_2(\text{rows})\rceil$ leaves more than half the cube real, so every such pair has a real half.
 
 \subsection{Proving the grand product (GKR)}\label{sec:gkr}
 

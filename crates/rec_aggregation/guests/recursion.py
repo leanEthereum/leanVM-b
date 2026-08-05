@@ -1551,31 +1551,36 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zc_round_fs1 = HeapBuf(g_zc_n * GEN)
     zc_round_cursor = HeapBuf(g_zc_n * GEN)
     zc_round_claim = HeapBuf(g_zc_n * GEN)
-    zc_round_cprod = HeapBuf(g_zc_n * GEN)  # the challenges bound so far, multiplied
+    zc_csuffix = HeapBuf(g_zc_n * GEN)  # per variable i: the product of rho[i..n]
     zc_round_fs0[GEN ** 0] = fs[0]
     zc_round_fs1[GEN ** 0] = fs[1]
     zc_round_cursor[GEN ** 0] = cursor
     zc_round_claim[GEN ** 0] = bus_target
-    zc_round_cprod[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
-        d = g_zc_n * INV_GEN / xk  # g^(n-1-j): the variable round j binds
+        # Round j binds variable j: every table is active from the start and departs
+        # after its own tau rounds (lean_vm::constraints).
         nfs0, nfs1, ncur, nclaim, rk = sumcheck_round4(zc_round_fs0[xk], zc_round_fs1[xk], zc_round_cursor[xk], zc_round_claim[xk])
-        rho[d] = rk
+        rho[xk] = rk
         xkn = xk * GEN
         zc_round_fs0[xkn] = nfs0
         zc_round_fs1[xkn] = nfs1
         zc_round_cursor[xkn] = ncur
-        # cprod is the weight of a table that joins here; peq below is the rest
-        zc_round_cprod[xkn] = zc_round_cprod[xk] * rk
         zc_round_claim[xkn] = nclaim
     fs = [zc_round_fs0[g_zc_n], zc_round_fs1[g_zc_n]]
     cursor = zc_round_cursor[g_zc_n]
     claim = zc_round_claim[g_zc_n]
-    # peq[g^tau] = eq(zeta[..tau], rho[..tau]), as a prefix chain.
+    # A table of height tau weighs eq over the variables it owns times the challenges
+    # of the rounds it sat out, which are now the LAST n - tau: peq[g^tau] =
+    # eq(zeta[..tau], rho[..tau]) as a prefix chain, csuffix[g^tau] = prod_{i>=tau}
+    # rho[i] as a suffix chain (built downward, so no division).
     zc_peq = HeapBuf(g_zc_n * GEN)
     zc_peq[GEN ** 0] = 1
     for xi in mul_range(1, g_zc_n):
         zc_peq[xi * GEN] = zc_peq[xi] * (1 + zeta[xi] + rho[xi])
+    zc_csuffix[g_zc_n] = 1
+    for xi in mul_range(1, g_zc_n):
+        d = g_zc_n * INV_GEN / xi  # g^(n-1-i), walking the variables downward
+        zc_csuffix[d] = zc_csuffix[d * GEN] * rho[d]
     # Per table: every committed column's evaluation (pooled), its AIR constraint
     # at its own reduced point rho[..tau_t], weighted into the batch's final claim.
     air_acc = 0
@@ -1653,7 +1658,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                         else:
                             form += block_eq_all[GEN ** b] * (gamma + inner)
             constraint_eval += eta_pows[ETA_FORM_BASE + sd] * form
-        air_acc += zc_round_cprod[g_zc_n / tau_g] * zc_peq[tau_g] * constraint_eval  # cprod[n - tau] * peq[tau]
+        air_acc += zc_csuffix[tau_g] * zc_peq[tau_g] * constraint_eval  # eq over its own tau, challenges over the rest
     assert air_acc == claim
 
     # ---- public-input binding claim: MEM as ONE logical E-column ----

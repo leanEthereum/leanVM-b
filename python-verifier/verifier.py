@@ -1022,7 +1022,11 @@ def verify_constraints(
     weights = [ONE] * len(airs)
     point = [ZERO] * depth
     for round_index in range(depth):
-        variable = depth - 1 - round_index
+        # Round j binds variable j: a table of height h is active for its first h
+        # rounds and then rides its lift's challenges. Either binding order gives the
+        # same weight, eq over the table's own variables times the challenges over
+        # the rest, but binding upward is what lets the prover skip padding rows.
+        variable = round_index
         message = transcript.scalars(4)
         require(
             message[0] + message[1] == claim,

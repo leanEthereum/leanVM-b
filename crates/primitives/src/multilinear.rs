@@ -110,12 +110,26 @@ fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
 
 /// The mixed fold: bind the lowest variable of a `K`-table to an
 /// `E`-challenge, producing the `E`-table the remaining rounds fold. One
-/// `mul_base` per output entry.
-fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
+/// `mul_base` per output entry. The [`fold_high_k`] counterpart for a bottom-up
+/// sumcheck.
+pub fn fold_low_k(table: &[F64], rho: F192) -> ArenaVec<F192> {
     debug_assert_eq!(table.len() % 2, 0);
     (0..table.len() / 2)
         .map(|i| interp_k(table[2 * i], table[2 * i + 1], rho))
         .collect()
+}
+
+/// Bind the lowest free variable of `table` in place: `table[i] =
+/// interp(table[2i], table[2i+1], rho)`. Pairing ADJACENT entries is what keeps a
+/// constant run constant: `interp(v, v, ρ) = v + ρ·(v+v) = v` in characteristic 2,
+/// so a table's padding tail survives every round as the same fixed row, which is
+/// what the constraint sumcheck skips (§sec:air).
+pub fn fold_low_inplace<B: Shrink<F192>>(table: &mut B, rho: F192) {
+    let half = table.len() / 2;
+    for i in 0..half {
+        table[i] = interp(table[2 * i], table[2 * i + 1], rho);
+    }
+    table.shrink_to(half);
 }
 
 /// Bind the highest variable of a `K`-table and lift the result into `E`.
@@ -157,6 +171,25 @@ pub fn shrink_eq_high<B: Shrink<F192>>(table: &mut B) {
         table[i] += hi;
     }
     table.shrink_to(half);
+}
+
+/// `Σ_{x ≥ s} eq(r, x)` over `x ∈ cube(r.len())`, the `eq` mass of an index suffix,
+/// in `O(r.len())` multiplies instead of a pass over the table. Peel the top bit:
+/// if it is set in `s` every qualifying `x` has it set too, and otherwise the whole
+/// `x_top = 1` half qualifies outright. Lets a sumcheck charge for a constant
+/// padding tail without walking it (§sec:air).
+pub fn eq_suffix_mass(r: &[F192], s: usize) -> F192 {
+    if s >= 1usize << r.len() {
+        return F192::ZERO;
+    }
+    // Built bottom-up, so `acc` is the answer for the bits below `i`.
+    r.iter().enumerate().fold(F192::ONE, |acc, (i, &ri)| {
+        if (s >> i) & 1 == 1 {
+            ri * acc
+        } else {
+            ri + (F192::ONE + ri) * acc
+        }
+    })
 }
 
 /// The barycentric weights of distinct `nodes` at `p`: `weights[i] =
@@ -253,28 +286,11 @@ pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     if point.is_empty() {
         return F192::from(table[0]);
     }
-    fold_ladder(fold_low_k(table, point[0]), &point[1..])
-}
-
-/// The MLE of the pointwise product `a·b` at an `E`-point, i.e. `Σ_z eq(point,
-/// z)·a(z)·b(z)`. This is NOT `â(point)·b̂(point)`: a product of multilinears is
-/// not multilinear, so it has to be summed over the cube. The first fold takes the
-/// product in `K` (1 PMULL) and lifts, after which it is [`mle_eval`]'s ladder.
-pub fn mle_eval_prod(a: &[F64], b: &[F64], point: &[F192]) -> F192 {
-    debug_assert_eq!(a.len(), b.len());
-    debug_assert_eq!(a.len(), 1 << point.len());
-    if point.is_empty() {
-        return F192::from(a[0] * b[0]);
-    }
-    let rho = point[0];
-    let cur = (0..a.len() / 2)
-        .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], rho))
-        .collect();
-    fold_ladder(cur, &point[1..])
+    fold_ladder(&mut fold_low_k(table, point[0]), &point[1..])
 }
 
 /// Bind the remaining variables of a half-folded `E`-table, LSB-first.
-fn fold_ladder(mut cur: Vec<F192>, point: &[F192]) -> F192 {
+fn fold_ladder(cur: &mut [F192], point: &[F192]) -> F192 {
     let mut len = cur.len();
     for &p in point {
         len /= 2;
@@ -295,4 +311,38 @@ pub fn lagrange_weights_naive(k_skip: usize, z: F192) -> Vec<F192> {
     let ell = 1usize << k_skip;
     assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
     lagrange_weights(&PHI_8_TABLE[..ell], z)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The closed form must agree with summing the tail of the `eq` table, at every
+    /// boundary including the empty and full ones.
+    #[test]
+    fn eq_suffix_mass_matches_the_table_tail() {
+        for n in 0..6 {
+            let r: Vec<F192> = (0..n)
+                .map(|i| F192::new(0x9e37 + i as u64, i as u64, 3 * i as u64))
+                .collect();
+            let table = eq_table(&r);
+            for s in 0..=(1usize << n) {
+                let want = table[s..].iter().fold(F192::ZERO, |a, &b| a + b);
+                assert_eq!(eq_suffix_mass(&r, s), want, "n = {n}, s = {s}");
+            }
+        }
+    }
+
+    /// Adjacent pairing leaves a constant run constant, whatever the challenge:
+    /// this is what lets a sumcheck skip a padding tail.
+    #[test]
+    fn low_fold_preserves_a_constant_run() {
+        let v = F192::new(7, 8, 9);
+        let mut t: Vec<F192> = (0..4)
+            .map(|i| F192::new(i, 0, 0))
+            .chain(std::iter::repeat_n(v, 4))
+            .collect();
+        fold_low_inplace(&mut t, F192::new(0xabc, 5, 6));
+        assert_eq!(&t[2..], &[v, v]);
+    }
 }

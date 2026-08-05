@@ -12,21 +12,26 @@
 //!
 //! Tables of different heights are combined by back-loaded batching: table `t`'s
 //! summand is lifted onto the common `n`-cube by `∏_{i ≥ τ_t} X_i`, which leaves
-//! its hypercube sum alone. Rounds bind `X_{n-1}` first, so table `t` sits out the
-//! first `n − τ_t` and joins at round `n − τ_t` weighted by the challenges it sat
-//! out. Two payoffs: every table active in a round binds the same variable, so one
-//! eq table serves the round; and the claims land on nested points `ρ[..τ_t]`.
+//! its hypercube sum alone. Rounds bind `X_0` first, so every table is active from
+//! the start and table `t` DEPARTS after round `τ_t`, its lift then weighting it by
+//! the challenges still to come. Either binding order gives each table the same
+//! weight `∏_{i<τ_t}eq(ζ_i,ρ_i)·∏_{i≥τ_t}ρ_i` and lands its claim on the nested
+//! point `ρ[..τ_t]`; binding upward is what makes a table's padding rows a constant
+//! run in every round rather than only before the first fold (see [`prove`]).
 //!
-//! With nonzero sums the waiting tables stop dropping out: in a round it sits out, a
+//! With nonzero sums the departed tables stop dropping out: in a round it sits out, a
 //! table's variable reaches its summand once, through the padding product, so its
-//! contribution is degree 1 in that variable and vanishes at 0, and all of them
-//! share the same challenge product. The round polynomial is therefore the cubic
-//! `eq(ζ_m, Y)·p(Y) + Y·u`, and it is sent WHOLE, at four nodes. That costs one
-//! field element more than the degree-2 cofactor alone, and buys a verifier that
-//! reapplies nothing: `h(0) + h(1) = claim`, then interpolate at the challenge. No
-//! round CHECK depends on a height or on `ζ`: those enter only the per-table
-//! `weights`, which a verifier may accumulate as it goes or defer wholesale to the
-//! end, as the recursion guest does. That is what a recursive verifier needs.
+//! contribution is degree 1 in that variable and vanishes at 0. The round polynomial
+//! is therefore the cubic `eq(ζ_j, Y)·p(Y) + Y·u`, and it is sent WHOLE, at four
+//! nodes. That costs one field element more than the degree-2 cofactor alone, and
+//! buys a verifier that reapplies nothing: `h(0) + h(1) = claim`, then interpolate at
+//! the challenge. No round CHECK depends on a height or on `ζ`: those enter only the
+//! per-table `weights`, which a verifier may accumulate as it goes or defer wholesale
+//! to the end, as the recursion guest does. That is what a recursive verifier needs.
+//!
+//! A departed table's slope is its own settled summand, which the prover has in
+//! hand, so nothing has to be told what each table sums to: only the batch's target
+//! (the bus's three leaf claims) is derived, once, by the caller.
 //!
 //! The eq point is the caller's, not a fresh one (the bus's GKR point `ζ`), which
 //! is what lets the forms' sums settle the bus. Batching derived in `doc/main.tex`
@@ -39,7 +44,7 @@ use crate::colval::ColVal;
 use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192, F192Unreduced, powers};
 use primitives::multilinear::{
-    add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
+    add3, eq_suffix_mass, eq_table_arena, fold_low_k, interp, lagrange_eval, quad_nodes, shrink_eq_low, tri_nodes, xor3,
 };
 use zk_alloc::ArenaVec;
 
@@ -71,6 +76,14 @@ pub struct Air<'a> {
     pub eval_k: ConstraintK<'a>,
 }
 
+/// A table's padding shape, for the prover's skip (§sec:e2e-pad). `rows` is its real
+/// row count and `pad` its one padding row, in local column order. Prover-side only:
+/// the verifier checks a message, not how it was summed.
+pub struct Padding<'a> {
+    pub rows: usize,
+    pub pad: &'a [F64],
+}
+
 /// Start of each table's disjoint range of `η`-powers.
 pub fn eta_offsets(n_constraints: impl Iterator<Item = usize>) -> Vec<usize> {
     n_constraints
@@ -82,7 +95,8 @@ pub fn eta_offsets(n_constraints: impl Iterator<Item = usize>) -> Vec<usize> {
         .collect()
 }
 
-/// An active round for a table: evaluate its columns at the three nodes `{0,1,g}`.
+/// An active round for a table: evaluate its columns at the three nodes `{0,1,g}`,
+/// over the `pairs` leading pairs only.
 ///
 /// Generic twice over: in the column element, `K` before a table's columns are
 /// folded and `E` after ([`ColVal`]), and in the container, `Vec` for the former
@@ -96,7 +110,7 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
     cols: &[C],
     eval: &(dyn Fn(&[F192], &[T]) -> F192 + Sync),
     pows: &[F192],
-    half: usize,
+    pairs: usize,
     eqr: &[F192],
 ) -> [F192; 3] {
     let ncols = cols.len();
@@ -105,7 +119,7 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
         let (v0, rest) = scratch.split_at_mut(ncols);
         let (v1, v2) = rest.split_at_mut(ncols);
         for (ci, c) in cols.iter().enumerate() {
-            let (lo, hi) = (c[i], c[i + half]);
+            let (lo, hi) = (c[2 * i], c[2 * i + 1]);
             v0[ci] = lo;
             v1[ci] = hi;
             v2[ci] = T::at_g(lo, hi);
@@ -116,11 +130,11 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
             e.mul_unreduced(eval(pows, v2)),
         ]
     };
-    let acc = if half >= PAR_THRESHOLD {
+    let acc = if pairs >= PAR_THRESHOLD {
         // The `3 * ncols` scratch is per-worker, not per-row: `map_reduce_with_state`
         // creates it once and threads it through every row that worker claims.
         parallel::map_reduce_with_state(
-            half,
+            pairs,
             || vec![T::ZERO; 3 * ncols],
             || [F192Unreduced::ZERO; 3],
             |scratch, acc, i| *acc = xor3(*acc, summand(i, scratch)),
@@ -128,7 +142,7 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
         )
     } else {
         let mut scratch = vec![T::ZERO; 3 * ncols];
-        (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
+        (0..pairs).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
     };
     [acc[0].reduce(), acc[1].reduce(), acc[2].reduce()]
 }
@@ -137,55 +151,105 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
 /// sumcheck over `max τ_t` variables. `cols[t]` holds table `t`'s involved columns
 /// (`2^{τ_t}` values each, folded in place). Returns the per-table claims, in input
 /// order, on the nested points `ρ[..τ_t]`.
+///
+/// Rounds bind upward, which is what lets a table's padding rows be charged for
+/// rather than walked. They are one fixed row (§sec:e2e-pad) sitting in the tail of
+/// every column, and adjacent pairing keeps a constant run constant, so at every
+/// round the tail is still that row: its whole contribution is `C(pad)` times the
+/// `eq` mass of the tail, one evaluation and one [`eq_suffix_mass`] against a pass
+/// over `2^{τ_t} − rows` rows. Only the real prefix is summed, and only it is folded.
+/// A prefix of odd length reads one padding entry as its last pair's upper half, so
+/// the fold restores that one slot; everything past it is left to go stale.
 pub fn prove(
     airs: &[Air<'_>],
+    pads: &[Padding<'_>],
     cols: &[Vec<&[F64]>],
     eta: F192,
     zeta: &[F192],
-    sigma: &[F192],
     ps: &mut ProverState,
 ) -> Vec<Claims> {
     let n = airs.iter().map(|a| a.tau).max().unwrap_or(0);
     debug_assert!(zeta.len() >= n, "the eq point must cover the tallest table");
     let offsets = eta_offsets(airs.iter().map(|a| a.n_constraints));
     let pows = powers(eta, airs.iter().map(|a| a.n_constraints).sum());
-    // η^{offset_t}, already inside `pows`; the rounds then fold in the pre-join
-    // challenges and the eq factor, so `weights` is the whole per-table state.
+    // η^{offset_t}, already inside `pows`; the rounds then fold in the eq factor and
+    // the post-departure challenges, so `weights` is the whole per-table state.
     let mut weights = vec![F192::ONE; airs.len()];
-    // ONE eq table over the low (still free) variables serves every active table.
-    let mut eqr = eq_table_arena(&zeta[..n.saturating_sub(1)]);
+    // One eq table per distinct height. Binding upward, an active table's remaining
+    // free variables are `ζ[j+1..τ_t]`, so tables of different heights no longer
+    // share one; a shorter table's is geometrically smaller than the tallest's, which
+    // is what a single shared table cost on its own.
+    debug_assert!(
+        airs.iter().zip(pads).all(|(a, p)| p.pad.len() == a.n_cols),
+        "a padding row must give every column of its table a value"
+    );
+    let mut heights: Vec<usize> = airs.iter().map(|a| a.tau).filter(|&t| t > 0).collect();
+    heights.sort_unstable();
+    heights.dedup();
+    let mut eqs: Vec<ArenaVec<F192>> = heights.iter().map(|&h| eq_table_arena(&zeta[1..h])).collect();
+    let eq_of: Vec<usize> = airs
+        .iter()
+        .map(|a| heights.iter().position(|&h| h == a.tau).unwrap_or(0))
+        .collect();
+    // The batched summand on a padding row, per table: one evaluation for the whole
+    // proof, since the row never changes and neither do the `η`-powers.
+    let pad_eval: Vec<F192> = airs
+        .iter()
+        .enumerate()
+        .map(|(t, air)| (air.eval_k)(&pows[offsets[t]..offsets[t] + air.n_constraints], pads[t].pad))
+        .collect();
+    // The padding row lifted once per table: the folded columns are `E`-valued, and
+    // the row is the same at every round.
+    let pad_e: Vec<Vec<F192>> = pads
+        .iter()
+        .map(|p| p.pad.iter().map(|&v| F192::from(v)).collect())
+        .collect();
     let nd = tri_nodes();
     let mut rho = vec![F192::ZERO; n];
     // The folded tables are the batch's largest transients: one E-lifted copy of
     // every column of every still-active table. Arena-backed, so they are bumped
     // rather than mapped afresh each round.
     let mut folded: Vec<Option<Vec<ArenaVec<F192>>>> = (0..airs.len()).map(|_| None).collect();
-    // `k`, the challenges drawn so far, common to every air that is still waiting.
-    let mut k = F192::ONE;
+    // Each table's real prefix length, halved (rounding up) per round.
+    let mut real: Vec<usize> = pads.iter().map(|p| p.rows).collect();
+    // What a departed table's line is: its own settled summand, `weights[t]` aside.
+    // A one-row table is departed before the batch even starts, so it is settled here.
+    let mut departed: Vec<F192> = airs
+        .iter()
+        .enumerate()
+        .map(|(t, air)| {
+            if air.tau > 0 {
+                return F192::ZERO;
+            }
+            let evals: Vec<F192> = cols[t].iter().map(|c| F192::from(c[0])).collect();
+            (air.eval)(&pows[offsets[t]..offsets[t] + air.n_constraints], &evals)
+        })
+        .collect();
     for j in 0..n {
-        let m = n - 1 - j; // the variable this round binds
-        // The waiting airs contribute the line `Y·k·Σσ`, whose slope `u` is all there
-        // is to it. It is NOT sent on its own: it folds into `h` below, and only `h`
-        // travels. `msg` is the joined airs' degree-2 cofactor, `h`'s multiplicand.
-        let waiting = airs
-            .iter()
-            .zip(sigma)
-            .filter(|(a, _)| a.tau <= m)
-            .fold(F192::ZERO, |acc, (_, &s)| acc + s);
-        let u = k * waiting;
+        // A departed air contributes the line `Y·weights[t]·C_t(ρ)`, whose slope `u`
+        // is all there is to it. It is NOT sent on its own: it folds into `h` below,
+        // and only `h` travels. `msg` is the active airs' degree-2 cofactor.
+        let mut u = F192::ZERO;
         let mut msg = [F192::ZERO; 3];
         for (t, air) in airs.iter().enumerate() {
-            if air.tau > m {
-                let w = &pows[offsets[t]..offsets[t] + air.n_constraints];
-                let p = if let Some(table) = &folded[t] {
-                    table_message(table, &*air.eval, w, 1 << m, &eqr)
-                } else {
-                    table_message(&cols[t], &*air.eval_k, w, 1 << m, &eqr)
-                };
-                msg = add3(msg, p.map(|x| weights[t] * x));
+            if air.tau <= j {
+                u += weights[t] * departed[t];
+                continue;
             }
+            let w = &pows[offsets[t]..offsets[t] + air.n_constraints];
+            let eqr = &eqs[eq_of[t]];
+            let pairs = real[t].div_ceil(2);
+            let mut p = if let Some(table) = &folded[t] {
+                table_message(table, &*air.eval, w, pairs, eqr)
+            } else {
+                table_message(&cols[t], &*air.eval_k, w, pairs, eqr)
+            };
+            // The padding tail: `C(pad)` at all three nodes, since it is the same row
+            // on both sides of every pair it fills.
+            let tail = pad_eval[t] * eq_suffix_mass(&zeta[j + 1..air.tau], pairs);
+            p = p.map(|x| weights[t] * (x + tail));
+            msg = add3(msg, p);
         }
-        shrink_eq_high(&mut eqr);
         // Assemble `h` and send it whole. The cofactor `p` is degree 2, so its value
         // at the fourth node is an interpolation of three scalars, NOT another pass
         // over the rows: the cheap message stays cheap and the verifier gets a
@@ -193,31 +257,65 @@ pub fn prove(
         let q = quad_nodes();
         debug_assert_eq!(q[..3], nd[..], "the cubic's first three nodes are the cofactor's");
         let p4 = [msg[0], msg[1], msg[2], lagrange_eval(&nd, &msg, q[3])];
-        let h: [F192; 4] = std::array::from_fn(|i| (F192::ONE + zeta[m] + q[i]) * p4[i] + q[i] * u);
+        let h: [F192; 4] = std::array::from_fn(|i| (F192::ONE + zeta[j] + q[i]) * p4[i] + q[i] * u);
         // A separate pass: the challenge only exists once the message is bound.
         ps.add_scalars(&h);
         let rk = ps.sample();
-        rho[m] = rk;
-        k *= rk;
-        let eq_k = F192::ONE + zeta[m] + rk;
+        rho[j] = rk;
+        let eq_k = F192::ONE + zeta[j] + rk;
         for (t, air) in airs.iter().enumerate() {
-            weights[t] *= if air.tau > m { eq_k } else { rk };
-            if air.tau <= m {
+            weights[t] *= if air.tau > j { eq_k } else { rk };
+            if air.tau <= j {
                 continue;
             }
+            let s = real[t];
+            let ns = s.div_ceil(2);
+            let pad = &pad_e[t];
             if let Some(table) = &mut folded[t] {
-                if m >= PAR_THRESHOLD.trailing_zeros() as usize {
+                if ns >= PAR_THRESHOLD {
                     let cols = parallel::Chunks::new(table, 1);
                     parallel::for_each(cols.count(), |ci| {
                         // SAFETY: column `ci` is folded by exactly one task.
                         let col = unsafe { &mut cols.get(ci)[0] };
-                        fold_high_inplace(col, rk);
+                        fold_low_prefix(col, rk, s, pad[ci]);
                     });
                 } else {
-                    table.iter_mut().for_each(|c| fold_high_inplace(c, rk));
+                    table
+                        .iter_mut()
+                        .zip(pad.iter())
+                        .for_each(|(c, &p)| fold_low_prefix(c, rk, s, p));
                 }
             } else {
-                folded[t] = Some(cols[t].iter().map(|c| fold_high_k(c, rk)).collect());
+                // The join round reads the committed columns, whose own tail already
+                // holds the padding row, so `2·ns` entries of each are in range. The
+                // lifted copy carries one slot past the prefix, for the rounds below.
+                folded[t] = Some(
+                    cols[t]
+                        .iter()
+                        .zip(pad.iter())
+                        .map(|(c, &p)| {
+                            let mut e = fold_low_k(&c[..2 * ns], rk);
+                            e.push(p);
+                            e
+                        })
+                        .collect(),
+                );
+            }
+            real[t] = ns;
+            if air.tau == j + 1 {
+                let evals: Vec<F192> = folded[t]
+                    .as_ref()
+                    .expect("joined at least once")
+                    .iter()
+                    .map(|c| c[0])
+                    .collect();
+                departed[t] = (air.eval)(&pows[offsets[t]..offsets[t] + air.n_constraints], &evals);
+            }
+            // A table's own eq table is shared with every table of its height, so it
+            // is shrunk once, here, by the first of them to reach this round.
+            let eqr = &mut eqs[eq_of[t]];
+            if eqr.len() > 1 && eqr.len() == 1 << (air.tau - 1 - j) {
+                shrink_eq_low(eqr);
             }
         }
     }
@@ -237,6 +335,22 @@ pub fn prove(
             }
         })
         .collect()
+}
+
+/// Bind the lowest variable over a column's real prefix `[0, s)` alone. The padding
+/// tail needs no folding: it is a run of one value and `interp(v, v, ρ) = v` in
+/// characteristic 2. An odd new prefix reads one padding entry as its last pair's
+/// upper half, so that one slot is restored; entries past it go stale, and nothing
+/// reads them. The array never shrinks, so the slot is always there.
+#[inline]
+fn fold_low_prefix(col: &mut [F192], rho: F192, s: usize, pad: F192) {
+    let ns = s.div_ceil(2);
+    for i in 0..ns {
+        col[i] = interp(col[2 * i], col[2 * i + 1], rho);
+    }
+    if ns % 2 == 1 {
+        col[ns] = pad;
+    }
 }
 
 /// Verify the batched zerocheck, returning the per-table claims for the caller to
@@ -263,17 +377,19 @@ pub fn verify(
     let mut claim = target;
     let mut rho = vec![F192::ZERO; n];
     for j in 0..n {
-        let m = n - 1 - j;
         let h = vs.next_scalars(4).map_err(|_| Error::Truncated)?;
         if h[0] + h[1] != claim {
             return Err(Error::RoundInconsistent { round: j });
         }
         let rk = vs.sample();
-        rho[m] = rk;
+        rho[j] = rk;
         claim = lagrange_eval(&nd, &h, rk);
-        let eq_k = F192::ONE + zeta[m] + rk;
+        let eq_k = F192::ONE + zeta[j] + rk;
         for (t, air) in airs.iter().enumerate() {
-            weights[t] *= if air.tau > m { eq_k } else { rk };
+            // Round `j` binds variable `j`, so a table of height τ is active for the
+            // first τ rounds and then rides its lift's challenges. Either order gives
+            // the same product: eq over its own variables, the challenges over the rest.
+            weights[t] *= if air.tau > j { eq_k } else { rk };
         }
     }
 
@@ -310,6 +426,44 @@ mod tests {
         let b: Vec<F64> = (0..n).map(|i| F64(3 * i as u64 + 1 + salt)).collect();
         let ab: Vec<F64> = a.iter().zip(&b).map(|(&x, &y)| x * y).collect();
         vec![a.clone(), b, ab, a]
+    }
+
+    /// The all-zero row satisfies both synthetic identities, so it stands in for the
+    /// arithmetization's padding row.
+    const ZERO_ROW: [F64; 4] = [F64::ZERO; 4];
+
+    /// `rows[t]` real rows per table, the rest padded with [`ZERO_ROW`].
+    fn padded_tables(taus: &[usize], rows: &[usize]) -> Vec<Vec<Vec<F64>>> {
+        taus.iter()
+            .zip(rows)
+            .enumerate()
+            .map(|(i, (&tau, &r))| {
+                let mut t = good_table(tau, i as u64);
+                for col in &mut t {
+                    col[r..].fill(F64::ZERO);
+                }
+                t
+            })
+            .collect()
+    }
+
+    fn pads_for(taus: &[usize], rows: &[usize]) -> Vec<Padding<'static>> {
+        taus.iter()
+            .zip(rows)
+            .map(|(&tau, &r)| Padding {
+                rows: r.min(1 << tau).max(1),
+                pad: &ZERO_ROW,
+            })
+            .collect()
+    }
+
+    fn full_pads(taus: &[usize]) -> Vec<Padding<'static>> {
+        taus.iter()
+            .map(|&tau| Padding {
+                rows: 1 << tau,
+                pad: &ZERO_ROW,
+            })
+            .collect()
     }
 
     /// A third, attached "identity": the linear form `vals[1]`, whose claimed sum
@@ -353,10 +507,9 @@ mod tests {
     fn run(taus: &[usize], cols: Vec<Vec<Vec<F64>>>) -> (Proof, Result<Vec<Claims>, Error>) {
         let airs = airs_for(taus, false);
         let (eta, zeta) = eta_zeta(taus);
-        let zeros = vec![F192::ZERO; taus.len()];
         let mut ps = ProverState::new(b"zc-test", &SEED);
         let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
-        let pclaims = prove(&airs, &views, eta, &zeta, &zeros, &mut ps);
+        let pclaims = prove(&airs, &full_pads(taus), &views, eta, &zeta, &mut ps);
         let proof = ps.into_proof();
         let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
         let vclaims = verify(&airs, eta, &zeta, F192::ZERO, &mut vs);
@@ -375,6 +528,31 @@ mod tests {
         for (c, &tau) in claims.iter().zip(&taus) {
             assert_eq!(c.rho, tallest[..tau]);
         }
+    }
+
+    /// The prover charges for the padding rows in closed form instead of walking
+    /// them, so a padded batch must produce the same proof as the same table read in
+    /// full. Row counts here are odd, a power of two, and just over half the cube, so
+    /// the prefix boundary lands on both parities and on the no-padding case.
+    #[test]
+    fn padding_skip_matches_reading_every_row() {
+        let taus = [5usize, 3, 5, 0, 1];
+        let rows = [17usize, 5, 32, 1, 2];
+        let cols = padded_tables(&taus, &rows);
+        let airs = airs_for(&taus, false);
+        let (eta, zeta) = eta_zeta(&taus);
+        let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
+        let run_with = |pads: &[Padding<'_>]| {
+            let mut ps = ProverState::new(b"zc-test", &SEED);
+            let claims = prove(&airs, pads, &views, eta, &zeta, &mut ps);
+            (ps.into_proof(), claims)
+        };
+        let (skipped, sk_claims) = run_with(&pads_for(&taus, &rows));
+        let (walked, wk_claims) = run_with(&full_pads(&taus));
+        assert_eq!(skipped.stream, walked.stream, "the skip must not change the proof");
+        assert_eq!(sk_claims, wk_claims);
+        let mut vs = VerifierState::new(b"zc-test", &skipped, &SEED);
+        verify(&airs, eta, &zeta, F192::ZERO, &mut vs).expect("padded batch verifies");
     }
 
     #[test]
@@ -414,7 +592,7 @@ mod tests {
             let target = sig.iter().fold(F192::ZERO, |a, &b| a + b);
             let mut ps = ProverState::new(b"zc-test", &SEED);
             let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
-            let pclaims = prove(&airs, &views, eta, &zeta, sig, &mut ps);
+            let pclaims = prove(&airs, &full_pads(&taus), &views, eta, &zeta, &mut ps);
             let proof = ps.into_proof();
             let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
             let out = verify(&airs, eta, &zeta, target, &mut vs);

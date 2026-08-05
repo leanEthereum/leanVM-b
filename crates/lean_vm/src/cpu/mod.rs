@@ -370,15 +370,6 @@ fn airs<'a>(
         .collect()
 }
 
-/// Each table's claimed sum: its identities vanish, so what its summand comes to
-/// is its three bus forms, `η`-weighted. Prover-side only, to build the waiting
-/// line each round; the verifier needs just their total, which it derives.
-fn sigmas(bus: &[Vec<F192>; 3], form_pows: [F192; 3]) -> Vec<F192> {
-    (0..tables::tables().len())
-        .map(|t| (0..3).fold(F192::ZERO, |acc, s| acc + form_pows[s] * bus[s][t]))
-        .collect()
-}
-
 /// Where the three bus forms sit in the batch's `η`-powers: the last three, AFTER
 /// every table's identity range, and shared by all tables rather than one triple
 /// per table. That sharing is what keeps the batch tied to the bus: with a common
@@ -550,13 +541,22 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             // batch settle the bus forms alongside the constraints.
             let eta = ps.sample();
             let form_pows = eta_form_pows(eta);
-            let sigma = sigmas(&bus.sigmas, form_pows);
+            // Each table's real row count and its one padding row, so the sumcheck
+            // charges for the padded rows instead of walking them (§constraints).
+            let pads: Vec<constraints::Padding> = spans
+                .iter()
+                .zip(&l.row_counts)
+                .map(|(&(base, n), &rows)| constraints::Padding {
+                    rows: rows.max(1),
+                    pad: &l.pad[base..base + n],
+                })
+                .collect();
             constraints::prove(
                 &airs(&l.taus, &bus.forms, form_pows),
+                &pads,
                 &table_cols,
                 eta,
                 &bus.point,
-                &sigma,
                 &mut ps,
             )
         });
