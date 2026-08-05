@@ -351,11 +351,9 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     let n_positions = 1usize << k_code;
     let codeword_len = n_positions * num_ntts;
 
-    let mut codeword = zk_alloc::alloc_uninit(codeword_len);
-    tracing::info_span!("Replicate", log_domain = k_code, replicas = 1usize << log_inv_rate)
-        .in_scope(|| replicate_message_fill_uninit(&mut codeword, message));
-    // SAFETY: the replicate fill initializes every codeword element.
-    let mut codeword = unsafe { zk_alloc::assume_init(codeword) };
+    // SAFETY: `encode_interleaved` writes every codeword element, either through
+    // its fused first pass or through the replicate its fallback does.
+    let mut codeword = unsafe { zk_alloc::ArenaVec::<F64>::uninitialized(codeword_len) };
 
     // Optional phase timing (WHIR_TRACE): one env lookup per commit, no
     // work when unset.
@@ -363,7 +361,7 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     let t_ntt = std::time::Instant::now();
     tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = num_ntts).in_scope(|| {
         let ntt = AdditiveNttF64::standard(k_code);
-        ntt.forward_transform_interleaved_from_layer(&mut codeword, num_ntts, log_inv_rate);
+        ntt.encode_interleaved(&mut codeword, message, num_ntts, log_inv_rate);
     });
     let ntt_elapsed = t_ntt.elapsed();
     let t_merkle = std::time::Instant::now();
