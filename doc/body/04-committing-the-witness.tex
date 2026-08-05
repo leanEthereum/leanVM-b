@@ -1,7 +1,7 @@
 % !TeX root = ../drafts/04-committing-the-witness.tex
 \section{Committing the witness}\label{sec:rs}
 
-\subsection{Stacking}\label{sec:stacking}
+\subsection{Multilinear stacking}\label{sec:stacking}
 
 Suppose we want to commit to $T$ multilinears $P_1,\dots,P_T$ over boolean hypercubes of various sizes. We could commit to each independently, at the cost of a large cumulative opening proof. Instead they are concatenated into a large multilinear polynomial $q$, which we commit to with an inner-product commitment scheme (Definition~\ref{def:ipcs}), with a protocol to reduce opening claims on $P_i$ to a claim on $q$. Order them by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and concatenate their values end to end,
 \[
@@ -17,62 +17,13 @@ An evaluation claim $\widetilde P_i(\zeta)=c$ is therefore a claim on the stack,
 \]
 a weighted sum over $\widetilde q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)$.
 
-\paragraph{Batching.} Every claim the protocol raises against one of the $P_i$ is a weighted sum $\langle W_j,\widetilde q\rangle=c_j$ with $\E$-valued weight and target. After the claimed values are bound, the verifier samples a single $\lambda\in\E$ and defines $W_\lambda=\sum_j\lambda^{j-1}W_j$ and $C_\lambda=\sum_j\lambda^{j-1}c_j$. One challenge rather than $J$ costs a factor $J-1$ in the soundness error, negligible at $|\E|=2^{192}$ (Lemma~\ref{lem:sz} in $\lambda$), and saves $J-1$ sponge squeezes, which are BLAKE3 compressions when this verifier runs in-circuit (\S\ref{sec:recursion}). The inner-product PCS (Annex~\ref{annex:pcs}) proves
+\paragraph{Batching.} By the identity above, the claims the protocol raises on the $P_i$ transfer to a list of claims $\langle W_j,\widetilde q\rangle=c_j$ on the stack, with $\E$-valued weights and targets. The verifier then samples $\lambda\in\E$, and it remains to prove
 \[
-  \sum_{w\in\cube{M}} W_\lambda(w)\,\widetilde q(w)=C_\lambda
+  \Bigl\langle \sum_j\lambda^{j-1}W_j,\;\widetilde q\Bigr\rangle=\sum_j\lambda^{j-1}c_j
 \]
+via the PCS (Annex~\ref{annex:pcs}).
 
-\subsection{Packing the Boolean witness}\label{sec:ringswitch}
+\subsection{Committing to booleans via Ring-Switching}\label{sec:ringswitch}
 
-Flock's BLAKE3 argument (\S\ref{sec:tab-blake3}) produces claims about Boolean multilinears. The VM packs them into $\K$-words for commitment and opens the resulting claims over $\E$, the specialization
-\[
-  \Ftwo \subset \K \subset \E
-\]
-of ring switching~\cite{DP26}. Annex~\ref{annex:rs} is the construction and its soundness; this section is what flock hands over and where it lands in the stack.
+Flock's BLAKE3 argument (\S\ref{sec:tab-blake3}) requires to commit a boolean multilinear (i.e. taking values in $\Ftwo$ on the boolean hypercube) in $\nflock + 6$ variables. Ring-Switching~\cite{DP26} enables us to transform a commitment in $\K$ into a commitment in $\Ftwo$, see Annex~\ref{annex:rs}. As a result, the Flock witness is committed as a $\K$-valued multilinear in $\nflock$ variables (using stacking \ref{sec:stacking}).
 
-\paragraph{Packing.} Let $\npkd$ be the number of Boolean variables left after the six that select a bit within a $64$-bit word, so the Boolean witness is $64$ multilinears $Q_0,\dots,Q_{63}:\cube{\npkd}\to\Ftwo$, that is $\npkd+6$ Boolean variables and $64\cdot2^{\npkd}$ values in all. In the polynomial basis $1,x,\dots,x^{63}$ of $\K/\Ftwo$, pack each word as
-\[
-  Q_\pkd(u)=\sum_{i=0}^{63}Q_i(u)\,x^i\in\K,
-  \qquad u\in\cube{\npkd}.
-\]
-The PCS commits the $2^{\npkd}$ values of $Q_\pkd$, stored in the $q_\pkd$ region of the witness stack (\S\ref{sec:stacking}). This represents the Boolean witness with no embedding overhead.
-
-\paragraph{Incoming claim.} Flock supplies $c\in\E$, a point $z\in\E^{\npkd}$, and verifier-known weights $\lag_i\in\E$ for $0\le i<64$. A valid witness satisfies
-\begin{equation}
-  c=\sum_{i=0}^{63}\lag_i s_i,
-  \qquad
-  s_i=\sum_{u\in\cube{\npkd}}\eq(z,u)\,Q_i(u).
-  \label{eq:rs-incoming}
-\end{equation}
-The $\lag_i$ are the Lagrange weights of flock's univariate skip. The prover sends $s_0,\dots,s_{63}\in\E$, and the verifier checks the first equality. It remains to bind these values to the committed $Q_\pkd$, which is exactly the $64$ claims at one shared point that Annex~\ref{annex:rs} reduces.
-
-\paragraph{Coordinate transpose.} Take the basis $e_{64j+i}=x^iy^j$ of $\E/\Ftwo$ of \S\ref{rs:setting}, $y$ generating the cubic extension $\E/\K$. Write
-\[
-  s_i=\sum_{w=0}^{191}\fcoord_{w,i}\,e_w,
-  \qquad \fcoord_{w,i}\in\Ftwo,
-  \qquad
-  t_w=\sum_{i=0}^{63}\fcoord_{w,i}\,x^i\in\K.
-\]
-The map $(s_i)_{i<64}\mapsto(t_w)_{w<192}$ only transposes a $192\times64$ bit matrix. Likewise, write
-\[
-  \eq(z,u)=\sum_{w=0}^{191}\fcoord_w(u)\,e_w,
-  \qquad \fcoord_w(u)\in\Ftwo.
-\]
-Taking coordinates in the definition of $s_i$ gives
-\begin{equation}
-  t_w
-  =\sum_{i=0}^{63}x^i\sum_{u\in\cube{\npkd}}\fcoord_w(u)\,Q_i(u)
-  =\sum_{u\in\cube{\npkd}}\fcoord_w(u)\,Q_\pkd(u),
-  \qquad 0\le w<192.
-  \label{eq:rs-coordinate-claim}
-\end{equation}
-
-\paragraph{Batching.} After absorbing all $s_i$, the verifier draws $f_0,\dots,f_5\leftarrow\E$ and forms the $\Ftwo$-linear map $\Phi$ of \eqref{eq:phi}, then the coefficients $\lambda_w=\Phi(e_w)$. Multiplying \eqref{eq:rs-coordinate-claim} by $\lambda_w$ and summing gives
-\begin{equation}
-  T:=\sum_{w=0}^{191}\lambda_w t_w
-  =\sum_{u\in\cube{\npkd}}\underbrace{\Phi\bigl(\eq(z,u)\bigr)}_{W_z(u)}Q_\pkd(u).
-  \label{eq:rs-batched}
-\end{equation}
-This is directly a weighted opening of the committed $Q_\pkd$: the target is $T\in\E$, and $W_z$ is a transparent $\E$-valued weight. No ring-switch sumcheck is needed. Multiple flock claims share the same map; independent $\E$-scalars then fold their targets and weights into the global stacked opening (\S\ref{sec:stacking}).
-
-\paragraph{Soundness and cost.} Drawing the challenges only after the $s_i$ are fixed bounds the batching error by less than $2^{-160}$, before the PCS decoder's list-size factor (\S\ref{rs:map}). At a PCS query point $r\in\E^{\npkd}$ the verifier needs $\mle{W_z}(r)$, which the boxed formula of \S\ref{rs:weight} evaluates in $O(64\,\npkd)$ field operations, without constructing the $2^{\npkd}$-entry table; the $64$ coefficients $c_k$ of $\Phi$ come once from the same six-stage recurrence (\S\ref{rs:cost}).
