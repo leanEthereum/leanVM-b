@@ -73,7 +73,7 @@
 
 use fiat_shamir::sponge::Sponge;
 use primitives::bits::transpose_8x8_bits;
-use primitives::field::{F64, F192};
+use primitives::field::{F64, F192, F192BaseUnreduced};
 use serde::{Deserialize, Serialize};
 
 use super::pack::PACKING_WIDTH;
@@ -136,16 +136,20 @@ pub const COMPOSITION_SHIFTS: [usize; 6] = [32, 16, 8, 4, 2, 1];
 /// nonzero error lies in the kernel for EVERY coefficient choice and passes
 /// with probability one.
 pub fn build_coordinate_weights(challenges: &[F192; COMPOSITION_SHIFTS.len()]) -> Vec<F192> {
-    // b_w has only bit w set: bits 0..64 are K's power basis, and bits 64/128
-    // shift it by Y / Y^2.
-    let basis = |w: usize| match w / PACKING_WIDTH {
+    (0..DEGREE_E)
+        .map(|w| apply_composed_map(extension_coordinate_basis(w), challenges))
+        .collect()
+}
+
+/// The `w`-th coordinate basis element of E over F_2.
+#[inline]
+fn extension_coordinate_basis(w: usize) -> F192 {
+    // Bits 0..64 are K's power basis, and bits 64/128 shift it by Y / Y^2.
+    match w / PACKING_WIDTH {
         0 => F192::new(1u64 << (w % PACKING_WIDTH), 0, 0),
         1 => F192::new(0, 1u64 << (w % PACKING_WIDTH), 0),
         _ => F192::new(0, 0, 1u64 << (w % PACKING_WIDTH)),
-    };
-    (0..DEGREE_E)
-        .map(|w| apply_composed_map(basis(w), challenges))
-        .collect()
+    }
 }
 
 /// Applies the composed map `Phi` of [`build_coordinate_weights`] to one value.
@@ -246,6 +250,65 @@ pub fn s_hat_v_from_z_vec(z_vec: &[F192], inner_rest_tail: &[F192]) -> Vec<F192>
             acc
         },
     )
+}
+
+/// Number of packed-polynomial coordinates retained by the direct fold-6
+/// statistic.
+pub const FOLD6_RETAINED_VARS: usize = 6;
+
+/// Number of endpoints retained across the six deferred coordinates.
+pub const FOLD6_ENDPOINT_BANKS: usize = 1 << FOLD6_RETAINED_VARS;
+
+/// Number of values in the endpoint-major bit-slice representation.
+pub const FOLD6_ENDPOINT_VALUES: usize = FOLD6_ENDPOINT_BANKS * PACKING_WIDTH;
+
+/// Number of entries in the 64 by 64 endpoint-product matrix.
+pub const FOLD6_ENDPOINT_MATRIX_VALUES: usize = FOLD6_ENDPOINT_BANKS * FOLD6_ENDPOINT_BANKS;
+
+/// Retain the six least-significant packed indices while evaluating the tail
+/// of a ring-switch suffix point. The output is endpoint-major, with 64 bit
+/// slices per endpoint.
+pub fn s_hat_v_fold6_from_q_flock(q_flock: &[F64], suffix_point: &[F192]) -> Vec<F192> {
+    assert!(suffix_point.len() >= FOLD6_RETAINED_VARS);
+    assert_eq!(q_flock.len(), 1usize << suffix_point.len());
+
+    let high_eq = build_eq_table_ext(&suffix_point[FOLD6_RETAINED_VARS..]);
+    parallel::fold_reduce(
+        high_eq.len(),
+        || vec![F192::ZERO; FOLD6_ENDPOINT_VALUES],
+        |out, high| {
+            let weight = high_eq[high];
+            let block = &q_flock[high * FOLD6_ENDPOINT_BANKS..(high + 1) * FOLD6_ENDPOINT_BANKS];
+            for (endpoint, word) in block.iter().enumerate() {
+                let mut bits = word.0;
+                while bits != 0 {
+                    let bit = bits.trailing_zeros() as usize;
+                    out[endpoint * PACKING_WIDTH + bit] += weight;
+                    bits &= bits - 1;
+                }
+            }
+        },
+        |mut out, part| {
+            for (slot, value) in out.iter_mut().zip(part) {
+                *slot += value;
+            }
+            out
+        },
+    )
+}
+
+/// Collapse a fold-6 endpoint statistic to the canonical 64-entry wire.
+pub fn collapse_s_hat_v_fold6(endpoint_banks: &[F192], low_point: &[F192]) -> Vec<F192> {
+    assert_eq!(endpoint_banks.len(), FOLD6_ENDPOINT_VALUES);
+    assert_eq!(low_point.len(), FOLD6_RETAINED_VARS);
+    let low_eq = build_eq_table_ext(low_point);
+    let mut out = vec![F192::ZERO; PACKING_WIDTH];
+    for (endpoint, &weight) in low_eq.iter().enumerate() {
+        for bit in 0..PACKING_WIDTH {
+            out[bit] += weight * endpoint_banks[endpoint * PACKING_WIDTH + bit];
+        }
+    }
+    out
 }
 
 /// XOR-reduce two per-worker partial accumulators of the bit-slice folds
@@ -455,6 +518,139 @@ pub(crate) fn prove_finish_deferred(
     }
 }
 
+/// Compact ring-switch plan for deferring the first six WHIR folds.
+#[derive(Clone, Debug)]
+pub struct DirectFold6RingPlan {
+    batched_sumcheck_claim: F192,
+    low_eq: [F192; FOLD6_ENDPOINT_BANKS],
+    tail_eq_lo: Vec<F192>,
+    tail_eq_hi: Vec<F192>,
+    scaled_coordinate_weights: Vec<F192>,
+    endpoint_products: Vec<F192>,
+}
+
+impl DirectFold6RingPlan {
+    pub fn batched_sumcheck_claim(&self) -> F192 {
+        self.batched_sumcheck_claim
+    }
+
+    pub fn add_endpoint_products_into(&self, mixed: &mut [F192]) {
+        assert_eq!(mixed.len(), FOLD6_ENDPOINT_MATRIX_VALUES);
+        for (out, &value) in mixed.iter_mut().zip(&self.endpoint_products) {
+            *out += value;
+        }
+    }
+
+    /// Materialize only the ring-switch basis remaining after six LSB-first
+    /// folds. The batching scalar is already included in the plan.
+    pub fn materialize_basis_after_fold6(&self, fold_challenges: &[F192; FOLD6_RETAINED_VARS]) -> Vec<F192> {
+        let fold_weights = build_eq_table_ext(fold_challenges);
+        let base_table = build_fold_byte_table_ext(&self.scaled_coordinate_weights);
+        let mut folded_coordinate_weights = vec![F192::ZERO; DEGREE_E];
+        for (coordinate, out) in folded_coordinate_weights.iter_mut().enumerate() {
+            let basis = extension_coordinate_basis(coordinate);
+            for (endpoint, &fold_weight) in fold_weights.iter().enumerate() {
+                *out += fold_weight * fold_one_slot_ext(self.low_eq[endpoint] * basis, &base_table);
+            }
+        }
+        drop(base_table);
+        let direct_table = build_fold_byte_table_ext(&folded_coordinate_weights);
+
+        let block_len = self.tail_eq_lo.len();
+        debug_assert!(block_len.is_power_of_two());
+        let mask = block_len - 1;
+        let shift = block_len.trailing_zeros();
+        parallel::map_collect(block_len * self.tail_eq_hi.len(), |high| {
+            fold_one_slot_ext(
+                self.tail_eq_lo[high & mask] * self.tail_eq_hi[high >> shift],
+                &direct_table,
+            )
+        })
+    }
+}
+
+#[inline]
+fn inner_product_base_ext_deferred(witness: &[F64], weights: &[F192]) -> F192 {
+    assert_eq!(witness.len(), weights.len());
+    witness
+        .iter()
+        .zip(weights)
+        .fold(F192BaseUnreduced::ZERO, |acc, (&base, &weight)| {
+            acc ^ weight.mul_base_unreduced(base)
+        })
+        .reduce()
+}
+
+/// Finalize a ring-switch claim using a caller-supplied fold-6 endpoint
+/// statistic. The observed 64-entry wire is checked against the statistic
+/// before the compact plan is returned.
+pub fn prove_finish_direct_fold6(
+    state: RingSwitchProveState,
+    endpoint_banks: &[F192],
+    coordinate_weights: &[F192],
+    gamma: F192,
+) -> DirectFold6RingPlan {
+    assert_eq!(coordinate_weights.len(), DEGREE_E);
+    assert_eq!(endpoint_banks.len(), FOLD6_ENDPOINT_VALUES);
+    assert!(state.suffix_point.len() >= FOLD6_RETAINED_VARS);
+
+    let low_eq: [F192; FOLD6_ENDPOINT_BANKS] = build_eq_table_ext(&state.suffix_point[..FOLD6_RETAINED_VARS])
+        .try_into()
+        .expect("six suffix coordinates have sixty-four equality weights");
+    assert_eq!(
+        collapse_s_hat_v_fold6(endpoint_banks, &state.suffix_point[..FOLD6_RETAINED_VARS]),
+        state.s_hat_v,
+        "direct fold-6 banks do not refine the observed s_hat_v"
+    );
+
+    let s_hat_u = transpose_s_hat(&state.s_hat_v);
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
+    let scaled_coordinate_weights: Vec<F192> = coordinate_weights.iter().map(|&weight| gamma * weight).collect();
+    let scaled_table = build_fold_byte_table_ext(&scaled_coordinate_weights);
+
+    let changed_weights: Vec<F192> = parallel::map_collect(FOLD6_ENDPOINT_BANKS * DEGREE_E, |cell| {
+        let basis_endpoint = cell / DEGREE_E;
+        let coordinate = cell % DEGREE_E;
+        fold_one_slot_ext(
+            low_eq[basis_endpoint] * extension_coordinate_basis(coordinate),
+            &scaled_table,
+        )
+    });
+    let transposed_banks: Vec<Vec<F64>> = parallel::map_collect(FOLD6_ENDPOINT_BANKS, |endpoint| {
+        let start = endpoint * PACKING_WIDTH;
+        transpose_s_hat(&endpoint_banks[start..start + PACKING_WIDTH])
+    });
+    let endpoint_products = parallel::map_collect(FOLD6_ENDPOINT_MATRIX_VALUES, |cell| {
+        let witness_endpoint = cell / FOLD6_ENDPOINT_BANKS;
+        let basis_endpoint = cell % FOLD6_ENDPOINT_BANKS;
+        inner_product_base_ext_deferred(
+            &transposed_banks[witness_endpoint],
+            &changed_weights[basis_endpoint * DEGREE_E..(basis_endpoint + 1) * DEGREE_E],
+        )
+    });
+
+    let (tail_eq_lo, tail_eq_hi) = build_eq_split_ext(&state.suffix_point[FOLD6_RETAINED_VARS..]);
+    DirectFold6RingPlan {
+        batched_sumcheck_claim: gamma * sumcheck_claim,
+        low_eq,
+        tail_eq_lo,
+        tail_eq_hi,
+        scaled_coordinate_weights,
+        endpoint_products,
+    }
+}
+
+/// Portable fold-6 path for callers without producer-native endpoint banks.
+pub fn prove_finish_direct_fold6_from_q_flock(
+    state: RingSwitchProveState,
+    q_flock: &[F64],
+    coordinate_weights: &[F192],
+    gamma: F192,
+) -> DirectFold6RingPlan {
+    let endpoint_banks = s_hat_v_fold6_from_q_flock(q_flock, &state.suffix_point);
+    prove_finish_direct_fold6(state, &endpoint_banks, coordinate_weights, gamma)
+}
+
 /// Fold several deferred claims directly into their final combined dense basis.
 /// No per-claim dense vector is allocated or read back, and the first claim
 /// **writes** rather than accumulates, so the caller need not pre-zero `out`.
@@ -620,6 +816,7 @@ pub struct RingSwitchProveState {
     s_hat_v: Vec<F192>,
     eq_lo: Vec<F192>,
     eq_hi: Vec<F192>,
+    suffix_point: Vec<F192>,
 }
 
 /// Phase 1 of the ring-switch prover: compute + observe `s_hat_v` (NO domain
@@ -662,7 +859,12 @@ pub fn prove_observe(
         RingSwitchProof {
             s_hat_v: s_hat_v.clone(),
         },
-        RingSwitchProveState { s_hat_v, eq_lo, eq_hi },
+        RingSwitchProveState {
+            s_hat_v,
+            eq_lo,
+            eq_hi,
+            suffix_point: suffix_point.to_vec(),
+        },
     )
 }
 
@@ -854,6 +1056,7 @@ mod tests {
                     s_hat_v: rng.ext_vec(PACKING_WIDTH),
                     eq_lo,
                     eq_hi,
+                    suffix_point: point.clone(),
                 }
             })
             .collect::<Vec<_>>();

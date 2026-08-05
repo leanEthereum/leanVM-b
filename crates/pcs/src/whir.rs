@@ -565,6 +565,63 @@ pub struct SumcheckMessage {
     pub u_2: F192,
 }
 
+/// Adaptive endpoint-product state for the first six LSB-first sumcheck
+/// messages. The row-major 64 by 64 matrix represents all products after the
+/// high coordinates have already been summed out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectFold6Messages {
+    products: Vec<F192>,
+    width: usize,
+}
+
+impl DirectFold6Messages {
+    pub fn new(products: Vec<F192>) -> Self {
+        assert_eq!(products.len(), 64 * 64);
+        Self { products, width: 64 }
+    }
+
+    pub fn current_message(&self) -> SumcheckMessage {
+        assert!(self.width >= 2 && self.width.is_power_of_two());
+        let mut u_0 = F192::ZERO;
+        let mut u_2 = F192::ZERO;
+        for pair in 0..self.width / 2 {
+            let even = 2 * pair;
+            let odd = even + 1;
+            u_0 += self.products[even * self.width + even];
+            u_2 += self.products[even * self.width + even]
+                + self.products[even * self.width + odd]
+                + self.products[odd * self.width + even]
+                + self.products[odd * self.width + odd];
+        }
+        SumcheckMessage { u_0, u_2 }
+    }
+
+    pub fn fold_and_message(&mut self, challenge: F192) -> SumcheckMessage {
+        assert!(self.width >= 4);
+        let old_width = self.width;
+        let new_width = old_width / 2;
+        let mut rows_folded = vec![F192::ZERO; new_width * old_width];
+        for row in 0..new_width {
+            for column in 0..old_width {
+                let p0 = self.products[(2 * row) * old_width + column];
+                let p1 = self.products[(2 * row + 1) * old_width + column];
+                rows_folded[row * old_width + column] = p0 + challenge * (p0 + p1);
+            }
+        }
+        let mut next = vec![F192::ZERO; new_width * new_width];
+        for row in 0..new_width {
+            for column in 0..new_width {
+                let p0 = rows_folded[row * old_width + 2 * column];
+                let p1 = rows_folded[row * old_width + 2 * column + 1];
+                next[row * new_width + column] = p0 + challenge * (p0 + p1);
+            }
+        }
+        self.products = next;
+        self.width = new_width;
+        self.current_message()
+    }
+}
+
 /// Round-quadratic in coefficient form `c + b X + a X^2` (verifier side).
 #[derive(Clone, Copy, Debug)]
 struct RoundQuad {
@@ -877,6 +934,36 @@ impl<'a> SumcheckProver<'a> {
         (inst, msg)
     }
 
+    /// Resume after six deferred folds using compact, already-folded vectors
+    /// and the seventh message computed in the same pass as materialization.
+    fn new_ext_after_prefix_with_message(
+        f: ArenaVec<F192>,
+        b1: ArenaVec<F192>,
+        h1: F192,
+        mut prefix: Vec<SumcheckMessage>,
+        challenges: &[F192],
+        msg: SumcheckMessage,
+    ) -> (Self, SumcheckMessage) {
+        assert_eq!(f.len(), b1.len());
+        assert_eq!(prefix.len(), challenges.len());
+        let mut t_r = h1;
+        for (&prefix_msg, &challenge) in prefix.iter().zip(challenges) {
+            t_r = RoundQuad::from_msg(prefix_msg, t_r).eval(challenge);
+        }
+        prefix.push(msg);
+        (
+            Self {
+                f: Witness::Ext(f),
+                combined_basis: b1,
+                t_r,
+                transcript: prefix,
+                round: challenges.len(),
+                pending_glue: None,
+            },
+            msg,
+        )
+    }
+
     fn fold(&mut self, r: F192) -> SumcheckMessage {
         self.round += 1;
         let log_size = match &self.f {
@@ -1094,6 +1181,14 @@ fn stored_opening<T: Copy>(
     (rows, multi_proof)
 }
 
+type DirectFold6Materializer<'a> =
+    Box<dyn FnOnce(&[F64], [F192; 6]) -> (ArenaVec<F192>, ArenaVec<F192>, SumcheckMessage) + 'a>;
+
+struct DirectFold6Init<'a> {
+    messages: DirectFold6Messages,
+    materialize: DirectFold6Materializer<'a>,
+}
+
 /// Prove `Σ_x witness(x) · b_initial(x) = target` against the L0 commitment
 /// produced by [`commit`] (with `log_batch_size = config.initial_k` and
 /// `log_inv_rate = config.log_inv_rates[0]`).
@@ -1112,6 +1207,68 @@ pub fn recursive_prover_with_basis(
     target: F192,
     l0_codeword: &[F64],
     l0_tree: &[Hash],
+    sponge: &mut Sponge,
+) -> WhirProof {
+    recursive_prover_with_basis_impl(
+        config,
+        witness,
+        Some(b_initial),
+        target,
+        l0_codeword,
+        l0_tree,
+        None,
+        sponge,
+    )
+}
+
+/// Run the ordinary WHIR prover after deferring exactly the first six folds to
+/// a 64 by 64 endpoint-product matrix and a compact materializer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn recursive_prover_with_basis_direct_fold6<'a, M>(
+    config: &ProverConfig,
+    witness: &'a [F64],
+    target: F192,
+    l0_codeword: &[F64],
+    l0_tree: &[Hash],
+    products: Vec<F192>,
+    materialize: M,
+    sponge: &mut Sponge,
+) -> WhirProof
+where
+    M: FnOnce(&[F64], [F192; 6]) -> (ArenaVec<F192>, ArenaVec<F192>, SumcheckMessage) + 'a,
+{
+    assert_eq!(config.initial_k, 6, "direct fold-6 requires initial_k = 6");
+    assert!(
+        witness.len() >= 128,
+        "direct fold-6 requires a nontrivial folded witness"
+    );
+    assert_eq!(products.len(), 64 * 64);
+    let diagonal = (0..64).fold(F192::ZERO, |acc, endpoint| acc + products[64 * endpoint + endpoint]);
+    assert_eq!(diagonal, target, "direct fold-6 endpoint matrix must encode the target");
+    recursive_prover_with_basis_impl(
+        config,
+        witness,
+        None,
+        target,
+        l0_codeword,
+        l0_tree,
+        Some(DirectFold6Init {
+            messages: DirectFold6Messages::new(products),
+            materialize: Box::new(materialize),
+        }),
+        sponge,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn recursive_prover_with_basis_impl<'a>(
+    config: &ProverConfig,
+    witness: &'a [F64],
+    mut b_initial: Option<ArenaVec<F192>>,
+    target: F192,
+    l0_codeword: &[F64],
+    l0_tree: &[Hash],
+    mut direct: Option<DirectFold6Init<'a>>,
     sponge: &mut Sponge,
 ) -> WhirProof {
     let log_n = witness.len().trailing_zeros() as usize;
@@ -1146,7 +1303,13 @@ pub fn recursive_prover_with_basis(
     ];
 
     assert_eq!(witness.len(), 1usize << log_n);
-    assert_eq!(b_initial.len(), 1usize << log_n);
+    if let Some(b_initial) = &b_initial {
+        assert!(direct.is_none());
+        assert_eq!(b_initial.len(), 1usize << log_n);
+    } else {
+        assert!(direct.is_some(), "missing initial sumcheck basis");
+        assert_eq!(initial_k, 6);
+    }
     assert_eq!(config.level_ks.len(), r);
     assert_eq!(config.log_inv_rates.len(), r + 1);
     assert!(r >= 1);
@@ -1193,7 +1356,27 @@ pub fn recursive_prover_with_basis(
     let _t = std::time::Instant::now();
     let gate0_initial_sumcheck = Gate0Span::new("whir_initial_sumcheck");
     let sumcheck_span = tracing::info_span!("Sumcheck");
-    let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| SumcheckProver::new(witness, b_initial, target));
+    let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| {
+        if let Some(direct) = &direct {
+            (None, direct.messages.current_message())
+        } else {
+            let (prover, msg) = SumcheckProver::new(
+                witness,
+                b_initial.take().expect("dense initialization requires a basis"),
+                target,
+            );
+            (Some(prover), msg)
+        }
+    });
+    let mut direct_prefix = if direct.is_some() { vec![start_msg] } else { Vec::new() };
+    if trace {
+        eprintln!(
+            "WHIR_DIRECT_FOLD6 schema=1 selected={} initial_k={} log_n={}",
+            direct.is_some(),
+            initial_k,
+            log_n,
+        );
+    }
     sponge.observe(start_msg.u_0);
     sponge.observe(start_msg.u_2);
 
@@ -1207,7 +1390,41 @@ pub fn recursive_prover_with_basis(
             fold_grinding_nonces.push(sponge.grind_pow(bits));
         }
         let r_j = sponge.sample();
-        let msg = sumcheck_span.in_scope(|| sc_prover.fold(r_j));
+        let msg = sumcheck_span.in_scope(|| {
+            if direct.is_some() {
+                if j + 1 < 6 {
+                    let msg = direct
+                        .as_mut()
+                        .expect("direct fold-6 prefix state")
+                        .messages
+                        .fold_and_message(r_j);
+                    direct_prefix.push(msg);
+                    msg
+                } else {
+                    assert_eq!(j + 1, 6, "direct fold-6 must hand off after six challenges");
+                    let mut challenge_vec = r_lane_fold.clone();
+                    challenge_vec.push(r_j);
+                    let challenges: [F192; 6] = challenge_vec.try_into().expect("six direct fold challenges");
+                    let init = direct.take().expect("direct fold-6 handoff state");
+                    let (f_folded, b_folded, next_msg) = (init.materialize)(witness, challenges);
+                    let expected_len = 1usize << (log_n - 6);
+                    assert_eq!(f_folded.len(), expected_len);
+                    assert_eq!(b_folded.len(), expected_len);
+                    let (prover, msg) = SumcheckProver::new_ext_after_prefix_with_message(
+                        f_folded,
+                        b_folded,
+                        target,
+                        std::mem::take(&mut direct_prefix),
+                        &challenges,
+                        next_msg,
+                    );
+                    sc_prover = Some(prover);
+                    msg
+                }
+            } else {
+                sc_prover.as_mut().expect("sumcheck prover materialized").fold(r_j)
+            }
+        });
         sponge.observe(msg.u_0);
         sponge.observe(msg.u_2);
         r_lane_fold.push(r_j);
@@ -1217,6 +1434,7 @@ pub fn recursive_prover_with_basis(
     if trace {
         t_init_sumcheck += _t.elapsed();
     }
+    let mut sc_prover = sc_prover.expect("initial sumcheck must materialize a prover");
 
     // Commit f^1 = folded (now E-valued) witness as wtns_1.
     let n1 = log_n - initial_k;
