@@ -12,7 +12,7 @@ use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
-use primitives::multilinear::{eq_eval, mle_eval};
+use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod};
 use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
@@ -25,6 +25,11 @@ pub enum Coord {
     /// The free increment `g^k · col[z]` (a virtual column, §sec:vm): `k = 1` for the
     /// count/state steps, `k ∈ {1,2,3}` for BLAKE3's consecutive-word successors.
     GCol(usize, u32),
+    /// The product `g^k · col_a[z] · col_b[z]` of two committed columns. An address
+    /// is `fp·g^o`, so this carries one on the bus without committing it: the
+    /// coordinate IS the product, so no column can disagree with it and the binding
+    /// constraint that used to say so is unnecessary (§sec:m3-addr).
+    Prod(usize, usize, u32),
     /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
     Index,
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
@@ -123,6 +128,7 @@ pub fn layout(blocks: &[Block]) -> Layout {
 /// `GCol` folds the `g^k` factor into the coefficient.
 enum Term<'a> {
     Col(usize, F192),
+    Prod(usize, usize, F192),
     Index(F192),
     Public(&'a [F64], F192),
 }
@@ -152,6 +158,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
                 Coord::Const(v) => const_part += alpha_pow.mul_base(*v),
                 Coord::Col(i) => terms.push(Term::Col(*i, alpha_pow)),
                 Coord::GCol(i, k) => terms.push(Term::Col(*i, alpha_pow.mul_base(g_pow(*k as usize)))),
+                Coord::Prod(i, j, k) => terms.push(Term::Prod(*i, *j, alpha_pow.mul_base(g_pow(*k as usize)))),
                 Coord::Index => terms.push(Term::Index(alpha_pow)),
                 Coord::Public(vals) => terms.push(Term::Public(vals, alpha_pow)),
             }
@@ -166,6 +173,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
             for t in &terms {
                 acc ^= match t {
                     Term::Col(i, c) => c.mul_base_unreduced(cols[*i][z]),
+                    Term::Prod(i, j, c) => c.mul_base_unreduced(cols[*i][z] * cols[*j][z]),
                     Term::Index(c) => c.mul_base_unreduced(gpow[z]),
                     Term::Public(vals, c) => c.mul_base_unreduced(vals[z]),
                 };
@@ -196,15 +204,22 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
     gkr::LeafVector::new(leaves, pads)
 }
 
-/// One table's bus contribution on one side, as a linear form over that table's
-/// committed columns: `Σ_c coeffs[c]·col_c(z) + constant`. Every coefficient is a
-/// public function of `α`, `γ` and the block selectors at `ζ`, because a table's
-/// bus blocks carry only `Const`/`Col`/`GCol` coordinates. The batched zerocheck
-/// sums this against `eq(ζ[..τ], ·)` instead of opening each column at `ζ`, which
-/// is why those per-column claims no longer reach the PCS.
+/// One table's bus contribution on one side, as a form over that table's committed
+/// columns: `Σ_c coeffs[c]·col_c(z) + Σ (a,b,c) c·col_a(z)·col_b(z) + constant`.
+/// Every coefficient is a public function of `α`, `γ` and the block selectors at
+/// `ζ`, because a table's bus blocks carry only `Const`/`Col`/`GCol`/`Prod`
+/// coordinates. The batched zerocheck sums this against `eq(ζ[..τ], ·)` instead of
+/// opening each column at `ζ`, which is why those per-column claims no longer reach
+/// the PCS.
+///
+/// The quadratic part comes from [`Coord::Prod`] and is free: the AIR identities are
+/// already degree 2, so a degree-2 form does not raise the round-polynomial degree
+/// the batch pays for.
 #[derive(Clone, Debug)]
 pub struct BusForm {
     pub coeffs: Vec<F192>,
+    /// `(col_a, col_b, coeff)` in LOCAL column indices.
+    pub prods: Vec<(usize, usize, F192)>,
     pub constant: F192,
 }
 
@@ -212,14 +227,37 @@ impl BusForm {
     fn new(n_cols: usize) -> Self {
         Self {
             coeffs: vec![F192::ZERO; n_cols],
+            prods: Vec::new(),
             constant: F192::ZERO,
         }
     }
 
-    /// `Σ_c coeffs[c]·evals[c] + constant`: the form at one row, or at a point when
-    /// `evals` are column evaluations there.
+    /// The form at one point: `evals` are the columns' values there. This is what the
+    /// zerocheck evaluates, per row while a table is unfolded and at the sumcheck
+    /// point after.
     pub fn eval<T: ColVal>(&self, evals: &[T]) -> F192 {
-        T::dot(&self.coeffs, evals, self.constant)
+        self.prods
+            .iter()
+            .fold(T::dot(&self.coeffs, evals, self.constant), |acc, &(a, b, c)| {
+                acc + (evals[a] * evals[b]).mul_e(c)
+            })
+    }
+
+    /// What the form sums to over the table's rows against `eq(ζ, ·)`, the target the
+    /// zerocheck settles. The linear part factors through the columns' evaluations at
+    /// `ζ`, which is the whole point of a form; a product coordinate does NOT, so
+    /// `prod_sums` supplies `Σ_z eq(ζ,z)·col_a(z)·col_b(z)` for each pair it uses
+    /// ([`mle_eval_prod`]).
+    fn sum_at(&self, evals: &[F192], prod_sums: &[(usize, usize, F192)]) -> F192 {
+        self.prods
+            .iter()
+            .fold(F192::dot(&self.coeffs, evals, self.constant), |acc, &(a, b, c)| {
+                let s = prod_sums
+                    .iter()
+                    .find(|p| (p.0, p.1) == (a, b))
+                    .expect("every pair was summed");
+                acc + c * s.2
+            })
     }
 }
 
@@ -264,6 +302,10 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                     Coord::Const(v) => form.constant += eq_hi * alpha_pow.mul_base(*v),
                     Coord::Col(i) => form.coeffs[*i - base] += eq_hi * alpha_pow,
                     Coord::GCol(i, k) => form.coeffs[*i - base] += eq_hi * alpha_pow.mul_base(g_pow(*k as usize)),
+                    Coord::Prod(i, j, k) => {
+                        form.prods
+                            .push((*i - base, *j - base, eq_hi * alpha_pow.mul_base(g_pow(*k as usize))))
+                    }
                     Coord::Index | Coord::Public(_) => {
                         unreachable!("a table's bus block carries no virtual coordinate")
                     }
@@ -296,6 +338,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 Coord::Index => index_mle(zeta_lo),
                 Coord::Col(i) => col_val(*i)?,
                 Coord::GCol(i, k) => col_val(*i)?.mul_base(g_pow(*k as usize)),
+                Coord::Prod(..) => unreachable!("only a table's bus block carries a product coordinate"),
                 Coord::Public(vals) => mle_eval(vals, zeta_lo),
             };
             inner += alpha_pow * coord_val;
@@ -421,7 +464,7 @@ fn fpow(base: F192, mut e: usize) -> F192 {
 }
 
 /// `π_α` of a block's padding-row tuple (every column zero but the read counts,
-/// value `1`). Only padded blocks are queried, and those carry only `Const`/`Col`/`GCol`.
+/// value `1`). Only padded blocks are queried, and those carry no virtual coordinate.
 fn default_fingerprint(block: &Block, pad: &[F64], alpha: F192) -> F192 {
     let mut fingerprint = F192::ZERO;
     let mut alpha_pow = F192::ONE;
@@ -430,6 +473,7 @@ fn default_fingerprint(block: &Block, pad: &[F64], alpha: F192) -> F192 {
             Coord::Const(v) => *v,
             Coord::Col(i) => pad[*i],
             Coord::GCol(i, k) => g_pow(*k as usize) * pad[*i],
+            Coord::Prod(i, j, k) => g_pow(*k as usize) * pad[*i] * pad[*j],
             Coord::Index | Coord::Public(_) => F64::ZERO,
         };
         fingerprint += alpha_pow.mul_base(coord_val);
@@ -641,21 +685,21 @@ pub fn prove_balance(
     });
 
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
-    // every table block becomes a linear form for the zerocheck instead.
+    // every table block becomes a form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], alpha, gamma);
     // Each table's columns at ζ[..τ], computed once and shared by the three sides
-    // (a form is linear in them). Nothing here travels, neither the evaluations nor
-    // any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
+    // (a form's linear part factors through them). Nothing here travels, neither the
+    // evaluations nor any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
     // framework decomposition ([`verify_balance`]) and the batch settles it. A
     // transmitted total would appear in exactly one check, which it could always be
     // solved to satisfy, and would settle nothing.
     let table_evals = tables_at(cols, tables, &bus_gkr.point);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
-    let mut sigmas: [Vec<F192>; 3] = std::array::from_fn(|_| Vec::new());
+    let mut frameworks = [F192::ZERO; 3];
     crate::stage!("Bus decompose", || {
         for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
-            let framework = decompose_prove(
+            frameworks[s] = decompose_prove(
                 blocks,
                 lay,
                 cols,
@@ -667,15 +711,24 @@ pub fn prove_balance(
                 &mut claims,
                 ps,
             );
-            sigmas[s] = forms[s].iter().zip(&table_evals).map(|(f, e)| f.eval(e)).collect();
-            // Completeness only: the verifier derives this identity rather than checking
-            // it, so a mismatch here is a prover bug, not a rejection path.
-            debug_assert_eq!(
-                sigmas[s].iter().fold(framework, |acc, &b| acc + b),
-                bus_gkr.values[s],
-                "side {s} must decompose into its leaf value"
-            );
         }
+    });
+    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point);
+    let sigmas: [Vec<F192>; 3] = std::array::from_fn(|s| {
+        let sigmas: Vec<F192> = forms[s]
+            .iter()
+            .zip(&table_evals)
+            .zip(&prod_sums)
+            .map(|((f, e), p)| f.sum_at(e, p))
+            .collect();
+        // Completeness only: the verifier derives this identity rather than checking
+        // it, so a mismatch here is a prover bug, not a rejection path.
+        debug_assert_eq!(
+            sigmas.iter().fold(frameworks[s], |acc, &b| acc + b),
+            bus_gkr.values[s],
+            "side {s} must decompose into its leaf value"
+        );
+        sigmas
     });
 
     let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, ps)];
@@ -696,6 +749,36 @@ fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<V
         .map(|&(base, n_cols)| {
             let tau = crate::log2_strict_usize(cols[base].len());
             parallel::map_collect(n_cols, |c| mle_eval(cols[base + c], &zeta[..tau]))
+        })
+        .collect()
+}
+
+/// Per table, `Σ_z eq(ζ[..τ], z)·col_a(z)·col_b(z)` for every column pair its forms
+/// multiply. Deduped across the three sides and the several blocks that carry the
+/// same address, so an address costs one pass over the table however often it is
+/// flushed; there are a handful of pairs against a table's dozen-odd columns, all of
+/// which [`tables_at`] folds anyway.
+fn prod_sums_at(
+    cols: &[&[F64]],
+    tables: &[(usize, usize)],
+    forms: &[Vec<BusForm>; 3],
+    zeta: &[F192],
+) -> Vec<Vec<(usize, usize, F192)>> {
+    tables
+        .iter()
+        .enumerate()
+        .map(|(t, &(base, _))| {
+            let tau = crate::log2_strict_usize(cols[base].len());
+            let mut pairs: Vec<(usize, usize)> = forms
+                .iter()
+                .flat_map(|side| side[t].prods.iter().map(|&(a, b, _)| (a, b)))
+                .collect();
+            pairs.sort_unstable();
+            pairs.dedup();
+            parallel::map_collect(pairs.len(), |i| {
+                let (a, b) = pairs[i];
+                (a, b, mle_eval_prod(cols[base + a], cols[base + b], &zeta[..tau]))
+            })
         })
         .collect()
 }

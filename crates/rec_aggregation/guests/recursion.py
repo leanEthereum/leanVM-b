@@ -30,7 +30,8 @@ GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 # [SIDE_BLOCK_START[s], SIDE_BLOCK_START[s+1])). The block STRUCTURE is
 # protocol-fixed and baked: each block's coord range [BLOCK_COORD_OFF,
 # +BLOCK_COORD_COUNT), per coord COORD_TYPE (0=const, 1=col, 2=gcol, 3=index,
-# 4=public bytecode; named COORD_KIND_* below), COORD_CONST (the const value, else 0), COORD_PAD_VAL
+# 4=public bytecode, 5=product; named COORD_KIND_* below), COORD_CONST (the const
+# value, a product's or gcol's g^k, else 0), COORD_PAD_VAL
 # (its default-padding fingerprint value), and the kappa SOURCE map
 # (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block SHAPES
 # are all reconstructed at runtime from the certified logs: kappa directly,
@@ -41,6 +42,7 @@ COORD_KIND_COL = 1
 COORD_KIND_GCOL = 2
 COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
+COORD_KIND_PROD = 5
 # BLOCK_REAL_TABLE: the table whose count is the block's real row count, or
 # REAL_IS_FULL_CUBE for the framework blocks (real = 2^kappa, no padding). It is
 # also what marks a block as owned: an owned block's fingerprint is settled by the
@@ -67,6 +69,8 @@ COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
 # For a coord of a TABLE's block: its column's local index inside that table. Those
 # coords raise no claim (the zerocheck settles them), so they use this instead.
 COORD_COL_LOCAL = COORD_COL_LOCAL_PLACEHOLDER
+# The SECOND local column index of a product coordinate (0 for every other kind).
+COORD_COL_LOCAL_B = COORD_COL_LOCAL_B_PLACEHOLDER
 N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
@@ -1587,38 +1591,37 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # the table's AIR constraint at the final point (col_evals is indexed by
         # local column index; the formulas mirror tables.rs eval_constraint).
         if t == TABLE_XOR:
-            va = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
-            vb = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
-            vc = f192_from_limbs(col_evals[14], col_evals[15], col_evals[16])
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[5] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[6] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[7] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (vc + va + vb)
+            va = f192_from_limbs(col_evals[5], col_evals[6], col_evals[7])
+            vb = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
+            vc = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (vc + va + vb)
         if t == TABLE_MUL:
-            va = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
-            vb = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
-            vc = f192_from_limbs(col_evals[14], col_evals[15], col_evals[16])
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[5] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[6] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[7] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (vc + va * vb)
+            va = f192_from_limbs(col_evals[5], col_evals[6], col_evals[7])
+            vb = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
+            vc = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (vc + va * vb)
         if t == TABLE_SET:
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[6] + col_evals[1] * col_evals[2])
+            constraint_eval = 0
         if t == TABLE_DEREF:
-            v2 = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
-            v3 = f192_from_limbs(col_evals[14], col_evals[15], col_evals[16])
+            v2 = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
+            v3 = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
             src = (1 + col_evals[5] + col_evals[6]) * v3 + col_evals[5] * (GEN * GEN * col_evals[0]) + col_evals[6] * col_evals[1]
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[7] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[8] + col_evals[10] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[9] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (v2 + src)
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (v2 + src)
         if t == TABLE_JUMP:
             ft = GEN * col_evals[0]
-            c = f192_from_limbs(col_evals[10], col_evals[11], col_evals[12])
-            d = f192_from_limbs(col_evals[13], col_evals[14], col_evals[15])
-            ff = f192_from_limbs(col_evals[16], col_evals[17], col_evals[18])
-            w = f192_from_limbs(col_evals[23], col_evals[24], col_evals[25])
-            addrs = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[7] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[8] + col_evals[1] * col_evals[5]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[9] + col_evals[1] * col_evals[6])
-            ind_def = eta_pows[ETA_OFFSET[t] + 3] * (col_evals[26] + c * w)
-            ind_nz = eta_pows[ETA_OFFSET[t] + 4] * (c * (col_evals[26] + 1))
-            sel_pc = eta_pows[ETA_OFFSET[t] + 5] * (col_evals[2] + col_evals[26] * d + (col_evals[26] + 1) * ft)
-            sel_fp = eta_pows[ETA_OFFSET[t] + 6] * (col_evals[3] + col_evals[26] * ff + (col_evals[26] + 1) * col_evals[1])
-            constraint_eval = addrs + ind_def + ind_nz + sel_pc + sel_fp
+            c = f192_from_limbs(col_evals[7], col_evals[8], col_evals[9])
+            d = f192_from_limbs(col_evals[10], col_evals[11], col_evals[12])
+            ff = f192_from_limbs(col_evals[13], col_evals[14], col_evals[15])
+            w = f192_from_limbs(col_evals[20], col_evals[21], col_evals[22])
+            ind_def = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[23] + c * w)
+            ind_nz = eta_pows[ETA_OFFSET[t] + 1] * (c * (col_evals[23] + 1))
+            sel_pc = eta_pows[ETA_OFFSET[t] + 2] * (col_evals[2] + col_evals[23] * d + (col_evals[23] + 1) * ft)
+            sel_fp = eta_pows[ETA_OFFSET[t] + 3] * (col_evals[3] + col_evals[23] * ff + (col_evals[23] + 1) * col_evals[1])
+            constraint_eval = ind_def + ind_nz + sel_pc + sel_fp
         if t == TABLE_BLAKE3:
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[8] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[9] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[10] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (col_evals[11] + col_evals[1] * col_evals[5]) + eta_pows[ETA_OFFSET[t] + 4] * (col_evals[12] + col_evals[1] * col_evals[6]) + eta_pows[ETA_OFFSET[t] + 5] * (col_evals[13] + col_evals[1] * col_evals[7])
+            constraint_eval = 0
         if t == TABLE_PACK64X2:
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[5] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[6] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[7] + col_evals[1] * col_evals[4])
+            constraint_eval = 0
         # The table's three bus forms, evaluated at the SAME column evaluations:
         # Σ_b eq_hi(b) · (γ + Σ_i α^i · coord_i), the coords read off col_evals at
         # their local index. This is what replaces opening those columns at ζ.
@@ -1636,6 +1639,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                                 cv = col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]]
                             if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
                                 cv = COORD_CONST[BLOCK_COORD_OFF[b] + i] * col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]]
+                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PROD:
+                                # An address g^k·col_a·col_b: degree 2 in the column
+                                # evaluations, which the identities already are.
+                                cv = COORD_CONST[BLOCK_COORD_OFF[b] + i] * (col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]] * col_evals[COORD_COL_LOCAL_B[BLOCK_COORD_OFF[b] + i]])
                             if sd == COUNT_SIDE:
                                 inner += cv
                             else:

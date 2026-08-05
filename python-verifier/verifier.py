@@ -8,7 +8,7 @@ GKR/bus/AIR checks, VM layout, Ligerito, Flock, and final orchestration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
@@ -664,12 +664,15 @@ class Coordinate:
     """One coordinate of a bus tuple.
 
     Exactly one payload is set. ``column`` and ``generator_column`` refer to
-    committed global columns; ``public`` is a dense public multilinear table.
+    committed global columns; ``product`` is ``(a, b, k)`` for ``g^k * col_a *
+    col_b``, an address ``fp*g^o`` carried without committing it; ``public`` is a
+    dense public multilinear table.
     """
 
     constant: F192 | None = None
     column: int | None = None
     generator_column: int | None = None
+    product: tuple[int, int, int] | None = None
     index: bool = False
     public: tuple[F192, ...] | None = None
 
@@ -678,6 +681,7 @@ class Coordinate:
             self.constant is not None,
             self.column is not None,
             self.generator_column is not None,
+            self.product is not None,
             self.index,
             self.public is not None,
         )
@@ -737,7 +741,15 @@ class BytecodeClaim:
 
 @dataclass
 class BusForm:
+    """A table's bus contribution as a degree-2 form over its committed columns.
+
+    ``products`` holds ``(a, b, coefficient)`` in local indices, contributed by the
+    product coordinates. The form stays degree 2, which the AIR identities already
+    are, so the batch's round polynomial does not grow.
+    """
+
     coefficients: list[F192]
+    products: list[tuple[int, int, F192]] = field(default_factory=list)
     constant: F192 = ZERO
 
     def evaluate(self, values: Sequence[F192]) -> F192:
@@ -745,6 +757,9 @@ class BusForm:
         return sum(
             (coefficient * value for coefficient, value in zip(self.coefficients, values)),
             self.constant,
+        ) + sum(
+            (coefficient * values[a] * values[b] for a, b, coefficient in self.products),
+            ZERO,
         )
 
 
@@ -795,6 +810,11 @@ def _decompose_bus_side(
                     form.coefficients[coordinate.generator_column - base] += (
                         selector_weight * coefficient * GEN
                     )
+                elif coordinate.product is not None:
+                    a, b, exponent = coordinate.product
+                    form.products.append(
+                        (a - base, b - base, selector_weight * coefficient * _gpow(exponent))
+                    )
                 else:
                     raise VerificationError("table bus block has a virtual coordinate")
                 coefficient *= alpha
@@ -834,6 +854,9 @@ def _padding_fingerprint(block: BusBlock, padding: Sequence[F192], alpha: F192) 
             value = padding[coordinate.column]
         elif coordinate.generator_column is not None:
             value = GEN * padding[coordinate.generator_column]
+        elif coordinate.product is not None:
+            a, b, exponent = coordinate.product
+            value = _gpow(exponent) * padding[a] * padding[b]
         else:
             value = ZERO
         result += coefficient * value
@@ -1027,19 +1050,19 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
-BASES = (6, 27, 48, 57, 78, 105, 146)
-WIDTHS = (21, 21, 9, 21, 27, 41, 14)
-CONSTRAINT_COUNTS = (4, 4, 1, 4, 7, 6, 3)
+BASES = (6, 24, 42, 50, 68, 92, 127)
+WIDTHS = (18, 18, 8, 18, 24, 35, 11)
+CONSTRAINT_COUNTS = (1, 1, 0, 1, 4, 0, 0)
 COUNT_COLUMNS = (
-    (17, 18, 19, 20),
-    (17, 18, 19, 20),
-    (7, 8),
-    (17, 18, 19, 20),
-    (19, 20, 21, 22),
-    (32, 33, 34, 35, 36, 37, 38, 39, 40),
-    (10, 11, 12, 13),
+    (14, 15, 16, 17),
+    (14, 15, 16, 17),
+    (6, 7),
+    (14, 15, 16, 17),
+    (16, 17, 18, 19),
+    (26, 27, 28, 29, 30, 31, 32, 33, 34),
+    (7, 8, 9, 10),
 )
-BLAKE3_VALUES = tuple(range(14, 32))
+BLAKE3_VALUES = tuple(range(8, 26))
 BLAKE3_SLOTS = (10, 11, 12, 13, 14, 15, 16, 17, 4, 5, 6, 7, 0, 1, 2, 3, 18, 19)
 BLAKE3_SLOT_BY_VALUE: dict[int, int] = dict(zip(BLAKE3_VALUES, BLAKE3_SLOTS))
 VM_IV = (0xBB67AE856A09E667, 0xA54FF53A3C6EF372, 0x9B05688C510E527F, 0x5BE0CD191F83D9AB)
@@ -1218,6 +1241,10 @@ def _gcol(index: int) -> Coordinate:
     return Coordinate(generator_column=index)
 
 
+def _prod(a: int, b: int, exponent: int = 0) -> Coordinate:
+    return Coordinate(product=(a, b, exponent))
+
+
 def _public(values: Sequence[F192]) -> Coordinate:
     return Coordinate(public=tuple(values))
 
@@ -1242,69 +1269,66 @@ class Flushes:
         prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), _const(_gpow(opcode)))
         self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
 
-    def memory(
-        self, address: int, count: int, values: Sequence[Coordinate], successor: bool = False
-    ) -> None:
-        addr = _gcol(address) if successor else _col(address)
+    def memory(self, address: Coordinate, count: int, values: Sequence[Coordinate]) -> None:
         self.pair(
-            (_const(GEN), addr, _gcol(count), *values),
-            (_const(GEN), addr, _col(count), *values),
+            (_const(GEN), address, _gcol(count), *values),
+            (_const(GEN), address, _col(count), *values),
         )
 
-    def memory_word(self, address: int, count: int, lo: int, hi: int, top: int) -> None:
+    def memory_word(self, address: Coordinate, count: int, lo: int, hi: int, top: int) -> None:
         self.memory(address, count, (_col(lo), _col(hi), _col(top)))
 
-    def memory_base(self, address: int, count: int, value: int) -> None:
+    def memory_base(self, address: Coordinate, count: int, value: int) -> None:
         self.memory(address, count, (_col(value), _const(ZERO), _const(ZERO)))
 
-    def memory_128(self, address: int, count: int, lo: int, hi: int, successor: bool = False) -> None:
-        self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)), successor)
+    def memory_128(self, address: Coordinate, count: int, lo: int, hi: int) -> None:
+        self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)))
 
 
 def _table_flushes(table: int) -> Flushes:
     f = Flushes()
     if table in (0, 1):
         f.state_step(0, 1)
-        f.bytecode(0, 20, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_word(5, 17, 8, 9, 10)
-        f.memory_word(6, 18, 11, 12, 13)
-        f.memory_word(7, 19, 14, 15, 16)
+        f.bytecode(0, 17, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 14, 5, 6, 7)
+        f.memory_word(_prod(1, 3), 15, 8, 9, 10)
+        f.memory_word(_prod(1, 4), 16, 11, 12, 13)
     elif table == 2:
         f.state_step(0, 1)
-        f.bytecode(0, 8, 2, (_col(2), _col(3), _col(4), _col(5), _const(ZERO)))
-        f.memory_word(6, 7, 3, 4, 5)
+        f.bytecode(0, 7, 2, (_col(2), _col(3), _col(4), _col(5), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 6, 3, 4, 5)
     elif table == 3:
         f.state_step(0, 1)
-        f.bytecode(0, 20, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
-        f.memory_base(7, 17, 10)
-        f.memory_word(8, 18, 11, 12, 13)
-        f.memory_word(9, 19, 14, 15, 16)
+        f.bytecode(0, 17, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
+        f.memory_base(_prod(1, 2), 14, 7)
+        f.memory_word(_prod(7, 3), 15, 8, 9, 10)
+        f.memory_word(_prod(1, 4), 16, 11, 12, 13)
     elif table == 4:
         f.state_jump(0, 1, 2, 3)
-        f.bytecode(0, 22, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
-        f.memory_word(7, 19, 10, 11, 12)
-        f.memory_word(8, 20, 13, 14, 15)
-        f.memory_word(9, 21, 16, 17, 18)
+        f.bytecode(0, 19, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 4), 16, 7, 8, 9)
+        f.memory_word(_prod(1, 5), 17, 10, 11, 12)
+        f.memory_word(_prod(1, 6), 18, 13, 14, 15)
     elif table == 5:
         f.state_step(0, 1)
-        f.bytecode(0, 40, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 30, 31)))
-        for address, count, lo, hi, successor in (
-            (8, 32, 14, 15, False),
-            (9, 33, 16, 17, False),
-            (10, 34, 18, 19, False),
-            (11, 35, 20, 21, False),
-            (12, 36, 26, 27, False),
-            (12, 37, 28, 29, True),
-            (13, 38, 22, 23, False),
-            (13, 39, 24, 25, True),
+        f.bytecode(0, 34, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 24, 25)))
+        for operand, exponent, count, lo, hi in (
+            (2, 0, 26, 8, 9),
+            (3, 0, 27, 10, 11),
+            (4, 0, 28, 12, 13),
+            (5, 0, 29, 14, 15),
+            (6, 0, 30, 20, 21),
+            (6, 1, 31, 22, 23),
+            (7, 0, 32, 16, 17),
+            (7, 1, 33, 18, 19),
         ):
-            f.memory_128(address, count, lo, hi, successor)
+            f.memory_128(_prod(1, operand, exponent), count, lo, hi)
     else:
         f.state_step(0, 1)
-        f.bytecode(0, 13, 6, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_base(5, 10, 8)
-        f.memory_base(6, 11, 9)
-        f.memory_128(7, 12, 8, 9)
+        f.bytecode(0, 10, 6, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_base(_prod(1, 2), 7, 5)
+        f.memory_base(_prod(1, 3), 8, 6)
+        f.memory_128(_prod(1, 4), 9, 5, 6)
     return f
 
 
@@ -1313,6 +1337,9 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
         return _col(base + coordinate.column)
     if coordinate.generator_column is not None:
         return _gcol(base + coordinate.generator_column)
+    if coordinate.product is not None:
+        a, b, exponent = coordinate.product
+        return _prod(base + a, base + b, exponent)
     return coordinate
 
 
@@ -1415,10 +1442,10 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
     b3 = BASES[5]
     digest_words = [int.from_bytes(zero_digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24)]
     for index, value in enumerate(digest_words):
-        padding[b3 + 22 + index] = F192(value)
-        padding[b3 + 26 + index] = F192(VM_IV[index])
-    padding[b3 + 30] = ZERO
-    padding[b3 + 31] = F192(64 | 11 << 32)
+        padding[b3 + 16 + index] = F192(value)
+        padding[b3 + 20 + index] = F192(VM_IV[index])
+    padding[b3 + 24] = ZERO
+    padding[b3 + 25] = F192(64 | 11 << 32)
 
     kappas: list[int | None] = [0] * (6 + sum(WIDTHS))
     kappas[0] = kappas[1] = kappas[2] = kappas[3] = log_memory
@@ -1458,50 +1485,28 @@ def _air_evaluator(
         def word(lo: int, hi: int, top: int) -> F192:
             return value(lo) + F192(0, 1) * (value(hi) + F192(0, 1) * value(top))
 
+        # No table binds an address: the bus reads each as a product coordinate.
         if table in (0, 1):
-            va, vb, vc = word(8, 9, 10), word(11, 12, 13), word(14, 15, 16)
+            va, vb, vc = word(5, 6, 7), word(8, 9, 10), word(11, 12, 13)
             operation = va + vb if table == 0 else va * vb
-            terms = (
-                value(5) + value(1) * value(2),
-                value(6) + value(1) * value(3),
-                value(7) + value(1) * value(4),
-                vc + operation,
-            )
-        elif table == 2:
-            terms = (value(6) + value(1) * value(2),)
+            terms = (vc + operation,)
         elif table == 3:
-            v2, v3 = word(11, 12, 13), word(14, 15, 16)
+            v2, v3 = word(8, 9, 10), word(11, 12, 13)
             source = (ONE + value(5) + value(6)) * v3 + value(5) * GEN * GEN * value(0) + value(6) * value(1)
-            terms = (
-                value(7) + value(1) * value(2),
-                value(8) + value(10) * value(3),
-                value(9) + value(1) * value(4),
-                v2 + source,
-            )
+            terms = (v2 + source,)
         elif table == 4:
-            condition = word(10, 11, 12)
-            destination = word(13, 14, 15)
-            frame = word(16, 17, 18)
-            inverse, flag = word(23, 24, 25), value(26)
+            condition = word(7, 8, 9)
+            destination = word(10, 11, 12)
+            frame = word(13, 14, 15)
+            inverse, flag = word(20, 21, 22), value(23)
             terms = (
-                value(7) + value(1) * value(4),
-                value(8) + value(1) * value(5),
-                value(9) + value(1) * value(6),
                 flag + condition * inverse,
                 condition * (flag + ONE),
                 value(2) + flag * destination + (flag + ONE) * GEN * value(0),
                 value(3) + flag * frame + (flag + ONE) * value(1),
             )
-        elif table == 5:
-            terms = tuple(
-                value(address) + value(1) * value(operand)
-                for address, operand in zip((8, 9, 10, 11, 12, 13), (2, 3, 4, 5, 6, 7))
-            )
         else:
-            terms = tuple(
-                value(address) + value(1) * value(operand)
-                for address, operand in zip((5, 6, 7), (2, 3, 4))
-            )
+            terms = ()
 
         require(len(weights) == len(terms), "AIR constraint weight mismatch")
         identities = sum((weight * term for weight, term in zip(weights, terms)), ZERO)

@@ -754,7 +754,9 @@ fn gen_verify(
                         }
                     }
                     Coord::Public(_) => nbcv += 1,
-                    Coord::Const(_) | Coord::Index => {}
+                    // A product coordinate lives only in a table block, which raises
+                    // no framework claim.
+                    Coord::Const(_) | Coord::Index | Coord::Prod(..) => {}
                 }
             }
         }
@@ -1317,6 +1319,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
     let (mut coord_fresh, mut coord_slot, mut coord_local) = (vec![], vec![], vec![]);
+    // A product coordinate's second local index; 0 for every other kind.
+    let mut coord_local_b: Vec<usize> = vec![];
     // A table's blocks raise no claim any more: the batched zerocheck settles them
     //, so only the framework blocks stream column values.
     let sch_pm = lean_vm::cpu::schema();
@@ -1334,6 +1338,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
                 // indexes them by global coord offset); only Col/GCol matter.
                 let (mut fresh, mut slot, mut local) = (0usize, 0usize, 0usize);
+                let mut local_b = 0usize;
+                if let Coord::Prod(i, j, _) = c {
+                    let t = owner.expect("a product coordinate lives only in a table block");
+                    local = *i - sch_pm.base[t];
+                    local_b = *j - sch_pm.base[t];
+                }
                 if let Coord::Col(i) | Coord::GCol(i, _) = c {
                     match owner {
                         // A table's coord: the zerocheck reads it off that table's
@@ -1355,6 +1365,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
                 coord_local.push(local);
+                coord_local_b.push(local_b);
                 let (t, v, f) = match c {
                     Coord::Const(v) => (0u128, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
                     Coord::Col(i) => (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
@@ -1366,6 +1377,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     Coord::Public(_) => {
                         nbcv += 1;
                         (4, F192::ZERO, F192::ZERO)
+                    }
+                    Coord::Prod(i, j, k) => {
+                        let gk = g_pow(*k as usize);
+                        (
+                            5,
+                            F192::new(gk.0, 0, 0),
+                            F192::new((gk * l.pad[*i] * l.pad[*j]).0, 0, 0),
+                        )
                     }
                 };
                 ct.push(t);
@@ -1492,6 +1511,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
     ps("COORD_COL_LOCAL", ints(&coord_local));
+    ps("COORD_COL_LOCAL_B", ints(&coord_local_b));
     ps("N_BUS_CLAIMS", nclaims.to_string());
     let idxc: Vec<u128> = (0..34)
         .map(|i| {

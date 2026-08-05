@@ -55,6 +55,7 @@ fn offset_coords(base: usize, coords: Vec<Coord>) -> Vec<Coord> {
         .map(|c| match c {
             Coord::Col(i) => Coord::Col(base + i),
             Coord::GCol(i, k) => Coord::GCol(base + i, k),
+            Coord::Prod(i, j, k) => Coord::Prod(base + i, base + j, k),
             other => other,
         })
         .collect()
