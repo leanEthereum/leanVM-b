@@ -1555,7 +1555,7 @@ mod tests {
 // The zerocheck, lincheck, and ring-switch scalars use the shared transcript;
 // the caller carries the WHIR opening.
 
-/// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
+/// One claim on the committed packed BLAKE3 witness `q_flock`, as left by the
 /// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
 /// evaluation the PCS must discharge; `s_hat_v` is the prover-only ring-switch
 /// tensor weight the packed open consumes (`None` when `k_log < LOG_PACKING`,
@@ -1566,7 +1566,7 @@ pub struct WitnessClaim {
     pub s_hat_v: Option<Vec<F192>>,
 }
 
-/// The two claims on the committed witness `q_pkd` left by the Flock BLAKE3
+/// The two claims on the committed witness `q_flock` left by the Flock BLAKE3
 /// zerocheck + lincheck reduction, for the PCS to discharge:
 /// - `ab`: the `A∘B` side, from lincheck.
 /// - `c` : the `C` side, from zerocheck (`C = I`, so a direct z-claim).
@@ -1592,11 +1592,11 @@ pub struct ReductionReplay {
 impl Blake3Setup {
     /// **Flock reduction (prover).** Run the BLAKE3 zerocheck and lincheck on
     /// the shared transcript, reducing R1CS validity of `blocks` to two
-    /// evaluation claims on the committed packed witness `q_pkd`. (The
+    /// evaluation claims on the committed packed witness `q_flock`. (The
     /// statement is already transcript-bound: the embedding protocol seeds
     /// with the circuit family digest and announces the count.) Returns:
     /// - `z_packed`: the regenerated packed witness the PCS later opens against;
-    /// - the [`PackedWitnessClaims`] `(ab, c)` on `q_pkd`, with ring-switch weights.
+    /// - the [`PackedWitnessClaims`] `(ab, c)` on `q_flock`, with ring-switch weights.
     ///
     /// Does NOT open the PCS; the caller discharges the returned claims in the
     /// one stacked opening (`lean_vm`'s `pcs::open`).
@@ -1741,7 +1741,7 @@ impl Blake3Setup {
 
     /// **Flock reduction (verifier).** Replay the BLAKE3 zerocheck and
     /// lincheck straight off the shared transcript stream, recovering the two
-    /// `(ab, c)` evaluation claims on the committed witness `q_pkd`. Mirror of
+    /// `(ab, c)` evaluation claims on the committed witness `q_flock`. Mirror of
     /// [`Self::prove_reduction`]; the PCS then discharges the returned claims.
     pub fn verify_reduction<O>(
         &self,

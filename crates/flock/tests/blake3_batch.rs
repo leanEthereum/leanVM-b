@@ -53,10 +53,10 @@ fn flatten_packed(packed: &[F192]) -> Vec<F64> {
 /// Adapt one Flock evaluation claim to the 64-bit ring switch. Lincheck
 /// captures its 64 slices directly; the fused zerocheck kernel captures two
 /// banks around the first suffix coordinate, which are folded here.
-fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> RingSwitchClaim {
+fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> RingSwitchClaim {
     let mut suffix_point = z.point.x_inner_rest.clone();
     suffix_point.extend_from_slice(&z.point.x_outer);
-    assert_eq!(suffix_point.len(), qpkd_vars);
+    assert_eq!(suffix_point.len(), qflock_vars);
 
     let s_hat_v = captured.and_then(|s| match s.len() {
         PACKING_WIDTH => Some(s.to_vec()),
@@ -79,22 +79,22 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> RingSw
     }
 }
 
-fn prover_ring(reduced: &PackedWitnessClaims, qpkd_vars: usize) -> RingSwitchOpen {
+fn prover_ring(reduced: &PackedWitnessClaims, qflock_vars: usize) -> RingSwitchOpen {
     RingSwitchOpen {
         offset: 0,
-        qpkd_vars,
+        qflock_vars,
         claims: vec![
-            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qpkd_vars),
-            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qpkd_vars),
+            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
+            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
         ],
     }
 }
 
-fn verifier_ring(ab: &ZClaim, c: &ZClaim, qpkd_vars: usize) -> RingSwitchVerify {
+fn verifier_ring(ab: &ZClaim, c: &ZClaim, qflock_vars: usize) -> RingSwitchVerify {
     RingSwitchVerify {
         offset: 0,
-        qpkd_vars,
-        claims: vec![ring_claim(ab, None, qpkd_vars), ring_claim(c, None, qpkd_vars)],
+        qflock_vars,
+        claims: vec![ring_claim(ab, None, qflock_vars), ring_claim(c, None, qflock_vars)],
     }
 }
 
@@ -140,15 +140,15 @@ fn blake3_batch_prove_verify() {
         let _phase = zk_alloc::enter_phase();
         let t = Instant::now();
         let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
-        let q_pkd = flatten_packed(&z_packed);
+        let q_flock = flatten_packed(&z_packed);
         let witness_s = t.elapsed().as_secs_f64();
-        assert_eq!(q_pkd.len(), 1 << mu);
+        assert_eq!(q_flock.len(), 1 << mu);
 
         let mut ps = ProverState::<()>::new(b"flock-blake3-batch", &[]);
         let t_prove = Instant::now();
 
         let t = Instant::now();
-        let (commitment, prover_data) = commit(&q_pkd, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
+        let (commitment, prover_data) = commit(&q_flock, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
         ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
         let commit_s = t.elapsed().as_secs_f64();
 
@@ -156,7 +156,8 @@ fn blake3_batch_prove_verify() {
         let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
         drop((z_packed, a_packed, b_packed, z_lincheck));
         let ring = prover_ring(&reduced, mu);
-        let opening = open_batch_mixed_whir_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
+        let opening =
+            open_batch_mixed_whir_stacked(ps.sponge_mut(), &q_flock, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 

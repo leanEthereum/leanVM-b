@@ -4,7 +4,7 @@
 //! weight `W` (a point evaluation `q̂(r)` is `W = eq(r,·)`). A batch of claims
 //! `q̂(point_j) = value_j` folds with random `γ`s into one weight and target,
 //! opened in a single WHIR run: the verifier evaluates the weight itself,
-//! so it never travels. flock's ring-switched `q_pkd` claims join the same batch
+//! so it never travels. flock's ring-switched `q_flock` claims join the same batch
 //! ([`::pcs::stack_open`]).
 //!
 //! Security: the K configs use rate-1/2 Johnson list decoding with OOD binding
@@ -144,7 +144,7 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
 /// point *values* rode the stream during their sub-protocols, so nothing extra
 /// is bound here.
 ///
-/// There is no plain (non-ring-switch) path: the witness ALWAYS carries a `q_pkd`
+/// There is no plain (non-ring-switch) path: the witness ALWAYS carries a `q_flock`
 /// sub-block (≥ 1 padding instance, §cpu), so every opening is stacked.
 pub fn open(
     ps: &mut ProverState,

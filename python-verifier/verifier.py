@@ -2166,8 +2166,8 @@ def verify_stacked_opening(
     root: bytes,
     stack_log: int,
     initial_rate: int,
-    qpkd_offset: int,
-    qpkd_variables: int,
+    qflock_offset: int,
+    qflock_variables: int,
     reduction: Reduction,
     point_claims: Sequence[tuple[Sequence[F192], F192]],
 ) -> None:
@@ -2195,15 +2195,15 @@ def verify_stacked_opening(
     point_scales = powers(transcript.sample(), len(point_claims))
     target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims)), ZERO)
 
-    selector = qpkd_offset >> qpkd_variables
+    selector = qflock_offset >> qflock_variables
 
     def evaluate_basis(prefix: Sequence[F192], residual_log: int) -> list[F192]:
         shared_ring = None
-        if len(prefix) >= qpkd_variables:
+        if len(prefix) >= qflock_variables:
             shared_ring = sum(
                 (scale * _ring_weight(
                     claim.point.ring_tail,
-                    prefix[:qpkd_variables],
+                    prefix[:qflock_variables],
                     coordinate_weights,
                 ) for scale, claim in zip(ring_scales, ring_claims)),
                 ZERO,
@@ -2211,7 +2211,7 @@ def verify_stacked_opening(
         result = []
         for vertex in range(1 << residual_log):
             point = list(prefix) + [F192(vertex >> bit & 1) for bit in range(residual_log)]
-            low, high = point[:qpkd_variables], point[qpkd_variables:]
+            low, high = point[:qflock_variables], point[qflock_variables:]
             selector_weight = ONE
             for bit, challenge in enumerate(high):
                 selector_weight *= challenge if selector >> bit & 1 else ONE + challenge
@@ -2459,7 +2459,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     )
 
     point_claims: list[tuple[tuple[F192, ...], F192]] = []
-    qpkd = layout.placements[5]
+    qflock = layout.placements[5]
     for claim in claims:
         slot = virtual_slot(claim.column)
         if slot is None:
@@ -2471,12 +2471,12 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
                 selector, layout.stack_log - placement.variables
             )
         else:
-            require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
-            selector = qpkd.offset >> qpkd.variables
+            require(len(claim.point) + 8 == qflock.variables, "BLAKE3 slot claim dimension mismatch")
+            selector = qflock.offset >> qflock.variables
             full_point = (
                 _selector_point(slot, 8)
                 + claim.point
-                + _selector_point(selector, layout.stack_log - qpkd.variables)
+                + _selector_point(selector, layout.stack_log - qflock.variables)
             )
         point_claims.append((full_point, claim.value))
 
@@ -2488,8 +2488,8 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         root,
         layout.stack_log,
         log_inverse_rate,
-        qpkd.offset,
-        qpkd.variables,
+        qflock.offset,
+        qflock.variables,
         reduction,
         point_claims,
     )

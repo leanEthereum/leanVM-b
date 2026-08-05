@@ -26,7 +26,7 @@ use primitives::{
     pretty_f64, pretty_integer,
 };
 
-/// Why the guest reads every `q_pkd` slot claim's instance point off `rho`: a
+/// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the zerocheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
@@ -640,7 +640,7 @@ fn blake3_value_columns() -> Vec<usize> {
 enum ClaimSite {
     /// A framework bus block reads a committed column at this kappa.
     Framework { column: usize, kappa: usize },
-    /// A committed column of `table`; `is_virtual` marks the q_pkd-backed value
+    /// A committed column of `table`; `is_virtual` marks the q_flock-backed value
     /// columns, whose claim is a strided slot rather than a plain column.
     TableColumn {
         table: usize,
@@ -1389,8 +1389,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             n_committed += 1;
         }
     }
-    let qpkd_compact = compact_col_pm[lean_vm::cpu::QPKD];
-    assert_ne!(qpkd_compact, usize::MAX, "QPKD must be committed");
+    let qflock_compact = compact_col_pm[lean_vm::cpu::QFLOCK];
+    assert_ne!(qflock_compact, usize::MAX, "QFLOCK must be committed");
     let (mut cpbuf, mut cpcol, mut cpqslot): (Vec<usize>, Vec<usize>, Vec<usize>) = (vec![], vec![], vec![]);
     walk_claims(&l, kbc, |site| match site {
         ClaimSite::Framework { column, .. } => {
@@ -1403,7 +1403,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ClaimSite::TableColumn { column, is_virtual, .. } => {
             cpbuf.push(if is_virtual { 4 } else { 1 });
             cpcol.push(if is_virtual {
-                qpkd_compact
+                qflock_compact
             } else {
                 compact_col_pm[column]
             });
@@ -1421,7 +1421,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     });
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     assert_eq!(cpcol.len(), ncl, "every descriptor has a committed-column target");
-    assert_eq!(cpqslot.len(), ncl, "every descriptor has a fixed QPKD slot");
+    assert_eq!(cpqslot.len(), ncl, "every descriptor has a fixed QFLOCK slot");
 
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1578,8 +1578,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
-    // The q_pkd Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
-    // qpkd point-claim slot must use THIS, not LOG2_FIELD_BITS.
+    // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
+    // qflock point-claim slot must use THIS, not LOG2_FIELD_BITS.
     ps("SLOT_STRIDE_LOG", lean_vm::blake3_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
@@ -1876,9 +1876,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .iter()
         .flat_map(|&slot| (0..slot_stride_log).map(move |k| (slot >> k) & 1))
         .collect();
-    ps("CLAIM_QPKD_SLOT_BITS", ints(&cpqbits));
-    ps("QPKD_COMMITTED_COL", qpkd_compact.to_string());
-    ps("QPKD_VARS_CAP", (33 + slot_stride_log).to_string());
+    ps("CLAIM_QFLOCK_SLOT_BITS", ints(&cpqbits));
+    ps("QFLOCK_COMMITTED_COL", qflock_compact.to_string());
+    ps("QFLOCK_VARS_CAP", (33 + slot_stride_log).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
     // log2_ceil_usize(cols) selector bits. The defer region is 2*kbc points + sel
@@ -2098,7 +2098,7 @@ fn recursion_soundness_binds() {
     assert!(
         batch.merged.iter().all(|(name, _)| !matches!(
             name.as_str(),
-            "claim_sel_bits" | "claim_yslot_bits" | "claim_qpkd_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
+            "claim_sel_bits" | "claim_yslot_bits" | "claim_qflock_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
         )),
         "claim and ring placement descriptors must be derived, not hinted"
     );

@@ -94,7 +94,7 @@ fn pack64_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
 fn blake3_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     use blake3t::*;
     // The six address bindings a_X = fp·o_X (degree 2). The compression carries no
-    // table constraint here: flock's R1CS validity proves it via q_pkd.
+    // table constraint here: flock's R1CS validity proves it via q_flock.
     let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
     bind(AA0, OA0).mul_e(pows[0])
         + bind(AA1, OA1).mul_e(pows[1])
@@ -425,8 +425,8 @@ pub(crate) fn blake3_metadata(prog: &[Op], pc: u32) -> F192 {
 /// BLAKE3 value-column LOCAL indices in canonical slot order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
 /// `blake3_flock::SLOTS`). These columns are
-/// VIRTUAL (never committed): `q_pkd` already holds those words at fixed packed
-/// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_pkd`
+/// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
+/// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
 /// (`slot_claims`): the value the bus flushes IS the flock-proven word.
 pub const BLAKE3_VALUE_COLS: [usize; 18] = [
     blake3t::VA0,
@@ -948,14 +948,14 @@ impl Table for Pack64x2Table {
 /// consecutive cells, based at `acv` and `ac`, so the row reads eight cells in
 /// all. Six address bindings `a_X = fp·o_X` are constrained; the compression
 /// relating output words to input words carries no table constraint here: it is
-/// proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
+/// proven by flock's R1CS validity via `q_flock` (§blake3_flock).
 ///
 /// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the sixteen
 /// memory-borne flock words are sixteen value LANE columns over eight cells,
 /// plus the metadata immediate's two lanes. They are listed in
 /// `n_committed_columns` (they need a local index for the flushes and are filled
 /// from the trace for the bus), but `cpu` treats them as VIRTUAL (not committed)
-/// and routes their bus claims to `q_pkd`, which already holds those words (see
+/// and routes their bus claims to `q_flock`, which already holds those words (see
 /// [`BLAKE3_VALUE_COLS`]).
 struct Blake3Table;
 

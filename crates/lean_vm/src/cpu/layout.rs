@@ -15,14 +15,14 @@ pub const MEM_HI: usize = 1;
 pub const MEM_TOP: usize = 2;
 pub const MFCNT: usize = 3; // per-cell memory access count, g^{A[i]}
 pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
-// flock's packed BLAKE3 witness `q_pkd`, committed in the SAME stack as every
+// flock's packed BLAKE3 witness `q_flock`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-BLAKE3 program commits one full padding instance). It is the
 // SOLE copy of the input/output words: the VM's BLAKE3 value columns are
-// virtual and their memory-bus claims route to `q_pkd` slots (§blake3_flock), so
+// virtual and their memory-bus claims route to `q_flock` slots (§blake3_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
-pub const QPKD: usize = 5;
+pub const QFLOCK: usize = 5;
 pub const N_SHARED: usize = 6;
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
@@ -150,18 +150,18 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k[MEM_TOP] = Some((1, 0));
     k[MFCNT] = Some((1, 0));
     k[BFCNT] = Some((0, log_bytecode));
-    // q_pkd is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
+    // q_flock is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
     // instance (a no-BLAKE3 program commits one padding instance), and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor), so this
-    // reproduces `qpkd_kappa`.
-    k[QPKD] = Some((2 + tables::BLAKE3_TABLE, flock::blake3::K_LOG - ::pcs::LOG_PACKING));
+    // reproduces `qflock_kappa`.
+    k[QFLOCK] = Some((2 + tables::BLAKE3_TABLE, flock::blake3::K_LOG - ::pcs::LOG_PACKING));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
     }
-    // The BLAKE3 value columns are ALWAYS virtual: `q_pkd` already holds those
+    // The BLAKE3 value columns are ALWAYS virtual: `q_flock` already holds those
     // words at fixed packed slots, so committing them again is redundant. Their
-    // memory-bus claims route directly to `q_pkd` slot evaluations (`slot_claims`),
+    // memory-bus claims route directly to `q_flock` slot evaluations (`slot_claims`),
     // which both binds them to the proven witness AND removes the separate
     // value-binding sub-protocol.
     let b3 = sch.base[tables::BLAKE3_TABLE];
@@ -226,8 +226,8 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     }
     // The BLAKE3 table is ALWAYS sized to flock's `2^n_log` instance count
     // (`max(count,1)`, lincheck floor ≥ 8) so its per-instance (virtual) value
-    // columns share `q_pkd`'s instance cube: a value-column bus claim at instance
-    // point `r` maps to a strided `q_pkd` slot claim at `r` (`slot_claims`).
+    // columns share `q_flock`'s instance cube: a value-column bus claim at instance
+    // point `r` maps to a strided `q_flock` slot claim at `r` (`slot_claims`).
     taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
@@ -435,7 +435,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
     // compression): zero inputs but a NONZERO output `out_lo`. So the four output
     // value columns pad with that digest, not 0: the memory bus flushes these
-    // (virtual) columns, and their padding rows must equal `q_pkd`'s padding slots
+    // (virtual) columns, and their padding rows must equal `q_flock`'s padding slots
     // so the default-padding surplus divides out and the routed claims agree.
     // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
     // always present, all-padding for a no-BLAKE3 program).
@@ -520,7 +520,7 @@ impl Program {
         let mut q = unsafe { witness::alloc_stack(l.m) };
         // A virtual column is not in the stack, so its values need storage of their
         // own: it carries data for the bus, and only its evaluation claims route
-        // elsewhere (to `q_pkd`).
+        // elsewhere (to `q_flock`).
         let mut virt: Vec<(usize, zk_alloc::ArenaVec<F64>)> = Vec::new();
         for (t, table) in tables::tables().iter().enumerate() {
             for c in 0..table.n_committed_columns() {
@@ -544,7 +544,7 @@ impl Program {
                 tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
             // Shared columns. The 192-bit memory image splits into three K-limbs.
-            // These five plus `QPKD` below are every shared column, and each has to
+            // These five plus `QFLOCK` below are every shared column, and each has to
             // be written: the stack is uninitialized, so one left out would be read
             // as indeterminate bytes rather than caught by a length mismatch.
             const _: () = assert!(N_SHARED == 6, "a new shared column needs a fill here");
@@ -554,11 +554,11 @@ impl Program {
             parallel::fill(windows[MFCNT], |i| tr.mem_count[i]); // counts ended at g^{A[i]}
             parallel::fill(windows[BFCNT], |i| tr.bytecode_count[i]); // … at g^{A[pc]}
         });
-        // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:
+        // flock's packed BLAKE3 witness q_flock, ALWAYS committed in this same stack:
         // built from the executed BLAKE3 rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances, so a
         // program with no BLAKE3 still carries a single padding instance.
-        let flock_reduction = crate::stage!("Build q_pkd", || {
+        let flock_reduction = crate::stage!("Build q_flock", || {
             // The rows carry only their access counts; the compression's input
             // words are the eight cells they read, in the finished (write-once)
             // memory image.
@@ -580,7 +580,7 @@ impl Program {
                     tables::blake3_metadata(&self.prog, r.pc),
                 )
             });
-            crate::blake3_flock::build_qpkd_prepared(&blocks, windows[QPKD])
+            crate::blake3_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
         });
 
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =

@@ -126,7 +126,7 @@ LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
-SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_pkd slot stride
+SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_flock slot stride
 # Phase E: the stacked mixed opening. The two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
@@ -202,23 +202,23 @@ LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
 LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
-# eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
+# eval_b claim descriptors (fixed parts) + the qflock capacity stride.
 # CLAIM_COMMITTED_COL maps each pooled logical claim to the compact index of the
-# committed column it must open. Virtual BLAKE3 value claims map to QPKD.
-# CLAIM_QPKD_SLOT_BITS contains the fixed packed-slot bits for every logical
-# claim (zero for non-virtual claims), and QPKD_COMMITTED_COL identifies the
+# committed column it must open. Virtual BLAKE3 value claims map to QFLOCK.
+# CLAIM_QFLOCK_SLOT_BITS contains the fixed packed-slot bits for every logical
+# claim (zero for non-virtual claims), and QFLOCK_COMMITTED_COL identifies the
 # ring-switch target.
 # Which point buffer a pooled claim's x-part lives in (CLAIM_POINT_BUF codes):
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
-POINT_BUF_QPKD = 3
-POINT_BUF_QPKD_RHO = 4
+POINT_BUF_QFLOCK = 3
+POINT_BUF_QFLOCK_RHO = 4
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_COMMITTED_COL = CLAIM_COMMITTED_COL_PLACEHOLDER
-CLAIM_QPKD_SLOT_BITS = CLAIM_QPKD_SLOT_BITS_PLACEHOLDER
-QPKD_COMMITTED_COL = QPKD_COMMITTED_COL_PLACEHOLDER
-QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
+CLAIM_QFLOCK_SLOT_BITS = CLAIM_QFLOCK_SLOT_BITS_PLACEHOLDER
+QFLOCK_COMMITTED_COL = QFLOCK_COMMITTED_COL_PLACEHOLDER
+QFLOCK_VARS_CAP = QFLOCK_VARS_CAP_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: one bytecode point and the Flock
@@ -1670,7 +1670,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
     tau_blake3_g = dims_g[GEN ** (TABLE_BLAKE3 + 1)]  # the BLAKE3 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
-    # buffers are sized for that), and q_pkd's committed kappa =
+    # buffers are sized for that), and q_flock's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
     # dispatch bound caps tau well below any baked structure.
     # flock's sub-proof scalars are ordinary stream words (add_scalar on the
@@ -1822,7 +1822,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_eq_vals = StackBuf(2)
     map_challenges = HeapBuf(6)
     c_table = HeapBuf(BASE_FIELD_BITS)
-    z_vals = HeapBuf(2 * QPKD_VARS_CAP)
+    z_vals = HeapBuf(2 * QFLOCK_VARS_CAP)
     for rs in unroll(0, 2):
         # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
         # observe_ext_slice) before the claim check and the shared map.
@@ -1894,7 +1894,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
     for xt in mul_range(1, tau_blake3_g):
         zv_lo[xt] = zr_hi[xt]
-    zv_hi = z_vals * GEN ** QPKD_VARS_CAP
+    zv_hi = z_vals * GEN ** QFLOCK_VARS_CAP
     zcr7 = zerocheck_r * GEN ** K_SKIP
     for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
         zv_hi[xt] = zcr7[xt]
@@ -1993,7 +1993,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths remain certified below. Every stack selector comes from
     # the certified offset of CLAIM_COMMITTED_COL[j]; it is not prover advice.
-    # QPKD value-slot IDs are baked per logical claim. All selector products use
+    # QFLOCK value-slot IDs are baked per logical claim. All selector products use
     # eq(b, r) = 1 + b + r.
     claim_low_len = HeapBuf(N_CLAIMS)  # computed low_len per claim (the y-slot
     #                             # overlap pointers below re-read it)
@@ -2014,7 +2014,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- shared low-coordinate eq chains ----
     # A claim's low_eq is the prefix product prod_{k < low_len} (1 + p_k + ris_k)
     # over its point buffer p: the FACTORS depend only on which buffer the claim
-    # reads (and, for the qpkd slots, on the ris shift), never on the claim, so
+    # reads (and, for the qflock slots, on the ris shift), never on the claim, so
     # every claim on one buffer multiplies the same factors in the same order and
     # differs only in where it stops. Build one prefix-product chain per buffer
     # and let each claim read the partial product at its own certified length.
@@ -2030,7 +2030,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rho_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
         rho_eq_chain[xk * GEN] = rho_eq_chain[xk] * (1 + rho[xk] + fold_challenges[xk])
-    # The qpkd variants read the same points against ris shifted past the slot
+    # The qflock variants read the same points against ris shifted past the slot
     # coordinates, so they need their own chains.
     ris_slot = fold_challenges * GEN ** SLOT_STRIDE_LOG
     zeta_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
@@ -2061,9 +2061,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         else:
             cplen_g = claim_cplen_g[GEN ** j]
             nlow = cplen_g
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qpkd slot coords
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD_RHO:
+            if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
+                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qflock slot coords
+            if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
                 nlow = cplen_g * GEN ** SLOT_STRIDE_LOG
         nover_g = claim_nover[GEN ** j]
         # nover <= YR_LOG_CAP: honest nover <= yr_log_n <= cap, and the y-slot
@@ -2082,7 +2082,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # nlow + seln == lenris (the honest overlap-free case).
         assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
         # low_eq: the shared chain's partial product at this claim's certified
-        # length, times the qpkd slot factors (the only per-claim part).
+        # length, times the qflock slot factors (the only per-claim part).
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             low_eq = zeta_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
@@ -2094,18 +2094,18 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for xk in mul_range(GEN, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
             low_eq = low_chain[low_len_g]
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            qpkd_slot_eq = GEN ** 0
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
+            qflock_slot_eq = GEN ** 0
             for k in unroll(0, SLOT_STRIDE_LOG):
-                sb3 = CLAIM_QPKD_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
-                qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            low_eq = qpkd_slot_eq * zeta_slot_eq_chain[low_len_g]
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD_RHO:
-            qpkd_slot_eq = GEN ** 0
+                sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
+                qflock_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
+            low_eq = qflock_slot_eq * zeta_slot_eq_chain[low_len_g]
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
+            qflock_slot_eq = GEN ** 0
             for k in unroll(0, SLOT_STRIDE_LOG):
-                sb3 = CLAIM_QPKD_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
-                qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            low_eq = qpkd_slot_eq * rho_slot_eq_chain[low_len_g]
+                sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
+                qflock_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
+            low_eq = qflock_slot_eq * rho_slot_eq_chain[low_len_g]
         ris_hi = fold_challenges * nlow
         # Selector coordinates [nlow, lenris) are exactly the corresponding
         # certified placement-offset bits.
@@ -2118,23 +2118,23 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
+    # QFLOCK_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
     # certified announced log. Walk the runtime coordinates OUTSIDE and the
     # fixed FIELD_BITS Frobenius powers inside: each coordinate loads its
     # opening challenge once and evolves z by squaring in registers, advancing
     # one contiguous FIELD_BITS-wide product row. Same product formula as the
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
-    qpkdv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
+    qflockv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
     # Evaluate both transparent weights in lockstep, sharing c_k and the
     # verifier-point factor in every inner iteration.
-    z_row_src_1 = z_vals * GEN ** QPKD_VARS_CAP
-    prod_chains_0 = HeapBuf((qpkdv_g * GEN) ** BASE_FIELD_BITS)
-    prod_chains_1 = HeapBuf((qpkdv_g * GEN) ** BASE_FIELD_BITS)
+    z_row_src_1 = z_vals * GEN ** QFLOCK_VARS_CAP
+    prod_chains_0 = HeapBuf((qflockv_g * GEN) ** BASE_FIELD_BITS)
+    prod_chains_1 = HeapBuf((qflockv_g * GEN) ** BASE_FIELD_BITS)
     for k in unroll(0, BASE_FIELD_BITS):
         prod_chains_0[GEN ** k] = 1
         prod_chains_1[GEN ** k] = 1
-    for x_round in mul_range(1, qpkdv_g):
+    for x_round in mul_range(1, qflockv_g):
         zv_0 = z_vals[x_round]
         zv_1 = z_row_src_1[x_round]
         one_plus = 1 + fold_challenges[x_round]
@@ -2148,8 +2148,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             if k != BASE_FIELD_BITS - 1:
                 zv_0 *= zv_0
                 zv_1 *= zv_1
-    prod_final_0 = prod_chains_0 * qpkdv_g ** BASE_FIELD_BITS
-    prod_final_1 = prod_chains_1 * qpkdv_g ** BASE_FIELD_BITS
+    prod_final_0 = prod_chains_0 * qflockv_g ** BASE_FIELD_BITS
+    prod_final_1 = prod_chains_1 * qflockv_g ** BASE_FIELD_BITS
     e_acc_0 = 0
     e_acc_1 = 0
     for k in unroll(0, BASE_FIELD_BITS):
@@ -2159,17 +2159,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_eq_vals[0] = e_acc_0
     rs_eq_vals[1] = e_acc_1
     # ring-switch weight: extend by the selector bits over the fold_challenges
-    # coords [qpkdv, lenris).
+    # coords [qflockv, lenris).
     rs_weight = rs_eq_vals[0] + gamma_rs * rs_eq_vals[1]
-    # rs_len = lenris - qpkdv, DERIVED as g^lenris / g^qpkdv (not hinted). The
-    # selector loop then reads fold_challenges[qpkdv .. qpkdv+rs_len) = [qpkdv ..
-    # lenris), inside its written [0, lenris) extent; a qpkdv > lenris would make
+    # rs_len = lenris - qflockv, DERIVED as g^lenris / g^qflockv (not hinted). The
+    # selector loop then reads fold_challenges[qflockv .. qflockv+rs_len) = [qflockv ..
+    # lenris), inside its written [0, lenris) extent; a qflockv > lenris would make
     # rs_len a huge exponent and blow the range check below.
-    rs_len_g = fold_cap_g / qpkdv_g
+    rs_len_g = fold_cap_g / qflockv_g
     assert log(rs_len_g) < SIZE_BITS
-    ris_q = fold_challenges * qpkdv_g
-    qpkd_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * QPKD_COMMITTED_COL)
-    rs_sel_bits = qpkd_offset_bits * qpkdv_g
+    ris_q = fold_challenges * qflockv_g
+    qflock_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * QFLOCK_COMMITTED_COL)
+    rs_sel_bits = qflock_offset_bits * qflockv_g
     rsw_chain = HeapBuf(SIZE_BITS + 1)
     rsw_chain[GEN ** 0] = rs_weight
     for xk in mul_range(1, rs_len_g):
@@ -2184,7 +2184,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         overlap_ptr = rho * claim_low_len[GEN ** j]
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             overlap_ptr = zeta * claim_low_len[GEN ** j]
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
             overlap_ptr = zeta * claim_low_len[GEN ** j]
         # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
         # only for k < nover (the [low_len, cplen) span); at k >= nover it points
@@ -2215,7 +2215,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             assert hi_mask[xk] == 0
             assert hi_slot[xk] == 0
         inner_sum += claim_weights[GEN ** j] * tail_eq
-    rs_yslot_bits = qpkd_offset_bits * fold_cap_g
+    rs_yslot_bits = qflock_offset_bits * fold_cap_g
     rs_tail_eq = GEN ** 0
     for k in unroll(0, YR_LOG_CAP):
         yb = rs_yslot_bits[GEN ** k]
