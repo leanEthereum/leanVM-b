@@ -51,7 +51,7 @@
 
 use crate::merkle::Hash;
 use fiat_shamir::sponge::Sponge;
-use primitives::field::{F64, F192};
+use primitives::field::{F64, F192, powers};
 use primitives::multilinear::eq_eval;
 use serde::{Deserialize, Serialize};
 
@@ -356,7 +356,7 @@ pub fn open_batch_mixed_whir_stacked(
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound.
-    let gammas_rs = sponge.sample_vec(ring.claims.len());
+    let gammas_rs = powers(sponge.sample(), ring.claims.len());
     let rs_outputs: Vec<_> = rs_states
         .into_iter()
         .zip(gammas_rs)
@@ -369,7 +369,7 @@ pub fn open_batch_mixed_whir_stacked(
     for claim in point_claims {
         sponge.observe(claim.value());
     }
-    let gammas_pd = sponge.sample_vec(point_claims.len());
+    let gammas_pd = powers(sponge.sample(), point_claims.len());
 
     // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
     //    rs_eq_ind sum scattered at the q_pkd slice, plus the point-claim
@@ -469,7 +469,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
         .iter()
         .map(|rs_proof| ring_switch::verify_finish(rs_proof, &coordinate_weights))
         .collect();
-    let gammas_rs = sponge.sample_vec(n_rs);
+    let gammas_rs = powers(sponge.sample(), n_rs);
     let mut target = F192::ZERO;
     for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
         target += *g * out.sumcheck_claim;
@@ -479,7 +479,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     for claim in point_claims {
         sponge.observe(claim.value());
     }
-    let gammas_pd = sponge.sample_vec(point_claims.len());
+    let gammas_pd = powers(sponge.sample(), point_claims.len());
     for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
         target += *g * claim.value();
     }

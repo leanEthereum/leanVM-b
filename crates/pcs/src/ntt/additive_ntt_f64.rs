@@ -7,6 +7,7 @@
 //! SIMD kernels where available; large transforms are memory-bandwidth bound.
 
 use primitives::field::F64;
+use primitives::log2_strict_usize;
 
 /// Normalized subspace-polynomial evaluation table (see the extension-field twin).
 fn generate_evals_from_subspace(basis: &[F64]) -> Vec<Vec<F64>> {
@@ -80,7 +81,7 @@ impl AdditiveNttF64 {
     /// Forward additive NTT in place (scalar; used directly for tests and as
     /// the small-input path).
     pub fn forward_transform_scalar(&self, data: &mut [F64]) {
-        let log_d = log2_pow2(data.len());
+        let log_d = log2_strict_usize(data.len());
         assert!(log_d <= self.log_domain_size());
         for layer in 0..log_d {
             let num_blocks = 1usize << layer;
@@ -117,7 +118,7 @@ impl AdditiveNttF64 {
         start_layer: usize,
     ) {
         let n_total = data.len();
-        let log_d = log2_pow2(n_total / num_ntts);
+        let log_d = log2_strict_usize(n_total / num_ntts);
 
         for layer in start_layer..log_d {
             let num_blocks = 1usize << layer;
@@ -154,20 +155,20 @@ impl AdditiveNttF64 {
         assert!(num_ntts.is_power_of_two() && num_ntts > 0);
         let n_total = data.len();
         assert_eq!(n_total % num_ntts, 0);
-        let log_d = log2_pow2(n_total / num_ntts);
+        let log_d = log2_strict_usize(n_total / num_ntts);
         assert!(log_d <= self.log_domain_size());
         assert!(start_layer <= log_d);
 
         // Target sub-group ≈ 2 MB; each position is num_ntts × 8 bytes.
         const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
-        let log_bytes_per_position = 3 + log2_pow2(num_ntts);
+        let log_bytes_per_position = 3 + log2_strict_usize(num_ntts);
         let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
         let cache_n_top = log_d.saturating_sub(target_log_positions);
 
         const PARALLEL_FLOOR_LOG_D: usize = 12;
         const MIN_SUB_LOG: usize = 8;
         let n_top = if log_d >= PARALLEL_FLOOR_LOG_D {
-            let want_subs_log = log2_pow2(parallel::num_threads().next_power_of_two());
+            let want_subs_log = log2_strict_usize(parallel::num_threads().next_power_of_two());
             let max_n_top = log_d.saturating_sub(MIN_SUB_LOG);
             cache_n_top.max(want_subs_log.min(max_n_top))
         } else {
@@ -266,7 +267,7 @@ impl AdditiveNttF64 {
     /// transform; used by tests.
     #[cfg(test)]
     pub fn inverse_transform(&self, data: &mut [F64]) {
-        let log_d = log2_pow2(data.len());
+        let log_d = log2_strict_usize(data.len());
         assert!(log_d <= self.log_domain_size());
         for layer in (0..log_d).rev() {
             let num_blocks = 1usize << layer;
@@ -616,12 +617,6 @@ unsafe fn butterfly_lane_pair_neon(top: *mut F64, bot: *mut F64, twiddle: u64) {
         vst1q_u64(top as *mut u64, new_u);
         vst1q_u64(bot as *mut u64, new_v);
     }
-}
-
-#[inline]
-fn log2_pow2(n: usize) -> usize {
-    assert!(n.is_power_of_two() && n > 0, "length must be a positive power of 2");
-    n.trailing_zeros() as usize
 }
 
 #[cfg(test)]

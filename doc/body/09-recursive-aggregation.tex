@@ -12,7 +12,7 @@ Twice during verification, a large \emph{fixed} multilinear must be evaluated at
 \end{itemize}
 Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
 
-The aggregation guest therefore does not evaluate these fixed tables. It verifies every surrounding reduction and exports only the resulting points and claimed values.
+The aggregation guest therefore does not evaluate these fixed polynomials. It verifies every surrounding reduction and exports only the resulting points and claimed values.
 
 There are three fixed polynomials: the bytecode and the two matrices $A_0,B_0$. Verifying each ordinary sub-proof produces one claim on each, for $3n_{\mathrm{rec}}$ claims. A fresh Fiat--Shamir transcript absorbs all sub-statements and claim data, then batches them with two sumchecks: one for bytecode and one for the matrices, which share their $28$ variables. The aggregation and recursive-statement transcripts use distinct domain labels; each absorbs $n_{\mathrm{rec}}$ before any variable-length sequence, so concatenations cannot be confused. The guest reduces the batch to one bytecode evaluation and a common-point evaluation of each matrix. These three reduced claims, the inner proving-environment digest, and the sub-statements are hashed into the outer VM's two-word public input.
 

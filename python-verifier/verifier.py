@@ -2187,12 +2187,12 @@ def verify_stacked_opening(
     coordinate_weights = _coordinate_weights(map_challenges)
     ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights)), ZERO)
                    for values in slices]
-    ring_scales = transcript.samples(2)
+    ring_scales = powers(transcript.sample(), 2)
     target = sum((scale * value for scale, value in zip(ring_scales, ring_values)), ZERO)
 
     for _, value in point_claims:
         transcript.observe(value)
-    point_scales = transcript.samples(len(point_claims))
+    point_scales = powers(transcript.sample(), len(point_claims))
     target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims)), ZERO)
 
     selector = qpkd_offset >> qpkd_variables

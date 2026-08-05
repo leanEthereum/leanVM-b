@@ -48,6 +48,18 @@ pub const fn mul_by_g_e(a: F192) -> F192 {
     }
 }
 
+/// `[x^0, x^1, …, x^{n-1}]`: the weights of a random linear combination batched
+/// with the powers of one challenge, rather than `n` independent ones.
+pub fn powers(x: F192, n: usize) -> Vec<F192> {
+    let mut out = Vec::with_capacity(n);
+    let mut p = F192::ONE;
+    for _ in 0..n {
+        out.push(p);
+        p *= x;
+    }
+    out
+}
+
 /// `[g^0, g^1, …, g^{n-1}]`, built in parallel: each chunk seeds with one g-power
 /// (`x_pow`, `O(log)`) and fills by `mul_by_g`, breaking the serial prefix chain
 /// across cores.

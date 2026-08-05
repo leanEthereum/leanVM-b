@@ -3,11 +3,11 @@
 
 \subsection{Stacking}\label{sec:stacking}
 
-Suppose we want to commit to $T$ multilinears $P_1,\dots,P_T$ over boolean hypercubes of various sizes. We could commit to each independently, at the cost of a large cumulative opening proof. Instead they are concatenated into a large multilinear polynomial $q$, which we commit to with an inner-product commitment scheme (Definition~\ref{def:ipcs}), with a protocol to reduce opening claims on $P_i$ to a claim on $q$. Order them by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and concatenate their tables end to end,
+Suppose we want to commit to $T$ multilinears $P_1,\dots,P_T$ over boolean hypercubes of various sizes. We could commit to each independently, at the cost of a large cumulative opening proof. Instead they are concatenated into a large multilinear polynomial $q$, which we commit to with an inner-product commitment scheme (Definition~\ref{def:ipcs}), with a protocol to reduce opening claims on $P_i$ to a claim on $q$. Order them by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and concatenate their values end to end,
 \[
   q \;=\; P_1 \,\Vert\, P_2 \,\Vert\,\dots\,\Vert\, P_T \,\Vert\, 0,
 \]
-zero-padded to length $2^{M}$, with $M=\bigl\lceil\log_2\textstyle\sum_i 2^{\kappa_i}\bigr\rceil$. Placed largest first, column $i$ starts at an offset that is a multiple of $2^{\kappa_i}$; writing $\mathsf{sel}_i\in\cube{M-\kappa_i}$ for the high bits of that offset,
+zero-padded to length $2^{M}$, with $M=\bigl\lceil\log_2\textstyle\sum_i 2^{\kappa_i}\bigr\rceil$. Placed largest first, $P_i$ starts at an offset that is a multiple of $2^{\kappa_i}$; writing $\mathsf{sel}_i\in\cube{M-\kappa_i}$ for the high bits of that offset,
 \[
   \widetilde P_i(z)\;=\;\widetilde q(z,\mathsf{sel}_i)\qquad(z\in\cube{\kappa_i}).
 \]
@@ -17,7 +17,7 @@ An evaluation claim $\widetilde P_i(\zeta)=c$ is therefore a claim on the stack,
 \]
 a weighted sum over $\widetilde q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)$.
 
-\paragraph{Batching.} Every claim the protocol raises against a column is a weighted sum $\langle W_j,\widetilde q\rangle=c_j$ with $\E$-valued weight and target. After the claimed values are bound, the verifier samples independent $\lambda_j\in\E$ and defines $W_\lambda=\sum_j\lambda_jW_j$ and $C_\lambda=\sum_j\lambda_jc_j$. The inner-product PCS (Annex~\ref{annex:pcs}) proves
+\paragraph{Batching.} Every claim the protocol raises against one of the $P_i$ is a weighted sum $\langle W_j,\widetilde q\rangle=c_j$ with $\E$-valued weight and target. After the claimed values are bound, the verifier samples a single $\lambda\in\E$ and defines $W_\lambda=\sum_j\lambda^{j-1}W_j$ and $C_\lambda=\sum_j\lambda^{j-1}c_j$. One challenge rather than $J$ costs a factor $J-1$ in the soundness error, negligible at $|\E|=2^{192}$ (Lemma~\ref{lem:sz} in $\lambda$), and saves $J-1$ sponge squeezes, which are BLAKE3 compressions when this verifier runs in-circuit (\S\ref{sec:recursion}). The inner-product PCS (Annex~\ref{annex:pcs}) proves
 \[
   \sum_{w\in\cube{M}} W_\lambda(w)\,\widetilde q(w)=C_\lambda
 \]

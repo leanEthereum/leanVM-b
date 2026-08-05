@@ -37,7 +37,7 @@
 use crate::PAR_THRESHOLD;
 use crate::colval::ColVal;
 use crate::transcript::{ProverState, VerifierState};
-use primitives::field::{F64, F192, F192Unreduced};
+use primitives::field::{F64, F192, F192Unreduced, powers};
 use primitives::multilinear::{
     add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
 };
@@ -80,18 +80,6 @@ pub fn eta_offsets(n_constraints: impl Iterator<Item = usize>) -> Vec<usize> {
             Some(start)
         })
         .collect()
-}
-
-/// The batch's `η`-powers: `η^0 … η^{total-1}`, sliced per table by [`eta_offsets`].
-/// The caller needs these too, to weight the claims it attaches.
-pub fn eta_powers(eta: F192, total: usize) -> Vec<F192> {
-    let mut pows = Vec::with_capacity(total);
-    let mut p = F192::ONE;
-    for _ in 0..total {
-        pows.push(p);
-        p *= eta;
-    }
-    pows
 }
 
 /// An active round for a table: evaluate its columns at the three nodes `{0,1,g}`.
@@ -160,7 +148,7 @@ pub fn prove(
     let n = airs.iter().map(|a| a.tau).max().unwrap_or(0);
     debug_assert!(zeta.len() >= n, "the eq point must cover the tallest table");
     let offsets = eta_offsets(airs.iter().map(|a| a.n_constraints));
-    let pows = eta_powers(eta, airs.iter().map(|a| a.n_constraints).sum());
+    let pows = powers(eta, airs.iter().map(|a| a.n_constraints).sum());
     // η^{offset_t}, already inside `pows`; the rounds then fold in the pre-join
     // challenges and the eq factor, so `weights` is the whole per-table state.
     let mut weights = vec![F192::ONE; airs.len()];
@@ -265,7 +253,7 @@ pub fn verify(
         return Err(Error::Truncated);
     }
     let offsets = eta_offsets(airs.iter().map(|a| a.n_constraints));
-    let pows = eta_powers(eta, airs.iter().map(|a| a.n_constraints).sum());
+    let pows = powers(eta, airs.iter().map(|a| a.n_constraints).sum());
     let nd = quad_nodes();
     let mut weights = vec![F192::ONE; airs.len()];
     // An ordinary sumcheck for `target`, which the caller supplies. Each round
@@ -412,7 +400,7 @@ mod tests {
         let taus = [5usize, 3, 5, 0, 1];
         let cols: Vec<Vec<Vec<F64>>> = taus.iter().enumerate().map(|(i, &t)| good_table(t, i as u64)).collect();
         let (eta, zeta) = eta_zeta(&taus);
-        let pows = eta_powers(eta, 3 * taus.len());
+        let pows = powers(eta, 3 * taus.len());
         // σ_t = η^{offset_t + 2} · col_1(ζ[..τ_t]): the attached identity is `vals[1]`,
         // so its eq-weighted sum over the table's cube is that column's evaluation.
         let sigmas: Vec<F192> = taus

@@ -1899,15 +1899,18 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
         zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
-    fs, gamma_ab = squeeze(fs)
-    fs, gamma_c = squeeze(fs)
-    target = gamma_ab * transposed_claims[0] + gamma_c * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
+    fs, gamma_rs = squeeze(fs)  # ONE challenge; the two claims take its powers 1, gamma_rs
+    target = transposed_claims[0] + gamma_rs * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
     # ...then every pooled point claim, each observed.
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, claim_pool[GEN ** j])
+    fs, gamma = squeeze(fs)  # ONE challenge for the whole pool: N_CLAIMS - 1 fewer sponge compressions
     gamma_pool = HeapBuf(N_CLAIMS)
-    for j in unroll(0, N_CLAIMS):
-        fs, gv = squeeze(fs)
+    gamma_pool[GEN ** 0] = 1  # powers of one challenge, as for the eta-powers above
+    target += claim_pool[GEN ** 0]
+    gv = 1
+    for j in unroll(1, N_CLAIMS):
+        gv *= gamma
         gamma_pool[GEN ** j] = gv
         target += gv * claim_pool[GEN ** j]
 
@@ -2157,7 +2160,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_eq_vals[1] = e_acc_1
     # ring-switch weight: extend by the selector bits over the fold_challenges
     # coords [qpkdv, lenris).
-    rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
+    rs_weight = rs_eq_vals[0] + gamma_rs * rs_eq_vals[1]
     # rs_len = lenris - qpkdv, DERIVED as g^lenris / g^qpkdv (not hinted). The
     # selector loop then reads fold_challenges[qpkdv .. qpkdv+rs_len) = [qpkdv ..
     # lenris), inside its written [0, lenris) extent; a qpkdv > lenris would make

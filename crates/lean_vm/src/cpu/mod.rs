@@ -395,7 +395,7 @@ pub fn eta_form_base() -> usize {
 /// The three shared form powers `η^{base}, η^{base+1}, η^{base+2}`.
 fn eta_form_pows(eta: F192) -> [F192; 3] {
     let base = eta_form_base();
-    let pows = constraints::eta_powers(eta, base + 3);
+    let pows = primitives::field::powers(eta, base + 3);
     [pows[base], pows[base + 1], pows[base + 2]]
 }
 

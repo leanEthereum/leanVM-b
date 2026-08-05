@@ -8,9 +8,9 @@
 //! opener beyond the two log helpers.
 
 use crate::ntt::AdditiveNttF64;
-use crate::whir::log2_pow2;
 use primitives::field::{F64, F192};
 use primitives::log2_ceil_usize;
+use primitives::log2_strict_usize;
 
 // ===================================================================
 // Interleaved forward additive NTT over E with K-twiddles
@@ -31,7 +31,7 @@ pub(crate) fn forward_transform_interleaved_ext_from_layer(
     assert!(num_ntts.is_power_of_two() && num_ntts > 0);
     let n_total = data.len();
     assert_eq!(n_total % num_ntts, 0);
-    let log_d = log2_pow2(n_total / num_ntts);
+    let log_d = log2_strict_usize(n_total / num_ntts);
     assert!(log_d <= ntt.log_domain_size());
     assert!(start_layer <= log_d);
 
@@ -47,7 +47,7 @@ pub(crate) fn forward_transform_interleaved_ext_scalar_from_layer(
     start_layer: usize,
 ) {
     let n_total = data.len();
-    let log_d = log2_pow2(n_total / num_ntts);
+    let log_d = log2_strict_usize(n_total / num_ntts);
 
     for layer in start_layer..log_d {
         let num_blocks = 1usize << layer;
@@ -82,7 +82,7 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
     start_layer: usize,
 ) {
     let n_total = data.len();
-    let log_d = log2_pow2(n_total / num_ntts);
+    let log_d = log2_strict_usize(n_total / num_ntts);
 
     // Target sub-group ~2 MB; each position is `num_ntts` F192 elements.
     const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
@@ -93,7 +93,7 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
     const PARALLEL_FLOOR_LOG_D: usize = 12;
     const MIN_SUB_LOG: usize = 8;
     let n_top = if log_d >= PARALLEL_FLOOR_LOG_D {
-        let want_subs_log = log2_pow2(parallel::num_threads().next_power_of_two());
+        let want_subs_log = log2_strict_usize(parallel::num_threads().next_power_of_two());
         let max_n_top = log_d.saturating_sub(MIN_SUB_LOG);
         cache_n_top.max(want_subs_log.min(max_n_top))
     } else {

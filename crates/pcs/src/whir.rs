@@ -35,6 +35,7 @@
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
 use fiat_shamir::sponge::Sponge;
+use primitives::log2_strict_usize;
 use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
     log2_ceil_usize,
@@ -272,12 +273,6 @@ pub fn inner_product_base_ext(witness: &[F64], b: &[F192]) -> F192 {
     )
 }
 
-#[inline]
-pub(crate) fn log2_pow2(n: usize) -> usize {
-    assert!(n.is_power_of_two() && n > 0, "length must be a positive power of 2");
-    n.trailing_zeros() as usize
-}
-
 // ===================================================================
 // Config reuse
 // ===================================================================
@@ -343,7 +338,7 @@ fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem
 ///
 /// `message.len()` must be a power of two `>= 2^log_batch_size`.
 pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (Commitment, ProverData) {
-    let log_msg_len = log2_pow2(message.len());
+    let log_msg_len = log2_strict_usize(message.len());
     assert!(log_msg_len >= log_batch_size, "message too small for log_batch_size");
     assert!(log_inv_rate >= 1, "log_inv_rate must be >= 1 for a non-trivial RS code");
     let log_dim = log_msg_len - log_batch_size;
