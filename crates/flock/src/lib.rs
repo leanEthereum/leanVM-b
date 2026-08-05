@@ -3,7 +3,7 @@
 //! to evaluation claims on the committed packed witness.
 //!
 //! Protocol flow (all challenges from the shared [`fiat_shamir`] transcript):
-//!   1. The caller commits the packed Boolean witness `q_pkd` (inside the VM's
+//!   1. The caller commits the packed Boolean witness `q_flock` (inside the VM's
 //!      one stacked [`pcs`] commitment).
 //!   2. [`zerocheck`] reduces `a·b ⊕ c = 0` over the cube to evaluation claims
 //!      on `(â, b̂, ĉ)`.

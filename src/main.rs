@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 struct Cli {
-    /// Ligerito inverse-rate logarithm: 1, 2, 3, or 4 selects rate 1/2,
+    /// WHIR inverse-rate logarithm: 1, 2, 3, or 4 selects rate 1/2,
     /// 1/4, 1/8, or 1/16 respectively.
     #[arg(
         long,

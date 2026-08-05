@@ -30,7 +30,8 @@ GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 # [SIDE_BLOCK_START[s], SIDE_BLOCK_START[s+1])). The block STRUCTURE is
 # protocol-fixed and baked: each block's coord range [BLOCK_COORD_OFF,
 # +BLOCK_COORD_COUNT), per coord COORD_TYPE (0=const, 1=col, 2=gcol, 3=index,
-# 4=public bytecode; named COORD_KIND_* below), COORD_CONST (the const value, else 0), COORD_PAD_VAL
+# 4=public bytecode, 5=product; named COORD_KIND_* below), COORD_CONST (the const
+# value, a product's or gcol's g^k, else 0), COORD_PAD_VAL
 # (its default-padding fingerprint value), and the kappa SOURCE map
 # (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block SHAPES
 # are all reconstructed at runtime from the certified logs: kappa directly,
@@ -41,6 +42,7 @@ COORD_KIND_COL = 1
 COORD_KIND_GCOL = 2
 COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
+COORD_KIND_PROD = 5
 # BLOCK_REAL_TABLE: the table whose count is the block's real row count, or
 # REAL_IS_FULL_CUBE for the framework blocks (real = 2^kappa, no padding). It is
 # also what marks a block as owned: an owned block's fingerprint is settled by the
@@ -67,6 +69,8 @@ COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
 # For a coord of a TABLE's block: its column's local index inside that table. Those
 # coords raise no claim (the zerocheck settles them), so they use this instead.
 COORD_COL_LOCAL = COORD_COL_LOCAL_PLACEHOLDER
+# The SECOND local column index of a product coordinate (0 for every other kind).
+COORD_COL_LOCAL_B = COORD_COL_LOCAL_B_PLACEHOLDER
 N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
@@ -128,11 +132,11 @@ LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
-SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_pkd slot stride
+SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_flock slot stride
 # Phase E: the stacked mixed opening. The two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
-# Phase E2: the Ligerito opening over the stacked commitment, dispatched by
+# Phase E2: the WHIR opening over the stacked commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
 # below carry one row per (rate, m), with rate in 1..=4 and m in the
 # supported committed-size interval,
@@ -204,23 +208,23 @@ LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
 LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
-# eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
+# eval_b claim descriptors (fixed parts) + the qflock capacity stride.
 # CLAIM_COMMITTED_COL maps each pooled logical claim to the compact index of the
-# committed column it must open. Virtual BLAKE3 value claims map to QPKD.
-# CLAIM_QPKD_SLOT_BITS contains the fixed packed-slot bits for every logical
-# claim (zero for non-virtual claims), and QPKD_COMMITTED_COL identifies the
+# committed column it must open. Virtual BLAKE3 value claims map to QFLOCK.
+# CLAIM_QFLOCK_SLOT_BITS contains the fixed packed-slot bits for every logical
+# claim (zero for non-virtual claims), and QFLOCK_COMMITTED_COL identifies the
 # ring-switch target.
 # Which point buffer a pooled claim's x-part lives in (CLAIM_POINT_BUF codes):
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
-POINT_BUF_QPKD = 3
-POINT_BUF_QPKD_RHO = 4
+POINT_BUF_QFLOCK = 3
+POINT_BUF_QFLOCK_RHO = 4
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_COMMITTED_COL = CLAIM_COMMITTED_COL_PLACEHOLDER
-CLAIM_QPKD_SLOT_BITS = CLAIM_QPKD_SLOT_BITS_PLACEHOLDER
-QPKD_COMMITTED_COL = QPKD_COMMITTED_COL_PLACEHOLDER
-QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
+CLAIM_QFLOCK_SLOT_BITS = CLAIM_QFLOCK_SLOT_BITS_PLACEHOLDER
+QFLOCK_COMMITTED_COL = QFLOCK_COMMITTED_COL_PLACEHOLDER
+QFLOCK_VARS_CAP = QFLOCK_VARS_CAP_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: one bytecode point and the Flock
@@ -341,40 +345,35 @@ def combine_tower_limbs(c0: Ext, c1: Ext, c2: Ext):
 
 
 @inline
-def base_air_constraint(col_evals, eta: Ext, is_mul: Const):
-    fp = sload(col_evals, 1)
-    c0 = eadd(sload(col_evals, 5), emul(fp, sload(col_evals, 2)))
-    c1 = eadd(sload(col_evals, 6), emul(fp, sload(col_evals, 3)))
-    c2 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 4)))
+def base_air_constraint(col_evals, is_mul: Const):
+    # The third-operand identity, the table's only one: no address is committed,
+    # the bus reads each as the product fp*o (§sec:m3-addr).
     if is_mul == 0:
-        result = eadd(sload(col_evals, 8), sload(col_evals, 9))
+        result = eadd(sload(col_evals, 5), sload(col_evals, 6))
     else:
-        result = emul(sload(col_evals, 8), sload(col_evals, 9))
-    c3 = eadd(sload(col_evals, 10), result)
-    return epoly4(eta, c0, c1, c2, c3)
+        result = emul(sload(col_evals, 5), sload(col_evals, 6))
+    return eadd(sload(col_evals, 7), result)
 
 
 @inline
 def ext_air_constraint(col_evals, eta: Ext, is_mul: Const):
-    fp = sload(col_evals, 1)
-    c0 = eadd(sload(col_evals, 5), emul(fp, sload(col_evals, 2)))
-    c1 = eadd(sload(col_evals, 6), emul(fp, sload(col_evals, 3)))
-    c2 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 4)))
-    va = combine_tower_limbs(sload(col_evals, 8), sload(col_evals, 9), sload(col_evals, 10))
-    vb = combine_tower_limbs(sload(col_evals, 11), sload(col_evals, 12), sload(col_evals, 13))
-    vc = combine_tower_limbs(sload(col_evals, 14), sload(col_evals, 15), sload(col_evals, 16))
+    va = combine_tower_limbs(sload(col_evals, 5), sload(col_evals, 6), sload(col_evals, 7))
+    vb = combine_tower_limbs(sload(col_evals, 8), sload(col_evals, 9), sload(col_evals, 10))
+    vc = combine_tower_limbs(sload(col_evals, 11), sload(col_evals, 12), sload(col_evals, 13))
     if is_mul == 0:
         result = eadd(va, vb)
     else:
         result = emul(va, vb)
-    c3 = eadd(vc, result)
+    c0 = eadd(vc, result)
     if is_mul == 0:
-        out = epoly4(eta, c0, c1, c2, c3)
+        out = c0
     else:
-        full_a = eadd([1, 0, 0], sload(col_evals, 29))
-        c4 = eadd(sload(col_evals, 9), emul(full_a, sload(col_evals, 27)))
-        c5 = eadd(sload(col_evals, 10), emul(full_a, sload(col_evals, 28)))
-        out = epoly6(eta, c0, c1, c2, c3, c4, c5)
+        # MUL_EXT_BASE zeroes the first operand's two upper lanes while its cells
+        # stay memory-bound through MEM_A1/MEM_A2.
+        full_a = eadd([1, 0, 0], sload(col_evals, 26))
+        c1 = eadd(sload(col_evals, 6), emul(full_a, sload(col_evals, 24)))
+        c2 = eadd(sload(col_evals, 7), emul(full_a, sload(col_evals, 25)))
+        out = eadd(c0, emul(eta, eadd(c1, emul(eta, c2))))
     return out
 
 
@@ -525,7 +524,7 @@ def decode_query_bits(v: Ext, positions_out, bit_ptrs_out, depth: Const):
 
 
 def grind_check(state_0, state_1, state_2, state_3, nonce: Ext, nbits_g):
-    # Ligerito fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
+    # WHIR fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
     # low digest word's bits are advice-decomposed HERE and verified (booleanity
     # + reconstruction), and the low nbits (nbits_g = g^nbits) must be zero —
     # the CONTIGUOUS PoW window of transcript::pow_bits_ok. That native predicate
@@ -890,7 +889,7 @@ def eqtree(point_ptr, out, n_coords: Const):
 
 
 def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, commit_root_1, commit_root_2, commit_root_3, cursor, sumcheck_out, inner_out, yr_at_tail_out):
-    # The stacked Ligerito opening. m_idx is the flattened (rate, committed
+    # The stacked WHIR opening. m_idx is the flattened (rate, committed
     # log-size) configuration index, and every LIG_* table below reads row
     # m_idx (the match_range dispatch bakes one
     # specialization of this function per candidate). All opening proof data is hinted HERE, so
@@ -1281,7 +1280,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     #      evaluation deferred);
     #   8. ring-switch fronts (shared linear map, transpose in-circuit);
     #   9. gamma-combine everything, certify the committed size m, dispatch
-    #      the stacked Ligerito opening (open_stacked), and assert its
+    #      the stacked WHIR opening (open_stacked), and assert its
     #      eval_b terminal;
     #  10. export the deferred-claim region for the aggregation.
     # Claim pool: values of every committed-coordinate claim, in decompose order
@@ -1894,60 +1893,40 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         # the table's AIR constraint at the final point (col_evals is indexed by
         # local column index; the formulas mirror tables.rs eval_constraint).
         if t == TABLE_ADD:
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), base_air_constraint(col_evals, eta, 0))
+            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), base_air_constraint(col_evals, 0))
         if t == TABLE_MUL:
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), base_air_constraint(col_evals, eta, 1))
+            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), base_air_constraint(col_evals, 1))
         if t == TABLE_ADD_EXT:
             constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), ext_air_constraint(col_evals, eta, 0))
         if t == TABLE_MUL_EXT:
             constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), ext_air_constraint(col_evals, eta, 1))
         if t == TABLE_SET:
-            set_constraint = eadd(sload(col_evals, 4), emul(sload(col_evals, 1), sload(col_evals, 2)))
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), set_constraint)
+            constraint_eval = [0, 0, 0]  # the bus reads the address as fp*o, nothing left to constrain
         if t == TABLE_DEREF:
             fp = sload(col_evals, 1)
             fpc = sload(col_evals, 5)
             ffp = sload(col_evals, 6)
-            v3 = sload(col_evals, 12)
+            v3 = sload(col_evals, 9)
             src = eadd(emul(eadd(eadd([1, 0, 0], fpc), ffp), v3), eadd(emul(fpc, emul([GEN * GEN, 0, 0], sload(col_evals, 0))), emul(ffp, fp)))
-            c0 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 2)))
-            c1 = eadd(sload(col_evals, 8), emul(sload(col_evals, 10), sload(col_evals, 3)))
-            c2 = eadd(sload(col_evals, 9), emul(fp, sload(col_evals, 4)))
-            c3 = eadd(sload(col_evals, 11), src)
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly4(eta, c0, c1, c2, c3))
+            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), eadd(sload(col_evals, 8), src))
         if t == TABLE_DEREF_EXT:
-            fp = sload(col_evals, 1)
-            c0 = eadd(sload(col_evals, 5), emul(fp, sload(col_evals, 2)))
-            c1 = eadd(sload(col_evals, 6), emul(sload(col_evals, 8), sload(col_evals, 3)))
-            c2 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 4)))
-            width3 = sload(col_evals, 23)
-            v2 = combine_tower_limbs(sload(col_evals, 9), sload(col_evals, 10), emul(width3, sload(col_evals, 11)))
-            v3 = combine_tower_limbs(sload(col_evals, 12), sload(col_evals, 13), emul(width3, sload(col_evals, 14)))
-            c3 = eadd(v2, v3)
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly4(eta, c0, c1, c2, c3))
+            width3 = sload(col_evals, 20)
+            v2 = combine_tower_limbs(sload(col_evals, 6), sload(col_evals, 7), emul(width3, sload(col_evals, 8)))
+            v3 = combine_tower_limbs(sload(col_evals, 9), sload(col_evals, 10), emul(width3, sload(col_evals, 11)))
+            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), eadd(v2, v3))
         if t == TABLE_JUMP:
             pc = sload(col_evals, 0)
             fp = sload(col_evals, 1)
-            bval = sload(col_evals, 18)
+            bval = sload(col_evals, 15)
             one_plus_b = eadd(bval, [1, 0, 0])
             fall_through = emul([GEN, 0, 0], pc)
-            c0 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 4)))
-            c1 = eadd(sload(col_evals, 8), emul(fp, sload(col_evals, 5)))
-            c2 = eadd(sload(col_evals, 9), emul(fp, sload(col_evals, 6)))
-            c3 = eadd(bval, emul(sload(col_evals, 10), sload(col_evals, 17)))
-            c4 = emul(sload(col_evals, 10), one_plus_b)
-            c5 = eadd(sload(col_evals, 2), eadd(emul(bval, sload(col_evals, 11)), emul(one_plus_b, fall_through)))
-            c6 = eadd(sload(col_evals, 3), eadd(emul(bval, sload(col_evals, 12)), emul(one_plus_b, fp)))
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly7(eta, c0, c1, c2, c3, c4, c5, c6))
+            c0 = eadd(bval, emul(sload(col_evals, 7), sload(col_evals, 14)))
+            c1 = emul(sload(col_evals, 7), one_plus_b)
+            c2 = eadd(sload(col_evals, 2), eadd(emul(bval, sload(col_evals, 8)), emul(one_plus_b, fall_through)))
+            c3 = eadd(sload(col_evals, 3), eadd(emul(bval, sload(col_evals, 9)), emul(one_plus_b, fp)))
+            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly4(eta, c0, c1, c2, c3))
         if t == TABLE_BLAKE3:
-            fp = sload(col_evals, 1)
-            c0 = eadd(sload(col_evals, 8), emul(fp, sload(col_evals, 2)))
-            c1 = eadd(sload(col_evals, 9), emul(fp, sload(col_evals, 3)))
-            c2 = eadd(sload(col_evals, 10), emul(fp, sload(col_evals, 4)))
-            c3 = eadd(sload(col_evals, 11), emul(fp, sload(col_evals, 5)))
-            c4 = eadd(sload(col_evals, 12), emul(fp, sload(col_evals, 6)))
-            c5 = eadd(sload(col_evals, 13), emul(fp, sload(col_evals, 7)))
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly6(eta, c0, c1, c2, c3, c4, c5))
+            constraint_eval = [0, 0, 0]  # the bus reads each address as fp*o, and flock proves the compression
         # The table's three bus forms, evaluated at the SAME column evaluations:
         # Σ_b eq_hi(b) · (γ + Σ_i α^i · coord_i), the coords read off col_evals at
         # their local index. This is what replaces opening those columns at ζ.
@@ -1965,6 +1944,10 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
                                 cv = sload(col_evals, COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i])
                             if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
                                 cv = emul_base(COORD_CONST[BLOCK_COORD_OFF[b] + i], sload(col_evals, COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]))
+                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PROD:
+                                # An address g^k*col_a*col_b: degree 2 in the column
+                                # evaluations, which the identities already are.
+                                cv = emul_base(COORD_CONST[BLOCK_COORD_OFF[b] + i], emul(sload(col_evals, COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]), sload(col_evals, COORD_COL_LOCAL_B[BLOCK_COORD_OFF[b] + i])))
                             if sd == COUNT_SIDE:
                                 inner = eadd(inner, cv)
                             else:
@@ -1994,7 +1977,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
     tau_blake3_g = dims_g[GEN ** (TABLE_BLAKE3 + 1)]  # the BLAKE3 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
-    # buffers are sized for that), and q_pkd's committed kappa =
+    # buffers are sized for that), and q_flock's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
     # dispatch bound caps tau well below any baked structure.
     # flock's sub-proof scalars are ordinary stream words (add_scalar on the
@@ -2161,7 +2144,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     rs_eq_vals = StackBuf(3 * 2)
     map_challenges = HeapBuf(3 * 6)
     c_table = HeapBuf(3 * BASE_FIELD_BITS)
-    z_vals = HeapBuf(3 * 2 * QPKD_VARS_CAP)
+    z_vals = HeapBuf(3 * 2 * QFLOCK_VARS_CAP)
     for rs in unroll(0, 2):
         # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
         # observe_ext_slice) before the claim check and the shared map.
@@ -2235,27 +2218,30 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     for xt in mul_range(1, tau_blake3_g):
         xt3 = xt ** 3
         estore(zv_lo * xt3, eload(zr_hi * xt3))
-    zv_hi = z_vals * GEN ** (3 * QPKD_VARS_CAP)
+    zv_hi = z_vals * GEN ** (3 * QFLOCK_VARS_CAP)
     zcr7 = zerocheck_r * GEN ** (3 * K_SKIP)
     for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
         xt3 = xt ** 3
         estore(zv_hi * xt3, eload(zcr7 * xt3))
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
-    fs, gamma_ab = squeeze(fs)
-    fs, gamma_c = squeeze(fs)
-    target = eadd(emul(gamma_ab, sload(transposed_claims, 0)), emul(gamma_c, sload(transposed_claims, 1)))
+    fs, gamma_rs = squeeze(fs)  # ONE challenge; the two claims take its powers 1, gamma_rs
+    target = eadd(sload(transposed_claims, 0), emul(gamma_rs, sload(transposed_claims, 1)))  # gamma-batch the two ring-switch claims into the opening's target
     # ...then every pooled point claim, each observed.
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, eload(claim_pool * GEN ** (3 * j)))
+    fs, gamma = squeeze(fs)  # ONE challenge for the whole pool: N_CLAIMS - 1 fewer sponge compressions
     gamma_pool = HeapBuf(3 * N_CLAIMS)
-    for j in unroll(0, N_CLAIMS):
-        fs, gv = squeeze(fs)
+    estore(gamma_pool, [1, 0, 0])  # powers of one challenge, as for the eta-powers above
+    target = eadd(target, eload(claim_pool))
+    gv = [1, 0, 0]
+    for j in unroll(1, N_CLAIMS):
+        gv = emul(gv, gamma)
         estore(gamma_pool * GEN ** (3 * j), gv)
         target = eadd(target, emul(gv, eload(claim_pool * GEN ** (3 * j))))
 
-    # ================= the Ligerito opening core (stacked, m = STACK) ========
+    # ================= the WHIR opening core (stacked, m = STACK) ========
 
-    # ---- stacked Ligerito opening: dispatch on the committed log-size ----
+    # ---- stacked WHIR opening: dispatch on the committed log-size ----
     # ---- reconstruct the native committed-column placement ----
     # placements_of sorts committed columns by descending kappa and then by
     # ascending column index. The hinted order is only transport: range checks,
@@ -2338,7 +2324,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths remain certified below. Every stack selector comes from
     # the certified offset of CLAIM_COMMITTED_COL[j]; it is not prover advice.
-    # QPKD value-slot IDs are baked per logical claim. All selector products use
+    # QFLOCK value-slot IDs are baked per logical claim. All selector products use
     # eq(b, r) = 1 + b + r.
     claim_low_len = HeapBuf(N_CLAIMS)  # computed low_len per claim (the y-slot
     #                             # overlap pointers below re-read it)
@@ -2359,7 +2345,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     # ---- shared low-coordinate eq chains ----
     # A claim's low_eq is the prefix product prod_{k < low_len} (1 + p_k + ris_k)
     # over its point buffer p: the FACTORS depend only on which buffer the claim
-    # reads (and, for the qpkd slots, on the ris shift), never on the claim, so
+    # reads (and, for the qflock slots, on the ris shift), never on the claim, so
     # every claim on one buffer multiplies the same factors in the same order and
     # differs only in where it stops. Build one prefix-product chain per buffer
     # and let each claim read the partial product at its own certified length.
@@ -2379,7 +2365,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         xk3 = xk ** 3
         factor = eadd([1, 0, 0], eadd(eload(rho * xk3), eload(fold_challenges * xk3)))
         estore(rho_eq_chain * xk3 * GEN ** 3, emul(eload(rho_eq_chain * xk3), factor))
-    # The qpkd variants read the same points against ris shifted past the slot
+    # The qflock variants read the same points against ris shifted past the slot
     # coordinates, so they need their own chains.
     ris_slot = fold_challenges * GEN ** (3 * SLOT_STRIDE_LOG)
     zeta_slot_eq_chain = HeapBuf(3 * (SIZE_BITS + 1))
@@ -2419,9 +2405,9 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         else:
             cplen_g = claim_cplen_g[GEN ** j]
             nlow = cplen_g
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qpkd slot coords
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD_RHO:
+            if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
+                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qflock slot coords
+            if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
                 nlow = cplen_g * GEN ** SLOT_STRIDE_LOG
         nover_g = claim_nover[GEN ** j]
         # nover <= YR_LOG_CAP: honest nover <= yr_log_n <= cap, and the y-slot
@@ -2440,7 +2426,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         # nlow + seln == lenris (the honest overlap-free case).
         assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
         # low_eq: the shared chain's partial product at this claim's certified
-        # length, times the qpkd slot factors (the only per-claim part).
+        # length, times the qflock slot factors (the only per-claim part).
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             low_eq = eload(zeta_eq_chain * low_len_g ** 3)
         if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
@@ -2453,18 +2439,18 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
                 factor = eadd([1, 0, 0], eadd(eload(pi_point * xk3), eload(fold_challenges * xk3)))
                 estore(low_chain * xk3 * GEN ** 3, emul(eload(low_chain * xk3), factor))
             low_eq = eload(low_chain * low_len_g ** 3)
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            qpkd_slot_eq = [1, 0, 0]
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
+            qflock_slot_eq = [1, 0, 0]
             for k in unroll(0, SLOT_STRIDE_LOG):
-                sb3 = CLAIM_QPKD_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
-                qpkd_slot_eq = emul(qpkd_slot_eq, eadd_base(1 + sb3, eload(fold_challenges * GEN ** (3 * k))))
-            low_eq = emul(qpkd_slot_eq, eload(zeta_slot_eq_chain * low_len_g ** 3))
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD_RHO:
-            qpkd_slot_eq = [1, 0, 0]
+                sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
+                qflock_slot_eq = emul(qflock_slot_eq, eadd_base(1 + sb3, eload(fold_challenges * GEN ** (3 * k))))
+            low_eq = emul(qflock_slot_eq, eload(zeta_slot_eq_chain * low_len_g ** 3))
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
+            qflock_slot_eq = [1, 0, 0]
             for k in unroll(0, SLOT_STRIDE_LOG):
-                sb3 = CLAIM_QPKD_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
-                qpkd_slot_eq = emul(qpkd_slot_eq, eadd_base(1 + sb3, eload(fold_challenges * GEN ** (3 * k))))
-            low_eq = emul(qpkd_slot_eq, eload(rho_slot_eq_chain * low_len_g ** 3))
+                sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
+                qflock_slot_eq = emul(qflock_slot_eq, eadd_base(1 + sb3, eload(fold_challenges * GEN ** (3 * k))))
+            low_eq = emul(qflock_slot_eq, eload(rho_slot_eq_chain * low_len_g ** 3))
         ris_hi = fold_challenges * nlow ** 3
         # Selector coordinates [nlow, lenris) are exactly the corresponding
         # certified placement-offset bits.
@@ -2479,23 +2465,23 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         estore(claim_weights * GEN ** (3 * j), emul(eload(sel_chain * seln ** 3), eload(gamma_pool * GEN ** (3 * j))))
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
+    # QFLOCK_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
     # certified announced log. Walk the runtime coordinates OUTSIDE and the
     # fixed FIELD_BITS Frobenius powers inside: each coordinate loads its
     # opening challenge once and evolves z by squaring in registers, advancing
     # one contiguous FIELD_BITS-wide product row. Same product formula as the
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
-    qpkdv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
+    qflockv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
     # Evaluate both transparent weights in lockstep, sharing c_k and the
     # verifier-point factor in every inner iteration.
-    z_row_src_1 = z_vals * GEN ** (3 * QPKD_VARS_CAP)
-    prod_chains_0 = HeapBuf((qpkdv_g * GEN) ** (3 * BASE_FIELD_BITS))
-    prod_chains_1 = HeapBuf((qpkdv_g * GEN) ** (3 * BASE_FIELD_BITS))
+    z_row_src_1 = z_vals * GEN ** (3 * QFLOCK_VARS_CAP)
+    prod_chains_0 = HeapBuf((qflockv_g * GEN) ** (3 * BASE_FIELD_BITS))
+    prod_chains_1 = HeapBuf((qflockv_g * GEN) ** (3 * BASE_FIELD_BITS))
     for k in unroll(0, BASE_FIELD_BITS):
         estore(prod_chains_0 * GEN ** (3 * k), [1, 0, 0])
         estore(prod_chains_1 * GEN ** (3 * k), [1, 0, 0])
-    for x_round in mul_range(1, qpkdv_g):
+    for x_round in mul_range(1, qflockv_g):
         x_round3 = x_round ** 3
         zv_0 = eload(z_vals * x_round3)
         zv_1 = eload(z_row_src_1 * x_round3)
@@ -2511,8 +2497,8 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             if k != BASE_FIELD_BITS - 1:
                 zv_0 = emul(zv_0, zv_0)
                 zv_1 = emul(zv_1, zv_1)
-    prod_final_0 = prod_chains_0 * qpkdv_g ** (3 * BASE_FIELD_BITS)
-    prod_final_1 = prod_chains_1 * qpkdv_g ** (3 * BASE_FIELD_BITS)
+    prod_final_0 = prod_chains_0 * qflockv_g ** (3 * BASE_FIELD_BITS)
+    prod_final_1 = prod_chains_1 * qflockv_g ** (3 * BASE_FIELD_BITS)
     e_acc_0 = [0, 0, 0]
     e_acc_1 = [0, 0, 0]
     for k in unroll(0, BASE_FIELD_BITS):
@@ -2523,17 +2509,17 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     sstore(rs_eq_vals, 0, e_acc_0)
     sstore(rs_eq_vals, 1, e_acc_1)
     # ring-switch weight: extend by the selector bits over the fold_challenges
-    # coords [qpkdv, lenris).
-    rs_weight = eadd(emul(gamma_ab, sload(rs_eq_vals, 0)), emul(gamma_c, sload(rs_eq_vals, 1)))
-    # rs_len = lenris - qpkdv, DERIVED as g^lenris / g^qpkdv (not hinted). The
-    # selector loop then reads fold_challenges[qpkdv .. qpkdv+rs_len) = [qpkdv ..
-    # lenris), inside its written [0, lenris) extent; a qpkdv > lenris would make
+    # coords [qflockv, lenris).
+    rs_weight = eadd(sload(rs_eq_vals, 0), emul(gamma_rs, sload(rs_eq_vals, 1)))
+    # rs_len = lenris - qflockv, DERIVED as g^lenris / g^qflockv (not hinted). The
+    # selector loop then reads fold_challenges[qflockv .. qflockv+rs_len) = [qflockv ..
+    # lenris), inside its written [0, lenris) extent; a qflockv > lenris would make
     # rs_len a huge exponent and blow the range check below.
-    rs_len_g = fold_cap_g / qpkdv_g
+    rs_len_g = fold_cap_g / qflockv_g
     assert log(rs_len_g) < SIZE_BITS
-    ris_q = fold_challenges * qpkdv_g ** 3
-    qpkd_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * QPKD_COMMITTED_COL)
-    rs_sel_bits = qpkd_offset_bits * qpkdv_g
+    ris_q = fold_challenges * qflockv_g ** 3
+    qflock_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * QFLOCK_COMMITTED_COL)
+    rs_sel_bits = qflock_offset_bits * qflockv_g
     rsw_chain = HeapBuf(3 * (SIZE_BITS + 1))
     estore(rsw_chain, rs_weight)
     for xk in mul_range(1, rs_len_g):
@@ -2550,7 +2536,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         overlap_ptr = rho * claim_low_len[GEN ** j] ** 3
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             overlap_ptr = zeta * claim_low_len[GEN ** j] ** 3
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
             overlap_ptr = zeta * claim_low_len[GEN ** j] ** 3
         # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
         # only for k < nover (the [low_len, cplen) span); at k >= nover it points
@@ -2583,7 +2569,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             assert hi_mask[xk] == 0
             assert hi_slot[xk] == 0
         inner_sum = eadd(inner_sum, emul(eload(claim_weights * GEN ** (3 * j)), tail_eq))
-    rs_yslot_bits = qpkd_offset_bits * fold_cap_g
+    rs_yslot_bits = qflock_offset_bits * fold_cap_g
     rs_tail_eq = [1, 0, 0]
     for k in unroll(0, YR_LOG_CAP):
         yb = rs_yslot_bits[GEN ** k]

@@ -8,7 +8,7 @@ GKR/bus/AIR checks, VM layout, Ligerito, Flock, and final orchestration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
@@ -664,13 +664,16 @@ class Coordinate:
     """One coordinate of a bus tuple.
 
     Exactly one payload is set. ``column`` and ``generator_column`` refer to
-    committed global columns; ``public`` is a dense public multilinear table.
+    committed global columns; ``product`` is ``(a, b, k)`` for ``g^k * col_a *
+    col_b``, an address ``fp*g^o`` carried without committing it; ``public`` is a
+    dense public multilinear table.
     """
 
     constant: F192 | None = None
     column: int | None = None
     generator_column: int | None = None
     generator_power: int = 1
+    product: tuple[int, int, int] | None = None
     index: bool = False
     public: tuple[F192, ...] | None = None
 
@@ -679,6 +682,7 @@ class Coordinate:
             self.constant is not None,
             self.column is not None,
             self.generator_column is not None,
+            self.product is not None,
             self.index,
             self.public is not None,
         )
@@ -739,7 +743,15 @@ class BytecodeClaim:
 
 @dataclass
 class BusForm:
+    """A table's bus contribution as a degree-2 form over its committed columns.
+
+    ``products`` holds ``(a, b, coefficient)`` in local indices, contributed by the
+    product coordinates. The form stays degree 2, which the AIR identities already
+    are, so the batch's round polynomial does not grow.
+    """
+
     coefficients: list[F192]
+    products: list[tuple[int, int, F192]] = field(default_factory=list)
     constant: F192 = ZERO
 
     def evaluate(self, values: Sequence[F192]) -> F192:
@@ -747,6 +759,9 @@ class BusForm:
         return sum(
             (coefficient * value for coefficient, value in zip(self.coefficients, values)),
             self.constant,
+        ) + sum(
+            (coefficient * values[a] * values[b] for a, b, coefficient in self.products),
+            ZERO,
         )
 
 
@@ -797,6 +812,11 @@ def _decompose_bus_side(
                     form.coefficients[coordinate.generator_column - base] += (
                         selector_weight * coefficient * (GEN ** coordinate.generator_power)
                     )
+                elif coordinate.product is not None:
+                    a, b, exponent = coordinate.product
+                    form.products.append(
+                        (a - base, b - base, selector_weight * coefficient * _gpow(exponent))
+                    )
                 else:
                     raise VerificationError("table bus block has a virtual coordinate")
                 coefficient *= alpha
@@ -836,6 +856,9 @@ def _padding_fingerprint(block: BusBlock, padding: Sequence[F192], alpha: F192) 
             value = padding[coordinate.column]
         elif coordinate.generator_column is not None:
             value = (GEN ** coordinate.generator_power) * padding[coordinate.generator_column]
+        elif coordinate.product is not None:
+            a, b, exponent = coordinate.product
+            value = _gpow(exponent) * padding[a] * padding[b]
         else:
             value = ZERO
         result += coefficient * value
@@ -1032,22 +1055,22 @@ FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0
 N_TABLES = 9
 BLAKE3_TABLE = 8
 MEM_COLUMN = 0
-QPKD_COLUMN = 3
-BASES = (4, 19, 34, 61, 91, 98, 115, 139, 158)
-WIDTHS = (15, 15, 27, 30, 7, 17, 24, 19, 49)
-CONSTRAINT_COUNTS = (4, 4, 4, 6, 1, 4, 4, 7, 6)
+QFLOCK_COLUMN = 3
+BASES = (4, 16, 28, 52, 79, 85, 99, 120, 136)
+WIDTHS = (12, 12, 24, 27, 6, 14, 21, 16, 43)
+CONSTRAINT_COUNTS = (1, 1, 1, 3, 0, 1, 1, 4, 0)
 COUNT_COLUMNS = (
-    (11, 12, 13, 14),
-    (11, 12, 13, 14),
-    (17, 18, 19, 20, 21, 22, 23, 24, 25, 26),
-    (17, 18, 19, 20, 21, 22, 23, 24, 25, 26),
-    (5, 6),
-    (13, 14, 15, 16),
-    (15, 16, 17, 18, 19, 20, 21, 22),
-    (13, 14, 15, 16),
-    tuple(range(32, 49)),
+    (8, 9, 10, 11),
+    (8, 9, 10, 11),
+    (14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
+    (14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
+    (4, 5),
+    (10, 11, 12, 13),
+    (12, 13, 14, 15, 16, 17, 18, 19),
+    (10, 11, 12, 13),
+    tuple(range(26, 43)),
 )
-BLAKE3_VALUES = tuple(range(14, 32))
+BLAKE3_VALUES = tuple(range(8, 26))
 BLAKE3_SLOTS = (10, 11, 12, 13, 14, 15, 16, 17, 4, 5, 6, 7, 0, 1, 2, 3, 18, 19)
 BLAKE3_SLOT_BY_VALUE: dict[int, int] = dict(zip(BLAKE3_VALUES, BLAKE3_SLOTS))
 VM_IV = (0xBB67AE856A09E667, 0xA54FF53A3C6EF372, 0x9B05688C510E527F, 0x5BE0CD191F83D9AB)
@@ -1243,6 +1266,10 @@ def _gcol(index: int, power: int = 1) -> Coordinate:
     return Coordinate(generator_column=index, generator_power=power)
 
 
+def _prod(a: int, b: int, exponent: int = 0) -> Coordinate:
+    return Coordinate(product=(a, b, exponent))
+
+
 def _public(values: Sequence[F192]) -> Coordinate:
     return Coordinate(public=tuple(values))
 
@@ -1267,73 +1294,70 @@ class Flushes:
         prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), _const(_gpow(opcode)))
         self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
 
-    def memory(
-        self, address: int, count: int, values: Sequence[Coordinate], successor: bool = False
-    ) -> None:
-        addr = _gcol(address) if successor else _col(address)
+    def memory(self, address: Coordinate, count: int, values: Sequence[Coordinate]) -> None:
         self.pair(
-            (_const(GEN), addr, _gcol(count), *values),
-            (_const(GEN), addr, _col(count), *values),
+            (_const(GEN), address, _gcol(count), *values),
+            (_const(GEN), address, _col(count), *values),
         )
 
-    def memory_word(self, address: int, count: int, value: int, successor: int = 0) -> None:
-        addr = _gcol(address, successor) if successor else _col(address)
-        self.pair(
-            (_const(GEN), addr, _gcol(count), _col(value)),
-            (_const(GEN), addr, _col(count), _col(value)),
-        )
+    def memory_word(self, address: Coordinate, count: int, value: int) -> None:
+        self.memory(address, count, (_col(value),))
 
 
 def _table_flushes(table: int) -> Flushes:
     f = Flushes()
     if table in (0, 1):
         f.state_step(0, 1)
-        f.bytecode(0, 14, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_word(5, 11, 8)
-        f.memory_word(6, 12, 9)
-        f.memory_word(7, 13, 10)
+        f.bytecode(0, 11, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 8, 5)
+        f.memory_word(_prod(1, 3), 9, 6)
+        f.memory_word(_prod(1, 4), 10, 7)
     elif table in (2, 3):
         f.state_step(0, 1)
-        mode = _const(ZERO) if table == 2 else _col(29)
-        f.bytecode(0, 26, table + 4, (_col(2), _col(3), _col(4), mode, _const(ZERO)))
+        base_a = _const(ZERO) if table == 2 else _col(26)
+        f.bytecode(0, 23, table + 4, (_col(2), _col(3), _col(4), base_a, _const(ZERO)))
         for lane in range(3):
-            a_value = 8 + lane if table == 2 or lane == 0 else 26 + lane
-            f.memory_word(5, 17 + lane, a_value, lane)
-            f.memory_word(6, 20 + lane, 11 + lane, lane)
-            f.memory_word(7, 23 + lane, 14 + lane, lane)
+            # MUL_EXT_BASE reads its first operand's upper cells into MEM_A1/MEM_A2.
+            a_value = 5 + lane if table == 2 or lane == 0 else 23 + lane
+            f.memory_word(_prod(1, 2, lane), 14 + lane, a_value)
+            f.memory_word(_prod(1, 3, lane), 17 + lane, 8 + lane)
+            f.memory_word(_prod(1, 4, lane), 20 + lane, 11 + lane)
     elif table == 4:
         f.state_step(0, 1)
-        f.bytecode(0, 6, 2, (_col(2), _col(3), _const(ZERO), _const(ZERO), _const(ZERO)))
-        f.memory_word(4, 5, 3)
+        f.bytecode(0, 5, 2, (_col(2), _col(3), _const(ZERO), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 4, 3)
     elif table == 5:
         f.state_step(0, 1)
-        f.bytecode(0, 16, 3, tuple(_col(i) for i in (2, 3, 4, 5, 6)))
-        f.memory_word(7, 13, 10)
-        f.memory_word(8, 14, 11)
-        f.memory_word(9, 15, 12)
+        f.bytecode(0, 13, 3, tuple(_col(i) for i in (2, 3, 4, 5, 6)))
+        f.memory_word(_prod(1, 2), 10, 7)
+        f.memory_word(_prod(7, 3), 11, 8)
+        f.memory_word(_prod(1, 4), 12, 9)
     elif table == 6:
         f.state_step(0, 1)
-        f.bytecode(0, 22, 8, (_col(2), _col(3), _col(4), _col(23), _const(ZERO)))
-        f.memory_word(5, 15, 8)
+        f.bytecode(0, 19, 8, (_col(2), _col(3), _col(4), _col(20), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 12, 5)
         for lane in range(3):
-            f.memory_word(6, 16 + lane, 9 + lane, lane)
-            f.memory_word(7, 19 + lane, 12 + lane, lane)
+            f.memory_word(_prod(5, 3, lane), 13 + lane, 6 + lane)
+            f.memory_word(_prod(1, 4, lane), 16 + lane, 9 + lane)
     elif table == 7:
         f.state_jump(0, 1, 2, 3)
-        f.bytecode(0, 16, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
-        f.memory_word(7, 13, 10)
-        f.memory_word(8, 14, 11)
-        f.memory_word(9, 15, 12)
+        f.bytecode(0, 13, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 4), 10, 7)
+        f.memory_word(_prod(1, 5), 11, 8)
+        f.memory_word(_prod(1, 6), 12, 9)
     else:
         f.state_step(0, 1)
-        f.bytecode(0, 48, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 30, 31)))
+        f.bytecode(0, 42, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 24, 25)))
+        # The four message chunks span two cells each, the chaining value and the
+        # output four; every cell past a run's base is a free power of g.
+        for lane in range(2):
+            f.memory_word(_prod(1, 2, lane), 26 + lane, 8 + lane)
+            f.memory_word(_prod(1, 3, lane), 28 + lane, 10 + lane)
+            f.memory_word(_prod(1, 4, lane), 30 + lane, 12 + lane)
+            f.memory_word(_prod(1, 5, lane), 32 + lane, 14 + lane)
         for lane in range(4):
-            first_half = lane < 2
-            successor = lane & 1
-            f.memory_word(8 if first_half else 9, 32 + lane, 14 + lane, successor)
-            f.memory_word(10 if first_half else 11, 36 + lane, 18 + lane, successor)
-            f.memory_word(12, 40 + lane, 26 + lane, lane)
-            f.memory_word(13, 44 + lane, 22 + lane, lane)
+            f.memory_word(_prod(1, 6, lane), 34 + lane, 20 + lane)
+            f.memory_word(_prod(1, 7, lane), 38 + lane, 16 + lane)
     return f
 
 
@@ -1342,6 +1366,9 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
         return _col(base + coordinate.column)
     if coordinate.generator_column is not None:
         return _gcol(base + coordinate.generator_column, coordinate.generator_power)
+    if coordinate.product is not None:
+        a, b, exponent = coordinate.product
+        return _prod(base + a, base + b, exponent)
     return coordinate
 
 
@@ -1453,15 +1480,15 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
     b3 = BASES[BLAKE3_TABLE]
     digest_words = [int.from_bytes(zero_digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24)]
     for index, value in enumerate(digest_words):
-        padding[b3 + 22 + index] = F192(value)
-        padding[b3 + 26 + index] = F192(VM_IV[index])
-    padding[b3 + 30] = ZERO
-    padding[b3 + 31] = F192(64 | 11 << 32)
+        padding[b3 + 16 + index] = F192(value)
+        padding[b3 + 20 + index] = F192(VM_IV[index])
+    padding[b3 + 24] = ZERO
+    padding[b3 + 25] = F192(64 | 11 << 32)
 
     kappas: list[int | None] = [0] * (4 + sum(WIDTHS))
     kappas[MEM_COLUMN] = kappas[1] = log_memory
     kappas[2] = bytecode_log
-    kappas[QPKD_COLUMN] = table_logs[BLAKE3_TABLE] + 8
+    kappas[QFLOCK_COLUMN] = table_logs[BLAKE3_TABLE] + 8
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_VALUES:
@@ -1496,68 +1523,43 @@ def _air_evaluator(
         def word(lo: int, hi: int, top: int) -> F192:
             return value(lo) + F192(0, 1) * (value(hi) + F192(0, 1) * value(top))
 
+        # No table binds an address: the bus reads each as a product coordinate.
         if table in (0, 1):
-            operation = value(8) + value(9) if table == 0 else value(8) * value(9)
-            terms = (
-                value(5) + value(1) * value(2),
-                value(6) + value(1) * value(3),
-                value(7) + value(1) * value(4),
-                value(10) + operation,
-            )
+            operation = value(5) + value(6) if table == 0 else value(5) * value(6)
+            terms = (value(7) + operation,)
         elif table in (2, 3):
-            va, vb, vc = word(8, 9, 10), word(11, 12, 13), word(14, 15, 16)
+            va, vb, vc = word(5, 6, 7), word(8, 9, 10), word(11, 12, 13)
             operation = va + vb if table == 2 else va * vb
-            terms = [
-                value(5) + value(1) * value(2),
-                value(6) + value(1) * value(3),
-                value(7) + value(1) * value(4),
-                vc + operation,
-            ]
+            terms = [vc + operation]
             if table == 3:
-                full_a = ONE + value(29)
+                full_a = ONE + value(26)
                 terms.extend((
-                    value(9) + full_a * value(27),
-                    value(10) + full_a * value(28),
+                    value(6) + full_a * value(24),
+                    value(7) + full_a * value(25),
                 ))
             terms = tuple(terms)
         elif table == 4:
-            terms = (value(4) + value(1) * value(2),)
+            terms = ()
         elif table == 5:
-            source = ((ONE + value(5) + value(6)) * value(12)
+            source = ((ONE + value(5) + value(6)) * value(9)
                       + value(5) * GEN * GEN * value(0) + value(6) * value(1))
-            terms = (
-                value(7) + value(1) * value(2),
-                value(8) + value(10) * value(3),
-                value(9) + value(1) * value(4),
-                value(11) + source,
-            )
+            terms = (value(8) + source,)
         elif table == 6:
-            width3 = value(23)
-            v2 = value(9) + F192(0, 1) * (value(10) + F192(0, 1) * width3 * value(11))
-            v3 = value(12) + F192(0, 1) * (value(13) + F192(0, 1) * width3 * value(14))
-            terms = (
-                value(5) + value(1) * value(2),
-                value(6) + value(8) * value(3),
-                value(7) + value(1) * value(4),
-                v2 + v3,
-            )
+            width3 = value(20)
+            v2 = value(6) + F192(0, 1) * (value(7) + F192(0, 1) * width3 * value(8))
+            v3 = value(9) + F192(0, 1) * (value(10) + F192(0, 1) * width3 * value(11))
+            terms = (v2 + v3,)
         elif table == 7:
-            condition, destination, frame = value(10), value(11), value(12)
-            inverse, flag = value(17), value(18)
+            condition, destination, frame = value(7), value(8), value(9)
+            inverse, flag = value(14), value(15)
             terms = (
-                value(7) + value(1) * value(4),
-                value(8) + value(1) * value(5),
-                value(9) + value(1) * value(6),
                 flag + condition * inverse,
                 condition * (flag + ONE),
                 value(2) + flag * destination + (flag + ONE) * GEN * value(0),
                 value(3) + flag * frame + (flag + ONE) * value(1),
             )
         else:
-            terms = tuple(
-                value(address) + value(1) * value(operand)
-                for address, operand in zip((8, 9, 10, 11, 12, 13), (2, 3, 4, 5, 6, 7))
-            )
+            terms = ()
 
         require(len(weights) == len(terms), "AIR constraint weight mismatch")
         identities = sum((weight * term for weight, term in zip(weights, terms)), ZERO)
@@ -2227,8 +2229,8 @@ def verify_stacked_opening(
     root: bytes,
     stack_log: int,
     initial_rate: int,
-    qpkd_offset: int,
-    qpkd_variables: int,
+    qflock_offset: int,
+    qflock_variables: int,
     reduction: Reduction,
     point_claims: Sequence[tuple[Sequence[F192], F192]],
 ) -> None:
@@ -2248,23 +2250,23 @@ def verify_stacked_opening(
     coordinate_weights = _coordinate_weights(map_challenges)
     ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights)), ZERO)
                    for values in slices]
-    ring_scales = transcript.samples(2)
+    ring_scales = powers(transcript.sample(), 2)
     target = sum((scale * value for scale, value in zip(ring_scales, ring_values)), ZERO)
 
     for _, value in point_claims:
         transcript.observe(value)
-    point_scales = transcript.samples(len(point_claims))
+    point_scales = powers(transcript.sample(), len(point_claims))
     target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims)), ZERO)
 
-    selector = qpkd_offset >> qpkd_variables
+    selector = qflock_offset >> qflock_variables
 
     def evaluate_basis(prefix: Sequence[F192], residual_log: int) -> list[F192]:
         shared_ring = None
-        if len(prefix) >= qpkd_variables:
+        if len(prefix) >= qflock_variables:
             shared_ring = sum(
                 (scale * _ring_weight(
                     claim.point.ring_tail,
-                    prefix[:qpkd_variables],
+                    prefix[:qflock_variables],
                     coordinate_weights,
                 ) for scale, claim in zip(ring_scales, ring_claims)),
                 ZERO,
@@ -2272,7 +2274,7 @@ def verify_stacked_opening(
         result = []
         for vertex in range(1 << residual_log):
             point = list(prefix) + [F192(vertex >> bit & 1) for bit in range(residual_log)]
-            low, high = point[:qpkd_variables], point[qpkd_variables:]
+            low, high = point[:qflock_variables], point[qflock_variables:]
             selector_weight = ONE
             for bit, challenge in enumerate(high):
                 selector_weight *= challenge if selector >> bit & 1 else ONE + challenge
@@ -2526,7 +2528,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     claims.append(ColumnClaim(MEM_COLUMN, tuple(public_point), public_value))
 
     point_claims: list[tuple[tuple[F192, ...], F192]] = []
-    qpkd = layout.placements[QPKD_COLUMN]
+    qflock = layout.placements[QFLOCK_COLUMN]
     for claim in claims:
         slot = virtual_slot(claim.column)
         if slot is None:
@@ -2542,12 +2544,12 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
                 selector, layout.stack_log - placement.variables
             )
         else:
-            require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
-            selector = qpkd.offset >> qpkd.variables
+            require(len(claim.point) + 8 == qflock.variables, "BLAKE3 slot claim dimension mismatch")
+            selector = qflock.offset >> qflock.variables
             full_point = (
                 _selector_point(slot, 8)
                 + claim.point
-                + _selector_point(selector, layout.stack_log - qpkd.variables)
+                + _selector_point(selector, layout.stack_log - qflock.variables)
             )
         point_claims.append((full_point, claim.value))
 
@@ -2559,8 +2561,8 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         root,
         layout.stack_log,
         log_inverse_rate,
-        qpkd.offset,
-        qpkd.variables,
+        qflock.offset,
+        qflock.variables,
         reduction,
         point_claims,
     )

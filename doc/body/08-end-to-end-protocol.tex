@@ -1,3 +1,4 @@
+% !TeX root = ../drafts/08-end-to-end-protocol.tex
 \section{End-to-end protocol}\label{sec:e2e}
 
 This section assembles the primitives into the executable protocol, beginning with the constants, encodings, and padding fixed in advance.
@@ -12,7 +13,7 @@ Fixed once, public, and shared by prover and verifier: the fields, the bus shape
 \E=\K[y]/(y^3+y+1),\qquad
 \gen=x,\qquad \operatorname{ord}(\gen)=2^{64}-1.
 \]
-Committed columns and machine words are $\K$-valued; challenges are $\E$-valued (\S\ref{sec:prelim}). Every bus tuple has width $m=12$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
+Committed columns and machine words are $\K$-valued, and so is every constraint on them (\S\ref{sec:prelim}); a $192$-bit value is an $\E$-element only in the sense that its three consecutive $\K$ words are read as one, and challenges are $\E$-valued for soundness. Every bus tuple has width $m=12$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
 
 \paragraph{Domain separators.} Coordinate $0$ of every tuple is a domain separator, naming the interaction it belongs to (\S\ref{sec:m3}):
 \[
@@ -51,9 +52,9 @@ Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$ & $11$\\
 \hline
 \end{tabular}
 \end{center}
-So the program is nine public columns (opcode plus eight slots), whose MLEs the verifier forms itself. For \texttt{DEREF}, two operand slots are the store-mode flags; \texttt{MUL\_192} and \texttt{DEREF\_WIDE} take their mode and width bits from a slot; and for \texttt{BLAKE3} the slots hold six addresses and two metadata words. Writing $\mathit{instr}$ for the nine, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces every operand, flag, and immediate to match the program at its $\pc$.
+By convention the bytecode is a single multilinear over $\K$. The program is padded to $\nprog=2^{\kbc}$ instructions (\S\ref{sec:idxcol}) and its slots to a power of two as well, so the bytecode is a multilinear in $\kbc+4$ variables: the low $\kbc$ index the instruction and the high four select one of sixteen slots, nine of them carrying the encoding above and seven zero. It is public, so the verifier forms its multilinear extension itself. For \texttt{DEREF}, two operand slots are the store-mode flags; \texttt{MUL\_192} and \texttt{DEREF\_WIDE} take their mode and width bits from a slot; and for \texttt{BLAKE3} the slots hold six operand offsets and two metadata words. Writing $\mathit{instr}$ for the nine used slots at $\pc$, the bytecode seed pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces every operand, flag, and immediate to match the program at its $\pc$.
 
-The program is padded to a power of two (\S\ref{sec:idxcol}). A padding entry is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
+A padding instruction is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
 
 \subsection{Padding rows}\label{sec:e2e-pad}
 
@@ -75,7 +76,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Builds the $\K$-valued committed columns: each table's state, operands, addresses, read values, and counts; the single memory-value column $M$; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}). A program with no \texttt{BLAKE3} execution carries one padding instance so the proof shape remains uniform. An extension operand contributes three value columns but only one committed starting-address column; its successor addresses are virtual (\S\ref{sec:prelim}). The \texttt{JUMP} table additionally commits $w,b,\mathit{next\_pc},\mathit{next\_fp}$. Counts are committed $\gen$-powers (\S\ref{sec:memchan}); the public program and virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. The prover stacks these columns into $q$, sends the commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's real row count. The verifier checks the instance caps and derives the power-of-two table, stack, and leaf shapes (\S\ref{sec:leafstack}). The sizes also fix the default-row surplus later divided out of the grand product (\S\ref{sec:e2e-pad}, \S\ref{sec:gp}).
+\item \textbf{Prover.} Builds the $\K$-valued committed columns: each table's state, operands, read values, and counts; the single memory-value column $M$; the memory and bytecode finalize counts; and flock's packed witness $q_\flock$ (\S\ref{sec:tab-blake3}). A program with no \texttt{BLAKE3} execution carries one padding instance so the proof shape remains uniform. An extension operand contributes three value columns and no address column at all: every address rides the bus as a product $\gen^k\fp\cdot o$ (\S\ref{sec:m3}). The \texttt{JUMP} table additionally commits $w,b,\mathit{next\_pc},\mathit{next\_fp}$. Counts are committed $\gen$-powers (\S\ref{sec:memchan}); the public program and virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. The prover stacks these columns into $q$, sends the commitment (\S\ref{sec:stacking}, Annex~\ref{annex:pcs}), and announces each table's real row count. The verifier checks the instance caps and derives the power-of-two table, stack, and leaf shapes (\S\ref{sec:leafstack}). The sizes also fix the default-row surplus later divided out of the grand product (\S\ref{sec:e2e-pad}, \S\ref{sec:gp}).
 \end{enumerate}
 
 \paragraph{Bus.}
@@ -89,7 +90,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \paragraph{Local constraints.} One run for all nine tables (\S\ref{sec:air}).
 \begin{enumerate}
 \item \textbf{Verifier.} Sends the constraint-batch challenge $\eta$. Table $T_j$ takes a disjoint range of its powers, one per constraint; the bus forms absorbed above take three further powers, one per side and shared by every table. No point is drawn, the batch running at the bus point with $T_j$ tested at $\zeta_{<\tau_j}$.
-\item \textbf{Prover \& Verifier.} Run the back-loaded batched zerocheck, an $n$-round sumcheck with $n=\max_j\tau_j$, a table of $2^{\tau}$ rows joining at round $n-\tau$. It starts from a target the verifier derives from the three leaf claims, and each round is four $\E$-elements, the round polynomial itself at four nodes. Its end needs every column of every table, \texttt{BLAKE3}'s eighteen value columns included, whose claims route to $q_{\mathrm{pkd}}$; each at that table's own reduced point $\rho_{<\tau_j}$, all of them prefixes of one $\rho$; these enter the pool, and they are also what the bus forms are read off.
+\item \textbf{Prover \& Verifier.} Run the back-loaded batched zerocheck, an $n$-round sumcheck with $n=\max_j\tau_j$, a table of $2^{\tau}$ rows joining at round $n-\tau$. It starts from a target the verifier derives from the three leaf claims, and each round is four $\E$-elements, the round polynomial itself at four nodes. Its end needs every column of every table, \texttt{BLAKE3}'s eighteen value columns included, whose claims route to $q_\flock$; each at that table's own reduced point $\rho_{<\tau_j}$, all of them prefixes of one $\rho$; these enter the pool, and they are also what the bus forms are read off.
 \end{enumerate}
 
 \paragraph{Public input.}
@@ -99,14 +100,14 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{BLAKE3 validity.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $q_\pkd$ (\S\ref{sec:tab-blake3}).
-\item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $q_\pkd$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
+\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $q_\flock$ (\S\ref{sec:tab-blake3}).
+\item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $q_\flock$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
 \end{enumerate}
 
 \paragraph{Opening.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a committed column at a point, its value already supplied; via the stacking selectors (\S\ref{sec:stacking}) it becomes a weighted sum $\sum_w W_j(w)\,\widetilde q(w)=c_j$ over the stacked witness. (The ring-switched claims arrive already in this form, their weights supported on the $q_\pkd$ region.)
+\item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a committed column at a point, its value already supplied; via the stacking selectors (\S\ref{sec:stacking}) it becomes a weighted sum $\sum_w W_j(w)\,\widetilde q(w)=c_j$ over the stacked witness. (The ring-switched claims arrive already in this form, their weights supported on the $q_\flock$ region.)
 \item \textbf{Verifier.} Sends the batching coefficients $\lambda_1,\dots,\lambda_J\in\E$, one per claim.
-\item \textbf{Prover \& Verifier.} Fold the $J$ claims into $W_\lambda=\sum_j\lambda_j W_j$ and $C_\lambda=\sum_j\lambda_j c_j$, and run the inner-product PCS opening on $\sum_w W_\lambda(w)\,\widetilde q(w)=C_\lambda$ (\S\ref{sec:rs-dense}), the verifier evaluating $W_\lambda$ itself. This one opening discharges every pooled claim; there is no separate reduction sumcheck.
+\item \textbf{Prover \& Verifier.} Fold the $J$ claims into $W_\lambda=\sum_j\lambda_j W_j$ and $C_\lambda=\sum_j\lambda_j c_j$, and run the inner-product PCS opening on $\sum_w W_\lambda(w)\,\widetilde q(w)=C_\lambda$ (Annex~\ref{annex:pcs}), the verifier evaluating $W_\lambda$ itself. This one opening discharges every pooled claim; there is no separate reduction sumcheck.
 \item \textbf{Verifier.} Accepts iff the announced sizes passed the caps, the two roots agreed after the surplus division, the count root was nonzero, every sumcheck's rounds were consistent (the batch's against the target derived from the three leaf claims) and its final value matched the supplied evaluations, flock's reduction verified, the public-input claim held, and the PCS opening verified.
 \end{enumerate}

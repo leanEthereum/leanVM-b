@@ -1,14 +1,20 @@
 //! Per-opcode trace rows, emitted during execution and assembled into a [`Trace`].
+//!
+//! A row carries only what the witness fill cannot recover: the step's
+//! `(pc, fp)`, the access counts read at access time, and `DEREF`'s resolved
+//! store index. Everything else is a function of those:
+//! operands and immediates come from `prog[pc]`, addresses from `fp` plus those
+//! operands, and values from the final memory image, which is write-once and so
+//! still holds what each accessed cell held at the time it was accessed. The
+//! rows are the interpreter's largest write stream, so what they do not carry
+//! they do not pay for, twice: once writing them and once reading them back.
 
-use super::DerefMode;
 use primitives::field::F64;
 
+/// `XOR` and `MUL` row: the three cells are `fp·g^{a,b,c}`.
 pub(crate) struct Xrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32, // frame base: address = fp + offset, operand = g^offset
-    pub(crate) aa: u32,
-    pub(crate) ab: u32,
-    pub(crate) ac: u32,
     pub(crate) ra: F64,
     pub(crate) rb: F64,
     pub(crate) rc: F64,
@@ -17,45 +23,27 @@ pub(crate) struct Xrow {
 pub(crate) struct Srow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) o: u32,
-    pub(crate) a: u32,
-    pub(crate) k: F64,
     pub(crate) r: F64,
     pub(crate) bytecode_read: F64,
 }
 pub(crate) struct Drow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) alpha: u32,
-    pub(crate) beta: u32,
-    pub(crate) gamma: u32,
-    pub(crate) mode: DerefMode,
-    pub(crate) a1: u32,
-    pub(crate) p: F64,
-    pub(crate) a2: usize,
-    pub(crate) a3: u32,
-    pub(crate) v2: F64,
-    pub(crate) v3: F64,
+    /// The store target `p·g^beta` as a memory index. The pointer's discrete log
+    /// is the one field of a `DEREF` row the fill cannot recompute cheaply.
+    pub(crate) a2: u32,
     pub(crate) r1: F64,
     pub(crate) r2: F64,
     pub(crate) r3: F64,
     pub(crate) bytecode_read: F64,
 }
-/// Three-word pointer dereference. Only the base heap/frame addresses are
-/// committed; their two successors are virtual ×g/×g² addresses.
+/// Multi-word pointer dereference (`DEREF_128`, `DEREF_EXT`). Only each run's
+/// base address rides the bus; its successors are free ×g multiples of it.
 pub(crate) struct EDrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) alpha: u32,
-    pub(crate) beta: u32,
-    pub(crate) gamma: u32,
-    pub(crate) width3: F64,
-    pub(crate) a1: u32,
-    pub(crate) p: F64,
-    pub(crate) a2: usize,
-    pub(crate) a3: u32,
-    pub(crate) v2: [F64; 3],
-    pub(crate) v3: [F64; 3],
+    /// The store target's base cell, as for [`Drow`].
+    pub(crate) a2: u32,
     pub(crate) r1: F64,
     pub(crate) r2: [F64; 3],
     pub(crate) r3: [F64; 3],
@@ -64,61 +52,34 @@ pub(crate) struct EDrow {
 pub(crate) struct Jrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) npc: F64, // next pc, a K-valued address
-    pub(crate) nfp: F64, // next fp, a K-valued address
-    pub(crate) oc: u32,
-    pub(crate) od: u32,
-    pub(crate) of: u32,
-    pub(crate) ac: u32,
-    pub(crate) ad: u32,
-    pub(crate) af: u32,
-    pub(crate) c: F64,
-    pub(crate) d: F64,
-    pub(crate) f: F64,
-    pub(crate) w: F64,
-    pub(crate) b: F64, // taken indicator b = [c ≠ 0]
     pub(crate) rc: F64,
     pub(crate) rd: F64,
     pub(crate) rf: F64,
     pub(crate) bytecode_read: F64,
 }
 
-/// An extension operation addresses three consecutive base words for each
-/// operand. Only each run's base address is committed; successors are virtual.
+/// An extension operation addresses three consecutive base words per operand.
+/// Only each run's base address rides the bus; successors are free ×g multiples.
 pub(crate) struct Erow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) aa: u32,
-    pub(crate) ab: u32,
-    pub(crate) ac: u32,
-    pub(crate) base_a: F64,
     pub(crate) ra: [F64; 3],
     pub(crate) rb: [F64; 3],
     pub(crate) rc: [F64; 3],
     pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE3` row: four two-word message chunks, a four-word chaining value,
-/// a four-word output, and their per-word memory counts. The four chunk
-/// addresses are independent; the CV and output runs commit only their base.
+/// `BLAKE3` row: the per-word memory access counts of the four message words
+/// (two two-word chunks), the four-word chaining value and the four-word
+/// output. The addresses are `fp·g^{ins[i]}`, `fp·g^{cv}`, `fp·g^{out}` and the
+/// successors of those runs; the values are what the final image holds there.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) aa0: u32,
-    pub(crate) aa1: u32,
-    pub(crate) ab0: u32,
-    pub(crate) ab1: u32,
-    pub(crate) acv: u32,
-    pub(crate) ac: u32,
-    pub(crate) va: [F64; 4],
-    pub(crate) vb: [F64; 4],
-    pub(crate) vcv: [F64; 4],
-    pub(crate) vc: [F64; 4],
-    pub(crate) metadata: [F64; 2],
-    pub(crate) ra: [F64; 4],
-    pub(crate) rb: [F64; 4],
-    pub(crate) rcv: [F64; 4],
-    pub(crate) rc: [F64; 4],
+    pub(crate) ra: [F64; 4],  // per-word counts for the two a input chunks
+    pub(crate) rb: [F64; 4],  // … the two b input chunks
+    pub(crate) rcv: [F64; 4], // … the four cv words
+    pub(crate) rc: [F64; 4],  // … the four output words
     pub(crate) bytecode_read: F64,
 }
 

@@ -7,6 +7,7 @@
 //! SIMD kernels where available; large transforms are memory-bandwidth bound.
 
 use primitives::field::F64;
+use primitives::log2_strict_usize;
 
 /// Normalized subspace-polynomial evaluation table (see the extension-field twin).
 fn generate_evals_from_subspace(basis: &[F64]) -> Vec<Vec<F64>> {
@@ -80,7 +81,7 @@ impl AdditiveNttF64 {
     /// Forward additive NTT in place (scalar; used directly for tests and as
     /// the small-input path).
     pub fn forward_transform_scalar(&self, data: &mut [F64]) {
-        let log_d = log2_pow2(data.len());
+        let log_d = log2_strict_usize(data.len());
         assert!(log_d <= self.log_domain_size());
         for layer in 0..log_d {
             let num_blocks = 1usize << layer;
@@ -97,6 +98,81 @@ impl AdditiveNttF64 {
                 }
             }
         }
+    }
+
+    /// How many leading layers sweep the whole buffer before the rest run as
+    /// cache-resident sub-NTTs. The split targets a sub-block of about 2 MB and
+    /// then, if the transform is big enough to be worth splitting, enough
+    /// sub-blocks to keep every worker busy.
+    fn cache_split(log_d: usize, num_ntts: usize) -> usize {
+        const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
+        let log_bytes_per_position = 3 + log2_strict_usize(num_ntts);
+        let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
+        let cache_n_top = log_d.saturating_sub(target_log_positions);
+
+        const PARALLEL_FLOOR_LOG_D: usize = 12;
+        const MIN_SUB_LOG: usize = 8;
+        if log_d >= PARALLEL_FLOOR_LOG_D {
+            let want_subs_log = log2_strict_usize(parallel::num_threads().next_power_of_two());
+            let max_n_top = log_d.saturating_sub(MIN_SUB_LOG);
+            cache_n_top.max(want_subs_log.min(max_n_top))
+        } else {
+            cache_n_top
+        }
+    }
+
+    /// RS-encode `msg` into the codeword `data`: `data` is `2^log_inv_rate`
+    /// replicas of `msg`, transformed from layer `log_inv_rate`.
+    ///
+    /// The replication is fused into the first pass. Each block at layer
+    /// `log_inv_rate` IS one replica, so a block's eight participating rows are
+    /// eight message rows, and the pass can gather them itself instead of reading
+    /// back a codeword someone else just filled. That turns three sweeps of the
+    /// whole codeword (fill it, read it, write it) into one gather and one write:
+    /// at the XMSS scale, three gigabytes moved instead of seven.
+    ///
+    /// Falls back to filling `data` and transforming it when the first pass is not
+    /// the fused radix-8 group (tiny transforms, or a rate deep enough to leave
+    /// fewer than three whole-buffer layers).
+    pub fn encode_interleaved(&self, data: &mut [F64], msg: &[F64], num_ntts: usize, log_inv_rate: usize) {
+        assert!(num_ntts.is_power_of_two() && num_ntts > 0);
+        assert_eq!(data.len(), msg.len() << log_inv_rate, "codeword is 2^rate messages");
+        let log_d = log2_strict_usize(data.len() / num_ntts);
+        let n_top = Self::cache_split(log_d, num_ntts);
+        let block_rows = 1usize << (log_d - log_inv_rate);
+
+        if n_top == 0 || log_d < 8 || log_inv_rate + 2 >= n_top || block_rows < 8 {
+            replicate_rows(data, msg);
+            self.forward_transform_interleaved_from_layer(data, num_ntts, log_inv_rate);
+            return;
+        }
+
+        let eighth = block_rows >> 3;
+        let dst = parallel::SendPtr(data.as_mut_ptr());
+        parallel::for_each(eighth, |r| {
+            for block in 0..(1usize << log_inv_rate) {
+                let mut t = [F64::ZERO; 7];
+                t[0] = self.twiddle(log_inv_rate, block);
+                for s in 0..2 {
+                    t[1 + s] = self.twiddle(log_inv_rate + 1, 2 * block + s);
+                }
+                for s in 0..4 {
+                    t[3 + s] = self.twiddle(log_inv_rate + 2, 4 * block + s);
+                }
+                let base = (block * block_rows + r) * num_ntts;
+                // SAFETY: row group `r` of block `block` owns the eight windows
+                // `base + i * eighth * num_ntts`, disjoint across `r` and across
+                // blocks, and `data` outlives the dispatch.
+                let mut rows: [&mut [F64]; 8] =
+                    std::array::from_fn(|i| unsafe { dst.slice(base + i * eighth * num_ntts, num_ntts) });
+                for (i, row) in rows.iter_mut().enumerate() {
+                    let src = (i * eighth + r) * num_ntts;
+                    row.copy_from_slice(&msg[src..src + num_ntts]);
+                }
+                radix8_butterflies(&mut rows, &t);
+            }
+        });
+        self.forward_transform_interleaved_parallel_from_layer(data, num_ntts, log_inv_rate + 3);
     }
 
     /// Interleaved (SoA) forward NTT of `num_ntts` independent lanes sharing
@@ -117,7 +193,7 @@ impl AdditiveNttF64 {
         start_layer: usize,
     ) {
         let n_total = data.len();
-        let log_d = log2_pow2(n_total / num_ntts);
+        let log_d = log2_strict_usize(n_total / num_ntts);
 
         for layer in start_layer..log_d {
             let num_blocks = 1usize << layer;
@@ -142,9 +218,10 @@ impl AdditiveNttF64 {
     }
 
     /// Parallel interleaved forward NTT, cache-blocked like the extension-field twin:
-    /// top layers sweep the full buffer (fused two-layer passes, row-parallel),
-    /// deep layers run as cache-resident sub-NTTs in parallel. Constants are
-    /// re-derived for 8-byte elements.
+    /// top layers sweep the full buffer row-parallel, deep layers run as
+    /// cache-resident sub-NTTs one per worker. Both phases fuse up to three layers
+    /// per pass, so the pass count, which is what a memory-bound transform pays,
+    /// is a third of the layer count. Constants are re-derived for 8-byte elements.
     pub fn forward_transform_interleaved_parallel_from_layer(
         &self,
         data: &mut [F64],
@@ -154,25 +231,11 @@ impl AdditiveNttF64 {
         assert!(num_ntts.is_power_of_two() && num_ntts > 0);
         let n_total = data.len();
         assert_eq!(n_total % num_ntts, 0);
-        let log_d = log2_pow2(n_total / num_ntts);
+        let log_d = log2_strict_usize(n_total / num_ntts);
         assert!(log_d <= self.log_domain_size());
         assert!(start_layer <= log_d);
 
-        // Target sub-group ≈ 2 MB; each position is num_ntts × 8 bytes.
-        const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
-        let log_bytes_per_position = 3 + log2_pow2(num_ntts);
-        let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
-        let cache_n_top = log_d.saturating_sub(target_log_positions);
-
-        const PARALLEL_FLOOR_LOG_D: usize = 12;
-        const MIN_SUB_LOG: usize = 8;
-        let n_top = if log_d >= PARALLEL_FLOOR_LOG_D {
-            let want_subs_log = log2_pow2(parallel::num_threads().next_power_of_two());
-            let max_n_top = log_d.saturating_sub(MIN_SUB_LOG);
-            cache_n_top.max(want_subs_log.min(max_n_top))
-        } else {
-            cache_n_top
-        };
+        let n_top = Self::cache_split(log_d, num_ntts);
         if n_top == 0 || log_d < 8 {
             self.forward_transform_interleaved_scalar_from_layer(data, num_ntts, start_layer);
             return;
@@ -200,11 +263,12 @@ impl AdditiveNttF64 {
                         t[3 + s] = self.twiddle(layer + 2, 4 * block + s);
                     }
                     let start = block * block_elems;
-                    butterfly_interleaved_fused_3layer_par_rows(
+                    butterfly_interleaved_fused_3layer(
                         &mut data[start..start + block_elems],
                         &t,
                         eighth,
                         num_ntts,
+                        true,
                     );
                 }
                 layer += 3;
@@ -215,13 +279,14 @@ impl AdditiveNttF64 {
                     let t_inner_a = self.twiddle(layer + 1, 2 * block);
                     let t_inner_b = self.twiddle(layer + 1, 2 * block + 1);
                     let start = block * block_elems;
-                    butterfly_interleaved_fused_2layer_par_rows(
+                    butterfly_interleaved_fused_2layer(
                         &mut data[start..start + block_elems],
                         t_outer,
                         t_inner_a,
                         t_inner_b,
                         quarter,
                         num_ntts,
+                        true,
                     );
                 }
                 layer += 2;
@@ -241,22 +306,69 @@ impl AdditiveNttF64 {
             }
         }
 
-        // Deep layers: parallel cache-resident sub-NTTs.
+        // Deep layers: one sub-NTT per worker, each over a cache-resident
+        // sub-block. Layers fuse here for the same reason they do above, only the
+        // pass being saved is over L2/L3 rather than DRAM: a sub is a couple of
+        // megabytes, so twelve single-layer sweeps re-read it twelve times. The
+        // row loop inside a fused kernel stays serial, since the parallelism is
+        // already spent on the subs and a nested dispatch would deadlock.
         let sub_size_positions = 1usize << (log_d - n_top);
         let sub_elems = sub_size_positions * num_ntts;
         parallel::chunks_mut(data, sub_elems, |sub_idx, sub_data| {
-            for layer in n_top.max(start_layer)..log_d {
-                let layer_in_sub = layer - n_top;
-                let num_blocks_in_sub = 1usize << layer_in_sub;
+            let mut layer = n_top.max(start_layer);
+            while layer < log_d {
+                let num_blocks_in_sub = 1usize << (layer - n_top);
                 let block_size = 1usize << (log_d - layer);
-                let block_size_half = block_size >> 1;
                 let block_elems = block_size * num_ntts;
-                for block_in_sub in 0..num_blocks_in_sub {
-                    let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
-                    let twiddle = self.twiddle(layer, global_block);
-                    let block_start = block_in_sub * block_elems;
-                    let block = &mut sub_data[block_start..block_start + block_elems];
-                    butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts);
+                let blocks =
+                    |lay: usize| (0..num_blocks_in_sub).map(move |b| (b, sub_idx * (1usize << (lay - n_top)) + b));
+                if layer + 2 < log_d && block_size >= 8 {
+                    let eighth = block_size >> 3;
+                    for (block_in_sub, global_block) in blocks(layer) {
+                        let mut t = [F64::ZERO; 7];
+                        t[0] = self.twiddle(layer, global_block);
+                        for s in 0..2 {
+                            t[1 + s] = self.twiddle(layer + 1, 2 * global_block + s);
+                        }
+                        for s in 0..4 {
+                            t[3 + s] = self.twiddle(layer + 2, 4 * global_block + s);
+                        }
+                        let start = block_in_sub * block_elems;
+                        butterfly_interleaved_fused_3layer(
+                            &mut sub_data[start..start + block_elems],
+                            &t,
+                            eighth,
+                            num_ntts,
+                            false,
+                        );
+                    }
+                    layer += 3;
+                } else if layer + 1 < log_d && block_size >= 4 {
+                    let quarter = block_size >> 2;
+                    for (block_in_sub, global_block) in blocks(layer) {
+                        let t_outer = self.twiddle(layer, global_block);
+                        let t_inner_a = self.twiddle(layer + 1, 2 * global_block);
+                        let t_inner_b = self.twiddle(layer + 1, 2 * global_block + 1);
+                        let start = block_in_sub * block_elems;
+                        butterfly_interleaved_fused_2layer(
+                            &mut sub_data[start..start + block_elems],
+                            t_outer,
+                            t_inner_a,
+                            t_inner_b,
+                            quarter,
+                            num_ntts,
+                            false,
+                        );
+                    }
+                    layer += 2;
+                } else {
+                    for (block_in_sub, global_block) in blocks(layer) {
+                        let twiddle = self.twiddle(layer, global_block);
+                        let start = block_in_sub * block_elems;
+                        let block = &mut sub_data[start..start + block_elems];
+                        butterfly_interleaved_block(block, twiddle, block_size >> 1, num_ntts);
+                    }
+                    layer += 1;
                 }
             }
         });
@@ -266,7 +378,7 @@ impl AdditiveNttF64 {
     /// transform; used by tests.
     #[cfg(test)]
     pub fn inverse_transform(&self, data: &mut [F64]) {
-        let log_d = log2_pow2(data.len());
+        let log_d = log2_strict_usize(data.len());
         assert!(log_d <= self.log_domain_size());
         for layer in (0..log_d).rev() {
             let num_blocks = 1usize << layer;
@@ -315,6 +427,7 @@ fn fused_rows<const N: usize>(
     block: &mut [F64],
     stride_rows: usize,
     num_ntts: usize,
+    par_rows: bool,
     do_one: impl Fn(&mut [&mut [F64]; N]) + Sync,
 ) {
     const PARALLEL_ROW_THRESHOLD: usize = 512;
@@ -330,7 +443,7 @@ fn fused_rows<const N: usize>(
         do_one(&mut rows);
     };
 
-    if stride_rows < PARALLEL_ROW_THRESHOLD {
+    if !par_rows || stride_rows < PARALLEL_ROW_THRESHOLD {
         for r in 0..stride_rows {
             group(r);
         }
@@ -352,38 +465,54 @@ fn fused_rows<const N: usize>(
 /// distance `4·eighth`, layer L+1 at `2·eighth`, layer L+2 at `eighth`.
 /// `t` holds the seven twiddles breadth-first: `t[0]` is layer L, `t[1..3]`
 /// layer L+1 (one per half), `t[3..7]` layer L+2 (one per quarter).
-fn butterfly_interleaved_fused_3layer_par_rows(block: &mut [F64], t: &[F64; 7], eighth: usize, num_ntts: usize) {
-    fused_rows::<8>(block, eighth, num_ntts, |rows| {
-        let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
-        // Layer L, distance 4·eighth.
-        butterfly_lanes(r0, r4, t[0]);
-        butterfly_lanes(r1, r5, t[0]);
-        butterfly_lanes(r2, r6, t[0]);
-        butterfly_lanes(r3, r7, t[0]);
-        // Layer L+1, distance 2·eighth: t[1] on the new top half, t[2] on the
-        // new bottom half.
-        butterfly_lanes(r0, r2, t[1]);
-        butterfly_lanes(r1, r3, t[1]);
-        butterfly_lanes(r4, r6, t[2]);
-        butterfly_lanes(r5, r7, t[2]);
-        // Layer L+2, distance eighth: one twiddle per quarter.
-        butterfly_lanes(r0, r1, t[3]);
-        butterfly_lanes(r2, r3, t[4]);
-        butterfly_lanes(r4, r5, t[5]);
-        butterfly_lanes(r6, r7, t[6]);
-    });
+fn butterfly_interleaved_fused_3layer(block: &mut [F64], t: &[F64; 7], eighth: usize, num_ntts: usize, par_rows: bool) {
+    fused_rows::<8>(block, eighth, num_ntts, par_rows, |rows| radix8_butterflies(rows, t));
+}
+
+/// The twelve butterflies of one radix-8 row group: layer L pairs the rows at
+/// distance 4, L+1 at 2, L+2 at 1, with `t` holding the seven twiddles
+/// breadth-first. Shared with [`AdditiveNttF64::encode_interleaved`], whose first
+/// pass gathers its rows from the message rather than finding them in place.
+#[inline(always)]
+fn radix8_butterflies(rows: &mut [&mut [F64]; 8], t: &[F64; 7]) {
+    let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
+    // Layer L, distance 4·eighth.
+    butterfly_lanes(r0, r4, t[0]);
+    butterfly_lanes(r1, r5, t[0]);
+    butterfly_lanes(r2, r6, t[0]);
+    butterfly_lanes(r3, r7, t[0]);
+    // Layer L+1, distance 2·eighth: t[1] on the new top half, t[2] on the new
+    // bottom half.
+    butterfly_lanes(r0, r2, t[1]);
+    butterfly_lanes(r1, r3, t[1]);
+    butterfly_lanes(r4, r6, t[2]);
+    butterfly_lanes(r5, r7, t[2]);
+    // Layer L+2, distance eighth: one twiddle per quarter.
+    butterfly_lanes(r0, r1, t[3]);
+    butterfly_lanes(r2, r3, t[4]);
+    butterfly_lanes(r4, r5, t[5]);
+    butterfly_lanes(r6, r7, t[6]);
+}
+
+/// Fill `data` with `data.len() / msg.len()` copies of `msg`, the un-fused form of
+/// [`AdditiveNttF64::encode_interleaved`]'s first pass.
+fn replicate_rows(data: &mut [F64], msg: &[F64]) {
+    for replica in data.chunks_mut(msg.len()) {
+        replica.copy_from_slice(msg);
+    }
 }
 
 /// Fused 2-layer butterfly, row-parallel; see the extension-field twin for the shape.
-fn butterfly_interleaved_fused_2layer_par_rows(
+fn butterfly_interleaved_fused_2layer(
     block: &mut [F64],
     t_outer: F64,
     t_inner_a: F64,
     t_inner_b: F64,
     quarter: usize,
     num_ntts: usize,
+    par_rows: bool,
 ) {
-    fused_rows::<4>(block, quarter, num_ntts, |rows| {
+    fused_rows::<4>(block, quarter, num_ntts, par_rows, |rows| {
         let [row_a, row_b, row_c, row_d] = rows;
         // Layer L butterflies (a,c) and (b,d), then layer L+1 (a,b) and
         // (c,d); each stage runs the NEON lane-pair kernel over the rows.
@@ -618,12 +747,6 @@ unsafe fn butterfly_lane_pair_neon(top: *mut F64, bot: *mut F64, twiddle: u64) {
     }
 }
 
-#[inline]
-fn log2_pow2(n: usize) -> usize {
-    assert!(n.is_power_of_two() && n > 0, "length must be a positive power of 2");
-    n.trailing_zeros() as usize
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,6 +802,35 @@ mod tests {
                     assert_eq!(
                         got, want,
                         "parallel != scalar at log_d={log_d}, lanes={lanes}, start_layer={start_layer}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `encode_interleaved` fuses the replication into its first pass, so it must
+    /// land exactly where filling the codeword and transforming it does, including
+    /// on the sizes that take its fallback.
+    #[test]
+    fn fused_encode_matches_replicate_then_transform() {
+        let mut rng = Rng::new(0xE0C0DE);
+        for log_d in [9usize, 12, 14] {
+            for lanes in [8usize, 64] {
+                for log_inv_rate in [1usize, 2] {
+                    let ntt = AdditiveNttF64::standard(log_d);
+                    let msg_len = ((1usize << log_d) * lanes) >> log_inv_rate;
+                    let msg: Vec<F64> = (0..msg_len).map(|_| F64(rng.next_u64())).collect();
+
+                    let mut want = vec![F64::ZERO; msg_len << log_inv_rate];
+                    replicate_rows(&mut want, &msg);
+                    ntt.forward_transform_interleaved_from_layer(&mut want, lanes, log_inv_rate);
+
+                    let mut got = vec![F64::ZERO; msg_len << log_inv_rate];
+                    ntt.encode_interleaved(&mut got, &msg, lanes, log_inv_rate);
+
+                    assert_eq!(
+                        got, want,
+                        "fused != replicate+transform at log_d={log_d}, lanes={lanes}, rate={log_inv_rate}"
                     );
                 }
             }

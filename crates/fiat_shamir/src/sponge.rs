@@ -279,7 +279,7 @@ pub enum TraceOp {
         bits: u32,
         digest: F64,
     },
-    /// An opening hint consumed (the Ligerito hint channel).
+    /// An opening hint consumed (the WHIR hint channel).
     Opening,
 }
 

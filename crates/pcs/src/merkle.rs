@@ -174,7 +174,7 @@ fn hash_leaves_batched_uninit(
         128 => batched::<128>(platform, data, out),
         256 => batched::<256>(platform, data, out),
         512 => batched::<512>(platform, data, out),
-        // The Ligerito recursion levels commit F192 rows, so their leaves are
+        // The WHIR recursion levels commit F192 rows, so their leaves are
         // `num_interleaved * 24` bytes, a multiple of 64 but not a power of
         // two, which used to miss every batched arm and fall through to the
         // one-leaf-at-a-time path with no cross-leaf SIMD at all.

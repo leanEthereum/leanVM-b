@@ -1,4 +1,4 @@
-//! The grand product via GKR (§4.3): given leaves `v_0…v_{2^μ-1}`, prove the
+//! The grand product via GKR (§sec:gkr): given leaves `v_0…v_{2^μ-1}`, prove the
 //! root `P = ∏ v_k` of the product tree, reducing the root to one leaf evaluation
 //! `Ṽ_0(ζ)`. Two binary levels are contracted at a time: a radix-four layer has
 //! relation `V_i(x)=∏_{a,b∈{0,1}}V_{i-2}(a,b,x)`. Its normalized eq-trick

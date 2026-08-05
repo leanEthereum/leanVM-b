@@ -119,12 +119,13 @@ fn operation_json(operation: Op) -> String {
             format!(r#"    {{"op":"deref_128","alpha":{alpha},"beta":{beta},"gamma":{gamma}}}"#)
         }
         Op::Blake3 { ins, cv, out, metadata } => format!(
-            r#"    {{"op":"blake3","ins":[{},{},{},{}],"cv":{cv},"out":{out},"metadata":{}}}"#,
+            r#"    {{"op":"blake3","ins":[{},{},{},{}],"cv":{cv},"out":{out},"metadata":[{},{}]}}"#,
             ins[0],
             ins[1],
             ins[2],
             ins[3],
-            format!("[{},{}]", metadata[0].0, metadata[1].0),
+            metadata[0].0,
+            metadata[1].0,
         ),
     }
 }

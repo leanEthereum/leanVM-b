@@ -26,7 +26,7 @@ use primitives::{
     pretty_f64, pretty_integer,
 };
 
-/// Why the guest reads every `q_pkd` slot claim's instance point off `rho`: a
+/// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the zerocheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
@@ -449,7 +449,7 @@ fn aggregate_deferred_claims(
         })
         .collect();
     for (t, p) in points.iter().enumerate() {
-        let eqt = pcs::ligerito::build_eq_table_ext(p);
+        let eqt = pcs::whir::build_eq_table_ext(p);
         for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
             *w += gbc[t] * e;
         }
@@ -543,7 +543,7 @@ fn aggregate_deferred_claims(
             fold_lsb(m, r);
         }
     }
-    let eq_rstar = pcs::ligerito::build_eq_table_ext(&r_row);
+    let eq_rstar = pcs::whir::build_eq_table_ext(&r_row);
     let contract_rows = |m: &flock::r1cs::SparseBinaryMatrix| -> Vec<F192> {
         let mut out = vec![F192::ZERO; 1 << klog];
         for (i, row) in m.rows.iter().enumerate() {
@@ -579,8 +579,8 @@ fn aggregate_deferred_claims(
     // sanity for the GUEST's succinct terminal-weight formulas.
     #[cfg(debug_assertions)]
     {
-        let eqr = pcs::ligerito::build_eq_table_ext(&r_row[..6]);
-        let eqc = pcs::ligerito::build_eq_table_ext(&r_col[..6]);
+        let eqr = pcs::whir::build_eq_table_ext(&r_row[..6]);
+        let eqc = pcs::whir::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F192::ZERO, F192::ZERO);
         for (t, d) in subs.iter().enumerate() {
             let lam = primitives::multilinear::lagrange_weights_naive(6, d.skip_point);
@@ -661,8 +661,8 @@ fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(
     if claims.matrix_point.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
-    let eq_r = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[..klog]);
-    let eq_c = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[klog..]);
+    let eq_r = pcs::whir::build_eq_table_ext(&claims.matrix_point[..klog]);
+    let eq_c = pcs::whir::build_eq_table_ext(&claims.matrix_point[klog..]);
     let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
     if v_a != claims.matrix_a_value {
         return Err(RecursiveVerifyError::MatrixAClaim);
@@ -673,30 +673,29 @@ fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(
     Ok(())
 }
 
-/// The verifier-side Ligerito config for one committed size and rate, plus the
+/// The verifier-side WHIR config for one committed size and rate, plus the
 /// query packing derived from it. The hint builder needs it for the real
 /// opening and the placeholder map for every candidate size, so it lives here:
 /// a candidate whose shape differed from the real one would compile a guest
 /// that cannot open the proof it is handed.
-struct LigeritoShape {
-    config: pcs::ligerito::VerifierConfig,
-    levels: pcs::ligerito::LevelShapes,
+struct WhirShape {
+    config: pcs::whir::VerifierConfig,
+    levels: pcs::whir::LevelShapes,
     /// Merkle tree depth per level.
     depth: Vec<usize>,
     /// Query positions carried by one squeezed F192 word, per level.
     per_squeeze: Vec<usize>,
 }
 
-fn ligerito_shape(mu: usize, log_inv_rate: usize) -> LigeritoShape {
-    let config =
-        pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(mu + pcs::LOG_PACKING, log_inv_rate)
-            .and_then(|s| s.to_prover_verifier_configs())
-            .expect("stacked ligerito config")
-            .1;
+fn whir_shape(mu: usize, log_inv_rate: usize) -> WhirShape {
+    let config = pcs::whir::WhirSecurityConfig::derive_config_with_log_inv_rate(mu + pcs::LOG_PACKING, log_inv_rate)
+        .and_then(|s| s.to_prover_verifier_configs())
+        .expect("stacked whir config")
+        .1;
     let levels = config.level_shapes(mu);
     let depth: Vec<usize> = levels.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
     let per_squeeze = depth.iter().map(|&d| 192 / d).collect();
-    LigeritoShape {
+    WhirShape {
         config,
         levels,
         depth,
@@ -714,7 +713,7 @@ fn blake3_value_columns() -> Vec<usize> {
 enum ClaimSite {
     /// A framework bus block reads a committed column at this kappa.
     Framework { column: usize, kappa: usize },
-    /// A committed column of `table`; `is_virtual` marks the q_pkd-backed value
+    /// A committed column of `table`; `is_virtual` marks the q_flock-backed value
     /// columns, whose claim is a strided slot rather than a plain column.
     TableColumn {
         table: usize,
@@ -828,7 +827,9 @@ fn gen_verify(
                         }
                     }
                     Coord::Public(_) => nbcv += 1,
-                    Coord::Const(_) | Coord::Index => {}
+                    // A product coordinate lives only in a table block, which raises
+                    // no framework claim.
+                    Coord::Const(_) | Coord::Index | Coord::Prod(..) => {}
                 }
             }
         }
@@ -872,7 +873,7 @@ fn gen_verify(
     let ncl = nclaims + evtot_e + 1; // bus + constraint + the one base-memory PI claim
 
     // ---- the stacked opening: config + the opening summary ----
-    let stack = ligerito_shape(l.m, summary.log_inv_rate);
+    let stack = whir_shape(l.m, summary.log_inv_rate);
     let (vcfg, shapes) = (&stack.config, &stack.levels);
     let (nlev, r) = (shapes.levels, vcfg.level_steps);
     let klvl = &shapes.ks;
@@ -909,7 +910,7 @@ fn gen_verify(
     pinw *= lcz[pincol % 64];
     let matpart = lrun + pinw;
 
-    let lig_raw = summary.opening.lig.query_squeezes.clone();
+    let whir_raw = summary.opening.lig.query_squeezes.clone();
     // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
     // per the config schedule) then ONE query-phase
     // grind. The nonces themselves ride the shared stream now (raw words);
@@ -975,7 +976,7 @@ fn gen_verify(
         .collect();
     let log_mem = proof.stream[0].c0 as usize;
 
-    // ---- Phase E2 hints (the stacked Ligerito opening) ----
+    // ---- Phase E2 hints (the stacked WHIR opening) ----
     let lig = &proof.openings[0];
     let numinter: Vec<usize> = klvl.iter().map(|&k| 1usize << k).collect();
     let lenris: usize = klvl.iter().sum();
@@ -984,7 +985,7 @@ fn gen_verify(
         .map(|lv| {
             let d = depth[lv];
             let mut out = Vec::with_capacity(queries[lv]);
-            for v in &lig_raw[lv] {
+            for v in &whir_raw[lv] {
                 for j in 0..per[lv].min(queries[lv] - out.len()) {
                     let off = j * d;
                     let limbs = [v.c0, v.c1, v.c2];
@@ -1001,11 +1002,11 @@ fn gen_verify(
         .collect();
     let path_of = |lv: usize| -> &Vec<[u8; 32]> {
         if lv == 0 {
-            &lig.ligerito.initial_proof.merkle_proof
+            &lig.whir.initial_proof.merkle_proof
         } else if lv == r {
-            &lig.ligerito.final_proof.merkle_proof
+            &lig.whir.final_proof.merkle_proof
         } else {
-            &lig.ligerito.recursive_proofs[lv - 1].merkle_proof
+            &lig.whir.recursive_proofs[lv - 1].merkle_proof
         }
     };
     // Level 0 rows are embedded F64 values. For levels ≥1, each F192 word is
@@ -1014,10 +1015,10 @@ fn gen_verify(
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
         let path_exp = if lv == 0 {
-            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_base(
+            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_base(
                 shapes.block_len[lv],
                 &positions[lv],
-                &lig.ligerito.initial_proof.opened_rows,
+                &lig.whir.initial_proof.opened_rows,
                 numinter[lv],
                 path_of(lv),
             )
@@ -1030,11 +1031,11 @@ fn gen_verify(
             path_exp
         } else {
             let rows_ref = if lv == r {
-                &lig.ligerito.final_proof.opened_rows
+                &lig.whir.final_proof.opened_rows
             } else {
-                &lig.ligerito.recursive_proofs[lv - 1].opened_rows
+                &lig.whir.recursive_proofs[lv - 1].opened_rows
             };
-            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_ext(
+            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_ext(
                 shapes.block_len[lv],
                 &positions[lv],
                 rows_ref,
@@ -1094,8 +1095,8 @@ fn gen_verify(
     let hints = vec![
         ("stream".to_string(), {
             let mut v = proof.stream.clone();
-            // Append the Ligerito opening's msg-cursor sequence, in EXACT
-            // F64-verifier order (see ligerito::recursive_verifier_with_basis_
+            // Append the WHIR opening's msg-cursor sequence, in EXACT
+            // F64-verifier order (see whir::recursive_verifier_with_basis_
             // succinct): the interleaved raw grind nonces + observed scalars
             // (start_msg, per-fold [grind-nonce?, msg u0/u2], level roots as two
             // hash_to_scalars, query-grind nonce, every level's intro msg,
@@ -1103,7 +1104,7 @@ fn gen_verify(
             // The guest's open_stacked reads these via `msg_cursor = cursor`,
             // which sits at proof.stream.len() after the flock reduction — the
             // ring-switch is struct-observed and no longer advances the cursor.
-            let lp = &proof.openings[0].ligerito;
+            let lp = &proof.openings[0].whir;
             let fb = |lvl: usize| -> u32 { vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
             let (mut tx, mut fni, mut qi, mut rri, mut oi) = (0usize, 0usize, 0usize, 0usize, 0usize);
             let msg = |tx: &mut usize| -> [F192; 2] {
@@ -1170,22 +1171,22 @@ fn gen_verify(
             assert_eq!(
                 tx,
                 lp.sumcheck_transcript.len(),
-                "lig_msgs: sumcheck_transcript not fully consumed"
+                "whir_msgs: sumcheck_transcript not fully consumed"
             );
             assert_eq!(
                 fni,
                 lp.fold_grinding_nonces.len(),
-                "lig_msgs: fold nonces not fully consumed"
+                "whir_msgs: fold nonces not fully consumed"
             );
             assert_eq!(
                 rri,
                 lp.recursive_roots.len(),
-                "lig_msgs: recursive_roots not fully consumed"
+                "whir_msgs: recursive_roots not fully consumed"
             );
-            assert_eq!(oi, lp.ood_values.len(), "lig_msgs: OOD values not fully consumed");
+            assert_eq!(oi, lp.ood_values.len(), "whir_msgs: OOD values not fully consumed");
             assert!(
                 v.len() <= stream_cap,
-                "stream+lig_msgs {} exceeds stream_cap {stream_cap}",
+                "stream+whir_msgs {} exceeds stream_cap {stream_cap}",
                 v.len()
             );
             v.resize(stream_cap, F192::ZERO);
@@ -1385,6 +1386,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
     let (mut coord_fresh, mut coord_slot, mut coord_local) = (vec![], vec![], vec![]);
+    // A product coordinate's second local index; 0 for every other kind.
+    let mut coord_local_b: Vec<usize> = vec![];
     // A table's blocks raise no claim any more: the batched zerocheck settles them
     //, so only the framework blocks stream column values.
     let sch_pm = lean_vm::cpu::schema();
@@ -1402,6 +1405,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
                 // indexes them by global coord offset); only Col/GCol matter.
                 let (mut fresh, mut slot, mut local) = (0usize, 0usize, 0usize);
+                let mut local_b = 0usize;
+                if let Coord::Prod(i, j, _) = c {
+                    let t = owner.expect("a product coordinate lives only in a table block");
+                    local = *i - sch_pm.base[t];
+                    local_b = *j - sch_pm.base[t];
+                }
                 if let Coord::Col(i) | Coord::GCol(i, _) = c {
                     match owner {
                         // A table's coord: the zerocheck reads it off that table's
@@ -1423,6 +1432,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
                 coord_local.push(local);
+                coord_local_b.push(local_b);
                 let (t, v, f) = match c {
                     Coord::Const(v) => (0u64, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
                     Coord::Col(i) => (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
@@ -1434,6 +1444,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     Coord::Public(_) => {
                         nbcv += 1;
                         (4, F192::ZERO, F192::ZERO)
+                    }
+                    Coord::Prod(i, j, k) => {
+                        let gk = g_pow(*k as usize);
+                        (
+                            5,
+                            F192::new(gk.0, 0, 0),
+                            F192::new((gk * l.pad[*i] * l.pad[*j]).0, 0, 0),
+                        )
                     }
                 };
                 ct.push(t);
@@ -1457,8 +1475,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             n_committed += 1;
         }
     }
-    let qpkd_compact = compact_col_pm[lean_vm::cpu::QPKD];
-    assert_ne!(qpkd_compact, usize::MAX, "QPKD must be committed");
+    let qflock_compact = compact_col_pm[lean_vm::cpu::QFLOCK];
+    assert_ne!(qflock_compact, usize::MAX, "QFLOCK must be committed");
     let (mut cpbuf, mut cpcol, mut cpqslot): (Vec<usize>, Vec<usize>, Vec<usize>) = (vec![], vec![], vec![]);
     walk_claims(&l, kbc, |site| match site {
         ClaimSite::Framework { column, .. } => {
@@ -1471,7 +1489,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ClaimSite::TableColumn { column, is_virtual, .. } => {
             cpbuf.push(if is_virtual { 4 } else { 1 });
             cpcol.push(if is_virtual {
-                qpkd_compact
+                qflock_compact
             } else {
                 compact_col_pm[column]
             });
@@ -1489,7 +1507,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     });
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     assert_eq!(cpcol.len(), ncl, "every descriptor has a committed-column target");
-    assert_eq!(cpqslot.len(), ncl, "every descriptor has a fixed QPKD slot");
+    assert_eq!(cpqslot.len(), ncl, "every descriptor has a fixed QFLOCK slot");
 
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1564,6 +1582,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
     ps("COORD_COL_LOCAL", ints(&coord_local));
+    ps("COORD_COL_LOCAL_B", ints(&coord_local_b));
     ps("N_BUS_CLAIMS", nclaims.to_string());
     let idxc: Vec<u64> = (0..34)
         .map(|i| {
@@ -1650,13 +1669,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
-    // The q_pkd Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
-    // qpkd point-claim slot must use THIS, not LOG2_FIELD_BITS.
+    // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
+    // qflock point-claim slot must use THIS, not LOG2_FIELD_BITS.
     ps("SLOT_STRIDE_LOG", lean_vm::blake3_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
-        let shape = ligerito_shape(m, log_inv_rate);
+        let shape = whir_shape(m, log_inv_rate);
         let (vc, sh) = (&shape.config, &shape.levels);
         let (cn, cr) = (sh.levels, vc.level_steps);
         let (ck, cl, cyr) = (sh.ks.clone(), sh.log_msg_cols.clone(), sh.yr_log_n);
@@ -1674,7 +1693,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 };
                 bytes <= 1024 && whole_blocks
             }),
-            "recursive Ligerito guest supports whole-block Merkle rows of at most one 1024-byte BLAKE3 chunk"
+            "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE3 chunk"
         );
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
@@ -1701,7 +1720,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let mut c_svk = Vec::new();
         let mut c_ivk = Vec::new();
         for &cl_lv in cl.iter().take(cn) {
-            for &v in &pcs::ligerito::eval_sk_at_vks(cl_lv) {
+            for &v in &pcs::whir::eval_sk_at_vks(cl_lv) {
                 c_svk.push(F192::new(v.0, 0, 0));
                 c_ivk.push(if v == F64::ZERO {
                     F192::ZERO
@@ -1735,7 +1754,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     };
     let (minm, maxm) = (MU_MIN, MU_MAX);
-    let rates = pcs::ligerito::MIN_LOG_INV_RATE..=pcs::ligerito::MAX_LOG_INV_RATE;
+    let rates = pcs::whir::MIN_LOG_INV_RATE..=pcs::whir::MAX_LOG_INV_RATE;
     let cands: Vec<_> = rates
         .clone()
         .flat_map(|r| (minm..=maxm).map(move |m| oshape(m, r)))
@@ -1935,7 +1954,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_VANISH_INVS", flds(&ivk2));
     }
     let n_log_sizes = maxm - minm + 1;
-    let n_rates = pcs::ligerito::MAX_LOG_INV_RATE - pcs::ligerito::MIN_LOG_INV_RATE + 1;
+    let n_rates = pcs::whir::MAX_LOG_INV_RATE - pcs::whir::MIN_LOG_INV_RATE + 1;
     ps("LIG_N_LOG_SIZES", n_log_sizes.to_string());
     ps("LIG_N_RATES", n_rates.to_string());
     ps("LIG_N_CANDIDATES", (n_log_sizes * n_rates).to_string());
@@ -1947,9 +1966,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .iter()
         .flat_map(|&slot| (0..slot_stride_log).map(move |k| (slot >> k) & 1))
         .collect();
-    ps("CLAIM_QPKD_SLOT_BITS", ints(&cpqbits));
-    ps("QPKD_COMMITTED_COL", qpkd_compact.to_string());
-    ps("QPKD_VARS_CAP", (33 + slot_stride_log).to_string());
+    ps("CLAIM_QFLOCK_SLOT_BITS", ints(&cpqbits));
+    ps("QFLOCK_COMMITTED_COL", qflock_compact.to_string());
+    ps("QFLOCK_VARS_CAP", (33 + slot_stride_log).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
     // log2_ceil_usize(cols) selector bits. The defer region is 2*kbc points + sel
@@ -2070,8 +2089,14 @@ fn run_recursion_with_rates(
     }
     let trace_span =
         tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
-    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|| batch.prove(&mut guest));
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+    // Only the final measured pass of each stage is traced: the tree describes the
+    // proof the reported timings are about, instead of repeating itself per pass.
+    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
+        batch.prove(&mut guest)
+    });
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
         recursive_proof
             .verify(&batch.program0)
             .expect("complete recursive proof verifies");
@@ -2161,7 +2186,7 @@ fn recursion_soundness_binds() {
     assert!(
         batch.merged.iter().all(|(name, _)| !matches!(
             name.as_str(),
-            "claim_sel_bits" | "claim_yslot_bits" | "claim_qpkd_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
+            "claim_sel_bits" | "claim_yslot_bits" | "claim_qflock_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
         )),
         "claim and ring placement descriptors must be derived, not hinted"
     );

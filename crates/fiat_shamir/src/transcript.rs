@@ -15,7 +15,7 @@
 //!   binding it twice silently desynchronizes the two sides. A challenge is just
 //!   `sample()`d, bound to everything seeded/sent so far.
 //! - **`hint_*` (prover) / `next_*` (verifier)**: transport that is NOT absorbed
-//!   here, hash-bearing data (the Ligerito `openings`, like leanVM's
+//!   here, hash-bearing data (the WHIR `openings`, like leanVM's
 //!   `merkle_paths`) whose binding is the Merkle structure itself.
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
@@ -25,13 +25,13 @@
 use crate::sponge::{Sponge, TraceOp, trace};
 use primitives::field::{F64, F192};
 
-/// A complete proof: the scalar transcript stream plus the Ligerito opening hint
+/// A complete proof: the scalar transcript stream plus the WHIR opening hint
 /// channel: **two** channels, no bolted-on side field. The commitment root and
-/// every transmitted scalar ride `stream`; the hash-bearing Ligerito openings
+/// every transmitted scalar ride `stream`; the hash-bearing WHIR openings
 /// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its
 /// zerocheck / lincheck / ring-switch scalars are ordinary `add_scalar` words on
 /// `stream` (transmitted AND bound at their protocol points, like every other
-/// scalar) and its one Ligerito opening rides `openings`.
+/// scalar) and its one WHIR opening rides `openings`.
 ///
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
 /// an independent verifier process reconstructs it: everything lives in these two
@@ -42,7 +42,7 @@ pub struct Proof<O> {
     /// Every transmitted field scalar, in protocol order (plus flock's scalar
     /// sub-proof as trailing raw transport words).
     pub stream: Vec<F192>,
-    /// Ligerito openings (sumcheck messages + Merkle roots/paths), in order.
+    /// WHIR openings (sumcheck messages + Merkle roots/paths), in order.
     pub openings: Vec<O>,
 }
 
@@ -121,7 +121,7 @@ impl<O> ProverState<O> {
     }
 
     /// The raw sponge, for side-agnostic sub-steps shared by prover and
-    /// verifier (e.g. the Ligerito query sampler).
+    /// verifier (e.g. the WHIR query sampler).
     pub fn sponge_mut(&mut self) -> &mut Sponge {
         &mut self.sponge
     }

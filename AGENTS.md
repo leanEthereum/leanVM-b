@@ -4,7 +4,7 @@
 
 A minimal (zero-knowledge Virtual Machine, which is actually not ZK in the real sense, i.e. it's only a snark, not a zk-snark).
 
-- `doc/` is one LaTeX project (root `doc/main.tex`, build with `cd doc && latexmk -pdf main.tex`, output in the gitignored `doc/.build/`) describing the machine ISA and the snark that proves it. Sections live in `doc/body/`, ring switching and the PCS are annexes in `doc/annex/`, and every symbol is defined once in `doc/preamble/macros.tex`. If latexmk fails oddly (a bibtex error, or a missing `main.log`) right after inputs are renamed or `refs.bib` is edited, `rm -rf doc/.build` and rerun; it has not reproduced on unchanged inputs.
+- `doc/` is one LaTeX project (root `doc/main.tex`, build with `cd doc && latexmk -pdf main.tex`, output in the gitignored `doc/.build/`) describing the machine ISA and the snark that proves it. Sections live in `doc/body/`, numbered `01`..`10` plus the lettered annexes `a` (ring switching) and `b` (the PCS), and every symbol is defined once in `doc/preamble/macros.tex`. If latexmk fails oddly (a bibtex error, or a missing `main.log`) right after inputs are renamed or `refs.bib` is edited, `rm -rf doc/.build` and rerun; it has not reproduced on unchanged inputs. **Drafting one section:** each section file carries a `% !TeX root` comment pointing at its generated driver in `doc/drafts/`, so the LaTeX build key (`F5`, or the extension's `cmd+alt+b`) compiles only that section, numbered as in the full document and with cross-references and citations resolved against `.build/main.aux`; in `main.tex` the same key builds everything. Run `doc/make-drafts.sh` after adding, renaming or renumbering a section.
 - `crates/lean_compiler/zkDSL.md` documents the (pythonic) zkDSL (that compiles to the ISA that our VM runs, and that our snark proves).
 
 Primary goal:
@@ -21,7 +21,7 @@ Dependency order, leaves first:
 | `zk_alloc`        | proving arena (below)                                    |
 | `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, `bench` |
 | `fiat_shamir`     | VM-native sponge + prover/verifier transcript                          |
-| `pcs`             | additive NTT, Merkle, ring switch, stacked Ligerito                    |
+| `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
 | `flock`           | batched R1CS over GF(2) for BLAKE3: zerocheck + lincheck               |
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
@@ -32,16 +32,17 @@ Dependency order, leaves first:
 
 ## Building / Testing / Formatting
 
-- `.cargo/config.toml` pins `-C target-cpu=native`
+- `.cargo/config.toml` pins `-C target-cpu=native` and `-D warnings` for rustdoc
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
 
 ```bash
-cargo testall                     # = test --all --release; whole suite in seconds
-cargo clippy --release --all-targets
+cargo testall                     # whole suite in seconds
+cargo clippyall                   # clippy, -D warnings
+cargo docall                      # rustdoc, -D warnings
 cargo fmt --all                   # max_width = 120
 ```
 
-Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_ligerito_query_counts`, `encoding_grinding_bits`.
+Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_whir_query_counts`, `encoding_grinding_bits`.
 
 ## Benchmarking
 
@@ -112,5 +113,5 @@ The third is worth understanding before touching the verifier. `guests/recursion
 | `LEANVM_XMSS_N`, `LEANVM_HASH_N`, `LEANVM_HASH_UNROLL`                                                  | workload sizes in tests                          |
 | `FLOCK_N_LOG`, `FLOCK_PROVE_TRACE`, `FLOCK_ZC_TIMING`, `LINCHECK_TRACE`                                 | flock batch size, stage traces                   |
 | `PCS_LOG_N`, `PCS_LOG_INV_RATE`, `PCS_MIN_MU`, `PCS_SAMPLES`                                            | PCS throughput bench                             |
-| `LIGERITO_TRACE`, `LIGERITO_NUM_VARS`, `LIGERITO_LOG_INV_RATE`                                          | Ligerito NTT/Merkle split                        |
+| `WHIR_TRACE`, `WHIR_NUM_VARS`, `WHIR_LOG_INV_RATE`                                          | WHIR NTT/Merkle split                        |
 | `DBG_PROF{,_DUMP}`, `DBG_LOOPS`, `DBG_DISASM`, `DBG_LOWER`, `DBG_CSE`, `DBG_NO_CSE`, `DBG_PLACEHOLDERS` | compiler / guest-cycle attribution               |

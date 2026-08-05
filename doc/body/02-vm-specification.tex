@@ -1,3 +1,4 @@
+% !TeX root = ../drafts/02-vm-specification.tex
 \section{VM specification}\label{sec:vm}
 
 \paragraph{Field.}
@@ -9,7 +10,7 @@
 \]
 A \emph{memory word}, immediate, hash lane, memory address, program counter $\pc$, frame pointer $\fp$, and read counter is one element of $\K$. Base addition is bitwise \textsc{xor} and base multiplication is in $\K$. An extension value $v=v_0+v_1y+v_2y^2\in\E$ is stored as three consecutive $\K$ words; the explicit extension instructions reassemble those coordinates inside their constraints. Protocol randomness is sampled from $\E$ (\S\ref{sec:prelim}), while every physical committed column remains $\K$-valued.
 
-\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$.
+\paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the $\K$-element $\gen^{\,i}$.
 
 \paragraph{Memory.} Memory is read-only (equivalently: write-once): an array of $2^{h}$ cells, each holding one $64$-bit $\K$ word, addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$. The memory log-size $h$ depends on each VM execution, with the constraint $16\le h\le 32$. Each cell is set once; every access thereafter reads it. An extension value beginning at address $a$ therefore occupies $\mem[a],\mem[\gen a],\mem[\gen^2a]$.
 
@@ -17,7 +18,7 @@ A \emph{memory word}, immediate, hash lane, memory address, program counter $\pc
 
 \paragraph{Registers.} The machine state is two registers, the program counter $\pc$ and the frame pointer $\fp$, each a power of $\gen$. Every instruction except \texttt{JUMP} advances the state by $\pc\gets\gen\cdot\pc$ (fetching the next instruction) and leaves $\fp$ unchanged; \texttt{JUMP} may set both.
 
-\paragraph{Operands and addressing.} An operand is either an \emph{immediate}, a literal field element used as given, or an \emph{fp-relative reference}: an offset $j$ into the current frame, encoded as the $\gen$-power $o=\gen^{\,j}$. With the frame based at $\fp=\gen^{\mathrm{base}}$, the reference names the cell
+\paragraph{Operands and addressing.} An operand is either an \emph{immediate}, a literal $\E$-element used as given, or an \emph{fp-relative reference}: an offset $j$ into the current frame, encoded as the $\gen$-power $o=\gen^{\,j}$. With the frame based at $\fp=\gen^{\mathrm{base}}$, the reference names the cell
 \[
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
@@ -41,7 +42,7 @@ Instruction & Operands & Semantics\\
 \end{tabularx}
 \end{center}
 
-For \texttt{XOR\_192} and \texttt{MUL\_192}, each operand reference names its first coordinate. If $a_A=\fp o_A$, the other two addresses are the virtual columns $\gen a_A$ and $\gen^2a_A$; only $a_A$ is committed. The same convention applies to $B$ and $C$.
+For \texttt{XOR\_192} and \texttt{MUL\_192}, each operand reference names its first coordinate. If $a_A=\fp o_A$, the other two addresses are $\gen a_A$ and $\gen^2a_A$, reached for free by the $\gen^k$ factor on the bus product; no address is committed at all.
 
 \texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each 256-bit input is split into two independently addressed 128-bit chunks: $a$ begins at $\loc{o_{A,0}}$ and $\loc{o_{A,1}}$, and $b$ at $\loc{o_{B,0}}$ and $\loc{o_{B,1}}$. Each chunk holds two consecutive $\K$ words, so its second address is the virtual multiple by $\gen$. The chaining value and the digest are four consecutive words beginning at $\loc{o_{CV}}$ and $\loc{o_C}$, their remaining addresses the virtual multiples by $\gen,\gen^2,\gen^3$. Each row therefore commits six starting addresses and accesses sixteen memory words. The two metadata words carry the standard compression metadata in little-endian order,
 \[

@@ -17,7 +17,7 @@ use crate::tables::{
     self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
 };
 use crate::transcript::{ProverState, VerifierState};
-use crate::witness::{self, Column};
+use crate::witness;
 use primitives::field::{F64, F192, g_pow};
 
 mod execute;
@@ -187,7 +187,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F64; 4]) 
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
         || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
-        || ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).is_err()
+        || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
     }
@@ -260,7 +260,7 @@ impl Program {
     /// programs that never change the frame pointer and touch only the first
     /// `main_frame` memory cells (so the prover needs no nondeterministic frame
     /// allocation). `prog.len()` must be a power of two with a never-executed
-    /// sentinel in its last slot: the run halts on reaching `g^{len-1}` (§state).
+    /// sentinel in its last slot: the run halts on reaching `g^{len-1}` (§sec:state).
     #[cfg(test)]
     pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
         Self::assemble(prog, 0, 0, HashMap::new(), main_frame)
@@ -374,6 +374,7 @@ fn airs<'a>(
         .enumerate()
         .map(|(t, (&table, &tau))| {
             let bus: Vec<&leaf::BusForm> = (0..3).map(|s| &forms[s][t]).collect();
+            let bus_k = bus.clone();
             constraints::Air {
                 tau,
                 n_cols: table.n_committed_columns(),
@@ -381,6 +382,15 @@ fn airs<'a>(
                 eval: Box::new(move |p, vals| {
                     let air = table.eval_constraint(p, vals);
                     bus.iter()
+                        .zip(form_pows)
+                        .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
+                }),
+                // The same expression over K columns: the identity's K-only products
+                // stay 64-bit and each bus form becomes a mixed dot product.
+                eval_k: Box::new(move |p, vals| {
+                    let air = table.eval_constraint_k(p, vals);
+                    bus_k
+                        .iter()
                         .zip(form_pows)
                         .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
                 }),
@@ -414,7 +424,7 @@ pub fn eta_form_base() -> usize {
 /// The three shared form powers `η^{base}, η^{base+1}, η^{base+2}`.
 fn eta_form_pows(eta: F192) -> [F192; 3] {
     let base = eta_form_base();
-    let pows = constraints::eta_powers(eta, base + 3);
+    let pows = primitives::field::powers(eta, base + 3);
     [pows[base], pows[base + 1], pows[base + 2]]
 }
 
@@ -437,10 +447,10 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
     v
 }
 
-/// If `col` is a BLAKE3 **value** column (global index), its `q_pkd` packed slot.
+/// If `col` is a BLAKE3 **value** column (global index), its `q_flock` packed slot.
 /// These columns are virtual (uncommitted): their memory-bus evaluation claims
-/// are re-routed to `q_pkd` slot evaluations, which is the whole binding: the
-/// bus-tied value IS the proven `q_pkd` word, no separate check needed.
+/// are re-routed to `q_flock` slot evaluations, which is the whole binding: the
+/// bus-tied value IS the proven `q_flock` word, no separate check needed.
 fn blake3_value_slot(col: usize) -> Option<usize> {
     let base = schema().base[tables::BLAKE3_TABLE];
     tables::BLAKE3_VALUE_COLS
@@ -521,7 +531,7 @@ impl Stats {
 /// Fiat-Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> (Proof, Stats) {
-    ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
+    ::pcs::whir::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     // One proof is one arena phase: every transient buffer below is bump-allocated
     // and reclaimed wholesale here, rather than faulted in and unmapped again per
     // proof. Bound first so it outlives them; inert unless `init_prover` opted in.
@@ -543,15 +553,7 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     let cycles = exec.cycles;
     let mut w = crate::stage!("Build witness", || program.build(&exec));
     let counts = w.layout.row_counts;
-    // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
-    // value columns) carry data for the bus but are NOT committed, so exclude them.
-    let committed_size: usize = w
-        .cols
-        .iter()
-        .zip(&w.layout.placements)
-        .filter(|(_, p)| !p.is_virtual())
-        .map(|(c, _)| c.len())
-        .sum();
+    let committed_size = w.committed_size();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
     let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
@@ -560,55 +562,60 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     announce_public(&mut ps, w.log_mem, w.layout.row_counts, log_inv_rate);
     let committed = crate::stage!("Commit", || { pcs::commit(&mut ps, &w.q, log_inv_rate) });
 
-    // BLAKE3 to flock (§blake3_flock), single PCS: q_pkd is ALWAYS a column in
+    // BLAKE3 to flock (§blake3_flock), single PCS: q_flock is ALWAYS a column in
     // `w.q` (≥1 instance, a program with no BLAKE3 carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-BLAKE3 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
-    // Ligerito over this commitment (below). The input/output words bind via the
-    // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
+    // WHIR over this commitment (below). The input/output words bind via the
+    // memory bus (virtual value columns route to q_flock); the constant pins reuse a
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
-    let l = &w.layout;
-    let (owners, spans) = bus_wiring(program, l);
+    let (owners, spans) = bus_wiring(program, &w.layout);
     if std::env::var_os("LEANVM_PROFILE").is_some() {
-        dump_bus_layout(l, &owners);
+        dump_bus_layout(&w.layout, &owners);
     }
-    let bus = crate::stage!("Prove bus", || {
-        leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps)
-    });
-    let table_claims = crate::stage!("Prove constraints", || {
-        // One sumcheck for all seven tables (§constraints).
-        // MOVE the columns out: the batch folds them destructively and nothing
-        // reads them again (`prove_balance` is done, and `QPKD < N_SHARED` is never
-        // a table column), so copying them would be ~300 MB for nothing.
-        let mut cols: Vec<Vec<Column>> = spans
-            .iter()
-            .map(|&(base, n)| (0..n).map(|c| std::mem::take(&mut w.cols[base + c])).collect())
-            .collect();
-        // The eq point is the bus GKR's ζ, not a fresh one: that is what lets the
-        // batch settle the bus forms alongside the constraints.
-        let eta = ps.sample();
-        let form_pows = eta_form_pows(eta);
-        let sigma = sigmas(&bus.sigmas, form_pows);
-        constraints::prove(
-            &airs(&l.taus, &bus.forms, form_pows),
-            &mut cols,
-            eta,
-            &bus.point,
-            &sigma,
-            &mut ps,
-        )
-    });
+    // The columns are windows into `w.q`, so both stages read them in place: the
+    // batched zerocheck lifts each K-column into a fresh `E` copy on the round it
+    // joins and never writes the K-columns back.
+    let (bus, table_claims) = {
+        let l = &w.layout;
+        let cols = w.columns();
+        let bus = crate::stage!("Prove bus", || {
+            leaf::prove_balance(&l.push, &l.pull, &l.count, &cols, &owners, &spans, &mut ps)
+        });
+        let table_claims = crate::stage!("Prove constraints", || {
+            // One sumcheck for all seven tables (§constraints).
+            let table_cols: Vec<Vec<&[F64]>> = spans
+                .iter()
+                .map(|&(base, n)| (0..n).map(|c| cols[base + c]).collect())
+                .collect();
+            // The eq point is the bus GKR's ζ, not a fresh one: that is what lets the
+            // batch settle the bus forms alongside the constraints.
+            let eta = ps.sample();
+            let form_pows = eta_form_pows(eta);
+            let sigma = sigmas(&bus.sigmas, form_pows);
+            constraints::prove(
+                &airs(&l.taus, &bus.forms, form_pows),
+                &table_cols,
+                eta,
+                &bus.point,
+                &sigma,
+                &mut ps,
+            )
+        });
+        (bus, table_claims)
+    };
+    let l = &w.layout;
 
     let r_pi = [ps.sample(), ps.sample()];
     // The input/output words bind via the memory bus (value columns are virtual and
-    // route to q_pkd, see `slot_claims`); cv/counter/blen/flags are constants baked
+    // route to q_flock, see `slot_claims`); cv/counter/blen/flags are constants baked
     // into flock's per-block matrices, so no pin claims are needed.
     let slots = finish_claims(l, bus.claims, &table_claims, r_pi);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
-    // layouts retained from the fused q_pkd build pass; it returns the `(ab, c)`
-    // validity claims on the committed `q_pkd`, discharged by the PCS below in the
-    // SAME Ligerito as every leanVM point claim (the point claims become the
+    // layouts retained from the fused q_flock build pass; it returns the `(ab, c)`
+    // validity claims on the committed `q_flock`, discharged by the PCS below in the
+    // SAME WHIR as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
     let flock_reduction = w
         .flock_reduction
@@ -617,10 +624,8 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     let reduced = crate::stage!("Flock reduction", || { flock_reduction.prove(&mut ps) });
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
-    let offset = w.layout.placements[QPKD].offset;
-    let ring = crate::stage!("Package ring switch", || {
-        crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced)
-    });
+    let offset = w.layout.placements[QFLOCK].offset;
+    let ring = crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced);
     let mixed_open = crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     // flock's scalar sub-proof already rode the shared stream (add_scalar at its
     // protocol points); only the Merkle-bearing stacked opening needs the hint
@@ -654,8 +659,9 @@ fn finish_claims(
     slot_claims(l, &claims)
 }
 
-/// Bind the first four base-field memory words to the four-word public input at
-/// a random two-variable point, with all higher memory variables fixed to zero.
+/// The public-input binding (§sec:e2e-pi): bind the first four base-field memory
+/// words to the four-word public input at a random two-variable point, with all
+/// higher memory variables fixed to zero. The opening discharges the claim.
 /// `placements` and `pi` come from the prover's or verifier's layout, so both
 /// sides build byte-identical claims.
 fn bind_pi_claim(r: [F192; 2], placements: &[witness::Placement], pi: &[F64; 4]) -> ColumnClaim {
@@ -673,7 +679,7 @@ fn bind_pi_claim(r: [F192; 2], placements: &[witness::Placement], pi: &[F64; 4])
 /// Everything a recursion harness needs from an accepting verify run, named
 /// and typed: the deferred bytecode claims, the count-channel root, flock's
 /// reduction claims, and the stacked-opening summary (ring-switch challenges +
-/// Ligerito fold/query data). The sub-proof scalars themselves live on
+/// WHIR fold/query data). The sub-proof scalars themselves live on
 /// `proof.stream` at fixed offsets from its tail. Ordinary callers just
 /// `?`-discard it.
 pub struct VerifySummary {
@@ -697,7 +703,7 @@ pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Resu
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
     // BLAKE3 ↔ flock (single PCS): flock's R1CS validity and every leanVM point
-    // claim are verified together by ONE Ligerito opening at the end. The executed-
+    // claim are verified together by ONE WHIR opening at the end. The executed-
     // BLAKE3 count is public (announced); its flock sub-proof rides the shared
     // `stream`/`openings`, and presence is enforced by consumption below plus
     // `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice versa,
@@ -731,11 +737,11 @@ pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Resu
     let slots = finish_claims(&l, bus.claims, &table_claims, r_pi);
 
     // Replay flock's reduction straight off the shared stream (each scalar bound
-    // as it is read) to recover its `(ab, c)` validity claims on q_pkd, then
-    // verify them alongside every point claim in the ONE Ligerito opening
+    // as it is read) to recover its `(ab, c)` validity claims on q_flock, then
+    // verify them alongside every point claim in the ONE WHIR opening
     // (mirroring `prove`). `n_blocks = max(n_b3, 1)`, always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
-    let offset = l.placements[QPKD].offset;
+    let offset = l.placements[QFLOCK].offset;
     let replay = crate::blake3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake3)?;
     let open = vs.next_opening().map_err(Error::Transcript)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
@@ -756,8 +762,8 @@ pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Resu
 ///
 /// BLAKE3 value columns are virtual: they have no committed placement. A bus
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
-/// to the equal `q_pkd` slot evaluation: an ordinary claim on the committed
-/// `QPKD` column at the point freezing the low 8 coords to the slot's bits and
+/// to the equal `q_flock` slot evaluation: an ordinary claim on the committed
+/// `QFLOCK` column at the point freezing the low 8 coords to the slot's bits and
 /// the high coords to `r`. No downstream special-casing: it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
@@ -765,12 +771,12 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
         .iter()
         .map(|c| {
             // A virtual BLAKE3 value column (always virtual): its bus claim at
-            // instance point `c.point` is the q_pkd slot value, a boolean-selector
-            // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(8+n_log)
-            // dense QPKD block).
+            // instance point `c.point` is the q_flock slot value, a boolean-selector
+            // (strided) claim on QFLOCK, folded sparsely (2^n_log, not the 2^(8+n_log)
+            // dense QFLOCK block).
             if let Some(slot) = blake3_value_slot(c.col) {
                 return pcs::SlotClaim::Strided {
-                    offset: l.placements[QPKD].offset,
+                    offset: l.placements[QFLOCK].offset,
                     slot,
                     stride_log: crate::blake3_flock::SLOT_STRIDE_LOG,
                     point: c.point.clone(),
@@ -808,7 +814,7 @@ mod tests {
     /// cell), hash them into the output `c` (cells 12..16), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
     /// there. The flock validity sub-proof plus the memory / state / bytecode bus
-    /// interactions are verified end-to-end (the proof carries the Ligerito
+    /// interactions are verified end-to-end (the proof carries the WHIR
     /// opening they assert on).
     fn blake3_program(a: [F64; 4], b: [F64; 4]) -> Program {
         let mut prog: Vec<Op> = a
@@ -870,9 +876,9 @@ mod tests {
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[tables::BLAKE3_TABLE], 1, "one BLAKE3 row");
-        // flock's sub-proof rides the shared channels: its Ligerito is the proof's
+        // flock's sub-proof rides the shared channels: its WHIR is the proof's
         // one opening, its scalar reduction trails the `stream`.
-        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a Ligerito opening");
+        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a WHIR opening");
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
     }
 
@@ -924,7 +930,7 @@ mod tests {
         verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
     }
 
-    /// Tampering flock's validity sub-proof (its Ligerito, opened over the same
+    /// Tampering flock's validity sub-proof (its WHIR, opened over the same
     /// stacked commitment) must make verification fail.
     #[test]
     fn blake3_rejects_tampered_validity() {
@@ -938,8 +944,8 @@ mod tests {
 
         // The stacked opening is the proof's one hint; tamper a sumcheck
         // round message (the inner-product transcript); must be rejected.
-        let lig = proof.openings.last_mut().expect("stacked Ligerito opening");
-        lig.ligerito.sumcheck_transcript[0].u_0 += F192::ONE;
+        let lig = proof.openings.last_mut().expect("stacked WHIR opening");
+        lig.whir.sumcheck_transcript[0].u_0 += F192::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
             "tampered BLAKE3 validity proof must be rejected"
@@ -951,7 +957,7 @@ mod tests {
     /// the verifier's reduction/opening replay, so tampering a transport word
     /// diverges the recovered `(ab, c)` claims (or breaks decoding) and
     /// verification must reject. (Complements `blake3_rejects_tampered_validity`,
-    /// which tampers the Ligerito opening.)
+    /// which tampers the WHIR opening.)
     #[test]
     fn blake3_rejects_tampered_reduction() {
         let program = blake3_program(
@@ -975,7 +981,7 @@ mod tests {
     }
 
     /// A program with no BLAKE3 instructions still proves and verifies through the
-    /// unified path: `q_pkd` carries a single padding instance and the flock
+    /// unified path: `q_flock` carries a single padding instance and the flock
     /// sub-proof (over that padding) rides the shared channels like any BLAKE3
     /// program, and there is no separate no-BLAKE3 code path.
     #[test]
@@ -990,7 +996,7 @@ mod tests {
         let pi = pi();
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[tables::BLAKE3_TABLE], 0, "no real BLAKE3 rows");
-        // The proof still carries exactly one Ligerito opening (over the padding).
+        // The proof still carries exactly one WHIR opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
     }

@@ -13,7 +13,7 @@
 //!   PCS_LOG_N=24 PCS_LOG_INV_RATE=1 cargo test --release -p pcs --test pcs_throughput -- --ignored --nocapture
 //!
 //! Hierarchical tracing is enabled automatically (`RUST_LOG` adjusts its
-//! verbosity). Set `LIGERITO_TRACE=1` as well for the legacy textual per-phase
+//! verbosity). Set `WHIR_TRACE=1` as well for the legacy textual per-phase
 //! breakdown. Large `PCS_LOG_N` needs substantial memory (the RS codeword is
 //! `2^log_inv_rate`× the witness, and the open clones the basis table each
 //! sample).
@@ -22,7 +22,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use fiat_shamir::sponge::Sponge;
-use pcs::ligerito::{
+use pcs::whir::{
     build_eq_table_ext, commit, configs_for, configs_for_rate, inner_product_base_ext, recursive_prover_with_basis,
 };
 use primitives::{
@@ -56,7 +56,7 @@ fn pcs_throughput() {
         Some(r) => configs_for_rate(log_n, r),
         None => configs_for(log_n),
     }
-    .expect("Ligerito config feasible (try a larger PCS_LOG_N, e.g. >= 16)");
+    .expect("WHIR config feasible (try a larger PCS_LOG_N, e.g. >= 16)");
     let log_inv_rate = pc.log_inv_rates[0];
     let trace_span = tracing::info_span!("PCS throughput", log_n, log_inv_rate, samples).entered();
 
