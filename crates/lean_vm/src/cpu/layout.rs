@@ -105,9 +105,11 @@ fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Blo
             let next = group_of_source.len();
             let group = *group_of_source.entry(source).or_insert(next);
             for coord in &block.coords {
-                if let Coord::Col(col) | Coord::GCol(col, _) = coord
-                    && sources[*col].is_some()
-                {
+                let cols: &[usize] = match coord {
+                    Coord::Col(col) | Coord::GCol(col, _) => &[*col],
+                    _ => &[],
+                };
+                for col in cols.iter().filter(|&&col| sources[col].is_some()) {
                     signatures[*col].push(group);
                 }
             }
@@ -161,8 +163,12 @@ fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Blo
     blocks
 }
 
-/// The prover's witness bundle: the committed column values + their stacked
+/// The prover's witness bundle: the logical column values + the dense Jagged
 /// multilinear `q` + the public [`Layout`] (plus the sizes needed to announce it).
+///
+/// The columns keep their full padded length: the bus and the constraint batch
+/// read the logical columns, while `q` holds only each column's committed real
+/// prefix, offset by its pad value and row-major interleaved per Jagged block.
 pub(crate) struct Witness {
     pub(crate) cols: Vec<Column>,
     pub(crate) q: Vec<F64>,
@@ -697,12 +703,12 @@ mod tests {
         assert_eq!(l.pad[MFCNT], F64::ONE);
         assert_eq!(l.pad[BFCNT], F64::ONE);
 
-        let qpkd = l.placements[QFLOCK];
+        let qflock = l.placements[QFLOCK];
         assert_eq!(
-            qpkd.height,
-            1usize << qpkd.n_vars,
+            qflock.height,
+            1usize << qflock.n_vars,
             "q_flock remains a full aligned subcube"
         );
-        assert_eq!(qpkd.offset, 0);
+        assert_eq!(qflock.offset, 0);
     }
 }

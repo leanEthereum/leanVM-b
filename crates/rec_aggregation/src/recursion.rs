@@ -2232,10 +2232,7 @@ fn run_recursion_with_rates(
         prove_time.spread(),
         crate::report::peak_gib()
     );
-    println!(
-        "  complete recursive verify   : {} s",
-        pretty_f64(verify_time.mean())
-    );
+    println!("  complete recursive verify   : {} s", pretty_f64(verify_time.mean()));
     recursive_proof
 }
 
@@ -2301,7 +2298,12 @@ fn recursion_1to1_smoke() {
 /// outer proof, whose three reduced claims are then discharged natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[(8, 34816), (8, 34816)], lean_vm::pcs::LOG_INV_RATE, false, Plan::default());
+    run_recursion(
+        &[(8, 34816), (8, 34816)],
+        lean_vm::pcs::LOG_INV_RATE,
+        false,
+        Plan::default(),
+    );
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner

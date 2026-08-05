@@ -9,7 +9,6 @@
 //! extension operations reassemble three consecutive base words as one
 //! `E = F192` value inside their constraints.
 
-
 use crate::cpu::Trace;
 use crate::leaf::Coord::{self, Col, Const, GCol};
 use crate::witness::Column;

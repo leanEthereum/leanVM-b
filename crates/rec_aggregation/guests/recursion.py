@@ -139,7 +139,7 @@ SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the
 # The two ring-switch fronts (claim check, tensor transpose, and eval_rs_eq all
 # in-circuit), followed by the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
-# Phase E2: the Ligerito opening over the dense commitment, dispatched by
+# Phase E2: the WHIR opening over the dense commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
 # below carry one row per (rate, m), with rate in 1..=4 and m in the
 # supported committed-size interval,
@@ -2537,7 +2537,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         estore(gamma_pool * GEN ** (3 * j), weight)
         target = eadd(target, emul(weight, eload(opening_claim_values * GEN ** (3 * j))))
 
-    # ================= the Ligerito opening core (Jagged dense q) ===========
+    # ================= the WHIR opening core (Jagged dense q) ===========
 
     # Dispatch on m = max(log2_ceil(total real area), LIG_MIN_LOG_SIZE).
     size_sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN)

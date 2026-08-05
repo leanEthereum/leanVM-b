@@ -33,7 +33,7 @@
 //!
 //! label -> per ring-switched claim ([`super::ring_switch`]'s own label +
 //! `s_hat_v_i` observed + shared linear map sampled) -> gamma_rs (one per claim) ->
-//! per point claim (label + value observed) -> ONE gamma_pd -> Ligerito, with
+//! per point claim (label + value observed) -> ONE gamma_pd -> WHIR, with
 //! domain-separated labels for every phase.
 //!
 //! The point claims take consecutive POWERS of that single `gamma_pd`
@@ -61,18 +61,18 @@
 
 use crate::merkle::Hash;
 use fiat_shamir::sponge::Sponge;
-use primitives::field::{F64, F192};
+use primitives::field::{F64, F192, powers};
 use primitives::multilinear::eq_eval;
 use serde::{Deserialize, Serialize};
 use zk_alloc::ArenaVec;
 
-use super::whir::{
-    WhirProof, ProverData, build_eq_table_ext, build_eq_table_ext_parallel, recursive_prover_with_basis,
-    recursive_verifier_with_basis_succinct_with_squeezes,
-};
-use super::whir::{ProverConfig, VerifierConfig};
 use super::pack::PACKING_WIDTH;
 use super::ring_switch::{self, RingSwitchProof};
+use super::whir::{ProverConfig, VerifierConfig};
+use super::whir::{
+    ProverData, WhirProof, build_eq_table_ext, build_eq_table_ext_parallel, recursive_prover_with_basis,
+    recursive_verifier_with_basis_succinct_with_squeezes,
+};
 
 // ---------------------------------------------------------------------------
 // Claim types
@@ -165,10 +165,7 @@ struct JaggedClaimBatch {
 /// point. The public-input exception is routed through `Strided` upstream.
 fn geometric_claim_weights(claims: &[StackClaim], gamma: F192) -> (Vec<F192>, Vec<JaggedClaimBatch>) {
     let n = claims.len();
-    let mut powers = vec![F192::ONE; n];
-    for k in 1..n {
-        powers[k] = powers[k - 1] * gamma;
-    }
+    let powers = powers(gamma, n);
 
     let mut rank = vec![usize::MAX; n];
     let mut batches = Vec::new();
@@ -796,10 +793,10 @@ pub fn verify_opening_batch_mixed_whir_stacked(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::whir::{commit, configs_for, inner_product_base_ext};
-    use crate::whir::{default_config, default_verifier_config};
     use crate::pack::{LOG_PACKING, pack_witness};
     use crate::ring_switch::{claim_check, fold_1b_rows};
+    use crate::whir::{commit, configs_for, inner_product_base_ext};
+    use crate::whir::{default_config, default_verifier_config};
     use primitives::test_rng::Rng;
 
     /// Configs for a K-stack of `2^log_n` words: prefer the production
@@ -945,16 +942,8 @@ mod tests {
             claims: ring_claims.to_vec(),
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
-        verify_opening_batch_mixed_whir_stacked(
-            &mut ch,
-            &inst.vc,
-            inst.log_n,
-            &inst.root,
-            point_claims,
-            &ring,
-            proof,
-        )
-        .is_some()
+        verify_opening_batch_mixed_whir_stacked(&mut ch, &inst.vc, inst.log_n, &inst.root, point_claims, &ring, proof)
+            .is_some()
     }
 
     #[test]
@@ -1117,16 +1106,8 @@ mod tests {
         bad_ring.claims[0].value += F192::ONE;
         let mut ch = Sponge::new(DOMAIN, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(
-                &mut ch,
-                &vc,
-                log_n,
-                &cm.root,
-                &point_claims,
-                &bad_ring,
-                &proof,
-            )
-            .is_none(),
+            verify_opening_batch_mixed_whir_stacked(&mut ch, &vc, log_n, &cm.root, &point_claims, &bad_ring, &proof,)
+                .is_none(),
             "tampered crossing-regime ring value accepted"
         );
     }

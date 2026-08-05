@@ -139,7 +139,7 @@ pub fn placements_of_blocks(
     );
     // The dense cube must both hold the packed area and have enough coordinates
     // to embed every block's selector + logical row point. Floor additionally
-    // at the PCS minimum required by Ligerito's level ladder.
+    // at the PCS minimum required by WHIR's level ladder.
     let m = crate::log2_ceil_usize(off.max(1))
         .max(logical_m)
         .max(crate::pcs::MIN_MU);

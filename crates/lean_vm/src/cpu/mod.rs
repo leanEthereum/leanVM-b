@@ -477,7 +477,15 @@ pub struct Stats {
 impl Stats {
     /// Table names in `counts` order.
     pub const TABLES: [&'static str; tables::N_TABLES] = [
-        "XOR", "MUL", "ADD_EXT", "MUL_EXT", "SET", "DEREF", "DEREF_EXT", "JUMP", "BLAKE3",
+        "XOR",
+        "MUL",
+        "ADD_EXT",
+        "MUL_EXT",
+        "SET",
+        "DEREF",
+        "DEREF_EXT",
+        "JUMP",
+        "BLAKE3",
     ];
 
     /// One line of run sizes, every one a power of two: the per-table instruction

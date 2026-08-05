@@ -25,7 +25,7 @@ The arithmetization still regards a column as extended to its power-of-two logic
 
 The packed flock witness $q_\flock$ is the sole aligned exception. It occupies the offset-zero prefix so its ring-switch and fixed-slot claims retain their direct subcube formulas; all ordinary trace columns follow it in the tight jagged layout.
 
-\paragraph{Batching.} Every claim the protocol raises against a column is such a weighted sum $\sum_w W_j(w)\,\widetilde q(w)=c_j$. The verifier folds the $J$ of them with powers of one random $\lambda$ into one weight $W_\lambda=\sum_j\lambda^j W_j$ and target $C_\lambda=\sum_j\lambda^j c_j$, and the inner-product PCS (\S\ref{sec:rs-dense}) proves
+\paragraph{Batching.} Every claim the protocol raises against a column is such a weighted sum $\sum_w W_j(w)\,\widetilde q(w)=c_j$. The verifier folds the $J$ of them with powers of one random $\lambda$ into one weight $W_\lambda=\sum_j\lambda^j W_j$ and target $C_\lambda=\sum_j\lambda^j c_j$, and the inner-product PCS (Annex~\ref{annex:pcs}) proves
 \[
   \sum_{w\in\cube{M}} W_\lambda(w)\,\widetilde q(w)=C_\lambda.
 \]

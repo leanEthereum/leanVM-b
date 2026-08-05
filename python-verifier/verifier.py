@@ -3,7 +3,7 @@
 The command-line interface consumes a public statement JSON file and the
 project's bincode proof. No prover-side auxiliary data is accepted. The file is
 ordered along the verification path: arithmetic and hashing, proof transport,
-GKR/bus/AIR checks, VM layout, Ligerito, Flock, and final orchestration.
+GKR/bus/AIR checks, VM layout, WHIR, Flock, and final orchestration.
 """
 
 from __future__ import annotations
@@ -419,7 +419,7 @@ class SumcheckMessage:
 
 
 @dataclass(frozen=True)
-class LigeritoProofData:
+class WHIRProofData:
     initial: InitialOpening
     recursive_roots: tuple[bytes, ...]
     recursive: tuple[RecursiveOpening, ...]
@@ -430,11 +430,11 @@ class LigeritoProofData:
     fold_grinding_nonces: tuple[int, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> "LigeritoProofData":
+    def read(cls, reader: BinaryReader) -> "WHIRProofData":
         initial = InitialOpening.read(reader)
         roots = reader.hashes()
         count = reader.u64()
-        require(count <= 32, "too many Ligerito levels")
+        require(count <= 32, "too many WHIR levels")
         recursive = tuple(RecursiveOpening.read(reader) for _ in range(count))
         final = FinalOpening.read(reader)
         message_count = reader.u64()
@@ -451,22 +451,22 @@ class LigeritoProofData:
 
 
 @dataclass(frozen=True)
-class LigeritoOpening:
+class WHIROpening:
     ring_switches: tuple[tuple[F192, ...], ...]
     whir: LigeritoProofData
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> "LigeritoOpening":
+    def read(cls, reader: BinaryReader) -> "WHIROpening":
         count = reader.u64()
         require(count <= 16, "too many ring-switch proofs")
         ring_switches = tuple(tuple(reader.fields()) for _ in range(count))
-        return cls(ring_switches, LigeritoProofData.read(reader))
+        return cls(ring_switches, WHIRProofData.read(reader))
 
 
 @dataclass(frozen=True)
 class Proof:
     stream: tuple[F192, ...]
-    openings: tuple[LigeritoOpening, ...]
+    openings: tuple[WHIROpening, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> "Proof":
@@ -474,7 +474,7 @@ class Proof:
         stream = tuple(reader.fields())
         count = reader.u64()
         require(count <= 8, "too many PCS openings")
-        openings = tuple(LigeritoOpening.read(reader) for _ in range(count))
+        openings = tuple(WHIROpening.read(reader) for _ in range(count))
         reader.finish()
         return cls(stream, openings)
 
@@ -569,7 +569,7 @@ class Transcript:
         self.stream_offset += 1
         self.sponge.check_pow(encoded, bits)
 
-    def opening(self) -> LigeritoOpening:
+    def opening(self) -> WHIROpening:
         require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
         result = self.proof.openings[self.opening_offset]
         self.opening_offset += 1
@@ -1510,11 +1510,15 @@ def build_layout(
                 source = (2 + block.owner[0], 0)
             group = source_groups.setdefault(source, len(source_groups))
             for coordinate in block.coordinates:
-                column = coordinate.column
-                if column is None:
-                    column = coordinate.generator_column
-                if column is not None and kappas[column] is not None:
-                    signatures[column].append(group)
+                if coordinate.column is not None:
+                    columns = (coordinate.column,)
+                elif coordinate.generator_column is not None:
+                    columns = (coordinate.generator_column,)
+                else:
+                    columns = ()
+                for column in columns:
+                    if kappas[column] is not None:
+                        signatures[column].append(group)
 
     next_group = len(source_groups)
     for base, width in zip(BASES, WIDTHS):
@@ -1695,9 +1699,9 @@ def constraint_claims(layout: Layout, claims: Sequence[AirClaim]) -> list[Column
 def virtual_slot(column: int) -> int | None:
     return BLAKE3_SLOT_BY_VALUE.get(column - BASES[BLAKE3_TABLE])
 
-# Ligerito opening ------------------------------------------------------------
+# WHIR opening ------------------------------------------------------------
 
-# Ligerito ladder geometry. These mirror the Rust source of truth in
+# WHIR ladder geometry. These mirror the Rust source of truth in
 # crates/pcs/src/whir_config.rs and must stay in sync with it: the prover
 # derives its opening shape from those constants, so a mismatch here rejects a
 # valid proof. Change a factor there, change it here.
@@ -1709,7 +1713,7 @@ RESIDUAL_MAX_LOG = 5
 
 
 @dataclass(frozen=True)
-class LigeritoConfig:
+class WHIRConfig:
     rates: tuple[int, ...]
     folds: tuple[int, ...]
     queries: tuple[int, ...]
@@ -1761,13 +1765,13 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         candidate = (queries, ood)
         if best is None or queries < best[0]:
             best = candidate
-    require(best is not None, "no secure Ligerito configuration")
+    require(best is not None, "no secure WHIR configuration")
     return best
 
 
-def derive_config(log_n: int, initial_rate: int) -> LigeritoConfig:
+def derive_config(log_n: int, initial_rate: int) -> WHIRConfig:
     """Derive the production Johnson/OOD ladder used by the Rust PCS."""
-    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= initial_rate <= 4, "invalid Ligerito shape")
+    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= initial_rate <= 4, "invalid WHIR shape")
     folds = [INITIAL_FOLDING_FACTOR]
     message_logs = [log_n - INITIAL_FOLDING_FACTOR]
     rates = [initial_rate]
@@ -1782,12 +1786,12 @@ def derive_config(log_n: int, initial_rate: int) -> LigeritoConfig:
         message_logs.append(remaining)
         prior_fold = fold
         reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
-    require(len(folds) >= 2, "Ligerito requires at least two levels")
+    require(len(folds) >= 2, "WHIR requires at least two levels")
     parameters = tuple(
         _johnson_parameters(rate, columns, fold)
         for rate, columns, fold in zip(rates, message_logs, folds)
     )
-    return LigeritoConfig(
+    return WHIRConfig(
         tuple(rates),
         tuple(folds),
         tuple(value[0] for value in parameters),
@@ -1897,7 +1901,7 @@ def _enforced_sum(
     query_weights = build_eq(alpha)[: len(rows)]
     total = ZERO
     for query_weight, row in zip(query_weights, rows):
-        require(len(row) == len(lane_weights), "Ligerito row/fold width mismatch")
+        require(len(row) == len(lane_weights), "WHIR row/fold width mismatch")
         total += query_weight * sum(
             ((F192(x) if isinstance(x, int) else x) * y for x, y in zip(row, lane_weights)),
             ZERO,
@@ -1955,9 +1959,9 @@ def _induced_residual(
     return result
 
 
-def verify_ligerito(
+def verify_whir(
     transcript: Transcript,
-    proof: LigeritoProofData,
+    proof: WHIRProofData,
     log_n: int,
     initial_rate: int,
     target: F192,
@@ -1967,9 +1971,9 @@ def verify_ligerito(
     """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, initial_rate)
     levels = len(config.folds)
-    require(len(proof.recursive_roots) == levels - 1, "wrong Ligerito root count")
-    require(len(proof.recursive) == levels - 2, "wrong Ligerito recursive-proof count")
-    require(len(proof.grinding_nonces) == levels, "wrong Ligerito nonce count")
+    require(len(proof.recursive_roots) == levels - 1, "wrong WHIR root count")
+    require(len(proof.recursive) == levels - 2, "wrong WHIR recursive-proof count")
+    require(len(proof.grinding_nonces) == levels, "wrong WHIR nonce count")
 
     def observe_root(value: bytes) -> None:
         require(len(value) == 32, "invalid Merkle root")
@@ -1980,7 +1984,7 @@ def verify_ligerito(
 
     def next_quad(claim: F192) -> QuadraticMessage:
         nonlocal message_index
-        require(message_index < len(proof.sumcheck), "truncated Ligerito sumcheck")
+        require(message_index < len(proof.sumcheck), "truncated WHIR sumcheck")
         message = proof.sumcheck[message_index]
         message_index += 1
         transcript.observe(message.constant)
@@ -2004,7 +2008,7 @@ def verify_ligerito(
             bits = max(0, config.fold_grinding[level] - fold_index)
             if bits:
                 require(fold_nonce_index < len(proof.fold_grinding_nonces),
-                        "missing Ligerito fold nonce")
+                        "missing WHIR fold nonce")
                 transcript.sponge.check_pow(proof.fold_grinding_nonces[fold_nonce_index], bits)
                 fold_nonce_index += 1
             challenge = transcript.sample()
@@ -2017,7 +2021,7 @@ def verify_ligerito(
         final_level = level == levels - 1
         if final_level:
             residual = proof.final.residual
-            require(len(residual) == 1 << message_log, "wrong Ligerito residual length")
+            require(len(residual) == 1 << message_log, "wrong WHIR residual length")
             for value in residual:
                 transcript.observe(value)
         else:
@@ -2025,7 +2029,7 @@ def verify_ligerito(
             observe_root(next_root)
             for _ in range(config.ood_samples[level + 1]):
                 point = tuple(transcript.samples(message_log))
-                require(ood_index < len(proof.ood_values), "missing Ligerito OOD value")
+                require(ood_index < len(proof.ood_values), "missing WHIR OOD value")
                 value = proof.ood_values[ood_index]
                 ood_index += 1
                 transcript.observe(value)
@@ -2056,7 +2060,7 @@ def verify_ligerito(
                 level == 0,
             )
         except VerificationError as exc:
-            raise VerificationError(f"Ligerito level {level}: {exc}") from exc
+            raise VerificationError(f"WHIR level {level}: {exc}") from exc
         enforced = _enforced_sum(rows, level_folds, alpha)
 
         # Every commitment, including the last one, enters through an intro
@@ -2077,10 +2081,10 @@ def verify_ligerito(
                 tail_folds.append(challenge)
                 if round_index + 1 < message_log:
                     running_quad = next_quad(running_target)
-            require(message_index == len(proof.sumcheck), "trailing Ligerito sumcheck messages")
-            require(ood_index == len(proof.ood_values), "trailing Ligerito OOD values")
+            require(message_index == len(proof.sumcheck), "trailing WHIR sumcheck messages")
+            require(ood_index == len(proof.ood_values), "trailing WHIR OOD values")
             require(fold_nonce_index == len(proof.fold_grinding_nonces),
-                    "trailing Ligerito fold nonces")
+                    "trailing WHIR fold nonces")
             weight_values = list(evaluate_basis(list(folds) + tail_folds, 0))
             require(len(weight_values) == 1, "basis point evaluation has the wrong length")
             weight = weight_values[0]
@@ -2105,11 +2109,11 @@ def verify_ligerito(
                     scale *= ONE + expected + actual
                 weight += scale
             terminal = weight * mle_eval(residual, tail_folds)
-            require(terminal == running_target, "Ligerito terminal check failed")
+            require(terminal == running_target, "WHIR terminal check failed")
             return
         current_root = next_root
 
-    raise VerificationError("Ligerito verification ended without a terminal level")
+    raise VerificationError("WHIR verification ended without a terminal level")
 
 # Flock reduction -------------------------------------------------------------
 
@@ -2477,7 +2481,7 @@ def _ring_weight(
 
 def verify_stacked_opening(
     transcript: Transcript,
-    opening: LigeritoOpening,
+    opening: WHIROpening,
     root: bytes,
     stack_log: int,
     initial_rate: int,
@@ -2551,7 +2555,7 @@ def verify_stacked_opening(
             result.append(value)
         return result
 
-    verify_ligerito(
+    verify_whir(
         transcript,
         opening.whir,
         stack_log,
