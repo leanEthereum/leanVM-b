@@ -39,15 +39,32 @@ impl F64 {
         self * self
     }
 
-    /// Multiplicative inverse via Fermat: x^(2^64 − 2). `ZERO.inv() == ZERO`.
+    /// Multiplicative inverse: x^(2^64 − 2). `ZERO.inv() == ZERO`.
+    ///
+    /// Itoh-Tsujii: x^(2^64−2) = (x^(2^63−1))², and x^(2^k−1) is built by an
+    /// addition chain on `k`. Doubling `k` costs `k` squarings and one multiply,
+    /// incrementing it one of each, so the chain 1,2,3,6,7,14,15,30,31,62,63
+    /// spends 63 squarings and 10 multiplies where the plain Fermat ladder
+    /// spends 63 and 62.
     pub fn inv(self) -> Self {
-        let mut cur = self.square();
-        let mut r = cur;
-        for _ in 2..64 {
-            cur = cur.square();
-            r *= cur;
-        }
-        r
+        let sq = |mut v: Self, n: u32| {
+            for _ in 0..n {
+                v = v.square();
+            }
+            v
+        };
+        let t1 = self; // x^(2^1−1)
+        let t2 = sq(t1, 1) * t1;
+        let t3 = sq(t2, 1) * t1;
+        let t6 = sq(t3, 3) * t3;
+        let t7 = sq(t6, 1) * t1;
+        let t14 = sq(t7, 7) * t7;
+        let t15 = sq(t14, 1) * t1;
+        let t30 = sq(t15, 15) * t15;
+        let t31 = sq(t30, 1) * t1;
+        let t62 = sq(t31, 31) * t31;
+        let t63 = sq(t62, 1) * t1;
+        sq(t63, 1)
     }
 }
 

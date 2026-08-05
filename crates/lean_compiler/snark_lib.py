@@ -13,7 +13,7 @@ Ext = Any
 
 
 class _Elt:
-    """A 64-bit machine word in K = GF(2^64). Indices and addresses are powers of GEN —
+    """A 64-bit machine word in K = GF(2^64). Indices and addresses are powers of GEN,
     "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its successor.
     A heap pointer is K-valued too; `buf[i]` is the write-once cell at `buf * i`."""
 
@@ -191,7 +191,15 @@ def blake3(
 
     The digest, optional chaining value, and each message half occupy four
     consecutive 64-bit words. With no keywords this hashes exactly 64 bytes
-    using the standard IV and one-block-root metadata. The remaining keywords
-    expose the VM's structured BLAKE3 modes; they are compile-time values.
-    """
+    using the standard IV, counter zero, block length 64, and
+    CHUNK_START | CHUNK_END | ROOT. `cv` selects an explicit chaining value and
+    requires a structured-mode keyword such as `step` or `flags`; `counter`,
+    `block_len`, and `flags` set the compile-time metadata directly. In
+    inferred-flag mode, `step=0` marks CHUNK_START, while `end`, `root`, and
+    `parent` add the corresponding BLAKE3 flags. Bytes after `block_len` must be
+    zero-filled by the program.
+
+    Message, chaining-value, and output operands are size-4 StackBufs or
+    4-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
+    bridged through the stack, one DEREF per cell)."""
     _ = a, b, out, cv, counter, chunk, block_len, flags, step, end, root, parent

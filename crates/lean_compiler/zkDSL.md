@@ -1,15 +1,8 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: nine
-instruction-table families, including native 128-bit transfer and base-scalar
-extension-multiplication modes, with write-once 64-bit memory and all indices carried "in the
-exponent" as powers of a fixed generator. For the underlying VM and proving
-system, see [`misc/doc.tex`](../../misc/doc.tex).
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: nine instruction-table families (including native 128-bit transfer and base-scalar extension-multiplication modes) over write-once 64-bit memory, with all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/main.tex`](../../doc/main.tex).
 
-Source files use the `.py` extension and are **valid Python**: they import the
-[`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
-`HeapBuf`, `StackBuf`, the extension arithmetic helpers, and `blake3` so that editors, linters, and even
-`python3` itself accept the file. The compiler skips the import.
+Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, the extension-arithmetic helpers, and `blake3`, so editors and linters resolve the names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` → `lean_compiler::compile` → `lean_vm::cpu::prove` / `verify`.
 
@@ -23,31 +16,15 @@ The fields are
 
 `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and `E = K[y]/(y^3 + y + 1) = GF(2^192)`.
 
-Every machine **word** (a memory cell, immediate, hash lane, `JUMP` condition,
-address, program counter, frame pointer, or counter) is in the 64-bit base field
-`K`. An extension value in `E` is represented by a three-cell `StackBuf(3)` in
-tower-coordinate order `[c0, c1, c2]`; in heap memory it occupies three
-consecutive addresses `p`, `p·GEN`, and `p·GEN²`.
+Every machine **word** (a memory cell, immediate, hash lane, `JUMP` condition, address, program counter, frame pointer, or counter) is in the 64-bit base field `K`. An extension value in `E` is represented by a three-cell `StackBuf(3)` in tower-coordinate order `[c0, c1, c2]`; in heap memory it occupies three consecutive addresses `p`, `p·GEN`, and `p·GEN²`.
 
 - `+` is base-field addition = bitwise 64-bit **XOR**,
 - `*` is multiplication in `K`,
-- `/` is runtime base-field division, `a / b = a · b⁻¹`. It costs one `MUL`: the
-  compiler leaves the quotient cell unset and emits the checked relation
-  `quotient · b == a`, which witness generation back-solves. Division by zero is
-  undefined. This is distinct from `//`, compile-time integer floor division in
-  sizes and indices,
-- an integer literal supplies one raw 64-bit `K` word (larger value literals
-  are rejected). Thus `5` is the polynomial `1 + x²`, not integer arithmetic,
-- `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×`
-  (multiplicative order `2^64 − 1`),
-- `GEN ** e` is the compile-time constant `g^e ∈ K` (`**` takes base `GEN` and a
-  compile-time integer exponent, a literal, a constant, an `unroll` variable,
-  `len(...)`, or index arithmetic of those). So `buf[GEN ** i]` names heap cell
-  `i` directly inside an `unroll` loop, with no running-pointer cursor.
-- `base ** e` with a **non-`GEN`** base and a compile-time exponent `e` is
-  square-and-multiply: integer arithmetic in an index/bound position (`2 ** c`),
-  or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i`
-  raised to a stride to reach cell `i·stride`). The base may be runtime.
+- `/` is runtime base-field division, `a / b = a · b⁻¹`. It costs one `MUL`: the compiler leaves the quotient cell unset and emits the checked relation `quotient · b == a`, which witness generation back-solves. Division by zero is undefined. This is distinct from `//`, compile-time integer floor division in sizes and indices,
+- an integer literal supplies one raw 64-bit `K` word (larger value literals are rejected). Thus `5` is the polynomial `1 + x²`, not integer arithmetic,
+- `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×` (multiplicative order `2^64 − 1`),
+- `GEN ** e` is the compile-time constant `g^e ∈ K` (`**` takes base `GEN` and a compile-time integer exponent: a literal, a constant, an `unroll` variable, `len(...)`, or index arithmetic of those). So `buf[GEN ** i]` names heap cell `i` directly inside an `unroll` loop, with no running-pointer cursor.
+- `base ** e` with a **non-`GEN`** base and a compile-time exponent `e` is square-and-multiply: integer arithmetic in an index/bound position (`2 ** c`), or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i` raised to a stride to reach cell `i·stride`). The base may be runtime.
 
 A logical **index** `i` is carried as `g^i` in the 64-bit subfield (order `2^64 − 1`): incrementing is one multiplication by `GEN`, and memory/bytecode addresses are g-powers. This is the design idiom of the whole VM: loops, heap addressing, and range checks below all live in the exponent, in `K`.
 
@@ -70,20 +47,11 @@ def helper(a, b):         # other functions
 
 `import snark_lib` / `from snark_lib import *` are the only imports accepted; anything else is a compile error (no multi-file programs yet). Comments (`#`) and blank lines are free. Indentation is block structure, as in Python.
 
-Ordinary functions may return scalars, `HeapBuf` pointers, and `StackBuf`
-values, including mixtures in a tuple return. A returned `StackBuf(n)` has a
-compile-time-known size: its `n` cells cross consecutive return slots and the
-caller binds the result as a new `StackBuf(n)`. The call ABI coalesces each
-physically contiguous two- or three-cell run into one wide `DEREF` row rather
-than separate scalar transfers. A `HeapBuf` return is just its one-cell pointer; the
-allocation hint already ran where the buffer was created, so no size metadata
-needs to cross the call.
+Ordinary functions may return scalars, `HeapBuf` pointers, and `StackBuf` values, including mixtures in a tuple return. A returned `StackBuf(n)` has a compile-time-known size: its `n` cells cross consecutive return slots and the caller binds the result as a new `StackBuf(n)`. The call ABI coalesces each physically contiguous two- or three-cell run into one wide `DEREF` row rather than separate scalar transfers. A `HeapBuf` return is just its one-cell pointer; the allocation hint already ran where the buffer was created, so no size metadata needs to cross the call.
 
 ## Public input
 
-Memory cells `m[0]` through `m[3]` hold the four public-input `K` words. A
-program *publishes* results by asserting them against those cells through the
-write-once heap store (the pointer `g^0` addresses absolute memory):
+Memory cells `m[0]` through `m[3]` hold the four public-input `K` words. A program *publishes* results by asserting them against those cells through the write-once heap store (the pointer `g^0` addresses absolute memory):
 
 ```python
 p = GEN ** 0
@@ -93,10 +61,7 @@ p[GEN ** 2] = result_c
 p[GEN ** 3] = result_d
 ```
 
-Test programs under `tests/programs/` declare the public input they expect
-with a top-of-file annotation of four constant elements (or omit it to run with
-four zeros); the generic harness `tests/py_source.rs` proves and verifies every
-program in the directory:
+Test programs under `tests/programs/` declare the public input they expect with a top-of-file annotation of four constant elements (or omit it to run with four zeros); the generic harness `tests/py_source.rs` proves and verifies every program in the directory:
 
 ```python
 # public_input: GEN ** 89, GEN ** 89, 0, 0
@@ -163,14 +128,7 @@ z = f(p, q)               # expression position: first return
 f(p, q)                   # statement: returns discarded
 ```
 
-Functions may recurse. Each call gets a **fresh frame**: the frame pointer is
-prover-hinted (write-once memory makes an unconstrained cell prover-chosen),
-arguments and the return address/frame are stored with `DEREF`s, and control
-transfers with one `JUMP`. Three adjacent physical argument or return cells use
-one `DEREF_192`, so each such triple saves two rows relative to the scalar cost
-of about `n_arg_cells + n_return_cells + 4`. Every non-`main` function must end
-in an explicit `return`; in `main`, `return` is a no-op (main halts at a
-sentinel automatically).
+Functions may recurse. Each call gets a **fresh frame**: the frame pointer is prover-hinted (write-once memory makes an unconstrained cell prover-chosen), arguments and the return address/frame are stored with `DEREF`s, and control transfers with one `JUMP`. Three adjacent physical argument or return cells use one `DEREF_192`, so each such triple saves two rows against the scalar cost of about `n_arg_cells + n_return_cells + 4`. Every non-`main` function must end in an explicit `return`; in `main`, `return` is a no-op (main halts at a sentinel automatically).
 
 ### `Const` parameters
 
@@ -267,14 +225,7 @@ tg = [v, 7]           # list literal: an initialized StackBuf, one cell per elem
 
 A **list literal** `x = [a, b, …]` is an initialized `StackBuf`: it allocates one cell per element and writes each element in place, exactly the alloc-then-store idiom above, in one line. Elements are arbitrary runtime expressions; each write goes through the same stack-store path (so copies and constants defer as aliases, see "Variables"). It exists only as the RHS of a plain assignment inside a function; a *top-level* `NAME = [...]` is a constant array (see "Constant arrays"). The elements are lowered before the name rebinds, so `s = [s[1], s[0]]` swaps through the old binding.
 
-Stack indexes and slice bounds are **compile-time integers**, and index
-arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2`
-floor-divides, `k % 2` is a remainder, index space, not the field, where XOR
-is what `+` means and `//`/`%` have no meaning at all: using one as a runtime
-field value is a compile error). Bounds are checked at compile time. A `StackBuf`
-name is a run of cells, not a scalar: using it as one is an error. A
-`StackBuf(3)` can be captured by a runtime loop as an extension value; other
-sizes must remain frame-local or be carried through a `HeapBuf`.
+Stack indexes and slice bounds are **compile-time integers**, and index arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2` floor-divides, `k % 2` is a remainder: index space, not the field, where XOR is what `+` means and `//`/`%` have no meaning at all: using one as a runtime field value is a compile error). Bounds are checked at compile time. A `StackBuf` name is a run of cells, not a scalar: using it as one is an error. A `StackBuf(3)` can be captured by a runtime loop as an extension value; other sizes must remain frame-local or be carried through a `HeapBuf`.
 
 ### Slices: `buf[lo:hi]`
 
@@ -282,19 +233,10 @@ sizes must remain frame-local or be carried through a `HeapBuf`.
 `blake3` operands (4 cells) or extension operands (3 cells). Two
 forms:
 
-- **compile-time bounds** (integers, as for stack indexes): frame cells
-  `base+lo .. base+hi` of a `StackBuf`, or heap cells `ptr·g^lo .. ptr·g^hi`
-  of a `HeapBuf`, `hb[2:6]` is the four-word run `g²,…,g⁵`;
-- **runtime start, heap only**: `buf[i:i + 4]` with a runtime g-power index
-  `i` (e.g. a loop counter) names four cells starting at `buf·i`, one `MUL`
-  folds `i` into the pointer. The `hi` bound cannot be evaluated, only
-  shape-checked: it must be syntactically `lo + width`
-  (`buf[b * GEN ** 4 : b * GEN ** 4 + 4]` is fine). A `StackBuf` slice cannot
-  have a runtime start, frame offsets are baked into the bytecode operands.
+- **compile-time bounds** (integers, as for stack indexes): frame cells `base+lo .. base+hi` of a `StackBuf`, or heap cells `ptr·g^lo .. ptr·g^hi` of a `HeapBuf`, so `hb[2:6]` is the four-word run `g²,…,g⁵`;
+- **runtime start, heap only**: `buf[i:i + 4]` with a runtime g-power index `i` (e.g. a loop counter) names four cells starting at `buf·i`; one `MUL` folds `i` into the pointer. The `hi` bound cannot be evaluated, only shape-checked: it must be syntactically `lo + width` (`buf[b * GEN ** 4 : b * GEN ** 4 + 4]` is fine). A `StackBuf` slice cannot have a runtime start: frame offsets are baked into the bytecode operands.
 
-Note the two index spaces, consistent with plain indexing: compile-time
-bounds are integer exponents (`hb[2:6]` addresses logical cells 2 through 5),
-runtime starts are g-power elements.
+Note the two index spaces, consistent with plain indexing: compile-time bounds are integer exponents (`hb[2:6]` addresses logical cells 2 through 5), runtime starts are g-power elements.
 
 ## Control flow
 
@@ -317,12 +259,7 @@ for j in mul_range(1, n):   # bound its log first, or it never does
 
 A runtime bound is evaluated once at entry and threaded through the loop as an extra parameter (+1 argument per iteration call); entry itself is the same `!=` test, so a bound equal to the start runs zero iterations.
 
-Lowering: the body becomes a tail-recursive helper function whose exit test is
-folded into the recursion's `JUMP` condition: one call per iteration, no
-separate is-zero gadget. Free variables of the body are captured **by value**
-as extra parameters; a `HeapBuf` pointer threads through fine, and a
-three-cell extension `StackBuf(3)` uses the flattened `Ext` ABI. Other
-`StackBuf` sizes cannot be captured.
+Lowering: the body becomes a tail-recursive helper function whose exit test is folded into the recursion's `JUMP` condition: one call per iteration, no separate is-zero gadget. Free variables of the body are captured **by value** as extra parameters; a `HeapBuf` pointer threads through fine, and a three-cell extension `StackBuf(3)` uses the flattened `Ext` ABI. Other `StackBuf` sizes cannot be captured.
 
 ### `for i in unroll(a, b)`: compile-time unrolling
 
@@ -420,9 +357,7 @@ The two `DEREF` target cells are unconstrained touches, back-filled at the end o
 
 ## Extension-field arithmetic
 
-Extension values are exactly three consecutive stack words. The explicit
-operations write into an existing `StackBuf(3)` (or a three-word StackBuf
-slice):
+Extension values are exactly three consecutive stack words. The explicit operations write into an existing `StackBuf(3)` (or a three-word `StackBuf` slice):
 
 ```python
 a = [a0, a1, a2]
@@ -434,34 +369,18 @@ mul_192_base(a0, b, c) # c = embedded(a0) · b in E
 div_192(a, b, c)       # c · b = a; b must be nonzero
 ```
 
-`xor_192` and `mul_192` are one VM instruction each. `div_192` uses one
-checked `MUL_192`, with witness generation
-back-solving the quotient. The ordinary infix operators remain base-field
-operations and never implicitly reinterpret three words as an extension.
-`mul_192_base` uses the bytecode-bound scalar mode of the same multiplication
-table, avoiding a temporary `[a0, 0, 0]` and three base multiplications.
+`xor_192` and `mul_192` are one VM instruction each. `div_192` uses one checked `MUL_192`, with witness generation back-solving the quotient. The ordinary infix operators remain base-field operations and never implicitly reinterpret three words as an extension. `mul_192_base` uses the bytecode-bound scalar mode of the same multiplication table, avoiding a temporary `[a0, 0, 0]` and three base multiplications.
 
-Three consecutive extension words can be transferred between heap and stack in
-one instruction:
+Three consecutive extension words can be transferred between heap and stack in one instruction:
 
 ```python
 value = StackBuf(3)
 deref_192(ptr, value)  # load if the heap run is set; store if `value` is set
 ```
 
-`DEREF_192` has the same write-once equality semantics as cell-mode `DEREF`.
-It commits only the base heap and stack addresses; the other two addresses are
-their virtual `GEN` and `GEN ** 2` multiples.
-The compiler uses the table's bytecode-bound two-word mode (`DEREF_128`) for
-native 128-bit values and BLAKE3 chunks. Its third lane is a read-only padding
-access excluded from the equality relation.
+`DEREF_192` has the same write-once equality semantics as cell-mode `DEREF`. It commits only the base heap and stack addresses; the other two addresses are their virtual `GEN` and `GEN ** 2` multiples. The compiler uses the table's bytecode-bound two-word mode (`DEREF_128`) for native 128-bit values and BLAKE3 chunks; its third lane is a read-only padding access excluded from the equality relation.
 
-Normal functions declare extension parameters with `: Ext`; the call ABI
-flattens each one into three cells and transfers a contiguous run with one
-`DEREF_192`. The argument must be a `StackBuf(3)`, a three-cell StackBuf slice,
-a list literal of length three, or a helper call returning that shape. A
-returned extension is an ordinary compile-time-sized StackBuf return and uses
-the same packed transfer when its physical cells are contiguous.
+Normal functions declare extension parameters with `: Ext`; the call ABI flattens each one into three cells and transfers a contiguous run with one `DEREF_192`. The argument must be a `StackBuf(3)`, a three-cell `StackBuf` slice, a list literal of length three, or a helper call returning that shape. A returned extension is an ordinary compile-time-sized `StackBuf` return and uses the same packed transfer when its physical cells are contiguous.
 
 ## BLAKE3
 
@@ -473,25 +392,25 @@ blake3(h, hb[0:4], hb[4:8])        # HeapBuf slices, input and output
 blake3(hb[i:i + 4], h, hb[j:j + 4])  # runtime-indexed heap slices
 ```
 
-`blake3(a, b, out)` is a **statement**: it compresses the two 256-bit operands
-`a`, `b` (64 bytes) and writes the 32-byte digest into the 4-cell run `out`.
-Operands are size-4 `StackBuf`s or 4-cell slices; each cell is one F64 lane:
+The three positional arguments form a **statement**: one standard BLAKE3 compression consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 4-cell run `out`. With no keywords it computes the standard hash of exactly 64 bytes: standard IV, counter 0, block length 64, and `CHUNK_START | CHUNK_END | ROOT` flags.
 
-- **stack operands** are read/written in place, zero copies; a self-hash
-  `blake3(h, h, out)` aliases one four-word run into both inputs;
-- each input operand is addressed as two independent 128-bit chunks (two
-  pointers per 256-bit input). Within each chunk, the second word is the
-  virtual `GEN` successor. The output uses one pointer and virtual successors
-  `GEN`, `GEN²`, and `GEN³`. When a 256-bit operand is
-  *assembled* from values that live in different places, the idiom
-  `p = [t0, t1, t2, t3]; blake3(p, …)`, plain-copy aliases can be forwarded:
-  a pair of adjacent plain-copy aliases or two zeros is forwarded as one
-  128-bit chunk (see "Variables"), and `BLAKE3` reads it where it already is.
-  Mixed or non-adjacent pairs are materialized;
-- **heap slices** are still bridged through the stack for the *input pull* (the
-  operand's words come from the heap): +1 `DEREF` per heap cell, and the output,
-  if a heap slice, is stored after, write-once memory fills whichever side is
-  unset.
+Every compression also has a 256-bit chaining value and a compile-time metadata immediate. The optional keywords are:
+
+- `cv=<run>`: a consecutive 4-cell chaining value; omitting it selects the standard BLAKE3 IV. On each runtime path, a function emits four `SET`s at its first such hash only and reuses those cells thereafter. Supplying `cv=` also requires `step=`, `flags=`, or another structured metadata keyword so a chained block cannot accidentally inherit the one-shot root flags;
+- `counter=<u64>`: BLAKE3's chunk counter. `chunk=<u64>` names the same field for the chunk index; supplying both is an error;
+- `block_len=<0..64>`: the number of bytes in this message block;
+- `flags=<u32>`: an explicit flag word;
+- `step=<0..15>`: the block index within a 1024-byte chunk. In the inferred flag mode, `step=0` sets `CHUNK_START`; later steps do not;
+- `end=1`, `root=1`, `parent=1`: OR `CHUNK_END`, `ROOT`, or `PARENT` into the flags.
+
+The metadata rides two base-field words, `counter:u64` and `block_len:u32 | flags:u32`, and is part of the public bytecode. A partial final block must set its exact `block_len`, and every message byte after `block_len` must be zero: the compression circuit still sees the complete 64-byte block and does not enforce this padding rule. For a multi-block chunk, feed each result back with `cv=...`, set `step=0` on the first block, and set `end=1` on the last; set `root=1` only when that output is the hash root. Parent-node compressions use `parent=1`, the standard IV, and a 64-byte block containing the two child chaining values.
+
+Operands are size-4 `StackBuf`s or 4-cell slices, each cell one `K` lane:
+
+- **stack operands** are read/written in place, at zero copies; a self-hash `blake3(h, h, out)` aliases one four-word run into both inputs;
+- each input operand is addressed as **two independent 128-bit chunks** (two pointers per 256-bit input), and within a chunk the second word is the virtual `GEN` successor. The output uses one pointer with virtual successors `GEN`, `GEN²`, and `GEN³`. So when a 256-bit operand is *assembled* from values that live in different places (the idiom `p = [t0, t1, t2, t3]; blake3(p, …)`), the copies vanish: a pair of adjacent plain-copy aliases, or two zeros, is forwarded as one 128-bit chunk (see "Variables") and `BLAKE3` reads it where it already is. Mixed or non-adjacent pairs are materialized;
+- the chaining value has only one opcode offset and therefore must be consecutive. If a 4-cell `cv` resolves to two non-adjacent chunks, the compiler copies them into a fresh consecutive run;
+- **heap slices** are still bridged through the stack for the *input pull* (the operand's words come from the heap): +1 `DEREF_128` per 128-bit chunk, and the output, if a heap slice, is stored after: write-once memory fills whichever side is unset.
 
 If `out` was already written, the statement *asserts* the digest equals it, write-once turning the hash into a verification, which is exactly what a signature verifier wants.
 
@@ -508,9 +427,7 @@ assert log(sb[0]) < 8        # hinted values are UNCONSTRAINED: pin them down
 
 Prover-supplied data (leanVM's `hint_witness`): a stream is a sequence of **entries**, one slice of values per `hint_witness` call, and the same symbol may be hinted many times. Each call pops the stream's next entry (whose length must match the destination run) and writes it into `dest` through the hint mechanism, at **zero cycles**. The values are completely unconstrained; the program must constrain them itself (asserts, range checks, hashes): an unconstrained hint consumed by anything security-relevant is a critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a literal) work too.
 
-The prover supplies streams with `program.set_witness("name", entries)`
-(`Vec<Vec<F64>>`); test programs declare them as annotations, one line per
-entry, repeated lines with the same name are its successive entries:
+The prover supplies streams with `program.set_witness("name", entries)` (`Vec<Vec<F64>>`); test programs declare them as annotations, one line per entry, and repeated lines with the same name are its successive entries:
 
 ```python
 # witness r: GEN ** 5, 12
@@ -537,7 +454,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | `mul_192(a, b, out)` / `div_192(...)` | 1 `MUL_192` |
 | `mul_192_base(a, b, out)` | 1 scalar-mode `MUL_192` |
 | `deref_192(ptr, value)` | 1 `DEREF_192` for three consecutive heap words |
-| heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF`, free) |
+| heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF`, for free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
 | `assert a != b` | 3 on the accepting path (+ amortized branch setup) |
@@ -579,9 +496,4 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables; conditions other than field (in)equality; `match` defaults
-(`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as
-`mul_range` or range-check bounds (a substituted literal is a bit-pattern
-element, not the g-power a bound needs); runtime slice starts on a `StackBuf`;
-runtime range-check bounds (`assert log a < log b` with runtime `b`);
-precompiles beyond `BLAKE3`.
+Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime `b`); precompiles beyond `BLAKE3`.

@@ -22,20 +22,11 @@ cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3
 
 ```
 XMSS aggregation, 890 signatures
-  cycles (VM steps)           :      1,513,580 =   2^20.53   (   1,700.652 / XMSS)
-    XOR      instructions     :        125,491 =  2^16.937   (     141.001 / XMSS)
-    MUL      instructions     :        292,821 =   2^18.16   (     329.012 / XMSS)
-    SET      instructions     :        341,765 =  2^18.383   (     384.006 / XMSS)
-    DEREF    instructions     :        508,569 =  2^18.956   (     571.426 / XMSS)
-    JUMP     instructions     :        114,813 =  2^16.809   (     129.003 / XMSS)
-    BLAKE3   instructions     :        130,121 =  2^16.989   (     146.203 / XMSS)
-    PACK64X2 instructions     :              0 =         -   (           0 / XMSS)
-  committed witness size      : 2^26.364
-  data memory                 : 2^22 padded (2^21.701 used)
-  proof size                  : 359.617 KiB
-  proving (incl. witness gen) : 1.905 s
-  verifying                   : 0.00426 s
-  throughput                  : 467.072 XMSS/s
+  cycles (VM steps)           : 1,513,580 = 2^20.53   (1,700.652 / XMSS)
+    details                   : DEREF 2^18.956 (33.6%)  SET 2^18.383 (22.6%)  MUL 2^18.16 (19.3%)  BLAKE3 2^16.989 (8.6%)  XOR 2^16.937 (8.3%)  JUMP 2^16.809 (7.6%)  MEMORY 2^21.701  TOTAL_COMMITTED 2^26.364
+  proof size                  : 359.6 KiB
+  proving                     : 1.262 s ± 5.4%   705.247 XMSS/s      peak memory 21.288 GiB
+  verifying                   : 0.00314 s
 ```
 
 ### Recursion
@@ -81,14 +72,18 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
     PACK64X2 instructions        : 0
   committed witness size      : 2^25.658
   proof size                  : 336.4 KiB
-  proving (incl. witness gen) : 1.031051291s
-  verifying                   : 3.274ms
-  throughput                  : 1,972,760 cycles/s
+  proving                     : 0.647 s ± 4.9%   3,142,652 cycles/s      peak memory 11.52 GiB
+  verifying                   : 0.0023 s
 ```
 
 ## Security
 
-- 128-bit proven (LDR Johnson)
+- 128-bit (LDR Johnson, no proximity gaps conjecture)
+
+## Snark machinery
+
+- Binary field of 192 bits
+- PCS: [WHIR](https://eprint.iacr.org/2024/1586) (aka [Ligerito](https://eprint.iacr.org/2025/1187))
 
 ## Credits
 

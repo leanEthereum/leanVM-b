@@ -67,7 +67,10 @@ pub enum Op {
     },
     /// One standard BLAKE3 compression. Each independently addressed 128-bit
     /// message chunk occupies two consecutive base-field memory words. The
-    /// chaining value and output occupy four consecutive words each.
+    /// chaining value and output occupy four consecutive words each. The four
+    /// chunks are addressed independently, with no forced contiguity, so the
+    /// caller need not assemble its operands into adjacent runs. The
+    /// compression relation is proven by flock.
     Blake3 {
         ins: [u32; 4],
         cv: u32,

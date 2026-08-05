@@ -209,8 +209,8 @@ pub const BLAKE3_TABLE: usize = 8;
 /// BLAKE3 value-column LOCAL indices in canonical slot order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
 /// `blake3_flock::SLOTS`). These columns are
-/// VIRTUAL (never committed): `q_pkd` already holds those words at fixed packed
-/// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_pkd`
+/// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
+/// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
 /// (`slot_claims`) — the value the bus flushes IS the flock-proven word.
 pub const BLAKE3_VALUE_COLS: [usize; 18] = [
     blake3t::VA0,
@@ -786,12 +786,12 @@ impl Table for JumpTable {
 /// `ac`. Five start addresses are committed and bound to bytecode operands;
 /// the other seven addresses are virtual generator multiples. The compression
 /// relating output words to input words carries no table constraint here: it is
-/// proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
+/// proven by flock's R1CS validity via `q_flock` (§blake3_flock).
 ///
 /// The twelve flock words are twelve virtual value columns. They are listed in
 /// `n_committed_columns` (they need a local index for the flushes and are filled
 /// from the trace for the bus), but `cpu` treats them as VIRTUAL — not committed —
-/// and routes their bus claims to `q_pkd`, which already holds those words (see
+/// and routes their bus claims to `q_flock`, which already holds those words (see
 /// [`BLAKE3_VALUE_COLS`]).
 struct Blake3Table;
 
@@ -860,7 +860,7 @@ impl Table for Blake3Table {
         use blake3t::*;
         // The six address bindings a_X = fp·o_X (degree 2). The compression
         // carries no table constraint here: flock's R1CS validity proves it
-        // via q_pkd (§blake3_flock).
+        // via q_flock (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
         pows[0] * bind(AA0, OA0)
             + pows[1] * bind(AA1, OA1)

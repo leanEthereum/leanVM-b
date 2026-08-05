@@ -1,6 +1,7 @@
+% !TeX root = ../drafts/07-instruction-tables.tex
 \section{The instruction tables}\label{sec:tables}
 
-Each instruction has its own table.
+Each instruction has its own table. Throughout, an operand address is written $\loc{o}=\fp\cdot o$ and is a bus coordinate, not a column: no table commits one, and none constrains one, since a coordinate may be a product of two columns (\S\ref{sec:m3}).
 
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
@@ -58,9 +59,9 @@ Asserts $\loc{o}=k\in\K$, how a constant enters the read-only memory.
 
 \texttt{DEREF} follows a pointer and asserts the cell it points to. The row reads three cells:
 \begin{itemize}
-\item the \emph{pointer} $p$, at $a_1=\fp\cdot\alpha$;
-\item the \emph{target} $v_2$, at the dereferenced address $a_2=p\cdot\beta$;
-\item the \emph{local} value $v_3$, at $a_3=\fp\cdot\gamma$.
+\item the \emph{pointer} $p$, at $\fp\cdot\alpha$;
+\item the \emph{target} $v_2$, at the dereferenced address $p\cdot\beta$;
+\item the \emph{local} value $v_3$, at $\fp\cdot\gamma$.
 \end{itemize}
 The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$ (a virtual $\times\gen^{2}$ of $\pc$, \S\ref{sec:prelim}), or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$.
 \begin{itemize}
@@ -122,13 +123,13 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses a $64$-byte message block (four $128$-bit chunks) under a $32$-byte chaining value to the $32$-byte result at $c$. Each chunk occupies one $192$-bit cell through the canonical embedding with top limb zero. The message chunks are addressed independently at $a_i=\fp\cdot o_i$, while $a_V=\fp\cdot o_V$ is the base of the two consecutive chaining-value cells $a_V,\gen a_V$. The output similarly occupies $a_C=\fp\cdot o_C$ and $\gen a_C$, so each row accesses eight cells. The $128$-bit immediate $\mu$ packs the $64$-bit counter, $32$-bit block length, and $32$-bit flags required by the BLAKE3 specification; its two $\K$-lanes $\mu_0,\mu_1$ ride the bytecode tuple.
+Compresses two 256-bit operands to a 256-bit digest. Each input is two independently addressed 128-bit chunks, based at $\fp\cdot o_{A,i}$ and $\fp\cdot o_{B,i}$ for $i\in\{0,1\}$; the second word of each chunk is the same product times $\gen$. The four-word chaining value and output are based at $\fp\cdot o_{CV}$ and $\fp\cdot o_C$, their successors the same products times $\gen,\gen^2,\gen^3$. Each row therefore accesses sixteen memory cells while committing no address at all: the $\gen^k$ factor on a bus product reaches a run's $k$-th successor for free.
 
-Flock~\cite{flock-impl} proves the compression relation with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. $q_\pkd$ is the one aligned exception to the jagged layout (\S\ref{sec:stacking}): it occupies the offset-zero prefix, so its ring-switch and fixed-slot claims keep their direct subcube formulas. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
+Flock~\cite{flock-impl} proves the compression relation with a batched R1CS over a Boolean witness. The witness is packed into $q_\flock$, with $64$ bits per $\K$-element. $q_\flock$ is the one aligned exception to the jagged layout (\S\ref{sec:stacking}): it occupies the offset-zero prefix, so its ring-switch and fixed-slot claims keep their direct subcube formulas. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\flock$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
 
-The message, result, chaining value, and metadata are all contained in $q_\pkd$. Each $64$-bit flock word occupies one packed slot, and each BLAKE3 cell contributes its two low limbs; the top limb is canonically zero. The eighteen limbs $v_{A0},\dots,v_{C3},v_{V0},\dots,v_{V3},\mu_0,\mu_1$ therefore need no separate commitment: each is a strided point evaluation of $q_\pkd$. Linking these embedded values to the full memory interaction implicitly forces the top limb of every BLAKE3-accessed cell to zero, and the zero limbs are never committed. The generalized R1CS matrices take the chaining value, counter, block length, and flags as free input rows; the bus and bytecode interactions bind them.
+The eighteen $64$-bit words of $a,b,c,cv,m_0,m_1$ are contained in $q_\flock$ and need no separate value-column commitment. Each is a strided point evaluation of $q_\flock$ and is linked directly to its single-word memory interaction. The R1CS matrices prove the compression relation for those supplied values.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_{A,0},o_{A,1},o_{B,0},o_{B,1},o_{CV},o_C$ and metadata $m_0,m_1$; their six starting addresses; sixteen per-word memory counts; bytecode count $r_{\mathrm{bc}}$. The eighteen values live in $q_\pkd$.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_{A,0},o_{A,1},o_{B,0},o_{B,1},o_{CV},o_C$ and metadata $m_0,m_1$; their six starting addresses; sixteen per-word memory counts; bytecode count $r_{\mathrm{bc}}$. The eighteen values live in $q_\flock$.
 \item \textbf{Constraints:} the six address relations $a_X=\fp o_X$. Flock proves $c=\mathrm{BLAKE3}(a,b;cv,m_0,m_1)$.
 \item \textbf{Flushes:}
   \begin{itemize}

@@ -1,0 +1,4 @@
+$pdf_mode = 1;
+$aux_dir = $out_dir = '.build';
+$bibtex_use = 2;
+$ENV{'BIBINPUTS'} = '..:.:' . ($ENV{'BIBINPUTS'} // '');

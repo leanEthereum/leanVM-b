@@ -6,15 +6,10 @@
 //! the digest into the pre-allocated four-word run `out`.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake3_flock::{FLAGS, IV, compression, digest, metadata, warm_setup};
+use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{Op, prove, verify};
+use lean_vm::vmhash::compress;
 use primitives::field::F64;
-
-/// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
-/// laid little-endian into 64 bytes, hashed, digest split into four `F64` words.
-fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
-    digest(&compression(a, b, IV, metadata(0, 64, FLAGS)))
-}
 
 fn pi2(a: F64, b: F64) -> [F64; 4] {
     [a, b, F64::ZERO, F64::ZERO]

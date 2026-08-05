@@ -2,7 +2,7 @@
 //!
 //! This exercises only Flock's BLAKE3 path over `N` compressions: witness
 //! generation, F64 commitment, zerocheck + lincheck reduction, the stacked
-//! ring-switch/Ligerito opening, and verification. Circuit construction is
+//! ring-switch/WHIR opening, and verification. Circuit construction is
 //! outside the timed region, matching the VM's warmed-setup convention.
 //!
 //! Run with the XMSS-sized workload:
@@ -24,13 +24,13 @@ use flock::blake3::{
     min_n_blocks_log, pinned_compression,
 };
 use flock::proof::ZClaim;
-use pcs::ligerito::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
-use pcs::ligerito::{commit, configs_for};
 use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use pcs::stack_open::{
-    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_ligerito_stacked,
-    verify_opening_batch_mixed_ligerito_stacked,
+    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_whir_stacked,
+    verify_opening_batch_mixed_whir_stacked,
 };
+use pcs::whir::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
+use pcs::whir::{commit, configs_for};
 use primitives::bench::{Plan, Timing};
 use primitives::multilinear::lagrange_weights_naive;
 use primitives::{
@@ -53,10 +53,10 @@ fn flatten_packed(packed: &[F192]) -> Vec<F64> {
 /// Adapt one Flock evaluation claim to the 64-bit ring switch. Lincheck
 /// captures its 64 slices directly; the fused zerocheck kernel captures two
 /// banks around the first suffix coordinate, which are folded here.
-fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> RingSwitchClaim {
+fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> RingSwitchClaim {
     let mut suffix_point = z.point.x_inner_rest.clone();
     suffix_point.extend_from_slice(&z.point.x_outer);
-    assert_eq!(suffix_point.len(), qpkd_vars);
+    assert_eq!(suffix_point.len(), qflock_vars);
 
     let s_hat_v = captured.and_then(|s| match s.len() {
         PACKING_WIDTH => Some(s.to_vec()),
@@ -79,22 +79,22 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> RingSw
     }
 }
 
-fn prover_ring(reduced: &PackedWitnessClaims, qpkd_vars: usize) -> RingSwitchOpen {
+fn prover_ring(reduced: &PackedWitnessClaims, qflock_vars: usize) -> RingSwitchOpen {
     RingSwitchOpen {
         offset: 0,
-        qpkd_vars,
+        qflock_vars,
         claims: vec![
-            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qpkd_vars),
-            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qpkd_vars),
+            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
+            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
         ],
     }
 }
 
-fn verifier_ring(ab: &ZClaim, c: &ZClaim, qpkd_vars: usize) -> RingSwitchVerify {
+fn verifier_ring(ab: &ZClaim, c: &ZClaim, qflock_vars: usize) -> RingSwitchVerify {
     RingSwitchVerify {
         offset: 0,
-        qpkd_vars,
-        claims: vec![ring_claim(ab, None, qpkd_vars), ring_claim(c, None, qpkd_vars)],
+        qflock_vars,
+        claims: vec![ring_claim(ab, None, qflock_vars), ring_claim(c, None, qflock_vars)],
     }
 }
 
@@ -125,7 +125,7 @@ fn blake3_batch_prove_verify() {
     let setup = Blake3Setup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    let (prover_config, verifier_config) = configs_for(mu).expect("Ligerito configuration");
+    let (prover_config, verifier_config) = configs_for(mu).expect("WHIR configuration");
 
     // One full prove pass: witness generation, commitment, and the reduction +
     // stacked opening. Deterministic in `blocks`, so every pass is the same work
@@ -140,15 +140,15 @@ fn blake3_batch_prove_verify() {
         let _phase = zk_alloc::enter_phase();
         let t = Instant::now();
         let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
-        let q_pkd = flatten_packed(&z_packed);
+        let q_flock = flatten_packed(&z_packed);
         let witness_s = t.elapsed().as_secs_f64();
-        assert_eq!(q_pkd.len(), 1 << mu);
+        assert_eq!(q_flock.len(), 1 << mu);
 
         let mut ps = ProverState::<()>::new(b"flock-blake3-batch", &[]);
         let t_prove = Instant::now();
 
         let t = Instant::now();
-        let (commitment, prover_data) = commit(&q_pkd, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
+        let (commitment, prover_data) = commit(&q_flock, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
         ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
         let commit_s = t.elapsed().as_secs_f64();
 
@@ -157,7 +157,7 @@ fn blake3_batch_prove_verify() {
         drop((z_packed, a_packed, b_packed, z_lincheck));
         let ring = prover_ring(&reduced, mu);
         let opening =
-            open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
+            open_batch_mixed_whir_stacked(ps.sponge_mut(), &q_flock, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 
@@ -168,7 +168,7 @@ fn blake3_batch_prove_verify() {
     // the warmup, the cooldown, and the repetition for all four of them.
     let plan = Plan::from_env();
     let mut stages: [Timing; 4] = std::array::from_fn(|_| Timing::default());
-    let ((transcript, opening), _) = plan.warm_then_measure(|| {
+    let ((transcript, opening), _) = plan.warm_then_measure(|_final_pass| {
         let (out, secs) = prove_pass();
         for (timing, s) in stages.iter_mut().zip(secs) {
             timing.push(s);
@@ -184,12 +184,12 @@ fn blake3_batch_prove_verify() {
         kept
     });
 
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
         let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
         let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = verifier_ring(&replay.ab, &replay.c, mu);
-        verify_opening_batch_mixed_ligerito_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
+        verify_opening_batch_mixed_whir_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
             .expect("stacked PCS opening verifies");
         vs.finish().expect("transcript fully consumed");
     });

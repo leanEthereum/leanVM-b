@@ -111,7 +111,7 @@ pub fn prefix_indicator_eval(height: usize, point: &[F192]) -> F192 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::ligerito::build_eq_table_ext as build_eq;
+    use super::super::whir::build_eq_table_ext as build_eq;
     use super::super::ring_switch::inner_product_ext;
     use super::*;
 

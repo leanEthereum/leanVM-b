@@ -26,7 +26,7 @@ use primitives::{
     pretty_f64, pretty_integer,
 };
 
-/// Why the guest reads every `q_pkd` slot claim's instance point off `rho`: a
+/// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the zerocheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
@@ -433,7 +433,7 @@ fn aggregate_deferred_claims(
         })
         .collect();
     for (t, p) in points.iter().enumerate() {
-        let eqt = pcs::ligerito::build_eq_table_ext(p);
+        let eqt = pcs::whir::build_eq_table_ext(p);
         for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
             *w += gbc[t] * e;
         }
@@ -540,7 +540,7 @@ fn aggregate_deferred_claims(
             fold_lsb(m, r);
         }
     }
-    let eq_rstar = pcs::ligerito::build_eq_table_ext(&r_row);
+    let eq_rstar = pcs::whir::build_eq_table_ext(&r_row);
     let contract_rows = |m: &flock::r1cs::SparseBinaryMatrix| -> Vec<F192> {
         let mut out = vec![F192::ZERO; 1 << klog];
         for (i, row) in m.rows.iter().enumerate() {
@@ -582,8 +582,8 @@ fn aggregate_deferred_claims(
     assert_eq!(mrun, v_a * wa[0] + v_b * wb[0], "matrix sumcheck terminal");
     // sanity for the GUEST's succinct terminal-weight formulas.
     {
-        let eqr = pcs::ligerito::build_eq_table_ext(&r_row[..6]);
-        let eqc = pcs::ligerito::build_eq_table_ext(&r_col[..6]);
+        let eqr = pcs::whir::build_eq_table_ext(&r_row[..6]);
+        let eqc = pcs::whir::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F192::ZERO, F192::ZERO);
         for (t, d) in subs.iter().enumerate() {
             let lam = primitives::multilinear::lagrange_weights_naive(6, d.skip_point);
@@ -664,8 +664,8 @@ fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(
     if claims.matrix_point.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
-    let eq_r = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[..klog]);
-    let eq_c = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[klog..]);
+    let eq_r = pcs::whir::build_eq_table_ext(&claims.matrix_point[..klog]);
+    let eq_c = pcs::whir::build_eq_table_ext(&claims.matrix_point[klog..]);
     let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
     if v_a != claims.matrix_a_value {
         return Err(RecursiveVerifyError::MatrixAClaim);
@@ -746,7 +746,7 @@ fn gen_verify(
 
     // ---- the stacked opening: config + the opening summary ----
     let stack_mu = l.m;
-    let vcfg = pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(
+    let vcfg = pcs::whir_config::WhirSecurityConfig::derive_config_with_log_inv_rate(
         stack_mu + pcs::LOG_PACKING,
         summary.log_inv_rate,
     )
@@ -862,11 +862,11 @@ fn gen_verify(
         .collect();
     let path_of = |lv: usize| -> &Vec<[u8; 32]> {
         if lv == 0 {
-            &lig.ligerito.initial_proof.merkle_proof
+            &lig.whir.initial_proof.merkle_proof
         } else if lv == r {
-            &lig.ligerito.final_proof.merkle_proof
+            &lig.whir.final_proof.merkle_proof
         } else {
-            &lig.ligerito.recursive_proofs[lv - 1].merkle_proof
+            &lig.whir.recursive_proofs[lv - 1].merkle_proof
         }
     };
     // Level 0 rows are embedded F64 values. For levels ≥1, each F192 word is
@@ -875,10 +875,10 @@ fn gen_verify(
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
         let path_exp = if lv == 0 {
-            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_base(
+            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_base(
                 shapes.block_len[lv],
                 &positions[lv],
-                &lig.ligerito.initial_proof.opened_rows,
+                &lig.whir.initial_proof.opened_rows,
                 numinter[lv],
                 path_of(lv),
             )
@@ -891,11 +891,11 @@ fn gen_verify(
             path_exp
         } else {
             let rows_ref = if lv == r {
-                &lig.ligerito.final_proof.opened_rows
+                &lig.whir.final_proof.opened_rows
             } else {
-                &lig.ligerito.recursive_proofs[lv - 1].opened_rows
+                &lig.whir.recursive_proofs[lv - 1].opened_rows
             };
-            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_ext(
+            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_ext(
                 shapes.block_len[lv],
                 &positions[lv],
                 rows_ref,
@@ -917,7 +917,7 @@ fn gen_verify(
     let mut svk_flat = Vec::new();
     let mut ivk_flat = Vec::new();
     for &lmc_lv in lmc.iter().take(nlev) {
-        let s2 = pcs::ligerito::eval_sk_at_vks(lmc_lv);
+        let s2 = pcs::whir::eval_sk_at_vks(lmc_lv);
         for &v in &s2 {
             svk_flat.push(F192::new(v.0, 0, 0));
             ivk_flat.push(if v == F64::ZERO {
@@ -953,7 +953,7 @@ fn gen_verify(
             // The guest's open_stacked reads these via `msg_cursor = cursor`,
             // which sits at proof.stream.len() after the flock reduction — the
             // ring-switch is struct-observed and no longer advances the cursor.
-            let lp = &proof.openings[0].ligerito;
+            let lp = &proof.openings[0].whir;
             let fb = |lvl: usize| -> u32 { vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
             let (mut tx, mut fni, mut qi, mut rri, mut oi) = (0usize, 0usize, 0usize, 0usize, 0usize);
             let msg = |tx: &mut usize| -> [F192; 2] {
@@ -1058,7 +1058,7 @@ fn gen_verify(
         ("sub_pis".to_string(), pi.to_vec()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
-        // (zeta/rho) and low_len(+SLOT_STRIDE_LOG for qpkd) <= lenris.
+        // (zeta/rho) and low_len(+SLOT_STRIDE_LOG for qflock) <= lenris.
         // per-claim overlap count, for the exact length pin: nover = the
         // amount by which the claim's total vars exceed the fold rounds.
         // the pi claim's low dimension is min(log_mem, lenris); certify it as
@@ -1356,12 +1356,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         for c in 0..table.n_committed_columns() {
             let col = sch.base[t] + c;
             if l.placements[col].is_virtual() {
-                // buf 4 = q_pkd at the table's rho point (upstream has only
-                // buf 3, q_pkd at zeta); both route to a strided q_pkd slot
+                // buf 4 = q_flock at the table's rho point (upstream has only
+                // buf 3, q_flock at zeta); both route to a strided q_flock slot
                 // rather than a Jagged block.
                 cpbuf.push(4);
                 cpoff.push(0);
-                let placement = l.placements[lean_vm::cpu::QPKD];
+                let placement = l.placements[lean_vm::cpu::QFLOCK];
                 cpcol.push(block_index[&placement.offset]);
                 cpblockslot.push(placement.slot);
                 cpblocklog.push(placement.block_width_log);
@@ -1408,7 +1408,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
 
     // Match pcs::geometric_claim_weights structurally: complete row-major
-    // blocks get consecutive gamma exponents in selector order; q_pkd and
+    // blocks get consecutive gamma exponents in selector order; q_flock and
     // singleton blocks retain one rank each. The batch list contains only the
     // ordinary Jagged groups evaluated by the recursion terminal.
     let mut claim_gamma_rank = vec![usize::MAX; ncl];
@@ -1630,14 +1630,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
-    // The q_pkd Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
-    // qpkd point-claim slot must use THIS, not LOG2_FIELD_BITS.
+    // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
+    // qflock point-claim slot must use THIS, not LOG2_FIELD_BITS.
     ps("SLOT_STRIDE_LOG", lean_vm::blake3_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
         let vc =
-            pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(m + pcs::LOG_PACKING, log_inv_rate)
+            pcs::whir_config::WhirSecurityConfig::derive_config_with_log_inv_rate(m + pcs::LOG_PACKING, log_inv_rate)
                 .and_then(|s| s.to_prover_verifier_configs())
                 .expect("candidate ligerito config")
                 .1;
@@ -1686,7 +1686,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let mut c_svk = Vec::new();
         let mut c_ivk = Vec::new();
         for &cl_lv in cl.iter().take(cn) {
-            for &v in &pcs::ligerito::eval_sk_at_vks(cl_lv) {
+            for &v in &pcs::whir::eval_sk_at_vks(cl_lv) {
                 c_svk.push(F192::new(v.0, 0, 0));
                 c_ivk.push(if v == F64::ZERO {
                     F192::ZERO
@@ -1720,7 +1720,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     };
     let (minm, maxm) = mu_range(kbc);
-    let rates = pcs::ligerito::MIN_LOG_INV_RATE..=pcs::ligerito::MAX_LOG_INV_RATE;
+    let rates = pcs::whir::MIN_LOG_INV_RATE..=pcs::whir::MAX_LOG_INV_RATE;
     let cands: Vec<_> = rates
         .clone()
         .flat_map(|r| (minm..=maxm).map(move |m| oshape(m, r)))
@@ -2005,7 +2005,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_VANISH_INVS", flds(&ivk2));
     }
     let n_log_sizes = maxm - minm + 1;
-    let n_rates = pcs::ligerito::MAX_LOG_INV_RATE - pcs::ligerito::MIN_LOG_INV_RATE + 1;
+    let n_rates = pcs::whir::MAX_LOG_INV_RATE - pcs::whir::MIN_LOG_INV_RATE + 1;
     ps("LIG_N_LOG_SIZES", n_log_sizes.to_string());
     ps("LIG_N_RATES", n_rates.to_string());
     ps("LIG_N_CANDIDATES", (n_log_sizes * n_rates).to_string());
@@ -2013,7 +2013,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
     ps("CLAIM_POINT_OFF", ints(&cpoff));
     ps(
-        "QPKD_VARS_CAP",
+        "QFLOCK_VARS_CAP",
         (33 + lean_vm::blake3_flock::SLOT_STRIDE_LOG).to_string(),
     );
     ps(
@@ -2023,7 +2023,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             cppad.iter().map(|v| v.0.to_string()).collect::<Vec<_>>().join(", ")
         ),
     );
-    ps("CLAIM_QPKD_SLOT", ints(&cpslot));
+    ps("CLAIM_QFLOCK_SLOT", ints(&cpslot));
     ps("CLAIM_GAMMA_RANK", ints(&claim_gamma_rank));
     ps("N_CLAIM_ROWS", claim_row_rep.len().to_string());
     ps("CLAIM_ROW_REP", ints(&claim_row_rep));
@@ -2149,8 +2149,14 @@ fn run_recursion_with_rates(
     }
     let trace_span =
         tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
-    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|| batch.prove(&mut guest));
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+    // Only the final measured pass of each stage is traced (the harness passes
+    // `last`, so the earlier passes run quiet).
+    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
+        batch.prove(&mut guest)
+    });
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
         recursive_proof
             .verify(&batch.program0)
             .expect("complete recursive proof verifies")
@@ -2332,7 +2338,7 @@ fn recursion_soundness_binds() {
     assert!(
         batch.merged.iter().all(|(name, _)| !matches!(
             name.as_str(),
-            "claim_sel_bits" | "claim_yslot_bits" | "claim_qpkd_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
+            "claim_sel_bits" | "claim_yslot_bits" | "claim_qflock_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
         )),
         "claim and ring placement descriptors must be derived, not hinted"
     );

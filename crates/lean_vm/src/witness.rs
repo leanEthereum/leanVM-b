@@ -14,7 +14,7 @@ pub type Column = Vec<F64>;
 /// Where a column sits in the dense Jagged witness. A [`Placement::VIRTUAL`]
 /// column is NOT committed: it carries data for the bus, but its evaluation
 /// claims settle against some other committed column (e.g. the BLAKE3 value
-/// columns route to `q_pkd`).
+/// columns route to `q_flock`).
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
     /// Number of variables in the logical, zero-padded column MLE.
@@ -77,7 +77,7 @@ pub(crate) fn stack_offsets(kappas: &[Option<usize>]) -> (Vec<usize>, usize) {
 ///
 /// `heights[i]` is the real prefix length (at most `2^kappas[i]`). A `None`
 /// kappa marks a virtual column. `first`, when present, anchors one
-/// power-of-two column at offset zero; leanVM uses this for flock's `q_pkd`,
+/// power-of-two column at offset zero; leanVM uses this for flock's `q_flock`,
 /// whose existing ring-switch weight is then lifted unchanged while every
 /// ordinary column goes through the Jagged adapter.
 ///
@@ -148,7 +148,7 @@ pub fn placements_of_blocks(
 
 /// Copy the real column prefixes into the Jagged dense vector `q` of length
 /// `2^m` (zero in the final PCS pad). Virtual columns are skipped. Large
-/// columns (e.g. `q_pkd`, ~1 GB at scale) copy in parallel: the `2^m` stack is
+/// columns (e.g. `q_flock`, ~1 GB at scale) copy in parallel: the `2^m` stack is
 /// memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
 ///

@@ -120,7 +120,12 @@ fn operation_json(operation: Op) -> String {
         }
         Op::Blake3 { ins, cv, out, metadata } => format!(
             r#"    {{"op":"blake3","ins":[{},{},{},{}],"cv":{cv},"out":{out},"metadata":[{},{}]}}"#,
-            ins[0], ins[1], ins[2], ins[3], metadata[0].0, metadata[1].0,
+            ins[0],
+            ins[1],
+            ins[2],
+            ins[3],
+            metadata[0].0,
+            metadata[1].0,
         ),
     }
 }

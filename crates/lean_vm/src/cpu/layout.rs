@@ -13,14 +13,14 @@ use super::*;
 pub const MEM: usize = 0;
 pub const MFCNT: usize = 1;
 pub const BFCNT: usize = 2;
-// flock's packed BLAKE3 witness `q_pkd`, committed in the SAME stack as every
+// flock's packed BLAKE3 witness `q_flock`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-BLAKE3 program commits one full padding instance). It is the
 // SOLE copy of the input/output words: the VM's BLAKE3 value columns are
-// virtual and their memory-bus claims route to `q_pkd` slots (§blake3_flock), so
+// virtual and their memory-bus claims route to `q_flock` slots (§blake3_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked Ligerito opening over this commitment.
-pub const QPKD: usize = 3;
+pub const QFLOCK: usize = 3;
 pub const N_SHARED: usize = 4;
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
@@ -74,7 +74,7 @@ pub struct Layout {
     /// columns' log-sizes alone, so reconstructable by the verifier.
     pub placements: Vec<witness::Placement>,
     /// Power-of-two equal-height column blocks used by the row-major Jagged
-    /// commitment layout. Virtual columns are absent; q_pkd is a singleton.
+    /// commitment layout. Virtual columns are absent; q_flock is a singleton.
     pub jagged_blocks: Vec<Vec<usize>>,
     /// `log2` of the stacked witness length.
     pub m: usize,
@@ -132,9 +132,9 @@ fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Blo
         signature.dedup();
     }
 
-    let mut blocks = vec![vec![QPKD]];
+    let mut blocks = vec![vec![QFLOCK]];
     let committed: Vec<usize> = (0..sources.len())
-        .filter(|&col| col != QPKD && sources[col].is_some())
+        .filter(|&col| col != QFLOCK && sources[col].is_some())
         .collect();
     let mut consumed = vec![false; sources.len()];
     for &first in &committed {
@@ -179,7 +179,7 @@ pub(crate) struct Witness {
 /// kappa = value(source) + adj, where source 0 is the constant 0 (kappa =
 /// adj; used for the fixed-size columns and the program bytecode length,
 /// which the caller passes as `log_bytecode`), source 1 is log_mem, and
-/// source 2 + t is tau_t. `None` = virtual (never committed). [`col_kappas`]
+/// source 2 + t is tau_t. `None` = virtual (never committed). `col_kappas`
 /// is derived from this, so the two cannot drift apart.
 pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
@@ -187,18 +187,18 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k[MEM] = Some((1, 0));
     k[MFCNT] = Some((1, 0));
     k[BFCNT] = Some((0, log_bytecode));
-    // q_pkd is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
+    // q_flock is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
     // instance (a no-BLAKE3 program commits one padding instance), and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor), so this
-    // reproduces `qpkd_kappa`.
-    k[QPKD] = Some((2 + tables::BLAKE3_TABLE, flock::blake3::K_LOG - ::pcs::LOG_PACKING));
+    // reproduces `qflock_kappa`.
+    k[QFLOCK] = Some((2 + tables::BLAKE3_TABLE, flock::blake3::K_LOG - ::pcs::LOG_PACKING));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
     }
-    // The BLAKE3 value columns are ALWAYS virtual: `q_pkd` already holds those
+    // The BLAKE3 value columns are ALWAYS virtual: `q_flock` already holds those
     // words at fixed packed slots, so committing them again is redundant. Their
-    // memory-bus claims route directly to `q_pkd` slot evaluations (`slot_claims`),
+    // memory-bus claims route directly to `q_flock` slot evaluations (`slot_claims`),
     // which both binds them to the proven witness AND removes the separate
     // value-binding sub-protocol.
     let b3 = sch.base[tables::BLAKE3_TABLE];
@@ -228,7 +228,7 @@ pub fn col_height_sources(bytecode_used: usize) -> Vec<Option<ColHeightSource>> 
     out[MEM] = Some(ColHeightSource::MemoryRows);
     out[MFCNT] = Some(ColHeightSource::MemoryRows);
     out[BFCNT] = Some(ColHeightSource::BytecodeRows(bytecode_used));
-    out[QPKD] = Some(ColHeightSource::Pow2 {
+    out[QFLOCK] = Some(ColHeightSource::Pow2 {
         source: 2 + tables::BLAKE3_TABLE,
         adjustment: flock::blake3::K_LOG - ::pcs::LOG_PACKING,
     });
@@ -280,7 +280,7 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLE
 }
 
 /// Real Jagged heights for the committed columns. Memory, memory-finalize, and
-/// bytecode-finalize commit only their non-default prefixes; flock's `q_pkd`
+/// bytecode-finalize commit only their non-default prefixes; flock's `q_flock`
 /// remains a full aligned power-of-two column. Per-opcode columns commit only
 /// their executed-row prefix. Fixed suffixes are reconstructed publicly when
 /// claims are routed to the PCS.
@@ -295,7 +295,7 @@ fn col_heights(
     heights[MEM] = mem_used;
     heights[MFCNT] = mem_used;
     heights[BFCNT] = bytecode_used;
-    heights[QPKD] = 1usize << kappas[QPKD].expect("q_pkd is committed");
+    heights[QFLOCK] = 1usize << kappas[QFLOCK].expect("q_flock is committed");
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         for height in &mut heights[base..base + table.n_committed_columns()] {
@@ -344,8 +344,8 @@ pub fn layout(
     }
     // The BLAKE3 table is ALWAYS sized to flock's `2^n_log` instance count
     // (`max(count,1)`, lincheck floor ≥ 8) so its per-instance (virtual) value
-    // columns share `q_pkd`'s instance cube: a value-column bus claim at instance
-    // point `r` maps to a strided `q_pkd` slot claim at `r` (`slot_claims`).
+    // columns share `q_flock`'s instance cube: a value-column bus claim at instance
+    // point `r` maps to a strided `q_flock` slot claim at `r` (`slot_claims`).
     taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
@@ -526,7 +526,7 @@ pub fn layout(
     // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
     // compression): zero inputs but a NONZERO output `out_lo`. So the four output
     // value columns pad with that digest, not 0: the memory bus flushes these
-    // (virtual) columns, and their padding rows must equal `q_pkd`'s padding slots
+    // (virtual) columns, and their padding rows must equal `q_flock`'s padding slots
     // so the default-padding surplus divides out and the routed claims agree.
     // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
     // always present, all-padding for a no-BLAKE3 program).
@@ -544,7 +544,7 @@ pub fn layout(
 
     let kappas = col_kappas(log_mem, log_bytecode, taus);
     let heights = col_heights(mem_used, bytecode_used, row_counts, &kappas);
-    // q_pkd stays at offset zero so its ring-switched weight remains an aligned
+    // q_flock stays at offset zero so its ring-switched weight remains an aligned
     // subcube. Every ordinary column after it is packed tightly and opened via
     // the Jagged indicator.
     let jagged_blocks = jagged_column_blocks(log_bytecode, bytecode_used, [&push, &pull, &count_blocks]);
@@ -598,11 +598,11 @@ impl Program {
             cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
             cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
         });
-        // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:
+        // flock's packed BLAKE3 witness q_flock, ALWAYS committed in this same stack:
         // built from the executed BLAKE3 rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances, so a
         // program with no BLAKE3 still carries a single padding instance.
-        let (q_pkd, flock_reduction) = crate::stage!("Build q_pkd", || {
+        let (q_flock, flock_reduction) = crate::stage!("Build q_flock", || {
             let blocks: Vec<_> = tr
                 .blake3
                 .iter()
@@ -611,9 +611,9 @@ impl Program {
                     crate::blake3_flock::compression(r.va, r.vb, r.vcv, metadata)
                 })
                 .collect();
-            crate::blake3_flock::build_qpkd_prepared(&blocks)
+            crate::blake3_flock::build_qflock_prepared(&blocks)
         });
-        cols[QPKD] = q_pkd;
+        cols[QFLOCK] = q_flock;
 
         // The public layout (flush/count blocks, per-column padding, placements,
         // boundary, taus) is a pure function of the program + announced sizes +
@@ -697,11 +697,11 @@ mod tests {
         assert_eq!(l.pad[MFCNT], F64::ONE);
         assert_eq!(l.pad[BFCNT], F64::ONE);
 
-        let qpkd = l.placements[QPKD];
+        let qpkd = l.placements[QFLOCK];
         assert_eq!(
             qpkd.height,
             1usize << qpkd.n_vars,
-            "q_pkd remains a full aligned subcube"
+            "q_flock remains a full aligned subcube"
         );
         assert_eq!(qpkd.offset, 0);
     }

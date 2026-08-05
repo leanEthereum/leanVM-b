@@ -134,8 +134,8 @@ LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
-SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_pkd slot stride
-# Phase E: the dense Jagged opening, with q_pkd retained as an aligned prefix.
+SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_flock slot stride
+# Phase E: the dense Jagged opening, with q_flock retained as an aligned prefix.
 # The two ring-switch fronts (claim check, tensor transpose, and eval_rs_eq all
 # in-circuit), followed by the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
@@ -149,7 +149,7 @@ SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the
 # per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
 # vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
 # claim descriptors bake the point source, dense column, fixed padding, and
-# q_pkd slot. Runtime dimensions and intervals are derived from public counts.
+# q_flock slot. Runtime dimensions and intervals are derived from public counts.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
 LIG_N_LOG_SIZES = LIG_N_LOG_SIZES_PLACEHOLDER
@@ -209,18 +209,18 @@ LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
 LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
-# eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
+# eval_b claim descriptors (fixed parts) + the qflock capacity stride.
 # Which point buffer a pooled claim's x-part lives in (CLAIM_POINT_BUF codes):
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
-POINT_BUF_QPKD = 3
-POINT_BUF_QPKD_RHO = 4
+POINT_BUF_QFLOCK = 3
+POINT_BUF_QFLOCK_RHO = 4
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 # Dense Jagged column index and fixed public pad value for each pooled claim.
 CLAIM_PAD = CLAIM_PAD_PLACEHOLDER
-CLAIM_QPKD_SLOT = CLAIM_QPKD_SLOT_PLACEHOLDER
+CLAIM_QFLOCK_SLOT = CLAIM_QFLOCK_SLOT_PLACEHOLDER
 CLAIM_GAMMA_RANK = CLAIM_GAMMA_RANK_PLACEHOLDER
 N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
 CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
@@ -229,7 +229,7 @@ JAGGED_BATCH_ROW = JAGGED_BATCH_ROW_PLACEHOLDER
 JAGGED_BATCH_COL = JAGGED_BATCH_COL_PLACEHOLDER
 JAGGED_BATCH_LOG = JAGGED_BATCH_LOG_PLACEHOLDER
 JAGGED_BATCH_BASE = JAGGED_BATCH_BASE_PLACEHOLDER
-QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
+QFLOCK_VARS_CAP = QFLOCK_VARS_CAP_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: one bytecode point and the Flock
@@ -1022,8 +1022,8 @@ def jagged_eval_terminal(m_idx: Const, fold_challenges, tail_challenges, claim_r
     return GEN ** 0
 
 
-def eval_qpkd_claim_weight(point, point_len_g, slot: Const, fold_challenges, fold_cap_g, qpkdv_g):
-    # q_pkd is the aligned first block of the dense Jagged witness. Its low
+def eval_qflock_claim_weight(point, point_len_g, slot: Const, fold_challenges, fold_cap_g, qflockv_g):
+    # q_flock is the aligned first block of the dense Jagged witness. Its low
     # SLOT_STRIDE_LOG coordinates select the packed lane, the next coordinates
     # evaluate the table point, and every remaining committed coordinate is zero.
     weight = [1, 0, 0]
@@ -1039,9 +1039,9 @@ def eval_qpkd_claim_weight(point, point_len_g, slot: Const, fold_challenges, fol
         xk3 = xk ** 3
         factor = eadd([1, 0, 0], eadd(eload(point * xk3), eload(ris_point * xk3)))
         estore(point_chain * xk3 * GEN ** 3, emul(eload(point_chain * xk3), factor))
-    q_hi_len_g = fold_cap_g / qpkdv_g
+    q_hi_len_g = fold_cap_g / qflockv_g
     assert log(q_hi_len_g) < SIZE_BITS
-    q_hi = fold_challenges * qpkdv_g ** 3
+    q_hi = fold_challenges * qflockv_g ** 3
     selector_chain = HeapBuf(3 * (SIZE_BITS + 1))
     estore(selector_chain, eload(point_chain * point_len_g ** 3))
     for xk in mul_range(1, q_hi_len_g):
@@ -2152,7 +2152,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
     tau_blake3_g = dims_g[GEN ** (TABLE_BLAKE3 + 1)]  # the BLAKE3 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
-    # buffers are sized for that), and q_pkd's committed kappa =
+    # buffers are sized for that), and q_flock's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
     # dispatch bound caps tau well below any baked structure.
     # flock's sub-proof scalars are ordinary stream words (add_scalar on the
@@ -2319,7 +2319,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     rs_eq_vals = StackBuf(3 * 2)
     map_challenges = HeapBuf(3 * 6)
     c_table = HeapBuf(3 * BASE_FIELD_BITS)
-    z_vals = HeapBuf(3 * 2 * QPKD_VARS_CAP)
+    z_vals = HeapBuf(3 * 2 * QFLOCK_VARS_CAP)
     for rs in unroll(0, 2):
         # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
         # observe_ext_slice) before the claim check and the shared map.
@@ -2508,11 +2508,11 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
 
     # The committed real prefix is offset by its public pad value, so the
     # logical evaluation is the committed one plus that constant at every
-    # point. q_pkd is exempt because its pad is zero.
+    # point. q_flock is exempt because its pad is zero.
     opening_claim_values = HeapBuf(3 * N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            # q_pkd remains the one aligned subcube for flock's ring-switch and
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
+            # q_flock remains the one aligned subcube for flock's ring-switch and
             # its strided VM-value claims; it has no public padding correction.
             estore(opening_claim_values * GEN ** (3 * j), eload(claim_pool * GEN ** (3 * j)))
         else:
@@ -2564,14 +2564,14 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
 
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
+    # QFLOCK_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
     # certified announced log. Walk the runtime coordinates OUTSIDE and the
     # fixed FIELD_BITS Frobenius powers inside: each coordinate loads its
     # opening challenge once and evolves z by squaring in registers, advancing
     # one contiguous FIELD_BITS-wide product row. Same product formula as the
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
-    qpkdv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
+    qflockv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
     # Evaluate both transparent weights in lockstep, sharing c_k and the
     # verifier-point factor in every inner iteration.
     z_row_src_1 = z_vals * GEN ** 123
@@ -2580,7 +2580,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     for k in unroll(0, BASE_FIELD_BITS):
         estore(prod_chains_0 * GEN ** (3 * k), [1, 0, 0])
         estore(prod_chains_1 * GEN ** (3 * k), [1, 0, 0])
-    for x_round in mul_range(1, qpkdv_g):
+    for x_round in mul_range(1, qflockv_g):
         x_round3 = x_round ** 3
         zv_0 = eload(z_vals * x_round3)
         zv_1 = eload(z_row_src_1 * x_round3)
@@ -2596,8 +2596,8 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             if k != BASE_FIELD_BITS - 1:
                 zv_0 = emul(zv_0, zv_0)
                 zv_1 = emul(zv_1, zv_1)
-    prod_final_0 = prod_chains_0 * qpkdv_g ** (3 * BASE_FIELD_BITS)
-    prod_final_1 = prod_chains_1 * qpkdv_g ** (3 * BASE_FIELD_BITS)
+    prod_final_0 = prod_chains_0 * qflockv_g ** (3 * BASE_FIELD_BITS)
+    prod_final_1 = prod_chains_1 * qflockv_g ** (3 * BASE_FIELD_BITS)
     e_acc_0 = [0, 0, 0]
     e_acc_1 = [0, 0, 0]
     for k in unroll(0, BASE_FIELD_BITS):
@@ -2607,12 +2607,12 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         e_acc_1 = eadd(e_acc_1, emul(ck, eload(prod_final_1 * koff)))
     sstore(rs_eq_vals, 0, e_acc_0)
     sstore(rs_eq_vals, 1, e_acc_1)
-    # q_pkd is deliberately the first dense Jagged column, so its selector is
+    # q_flock is deliberately the first dense Jagged column, so its selector is
     # all-zero. Extend the ring-switch weight across the remaining ris coords.
     rs_weight = eadd(emul(gamma_ab, sload(rs_eq_vals, 0)), emul(gamma_c, sload(rs_eq_vals, 1)))
-    rs_len_g = fold_cap_g / qpkdv_g
+    rs_len_g = fold_cap_g / qflockv_g
     assert log(rs_len_g) < SIZE_BITS
-    ris_q = fold_challenges * qpkdv_g ** 3
+    ris_q = fold_challenges * qflockv_g ** 3
     rsw_chain = HeapBuf(3 * (SIZE_BITS + 1))
     estore(rsw_chain, rs_weight)
     for xk in mul_range(1, rs_len_g):
@@ -2620,21 +2620,21 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
         estore(rsw_chain * xk3 * GEN ** 3, emul(eload(rsw_chain * xk3), eadd([1, 0, 0], eload(ris_q * xk3))))
     rs_weight = eload(rsw_chain * rs_len_g ** 3)
 
-    # The VM value claims routed into fixed q_pkd slots use the same aligned
+    # The VM value claims routed into fixed q_flock slots use the same aligned
     # offset-zero subcube. Framework claims use zeta; the BLAKE3 columns absorbed
     # by the shared AIR sumcheck use rho. Both have residual-y selector zero.
-    qpkd_claim_weight = [0, 0, 0]
+    qflock_claim_weight = [0, 0, 0]
     for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
             cplen_g = claim_cplen_g[GEN ** j]
-            weight = eval_qpkd_claim_weight(zeta, cplen_g, CLAIM_QPKD_SLOT[j], fold_challenges, fold_cap_g, qpkdv_g)
-            qpkd_claim_weight = eadd(qpkd_claim_weight, emul(eload(gamma_pool * GEN ** (3 * j)), weight))
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD_RHO:
+            weight = eval_qflock_claim_weight(zeta, cplen_g, CLAIM_QFLOCK_SLOT[j], fold_challenges, fold_cap_g, qflockv_g)
+            qflock_claim_weight = eadd(qflock_claim_weight, emul(eload(gamma_pool * GEN ** (3 * j)), weight))
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
             cplen_g = claim_cplen_g[GEN ** j]
-            weight = eval_qpkd_claim_weight(rho, cplen_g, CLAIM_QPKD_SLOT[j], fold_challenges, fold_cap_g, qpkdv_g)
-            qpkd_claim_weight = eadd(qpkd_claim_weight, emul(eload(gamma_pool * GEN ** (3 * j)), weight))
+            weight = eval_qflock_claim_weight(rho, cplen_g, CLAIM_QFLOCK_SLOT[j], fold_challenges, fold_cap_g, qflockv_g)
+            qflock_claim_weight = eadd(qflock_claim_weight, emul(eload(gamma_pool * GEN ** (3 * j)), weight))
 
-    # Evaluate the dense Jagged weights at the tail-sumcheck point. q_pkd is
+    # Evaluate the dense Jagged weights at the tail-sumcheck point. q_flock is
     # the aligned offset-zero subcube, so its residual selector is all zero.
     jagged_out = HeapBuf(3)
     jagged_dispatch = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_eval_terminal(m_idx, fold_challenges, tail_challenges, claim_rows, col_bound_bits, gamma, gamma_powers, jagged_out))
@@ -2643,7 +2643,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     tail_zero_eq = [1, 0, 0]
     for k in unroll(0, YR_LOG_CAP):
         tail_zero_eq = emul(tail_zero_eq, eadd([1, 0, 0], eload(tail_challenges * GEN ** (3 * k))))
-    inner_sum = eadd(eadd(inner_total, jagged_sum), emul(eadd(rs_weight, qpkd_claim_weight), tail_zero_eq))
+    inner_sum = eadd(eadd(inner_total, jagged_sum), emul(eadd(rs_weight, qflock_claim_weight), tail_zero_eq))
     ext_assert_eq(emul(inner_sum, yr_at_tail), sumcheck_target)
 
 

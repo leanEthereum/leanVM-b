@@ -22,11 +22,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # The flags live in .cargo/config.toml's aliases
       - name: Test
-        run: cargo test --release --workspace
+        run: cargo testall
       - name: Clippy
-        run: cargo clippy --release --workspace --all-targets -- -D warnings
+        run: cargo clippyall
       - name: Rustdoc
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --release --workspace --no-deps
+        run: cargo docall

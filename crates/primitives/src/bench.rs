@@ -206,12 +206,17 @@ impl Plan {
 
     /// Run `f` once untimed to warm up, then `self.repeat` measured passes,
     /// keeping the last result and the samples.
-    pub fn warm_then_measure<T>(&self, mut f: impl FnMut() -> T) -> (T, Timing) {
+    ///
+    /// Each call is told whether it is the FINAL measured pass, so a caller can
+    /// do once-per-run work in the pass the reported numbers describe. The
+    /// benchmarks use it to emit one trace tree instead of one per pass
+    /// ([`crate::suppress_tracing`]).
+    pub fn warm_then_measure<T>(&self, mut f: impl FnMut(bool) -> T) -> (T, Timing) {
         let progress = Progress::new();
         progress.status("[warming]");
         // Free the warmup's result before the first measured pass allocates, so
         // every measured pass sees the same steady-state footprint.
-        drop(f());
+        drop(f(false));
         self.run(f, progress, true)
     }
 
@@ -231,18 +236,18 @@ impl Plan {
     /// a stage an earlier one already warmed (verification after proving, say).
     /// Verification takes milliseconds and nobody tunes it, so echoing every pass
     /// would bury the numbers that matter.
-    pub fn measure_quiet<T>(&self, f: impl FnMut() -> T) -> (T, Timing) {
+    pub fn measure_quiet<T>(&self, f: impl FnMut(bool) -> T) -> (T, Timing) {
         self.run(f, Progress::new(), false)
     }
 
-    fn run<T>(&self, mut f: impl FnMut() -> T, mut progress: Progress, echo: bool) -> (T, Timing) {
+    fn run<T>(&self, mut f: impl FnMut(bool) -> T, mut progress: Progress, echo: bool) -> (T, Timing) {
         let mut timing = Timing::default();
         let mut last = None;
-        for _ in 0..self.repeat {
+        for pass in 0..self.repeat {
             drop(last.take()); // free the previous result before the next pass allocates
             self.cool_down(&progress);
             let t = Instant::now();
-            let out = f();
+            let out = f(pass + 1 == self.repeat);
             let secs = t.elapsed().as_secs_f64();
             timing.push(secs);
             if echo && self.repeat > 1 {
@@ -324,10 +329,13 @@ mod tests {
     #[test]
     fn warmup_pass_is_not_measured() {
         let mut calls = 0;
-        let (last, timing) = Plan::new(3, 0).warm_then_measure(|| {
+        let mut finals = 0;
+        let (last, timing) = Plan::new(3, 0).warm_then_measure(|final_pass| {
             calls += 1;
+            finals += usize::from(final_pass);
             calls
         });
+        assert_eq!(finals, 1, "exactly one pass is announced as the final one");
         assert_eq!(calls, 4, "one warmup plus three measured passes");
         assert_eq!(last, 4);
         assert_eq!(timing.samples().len(), 3);

@@ -1,6 +1,6 @@
-//! `disassemble` must render every opcode of the ISA without panicking, so it
-//! stays usable for the `DBG_DISASM` workflow (a failed guest `assert` surfaces
-//! as a write-once conflict, and the pc is all you get).
+//! `disassemble` must render every one of the nine opcodes without panicking,
+//! so it stays usable for the `DBG_DISASM` workflow (a failed guest `assert`
+//! surfaces as a write-once conflict, and the pc is all you get).
 
 use lean_compiler::{compile, disassemble, parse};
 use primitives::pretty_integer;
@@ -21,17 +21,25 @@ def main():
     h[3] = 13
     d = StackBuf(4)
     blake3(h, h, d)
-    a = StackBuf(3)
-    a[0] = 5
-    a[1] = 7
-    a[2] = 11
-    e = StackBuf(3)
-    xor_192(a, a, e)
-    m = StackBuf(3)
-    mul_192(a, e, m)
+    x = StackBuf(3)
+    x[0] = 5
+    x[1] = 7
+    x[2] = 11
+    y = StackBuf(3)
+    y[0] = 2
+    y[1] = 3
+    y[2] = 6
+    s = StackBuf(3)
+    xor_192(x, y, s)
+    q = StackBuf(3)
+    mul_192(x, y, q)
+    r = StackBuf(3)
+    mul_192_base(h[0], y, r)
+    ext = HeapBuf(3)
+    deref_192(ext, q)
     p = 1
-    p[1] = buff[GEN ** 4] + m[0]
-    p[GEN] = d[0]
+    p[1] = buff[GEN ** 4] + s[0]
+    p[GEN] = d[0] + q[0] + r[0]
     return
 ";
 
@@ -47,7 +55,18 @@ def main():
     let text = disassemble(&program.prog);
     print!("{text}");
 
-    for mnemonic in ["SET", "XOR", "MUL", "XOR_192", "MUL_192", "DEREF", "JUMP", "BLAKE3"] {
+    for mnemonic in [
+        "SET",
+        "XOR",
+        "MUL",
+        "XOR_192",
+        "MUL_192",
+        "MUL_192_BASE",
+        "DEREF",
+        "DEREF_192",
+        "JUMP",
+        "BLAKE3",
+    ] {
         assert!(text.contains(mnemonic), "disassembly is missing {mnemonic}");
     }
 }

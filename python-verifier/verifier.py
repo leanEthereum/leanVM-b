@@ -453,7 +453,7 @@ class LigeritoProofData:
 @dataclass(frozen=True)
 class LigeritoOpening:
     ring_switches: tuple[tuple[F192, ...], ...]
-    ligerito: LigeritoProofData
+    whir: LigeritoProofData
 
     @classmethod
     def read(cls, reader: BinaryReader) -> "LigeritoOpening":
@@ -1032,7 +1032,7 @@ FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0
 N_TABLES = 9
 BLAKE3_TABLE = 8
 MEM_COLUMN = 0
-QPKD_COLUMN = 3
+QFLOCK_COLUMN = 3
 BASES = (4, 19, 34, 61, 91, 98, 115, 139, 158)
 WIDTHS = (15, 15, 27, 30, 7, 17, 24, 19, 49)
 CONSTRAINT_COUNTS = (4, 4, 4, 6, 1, 4, 4, 7, 6)
@@ -1479,7 +1479,7 @@ def build_layout(
     kappas: list[int | None] = [0] * (4 + sum(WIDTHS))
     kappas[MEM_COLUMN] = kappas[1] = log_memory
     kappas[2] = bytecode_log
-    kappas[QPKD_COLUMN] = table_logs[BLAKE3_TABLE] + 8
+    kappas[QFLOCK_COLUMN] = table_logs[BLAKE3_TABLE] + 8
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_VALUES:
@@ -1490,8 +1490,8 @@ def build_layout(
     height_sources[MEM_COLUMN] = height_sources[1] = ("memory", 0)
     heights[2] = program.bytecode_used
     height_sources[2] = ("bytecode", program.bytecode_used)
-    heights[QPKD_COLUMN] = 1 << kappas[QPKD_COLUMN]
-    height_sources[QPKD_COLUMN] = ("power", QPKD_COLUMN)
+    heights[QFLOCK_COLUMN] = 1 << kappas[QFLOCK_COLUMN]
+    height_sources[QFLOCK_COLUMN] = ("power", QFLOCK_COLUMN)
     for table, (base, width, rows) in enumerate(zip(BASES, WIDTHS, row_counts)):
         for column in range(base, base + width):
             if kappas[column] is not None:
@@ -1525,9 +1525,9 @@ def build_layout(
     signatures[MEM_COLUMN].append(next_group)
     signatures = [sorted(set(signature)) for signature in signatures]
 
-    blocks: list[list[int]] = [[QPKD_COLUMN]]
+    blocks: list[list[int]] = [[QFLOCK_COLUMN]]
     committed = [column for column, variables in enumerate(kappas)
-                 if variables is not None and column != QPKD_COLUMN]
+                 if variables is not None and column != QFLOCK_COLUMN]
     consumed: set[int] = set()
     for first in committed:
         if first in consumed:
@@ -1698,7 +1698,7 @@ def virtual_slot(column: int) -> int | None:
 # Ligerito opening ------------------------------------------------------------
 
 # Ligerito ladder geometry. These mirror the Rust source of truth in
-# crates/pcs/src/ligerito_config.rs and must stay in sync with it: the prover
+# crates/pcs/src/whir_config.rs and must stay in sync with it: the prover
 # derives its opening shape from those constants, so a mismatch here rejects a
 # valid proof. Change a factor there, change it here.
 INITIAL_FOLDING_FACTOR = 6
@@ -2481,8 +2481,8 @@ def verify_stacked_opening(
     root: bytes,
     stack_log: int,
     initial_rate: int,
-    qpkd_offset: int,
-    qpkd_variables: int,
+    qflock_offset: int,
+    qflock_variables: int,
     reduction: Reduction,
     point_claims: Sequence[StackClaim],
 ) -> None:
@@ -2514,15 +2514,15 @@ def verify_stacked_opening(
     )
     grouped = {member for batch in jagged_batches for member in batch.members}
 
-    selector = qpkd_offset >> qpkd_variables
+    selector = qflock_offset >> qflock_variables
 
     def evaluate_basis(prefix: Sequence[F192], residual_log: int) -> list[F192]:
         shared_ring = None
-        if len(prefix) >= qpkd_variables:
+        if len(prefix) >= qflock_variables:
             shared_ring = sum(
                 (scale * _ring_weight(
                     claim.point.ring_tail,
-                    prefix[:qpkd_variables],
+                    prefix[:qflock_variables],
                     coordinate_weights,
                 ) for scale, claim in zip(ring_scales, ring_claims)),
                 ZERO,
@@ -2530,7 +2530,7 @@ def verify_stacked_opening(
         result = []
         for vertex in range(1 << residual_log):
             point = list(prefix) + [F192(vertex >> bit & 1) for bit in range(residual_log)]
-            low, high = point[:qpkd_variables], point[qpkd_variables:]
+            low, high = point[:qflock_variables], point[qflock_variables:]
             selector_weight = ONE
             for bit, challenge in enumerate(high):
                 selector_weight *= challenge if selector >> bit & 1 else ONE + challenge
@@ -2553,7 +2553,7 @@ def verify_stacked_opening(
 
     verify_ligerito(
         transcript,
-        opening.ligerito,
+        opening.whir,
         stack_log,
         initial_rate,
         target,
@@ -2788,12 +2788,12 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_start = len(claims) - 1
 
     point_claims: list[StackClaim] = []
-    qpkd = layout.placements[QPKD_COLUMN]
+    qflock = layout.placements[QFLOCK_COLUMN]
     for index, claim in enumerate(claims):
         slot = virtual_slot(claim.column)
         if slot is not None:
-            require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
-            point_claims.append(StridedClaim(qpkd.offset, slot, 8, claim.point, claim.value))
+            require(len(claim.point) + 8 == qflock.variables, "BLAKE3 slot claim dimension mismatch")
+            point_claims.append(StridedClaim(qflock.offset, slot, 8, claim.point, claim.value))
             continue
 
         placement = layout.placements[claim.column]
@@ -2833,8 +2833,8 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         root,
         layout.stack_log,
         log_inverse_rate,
-        qpkd.offset,
-        qpkd.variables,
+        qflock.offset,
+        qflock.variables,
         reduction,
         point_claims,
     )
