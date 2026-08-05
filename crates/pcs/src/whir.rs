@@ -433,6 +433,12 @@ pub(crate) fn ligero_commit_ext(
     assert!(log_block_len <= ntt.log_domain_size());
 
     let codeword_len = block_len * num_interleaved;
+    // Replicated up front rather than gathered by the first pass, unlike the base
+    // encode ([`AdditiveNttF64::encode_interleaved`]). Fusing it here was measured
+    // and lost, 340ms to 371ms over the six levels: this transform's fused width is
+    // radix 4 over `num_interleaved` = 8 F192 lanes, so a row is 192 bytes and the
+    // gather writes four of those at a stride, against the base encode's radix 8
+    // over 512-byte rows. The contiguous memcpy wins at that granularity.
     let mut mat = zk_alloc::alloc_uninit(codeword_len);
     replicate_message_fill_uninit(&mut mat, poly);
     // SAFETY: the replicate fill initializes every matrix element.
