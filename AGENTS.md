@@ -32,12 +32,13 @@ Dependency order, leaves first:
 
 ## Building / Testing / Formatting
 
-- `.cargo/config.toml` pins `-C target-cpu=native`
+- `.cargo/config.toml` pins `-C target-cpu=native` and `-D warnings` for rustdoc
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
 
 ```bash
-cargo testall                     # = test --all --release; whole suite in seconds
-cargo clippy --release --all-targets
+cargo testall                     # whole suite in seconds
+cargo clippyall                   # clippy, -D warnings
+cargo docall                      # rustdoc, -D warnings
 cargo fmt --all                   # max_width = 120
 ```
 

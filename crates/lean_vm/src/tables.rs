@@ -373,8 +373,8 @@ pub trait Table: Sync {
     fn flushes(&self, f: &mut FlushBuilder);
     /// Fill this table's columns from the trace: `out[i]` is local column `i`'s
     /// window, already at its padded length. Every window must be written in full;
-    /// use [`FillCtx::col`] / [`FillCtx::cols`], which append the column's pad value
-    /// past the last trace row and record the coverage [`fill_table`] checks.
+    /// use `FillCtx::col` / `FillCtx::cols`, which append the column's pad value
+    /// past the last trace row and record the coverage `fill_table` checks.
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
