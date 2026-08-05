@@ -35,6 +35,12 @@
 \newcommand{\val}{\mathit{val}}
 \newcommand{\cnt}{\mathit{count}}
 \newcommand{\md}{\mathit{md}}       % BLAKE3 metadata immediate: counter, block length, flags
+\newcommand{\cntfin}{\mathit{count}^{\mathrm{fin}}}  % committed finalize-count column
+\newcommand{\rcnts}{\mathcal{R}}          % multiset of read counts at one (address, value)
+\newcommand{\mset}[1]{\{\!\{#1\}\!\}}     % a multiset (plain braces stay sets)
+\newcommand{\lut}{\mathbf{L}}             % a lookup array (memory, or the program)
+\newcommand{\sep}{\dsep{sep}}             % the domain separator of a generic lookup array
+\newcommand{\ncomp}{N_{\mathrm{comp}}}    % components of a lookup entry (its width)
 \newcommand{\push}{\textsc{push}}
 \newcommand{\pull}{\textsc{pull}}
 \newcommand{\tup}[1]{\langle #1 \rangle}
@@ -42,6 +48,7 @@
 \newcommand{\opc}[1]{\mathsf{op}_{\mathsf{#1}}}
 \newcommand{\srcsel}[1]{\mathsf{src}(#1)}
 \newcommand{\nprog}{N_{\mathrm{prog}}}   % program length (was N; N is now a block length)
+\newcommand{\nread}{N_{\mathrm{read}}}   % total read flushes in a proof
 \newcommand{\kbc}{\kappa_{\mathrm{bc}}}   % log program length: nprog = 2^kbc instructions
 \newcommand{\ntab}{N_{\mathrm{tab}}}     % number of tables (fixed by the arithmetization)
 \newcommand{\ncol}[1]{N_{\mathrm{col},#1}}  % columns of table #1
