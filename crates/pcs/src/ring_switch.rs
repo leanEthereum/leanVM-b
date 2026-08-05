@@ -455,9 +455,14 @@ pub(crate) fn prove_finish_deferred(
     }
 }
 
-/// Fold several deferred claims directly into their final combined dense
-/// basis. Every output slot is written exactly once; no per-claim dense
-/// vectors are allocated or read back.
+/// Fold several deferred claims directly into their final combined dense basis.
+/// No per-claim dense vector is allocated or read back, and the first claim
+/// **writes** rather than accumulates, so the caller need not pre-zero `out`.
+///
+/// One tight pass per claim, not one pass over the claims per slot: the cost here
+/// is [`fold_one_slot_ext`]'s byte-table lookups, not the traffic to `out`, and
+/// interleaving two claims' tables in the inner loop measured slower than the
+/// extra pass it saves.
 pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &mut [F192]) {
     assert!(!outputs.is_empty());
     let block_len = outputs[0].eq_lo.len();

@@ -182,26 +182,28 @@ pub struct LigVerifierSummary {
 /// slot's stride. Both scatter with `+=`, so overlapping slices accumulate
 /// correctly; the OUTER loop therefore stays serial (several bus claims can
 /// land on one column region), and parallelism lives inside each claim: the
-/// gamma-seeded eq build ([`build_eq_table_ext_seeded_into`], parallel above
-/// its level floor, into one scratch buffer reused across claims) and the
-/// slice add. Small slices stay fully serial (with many tiny point claims,
-/// pool dispatch would cost more than the fold itself). The gamma seeding
-/// and the serial/parallel splits are exact-field/order-preserving, so
-/// `b_stack`'s bytes (and hence the proof) are unchanged relative to the
+/// gamma-seeded eq build ([`super::whir::add_eq_table_ext_seeded`], parallel
+/// above its level floor, expanding its last coordinate straight into
+/// `b_stack` so the table's largest level is never staged in scratch) and the
+/// strided scatter. Small slices stay fully serial (with many tiny point
+/// claims, pool dispatch would cost more than the fold itself). The gamma
+/// seeding and the serial/parallel splits are exact-field/order-preserving,
+/// so `b_stack`'s bytes (and hence the proof) are unchanged relative to the
 /// build-then-multiply form.
 fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[StackClaim], gammas: &[F192]) {
-    const PAR_FOLD_THRESHOLD: usize = 1 << 14;
-    // One reusable eq scratch sized to the largest Point claim: a fresh
-    // multi-MB allocation per claim would pay the first-touch page faults anew.
-    let max_len = claims
+    // One reusable eq scratch, sized to half the largest Point claim, since
+    // `add_eq_table_ext_seeded` expands the last coordinate straight into
+    // `b_stack`. A fresh multi-MB allocation per claim would pay the first-touch
+    // page faults anew.
+    let max_half = claims
         .iter()
         .map(|c| match c {
-            StackClaim::Point { low_point, .. } => 1usize << low_point.len(),
+            StackClaim::Point { low_point, .. } => 1usize << low_point.len().saturating_sub(1),
             StackClaim::Strided { .. } => 0,
         })
         .max()
         .unwrap_or(0);
-    let mut scratch = zk_alloc::alloc_uninit(max_len);
+    let mut scratch = zk_alloc::alloc_uninit(max_half);
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
@@ -215,20 +217,8 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
                     offset % len == 0,
                     "StackClaim::Point: offset must be 2^|low_point|-aligned"
                 );
-                super::whir::build_eq_table_ext_seeded_uninit(low_point, g, &mut scratch[..len]);
-                // SAFETY: the seeded eq build initialized this entire prefix.
-                let eq = unsafe { std::slice::from_raw_parts(scratch.as_ptr().cast::<F192>(), len) };
                 let dst = &mut b_stack[*offset..*offset + len];
-                if len < PAR_FOLD_THRESHOLD {
-                    for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
-                        *bi += *ei;
-                    }
-                } else {
-                    let chunk = parallel::recommended_chunk_size(dst.len());
-                    parallel::chunks_mut_zip(dst, eq, chunk, |_, d, e| {
-                        d.iter_mut().zip(e).for_each(|(bi, ei)| *bi += *ei);
-                    });
-                }
+                super::whir::add_eq_table_ext_seeded(low_point, g, &mut scratch, dst);
                 *target += g * *value;
             }
             StackClaim::Strided {
@@ -388,21 +378,25 @@ pub fn open_batch_mixed_whir_stacked(
         .iter()
         .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
-    // claims otherwise fault pages one claim at a time.
-    let mut b_stack = zk_alloc::alloc_uninit(stack.len());
+    // claims otherwise fault pages one claim at a time. The scatters that follow
+    // accumulate, so their slots have to start at zero, with one exception:
+    // `combine_deferred_into` writes the whole q_pkd block, so zeroing it first
+    // would be a quarter of a gigabyte of stores thrown away.
+    //
+    // SAFETY: every slot is written before it is read: the fill covers everything
+    // outside the q_pkd block, and `combine_deferred_into` writes the block.
+    let mut b_stack = unsafe { zk_alloc::ArenaVec::<F192>::uninitialized(stack.len()) };
     {
         const ZERO_CHUNK: usize = 1 << 16;
-        parallel::chunks_mut(&mut b_stack, ZERO_CHUNK, |_, chunk| {
-            for value in chunk {
-                value.write(F192::ZERO);
-            }
-        });
+        let (head, rest) = b_stack.split_at_mut(ring.offset);
+        let (block, tail) = rest.split_at_mut(qpkd_len);
+        for part in [head, tail] {
+            parallel::chunks_mut(part, ZERO_CHUNK, |_, chunk| chunk.fill(F192::ZERO));
+        }
+        mark("b_stack zero fill", &mut t);
+        ring_switch::combine_deferred_into(&rs_outputs, block);
+        mark("rs_eq_ind scatter", &mut t);
     }
-    // SAFETY: the parallel fill initializes every stack weight to zero.
-    let mut b_stack = unsafe { zk_alloc::assume_init(b_stack) };
-    mark("b_stack zero fill", &mut t);
-    ring_switch::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
-    mark("rs_eq_ind scatter", &mut t);
     fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd);
     mark("point-claim folds", &mut t);
 
