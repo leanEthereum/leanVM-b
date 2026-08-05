@@ -3,12 +3,12 @@
 The command-line interface consumes a public statement JSON file and the
 project's bincode proof. No prover-side auxiliary data is accepted. The file is
 ordered along the verification path: arithmetic and hashing, proof transport,
-GKR/bus/AIR checks, VM layout, Ligerito, Flock, and final orchestration.
+GKR/bus/AIR checks, VM layout, WHIR, Flock, and final orchestration.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
@@ -419,7 +419,7 @@ class SumcheckMessage:
 
 
 @dataclass(frozen=True)
-class LigeritoProofData:
+class WHIRProofData:
     initial: InitialOpening
     recursive_roots: tuple[bytes, ...]
     recursive: tuple[RecursiveOpening, ...]
@@ -430,11 +430,11 @@ class LigeritoProofData:
     fold_grinding_nonces: tuple[int, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> "LigeritoProofData":
+    def read(cls, reader: BinaryReader) -> "WHIRProofData":
         initial = InitialOpening.read(reader)
         roots = reader.hashes()
         count = reader.u64()
-        require(count <= 32, "too many Ligerito levels")
+        require(count <= 32, "too many WHIR levels")
         recursive = tuple(RecursiveOpening.read(reader) for _ in range(count))
         final = FinalOpening.read(reader)
         message_count = reader.u64()
@@ -451,22 +451,22 @@ class LigeritoProofData:
 
 
 @dataclass(frozen=True)
-class LigeritoOpening:
+class WHIROpening:
     ring_switches: tuple[tuple[F192, ...], ...]
-    ligerito: LigeritoProofData
+    whir: WHIRProofData
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> "LigeritoOpening":
+    def read(cls, reader: BinaryReader) -> "WHIROpening":
         count = reader.u64()
         require(count <= 16, "too many ring-switch proofs")
         ring_switches = tuple(tuple(reader.fields()) for _ in range(count))
-        return cls(ring_switches, LigeritoProofData.read(reader))
+        return cls(ring_switches, WHIRProofData.read(reader))
 
 
 @dataclass(frozen=True)
 class Proof:
     stream: tuple[F192, ...]
-    openings: tuple[LigeritoOpening, ...]
+    openings: tuple[WHIROpening, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> "Proof":
@@ -474,7 +474,7 @@ class Proof:
         stream = tuple(reader.fields())
         count = reader.u64()
         require(count <= 8, "too many PCS openings")
-        openings = tuple(LigeritoOpening.read(reader) for _ in range(count))
+        openings = tuple(WHIROpening.read(reader) for _ in range(count))
         reader.finish()
         return cls(stream, openings)
 
@@ -569,7 +569,7 @@ class Transcript:
         self.stream_offset += 1
         self.sponge.check_pow(encoded, bits)
 
-    def opening(self) -> LigeritoOpening:
+    def opening(self) -> WHIROpening:
         require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
         result = self.proof.openings[self.opening_offset]
         self.opening_offset += 1
@@ -664,12 +664,15 @@ class Coordinate:
     """One coordinate of a bus tuple.
 
     Exactly one payload is set. ``column`` and ``generator_column`` refer to
-    committed global columns; ``public`` is a dense public multilinear table.
+    committed global columns; ``product`` is ``(a, b, k)`` for ``g^k * col_a *
+    col_b``, an address ``fp*g^o`` carried without committing it; ``public`` is a
+    dense public multilinear table.
     """
 
     constant: F192 | None = None
     column: int | None = None
     generator_column: int | None = None
+    product: tuple[int, int, int] | None = None
     index: bool = False
     public: tuple[F192, ...] | None = None
 
@@ -678,6 +681,7 @@ class Coordinate:
             self.constant is not None,
             self.column is not None,
             self.generator_column is not None,
+            self.product is not None,
             self.index,
             self.public is not None,
         )
@@ -737,7 +741,15 @@ class BytecodeClaim:
 
 @dataclass
 class BusForm:
+    """A table's bus contribution as a degree-2 form over its committed columns.
+
+    ``products`` holds ``(a, b, coefficient)`` in local indices, contributed by the
+    product coordinates. The form stays degree 2, which the AIR identities already
+    are, so the batch's round polynomial does not grow.
+    """
+
     coefficients: list[F192]
+    products: list[tuple[int, int, F192]] = field(default_factory=list)
     constant: F192 = ZERO
 
     def evaluate(self, values: Sequence[F192]) -> F192:
@@ -745,6 +757,9 @@ class BusForm:
         return sum(
             (coefficient * value for coefficient, value in zip(self.coefficients, values)),
             self.constant,
+        ) + sum(
+            (coefficient * values[a] * values[b] for a, b, coefficient in self.products),
+            ZERO,
         )
 
 
@@ -795,6 +810,11 @@ def _decompose_bus_side(
                     form.coefficients[coordinate.generator_column - base] += (
                         selector_weight * coefficient * GEN
                     )
+                elif coordinate.product is not None:
+                    a, b, exponent = coordinate.product
+                    form.products.append(
+                        (a - base, b - base, selector_weight * coefficient * _gpow(exponent))
+                    )
                 else:
                     raise VerificationError("table bus block has a virtual coordinate")
                 coefficient *= alpha
@@ -834,6 +854,9 @@ def _padding_fingerprint(block: BusBlock, padding: Sequence[F192], alpha: F192) 
             value = padding[coordinate.column]
         elif coordinate.generator_column is not None:
             value = GEN * padding[coordinate.generator_column]
+        elif coordinate.product is not None:
+            a, b, exponent = coordinate.product
+            value = _gpow(exponent) * padding[a] * padding[b]
         else:
             value = ZERO
         result += coefficient * value
@@ -1027,19 +1050,19 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
-BASES = (6, 27, 48, 57, 78, 105, 146)
-WIDTHS = (21, 21, 9, 21, 27, 41, 14)
-CONSTRAINT_COUNTS = (4, 4, 1, 4, 7, 6, 3)
+BASES = (6, 24, 42, 50, 68, 92, 127)
+WIDTHS = (18, 18, 8, 18, 24, 35, 11)
+CONSTRAINT_COUNTS = (1, 1, 0, 1, 4, 0, 0)
 COUNT_COLUMNS = (
-    (17, 18, 19, 20),
-    (17, 18, 19, 20),
-    (7, 8),
-    (17, 18, 19, 20),
-    (19, 20, 21, 22),
-    (32, 33, 34, 35, 36, 37, 38, 39, 40),
-    (10, 11, 12, 13),
+    (14, 15, 16, 17),
+    (14, 15, 16, 17),
+    (6, 7),
+    (14, 15, 16, 17),
+    (16, 17, 18, 19),
+    (26, 27, 28, 29, 30, 31, 32, 33, 34),
+    (7, 8, 9, 10),
 )
-BLAKE3_VALUES = tuple(range(14, 32))
+BLAKE3_VALUES = tuple(range(8, 26))
 BLAKE3_SLOTS = (10, 11, 12, 13, 14, 15, 16, 17, 4, 5, 6, 7, 0, 1, 2, 3, 18, 19)
 BLAKE3_SLOT_BY_VALUE: dict[int, int] = dict(zip(BLAKE3_VALUES, BLAKE3_SLOTS))
 VM_IV = (0xBB67AE856A09E667, 0xA54FF53A3C6EF372, 0x9B05688C510E527F, 0x5BE0CD191F83D9AB)
@@ -1229,6 +1252,10 @@ def _gcol(index: int) -> Coordinate:
     return Coordinate(generator_column=index)
 
 
+def _prod(a: int, b: int, exponent: int = 0) -> Coordinate:
+    return Coordinate(product=(a, b, exponent))
+
+
 def _public(values: Sequence[F192]) -> Coordinate:
     return Coordinate(public=tuple(values))
 
@@ -1253,69 +1280,66 @@ class Flushes:
         prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), _const(_gpow(opcode)))
         self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
 
-    def memory(
-        self, address: int, count: int, values: Sequence[Coordinate], successor: bool = False
-    ) -> None:
-        addr = _gcol(address) if successor else _col(address)
+    def memory(self, address: Coordinate, count: int, values: Sequence[Coordinate]) -> None:
         self.pair(
-            (_const(GEN), addr, _gcol(count), *values),
-            (_const(GEN), addr, _col(count), *values),
+            (_const(GEN), address, _gcol(count), *values),
+            (_const(GEN), address, _col(count), *values),
         )
 
-    def memory_word(self, address: int, count: int, lo: int, hi: int, top: int) -> None:
+    def memory_word(self, address: Coordinate, count: int, lo: int, hi: int, top: int) -> None:
         self.memory(address, count, (_col(lo), _col(hi), _col(top)))
 
-    def memory_base(self, address: int, count: int, value: int) -> None:
+    def memory_base(self, address: Coordinate, count: int, value: int) -> None:
         self.memory(address, count, (_col(value), _const(ZERO), _const(ZERO)))
 
-    def memory_128(self, address: int, count: int, lo: int, hi: int, successor: bool = False) -> None:
-        self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)), successor)
+    def memory_128(self, address: Coordinate, count: int, lo: int, hi: int) -> None:
+        self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)))
 
 
 def _table_flushes(table: int) -> Flushes:
     f = Flushes()
     if table in (0, 1):
         f.state_step(0, 1)
-        f.bytecode(0, 20, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_word(5, 17, 8, 9, 10)
-        f.memory_word(6, 18, 11, 12, 13)
-        f.memory_word(7, 19, 14, 15, 16)
+        f.bytecode(0, 17, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 14, 5, 6, 7)
+        f.memory_word(_prod(1, 3), 15, 8, 9, 10)
+        f.memory_word(_prod(1, 4), 16, 11, 12, 13)
     elif table == 2:
         f.state_step(0, 1)
-        f.bytecode(0, 8, 2, (_col(2), _col(3), _col(4), _col(5), _const(ZERO)))
-        f.memory_word(6, 7, 3, 4, 5)
+        f.bytecode(0, 7, 2, (_col(2), _col(3), _col(4), _col(5), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 6, 3, 4, 5)
     elif table == 3:
         f.state_step(0, 1)
-        f.bytecode(0, 20, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
-        f.memory_base(7, 17, 10)
-        f.memory_word(8, 18, 11, 12, 13)
-        f.memory_word(9, 19, 14, 15, 16)
+        f.bytecode(0, 17, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
+        f.memory_base(_prod(1, 2), 14, 7)
+        f.memory_word(_prod(7, 3), 15, 8, 9, 10)
+        f.memory_word(_prod(1, 4), 16, 11, 12, 13)
     elif table == 4:
         f.state_jump(0, 1, 2, 3)
-        f.bytecode(0, 22, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
-        f.memory_word(7, 19, 10, 11, 12)
-        f.memory_word(8, 20, 13, 14, 15)
-        f.memory_word(9, 21, 16, 17, 18)
+        f.bytecode(0, 19, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 4), 16, 7, 8, 9)
+        f.memory_word(_prod(1, 5), 17, 10, 11, 12)
+        f.memory_word(_prod(1, 6), 18, 13, 14, 15)
     elif table == 5:
         f.state_step(0, 1)
-        f.bytecode(0, 40, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 30, 31)))
-        for address, count, lo, hi, successor in (
-            (8, 32, 14, 15, False),
-            (9, 33, 16, 17, False),
-            (10, 34, 18, 19, False),
-            (11, 35, 20, 21, False),
-            (12, 36, 26, 27, False),
-            (12, 37, 28, 29, True),
-            (13, 38, 22, 23, False),
-            (13, 39, 24, 25, True),
+        f.bytecode(0, 34, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 24, 25)))
+        for operand, exponent, count, lo, hi in (
+            (2, 0, 26, 8, 9),
+            (3, 0, 27, 10, 11),
+            (4, 0, 28, 12, 13),
+            (5, 0, 29, 14, 15),
+            (6, 0, 30, 20, 21),
+            (6, 1, 31, 22, 23),
+            (7, 0, 32, 16, 17),
+            (7, 1, 33, 18, 19),
         ):
-            f.memory_128(address, count, lo, hi, successor)
+            f.memory_128(_prod(1, operand, exponent), count, lo, hi)
     else:
         f.state_step(0, 1)
-        f.bytecode(0, 13, 6, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_base(5, 10, 8)
-        f.memory_base(6, 11, 9)
-        f.memory_128(7, 12, 8, 9)
+        f.bytecode(0, 10, 6, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_base(_prod(1, 2), 7, 5)
+        f.memory_base(_prod(1, 3), 8, 6)
+        f.memory_128(_prod(1, 4), 9, 5, 6)
     return f
 
 
@@ -1324,6 +1348,9 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
         return _col(base + coordinate.column)
     if coordinate.generator_column is not None:
         return _gcol(base + coordinate.generator_column)
+    if coordinate.product is not None:
+        a, b, exponent = coordinate.product
+        return _prod(base + a, base + b, exponent)
     return coordinate
 
 
@@ -1433,10 +1460,10 @@ def build_layout(
     b3 = BASES[5]
     digest_words = [int.from_bytes(zero_digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24)]
     for index, value in enumerate(digest_words):
-        padding[b3 + 22 + index] = F192(value)
-        padding[b3 + 26 + index] = F192(VM_IV[index])
-    padding[b3 + 30] = ZERO
-    padding[b3 + 31] = F192(64 | 11 << 32)
+        padding[b3 + 16 + index] = F192(value)
+        padding[b3 + 20 + index] = F192(VM_IV[index])
+    padding[b3 + 24] = ZERO
+    padding[b3 + 25] = F192(64 | 11 << 32)
 
     kappas: list[int | None] = [0] * (6 + sum(WIDTHS))
     kappas[0] = kappas[1] = kappas[2] = kappas[3] = log_memory
@@ -1473,11 +1500,18 @@ def build_layout(
                 source = (2 + block.owner[0], 0)
             group = source_groups.setdefault(source, len(source_groups))
             for coordinate in block.coordinates:
-                column = coordinate.column
-                if column is None:
-                    column = coordinate.generator_column
-                if column is not None and kappas[column] is not None:
-                    signatures[column].append(group)
+                # A product coordinate ties BOTH its columns to this row group.
+                if coordinate.product is not None:
+                    columns = coordinate.product[:2]
+                elif coordinate.column is not None:
+                    columns = (coordinate.column,)
+                elif coordinate.generator_column is not None:
+                    columns = (coordinate.generator_column,)
+                else:
+                    columns = ()
+                for column in columns:
+                    if kappas[column] is not None:
+                        signatures[column].append(group)
 
     next_group = len(source_groups)
     for base, width in zip(BASES, WIDTHS):
@@ -1551,50 +1585,28 @@ def _air_evaluator(
         def word(lo: int, hi: int, top: int) -> F192:
             return value(lo) + F192(0, 1) * (value(hi) + F192(0, 1) * value(top))
 
+        # No table binds an address: the bus reads each as a product coordinate.
         if table in (0, 1):
-            va, vb, vc = word(8, 9, 10), word(11, 12, 13), word(14, 15, 16)
+            va, vb, vc = word(5, 6, 7), word(8, 9, 10), word(11, 12, 13)
             operation = va + vb if table == 0 else va * vb
-            terms = (
-                value(5) + value(1) * value(2),
-                value(6) + value(1) * value(3),
-                value(7) + value(1) * value(4),
-                vc + operation,
-            )
-        elif table == 2:
-            terms = (value(6) + value(1) * value(2),)
+            terms = (vc + operation,)
         elif table == 3:
-            v2, v3 = word(11, 12, 13), word(14, 15, 16)
+            v2, v3 = word(8, 9, 10), word(11, 12, 13)
             source = (ONE + value(5) + value(6)) * v3 + value(5) * GEN * GEN * value(0) + value(6) * value(1)
-            terms = (
-                value(7) + value(1) * value(2),
-                value(8) + value(10) * value(3),
-                value(9) + value(1) * value(4),
-                v2 + source,
-            )
+            terms = (v2 + source,)
         elif table == 4:
-            condition = word(10, 11, 12)
-            destination = word(13, 14, 15)
-            frame = word(16, 17, 18)
-            inverse, flag = word(23, 24, 25), value(26)
+            condition = word(7, 8, 9)
+            destination = word(10, 11, 12)
+            frame = word(13, 14, 15)
+            inverse, flag = word(20, 21, 22), value(23)
             terms = (
-                value(7) + value(1) * value(4),
-                value(8) + value(1) * value(5),
-                value(9) + value(1) * value(6),
                 flag + condition * inverse,
                 condition * (flag + ONE),
                 value(2) + flag * destination + (flag + ONE) * GEN * value(0),
                 value(3) + flag * frame + (flag + ONE) * value(1),
             )
-        elif table == 5:
-            terms = tuple(
-                value(address) + value(1) * value(operand)
-                for address, operand in zip((8, 9, 10, 11, 12, 13), (2, 3, 4, 5, 6, 7))
-            )
         else:
-            terms = tuple(
-                value(address) + value(1) * value(operand)
-                for address, operand in zip((5, 6, 7), (2, 3, 4))
-            )
+            terms = ()
 
         require(len(weights) == len(terms), "AIR constraint weight mismatch")
         identities = sum((weight * term for weight, term in zip(weights, terms)), ZERO)
@@ -1636,10 +1648,10 @@ def constraint_claims(layout: Layout, claims: Sequence[AirClaim]) -> list[Column
 def virtual_slot(column: int) -> int | None:
     return BLAKE3_SLOT_BY_VALUE.get(column - BASES[5])
 
-# Ligerito opening ------------------------------------------------------------
+# WHIR opening ------------------------------------------------------------
 
-# Ligerito ladder geometry. These mirror the Rust source of truth in
-# crates/pcs/src/ligerito_config.rs and must stay in sync with it: the prover
+# WHIR ladder geometry. These mirror the Rust source of truth in
+# crates/pcs/src/whir_config.rs and must stay in sync with it: the prover
 # derives its opening shape from those constants, so a mismatch here rejects a
 # valid proof. Change a factor there, change it here.
 INITIAL_FOLDING_FACTOR = 6
@@ -1650,7 +1662,7 @@ RESIDUAL_MAX_LOG = 5
 
 
 @dataclass(frozen=True)
-class LigeritoConfig:
+class WHIRConfig:
     rates: tuple[int, ...]
     folds: tuple[int, ...]
     queries: tuple[int, ...]
@@ -1702,13 +1714,13 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         candidate = (queries, ood)
         if best is None or queries < best[0]:
             best = candidate
-    require(best is not None, "no secure Ligerito configuration")
+    require(best is not None, "no secure WHIR configuration")
     return best
 
 
-def derive_config(log_n: int, initial_rate: int) -> LigeritoConfig:
+def derive_config(log_n: int, initial_rate: int) -> WHIRConfig:
     """Derive the production Johnson/OOD ladder used by the Rust PCS."""
-    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= initial_rate <= 4, "invalid Ligerito shape")
+    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= initial_rate <= 4, "invalid WHIR shape")
     folds = [INITIAL_FOLDING_FACTOR]
     message_logs = [log_n - INITIAL_FOLDING_FACTOR]
     rates = [initial_rate]
@@ -1723,12 +1735,12 @@ def derive_config(log_n: int, initial_rate: int) -> LigeritoConfig:
         message_logs.append(remaining)
         prior_fold = fold
         reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
-    require(len(folds) >= 2, "Ligerito requires at least two levels")
+    require(len(folds) >= 2, "WHIR requires at least two levels")
     parameters = tuple(
         _johnson_parameters(rate, columns, fold)
         for rate, columns, fold in zip(rates, message_logs, folds)
     )
-    return LigeritoConfig(
+    return WHIRConfig(
         tuple(rates),
         tuple(folds),
         tuple(value[0] for value in parameters),
@@ -1838,7 +1850,7 @@ def _enforced_sum(
     query_weights = build_eq(alpha)[: len(rows)]
     total = ZERO
     for query_weight, row in zip(query_weights, rows):
-        require(len(row) == len(lane_weights), "Ligerito row/fold width mismatch")
+        require(len(row) == len(lane_weights), "WHIR row/fold width mismatch")
         total += query_weight * sum(
             ((F192(x) if isinstance(x, int) else x) * y for x, y in zip(row, lane_weights)),
             ZERO,
@@ -1896,9 +1908,9 @@ def _induced_residual(
     return result
 
 
-def verify_ligerito(
+def verify_whir(
     transcript: Transcript,
-    proof: LigeritoProofData,
+    proof: WHIRProofData,
     log_n: int,
     initial_rate: int,
     target: F192,
@@ -1908,9 +1920,9 @@ def verify_ligerito(
     """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, initial_rate)
     levels = len(config.folds)
-    require(len(proof.recursive_roots) == levels - 1, "wrong Ligerito root count")
-    require(len(proof.recursive) == levels - 2, "wrong Ligerito recursive-proof count")
-    require(len(proof.grinding_nonces) == levels, "wrong Ligerito nonce count")
+    require(len(proof.recursive_roots) == levels - 1, "wrong WHIR root count")
+    require(len(proof.recursive) == levels - 2, "wrong WHIR recursive-proof count")
+    require(len(proof.grinding_nonces) == levels, "wrong WHIR nonce count")
 
     def observe_root(value: bytes) -> None:
         require(len(value) == 32, "invalid Merkle root")
@@ -1921,7 +1933,7 @@ def verify_ligerito(
 
     def next_quad(claim: F192) -> QuadraticMessage:
         nonlocal message_index
-        require(message_index < len(proof.sumcheck), "truncated Ligerito sumcheck")
+        require(message_index < len(proof.sumcheck), "truncated WHIR sumcheck")
         message = proof.sumcheck[message_index]
         message_index += 1
         transcript.observe(message.constant)
@@ -1945,7 +1957,7 @@ def verify_ligerito(
             bits = max(0, config.fold_grinding[level] - fold_index)
             if bits:
                 require(fold_nonce_index < len(proof.fold_grinding_nonces),
-                        "missing Ligerito fold nonce")
+                        "missing WHIR fold nonce")
                 transcript.sponge.check_pow(proof.fold_grinding_nonces[fold_nonce_index], bits)
                 fold_nonce_index += 1
             challenge = transcript.sample()
@@ -1958,7 +1970,7 @@ def verify_ligerito(
         final_level = level == levels - 1
         if final_level:
             residual = proof.final.residual
-            require(len(residual) == 1 << message_log, "wrong Ligerito residual length")
+            require(len(residual) == 1 << message_log, "wrong WHIR residual length")
             for value in residual:
                 transcript.observe(value)
         else:
@@ -1966,7 +1978,7 @@ def verify_ligerito(
             observe_root(next_root)
             for _ in range(config.ood_samples[level + 1]):
                 point = tuple(transcript.samples(message_log))
-                require(ood_index < len(proof.ood_values), "missing Ligerito OOD value")
+                require(ood_index < len(proof.ood_values), "missing WHIR OOD value")
                 value = proof.ood_values[ood_index]
                 ood_index += 1
                 transcript.observe(value)
@@ -1997,7 +2009,7 @@ def verify_ligerito(
                 level == 0,
             )
         except VerificationError as exc:
-            raise VerificationError(f"Ligerito level {level}: {exc}") from exc
+            raise VerificationError(f"WHIR level {level}: {exc}") from exc
         enforced = _enforced_sum(rows, level_folds, alpha)
 
         # Every commitment, including the last one, enters through an intro
@@ -2018,10 +2030,10 @@ def verify_ligerito(
                 tail_folds.append(challenge)
                 if round_index + 1 < message_log:
                     running_quad = next_quad(running_target)
-            require(message_index == len(proof.sumcheck), "trailing Ligerito sumcheck messages")
-            require(ood_index == len(proof.ood_values), "trailing Ligerito OOD values")
+            require(message_index == len(proof.sumcheck), "trailing WHIR sumcheck messages")
+            require(ood_index == len(proof.ood_values), "trailing WHIR OOD values")
             require(fold_nonce_index == len(proof.fold_grinding_nonces),
-                    "trailing Ligerito fold nonces")
+                    "trailing WHIR fold nonces")
             weight_values = list(evaluate_basis(list(folds) + tail_folds, 0))
             require(len(weight_values) == 1, "basis point evaluation has the wrong length")
             weight = weight_values[0]
@@ -2046,11 +2058,11 @@ def verify_ligerito(
                     scale *= ONE + expected + actual
                 weight += scale
             terminal = weight * mle_eval(residual, tail_folds)
-            require(terminal == running_target, "Ligerito terminal check failed")
+            require(terminal == running_target, "WHIR terminal check failed")
             return
         current_root = next_root
 
-    raise VerificationError("Ligerito verification ended without a terminal level")
+    raise VerificationError("WHIR verification ended without a terminal level")
 
 # Flock reduction -------------------------------------------------------------
 
@@ -2418,12 +2430,12 @@ def _ring_weight(
 
 def verify_stacked_opening(
     transcript: Transcript,
-    opening: LigeritoOpening,
+    opening: WHIROpening,
     root: bytes,
     stack_log: int,
     initial_rate: int,
-    qpkd_offset: int,
-    qpkd_variables: int,
+    qflock_offset: int,
+    qflock_variables: int,
     reduction: Reduction,
     point_claims: Sequence[StackClaim],
 ) -> None:
@@ -2443,7 +2455,7 @@ def verify_stacked_opening(
     coordinate_weights = _coordinate_weights(map_challenges)
     ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights)), ZERO)
                    for values in slices]
-    ring_scales = transcript.samples(2)
+    ring_scales = powers(transcript.sample(), 2)
     target = sum((scale * value for scale, value in zip(ring_scales, ring_values)), ZERO)
 
     for claim in point_claims:
@@ -2456,15 +2468,15 @@ def verify_stacked_opening(
     )
     grouped = {member for batch in jagged_batches for member in batch.members}
 
-    selector = qpkd_offset >> qpkd_variables
+    selector = qflock_offset >> qflock_variables
 
     def evaluate_basis(prefix: Sequence[F192], residual_log: int) -> list[F192]:
         shared_ring = None
-        if len(prefix) >= qpkd_variables:
+        if len(prefix) >= qflock_variables:
             shared_ring = sum(
                 (scale * _ring_weight(
                     claim.point.ring_tail,
-                    prefix[:qpkd_variables],
+                    prefix[:qflock_variables],
                     coordinate_weights,
                 ) for scale, claim in zip(ring_scales, ring_claims)),
                 ZERO,
@@ -2472,7 +2484,7 @@ def verify_stacked_opening(
         result = []
         for vertex in range(1 << residual_log):
             point = list(prefix) + [F192(vertex >> bit & 1) for bit in range(residual_log)]
-            low, high = point[:qpkd_variables], point[qpkd_variables:]
+            low, high = point[:qflock_variables], point[qflock_variables:]
             selector_weight = ONE
             for bit, challenge in enumerate(high):
                 selector_weight *= challenge if selector >> bit & 1 else ONE + challenge
@@ -2493,9 +2505,9 @@ def verify_stacked_opening(
             result.append(value)
         return result
 
-    verify_ligerito(
+    verify_whir(
         transcript,
-        opening.ligerito,
+        opening.whir,
         stack_log,
         initial_rate,
         target,
@@ -2724,12 +2736,12 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_start = len(claims) - 3
 
     point_claims: list[StackClaim] = []
-    qpkd = layout.placements[5]
+    qflock = layout.placements[5]
     for index, claim in enumerate(claims):
         slot = virtual_slot(claim.column)
         if slot is not None:
-            require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
-            point_claims.append(StridedClaim(qpkd.offset, slot, 8, claim.point, claim.value))
+            require(len(claim.point) + 8 == qflock.variables, "BLAKE3 slot claim dimension mismatch")
+            point_claims.append(StridedClaim(qflock.offset, slot, 8, claim.point, claim.value))
             continue
 
         placement = layout.placements[claim.column]
@@ -2769,8 +2781,8 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         root,
         layout.stack_log,
         log_inverse_rate,
-        qpkd.offset,
-        qpkd.variables,
+        qflock.offset,
+        qflock.variables,
         reduction,
         point_claims,
     )

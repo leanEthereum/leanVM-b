@@ -308,7 +308,7 @@ impl FnLower<'_> {
 
     /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
     /// The cell holding `1` doubles as the (nonzero) jump condition and the new
-    /// frame pointer `g^0`; the dest cell holds `g^{B-1}` (doc §e2e, final state).
+    /// frame pointer `g^0`; the dest cell holds `g^{B-1}` (doc §sec:e2e, final state).
     fn halt(&mut self) {
         let one = self.one();
         let dest = self.fresh();

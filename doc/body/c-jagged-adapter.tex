@@ -1,10 +1,11 @@
+% !TeX root = ../drafts/c-jagged-adapter.tex
 \section{The jagged adapter}\label{annex:jagged}
 
 \begin{center}
 \fbox{\textbf{Warning: AI-assisted writing, some parts have not been properly reviewed yet.}}
 \end{center}
 
-Turning the evaluation claims of padded columns into one weighted claim on a single dense commitment, over a PCS that opens an arbitrary verifier-evaluable weight. This annex is the general construction; \S\ref{sec:stacking} is the layout this VM commits with, and \S\ref{sec:rs-dense} the opening it runs on.
+Turning the evaluation claims of padded columns into one weighted claim on a single dense commitment, over a PCS that opens an arbitrary verifier-evaluable weight. This annex is the general construction; \S\ref{sec:stacking} is the layout this VM commits with, and Annex~\ref{annex:pcs} the opening it runs on.
 
 \paragraph{Symbols.} As in the other annexes, a letter the main matter has already spent is given a free one here, and two go the other way because this construction names them first: the dense cube has $m$ variables, which \S\ref{sec:stacking} calls $M$, and $h$ is a block's real height, where the main matter's $h$ is the used-memory prefix. Everything else means what it means throughout.
 

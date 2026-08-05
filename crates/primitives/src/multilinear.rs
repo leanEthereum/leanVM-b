@@ -253,9 +253,30 @@ pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     if point.is_empty() {
         return F192::from(table[0]);
     }
-    let mut cur = fold_low_k(table, point[0]);
+    fold_ladder(fold_low_k(table, point[0]), &point[1..])
+}
+
+/// The MLE of the pointwise product `a·b` at an `E`-point, i.e. `Σ_z eq(point,
+/// z)·a(z)·b(z)`. This is NOT `â(point)·b̂(point)`: a product of multilinears is
+/// not multilinear, so it has to be summed over the cube. The first fold takes the
+/// product in `K` (1 PMULL) and lifts, after which it is [`mle_eval`]'s ladder.
+pub fn mle_eval_prod(a: &[F64], b: &[F64], point: &[F192]) -> F192 {
+    debug_assert_eq!(a.len(), b.len());
+    debug_assert_eq!(a.len(), 1 << point.len());
+    if point.is_empty() {
+        return F192::from(a[0] * b[0]);
+    }
+    let rho = point[0];
+    let cur = (0..a.len() / 2)
+        .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], rho))
+        .collect();
+    fold_ladder(cur, &point[1..])
+}
+
+/// Bind the remaining variables of a half-folded `E`-table, LSB-first.
+fn fold_ladder(mut cur: Vec<F192>, point: &[F192]) -> F192 {
     let mut len = cur.len();
-    for &p in &point[1..] {
+    for &p in point {
         len /= 2;
         // Deliberately scalar: the fold's mul has the loop-invariant `p` on one
         // side, and pairing outputs through a two-lane multiply measured slower,

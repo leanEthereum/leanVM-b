@@ -196,8 +196,13 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     // 32 Merkle-parent compressions.
     lean_vm::blake3_flock::warm_setup(181 + 146 * n);
 
-    let ((proof, stats), prove_time) = plan.warm_then_measure(|| prove(&program, want, log_inv_rate));
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+    // Only the final measured pass of each stage is traced (see `run_recursion`).
+    let ((proof, stats), prove_time) = plan.warm_then_measure(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
+        prove(&program, want, log_inv_rate)
+    });
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
+        let _quiet = (!last).then(primitives::suppress_tracing);
         verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     });
 

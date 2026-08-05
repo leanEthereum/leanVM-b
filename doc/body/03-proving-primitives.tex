@@ -1,19 +1,95 @@
+% !TeX root = ../drafts/03-proving-primitives.tex
 \section{Proving primitives}\label{sec:prelim}
 
-Every physical committed column is $\K$-valued (\S\ref{sec:vm}); every challenge, sumcheck, zerocheck, GKR value, and evaluation claim is $\E$-valued, for the two fields $\K\subset\E\cong\F_{2^{192}}$ fixed in \S\ref{sec:vm}, so $|\E|=2^{192}$. The embedding and mixed product are
+\begin{definition}[Iverson bracket]\label{def:iverson}
+For a proposition $P$, \ $[P]=1$ if $P$ holds and $[P]=0$ otherwise.
+\end{definition}
+
+\begin{definition}[Multilinear extension]\label{def:mle}
+A \emph{multilinear} is given by its $2^{\kappa}$ values on the boolean hypercube, a function $f:\cube{\kappa}\to\E$. Its \emph{multilinear extension} $\mle{f}:\E^{\kappa}\to\E$ is the unique polynomial of degree at most one in each variable agreeing with $f$ on $\cube{\kappa}$; we identify the two freely.
+\end{definition}
+
+
+\begin{definition}[Equality indicator]\label{def:eq}
+For $X,Y\in\E^{\kappa}$,
 \[
-  \K\hookrightarrow\E,\quad e\mapsto e+0\cdot y+0\cdot y^2,
-  \qquad
-  k(e_0+e_1y+e_2y^2)=ke_0+(ke_1)y+(ke_2)y^2.
+  \eq(X,Y)= \prod_i\bigl(X_iY_i+(1+X_i)(1+Y_i)\bigr) = \prod_{i=1}^{\kappa}\bigl(1+X_i+Y_i\bigr).
 \]
-Committed columns and their truth tables are $\K$-valued; extensions are evaluated at $\E$-points; protocol randomness is sampled from $\E$. A $192$-bit \emph{value} column is represented by $V_0,V_1,V_2:\cube\kappa\to\K$ with $V=V_0+V_1y+V_2y^2$. Address, register, and counter columns are single $\K$-columns.
+\end{definition}
 
-\textbf{Multilinear extension (MLE).} A function $f:\cube{\kappa}\to\K$ (a committed column) or $f:\cube{\kappa}\to\E$ (a product-tree layer of \S\ref{sec:gkr}) has a unique multilinear extension $\widetilde f:\E^{\kappa}\to\E$, the polynomial of degree at most $1$ in each variable that agrees with $f$ on the boolean hypercube. Define $\eq(r,X)=\prod_i(1+r_i+X_i)$. For Boolean $r$, this is $1$ at $X=r$ and $0$ at the other Boolean points. For arbitrary $r\in\E^\kappa$, it gives the interpolation weights: $\widetilde f(r)=\sum_{x\in\cube\kappa}f(x)\eq(r,x)$.
+$\eq$ is multilinear, and $\eq(X,Y)=[X=Y]$ on the boolean hypercube $\cube{2\kappa}$.
 
-\textbf{Tables and columns.} A \emph{table} is a group of columns of the same size. Each column is \emph{committed} or \emph{virtual}: a virtual column is a $\K$-linear function of the committed columns of its table, carried with no commitment of its own. Such a map, extended $\E$-linearly, commutes with the multilinear extension, $\widetilde{L(x)}(\zeta)=L\bigl(\widetilde x(\zeta)\bigr)$, so one opening of the committed columns evaluates the virtual one.
+\begin{definition}[Inner product over the boolean hypercube]\label{def:inner}
+For $a,b$ on $\cube{\kappa}$, \ $\inner{a}{b}=\sum_{x\in\cube{\kappa}}a(x)\,b(x)$.
+\end{definition}
 
-\textbf{Sumcheck.} Sumcheck reduces a claim $\sum_{x\in\cube\kappa}P(x)=s$ to a single evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$, over $\kappa$ rounds; a false claim passes with probability at most $\deg P\cdot\kappa/|\E|$.
+\begin{fact}[$\eq$ carries the interpolation weights]\label{fact:eq}
+For an arbitrary point $r\in\E^{\kappa}$,
+\[
+  \mle{f}(r)=\sum_{x\in\cube{\kappa}}f(x)\,\eq(r,x)=\inner{f}{\eq(r,\cdot)}.
+\]
+Binding only the first $\ell\le\kappa$ variables gives the same identity with the rest left free: for $r\in\E^{\ell}$ and $x\in\cube{\kappa-\ell}$,
+\[
+  \mle{f}(r,x)=\sum_{u\in\cube{\ell}}\eq(r,u)\,f(u,x),
+\]
+so a partial evaluation is again a multilinear, its values the $\eq(r,\cdot)$-weighted combination of the rows $f(u,\cdot)$.
+\end{fact}
 
-\textbf{Zerocheck.} To prove $P$ vanishes on $\cube\kappa$, the verifier samples $r\in\E^{\kappa}$ and runs sumcheck on $\sum_{x}P(x)\,\eq(r,x)=0$.
 
-\textbf{Inner-product PCS.} An \emph{inner-product commitment scheme} lets a prover commit to a multilinear $g:\cube{M}\to\K$ and later prove a weighted sum $\sum_{w\in\cube M} W(w)\,\widetilde g(w)=c$ against any weight $W:\cube{M}\to\E$ the verifier can evaluate: the commitment is over $\K$, the opening over $\E$. A point evaluation $\widetilde g(\mathbf r)$ at $\mathbf r\in\E^{M}$ is the special case $W=\eq(\mathbf r,\cdot)$. WHIR~\cite{ACFY25} and BaseFold~\cite{ZCF23}/Ligerito~\cite{NA25} are such schemes; we use one (\S\ref{sec:rs-dense}), specified with its soundness analysis in Annex~\ref{annex:pcs}, where such a claim is Definition~\ref{def:claim}.
+\begin{definition}[Table, column, virtual column]\label{def:column}
+A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$, and a \emph{table} is a group of columns of equal height. Each column is either \emph{committed} or \emph{virtual}: a virtual column is a fixed $\K$-linear combination of the committed columns of its own table. A $192$-bit \emph{value} (such as memory words) is indirectly committed by three columns, read as $V=V_0+V_1y+V_2y^{2}$. Addresses, registers and counters are single columns.
+\end{definition}
+
+\begin{fact}[Opening virtual column claims]\label{fact:virtual}
+Let $V=\sum_c\lambda_c C_c$ be a virtual column, the $C_c$ being committed columns and $\lambda_c\in\K$ (Definition~\ref{def:column}). For any weight $W$,
+\[
+  \inner{W}{V}=\sum_c\lambda_c\,\inner{W}{C_c},
+\]
+so a claim on $V$ is that same $\K$-combination of claims on the $C_c$, against the same $W$.
+\end{fact}
+
+To prove $\inner{W}{V}=v$, the prover sends a $v_c$ per committed column, claiming $\inner{W}{C_c}=v_c$. The verifier checks $v=\sum_c\lambda_c v_c$ from the public $\lambda_c$, and the $v_c$ form new claims (that remain to be discharged).
+
+\begin{lemma}[Schwartz--Zippel]\label{lem:sz}
+A nonzero $P\in\E[X_1,\dots,X_{\kappa}]$ of total degree at most $d$ satisfies
+\[
+  \Pr_{r\leftarrow\E^{\kappa}}\bigl[P(r)=0\bigr]\;\le\;\frac{d}{|\E|}.
+\]
+A nonzero multilinear has total degree at most $\kappa$, so it vanishes at a random point with probability at most $\kappa/|\E|$.
+\end{lemma}
+
+\begin{proof}
+Induction on $\kappa$. For $\kappa=1$ a nonzero univariate of degree at most $d$ has at most $d$ roots, so a uniform $r_1$ is one of them with probability at most $d/|\E|$. For $\kappa>1$ write $P$ in its last variable,
+\[
+  P(X_1,\dots,X_{\kappa})=\sum_{k=0}^{d}X_{\kappa}^{\,k}\,Q_k(X_1,\dots,X_{\kappa-1}),
+\]
+and let $k^{\ast}$ be the largest $k$ with $Q_k\neq0$. Then $Q_{k^{\ast}}$ is nonzero in $\kappa-1$ variables of total degree at most $d-k^{\ast}$, so by induction $Q_{k^{\ast}}(r_{<\kappa})=0$ with probability at most $(d-k^{\ast})/|\E|$. Fix $r_{<\kappa}$ with $Q_{k^{\ast}}(r_{<\kappa})\neq0$: then $X_{\kappa}\mapsto P(r_{<\kappa},X_{\kappa})$ has degree exactly $k^{\ast}$, hence at most $k^{\ast}$ roots, and a uniform $r_{\kappa}$ is one with probability at most $k^{\ast}/|\E|$. Adding the two bounds gives $d/|\E|$.
+\end{proof}
+
+
+\begin{fact}[Sumcheck~\cite{LFKN92}]\label{fact:sumcheck}
+Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$, on a $P$ of degree at most $d$ in each variable, to one evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$. Round $j$ carries a claim $s_{j-1}$, with $s_0=s$: the prover sends the univariate
+\[
+  h_j(Y)=\sum_{x\in\cube{\kappa-j}}P(\rho_1,\dots,\rho_{j-1},Y,x)
+\]
+of degree at most $d$, the verifier checks $h_j(0)+h_j(1)=s_{j-1}$, samples $\rho_j\leftarrow\E$ and takes $s_j=h_j(\rho_j)$. It ends holding $s_{\kappa}=P(\rho)$, for the caller to settle. A false $s$ survives with probability at most $d\kappa/|\E|$.
+\end{fact}
+
+\begin{definition}[Zerocheck]\label{def:zerocheck}
+To prove that $P$ vanishes on $\cube{\kappa}$, the verifier samples $r\in\E^{\kappa}$ and the two parties run sumcheck on
+\[
+  \sum_{x\in\cube{\kappa}}P(x)\,\eq(r,x)=0 .
+\]
+By Fact~\ref{fact:eq} that sum is $\mle{g}(r)$, for $g$ the restriction of $P$ to the boolean hypercube: the zero polynomial if $P$ vanishes there, and otherwise a nonzero multilinear, which a random $r$ sends to $0$ with probability at most $\kappa/|\E|$ (Lemma~\ref{lem:sz}).
+\end{definition}
+
+\begin{definition}[Inner-product commitment scheme]\label{def:ipcs}
+A \emph{weighted claim} about a multilinear $g:\cube{M}\to\K$ is a pair $(W,c)$ asserting $\inner{W}{g}=c$, with $c\in\E$ and the weight $W:\cube{M}\to\E$ \emph{MLE-friendly}: the verifier can evaluate $\mle{W}$ anywhere in $\mathrm{poly}(M)$ operations. An \emph{inner-product commitment scheme} commits to $g$ and later proves any such claim,
+\[
+  \inner{W}{g}=\sum_{w\in\cube{M}}W(w)\,g(w)=c .
+\]
+The commitment is over $\K$, the opening over $\E$. An evaluation claim $\mle{g}(r)=c$ is the case $W=\eq(r,\cdot)$, by Fact~\ref{fact:eq}.
+\end{definition}
+
+We use WHIR~\cite{ACFY25} / Ligerito~\cite{NA25} as inner-product commitment scheme (see annex \ref{annex:pcs}). The two are essentially the same scheme when WHIR is instantiated with an interleaved code and Ligerito with a Reed--Solomon code.
+

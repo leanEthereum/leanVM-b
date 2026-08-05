@@ -121,16 +121,34 @@ impl F192 {
         }
     }
 
-    /// Multiplicative inverse via Fermat: self^(2^192 − 2) = ∏_{i=1..191} self^(2^i).
-    /// One-time-setup speed class, not a hot path. `ZERO.inv() == ZERO`.
-    pub fn inv(self) -> Self {
-        let mut cur = self.square();
-        let mut r = cur;
-        for _ in 2..192 {
-            cur = cur.square();
-            r *= cur;
+    /// The Frobenius `self^(2^64)`. Free: `K` is fixed elementwise, and
+    /// `y^(2^64) = y²` (with `y⁴ = y² + y` from `y³ = y + 1`), so
+    /// `c0 + c1·y + c2·y² ↦ c0 + c2·y + (c1 + c2)·y²` is a coefficient shuffle
+    /// and one XOR.
+    #[inline]
+    pub const fn frobenius(self) -> Self {
+        Self {
+            c0: self.c0,
+            c1: self.c2,
+            c2: self.c1 ^ self.c2,
         }
-        r
+    }
+
+    /// Multiplicative inverse: `self^(2^192 − 2)`. `ZERO.inv() == ZERO`.
+    ///
+    /// Via the norm to the base field. With `φ` the Frobenius and
+    /// `m = φ(self)·φ²(self)`, the product `self·m` is the norm `N(self) ∈ K`,
+    /// so `self⁻¹ = m·N(self)⁻¹` needs two extension multiplies, one base-field
+    /// inverse and one base-field scaling. The Fermat ladder it replaces spent
+    /// 190 squarings and 190 multiplies, an order of magnitude more.
+    pub fn inv(self) -> Self {
+        let m = self.frobenius() * self.frobenius().frobenius();
+        let norm = self * m;
+        debug_assert!(
+            (norm.c1, norm.c2) == (0, 0),
+            "the norm of an F192 element must lie in K"
+        );
+        m.mul_base(F64(norm.c0).inv())
     }
 }
 
@@ -963,14 +981,42 @@ mod tests {
     #[test]
     fn square_and_inv() {
         let mut rng = Rng::new(4);
-        for _ in 0..50 {
+        for _ in 0..1000 {
             let a = rng.ext();
             assert_eq!(a.square(), a * a);
             if !a.is_zero() {
                 assert_eq!(a * a.inv(), F192::ONE);
             }
+            // K-valued and y-free elements are the cases `inv`'s norm path is
+            // most likely to get wrong, and the interpreter's MUL back-solve
+            // inverts K-valued words exclusively.
+            let k = F192::new(rng.ext().c0, 0, 0);
+            if !k.is_zero() {
+                assert_eq!(k * k.inv(), F192::ONE);
+                assert_eq!(k.inv(), F192::from(F64(k.c0).inv()));
+            }
         }
         assert_eq!(F192::ZERO.inv(), F192::ZERO);
+        assert_eq!(F192::ONE.inv(), F192::ONE);
+    }
+
+    /// `frobenius` is the shuffle form of `self^(2^64)`, which `inv` relies on.
+    #[test]
+    fn frobenius_is_the_64th_squaring() {
+        let mut rng = Rng::new(7);
+        for _ in 0..200 {
+            let a = rng.ext();
+            let mut want = a;
+            for _ in 0..64 {
+                want = want.square();
+            }
+            assert_eq!(a.frobenius(), want);
+            // Three applications return the element (Gal(F192/K) has order 3),
+            // and the norm a·φ(a)·φ²(a) lands in K.
+            assert_eq!(a.frobenius().frobenius().frobenius(), a);
+            let n = a * a.frobenius() * a.frobenius().frobenius();
+            assert_eq!((n.c1, n.c2), (0, 0));
+        }
     }
 
     #[test]
