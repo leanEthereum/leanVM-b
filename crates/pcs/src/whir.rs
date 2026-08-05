@@ -313,22 +313,26 @@ pub struct ProverData {
 fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem::MaybeUninit<T>], msg: &[T]) {
     let msg_len = msg.len();
     debug_assert!(codeword.len().is_multiple_of(msg_len));
+    let replicas = codeword.len() / msg_len;
     const COPY_CHUNK: usize = 1 << 16;
-    let copy = |dst: &mut [std::mem::MaybeUninit<T>], src: &[T]| {
-        // SAFETY: source and destination are disjoint, have the same length,
-        // and each destination slot is written exactly once.
-        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().cast(), dst.len()) };
-    };
-    if msg_len >= COPY_CHUNK {
-        parallel::chunks_mut(codeword, COPY_CHUNK, |i, dst| {
-            let src_off = (i * COPY_CHUNK) % msg_len;
-            copy(dst, &msg[src_off..src_off + dst.len()]);
-        });
-    } else {
-        for replica in codeword.chunks_mut(msg_len) {
-            copy(replica, msg);
+    // Walk the MESSAGE, writing every replica of a chunk before moving on, so the
+    // message is read once and stays in cache across its copies. Walking the
+    // codeword instead re-reads the whole message per replica, and at scale that
+    // is a gigabyte fetched from DRAM again for each one.
+    let n_chunks = msg_len.div_ceil(COPY_CHUNK);
+    let dst = parallel::SendPtr(codeword.as_mut_ptr());
+    parallel::for_each(n_chunks, |c| {
+        let start = c * COPY_CHUNK;
+        let len = COPY_CHUNK.min(msg_len - start);
+        for r in 0..replicas {
+            // SAFETY: chunk `c` owns `[r * msg_len + start, + len)` of the
+            // codeword for every `r`; those ranges are in bounds, disjoint across
+            // `c`, and disjoint from `msg`.
+            unsafe {
+                std::ptr::copy_nonoverlapping(msg.as_ptr().add(start), dst.add(r * msg_len + start).cast(), len);
+            }
         }
-    }
+    });
 }
 
 /// Commit to an `F64` message: replicate it `2^log_inv_rate` times, run the interleaved additive
@@ -348,7 +352,8 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     let codeword_len = n_positions * num_ntts;
 
     let mut codeword = zk_alloc::alloc_uninit(codeword_len);
-    replicate_message_fill_uninit(&mut codeword, message);
+    tracing::info_span!("Replicate", log_domain = k_code, replicas = 1usize << log_inv_rate)
+        .in_scope(|| replicate_message_fill_uninit(&mut codeword, message));
     // SAFETY: the replicate fill initializes every codeword element.
     let mut codeword = unsafe { zk_alloc::assume_init(codeword) };
 
