@@ -118,13 +118,14 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
                 let t_inner_a = ntt.twiddle(layer + 1, 2 * block);
                 let t_inner_b = ntt.twiddle(layer + 1, 2 * block + 1);
                 let start = block * block_elems;
-                butterfly_interleaved_ext_fused_2layer_par_rows(
+                butterfly_interleaved_ext_fused_2layer(
                     &mut data[start..start + block_elems],
                     t_outer,
                     t_inner_a,
                     t_inner_b,
                     quarter,
                     num_ntts,
+                    true,
                 );
             }
             layer += 2;
@@ -144,22 +145,48 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
         }
     }
 
-    // Deep layers: parallel cache-resident sub-NTTs.
+    // Deep layers: one sub-NTT per worker over a cache-resident sub-block. Layers
+    // fuse here for the same reason they do above, only the pass being saved is
+    // over L2/L3 rather than DRAM: a sub is a couple of megabytes, so sweeping it
+    // once per layer re-reads it once per layer. The row loop inside a fused
+    // kernel stays serial, since the parallelism is already spent on the subs and
+    // a nested dispatch would deadlock.
     let sub_size_positions = 1usize << (log_d - n_top);
     let sub_elems = sub_size_positions * num_ntts;
     parallel::chunks_mut(data, sub_elems, |sub_idx, sub_data| {
-        for layer in n_top.max(start_layer)..log_d {
-            let layer_in_sub = layer - n_top;
-            let num_blocks_in_sub = 1usize << layer_in_sub;
+        let mut layer = n_top.max(start_layer);
+        while layer < log_d {
+            let num_blocks_in_sub = 1usize << (layer - n_top);
             let block_size = 1usize << (log_d - layer);
-            let block_size_half = block_size >> 1;
             let block_elems = block_size * num_ntts;
-            for block_in_sub in 0..num_blocks_in_sub {
-                let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
-                let twiddle = ntt.twiddle(layer, global_block);
-                let block_start = block_in_sub * block_elems;
-                let block = &mut sub_data[block_start..block_start + block_elems];
-                butterfly_interleaved_ext_block(block, twiddle, block_size_half, num_ntts);
+            let global = |b: usize| sub_idx * num_blocks_in_sub + b;
+            if layer + 1 < log_d && block_size >= 4 {
+                let quarter = block_size >> 2;
+                for block_in_sub in 0..num_blocks_in_sub {
+                    let gb = global(block_in_sub);
+                    let t_outer = ntt.twiddle(layer, gb);
+                    let t_inner_a = ntt.twiddle(layer + 1, 2 * gb);
+                    let t_inner_b = ntt.twiddle(layer + 1, 2 * gb + 1);
+                    let start = block_in_sub * block_elems;
+                    butterfly_interleaved_ext_fused_2layer(
+                        &mut sub_data[start..start + block_elems],
+                        t_outer,
+                        t_inner_a,
+                        t_inner_b,
+                        quarter,
+                        num_ntts,
+                        false,
+                    );
+                }
+                layer += 2;
+            } else {
+                for block_in_sub in 0..num_blocks_in_sub {
+                    let twiddle = ntt.twiddle(layer, global(block_in_sub));
+                    let start = block_in_sub * block_elems;
+                    let block = &mut sub_data[start..start + block_elems];
+                    butterfly_interleaved_ext_block(block, twiddle, block_size >> 1, num_ntts);
+                }
+                layer += 1;
             }
         }
     });
@@ -184,13 +211,14 @@ fn butterfly_interleaved_ext_block_par_rows(block: &mut [F192], twiddle: F64, bl
 }
 
 /// Fused 2-layer butterfly, row-parallel; see the F64 twin for the shape.
-fn butterfly_interleaved_ext_fused_2layer_par_rows(
+fn butterfly_interleaved_ext_fused_2layer(
     block: &mut [F192],
     t_outer: F64,
     t_inner_a: F64,
     t_inner_b: F64,
     quarter: usize,
     num_ntts: usize,
+    par_rows: bool,
 ) {
     const PARALLEL_ROW_THRESHOLD: usize = 512;
     let stride = quarter * num_ntts;
@@ -211,7 +239,7 @@ fn butterfly_interleaved_ext_fused_2layer_par_rows(
         do_one(a, b, c, d);
     };
 
-    if quarter < PARALLEL_ROW_THRESHOLD {
+    if !par_rows || quarter < PARALLEL_ROW_THRESHOLD {
         for r in 0..quarter {
             group(r);
         }

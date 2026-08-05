@@ -143,9 +143,10 @@ impl AdditiveNttF64 {
     }
 
     /// Parallel interleaved forward NTT, cache-blocked like the extension-field twin:
-    /// top layers sweep the full buffer (fused two-layer passes, row-parallel),
-    /// deep layers run as cache-resident sub-NTTs in parallel. Constants are
-    /// re-derived for 8-byte elements.
+    /// top layers sweep the full buffer row-parallel, deep layers run as
+    /// cache-resident sub-NTTs one per worker. Both phases fuse up to three layers
+    /// per pass, so the pass count, which is what a memory-bound transform pays,
+    /// is a third of the layer count. Constants are re-derived for 8-byte elements.
     pub fn forward_transform_interleaved_parallel_from_layer(
         &self,
         data: &mut [F64],
@@ -201,11 +202,12 @@ impl AdditiveNttF64 {
                         t[3 + s] = self.twiddle(layer + 2, 4 * block + s);
                     }
                     let start = block * block_elems;
-                    butterfly_interleaved_fused_3layer_par_rows(
+                    butterfly_interleaved_fused_3layer(
                         &mut data[start..start + block_elems],
                         &t,
                         eighth,
                         num_ntts,
+                        true,
                     );
                 }
                 layer += 3;
@@ -216,13 +218,14 @@ impl AdditiveNttF64 {
                     let t_inner_a = self.twiddle(layer + 1, 2 * block);
                     let t_inner_b = self.twiddle(layer + 1, 2 * block + 1);
                     let start = block * block_elems;
-                    butterfly_interleaved_fused_2layer_par_rows(
+                    butterfly_interleaved_fused_2layer(
                         &mut data[start..start + block_elems],
                         t_outer,
                         t_inner_a,
                         t_inner_b,
                         quarter,
                         num_ntts,
+                        true,
                     );
                 }
                 layer += 2;
@@ -242,22 +245,69 @@ impl AdditiveNttF64 {
             }
         }
 
-        // Deep layers: parallel cache-resident sub-NTTs.
+        // Deep layers: one sub-NTT per worker, each over a cache-resident
+        // sub-block. Layers fuse here for the same reason they do above, only the
+        // pass being saved is over L2/L3 rather than DRAM: a sub is a couple of
+        // megabytes, so twelve single-layer sweeps re-read it twelve times. The
+        // row loop inside a fused kernel stays serial, since the parallelism is
+        // already spent on the subs and a nested dispatch would deadlock.
         let sub_size_positions = 1usize << (log_d - n_top);
         let sub_elems = sub_size_positions * num_ntts;
         parallel::chunks_mut(data, sub_elems, |sub_idx, sub_data| {
-            for layer in n_top.max(start_layer)..log_d {
-                let layer_in_sub = layer - n_top;
-                let num_blocks_in_sub = 1usize << layer_in_sub;
+            let mut layer = n_top.max(start_layer);
+            while layer < log_d {
+                let num_blocks_in_sub = 1usize << (layer - n_top);
                 let block_size = 1usize << (log_d - layer);
-                let block_size_half = block_size >> 1;
                 let block_elems = block_size * num_ntts;
-                for block_in_sub in 0..num_blocks_in_sub {
-                    let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
-                    let twiddle = self.twiddle(layer, global_block);
-                    let block_start = block_in_sub * block_elems;
-                    let block = &mut sub_data[block_start..block_start + block_elems];
-                    butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts);
+                let blocks =
+                    |lay: usize| (0..num_blocks_in_sub).map(move |b| (b, sub_idx * (1usize << (lay - n_top)) + b));
+                if layer + 2 < log_d && block_size >= 8 {
+                    let eighth = block_size >> 3;
+                    for (block_in_sub, global_block) in blocks(layer) {
+                        let mut t = [F64::ZERO; 7];
+                        t[0] = self.twiddle(layer, global_block);
+                        for s in 0..2 {
+                            t[1 + s] = self.twiddle(layer + 1, 2 * global_block + s);
+                        }
+                        for s in 0..4 {
+                            t[3 + s] = self.twiddle(layer + 2, 4 * global_block + s);
+                        }
+                        let start = block_in_sub * block_elems;
+                        butterfly_interleaved_fused_3layer(
+                            &mut sub_data[start..start + block_elems],
+                            &t,
+                            eighth,
+                            num_ntts,
+                            false,
+                        );
+                    }
+                    layer += 3;
+                } else if layer + 1 < log_d && block_size >= 4 {
+                    let quarter = block_size >> 2;
+                    for (block_in_sub, global_block) in blocks(layer) {
+                        let t_outer = self.twiddle(layer, global_block);
+                        let t_inner_a = self.twiddle(layer + 1, 2 * global_block);
+                        let t_inner_b = self.twiddle(layer + 1, 2 * global_block + 1);
+                        let start = block_in_sub * block_elems;
+                        butterfly_interleaved_fused_2layer(
+                            &mut sub_data[start..start + block_elems],
+                            t_outer,
+                            t_inner_a,
+                            t_inner_b,
+                            quarter,
+                            num_ntts,
+                            false,
+                        );
+                    }
+                    layer += 2;
+                } else {
+                    for (block_in_sub, global_block) in blocks(layer) {
+                        let twiddle = self.twiddle(layer, global_block);
+                        let start = block_in_sub * block_elems;
+                        let block = &mut sub_data[start..start + block_elems];
+                        butterfly_interleaved_block(block, twiddle, block_size >> 1, num_ntts);
+                    }
+                    layer += 1;
                 }
             }
         });
@@ -316,6 +366,7 @@ fn fused_rows<const N: usize>(
     block: &mut [F64],
     stride_rows: usize,
     num_ntts: usize,
+    par_rows: bool,
     do_one: impl Fn(&mut [&mut [F64]; N]) + Sync,
 ) {
     const PARALLEL_ROW_THRESHOLD: usize = 512;
@@ -331,7 +382,7 @@ fn fused_rows<const N: usize>(
         do_one(&mut rows);
     };
 
-    if stride_rows < PARALLEL_ROW_THRESHOLD {
+    if !par_rows || stride_rows < PARALLEL_ROW_THRESHOLD {
         for r in 0..stride_rows {
             group(r);
         }
@@ -353,8 +404,8 @@ fn fused_rows<const N: usize>(
 /// distance `4·eighth`, layer L+1 at `2·eighth`, layer L+2 at `eighth`.
 /// `t` holds the seven twiddles breadth-first: `t[0]` is layer L, `t[1..3]`
 /// layer L+1 (one per half), `t[3..7]` layer L+2 (one per quarter).
-fn butterfly_interleaved_fused_3layer_par_rows(block: &mut [F64], t: &[F64; 7], eighth: usize, num_ntts: usize) {
-    fused_rows::<8>(block, eighth, num_ntts, |rows| {
+fn butterfly_interleaved_fused_3layer(block: &mut [F64], t: &[F64; 7], eighth: usize, num_ntts: usize, par_rows: bool) {
+    fused_rows::<8>(block, eighth, num_ntts, par_rows, |rows| {
         let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
         // Layer L, distance 4·eighth.
         butterfly_lanes(r0, r4, t[0]);
@@ -376,15 +427,16 @@ fn butterfly_interleaved_fused_3layer_par_rows(block: &mut [F64], t: &[F64; 7], 
 }
 
 /// Fused 2-layer butterfly, row-parallel; see the extension-field twin for the shape.
-fn butterfly_interleaved_fused_2layer_par_rows(
+fn butterfly_interleaved_fused_2layer(
     block: &mut [F64],
     t_outer: F64,
     t_inner_a: F64,
     t_inner_b: F64,
     quarter: usize,
     num_ntts: usize,
+    par_rows: bool,
 ) {
-    fused_rows::<4>(block, quarter, num_ntts, |rows| {
+    fused_rows::<4>(block, quarter, num_ntts, par_rows, |rows| {
         let [row_a, row_b, row_c, row_d] = rows;
         // Layer L butterflies (a,c) and (b,d), then layer L+1 (a,b) and
         // (c,d); each stage runs the NEON lane-pair kernel over the rows.
