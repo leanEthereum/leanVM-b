@@ -1034,6 +1034,7 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
+MAX_LOG_BYTECODE = 32
 BASES = (6, 21, 36, 44, 59, 77, 112)
 WIDTHS = (15, 15, 8, 15, 18, 35, 11)
 CONSTRAINT_COUNTS = (0, 0, 0, 0, 2, 0, 0)
@@ -1143,6 +1144,9 @@ class Program:
         operations = tuple(Operation.parse(item) for item in encoded)
         require(bool(operations) and not len(operations) & (len(operations) - 1),
                 "program length must be a nonzero power of two")
+        # One of the public instance caps the counting arguments rest on (doc
+        # sec:bytecode, sec:memchan): reject an oversized announcement outright.
+        require(len(operations) <= 1 << MAX_LOG_BYTECODE, "program exceeds the bytecode cap")
         return cls(operations)
 
     def digest(self) -> tuple[int, int, int, int]:
