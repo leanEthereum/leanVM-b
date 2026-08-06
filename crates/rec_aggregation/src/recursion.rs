@@ -1298,6 +1298,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                         nbcv += 1;
                         (4, F192::ZERO, F192::ZERO)
                     }
+                    // No table declares a degree-2 coordinate yet; converting them
+                    // teaches the guest to flatten one into terms first.
+                    Coord::Prod(..) | Coord::Sum(..) => {
+                        unreachable!("no bus coordinate is degree 2 yet")
+                    }
                 };
                 ct.push(t);
                 cval.push(u(v));
