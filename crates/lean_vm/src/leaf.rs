@@ -12,7 +12,7 @@ use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
-use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod};
+use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod, mle_eval_prod_vec4, mle_eval_vec4};
 use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
@@ -442,6 +442,24 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F19
         .map(|c| c.value)
 }
 
+#[inline]
+fn eval_mle(table: &[F64], point: &[F192], vec4: bool) -> F192 {
+    if vec4 {
+        mle_eval_vec4(table, point)
+    } else {
+        mle_eval(table, point)
+    }
+}
+
+#[inline]
+fn eval_mle_prod(a: &[F64], b: &[F64], point: &[F192], vec4: bool) -> F192 {
+    if vec4 {
+        mle_eval_prod_vec4(a, b, point)
+    } else {
+        mle_eval_prod(a, b, point)
+    }
+}
+
 /// Prover-side decomposition: reads the real columns, writing each FRESH
 /// committed value onto the stream and recording the matching claim
 /// (block/coord order); duplicates reuse the recorded value.
@@ -464,6 +482,7 @@ fn decompose_prove(
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
     ps: &mut ProverState,
+    mle_vec4: bool,
 ) -> F192 {
     // Pass 1: enumerate the FRESH committed coords exactly as `decompose_formula`
     // visits them (blocks in order, coords in order, Col/GCol only, first
@@ -485,7 +504,7 @@ fn decompose_prove(
     }
     let vals: Vec<F192> = parallel::map_collect(jobs.len(), |i| {
         let (col, kappa) = jobs[i];
-        mle_eval(cols[col], &zeta[..kappa])
+        eval_mle(cols[col], &zeta[..kappa], mle_vec4)
     });
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
@@ -552,13 +571,17 @@ pub struct BytecodeClaim {
 /// The public (bytecode) coordinate evaluations of a side at its GKR point,
 /// block/coord order, with the bytecode block's `κ`.
 pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
+    public_evals_with_mode(blocks, zeta, false)
+}
+
+fn public_evals_with_mode(blocks: &[Block], zeta: &[F192], mle_vec4: bool) -> (usize, Vec<F192>) {
     let mut kappa = 0;
     let mut out = Vec::new();
     for blk in blocks {
         for c in &blk.coords {
             if let Coord::Public(vals) = c {
                 kappa = blk.kappa;
-                out.push(mle_eval(vals, &zeta[..blk.kappa]));
+                out.push(eval_mle(vals, &zeta[..blk.kappa], mle_vec4));
             }
         }
     }
@@ -653,8 +676,8 @@ impl Absorb for VerifierState<'_> {
 /// columns are opened ONCE: bind the evaluations, sample the four selector
 /// challenges, emit the single reduced claim. Both sides run exactly this
 /// sequence, in this order.
-fn bytecode_claim(blocks: &[Block], point: &[F192], t: &mut impl Absorb) -> BytecodeClaim {
-    let (kbc, pv) = public_evals(blocks, point);
+fn bytecode_claim(blocks: &[Block], point: &[F192], t: &mut impl Absorb, mle_vec4: bool) -> BytecodeClaim {
+    let (kbc, pv) = public_evals_with_mode(blocks, point, mle_vec4);
     for &v in &pv {
         t.observe(v);
     }
@@ -695,6 +718,23 @@ pub fn prove_balance(
     ps: &mut ProverState,
 ) -> BusProof {
     let detail_trace = std::env::var("LEANVM_BUS_DETAIL_TRACE").as_deref() == Ok("1");
+    let mle_vec4_requested = std::env::var("LEANVM_BUS_MLE_VEC4").as_deref() == Ok("1");
+    let mle_vec4_eligible = cfg!(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ));
+    assert!(
+        !mle_vec4_requested || mle_vec4_eligible,
+        "LEANVM_BUS_MLE_VEC4=1 requires an x86-64 VPCLMULQDQ/AVX-512F build"
+    );
+    let mle_vec4 = mle_vec4_requested && mle_vec4_eligible;
+    if std::env::var_os("LEANVM_BUS_MLE_VEC4").is_some() {
+        eprintln!(
+            "LEANVM_BUS_MLE schema=1 requested={mle_vec4_requested} \
+             eligible={mle_vec4_eligible} selected={mle_vec4}"
+        );
+    }
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
@@ -735,7 +775,7 @@ pub fn prove_balance(
     // transmitted total would appear in exactly one check, which it could always be
     // solved to satisfy, and would settle nothing.
     let table_evals_started = detail_trace.then(std::time::Instant::now);
-    let table_evals = tables_at(cols, tables, &bus_gkr.point);
+    let table_evals = tables_at(cols, tables, &bus_gkr.point, mle_vec4);
     let table_evals_ns = table_evals_started.map_or(0, |started| started.elapsed().as_nanos());
     let forms_started = detail_trace.then(std::time::Instant::now);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
@@ -757,6 +797,7 @@ pub fn prove_balance(
                 &mut forms[s],
                 &mut claims,
                 ps,
+                mle_vec4,
             );
             if let Some(started) = side_started {
                 decompose_side_ns[s] = started.elapsed().as_nanos();
@@ -765,7 +806,7 @@ pub fn prove_balance(
     });
     let decompose_ns = decompose_started.map_or(0, |started| started.elapsed().as_nanos());
     let prod_sums_started = detail_trace.then(std::time::Instant::now);
-    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point);
+    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point, mle_vec4);
     let prod_sums_ns = prod_sums_started.map_or(0, |started| started.elapsed().as_nanos());
     let sigmas_started = detail_trace.then(std::time::Instant::now);
     let sigmas: [Vec<F192>; 3] = std::array::from_fn(|s| {
@@ -787,7 +828,7 @@ pub fn prove_balance(
     let sigmas_ns = sigmas_started.map_or(0, |started| started.elapsed().as_nanos());
 
     let bytecode_started = detail_trace.then(std::time::Instant::now);
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, ps)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, ps, mle_vec4)];
     let bytecode_ns = bytecode_started.map_or(0, |started| started.elapsed().as_nanos());
     if let Some(started) = post_gkr_started {
         eprintln!(
@@ -810,12 +851,12 @@ pub fn prove_balance(
 
 /// Every table's committed columns at `ζ[..τ_t]`: one `eq` table per table, then an
 /// inner product per column. `tables[t] = (base, n_cols)` in the global schema.
-fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<Vec<F192>> {
+fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192], mle_vec4: bool) -> Vec<Vec<F192>> {
     tables
         .iter()
         .map(|&(base, n_cols)| {
             let tau = crate::log2_strict_usize(cols[base].len());
-            parallel::map_collect(n_cols, |c| mle_eval(cols[base + c], &zeta[..tau]))
+            parallel::map_collect(n_cols, |c| eval_mle(cols[base + c], &zeta[..tau], mle_vec4))
         })
         .collect()
 }
@@ -830,6 +871,7 @@ fn prod_sums_at(
     tables: &[(usize, usize)],
     forms: &[Vec<BusForm>; 3],
     zeta: &[F192],
+    mle_vec4: bool,
 ) -> Vec<Vec<(usize, usize, F192)>> {
     tables
         .iter()
@@ -844,7 +886,11 @@ fn prod_sums_at(
             pairs.dedup();
             parallel::map_collect(pairs.len(), |i| {
                 let (a, b) = pairs[i];
-                (a, b, mle_eval_prod(cols[base + a], cols[base + b], &zeta[..tau]))
+                (
+                    a,
+                    b,
+                    eval_mle_prod(cols[base + a], cols[base + b], &zeta[..tau], mle_vec4),
+                )
             })
         })
         .collect()
@@ -925,7 +971,7 @@ pub fn verify_balance(
         totals[s] = framework + bus_gkr.values[s];
     }
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, vs)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, vs, false)];
     Ok(BusVerify {
         claims,
         bytecode_claims,
