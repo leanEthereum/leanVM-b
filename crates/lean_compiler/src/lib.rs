@@ -89,7 +89,9 @@ pub fn compile(ast: &Ast) -> Program {
         let dropped = if std::env::var("DBG_NO_CSE").is_ok() {
             0
         } else {
-            cse::cse(&mut low.code, low.abi_end)
+            // Coalescing runs second: CSE first collapses the duplicate copies,
+            // leaving one per destination for this to retarget away.
+            cse::cse(&mut low.code, low.abi_end) + cse::coalesce_copies(&mut low.code, low.abi_end)
         };
         cse_dropped += dropped;
         if dbg_lower {

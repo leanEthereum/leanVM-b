@@ -194,7 +194,7 @@ def main():
 }
 
 #[test]
-fn extension_square_uses_base_field_identity() {
+fn extension_square_uses_one_extension_row() {
     let src = r#"
 def main():
     a = [5, 7, 11]
@@ -209,24 +209,26 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     let expected = words(F192::new(5, 7, 11) * F192::new(5, 7, 11));
     program.execute([expected[0], expected[1], expected[2], F64::ZERO]);
+    // Both operands name the same run, which the row reads twice at two access
+    // counts. Decomposing the square into `a²`, `c²`, `b² + c²` would cost four
+    // base rows: more cycles, more committed cells and more bus flushes.
+    assert_eq!(
+        program.prog.iter().filter(|op| matches!(op, Op::MulExt { .. })).count(),
+        1
+    );
     assert_eq!(
         program
             .prog
             .iter()
             .filter(|op| matches!(op, Op::Mul { a, b, .. } if a == b))
             .count(),
-        3,
-        "the three coefficient squares use base-field multiplication"
-    );
-    assert_eq!(program.prog.iter().filter(|op| matches!(op, Op::Xor { .. })).count(), 1);
-    assert_eq!(
-        program.prog.iter().filter(|op| matches!(op, Op::MulExt { .. })).count(),
-        0
+        0,
+        "no coefficient squaring is left in base rows"
     );
 }
 
 #[test]
-fn implicit_embedded_base_product_uses_three_base_multiplications() {
+fn implicit_embedded_base_product_uses_the_scalar_row() {
     let src = r#"
 def main():
     scalar = [5, 0, 0]
@@ -242,9 +244,15 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     let expected = words(F192::from(F64(5)) * F192::new(7, 11, 13));
     program.execute([expected[0], expected[1], expected[2], F64::ZERO]);
-    assert!(
-        program.prog.iter().filter(|op| matches!(op, Op::Mul { .. })).count() >= 3,
-        "the three coefficients use base-field multiplication"
+    // A recognized embedded scalar takes the shared row's base mode, one row
+    // rather than one base multiplication per coefficient.
+    assert_eq!(
+        program
+            .prog
+            .iter()
+            .filter(|op| matches!(op, Op::MulExtBase { .. }))
+            .count(),
+        1
     );
     assert_eq!(
         program.prog.iter().filter(|op| matches!(op, Op::MulExt { .. })).count(),

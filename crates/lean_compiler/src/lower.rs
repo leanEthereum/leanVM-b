@@ -1509,47 +1509,6 @@ impl FnLower<'_> {
         self.ext_operand_with_base(e).0
     }
 
-    /// `(a + bY + cY²)² = a² + c²Y + (b² + c²)Y²` in
-    /// `F64[Y]/(Y³ + Y + 1)`. Three base multiplications and one base XOR are
-    /// cheaper for the 64-bit-memory VM and, crucially, do not consume a row in
-    /// the much wider extension-multiplication table.
-    fn square_ext_with_base_ops(&mut self, input: Off, output: Off) {
-        let b2 = self.fresh();
-        self.emit(LOp::Mul {
-            a: input,
-            b: input,
-            c: output,
-        });
-        self.emit(LOp::Mul {
-            a: input + 2,
-            b: input + 2,
-            c: output + 1,
-        });
-        self.emit(LOp::Mul {
-            a: input + 1,
-            b: input + 1,
-            c: b2,
-        });
-        self.emit(LOp::Xor {
-            a: b2,
-            b: output + 1,
-            c: output + 2,
-        });
-    }
-
-    /// Multiply an embedded base scalar by an extension value coefficient by
-    /// coefficient. This is exactly the tower-field mixed product and needs no
-    /// extension-table row.
-    fn mul_ext_base_with_base_ops(&mut self, scalar: Off, value: Off, output: Off) {
-        for k in 0..3 {
-            self.emit(LOp::Mul {
-                a: scalar,
-                b: value + k,
-                c: output + k,
-            });
-        }
-    }
-
     /// Follow a deferred three-cell alias when it already names one contiguous
     /// extension run. Extension instructions consume only the run's FP-relative
     /// base, so forwarding the base is equivalent to materializing three copies.
@@ -1695,22 +1654,62 @@ impl FnLower<'_> {
     /// g-power *factor* still goes into the `beta` immediate, so only the
     /// runtime factor costs a pointer `MUL`.
     fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
-        // `buf[r * GEN ** k]` (either factor order): beta takes the constant,
-        // the pointer MUL takes only the runtime factor `r`.
-        if let Expr::Mul(a, b) = idx {
-            for (c, r) in [(a, b), (b, a)] {
-                if let Some(k) = self.try_gpow_index(c) {
-                    let (la, lr) = (self.expr(arr), self.expr(r));
+        // `buf[r * GEN ** k]` (either factor order, either side): beta takes
+        // every constant factor, the pointer MUL only the runtime ones.
+        let (arr_rt, ka) = self.split_gpow(arr);
+        let (idx_rt, ki) = self.split_gpow(idx);
+        if let Some(beta) = ka.checked_add(ki).filter(|k| *k <= FOLD_MAX) {
+            match (arr_rt, idx_rt) {
+                (Some(a), Some(i)) => {
+                    let (la, li) = (self.expr(&a), self.expr(&i));
                     let ptr = self.fresh();
-                    self.emit(LOp::Mul { a: la, b: lr, c: ptr });
-                    return (ptr, k);
+                    self.emit(LOp::Mul { a: la, b: li, c: ptr });
+                    return (ptr, beta as u32);
                 }
+                // One side is wholly constant: it is entirely beta's, and the
+                // other side is already the pointer cell.
+                (Some(r), None) | (None, Some(r)) => return (self.expr(&r), beta as u32),
+                // Both constant: the address is a fixed g-power, which still
+                // needs a cell to be dereferenced through.
+                (None, None) => {}
             }
         }
         let (la, li) = (self.expr(arr), self.expr(idx));
         let ptr = self.fresh();
         self.emit(LOp::Mul { a: la, b: li, c: ptr });
         (ptr, 0)
+    }
+
+    /// Split a product into its runtime factors and the exponent carried by its
+    /// compile-time `g`-power factors: `chain · x³ · GEN ** 3` gives
+    /// `(chain · x³, 3)`. `None` when every factor is constant.
+    ///
+    /// [`Self::gaddr_of`] cannot do this: it gives up entirely on a product of
+    /// two runtime bases, which is exactly the shape of an extension-strided
+    /// index, so the constant factor ended up materialized by a `SET` and
+    /// multiplied in by a `MUL` instead of riding a `DEREF`'s `β` immediate.
+    fn split_gpow(&self, e: &Expr) -> (Option<Expr>, u128) {
+        if let Expr::Mul(a, b) = e {
+            let (ra, ka) = self.split_gpow(a);
+            let (rb, kb) = self.split_gpow(b);
+            let Some(exp) = ka.checked_add(kb) else {
+                return (Some(e.clone()), 0);
+            };
+            return match (ra, rb) {
+                (Some(x), Some(y)) => (Some(Expr::Mul(Box::new(x), Box::new(y))), exp),
+                (Some(x), None) | (None, Some(x)) => (Some(x), exp),
+                (None, None) => (None, exp),
+            };
+        }
+        match self.gaddr_of(e) {
+            Some(GAddr { base: None, exp }) => (None, exp),
+            // `gaddr_of` does not read a power-of-two literal as a g-power, and
+            // `g = x` makes it one.
+            _ => match self.try_gpow_index(e) {
+                Some(k) => (None, k as u128),
+                None => (Some(e.clone()), 0),
+            },
+        }
     }
 
     /// The symbolic g-address of `e`, when it is one: a constant g-power
@@ -1829,6 +1828,16 @@ impl FnLower<'_> {
             && exp <= FOLD_MAX
         {
             return (base, exp as u32);
+        }
+        // `arr` is not a recognized g-address (typically a product of two
+        // runtime bases), but its constant factors and `extra` still belong in
+        // `β` rather than in a `SET` and a `MUL`.
+        let (runtime, peeled) = self.split_gpow(arr);
+        if let Some(r) = runtime
+            && let Some(exp) = peeled.checked_add(extra)
+            && exp <= FOLD_MAX
+        {
+            return (self.expr(&r), exp as u32);
         }
         let a = self.expr(arr);
         if extra == 0 {
@@ -2074,6 +2083,18 @@ impl FnLower<'_> {
                     Some(RetBind::Gaddr(ga)) => Bind::Addr(ga),
                     _ => Bind::Cell(cell),
                 }
+            } else if let (Some(r), k) = self.split_gpow(a)
+                && k > 0
+            {
+                // A runtime product times a constant g-power (`chain · x³ · g³`)
+                // is no `GAddr`, since `gmul` gives up on two runtime bases. Bind
+                // the runtime part as the base and the constant as the shift
+                // anyway, so it still reaches a callee `DEREF`'s `β` immediate
+                // instead of being materialized here by a `SET` and a `MUL`.
+                Bind::Addr(GAddr {
+                    base: Some(self.expr(&r)),
+                    exp: k,
+                })
             } else {
                 Bind::Cell(self.expr(a))
             };
@@ -2580,17 +2601,20 @@ impl FnLower<'_> {
                 let c = self.ext_operand(&args[2]);
                 match f {
                     "xor_192" => self.emit(LOp::AddExt { a, b, c }),
-                    "mul_192" => {
-                        if a == b {
-                            self.square_ext_with_base_ops(a, c);
-                        } else if let Some(scalar) = a_base {
-                            self.mul_ext_base_with_base_ops(scalar, b, c);
-                        } else if let Some(scalar) = b_base {
-                            self.mul_ext_base_with_base_ops(scalar, a, c);
-                        } else {
-                            self.emit(LOp::MulExt { a, b, c });
-                        }
-                    }
+                    // One extension row beats decomposing into base rows on every
+                    // axis: a squaring is 3 MUL + 1 XOR (48 committed cells, 20 bus
+                    // flushes, 4 cycles) against one MUL_EXT row (27, 11, 1), and a
+                    // base-scalar product is 3 MUL (36, 15, 3) against one
+                    // MUL_EXT_BASE row. `a == b` needs no special case: the row reads
+                    // the run twice, at two access counts, and squares it.
+                    "mul_192" => match (a_base, b_base) {
+                        // The scalar mode reads its first operand's run for the bus
+                        // but multiplies by lane 0 alone, so the scalar must name a
+                        // run whose upper lanes are the zeros it ignores.
+                        (Some(scalar), _) if a != b => self.emit(LOp::MulExtBase { a: scalar, b, c }),
+                        (_, Some(scalar)) if a != b => self.emit(LOp::MulExtBase { a: scalar, b: a, c }),
+                        _ => self.emit(LOp::MulExt { a, b, c }),
+                    },
                     // c = a / b is constrained by c * b = a; the VM's write-once
                     // deduction fills c when it is unset.
                     _ => self.emit(LOp::MulExt { a: c, b, c: a }),
