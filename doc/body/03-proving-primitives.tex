@@ -40,19 +40,9 @@ so a partial evaluation is again a multilinear, its values the $\eq(r,\cdot)$-we
 \end{fact}
 
 
-\begin{definition}[Table, column, virtual column]\label{def:column}
-A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$, and a \emph{table} is a group of columns of equal height. Each column is either \emph{committed} or \emph{virtual}: a virtual column is a fixed $\K$-linear combination of the committed columns of its own table. A $192$-bit \emph{value} (such as memory words) is indirectly committed by three columns, read as $V=V_0+V_1y+V_2y^{2}$. Addresses, registers and counters are single columns.
+\begin{definition}[Table, column]\label{def:column}
+A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$ committed at the beginning of the proof (via \S\ref{sec:stacking}), and a \emph{table} is a group of columns, of equal height, connected by polynomial constraints. A $192$-bit \emph{value} (such as memory words) is indirectly committed by three columns, read as $V=V_0+V_1y+V_2y^{2}$.
 \end{definition}
-
-\begin{fact}[Opening virtual column claims]\label{fact:virtual}
-Let $V=\sum_c\lambda_c C_c$ be a virtual column, the $C_c$ being committed columns and $\lambda_c\in\K$ (Definition~\ref{def:column}). For any weight $W$,
-\[
-  \inner{W}{V}=\sum_c\lambda_c\,\inner{W}{C_c},
-\]
-so a claim on $V$ is that same $\K$-combination of claims on the $C_c$, against the same $W$.
-\end{fact}
-
-To prove $\inner{W}{V}=v$, the prover sends a $v_c$ per committed column, claiming $\inner{W}{C_c}=v_c$. The verifier checks $v=\sum_c\lambda_c v_c$ from the public $\lambda_c$, and the $v_c$ form new claims (that remain to be discharged).
 
 \begin{lemma}[Schwartz--Zippel]\label{lem:sz}
 A nonzero $P\in\E[X_1,\dots,X_{\kappa}]$ of total degree at most $d$ satisfies
