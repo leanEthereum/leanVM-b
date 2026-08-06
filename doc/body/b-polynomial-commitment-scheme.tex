@@ -117,7 +117,7 @@ For $\rexp \ge 1$ and $\kappa + \rexp \le \beta$, \S\ref{app:ntt} constructs, fo
 \textbf{Open}$\bigl(\{(W_\tau, c_\tau)\}_{\tau \in [J_0]}\bigr)$, $J_0 \ge 1$ weighted claims about $f$: set $f^{(0)} := f$. For $i = 0, 1, \dots, \nlev - 1$:
 \begin{enumerate}[itemsep=0.5pt,topsep=2pt]
 \item \emph{(batch)} $\mathbf{V}$ sends $\lambda \leftarrow \F$; the \emph{batched claim} is $(W, \rc{0}) := \bigl(\sum_{\tau \in [J_i]} \lambda^{\tau-1} W_\tau,\; \sum_{\tau} \lambda^{\tau-1} c_\tau\bigr)$.
-\item \emph{(sumcheck~\cite{LFKN92})} For $j = 1, \dots, \ell_i$: $\mathbf{P}$ sends $h_j \in \F[X]$ with $\deg h_j \le 2$, honestly $h_j(X) = \sum_{x} \mle{W}(\fc^{<j}, X, x)\, \mle{f^{(i)}}(\fc^{<j}, X, x)$ where $\fc^{<j} := (\fc_1, \dots, \fc_{j-1})$; $\mathbf{V}$ checks $h_j(0) + h_j(1) = \rc{j-1}$ and sends $\fc_j \leftarrow \F$; both set $\rc{j} := h_j(\fc_j)$.\\
+\item \emph{(sumcheck~\cite{LFKN92})} For $j = 1, \dots, \ell_i$: $\mathbf{P}$ sends $h_j \in \F[X]$ with $\deg h_j \le 2$, honestly $h_j(X) = \sum_{x} \mle{W}(\fc^{<j}, X, x)\, \mle{f^{(i)}}(\fc^{<j}, X, x)$ where $\fc^{<j} := (\fc_1, \dots, \fc_{j-1})$; $\mathbf{V}$ checks $h_j(0) + h_j(1) \qeq \rc{j-1}$ and sends $\fc_j \leftarrow \F$; both set $\rc{j} := h_j(\fc_j)$.\\
 Set $\fc := (\fc_1, \dots, \fc_{\ell_i})$, $c' := \rc{\ell_i}$, and, for $x \in \cube{\nv_{i+1}}$: \ $f^{(i+1)}(x) := \mle{f^{(i)}}(\fc, x)$, \ $W'(x) := \mle{W}(\fc, x)$. The \emph{residual claim} $(W', c')$ is a weighted claim about the folded multilinear $f^{(i+1)}$.
 \item If $i < \nlev - 1$:
 \begin{enumerate}[itemsep=0.5pt,topsep=1pt,label=(\alph*)]
@@ -126,7 +126,7 @@ Set $\fc := (\fc_1, \dots, \fc_{\ell_i})$, $c' := \rc{\ell_i}$, and, for $x \in 
 \item \emph{(query)} $\mathbf{V}$ sends $\nq_i$ i.i.d.\ columns $\qset_i = (x_q)_{q \in [\nq_i]} \leftarrow \dom_i$; it reads $\orc^{(i)}[\cdot, x_q]$ and computes $c_q := \sum_{u} \eq(\fc, u)\, \orc^{(i)}[u, x_q] = \orc^{(i)}_\fc[x_q]$; honestly $c_q = \Enc_i(f^{(i+1)})[x_q]$, by Fact~\ref{fact:fold-decode}.
 \item Claims for level $i+1$ (so $J_{i+1} := \nq_i + 2$): the residual claim $(W', c')$, the OOD claim $(\eq(z, \cdot), \cood)$, and the $\nq_i$ \emph{consistency claims} $(W^{(i)}_{x_q}, c_q)$, where $W^{(i)}_x$ are the column weights of $\Enc_i$ (\S\ref{sec:binary-rs}): the $q$-th asserts $\Enc_i(f^{(i+1)})[x_q] = c_q$.
 \end{enumerate}
-\item If $i = \nlev - 1$: \emph{(final)} $\mathbf{P}$ sends the multilinear $\ffinal : \cube{\nv_\nlev} \to \F$; $\mathbf{V}$ sends $\nq_{\nlev-1}$ i.i.d.\ columns $\qset_{\nlev-1} \leftarrow \dom_{\nlev-1}$, computes $c_q$ from $\orc^{(\nlev-1)}$ as in 3(c), and checks $\sum_{x \in \cube{\nv_\nlev}} W'(x)\, \ffinal(x) = c'$ and $\Enc_{\nlev-1}(\ffinal)[x_q] = c_q$ for all $q \in [\nq_{\nlev-1}]$.
+\item If $i = \nlev - 1$: \emph{(final)} $\mathbf{P}$ sends the multilinear $\ffinal : \cube{\nv_\nlev} \to \F$; $\mathbf{V}$ sends $\nq_{\nlev-1}$ i.i.d.\ columns $\qset_{\nlev-1} \leftarrow \dom_{\nlev-1}$, computes $c_q$ from $\orc^{(\nlev-1)}$ as in 3(c), and checks $\sum_{x \in \cube{\nv_\nlev}} W'(x)\, \ffinal(x) \qeq c'$ and $\Enc_{\nlev-1}(\ffinal)[x_q] \qeq c_q$ for all $q \in [\nq_{\nlev-1}]$.
 \end{enumerate}
 $\mathbf{V}$ accepts iff every check above passed.
 \end{protocol}
