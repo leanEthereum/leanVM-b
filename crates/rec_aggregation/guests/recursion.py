@@ -236,14 +236,18 @@ BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: one bytecode point and the Flock
 # lincheck data (see verify_sub's defer_out layout).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
-# Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
+# Aggregation: a RUNTIME number of sub-proofs of the same program; per-sub data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
 # (TRANSCRIPT_SEED), then the hinted sub statement + the inner PROGRAM DIGEST are bound.
 # The seed is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
 # (the fs_seed hint folded into own_pi in main), so ONE compiled guest verifies
 # proofs of any inner program of this VM — the outer statement fixes the whole
 # proving environment (circuit family + program), via own_pi.
-NSUB = NSUB_PLACEHOLDER
+# The arity is hinted too, as g^nsub, and absorbed by both aggregation transcripts
+# ahead of every variable-length sequence, so the outer statement fixes it as well.
+# NSUB_BOUND (nsub < NSUB_BOUND) is the compile-time range-check bound that makes
+# the count a bounded exponent, hence every sub-walk below terminate.
+NSUB_BOUND = NSUB_BOUND_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
@@ -2555,13 +2559,19 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
 
 
 def main():
-    # NSUB sub-proofs of the fixed inner program: verify each (verify_sub),
+    # nsub sub-proofs of the fixed inner program: verify each (verify_sub),
     # then aggregate their deferred claims. The fresh aggregation transcript
     # RLC-batches the bytecode and matrix claims through two sumchecks; only
     # the three reduced claims (evaluated natively by the outer verifier)
     # reach this guest's public input.
-    sub_pis = HeapBuf(NSUB * 4)
-    hint_witness(sub_pis[0:NSUB * 4], "sub_pis")
+    # The arity is prover advice, hinted in the exponent as nsub_g = g^nsub. It
+    # sizes every buffer and bounds every sub-walk below, and both transcripts
+    # absorb it first, so a wrong count changes own_pi and is rejected there.
+    nsub_hint = StackBuf(1)
+    hint_witness(nsub_hint[0:1], "nsub")
+    nsub_g = nsub_hint[0]
+    assert log(nsub_g) < NSUB_BOUND
+    sub_pis = HeapBuf(nsub_g ** 4)  # 4 statement words per sub
     # The FS seed — ONE digest of everything fixed about the inner environment
     # (the flock circuit family, the inner program bytecode) — rides the
     # recursion's public input: hinted here, it leads every sub's transcript
@@ -2580,12 +2590,23 @@ def main():
     # exponent-domain lookup tables, shared read-only across every sub-proof.
     g_logs_pow2, g_squares = exponent_tables()
 
-    # per-sub deferred-claim regions (layout: see verify_sub's defer_out)
-    defer = HeapBuf(NSUB * DEFER_SIZE * 3)
+    # per-sub deferred-claim regions (layout: see verify_sub's defer_out) and the
+    # per-sub base pointer into them, so the walks below never redo g^(3*t*DEFER_SIZE).
+    defer = HeapBuf(nsub_g ** (DEFER_SIZE * 3))
+    defer_row = HeapBuf(nsub_g)
+    # Scalars: a StackBuf cannot cross into a runtime loop body.
+    seed_0 = fs_seed[0]
+    seed_1 = fs_seed[1]
+    seed_2 = fs_seed[2]
+    seed_3 = fs_seed[3]
 
-    for sub in unroll(0, NSUB):
-        sub_pi = sub_pis * GEN ** (4 * sub)
-        verify_sub(sub_pi[GEN ** 0], sub_pi[GEN ** 1], sub_pi[GEN ** 2], sub_pi[GEN ** 3], fs_seed[0], fs_seed[1], fs_seed[2], fs_seed[3], g_logs_pow2, g_squares, defer * GEN ** (3 * sub * DEFER_SIZE))
+    for xs in mul_range(1, nsub_g):
+        x4 = xs ** 4  # g^(4t): this sub's statement quadruple
+        hint_witness(sub_pis[x4:x4 + 4], "sub_pis")
+        sub_pi = sub_pis * x4
+        row = defer * xs ** (DEFER_SIZE * 3)
+        defer_row[xs] = row
+        verify_sub(sub_pi[GEN ** 0], sub_pi[GEN ** 1], sub_pi[GEN ** 2], sub_pi[GEN ** 3], seed_0, seed_1, seed_2, seed_3, g_logs_pow2, g_squares, row)
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
@@ -2593,29 +2614,64 @@ def main():
     # doc/main.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
     agg_fs = [AGG_SEED_0, AGG_SEED_1, AGG_SEED_2, AGG_SEED_3]
-    agg_fs = obs_base(agg_fs, NSUB)
-    for sub in unroll(0, NSUB):
-        sub_pi_ptr = sub_pis * GEN ** (4 * sub)
+    agg_fs = obs_base(agg_fs, nsub_g)
+    # Every per-sub walk below is a runtime loop, so its loop-carried state (the
+    # sponge, the running claim, the accumulated weight) rides a chain buffer
+    # indexed by the counter, the guest's standard idiom.
+    abs_fs0 = HeapBuf(nsub_g * GEN)
+    abs_fs1 = HeapBuf(nsub_g * GEN)
+    abs_fs2 = HeapBuf(nsub_g * GEN)
+    abs_fs3 = HeapBuf(nsub_g * GEN)
+    abs_fs0[GEN ** 0] = agg_fs[0]
+    abs_fs1[GEN ** 0] = agg_fs[1]
+    abs_fs2[GEN ** 0] = agg_fs[2]
+    abs_fs3[GEN ** 0] = agg_fs[3]
+    for xs in mul_range(1, nsub_g):
+        sub_pi_ptr = sub_pis * xs ** 4
         sub_pi_prefix = eload(sub_pi_ptr)
-        agg_fs = obs_base(agg_fs, sub_pi_prefix[0])
-        agg_fs = obs_base(agg_fs, sub_pi_prefix[1])
-        agg_fs = obs_base(agg_fs, sub_pi_prefix[2])
-        agg_fs = obs_base(agg_fs, sub_pi_ptr[GEN ** 3])
+        st = [abs_fs0[xs], abs_fs1[xs], abs_fs2[xs], abs_fs3[xs]]
+        st = obs_base(st, sub_pi_prefix[0])
+        st = obs_base(st, sub_pi_prefix[1])
+        st = obs_base(st, sub_pi_prefix[2])
+        st = obs_base(st, sub_pi_ptr[GEN ** 3])
+        row = defer_row[xs]
         # the deferred-claim region is one contiguous run in absorb order.
         for k in unroll(0, DEFER_SIZE):
-            defer_value = eload(defer * GEN ** (3 * (sub * DEFER_SIZE + k)))
-            agg_fs = obs(agg_fs, defer_value)
+            st = obs(st, eload(row * GEN ** (3 * k)))
+        xsn = xs * GEN
+        abs_fs0[xsn] = st[0]
+        abs_fs1[xsn] = st[1]
+        abs_fs2[xsn] = st[2]
+        abs_fs3[xsn] = st[3]
+    agg_fs = [abs_fs0[nsub_g], abs_fs1[nsub_g], abs_fs2[nsub_g], abs_fs3[nsub_g]]
 
-    # ---- bytecode batching sumcheck (BYTECODE_VARS variables, NSUB claims) ----
+    # ---- bytecode batching sumcheck (BYTECODE_VARS variables, nsub claims) ----
     one_ext = [1, 0, 0]
-    gamma_bc = HeapBuf(3 * NSUB)
-    bc_running = [0, 0, 0]
-    for t in unroll(0, NSUB):
-        agg_fs, gv = squeeze(agg_fs)
-        estore(gamma_bc * GEN ** (3 * t), gv)
-        defer_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS)))
-        weighted = emul(gv, defer_value)
-        bc_running = eadd(bc_running, weighted)
+    gamma_bc = HeapBuf(nsub_g ** 3)
+    bc_fs0 = HeapBuf(nsub_g * GEN)
+    bc_fs1 = HeapBuf(nsub_g * GEN)
+    bc_fs2 = HeapBuf(nsub_g * GEN)
+    bc_fs3 = HeapBuf(nsub_g * GEN)
+    bc_claim = HeapBuf((nsub_g * GEN) ** 3)
+    bc_fs0[GEN ** 0] = agg_fs[0]
+    bc_fs1[GEN ** 0] = agg_fs[1]
+    bc_fs2[GEN ** 0] = agg_fs[2]
+    bc_fs3[GEN ** 0] = agg_fs[3]
+    estore(bc_claim, [0, 0, 0])
+    for xs in mul_range(1, nsub_g):
+        st = [bc_fs0[xs], bc_fs1[xs], bc_fs2[xs], bc_fs3[xs]]
+        st, gv = squeeze(st)
+        estore(gamma_bc * xs ** 3, gv)
+        row = defer_row[xs]
+        defer_value = eload(row * GEN ** (3 * (BYTECODE_LOG + LOG2_BYTECODE_COLS)))
+        xsn = xs * GEN
+        bc_fs0[xsn] = st[0]
+        bc_fs1[xsn] = st[1]
+        bc_fs2[xsn] = st[2]
+        bc_fs3[xsn] = st[3]
+        estore(bc_claim * xsn ** 3, eadd(eload(bc_claim * xs ** 3), emul(gv, defer_value)))
+    agg_fs = [bc_fs0[nsub_g], bc_fs1[nsub_g], bc_fs2[nsub_g], bc_fs3[nsub_g]]
+    bc_running = eload(bc_claim * nsub_g ** 3)
     bc_point = HeapBuf(3 * BYTECODE_VARS)
     for rd in unroll(0, BYTECODE_VARS):
         agg_fs, msg_g1, c = fs_next(agg_fs, bc_sumcheck_msgs * GEN ** (6 * rd))
@@ -2630,37 +2686,57 @@ def main():
         term_2 = emul(term_1, rv)
         bc_running = eadd(term_2, g_zero)
     # terminal: W(r*) in-circuit; the reduced bytecode claim B(r*) is deferred.
-    bc_weight = [0, 0, 0]
-    for t in unroll(0, NSUB):
+    bc_wsum = HeapBuf((nsub_g * GEN) ** 3)
+    estore(bc_wsum, [0, 0, 0])
+    for xs in mul_range(1, nsub_g):
+        row = defer_row[xs]
         e = [1, 0, 0]
         for k in unroll(0, BYTECODE_LOG):
-            defer_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + k)))
+            defer_value = eload(row * GEN ** (3 * k))
             point_value = eload(bc_point * GEN ** (3 * k))
             factor_0 = eadd(one_ext, defer_value)
             factor = eadd(factor_0, point_value)
             e = emul(e, factor)
         for k in unroll(0, LOG2_BYTECODE_COLS):
-            defer_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + k)))
+            defer_value = eload(row * GEN ** (3 * (BYTECODE_LOG + k)))
             point_value = eload(bc_point * GEN ** (3 * (BYTECODE_LOG + k)))
             factor_0 = eadd(one_ext, defer_value)
             factor = eadd(factor_0, point_value)
             e = emul(e, factor)
-        gamma_value = eload(gamma_bc * GEN ** (3 * t))
+        gamma_value = eload(gamma_bc * xs ** 3)
         weighted = emul(gamma_value, e)
-        bc_weight = eadd(bc_weight, weighted)
+        estore(bc_wsum * (xs * GEN) ** 3, eadd(eload(bc_wsum * xs ** 3), weighted))
+    bc_weight = eload(bc_wsum * nsub_g ** 3)
     bytecode_star = [bc_star_hint[0], bc_star_hint[1], bc_star_hint[2]]
     bc_final = emul(bytecode_star, bc_weight)
     ext_assert_eq(bc_running, bc_final)
 
-    # ---- matrix batching sumcheck (2*K_LOG variables, NSUB weighted claims) ----
-    gamma_mat = HeapBuf(3 * NSUB)
-    mat_running = [0, 0, 0]
-    for t in unroll(0, NSUB):
-        agg_fs, gv = squeeze(agg_fs)
-        estore(gamma_mat * GEN ** (3 * t), gv)
-        defer_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)))
-        weighted = emul(gv, defer_value)
-        mat_running = eadd(mat_running, weighted)
+    # ---- matrix batching sumcheck (2*K_LOG variables, nsub weighted claims) ----
+    gamma_mat = HeapBuf(nsub_g ** 3)
+    mat_fs0 = HeapBuf(nsub_g * GEN)
+    mat_fs1 = HeapBuf(nsub_g * GEN)
+    mat_fs2 = HeapBuf(nsub_g * GEN)
+    mat_fs3 = HeapBuf(nsub_g * GEN)
+    mat_claim = HeapBuf((nsub_g * GEN) ** 3)
+    mat_fs0[GEN ** 0] = agg_fs[0]
+    mat_fs1[GEN ** 0] = agg_fs[1]
+    mat_fs2[GEN ** 0] = agg_fs[2]
+    mat_fs3[GEN ** 0] = agg_fs[3]
+    estore(mat_claim, [0, 0, 0])
+    for xs in mul_range(1, nsub_g):
+        st = [mat_fs0[xs], mat_fs1[xs], mat_fs2[xs], mat_fs3[xs]]
+        st, gv = squeeze(st)
+        estore(gamma_mat * xs ** 3, gv)
+        row = defer_row[xs]
+        defer_value = eload(row * GEN ** (3 * (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)))
+        xsn = xs * GEN
+        mat_fs0[xsn] = st[0]
+        mat_fs1[xsn] = st[1]
+        mat_fs2[xsn] = st[2]
+        mat_fs3[xsn] = st[3]
+        estore(mat_claim * xsn ** 3, eadd(eload(mat_claim * xs ** 3), emul(gv, defer_value)))
+    agg_fs = [mat_fs0[nsub_g], mat_fs1[nsub_g], mat_fs2[nsub_g], mat_fs3[nsub_g]]
+    mat_running = eload(mat_claim * nsub_g ** 3)
     mat_point = HeapBuf(6 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
         agg_fs, msg_g1, c = fs_next(agg_fs, mat_sumcheck_msgs * GEN ** (6 * rd))
@@ -2682,10 +2758,13 @@ def main():
     eqtree(mat_point, eq_rows, K_SKIP)
     eq_cols = HeapBuf(3 * (2 ** (K_SKIP + 1) - 2))
     eqtree(mat_point * GEN ** (3 * K_LOG), eq_cols, K_SKIP)
-    weight_a = [0, 0, 0]
-    weight_b = [0, 0, 0]
-    for t in unroll(0, NSUB):
-        z_skip_t = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)))
+    wa_sum = HeapBuf((nsub_g * GEN) ** 3)
+    wb_sum = HeapBuf((nsub_g * GEN) ** 3)
+    estore(wa_sum, [0, 0, 0])
+    estore(wb_sum, [0, 0, 0])
+    for xs in mul_range(1, nsub_g):
+        row = defer_row[xs]
+        z_skip_t = eload(row * GEN ** (3 * (BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)))
         row_nums = lag64(z_skip_t, 0)
         row_weight = [0, 0, 0]
         for i in unroll(0, 2 ** K_SKIP):
@@ -2696,31 +2775,35 @@ def main():
             term = emul(term_0, eq_value)
             row_weight = eadd(row_weight, term)
         for k in unroll(0, LINCHECK_ROUNDS):
-            defer_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)))
+            defer_value = eload(row * GEN ** (3 * (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)))
             point_value = eload(mat_point * GEN ** (3 * (K_SKIP + k)))
             factor_0 = eadd(one_ext, defer_value)
             factor = eadd(factor_0, point_value)
             row_weight = emul(row_weight, factor)
         col_weight = [0, 0, 0]
         for i in unroll(0, 2 ** K_SKIP):
-            defer_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + i)))
+            defer_value = eload(row * GEN ** (3 * (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + i)))
             eq_value = eload(eq_cols * GEN ** (3 * (2 ** K_SKIP - 2 + i)))
             term = emul(defer_value, eq_value)
             col_weight = eadd(col_weight, term)
         for j in unroll(0, LINCHECK_ROUNDS):
-            defer_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + j)))
+            defer_value = eload(row * GEN ** (3 * (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + j)))
             point_value = eload(mat_point * GEN ** (3 * (2 * K_LOG - 1 - j)))
             factor_0 = eadd(one_ext, defer_value)
             factor = eadd(factor_0, point_value)
             col_weight = emul(col_weight, factor)
         weight_u = emul(row_weight, col_weight)
-        gamma_value = eload(gamma_mat * GEN ** (3 * t))
-        alpha_value = eload(defer * GEN ** (3 * (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)))
+        gamma_value = eload(gamma_mat * xs ** 3)
+        alpha_value = eload(row * GEN ** (3 * (BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)))
         weighted_0 = emul(gamma_value, alpha_value)
         weighted_1 = emul(weighted_0, weight_u)
-        weight_a = eadd(weight_a, weighted_1)
         weighted_b = emul(gamma_value, weight_u)
-        weight_b = eadd(weight_b, weighted_b)
+        xs3 = xs ** 3
+        xsn3 = (xs * GEN) ** 3
+        estore(wa_sum * xsn3, eadd(eload(wa_sum * xs3), weighted_1))
+        estore(wb_sum * xsn3, eadd(eload(wb_sum * xs3), weighted_b))
+    weight_a = eload(wa_sum * nsub_g ** 3)
+    weight_b = eload(wb_sum * nsub_g ** 3)
     a_star = [mat_stars_hint[0], mat_stars_hint[1], mat_stars_hint[2]]
     b_star = [mat_stars_hint[3], mat_stars_hint[4], mat_stars_hint[5]]
     final_a = emul(a_star, weight_a)
@@ -2730,18 +2813,33 @@ def main():
 
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
     out_fs = [STATEMENT_SEED_0, STATEMENT_SEED_1, STATEMENT_SEED_2, STATEMENT_SEED_3]
-    out_fs = obs_base(out_fs, NSUB)
-    out_fs = obs_base(out_fs, fs_seed[0])
-    out_fs = obs_base(out_fs, fs_seed[1])
-    out_fs = obs_base(out_fs, fs_seed[2])
-    out_fs = obs_base(out_fs, fs_seed[3])
-    for sub in unroll(0, NSUB):
-        sub_pi_ptr = sub_pis * GEN ** (4 * sub)
+    out_fs = obs_base(out_fs, nsub_g)
+    out_fs = obs_base(out_fs, seed_0)
+    out_fs = obs_base(out_fs, seed_1)
+    out_fs = obs_base(out_fs, seed_2)
+    out_fs = obs_base(out_fs, seed_3)
+    out_fs0 = HeapBuf(nsub_g * GEN)
+    out_fs1 = HeapBuf(nsub_g * GEN)
+    out_fs2 = HeapBuf(nsub_g * GEN)
+    out_fs3 = HeapBuf(nsub_g * GEN)
+    out_fs0[GEN ** 0] = out_fs[0]
+    out_fs1[GEN ** 0] = out_fs[1]
+    out_fs2[GEN ** 0] = out_fs[2]
+    out_fs3[GEN ** 0] = out_fs[3]
+    for xs in mul_range(1, nsub_g):
+        sub_pi_ptr = sub_pis * xs ** 4
         sub_pi_prefix = eload(sub_pi_ptr)
-        out_fs = obs_base(out_fs, sub_pi_prefix[0])
-        out_fs = obs_base(out_fs, sub_pi_prefix[1])
-        out_fs = obs_base(out_fs, sub_pi_prefix[2])
-        out_fs = obs_base(out_fs, sub_pi_ptr[GEN ** 3])
+        st = [out_fs0[xs], out_fs1[xs], out_fs2[xs], out_fs3[xs]]
+        st = obs_base(st, sub_pi_prefix[0])
+        st = obs_base(st, sub_pi_prefix[1])
+        st = obs_base(st, sub_pi_prefix[2])
+        st = obs_base(st, sub_pi_ptr[GEN ** 3])
+        xsn = xs * GEN
+        out_fs0[xsn] = st[0]
+        out_fs1[xsn] = st[1]
+        out_fs2[xsn] = st[2]
+        out_fs3[xsn] = st[3]
+    out_fs = [out_fs0[nsub_g], out_fs1[nsub_g], out_fs2[nsub_g], out_fs3[nsub_g]]
     for k in unroll(0, BYTECODE_VARS):
         point_value = eload(bc_point * GEN ** (3 * k))
         out_fs = obs(out_fs, point_value)
