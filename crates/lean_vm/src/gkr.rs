@@ -123,7 +123,7 @@ struct Layer {
 
 /// Build only the levels consumed by radix four: `0,2,4,…`, plus a final
 /// binary root when the logical depth is odd.
-fn build_layers(leaves: LeafVector, mu: usize, preallocate_tail: bool) -> Vec<Layer> {
+fn build_layers(leaves: LeafVector, mu: usize, quaternary_capacity: bool) -> Vec<Layer> {
     assert!(!leaves.leaves.is_empty());
     assert!(leaves.leaves.len() <= 1usize << mu);
     let mut layers: Vec<Layer> = (0..=mu).map(|_| Layer::default()).collect();
@@ -134,6 +134,7 @@ fn build_layers(leaves: LeafVector, mu: usize, preallocate_tail: bool) -> Vec<La
         let full_rows = current.len() / 4;
         let has_tail = current.len() % 4 != 0 && current.len() > 2;
         let output_rows = full_rows + usize::from(has_tail);
+        let output_capacity = output_rows.next_multiple_of(4);
         let product = |row: usize| {
             let [left, right] = mul_pair(
                 [current[4 * row], current[4 * row + 2]],
@@ -146,12 +147,13 @@ fn build_layers(leaves: LeafVector, mu: usize, preallocate_tail: bool) -> Vec<La
         } else if current.len() == 2 {
             ArenaVec::from_iter([current[0] * current[1]])
         } else if full_rows >= PAR_THRESHOLD {
-            if preallocate_tail && has_tail {
+            if quaternary_capacity {
                 // `par_collect` deliberately allocates exactly `full_rows`.
-                // Appending the identity-padded tail would therefore double the
-                // buffer and copy every complete row.  Reserve the known final
-                // shape while keeping the live prefix limited to initialized rows.
-                let mut output = ArenaVec::with_capacity(output_rows);
+                // Appending the identity-padded tail, or padding this output for
+                // the next quaternary sumcheck, would therefore double and copy
+                // the buffer.  Reserve both known shapes while keeping the live
+                // prefix limited to initialized rows.
+                let mut output = ArenaVec::with_capacity(output_capacity);
                 // SAFETY: the parallel fill below writes every slot in
                 // `0..full_rows` exactly once and joins before `output` escapes.
                 unsafe { output.set_len(full_rows) };
@@ -160,8 +162,8 @@ fn build_layers(leaves: LeafVector, mu: usize, preallocate_tail: bool) -> Vec<La
             } else {
                 ArenaVec::par_collect(full_rows, product)
             }
-        } else if preallocate_tail && has_tail {
-            let mut output = ArenaVec::with_capacity(output_rows);
+        } else if quaternary_capacity {
+            let mut output = ArenaVec::with_capacity(output_capacity);
             output.extend((0..full_rows).map(product));
             output
         } else {
@@ -354,7 +356,7 @@ pub struct ProductTriple {
 pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> ProductTriple {
     let detail_trace = std::env::var("LEANVM_GKR_DETAIL_TRACE").as_deref() == Ok("1");
     let uninitialized_fold_output = std::env::var("LEANVM_GKR_UNINIT_FOLD").as_deref() == Ok("1");
-    let preallocate_layer_tail = std::env::var("LEANVM_GKR_PREALLOCATE_LAYER_TAIL").as_deref() == Ok("1");
+    let quaternary_layer_capacity = std::env::var("LEANVM_GKR_QUATERNARY_LAYER_CAPACITY").as_deref() == Ok("1");
     if std::env::var_os("LEANVM_GKR_UNINIT_FOLD").is_some() {
         eprintln!("LEANVM_GKR_FOLD_OUTPUT schema=1 uninitialized={uninitialized_fold_output}");
     }
@@ -368,7 +370,7 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
         "batched trees must be nonempty prefixes of the first tree's logical tree"
     );
     let build_started = detail_trace.then(std::time::Instant::now);
-    let mut layers = leaves.map(|lane| build_layers(lane, mu, preallocate_layer_tail));
+    let mut layers = leaves.map(|lane| build_layers(lane, mu, quaternary_layer_capacity));
     let build_ns = build_started.map_or(0, |started| started.elapsed().as_nanos());
     let retained_layer_values: [usize; 3] =
         std::array::from_fn(|tree| layers[tree].iter().map(|layer| layer.values.len()).sum());
@@ -376,11 +378,11 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
         .iter()
         .sum::<usize>()
         .saturating_mul(std::mem::size_of::<F192>());
-    if std::env::var_os("LEANVM_GKR_PREALLOCATE_LAYER_TAIL").is_some() {
+    if std::env::var_os("LEANVM_GKR_QUATERNARY_LAYER_CAPACITY").is_some() {
         let retained_layer_capacities: [usize; 3] =
             std::array::from_fn(|tree| layers[tree].iter().map(|layer| layer.values.capacity()).sum());
         eprintln!(
-            "LEANVM_GKR_LAYER_CAPACITY schema=1 preallocate_tail={preallocate_layer_tail} \
+            "LEANVM_GKR_LAYER_CAPACITY schema=2 quaternary_capacity={quaternary_layer_capacity} \
              retained_values={retained_layer_values:?} \
              retained_capacities={retained_layer_capacities:?}"
         );
@@ -700,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn preallocated_layer_tail_matches_exact_capacity_path() {
+    fn quaternary_layer_capacity_matches_exact_capacity_path() {
         for mu in 3..=12 {
             for len in [3usize, 5, 6, 7, (1usize << (mu - 1)) + 1, (1usize << mu) - 3] {
                 let len = len.min(1usize << mu);
@@ -708,15 +710,22 @@ mod tests {
                     .map(|row| F192::new((11 * row + 1) as u64, (7 * row + 3) as u64, row as u64))
                     .collect::<Vec<_>>();
                 let exact = build_layers(LeafVector::new(ArenaVec::from_slice(&values)), mu, false);
-                let preallocated = build_layers(LeafVector::new(ArenaVec::from_slice(&values)), mu, true);
-                assert_eq!(exact.len(), preallocated.len());
-                for (exact_layer, preallocated_layer) in exact.iter().zip(&preallocated) {
-                    assert_eq!(exact_layer.values, preallocated_layer.values);
-                    assert_eq!(
-                        preallocated_layer.values.capacity(),
-                        preallocated_layer.values.len(),
-                        "the preallocated path retains no spare layer capacity"
-                    );
+                let quaternary = build_layers(LeafVector::new(ArenaVec::from_slice(&values)), mu, true);
+                assert_eq!(exact.len(), quaternary.len());
+                for (exact_layer, quaternary_layer) in exact.iter().zip(&quaternary) {
+                    assert_eq!(exact_layer.values, quaternary_layer.values);
+                }
+                let mut level = 2;
+                while level <= mu {
+                    let parent_len = quaternary[level - 2].values.len();
+                    let layer = &quaternary[level].values;
+                    let expected_capacity = if parent_len > 2 {
+                        layer.len().next_multiple_of(4)
+                    } else {
+                        layer.len()
+                    };
+                    assert_eq!(layer.capacity(), expected_capacity);
+                    level += 2;
                 }
             }
         }
