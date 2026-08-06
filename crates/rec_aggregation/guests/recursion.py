@@ -35,13 +35,14 @@ GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 # (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block SHAPES are all
 # reconstructed at runtime from the certified logs: kappa directly, the selector bits
 # by pinned advice-decompositions.
-# Coord kinds (COORD_TYPE codes, mirroring leaf.rs::Coord):
+# Coord kinds (COORD_TYPE / TERM_TYPE codes, mirroring leaf.rs::Coord):
 COORD_KIND_CONST = 0
 COORD_KIND_COL = 1
 COORD_KIND_GCOL = 2
 COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
 COORD_KIND_PROD = 5
+COORD_KIND_SUM = 6
 # BLOCK_TABLE: the table a block's flush belongs to, or NO_TABLE for the framework
 # blocks (boundary, memory seed/finalize, bytecode seed/finalize). It is
 # also what marks a block as owned: an owned block's fingerprint is settled by the
@@ -64,11 +65,18 @@ COORD_CONST = COORD_CONST_PLACEHOLDER
 # side has its own point, so its claims never dedup against the pair's.
 COORD_FRESH = COORD_FRESH_PLACEHOLDER
 COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
-# For a coord of a TABLE's block: its column's local index inside that table. Those
-# coords raise no claim (the zerocheck settles them), so they use this instead.
-COORD_COL_LOCAL = COORD_COL_LOCAL_PLACEHOLDER
-# The SECOND local column index of a product coordinate (0 for every other kind).
-COORD_COL_LOCAL_B = COORD_COL_LOCAL_B_PLACEHOLDER
+# A TABLE block's coordinates, flattened into TERMS: coord c is
+# Σ_{j < COORD_TERM_COUNT[c]} term(COORD_TERM_OFF[c] + j), each term a
+# TERM_TYPE kind over that table's LOCAL column indices TERM_COL_A/TERM_COL_B,
+# scaled by TERM_CONST. Those coords raise no claim (the zerocheck settles them),
+# which is what lets one carry a value the row DERIVES from its columns: an
+# XOR/MUL result, a DEREF store, a JUMP successor. A framework coord has no terms.
+COORD_TERM_OFF = COORD_TERM_OFF_PLACEHOLDER
+COORD_TERM_COUNT = COORD_TERM_COUNT_PLACEHOLDER
+TERM_TYPE = TERM_TYPE_PLACEHOLDER
+TERM_CONST = TERM_CONST_PLACEHOLDER
+TERM_COL_A = TERM_COL_A_PLACEHOLDER
+TERM_COL_B = TERM_COL_B_PLACEHOLDER
 N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
@@ -1387,24 +1395,25 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 inner_sum = 0
                 alpha_pow = GEN ** 0
                 for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
-                        coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i]
-                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
-                        if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
+                    ci = BLOCK_COORD_OFF[b] + i  # a compile-time index, so `ci` costs nothing
+                    if COORD_TYPE[ci] == COORD_KIND_CONST:
+                        coord_val = COORD_CONST[ci]
+                    if COORD_TYPE[ci] == COORD_KIND_COL:
+                        if COORD_FRESH[ci] == 1:
                             fs, coord_val, cursor = fs_next(fs, cursor)
-                            claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = coord_val
-                            claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+                            claim_pool[GEN ** COORD_CLAIM_SLOT[ci]] = coord_val
+                            claim_cplen_g[GEN ** COORD_CLAIM_SLOT[ci]] = kappa_g  # cplen = block kappa
                         else:
-                            coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
-                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
-                        if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
+                            coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[ci]]
+                    if COORD_TYPE[ci] == COORD_KIND_GCOL:
+                        if COORD_FRESH[ci] == 1:
                             fs, rawv, cursor = fs_next(fs, cursor)
-                            claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = rawv
-                            claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+                            claim_pool[GEN ** COORD_CLAIM_SLOT[ci]] = rawv
+                            claim_cplen_g[GEN ** COORD_CLAIM_SLOT[ci]] = kappa_g  # cplen = block kappa
                         else:
-                            rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
-                        coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i] * rawv
-                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_INDEX:
+                            rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[ci]]
+                        coord_val = COORD_CONST[ci] * rawv
+                    if COORD_TYPE[ci] == COORD_KIND_INDEX:
                         if s == PULL_SIDE:
                             coord_val = block_index_mle[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
                         else:
@@ -1415,7 +1424,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                             coord_val = idx_chain[kappa_g]
                             if s == PUSH_SIDE:
                                 block_index_mle[GEN ** b] = coord_val
-                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PUBLIC:
+                    if COORD_TYPE[ci] == COORD_KIND_PUBLIC:
                         # push and pull share zeta, so BOTH bytecode blocks read the
                         # same public evaluations (indexed per block, not globally).
                         coord_val = bytecode_vals[GEN ** block_public_idx]
@@ -1538,34 +1547,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             claim_idx += 1
         # the table's AIR constraint at the final point (col_evals is indexed by
         # local column index; the formulas mirror tables.rs eval_constraint).
+        # Every value relation now rides the bus as a degree-2 coordinate, so only
+        # JUMP's is-nonzero indicator is left with an identity of its own.
         if t == TABLE_XOR:
-            va = f192_from_limbs(col_evals[5], col_evals[6], col_evals[7])
-            vb = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
-            vc = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (vc + va + vb)
+            constraint_eval = 0
         if t == TABLE_MUL:
-            va = f192_from_limbs(col_evals[5], col_evals[6], col_evals[7])
-            vb = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
-            vc = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (vc + va * vb)
+            constraint_eval = 0
         if t == TABLE_SET:
             constraint_eval = 0
         if t == TABLE_DEREF:
-            v2 = f192_from_limbs(col_evals[8], col_evals[9], col_evals[10])
-            v3 = f192_from_limbs(col_evals[11], col_evals[12], col_evals[13])
-            src = (1 + col_evals[5] + col_evals[6]) * v3 + col_evals[5] * (GEN * GEN * col_evals[0]) + col_evals[6] * col_evals[1]
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (v2 + src)
+            constraint_eval = 0
         if t == TABLE_JUMP:
-            ft = GEN * col_evals[0]
-            c = f192_from_limbs(col_evals[7], col_evals[8], col_evals[9])
-            d = f192_from_limbs(col_evals[10], col_evals[11], col_evals[12])
-            ff = f192_from_limbs(col_evals[13], col_evals[14], col_evals[15])
-            w = f192_from_limbs(col_evals[20], col_evals[21], col_evals[22])
-            ind_def = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[23] + c * w)
-            ind_nz = eta_pows[ETA_OFFSET[t] + 1] * (c * (col_evals[23] + 1))
-            sel_pc = eta_pows[ETA_OFFSET[t] + 2] * (col_evals[2] + col_evals[23] * d + (col_evals[23] + 1) * ft)
-            sel_fp = eta_pows[ETA_OFFSET[t] + 3] * (col_evals[3] + col_evals[23] * ff + (col_evals[23] + 1) * col_evals[1])
-            constraint_eval = ind_def + ind_nz + sel_pc + sel_fp
+            c = f192_from_limbs(col_evals[5], col_evals[6], col_evals[7])
+            w = f192_from_limbs(col_evals[14], col_evals[15], col_evals[16])
+            ind_def = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[17] + c * w)
+            ind_nz = eta_pows[ETA_OFFSET[t] + 1] * (c * (col_evals[17] + 1))
+            constraint_eval = ind_def + ind_nz
         if t == TABLE_BLAKE3:
             constraint_eval = 0
         if t == TABLE_PACK64X2:
@@ -1581,16 +1578,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                         inner = 0
                         apow = GEN ** 0
                         for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
-                                cv = COORD_CONST[BLOCK_COORD_OFF[b] + i]
-                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
-                                cv = col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]]
-                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
-                                cv = COORD_CONST[BLOCK_COORD_OFF[b] + i] * col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]]
-                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PROD:
-                                # An address g^k·col_a·col_b: degree 2 in the column
-                                # evaluations, which the identities already are.
-                                cv = COORD_CONST[BLOCK_COORD_OFF[b] + i] * (col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]] * col_evals[COORD_COL_LOCAL_B[BLOCK_COORD_OFF[b] + i]])
+                            # Each coord is the sum of its terms, over this table's
+                            # column evaluations. A product term (an address, an
+                            # arithmetic result) is degree 2, which the batch's
+                            # round polynomial already allows.
+                            ci = BLOCK_COORD_OFF[b] + i  # a compile-time index, so `ci` costs nothing
+                            cv = 0
+                            for j in unroll(0, COORD_TERM_COUNT[ci]):
+                                tj = COORD_TERM_OFF[ci] + j
+                                if TERM_TYPE[tj] == COORD_KIND_CONST:
+                                    cv += TERM_CONST[tj]
+                                if TERM_TYPE[tj] == COORD_KIND_COL:
+                                    cv += col_evals[TERM_COL_A[tj]]
+                                if TERM_TYPE[tj] == COORD_KIND_GCOL:
+                                    cv += TERM_CONST[tj] * col_evals[TERM_COL_A[tj]]
+                                if TERM_TYPE[tj] == COORD_KIND_PROD:
+                                    cv += TERM_CONST[tj] * (col_evals[TERM_COL_A[tj]] * col_evals[TERM_COL_B[tj]])
                             if sd == COUNT_SIDE:
                                 inner += cv
                             else:

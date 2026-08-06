@@ -633,7 +633,6 @@ impl Program {
                     deref.push(Drow {
                         pc,
                         fp,
-                        a2: a2 as u32,
                         r1,
                         r2,
                         r3,
@@ -644,8 +643,12 @@ impl Program {
                 Op::Jump { oc, od, of } => {
                     let (ac, ad, af) = (fp + oc, fp + od, fp + of);
                     let c = m.get(ac);
-                    let d = m.get(ad);
-                    let f = m.get(af);
+                    // The destination and frame cells hold addresses, so they are
+                    // K-valued on EVERY row, taken or not: the table commits one
+                    // lane each and their memory flushes carry literal zeros above
+                    // it (§sec:tab-jump), which the bus would otherwise not balance.
+                    let d = as_addr(m.get(ad)).expect("JUMP target is not a K-valued word");
+                    let f = as_addr(m.get(af)).expect("JUMP fp is not a K-valued word");
                     // The is-nonzero witness `w = c⁻¹` is never used for control
                     // flow, only recorded as a witness column, so it is not
                     // computed here at all: `JumpTable::fill` batch-inverts every
@@ -663,10 +666,8 @@ impl Program {
                         bytecode_read,
                     });
                     if taken {
-                        let dpc = as_addr(d).expect("JUMP target is not a K-valued g-power");
-                        let ffp = as_addr(f).expect("JUMP fp is not a K-valued g-power");
-                        pc = g.log(dpc).expect("JUMP target not a g-power");
-                        fp = g.log(ffp).expect("JUMP fp not a g-power");
+                        pc = g.log(d).expect("JUMP target not a g-power");
+                        fp = g.log(f).expect("JUMP fp not a g-power");
                     } else {
                         pc += 1;
                     }

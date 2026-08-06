@@ -50,15 +50,17 @@ pub fn schema() -> &'static Schema {
 
 /// Offset a table's local flush coordinates to global column indices.
 fn offset_coords(base: usize, coords: Vec<Coord>) -> Vec<Coord> {
-    coords
-        .into_iter()
-        .map(|c| match c {
-            Coord::Col(i) => Coord::Col(base + i),
-            Coord::GCol(i, k) => Coord::GCol(base + i, k),
-            Coord::Prod(i, j, k) => Coord::Prod(base + i, base + j, k),
-            other => other,
-        })
-        .collect()
+    coords.into_iter().map(|c| offset_coord(base, c)).collect()
+}
+
+fn offset_coord(base: usize, c: Coord) -> Coord {
+    match c {
+        Coord::Col(i) => Coord::Col(base + i),
+        Coord::GCol(i, k) => Coord::GCol(base + i, k),
+        Coord::Prod(i, j, k) => Coord::Prod(base + i, base + j, k),
+        Coord::Sum(cs) => Coord::Sum(offset_coords(base, cs)),
+        other => other,
+    }
 }
 
 /// The public proof structure: everything the verifier reconstructs from the

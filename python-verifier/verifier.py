@@ -13,7 +13,7 @@ from functools import lru_cache
 from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
 from struct import pack, unpack
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 
 class VerificationError(Exception):
@@ -666,7 +666,9 @@ class Coordinate:
     Exactly one payload is set. ``column`` and ``generator_column`` refer to
     committed global columns; ``product`` is ``(a, b, k)`` for ``g^k * col_a *
     col_b``, an address ``fp*g^o`` carried without committing it; ``public`` is a
-    dense public multilinear table.
+    dense public multilinear table; ``terms`` is a sum of the above, any degree-2
+    form over a table's columns, which is what carries a value a row derives from
+    its columns without committing one for it.
     """
 
     constant: F192 | None = None
@@ -675,6 +677,7 @@ class Coordinate:
     product: tuple[int, int, int] | None = None
     index: bool = False
     public: tuple[F192, ...] | None = None
+    terms: tuple["Coordinate", ...] | None = None
 
     def __post_init__(self) -> None:
         choices = (
@@ -684,6 +687,7 @@ class Coordinate:
             self.product is not None,
             self.index,
             self.public is not None,
+            self.terms is not None,
         )
         require(sum(choices) == 1, "a bus coordinate must have exactly one source")
 
@@ -759,6 +763,28 @@ class BusForm:
         )
 
 
+def _accumulate_form(coordinate: Coordinate, weight: F192, form: BusForm, base: int) -> None:
+    """Accumulate one coordinate of a table's block into that table's form.
+
+    A sum's children share their coordinate's alpha-power, so a derived value lands
+    as the several coefficients and products it is made of.
+    """
+    if coordinate.constant is not None:
+        form.constant += weight * coordinate.constant
+    elif coordinate.column is not None:
+        form.coefficients[coordinate.column - base] += weight
+    elif coordinate.generator_column is not None:
+        form.coefficients[coordinate.generator_column - base] += weight * GEN
+    elif coordinate.product is not None:
+        a, b, exponent = coordinate.product
+        form.products.append((a - base, b - base, weight * _gpow(exponent)))
+    elif coordinate.terms is not None:
+        for term in coordinate.terms:
+            _accumulate_form(term, weight, form, base)
+    else:
+        raise VerificationError("table bus block has a virtual coordinate")
+
+
 def _decompose_bus_side(
     blocks: Sequence[BusBlock],
     layout: BusLayout,
@@ -798,21 +824,7 @@ def _decompose_bus_side(
             form.constant += selector_weight * gamma
             coefficient = ONE
             for coordinate in block.coordinates:
-                if coordinate.constant is not None:
-                    form.constant += selector_weight * coefficient * coordinate.constant
-                elif coordinate.column is not None:
-                    form.coefficients[coordinate.column - base] += selector_weight * coefficient
-                elif coordinate.generator_column is not None:
-                    form.coefficients[coordinate.generator_column - base] += (
-                        selector_weight * coefficient * GEN
-                    )
-                elif coordinate.product is not None:
-                    a, b, exponent = coordinate.product
-                    form.products.append(
-                        (a - base, b - base, selector_weight * coefficient * _gpow(exponent))
-                    )
-                else:
-                    raise VerificationError("table bus block has a virtual coordinate")
+                _accumulate_form(coordinate, selector_weight * coefficient, form, base)
                 coefficient *= alpha
             continue
 
@@ -1012,15 +1024,15 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
-BASES = (6, 24, 42, 50, 68, 92, 127)
-WIDTHS = (18, 18, 8, 18, 24, 35, 11)
-CONSTRAINT_COUNTS = (1, 1, 0, 1, 4, 0, 0)
+BASES = (6, 21, 36, 44, 59, 77, 112)
+WIDTHS = (15, 15, 8, 15, 18, 35, 11)
+CONSTRAINT_COUNTS = (0, 0, 0, 0, 2, 0, 0)
 COUNT_COLUMNS = (
-    (14, 15, 16, 17),
-    (14, 15, 16, 17),
+    (11, 12, 13, 14),
+    (11, 12, 13, 14),
     (6, 7),
-    (14, 15, 16, 17),
-    (16, 17, 18, 19),
+    (11, 12, 13, 14),
+    (10, 11, 12, 13),
     (26, 27, 28, 29, 30, 31, 32, 33, 34),
     (7, 8, 9, 10),
 )
@@ -1202,6 +1214,10 @@ def _gcol(index: int) -> Coordinate:
     return Coordinate(generator_column=index)
 
 
+def _sum(terms: Iterable[Coordinate]) -> Coordinate:
+    return Coordinate(terms=tuple(terms))
+
+
 def _prod(a: int, b: int, exponent: int = 0) -> Coordinate:
     return Coordinate(product=(a, b, exponent))
 
@@ -1222,8 +1238,8 @@ class Flushes:
     def state_step(self, pc: int, fp: int) -> None:
         self.pair((_const(ONE), _gcol(pc), _col(fp)), (_const(ONE), _col(pc), _col(fp)))
 
-    def state_jump(self, pc: int, fp: int, npc: int, nfp: int) -> None:
-        self.pair((_const(ONE), _col(npc), _col(nfp)), (_const(ONE), _col(pc), _col(fp)))
+    def state_derived(self, pc: int, fp: int, npc: Coordinate, nfp: Coordinate) -> None:
+        self.pair((_const(ONE), npc, nfp), (_const(ONE), _col(pc), _col(fp)))
 
     def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Coordinate]) -> None:
         prefix_push = (_const(GEN * GEN), _col(pc), _gcol(count), _const(_gpow(opcode)))
@@ -1246,30 +1262,73 @@ class Flushes:
         self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)))
 
 
+def _arith_result(table: int) -> tuple[Coordinate, Coordinate, Coordinate]:
+    """The result word's three K-lanes as forms over the operand lanes 5..7, 8..10.
+
+    XOR is the lane-wise sum; MUL is the tower product with ``y**3 = y + 1``, whose
+    partials fold into ``c0 = p0+p3``, ``c1 = p1+p3+p4``, ``c2 = p2+p4``.
+    """
+    if table == 0:
+        return (
+            _sum((_col(5), _col(8))),
+            _sum((_col(6), _col(9))),
+            _sum((_col(7), _col(10))),
+        )
+    a, b = (5, 6, 7), (8, 9, 10)
+
+    def p(i: int, j: int) -> Coordinate:
+        return _prod(a[i], b[j])
+
+    return (
+        _sum((p(0, 0), p(1, 2), p(2, 1))),
+        _sum((p(0, 1), p(1, 0), p(1, 2), p(2, 1), p(2, 2))),
+        _sum((p(0, 2), p(1, 1), p(2, 0), p(2, 2))),
+    )
+
+
+def _deref_store() -> tuple[Coordinate, Coordinate, Coordinate]:
+    """``v2 = (1 + f_pc + f_fp) * v3 + f_pc * (g^2 * pc) + f_fp * fp``, lane-wise."""
+
+    def gated(lane: int) -> list[Coordinate]:
+        return [_col(lane), _prod(5, lane), _prod(6, lane)]
+
+    return (
+        _sum(gated(8) + [_prod(5, 0, 2), _prod(6, 1)]),
+        _sum(gated(9)),
+        _sum(gated(10)),
+    )
+
+
 def _table_flushes(table: int) -> Flushes:
     f = Flushes()
     if table in (0, 1):
         f.state_step(0, 1)
-        f.bytecode(0, 17, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_word(_prod(1, 2), 14, 5, 6, 7)
-        f.memory_word(_prod(1, 3), 15, 8, 9, 10)
-        f.memory_word(_prod(1, 4), 16, 11, 12, 13)
+        f.bytecode(0, 14, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 11, 5, 6, 7)
+        f.memory_word(_prod(1, 3), 12, 8, 9, 10)
+        f.memory(_prod(1, 4), 13, _arith_result(table))
     elif table == 2:
         f.state_step(0, 1)
         f.bytecode(0, 7, 2, (_col(2), _col(3), _col(4), _col(5), _const(ZERO)))
         f.memory_word(_prod(1, 2), 6, 3, 4, 5)
     elif table == 3:
         f.state_step(0, 1)
-        f.bytecode(0, 17, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
-        f.memory_base(_prod(1, 2), 14, 7)
-        f.memory_word(_prod(7, 3), 15, 8, 9, 10)
-        f.memory_word(_prod(1, 4), 16, 11, 12, 13)
+        f.bytecode(0, 14, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
+        f.memory_base(_prod(1, 2), 11, 7)
+        f.memory(_prod(7, 3), 12, _deref_store())
+        f.memory_word(_prod(1, 4), 13, 8, 9, 10)
     elif table == 4:
-        f.state_jump(0, 1, 2, 3)
-        f.bytecode(0, 19, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
-        f.memory_word(_prod(1, 4), 16, 7, 8, 9)
-        f.memory_word(_prod(1, 5), 17, 10, 11, 12)
-        f.memory_word(_prod(1, 6), 18, 13, 14, 15)
+        # next_pc = b*d + (b+1)*g*pc, next_fp = b*f + (b+1)*fp, both derived.
+        f.state_derived(
+            0,
+            1,
+            _sum((_prod(17, 8), _prod(17, 0, 1), _gcol(0))),
+            _sum((_prod(17, 9), _prod(17, 1), _col(1))),
+        )
+        f.bytecode(0, 13, 4, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 10, 5, 6, 7)
+        f.memory_base(_prod(1, 3), 11, 8)
+        f.memory_base(_prod(1, 4), 12, 9)
     elif table == 5:
         f.state_step(0, 1)
         f.bytecode(0, 34, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 24, 25)))
@@ -1301,6 +1360,8 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
     if coordinate.product is not None:
         a, b, exponent = coordinate.product
         return _prod(base + a, base + b, exponent)
+    if coordinate.terms is not None:
+        return _sum(_offset_coordinate(term, base) for term in coordinate.terms)
     return coordinate
 
 
@@ -1433,26 +1494,13 @@ def _air_evaluator(
         def word(lo: int, hi: int, top: int) -> F192:
             return value(lo) + F192(0, 1) * (value(hi) + F192(0, 1) * value(top))
 
-        # No table binds an address: the bus reads each as a product coordinate.
-        if table in (0, 1):
-            va, vb, vc = word(5, 6, 7), word(8, 9, 10), word(11, 12, 13)
-            operation = va + vb if table == 0 else va * vb
-            terms = (vc + operation,)
-        elif table == 3:
-            v2, v3 = word(8, 9, 10), word(11, 12, 13)
-            source = (ONE + value(5) + value(6)) * v3 + value(5) * GEN * GEN * value(0) + value(6) * value(1)
-            terms = (v2 + source,)
-        elif table == 4:
-            condition = word(7, 8, 9)
-            destination = word(10, 11, 12)
-            frame = word(13, 14, 15)
-            inverse, flag = word(20, 21, 22), value(23)
-            terms = (
-                flag + condition * inverse,
-                condition * (flag + ONE),
-                value(2) + flag * destination + (flag + ONE) * GEN * value(0),
-                value(3) + flag * frame + (flag + ONE) * value(1),
-            )
+        # No table binds an address, an arithmetic result, a DEREF store or a JUMP
+        # successor: the bus reads each as a degree-2 coordinate. All that is left
+        # is JUMP's is-nonzero indicator.
+        if table == 4:
+            condition = word(5, 6, 7)
+            inverse, flag = word(14, 15, 16), value(17)
+            terms = (flag + condition * inverse, condition * (flag + ONE))
         else:
             terms = ()
 

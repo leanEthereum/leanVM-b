@@ -1,28 +1,29 @@
 % !TeX root = ../drafts/07-instruction-tables.tex
 \section{The instruction tables}\label{sec:tables}
 
-Each instruction has its own table. Throughout, an operand address is written $\loc{o}=\fp\cdot o$ and is a bus coordinate, not a column: no table commits one, and none constrains one, since a coordinate may be a product of two columns (\S\ref{sec:m3}).
+Each instruction has its own table. Throughout, an operand address is written $\loc{o}=\fp\cdot o$ and is a bus coordinate, not a column: no table commits one, and none constrains one, since a coordinate may be any polynomial of degree at most $d=2$ in the table's columns (\S\ref{sec:m3}). The same holds of every value a row \emph{derives} from the ones it reads. Writing the derived value straight into the tuple that would have carried its column costs the columns nothing and removes the identity that used to tie the two, since bus balance now asserts it directly. That is why \texttt{XOR}, \texttt{MUL\_NATIVE} and \texttt{DEREF} have no constraint at all: an arithmetic result and a flag-selected store are both degree-2 forms, so both ride the memory flush that reads their cell.
 
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
-Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum.
+Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum. The result is no column: the destination cell's memory flush carries the sum itself, so bus balance is the assertion.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; values $v_A,v_B,v_C$ (each three $\K$-limbs); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} the sum $v_C=v_A+v_B$ (the $\E$-relation on the value limbs, reassembled $v=v_0+v_1 y+v_2y^2$; limb-wise it is three $\K$-equations).
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; the two read values $v_A,v_B$ (each three $\K$-limbs); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Constraints:} none.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{XOR},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory} ($X\in\{A,B,C\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X}$.
+  \item \textbf{Memory} ($X\in\{A,B\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X}$; and for the destination, the same pair at $\fp\cdot o_C$ with the three value coordinates $v_{A,i}+v_{B,i}$, of degree one.
   \end{itemize}
 \end{itemize}
 
 \subsection{\texttt{MUL\_NATIVE}}\label{sec:tab-mul}
 
-Identical to \texttt{XOR} but for the product:
+Identical to \texttt{XOR} but for the product, which is degree two rather than one and so still fits a coordinate:
 \begin{itemize}
 \item \textbf{Columns:} as \texttt{XOR}.
-\item \textbf{Constraints:} $v_C=v_Av_B$ in $\E$. With $y^3=y+1$, put
+\item \textbf{Constraints:} none.
+\item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$ and the destination's three value coordinates carrying $v_Av_B$ in $\E$. With $y^3=y+1$, put
 \[
 p_0=v_{A,0}v_{B,0},\quad
 p_1=v_{A,0}v_{B,1}+v_{A,1}v_{B,0},\quad
@@ -30,10 +31,9 @@ p_2=v_{A,0}v_{B,2}+v_{A,1}v_{B,1}+v_{A,2}v_{B,0},
 \]
 \[
 p_3=v_{A,1}v_{B,2}+v_{A,2}v_{B,1},\qquad
-p_4=v_{A,2}v_{B,2}.
+p_4=v_{A,2}v_{B,2};
 \]
-Then $v_{C,0}=p_0+p_3$, $v_{C,1}=p_1+p_3+p_4$, and $v_{C,2}=p_2+p_4$.
-\item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$.
+the coordinates are then $p_0+p_3$, $p_1+p_3+p_4$ and $p_2+p_4$, twelve products over the nine pairs $v_{A,i}v_{B,j}$.
 \end{itemize}
 
 \subsection{\texttt{SET\_CONSTANT}}\label{sec:tab-set}
@@ -58,19 +58,19 @@ Asserts $\loc{o}=k$, how a constant enters the read-only memory: the row ties th
 \item the \emph{target} $v_2$, at the dereferenced address $p\cdot\beta$;
 \item the \emph{local} value $v_3$, at $\fp\cdot\gamma$.
 \end{itemize}
-The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$ (a free $\times\gen^{2}$ of $\pc$, no column of its own, \S\ref{sec:m3}), or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$.
+The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$ (a free $\times\gen^{2}$ of $\pc$, no column of its own, \S\ref{sec:m3}), or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$. That selection is degree two, so $v_2$ is no column either: the target's memory flush carries it.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $\alpha,\beta,\gamma$; flags $f_{\pc},f_{\fp}$; pointer $p$ (a single $\K$-limb); values $v_2,v_3$ (each three $\K$-limbs); memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} the store
-\[
-  v_2 \;=\; (1+f_{\pc}+f_{\fp})\,v_3 \;+\; f_{\pc}\,(\gen^{2}\cdot\pc) \;+\; f_{\fp}\,\fp ,
-\]
-which gives $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings (in characteristic $2$ the $v_3$ term zeroes for the last two). The store is an $\E$-relation on the value limbs. The dereferenced address $p\cdot\beta$ is the one product coordinate not based at $\fp$; the pointer $p$ is a single $\K$ column and the pointer read carries literal zeros in its two upper limbs, so bus balance forces the stored pointer word into $\K$ (a genuine $\gen$-power) and the product with it. The flags need no validity check: the verifier reads them from the public program (\S\ref{sec:e2e-bc}).
+\item \textbf{Columns:} $\pc,\fp$; operands $\alpha,\beta,\gamma$; flags $f_{\pc},f_{\fp}$; pointer $p$ (a single $\K$-limb); the local value $v_3$ (three $\K$-limbs); memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Constraints:} none. The dereferenced address $p\cdot\beta$ is the one product coordinate not based at $\fp$; the pointer $p$ is a single $\K$ column and the pointer read carries literal zeros in its two upper limbs, so bus balance forces the stored pointer word into $\K$ (a genuine $\gen$-power) and the product with it. The flags need no validity check: the verifier reads them from the public program (\S\ref{sec:e2e-bc}).
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{DRF},\alpha,\beta,\gamma,f_{\pc},f_{\fp}}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} three reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: pointer $\tup{\dsep{MEM},\fp\cdot\alpha,r_1,p,0,0}$, target $\tup{\dsep{MEM},p\cdot\beta,r_2,v_2}$, local cell $\tup{\dsep{MEM},\fp\cdot\gamma,r_3,v_3}$.
+  \item \textbf{Memory:} three reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: pointer $\tup{\dsep{MEM},\fp\cdot\alpha,r_1,p,0,0}$, local cell $\tup{\dsep{MEM},\fp\cdot\gamma,r_3,v_3}$, and the target $\tup{\dsep{MEM},p\cdot\beta,r_2,v_2}$ with
+    \[
+      v_2 \;=\; (1+f_{\pc}+f_{\fp})\,v_3 \;+\; f_{\pc}\,(\gen^{2}\cdot\pc) \;+\; f_{\fp}\,\fp
+    \]
+    as its three value coordinates, which give $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings (in characteristic $2$ the $v_3$ term zeroes for the last two). Only the low limb takes the two $\K$-valued sources; the upper two are the gated limbs of $v_3$ alone.
   \end{itemize}
 \end{itemize}
 
@@ -82,17 +82,17 @@ A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ a
 \]
 When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
 \[
-  \mathit{next\_pc}=b\cdot d+(b+1)\,s,\qquad \mathit{next\_fp}=b\cdot f+(b+1)\,\fp.
+  \mathit{next\_pc}=b\cdot d+(b+1)\,s,\qquad \mathit{next\_fp}=b\cdot f+(b+1)\,\fp,
 \]
-Alone among the tables, \texttt{JUMP} commits its successors.
+degree two in the columns, so neither successor is a column: the state push carries them. The destination and the frame are addresses on every row, taken or not, so each is a single $\K$-column read through a flush with literal zeros in its upper limbs, the same device as the \texttt{DEREF} pointer, and it is bus balance that puts the stored words in $\K$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$ and $\mathit{next\_pc},\mathit{next\_fp}$ (single $\K$-columns, the next state); operands $o_c,o_d,o_f$; the condition $c$ and the destination/frame words $d,f$ (each three $\K$-limbs); inverse $w$ (three $\K$-limbs, $c^{-1}$ in $\E$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is no column, only a term of the two selections.)
-\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$ ($\E$-relations on the limbs); and the two selections $\mathit{next\_pc},\mathit{next\_fp}$ above. Since $\mathit{next\_pc},\mathit{next\_fp}$ are single $\K$-columns, the selections force the chosen words $d,f$ into $\K$ on a taken branch.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_c,o_d,o_f$; the condition $c$ (three $\K$-limbs); the destination $d$ and frame $f$ (one $\K$-limb each); inverse $w$ (three $\K$-limbs, $c^{-1}$ in $\E$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is no column, only a term of the two selections.)
+\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$ ($\E$-relations on the limbs), and nothing else. \texttt{JUMP} is the one table left with an identity, because $b$ is the one quantity no interaction pins.
 \item \textbf{Flushes:}
   \begin{itemize}
-  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$.
+  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},b\,d+b\,(\gen\cdot\pc)+\gen\cdot\pc,\;b\,f+b\,\fp+\fp}$, the two selections written out in characteristic $2$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{JMP},o_c,o_d,o_f,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory} ($X\in\{c,d,f\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,X}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,X}$.
+  \item \textbf{Memory:} three reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: the condition $\tup{\dsep{MEM},\fp\cdot o_c,r_c,c}$ with all three limbs, then $\tup{\dsep{MEM},\fp\cdot o_d,r_d,d,0,0}$ and $\tup{\dsep{MEM},\fp\cdot o_f,r_f,f,0,0}$.
   \end{itemize}
 \end{itemize}
 
