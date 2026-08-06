@@ -307,16 +307,18 @@ def challenge_from_state(state):
 @inline
 def sponge_compress(state, scalar, tail, out):
     # Serialize scalar.c0, scalar.c1, scalar.c2, tail as two canonical cells.
-    # The hints only provide the decomposition; PACK64X2 proves all four lanes
-    # are in K, and the equality binds the first three back to scalar. block[0] is
-    # the pack of the low two limbs, i.e. limbs[0] + Y·limbs[1] already, so the
-    # binding reads scalar == block[0] + Y²·limbs[2].
-    limbs = StackBuf(3)
-    hint_f192_limbs(limbs, scalar)
+    # Only the two LOW limbs are advice: PACK64X2 proves they are in K and makes
+    # block[0] their packing lo + Y·hi, which leaves the top limb determined,
+    # (scalar + block[0])·Y⁻², with the second pack proving that is in K as well.
+    # Three limbs in K that weight to scalar ARE its limbs, the tower
+    # representation being unique, so the serialization is canonical with no
+    # equality check to make and one less hint to distrust.
+    lo = StackBuf(2)
+    hint_f192_limbs(lo, scalar)
     block = StackBuf(2)
-    pack64x2_into(limbs[0], limbs[1], block[0])
-    pack64x2_into(limbs[2], tail, block[1])
-    assert scalar == block[0] + Y_TOWER * Y_TOWER * limbs[2]
+    pack64x2_into(lo[0], lo[1], block[0])
+    top = (scalar + block[0]) * (Y_INV * Y_INV)
+    pack64x2_into(top, tail, block[1])
     blake3(state, block, out)
     return
 
@@ -740,9 +742,14 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     merkle_paths = HeapBuf(GEN ** (LIG_PATHS_LEN[m_idx]))
     hint_witness(merkle_paths[0:LIG_PATHS_LEN[m_idx]], "merkle_paths")
     final_msg = HeapBuf(GEN ** (LIG_YR_LEN[m_idx]))  # filled from the stream at the last level
-    # Stream-bound level roots (filled as each root is read; index = level).
+    # Level roots by level: slot 0 is the commitment root (bound above), the rest
+    # are filled as each root is read off the stream. Every query then checks its
+    # walk with ONE heap store per digest cell, the write-once equality, with no
+    # level-0 special case.
     level_roots_0 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
     level_roots_1 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
+    level_roots_0[GEN ** 0] = commit_root_0
+    level_roots_1[GEN ** 0] = commit_root_1
     # ...and guest-filled accumulators (one slot per fold / per level / per query):
     fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
     level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
@@ -893,15 +900,11 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             path_base = xe ** (2 * LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
             path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * path_base
             root_0, root_1 = verify_merkle_path(node_0, node_1, path_ptr, direction_bits, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])  # walk the query's Merkle path to the level root
-            if lvl == 0:
-                assert root_0 == commit_root_0
-                assert root_1 == commit_root_1
-            else:
-                # A heap store IS the equality assert here (`DerefMode::Cell`
-                # unifies the two cells, and the slot was written when the root
-                # was read off the stream), at one instruction instead of three.
-                level_roots_0[GEN ** lvl] = root_0
-                level_roots_1[GEN ** lvl] = root_1
+            # A heap store IS the equality assert here (`DerefMode::Cell` unifies
+            # the two cells, and the slot holds this level's bound root already),
+            # at one instruction instead of three.
+            level_roots_0[GEN ** lvl] = root_0
+            level_roots_1[GEN ** lvl] = root_1
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
         # Every level, including the last, ties its commitment in through an
