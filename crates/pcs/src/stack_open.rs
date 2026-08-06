@@ -332,6 +332,7 @@ pub fn open_batch_mixed_whir_stacked(
 
     // 1. Ring-switch reduction: observe every claim's s_hat_v, sample one
     //    shared linear map, then finish each claim against that map.
+    let gate0_ring_switch = super::whir::Gate0Span::new("stack_open_ring_switch");
     let qflock = &stack[ring.offset..ring.offset + qflock_len];
     let mut rs_proofs = Vec::with_capacity(ring.claims.len());
     let mut rs_states = Vec::with_capacity(ring.claims.len());
@@ -362,6 +363,7 @@ pub fn open_batch_mixed_whir_stacked(
         .zip(gammas_rs)
         .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
         .collect();
+    drop(gate0_ring_switch);
     mark("ring-switch proves", &mut t);
 
     // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
@@ -385,6 +387,7 @@ pub fn open_batch_mixed_whir_stacked(
     //
     // SAFETY: every slot is written before it is read: the fill covers everything
     // outside the q_flock block, and `combine_deferred_into` writes the block.
+    let gate0_basis = super::whir::Gate0Span::new("stack_open_build_basis");
     let mut b_stack = unsafe { zk_alloc::ArenaVec::<F192>::uninitialized(stack.len()) };
     {
         const ZERO_CHUNK: usize = 1 << 16;
@@ -398,19 +401,23 @@ pub fn open_batch_mixed_whir_stacked(
         mark("rs_eq_ind scatter", &mut t);
     }
     fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd);
+    drop(gate0_basis);
     mark("point-claim folds", &mut t);
 
     // 4. One WHIR over the full stack against the combined claim (the
     //    stack is borrowed by the prover; no copy).
-    let whir = recursive_prover_with_basis(
-        config,
-        stack,
-        b_stack,
-        target,
-        &prover_data.codeword,
-        &prover_data.merkle_tree,
-        sponge,
-    );
+    let whir = {
+        let _gate0 = super::whir::Gate0Span::new("stack_open_whir");
+        recursive_prover_with_basis(
+            config,
+            stack,
+            b_stack,
+            target,
+            &prover_data.codeword,
+            &prover_data.merkle_tree,
+            sponge,
+        )
+    };
     BatchOpeningProof {
         ring_switches: rs_proofs,
         whir,

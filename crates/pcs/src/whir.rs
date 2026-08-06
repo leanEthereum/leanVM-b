@@ -56,6 +56,54 @@ pub use super::whir_config::{default_config, default_verifier_config, udr_querie
 pub use crate::whir_induce::*;
 use crate::whir_ntt_ext::*;
 
+fn gate0_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LEANVM_GATE0_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")))
+}
+
+fn gate0_trace_event(kind: &str, id: u64, name: &str) {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let process_ns = ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_nanos();
+    let unix_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    eprintln!(
+        "LEANVM_GATE0_EVENT schema=1 source=pcs kind={kind} id={id} name={name:?} unix_ns={unix_ns} process_ns={process_ns} pid={}",
+        std::process::id()
+    );
+}
+
+pub(crate) struct Gate0Span {
+    enabled: bool,
+    id: u64,
+    name: &'static str,
+}
+
+impl Gate0Span {
+    pub(crate) fn new(name: &'static str) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2_000_000);
+        let enabled = gate0_trace_enabled();
+        let id = if enabled {
+            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        } else {
+            0
+        };
+        if enabled {
+            gate0_trace_event("start", id, name);
+        }
+        Self { enabled, id, name }
+    }
+}
+
+impl Drop for Gate0Span {
+    fn drop(&mut self) {
+        if self.enabled {
+            gate0_trace_event("end", self.id, self.name);
+        }
+    }
+}
+
 /// Bind a Merkle root into the transcript as two `F192` scalars rather than
 /// as a byte string. Binds the root before any challenge exactly as `absorb_bytes`
 /// would; keeping the scalar form matches the recursion guest's replay.
@@ -359,10 +407,13 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     // work when unset.
     let trace = std::env::var_os("WHIR_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
-    tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = num_ntts).in_scope(|| {
-        let ntt = AdditiveNttF64::standard(k_code);
-        ntt.encode_interleaved(&mut codeword, message, num_ntts, log_inv_rate);
-    });
+    {
+        let _gate0 = Gate0Span::new("whir_commit_l0_ntt");
+        tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = num_ntts).in_scope(|| {
+            let ntt = AdditiveNttF64::standard(k_code);
+            ntt.encode_interleaved(&mut codeword, message, num_ntts, log_inv_rate);
+        });
+    }
     let ntt_elapsed = t_ntt.elapsed();
     let t_merkle = std::time::Instant::now();
 
@@ -377,7 +428,10 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
             codeword.len() * core::mem::size_of::<F64>(),
         )
     };
-    let merkle_tree = merkle::merkle_tree(codeword_bytes, n_positions);
+    let merkle_tree = {
+        let _gate0 = Gate0Span::new("whir_commit_l0_merkle");
+        merkle::merkle_tree(codeword_bytes, n_positions)
+    };
     let root = *merkle_tree.last().expect("merkle tree non-empty");
     if trace {
         let k_code = pretty_integer(k_code);
@@ -448,13 +502,16 @@ pub(crate) fn ligero_commit_ext(
     // commit level, no work when unset.
     let trace = std::env::var_os("WHIR_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
-    tracing::info_span!(
-        "NTT",
-        kind = "extension encode",
-        log_domain = log_block_len,
-        lanes = num_interleaved
-    )
-    .in_scope(|| forward_transform_interleaved_ext_from_layer(ntt, &mut mat, num_interleaved, log_inv_rate));
+    {
+        let _gate0 = Gate0Span::new("whir_recursive_commit_ntt");
+        tracing::info_span!(
+            "NTT",
+            kind = "extension encode",
+            log_domain = log_block_len,
+            lanes = num_interleaved
+        )
+        .in_scope(|| forward_transform_interleaved_ext_from_layer(ntt, &mut mat, num_interleaved, log_inv_rate));
+    }
     let ntt_elapsed = t_ntt.elapsed();
     let t_merkle = std::time::Instant::now();
 
@@ -467,7 +524,10 @@ pub(crate) fn ligero_commit_ext(
     let data_bytes: &[u8] =
         unsafe { core::slice::from_raw_parts(mat.as_ptr() as *const u8, mat.len() * core::mem::size_of::<F192>()) };
     debug_assert_eq!(data_bytes.len(), block_len * leaf_size_bytes);
-    let tree = merkle::merkle_tree(data_bytes, block_len);
+    let tree = {
+        let _gate0 = Gate0Span::new("whir_recursive_commit_merkle");
+        merkle::merkle_tree(data_bytes, block_len)
+    };
     if trace {
         let log_block_len = pretty_integer(log_block_len);
         let num_interleaved = pretty_integer(num_interleaved);
@@ -1057,6 +1117,33 @@ pub fn recursive_prover_with_basis(
     let log_n = witness.len().trailing_zeros() as usize;
     let r = config.level_steps;
     let initial_k = config.initial_k;
+    const FOLD_LEVEL_NAMES: [&str; 5] = [
+        "whir_fold_l1",
+        "whir_fold_l2",
+        "whir_fold_l3",
+        "whir_fold_l4",
+        "whir_fold_l5",
+    ];
+    const COMMIT_LEVEL_NAMES: [&str; 4] = [
+        "whir_recursive_commit_l2",
+        "whir_recursive_commit_l3",
+        "whir_recursive_commit_l4",
+        "whir_recursive_commit_l5",
+    ];
+    const OPEN_LEVEL_NAMES: [&str; 5] = [
+        "whir_open_l1",
+        "whir_open_l2",
+        "whir_open_l3",
+        "whir_open_l4",
+        "whir_open_l5",
+    ];
+    const INDUCE_LEVEL_NAMES: [&str; 5] = [
+        "whir_induce_l1",
+        "whir_induce_l2",
+        "whir_induce_l3",
+        "whir_induce_l4",
+        "whir_induce_l5",
+    ];
 
     assert_eq!(witness.len(), 1usize << log_n);
     assert_eq!(b_initial.len(), 1usize << log_n);
@@ -1104,6 +1191,7 @@ pub fn recursive_prover_with_basis(
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
+    let gate0_initial_sumcheck = Gate0Span::new("whir_initial_sumcheck");
     let sumcheck_span = tracing::info_span!("Sumcheck");
     let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| SumcheckProver::new(witness, b_initial, target));
     sponge.observe(start_msg.u_0);
@@ -1125,6 +1213,7 @@ pub fn recursive_prover_with_basis(
         r_lane_fold.push(r_j);
     }
     drop(sumcheck_span);
+    drop(gate0_initial_sumcheck);
     if trace {
         t_init_sumcheck += _t.elapsed();
     }
@@ -1135,10 +1224,26 @@ pub fn recursive_prover_with_basis(
     assert!(n1 >= log_num_interleaved_1);
     let log_msg_cols_1 = n1 - log_num_interleaved_1;
     let log_inv_rate_1 = config.log_inv_rates[1];
+    if gate0_trace_enabled() {
+        eprintln!(
+            "LEANVM_GATE0_PCS_CONFIG schema=1 log_n={log_n} initial_k={initial_k} level_ks={:?} log_inv_rates={:?} queries={:?} ood_samples={:?} grinding_bits={:?} fold_grinding_bits={:?} l0_induce_ntt={} workers={}",
+            config.level_ks,
+            config.log_inv_rates,
+            config.queries,
+            config.ood_samples,
+            config.grinding_bits,
+            config.fold_grinding_bits,
+            induce_use_ntt_heuristic(n1, log_inv_rate_0, config.queries[0]),
+            parallel::num_threads(),
+        );
+    }
     let _t = std::time::Instant::now();
     let ntt_1 = AdditiveNttF64::standard(log_msg_cols_1 + log_inv_rate_1);
     let f1 = sc_prover.f_ext().to_vec();
-    let wtns_1 = ligero_commit_ext(&f1, log_msg_cols_1, log_num_interleaved_1, log_inv_rate_1, &ntt_1);
+    let wtns_1 = {
+        let _gate0 = Gate0Span::new("whir_recursive_commit_l1");
+        ligero_commit_ext(&f1, log_msg_cols_1, log_num_interleaved_1, log_inv_rate_1, &ntt_1)
+    };
     if trace {
         t_commits += _t.elapsed();
     }
@@ -1159,10 +1264,14 @@ pub fn recursive_prover_with_basis(
     let alpha_0 = sponge.sample_vec(log2_ceil_usize(num_queries_0));
     let _t = std::time::Instant::now();
     // Ordered (dup-possible) rows for the local induce math ...
-    let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
-    // ... but the stored proof carries the sorted-unique rows + one octopus over
-    // the sorted-unique positions (the verifier re-fans them to ordered).
-    let (stored_rows_0, merkle_proof_0) = stored_opening(&queries_0, |q| l0_row(q).to_vec(), l0_tree, block_len_0);
+    let (opened_rows_0, stored_rows_0, merkle_proof_0) = {
+        let _gate0 = Gate0Span::new("whir_open_l0");
+        let opened_rows: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
+        // ... but the stored proof carries the sorted-unique rows + one octopus over
+        // the sorted-unique positions (the verifier re-fans them to ordered).
+        let (stored_rows, merkle_proof) = stored_opening(&queries_0, |q| l0_row(q).to_vec(), l0_tree, block_len_0);
+        (opened_rows, stored_rows, merkle_proof)
+    };
     if trace {
         t_opens += _t.elapsed();
     }
@@ -1176,15 +1285,18 @@ pub fn recursive_prover_with_basis(
     // it (deeper levels stay dense), mirroring the original.
     let sks_vks_n1 = eval_sk_at_vks(n1);
     let _t = std::time::Instant::now();
-    let (basis_0_induced, enforced_sum_0) = induce_sumcheck_poly_auto_base(
-        n1,
-        log_inv_rate_0,
-        &sks_vks_n1,
-        &opened_rows_0,
-        &r_lane_fold,
-        &queries_0,
-        &alpha_0,
-    );
+    let (basis_0_induced, enforced_sum_0) = {
+        let _gate0 = Gate0Span::new("whir_induce_l0");
+        induce_sumcheck_poly_auto_base(
+            n1,
+            log_inv_rate_0,
+            &sks_vks_n1,
+            &opened_rows_0,
+            &r_lane_fold,
+            &queries_0,
+            &alpha_0,
+        )
+    };
     if trace {
         t_induce += _t.elapsed();
     }
@@ -1209,6 +1321,7 @@ pub fn recursive_prover_with_basis(
         let k_i = config.level_ks[i];
         let mut level_rs = Vec::with_capacity(k_i);
         let _t = std::time::Instant::now();
+        let gate0_fold = Gate0Span::new(FOLD_LEVEL_NAMES.get(i).copied().unwrap_or("whir_fold_level"));
         let sumcheck_span = tracing::info_span!("Sumcheck");
         for j in 0..k_i {
             // These folds fold level i+1's commitment; tapered grinding as in
@@ -1224,6 +1337,7 @@ pub fn recursive_prover_with_basis(
             level_rs.push(ri);
         }
         drop(sumcheck_span);
+        drop(gate0_fold);
         if trace {
             t_sumcheck_folds += _t.elapsed();
         }
@@ -1244,17 +1358,22 @@ pub fn recursive_prover_with_basis(
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
             // verifier fans these to ordered for its last-level induce.
-            let (opened_rows_last, merkle_proof_last) = stored_opening(
-                &queries_last,
-                |q| wtns_prev.row(q).to_vec(),
-                &wtns_prev.tree,
-                wtns_prev.block_len,
-            );
+            let (opened_rows_last, merkle_proof_last, rows_last) = {
+                let _gate0 = Gate0Span::new(OPEN_LEVEL_NAMES.get(i).copied().unwrap_or("whir_open_level"));
+                let (opened_rows, merkle_proof) = stored_opening(
+                    &queries_last,
+                    |q| wtns_prev.row(q).to_vec(),
+                    &wtns_prev.tree,
+                    wtns_prev.block_len,
+                );
+                let rows: Vec<Vec<F192>> = queries_last.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
+                (opened_rows, merkle_proof, rows)
+            };
             // Tie the last commitment into the running claim through the same
             // intro/glue step as every other level, then finish the remaining
             // sumcheck rounds. This closes on one weight evaluation instead of
             // a sweep over the residual cube.
-            let rows_last: Vec<Vec<F192>> = queries_last.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
+            let gate0_induce = Gate0Span::new(INDUCE_LEVEL_NAMES.get(i).copied().unwrap_or("whir_induce_level"));
             let enforced_sum_last = induce_sumcheck_enforced_sum(&rows_last, &level_rs, &queries_last, &alpha_last);
             let n_res = sc_prover.f_ext().len().trailing_zeros() as usize;
             let basis_last = induce_sumcheck_evaluate_at_residual(
@@ -1265,16 +1384,20 @@ pub fn recursive_prover_with_basis(
                 &[],
                 n_res,
             );
+            drop(gate0_induce);
             let intro_msg_last = sc_prover.introduce_new(basis_last, enforced_sum_last);
             sponge.observe(intro_msg_last.u_0);
             sponge.observe(intro_msg_last.u_2);
             sc_prover.glue(sponge.sample());
-            for j in 0..n_res {
-                let ri = sponge.sample();
-                let msg = sc_prover.fold(ri);
-                if j + 1 < n_res {
-                    sponge.observe(msg.u_0);
-                    sponge.observe(msg.u_2);
+            {
+                let _gate0 = Gate0Span::new("whir_fold_residual");
+                for j in 0..n_res {
+                    let ri = sponge.sample();
+                    let msg = sc_prover.fold(ri);
+                    if j + 1 < n_res {
+                        sponge.observe(msg.u_0);
+                        sponge.observe(msg.u_2);
+                    }
                 }
             }
             let transmitted_sumcheck_len = sc_prover.transcript().len() - usize::from(n_res > 0);
@@ -1331,13 +1454,21 @@ pub fn recursive_prover_with_basis(
         let _t = std::time::Instant::now();
         let ntt_next = AdditiveNttF64::standard(log_msg_cols_next + log_inv_rate_next);
         let f_evals = sc_prover.f_ext().to_vec();
-        let wtns_next = ligero_commit_ext(
-            &f_evals,
-            log_msg_cols_next,
-            log_num_interleaved_next,
-            log_inv_rate_next,
-            &ntt_next,
-        );
+        let wtns_next = {
+            let _gate0 = Gate0Span::new(
+                COMMIT_LEVEL_NAMES
+                    .get(i)
+                    .copied()
+                    .unwrap_or("whir_recursive_commit_level"),
+            );
+            ligero_commit_ext(
+                &f_evals,
+                log_msg_cols_next,
+                log_num_interleaved_next,
+                log_inv_rate_next,
+                &ntt_next,
+            )
+        };
         if trace {
             t_commits += _t.elapsed();
         }
@@ -1355,13 +1486,17 @@ pub fn recursive_prover_with_basis(
         let alpha_i = sponge.sample_vec(log2_ceil_usize(num_queries_i));
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
-        let opened_rows_i: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
-        let (stored_rows_i, merkle_proof_i) = stored_opening(
-            &queries_i,
-            |q| wtns_prev.row(q).to_vec(),
-            &wtns_prev.tree,
-            wtns_prev.block_len,
-        );
+        let (opened_rows_i, stored_rows_i, merkle_proof_i) = {
+            let _gate0 = Gate0Span::new(OPEN_LEVEL_NAMES.get(i).copied().unwrap_or("whir_open_level"));
+            let opened_rows: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
+            let (stored_rows, merkle_proof) = stored_opening(
+                &queries_i,
+                |q| wtns_prev.row(q).to_vec(),
+                &wtns_prev.tree,
+                wtns_prev.block_len,
+            );
+            (opened_rows, stored_rows, merkle_proof)
+        };
         if trace {
             t_opens += _t.elapsed();
         }
@@ -1372,8 +1507,10 @@ pub fn recursive_prover_with_basis(
 
         let sks_vks_i = eval_sk_at_vks(n_next);
         let _t = std::time::Instant::now();
-        let (basis_i_induced, enforced_sum_i) =
-            induce_sumcheck_poly(n_next, &sks_vks_i, &opened_rows_i, &level_rs, &queries_i, &alpha_i);
+        let (basis_i_induced, enforced_sum_i) = {
+            let _gate0 = Gate0Span::new(INDUCE_LEVEL_NAMES.get(i).copied().unwrap_or("whir_induce_level"));
+            induce_sumcheck_poly(n_next, &sks_vks_i, &opened_rows_i, &level_rs, &queries_i, &alpha_i)
+        };
         if trace {
             t_induce += _t.elapsed();
         }

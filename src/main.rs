@@ -5,6 +5,10 @@
 //! cargo run --release -- xmss --n-signatures 820 --log-inv-rate 2
 //! cargo run --release -- xmss --n-signatures 820 --repeat 5
 //! cargo run --release -- recursion --n 2
+//! cargo run --release -- recursion-prepare --output children.bin --n 2
+//! cargo run --release -- recursion-inspect --fixture children.bin
+//! cargo run --release -- recursion-aggregate --fixture children.bin --output proof.bin
+//! cargo run --release -- recursion-proof-inspect --artifact proof.bin
 //! cargo run --release -- fibonacci --n 2000000
 //! cargo run --release -- --tracing fibonacci --n 2000000
 //! ```
@@ -14,6 +18,8 @@
 //! averages `n` measured passes and reports a 95% confidence half-width alongside
 //! the mean. `--cooldown` (seconds, default 2) idles before each pass so a
 //! thermally limited laptop does not report its power budget as proving cost.
+
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
@@ -71,6 +77,50 @@ enum Command {
         /// range check gives out just above 66000, so this is near the ceiling.
         #[arg(long, default_value = "64000")]
         iters: usize,
+        /// Create a deterministic, create-new artifact from the proof returned
+        /// by the unchanged native recursion path.
+        #[arg(long, value_name = "PATH")]
+        proof_artifact_v2: Option<PathBuf>,
+    },
+    /// Prove canonical children once and publish an input-ready fixture.
+    #[command(name = "recursion-prepare")]
+    RecursionPrepare {
+        /// Create-new output path for the child-proof fixture.
+        #[arg(long)]
+        output: PathBuf,
+        /// Number of child proofs.
+        #[arg(long, default_value = "2")]
+        n: usize,
+        /// BLAKE3 compressions per child proof.
+        #[arg(long, default_value = "8")]
+        hashes: usize,
+        /// MUL iterations per child proof.
+        #[arg(long, default_value = "64000")]
+        iters: usize,
+    },
+    /// Reopen, exactly decode, and verify every proof in a child fixture.
+    #[command(name = "recursion-inspect")]
+    RecursionInspect {
+        /// Existing child-proof fixture.
+        #[arg(long)]
+        fixture: PathBuf,
+    },
+    /// Aggregate an input-ready fixture and publish a verified proof artifact.
+    #[command(name = "recursion-aggregate")]
+    RecursionAggregate {
+        /// Existing child-proof fixture.
+        #[arg(long)]
+        fixture: PathBuf,
+        /// Create-new output path for the recursive proof artifact.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Reopen, exactly decode, and verify a recursive proof artifact twice.
+    #[command(name = "recursion-proof-inspect")]
+    RecursionProofInspect {
+        /// Existing recursive proof artifact.
+        #[arg(long)]
+        artifact: PathBuf,
     },
     /// Prove and verify Fibonacci in the exponent (demo).
     Fibonacci {
@@ -110,9 +160,60 @@ fn main() {
         }
         // `run_recursion` initializes tracing itself, after the guest compile it
         // does not want traced.
-        Command::Recursion { n, hashes, iters } => {
+        Command::Recursion {
+            n,
+            hashes,
+            iters,
+            proof_artifact_v2,
+        } => {
             let inner: Vec<(usize, usize)> = (0..*n).map(|_| (*hashes, *iters)).collect();
-            rec_aggregation::run_recursion(&inner, cli.log_inv_rate, cli.tracing, plan);
+            if let Some(output) = proof_artifact_v2 {
+                rec_aggregation::run_recursion_with_artifact(&inner, cli.log_inv_rate, cli.tracing, output, plan)
+                    .unwrap_or_else(|error| {
+                        eprintln!("recursive proof artifact failed: {error}");
+                        std::process::exit(1);
+                    });
+            } else {
+                rec_aggregation::run_recursion(&inner, cli.log_inv_rate, cli.tracing, plan);
+            }
+        }
+        Command::RecursionPrepare {
+            output,
+            n,
+            hashes,
+            iters,
+        } => {
+            let inner: Vec<(usize, usize)> = (0..*n).map(|_| (*hashes, *iters)).collect();
+            rec_aggregation::prepare_recursion_fixture(&inner, cli.log_inv_rate, output)
+                .unwrap_or_else(|error| {
+                    eprintln!("recursion fixture preparation failed: {error}");
+                    std::process::exit(1);
+                })
+                .print();
+        }
+        Command::RecursionInspect { fixture } => {
+            rec_aggregation::inspect_recursion_fixture(fixture)
+                .unwrap_or_else(|error| {
+                    eprintln!("recursion fixture inspection failed: {error}");
+                    std::process::exit(1);
+                })
+                .print();
+        }
+        Command::RecursionAggregate { fixture, output } => {
+            rec_aggregation::run_recursion_fixture_aggregation(fixture, output, cli.log_inv_rate, cli.tracing)
+                .unwrap_or_else(|error| {
+                    eprintln!("recursion fixture aggregation failed: {error}");
+                    std::process::exit(1);
+                })
+                .print();
+        }
+        Command::RecursionProofInspect { artifact } => {
+            rec_aggregation::inspect_recursive_proof_artifact(artifact)
+                .unwrap_or_else(|error| {
+                    eprintln!("recursive proof inspection failed: {error}");
+                    std::process::exit(1);
+                })
+                .print();
         }
         Command::Fibonacci { n } => {
             if cli.tracing {
