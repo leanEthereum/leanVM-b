@@ -123,6 +123,147 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> u
     dropped
 }
 
+/// Copy coalescing: drop `MUL dst = src · 1` by having whatever defines `src`
+/// write `dst` in the first place.
+///
+/// The lowerer emits that copy whenever a value has to sit at a *particular*
+/// cell rather than wherever it was computed, which the 64-bit dialect asks for
+/// constantly: a `BLAKE3` message chunk is two adjacent words, an extension
+/// operand three, so handing one an existing value means moving it. Renaming
+/// `src` to `dst` throughout the function does the move for free.
+///
+/// The rules are [`cse`]'s, for the same reasons, plus two of its own:
+/// 5. **Single-cell definitions only.** A multiword destination (`MUL_192`'s
+///    three-word run, a digest's four) is one address; renaming one of its lanes
+///    would move that lane out from under the run.
+/// 6. **The definition is in the copy's own block**, so the two always execute
+///    together and the rename relocates the single write rather than losing it.
+///    Every read of `src` is after that write, so every read is still served.
+pub(crate) fn coalesce_copies(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> usize {
+    let writes = write_counts(code);
+    let labels = label_targets(code);
+    let runs = implicit_run_operands(code);
+    let frozen = frozen_cells(code, frozen_from);
+    // `FnLower::one` pools the constant, but a branch-local cache can leave more
+    // than one cell holding it.
+    let ones: std::collections::HashSet<Off> = code
+        .iter()
+        .filter_map(|ins| match &ins.op {
+            LOp::Set { o, k: KVal::Const(k) } if *k == primitives::field::F64::ONE => Some(*o),
+            _ => None,
+        })
+        .collect();
+
+    let mut def: HashMap<Off, ()> = HashMap::new();
+    let mut subst: HashMap<Off, Off> = HashMap::new();
+    let mut drop = vec![false; code.len()];
+    let mut ends_block = false;
+    for i in 0..code.len().min(frozen_from) {
+        if ends_block || labels.contains(&(i as u32)) {
+            def.clear();
+        }
+        ends_block = matches!(code[i].op, LOp::Jump { .. });
+
+        // `MUL dst = src · 1`, with `src` defined earlier in this same block by an
+        // instruction free to write `dst` instead.
+        let copy = match &code[i].op {
+            LOp::Mul { a, b, c } if code[i].hints.is_empty() => match (ones.contains(a), ones.contains(b)) {
+                (false, true) => Some((*a, *c)),
+                (true, false) => Some((*b, *c)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((src, dst)) = copy
+            && def.contains_key(&src)
+            && src >= abi_end
+            && !runs.contains(&src)
+            && !frozen.contains(&src)
+            && !frozen.contains(&dst)
+            && !subst.contains_key(&dst)
+            && writes.get(&src) == Some(&1)
+            && writes.get(&dst) == Some(&1)
+        {
+            subst.insert(src, dst);
+            // `src` no longer exists, so a second copy of it cannot coalesce too.
+            def.remove(&src);
+            drop[i] = true;
+            continue;
+        }
+        // Offer only single-cell definitions, and only ones this pass may move:
+        // a `Cell` deref's `gamma` is the load's landing cell, so it retargets
+        // like an arithmetic destination.
+        let dest = match &code[i].op {
+            LOp::Set { o, .. } => Some(*o),
+            LOp::Xor { c, .. } | LOp::Mul { c, .. } => Some(*c),
+            LOp::Deref {
+                gamma,
+                mode: super::DerefMode::Cell,
+                ..
+            } => Some(*gamma),
+            _ => None,
+        };
+        if let Some(d) = dest {
+            def.insert(d, ());
+        }
+    }
+
+    let dropped = drop.iter().filter(|d| **d).count();
+    if dropped > 0 {
+        let live = frozen_from.min(code.len());
+        for ins in code[..live].iter_mut() {
+            rewrite_reads(ins, &subst);
+            rewrite_dest(ins, &subst);
+        }
+        compact(code, &drop);
+    }
+    dropped
+}
+
+/// Every cell named by an instruction the passes must not touch: the fill
+/// blocks address the frames the interpreter gives them, not this function's, so
+/// a cell one of them reads cannot be renamed out from under it.
+fn frozen_cells(code: &[LInstr], frozen_from: usize) -> std::collections::HashSet<Off> {
+    let mut out = std::collections::HashSet::new();
+    for ins in &code[frozen_from.min(code.len())..] {
+        match &ins.op {
+            LOp::Set { o, .. } => {
+                out.insert(*o);
+            }
+            LOp::Xor { a, b, c } | LOp::Mul { a, b, c } => out.extend([*a, *b, *c]),
+            LOp::AddExt { a, b, c } | LOp::MulExt { a, b, c } | LOp::MulExtBase { a, b, c } => {
+                out.extend((0..3).flat_map(|k| [*a + k, *b + k, *c + k]))
+            }
+            LOp::Deref { alpha, gamma, .. } => out.extend([*alpha, *gamma]),
+            LOp::Deref128 { alpha, gamma, .. } => out.extend((0..3).map(|k| *gamma + k).chain([*alpha])),
+            LOp::DerefExt { alpha, gamma, .. } => out.extend((0..3).map(|k| *gamma + k).chain([*alpha])),
+            LOp::Jump { oc, od, of } => out.extend([*oc, *od, *of]),
+            LOp::Blake3 { ins, cv, out: o, .. } => {
+                out.extend(ins.iter().flat_map(|&ch| [ch, ch + 1]));
+                out.extend((0..4).flat_map(|k| [*cv + k, *o + k]));
+            }
+        }
+    }
+    out
+}
+
+/// Point a single-cell destination at its renamed cell. Only the three ops
+/// [`coalesce_copies`] admits as definitions can appear in its substitution, and
+/// a `Cell` deref's `gamma` is already covered by [`rewrite_reads`].
+fn rewrite_dest(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
+    if subst.is_empty() {
+        return;
+    }
+    let dest = match &mut ins.op {
+        LOp::Set { o, .. } => o,
+        LOp::Xor { c, .. } | LOp::Mul { c, .. } => c,
+        _ => return,
+    };
+    if let Some(&renamed) = subst.get(dest) {
+        *dest = renamed;
+    }
+}
+
 /// Cells consumed through the implicit width of a multiword operand. A BLAKE3
 /// chunk, chaining value, or extension operand names only its first address;
 /// rewriting (or deleting) an individual defining cell cannot retarget that
