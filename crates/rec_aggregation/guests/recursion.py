@@ -299,20 +299,24 @@ def challenge_from_state(state):
     hint_f192_limbs(hi, state[1])
     pack64x2_into(lo[0], lo[1], state[0])
     pack64x2_into(hi[0], hi[1], state[1])
-    return f192_from_limbs(lo[0], lo[1], hi[0])
+    # state[0] IS lo[0] + Y·lo[1], pinned by the pack just above, so the low two
+    # lanes need no reassembly: only the top lane is weighted in.
+    return state[0] + Y_TOWER * Y_TOWER * hi[0]
 
 
 @inline
 def sponge_compress(state, scalar, tail, out):
     # Serialize scalar.c0, scalar.c1, scalar.c2, tail as two canonical cells.
     # The hints only provide the decomposition; PACK64X2 proves all four lanes
-    # are in K, and the equality binds the first three back to scalar.
+    # are in K, and the equality binds the first three back to scalar. block[0] is
+    # the pack of the low two limbs, i.e. limbs[0] + Y·limbs[1] already, so the
+    # binding reads scalar == block[0] + Y²·limbs[2].
     limbs = StackBuf(3)
     hint_f192_limbs(limbs, scalar)
     block = StackBuf(2)
     pack64x2_into(limbs[0], limbs[1], block[0])
     pack64x2_into(limbs[2], tail, block[1])
-    assert scalar == f192_from_limbs(limbs[0], limbs[1], limbs[2])
+    assert scalar == block[0] + Y_TOWER * Y_TOWER * limbs[2]
     blake3(state, block, out)
     return
 
@@ -327,7 +331,7 @@ def hash_state_to_words(cell_0, cell_1):
     hint_f192_limbs(hi, cell_1)
     pack64x2_into(lo[0], lo[1], cell_0)
     pack64x2_into(hi[0], hi[1], cell_1)
-    return f192_from_limbs(lo[0], lo[1], hi[0]), hi[1]
+    return cell_0 + Y_TOWER * Y_TOWER * hi[0], hi[1]  # cell_0 IS lo[0] + Y·lo[1] (pinned above)
 
 
 @inline
@@ -338,7 +342,7 @@ def hash_words_to_state(word_0, word_1):
     state = StackBuf(2)
     pack64x2_into(limbs[0], limbs[1], state[0])
     pack64x2_into(limbs[2], word_1, state[1])
-    assert word_0 == f192_from_limbs(limbs[0], limbs[1], limbs[2])
+    assert word_0 == state[0] + Y_TOWER * Y_TOWER * limbs[2]  # state[0] is the pack of the low two limbs
     return state
 
 
