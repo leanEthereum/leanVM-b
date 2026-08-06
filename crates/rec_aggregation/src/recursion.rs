@@ -1658,6 +1658,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let shape = whir_shape(m, log_inv_rate);
         let (vc, sh) = (&shape.config, &shape.levels);
         let (cn, cr) = (sh.levels, vc.level_steps);
+        // The final message sits at the LAST level. The guest fills level_roots slot 0
+        // with the commitment root and every later slot from that level's root read,
+        // then checks each query's Merkle walk with a write-once store into its slot.
+        // A slot no read had filled would turn that check into a write, so this
+        // relation is what keeps the query phase binding.
+        assert_eq!(cr, cn - 1, "the yr level must be the last one");
         let (ck, cl, cyr) = (sh.ks.clone(), sh.log_msg_cols.clone(), sh.yr_log_n);
         let cq = vc.queries.clone();
         let (cd, cp) = (&shape.depth, &shape.per_squeeze);
