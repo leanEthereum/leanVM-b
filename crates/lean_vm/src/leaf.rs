@@ -694,6 +694,7 @@ pub fn prove_balance(
     tables: &[(usize, usize)],
     ps: &mut ProverState,
 ) -> BusProof {
+    let detail_trace = std::env::var("LEANVM_BUS_DETAIL_TRACE").as_deref() == Ok("1");
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
@@ -720,22 +721,31 @@ pub fn prove_balance(
     let bus_gkr = crate::stage!("Bus GKR", || {
         gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps)
     });
+    let post_gkr_started = detail_trace.then(std::time::Instant::now);
 
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
     // every table block becomes a form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], alpha, gamma);
+    let setup_ns = post_gkr_started.map_or(0, |started| started.elapsed().as_nanos());
     // Each table's columns at ζ[..τ], computed once and shared by the three sides
     // (a form's linear part factors through them). Nothing here travels, neither the
     // evaluations nor any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
     // framework decomposition ([`verify_balance`]) and the batch settles it. A
     // transmitted total would appear in exactly one check, which it could always be
     // solved to satisfy, and would settle nothing.
+    let table_evals_started = detail_trace.then(std::time::Instant::now);
     let table_evals = tables_at(cols, tables, &bus_gkr.point);
+    let table_evals_ns = table_evals_started.map_or(0, |started| started.elapsed().as_nanos());
+    let forms_started = detail_trace.then(std::time::Instant::now);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
+    let forms_setup_ns = forms_started.map_or(0, |started| started.elapsed().as_nanos());
     let mut frameworks = [F192::ZERO; 3];
+    let mut decompose_side_ns = [0u128; 3];
+    let decompose_started = detail_trace.then(std::time::Instant::now);
     crate::stage!("Bus decompose", || {
         for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
+            let side_started = detail_trace.then(std::time::Instant::now);
             frameworks[s] = decompose_prove(
                 blocks,
                 lay,
@@ -748,9 +758,16 @@ pub fn prove_balance(
                 &mut claims,
                 ps,
             );
+            if let Some(started) = side_started {
+                decompose_side_ns[s] = started.elapsed().as_nanos();
+            }
         }
     });
+    let decompose_ns = decompose_started.map_or(0, |started| started.elapsed().as_nanos());
+    let prod_sums_started = detail_trace.then(std::time::Instant::now);
     let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point);
+    let prod_sums_ns = prod_sums_started.map_or(0, |started| started.elapsed().as_nanos());
+    let sigmas_started = detail_trace.then(std::time::Instant::now);
     let sigmas: [Vec<F192>; 3] = std::array::from_fn(|s| {
         let sigmas: Vec<F192> = forms[s]
             .iter()
@@ -767,8 +784,21 @@ pub fn prove_balance(
         );
         sigmas
     });
+    let sigmas_ns = sigmas_started.map_or(0, |started| started.elapsed().as_nanos());
 
+    let bytecode_started = detail_trace.then(std::time::Instant::now);
     let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, ps)];
+    let bytecode_ns = bytecode_started.map_or(0, |started| started.elapsed().as_nanos());
+    if let Some(started) = post_gkr_started {
+        eprintln!(
+            "LEANVM_BUS_DETAIL schema=1 setup_ns={setup_ns} table_evals_ns={table_evals_ns} \
+             forms_setup_ns={forms_setup_ns} decompose_ns={decompose_ns} \
+             decompose_side_ns={decompose_side_ns:?} prod_sums_ns={prod_sums_ns} \
+             sigmas_ns={sigmas_ns} bytecode_ns={bytecode_ns} \
+             total_post_gkr_ns={}",
+            started.elapsed().as_nanos()
+        );
+    }
     BusProof {
         claims,
         bytecode_claims,
