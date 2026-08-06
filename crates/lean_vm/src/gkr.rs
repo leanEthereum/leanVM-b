@@ -316,6 +316,9 @@ pub struct ProductTriple {
 
 /// Prove three identity-padded grand products as one RLC-batched radix-four GKR.
 pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> ProductTriple {
+    let detail_trace = std::env::var("LEANVM_GKR_DETAIL_TRACE").as_deref() == Ok("1");
+    let total_started = detail_trace.then(std::time::Instant::now);
+    let leaf_lengths: [usize; 3] = std::array::from_fn(|lane| leaves[lane].leaves.len());
     let mu = crate::log2_ceil_usize(leaves[0].leaves.len());
     assert!(
         leaves
@@ -323,7 +326,15 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
             .all(|lane| !lane.leaves.is_empty() && lane.leaves.len() <= 1 << mu),
         "batched trees must be nonempty prefixes of the first tree's logical tree"
     );
+    let build_started = detail_trace.then(std::time::Instant::now);
     let mut layers = leaves.map(|lane| build_layers(lane, mu));
+    let build_ns = build_started.map_or(0, |started| started.elapsed().as_nanos());
+    let retained_layer_values: [usize; 3] =
+        std::array::from_fn(|tree| layers[tree].iter().map(|layer| layer.values.len()).sum());
+    let retained_layer_bytes = retained_layer_values
+        .iter()
+        .sum::<usize>()
+        .saturating_mul(std::mem::size_of::<F192>());
     let roots = [
         layers[0][mu].values[0],
         layers[1][mu].values[0],
@@ -337,6 +348,11 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
     let mut values = roots;
 
     let mut layer = mu;
+    let mut message_ns = 0u128;
+    let mut fold_ns = 0u128;
+    let mut equality_ns = 0u128;
+    let mut message_rounds = 0usize;
+    let mut equality_peak_entries = 0usize;
     while layer > 0 {
         let round_count = mu - layer;
         if layer % 2 == 1 {
@@ -367,23 +383,41 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
             let Layer { values } = std::mem::take(&mut layers[tree][layer - 2]);
             QuaternaryLayerState::new(values, width)
         });
+        let equality_started = detail_trace.then(std::time::Instant::now);
         let mut equality = if round_count > 0 {
             eq_table(&point[1..])
         } else {
             Vec::new()
         };
+        equality_peak_entries = equality_peak_entries.max(equality.len());
+        if let Some(started) = equality_started {
+            equality_ns += started.elapsed().as_nanos();
+        }
         let mut round_point = Vec::with_capacity(round_count);
         for _ in 0..round_count {
+            let message_started = detail_trace.then(std::time::Instant::now);
             let messages = [0, 1, 2].map(|tree| trees[tree].round_message(&equality));
+            if let Some(started) = message_started {
+                message_ns += started.elapsed().as_nanos();
+            }
+            message_rounds += 1;
             ps.add_scalars(&[0, 1, 2, 3].map(|coefficient| {
                 messages[0][coefficient] + lambda * (messages[1][coefficient] + lambda * messages[2][coefficient])
             }));
             let challenge = ps.sample();
             round_point.push(challenge);
+            let fold_started = detail_trace.then(std::time::Instant::now);
             for tree in &mut trees {
                 tree.fold(challenge);
             }
+            if let Some(started) = fold_started {
+                fold_ns += started.elapsed().as_nanos();
+            }
+            let equality_started = detail_trace.then(std::time::Instant::now);
             shrink_eq_low(&mut equality);
+            if let Some(started) = equality_started {
+                equality_ns += started.elapsed().as_nanos();
+            }
         }
 
         for tree in &trees {
@@ -403,6 +437,13 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
         point = vec![low_challenge, high_challenge];
         point.extend_from_slice(&round_point);
         layer -= 2;
+    }
+
+    if let Some(started) = total_started {
+        eprintln!(
+            "LEANVM_GKR_DETAIL schema=1 mu={mu} leaf_lengths={leaf_lengths:?} retained_layer_values={retained_layer_values:?} retained_layer_bytes={retained_layer_bytes} build_ns={build_ns} message_ns={message_ns} fold_ns={fold_ns} equality_ns={equality_ns} message_rounds={message_rounds} equality_peak_entries={equality_peak_entries} total_ns={}",
+            started.elapsed().as_nanos(),
+        );
     }
 
     ProductTriple { roots, point, values }
