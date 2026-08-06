@@ -829,9 +829,9 @@ fn gen_verify(
                         }
                     }
                     Coord::Public(_) => nbcv += 1,
-                    // A product coordinate lives only in a table block, which raises
+                    // A degree-2 coordinate lives only in a table block, which raises
                     // no framework claim.
-                    Coord::Const(_) | Coord::Index | Coord::Prod(..) => {}
+                    Coord::Const(_) | Coord::Index | Coord::Prod(..) | Coord::Sum(..) => {}
                 }
             }
         }
@@ -1445,6 +1445,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                         (4, F192::ZERO)
                     }
                     Coord::Prod(_, _, k) => (5, F192::new(g_pow(*k as usize).0, 0, 0)),
+                    // No table on this branch derives a value yet; the port that
+                    // makes them do so teaches the guest to flatten a `Sum` first.
+                    Coord::Sum(_) => unreachable!("no bus coordinate is a sum yet"),
                 };
                 ct.push(t);
                 cval.push(u(v));
