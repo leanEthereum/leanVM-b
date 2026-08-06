@@ -1458,6 +1458,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let qflock_compact = compact_col_pm[lean_vm::cpu::QFLOCK];
     assert_ne!(qflock_compact, usize::MAX, "QFLOCK must be committed");
     let (mut cpbuf, mut cpcol, mut cpqslot): (Vec<usize>, Vec<usize>, Vec<usize>) = (vec![], vec![], vec![]);
+    // `cpbuf` codes are the guest's POINT_BUF_*: 0 zeta, 1 rho, 2 pi, 3 qflock-rho.
     walk_claims(&l, kbc, |site| match site {
         ClaimSite::Framework { column, .. } => {
             let compact = compact_col_pm[column];
@@ -1467,7 +1468,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             cpqslot.push(0);
         }
         ClaimSite::TableColumn { column, is_virtual, .. } => {
-            cpbuf.push(if is_virtual { 4 } else { 1 });
+            cpbuf.push(if is_virtual { 3 } else { 1 });
             cpcol.push(if is_virtual {
                 qflock_compact
             } else {

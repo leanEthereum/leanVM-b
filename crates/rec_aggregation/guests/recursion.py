@@ -222,8 +222,7 @@ LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
-POINT_BUF_QFLOCK = 3
-POINT_BUF_QFLOCK_RHO = 4
+POINT_BUF_QFLOCK_RHO = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_COMMITTED_COL = CLAIM_COMMITTED_COL_PLACEHOLDER
 CLAIM_QFLOCK_SLOT_BITS = CLAIM_QFLOCK_SLOT_BITS_PLACEHOLDER
@@ -1988,13 +1987,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rho_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
         rho_eq_chain[xk * GEN] = rho_eq_chain[xk] * (1 + rho[xk] + fold_challenges[xk])
-    # The qflock variants read the same points against ris shifted past the slot
-    # coordinates, so they need their own chains.
+    # The qflock variant reads rho against ris shifted past the slot coordinates,
+    # so it needs its own chain. There is no zeta counterpart: a virtual value
+    # column is referenced only by its own table's bus blocks, which the zerocheck
+    # settles, so no framework block can raise one (asserted while the placeholder
+    # map is built).
     ris_slot = fold_challenges * GEN ** SLOT_STRIDE_LOG
-    zeta_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
-    zeta_slot_eq_chain[GEN ** 0] = 1
-    for xk in mul_range(1, g_bus_mu):
-        zeta_slot_eq_chain[xk * GEN] = zeta_slot_eq_chain[xk] * (1 + zeta[xk] + ris_slot[xk])
     rho_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
     rho_slot_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
@@ -2019,10 +2017,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         else:
             cplen_g = claim_cplen_g[GEN ** j]
             nlow = cplen_g
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
-                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qflock slot coords
             if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
-                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG
+                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qflock slot coords
         nover_g = claim_nover[GEN ** j]
         # nover <= YR_LOG_CAP: honest nover <= yr_log_n <= cap, and the y-slot
         # loop below selects prefix_mask_table row nover, so its log must be
@@ -2052,12 +2048,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for xk in mul_range(GEN, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
             low_eq = low_chain[low_len_g]
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
-            qflock_slot_eq = GEN ** 0
-            for k in unroll(0, SLOT_STRIDE_LOG):
-                sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
-                qflock_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            low_eq = qflock_slot_eq * zeta_slot_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
             qflock_slot_eq = GEN ** 0
             for k in unroll(0, SLOT_STRIDE_LOG):
@@ -2141,8 +2131,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for j in unroll(0, N_CLAIMS):
         overlap_ptr = rho * claim_low_len[GEN ** j]
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            overlap_ptr = zeta * claim_low_len[GEN ** j]
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
             overlap_ptr = zeta * claim_low_len[GEN ** j]
         # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
         # only for k < nover (the [low_len, cplen) span); at k >= nover it points
