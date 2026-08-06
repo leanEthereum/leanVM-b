@@ -1,5 +1,5 @@
 //! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
-//! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
+//! replays `cpu::verify` for a hinted number of proofs of a fixed inner program, batches
 //! their deferred claims with the two aggregation sumchecks, and binds the sub
 //! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
 //! public input (`doc/main.tex` §Recursive aggregation, §Deferred evaluation claims).
@@ -32,6 +32,19 @@ use primitives::{
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
 const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
 const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
+
+/// Aggregation arity bound: the guest hints the count and range-checks its
+/// exponent against this (`NSUB_BOUND`), which is what makes its per-sub walks
+/// terminate. The bytecode does not otherwise depend on the arity.
+const NSUB_BOUND: usize = 1024;
+
+/// The aggregation arity, as the guest carries it: in the exponent, `g^nsub`.
+/// Both aggregation transcripts absorb it in this form, ahead of every
+/// variable-length sequence.
+fn nsub_word(nsub: usize) -> F192 {
+    assert!(nsub < NSUB_BOUND, "recursion arity {nsub} exceeds the guest bound");
+    F192::new(g_pow(nsub).0, 0, 0)
+}
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F192) -> u128 {
@@ -194,7 +207,7 @@ struct RecursiveStatement {
 impl RecursiveStatement {
     fn public_input(&self, inner_environment: [F192; 2]) -> [F192; 2] {
         let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
-        sponge.observe(F192::new(self.sub_statements.len() as u64, 0, 0));
+        sponge.observe(nsub_word(self.sub_statements.len()));
         for &v in &inner_environment {
             sponge.observe(v);
         }
@@ -241,7 +254,7 @@ impl RecursiveProof {
         }
         // Verification only reads the compiled guest; prover witness streams
         // live on owned clones.
-        let guest = recursion_guest_arc(inner_program, statement.sub_statements.len());
+        let guest = recursion_guest_arc(inner_program);
         let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
         verify(&guest, &public_input, &self.outer_proof).map_err(RecursiveVerifyError::OuterProof)?;
         check_deferred_claims(inner_program, &statement.reduced)
@@ -336,7 +349,7 @@ fn aggregate_deferred_claims(
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
     let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
-    h.observe(F192::new(nsub as u64, 0, 0));
+    h.observe(nsub_word(nsub));
     for d in subs {
         h.observe(d.public_input[0]);
         h.observe(d.public_input[1]);
@@ -538,7 +551,7 @@ fn aggregate_deferred_claims(
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);
     let mut e = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
-    e.observe(F192::new(subs.len() as u64, 0, 0));
+    e.observe(nsub_word(nsub));
     e.observe(seed[0]);
     e.observe(seed[1]);
     for d in subs {
@@ -557,6 +570,7 @@ fn aggregate_deferred_claims(
     e.observe(v_b);
 
     let hints = vec![
+        ("nsub".to_string(), vec![nsub_word(nsub)]),
         ("fs_seed".to_string(), vec![seed[0], seed[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
@@ -636,6 +650,59 @@ fn whir_shape(mu: usize, log_inv_rate: usize) -> WhirShape {
 fn blake3_value_columns() -> Vec<usize> {
     let base = lean_vm::cpu::schema().base[5];
     lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| base + c).collect()
+}
+
+/// The guest's `COORD_KIND_*` code for a coordinate (`guests/recursion.py`),
+/// shared by its `COORD_TYPE` and `TERM_TYPE` arrays.
+fn coord_kind(c: &Coord) -> usize {
+    match c {
+        Coord::Const(_) => 0,
+        Coord::Col(_) => 1,
+        Coord::GCol(..) => 2,
+        Coord::Index => 3,
+        Coord::Public(_) => 4,
+        Coord::Prod(..) => 5,
+        Coord::Sum(..) => 6,
+    }
+}
+
+/// The `K` scalar a coordinate carries beside its columns: the constant itself,
+/// or the `g^k` a `GCol`/`Prod` scales by. Zero for every other kind.
+fn coord_scale(c: &Coord) -> F192 {
+    match c {
+        Coord::Const(v) => F192::new(v.0, 0, 0),
+        Coord::GCol(_, k) | Coord::Prod(_, _, k) => F192::new(g_pow(*k as usize).0, 0, 0),
+        _ => F192::ZERO,
+    }
+}
+
+/// Flatten one table-block coordinate into the guest's term arrays, in local
+/// column indices. A [`Coord::Sum`]'s children are its terms; every other kind is
+/// one term. `Index`/`Public` never reach a table block.
+fn push_coord_terms(
+    c: &Coord,
+    base: usize,
+    ty: &mut Vec<usize>,
+    val: &mut Vec<u128>,
+    col_a: &mut Vec<usize>,
+    col_b: &mut Vec<usize>,
+) {
+    let (a, b) = match c {
+        Coord::Const(_) => (0, 0),
+        Coord::Col(i) | Coord::GCol(i, _) => (*i - base, 0),
+        Coord::Prod(i, j, _) => (*i - base, *j - base),
+        Coord::Sum(cs) => {
+            for c in cs {
+                push_coord_terms(c, base, ty, val, col_a, col_b);
+            }
+            return;
+        }
+        Coord::Index | Coord::Public(_) => unreachable!("a table's bus block carries no virtual coordinate"),
+    };
+    ty.push(coord_kind(c));
+    val.push(u(coord_scale(c)));
+    col_a.push(a);
+    col_b.push(b);
 }
 
 /// Config + hints for the recursion guest (`guests/recursion.py`), built
@@ -1103,13 +1170,6 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         subs.push(defer);
     }
     let (program0, _, _, _, _) = &protos[0];
-    // spi is main-level (one hint site): merge the statements into one entry.
-    let spi_all: Vec<F192> = subs
-        .iter()
-        .flat_map(|d| [d.public_input[0], d.public_input[1]])
-        .collect();
-    let spi_pos = merged.iter().position(|(n, _)| n == "sub_pis").expect("spi hint");
-    merged[spi_pos].1 = vec![spi_all];
     let (agg_hints, gpi, reduced) = aggregate_deferred_claims(program0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
     let statement = RecursiveStatement {
@@ -1187,9 +1247,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
-    let (mut coord_fresh, mut coord_slot, mut coord_local) = (vec![], vec![], vec![]);
-    // A product coordinate's second local index; 0 for every other kind.
-    let mut coord_local_b: Vec<usize> = vec![];
+    let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
+    // A TABLE block's coordinates, flattened into terms: the guest rebuilds each as
+    // `Σ_terms`, so a derived value (an XOR/MUL result, a DEREF store, a JUMP
+    // successor) costs terms rather than columns. A framework coordinate has none:
+    // it decomposes into pooled claims instead.
+    let (mut coord_toff, mut coord_tcount) = (vec![], vec![]);
+    let (mut term_type, mut term_const) = (vec![], vec![]);
+    let (mut term_col_a, mut term_col_b) = (vec![], vec![]);
     // A table's blocks raise no claim any more: the batched zerocheck settles them
     //, so only the framework blocks stream column values.
     let sch_pm = lean_vm::cpu::schema();
@@ -1205,60 +1270,41 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             nblocks += 1;
             for c in &blk.coords {
                 // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
-                // indexes them by global coord offset); only Col/GCol matter.
-                let (mut fresh, mut slot, mut local) = (0usize, 0usize, 0usize);
-                let mut local_b = 0usize;
-                if let Coord::Prod(i, j, _) = c {
-                    let t = owner.expect("a product coordinate lives only in a table block");
-                    local = *i - sch_pm.base[t];
-                    local_b = *j - sch_pm.base[t];
-                }
-                if let Coord::Col(i) | Coord::GCol(i, _) = c {
-                    match owner {
-                        // A table's coord: the zerocheck reads it off that table's
-                        // column evaluations, at its local index.
-                        Some(t) => local = *i - sch_pm.base[t],
-                        None => {
-                            let key = (*i, blk.kappa);
-                            if let Some(&known) = slot_of.get(&key) {
-                                slot = known;
-                            } else {
-                                slot_of.insert(key, nclaims);
-                                fresh = 1;
-                                slot = nclaims;
-                                nclaims += 1;
-                            }
-                        }
+                // indexes them by global coord offset); only a framework block's
+                // Col/GCol raises a claim.
+                let (mut fresh, mut slot) = (0usize, 0usize);
+                if let (Coord::Col(i) | Coord::GCol(i, _), None) = (c, owner) {
+                    let key = (*i, blk.kappa);
+                    if let Some(&known) = slot_of.get(&key) {
+                        slot = known;
+                    } else {
+                        slot_of.insert(key, nclaims);
+                        fresh = 1;
+                        slot = nclaims;
+                        nclaims += 1;
                     }
                 }
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
-                coord_local.push(local);
-                coord_local_b.push(local_b);
-                let (t, v, f) = match c {
-                    Coord::Const(v) => (0u128, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
-                    Coord::Col(i) => (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
-                    Coord::GCol(i, k) => {
-                        let gk = g_pow(*k as usize);
-                        (2, F192::new(gk.0, 0, 0), F192::new((gk * l.pad[*i]).0, 0, 0))
-                    }
-                    Coord::Index => (3, F192::ZERO, F192::ZERO),
-                    Coord::Public(_) => {
-                        nbcv += 1;
-                        (4, F192::ZERO, F192::ZERO)
-                    }
-                    Coord::Prod(i, j, k) => {
-                        let gk = g_pow(*k as usize);
-                        (
-                            5,
-                            F192::new(gk.0, 0, 0),
-                            F192::new((gk * l.pad[*i] * l.pad[*j]).0, 0, 0),
-                        )
-                    }
-                };
-                ct.push(t);
-                cval.push(u(v));
-                fpv.push(u(f));
+                // A table's coord becomes terms; a framework one has none, having
+                // decomposed into the pooled claim above.
+                let toff = term_type.len();
+                if let Some(t) = owner {
+                    push_coord_terms(
+                        c,
+                        sch_pm.base[t],
+                        &mut term_type,
+                        &mut term_const,
+                        &mut term_col_a,
+                        &mut term_col_b,
+                    );
+                }
+                coord_toff.push(toff);
+                coord_tcount.push(term_type.len() - toff);
+                nbcv += usize::from(matches!(c, Coord::Public(_)));
+                ct.push(coord_kind(c) as u128);
+                cval.push(u(coord_scale(c)));
+                fpv.push(u(F192::new(lean_vm::leaf::coord_pad_value(c, &l.pad).0, 0, 0)));
             }
         }
         sblk.push(nblocks);
@@ -1498,8 +1544,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_PAD_VAL", us(&fpv));
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
-    ps("COORD_COL_LOCAL", ints(&coord_local));
-    ps("COORD_COL_LOCAL_B", ints(&coord_local_b));
+    ps("COORD_TERM_OFF", ints(&coord_toff));
+    ps("COORD_TERM_COUNT", ints(&coord_tcount));
+    ps("TERM_TYPE", ints(&term_type));
+    ps("TERM_CONST", us(&term_const));
+    ps("TERM_COL_A", ints(&term_col_a));
+    ps("TERM_COL_B", ints(&term_col_b));
     ps("N_BUS_CLAIMS", nclaims.to_string());
     let idxc: Vec<u128> = (0..34)
         .map(|i| {
@@ -1977,6 +2027,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
+    ps("NSUB_BOUND", NSUB_BOUND.to_string());
     let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
@@ -1989,26 +2040,23 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     rep
 }
 
-/// Return the process-cached recursion guest for this program and batch arity.
-fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<Program> {
+/// Return the process-cached recursion guest for this program. The batch arity
+/// is a runtime hint, so it is not part of the key.
+fn recursion_guest_arc(inner_program: &Program) -> std::sync::Arc<Program> {
     use std::sync::{Arc, Mutex, OnceLock};
 
-    type Key = ([u64; 6], usize);
+    type Key = [u64; 6];
     static CACHE: OnceLock<Mutex<std::collections::HashMap<Key, Arc<Program>>>> = OnceLock::new();
     const GUEST_CACHE_CAP: usize = 8;
 
     let seed = lean_vm::cpu::fs_seed(inner_program);
-    let key = (
-        [seed[0].c0, seed[0].c1, seed[0].c2, seed[1].c0, seed[1].c1, seed[1].c2],
-        nsub,
-    );
+    let key = [seed[0].c0, seed[0].c1, seed[0].c2, seed[1].c0, seed[1].c1, seed[1].c2];
     let cache = CACHE.get_or_init(Default::default);
     if let Some(guest) = cache.lock().expect("recursion guest cache poisoned").get(&key) {
         return Arc::clone(guest);
     }
 
-    let mut replacements = placeholder_map(inner_program);
-    replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
+    let replacements = placeholder_map(inner_program);
     // `DBG_PLACEHOLDERS=path`: dump the baked guest constants, to read alongside
     // a `DBG_PROF_DUMP` profile (the guest's shape is entirely in these).
     if let Ok(path) = std::env::var("DBG_PLACEHOLDERS") {
@@ -2037,8 +2085,8 @@ fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<P
 }
 
 /// Return an owned guest whose witness streams may be mutated by the prover.
-fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
-    (*recursion_guest_arc(inner_program, nsub)).clone()
+fn recursion_guest(inner_program: &Program) -> Program {
+    (*recursion_guest_arc(inner_program)).clone()
 }
 
 /// Run an `inner.len()`→1 recursive aggregation and verify the outer proof;
@@ -2075,7 +2123,7 @@ fn run_recursion_with_rates(
     // bytecode size — so it is compiled FIRST, before any inner proof.
     let program = inner_program();
     let t = std::time::Instant::now();
-    let mut guest = recursion_guest(&program, inner.len());
+    let mut guest = recursion_guest(&program);
     let t_compile = t.elapsed();
     // The recursion program size + compile time, BEFORE any inner proving.
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
@@ -2144,7 +2192,7 @@ fn run_recursion_with_rates(
 fn recursion_1to1_smoke() {
     let cfg = [(4, 1 << 12)];
     let batch = build_batch(&cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    let mut guest = recursion_guest(&batch.program0);
     for (name, entries) in &batch.merged {
         guest.set_witness(name, entries.clone());
     }
@@ -2160,7 +2208,7 @@ fn recursion_1to1_smoke() {
         .find(|(name, _)| name == "stream")
         .expect("proof stream hint");
     stream.1[0][0] = F192::ONE;
-    let mut bad_guest = recursion_guest(&batch.program0, cfg.len());
+    let mut bad_guest = recursion_guest(&batch.program0);
     for (name, entries) in &bad_memory {
         bad_guest.set_witness(name, entries.clone());
     }
@@ -2201,7 +2249,7 @@ fn recursion_2to1_mixed() {
 fn recursion_soundness_binds() {
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
     let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    let mut guest = recursion_guest(&batch.program0);
     let public_input = batch.public_input();
 
     let run = |g: &mut Program, merged: &[(String, Vec<Vec<F192>>)]| -> bool {
@@ -2216,8 +2264,19 @@ fn recursion_soundness_binds() {
     };
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
+    assert!(
+        batch.merged.iter().all(|(name, _)| !matches!(
+            name.as_str(),
+            "claim_sel_bits" | "claim_yslot_bits" | "claim_qflock_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
+        )),
+        "claim and ring placement descriptors must be derived, not hinted"
+    );
+
+    // each tamper flips one hint to a definitely-invalid value.
     for &(stream, idx, val) in &[
         ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi (public input) must reject
+        ("nsub", 0, F192::ONE),    // g^0: dropping a sub-proof must not keep the statement
+        ("stream", 0, F192::new((lean_vm::cpu::MIN_LOG_MEM - 1) as u64, 0, 0)), // native memory floor
         ("stream", 1, F192::new(1u64 << 32, 0, 0)), // native row counts are strictly below 2^32
         ("zc_tau_max", 0, g_pow(2).into()), // not the max tau: the max-cert must reject
     ] {
@@ -2258,7 +2317,7 @@ fn recursion_generic_many() {
     // The recursion program is generic: compile it ONCE, from the inner program's
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
     // — every shape below verifies against this one bytecode.
-    let mut guest = recursion_guest(&inner_program(), 1);
+    let mut guest = recursion_guest(&inner_program());
     eprintln!("guest compiled ONCE ({} instrs)", pretty_integer(guest.prog.len()));
     for &cfg in configs {
         let batch = build_batch(&[cfg], &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
@@ -2294,7 +2353,7 @@ fn recursion_generic_many() {
 fn recursion_guest_profile() {
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
     let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    let mut guest = recursion_guest(&batch.program0);
     for (name, entries) in &batch.merged {
         guest.set_witness(name, entries.clone());
     }

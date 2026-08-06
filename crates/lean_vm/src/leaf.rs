@@ -35,6 +35,14 @@ pub enum Coord {
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
     /// its MLE directly, so it raises no claim.
     Public(Vec<F64>),
+    /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
+    /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
+    /// carries a value a row DERIVES from its columns (an `XOR`/`MUL` result, a
+    /// `DEREF` store, a `JUMP` successor) without committing a column for it, and
+    /// with it the identity that would have tied the two. Like [`Coord::Prod`],
+    /// only a table's blocks may carry one: the batched zerocheck settles them,
+    /// while a framework block has to split into per-column openings.
+    Sum(Vec<Coord>),
 }
 
 /// A flushing rule: `2^kappa` rows, each a tuple of coordinates. `real` is the
@@ -133,6 +141,25 @@ enum Term<'a> {
     Public(&'a [F64], F192),
 }
 
+/// Flatten one coordinate into leaf terms at coefficient `w`. A [`Coord::Sum`]
+/// spreads its children over the SAME `w`: they are one coordinate, so they share
+/// its `α`-power.
+fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &mut F192) {
+    match c {
+        Coord::Const(v) => *constant += w.mul_base(*v),
+        Coord::Col(i) => terms.push(Term::Col(*i, w)),
+        Coord::GCol(i, k) => terms.push(Term::Col(*i, w.mul_base(g_pow(*k as usize)))),
+        Coord::Prod(i, j, k) => terms.push(Term::Prod(*i, *j, w.mul_base(g_pow(*k as usize)))),
+        Coord::Index => terms.push(Term::Index(w)),
+        Coord::Public(vals) => terms.push(Term::Public(vals, w)),
+        Coord::Sum(cs) => {
+            for c in cs {
+                push_terms(c, w, terms, constant);
+            }
+        }
+    }
+}
+
 /// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i α^i c_i(z)`,
 /// followed implicitly by the identity `1` up to `2^μ`. The row-invariant
 /// `α`-power chain and constant coordinates are folded once per block into
@@ -154,14 +181,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
         let mut terms: Vec<Term> = Vec::with_capacity(blk.coords.len());
         let mut alpha_pow = F192::ONE;
         for c in &blk.coords {
-            match c {
-                Coord::Const(v) => const_part += alpha_pow.mul_base(*v),
-                Coord::Col(i) => terms.push(Term::Col(*i, alpha_pow)),
-                Coord::GCol(i, k) => terms.push(Term::Col(*i, alpha_pow.mul_base(g_pow(*k as usize)))),
-                Coord::Prod(i, j, k) => terms.push(Term::Prod(*i, *j, alpha_pow.mul_base(g_pow(*k as usize)))),
-                Coord::Index => terms.push(Term::Index(alpha_pow)),
-                Coord::Public(vals) => terms.push(Term::Public(vals, alpha_pow)),
-            }
+            push_terms(c, alpha_pow, &mut terms, &mut const_part);
             alpha_pow *= alpha;
         }
         let row = |z: usize| -> F192 {
@@ -261,6 +281,26 @@ impl BusForm {
     }
 }
 
+/// Accumulate one coordinate of a table's block into that table's form, at
+/// coefficient `w`. A [`Coord::Sum`]'s children share `w`, so a derived value
+/// lands as the several coefficients and products it is made of.
+fn accumulate_form(c: &Coord, w: F192, base: usize, form: &mut BusForm) {
+    match c {
+        Coord::Const(v) => form.constant += w.mul_base(*v),
+        Coord::Col(i) => form.coeffs[*i - base] += w,
+        Coord::GCol(i, k) => form.coeffs[*i - base] += w.mul_base(g_pow(*k as usize)),
+        Coord::Prod(i, j, k) => form.prods.push((*i - base, *j - base, w.mul_base(g_pow(*k as usize)))),
+        Coord::Sum(cs) => {
+            for c in cs {
+                accumulate_form(c, w, base, form);
+            }
+        }
+        Coord::Index | Coord::Public(_) => {
+            unreachable!("a table's bus block carries no virtual coordinate")
+        }
+    }
+}
+
 /// Walk one side's blocks. A block owned by table `t` (with column base `base`)
 /// accumulates into `forms[t]`; the framework blocks are decomposed into per-column
 /// claims as before, `fresh` supplying values not already in `claims`. Returns the
@@ -298,18 +338,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
             form.constant += eq_hi * gamma;
             let mut alpha_pow = F192::ONE;
             for c in &blk.coords {
-                match c {
-                    Coord::Const(v) => form.constant += eq_hi * alpha_pow.mul_base(*v),
-                    Coord::Col(i) => form.coeffs[*i - base] += eq_hi * alpha_pow,
-                    Coord::GCol(i, k) => form.coeffs[*i - base] += eq_hi * alpha_pow.mul_base(g_pow(*k as usize)),
-                    Coord::Prod(i, j, k) => {
-                        form.prods
-                            .push((*i - base, *j - base, eq_hi * alpha_pow.mul_base(g_pow(*k as usize))))
-                    }
-                    Coord::Index | Coord::Public(_) => {
-                        unreachable!("a table's bus block carries no virtual coordinate")
-                    }
-                }
+                accumulate_form(c, eq_hi * alpha_pow, base, form);
                 alpha_pow *= alpha;
             }
             continue;
@@ -338,7 +367,9 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 Coord::Index => index_mle(zeta_lo),
                 Coord::Col(i) => col_val(*i)?,
                 Coord::GCol(i, k) => col_val(*i)?.mul_base(g_pow(*k as usize)),
-                Coord::Prod(..) => unreachable!("only a table's bus block carries a product coordinate"),
+                Coord::Prod(..) | Coord::Sum(..) => {
+                    unreachable!("only a table's bus block carries a degree-2 coordinate")
+                }
                 Coord::Public(vals) => mle_eval(vals, zeta_lo),
             };
             inner += alpha_pow * coord_val;
@@ -463,20 +494,31 @@ fn fpow(base: F192, mut e: usize) -> F192 {
     r
 }
 
+/// What a coordinate reads on a PADDING row, where every column holds its own pad
+/// value (§sec:e2e-pad). A coordinate a row DERIVES has no column to read it off,
+/// so it takes the value its definition gives on those pads: a [`Coord::Sum`]'s is
+/// the sum of its terms', in characteristic two. The recursion guest's descriptors
+/// are baked from this same function, so the two cannot drift.
+pub fn coord_pad_value(c: &Coord, pad: &[F64]) -> F64 {
+    match c {
+        Coord::Const(v) => *v,
+        Coord::Col(i) => pad[*i],
+        Coord::GCol(i, k) => g_pow(*k as usize) * pad[*i],
+        Coord::Prod(i, j, k) => g_pow(*k as usize) * pad[*i] * pad[*j],
+        Coord::Sum(cs) => cs.iter().fold(F64::ZERO, |acc, c| acc + coord_pad_value(c, pad)),
+        // The index and bytecode columns are framework-only, and a framework block
+        // is a full cube with no padding rows.
+        Coord::Index | Coord::Public(_) => F64::ZERO,
+    }
+}
+
 /// `π_α` of a block's padding-row tuple (every column zero but the read counts,
 /// value `1`). Only padded blocks are queried, and those carry no virtual coordinate.
 fn default_fingerprint(block: &Block, pad: &[F64], alpha: F192) -> F192 {
     let mut fingerprint = F192::ZERO;
     let mut alpha_pow = F192::ONE;
     for c in &block.coords {
-        let coord_val = match c {
-            Coord::Const(v) => *v,
-            Coord::Col(i) => pad[*i],
-            Coord::GCol(i, k) => g_pow(*k as usize) * pad[*i],
-            Coord::Prod(i, j, k) => g_pow(*k as usize) * pad[*i] * pad[*j],
-            Coord::Index | Coord::Public(_) => F64::ZERO,
-        };
-        fingerprint += alpha_pow.mul_base(coord_val);
+        fingerprint += alpha_pow.mul_base(coord_pad_value(c, pad));
         alpha_pow *= alpha;
     }
     fingerprint
