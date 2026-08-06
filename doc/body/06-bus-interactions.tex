@@ -5,7 +5,29 @@ The machine runs three interactions on the bus, told apart by their domain separ
 
 \subsection{State}\label{sec:state}
 
-The state interaction carries $\tup{\dsep{ST},\pc,\fp}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$; the bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_0,\fp_0}$ and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}}}$. When the bus balances, the per-row transitions form a chain from $(\pc_0,\fp_0)$ to $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$, possibly alongside disjoint cycles. The chain is the execution; a cycle is a closed loop of rows that still satisfies every constraint and reads the same committed memory and bytecode, so it cannot affect the start-to-final claim. That tolerance is not merely harmless, it is used: the rows that bring each table to a power of two are exactly such cycles (\S\ref{sec:e2e-pad}). By convention execution halts at a fixed sentinel: the last bytecode instruction. Writing $\nprog$ for the program length (a power of two, \S\ref{sec:e2e-bc}), the instructions sit at $\gen^{0},\dots,\gen^{\,\nprog-1}$, so $\pc_{\mathrm{final}}=\gen^{\,\nprog-1}$, with $\fp_{\mathrm{final}}=\gen^{0}$. A compiled \texttt{main} ends by jumping there. Both boundary states are then public, so the verifier forms them itself.
+The state interaction carries the 2 registers, program counter and frame pointer: $\tup{\dsep{ST},\pc,\fp}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\nxt{\pc},\nxt{\fp}}$; the bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_0,\fp_0}$ and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}}}$ (boundary conditions).
+\begin{proposition}[Balance implies the existance of a valid execution]\label{prop:walk}
+Let $\mathcal R$ be a finite multiset of rows, each pulling a state $u(r)$ and pushing a state $v(r)$, and suppose the state channel balances:
+\[
+  \mset{v(r):r\in\mathcal R}\uplus\mset{(\pc_0,\fp_0)}
+  \;=\;\mset{u(r):r\in\mathcal R}\uplus\mset{(\pc_{\mathrm{final}},\fp_{\mathrm{final}})} .
+\]
+Then $\mathcal R$ splits into rows $r_1,\dots,r_L$ with
+\[
+  u(r_1)=(\pc_0,\fp_0),\qquad v(r_i)=u(r_{i+1}),\qquad v(r_L)=(\pc_{\mathrm{final}},\fp_{\mathrm{final}}),
+\]
+and rows forming closed walks.
+\end{proposition}
+
+\begin{proof}
+Build the directed multigraph $G$ on the states: one edge $u(r)\to v(r)$ per row, plus one edge $e$ from $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$ to $(\pc_0,\fp_0)$.
+
+Fix a state $x$. Its in-degree in $G$ counts the rows with $v(r)=x$, plus $e$ if $x=(\pc_0,\fp_0)$, where $e$ ends. Its out-degree counts the rows with $u(r)=x$, plus $e$ if $x=(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$, where $e$ starts. Those two counts are the multiplicities of $x$ on the two sides of the hypothesis, so they are equal: $G$ is balanced at every state.
+
+A finite balanced multigraph is a union of edge-disjoint closed walks: follow unused edges from any vertex, which balance always permits on entering one, until a vertex repeats; remove the closed walk found and repeat. Deleting $e$ from the closed walk that contains it leaves $r_1,\dots,r_L$.
+\end{proof}
+
+Tolerating closed walks is what lets a table be filled to a power of two (\S\ref{sec:e2e-pad}).
 
 \subsection{The lookup protocol}\label{sec:lookup}
 
