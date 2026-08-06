@@ -269,6 +269,11 @@ RING_MAP_SHIFTS = [32, 16, 8, 4, 2, 1]
 # bits.
 COUNT_BITS = 33
 SIZE_BITS = 34
+# A structural LOG (log_mem, tau_t, log_inv_rate) is announced as an integer word
+# and raised to a g-power by decomposing it (g_power_of_word). Every one of them is
+# below SIZE_BITS, so LOG_WORD_BITS bits are enough, and the reconstruction IS the
+# bound: a larger announced log cannot reproduce itself from this many bits.
+LOG_WORD_BITS = 6
 
 
 @inline
@@ -348,18 +353,6 @@ def squeeze_step(state_0, state_1):
     return challenge, o[0], o[1]
 
 
-def check_field_bits_decomposition(bits_ptr, v):
-    # Boolean-constrain FIELD_BITS hinted bits and assert they reconstruct v in
-    # the F192 COORDINATE basis (hint_decompose_bits emits coordinate bits).
-    acc = 0
-    for i in unroll(0, FIELD_BITS):
-        b = bits_ptr[GEN ** i]
-        assert b * b == b
-        acc += b * COORD_BASIS[i]  # bit i contributes the i-th coordinate basis vector
-    assert acc == v
-    return
-
-
 def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
     # The squeezed word's bits are advice-decomposed HERE, boolean-constrained,
     # and tied back by reconstruction; each depth-bit group also becomes a query
@@ -411,13 +404,16 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
 
 
 def grind_check(state_0, state_1, nonce, nbits_g):
-    # WHIR fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
-    # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
-    # check_field_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
-    # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
-    # caller absorbs the full field nonce afterwards. The honest prover searches
-    # the deterministic u64 subset, while verification permits the full field:
-    # each candidate still costs one hash and succeeds with probability 2^-bits.
+    # WHIR fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)), whose
+    # low nbits (nbits_g = g^nbits) must be zero. The PoW window of
+    # transcript::pow_bits_ok is `digest.0 & ((1 << bits) - 1)`, nbits < 64, so it
+    # lives entirely in the digest's FIRST 64-bit lane: one PACK64X2 pins the
+    # digest cell's two lanes (both proven to be in K, the third zero), and only
+    # that lane's BASE_FIELD_BITS coordinates are advice-decomposed and verified
+    # (booleanity + reconstruction), not all FIELD_BITS of the cell. The caller
+    # absorbs the full field nonce afterwards. The honest prover searches the
+    # deterministic u64 subset, while verification permits the full field: each
+    # candidate still costs one hash and succeeds with probability 2^-bits.
     if nbits_g == GEN ** 0:
         assert nonce == 0  # native canonical zero-work nonce
     st = [state_0, state_1]
@@ -426,11 +422,21 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     out = StackBuf(2)
     # nonce's three F64 limbs followed by DS_POW, exactly as the native sponge.
     sponge_compress(base, nonce, DS_POW, out)
-    digest_bits = HeapBuf(GEN ** FIELD_BITS)
-    hint_decompose_bits(digest_bits, out[0], FIELD_BITS)
-    check_field_bits_decomposition(digest_bits, out[0])
+    lanes = StackBuf(2)
+    hint_f192_limbs(lanes, out[0])
+    pack64x2_into(lanes[0], lanes[1], out[0])  # out[0] == (lanes[0], lanes[1], 0), both in K
+    lane_bits = HeapBuf(GEN ** BASE_FIELD_BITS)
+    hint_decompose_bits(lane_bits, lanes[0], BASE_FIELD_BITS)
+    acc = 0
+    for i in unroll(0, BASE_FIELD_BITS):
+        b = lane_bits[GEN ** i]
+        # Booleanity as a write-once pin: the cell already holds b, so storing b*b
+        # back IS the assert, one instruction shorter (as in decode_query_bits).
+        lane_bits[GEN ** i] = b * b
+        acc += b * COORD_BASIS[i]  # bit i contributes the i-th coordinate basis vector
+    assert acc == lanes[0]  # the bits ARE the lane's coordinates, so the pins below bind it
     for xb in mul_range(1, nbits_g):
-        assert digest_bits[xb] == 0
+        assert lane_bits[xb] == 0
     return
 
 
@@ -1061,7 +1067,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         fs, x, cursor = fs_next(fs, cursor)
         sizes[i] = x
     fs, log_inv_rate, cursor = fs_next(fs, cursor)
-    g_log_inv_rate = g_power_of_word(log_inv_rate, g_squares, COUNT_BITS)
+    g_log_inv_rate = g_power_of_word(log_inv_rate, g_squares, LOG_WORD_BITS)
     rate_sel = g_log_inv_rate / GEN  # g^(log_inv_rate - 1)
     assert log(rate_sel) < LIG_N_RATES
 
@@ -1073,7 +1079,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]
     # log_mem is announced AS a log (an integer word L): g^L is assembled from
     # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
-    g_log_mem = g_power_of_word(sizes[0], g_squares, COUNT_BITS)
+    g_log_mem = g_power_of_word(sizes[0], g_squares, LOG_WORD_BITS)
     assert log(g_log_mem) < COUNT_BITS
     mem_floor_slack = g_log_mem / GEN ** MIN_LOG_MEM
     assert log(mem_floor_slack) < COUNT_BITS  # native MIN_LOG_MEM <= log_mem
@@ -1084,7 +1090,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # so a height is all there is to announce, and the log2_ceil gadget
     # that used to turn a count into one is gone from here.
     for t in unroll(0, N_TABLES):
-        g_tau = g_power_of_word(sizes[t + 1], g_squares, COUNT_BITS)
+        g_tau = g_power_of_word(sizes[t + 1], g_squares, LOG_WORD_BITS)
         assert log(g_tau) < COUNT_BITS
         # A table's floor: flock sizes its BLAKE3 argument to at least 2^3 instances.
         assert log(g_tau / GEN ** FLOORS[t]) < COUNT_BITS
