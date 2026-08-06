@@ -26,8 +26,9 @@
 //!
 //! Basis induction mirrors the original's two strategies: the dense
 //! per-query LCH expansion and the sparse transposed-NTT fast path
-//! (`induce_sumcheck_poly_via_ntt_base`), with the SAME auto-dispatch size
-//! heuristic at L0 (deeper levels stay dense, exactly like the original).
+//! (`induce_sumcheck_poly_via_ntt_base`). L0 keeps the original size heuristic
+//! and also selects the fast path for the independently measured production
+//! family; deeper levels stay dense, exactly like the original.
 //!
 //! Soundness note: [`WhirSecurityConfig`] analyzes the actual challenge
 //! field size `q = 2^192`; the committed alphabet remains `K = GF(2^64)`.
@@ -2938,6 +2939,34 @@ mod tests {
         // And log_n = 12 is below the production ladder's feasibility floor, so
         // the tests there use the default_config fallback.
         assert!(configs_for(12).is_err());
+    }
+
+    #[test]
+    fn l0_induce_policy_and_override_are_narrow_and_fail_closed() {
+        for log_msg_cols in 19..=21 {
+            assert!(induce_ntt_validated_shape(log_msg_cols, 2, 113));
+            assert!(!induce_use_ntt_heuristic(log_msg_cols, 2, 113));
+            assert!(induce_use_ntt_policy(log_msg_cols, 2, 113));
+            assert_eq!(
+                parse_induce_ntt_override(Some(std::ffi::OsStr::new("1")), true),
+                Ok(Some(true))
+            );
+        }
+        assert!(!induce_ntt_validated_shape(18, 2, 113));
+        assert_eq!(induce_use_ntt_policy(18, 2, 113), induce_use_ntt_heuristic(18, 2, 113));
+        assert_eq!(parse_induce_ntt_override(None, false), Ok(None));
+        assert_eq!(
+            parse_induce_ntt_override(Some(std::ffi::OsStr::new("0")), false),
+            Ok(Some(false))
+        );
+        assert!(parse_induce_ntt_override(Some(std::ffi::OsStr::new("1")), false).is_err());
+        assert!(parse_induce_ntt_override(Some(std::ffi::OsStr::new("true")), true).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let invalid = std::ffi::OsString::from_vec(vec![0xff]);
+            assert!(parse_induce_ntt_override(Some(&invalid), true).is_err());
+        }
     }
 
     /// The parallel eq builder must be byte-identical to the serial one, and
