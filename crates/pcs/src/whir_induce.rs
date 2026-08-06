@@ -498,7 +498,21 @@ pub(crate) fn induce_sumcheck_poly_auto_base(
     queries: &[usize],
     alpha: &[F192],
 ) -> (ArenaVec<F192>, F192) {
-    if induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, queries.len()) {
+    let heuristic = induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, queries.len());
+    let requested = std::env::var("LEANVM_PCS_L0_INDUCE_NTT").ok();
+    let selected = match requested.as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => heuristic,
+    };
+    if requested.is_some() {
+        eprintln!(
+            "LEANVM_PCS_L0_INDUCE schema=1 requested={} heuristic={heuristic} selected={selected} log_msg_cols={log_msg_cols} log_inv_rate={log_inv_rate} queries={}",
+            requested.as_deref() == Some("1"),
+            queries.len()
+        );
+    }
+    if selected {
         induce_sumcheck_poly_via_ntt_base(log_msg_cols, log_inv_rate, opened_rows, v_challenges, queries, alpha)
     } else {
         induce_sumcheck_poly(log_msg_cols, sks_vks, opened_rows, v_challenges, queries, alpha)
