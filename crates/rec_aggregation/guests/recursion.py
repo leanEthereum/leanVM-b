@@ -226,14 +226,18 @@ BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: one bytecode point and the Flock
 # lincheck data (see verify_sub's defer_out layout).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
-# Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
-# as hints. The seed sponge state after the two byte-string absorbs is baked
+# Aggregation: a RUNTIME number of sub-proofs of the same program; per-sub proof
+# data arrives as hints. The seed sponge state after the two byte-string absorbs is baked
 # (TRANSCRIPT_SEED), then the hinted sub statement + the inner PROGRAM DIGEST are bound.
 # The seed is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
 # (the fs_seed hint folded into own_pi in main), so ONE compiled guest verifies
 # proofs of any inner program of this VM — the outer statement fixes the whole
 # proving environment (circuit family + program), via own_pi.
-NSUB = NSUB_PLACEHOLDER
+# The arity is hinted too, as g^nsub, and absorbed by both aggregation transcripts
+# ahead of every variable-length sequence, so the outer statement fixes it as well.
+# NSUB_BOUND (nsub < NSUB_BOUND) is the compile-time range-check bound that makes
+# the count a bounded exponent, hence every sub-walk below terminate.
+NSUB_BOUND = NSUB_BOUND_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
@@ -2201,13 +2205,19 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
 
 def main():
-    # NSUB sub-proofs of the fixed inner program: verify each (verify_sub),
+    # nsub sub-proofs of the fixed inner program: verify each (verify_sub),
     # then aggregate their deferred claims. The fresh aggregation transcript
     # RLC-batches the bytecode and matrix claims through two sumchecks; only
     # the three reduced claims (evaluated natively by the outer verifier)
     # reach this guest's public input.
-    sub_pis = HeapBuf(NSUB * 2)
-    hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
+    # The arity is prover advice, hinted in the exponent as nsub_g = g^nsub. It
+    # sizes every buffer and bounds every sub-walk below, and both transcripts
+    # absorb it first, so a wrong count changes own_pi and is rejected there.
+    nsub_hint = StackBuf(1)
+    hint_witness(nsub_hint[0:1], "nsub")
+    nsub_g = nsub_hint[0]
+    assert log(nsub_g) < NSUB_BOUND
+    sub_pis = HeapBuf(nsub_g * nsub_g)  # 2 statement words per sub
     # The FS seed — ONE digest of everything fixed about the inner environment
     # (the flock circuit family, the inner program bytecode) — rides the
     # recursion's public input: hinted here, it leads every sub's transcript
@@ -2215,6 +2225,8 @@ def main():
     # proving environment with one word pair.
     fs_seed = StackBuf(2)
     hint_witness(fs_seed[0:2], "fs_seed")
+    seed_0 = fs_seed[0]  # scalars: a StackBuf cannot cross into a runtime loop body
+    seed_1 = fs_seed[1]
     bc_sumcheck_msgs = HeapBuf(2 * BYTECODE_VARS)
     hint_witness(bc_sumcheck_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
     mat_sumcheck_msgs = HeapBuf(4 * K_LOG)
@@ -2226,33 +2238,64 @@ def main():
     # exponent-domain lookup tables, shared read-only across every sub-proof.
     g_logs_pow2, g_squares = exponent_tables()
 
-    # per-sub deferred-claim regions (layout: see verify_sub's defer_out)
-    defer = HeapBuf(NSUB * DEFER_SIZE)
+    # per-sub deferred-claim regions (layout: see verify_sub's defer_out) and
+    # the per-sub base pointer into them, so the walks below never redo g^(t*DEFER_SIZE).
+    defer = HeapBuf(nsub_g ** DEFER_SIZE)
+    defer_row = HeapBuf(nsub_g)
 
-    for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
+    for xs in mul_range(1, nsub_g):
+        x2 = xs * xs  # g^(2t): this sub's statement pair
+        hint_witness(sub_pis[x2:x2 + 2], "sub_pis")
+        row = defer * xs ** DEFER_SIZE
+        defer_row[xs] = row
+        verify_sub(sub_pis[x2], sub_pis[x2 * GEN], seed_0, seed_1, g_logs_pow2, g_squares, row)
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
     # samples the RLC coefficients, and verifies the two batching sumchecks of
     # doc/main.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
+    # Every per-sub walk below is a runtime loop, so its loop-carried state (the
+    # sponge, the running claim, the accumulated weight) rides a chain buffer
+    # indexed by the counter, the guest's standard idiom.
     agg_fs = [AGG_SEED_0, AGG_SEED_1]
-    agg_fs = obs(agg_fs, NSUB)
-    for sub in unroll(0, NSUB):
-        agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub)])
-        agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub + 1)])
+    agg_fs = obs(agg_fs, nsub_g)
+    abs_fs0 = HeapBuf(nsub_g * GEN)
+    abs_fs1 = HeapBuf(nsub_g * GEN)
+    abs_fs0[GEN ** 0] = agg_fs[0]
+    abs_fs1[GEN ** 0] = agg_fs[1]
+    for xs in mul_range(1, nsub_g):
+        x2 = xs * xs
+        st = [abs_fs0[xs], abs_fs1[xs]]
+        st = obs(st, sub_pis[x2])
+        st = obs(st, sub_pis[x2 * GEN])
         # the deferred-claim region is one contiguous run in absorb order.
+        row = defer_row[xs]
         for k in unroll(0, DEFER_SIZE):
-            agg_fs = obs(agg_fs, defer[GEN ** (sub * DEFER_SIZE + k)])
+            st = obs(st, row[GEN ** k])
+        abs_fs0[xs * GEN] = st[0]
+        abs_fs1[xs * GEN] = st[1]
+    agg_fs = [abs_fs0[nsub_g], abs_fs1[nsub_g]]
 
-    # ---- bytecode batching sumcheck (BYTECODE_VARS variables, NSUB claims) ----
-    gamma_bc = StackBuf(NSUB)
-    bc_running = 0
-    for t in unroll(0, NSUB):
-        agg_fs, gv = squeeze(agg_fs)
-        gamma_bc[t] = gv
-        bc_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS)]
+    # ---- bytecode batching sumcheck (BYTECODE_VARS variables, nsub claims) ----
+    gamma_bc = HeapBuf(nsub_g)
+    bc_fs0 = HeapBuf(nsub_g * GEN)
+    bc_fs1 = HeapBuf(nsub_g * GEN)
+    bc_claim = HeapBuf(nsub_g * GEN)
+    bc_fs0[GEN ** 0] = agg_fs[0]
+    bc_fs1[GEN ** 0] = agg_fs[1]
+    bc_claim[GEN ** 0] = 0
+    for xs in mul_range(1, nsub_g):
+        st = [bc_fs0[xs], bc_fs1[xs]]
+        st, gv = squeeze(st)
+        gamma_bc[xs] = gv
+        row = defer_row[xs]
+        xsn = xs * GEN
+        bc_fs0[xsn] = st[0]
+        bc_fs1[xsn] = st[1]
+        bc_claim[xsn] = bc_claim[xs] + gv * row[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS)]
+    agg_fs = [bc_fs0[nsub_g], bc_fs1[nsub_g]]
+    bc_running = bc_claim[nsub_g]
     bc_point = HeapBuf(BYTECODE_VARS)
     for rd in unroll(0, BYTECODE_VARS):
         agg_fs, msg_g1, c = fs_next(agg_fs, bc_sumcheck_msgs * GEN ** (2 * rd))
@@ -2263,25 +2306,40 @@ def main():
         c_one = g_zero + msg_g1 + msg_ginf
         bc_running = (msg_ginf * rv + c_one) * rv + g_zero  # fold the degree-2 batching-sumcheck round at rv
     # terminal: W(r*) in-circuit; the reduced bytecode claim B(r*) is deferred.
-    bc_weight = 0
-    for t in unroll(0, NSUB):
+    bc_wsum = HeapBuf(nsub_g * GEN)
+    bc_wsum[GEN ** 0] = 0
+    for xs in mul_range(1, nsub_g):
+        row = defer_row[xs]
         e = GEN ** 0
         for k in unroll(0, BYTECODE_LOG):
-            e *= (1 + defer[GEN ** (t * DEFER_SIZE + k)] + bc_point[GEN ** k])
+            e *= (1 + row[GEN ** k] + bc_point[GEN ** k])
         for k in unroll(0, LOG2_BYTECODE_COLS):
-            e *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + k)] + bc_point[GEN ** (BYTECODE_LOG + k)])
-        bc_weight += gamma_bc[t] * e
+            e *= (1 + row[GEN ** (BYTECODE_LOG + k)] + bc_point[GEN ** (BYTECODE_LOG + k)])
+        bc_wsum[xs * GEN] = bc_wsum[xs] + gamma_bc[xs] * e
+    bc_weight = bc_wsum[nsub_g]
     bytecode_star = bc_star_hint[0]
     bc_final = bytecode_star * bc_weight  # terminal: claim == B(r*) * W(r*); B(r*) (bytecode_star) is deferred
     assert bc_running == bc_final
 
-    # ---- matrix batching sumcheck (2*K_LOG variables, NSUB weighted claims) ----
-    gamma_mat = StackBuf(NSUB)
-    mat_running = 0
-    for t in unroll(0, NSUB):
-        agg_fs, gv = squeeze(agg_fs)
-        gamma_mat[t] = gv
-        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
+    # ---- matrix batching sumcheck (2*K_LOG variables, nsub weighted claims) ----
+    gamma_mat = HeapBuf(nsub_g)
+    mat_fs0 = HeapBuf(nsub_g * GEN)
+    mat_fs1 = HeapBuf(nsub_g * GEN)
+    mat_claim = HeapBuf(nsub_g * GEN)
+    mat_fs0[GEN ** 0] = agg_fs[0]
+    mat_fs1[GEN ** 0] = agg_fs[1]
+    mat_claim[GEN ** 0] = 0
+    for xs in mul_range(1, nsub_g):
+        st = [mat_fs0[xs], mat_fs1[xs]]
+        st, gv = squeeze(st)
+        gamma_mat[xs] = gv
+        row = defer_row[xs]
+        xsn = xs * GEN
+        mat_fs0[xsn] = st[0]
+        mat_fs1[xsn] = st[1]
+        mat_claim[xsn] = mat_claim[xs] + gv * row[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
+    agg_fs = [mat_fs0[nsub_g], mat_fs1[nsub_g]]
+    mat_running = mat_claim[nsub_g]
     mat_point = HeapBuf(2 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
         agg_fs, msg_g1, c = fs_next(agg_fs, mat_sumcheck_msgs * GEN ** (2 * rd))
@@ -2299,25 +2357,32 @@ def main():
     eqtree(mat_point, eq_rows, K_SKIP)
     eq_cols = HeapBuf(2 ** (K_SKIP + 1) - 2)
     eqtree(mat_point * GEN ** K_LOG, eq_cols, K_SKIP)
-    weight_a = 0
-    weight_b = 0
-    for t in unroll(0, NSUB):
-        z_skip_t = defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)]
+    wa_sum = HeapBuf(nsub_g * GEN)
+    wb_sum = HeapBuf(nsub_g * GEN)
+    wa_sum[GEN ** 0] = 0
+    wb_sum[GEN ** 0] = 0
+    for xs in mul_range(1, nsub_g):
+        row = defer_row[xs]
+        z_skip_t = row[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)]
         row_nums = StackBuf(2 ** K_SKIP)
         lag64(z_skip_t, row_nums, 0)
         row_weight = 0
         for i in unroll(0, 2 ** K_SKIP):
             row_weight += row_nums[i] * LAGRANGE_INV_S[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
         for k in unroll(0, LINCHECK_ROUNDS):
-            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] + mat_point[GEN ** (K_SKIP + k)])
+            row_weight *= (1 + row[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] + mat_point[GEN ** (K_SKIP + k)])
         col_weight = 0
         for i in unroll(0, 2 ** K_SKIP):
-            col_weight += defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (2 ** K_SKIP - 2 + i)]
+            col_weight += row[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (2 ** K_SKIP - 2 + i)]
         for j in unroll(0, LINCHECK_ROUNDS):
-            col_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
+            col_weight *= (1 + row[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
         weight_u = row_weight * col_weight
-        weight_a += gamma_mat[t] * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] * weight_u
-        weight_b += gamma_mat[t] * weight_u
+        gm = gamma_mat[xs]
+        xsn = xs * GEN
+        wa_sum[xsn] = wa_sum[xs] + gm * row[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] * weight_u
+        wb_sum[xsn] = wb_sum[xs] + gm * weight_u
+    weight_a = wa_sum[nsub_g]
+    weight_b = wb_sum[nsub_g]
     a_star = mat_stars_hint[0]
     b_star = mat_stars_hint[1]
     mat_final = a_star * weight_a + b_star * weight_b
@@ -2325,12 +2390,21 @@ def main():
 
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
     out_fs = [STATEMENT_SEED_0, STATEMENT_SEED_1]
-    out_fs = obs(out_fs, NSUB)
-    out_fs = obs(out_fs, fs_seed[0])  # the inner proving environment is part of the public statement
-    out_fs = obs(out_fs, fs_seed[1])
-    for sub in unroll(0, NSUB):
-        out_fs = obs(out_fs, sub_pis[GEN ** (2 * sub)])
-        out_fs = obs(out_fs, sub_pis[GEN ** (2 * sub + 1)])
+    out_fs = obs(out_fs, nsub_g)
+    out_fs = obs(out_fs, seed_0)  # the inner proving environment is part of the public statement
+    out_fs = obs(out_fs, seed_1)
+    out_fs0 = HeapBuf(nsub_g * GEN)
+    out_fs1 = HeapBuf(nsub_g * GEN)
+    out_fs0[GEN ** 0] = out_fs[0]
+    out_fs1[GEN ** 0] = out_fs[1]
+    for xs in mul_range(1, nsub_g):
+        x2 = xs * xs
+        st = [out_fs0[xs], out_fs1[xs]]
+        st = obs(st, sub_pis[x2])
+        st = obs(st, sub_pis[x2 * GEN])
+        out_fs0[xs * GEN] = st[0]
+        out_fs1[xs * GEN] = st[1]
+    out_fs = [out_fs0[nsub_g], out_fs1[nsub_g]]
     for k in unroll(0, BYTECODE_VARS):
         out_fs = obs(out_fs, bc_point[GEN ** k])
     out_fs = obs(out_fs, bytecode_star)

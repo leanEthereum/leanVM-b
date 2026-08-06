@@ -1,5 +1,5 @@
 //! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
-//! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
+//! replays `cpu::verify` for a hinted number of proofs of a fixed inner program, batches
 //! their deferred claims with the two aggregation sumchecks, and binds the sub
 //! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
 //! public input (`doc/main.tex` §Recursive aggregation, §Deferred evaluation claims).
@@ -32,6 +32,19 @@ use primitives::{
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
 const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
 const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
+
+/// Aggregation arity bound: the guest hints the count and range-checks its
+/// exponent against this (`NSUB_BOUND`), which is what makes its per-sub walks
+/// terminate. The bytecode does not otherwise depend on the arity.
+const NSUB_BOUND: usize = 1024;
+
+/// The aggregation arity, as the guest carries it: in the exponent, `g^nsub`.
+/// Both aggregation transcripts absorb it in this form, ahead of every
+/// variable-length sequence.
+fn nsub_word(nsub: usize) -> F192 {
+    assert!(nsub < NSUB_BOUND, "recursion arity {nsub} exceeds the guest bound");
+    F192::new(g_pow(nsub).0, 0, 0)
+}
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F192) -> u128 {
@@ -196,7 +209,7 @@ struct RecursiveStatement {
 impl RecursiveStatement {
     fn public_input(&self, inner_environment: [F192; 2]) -> [F192; 2] {
         let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
-        sponge.observe(F192::new(self.sub_statements.len() as u64, 0, 0));
+        sponge.observe(nsub_word(self.sub_statements.len()));
         for &v in &inner_environment {
             sponge.observe(v);
         }
@@ -243,7 +256,7 @@ impl RecursiveProof {
         }
         // Verification only reads the compiled guest; prover witness streams
         // live on owned clones.
-        let guest = recursion_guest_arc(inner_program, statement.sub_statements.len());
+        let guest = recursion_guest_arc(inner_program);
         let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
         verify(&guest, &public_input, &self.outer_proof).map_err(RecursiveVerifyError::OuterProof)?;
         check_deferred_claims(inner_program, &statement.reduced)
@@ -336,7 +349,7 @@ fn aggregate_deferred_claims(
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
     let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
-    h.observe(F192::new(nsub as u64, 0, 0));
+    h.observe(nsub_word(nsub));
     for d in subs {
         h.observe(d.public_input[0]);
         h.observe(d.public_input[1]);
@@ -538,7 +551,7 @@ fn aggregate_deferred_claims(
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);
     let mut e = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
-    e.observe(F192::new(subs.len() as u64, 0, 0));
+    e.observe(nsub_word(nsub));
     e.observe(seed[0]);
     e.observe(seed[1]);
     for d in subs {
@@ -557,6 +570,7 @@ fn aggregate_deferred_claims(
     e.observe(v_b);
 
     let hints = vec![
+        ("nsub".to_string(), vec![nsub_word(nsub)]),
         ("fs_seed".to_string(), vec![seed[0], seed[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
@@ -1238,13 +1252,6 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         subs.push(defer);
     }
     let (program0, _, _, _, _) = &protos[0];
-    // spi is main-level (one hint site): merge the statements into one entry.
-    let spi_all: Vec<F192> = subs
-        .iter()
-        .flat_map(|d| [d.public_input[0], d.public_input[1]])
-        .collect();
-    let spi_pos = merged.iter().position(|(n, _)| n == "sub_pis").expect("spi hint");
-    merged[spi_pos].1 = vec![spi_all];
     let (agg_hints, gpi, reduced) = aggregate_deferred_claims(program0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
     let statement = RecursiveStatement {
@@ -1900,6 +1907,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
+    ps("NSUB_BOUND", NSUB_BOUND.to_string());
     let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
@@ -1912,26 +1920,23 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     rep
 }
 
-/// Return the process-cached recursion guest for this program and batch arity.
-fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<Program> {
+/// Return the process-cached recursion guest for this program. The batch arity
+/// is a runtime hint, so it is not part of the key.
+fn recursion_guest_arc(inner_program: &Program) -> std::sync::Arc<Program> {
     use std::sync::{Arc, Mutex, OnceLock};
 
-    type Key = ([u64; 6], usize);
+    type Key = [u64; 6];
     static CACHE: OnceLock<Mutex<std::collections::HashMap<Key, Arc<Program>>>> = OnceLock::new();
     const GUEST_CACHE_CAP: usize = 8;
 
     let seed = lean_vm::cpu::fs_seed(inner_program);
-    let key = (
-        [seed[0].c0, seed[0].c1, seed[0].c2, seed[1].c0, seed[1].c1, seed[1].c2],
-        nsub,
-    );
+    let key = [seed[0].c0, seed[0].c1, seed[0].c2, seed[1].c0, seed[1].c1, seed[1].c2];
     let cache = CACHE.get_or_init(Default::default);
     if let Some(guest) = cache.lock().expect("recursion guest cache poisoned").get(&key) {
         return Arc::clone(guest);
     }
 
-    let mut replacements = placeholder_map(inner_program);
-    replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
+    let replacements = placeholder_map(inner_program);
     // `DBG_PLACEHOLDERS=path`: dump the baked guest constants, to read alongside
     // a `DBG_PROF_DUMP` profile (the guest's shape is entirely in these).
     if let Ok(path) = std::env::var("DBG_PLACEHOLDERS") {
@@ -1960,8 +1965,8 @@ fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<P
 }
 
 /// Return an owned guest whose witness streams may be mutated by the prover.
-fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
-    (*recursion_guest_arc(inner_program, nsub)).clone()
+fn recursion_guest(inner_program: &Program) -> Program {
+    (*recursion_guest_arc(inner_program)).clone()
 }
 
 /// Run an `inner.len()`→1 recursive aggregation and verify the outer proof;
@@ -1998,7 +2003,7 @@ fn run_recursion_with_rates(
     // bytecode size — so it is compiled FIRST, before any inner proof.
     let program = inner_program();
     let t = std::time::Instant::now();
-    let mut guest = recursion_guest(&program, inner.len());
+    let mut guest = recursion_guest(&program);
     let t_compile = t.elapsed();
     // The recursion program size + compile time, BEFORE any inner proving.
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
@@ -2098,7 +2103,7 @@ fn recursion_2to1_mixed() {
 fn recursion_soundness_binds() {
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
     let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    let mut guest = recursion_guest(&batch.program0);
     let public_input = batch.public_input();
 
     let run = |g: &mut Program, merged: &[(String, Vec<Vec<F192>>)]| -> bool {
@@ -2124,6 +2129,7 @@ fn recursion_soundness_binds() {
     // each tamper flips one hint to a definitely-invalid value.
     let tampers: Vec<(&str, usize, F192)> = vec![
         ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi must reject
+        ("nsub", 0, F192::ONE),    // g^0: dropping a sub-proof must not keep the statement
         ("stream", 0, F192::new((lean_vm::cpu::MIN_LOG_MEM - 1) as u64, 0, 0)), // native memory floor
         ("stream", 1, F192::new(1u64 << 32, 0, 0)), // native row counts are strictly below 2^32
         ("claim_nover", 0, F192::new(g_pow(5).0, 0, 0)),
@@ -2190,7 +2196,7 @@ fn recursion_generic_many() {
     // The recursion program is generic: compile it ONCE, from the inner program's
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
     // — every shape below verifies against this one bytecode.
-    let mut guest = recursion_guest(&inner_program(), 1);
+    let mut guest = recursion_guest(&inner_program());
     eprintln!("guest compiled ONCE ({} instrs)", pretty_integer(guest.prog.len()));
     for &cfg in configs {
         let batch = build_batch(&[cfg], &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
@@ -2226,7 +2232,7 @@ fn recursion_generic_many() {
 fn recursion_guest_profile() {
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
     let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    let mut guest = recursion_guest(&batch.program0);
     for (name, entries) in &batch.merged {
         guest.set_witness(name, entries.clone());
     }
