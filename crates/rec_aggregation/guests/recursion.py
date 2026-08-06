@@ -44,6 +44,8 @@ GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 COORD_KIND_CONST = 0
 COORD_KIND_COL = 1
 COORD_KIND_GCOL = 2
+COORD_KIND_PROD = 5
+COORD_KIND_SUM = 6
 COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
 # BLOCK_REAL_TABLE: the table whose count is the block's real row count, or
@@ -71,7 +73,15 @@ COORD_FRESH = COORD_FRESH_PLACEHOLDER
 COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
 # For a coord of a TABLE's block: its column's local index inside that table. Those
 # coords raise no claim (the zerocheck settles them), so they use this instead.
-COORD_COL_LOCAL = COORD_COL_LOCAL_PLACEHOLDER
+# A table coord's terms, at TERM_* over that table's LOCAL column indices: one
+# term for a plain kind, several for a value the row derives (§5). A framework
+# coord has none, having decomposed into a pooled claim.
+COORD_TERM_OFF = COORD_TERM_OFF_PLACEHOLDER
+COORD_TERM_COUNT = COORD_TERM_COUNT_PLACEHOLDER
+TERM_TYPE = TERM_TYPE_PLACEHOLDER
+TERM_CONST = TERM_CONST_PLACEHOLDER
+TERM_COL_A = TERM_COL_A_PLACEHOLDER
+TERM_COL_B = TERM_COL_B_PLACEHOLDER
 N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
@@ -2051,61 +2061,36 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             claim_idx += 1
         # the table's AIR constraint at the final point (col_evals is indexed by
         # local column index; the formulas mirror tables.rs eval_constraint).
+        # Every relation whose value rides the bus as a coordinate needs no
+        # identity: bus balance IS the assertion. Two are left.
         if t == TABLE_ADD:
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), base_air_constraint(col_evals, eta, 0))
+            constraint_eval = [0, 0, 0]
         if t == TABLE_MUL:
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), base_air_constraint(col_evals, eta, 1))
+            constraint_eval = [0, 0, 0]
         if t == TABLE_ADD_EXT:
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), ext_air_constraint(col_evals, eta, 0))
-        if t == TABLE_MUL_EXT:
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), ext_air_constraint(col_evals, eta, 1))
+            constraint_eval = [0, 0, 0]
         if t == TABLE_SET:
-            set_constraint = eadd(sload(col_evals, 4), emul(sload(col_evals, 1), sload(col_evals, 2)))
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), set_constraint)
+            constraint_eval = [0, 0, 0]
         if t == TABLE_DEREF:
-            fp = sload(col_evals, 1)
-            fpc = sload(col_evals, 5)
-            ffp = sload(col_evals, 6)
-            v3 = sload(col_evals, 12)
-            src = eadd(emul(eadd(eadd([1, 0, 0], fpc), ffp), v3), eadd(emul(fpc, emul([GEN * GEN, 0, 0], sload(col_evals, 0))), emul(ffp, fp)))
-            c0 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 2)))
-            c1 = eadd(sload(col_evals, 8), emul(sload(col_evals, 10), sload(col_evals, 3)))
-            c2 = eadd(sload(col_evals, 9), emul(fp, sload(col_evals, 4)))
-            c3 = eadd(sload(col_evals, 11), src)
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly4(eta, c0, c1, c2, c3))
+            constraint_eval = [0, 0, 0]
         if t == TABLE_DEREF_EXT:
-            fp = sload(col_evals, 1)
-            c0 = eadd(sload(col_evals, 5), emul(fp, sload(col_evals, 2)))
-            c1 = eadd(sload(col_evals, 6), emul(sload(col_evals, 8), sload(col_evals, 3)))
-            c2 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 4)))
-            width3 = sload(col_evals, 23)
-            v2 = combine_tower_limbs(sload(col_evals, 9), sload(col_evals, 10), emul(width3, sload(col_evals, 11)))
-            v3 = combine_tower_limbs(sload(col_evals, 12), sload(col_evals, 13), emul(width3, sload(col_evals, 14)))
-            c3 = eadd(v2, v3)
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly4(eta, c0, c1, c2, c3))
-        if t == TABLE_JUMP:
-            pc = sload(col_evals, 0)
-            fp = sload(col_evals, 1)
-            bval = sload(col_evals, 18)
-            one_plus_b = eadd(bval, [1, 0, 0])
-            fall_through = emul([GEN, 0, 0], pc)
-            c0 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 4)))
-            c1 = eadd(sload(col_evals, 8), emul(fp, sload(col_evals, 5)))
-            c2 = eadd(sload(col_evals, 9), emul(fp, sload(col_evals, 6)))
-            c3 = eadd(bval, emul(sload(col_evals, 10), sload(col_evals, 17)))
-            c4 = emul(sload(col_evals, 10), one_plus_b)
-            c5 = eadd(sload(col_evals, 2), eadd(emul(bval, sload(col_evals, 11)), emul(one_plus_b, fall_through)))
-            c6 = eadd(sload(col_evals, 3), eadd(emul(bval, sload(col_evals, 12)), emul(one_plus_b, fp)))
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly7(eta, c0, c1, c2, c3, c4, c5, c6))
+            constraint_eval = [0, 0, 0]
         if t == TABLE_BLAKE3:
-            fp = sload(col_evals, 1)
-            c0 = eadd(sload(col_evals, 8), emul(fp, sload(col_evals, 2)))
-            c1 = eadd(sload(col_evals, 9), emul(fp, sload(col_evals, 3)))
-            c2 = eadd(sload(col_evals, 10), emul(fp, sload(col_evals, 4)))
-            c3 = eadd(sload(col_evals, 11), emul(fp, sload(col_evals, 5)))
-            c4 = eadd(sload(col_evals, 12), emul(fp, sload(col_evals, 6)))
-            c5 = eadd(sload(col_evals, 13), emul(fp, sload(col_evals, 7)))
-            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly6(eta, c0, c1, c2, c3, c4, c5))
+            constraint_eval = [0, 0, 0]
+        if t == TABLE_MUL_EXT:
+            # The scalar mode's effective upper lanes: the cells' contents when
+            # base_a = 0, zero when it is 1. These stay identities because those
+            # lanes feed a product, which a form would take to degree three.
+            full_a = eadd([1, 0, 0], sload(col_evals, 23))
+            c0 = eadd(sload(col_evals, 6), emul(full_a, sload(col_evals, 21)))
+            c1 = eadd(sload(col_evals, 7), emul(full_a, sload(col_evals, 22)))
+            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), eadd(c0, emul(eta, c1)))
+        if t == TABLE_JUMP:
+            bval = sload(col_evals, 13)
+            cond = sload(col_evals, 5)
+            c0 = eadd(bval, emul(cond, sload(col_evals, 12)))
+            c1 = emul(cond, eadd(bval, [1, 0, 0]))
+            constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), eadd(c0, emul(eta, c1)))
         # The table's three bus forms, evaluated at the SAME column evaluations:
         # Σ_b eq_hi(b) · (γ + Σ_i α^i · coord_i), the coords read off col_evals at
         # their local index. This is what replaces opening those columns at ζ.
@@ -2117,12 +2102,19 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
                         inner = [0, 0, 0]
                         apow = [1, 0, 0]
                         for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
-                                cv = ebase(COORD_CONST[BLOCK_COORD_OFF[b] + i])
-                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
-                                cv = sload(col_evals, COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i])
-                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
-                                cv = emul_base(COORD_CONST[BLOCK_COORD_OFF[b] + i], sload(col_evals, COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]))
+                            # Every coord of a table block is a sum of terms, each
+                            # degree at most 2 in the column evaluations: one term
+                            # for a plain kind, several for a value the row derives.
+                            cv = [0, 0, 0]
+                            for tj in unroll(COORD_TERM_OFF[BLOCK_COORD_OFF[b] + i], COORD_TERM_OFF[BLOCK_COORD_OFF[b] + i] + COORD_TERM_COUNT[BLOCK_COORD_OFF[b] + i]):
+                                if TERM_TYPE[tj] == COORD_KIND_CONST:
+                                    cv = eadd(cv, ebase(TERM_CONST[tj]))
+                                if TERM_TYPE[tj] == COORD_KIND_COL:
+                                    cv = eadd(cv, sload(col_evals, TERM_COL_A[tj]))
+                                if TERM_TYPE[tj] == COORD_KIND_GCOL:
+                                    cv = eadd(cv, emul_base(TERM_CONST[tj], sload(col_evals, TERM_COL_A[tj])))
+                                if TERM_TYPE[tj] == COORD_KIND_PROD:
+                                    cv = eadd(cv, emul_base(TERM_CONST[tj], emul(sload(col_evals, TERM_COL_A[tj]), sload(col_evals, TERM_COL_B[tj]))))
                             if sd == COUNT_SIDE:
                                 inner = eadd(inner, cv)
                             else:
