@@ -2952,8 +2952,21 @@ mod tests {
                 Ok(Some(true))
             );
         }
-        assert!(!induce_ntt_validated_shape(18, 2, 113));
-        assert_eq!(induce_use_ntt_policy(18, 2, 113), induce_use_ntt_heuristic(18, 2, 113));
+        // Every edge of the measured family is explicit: below/above the
+        // column range, a different inverse-rate, and a different query count.
+        for (log_msg_cols, log_inv_rate, n_queries) in [(18, 2, 113), (22, 2, 113), (19, 1, 113), (19, 2, 112)] {
+            assert!(!induce_ntt_validated_shape(log_msg_cols, log_inv_rate, n_queries));
+            assert_eq!(
+                induce_use_ntt_policy(log_msg_cols, log_inv_rate, n_queries),
+                induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, n_queries)
+            );
+        }
+
+        // Outside the measured family, the inherited heuristic still selects
+        // NTT when its crossover condition is met.
+        assert!(!induce_ntt_validated_shape(18, 2, 1_000));
+        assert!(induce_use_ntt_heuristic(18, 2, 1_000));
+        assert!(induce_use_ntt_policy(18, 2, 1_000));
         assert_eq!(parse_induce_ntt_override(None, false), Ok(None));
         assert_eq!(
             parse_induce_ntt_override(Some(std::ffi::OsStr::new("0")), false),
