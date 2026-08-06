@@ -255,11 +255,28 @@ impl QuaternaryLayerState {
         message.map(F192Unreduced::reduce)
     }
 
-    fn fold(&mut self, challenge: F192) {
+    fn fold(&mut self, challenge: F192, uninitialized_output: bool) {
         let stored_rows = self.values.len() / 4;
         let full_rows = stored_rows / 2;
         let rows = stored_rows.div_ceil(2);
-        self.next.resize(4 * rows, F192::ZERO);
+        let next_len = 4 * rows;
+        if uninitialized_output {
+            if self.next.capacity() == 0 {
+                // SAFETY: the full-row path writes `4 * full_rows` slots and the
+                // odd-row path writes the remaining four slots, when present.
+                // Since `rows = ceil(stored_rows / 2)`, together they initialize
+                // exactly `next_len` slots before the buffer is read or swapped.
+                self.next = unsafe { ArenaVec::uninitialized(next_len) };
+            } else {
+                // After the first fold the two buffers alternate. The previous
+                // input is always at least as long as this geometrically shrinking
+                // output, so retaining its initialized prefix needs no fill.
+                debug_assert!(self.next.len() >= next_len);
+                self.next.truncate(next_len);
+            }
+        } else {
+            self.next.resize(next_len, F192::ZERO);
+        }
         let (values, next) = (&self.values, &mut self.next);
         let fold_row = |row: usize, destination: &mut [F192]| {
             let lo = 8 * row;
@@ -317,6 +334,10 @@ pub struct ProductTriple {
 /// Prove three identity-padded grand products as one RLC-batched radix-four GKR.
 pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> ProductTriple {
     let detail_trace = std::env::var("LEANVM_GKR_DETAIL_TRACE").as_deref() == Ok("1");
+    let uninitialized_fold_output = std::env::var("LEANVM_GKR_UNINIT_FOLD").as_deref() == Ok("1");
+    if std::env::var_os("LEANVM_GKR_UNINIT_FOLD").is_some() {
+        eprintln!("LEANVM_GKR_FOLD_OUTPUT schema=1 uninitialized={uninitialized_fold_output}");
+    }
     let total_started = detail_trace.then(std::time::Instant::now);
     let leaf_lengths: [usize; 3] = std::array::from_fn(|lane| leaves[lane].leaves.len());
     let mu = crate::log2_ceil_usize(leaves[0].leaves.len());
@@ -408,7 +429,7 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
             round_point.push(challenge);
             let fold_started = detail_trace.then(std::time::Instant::now);
             for tree in &mut trees {
-                tree.fold(challenge);
+                tree.fold(challenge, uninitialized_fold_output);
             }
             if let Some(started) = fold_started {
                 fold_ns += started.elapsed().as_nanos();
@@ -646,6 +667,31 @@ mod tests {
             assert_eq!(verified.point, proved.point);
             assert_eq!(verified.values, proved.values);
             vs.finish().expect("proof stream is consumed");
+        }
+    }
+
+    #[test]
+    fn uninitialized_fold_output_matches_zero_filled_path() {
+        for stored_rows in [2usize, 3, 4, 5, 8, 17, 32, 65] {
+            let values = (0..4 * stored_rows)
+                .map(|i| F192::new((13 * i + 1) as u64, (7 * i + 3) as u64, (5 * i + 9) as u64))
+                .collect::<Vec<_>>();
+            let width = stored_rows.next_power_of_two();
+            let mut zero_filled = QuaternaryLayerState::new(ArenaVec::from_slice(&values), width);
+            let mut uninitialized = QuaternaryLayerState::new(ArenaVec::from_slice(&values), width);
+            let mut round = 0usize;
+            while zero_filled.values.len() > 4 {
+                let challenge = F192::new(
+                    (17 * round + 2) as u64,
+                    (19 * round + 5) as u64,
+                    (23 * round + 7) as u64,
+                );
+                zero_filled.fold(challenge, false);
+                uninitialized.fold(challenge, true);
+                assert_eq!(uninitialized.values, zero_filled.values);
+                assert_eq!(uninitialized.logical_rows, zero_filled.logical_rows);
+                round += 1;
+            }
         }
     }
 }
