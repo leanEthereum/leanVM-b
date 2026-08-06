@@ -158,11 +158,16 @@ fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &m
     }
 }
 
-/// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i α^i c_i(z)`,
-/// followed implicitly by the identity `1` up to `2^μ`. The row-invariant
-/// `α`-power chain and constant coordinates are folded once per block into
-/// `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192, gamma: F192) -> gkr::LeafVector {
+/// Build one side's explicit leaf values. Block `b` row `z` holds
+/// `γ − Σ_i α^i c_i(z)`; the identity suffix up to `2^μ` remains implicit.
+fn build_leaf_values(
+    blocks: &[Block],
+    lay: &Layout,
+    cols: &[&[F64]],
+    alpha: F192,
+    gamma: F192,
+    uninitialized_output: bool,
+) -> ArenaVec<F192> {
     let explicit = blocks
         .iter()
         .enumerate()
@@ -170,7 +175,26 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
         .max()
         .unwrap_or(1);
     debug_assert!(explicit <= 1usize << lay.mu);
-    let mut leaves = ArenaVec::filled(F192::ONE, explicit);
+    let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
+    debug_assert!(blocks.is_empty() || covered == explicit);
+    let mut leaves = if uninitialized_output && !blocks.is_empty() {
+        let canonical = layout(blocks);
+        assert_eq!(
+            lay.offsets, canonical.offsets,
+            "uninitialized leaf output requires canonical offsets"
+        );
+        assert_eq!(
+            lay.mu, canonical.mu,
+            "uninitialized leaf output requires the canonical depth"
+        );
+        assert_eq!(covered, explicit, "canonical leaf blocks must tile the explicit prefix");
+        // SAFETY: `stack_offsets` packs the power-of-two blocks contiguously
+        // from zero. Their disjoint destination windows therefore cover all
+        // `explicit == covered` slots, and each fill joins before return.
+        unsafe { ArenaVec::uninitialized(explicit) }
+    } else {
+        ArenaVec::filled(F192::ONE, explicit)
+    };
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
@@ -210,7 +234,22 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
             }
         }
     }
-    gkr::LeafVector::new(leaves)
+    leaves
+}
+
+/// Build one side's leaf vector. The row-invariant `α`-power chain and constant
+/// coordinates are folded once per block into `const_part`.
+pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192, gamma: F192) -> gkr::LeafVector {
+    let uninitialized_output = std::env::var("LEANVM_BUS_UNINIT_LEAVES").as_deref() == Ok("1");
+    let values = build_leaf_values(blocks, lay, cols, alpha, gamma, uninitialized_output);
+    if std::env::var_os("LEANVM_BUS_UNINIT_LEAVES").is_some() {
+        let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
+        eprintln!(
+            "LEANVM_BUS_LEAF_OUTPUT schema=1 uninitialized={uninitialized_output} explicit={} covered={covered}",
+            values.len(),
+        );
+    }
+    gkr::LeafVector::new(values)
 }
 
 /// One table's bus contribution on one side, as a form over that table's committed
@@ -846,7 +885,7 @@ pub fn verify_balance(
 
 #[cfg(test)]
 mod tests {
-    use super::soundness_bits;
+    use super::*;
 
     /// The bound is `tuple_width · 2^mu` plus the GKR terms, so a wider tuple or a
     /// deeper bus costs bits. One factor of two more than before this test was
@@ -858,5 +897,49 @@ mod tests {
         assert!(soundness_bits(60, 12) >= crate::SECURITY_BITS);
         assert!(soundness_bits(61, 12) < crate::SECURITY_BITS);
         assert!(soundness_bits(58, 16) < soundness_bits(58, 1));
+    }
+
+    #[test]
+    fn uninitialized_leaf_output_matches_one_filled_path() {
+        let columns = [
+            (0..32).map(|i| F64((3 * i + 1) as u64)).collect::<Vec<_>>(),
+            (0..32).map(|i| F64((5 * i + 7) as u64)).collect::<Vec<_>>(),
+        ];
+        let column_slices = columns.each_ref().map(Vec::as_slice);
+        let blocks = vec![
+            Block {
+                kappa: 3,
+                coords: vec![Coord::Col(0), Coord::GCol(1, 2), Coord::Const(F64(11))],
+            },
+            Block {
+                kappa: 5,
+                coords: vec![Coord::Prod(0, 1, 1), Coord::Index],
+            },
+            Block {
+                kappa: 2,
+                coords: vec![Coord::Sum(vec![Coord::Col(0), Coord::Const(F64(13))])],
+            },
+        ];
+        let lay = layout(&blocks);
+        let alpha = F192::new(17, 19, 23);
+        let gamma = F192::new(29, 31, 37);
+        let one_filled = build_leaf_values(&blocks, &lay, &column_slices, alpha, gamma, false);
+        let uninitialized = build_leaf_values(&blocks, &lay, &column_slices, alpha, gamma, true);
+        assert_eq!(uninitialized, one_filled);
+        assert_eq!(uninitialized.len(), 44);
+    }
+
+    #[test]
+    #[should_panic(expected = "uninitialized leaf output requires canonical offsets")]
+    fn uninitialized_leaf_output_rejects_noncanonical_layout() {
+        let blocks = vec![Block {
+            kappa: 1,
+            coords: vec![Coord::Const(F64::ONE)],
+        }];
+        let bad_layout = Layout {
+            mu: 2,
+            offsets: vec![1],
+        };
+        let _ = build_leaf_values(&blocks, &bad_layout, &[], F192::ONE, F192::ONE, true);
     }
 }
