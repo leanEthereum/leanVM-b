@@ -1,7 +1,11 @@
-% !TeX root = ../drafts/06-memory-and-bytecode-lookups.tex
-\section{Memory and bytecode lookups}\label{sec:omc}
+% !TeX root = ../drafts/06-bus-interactions.tex
+\section{Bus interactions}\label{sec:omc}
 
-We use offline memory checking~\cite{BEGKN94} via the bus (\S\ref{sec:m3}) to handle both lookups into the public bytecode and the read-only memory.
+The machine runs three interactions on the bus, told apart by their domain separators (\S\ref{sec:m3}): the VM state, the read-only memory, and the public bytecode. The last two are lookups, handled by offline memory checking~\cite{BEGKN94}.
+
+\subsection{State}\label{sec:state}
+
+The state interaction carries $\tup{\dsep{ST},\pc,\fp}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$; the bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_0,\fp_0}$ and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}}}$. When the bus balances, the per-row transitions form a chain from $(\pc_0,\fp_0)$ to $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$, possibly alongside disjoint cycles. The chain is the execution; a cycle is a closed loop of rows that still satisfies every constraint and reads the same committed memory and bytecode, so it cannot affect the start-to-final claim. That tolerance is not merely harmless, it is used: the rows that bring each table to a power of two are exactly such cycles (\S\ref{sec:e2e-pad}). By convention execution halts at a fixed sentinel: the last bytecode instruction. Writing $\nprog$ for the program length (a power of two, \S\ref{sec:e2e-bc}), the instructions sit at $\gen^{0},\dots,\gen^{\,\nprog-1}$, so $\pc_{\mathrm{final}}=\gen^{\,\nprog-1}$, with $\fp_{\mathrm{final}}=\gen^{0}$. A compiled \texttt{main} ends by jumping there. Both boundary states are then public, so the verifier forms them itself.
 
 \subsection{The lookup protocol}\label{sec:lookup}
 
