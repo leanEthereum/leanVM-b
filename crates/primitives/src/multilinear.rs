@@ -256,6 +256,16 @@ pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     fold_ladder(fold_low_k(table, point[0]), &point[1..])
 }
 
+/// [`mle_eval`] with four independent pure-extension folds packed together on
+/// x86 AVX-512.  The first mixed base/extension fold remains unchanged.
+pub fn mle_eval_vec4(table: &[F64], point: &[F192]) -> F192 {
+    debug_assert_eq!(table.len(), 1 << point.len());
+    if point.is_empty() {
+        return F192::from(table[0]);
+    }
+    fold_ladder_vec4(fold_low_k(table, point[0]), &point[1..])
+}
+
 /// The MLE of the pointwise product `a·b` at an `E`-point, i.e. `Σ_z eq(point,
 /// z)·a(z)·b(z)`. This is NOT `â(point)·b̂(point)`: a product of multilinears is
 /// not multilinear, so it has to be summed over the cube. The first fold takes the
@@ -273,6 +283,21 @@ pub fn mle_eval_prod(a: &[F64], b: &[F64], point: &[F192]) -> F192 {
     fold_ladder(cur, &point[1..])
 }
 
+/// [`mle_eval_prod`] with the same four-output pure-extension fold as
+/// [`mle_eval_vec4`].
+pub fn mle_eval_prod_vec4(a: &[F64], b: &[F64], point: &[F192]) -> F192 {
+    debug_assert_eq!(a.len(), b.len());
+    debug_assert_eq!(a.len(), 1 << point.len());
+    if point.is_empty() {
+        return F192::from(a[0] * b[0]);
+    }
+    let rho = point[0];
+    let cur = (0..a.len() / 2)
+        .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], rho))
+        .collect();
+    fold_ladder_vec4(cur, &point[1..])
+}
+
 /// Bind the remaining variables of a half-folded `E`-table, LSB-first.
 fn fold_ladder(mut cur: Vec<F192>, point: &[F192]) -> F192 {
     let mut len = cur.len();
@@ -288,6 +313,41 @@ fn fold_ladder(mut cur: Vec<F192>, point: &[F192]) -> F192 {
     cur[0]
 }
 
+#[inline]
+fn interp_vec4(lo: [F192; 4], hi: [F192; 4], point: F192) -> [F192; 4] {
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    {
+        let difference = std::array::from_fn(|lane| lo[lane] + hi[lane]);
+        // SAFETY: both target features are enabled for the whole crate.
+        let product = unsafe { crate::field::gf2_64x3::x86_64::mul_vec4([point; 4], difference) };
+        std::array::from_fn(|lane| lo[lane] + product[lane])
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+    {
+        std::array::from_fn(|lane| interp(lo[lane], hi[lane], point))
+    }
+}
+
+fn fold_ladder_vec4(mut cur: Vec<F192>, point: &[F192]) -> F192 {
+    let mut live = cur.len();
+    for &p in point {
+        let next = live / 2;
+        let groups = next / 4;
+        for group in 0..groups {
+            let first = 4 * group;
+            let lo = std::array::from_fn(|lane| cur[2 * (first + lane)]);
+            let hi = std::array::from_fn(|lane| cur[2 * (first + lane) + 1]);
+            let output = interp_vec4(lo, hi, p);
+            cur[first..first + 4].copy_from_slice(&output);
+        }
+        for i in 4 * groups..next {
+            cur[i] = interp(cur[2 * i], cur[2 * i + 1], p);
+        }
+        live = next;
+    }
+    cur[0]
+}
+
 /// Barycentric weights over the first `2^k_skip` nodes of the GF(2^8) subfield.
 /// O(2^{2·k_skip}) field multiplies, a one-time cost.
 pub fn lagrange_weights_naive(k_skip: usize, z: F192) -> Vec<F192> {
@@ -295,4 +355,62 @@ pub fn lagrange_weights_naive(k_skip: usize, z: F192) -> Vec<F192> {
     let ell = 1usize << k_skip;
     assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
     lagrange_weights(&PHI_8_TABLE[..ell], z)
+}
+
+#[cfg(test)]
+mod vec4_tests {
+    use super::*;
+
+    fn next_u64(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(0xda94_2042_e4dd_58b5);
+        *state
+    }
+
+    #[test]
+    fn vec4_mle_paths_match_scalar_exactly() {
+        let mut state = 0x243f_6a88_85a3_08d3;
+        for log_n in 1..=14 {
+            let a: Vec<F64> = (0..1usize << log_n).map(|_| F64(next_u64(&mut state))).collect();
+            let b: Vec<F64> = (0..1usize << log_n).map(|_| F64(next_u64(&mut state))).collect();
+            let point: Vec<F192> = (0..log_n)
+                .map(|_| F192::new(next_u64(&mut state), next_u64(&mut state), next_u64(&mut state)))
+                .collect();
+            assert_eq!(mle_eval_vec4(&a, &point), mle_eval(&a, &point));
+            assert_eq!(mle_eval_prod_vec4(&a, &b, &point), mle_eval_prod(&a, &b, &point));
+        }
+    }
+
+    #[test]
+    #[ignore = "production-sized x86 AVX-512 MLE kernel screening probe"]
+    fn vec4_mle_screen() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let log_n = 20usize;
+        let mut state = 0x1319_8a2e_0370_7344;
+        let table: Vec<F64> = (0..1usize << log_n).map(|_| F64(next_u64(&mut state))).collect();
+        let point: Vec<F192> = (0..log_n)
+            .map(|_| F192::new(next_u64(&mut state), next_u64(&mut state), next_u64(&mut state)))
+            .collect();
+        assert_eq!(mle_eval_vec4(&table, &point), mle_eval(&table, &point));
+        for repetition in 0..16 {
+            let candidate_first = repetition & 1 == 1;
+            for candidate in [candidate_first, !candidate_first] {
+                let started = Instant::now();
+                let value = if candidate {
+                    mle_eval_vec4(&table, &point)
+                } else {
+                    mle_eval(&table, &point)
+                };
+                let elapsed_ns = started.elapsed().as_nanos();
+                black_box(value);
+                eprintln!(
+                    "MLE_VEC4_PROBE schema=1 repetition={repetition} arm={} elapsed_ns={elapsed_ns}",
+                    if candidate { "candidate" } else { "baseline" }
+                );
+            }
+        }
+    }
 }
