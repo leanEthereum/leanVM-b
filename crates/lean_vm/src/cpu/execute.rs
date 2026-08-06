@@ -670,7 +670,6 @@ impl Program {
                     deref.push(Drow {
                         pc,
                         fp,
-                        a2: a2 as u32,
                         r1,
                         r2,
                         r3,

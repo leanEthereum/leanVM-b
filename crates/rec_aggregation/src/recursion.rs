@@ -779,6 +779,59 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
     });
 }
 
+/// The guest's `COORD_KIND_*` code for a coordinate (`guests/recursion.py`),
+/// shared by its `COORD_TYPE` and `TERM_TYPE` arrays.
+fn coord_kind(c: &Coord) -> u64 {
+    match c {
+        Coord::Const(_) => 0,
+        Coord::Col(_) => 1,
+        Coord::GCol(..) => 2,
+        Coord::Index => 3,
+        Coord::Public(_) => 4,
+        Coord::Prod(..) => 5,
+        Coord::Sum(..) => 6,
+    }
+}
+
+/// The `K` scalar a coordinate carries beside its columns: the constant itself, or
+/// the `g^k` a `GCol`/`Prod` scales by. Zero for every other kind.
+fn coord_scale(c: &Coord) -> F64 {
+    match c {
+        Coord::Const(v) => *v,
+        Coord::GCol(_, k) | Coord::Prod(_, _, k) => g_pow(*k as usize),
+        _ => F64::ZERO,
+    }
+}
+
+/// Flatten one table-block coordinate into the guest's term arrays, in local
+/// column indices. A [`Coord::Sum`]'s children are its terms; every other kind is
+/// one term. `Index`/`Public` never reach a table block.
+fn push_coord_terms(
+    c: &Coord,
+    base: usize,
+    ty: &mut Vec<u64>,
+    val: &mut Vec<u64>,
+    col_a: &mut Vec<usize>,
+    col_b: &mut Vec<usize>,
+) {
+    let (a, b) = match c {
+        Coord::Const(_) => (0, 0),
+        Coord::Col(i) | Coord::GCol(i, _) => (*i - base, 0),
+        Coord::Prod(i, j, _) => (*i - base, *j - base),
+        Coord::Sum(cs) => {
+            for c in cs {
+                push_coord_terms(c, base, ty, val, col_a, col_b);
+            }
+            return;
+        }
+        Coord::Index | Coord::Public(_) => unreachable!("a table's bus block carries no virtual coordinate"),
+    };
+    ty.push(coord_kind(c));
+    val.push(coord_scale(c).0);
+    col_a.push(a);
+    col_b.push(b);
+}
+
 /// Config + hints for the recursion guest (`guests/recursion.py`), built
 /// from the REAL `cpu::layout` of the inner program and the transcript trace of
 /// a real `cpu::verify` run (zero hand-mirroring drift).
@@ -1230,7 +1283,7 @@ fn gen_verify(
 /// The guest's stacked-size dispatch range: one `match_range` opening arm per
 /// candidate `mu` in `MU_MIN..=MU_MAX` (mirrored by the soundness test's
 /// residual-log cap).
-const MU_MIN: usize = 22;
+const MU_MIN: usize = 21;
 const MU_MAX: usize = 28;
 
 /// Everything needed to run one N→1 recursion batch EXCEPT compiling the
@@ -1387,9 +1440,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
-    let (mut coord_fresh, mut coord_slot, mut coord_local) = (vec![], vec![], vec![]);
+    let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
+    // A table coord's terms: the guest rebuilds it as `Σ_terms`, which is what lets
+    // a value the row derives ride the bus instead of costing a column.
+    let (mut coord_toff, mut coord_tcount): (Vec<usize>, Vec<usize>) = (vec![], vec![]);
+    let (mut term_type, mut term_const): (Vec<u64>, Vec<u64>) = (vec![], vec![]);
+    let (mut term_col_a, mut term_col_b): (Vec<usize>, Vec<usize>) = (vec![], vec![]);
     // A product coordinate's second local index; 0 for every other kind.
-    let mut coord_local_b: Vec<usize> = vec![];
     // A table's blocks raise no claim any more: the batched zerocheck settles them
     //, so only the framework blocks stream column values.
     let sch_pm = lean_vm::cpu::schema();
@@ -1406,51 +1463,42 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             for c in &blk.coords {
                 // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
                 // indexes them by global coord offset); only Col/GCol matter.
-                let (mut fresh, mut slot, mut local) = (0usize, 0usize, 0usize);
-                let mut local_b = 0usize;
-                if let Coord::Prod(i, j, _) = c {
-                    let t = owner.expect("a product coordinate lives only in a table block");
-                    local = *i - sch_pm.base[t];
-                    local_b = *j - sch_pm.base[t];
-                }
-                if let Coord::Col(i) | Coord::GCol(i, _) = c {
-                    match owner {
-                        // A table's coord: the zerocheck reads it off that table's
-                        // column evaluations, at its local index.
-                        Some(t) => local = *i - sch_pm.base[t],
-                        None => {
-                            let key = (*i, blk.kappa);
-                            if let Some(&known) = slot_of.get(&key) {
-                                slot = known;
-                            } else {
-                                slot_of.insert(key, nclaims);
-                                fresh = 1;
-                                slot = nclaims;
-                                nclaims += 1;
-                            }
-                        }
+                let (mut fresh, mut slot) = (0usize, 0usize);
+                // Only a FRAMEWORK block's Col/GCol raises a claim; a table's
+                // coords are settled by the zerocheck, off its column evaluations,
+                // which the terms below index locally.
+                if let (Coord::Col(i) | Coord::GCol(i, _), None) = (c, owner) {
+                    let key = (*i, blk.kappa);
+                    if let Some(&known) = slot_of.get(&key) {
+                        slot = known;
+                    } else {
+                        slot_of.insert(key, nclaims);
+                        fresh = 1;
+                        slot = nclaims;
+                        nclaims += 1;
                     }
                 }
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
-                coord_local.push(local);
-                coord_local_b.push(local_b);
-                let (t, v) = match c {
-                    Coord::Const(v) => (0u64, F192::new(v.0, 0, 0)),
-                    Coord::Col(_) => (1, F192::ZERO),
-                    Coord::GCol(_, k) => (2, F192::new(g_pow(*k as usize).0, 0, 0)),
-                    Coord::Index => (3, F192::ZERO),
-                    Coord::Public(_) => {
-                        nbcv += 1;
-                        (4, F192::ZERO)
-                    }
-                    Coord::Prod(_, _, k) => (5, F192::new(g_pow(*k as usize).0, 0, 0)),
-                    // No table on this branch derives a value yet; the port that
-                    // makes them do so teaches the guest to flatten a `Sum` first.
-                    Coord::Sum(_) => unreachable!("no bus coordinate is a sum yet"),
-                };
-                ct.push(t);
-                cval.push(u(v));
+                // A table's coord becomes terms, so a value the row derives costs
+                // terms rather than a column; a framework one has none, having
+                // decomposed into the pooled claim above.
+                let toff = term_type.len();
+                if let Some(t) = owner {
+                    push_coord_terms(
+                        c,
+                        sch_pm.base[t],
+                        &mut term_type,
+                        &mut term_const,
+                        &mut term_col_a,
+                        &mut term_col_b,
+                    );
+                }
+                coord_toff.push(toff);
+                coord_tcount.push(term_type.len() - toff);
+                nbcv += usize::from(matches!(c, Coord::Public(_)));
+                ct.push(coord_kind(c));
+                cval.push(coord_scale(c).0);
             }
         }
         sblk.push(nblocks);
@@ -1574,8 +1622,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_CONST", us(&cval));
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
-    ps("COORD_COL_LOCAL", ints(&coord_local));
-    ps("COORD_COL_LOCAL_B", ints(&coord_local_b));
+    ps("COORD_TERM_OFF", ints(&coord_toff));
+    ps("COORD_TERM_COUNT", ints(&coord_tcount));
+    ps("TERM_TYPE", us(&term_type));
+    ps("TERM_CONST", us(&term_const));
+    ps("TERM_COL_A", ints(&term_col_a));
+    ps("TERM_COL_B", ints(&term_col_b));
     ps("N_BUS_CLAIMS", nclaims.to_string());
     let idxc: Vec<u64> = (0..34)
         .map(|i| {

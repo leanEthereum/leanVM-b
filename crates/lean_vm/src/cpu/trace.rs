@@ -29,9 +29,6 @@ pub(crate) struct Srow {
 pub(crate) struct Drow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    /// The store target `p·g^beta` as a memory index. The pointer's discrete log
-    /// is the one field of a `DEREF` row the fill cannot recompute cheaply.
-    pub(crate) a2: u32,
     pub(crate) r1: F64,
     pub(crate) r2: F64,
     pub(crate) r3: F64,

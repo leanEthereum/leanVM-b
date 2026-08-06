@@ -5,18 +5,22 @@
 //! `cpu`'s schema offsets them to global witness columns.
 //!
 //! Columns are `K`-valued (`F64`). The pc/fp, operands, counts, opcodes,
-//! separators and every memory word are single `K`-columns. An operand address
-//! is no column at all: the bus carries it as the product `fp·o` (§sec:m3),
-//! and a `g^k` factor on that product reaches the run's `k`-th successor for
-//! free. Explicit extension operations reassemble three consecutive base words
-//! as one `E = F192` value inside their constraints; a constraint is evaluated
-//! at an `E`-point after the table joins the batch, so each identity is written
-//! once against [`ColVal`] and instantiated over both `F64` and `F192`.
+//! separators and every memory word are single `K`-columns. Nothing a row DERIVES
+//! is a column at all: an operand address `fp·o`, an `XOR`/`MUL` result, an
+//! extension result lane, the `DEREF` store, the `DEREF_WIDE` run, the `JUMP`
+//! successors are each written out as the degree-2 bus coordinate that carries
+//! them (§sec:m3), and a `g^k` factor on such a product reaches a run's `k`-th
+//! successor for free. That leaves two identities in the whole machine: `JUMP`'s
+//! is-nonzero indicator, and `MUL_EXT`'s scalar mode, whose effective lanes feed a
+//! product and so cannot themselves be forms without reaching degree three. A
+//! constraint is evaluated at an `E`-point after the table joins the batch, so
+//! each is written once against [`ColVal`] and instantiated over both `F64` and
+//! `F192`.
 
 use crate::colval::ColVal;
 use crate::cpu::{Brow, Drow, EDrow, Erow, Jrow, Op, Srow, Trace};
 use crate::leaf::Coord::{self, Col, Const, GCol, Prod};
-use primitives::field::{F64, F192, G, mul_by_g};
+use primitives::field::{F64, F192, mul_by_g};
 
 // ---- the identities ----------------------------------------------------------
 //
@@ -25,65 +29,26 @@ use primitives::field::{F64, F192, G, mul_by_g};
 // columns stay 64-bit, an `η`-power or a word multiplies through `mul_e`, and a
 // three-word extension value from three `K` lanes costs nothing to assemble.
 
-fn arith_identity<T: ColVal>(is_xor: bool, pows: &[F192], cols: &[T]) -> F192 {
-    use arith::*;
-    let third = if is_xor { cols[VA] + cols[VB] } else { cols[VA] * cols[VB] };
-    // The addresses need no binding: the bus reads them as `fp·o` directly.
-    (cols[VC] + third).mul_e(pows[0])
-}
-
-fn ext_identity<T: ColVal>(is_add: bool, pows: &[F192], cols: &[T]) -> F192 {
+/// `MUL_EXT_BASE` reads its first operand as a single base word. `base_a = 1`
+/// forces that run's two upper lanes to zero while leaving the cells' actual
+/// contents (`MEM_A1`, `MEM_A2`) free, so the memory bus still balances. These two
+/// stay identities rather than becoming coordinates: the effective lanes are
+/// multiplied by the other operand's, and an effective lane that was itself a form
+/// would put that product at degree three.
+fn ext_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     use ext::*;
-    let va = T::word(cols[VA0], cols[VA0 + 1], cols[VA0 + 2]);
-    let vb = T::word(cols[VB0], cols[VB0 + 1], cols[VB0 + 2]);
-    let vc = T::word(cols[VC0], cols[VC0 + 1], cols[VC0 + 2]);
-    let result = if is_add { va + vb } else { va * vb };
-    let mut constraint = pows[0] * (vc + result);
-    if !is_add {
-        // `MUL_EXT_BASE` reads its first operand as a single base word. `base_a = 1`
-        // forces that run's two upper lanes to zero while leaving the cells' actual
-        // contents (`MEM_A1`, `MEM_A2`) free, so the memory bus still balances.
-        let full = T::ONE + cols[BASE_A];
-        constraint += (cols[VA0 + 1] + full * cols[MEM_A1]).mul_e(pows[1]);
-        constraint += (cols[VA0 + 2] + full * cols[MEM_A2]).mul_e(pows[2]);
-    }
-    constraint
-}
-
-fn deref_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
-    use deref::*;
-    // The flag-selected store `v2 = src`, where `src = (1+f_pc+f_fp)·v3 +
-    // f_pc·(g²·pc) + f_fp·fp` over the two boolean store-mode flags. The `pc`
-    // source is the virtual return target g²·pc (a free ×g² of the committed pc),
-    // so no column. The three addresses need no binding: the bus reads each as its
-    // own product (§sec:m3).
-    let src = (T::ONE + cols[FPC] + cols[FFP]) * cols[V3] + cols[FPC] * cols[PC].mul_k(G * G) + cols[FFP] * cols[FP];
-    (cols[V2] + src).mul_e(pows[0])
-}
-
-fn deref_ext_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
-    use deref_ext::*;
-    // WIDTH3=0 compares the native 128-bit prefix; WIDTH3=1 compares all three
-    // limbs. In two-word mode the last limbs remain independent, fully
-    // memory-bound padding reads.
-    let v2 = T::word(cols[V20], cols[V20 + 1], cols[WIDTH3] * cols[V20 + 2]);
-    let v3 = T::word(cols[V30], cols[V30 + 1], cols[WIDTH3] * cols[V30 + 2]);
-    pows[0] * (v2 + v3)
+    let full = T::ONE + cols[BASE_A];
+    (cols[VA0 + 1] + full * cols[MEM_A1]).mul_e(pows[0]) + (cols[VA0 + 2] + full * cols[MEM_A2]).mul_e(pows[1])
 }
 
 fn jump_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     use jump::*;
-    let fall_through = cols[PC].mul_k(G);
     let b1 = cols[B] + T::ONE;
     // `b = cond·w` and `cond·(b+1) = 0` together force `b = [cond ≠ 0]`:
     // when `cond ≠ 0` the second gives `b = 1` (and the first `w = cond⁻¹`);
-    // when `cond = 0` the first gives `b = 0`. NPC/NFP are single K columns, so
-    // the selections force the chosen word (d or f) into K.
-    let ind_def = (cols[B] + cols[C] * cols[W]).mul_e(pows[0]);
-    let ind_nz = (cols[C] * b1).mul_e(pows[1]);
-    let sel_pc = (cols[NPC] + cols[B] * cols[D] + b1 * fall_through).mul_e(pows[2]);
-    let sel_fp = (cols[NFP] + cols[B] * cols[F] + b1 * cols[FP]).mul_e(pows[3]);
-    ind_def + ind_nz + sel_pc + sel_fp
+    // when `cond = 0` the first gives `b = 0`. The two selections need no identity:
+    // the state push carries each as its own degree-2 coordinate (§sec:m3).
+    (cols[B] + cols[C] * cols[W]).mul_e(pows[0]) + (cols[C] * b1).mul_e(pows[1])
 }
 
 // ---- shared bus vocabulary ---------------------------------------------------
@@ -147,10 +112,11 @@ impl FlushBuilder {
         );
     }
 
-    /// Explicit state transition (JUMP): push the next `(npc, nfp)`, pull `(pc, fp)`.
-    pub(crate) fn state_jump(&mut self, pc: usize, fp: usize, npc: usize, nfp: usize) {
+    /// Explicit state transition (JUMP): push the next state, which the row
+    /// DERIVES from its columns rather than committing, and pull `(pc, fp)`.
+    pub(crate) fn state_derived(&mut self, pc: usize, fp: usize, npc: Coord, nfp: Coord) {
         self.pair(
-            vec![Const(SEP_STATE), Col(npc), Col(nfp)],
+            vec![Const(SEP_STATE), npc, nfp],
             vec![Const(SEP_STATE), Col(pc), Col(fp)],
         );
     }
@@ -168,9 +134,17 @@ impl FlushBuilder {
     /// Memory access to one base-field word at `addr`, with the cell's access
     /// count advanced by ×g on the push side.
     pub(crate) fn memory(&mut self, addr: Coord, count: usize, val: usize) {
+        self.memory_coord(addr, count, Col(val));
+    }
+
+    /// The same, for a word the row DERIVES rather than commits (an `XOR`/`MUL`
+    /// result, a `DEREF` store): the cell holds whatever the form says, which
+    /// removes both the value column and the identity that used to tie them
+    /// (§sec:m3).
+    pub(crate) fn memory_coord(&mut self, addr: Coord, count: usize, val: Coord) {
         self.pair(
-            vec![Const(SEP_MEM), addr.clone(), GCol(count, 1), Col(val)],
-            vec![Const(SEP_MEM), addr, Col(count), Col(val)],
+            vec![Const(SEP_MEM), addr.clone(), GCol(count, 1), val.clone()],
+            vec![Const(SEP_MEM), addr, Col(count), val],
         );
     }
 }
@@ -310,7 +284,11 @@ pub trait Table: Sync {
     fn count_columns(&self) -> &'static [usize];
     /// How many identities [`eval_constraint`](Table::eval_constraint) folds.
     /// Sizes this table's slice of the batch's disjoint `eta`-range (§constraints).
-    fn n_constraints(&self) -> usize;
+    /// Defaults to none, which is every table but `JUMP`: a relation whose value
+    /// rides the bus as a coordinate needs no identity to tie it (§sec:m3).
+    fn n_constraints(&self) -> usize {
+        0
+    }
     /// Evaluate the table's degree-2 constraint at one row, reading column values
     /// by local index from `cols` (e.g. `cols[arith::VA]`) and weighting identity
     /// `i` by `pows[i]`, this table's slice of the batch's `eta`-powers. The slice is
@@ -318,11 +296,19 @@ pub trait Table: Sync {
     /// past its end panics rather than silently reaching into the next table's
     /// range. The batched zerocheck carries every committed column of a table, in
     /// local order, so `cols` is indexed directly. Returns `0` on every valid row (§sec:air).
-    fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192;
+    /// The default is the constraint-free case; a table that declares constraints
+    /// and forgets to evaluate them trips the assert instead of dropping them.
+    fn eval_constraint(&self, pows: &[F192], _cols: &[F192]) -> F192 {
+        assert!(pows.is_empty(), "a table with constraints must evaluate them");
+        F192::ZERO
+    }
     /// The same identity over `K`-valued columns, for the round a table joins the
     /// batch, before its columns have been folded into `E` (§sec:air). Both entry
     /// points delegate to one generic definition per table, so they cannot drift.
-    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192;
+    fn eval_constraint_k(&self, pows: &[F192], _cols: &[F64]) -> F192 {
+        assert!(pows.is_empty(), "a table with constraints must evaluate them");
+        F192::ZERO
+    }
     /// Declare the table's bus interactions.
     fn flushes(&self, f: &mut FlushBuilder);
     /// Fill this table's columns from the trace: `out[i]` is local column `i`'s
@@ -434,14 +420,14 @@ mod arith {
     pub const OC: usize = 4;
     // No absolute-address columns: the memory bus carries `fp·o` as a product
     // coordinate (§sec:m3), which is why there is no address binding below.
+    // The two read words. The third, the result, is DERIVED.
     pub const VA: usize = 5;
     pub const VB: usize = 6;
-    pub const VC: usize = 7;
-    pub const RA: usize = 8;
-    pub const RB: usize = 9;
-    pub const RC: usize = 10;
-    pub const RBC: usize = 11;
-    pub const N: usize = 12;
+    pub const RA: usize = 7;
+    pub const RB: usize = 8;
+    pub const RC: usize = 9;
+    pub const RBC: usize = 10;
+    pub const N: usize = 11;
 }
 
 impl Table for Arith {
@@ -451,15 +437,6 @@ impl Table for Arith {
     fn count_columns(&self) -> &'static [usize] {
         use arith::*;
         &[RA, RB, RC, RBC]
-    }
-    fn n_constraints(&self) -> usize {
-        1 // the third-operand identity
-    }
-    fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        arith_identity(self.is_xor, pows, cols)
-    }
-    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
-        arith_identity(self.is_xor, pows, cols)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith::*;
@@ -472,7 +449,15 @@ impl Table for Arith {
         );
         f.memory(Prod(FP, OA, 0), RA, VA);
         f.memory(Prod(FP, OB, 0), RB, VB);
-        f.memory(Prod(FP, OC, 0), RC, VC);
+        // The destination cell holds the result, carried as a degree-≤2 coordinate
+        // over the operand columns, so bus balance IS the assertion: `v_A + v_B`
+        // for `XOR`, the base product `v_A·v_B` for `MUL`.
+        let result = if self.is_xor {
+            Coord::Sum(vec![Col(VA), Col(VB)])
+        } else {
+            Prod(VA, VB, 0)
+        };
+        f.memory_coord(Prod(FP, OC, 0), RC, result);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use arith::*;
@@ -484,12 +469,8 @@ impl Table for Arith {
             [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c)]
         });
         ctx.cols(out, rows, VA, |r| {
-            let (a, b, c) = ctx.ternary_operands(r.pc);
-            [
-                ctx.mem[(r.fp + a) as usize],
-                ctx.mem[(r.fp + b) as usize],
-                ctx.mem[(r.fp + c) as usize],
-            ]
+            let (a, b, _) = ctx.ternary_operands(r.pc);
+            [ctx.mem[(r.fp + a) as usize], ctx.mem[(r.fp + b) as usize]]
         });
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -511,20 +492,39 @@ mod ext {
     pub const OA: usize = 2;
     pub const OB: usize = 3;
     pub const OC: usize = 4;
+    // The two read runs. The third, the result, is DERIVED lane by lane.
     pub const VA0: usize = 5;
     pub const VB0: usize = 8;
-    pub const VC0: usize = 11;
-    pub const RA0: usize = 14;
-    pub const RB0: usize = 17;
-    pub const RC0: usize = 20;
-    pub const RBC: usize = 23;
+    pub const RA0: usize = 11;
+    pub const RB0: usize = 14;
+    pub const RC0: usize = 17;
+    pub const RBC: usize = 20;
     // `MUL_EXT_BASE` only: the two upper cells of the first operand's run, read
     // for the bus but forced out of the value by `BASE_A`.
-    pub const MEM_A1: usize = 24;
-    pub const MEM_A2: usize = 25;
-    pub const BASE_A: usize = 26;
-    pub const N_ADD: usize = 24;
-    pub const N_MUL: usize = 27;
+    pub const MEM_A1: usize = 21;
+    pub const MEM_A2: usize = 22;
+    pub const BASE_A: usize = 23;
+    pub const N_ADD: usize = 21;
+    pub const N_MUL: usize = 24;
+}
+
+/// The result run's three lanes as forms over the operand lanes. `ADD_EXT` is the
+/// lane-wise sum; `MUL_EXT` is the tower product with `y³ = y+1`, whose five
+/// partial sums fold into `c0 = p0+p3`, `c1 = p1+p3+p4`, `c2 = p2+p4`. Both are
+/// degree 2 in the committed lanes, so the destination run carries them on the bus
+/// and neither the lanes nor the identity that tied them is committed (§sec:m3).
+fn ext_result(is_add: bool) -> [Coord; 3] {
+    use ext::*;
+    let (a, b) = ([VA0, VA0 + 1, VA0 + 2], [VB0, VB0 + 1, VB0 + 2]);
+    if is_add {
+        return std::array::from_fn(|k| Coord::Sum(vec![Col(a[k]), Col(b[k])]));
+    }
+    let p = |i: usize, j: usize| Prod(a[i], b[j], 0);
+    [
+        Coord::Sum(vec![p(0, 0), p(1, 2), p(2, 1)]),
+        Coord::Sum(vec![p(0, 1), p(1, 0), p(1, 2), p(2, 1), p(2, 2)]),
+        Coord::Sum(vec![p(0, 2), p(1, 1), p(2, 0), p(2, 2)]),
+    ]
 }
 
 impl Table for ExtArith {
@@ -536,13 +536,15 @@ impl Table for ExtArith {
         &[RA0, RA0 + 1, RA0 + 2, RB0, RB0 + 1, RB0 + 2, RC0, RC0 + 1, RC0 + 2, RBC]
     }
     fn n_constraints(&self) -> usize {
-        if self.is_add { 1 } else { 3 }
+        // The product itself rides the bus; only the scalar mode's two
+        // effective-lane bindings remain, and `ADD_EXT` has neither.
+        if self.is_add { 0 } else { 2 }
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        ext_identity(self.is_add, pows, cols)
+        if self.is_add { F192::ZERO } else { ext_identity(pows, cols) }
     }
     fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
-        ext_identity(self.is_add, pows, cols)
+        if self.is_add { F192::ZERO } else { ext_identity(pows, cols) }
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use ext::*;
@@ -554,6 +556,7 @@ impl Table for ExtArith {
             if self.is_add { OP_ADD_EXT } else { OP_MUL_EXT },
             &[Col(OA), Col(OB), Col(OC), base_a, Const(F64::ZERO)],
         );
+        let result = ext_result(self.is_add);
         for k in 0u32..3 {
             // The k-th word of a run is the base product times g^k, for free.
             let va = if self.is_add || k == 0 {
@@ -565,7 +568,7 @@ impl Table for ExtArith {
             };
             f.memory(Prod(FP, OA, k), RA0 + k as usize, va);
             f.memory(Prod(FP, OB, k), RB0 + k as usize, VB0 + k as usize);
-            f.memory(Prod(FP, OC, k), RC0 + k as usize, VC0 + k as usize);
+            f.memory_coord(Prod(FP, OC, k), RC0 + k as usize, result[k as usize].clone());
         }
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
@@ -592,7 +595,6 @@ impl Table for ExtArith {
             if base_a(r) == F64::ONE { [w[0], F64::ZERO, F64::ZERO] } else { w }
         });
         ctx.cols(out, rows, VB0, |r| ctx.run::<3>(r.fp + ctx.ternary_operands(r.pc).1));
-        ctx.cols(out, rows, VC0, |r| ctx.run::<3>(r.fp + ctx.ternary_operands(r.pc).2));
         ctx.cols(out, rows, RA0, |r| r.ra);
         ctx.cols(out, rows, RB0, |r| r.rb);
         ctx.cols(out, rows, RC0, |r| r.rc);
@@ -628,15 +630,6 @@ impl Table for SetTable {
     fn count_columns(&self) -> &'static [usize] {
         use set::*;
         &[R, RBC]
-    }
-    fn n_constraints(&self) -> usize {
-        0 // the bus reads the address as `fp·o`, leaving nothing to constrain
-    }
-    fn eval_constraint(&self, _pows: &[F192], _cols: &[F192]) -> F192 {
-        F192::ZERO
-    }
-    fn eval_constraint_k(&self, _pows: &[F192], _cols: &[F64]) -> F192 {
-        F192::ZERO
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use set::*;
@@ -685,13 +678,29 @@ mod deref {
     // pointer-relative address it forms on the bus, `p·obe`, is a K product for
     // the same reason.
     pub const P: usize = 7;
-    pub const V2: usize = 8;
-    pub const V3: usize = 9;
-    pub const R1: usize = 10;
-    pub const R2: usize = 11;
-    pub const R3: usize = 12;
-    pub const RBC: usize = 13;
-    pub const N: usize = 14;
+    // The local cell. The store target is DERIVED from it, the two flags, `pc`
+    // and `fp`, so it is no column.
+    pub const V3: usize = 8;
+    pub const R1: usize = 9;
+    pub const R2: usize = 10;
+    pub const R3: usize = 11;
+    pub const RBC: usize = 12;
+    pub const N: usize = 13;
+}
+
+/// The stored word as a form: `v_2 = (1+f_pc+f_fp)·v_3 + f_pc·(g²·pc) + f_fp·fp`,
+/// the flag-selected source of §sec:tab-deref, written out in characteristic two.
+/// The `pc` source is the virtual return target `g²·pc`, a free `×g²` on the
+/// product coordinate.
+fn deref_store() -> Coord {
+    use deref::*;
+    Coord::Sum(vec![
+        Col(V3),
+        Prod(FPC, V3, 0),
+        Prod(FFP, V3, 0),
+        Prod(FPC, PC, 2),
+        Prod(FFP, FP, 0),
+    ])
 }
 
 impl Table for DerefTable {
@@ -702,15 +711,6 @@ impl Table for DerefTable {
         use deref::*;
         &[R1, R2, R3, RBC]
     }
-    fn n_constraints(&self) -> usize {
-        1 // the flag-selected store
-    }
-    fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        deref_identity(pows, cols)
-    }
-    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
-        deref_identity(pows, cols)
-    }
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
         f.state_step(PC, FP);
@@ -718,15 +718,14 @@ impl Table for DerefTable {
         // The pointer cell and the local cell are frame-relative; the store target
         // is pointer-relative, so its address is `p·obe`.
         f.memory(Prod(FP, OAL, 0), R1, P);
-        f.memory(Prod(P, OBE, 0), R2, V2);
+        f.memory_coord(Prod(P, OBE, 0), R2, deref_store());
         f.memory(Prod(FP, OGA, 0), R3, V3);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use deref::*;
         let rows = &ctx.trace.deref;
-        // Offsets and store mode are the instruction's. No address is committed, but
-        // the store target's `a2` still rides the row: reading the word there needs
-        // the pointer's discrete log, which the trace has and the fill does not.
+        // Offsets and store mode are the instruction's. Neither the store target's
+        // address nor its value is committed.
         let ins = |r: &Drow| match ctx.prog[r.pc as usize] {
             Op::Deref {
                 alpha,
@@ -747,7 +746,6 @@ impl Table for DerefTable {
             [mode.f_pc(), mode.f_fp()]
         });
         ctx.col(out, rows, P, |r| ctx.mem[(r.fp + ins(r).0) as usize]);
-        ctx.col(out, rows, V2, |r| ctx.mem[r.a2 as usize]);
         ctx.col(out, rows, V3, |r| ctx.mem[(r.fp + ins(r).2) as usize]);
         ctx.cols(out, rows, R1, |r| [r.r1, r.r2, r.r3]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -765,14 +763,30 @@ mod deref_ext {
     pub const OBE: usize = 3;
     pub const OGA: usize = 4;
     pub const P: usize = 5;
-    pub const V20: usize = 6;
-    pub const V30: usize = 9;
-    pub const R1: usize = 12;
-    pub const R20: usize = 13;
-    pub const R30: usize = 16;
-    pub const RBC: usize = 19;
-    pub const WIDTH3: usize = 20;
-    pub const N: usize = 21;
+    // Only the heap run's THIRD word is a column: in two-word mode it is an
+    // independent padding read, so nothing derives it. Its first two words are
+    // the local run's, which is what the equality said.
+    pub const V22: usize = 6;
+    pub const V30: usize = 7;
+    pub const R1: usize = 10;
+    pub const R20: usize = 11;
+    pub const R30: usize = 14;
+    pub const RBC: usize = 17;
+    pub const WIDTH3: usize = 18;
+    pub const N: usize = 19;
+}
+
+/// The heap run's three words as forms. Words 0 and 1 are always the local run's,
+/// so they are that column outright. Word 2 is `w·v3_2 + (1+w)·v2_2`: the local
+/// lane in three-word mode, its own independent read in two-word mode. All degree
+/// 2, which is the whole width-selected equality, so the table has no identity.
+fn deref_ext_run() -> [Coord; 3] {
+    use deref_ext::*;
+    [
+        Col(V30),
+        Col(V30 + 1),
+        Coord::Sum(vec![Prod(WIDTH3, V30 + 2, 0), Col(V22), Prod(WIDTH3, V22, 0)]),
+    ]
 }
 
 impl Table for DerefExtTable {
@@ -782,15 +796,6 @@ impl Table for DerefExtTable {
     fn count_columns(&self) -> &'static [usize] {
         use deref_ext::*;
         &[R1, R20, R20 + 1, R20 + 2, R30, R30 + 1, R30 + 2, RBC]
-    }
-    fn n_constraints(&self) -> usize {
-        1 // the width-selected run equality
-    }
-    fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
-        deref_ext_identity(pows, cols)
-    }
-    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
-        deref_ext_identity(pows, cols)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref_ext::*;
@@ -802,8 +807,9 @@ impl Table for DerefExtTable {
             &[Col(OAL), Col(OBE), Col(OGA), Col(WIDTH3), Const(F64::ZERO)],
         );
         f.memory(Prod(FP, OAL, 0), R1, P);
+        let heap = deref_ext_run();
         for k in 0u32..3 {
-            f.memory(Prod(P, OBE, k), R20 + k as usize, V20 + k as usize);
+            f.memory_coord(Prod(P, OBE, k), R20 + k as usize, heap[k as usize].clone());
             f.memory(Prod(FP, OGA, k), R30 + k as usize, V30 + k as usize);
         }
     }
@@ -826,7 +832,8 @@ impl Table for DerefExtTable {
             [ctx.g_at(alpha), ctx.g_at(beta), ctx.g_at(gamma)]
         });
         ctx.col(out, rows, P, |r| ctx.mem[(r.fp + ins(r).0) as usize]);
-        ctx.cols(out, rows, V20, |r| ctx.run::<3>(r.a2));
+        // Only the heap run's third word: the first two ARE the local run's.
+        ctx.col(out, rows, V22, |r| ctx.mem[r.a2 as usize + 2]);
         ctx.cols(out, rows, V30, |r| ctx.run::<3>(r.fp + ins(r).2));
         ctx.col(out, rows, R1, |r| r.r1);
         ctx.cols(out, rows, R20, |r| r.r2);
@@ -843,24 +850,24 @@ struct JumpTable;
 mod jump {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const NPC: usize = 2; // next pc, a K address (single lane)
-    pub const NFP: usize = 3; // next fp, a K address (single lane)
-    pub const OC: usize = 4;
-    pub const OD: usize = 5;
-    pub const OF: usize = 6;
-    pub const C: usize = 7;
-    pub const D: usize = 8;
-    pub const F: usize = 9;
-    pub const RC: usize = 10;
-    pub const RD: usize = 11;
-    pub const RF: usize = 12;
-    pub const RBC: usize = 13;
+    // The successor state is DERIVED from `b`, the words read and `(pc, fp)`, so
+    // neither `next_pc` nor `next_fp` is a column.
+    pub const OC: usize = 2;
+    pub const OD: usize = 3;
+    pub const OF: usize = 4;
+    pub const C: usize = 5;
+    pub const D: usize = 6;
+    pub const F: usize = 7;
+    pub const RC: usize = 8;
+    pub const RD: usize = 9;
+    pub const RF: usize = 10;
+    pub const RBC: usize = 11;
     // Local witness columns (committed, never flushed): the inverse hint `w`
     // and the taken indicator `b = [c ≠ 0]` it certifies
     // (the `JUMP` table in `doc/body/07-instruction-tables.tex`).
-    pub const W: usize = 14;
-    pub const B: usize = 15;
-    pub const N: usize = 16;
+    pub const W: usize = 12;
+    pub const B: usize = 13;
+    pub const N: usize = 14;
 }
 
 impl Table for JumpTable {
@@ -872,7 +879,7 @@ impl Table for JumpTable {
         &[RC, RD, RF, RBC]
     }
     fn n_constraints(&self) -> usize {
-        4 // two indicator identities + the pc/fp selections
+        2 // the two indicator identities; the selections ride the state push
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
         jump_identity(pows, cols)
@@ -882,7 +889,15 @@ impl Table for JumpTable {
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use jump::*;
-        f.state_jump(PC, FP, NPC, NFP);
+        // The successor state is DERIVED: `b·d + (b+1)·g·pc` and `b·f + (b+1)·fp`,
+        // each degree 2 in K columns, so neither successor is committed. Written
+        // out in characteristic 2 as `b·d + b·(g·pc) + g·pc`.
+        f.state_derived(
+            PC,
+            FP,
+            Coord::Sum(vec![Prod(B, D, 0), Prod(B, PC, 1), GCol(PC, 1)]),
+            Coord::Sum(vec![Prod(B, F, 0), Prod(B, FP, 0), Col(FP)]),
+        );
         f.bytecode(
             PC,
             RBC,
@@ -904,16 +919,6 @@ impl Table for JumpTable {
         let cond = |r: &Jrow| cell(r, ins(r).0);
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // The successor state: a taken branch goes to the destination/frame words
-        // it read, an untaken one falls through to `(g·pc, fp)`.
-        ctx.cols(out, rows, NPC, |r| {
-            let (oc, od, of) = ins(r);
-            if cell(r, oc).is_zero() {
-                [mul_by_g(ctx.g_at(r.pc)), ctx.g_at(r.fp)]
-            } else {
-                [cell(r, od), cell(r, of)]
-            }
-        });
         ctx.cols(out, rows, OC, |r| {
             let (oc, od, of) = ins(r);
             [ctx.g_at(oc), ctx.g_at(od), ctx.g_at(of)]
@@ -1026,15 +1031,6 @@ impl Table for Blake3Table {
             RC0 + 3,
             RBC,
         ]
-    }
-    fn n_constraints(&self) -> usize {
-        0 // the bus reads each address as `fp·o`, and flock proves the compression
-    }
-    fn eval_constraint(&self, _pows: &[F192], _cols: &[F192]) -> F192 {
-        F192::ZERO
-    }
-    fn eval_constraint_k(&self, _pows: &[F192], _cols: &[F64]) -> F192 {
-        F192::ZERO
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;

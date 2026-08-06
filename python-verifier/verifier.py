@@ -676,6 +676,7 @@ class Coordinate:
     product: tuple[int, int, int] | None = None
     index: bool = False
     public: tuple[F192, ...] | None = None
+    terms: tuple["Coordinate", ...] | None = None
 
     def __post_init__(self) -> None:
         choices = (
@@ -685,9 +686,32 @@ class Coordinate:
             self.product is not None,
             self.index,
             self.public is not None,
+            self.terms is not None,
         )
         require(sum(choices) == 1, "a bus coordinate must have exactly one source")
         require(self.generator_power >= 1, "generator power must be positive")
+
+
+def _accumulate_form(coordinate: "Coordinate", weight: F192, form: "BusForm", base: int) -> None:
+    """Fold one coordinate into a table's bus form at ``weight``.
+
+    A sum's children share their coordinate's alpha-power, so a value the row
+    derives lands as the several coefficients and products it is made of.
+    """
+    if coordinate.constant is not None:
+        form.constant += weight * coordinate.constant
+    elif coordinate.column is not None:
+        form.coefficients[coordinate.column - base] += weight
+    elif coordinate.generator_column is not None:
+        form.coefficients[coordinate.generator_column - base] += weight * (GEN ** coordinate.generator_power)
+    elif coordinate.product is not None:
+        a, b, exponent = coordinate.product
+        form.products.append((a - base, b - base, weight * _gpow(exponent)))
+    elif coordinate.terms is not None:
+        for term in coordinate.terms:
+            _accumulate_form(term, weight, form, base)
+    else:
+        raise VerificationError("table bus block has a virtual coordinate")
 
 
 @dataclass(frozen=True)
@@ -800,21 +824,7 @@ def _decompose_bus_side(
             form.constant += selector_weight * gamma
             coefficient = ONE
             for coordinate in block.coordinates:
-                if coordinate.constant is not None:
-                    form.constant += selector_weight * coefficient * coordinate.constant
-                elif coordinate.column is not None:
-                    form.coefficients[coordinate.column - base] += selector_weight * coefficient
-                elif coordinate.generator_column is not None:
-                    form.coefficients[coordinate.generator_column - base] += (
-                        selector_weight * coefficient * (GEN ** coordinate.generator_power)
-                    )
-                elif coordinate.product is not None:
-                    a, b, exponent = coordinate.product
-                    form.products.append(
-                        (a - base, b - base, selector_weight * coefficient * _gpow(exponent))
-                    )
-                else:
-                    raise VerificationError("table bus block has a virtual coordinate")
+                _accumulate_form(coordinate, selector_weight * coefficient, form, base)
                 coefficient *= alpha
             continue
 
@@ -1019,17 +1029,19 @@ BLAKE3_TABLE = 8
 MEM_COLUMN = 0
 QFLOCK_COLUMN = 3
 BASES = (4, 16, 28, 52, 79, 85, 99, 120, 136)
-WIDTHS = (12, 12, 24, 27, 6, 14, 21, 16, 43)
-CONSTRAINT_COUNTS = (1, 1, 1, 3, 0, 1, 1, 4, 0)
+WIDTHS = (11, 11, 21, 24, 6, 13, 19, 14, 43)
+# Only MUL_EXT's scalar mode and JUMP's is-nonzero indicator are left: every other
+# relation rides the bus as the coordinate that carries its value.
+CONSTRAINT_COUNTS = (0, 0, 0, 2, 0, 0, 0, 2, 0)
 COUNT_COLUMNS = (
-    (8, 9, 10, 11),
-    (8, 9, 10, 11),
-    (14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
-    (14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
+    (7, 8, 9, 10),
+    (7, 8, 9, 10),
+    (11, 12, 13, 14, 15, 16, 17, 18, 19, 20),
+    (11, 12, 13, 14, 15, 16, 17, 18, 19, 20),
     (4, 5),
-    (10, 11, 12, 13),
-    (12, 13, 14, 15, 16, 17, 18, 19),
-    (10, 11, 12, 13),
+    (9, 10, 11, 12),
+    (10, 11, 12, 13, 14, 15, 16, 17),
+    (8, 9, 10, 11),
     tuple(range(26, 43)),
 )
 BLAKE3_VALUES = tuple(range(8, 26))
@@ -1227,6 +1239,10 @@ def _gcol(index: int, power: int = 1) -> Coordinate:
     return Coordinate(generator_column=index, generator_power=power)
 
 
+def _sum(terms) -> Coordinate:
+    return Coordinate(terms=tuple(terms))
+
+
 def _prod(a: int, b: int, exponent: int = 0) -> Coordinate:
     return Coordinate(product=(a, b, exponent))
 
@@ -1247,8 +1263,9 @@ class Flushes:
     def state_step(self, pc: int, fp: int) -> None:
         self.pair((_const(ONE), _gcol(pc), _col(fp)), (_const(ONE), _col(pc), _col(fp)))
 
-    def state_jump(self, pc: int, fp: int, npc: int, nfp: int) -> None:
-        self.pair((_const(ONE), _col(npc), _col(nfp)), (_const(ONE), _col(pc), _col(fp)))
+    def state_derived(self, pc: int, fp: int, npc: Coordinate, nfp: Coordinate) -> None:
+        """JUMP's successor state, which the row derives rather than commits."""
+        self.pair((_const(ONE), npc, nfp), (_const(ONE), _col(pc), _col(fp)))
 
     def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Coordinate]) -> None:
         prefix_push = (_const(GEN * GEN), _col(pc), _gcol(count), _const(_gpow(opcode)))
@@ -1265,47 +1282,91 @@ class Flushes:
         self.memory(address, count, (_col(value),))
 
 
+def _ext_result(is_add: bool) -> tuple[Coordinate, Coordinate, Coordinate]:
+    """The extension result run's three lanes as forms over the operand lanes.
+
+    ADD_EXT is the lane-wise sum; MUL_EXT is the tower product with ``y**3 = y+1``,
+    whose five partial sums fold into ``c0 = p0+p3``, ``c1 = p1+p3+p4``,
+    ``c2 = p2+p4``. Mirrors ``tables.rs::ext_result``.
+    """
+    a, b = (5, 6, 7), (8, 9, 10)
+    if is_add:
+        return tuple(_sum((_col(a[k]), _col(b[k]))) for k in range(3))
+
+    def p(i: int, j: int) -> Coordinate:
+        return _prod(a[i], b[j])
+
+    return (
+        _sum((p(0, 0), p(1, 2), p(2, 1))),
+        _sum((p(0, 1), p(1, 0), p(1, 2), p(2, 1), p(2, 2))),
+        _sum((p(0, 2), p(1, 1), p(2, 0), p(2, 2))),
+    )
+
+
+def _deref_store() -> Coordinate:
+    """``v2 = (1+f_pc+f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp``, the flag-selected
+    source, written out in characteristic two. Mirrors ``tables.rs::deref_store``."""
+    return _sum((_col(8), _prod(5, 8), _prod(6, 8), _prod(5, 0, 2), _prod(6, 1)))
+
+
+def _deref_wide_run() -> tuple[Coordinate, Coordinate, Coordinate]:
+    """The heap run's three words. Words 0 and 1 ARE the local run's; word 2 is
+    ``w*v3_2 + (1+w)*v2_2``, the local lane in three-word mode and its own
+    independent read in two-word mode. Mirrors ``tables.rs::deref_ext_run``."""
+    return (_col(7), _col(8), _sum((_prod(18, 9), _col(6), _prod(18, 6))))
+
+
 def _table_flushes(table: int) -> Flushes:
     f = Flushes()
     if table in (0, 1):
         f.state_step(0, 1)
-        f.bytecode(0, 11, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_word(_prod(1, 2), 8, 5)
-        f.memory_word(_prod(1, 3), 9, 6)
-        f.memory_word(_prod(1, 4), 10, 7)
+        f.bytecode(0, 10, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 7, 5)
+        f.memory_word(_prod(1, 3), 8, 6)
+        # The destination cell holds the result, derived from the two operands.
+        result = _sum((_col(5), _col(6))) if table == 0 else _prod(5, 6)
+        f.memory(_prod(1, 4), 9, (result,))
     elif table in (2, 3):
         f.state_step(0, 1)
-        base_a = _const(ZERO) if table == 2 else _col(26)
-        f.bytecode(0, 23, table + 4, (_col(2), _col(3), _col(4), base_a, _const(ZERO)))
+        base_a = _const(ZERO) if table == 2 else _col(23)
+        f.bytecode(0, 20, table + 4, (_col(2), _col(3), _col(4), base_a, _const(ZERO)))
+        result = _ext_result(table == 2)
         for lane in range(3):
             # MUL_EXT_BASE reads its first operand's upper cells into MEM_A1/MEM_A2.
-            a_value = 5 + lane if table == 2 or lane == 0 else 23 + lane
-            f.memory_word(_prod(1, 2, lane), 14 + lane, a_value)
-            f.memory_word(_prod(1, 3, lane), 17 + lane, 8 + lane)
-            f.memory_word(_prod(1, 4, lane), 20 + lane, 11 + lane)
+            a_value = 5 + lane if table == 2 or lane == 0 else 20 + lane
+            f.memory_word(_prod(1, 2, lane), 11 + lane, a_value)
+            f.memory_word(_prod(1, 3, lane), 14 + lane, 8 + lane)
+            f.memory(_prod(1, 4, lane), 17 + lane, (result[lane],))
     elif table == 4:
         f.state_step(0, 1)
         f.bytecode(0, 5, 2, (_col(2), _col(3), _const(ZERO), _const(ZERO), _const(ZERO)))
         f.memory_word(_prod(1, 2), 4, 3)
     elif table == 5:
         f.state_step(0, 1)
-        f.bytecode(0, 13, 3, tuple(_col(i) for i in (2, 3, 4, 5, 6)))
-        f.memory_word(_prod(1, 2), 10, 7)
-        f.memory_word(_prod(7, 3), 11, 8)
-        f.memory_word(_prod(1, 4), 12, 9)
+        f.bytecode(0, 12, 3, tuple(_col(i) for i in (2, 3, 4, 5, 6)))
+        f.memory_word(_prod(1, 2), 9, 7)
+        f.memory(_prod(7, 3), 10, (_deref_store(),))
+        f.memory_word(_prod(1, 4), 11, 8)
     elif table == 6:
         f.state_step(0, 1)
-        f.bytecode(0, 19, 8, (_col(2), _col(3), _col(4), _col(20), _const(ZERO)))
-        f.memory_word(_prod(1, 2), 12, 5)
+        f.bytecode(0, 17, 8, (_col(2), _col(3), _col(4), _col(18), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 10, 5)
+        heap = _deref_wide_run()
         for lane in range(3):
-            f.memory_word(_prod(5, 3, lane), 13 + lane, 6 + lane)
-            f.memory_word(_prod(1, 4, lane), 16 + lane, 9 + lane)
+            f.memory(_prod(5, 3, lane), 11 + lane, (heap[lane],))
+            f.memory_word(_prod(1, 4, lane), 14 + lane, 7 + lane)
     elif table == 7:
-        f.state_jump(0, 1, 2, 3)
-        f.bytecode(0, 13, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
+        # The successor state is derived: `b*d + (b+1)*g*pc` and `b*f + (b+1)*fp`.
+        f.state_derived(
+            0,
+            1,
+            _sum((_prod(13, 6), _prod(13, 0, 1), _gcol(0))),
+            _sum((_prod(13, 7), _prod(13, 1), _col(1))),
+        )
+        f.bytecode(0, 11, 4, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(_prod(1, 2), 8, 5)
+        f.memory_word(_prod(1, 3), 9, 6)
         f.memory_word(_prod(1, 4), 10, 7)
-        f.memory_word(_prod(1, 5), 11, 8)
-        f.memory_word(_prod(1, 6), 12, 9)
     else:
         f.state_step(0, 1)
         f.bytecode(0, 42, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 24, 25)))
@@ -1330,6 +1391,8 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
     if coordinate.product is not None:
         a, b, exponent = coordinate.product
         return _prod(base + a, base + b, exponent)
+    if coordinate.terms is not None:
+        return _sum(_offset_coordinate(term, base) for term in coordinate.terms)
     return coordinate
 
 
@@ -1472,40 +1535,16 @@ def _air_evaluator(
             return value(lo) + F192(0, 1) * (value(hi) + F192(0, 1) * value(top))
 
         # No table binds an address: the bus reads each as a product coordinate.
-        if table in (0, 1):
-            operation = value(5) + value(6) if table == 0 else value(5) * value(6)
-            terms = (value(7) + operation,)
-        elif table in (2, 3):
-            va, vb, vc = word(5, 6, 7), word(8, 9, 10), word(11, 12, 13)
-            operation = va + vb if table == 2 else va * vb
-            terms = [vc + operation]
-            if table == 3:
-                full_a = ONE + value(26)
-                terms.extend((
-                    value(6) + full_a * value(24),
-                    value(7) + full_a * value(25),
-                ))
-            terms = tuple(terms)
-        elif table == 4:
-            terms = ()
-        elif table == 5:
-            source = ((ONE + value(5) + value(6)) * value(9)
-                      + value(5) * GEN * GEN * value(0) + value(6) * value(1))
-            terms = (value(8) + source,)
-        elif table == 6:
-            width3 = value(20)
-            v2 = value(6) + F192(0, 1) * (value(7) + F192(0, 1) * width3 * value(8))
-            v3 = value(9) + F192(0, 1) * (value(10) + F192(0, 1) * width3 * value(11))
-            terms = (v2 + v3,)
+        if table == 3:
+            # MUL_EXT's scalar mode: the effective upper lanes are the cells'
+            # contents when base_a = 0 and zero when it is 1. These stay identities
+            # because those lanes feed a product, which a form would take to
+            # degree three.
+            full_a = ONE + value(23)
+            terms = (value(6) + full_a * value(21), value(7) + full_a * value(22))
         elif table == 7:
-            condition, destination, frame = value(7), value(8), value(9)
-            inverse, flag = value(14), value(15)
-            terms = (
-                flag + condition * inverse,
-                condition * (flag + ONE),
-                value(2) + flag * destination + (flag + ONE) * GEN * value(0),
-                value(3) + flag * frame + (flag + ONE) * value(1),
-            )
+            condition, inverse, flag = value(5), value(12), value(13)
+            terms = (flag + condition * inverse, condition * (flag + ONE))
         else:
             terms = ()
 
