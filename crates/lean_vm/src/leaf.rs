@@ -167,6 +167,7 @@ fn build_leaf_values(
     alpha: F192,
     gamma: F192,
     uninitialized_output: bool,
+    quaternary_capacity: bool,
 ) -> ArenaVec<F192> {
     let explicit = blocks
         .iter()
@@ -177,6 +178,11 @@ fn build_leaf_values(
     debug_assert!(explicit <= 1usize << lay.mu);
     let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
     debug_assert!(blocks.is_empty() || covered == explicit);
+    let capacity = if quaternary_capacity {
+        explicit.next_multiple_of(4)
+    } else {
+        explicit
+    };
     let mut leaves = if uninitialized_output && !blocks.is_empty() {
         let canonical = layout(blocks);
         assert_eq!(
@@ -188,12 +194,17 @@ fn build_leaf_values(
             "uninitialized leaf output requires the canonical depth"
         );
         assert_eq!(covered, explicit, "canonical leaf blocks must tile the explicit prefix");
+        let mut values = ArenaVec::with_capacity(capacity);
         // SAFETY: `stack_offsets` packs the power-of-two blocks contiguously
         // from zero. Their disjoint destination windows therefore cover all
-        // `explicit == covered` slots, and each fill joins before return.
-        unsafe { ArenaVec::uninitialized(explicit) }
+        // `explicit == covered` live slots, and each fill joins before return.
+        // Any quaternary-capacity tail remains outside `len` until GKR writes it.
+        unsafe { values.set_len(explicit) };
+        values
     } else {
-        ArenaVec::filled(F192::ONE, explicit)
+        let mut values = ArenaVec::with_capacity(capacity);
+        values.resize(explicit, F192::ONE);
+        values
     };
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
@@ -241,12 +252,24 @@ fn build_leaf_values(
 /// coordinates are folded once per block into `const_part`.
 pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192, gamma: F192) -> gkr::LeafVector {
     let uninitialized_output = std::env::var("LEANVM_BUS_UNINIT_LEAVES").as_deref() == Ok("1");
-    let values = build_leaf_values(blocks, lay, cols, alpha, gamma, uninitialized_output);
-    if std::env::var_os("LEANVM_BUS_UNINIT_LEAVES").is_some() {
+    let quaternary_capacity = std::env::var("LEANVM_BUS_LEAF_QUAD_CAPACITY").as_deref() == Ok("1");
+    let values = build_leaf_values(
+        blocks,
+        lay,
+        cols,
+        alpha,
+        gamma,
+        uninitialized_output,
+        quaternary_capacity,
+    );
+    if std::env::var_os("LEANVM_BUS_UNINIT_LEAVES").is_some()
+        || std::env::var_os("LEANVM_BUS_LEAF_QUAD_CAPACITY").is_some()
+    {
         let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
         eprintln!(
-            "LEANVM_BUS_LEAF_OUTPUT schema=1 uninitialized={uninitialized_output} explicit={} covered={covered}",
+            "LEANVM_BUS_LEAF_OUTPUT schema=2 uninitialized={uninitialized_output} quad_capacity={quaternary_capacity} explicit={} capacity={} covered={covered}",
             values.len(),
+            values.capacity(),
         );
     }
     gkr::LeafVector::new(values)
@@ -919,14 +942,29 @@ mod tests {
                 kappa: 2,
                 coords: vec![Coord::Sum(vec![Coord::Col(0), Coord::Const(F64(13))])],
             },
+            Block {
+                kappa: 0,
+                coords: vec![Coord::Const(F64(17))],
+            },
         ];
         let lay = layout(&blocks);
         let alpha = F192::new(17, 19, 23);
         let gamma = F192::new(29, 31, 37);
-        let one_filled = build_leaf_values(&blocks, &lay, &column_slices, alpha, gamma, false);
-        let uninitialized = build_leaf_values(&blocks, &lay, &column_slices, alpha, gamma, true);
+        let one_filled = build_leaf_values(&blocks, &lay, &column_slices, alpha, gamma, false, false);
+        let uninitialized = build_leaf_values(&blocks, &lay, &column_slices, alpha, gamma, true, false);
+        let mut with_headroom = build_leaf_values(&blocks, &lay, &column_slices, alpha, gamma, true, true);
         assert_eq!(uninitialized, one_filled);
-        assert_eq!(uninitialized.len(), 44);
+        assert_eq!(with_headroom, one_filled);
+        assert_eq!(uninitialized.len(), 45);
+        assert_eq!(uninitialized.capacity(), 45);
+        assert_eq!(with_headroom.capacity(), 48);
+        let pointer = with_headroom.as_ptr();
+        with_headroom.resize(48, F192::ONE);
+        assert_eq!(
+            with_headroom.as_ptr(),
+            pointer,
+            "quaternary padding must not reallocate"
+        );
     }
 
     #[test]
@@ -940,6 +978,6 @@ mod tests {
             mu: 2,
             offsets: vec![1],
         };
-        let _ = build_leaf_values(&blocks, &bad_layout, &[], F192::ONE, F192::ONE, true);
+        let _ = build_leaf_values(&blocks, &bad_layout, &[], F192::ONE, F192::ONE, true, true);
     }
 }
