@@ -33,6 +33,9 @@ pub enum FillerOp {
     /// arithmetic table, which serves `MUL_NATIVE` too, so that table needs no
     /// second dummy.
     Xor,
+    /// `XOR_64 s, s -> s`, the same for the `K`-valued table: `0` is in `K`, which
+    /// is what that table's flushes demand of its operands.
+    Xor64,
     /// `SET s = 0`.
     Set,
     /// `PACK64X2 s, s -> s`: `pack(0, 0) = 0`, and the zero upper limbs the instruction
@@ -53,6 +56,7 @@ pub enum FillerOp {
 /// indexes them: a table's index is this array's position, so the two cannot disagree.
 pub const TABLES: [FillerOp; lean_vm::tables::N_TABLES] = [
     FillerOp::Xor,
+    FillerOp::Xor64,
     FillerOp::Set,
     FillerOp::Deref,
     FillerOp::Jump,

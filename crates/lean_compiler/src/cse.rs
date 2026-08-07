@@ -47,6 +47,11 @@ use std::collections::HashMap;
 enum Key {
     Xor(Off, Off),
     Mul(Off, Off),
+    // The `K`-valued forms key separately. Their VALUE is the same as the wide
+    // form's, so unifying the two would be sound, but nothing needs it and keeping
+    // them apart means CSE never turns one width into the other.
+    Xor64(Off, Off),
+    Mul64(Off, Off),
     Const([u64; 3]),
 }
 
@@ -85,6 +90,8 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> u
         let (key, dst) = match &ins.op {
             LOp::Xor { a, b, c } => (Key::Xor(*a.min(b), *a.max(b)), *c),
             LOp::Mul { a, b, c } => (Key::Mul(*a.min(b), *a.max(b)), *c),
+            LOp::Xor64 { a, b, c } => (Key::Xor64(*a.min(b), *a.max(b)), *c),
+            LOp::Mul64 { a, b, c } => (Key::Mul64(*a.min(b), *a.max(b)), *c),
             LOp::Set { o, k: KVal::Const(k) } => (Key::Const([k.c0, k.c1, k.c2]), *o),
             _ => continue,
         };
@@ -131,7 +138,11 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
     for ins in code {
         match &ins.op {
             LOp::Set { o, .. } => bump(*o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } | LOp::Pack64x2 { c, .. } => bump(*c),
+            LOp::Xor { c, .. }
+            | LOp::Mul { c, .. }
+            | LOp::Xor64 { c, .. }
+            | LOp::Mul64 { c, .. }
+            | LOp::Pack64x2 { c, .. } => bump(*c),
             // A `Cell` deref unifies `m[p·g^beta]` with `fp[gamma]`, which writes
             // `fp[gamma]` when it acts as a load. The `Pc`/`Fp` modes take their
             // source from the machine state and leave `gamma` unused.
@@ -198,7 +209,11 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
     };
     match &mut ins.op {
         LOp::Set { .. } => {}
-        LOp::Xor { a, b, .. } | LOp::Mul { a, b, .. } | LOp::Pack64x2 { a, b, .. } => {
+        LOp::Xor { a, b, .. }
+        | LOp::Mul { a, b, .. }
+        | LOp::Xor64 { a, b, .. }
+        | LOp::Mul64 { a, b, .. }
+        | LOp::Pack64x2 { a, b, .. } => {
             map(a);
             map(b);
         }

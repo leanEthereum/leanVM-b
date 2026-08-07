@@ -91,8 +91,10 @@ impl Program {
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
-        // XOR and MUL rows go to ONE table, in execution order.
+        // XOR and MUL rows go to ONE table, in execution order; their K-valued
+        // counterparts to another.
         let mut arith: Vec<Xrow> = Vec::new();
+        let mut arith64: Vec<Xrow> = Vec::new();
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
@@ -224,6 +226,7 @@ impl Program {
                     assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
                     let counts = [
                         arith.len(),
+                        arith64.len(),
                         set.len(),
                         deref.len(),
                         jump.len(),
@@ -478,8 +481,12 @@ impl Program {
             // and `Op` is wide enough that re-reading it costs a second load.
             let op = self.prog[pc as usize];
             match op {
-                Op::Xor { a, b, c } | Op::Mul { a, b, c } => {
-                    let is_xor = matches!(op, Op::Xor { .. });
+                Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => {
+                    let is_xor = matches!(op, Op::Xor { .. } | Op::Xor64 { .. });
+                    // A `_64` row's operands must lie in K: its table commits one lane
+                    // each and its memory flushes carry literal zeros above them, so a
+                    // wider operand is a witness the bus cannot balance (`tables`).
+                    let narrow = matches!(op, Op::Xor64 { .. } | Op::Mul64 { .. });
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
                     // The row is the equality `m[c] = m[a] op m[b]` over write-once
                     // memory. Normally the operands are known and the result is
@@ -505,19 +512,36 @@ impl Program {
                     }
                     let va = m.get(aa);
                     let vb = m.get(ab);
+                    assert!(
+                        !narrow || (as_addr(va).is_some() && as_addr(vb).is_some()),
+                        "a 64-bit arithmetic operand must be K-valued at pc {pc}:                          {:x}:{:x}:{:x} op {:x}:{:x}:{:x}",
+                        va.c2,
+                        va.c1,
+                        va.c0,
+                        vb.c2,
+                        vb.c1,
+                        vb.c0
+                    );
+                    // K is closed under both operations, so a K-valued row's result
+                    // needs no assertion of its own.
                     let vc = if is_xor { va + vb } else { va * vb };
                     m.put(ac, vc);
                     let ra = m.bump_access_count(aa);
                     let rb = m.bump_access_count(ab);
                     let rc = m.bump_access_count(ac);
-                    arith.push(Xrow {
+                    let row = Xrow {
                         pc,
                         fp,
                         ra,
                         rb,
                         rc,
                         bytecode_read,
-                    });
+                    };
+                    if narrow {
+                        arith64.push(row)
+                    } else {
+                        arith.push(row)
+                    }
                     pc += 1;
                 }
                 Op::Set { o, k } => {
@@ -805,6 +829,7 @@ impl Program {
         m.count.resize(cells, F64::ONE);
         let trace = Trace {
             arith,
+            arith64,
             set,
             deref,
             jump,

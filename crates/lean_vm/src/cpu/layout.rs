@@ -232,7 +232,9 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     let max_op = prog
         .iter()
         .map(|op| match *op {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } => a.max(b).max(c),
+            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => {
+                a.max(b).max(c)
+            }
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
@@ -247,6 +249,8 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     let opcode = |op: &Op| match op {
         Op::Xor { .. } => OP_XOR,
         Op::Mul { .. } => OP_MUL,
+        Op::Xor64 { .. } => OP_XOR64,
+        Op::Mul64 { .. } => OP_MUL64,
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
@@ -255,7 +259,9 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } => (g_at(a), g_at(b), g_at(c)),
+            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => {
+                (g_at(a), g_at(b), g_at(c))
+            }
             // The immediate's first two K-limbs ride operand slots o2/o3; c2
             // rides the fpc slot below.
             Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),

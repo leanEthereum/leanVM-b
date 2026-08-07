@@ -79,6 +79,14 @@ fn arith_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     )
 }
 
+/// The `K`-valued arithmetic table's two identities (§sec:tab-arith64): the same pair
+/// as [`arith_identity`] over a single lane, the operands being `K`-valued.
+fn arith64_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
+    use arith64::*;
+    let s = cols[S];
+    T::dot(pows, &[s * (s + T::ONE), cols[W] + s * cols[VB]], F192::ZERO)
+}
+
 /// `JUMP`'s six identities: `b = cond·w` and `cond·(b+1) = 0`, each written out over
 /// the three lanes (§sec:tab-jump).
 ///
@@ -130,6 +138,12 @@ pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE3: F64 = g_pow(5);
 pub(crate) const OP_PACK64X2: F64 = g_pow(6);
+// The `K`-valued arithmetic pair, whose table needs their exponents by name for the
+// same reason ([`arith64_opcode`]).
+pub(crate) const OP_XOR64_LOG: u32 = 7;
+pub(crate) const OP_MUL64_LOG: u32 = 8;
+pub(crate) const OP_XOR64: F64 = g_pow(OP_XOR64_LOG as usize);
+pub(crate) const OP_MUL64: F64 = g_pow(OP_MUL64_LOG as usize);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -373,14 +387,15 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[ARITH, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, the
-/// order of `row_counts` / `taus` throughout `cpu`. `ARITH` serves both `XOR` and
-/// `MUL_NATIVE`, so there are six tables for seven opcodes.
-pub const N_TABLES: usize = 6;
+/// The tables in fixed order `[ARITH, ARITH64, SET, DEREF, JUMP, BLAKE3, PACK64X2]`,
+/// the order of `row_counts` / `taus` throughout `cpu`. Each arithmetic table serves
+/// two opcodes under a selector, so there are seven tables for nine opcodes.
+pub const N_TABLES: usize = 7;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
         &ArithTable,
+        &Arith64Table,
         &SetTable,
         &DerefTable,
         &JumpTable,
@@ -390,7 +405,7 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
 }
 
 /// Index of the BLAKE3 table in [`tables`].
-pub const BLAKE3_TABLE: usize = 4;
+pub const BLAKE3_TABLE: usize = 5;
 
 /// The six base addresses a `BLAKE3` row reads: the four message cells, the
 /// chaining-value base and the output base (each of the last two spans that cell
@@ -599,6 +614,122 @@ impl Table for ArithTable {
             [
                 o[0], o[1], o[2], s, va[0], va[1], va[2], vb[0], vb[1], vb[2], w[0], w[1], w[2],
             ]
+        });
+        ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
+        ctx.col(out, rows, RBC, |r| r.bytecode_read);
+    }
+}
+
+// ---- ARITH64 (XOR_64 / MUL_NATIVE_64) ---------------------------------------
+
+/// `XOR_64` and `MUL_NATIVE_64`: the same pair of instructions as [`ArithTable`] and
+/// the same selector, over operands asserted to be `K`-valued (§sec:tab-arith64).
+///
+/// A `K` operand is ONE column, not three: its two upper limbs are provably zero
+/// rather than committed, because every memory flush carries literal zeros there
+/// (`memory_k`), so bus balance is what puts the stored words in `K`. That is the
+/// device the `DEREF` pointer and `PACK64X2`'s sources already use. `K` is closed
+/// under both operations, so the result is `K`-valued too and its flush carries
+/// zeros above the low lane as well. Thirteen columns against nineteen, for the
+/// arithmetic a program does on addresses, counters, g-powers and 64-bit words.
+struct Arith64Table;
+
+pub(crate) mod arith64 {
+    pub const PC: usize = 0;
+    pub const FP: usize = 1;
+    pub const OA: usize = 2;
+    pub const OB: usize = 3;
+    pub const OC: usize = 4;
+    /// `0` for an `XOR_64` row, `1` for a `MUL_NATIVE_64` row.
+    pub const S: usize = 5;
+    pub const VA: usize = 6;
+    pub const VB: usize = 7;
+    /// `w = s·v_B`, one lane where the 192-bit table needs three.
+    pub const W: usize = 8;
+    pub const RA: usize = 9;
+    pub const RB: usize = 10;
+    pub const RC: usize = 11;
+    pub const RBC: usize = 12;
+    pub const N: usize = 13;
+}
+// The fill writes `OA..RA` in one pass (`Arith64Table::fill`).
+const _: () = assert!(
+    arith64::S == arith64::OC + 1
+        && arith64::VA == arith64::S + 1
+        && arith64::VB == arith64::VA + 1
+        && arith64::W == arith64::VB + 1
+        && arith64::RA == arith64::W + 1
+);
+
+/// The bytecode opcode coordinate, affine in the selector ([`arith_opcode`]).
+fn arith64_opcode() -> Coord {
+    Coord::Sum(vec![
+        Const(OP_XOR64),
+        GCol(arith64::S, OP_XOR64_LOG),
+        GCol(arith64::S, OP_MUL64_LOG),
+    ])
+}
+
+/// The result, one lane: `(1+s)·(v_A + v_B) + v_A·w` with `w = s·v_B`, the 192-bit
+/// form ([`arith_result`]) with nothing above the low lane to carry.
+fn arith64_result() -> Coord {
+    use arith64::*;
+    Coord::Sum(vec![Col(VA), Col(VB), Prod(S, VA, 0), Col(W), Prod(VA, W, 0)])
+}
+
+impl Table for Arith64Table {
+    fn n_committed_columns(&self) -> usize {
+        arith64::N
+    }
+    fn count_columns(&self) -> &'static [usize] {
+        use arith64::*;
+        &[RA, RB, RC, RBC]
+    }
+    fn n_constraints(&self) -> usize {
+        2 // the selector is boolean, and it gates `w`
+    }
+    fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
+        arith64_identity(pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        arith64_identity(pows, cols)
+    }
+    fn flushes(&self, f: &mut FlushBuilder) {
+        use arith64::*;
+        f.state_step(PC, FP);
+        f.bytecode(
+            PC,
+            RBC,
+            arith64_opcode(),
+            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
+        );
+        // The literal zeros above each low lane are what assert the two operands
+        // into `K`, and the destination's carry the result there.
+        f.memory_k(Prod(FP, OA, 0), RA, VA);
+        f.memory_k(Prod(FP, OB, 0), RB, VB);
+        f.memory_coords(
+            Prod(FP, OC, 0),
+            RC,
+            [arith64_result(), Const(F64::ZERO), Const(F64::ZERO)],
+        );
+    }
+    fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
+        use arith64::*;
+        let rows = &ctx.trace.arith64;
+        let ins = |r: &Xrow| match ctx.prog[r.pc as usize] {
+            Op::Xor64 { a, b, c } => (F64::ZERO, a, b, c),
+            Op::Mul64 { a, b, c } => (F64::ONE, a, b, c),
+            op => unreachable!("a K-valued arithmetic row's pc {} holds {op:?}", r.pc),
+        };
+        // `cpu::execute` has already asserted both operands into `K`, so only their
+        // low lanes are read here; the bus is what proves it (`memory_k`).
+        let lane = |cell: u32| F64(ctx.mem[cell as usize].c0);
+        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
+        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.cols(out, rows, OA, |r| {
+            let (s, a, b, c) = ins(r);
+            let (va, vb) = (lane(r.fp + a), lane(r.fp + b));
+            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c), s, va, vb, vb * s]
         });
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);

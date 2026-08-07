@@ -15,7 +15,8 @@ use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
-    self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
+    self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_MUL64, OP_SET, OP_XOR, OP_XOR64,
+    SEP_BYTECODE, SEP_MEM, SEP_STATE,
 };
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness;
@@ -90,6 +91,8 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
         let (tag, a, b, c, k, x, y) = match *op {
             Op::Xor { a, b, c } => (0u8, a, b, c, F192::ZERO, 0u64, 0u64),
             Op::Mul { a, b, c } => (1, a, b, c, F192::ZERO, 0, 0),
+            Op::Xor64 { a, b, c } => (10, a, b, c, F192::ZERO, 0, 0),
+            Op::Mul64 { a, b, c } => (11, a, b, c, F192::ZERO, 0, 0),
             Op::Set { o, k } => (2, o, 0, 0, k, 0, 0),
             Op::Deref {
                 alpha,
@@ -449,7 +452,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-table counts
-/// `[ARITH, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
+/// `[ARITH, ARITH64, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -470,9 +473,11 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    /// `ARITH` is the merged `XOR`/`MUL_NATIVE` table (`tables::ArithTable`), so a
-    /// per-table count no longer splits the two arithmetic opcodes.
-    pub const TABLES: [&'static str; tables::N_TABLES] = ["ARITH", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"];
+    /// Each arithmetic table is a merged opcode pair (`tables::ArithTable`,
+    /// `tables::Arith64Table`), so a per-table count does not split the two opcodes
+    /// it serves; `ARITH64` is the `K`-valued pair.
+    pub const TABLES: [&'static str; tables::N_TABLES] =
+        ["ARITH", "ARITH64", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"];
 
     /// One line of run sizes, every one a power of two: the per-table instruction
     /// counts with their share of the run, largest first, then the data memory and

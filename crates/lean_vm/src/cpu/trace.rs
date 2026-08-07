@@ -64,6 +64,8 @@ pub(crate) struct Brow {
 pub(crate) struct Trace {
     /// `XOR` and `MUL` rows, in execution order: ONE table serves both.
     pub(crate) arith: Vec<Xrow>,
+    /// `XOR_64` and `MUL_64` rows, likewise, in their own narrower table.
+    pub(crate) arith64: Vec<Xrow>,
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
@@ -78,6 +80,7 @@ impl Trace {
     pub(crate) fn row_counts(&self) -> [usize; crate::tables::N_TABLES] {
         [
             self.arith.len(),
+            self.arith64.len(),
             self.set.len(),
             self.deref.len(),
             self.jump.len(),

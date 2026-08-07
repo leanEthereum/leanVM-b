@@ -74,6 +74,8 @@ fn operation_json(operation: Op) -> String {
     match operation {
         Op::Xor { a, b, c } => format!(r#"    {{"op":"xor","a":{a},"b":{b},"c":{c}}}"#),
         Op::Mul { a, b, c } => format!(r#"    {{"op":"mul","a":{a},"b":{b},"c":{c}}}"#),
+        Op::Xor64 { a, b, c } => format!(r#"    {{"op":"xor64","a":{a},"b":{b},"c":{c}}}"#),
+        Op::Mul64 { a, b, c } => format!(r#"    {{"op":"mul64","a":{a},"b":{b},"c":{c}}}"#),
         Op::Set { o, k } => format!(r#"    {{"op":"set","o":{o},"k":{}}}"#, field_json(k)),
         Op::Deref {
             alpha,

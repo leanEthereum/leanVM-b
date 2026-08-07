@@ -369,6 +369,11 @@ impl FnLower<'_> {
                             b: fr::SCRATCH,
                             c: fr::SCRATCH,
                         },
+                        FillerOp::Xor64 => LOp::Xor64 {
+                            a: fr::SCRATCH,
+                            b: fr::SCRATCH,
+                            c: fr::SCRATCH,
+                        },
                         FillerOp::Set => LOp::Set {
                             o: fr::SCRATCH,
                             k: KVal::Const(F192::ZERO),
@@ -1009,6 +1014,32 @@ impl FnLower<'_> {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
                 self.emit(LOp::Mul { a: la, b: lb, c: o });
+                o
+            }
+            // Width, said explicitly. `+`, `*` and `/` are 192-bit, which any value
+            // fits; the `_64` forms cost six columns fewer per row but assert both
+            // operands into K, so they are for what a program knows to be narrow:
+            // addresses, counters, g-powers, 64-bit words (§sec:tab-arith64). The
+            // `_192` names exist so a program can be explicit both ways, and so the
+            // default can move without touching the call sites that mean it.
+            Expr::Call(f, args)
+                if matches!(
+                    f.as_str(),
+                    "add_192" | "mul_192" | "div_192" | "add_64" | "mul_64" | "div_64"
+                ) =>
+            {
+                assert_eq!(args.len(), 2, "`{f}` takes two arguments");
+                let (la, lb) = (self.expr(&args[0]), self.expr(&args[1]));
+                let o = self.fresh();
+                match f.as_str() {
+                    "add_192" => self.emit(LOp::Xor { a: la, b: lb, c: o }),
+                    "mul_192" => self.emit(LOp::Mul { a: la, b: lb, c: o }),
+                    "add_64" => self.emit(LOp::Xor64 { a: la, b: lb, c: o }),
+                    "mul_64" => self.emit(LOp::Mul64 { a: la, b: lb, c: o }),
+                    // As `Expr::FieldDiv`, with the quotient the unset operand.
+                    "div_192" => self.emit(LOp::Mul { a: o, b: lb, c: la }),
+                    _ => self.emit(LOp::Mul64 { a: o, b: lb, c: la }),
+                }
                 o
             }
             Expr::FieldDiv(a, b) => {

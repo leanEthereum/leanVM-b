@@ -51,6 +51,18 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
+    /// The `K`-valued forms: same value, and both operands asserted into `K`
+    /// (`lean_vm::cpu::Op::Xor64`).
+    Xor64 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
+    Mul64 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
     Deref {
         alpha: Off,
         beta: Off,

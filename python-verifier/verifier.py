@@ -1091,7 +1091,7 @@ def _u32(value: Any, name: str) -> int:
 
 # The ISA discriminant the program digest binds, per instruction; DEREF's comes
 # from its store mode instead.
-DIGEST_TAGS = {"xor": 0, "mul": 1, "set": 2, "jump": 6, "blake3": 7, "pack64x2": 9}
+DIGEST_TAGS = {"xor": 0, "mul": 1, "set": 2, "jump": 6, "blake3": 7, "pack64x2": 9, "xor64": 10, "mul64": 11}
 DEREF_MODE_TAGS = {"cell": 3, "pc": 4, "fp": 5}
 
 
@@ -1122,7 +1122,7 @@ class Operation:
 
         lanes: tuple[F192, ...] = ()
         immediate, tag = ZERO, DIGEST_TAGS.get(name, 0)
-        if name in {"xor", "mul", "pack64x2"}:
+        if name in {"xor", "mul", "xor64", "mul64", "pack64x2"}:
             offsets = offsets_of("a", "b", "c")
         elif name == "set":
             offsets = offsets_of("o")
@@ -1379,6 +1379,34 @@ def _arith_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
     return (selector * (selector + ONE), *gated)
 
 
+def _arith64_opcode(selector: int) -> Coordinate:
+    """``opcode(XOR_64) + s*(opcode(XOR_64) + opcode(MUL_64))`` (_arith_opcode)."""
+    return _sum((_const(_gpow(OPCODES["xor64"])), _gcol(selector, OPCODES["xor64"]), _gcol(selector, OPCODES["mul64"])))
+
+
+def _flushes_arith64(t: Table) -> Flushes:
+    pc, fp, o_a, o_b, o_c, selector = t.cols("pc", "fp", "o_a", "o_b", "o_c", "s")
+    v_a, v_b, w = t.cols("v_a", "v_b", "w")
+    cnt_a, cnt_b, cnt_c, cnt_bc = t.cols("cnt_a", "cnt_b", "cnt_c", "cnt_bc")
+    f = Flushes()
+    f.state_step(pc, fp)
+    f.bytecode(pc, cnt_bc, _arith64_opcode(selector), (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    # One lane per operand, read through literal zeros above it: that is what makes
+    # the two range assertions exact, so no upper limb is committed. The result is a
+    # single lane too, K being closed under both operations.
+    f.memory_base(_prod(fp, o_a), cnt_a, v_a)
+    f.memory_base(_prod(fp, o_b), cnt_b, v_b)
+    result = _sum((_col(v_a), _col(v_b), _prod(selector, v_a), _col(w), _prod(v_a, w)))
+    f.memory(_prod(fp, o_c), cnt_c, (result, _const(ZERO), _const(ZERO)))
+    return f
+
+
+def _arith64_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
+    """``s*(s+1) = 0`` and ``w = s*v_B``: _arith_constraints over a single lane."""
+    selector = get("s")
+    return (selector * (selector + ONE), get("w") + selector * get("v_b"))
+
+
 def _flushes_set(t: Table) -> Flushes:
     pc, fp, o, cnt, cnt_bc = t.cols("pc", "fp", "o", "cnt", "cnt_bc")
     k = t.cols("k_0", "k_1", "k_2")
@@ -1501,6 +1529,9 @@ ARITH_COLUMNS = (
     "cnt_a", "cnt_b", "cnt_c", "cnt_bc",
 )  # fmt: skip
 
+# The K-valued arithmetic table: one lane per operand, so six columns fewer.
+ARITH64_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "s", "v_a", "v_b", "w", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
+
 SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
 
 DEREF_COLUMNS = (
@@ -1527,13 +1558,14 @@ PACK_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "v_a", "v_b", "cnt_a", "cnt_b",
 
 TABLES = (
     Table("arith", 0, ARITH_COLUMNS, _flushes_arith, _arith_constraints, 4),
-    Table("set", 1, SET_COLUMNS, _flushes_set),
-    Table("deref", 2, DEREF_COLUMNS, _flushes_deref),
-    Table("jump", 3, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 6),
-    Table("blake3", 4, BLAKE3_COLUMNS, _flushes_blake3),
-    Table("pack64x2", 5, PACK_COLUMNS, _flushes_pack),
+    Table("arith64", 1, ARITH64_COLUMNS, _flushes_arith64, _arith64_constraints, 2),
+    Table("set", 2, SET_COLUMNS, _flushes_set),
+    Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
+    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 6),
+    Table("blake3", 5, BLAKE3_COLUMNS, _flushes_blake3),
+    Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )
-BLAKE3 = TABLES[4]
+BLAKE3 = TABLES[5]
 
 # Where in the flock witness each embedded BLAKE3 limb lives (doc
 # sec:tab-blake3): one 64-bit slot per limb, the chaining value first, then the
@@ -1567,7 +1599,7 @@ BLAKE3_SLOT_BY_COLUMN = {
 # bus opcode tag g^k (doc sec:e2e-const). Seven opcodes over six tables: XOR and
 # MUL share the arithmetic table, whose opcode coordinate is a form over its
 # selector rather than a constant.
-OPCODES = {"xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4, "blake3": 5, "pack64x2": 6}
+OPCODES = {"xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4, "blake3": 5, "pack64x2": 6, "xor64": 7, "mul64": 8}
 
 # Coordinates 4..11 of a bytecode tuple: eight operand or immediate slots.
 N_BYTECODE_OPERANDS = 8

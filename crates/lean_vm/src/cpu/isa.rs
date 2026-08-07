@@ -14,6 +14,23 @@ pub enum Op {
         b: u32,
         c: u32,
     },
+    /// `XOR` on `K`-valued (64-bit) operands: `mem[fp·c] = mem[fp·a] + mem[fp·b]`,
+    /// with both inputs asserted to lie in `K = F64`. A `K` word's two upper limbs
+    /// are provably zero rather than committed (the memory bus carries literal zeros
+    /// there, as for `PACK64X2`'s sources), so the row costs six columns fewer than
+    /// the 192-bit form (§sec:tab-arith64). `K` is closed under both operations, so
+    /// the result is `K`-valued too.
+    Xor64 {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
+    /// `MUL_NATIVE` on `K`-valued operands ([`Op::Xor64`]).
+    Mul64 {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
     Set {
         o: u32,
         /// The immediate stored into `mem[fp·o]`. A full 192-bit machine word

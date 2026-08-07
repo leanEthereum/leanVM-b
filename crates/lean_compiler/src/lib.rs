@@ -226,6 +226,8 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Set { o, k } => format!("SET    fp[{o}] = {}", kfmt(*k)),
             Op::Xor { a, b, c } => format!("XOR    fp[{c}] = fp[{a}] ^ fp[{b}]"),
             Op::Mul { a, b, c } => format!("MUL    fp[{c}] = fp[{a}] * fp[{b}]"),
+            Op::Xor64 { a, b, c } => format!("XOR64  fp[{c}] = fp[{a}] ^ fp[{b}]"),
+            Op::Mul64 { a, b, c } => format!("MUL64  fp[{c}] = fp[{a}] * fp[{b}]"),
             Op::Deref {
                 alpha,
                 beta,
@@ -301,6 +303,8 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
         },
         LOp::Xor { a, b, c } => Op::Xor { a: *a, b: *b, c: *c },
         LOp::Mul { a, b, c } => Op::Mul { a: *a, b: *b, c: *c },
+        LOp::Xor64 { a, b, c } => Op::Xor64 { a: *a, b: *b, c: *c },
+        LOp::Mul64 { a, b, c } => Op::Mul64 { a: *a, b: *b, c: *c },
         LOp::Deref {
             alpha,
             beta,

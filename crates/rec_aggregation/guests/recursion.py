@@ -100,15 +100,17 @@ TABLE_COLS_CAP = TABLE_COLS_CAP_PLACEHOLDER
 ETA_OFFSET = ETA_OFFSET_PLACEHOLDER
 ETA_FORM_BASE = ETA_FORM_BASE_PLACEHOLDER
 N_ETA_POWS = N_ETA_POWS_PLACEHOLDER
-# The instruction tables, in schema order. Seven opcodes over six tables: XOR and
-# MUL share ARITH, which carries a boolean selector column saying which of the two
-# a row is (lean_vm::tables::ArithTable).
+# The instruction tables, in schema order. Nine opcodes over seven tables: each
+# arithmetic table carries a boolean selector column saying which of its two opcodes
+# a row is, and ARITH64 is the K-valued pair, one lane per operand where ARITH has
+# three (lean_vm::tables::ArithTable, Arith64Table).
 TABLE_ARITH = 0
-TABLE_SET = 1
-TABLE_DEREF = 2
-TABLE_JUMP = 3
-TABLE_BLAKE3 = 4
-TABLE_PACK64X2 = 5
+TABLE_ARITH64 = 1
+TABLE_SET = 2
+TABLE_DEREF = 3
+TABLE_JUMP = 4
+TABLE_BLAKE3 = 5
+TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
@@ -1598,6 +1600,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for lane in unroll(0, 3):
                 gated = col_evals[12 + lane] + sel * col_evals[9 + lane]
                 constraint_eval += eta_pows[ETA_OFFSET[t] + 1 + lane] * gated
+        if t == TABLE_ARITH64:
+            # The same pair as ARITH over a single lane, the operands being K-valued.
+            # Local columns: the selector s at 5, v_B at 7, w at 8.
+            sel = col_evals[5]
+            boolean = eta_pows[ETA_OFFSET[t] + 0] * (sel * (sel + 1))
+            gated = eta_pows[ETA_OFFSET[t] + 1] * (col_evals[8] + sel * col_evals[7])
+            constraint_eval = boolean + gated
         if t == TABLE_SET:
             constraint_eval = 0
         if t == TABLE_DEREF:
