@@ -1379,32 +1379,49 @@ def _arith_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
     return (selector * (selector + ONE), *gated)
 
 
-def _arith64_opcode(selector: int) -> Coordinate:
-    """``opcode(XOR_64) + s*(opcode(XOR_64) + opcode(MUL_64))`` (_arith_opcode)."""
-    return _sum((_const(_gpow(OPCODES["xor64"])), _gcol(selector, OPCODES["xor64"]), _gcol(selector, OPCODES["mul64"])))
+def _arith64_opcode(selector: int, packs: int) -> Coordinate:
+    """Affine in BOTH selectors: ``opcode(XOR_64) + s*(XOR_64 + MUL_64) + p*(XOR_64 + PACK)``.
+
+    The three legal settings give the three tags; the fourth gives a value no program
+    holds, which is what confines a row to one instruction.
+    """
+    return _sum(
+        (
+            _const(_gpow(OPCODES["xor64"])),
+            _gcol(selector, OPCODES["xor64"]),
+            _gcol(selector, OPCODES["mul64"]),
+            _gcol(packs, OPCODES["xor64"]),
+            _gcol(packs, OPCODES["pack64x2"]),
+        )
+    )
 
 
 def _flushes_arith64(t: Table) -> Flushes:
-    pc, fp, o_a, o_b, o_c, selector = t.cols("pc", "fp", "o_a", "o_b", "o_c", "s")
-    v_a, v_b, w = t.cols("v_a", "v_b", "w")
+    pc, fp, o_a, o_b, o_c = t.cols("pc", "fp", "o_a", "o_b", "o_c")
+    selector, packs, v_a, v_b, w = t.cols("s", "p", "v_a", "v_b", "w")
     cnt_a, cnt_b, cnt_c, cnt_bc = t.cols("cnt_a", "cnt_b", "cnt_c", "cnt_bc")
     f = Flushes()
     f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, _arith64_opcode(selector), (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    f.bytecode(pc, cnt_bc, _arith64_opcode(selector, packs), (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
     # One lane per operand, read through literal zeros above it: that is what makes
-    # the two range assertions exact, so no upper limb is committed. The result is a
-    # single lane too, K being closed under both operations.
+    # the two range assertions exact, for the packing exactly as for the arithmetic,
+    # so no upper limb is committed.
     f.memory_base(_prod(fp, o_a), cnt_a, v_a)
     f.memory_base(_prod(fp, o_b), cnt_b, v_b)
-    result = _sum((_col(v_a), _col(v_b), _prod(selector, v_a), _col(w), _prod(v_a, w)))
-    f.memory(_prod(fp, o_c), cnt_c, (result, _const(ZERO), _const(ZERO)))
+    # c_0 = v_A + (1+p)*v_B + s*v_A + w + [v_A*w], c_1 = p*v_B, c_2 = 0: the sum at
+    # (s,p) = (0,0), the product at (1,0), the packing (v_A, v_B, 0) at (0,1).
+    lane0 = _sum((_col(v_a), _col(v_b), _prod(packs, v_b), _prod(selector, v_a), _col(w), _prod(v_a, w)))
+    f.memory(_prod(fp, o_c), cnt_c, (lane0, _prod(packs, v_b), _const(ZERO)))
     return f
 
 
 def _arith64_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
-    """``s*(s+1) = 0`` and ``w = s*v_B``: _arith_constraints over a single lane."""
-    selector = get("s")
-    return (selector * (selector + ONE), get("w") + selector * get("v_b"))
+    """Both selectors boolean, and ``w = s*v_B``: _arith_constraints over one lane.
+
+    ``s*p = 0`` needs no identity: that corner names no instruction.
+    """
+    selector, packs = get("s"), get("p")
+    return (selector * (selector + ONE), packs * (packs + ONE), get("w") + selector * get("v_b"))
 
 
 def _flushes_set(t: Table) -> Flushes:
@@ -1503,21 +1520,6 @@ def _flushes_blake3(t: Table) -> Flushes:
     return f
 
 
-def _flushes_pack(t: Table) -> Flushes:
-    pc, fp, o_a, o_b, o_c, v_a, v_b, cnt_a, cnt_b, cnt_c, cnt_bc = t.cols(
-        "pc", "fp", "o_a", "o_b", "o_c", "v_a", "v_b", "cnt_a", "cnt_b", "cnt_c", "cnt_bc"
-    )
-    f = Flushes()
-    f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, _const(_gpow(OPCODES[t.name])), (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
-    # The literal zeros make the two source range assertions and the destination
-    # packing exact through bus balance.
-    f.memory_base(_prod(fp, o_a), cnt_a, v_a)
-    f.memory_base(_prod(fp, o_b), cnt_b, v_b)
-    f.memory_128(_prod(fp, o_c), cnt_c, v_a, v_b)
-    return f
-
-
 # The column names of each table, in the order they are committed. Hand-laid in
 # groups: the state, the operands, the values, then the read counts.
 # The arithmetic table's selector ``s`` (0 = XOR, 1 = MUL) rides with the operands
@@ -1529,8 +1531,9 @@ ARITH_COLUMNS = (
     "cnt_a", "cnt_b", "cnt_c", "cnt_bc",
 )  # fmt: skip
 
-# The K-valued arithmetic table: one lane per operand, so six columns fewer.
-ARITH64_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "s", "v_a", "v_b", "w", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
+# The K-valued table, which serves PACK64X2 as well: one lane per operand, so five
+# columns fewer than the 192-bit table even with the second selector.
+ARITH64_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "s", "p", "v_a", "v_b", "w", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
 
 SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
 
@@ -1554,16 +1557,13 @@ BLAKE3_COLUMNS = (
     "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_bc",
 )  # fmt: skip
 
-PACK_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "v_a", "v_b", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
-
 TABLES = (
     Table("arith", 0, ARITH_COLUMNS, _flushes_arith, _arith_constraints, 4),
-    Table("arith64", 1, ARITH64_COLUMNS, _flushes_arith64, _arith64_constraints, 2),
+    Table("arith64", 1, ARITH64_COLUMNS, _flushes_arith64, _arith64_constraints, 3),
     Table("set", 2, SET_COLUMNS, _flushes_set),
     Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
     Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 6),
     Table("blake3", 5, BLAKE3_COLUMNS, _flushes_blake3),
-    Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )
 BLAKE3 = TABLES[5]
 

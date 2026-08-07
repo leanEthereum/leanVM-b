@@ -3,18 +3,16 @@ use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192};
 
-/// How many rows the program itself gives one table, by name (`Stats::TABLES`), from
-/// a build without the fill blocks, executed but not proven. Proving needs them,
-/// since a table's height has to be a power of two with no padding rows, but their
-/// dummy rows would drown out exactly what this counts.
-fn rows(src: &str, pi: [F192; 2], table: &str) -> usize {
-    let t = lean_vm::cpu::Stats::TABLES
-        .iter()
-        .position(|&name| name == table)
-        .expect("a table of that name");
+/// How many `PACK64X2` instructions the program compiles to, from a build without the
+/// fill blocks (whose dummies would drown out what this counts). Counted in the
+/// bytecode rather than in rows: the packing shares the `K`-valued table with the
+/// narrow arithmetic pair, so a row count no longer isolates it.
+fn n_packs(src: &str) -> usize {
     compile_without_filler(&parse(src).expect("parse"))
-        .execute(pi)
-        .base_counts[t]
+        .prog
+        .iter()
+        .filter(|op| matches!(op, lean_vm::cpu::Op::Pack64x2 { .. }))
+        .count()
 }
 
 #[test]
@@ -33,7 +31,7 @@ def main():
     warm_setup(1);
     let want = [F192::new(5, 7, 0), F192::new(5, 7, 0)];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(rows(src, want, "PACK64X2"), 1, "one PACK64X2 instruction");
+    assert_eq!(n_packs(src), 1, "one PACK64X2 instruction");
     verify(&program, &want, &proof).expect("PACK64X2 program verifies");
 }
 

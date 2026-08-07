@@ -99,7 +99,6 @@ impl Program {
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
         let mut blake3: Vec<Brow> = Vec::new();
-        let mut pack64x2: Vec<Xrow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
         // range-check gadget's unconstrained target cells), as `(a2, a3)`,
@@ -231,7 +230,6 @@ impl Program {
                         deref.len(),
                         jump.len(),
                         blake3.len(),
-                        pack64x2.len(),
                     ];
                     base_counts = Some(counts);
                     // A frame per cycle, from the same bump allocator that serves `Alloc`
@@ -700,7 +698,9 @@ impl Program {
                     let ra = m.bump_access_count(aa);
                     let rb = m.bump_access_count(ab);
                     let rc = m.bump_access_count(ac);
-                    pack64x2.push(Xrow {
+                    // The packing rides the K-valued table: same two K reads, same
+                    // three addresses, only the destination's lanes differ (`tables`).
+                    arith64.push(Xrow {
                         pc,
                         fp,
                         ra,
@@ -834,7 +834,6 @@ impl Program {
             deref,
             jump,
             blake3,
-            pack64x2,
             mem_count: m.count,
             bytecode_count,
         };

@@ -32,7 +32,7 @@ pub const SIZES: [usize; 8] = [128, 64, 32, 16, 8, 4, 2, 1];
 /// Least rows a table can be proven over. Only `BLAKE3` has one above `1`: flock sizes
 /// its argument to at least eight instances, so filling that table below the floor
 /// would leave it padded up to it, which is the padding this exists to avoid.
-pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8, 1];
+pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8];
 
 /// The `JUMP` table's index in [`crate::cpu::Stats::TABLES`]. Every traversal of every
 /// block lands its closing jump here, so this table is solved last, absorbing the cost
@@ -229,15 +229,15 @@ mod tests {
     #[test]
     fn a_solve_lands_every_table_on_a_power_of_two() {
         let cases: [[usize; N_TABLES]; 6] = [
-            [0, 0, 0, 0, 0, 0, 0],
-            [1, 1, 1, 1, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1],
             // Roughly the XMSS run's mix.
-            [90_000, 321_000, 341_000, 508_000, 114_000, 130_000, 0],
+            [90_000, 321_000, 341_000, 508_000, 114_000, 130_000],
             // Tables already exactly on a power of two, the awkward case: the closing
             // jumps of every other table's traversals still have to fit somewhere.
-            [1 << 17, 1 << 15, 1000, 1 << 19, 1 << 16, 8, 0],
-            [1, 2, 3, 4, 5, 6, 7],
-            [0, 0, 0, 0, 1 << 20, 0, 0],
+            [1 << 17, 1 << 15, 1000, 1 << 19, 1 << 16, 8],
+            [1, 2, 3, 4, 5, 6],
+            [0, 0, 0, 0, 1 << 20, 0],
         ];
         for base in cases {
             let plan = solve(base).unwrap_or_else(|| panic!("no plan for {base:?}"));
@@ -254,7 +254,7 @@ mod tests {
     /// remainders.
     #[test]
     fn the_fill_is_short() {
-        let base = [90_000, 321_000, 341_000, 508_000, 114_000, 130_000, 0];
+        let base = [90_000, 321_000, 341_000, 508_000, 114_000, 130_000];
         let plan = solve(base).expect("solvable");
         let fill: usize = delivered(&plan).iter().sum();
         assert!(

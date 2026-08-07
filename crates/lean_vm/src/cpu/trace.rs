@@ -11,8 +11,8 @@
 
 use primitives::field::F64;
 
-/// Arithmetic (`XOR`/`MUL`) and `PACK64X2` row: the three cells are
-/// `fp·g^{a,b,c}`. Which of the two arithmetic instructions a row is stays out of
+/// A three-address row (arithmetic of either width, or `PACK64X2`): the three cells
+/// are `fp·g^{a,b,c}`. Which of the two arithmetic instructions a row is stays out of
 /// the row: it is `prog[pc]`'s, like the operands, and the fill reads the
 /// selector column off there (`tables::ArithTable`).
 pub(crate) struct Xrow {
@@ -64,13 +64,12 @@ pub(crate) struct Brow {
 pub(crate) struct Trace {
     /// `XOR` and `MUL` rows, in execution order: ONE table serves both.
     pub(crate) arith: Vec<Xrow>,
-    /// `XOR_64` and `MUL_64` rows, likewise, in their own narrower table.
+    /// `XOR_64`, `MUL_64` and `PACK64X2` rows: one narrow table serves all three.
     pub(crate) arith64: Vec<Xrow>,
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
     pub(crate) blake3: Vec<Brow>,
-    pub(crate) pack64x2: Vec<Xrow>,
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
 }
@@ -85,7 +84,6 @@ impl Trace {
             self.deref.len(),
             self.jump.len(),
             self.blake3.len(),
-            self.pack64x2.len(),
         ]
     }
 }

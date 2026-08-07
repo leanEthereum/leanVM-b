@@ -100,17 +100,17 @@ TABLE_COLS_CAP = TABLE_COLS_CAP_PLACEHOLDER
 ETA_OFFSET = ETA_OFFSET_PLACEHOLDER
 ETA_FORM_BASE = ETA_FORM_BASE_PLACEHOLDER
 N_ETA_POWS = N_ETA_POWS_PLACEHOLDER
-# The instruction tables, in schema order. Nine opcodes over seven tables: each
-# arithmetic table carries a boolean selector column saying which of its two opcodes
-# a row is, and ARITH64 is the K-valued pair, one lane per operand where ARITH has
-# three (lean_vm::tables::ArithTable, Arith64Table).
+# The instruction tables, in schema order. Nine opcodes over six tables: an
+# arithmetic table carries selector columns saying which of its opcodes a row is, and
+# ARITH64 is the K-valued table, one lane per operand where ARITH has three. PACK64X2
+# rides ARITH64: same two K reads at the same addresses, only the destination's lanes
+# differ (lean_vm::tables::ArithTable, Arith64Table).
 TABLE_ARITH = 0
 TABLE_ARITH64 = 1
 TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
 TABLE_BLAKE3 = 5
-TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
@@ -1601,12 +1601,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 gated = col_evals[12 + lane] + sel * col_evals[9 + lane]
                 constraint_eval += eta_pows[ETA_OFFSET[t] + 1 + lane] * gated
         if t == TABLE_ARITH64:
-            # The same pair as ARITH over a single lane, the operands being K-valued.
-            # Local columns: the selector s at 5, v_B at 7, w at 8.
+            # ARITH over a single lane, plus the packing under a second selector: both
+            # selectors boolean, and s gates w. s*p = 0 needs no identity, that corner
+            # naming no instruction. Local columns: s at 5, p at 6, v_B at 8, w at 9.
             sel = col_evals[5]
-            boolean = eta_pows[ETA_OFFSET[t] + 0] * (sel * (sel + 1))
-            gated = eta_pows[ETA_OFFSET[t] + 1] * (col_evals[8] + sel * col_evals[7])
-            constraint_eval = boolean + gated
+            packs = col_evals[6]
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (sel * (sel + 1))
+            constraint_eval += eta_pows[ETA_OFFSET[t] + 1] * (packs * (packs + 1))
+            constraint_eval += eta_pows[ETA_OFFSET[t] + 2] * (col_evals[9] + sel * col_evals[8])
         if t == TABLE_SET:
             constraint_eval = 0
         if t == TABLE_DEREF:
@@ -1633,8 +1635,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for lane in unroll(0, 3):
                 constraint_eval += eta_pows[ETA_OFFSET[t] + 3 + lane] * (col_evals[5 + lane] * b1)
         if t == TABLE_BLAKE3:
-            constraint_eval = 0
-        if t == TABLE_PACK64X2:
             constraint_eval = 0
         # The table's three bus forms, evaluated at the SAME column evaluations:
         # Σ_b eq_hi(b) · (γ + Σ_i α^i · coord_i), the coords read off col_evals at

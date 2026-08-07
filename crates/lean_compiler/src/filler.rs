@@ -33,14 +33,12 @@ pub enum FillerOp {
     /// arithmetic table, which serves `MUL_NATIVE` too, so that table needs no
     /// second dummy.
     Xor,
-    /// `XOR_64 s, s -> s`, the same for the `K`-valued table: `0` is in `K`, which
-    /// is what that table's flushes demand of its operands.
+    /// `XOR_64 s, s -> s`, the same for the `K`-valued table, which serves
+    /// `PACK64X2` as well and so needs no dummy of its own: `0` is in `K`, which is
+    /// what that table's flushes demand of its operands.
     Xor64,
     /// `SET s = 0`.
     Set,
-    /// `PACK64X2 s, s -> s`: `pack(0, 0) = 0`, and the zero upper limbs the instruction
-    /// demands of its sources hold.
-    Pack,
     /// `DEREF` through the frame's pointer cell, which the interpreter sets to `g^0`, so
     /// the address is memory cell `0` and the value read is the public input's.
     Deref,
@@ -61,5 +59,4 @@ pub const TABLES: [FillerOp; lean_vm::tables::N_TABLES] = [
     FillerOp::Deref,
     FillerOp::Jump,
     FillerOp::Blake3,
-    FillerOp::Pack,
 ];

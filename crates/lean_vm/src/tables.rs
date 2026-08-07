@@ -79,12 +79,18 @@ fn arith_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     )
 }
 
-/// The `K`-valued arithmetic table's two identities (§sec:tab-arith64): the same pair
-/// as [`arith_identity`] over a single lane, the operands being `K`-valued.
+/// The `K`-valued table's three identities (§sec:tab-arith64): both selectors are
+/// boolean, and `w` is the second operand gated by `s`, as in [`arith_identity`] over
+/// a single lane. `s·p = 0` needs no identity: that corner names no instruction
+/// ([`arith64_opcode`]).
 fn arith64_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     use arith64::*;
-    let s = cols[S];
-    T::dot(pows, &[s * (s + T::ONE), cols[W] + s * cols[VB]], F192::ZERO)
+    let (s, p) = (cols[S], cols[P]);
+    T::dot(
+        pows,
+        &[s * (s + T::ONE), p * (p + T::ONE), cols[W] + s * cols[VB]],
+        F192::ZERO,
+    )
 }
 
 /// `JUMP`'s six identities: `b = cond·w` and `cond·(b+1) = 0`, each written out over
@@ -137,7 +143,8 @@ pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE3: F64 = g_pow(5);
-pub(crate) const OP_PACK64X2: F64 = g_pow(6);
+pub(crate) const OP_PACK64X2_LOG: u32 = 6;
+pub(crate) const OP_PACK64X2: F64 = g_pow(OP_PACK64X2_LOG as usize);
 // The `K`-valued arithmetic pair, whose table needs their exponents by name for the
 // same reason ([`arith64_opcode`]).
 pub(crate) const OP_XOR64_LOG: u32 = 7;
@@ -387,10 +394,10 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[ARITH, ARITH64, SET, DEREF, JUMP, BLAKE3, PACK64X2]`,
-/// the order of `row_counts` / `taus` throughout `cpu`. Each arithmetic table serves
-/// two opcodes under a selector, so there are seven tables for nine opcodes.
-pub const N_TABLES: usize = 7;
+/// The tables in fixed order `[ARITH, ARITH64, SET, DEREF, JUMP, BLAKE3]`, the order
+/// of `row_counts` / `taus` throughout `cpu`. `ARITH` serves two opcodes under a
+/// selector and `ARITH64` three, so there are six tables for nine opcodes.
+pub const N_TABLES: usize = 6;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
@@ -400,7 +407,6 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
         &DerefTable,
         &JumpTable,
         &Blake3Table,
-        &Pack64x2Table,
     ]
 }
 
@@ -622,8 +628,13 @@ impl Table for ArithTable {
 
 // ---- ARITH64 (XOR_64 / MUL_NATIVE_64) ---------------------------------------
 
-/// `XOR_64` and `MUL_NATIVE_64`: the same pair of instructions as [`ArithTable`] and
-/// the same selector, over operands asserted to be `K`-valued (§sec:tab-arith64).
+/// The `K`-valued table: `XOR_64`, `MUL_NATIVE_64` and `PACK64X2`, over operands
+/// asserted to be `K`-valued (§sec:tab-arith64). Two selectors say which.
+///
+/// All three read two `K` cells at `fp·o_A`, `fp·o_B` and write one at `fp·o_C`, so
+/// they differ only in that destination's value coordinates ([`arith64_result`]), and
+/// one table serves them: `PACK64X2` has no table of its own, which spares the
+/// machine a whole table's bus blocks and its own power-of-two rounding.
 ///
 /// A `K` operand is ONE column, not three: its two upper limbs are provably zero
 /// rather than committed, because every memory flush carries literal zeros there
@@ -640,41 +651,85 @@ pub(crate) mod arith64 {
     pub const OA: usize = 2;
     pub const OB: usize = 3;
     pub const OC: usize = 4;
-    /// `0` for an `XOR_64` row, `1` for a `MUL_NATIVE_64` row.
+    /// The two selectors: `s` says `MUL_NATIVE_64` rather than `XOR_64`, `p` says
+    /// `PACK64X2`. `(0,0)`, `(1,0)`, `(0,1)`; `(1,1)` names no instruction.
     pub const S: usize = 5;
-    pub const VA: usize = 6;
-    pub const VB: usize = 7;
+    pub const P: usize = 6;
+    pub const VA: usize = 7;
+    pub const VB: usize = 8;
     /// `w = s·v_B`, one lane where the 192-bit table needs three.
-    pub const W: usize = 8;
-    pub const RA: usize = 9;
-    pub const RB: usize = 10;
-    pub const RC: usize = 11;
-    pub const RBC: usize = 12;
-    pub const N: usize = 13;
+    pub const W: usize = 9;
+    pub const RA: usize = 10;
+    pub const RB: usize = 11;
+    pub const RC: usize = 12;
+    pub const RBC: usize = 13;
+    pub const N: usize = 14;
 }
 // The fill writes `OA..RA` in one pass (`Arith64Table::fill`).
 const _: () = assert!(
     arith64::S == arith64::OC + 1
-        && arith64::VA == arith64::S + 1
+        && arith64::P == arith64::S + 1
+        && arith64::VA == arith64::P + 1
         && arith64::VB == arith64::VA + 1
         && arith64::W == arith64::VB + 1
         && arith64::RA == arith64::W + 1
 );
+// `s = p = 1` must name no instruction: its tag is what the bytecode bus would have
+// to match for such a row to exist, and no program holds it. Addition in this field
+// is XOR of the representations, so this is a compile-time check on the tags.
+const _: () = {
+    let bogus = OP_XOR64.0 ^ OP_MUL64.0 ^ OP_PACK64X2.0;
+    assert!(
+        bogus != OP_XOR.0
+            && bogus != OP_MUL.0
+            && bogus != OP_SET.0
+            && bogus != OP_DEREF.0
+            && bogus != OP_JUMP.0
+            && bogus != OP_BLAKE3.0
+            && bogus != OP_PACK64X2.0
+            && bogus != OP_XOR64.0
+            && bogus != OP_MUL64.0
+    );
+};
 
-/// The bytecode opcode coordinate, affine in the selector ([`arith_opcode`]).
+/// The bytecode opcode coordinate, affine in BOTH selectors ([`arith_opcode`]):
+/// `\opc{XOR64} + s·(\opc{XOR64}+\opc{MUL64}) + p·(\opc{XOR64}+\opc{PACK})`. The
+/// three legal settings give the three tags, and the fourth gives a value no program
+/// holds, which is what confines a row to one instruction.
 fn arith64_opcode() -> Coord {
+    use arith64::*;
     Coord::Sum(vec![
         Const(OP_XOR64),
-        GCol(arith64::S, OP_XOR64_LOG),
-        GCol(arith64::S, OP_MUL64_LOG),
+        GCol(S, OP_XOR64_LOG),
+        GCol(S, OP_MUL64_LOG),
+        GCol(P, OP_XOR64_LOG),
+        GCol(P, OP_PACK64X2_LOG),
     ])
 }
 
-/// The result, one lane: `(1+s)·(v_A + v_B) + v_A·w` with `w = s·v_B`, the 192-bit
-/// form ([`arith_result`]) with nothing above the low lane to carry.
-fn arith64_result() -> Coord {
+/// The destination word's three K-lanes. One form for all three instructions:
+///
+/// `c_0 = v_A + (1+p)·v_B + s·v_A + w + [v_A·w]`,  `c_1 = p·v_B`,  `c_2 = 0`,
+///
+/// with `w = s·v_B`. At `(s,p) = (0,0)` that is `v_A + v_B`; at `(1,0)` the sum
+/// cancels and it is `v_A·v_B`; at `(0,1)` the `v_B` terms cancel in lane 0 and the
+/// word is the packing `(v_A, v_B, 0)`. `PACK64X2` therefore needs no table of its
+/// own: it reads the same two `K` cells at the same two addresses as the arithmetic
+/// pair and differs only here.
+fn arith64_result() -> [Coord; 3] {
     use arith64::*;
-    Coord::Sum(vec![Col(VA), Col(VB), Prod(S, VA, 0), Col(W), Prod(VA, W, 0)])
+    [
+        Coord::Sum(vec![
+            Col(VA),
+            Col(VB),
+            Prod(P, VB, 0),
+            Prod(S, VA, 0),
+            Col(W),
+            Prod(VA, W, 0),
+        ]),
+        Prod(P, VB, 0),
+        Const(F64::ZERO),
+    ]
 }
 
 impl Table for Arith64Table {
@@ -686,7 +741,7 @@ impl Table for Arith64Table {
         &[RA, RB, RC, RBC]
     }
     fn n_constraints(&self) -> usize {
-        2 // the selector is boolean, and it gates `w`
+        3 // both selectors are boolean, and `s` gates `w`
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
         arith64_identity(pows, cols)
@@ -704,22 +759,19 @@ impl Table for Arith64Table {
             &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
         );
         // The literal zeros above each low lane are what assert the two operands
-        // into `K`, and the destination's carry the result there.
+        // into `K`, for the packing exactly as for the arithmetic.
         f.memory_k(Prod(FP, OA, 0), RA, VA);
         f.memory_k(Prod(FP, OB, 0), RB, VB);
-        f.memory_coords(
-            Prod(FP, OC, 0),
-            RC,
-            [arith64_result(), Const(F64::ZERO), Const(F64::ZERO)],
-        );
+        f.memory_coords(Prod(FP, OC, 0), RC, arith64_result());
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use arith64::*;
         let rows = &ctx.trace.arith64;
         let ins = |r: &Xrow| match ctx.prog[r.pc as usize] {
-            Op::Xor64 { a, b, c } => (F64::ZERO, a, b, c),
-            Op::Mul64 { a, b, c } => (F64::ONE, a, b, c),
-            op => unreachable!("a K-valued arithmetic row's pc {} holds {op:?}", r.pc),
+            Op::Xor64 { a, b, c } => (F64::ZERO, F64::ZERO, a, b, c),
+            Op::Mul64 { a, b, c } => (F64::ONE, F64::ZERO, a, b, c),
+            Op::Pack64x2 { a, b, c } => (F64::ZERO, F64::ONE, a, b, c),
+            op => unreachable!("a K-valued row's pc {} holds {op:?}", r.pc),
         };
         // `cpu::execute` has already asserted both operands into `K`, so only their
         // low lanes are read here; the bus is what proves it (`memory_k`).
@@ -727,9 +779,9 @@ impl Table for Arith64Table {
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
         ctx.cols(out, rows, OA, |r| {
-            let (s, a, b, c) = ins(r);
+            let (s, p, a, b, c) = ins(r);
             let (va, vb) = (lane(r.fp + a), lane(r.fp + b));
-            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c), s, va, vb, vb * s]
+            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c), s, p, va, vb, vb * s]
         });
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -1023,79 +1075,6 @@ impl Table for JumpTable {
         ctx.cols_at(out, rows.len(), W_LO, |i| [F64(w[i].c0), F64(w[i].c1), F64(w[i].c2)]);
         ctx.col(out, rows, B, |r| if cond(r).is_zero() { F64::ZERO } else { F64::ONE });
         ctx.cols(out, rows, RC, |r| [r.rc, r.rd, r.rf]);
-        ctx.col(out, rows, RBC, |r| r.bytecode_read);
-    }
-}
-
-// ---- PACK64X2 ----------------------------------------------------------------
-
-/// Pack two K-valued memory cells into one canonical 128-bit cell. There are
-/// deliberately no source extension-limb columns: `memory_k` puts literal
-/// zeros in those bus coordinates, so the global memory permutation can
-/// balance only when the actual source words are in K. Likewise `memory_128`
-/// writes the destination as `(va, vb, 0)` directly through the bus.
-struct Pack64x2Table;
-
-mod pack64 {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
-    pub const VA: usize = 5;
-    pub const VB: usize = 6;
-    pub const RA: usize = 7;
-    pub const RB: usize = 8;
-    pub const RC: usize = 9;
-    pub const RBC: usize = 10;
-    pub const N: usize = 11;
-}
-
-impl Table for Pack64x2Table {
-    fn n_committed_columns(&self) -> usize {
-        pack64::N
-    }
-
-    fn count_columns(&self) -> &'static [usize] {
-        use pack64::*;
-        &[RA, RB, RC, RBC]
-    }
-
-    fn flushes(&self, f: &mut FlushBuilder) {
-        use pack64::*;
-        f.state_step(PC, FP);
-        f.bytecode(
-            PC,
-            RBC,
-            Const(OP_PACK64X2),
-            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
-        );
-        f.memory_k(Prod(FP, OA, 0), RA, VA);
-        f.memory_k(Prod(FP, OB, 0), RB, VB);
-        f.memory_128(Prod(FP, OC, 0), RC, VA, VB);
-    }
-
-    fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use pack64::*;
-        let rows = &ctx.trace.pack64x2;
-        let ins = |r: &Xrow| match ctx.prog[r.pc as usize] {
-            Op::Pack64x2 { a, b, c } => (a, b, c),
-            op => unreachable!("a PACK64X2 row's pc {} holds {op:?}", r.pc),
-        };
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        ctx.cols(out, rows, OA, |r| {
-            let (a, b, c) = ins(r);
-            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c)]
-        });
-        ctx.cols(out, rows, VA, |r| {
-            let (a, b, _) = ins(r);
-            [
-                F64(ctx.mem[(r.fp + a) as usize].c0),
-                F64(ctx.mem[(r.fp + b) as usize].c0),
-            ]
-        });
-        ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }

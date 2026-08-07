@@ -416,11 +416,6 @@ impl FnLower<'_> {
                             o: fr::SCRATCH,
                             k: KVal::Const(F192::ZERO),
                         },
-                        FillerOp::Pack => LOp::Pack64x2 {
-                            a: fr::SCRATCH,
-                            b: fr::SCRATCH,
-                            c: fr::SCRATCH,
-                        },
                         FillerOp::Deref => LOp::Deref {
                             alpha: fr::PTR,
                             beta: 0,

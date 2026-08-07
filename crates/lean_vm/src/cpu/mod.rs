@@ -452,7 +452,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-table counts
-/// `[ARITH, ARITH64, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
+/// `[ARITH, ARITH64, SET, DEREF, JUMP, BLAKE3]`, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -473,11 +473,10 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    /// Each arithmetic table is a merged opcode pair (`tables::ArithTable`,
-    /// `tables::Arith64Table`), so a per-table count does not split the two opcodes
-    /// it serves; `ARITH64` is the `K`-valued pair.
-    pub const TABLES: [&'static str; tables::N_TABLES] =
-        ["ARITH", "ARITH64", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"];
+    /// Each arithmetic table serves several opcodes under a selector
+    /// (`tables::ArithTable`, `tables::Arith64Table`), so a per-table count does not
+    /// split them; `ARITH64` is the `K`-valued table, and `PACK64X2` rides it.
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["ARITH", "ARITH64", "SET", "DEREF", "JUMP", "BLAKE3"];
 
     /// One line of run sizes, every one a power of two: the per-table instruction
     /// counts with their share of the run, largest first, then the data memory and
