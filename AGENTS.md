@@ -40,6 +40,7 @@ cargo testall                     # whole suite in seconds
 cargo clippyall                   # clippy, -D warnings
 cargo docall                      # rustdoc, -D warnings
 cargo fmt --all                   # max_width = 120
+ruff format --line-length 150 python-verifier/verifier.py   # and `ruff check` it
 ```
 
 Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_whir_query_counts`, `encoding_grinding_bits`.
@@ -115,3 +116,7 @@ The third is worth understanding before touching the verifier. `guests/recursion
 | `PCS_LOG_N`, `PCS_LOG_INV_RATE`, `PCS_MIN_MU`, `PCS_SAMPLES`                                            | PCS throughput bench                             |
 | `WHIR_TRACE`, `WHIR_NUM_VARS`, `WHIR_LOG_INV_RATE`                                          | WHIR NTT/Merkle split                        |
 | `DBG_PROF{,_DUMP}`, `DBG_LOOPS`, `DBG_DISASM`, `DBG_LOWER`, `DBG_CSE`, `DBG_NO_CSE`, `DBG_PLACEHOLDERS` | compiler / guest-cycle attribution               |
+
+## Side notes
+
+- proofs, and thus proof size, are not deterministic; due to Proof of Work grinding, which is multi-threaded.

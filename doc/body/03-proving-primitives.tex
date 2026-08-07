@@ -60,22 +60,35 @@ Induction on $\kappa$. For $\kappa=1$ a nonzero univariate of degree at most $d$
 and let $k^{\ast}$ be the largest $k$ with $Q_k\neq0$. Then $Q_{k^{\ast}}$ is nonzero in $\kappa-1$ variables of total degree at most $d-k^{\ast}$, so by induction $Q_{k^{\ast}}(r_{<\kappa})=0$ with probability at most $(d-k^{\ast})/|\E|$. Fix $r_{<\kappa}$ with $Q_{k^{\ast}}(r_{<\kappa})\neq0$: then $X_{\kappa}\mapsto P(r_{<\kappa},X_{\kappa})$ has degree exactly $k^{\ast}$, hence at most $k^{\ast}$ roots, and a uniform $r_{\kappa}$ is one with probability at most $k^{\ast}/|\E|$. Adding the two bounds gives $d/|\E|$.
 \end{proof}
 
+\begin{corollary}[Testing an identity at one random point]\label{cor:idtest}
+Let $A,B\in\E[X_1,\dots,X_{\kappa}]$ have total degree at most $d$, and let $r\leftarrow\E^{\kappa}$ be drawn after both are fixed. If $A\neq B$ then
+\[
+  \Pr_{r}\bigl[A(r)=B(r)\bigr]\;\le\;\frac{d}{|\E|}.
+\]
+\end{corollary}
+
+\begin{proof}
+Apply Lemma~\ref{lem:sz} to $A-B$, nonzero of total degree at most $d$.
+\end{proof}
+
 
 \begin{fact}[Sumcheck~\cite{LFKN92}]\label{fact:sumcheck}
 Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$, on a $P$ of degree at most $d$ in each variable, to one evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$. Round $j$ carries a claim $s_{j-1}$, with $s_0=s$: the prover sends the univariate
 \[
   h_j(Y)=\sum_{x\in\cube{\kappa-j}}P(\rho_1,\dots,\rho_{j-1},Y,x)
 \]
-of degree at most $d$, the verifier checks $h_j(0)+h_j(1)=s_{j-1}$, samples $\rho_j\leftarrow\E$ and takes $s_j=h_j(\rho_j)$. It ends holding $s_{\kappa}=P(\rho)$, for the caller to settle. A false $s$ survives with probability at most $d\kappa/|\E|$.
+of degree at most $d$, the verifier checks $h_j(0)+h_j(1)\qeq s_{j-1}$, samples $\rho_j\leftarrow\E$ and takes $s_j=h_j(\rho_j)$. It ends holding $s_{\kappa}=P(\rho)$, for the caller to settle. A false $s$ survives with probability at most $d\kappa/|\E|$.
 \end{fact}
 
 \begin{definition}[Zerocheck]\label{def:zerocheck}
 To prove that $P$ vanishes on $\cube{\kappa}$, the verifier samples $r\in\E^{\kappa}$ and the two parties run sumcheck on
 \[
-  \sum_{x\in\cube{\kappa}}P(x)\,\eq(r,x)=0 .
+  \sum_{x\in\cube{\kappa}}P(x)\,\eq(r,x)\qeq 0 .
 \]
 By Fact~\ref{fact:eq} that sum is $\mle{g}(r)$, for $g$ the restriction of $P$ to the boolean hypercube: the zero polynomial if $P$ vanishes there, and otherwise a nonzero multilinear, which a random $r$ sends to $0$ with probability at most $\kappa/|\E|$ (Lemma~\ref{lem:sz}).
 \end{definition}
+
+\paragraph{Two savings on a round message~\cite{Gru24}.} A round polynomial of degree $D$ would take $D+1$ values, but the round check $h_j(0)+h_j(1)\qeq s_{j-1}$ already pins one of them to the incoming claim, so $D$ are enough. The same idea applies to the known factor: a zerocheck's summand carries $\eq(r,\cdot)$, which the verifier can form itself, so only the cofactor travels and it is one degree lower. A zerocheck round on a degree-$d$ cofactor therefore costs $d$ field elements.
 
 \begin{definition}[Inner-product commitment scheme]\label{def:ipcs}
 A \emph{weighted claim} about a multilinear $g:\cube{M}\to\K$ is a pair $(W,c)$ asserting $\inner{W}{g}=c$, with $c\in\E$ and the weight $W:\cube{M}\to\E$ \emph{MLE-friendly}: the verifier can evaluate $\mle{W}$ anywhere in $\mathrm{poly}(M)$ operations. An \emph{inner-product commitment scheme} commits to $g$ and later proves any such claim,
