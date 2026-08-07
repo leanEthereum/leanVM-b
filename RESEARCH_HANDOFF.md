@@ -17,8 +17,9 @@ This branch preserves the exact measured seven-component research lineage and in
 | L0 boundary tests | `a2c10248d2b38c4e1381687b7e193eca081f612c` |
 | Upstream integrated for this handoff | `e9cd16d49ef33909d9732778451ec73fbbedfd4a` |
 | Integration merge | `ae08017b89fdc03bfa0af31d31b08bf3c11eaa9d` |
+| Current-source two-kernel measured candidate | `a5477b369ee44ef7aea91b0799f7b920b349632f` |
 
-The statistical performance campaigns bind to `256928f`, not to the integration merge. The integration merge establishes source compatibility and test acceptance only. It has not received a fresh full-system performance campaign.
+The earlier seven-component statistical campaigns bind to `256928f`, not to the integration merge. The integration merge initially established source compatibility and test acceptance only. The separate current-source campaign described below binds to descendant `a5477b3` and measures only the two additional kernels.
 
 ## Accepted stack
 
@@ -63,7 +64,35 @@ The AVX-512 component is not selected on this Apple host. Its system measurement
 
 The evidence pack contains raw run order, command and environment records, 25 ms process-memory samples, host samples, phase events, serialized proofs, inspection logs, fixtures, source bundles and campaign checksum manifests. Its root manifest names 2,137 files and has SHA-256 `b6ae60e665294629bfc9dc599ed44472cf38fef4b487553f9aba5464b13dcd71`. The pack is retained outside this source branch and can be transferred separately.
 
-Before drawing a current-main performance conclusion, rerun the canonical N2 campaign on this integration branch or a later descendant. Upstream commits after the measured freeze changed the recursion guest, native recursion code and Python verifier, so the old medians must not be relabeled as measurements of the integrated head.
+Before relabeling the earlier seven-component medians as a current-main result, rerun that complete comparison on this integration branch or a later descendant. Upstream commits after the old measured freeze changed the recursion guest, native recursion code and Python verifier. The two-kernel campaign below does not retroactively transfer the old seven-component percentages to the integrated head.
+
+## Current-source two-kernel result
+
+Commit `a5477b369ee44ef7aea91b0799f7b920b349632f` adds two replayable, default-off experiments on top of the integrated stack:
+
+1. `LEANVM_CONSTRAINT_NODE_SKIP=1` evaluates one Boolean endpoint and the third interpolation node for each constraints sumcheck message. It derives the omitted endpoint from the running claim, with a separate exact branch for `zeta == 1` where the usual denominator vanishes.
+2. `FLOCK_PACKED_128_PARALLEL=1` serializes the three live packed Flock witnesses in one parallel dispatch over disjoint, completely initialized output chunks. The legacy serial route remains the default.
+
+Both overrides accept only literal `0` or `1` and fail closed otherwise. Unit tests establish byte-identical transcript streams, unchanged claims and acceptance by the unchanged verifier. The packed-copy tests cover empty, boundary and non-power-of-two lengths as well as the complete reduction transcript.
+
+The canonical N2 campaign used one AMD EPYC 9354 NUMA domain, CPUs 8 through 15, and the same binary for a repeated Williams-square 2-by-2 factorial design. It retained four pilots and 32 measured fresh processes. All 36 proofs were 230,804 bytes, had SHA-256 `c05561327b52c3a11466511dc4ccde942d89086f4541b13eb9d27ae1cf0d3e79`, and passed the unchanged proof-inspection command.
+
+| Factorial effect | Paired-block median | Favorable blocks |
+|---|---:|---:|
+| Node skip on `Prove constraints` | -62.897 ms | 8 / 8 |
+| Parallel serialization on packed copy | -118.250 ms | 8 / 8 |
+| Parallel serialization on Flock reduction | -124.799 ms | 8 / 8 |
+| Combined versus control on outer prove | -189.041 ms | 8 / 8 |
+| Combined versus control on process wall | -175.106 ms | 8 / 8 |
+| Combined versus control on peak physical memory | -3.781 MB | 5 / 8 |
+
+Relative to the control-arm medians, the paired combined effect is approximately -6.31% of outer-prove time and -3.02% of process wall time. The median peak footprint is effectively unchanged. Cgroup CPU throttling, swap, memory fail counts and full-memory PSI did not increase during the campaign.
+
+The preregistered mechanism gates passed, but a deliberately stronger system-materiality rule required an outer-prove delta of at least -350 ms. The observed -189 ms therefore establishes a repeatable system improvement on this host without satisfying that larger-win target. It does not establish that aggregation as a whole meets a production budget.
+
+A separate 24-observation-per-arm component sweep on the same eight cores found that the packed path crosses over between 2^12 and 2^14 words: it is slower at 2^10 and 2^12, 1.226 times faster at 2^14, and 2.073 to 3.351 times faster from 2^16 through 2^22. Any automatic production policy should therefore retain a size threshold rather than enabling the parallel dispatch for every shape.
+
+The complete single-NUMA campaign checksum manifest has SHA-256 `d7f9bedf61556cd6b0d17f052d70d4e791dfb77047bca45e054ac47228d3f03a`. An independent validator rehashed all 548 entries and reconstructed every metric and factorial effect from raw run records. On the same exact commit, Linux release validation passed 293 tests with 0 failures and 10 ignored tests, plus Clippy, formatting and documentation.
 
 ## Fast-upstream procedure
 
