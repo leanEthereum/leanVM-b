@@ -91,8 +91,8 @@ impl Program {
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
-        let mut xor: Vec<Xrow> = Vec::new();
-        let mut mul: Vec<Xrow> = Vec::new();
+        // XOR and MUL rows go to ONE table, in execution order.
+        let mut arith: Vec<Xrow> = Vec::new();
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
@@ -223,8 +223,7 @@ impl Program {
                 if left.is_none() {
                     assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
                     let counts = [
-                        xor.len(),
-                        mul.len(),
+                        arith.len(),
                         set.len(),
                         deref.len(),
                         jump.len(),
@@ -511,19 +510,14 @@ impl Program {
                     let ra = m.bump_access_count(aa);
                     let rb = m.bump_access_count(ab);
                     let rc = m.bump_access_count(ac);
-                    let row = Xrow {
+                    arith.push(Xrow {
                         pc,
                         fp,
                         ra,
                         rb,
                         rc,
                         bytecode_read,
-                    };
-                    if is_xor {
-                        xor.push(row);
-                    } else {
-                        mul.push(row);
-                    }
+                    });
                     pc += 1;
                 }
                 Op::Set { o, k } => {
@@ -810,8 +804,7 @@ impl Program {
         m.cells.resize(cells, F192::ZERO);
         m.count.resize(cells, F64::ONE);
         let trace = Trace {
-            xor,
-            mul,
+            arith,
             set,
             deref,
             jump,

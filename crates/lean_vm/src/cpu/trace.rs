@@ -11,7 +11,10 @@
 
 use primitives::field::F64;
 
-/// `XOR`, `MUL` and `PACK64X2` row: the three cells are `fp·g^{a,b,c}`.
+/// Arithmetic (`XOR`/`MUL`) and `PACK64X2` row: the three cells are
+/// `fp·g^{a,b,c}`. Which of the two arithmetic instructions a row is stays out of
+/// the row: it is `prog[pc]`'s, like the operands, and the fill reads the
+/// selector column off there (`tables::ArithTable`).
 pub(crate) struct Xrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32, // frame base: address = fp + offset, operand = g^offset
@@ -59,8 +62,8 @@ pub(crate) struct Brow {
 }
 
 pub(crate) struct Trace {
-    pub(crate) xor: Vec<Xrow>,
-    pub(crate) mul: Vec<Xrow>,
+    /// `XOR` and `MUL` rows, in execution order: ONE table serves both.
+    pub(crate) arith: Vec<Xrow>,
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
@@ -74,8 +77,7 @@ impl Trace {
     /// Rows per instruction table, in [`crate::cpu::Stats::TABLES`] order.
     pub(crate) fn row_counts(&self) -> [usize; crate::tables::N_TABLES] {
         [
-            self.xor.len(),
-            self.mul.len(),
+            self.arith.len(),
             self.set.len(),
             self.deref.len(),
             self.jump.len(),

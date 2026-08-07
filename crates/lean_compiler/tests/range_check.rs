@@ -10,14 +10,18 @@ use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192, g_pow};
 
-/// The program's own instruction mix: a build without the fill blocks, executed but not
-/// proven. Proving needs them, since a table's height has to be a power of two with no
-/// padding rows, but their dummy rows would drown out exactly what these counts are
-/// measuring.
-fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
+/// How many rows the program itself gives one table, by name (`Stats::TABLES`), from
+/// a build without the fill blocks, executed but not proven. Proving needs them,
+/// since a table's height has to be a power of two with no padding rows, but their
+/// dummy rows would drown out exactly what this counts.
+fn rows(src: &str, pi: [F192; 2], table: &str) -> usize {
+    let t = lean_vm::cpu::Stats::TABLES
+        .iter()
+        .position(|&name| name == table)
+        .expect("a table of that name");
     compile_without_filler(&parse(src).expect("parse"))
         .execute(pi)
-        .base_counts
+        .base_counts[t]
 }
 
 /// Both bound forms (`log GEN ** k` and a plain integer exponent) with the
@@ -44,7 +48,7 @@ def main():
     let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 2 DEREFs per range check (4 checks) + 2 publishing stores.
-    assert_eq!(mix(src, want)[3], 10, "DEREF count");
+    assert_eq!(rows(src, want, "DEREF"), 10, "DEREF count");
     verify(&program, &want, &proof).expect("range-checked program verifies");
 
     let bad = [F192::from(g_pow(12)), F192::from(g_pow(6))];
@@ -113,7 +117,7 @@ def main():
     let want = [F192::from(F64(5)), F192::from(F64(7))];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 6 iterations × 2 range-check DEREFs, plus call/publish plumbing.
-    assert!(mix(src, want)[3] >= 12, "at least the 12 range-check DEREFs");
+    assert!(rows(src, want, "DEREF") >= 12, "at least the 12 range-check DEREFs");
     verify(&program, &want, &proof).expect("loop range checks verify");
 }
 

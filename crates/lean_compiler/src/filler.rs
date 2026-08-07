@@ -29,10 +29,10 @@
 /// the value already there (`FnLower::lower_filler_blocks` fixes the frame offsets).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FillerOp {
-    /// `XOR s, s -> s`: pins the scratch cell to `m[s] + m[s] = 0`.
+    /// `XOR s, s -> s`: pins the scratch cell to `m[s] + m[s] = 0`. Fills the
+    /// arithmetic table, which serves `MUL_NATIVE` too, so that table needs no
+    /// second dummy.
     Xor,
-    /// `MUL s, s -> s`: pins it to `m[s]^2`, so to `0` given the above.
-    Mul,
     /// `SET s = 0`.
     Set,
     /// `PACK64X2 s, s -> s`: `pack(0, 0) = 0`, and the zero upper limbs the instruction
@@ -49,14 +49,13 @@ pub enum FillerOp {
     Blake3,
 }
 
-/// The tables, in `lean_vm::cpu::Stats::TABLES` order, which is how the solver indexes
-/// them.
-pub const TABLES: [(u8, FillerOp); 7] = [
-    (0, FillerOp::Xor),
-    (1, FillerOp::Mul),
-    (2, FillerOp::Set),
-    (3, FillerOp::Deref),
-    (4, FillerOp::Jump),
-    (5, FillerOp::Blake3),
-    (6, FillerOp::Pack),
+/// One dummy per table, in `lean_vm::cpu::Stats::TABLES` order, which is how the solver
+/// indexes them: a table's index is this array's position, so the two cannot disagree.
+pub const TABLES: [FillerOp; lean_vm::tables::N_TABLES] = [
+    FillerOp::Xor,
+    FillerOp::Set,
+    FillerOp::Deref,
+    FillerOp::Jump,
+    FillerOp::Blake3,
+    FillerOp::Pack,
 ];

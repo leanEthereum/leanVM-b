@@ -355,21 +355,16 @@ impl FnLower<'_> {
         // counter, and nothing here touches `main`'s frame at all.
         self.filler_start = Some(self.code.len());
         let mut blocks = Vec::new();
-        for (table, op) in crate::filler::TABLES {
+        for (table, op) in crate::filler::TABLES.into_iter().enumerate() {
             for size in SIZES {
                 blocks.push(Block {
                     pc: self.code.len() as u32,
                     size: size as u32,
-                    table,
+                    table: table as u8,
                 });
                 for _ in 0..size {
                     self.emit(match op {
                         FillerOp::Xor => LOp::Xor {
-                            a: fr::SCRATCH,
-                            b: fr::SCRATCH,
-                            c: fr::SCRATCH,
-                        },
-                        FillerOp::Mul => LOp::Mul {
                             a: fr::SCRATCH,
                             b: fr::SCRATCH,
                             c: fr::SCRATCH,

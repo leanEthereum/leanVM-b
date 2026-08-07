@@ -2,7 +2,8 @@
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
-//! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
+//! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2, one
+//! table for both under a boolean selector),
 //! with each word carried by three committed `K = F64` limbs. `BLAKE3`
 //! adds the memory/state/bytecode plumbing for a 64→32-byte compression
 //! whose relation is discharged by flock (see [`crate::blake3_flock`]). All
@@ -447,8 +448,8 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
-/// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
+/// instructions), the per-table counts
+/// `[ARITH, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -469,7 +470,9 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"];
+    /// `ARITH` is the merged `XOR`/`MUL_NATIVE` table (`tables::ArithTable`), so a
+    /// per-table count no longer splits the two arithmetic opcodes.
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["ARITH", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"];
 
     /// One line of run sizes, every one a power of two: the per-table instruction
     /// counts with their share of the run, largest first, then the data memory and

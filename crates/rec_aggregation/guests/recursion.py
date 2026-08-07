@@ -3,8 +3,9 @@ from snark_lib import *
 # The proof stream rides ONE padded witness hint (the guest walks only the
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
-# Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
-FLOORS = [0, 0, 0, 0, 0, 3, 0]
+# Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3), every
+# other table to nothing.
+FLOORS = FLOORS_PLACEHOLDER
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
 # The batched zerocheck's round polynomial arrives WHOLE, as a cubic at {0,1,g,g^2}:
@@ -99,14 +100,15 @@ TABLE_COLS_CAP = TABLE_COLS_CAP_PLACEHOLDER
 ETA_OFFSET = ETA_OFFSET_PLACEHOLDER
 ETA_FORM_BASE = ETA_FORM_BASE_PLACEHOLDER
 N_ETA_POWS = N_ETA_POWS_PLACEHOLDER
-# The instruction tables, in schema order:
-TABLE_XOR = 0
-TABLE_MUL = 1
-TABLE_SET = 2
-TABLE_DEREF = 3
-TABLE_JUMP = 4
-TABLE_BLAKE3 = 5
-TABLE_PACK64X2 = 6
+# The instruction tables, in schema order. Seven opcodes over six tables: XOR and
+# MUL share ARITH, which carries a boolean selector column saying which of the two
+# a row is (lean_vm::tables::ArithTable).
+TABLE_ARITH = 0
+TABLE_SET = 1
+TABLE_DEREF = 2
+TABLE_JUMP = 3
+TABLE_BLAKE3 = 4
+TABLE_PACK64X2 = 5
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
@@ -1582,12 +1584,20 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             claim_idx += 1
         # the table's AIR constraint at the final point (col_evals is indexed by
         # local column index; the formulas mirror tables.rs eval_constraint).
-        # Every value relation now rides the bus as a degree-2 coordinate, so only
-        # JUMP's is-nonzero indicator is left with an identity of its own.
-        if t == TABLE_XOR:
-            constraint_eval = 0
-        if t == TABLE_MUL:
-            constraint_eval = 0
+        # Every value relation rides the bus as a degree-2 coordinate, so the
+        # identities are down to the two quantities no interaction pins: ARITH's
+        # selector gating and JUMP's is-nonzero indicator.
+        if t == TABLE_ARITH:
+            # s is boolean (its opcode coordinate is affine in s, so an
+            # unconstrained s would name another opcode's tag), and w = s*v_B on each
+            # lane, which is what keeps the merged result form at degree 2. Gating
+            # needs no unrolling, s lying in K.
+            # Local columns: the selector s at 5, v_B's lanes at 9..11, w's at 12..14.
+            sel = col_evals[5]
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (sel * (sel + 1))
+            for lane in unroll(0, 3):
+                gated = col_evals[12 + lane] + sel * col_evals[9 + lane]
+                constraint_eval += eta_pows[ETA_OFFSET[t] + 1 + lane] * gated
         if t == TABLE_SET:
             constraint_eval = 0
         if t == TABLE_DEREF:

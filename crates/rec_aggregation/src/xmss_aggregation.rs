@@ -206,7 +206,8 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     });
 
-    assert_eq!(stats.base_counts[5], 181 + 146 * n, "BLAKE3 instruction count");
+    let blake3 = lean_vm::cpu::Stats::TABLES.iter().position(|&t| t == "BLAKE3").unwrap();
+    assert_eq!(stats.base_counts[blake3], 181 + 146 * n, "BLAKE3 instruction count");
     let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 

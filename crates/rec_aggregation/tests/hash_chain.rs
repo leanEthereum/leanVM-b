@@ -26,14 +26,18 @@ use primitives::{
     pretty_f64, pretty_integer,
 };
 
-/// The program's own instruction mix: a build without the fill blocks, executed but not
-/// proven. Proving needs them, since a table's height has to be a power of two with no
-/// padding rows, but their dummy rows would drown out exactly what these counts are
-/// measuring.
-fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
+/// How many rows the program itself gives one table, by name (`Stats::TABLES`), from
+/// a build without the fill blocks, executed but not proven. Proving needs them,
+/// since a table's height has to be a power of two with no padding rows, but their
+/// dummy rows would drown out exactly what this counts.
+fn rows(src: &str, pi: [F192; 2], table: &str) -> usize {
+    let t = lean_vm::cpu::Stats::TABLES
+        .iter()
+        .position(|&name| name == table)
+        .expect("a table of that name");
     compile_without_filler(&parse(src).expect("parse"))
         .execute(pi)
-        .base_counts
+        .base_counts[t]
 }
 
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
@@ -119,7 +123,11 @@ fn blake3_hash_chain() {
     verify(&program, &pi, &proof).expect("hash-chain proof verifies");
     let t_verify = t.elapsed();
 
-    assert_eq!(mix(&chain_source(n, unroll), pi)[5], n, "one BLAKE3 row per chain step");
+    assert_eq!(
+        rows(&chain_source(n, unroll), pi, "BLAKE3"),
+        n,
+        "one BLAKE3 row per chain step"
+    );
 
     println!(
         "\nBLAKE3 hash chain, N = {}, unroll = {}",

@@ -1,19 +1,21 @@
-//! Per-instruction tables (`doc/body/07-instruction-tables.tex`). Each opcode is one [`Table`] impl that declares,
+//! Per-instruction tables (`doc/body/07-instruction-tables.tex`). Each is one [`Table`] impl that declares,
 //! in one place, its committed columns, how to fill them from the trace, its bus
 //! interactions (flushes), the read-count columns that feed the count channel,
 //! and its degree-2 constraint. Column indices here are *local* (`0..n_committed_columns`);
-//! `cpu`'s schema offsets them to global witness columns.
+//! `cpu`'s schema offsets them to global witness columns. One table per opcode,
+//! but for `XOR` and `MUL_NATIVE`, which share the arithmetic table under a
+//! boolean selector column.
 //!
 //! Columns are `K`-valued (`F64`). The pc/fp, operands, counts, opcodes and
 //! separators are single `K`-columns; a **machine word** (memory value) is
 //! 192-bit (`E = F192`), committed as THREE `K`-lane columns. Nothing a row
 //! DERIVES is a column at all: an operand address `fp·o`, an `XOR`/`MUL` result,
 //! the `DEREF` store, the `JUMP` successors are each written out as the degree-2
-//! bus coordinate that carries them (§sec:m3), which leaves `JUMP`'s is-nonzero
-//! indicator as the one identity any table still has. Every identity is `K`-valued,
-//! so a relation on machine words is written out lane by lane; after the round a
-//! table joins the batch its columns are `E`-valued, which is what
-//! `eval_constraint` takes.
+//! bus coordinate that carries them (§sec:m3), which leaves the identities to the
+//! two quantities no interaction pins: `JUMP`'s is-nonzero indicator and the
+//! arithmetic selector's gating. Every identity is `K`-valued, so a relation on
+//! machine words is written out lane by lane; after the round a table joins the
+//! batch its columns are `E`-valued, which is what `eval_constraint` takes.
 
 use crate::colval::ColVal;
 use crate::cpu::{Brow, Drow, Jrow, Op, Srow, Trace, Xrow};
@@ -29,19 +31,20 @@ use primitives::field::{F64, F192, mul_by_g};
 // EVERY identity is `K`-valued, like the columns it reads and like the bus
 // coordinates (§sec:air). A relation between machine WORDS is therefore written out
 // lane by lane, with the tower multiplication unrolled by hand ([`TOWER_LANES`]),
-// rather than assembled into one `E` equation. A table's identity slice is then a
-// mixed dot product against its `η`-range: in the round a table joins the batch (the
-// batch's largest) that is one 64-bit product per identity plus three PMULL for its
-// `η`-power, with ONE reduction for the whole slice ([`ColVal::dot`]). One `E`-valued
-// identity would instead cost a full `E×E` product against its `η`-power, plus a
-// reduction of its own, and the lanes it bundles are the same lane polynomials
-// either way.
+// rather than assembled into one `E` equation: the two have the same zero set, since
+// `{1, y, y²}` is a `K`-basis of `E`. A table's identity slice is then a mixed dot
+// product against its `η`-range, one reduction for the lot ([`ColVal::dot`]).
+//
+// Uniformity is the reason, not speed. Unrolling a tower product trades one
+// Karatsuba `E` multiply for nine lane multiplies, and every identity it splits into
+// costs another mixed `η`-weighting, so this is marginally the DEARER form: measured
+// at +0.6% of the constraint-proving stage, which is +0.06% of a proof.
 
 /// The tower product `x·y` in `E = K[y]/(y³+y+1)` as three lane sums: lane `i` is
-/// `Σ x_j·y_k` over `TOWER_LANES[i]`. The five partial sums of §sec:tab-mul fold
+/// `Σ x_j·y_k` over `TOWER_LANES[i]`. The five partial sums of §sec:tab-arith fold
 /// into `c0 = p0+p3`, `c1 = p1+p3+p4`, `c2 = p2+p4`; written once here because both
-/// `MUL`'s result coordinate ([`arith_result`]) and `JUMP`'s inverse identity need
-/// the same unrolling.
+/// the arithmetic result coordinate ([`arith_result`]) and `JUMP`'s inverse identity
+/// need the same unrolling.
 const TOWER_LANES: [&[(usize, usize)]; 3] = [
     &[(0, 0), (1, 2), (2, 1)],
     &[(0, 1), (1, 0), (1, 2), (2, 1), (2, 2)],
@@ -51,6 +54,29 @@ const TOWER_LANES: [&[(usize, usize)]; 3] = [
 /// One lane of the tower product, in the columns' own field.
 fn tower_lane<T: ColVal>(lane: usize, x: [T; 3], y: [T; 3]) -> T {
     TOWER_LANES[lane].iter().fold(T::ZERO, |acc, &(j, k)| acc + x[j] * y[k])
+}
+
+/// The arithmetic table's four identities (§sec:tab-arith): the selector is
+/// boolean, and `w` is the second operand gated by it, lane by lane. Gating needs no
+/// unrolling, `s` lying in `K`.
+///
+/// Booleanity is what confines the row to an `XOR` or a `MUL`: the bytecode
+/// coordinate is affine in `s` ([`arith_opcode`]), so an unconstrained `s` would
+/// solve for any other opcode's tag and run that instruction as arithmetic.
+fn arith_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
+    use arith::*;
+    let s = cols[S];
+    let gate = |w: usize, b: usize| cols[w] + s * cols[b];
+    T::dot(
+        pows,
+        &[
+            s * (s + T::ONE),
+            gate(W_LO, VB_LO),
+            gate(W_HI, VB_HI),
+            gate(W_TOP, VB_TOP),
+        ],
+        F192::ZERO,
+    )
 }
 
 /// `JUMP`'s six identities: `b = cond·w` and `cond·(b+1) = 0`, each written out over
@@ -92,9 +118,13 @@ pub(crate) const SEP_STATE: F64 = g_pow(0);
 pub(crate) const SEP_MEM: F64 = g_pow(1);
 pub(crate) const SEP_BYTECODE: F64 = g_pow(2);
 
-// Opcodes (coordinate 3 of a bytecode tuple).
-pub(crate) const OP_XOR: F64 = g_pow(0);
-pub(crate) const OP_MUL: F64 = g_pow(1);
+// Opcodes (coordinate 3 of a bytecode tuple). The two arithmetic tags keep their
+// exponents by name: one table serves both, and its opcode coordinate is an
+// affine function of the selector built from these two g-powers ([`arith_opcode`]).
+pub(crate) const OP_XOR_LOG: u32 = 0;
+pub(crate) const OP_MUL_LOG: u32 = 1;
+pub(crate) const OP_XOR: F64 = g_pow(OP_XOR_LOG as usize);
+pub(crate) const OP_MUL: F64 = g_pow(OP_MUL_LOG as usize);
 pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
@@ -143,10 +173,13 @@ impl FlushBuilder {
     }
 
     /// Bytecode read at `pc`: the program tuple (opcode + seven operand slots),
-    /// with the per-pc execution count advanced by ×g on the push side.
-    pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: F64, operands: &[Coord]) {
-        let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count, 1), Const(opcode)];
-        let mut pull = vec![Const(SEP_BYTECODE), Col(pc), Col(count), Const(opcode)];
+    /// with the per-pc execution count advanced by ×g on the push side. The opcode
+    /// is a coordinate like any other: a table serving ONE instruction passes its
+    /// tag as a `Const`, while the arithmetic table passes a form over its selector
+    /// column ([`arith_opcode`]).
+    pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: Coord, operands: &[Coord]) {
+        let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count, 1), opcode.clone()];
+        let mut pull = vec![Const(SEP_BYTECODE), Col(pc), Col(count), opcode];
         push.extend_from_slice(operands);
         pull.extend_from_slice(operands);
         self.pair(push, pull);
@@ -220,17 +253,6 @@ impl<'a> FillCtx<'a> {
 
     fn g_at(&self, i: u32) -> F64 {
         self.gpow[i as usize]
-    }
-
-    /// The three frame offsets of an `XOR`/`MUL`/`PACK64X2` row. A row records
-    /// only its `(pc, fp)`; the operands are the instruction's, so they are read
-    /// back from the bytecode rather than copied into every row (§the trace rows
-    /// in `cpu::trace`).
-    fn ternary_operands(&self, pc: u32) -> (u32, u32, u32) {
-        match self.prog[pc as usize] {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::Pack64x2 { a, b, c } => (a, b, c),
-            op => unreachable!("a three-operand row's pc {pc} holds {op:?}"),
-        }
     }
 
     /// Write local column `at`: `f` over the trace rows, then its pad value to the
@@ -316,8 +338,9 @@ pub trait Table: Sync {
     fn count_columns(&self) -> &'static [usize];
     /// How many identities [`eval_constraint`](Table::eval_constraint) folds.
     /// Sizes this table's slice of the batch's disjoint `eta`-range (§constraints).
-    /// Defaults to none, which is every table but `JUMP`: a relation whose value
-    /// rides the bus as a coordinate needs no identity to tie it (§sec:m3).
+    /// Defaults to none, which is every table but the arithmetic one and `JUMP`: a
+    /// relation whose value rides the bus as a coordinate needs no identity to tie
+    /// it (§sec:m3). Each identity is `K`-valued (§sec:air).
     fn n_constraints(&self) -> usize {
         0
     }
@@ -350,14 +373,14 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, the
-/// order of `row_counts` / `taus` throughout `cpu`.
-pub const N_TABLES: usize = 7;
+/// The tables in fixed order `[ARITH, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, the
+/// order of `row_counts` / `taus` throughout `cpu`. `ARITH` serves both `XOR` and
+/// `MUL_NATIVE`, so there are six tables for seven opcodes.
+pub const N_TABLES: usize = 6;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
-        &Arith { is_xor: true },
-        &Arith { is_xor: false },
+        &ArithTable,
         &SetTable,
         &DerefTable,
         &JumpTable,
@@ -367,7 +390,7 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
 }
 
 /// Index of the BLAKE3 table in [`tables`].
-pub(crate) const BLAKE3_TABLE: usize = 5;
+pub const BLAKE3_TABLE: usize = 4;
 
 /// The six base addresses a `BLAKE3` row reads: the four message cells, the
 /// chaining-value base and the output base (each of the last two spans that cell
@@ -430,58 +453,99 @@ const _: () = assert!(
         && blake3t::MD1 == blake3t::VA0 + 17
 );
 
-// ---- XOR / MUL ---------------------------------------------------------------
+// ---- ARITH (XOR / MUL_NATIVE) ------------------------------------------------
 
-/// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they
-/// differ only in the opcode tag and in how the destination cell's value rides
-/// the bus (`v_A + v_B` for `XOR`, `v_A·v_B` in `E = K[y]/(y³+y+1)` for `MUL`).
-/// Neither commits that value and neither has an identity: the destination's
-/// memory flush carries the result as a degree-≤2 coordinate over the operand
-/// lanes, so bus balance IS the assertion (§sec:m3).
-struct Arith {
-    is_xor: bool,
-}
+/// `XOR` and `MUL_NATIVE` are ONE table (§sec:tab-arith): same state, same
+/// operands, same three memory reads, and one boolean selector column `s` saying
+/// which instruction the row is (`0` = `XOR`, `1` = `MUL`). Neither commits the
+/// result: the destination's memory flush carries it as a degree-2 coordinate over
+/// the row's columns, so bus balance IS the assertion (§sec:m3).
+///
+/// Merging them costs the selector, one gated copy `w = s·v_B` of the second
+/// operand ([`arith_result`]) and two identities; it saves a table's worth of bus
+/// blocks, count channels and padding, and the two opcodes' rows now round up to
+/// ONE power of two rather than two.
+struct ArithTable;
 
 mod arith {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
+    // The operands and the selector all come out of the row's ONE bytecode decode.
     pub const OA: usize = 2;
     pub const OB: usize = 3;
     pub const OC: usize = 4;
+    /// `0` for an `XOR` row, `1` for a `MUL` row.
+    pub const S: usize = 5;
     // No absolute-address columns: the memory bus carries `fp·o` as a product
     // coordinate (§sec:m3), which is why there is no address binding below.
     // The two read words, each three K-limbs. The third (the result) is DERIVED.
-    pub const VA_LO: usize = 5;
-    pub const VA_HI: usize = 6;
-    pub const VA_TOP: usize = 7;
-    pub const VB_LO: usize = 8;
-    pub const VB_HI: usize = 9;
-    pub const VB_TOP: usize = 10;
-    pub const RA: usize = 11;
-    pub const RB: usize = 12;
-    pub const RC: usize = 13;
-    pub const RBC: usize = 14;
-    pub const N: usize = 15;
+    pub const VA_LO: usize = 6;
+    pub const VA_HI: usize = 7;
+    pub const VA_TOP: usize = 8;
+    pub const VB_LO: usize = 9;
+    pub const VB_HI: usize = 10;
+    pub const VB_TOP: usize = 11;
+    // `w = s·v_B`, next to `v_B` because one read fills both.
+    pub const W_LO: usize = 12;
+    pub const W_HI: usize = 13;
+    pub const W_TOP: usize = 14;
+    pub const RA: usize = 15;
+    pub const RB: usize = 16;
+    pub const RC: usize = 17;
+    pub const RBC: usize = 18;
+    pub const N: usize = 19;
+}
+// The fill writes `OA..RA` in one pass, so those columns have to be contiguous and
+// in this order (`ArithTable::fill`).
+const _: () = assert!(
+    arith::S == arith::OC + 1
+        && arith::VA_LO == arith::S + 1
+        && arith::VB_LO == arith::VA_LO + 3
+        && arith::W_LO == arith::VB_LO + 3
+        && arith::RA == arith::W_LO + 3
+);
+
+/// The bytecode opcode coordinate `\opc{XOR} + s·(\opc{XOR} + \opc{MUL})`: affine
+/// in the selector, so injective. With `s` boolean (the table's first identity) it
+/// is exactly one of the two tags, which is what lets the bytecode bus admit the
+/// row against an `XOR` or a `MUL` instruction and nothing else, and forces `s` to
+/// say which of the two it was.
+fn arith_opcode() -> Coord {
+    Coord::Sum(vec![
+        Const(OP_XOR),
+        GCol(arith::S, OP_XOR_LOG),
+        GCol(arith::S, OP_MUL_LOG),
+    ])
 }
 
-/// The result word's three K-lanes as forms over the operand lanes. For `XOR`
-/// that is the lane-wise sum; for `MUL` it is the tower product, unrolled through
-/// [`TOWER_LANES`].
-fn arith_result(is_xor: bool) -> [Coord; 3] {
+/// The result word's three K-lanes as forms over the operand lanes, the gated copy
+/// `w = s·v_B` and the selector. One form covers both instructions:
+///
+/// `c_i = (1+s)·(v_{A,i} + v_{B,i}) + [v_A·w]_i`,
+///
+/// where the bracket is the tower product, unrolled through [`TOWER_LANES`]. At
+/// `s = 0` it vanishes with `w` and the lane is the sum; at `s = 1` the factor `1+s`
+/// vanishes and the lane is `v_A·v_B`.
+///
+/// The gated copy is what keeps this at degree 2, and the whole reason it is a
+/// column: selecting on the result directly would ask for `s·(v_A·v_B)`, degree 3.
+/// With the selector inside `w` the product is `v_A·w`, and `s·v_{B,i}` wherever
+/// else it is wanted IS `w_i`.
+fn arith_result() -> [Coord; 3] {
     use arith::*;
-    if is_xor {
-        return [
-            Coord::Sum(vec![Col(VA_LO), Col(VB_LO)]),
-            Coord::Sum(vec![Col(VA_HI), Col(VB_HI)]),
-            Coord::Sum(vec![Col(VA_TOP), Col(VB_TOP)]),
-        ];
-    }
-    let (a, b) = ([VA_LO, VA_HI, VA_TOP], [VB_LO, VB_HI, VB_TOP]);
-    let lane = |i: usize| Coord::Sum(TOWER_LANES[i].iter().map(|&(j, k)| Prod(a[j], b[k], 0)).collect());
+    let a = [VA_LO, VA_HI, VA_TOP];
+    let b = [VB_LO, VB_HI, VB_TOP];
+    let w = [W_LO, W_HI, W_TOP];
+    // `(1+s)·(v_A + v_B)` lane-wise, in characteristic 2: `s·v_{B,i}` IS `w_i`.
+    let lane = |i: usize| {
+        let mut terms = vec![Col(a[i]), Col(b[i]), Prod(S, a[i], 0), Col(w[i])];
+        terms.extend(TOWER_LANES[i].iter().map(|&(j, k)| Prod(a[j], w[k], 0)));
+        Coord::Sum(terms)
+    };
     [lane(0), lane(1), lane(2)]
 }
 
-impl Table for Arith {
+impl Table for ArithTable {
     fn n_committed_columns(&self) -> usize {
         arith::N
     }
@@ -489,34 +553,53 @@ impl Table for Arith {
         use arith::*;
         &[RA, RB, RC, RBC]
     }
+    fn n_constraints(&self) -> usize {
+        4 // the selector is boolean, and it gates `w` on each of the three lanes
+    }
+    fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
+        arith_identity(pows, cols)
+    }
+    fn eval_constraint_k(&self, pows: &[F192], cols: &[F64]) -> F192 {
+        arith_identity(pows, cols)
+    }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith::*;
         f.state_step(PC, FP);
         f.bytecode(
             PC,
             RBC,
-            if self.is_xor { OP_XOR } else { OP_MUL },
+            arith_opcode(),
             &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
         );
         f.memory(Prod(FP, OA, 0), RA, VA_LO, VA_HI, VA_TOP);
         f.memory(Prod(FP, OB, 0), RB, VB_LO, VB_HI, VB_TOP);
-        f.memory_coords(Prod(FP, OC, 0), RC, arith_result(self.is_xor));
+        f.memory_coords(Prod(FP, OC, 0), RC, arith_result());
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use arith::*;
-        let rows = if self.is_xor { &ctx.trace.xor } else { &ctx.trace.mul };
-        let addrs = |r: &Xrow| {
-            let (a, b, _) = ctx.ternary_operands(r.pc);
-            [r.fp + a, r.fp + b]
+        let rows = &ctx.trace.arith;
+        // The selector is the row's instruction, and so are its operands: one decode
+        // of `prog[pc]` yields both, and they fill in one pass.
+        let ins = |r: &Xrow| match ctx.prog[r.pc as usize] {
+            Op::Xor { a, b, c } => (F64::ZERO, a, b, c),
+            Op::Mul { a, b, c } => (F64::ONE, a, b, c),
+            op => unreachable!("an arithmetic row's pc {} holds {op:?}", r.pc),
         };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        // Everything the decode and the two operand reads yield, in ONE pass over
+        // the rows: `OA..W_TOP` is contiguous, and splitting it would re-decode
+        // `prog[pc]` and re-walk the table's rows once per group. `w = v_B` on a
+        // `MUL` row, `0` on an `XOR` row.
         ctx.cols(out, rows, OA, |r| {
-            let (a, b, c) = ctx.ternary_operands(r.pc);
-            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c)]
+            let (s, a, b, c) = ins(r);
+            let o = [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c)];
+            let (va, vb) = (ctx.limbs(r.fp + a), ctx.limbs(r.fp + b));
+            let w = vb.map(|v| v * s);
+            [
+                o[0], o[1], o[2], s, va[0], va[1], va[2], vb[0], vb[1], vb[2], w[0], w[1], w[2],
+            ]
         });
-        ctx.cols(out, rows, VA_LO, |r| ctx.limbs(addrs(r)[0]));
-        ctx.cols(out, rows, VB_LO, |r| ctx.limbs(addrs(r)[1]));
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
@@ -555,7 +638,7 @@ impl Table for SetTable {
         f.bytecode(
             PC,
             RBC,
-            OP_SET,
+            Const(OP_SET),
             &[Col(O), Col(K_LO), Col(K_HI), Col(K_TOP), Const(F64::ZERO)],
         );
         // The stored constant K is the cell's value.
@@ -635,7 +718,12 @@ impl Table for DerefTable {
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
         f.state_step(PC, FP);
-        f.bytecode(PC, RBC, OP_DEREF, &[Col(OAL), Col(OBE), Col(OGA), Col(FPC), Col(FFP)]);
+        f.bytecode(
+            PC,
+            RBC,
+            Const(OP_DEREF),
+            &[Col(OAL), Col(OBE), Col(OGA), Col(FPC), Col(FFP)],
+        );
         // The pointer cell and the local cell are frame-relative; the store target
         // is pointer-relative, so its address is `p·obe`, and its value is the
         // flag-selected source rather than a column.
@@ -745,7 +833,7 @@ impl Table for JumpTable {
         f.bytecode(
             PC,
             RBC,
-            OP_JUMP,
+            Const(OP_JUMP),
             &[Col(OC), Col(OD), Col(OF), Const(F64::ZERO), Const(F64::ZERO)],
         );
         f.memory(Prod(FP, OC, 0), RC, C_LO, C_HI, C_TOP);
@@ -848,7 +936,7 @@ impl Table for Pack64x2Table {
         f.bytecode(
             PC,
             RBC,
-            OP_PACK64X2,
+            Const(OP_PACK64X2),
             &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
         );
         f.memory_k(Prod(FP, OA, 0), RA, VA);
@@ -859,19 +947,22 @@ impl Table for Pack64x2Table {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use pack64::*;
         let rows = &ctx.trace.pack64x2;
-        let addrs = |r: &Xrow| {
-            let (a, b, c) = ctx.ternary_operands(r.pc);
-            [r.fp + a, r.fp + b, r.fp + c]
+        let ins = |r: &Xrow| match ctx.prog[r.pc as usize] {
+            Op::Pack64x2 { a, b, c } => (a, b, c),
+            op => unreachable!("a PACK64X2 row's pc {} holds {op:?}", r.pc),
         };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
         ctx.cols(out, rows, OA, |r| {
-            let (a, b, c) = ctx.ternary_operands(r.pc);
+            let (a, b, c) = ins(r);
             [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c)]
         });
         ctx.cols(out, rows, VA, |r| {
-            let a = addrs(r);
-            [F64(ctx.mem[a[0] as usize].c0), F64(ctx.mem[a[1] as usize].c0)]
+            let (a, b, _) = ins(r);
+            [
+                F64(ctx.mem[(r.fp + a) as usize].c0),
+                F64(ctx.mem[(r.fp + b) as usize].c0),
+            ]
         });
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -943,7 +1034,7 @@ impl Table for Blake3Table {
         f.bytecode(
             PC,
             RBC,
-            OP_BLAKE3,
+            Const(OP_BLAKE3),
             &[
                 Col(OA0),
                 Col(OA1),
@@ -1005,18 +1096,44 @@ mod tests {
     use super::*;
     use primitives::field::powers;
 
-    const C: F192 = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
+    /// A degree-2 form over one row's columns, evaluated directly.
+    fn eval(c: &Coord, row: &[F64]) -> F64 {
+        match c {
+            Const(v) => *v,
+            Col(i) => row[*i],
+            GCol(i, k) => row[*i] * g_pow(*k as usize),
+            Prod(i, j, k) => row[*i] * row[*j] * g_pow(*k as usize),
+            Coord::Sum(cs) => cs.iter().fold(F64::ZERO, |acc, c| acc + eval(c, row)),
+            _ => unreachable!("an arithmetic row's coordinates are these"),
+        }
+    }
+
+    /// One arithmetic row's columns for `a op b`, as [`ArithTable::fill`] writes them.
+    fn arith_row(a: F192, b: F192, is_mul: bool) -> Vec<F64> {
+        let s = if is_mul { F64::ONE } else { F64::ZERO };
+        let lanes = |w: F192| [F64(w.c0), F64(w.c1), F64(w.c2)];
+        let mut row = vec![F64::ZERO; arith::N];
+        for (i, (va, vb)) in lanes(a).into_iter().zip(lanes(b)).enumerate() {
+            row[arith::VA_LO + i] = va;
+            row[arith::VB_LO + i] = vb;
+            row[arith::W_LO + i] = vb * s;
+        }
+        row[arith::S] = s;
+        row
+    }
+
+    const A: F192 = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
+    const B: F192 = F192::new(0x9999_aaaa_bbbb_cccc, 0x1357_9bdf_2468_ace0, 0x5555_6666_7777_8888);
 
     /// The hand-unrolled tower product IS `E`'s multiplication, lane by lane. Both
-    /// `MUL`'s result coordinate and `JUMP`'s inverse identity are written out from
-    /// [`TOWER_LANES`], and neither can be checked against the field at run time (one
-    /// is a bus coordinate, the other a `K` identity), so pin the unrolling here.
+    /// the arithmetic result coordinate and `JUMP`'s inverse identity are written out
+    /// from [`TOWER_LANES`], and neither can be checked against the field at run time
+    /// (one is a bus coordinate, the other a `K` identity), so pin the unrolling here.
     #[test]
     fn the_unrolled_tower_product_is_the_field_product() {
         let lanes = |v: F192| [F64(v.c0), F64(v.c1), F64(v.c2)];
-        let (x, y) = (C, C * C + F192::ONE);
-        let got = [0, 1, 2].map(|i| tower_lane(i, lanes(x), lanes(y)).0);
-        assert_eq!(F192::new(got[0], got[1], got[2]), x * y);
+        let got = [0, 1, 2].map(|i| tower_lane(i, lanes(A), lanes(B)).0);
+        assert_eq!(F192::new(got[0], got[1], got[2]), A * B);
     }
 
     /// `JUMP`'s six identities vanish on an honest row, taken or not, and every lane
@@ -1025,7 +1142,7 @@ mod tests {
     #[test]
     fn the_jump_identities_bind_every_lane() {
         let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 6);
-        for cond in [F192::ZERO, C] {
+        for cond in [F192::ZERO, A] {
             let mut row = vec![F64::ZERO; jump::N];
             let w = if cond.is_zero() { F192::ZERO } else { cond.inv() };
             for (i, (c, v)) in [(cond.c0, w.c0), (cond.c1, w.c1), (cond.c2, w.c2)]
@@ -1052,6 +1169,41 @@ mod tests {
                     F192::ZERO,
                     "column {col}, cond = {cond:?}"
                 );
+            }
+        }
+    }
+
+    /// ONE destination coordinate for both instructions: the lane-wise sum on an
+    /// `XOR` row, the tower product on a `MUL` row, with the opcode coordinate
+    /// landing on the matching tag either way (§sec:tab-arith).
+    #[test]
+    fn one_form_serves_both_arithmetic_opcodes() {
+        let result = arith_result();
+        for (is_mul, want, tag) in [(false, A + B, OP_XOR), (true, A * B, OP_MUL)] {
+            let row = arith_row(A, B, is_mul);
+            let lane = |i: usize| eval(&result[i], &row).0;
+            assert_eq!(F192::new(lane(0), lane(1), lane(2)), want, "is_mul = {is_mul}");
+            assert_eq!(eval(&arith_opcode(), &row), tag, "is_mul = {is_mul}");
+        }
+    }
+
+    /// The four identities vanish on an honest row and catch the two ways the merge
+    /// can be forged: a selector that is not boolean (which would name some other
+    /// opcode's tag through the affine coordinate) and a gated copy that is not
+    /// `s·v_B` on some lane (which would free the product from the selector).
+    #[test]
+    fn the_identities_bind_the_selector_and_its_gated_operand() {
+        let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 4);
+        for is_mul in [false, true] {
+            let row = arith_row(A, B, is_mul);
+            assert_eq!(arith_identity(&pows, &row), F192::ZERO);
+            let mut forged = row.clone();
+            forged[arith::S] = g_pow(3);
+            assert_ne!(arith_identity(&pows, &forged), F192::ZERO, "a non-boolean selector");
+            for lane in 0..3 {
+                let mut forged = row.clone();
+                forged[arith::W_LO + lane] += F64::ONE;
+                assert_ne!(arith_identity(&pows, &forged), F192::ZERO, "an ungated w_{lane}");
             }
         }
     }

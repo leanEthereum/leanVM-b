@@ -32,12 +32,12 @@ pub const SIZES: [usize; 8] = [128, 64, 32, 16, 8, 4, 2, 1];
 /// Least rows a table can be proven over. Only `BLAKE3` has one above `1`: flock sizes
 /// its argument to at least eight instances, so filling that table below the floor
 /// would leave it padded up to it, which is the padding this exists to avoid.
-pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8, 1];
+pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 8, 1];
 
 /// The `JUMP` table's index in [`crate::cpu::Stats::TABLES`]. Every traversal of every
 /// block lands its closing jump here, so this table is solved last, absorbing the cost
 /// of the whole fill.
-pub const JUMP: usize = 4;
+pub const JUMP: usize = 3;
 
 /// One block in the bytecode: `size` dummy rows of `table`'s opcode at `pc`, then the
 /// jump back to `pc`.
@@ -210,20 +210,34 @@ pub fn is_filled(counts: [usize; N_TABLES]) -> bool {
 mod tests {
     use super::*;
 
+    /// The constants above are POSITIONAL, so they say nothing on their own: pin them
+    /// to the table names. Inserting or merging a table renumbers the set (`tables`),
+    /// and nothing else here would notice.
+    #[test]
+    fn the_positional_constants_match_the_table_set() {
+        use crate::cpu::Stats;
+        use crate::tables::BLAKE3_TABLE;
+        assert_eq!(Stats::TABLES[JUMP], "JUMP");
+        assert_eq!(Stats::TABLES[BLAKE3_TABLE], "BLAKE3");
+        // Only BLAKE3 has a floor above one row: flock's least instance count.
+        assert_eq!(MIN_ROWS[BLAKE3_TABLE], 1 << crate::blake3_flock::n_blocks_log(1));
+        assert!(MIN_ROWS.iter().enumerate().all(|(t, &r)| t == BLAKE3_TABLE || r == 1));
+    }
+
     /// Whatever the shape of the run, every table comes out an exact power of two at or
     /// above its floor.
     #[test]
     fn a_solve_lands_every_table_on_a_power_of_two() {
         let cases: [[usize; N_TABLES]; 6] = [
-            [0, 0, 0, 0, 0, 0, 0],
-            [1, 1, 1, 1, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1],
             // Roughly the XMSS run's mix.
-            [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 0],
+            [411_000, 341_000, 508_000, 114_000, 130_000, 0],
             // Tables already exactly on a power of two, the awkward case: the closing
             // jumps of every other table's traversals still have to fit somewhere.
-            [1 << 17, 1 << 12, 1000, 1 << 19, 1 << 16, 8, 0],
-            [1, 2, 3, 4, 5, 6, 7],
-            [0, 0, 0, 0, 1 << 20, 0, 0],
+            [1 << 17, 1000, 1 << 19, 1 << 16, 8, 0],
+            [1, 2, 3, 4, 5, 6],
+            [0, 0, 0, 1 << 20, 0, 0],
         ];
         for base in cases {
             let plan = solve(base).unwrap_or_else(|| panic!("no plan for {base:?}"));
@@ -240,7 +254,7 @@ mod tests {
     /// remainders.
     #[test]
     fn the_fill_is_short() {
-        let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 0];
+        let base = [411_000, 341_000, 508_000, 114_000, 130_000, 0];
         let plan = solve(base).expect("solvable");
         let fill: usize = delivered(&plan).iter().sum();
         assert!(

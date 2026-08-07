@@ -1,39 +1,48 @@
 % !TeX root = ../drafts/07-instruction-tables.tex
 \section{The instruction tables}\label{sec:tables}
 
-Each instruction has its own table. Throughout, an operand address is written $\loc{o}=\fp\cdot o$ and is a bus coordinate, not a column: no table commits one, and none constrains one, since a coordinate may be any polynomial of degree at most $d=2$ in the table's columns (\S\ref{sec:m3}). The same holds of every value a row \emph{derives} from the ones it reads. Writing the derived value straight into the tuple that would have carried its column costs the columns nothing and removes the identity that used to tie the two, since bus balance now asserts it directly. That is why \texttt{XOR}, \texttt{MUL\_NATIVE} and \texttt{DEREF} have no constraint at all: an arithmetic result and a flag-selected store are both degree-2 forms, so both ride the memory flush that reads their cell.
+There is one table per instruction, but for \texttt{XOR} and \texttt{MUL\_NATIVE}, which share one (\S\ref{sec:tab-arith}): six tables for seven instructions. Throughout, an operand address is written $\loc{o}=\fp\cdot o$ and is a bus coordinate, not a column: no table commits one, and none constrains one, since a coordinate may be any polynomial of degree at most $d=2$ in the table's columns (\S\ref{sec:m3}). The same holds of every value a row \emph{derives} from the ones it reads. Writing the derived value straight into the tuple that would have carried its column costs the columns nothing and removes the identity that used to tie the two, since bus balance now asserts it directly. That is why \texttt{DEREF} has no constraint at all, and why the arithmetic table's only identities are the ones its selector needs: an arithmetic result and a flag-selected store are both degree-2 forms, so both ride the memory flush that reads their cell.
 
-\subsection{\texttt{XOR}}\label{sec:tab-xor}
+\subsection{Arithmetic: \texttt{XOR} and \texttt{MUL\_NATIVE}}\label{sec:tab-arith}
 
-Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum. The result is no column: the destination cell's memory flush carries the sum itself, so bus balance is the assertion.
+The two arithmetic instructions assert $\loc{o_C}=\loc{o_A}+\loc{o_B}$ and $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ over $\E$. They read the same three cells at the same three addresses and differ only in what the third one holds, so one table serves both, with a boolean column $s$ saying which instruction the row is ($s=0$ for \texttt{XOR}, $s=1$ for \texttt{MUL\_NATIVE}). The result is no column either way: the destination cell's memory flush carries it, so bus balance is the assertion.
+
+Merging them halves this pair's bus blocks, count channels and row-count rounding, at the price of the selector, one gated copy $w=s\,v_B$ of the second operand, and four identities. The gated copy is what keeps the degree at $2$. Selecting on the result would ask for
+\[
+  (1+s)\,(v_A+v_B)\;+\;s\,(v_Av_B),
+\]
+whose second term is degree $3$; committing $w=s\,v_B$ instead moves the selector into a column, so that term becomes the degree-2 product $v_A\,w$, and $s\,v_{B,i}$ wherever else it is needed is the column $w_i$ itself. Since $\opc{XOR}=1$ and $\opc{MUL}=\gen$ (\S\ref{sec:e2e-const}), the bytecode tuple's opcode coordinate is the affine
+\[
+  \opc{XOR}+s\,(\opc{XOR}+\opc{MUL})\;=\;1+s+\gen\,s,
+\]
+which is injective in $s$, so with $s$ boolean it is one of the two tags and nothing else: the bytecode bus then admits the row only against an \texttt{XOR} or a \texttt{MUL\_NATIVE} instruction, and forces $s$ to say which. Booleanity is what makes that argument work, and it is the table's first identity: without it the prover could solve the affine for any other opcode's tag and run, say, a \texttt{SET\_CONSTANT} instruction as arithmetic.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; the two read values $v_A,v_B$ (each three $\K$-limbs); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} none.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; the two read values $v_A,v_B$ (each three $\K$-limbs); the gated copy $w$ (three $\K$-limbs); the selector $s$ (one $\K$-limb, $0/1$); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$. ($s$ and $w$ are witness columns, neither read from memory nor in the bytecode.)
+\item \textbf{Constraints:} four, all about the selector, and nothing about the arithmetic itself:
+\[
+  s\,(s+1)=0,\qquad w_i=s\,v_{B,i}\quad(i=0,1,2).
+\]
+An identity is $\K$-valued (\S\ref{sec:air}), so the gating is stated lane by lane; it needs no unrolling, $s$ lying in $\K$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{XOR},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory} ($X\in\{A,B\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X}$; and for the destination, the same pair at $\fp\cdot o_C$ with the three value coordinates $v_{A,i}+v_{B,i}$, of degree one.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},1+s+\gen\,s,o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory} ($X\in\{A,B\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X}$; and for the destination, the same pair at $\fp\cdot o_C$ with the three value coordinates
+    \[
+      c_i \;=\; \underbrace{v_{A,i}+v_{B,i}+s\,v_{A,i}+w_i}_{(1+s)\,(v_A+v_B)_i} \;+\; [\,v_A\,w\,]_i .
+    \]
+    The bracket is the tower product with $y^3=y+1$, the same unrolling \texttt{JUMP}'s inverse identity uses (\S\ref{sec:tab-jump}): putting
+    \[
+    p_0=v_{A,0}w_0,\quad
+    p_1=v_{A,0}w_1+v_{A,1}w_0,\quad
+    p_2=v_{A,0}w_2+v_{A,1}w_1+v_{A,2}w_0,
+    \]
+    \[
+    p_3=v_{A,1}w_2+v_{A,2}w_1,\qquad
+    p_4=v_{A,2}w_2,
+    \]
+    it is $p_0+p_3$, $p_1+p_3+p_4$, $p_2+p_4$, twelve products over the nine pairs $v_{A,i}w_j$. At $s=0$ the bracket vanishes with $w$ and the coordinate is the sum; at $s=1$ the factor $1+s$ vanishes and it is $v_Av_B$.
   \end{itemize}
-\end{itemize}
-
-\subsection{\texttt{MUL\_NATIVE}}\label{sec:tab-mul}
-
-Identical to \texttt{XOR} but for the product, which is degree two rather than one and so still fits a coordinate:
-\begin{itemize}
-\item \textbf{Columns:} as \texttt{XOR}.
-\item \textbf{Constraints:} none.
-\item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$ and the destination's three value coordinates carrying $v_Av_B$ in $\E$. With $y^3=y+1$, put
-\[
-p_0=v_{A,0}v_{B,0},\quad
-p_1=v_{A,0}v_{B,1}+v_{A,1}v_{B,0},\quad
-p_2=v_{A,0}v_{B,2}+v_{A,1}v_{B,1}+v_{A,2}v_{B,0},
-\]
-\[
-p_3=v_{A,1}v_{B,2}+v_{A,2}v_{B,1},\qquad
-p_4=v_{A,2}v_{B,2};
-\]
-the coordinates are then $p_0+p_3$, $p_1+p_3+p_4$ and $p_2+p_4$, twelve products over the nine pairs $v_{A,i}v_{B,j}$.
 \end{itemize}
 
 \subsection{\texttt{SET\_CONSTANT}}\label{sec:tab-set}
@@ -80,14 +89,14 @@ A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ a
 \[
   b=c\cdot w,\qquad c\,(b+1)=0 .
 \]
-When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Both are relations between \emph{words}, and an identity is $\K$-valued (\S\ref{sec:air}), so each is written out over the three lanes: six identities, with the tower product $c\cdot w$ unrolled as in \S\ref{sec:tab-mul} and the gating $c\,(b+1)$ lane by lane, $b$ lying in $\K$. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
+When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Both are relations between \emph{words}, and an identity is $\K$-valued (\S\ref{sec:air}), so each is written out over the three lanes: six identities, with the tower product $c\cdot w$ unrolled as in \S\ref{sec:tab-arith} and the gating $c\,(b+1)$ lane by lane, $b$ lying in $\K$. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
 \[
   \nxt{\pc}=b\cdot d+(b+1)\,s,\qquad \nxt{\fp}=b\cdot f+(b+1)\,\fp,
 \]
 degree two in the columns, so neither successor is a column: the state push carries them. The destination and the frame are addresses on every row, taken or not, so each is a single $\K$-column read through a flush with literal zeros in its upper limbs, the same device as the \texttt{DEREF} pointer, and it is bus balance that puts the stored words in $\K$.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_c,o_d,o_f$; the condition $c$ (three $\K$-limbs); the destination $d$ and frame $f$ (one $\K$-limb each); inverse $w$ (three $\K$-limbs, $c^{-1}$ in $\E$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is no column, only a term of the two selections.)
-\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$, six $\K$ identities once each is taken lane by lane, and nothing else. \texttt{JUMP} is the one table left with an identity, because $b$ is the one quantity no interaction pins. On a zero condition $w$ is unconstrained, being multiplied by zero; what the identities pin there is $b=0$.
+\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$, six $\K$ identities once each is taken lane by lane, and nothing else. Along with the arithmetic selector's, these are the machine's only identities, because $b$ is the one quantity no interaction pins. On a zero condition $w$ is unconstrained, being multiplied by zero; what the identities pin there is $b=0$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},b\,d+b\,(\gen\cdot\pc)+\gen\cdot\pc,\;b\,f+b\,\fp+\fp}$, the two selections written out in characteristic $2$.

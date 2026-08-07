@@ -648,7 +648,7 @@ fn whir_shape(mu: usize, log_inv_rate: usize) -> WhirShape {
 
 /// The BLAKE3 table's virtual value columns, in `blake3_flock::SLOTS` order.
 fn blake3_value_columns() -> Vec<usize> {
-    let base = lean_vm::cpu::schema().base[5];
+    let base = lean_vm::cpu::schema().base[lean_vm::tables::BLAKE3_TABLE];
     lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| base + c).collect()
 }
 
@@ -855,7 +855,7 @@ fn gen_verify(
 
     let taus = l.taus;
     // Flock replay data, all named struct fields.
-    let n_log_b3 = l.taus[5];
+    let n_log_b3 = l.taus[lean_vm::tables::BLAKE3_TABLE];
     let lcrounds = flock::blake3::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
@@ -1594,7 +1594,20 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .collect();
     ps("N_TABLE_COLS", ints(&committed));
     ps("TABLE_COLS_CAP", (committed.iter().max().unwrap() + 1).to_string());
+    // Each table's tau floor, which the guest range-checks every announced tau
+    // against: only BLAKE3 has one, flock's least instance count. Baked from the
+    // native floor rather than written out in the guest, which would be one more
+    // hand-kept mirror to renumber whenever the table set changes.
     const MINB3: usize = 3;
+    let floors: Vec<usize> = (0..l.taus.len())
+        .map(|t| if t == lean_vm::tables::BLAKE3_TABLE { MINB3 } else { 0 })
+        .collect();
+    assert_eq!(
+        MINB3,
+        lean_vm::blake3_flock::n_blocks_log(1),
+        "the BLAKE3 floor is flock's"
+    );
+    ps("FLOORS", ints(&floors));
     let fixed_challenges: Vec<F192> = flock::zerocheck::univariate_skip_optimized::small_challenges()
         .into_iter()
         .chain(flock::zerocheck::univariate_skip_optimized::medium_challenges())
@@ -1644,7 +1657,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
-    let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3))
+    let pincol = flock::blake3::build_block_r1cs(taus[lean_vm::tables::BLAKE3_TABLE].max(MINB3))
         .const_pin
         .expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());

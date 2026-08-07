@@ -683,17 +683,18 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
 class Coordinate:
     """One coordinate of a bus tuple.
 
-    Exactly one payload is set. ``column`` and ``generator_column`` refer to
-    committed global columns; ``product`` is ``(a, b, k)`` for ``g^k * col_a *
-    col_b``, an address ``fp*g^o`` carried without committing it; ``public`` is a
-    dense public multilinear table; ``terms`` is a sum of the above, any degree-2
-    form over a table's columns, which is what carries a value a row derives from
-    its columns without committing one for it.
+    Exactly one payload is set. ``column`` refers to a committed global column and
+    ``generator_column`` is ``(col, k)`` for ``g^k * col``, a free scaling (a count
+    or pc increment, an opcode tag over the arithmetic selector); ``product`` is
+    ``(a, b, k)`` for ``g^k * col_a * col_b``, an address ``fp*g^o`` carried without
+    committing it; ``public`` is a dense public multilinear table; ``terms`` is a sum
+    of the above, any degree-2 form over a table's columns, which is what carries a
+    value a row derives from its columns without committing one for it.
     """
 
     constant: F192 | None = None
     column: int | None = None
-    generator_column: int | None = None
+    generator_column: tuple[int, int] | None = None
     product: tuple[int, int, int] | None = None
     index: bool = False
     public: tuple[F192, ...] | None = None
@@ -785,7 +786,8 @@ def _accumulate_form(coordinate: Coordinate, weight: F192, form: BusForm, base: 
     elif coordinate.column is not None:
         form.coefficients[coordinate.column - base] += weight
     elif coordinate.generator_column is not None:
-        form.coefficients[coordinate.generator_column - base] += weight * GEN
+        column, exponent = coordinate.generator_column
+        form.coefficients[column - base] += weight * _gpow(exponent)
     elif coordinate.product is not None:
         a, b, exponent = coordinate.product
         form.products.append((a - base, b - base, weight * _gpow(exponent)))
@@ -844,7 +846,8 @@ def _decompose_bus_side(
             elif coordinate.column is not None:
                 value = committed_value(coordinate.column, low)
             elif coordinate.generator_column is not None:
-                value = GEN * committed_value(coordinate.generator_column, low)
+                column, exponent = coordinate.generator_column
+                value = _gpow(exponent) * committed_value(column, low)
             elif coordinate.index:
                 value = index_mle(low)
             else:
@@ -1212,8 +1215,8 @@ def _col(index: int) -> Coordinate:
     return Coordinate(column=index)
 
 
-def _gcol(index: int) -> Coordinate:
-    return Coordinate(generator_column=index)
+def _gcol(index: int, exponent: int = 1) -> Coordinate:
+    return Coordinate(generator_column=(index, exponent))
 
 
 def _sum(terms: Iterable[Coordinate]) -> Coordinate:
@@ -1243,9 +1246,11 @@ class Flushes:
     def state_derived(self, pc: int, fp: int, npc: Coordinate, nfp: Coordinate) -> None:
         self.pair((_const(ONE), npc, nfp), (_const(ONE), _col(pc), _col(fp)))
 
-    def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Coordinate]) -> None:
-        prefix_push = (_const(GEN * GEN), _col(pc), _gcol(count), _const(_gpow(opcode)))
-        prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), _const(_gpow(opcode)))
+    def bytecode(self, pc: int, count: int, opcode: Coordinate, operands: Sequence[Coordinate]) -> None:
+        """The opcode is a coordinate like any other: a table serving one instruction
+        passes its tag as a constant, the arithmetic table a form over its selector."""
+        prefix_push = (_const(GEN * GEN), _col(pc), _gcol(count), opcode)
+        prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), opcode)
         self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
 
     def memory(self, address: Coordinate, count: int, values: Sequence[Coordinate]) -> None:
@@ -1266,19 +1271,21 @@ class Flushes:
 
 # The instruction tables (doc sec:tables) -------------------------------------
 #
-# One table per opcode. Each declares its columns by name, how it flushes the
-# bus, and its AIR; everything else about it (its width, where its columns land
-# in the global numbering, which of them hold read counts) is read off those
-# names, so the views cannot drift apart. A column name prefixed ``cnt`` is a
-# read count, and ``<x>_0.._2`` are the three K-lanes of one 192-bit word.
+# One table per opcode, but for XOR and MUL, which share the arithmetic table
+# under a boolean selector column. Each declares its columns by name, how it
+# flushes the bus, and its AIR; everything else about it (its width, where its
+# columns land in the global numbering, which of them hold read counts) is read
+# off those names, so the views cannot drift apart. A column name prefixed
+# ``cnt`` is a read count, and ``<x>_0.._2`` are the three K-lanes of one
+# 192-bit word.
 
 
 @dataclass(frozen=True)
 class Table:
-    """One instruction's table: its columns, its bus flushes, its AIR."""
+    """One table: its columns, its bus flushes, its AIR."""
 
     name: str
-    opcode: int  # also its index in TABLES, so g^opcode is its bytecode tag
+    index: int  # its position in TABLES, hence in the schema and the announced logs
     columns: tuple[str, ...]
     flushes: Callable[[Table], Flushes]
     constraints: Callable[[Callable[[str], F192]], tuple[F192, ...]] = lambda _: ()
@@ -1301,7 +1308,7 @@ class Table:
 
 
 # The tower product in E = K[y]/(y^3+y+1), lane by lane: lane i sums ``x[j]*y[k]``
-# over TOWER_LANES[i], the five partials of doc sec:tab-mul folded into
+# over TOWER_LANES[i], the five partials of doc sec:tab-arith folded into
 # ``c0 = p0+p3``, ``c1 = p1+p3+p4``, ``c2 = p2+p4``. Written once: MUL's result
 # coordinate and JUMP's inverse identity need the same unrolling, and every identity
 # is K-valued (doc sec:air), so a word relation is three lane relations.
@@ -1317,28 +1324,59 @@ def _tower_lanes(x: Sequence[F192], y: Sequence[F192]) -> tuple[F192, ...]:
     return tuple(sum((x[j] * y[k] for j, k in lane), ZERO) for lane in TOWER_LANES)
 
 
-def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[Coordinate, ...]:
-    """The result word's three K-lanes as forms over the two operands' lanes.
+def _arith_opcode(selector: int) -> Coordinate:
+    """``opcode(XOR) + s*(opcode(XOR) + opcode(MUL))``, affine in the selector.
 
-    XOR is the lane-wise sum; MUL is the tower product, unrolled through TOWER_LANES.
+    Injective, so with ``s`` boolean (the table's first identity) the coordinate is
+    one of the two tags: the bytecode bus admits the row against an XOR or a MUL
+    instruction and nothing else, and forces the selector to say which.
     """
-    if not multiply:
-        return tuple(_sum((_col(a[i]), _col(b[i]))) for i in range(3))
-    return tuple(_sum(_prod(a[j], b[k]) for j, k in lane) for lane in TOWER_LANES)
+    return _sum((_const(_gpow(OPCODES["xor"])), _gcol(selector, OPCODES["xor"]), _gcol(selector, OPCODES["mul"])))
+
+
+def _arith_result(a: Sequence[int], b: Sequence[int], w: Sequence[int], selector: int) -> tuple[Coordinate, ...]:
+    """The result word's three K-lanes as forms over the operands and the selector.
+
+    One form for both instructions: ``c_i = (1+s)*(v_A + v_B)_i + [v_A*w]_i`` with
+    ``w = s*v_B``, the bracket the tower product unrolled through TOWER_LANES. At
+    ``s=0`` it vanishes with ``w`` and the lane is the sum; at ``s=1`` the factor
+    ``1+s`` vanishes and the lane is the product. Degree two throughout: the selector
+    reaches the product through a column, never inside the coordinate.
+    """
+
+    def lane(i: int) -> Coordinate:
+        gated_sum = (_col(a[i]), _col(b[i]), _prod(selector, a[i]), _col(w[i]))
+        return _sum((*gated_sum, *(_prod(a[j], w[k]) for j, k in TOWER_LANES[i])))
+
+    return (lane(0), lane(1), lane(2))
 
 
 def _flushes_arith(t: Table) -> Flushes:
     pc, fp, o_a, o_b, o_c, cnt_a, cnt_b, cnt_c, cnt_bc = t.cols("pc", "fp", "o_a", "o_b", "o_c", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
-    va, vb = t.cols("va_0", "va_1", "va_2"), t.cols("vb_0", "vb_1", "vb_2")
+    va, vb, w = t.cols("va_0", "va_1", "va_2"), t.cols("vb_0", "vb_1", "vb_2"), t.cols("w_0", "w_1", "w_2")
+    selector = t.col("s")
     f = Flushes()
     f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    f.bytecode(pc, cnt_bc, _arith_opcode(selector), (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
     f.memory_word(_prod(fp, o_a), cnt_a, *va)
     f.memory_word(_prod(fp, o_b), cnt_b, *vb)
     # The destination cell's flush carries the result itself, so bus balance is
     # the assertion and the result is no column.
-    f.memory(_prod(fp, o_c), cnt_c, _arith_result(t.name == "mul", va, vb))
+    f.memory(_prod(fp, o_c), cnt_c, _arith_result(va, vb, w, selector))
     return f
+
+
+def _arith_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
+    """``s*(s+1) = 0`` and ``w = s*v_B`` lane by lane: the four the merged table needs.
+
+    The selector must be boolean because the bytecode coordinate is affine in it:
+    an unconstrained ``s`` would solve for another opcode's tag and run that
+    instruction as arithmetic. The gated copy ``w`` is what keeps the result form at
+    degree two. Gating needs no unrolling, ``s`` lying in K.
+    """
+    selector = get("s")
+    gated = tuple(get(f"w_{i}") + selector * get(f"vb_{i}") for i in range(3))
+    return (selector * (selector + ONE), *gated)
 
 
 def _flushes_set(t: Table) -> Flushes:
@@ -1347,7 +1385,7 @@ def _flushes_set(t: Table) -> Flushes:
     f = Flushes()
     f.state_step(pc, fp)
     # The immediate's three limbs ride the spare operand slots.
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
+    f.bytecode(pc, cnt_bc, _const(_gpow(OPCODES[t.name])), (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
     f.memory_word(_prod(fp, o), cnt, *k)
     return f
 
@@ -1369,7 +1407,7 @@ def _flushes_deref(t: Table) -> Flushes:
     )
     f = Flushes()
     f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
+    f.bytecode(pc, cnt_bc, _const(_gpow(OPCODES[t.name])), (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
     f.memory_base(_prod(fp, alpha), cnt_ptr, ptr)
     f.memory(_prod(ptr, beta), cnt_target, store)
     f.memory_word(_prod(fp, gamma), cnt_local, *v3)
@@ -1388,7 +1426,7 @@ def _flushes_jump(t: Table) -> Flushes:
         _sum((_prod(b, dest), _prod(b, pc, 1), _gcol(pc))),
         _sum((_prod(b, frame), _prod(b, fp), _col(fp))),
     )
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
+    f.bytecode(pc, cnt_bc, _const(_gpow(OPCODES[t.name])), (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
     f.memory_word(_prod(fp, o_c), cnt_c, *cond)
     # The destination and the frame are addresses on every row, taken or not, so
     # each is one K-limb read through literal zeros in the upper lanes.
@@ -1418,7 +1456,7 @@ def _flushes_blake3(t: Table) -> Flushes:
     operands = t.cols("o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
     f = Flushes()
     f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, tuple(_col(i) for i in operands))
+    f.bytecode(pc, cnt_bc, _const(_gpow(OPCODES[t.name])), tuple(_col(i) for i in operands))
     # The eight cells a row accesses: the four independently addressed message
     # chunks, then the two consecutive chaining-value cells and the two output
     # ones. Each carries two limbs of q_flock and a zero top limb.
@@ -1443,7 +1481,7 @@ def _flushes_pack(t: Table) -> Flushes:
     )
     f = Flushes()
     f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    f.bytecode(pc, cnt_bc, _const(_gpow(OPCODES[t.name])), (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
     # The literal zeros make the two source range assertions and the destination
     # packing exact through bus balance.
     f.memory_base(_prod(fp, o_a), cnt_a, v_a)
@@ -1454,9 +1492,12 @@ def _flushes_pack(t: Table) -> Flushes:
 
 # The column names of each table, in the order they are committed. Hand-laid in
 # groups: the state, the operands, the values, then the read counts.
+# The arithmetic table's selector ``s`` (0 = XOR, 1 = MUL) rides with the operands
+# it is decoded alongside, and its gated copy ``w = s*v_B`` with ``vb``, which one
+# memory read fills.
 ARITH_COLUMNS = (
-    "pc", "fp", "o_a", "o_b", "o_c",
-    "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2",
+    "pc", "fp", "o_a", "o_b", "o_c", "s",
+    "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2", "w_0", "w_1", "w_2",
     "cnt_a", "cnt_b", "cnt_c", "cnt_bc",
 )  # fmt: skip
 
@@ -1485,15 +1526,14 @@ BLAKE3_COLUMNS = (
 PACK_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "v_a", "v_b", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
 
 TABLES = (
-    Table("xor", 0, ARITH_COLUMNS, _flushes_arith),
-    Table("mul", 1, ARITH_COLUMNS, _flushes_arith),
-    Table("set", 2, SET_COLUMNS, _flushes_set),
-    Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
-    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 6),
-    Table("blake3", 5, BLAKE3_COLUMNS, _flushes_blake3),
-    Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
+    Table("arith", 0, ARITH_COLUMNS, _flushes_arith, _arith_constraints, 4),
+    Table("set", 1, SET_COLUMNS, _flushes_set),
+    Table("deref", 2, DEREF_COLUMNS, _flushes_deref),
+    Table("jump", 3, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 6),
+    Table("blake3", 4, BLAKE3_COLUMNS, _flushes_blake3),
+    Table("pack64x2", 5, PACK_COLUMNS, _flushes_pack),
 )
-BLAKE3 = TABLES[5]
+BLAKE3 = TABLES[4]
 
 # Where in the flock witness each embedded BLAKE3 limb lives (doc
 # sec:tab-blake3): one 64-bit slot per limb, the chaining value first, then the
@@ -1523,9 +1563,11 @@ BLAKE3_SLOT_BY_COLUMN = {
     }.items()  # fmt: skip
 }
 
-# The instruction names the statement JSON uses are the table names, and the bus
-# opcode is the table's index (doc sec:e2e-const).
-OPCODES = {table.name: table.opcode for table in TABLES}
+# The instruction names the statement JSON uses, and the exponent of each one's
+# bus opcode tag g^k (doc sec:e2e-const). Seven opcodes over six tables: XOR and
+# MUL share the arithmetic table, whose opcode coordinate is a form over its
+# selector rather than a constant.
+OPCODES = {"xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4, "blake3": 5, "pack64x2": 6}
 
 # Coordinates 4..11 of a bytecode tuple: eight operand or immediate slots.
 N_BYTECODE_OPERANDS = 8
@@ -1539,7 +1581,8 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
     if coordinate.column is not None:
         return _col(base + coordinate.column)
     if coordinate.generator_column is not None:
-        return _gcol(base + coordinate.generator_column)
+        column, exponent = coordinate.generator_column
+        return _gcol(base + column, exponent)
     if coordinate.product is not None:
         a, b, exponent = coordinate.product
         return _prod(base + a, base + b, exponent)
@@ -1566,11 +1609,11 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
 def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
-        and len(table_logs) == 7
+        and len(table_logs) == len(TABLES)
         and all(0 <= height <= 32 for height in table_logs)
         # flock sizes its argument to at least 2^3 instances and the BLAKE3 table's value
         # columns share that instance cube, so a smaller height is not expressible.
-        and table_logs[5] >= 3,
+        and table_logs[BLAKE3.index] >= 3,
         "invalid announced table sizes",
     )
     table_logs = list(table_logs)
@@ -1626,11 +1669,11 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
     kappas: list[int | None] = [0] * (len(GLOBAL_COLUMNS) + sum(WIDTHS))
     kappas[MEM_0] = kappas[MEM_1] = kappas[MEM_2] = kappas[MEM_FINAL_CNT] = log_memory
     kappas[BYTECODE_FINAL_CNT] = bytecode_log
-    kappas[QFLOCK] = table_logs[BLAKE3.opcode] + QFLOCK_SLOT_BITS
+    kappas[QFLOCK] = table_logs[BLAKE3.index] + QFLOCK_SLOT_BITS
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_SLOT_BY_COLUMN:
-        kappas[BASES[BLAKE3.opcode] + local] = None
+        kappas[BASES[BLAKE3.index] + local] = None
     offsets, total_log = stack_offsets(kappas)
     placements = [Placement(-1, 0) if variables is None else Placement(variables, offset) for variables, offset in zip(kappas, offsets)]
     # Floor at the PCS minimum: WHIR's level ladder needs room, so a tiny
@@ -1640,7 +1683,7 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
 
 
 def build_airs(layout: Layout, bus_forms: Sequence[Sequence[BusForm]]) -> list[Air]:
-    return [Air(table, height, tuple(side[table.opcode] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs)]
+    return [Air(table, height, tuple(side[table.index] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs)]
 
 
 def constraint_claims(claims: Sequence[AirClaim]) -> list[ColumnClaim]:
@@ -1653,7 +1696,7 @@ def constraint_claims(claims: Sequence[AirClaim]) -> list[ColumnClaim]:
 
 def virtual_slot(column: int) -> int | None:
     """The q_flock slot a BLAKE3 value column rides in, or None if committed."""
-    return BLAKE3_SLOT_BY_COLUMN.get(column - BASES[BLAKE3.opcode])
+    return BLAKE3_SLOT_BY_COLUMN.get(column - BASES[BLAKE3.index])
 
 
 # Ligerito opening ------------------------------------------------------------
@@ -2564,7 +2607,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         point_claims.append((full_point, claim.value))
 
     # 7] BLAKE3 validity, then the one opening that discharges every claim.
-    reduction = verify_reduction(FLOCK_LOG_BITS + layout.table_logs[BLAKE3.opcode], transcript)
+    reduction = verify_reduction(FLOCK_LOG_BITS + layout.table_logs[BLAKE3.index], transcript)
     opening = transcript.opening()
     verify_stacked_opening(
         transcript,
