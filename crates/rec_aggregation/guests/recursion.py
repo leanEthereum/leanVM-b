@@ -218,8 +218,7 @@ LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
-POINT_BUF_QFLOCK = 3
-POINT_BUF_QFLOCK_RHO = 4
+POINT_BUF_QFLOCK_RHO = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 # Dense Jagged column index and fixed public pad value for each pooled claim.
@@ -2315,13 +2314,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # The committed real prefix is offset by its public pad value, so the
     # logical evaluation is the committed one plus that constant at every
-    # point. q_flock is exempt because its pad is zero.
+    # point. q_flock needs no exemption: its pad is zero.
     opening_claim_values = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
-            opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
-        else:
-            opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j]
+        opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j]
 
     # Every adjusted Jagged claim value is observed before its batching scalar,
     # exactly as in the native verifier.
@@ -2409,14 +2405,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + ris_q[xk])
     rs_weight = rsw_chain[rs_len_g]
     # The VM value claims routed into fixed q_flock slots use the same aligned
-    # offset-zero subcube. Framework claims use zeta; the BLAKE3 columns absorbed
-    # by the shared AIR sumcheck use rho.
+    # offset-zero subcube, always at rho: a virtual BLAKE3 value column is
+    # referenced only by its own table's bus blocks, which the batched zerocheck
+    # settles, so no framework block can raise one at zeta (walk_claims asserts
+    # exactly that).
     qflock_claim_weight = 0
     for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
-            cplen_g = claim_cplen_g[GEN ** j]
-            weight = eval_qflock_claim_weight(zeta, cplen_g, CLAIM_QFLOCK_SLOT[j], fold_challenges, fold_cap_g, qflockv_g)
-            qflock_claim_weight += gamma_pool[GEN ** j] * weight
         if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
             cplen_g = claim_cplen_g[GEN ** j]
             weight = eval_qflock_claim_weight(rho, cplen_g, CLAIM_QFLOCK_SLOT[j], fold_challenges, fold_cap_g, qflockv_g)

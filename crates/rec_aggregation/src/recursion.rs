@@ -1358,10 +1358,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         for c in 0..table.n_committed_columns() {
             let col = sch.base[t] + c;
             if l.placements[col].is_virtual() {
-                // buf 4 = q_flock at the table's rho point (upstream has only
-                // buf 3, q_flock at zeta); both route to a strided q_flock slot
-                // rather than a Jagged block.
-                cpbuf.push(4);
+                // `cpbuf` codes are the guest's POINT_BUF_*: 0 zeta, 1 rho, 2 pi,
+                // 3 qflock-rho. A virtual value column routes to a strided
+                // q_flock slot rather than a Jagged block.
+                cpbuf.push(3);
                 cpoff.push(0);
                 let placement = l.placements[lean_vm::cpu::QFLOCK];
                 cpcol.push(block_index[&placement.offset]);
