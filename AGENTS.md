@@ -40,6 +40,7 @@ cargo testall                     # whole suite in seconds
 cargo clippyall                   # clippy, -D warnings
 cargo docall                      # rustdoc, -D warnings
 cargo fmt --all                   # max_width = 120
+ruff format --line-length 150 python-verifier/verifier.py   # and `ruff check` it
 ```
 
 Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_whir_query_counts`, `encoding_grinding_bits`.
