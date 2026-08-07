@@ -222,8 +222,7 @@ LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
-POINT_BUF_QFLOCK = 3
-POINT_BUF_QFLOCK_RHO = 4
+POINT_BUF_QFLOCK_RHO = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_COMMITTED_COL = CLAIM_COMMITTED_COL_PLACEHOLDER
 CLAIM_QFLOCK_SLOT_BITS = CLAIM_QFLOCK_SLOT_BITS_PLACEHOLDER
@@ -270,6 +269,11 @@ RING_MAP_SHIFTS = [32, 16, 8, 4, 2, 1]
 # bits.
 COUNT_BITS = 33
 SIZE_BITS = 34
+# A structural LOG (log_mem, tau_t, log_inv_rate) is announced as an integer word
+# and raised to a g-power by decomposing it (g_power_of_word). Every one of them is
+# below SIZE_BITS, so LOG_WORD_BITS bits are enough, and the reconstruction IS the
+# bound: a larger announced log cannot reproduce itself from this many bits.
+LOG_WORD_BITS = 6
 
 
 @inline
@@ -295,20 +299,26 @@ def challenge_from_state(state):
     hint_f192_limbs(hi, state[1])
     pack64x2_into(lo[0], lo[1], state[0])
     pack64x2_into(hi[0], hi[1], state[1])
-    return f192_from_limbs(lo[0], lo[1], hi[0])
+    # state[0] IS lo[0] + Y·lo[1], pinned by the pack just above, so the low two
+    # lanes need no reassembly: only the top lane is weighted in.
+    return state[0] + Y_TOWER * Y_TOWER * hi[0]
 
 
 @inline
 def sponge_compress(state, scalar, tail, out):
     # Serialize scalar.c0, scalar.c1, scalar.c2, tail as two canonical cells.
-    # The hints only provide the decomposition; PACK64X2 proves all four lanes
-    # are in K, and the equality binds the first three back to scalar.
-    limbs = StackBuf(3)
-    hint_f192_limbs(limbs, scalar)
+    # Only the two LOW limbs are advice: PACK64X2 proves they are in K and makes
+    # block[0] their packing lo + Y·hi, which leaves the top limb determined,
+    # (scalar + block[0])·Y⁻², with the second pack proving that is in K as well.
+    # Three limbs in K that weight to scalar ARE its limbs, the tower
+    # representation being unique, so the serialization is canonical with no
+    # equality check to make and one less hint to distrust.
+    lo = StackBuf(2)
+    hint_f192_limbs(lo, scalar)
     block = StackBuf(2)
-    pack64x2_into(limbs[0], limbs[1], block[0])
-    pack64x2_into(limbs[2], tail, block[1])
-    assert scalar == f192_from_limbs(limbs[0], limbs[1], limbs[2])
+    pack64x2_into(lo[0], lo[1], block[0])
+    top = (scalar + block[0]) * (Y_INV * Y_INV)
+    pack64x2_into(top, tail, block[1])
     blake3(state, block, out)
     return
 
@@ -323,7 +333,7 @@ def hash_state_to_words(cell_0, cell_1):
     hint_f192_limbs(hi, cell_1)
     pack64x2_into(lo[0], lo[1], cell_0)
     pack64x2_into(hi[0], hi[1], cell_1)
-    return f192_from_limbs(lo[0], lo[1], hi[0]), hi[1]
+    return cell_0 + Y_TOWER * Y_TOWER * hi[0], hi[1]  # cell_0 IS lo[0] + Y·lo[1] (pinned above)
 
 
 @inline
@@ -334,7 +344,7 @@ def hash_words_to_state(word_0, word_1):
     state = StackBuf(2)
     pack64x2_into(limbs[0], limbs[1], state[0])
     pack64x2_into(limbs[2], word_1, state[1])
-    assert word_0 == f192_from_limbs(limbs[0], limbs[1], limbs[2])
+    assert word_0 == state[0] + Y_TOWER * Y_TOWER * limbs[2]  # state[0] is the pack of the low two limbs
     return state
 
 
@@ -347,18 +357,6 @@ def squeeze_step(state_0, state_1):
     sponge_compress(a, f192_from_limbs(0, 0, DS_SQ), 0, o)
     challenge = challenge_from_state(o)
     return challenge, o[0], o[1]
-
-
-def check_field_bits_decomposition(bits_ptr, v):
-    # Boolean-constrain FIELD_BITS hinted bits and assert they reconstruct v in
-    # the F192 COORDINATE basis (hint_decompose_bits emits coordinate bits).
-    acc = 0
-    for i in unroll(0, FIELD_BITS):
-        b = bits_ptr[GEN ** i]
-        assert b * b == b
-        acc += b * COORD_BASIS[i]  # bit i contributes the i-th coordinate basis vector
-    assert acc == v
-    return
 
 
 def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
@@ -412,13 +410,16 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
 
 
 def grind_check(state_0, state_1, nonce, nbits_g):
-    # WHIR fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
-    # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
-    # check_field_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
-    # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
-    # caller absorbs the full field nonce afterwards. The honest prover searches
-    # the deterministic u64 subset, while verification permits the full field:
-    # each candidate still costs one hash and succeeds with probability 2^-bits.
+    # WHIR fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)), whose
+    # low nbits (nbits_g = g^nbits) must be zero. The PoW window of
+    # transcript::pow_bits_ok is `digest.0 & ((1 << bits) - 1)`, nbits < 64, so it
+    # lives entirely in the digest's FIRST 64-bit lane: one PACK64X2 pins the
+    # digest cell's two lanes (both proven to be in K, the third zero), and only
+    # that lane's BASE_FIELD_BITS coordinates are advice-decomposed and verified
+    # (booleanity + reconstruction), not all FIELD_BITS of the cell. The caller
+    # absorbs the full field nonce afterwards. The honest prover searches the
+    # deterministic u64 subset, while verification permits the full field: each
+    # candidate still costs one hash and succeeds with probability 2^-bits.
     if nbits_g == GEN ** 0:
         assert nonce == 0  # native canonical zero-work nonce
     st = [state_0, state_1]
@@ -427,11 +428,21 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     out = StackBuf(2)
     # nonce's three F64 limbs followed by DS_POW, exactly as the native sponge.
     sponge_compress(base, nonce, DS_POW, out)
-    digest_bits = HeapBuf(GEN ** FIELD_BITS)
-    hint_decompose_bits(digest_bits, out[0], FIELD_BITS)
-    check_field_bits_decomposition(digest_bits, out[0])
+    lanes = StackBuf(2)
+    hint_f192_limbs(lanes, out[0])
+    pack64x2_into(lanes[0], lanes[1], out[0])  # out[0] == (lanes[0], lanes[1], 0), both in K
+    lane_bits = HeapBuf(GEN ** BASE_FIELD_BITS)
+    hint_decompose_bits(lane_bits, lanes[0], BASE_FIELD_BITS)
+    acc = 0
+    for i in unroll(0, BASE_FIELD_BITS):
+        b = lane_bits[GEN ** i]
+        # Booleanity as a write-once pin: the cell already holds b, so storing b*b
+        # back IS the assert, one instruction shorter (as in decode_query_bits).
+        lane_bits[GEN ** i] = b * b
+        acc += b * COORD_BASIS[i]  # bit i contributes the i-th coordinate basis vector
+    assert acc == lanes[0]  # the bits ARE the lane's coordinates, so the pins below bind it
     for xb in mul_range(1, nbits_g):
-        assert digest_bits[xb] == 0
+        assert lane_bits[xb] == 0
     return
 
 
@@ -731,9 +742,14 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     merkle_paths = HeapBuf(GEN ** (LIG_PATHS_LEN[m_idx]))
     hint_witness(merkle_paths[0:LIG_PATHS_LEN[m_idx]], "merkle_paths")
     final_msg = HeapBuf(GEN ** (LIG_YR_LEN[m_idx]))  # filled from the stream at the last level
-    # Stream-bound level roots (filled as each root is read; index = level).
+    # Level roots by level: slot 0 is the commitment root (bound above), the rest
+    # are filled as each root is read off the stream. Every query then checks its
+    # walk with ONE heap store per digest cell, the write-once equality, with no
+    # level-0 special case.
     level_roots_0 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
     level_roots_1 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
+    level_roots_0[GEN ** 0] = commit_root_0
+    level_roots_1[GEN ** 0] = commit_root_1
     # ...and guest-filled accumulators (one slot per fold / per level / per query):
     fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
     level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
@@ -884,15 +900,11 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             path_base = xe ** (2 * LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
             path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * path_base
             root_0, root_1 = verify_merkle_path(node_0, node_1, path_ptr, direction_bits, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])  # walk the query's Merkle path to the level root
-            if lvl == 0:
-                assert root_0 == commit_root_0
-                assert root_1 == commit_root_1
-            else:
-                # A heap store IS the equality assert here (`DerefMode::Cell`
-                # unifies the two cells, and the slot was written when the root
-                # was read off the stream), at one instruction instead of three.
-                level_roots_0[GEN ** lvl] = root_0
-                level_roots_1[GEN ** lvl] = root_1
+            # A heap store IS the equality assert here (`DerefMode::Cell` unifies
+            # the two cells, and the slot holds this level's bound root already),
+            # at one instruction instead of three.
+            level_roots_0[GEN ** lvl] = root_0
+            level_roots_1[GEN ** lvl] = root_1
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
         # Every level, including the last, ties its commitment in through an
@@ -1062,7 +1074,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         fs, x, cursor = fs_next(fs, cursor)
         sizes[i] = x
     fs, log_inv_rate, cursor = fs_next(fs, cursor)
-    g_log_inv_rate = g_power_of_word(log_inv_rate, g_squares, COUNT_BITS)
+    g_log_inv_rate = g_power_of_word(log_inv_rate, g_squares, LOG_WORD_BITS)
     rate_sel = g_log_inv_rate / GEN  # g^(log_inv_rate - 1)
     assert log(rate_sel) < LIG_N_RATES
 
@@ -1074,7 +1086,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]
     # log_mem is announced AS a log (an integer word L): g^L is assembled from
     # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
-    g_log_mem = g_power_of_word(sizes[0], g_squares, COUNT_BITS)
+    g_log_mem = g_power_of_word(sizes[0], g_squares, LOG_WORD_BITS)
     assert log(g_log_mem) < COUNT_BITS
     mem_floor_slack = g_log_mem / GEN ** MIN_LOG_MEM
     assert log(mem_floor_slack) < COUNT_BITS  # native MIN_LOG_MEM <= log_mem
@@ -1085,7 +1097,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # so a height is all there is to announce, and the log2_ceil gadget
     # that used to turn a count into one is gone from here.
     for t in unroll(0, N_TABLES):
-        g_tau = g_power_of_word(sizes[t + 1], g_squares, COUNT_BITS)
+        g_tau = g_power_of_word(sizes[t + 1], g_squares, LOG_WORD_BITS)
         assert log(g_tau) < COUNT_BITS
         # A table's floor: flock sizes its BLAKE3 argument to at least 2^3 instances.
         assert log(g_tau / GEN ** FLOORS[t]) < COUNT_BITS
@@ -1988,13 +2000,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rho_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
         rho_eq_chain[xk * GEN] = rho_eq_chain[xk] * (1 + rho[xk] + fold_challenges[xk])
-    # The qflock variants read the same points against ris shifted past the slot
-    # coordinates, so they need their own chains.
+    # The qflock variant reads rho against ris shifted past the slot coordinates,
+    # so it needs its own chain. There is no zeta counterpart: a virtual value
+    # column is referenced only by its own table's bus blocks, which the zerocheck
+    # settles, so no framework block can raise one (asserted while the placeholder
+    # map is built).
     ris_slot = fold_challenges * GEN ** SLOT_STRIDE_LOG
-    zeta_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
-    zeta_slot_eq_chain[GEN ** 0] = 1
-    for xk in mul_range(1, g_bus_mu):
-        zeta_slot_eq_chain[xk * GEN] = zeta_slot_eq_chain[xk] * (1 + zeta[xk] + ris_slot[xk])
     rho_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
     rho_slot_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
@@ -2019,10 +2030,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         else:
             cplen_g = claim_cplen_g[GEN ** j]
             nlow = cplen_g
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
-                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qflock slot coords
             if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
-                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG
+                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qflock slot coords
         nover_g = claim_nover[GEN ** j]
         # nover <= YR_LOG_CAP: honest nover <= yr_log_n <= cap, and the y-slot
         # loop below selects prefix_mask_table row nover, so its log must be
@@ -2052,12 +2061,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for xk in mul_range(GEN, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
             low_eq = low_chain[low_len_g]
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
-            qflock_slot_eq = GEN ** 0
-            for k in unroll(0, SLOT_STRIDE_LOG):
-                sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
-                qflock_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            low_eq = qflock_slot_eq * zeta_slot_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
             qflock_slot_eq = GEN ** 0
             for k in unroll(0, SLOT_STRIDE_LOG):
@@ -2141,8 +2144,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for j in unroll(0, N_CLAIMS):
         overlap_ptr = rho * claim_low_len[GEN ** j]
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            overlap_ptr = zeta * claim_low_len[GEN ** j]
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK:
             overlap_ptr = zeta * claim_low_len[GEN ** j]
         # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
         # only for k < nover (the [low_len, cplen) span); at k >= nover it points

@@ -277,6 +277,16 @@ def blake3_hash(data: bytes) -> bytes:
     return _output_root(output)
 
 
+def digest_words(digest: bytes) -> tuple[int, int, int, int]:
+    """Read the first 32 bytes of a digest as four little-endian 64-bit words."""
+    return (
+        int.from_bytes(digest[0:8], "little"),
+        int.from_bytes(digest[8:16], "little"),
+        int.from_bytes(digest[16:24], "little"),
+        int.from_bytes(digest[24:32], "little"),
+    )
+
+
 def build_eq(point: Sequence[F192]) -> list[F192]:
     out = [ONE]
     for r in point:
@@ -496,7 +506,7 @@ DS_POW = 5
 def compress(left: Sequence[int], right: Sequence[int]) -> tuple[int, int, int, int]:
     require(len(left) == len(right) == 4, "compression operands must contain four words")
     digest = blake3_hash(b"".join(x.to_bytes(8, "little") for x in (*left, *right)))
-    return tuple(int.from_bytes(digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
+    return digest_words(digest)
 
 
 class Sponge:
@@ -633,7 +643,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
             message = transcript.scalars(4)
             challenge = transcript.sample()
             round_point.append(challenge)
-            claim = quartic_eval_from_eq(claim, prior, *message, challenge)
+            claim = quartic_eval_from_eq(claim, prior, message[0], message[1], message[2], message[3], challenge)
 
         tails = [transcript.scalars(4) for _ in range(3)]
         products = [tail[0] * tail[1] * tail[2] * tail[3] for tail in tails]
@@ -1024,6 +1034,7 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
+MAX_LOG_BYTECODE = 32
 BASES = (6, 21, 36, 44, 59, 77, 112)
 WIDTHS = (15, 15, 8, 15, 18, 35, 11)
 CONSTRAINT_COUNTS = (0, 0, 0, 0, 2, 0, 0)
@@ -1133,6 +1144,9 @@ class Program:
         operations = tuple(Operation.parse(item) for item in encoded)
         require(bool(operations) and not len(operations) & (len(operations) - 1),
                 "program length must be a nonzero power of two")
+        # One of the public instance caps the counting arguments rest on (doc
+        # sec:bytecode, sec:memchan): reject an oversized announcement outright.
+        require(len(operations) <= 1 << MAX_LOG_BYTECODE, "program exceeds the bytecode cap")
         return cls(operations)
 
     def digest(self) -> tuple[int, int, int, int]:
@@ -1161,7 +1175,7 @@ class Program:
                 y = int(d["out"])
             words.extend((a | b << 32, c | tag << 32, k.c0, k.c1, k.c2, int(x), int(y)))
         digest = blake3_hash(b"".join(word.to_bytes(8, "little") for word in words))
-        return tuple(int.from_bytes(digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
+        return digest_words(digest)
 
     def transcript_statement(self, public_input: Sequence[F192]) -> tuple[F192, ...]:
         program_digest = self.digest()
@@ -1170,7 +1184,7 @@ class Program:
             + FAMILY_DIGEST
             + b"".join(word.to_bytes(8, "little") for word in program_digest)
         )
-        words = tuple(int.from_bytes(seed[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
+        words = digest_words(seed)
         return (F192(words[0], words[1]), F192(words[2], words[3]), *public_input)
 
 
@@ -1610,7 +1624,8 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         candidate = (queries, ood)
         if best is None or queries < best[0]:
             best = candidate
-    require(best is not None, "no secure Ligerito configuration")
+    if best is None:
+        raise VerificationError("no secure Ligerito configuration")
     return best
 
 

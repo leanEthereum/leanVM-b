@@ -115,3 +115,7 @@ The third is worth understanding before touching the verifier. `guests/recursion
 | `PCS_LOG_N`, `PCS_LOG_INV_RATE`, `PCS_MIN_MU`, `PCS_SAMPLES`                                            | PCS throughput bench                             |
 | `WHIR_TRACE`, `WHIR_NUM_VARS`, `WHIR_LOG_INV_RATE`                                          | WHIR NTT/Merkle split                        |
 | `DBG_PROF{,_DUMP}`, `DBG_LOOPS`, `DBG_DISASM`, `DBG_LOWER`, `DBG_CSE`, `DBG_NO_CSE`, `DBG_PLACEHOLDERS` | compiler / guest-cycle attribution               |
+
+## Side notes
+
+- proofs, and thus proof size, are not deterministic; due to Proof of Work grinding, which is multi-threaded.

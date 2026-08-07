@@ -82,7 +82,7 @@ A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ a
 \]
 When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
 \[
-  \mathit{next\_pc}=b\cdot d+(b+1)\,s,\qquad \mathit{next\_fp}=b\cdot f+(b+1)\,\fp,
+  \nxt{\pc}=b\cdot d+(b+1)\,s,\qquad \nxt{\fp}=b\cdot f+(b+1)\,\fp,
 \]
 degree two in the columns, so neither successor is a column: the state push carries them. The destination and the frame are addresses on every row, taken or not, so each is a single $\K$-column read through a flush with literal zeros in its upper limbs, the same device as the \texttt{DEREF} pointer, and it is bus balance that puts the stored words in $\K$.
 \begin{itemize}
