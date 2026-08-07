@@ -134,8 +134,8 @@ fn table_message_all_nodes<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
 }
 
 /// Evaluate one Boolean node and `g`. The other Boolean node is recovered from
-/// the running sumcheck claim, so this removes one full pass over every active
-/// table while preserving the four transmitted round values exactly.
+/// the running sumcheck claim, so this removes one constraint evaluation at
+/// every active row while preserving the four transmitted round values exactly.
 #[inline(always)]
 fn table_message_with_derived_boolean<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
     cols: &[C],
