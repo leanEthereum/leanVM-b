@@ -1593,11 +1593,26 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         if t == TABLE_DEREF:
             constraint_eval = 0
         if t == TABLE_JUMP:
-            c = f192_from_limbs(col_evals[5], col_evals[6], col_evals[7])
-            w = f192_from_limbs(col_evals[14], col_evals[15], col_evals[16])
-            ind_def = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[17] + c * w)
-            ind_nz = eta_pows[ETA_OFFSET[t] + 1] * (c * (col_evals[17] + 1))
-            constraint_eval = ind_def + ind_nz
+            # `b = c*w` and `c*(b+1) = 0`, each written out over the three lanes: an
+            # identity is K-valued, so the tower product (y^3 = y + 1) is unrolled by
+            # hand rather than assembled into one E equation (tables.rs TOWER_LANES).
+            # Local columns: c's lanes at 5..7, w's at 14..16, the indicator b at 17.
+            c0 = col_evals[5]
+            c1 = col_evals[6]
+            c2 = col_evals[7]
+            w0 = col_evals[14]
+            w1 = col_evals[15]
+            w2 = col_evals[16]
+            b = col_evals[17]
+            b1 = b + 1
+            cw0 = c0 * w0 + c1 * w2 + c2 * w1
+            cw1 = c0 * w1 + c1 * w0 + c1 * w2 + c2 * w1 + c2 * w2
+            cw2 = c0 * w2 + c1 * w1 + c2 * w0 + c2 * w2
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (b + cw0)
+            constraint_eval += eta_pows[ETA_OFFSET[t] + 1] * cw1
+            constraint_eval += eta_pows[ETA_OFFSET[t] + 2] * cw2
+            for lane in unroll(0, 3):
+                constraint_eval += eta_pows[ETA_OFFSET[t] + 3 + lane] * (col_evals[5 + lane] * b1)
         if t == TABLE_BLAKE3:
             constraint_eval = 0
         if t == TABLE_PACK64X2:

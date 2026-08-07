@@ -10,9 +10,10 @@
 //! DERIVES is a column at all: an operand address `fp·o`, an `XOR`/`MUL` result,
 //! the `DEREF` store, the `JUMP` successors are each written out as the degree-2
 //! bus coordinate that carries them (§sec:m3), which leaves `JUMP`'s is-nonzero
-//! indicator as the one identity any table still has. A constraint is evaluated
-//! at an `E`-point, so `eval_constraint` receives `E`-values; a word is
-//! reassembled as `c0 + c1·y + c2·y²`.
+//! indicator as the one identity any table still has. Every identity is `K`-valued,
+//! so a relation on machine words is written out lane by lane; after the round a
+//! table joins the batch its columns are `E`-valued, which is what
+//! `eval_constraint` takes.
 
 use crate::colval::ColVal;
 use crate::cpu::{Brow, Drow, Jrow, Op, Srow, Trace, Xrow};
@@ -23,21 +24,54 @@ use primitives::field::{F64, F192, mul_by_g};
 //
 // Each is written ONCE, generic over the column type: `F64` in the round a table
 // joins the batch, `F192` afterwards (see [`ColVal`]). Products of two `K`
-// columns stay 64-bit, an `η`-power or a word multiplies through `mul_e`, and a
-// machine word from three `K` lanes costs nothing to assemble.
+// columns stay 64-bit and an `η`-power multiplies through `mul_e`.
+//
+// EVERY identity is `K`-valued, like the columns it reads and like the bus
+// coordinates (§sec:air). A relation between machine WORDS is therefore written out
+// lane by lane, with the tower multiplication unrolled by hand ([`TOWER_LANES`]),
+// rather than assembled into one `E` equation. A table's identity slice is then a
+// mixed dot product against its `η`-range: in the round a table joins the batch (the
+// batch's largest) that is one 64-bit product per identity plus three PMULL for its
+// `η`-power, with ONE reduction for the whole slice ([`ColVal::dot`]). One `E`-valued
+// identity would instead cost a full `E×E` product against its `η`-power, plus a
+// reduction of its own, and the lanes it bundles are the same lane polynomials
+// either way.
 
+/// The tower product `x·y` in `E = K[y]/(y³+y+1)` as three lane sums: lane `i` is
+/// `Σ x_j·y_k` over `TOWER_LANES[i]`. The five partial sums of §sec:tab-mul fold
+/// into `c0 = p0+p3`, `c1 = p1+p3+p4`, `c2 = p2+p4`; written once here because both
+/// `MUL`'s result coordinate ([`arith_result`]) and `JUMP`'s inverse identity need
+/// the same unrolling.
+const TOWER_LANES: [&[(usize, usize)]; 3] = [
+    &[(0, 0), (1, 2), (2, 1)],
+    &[(0, 1), (1, 0), (1, 2), (2, 1), (2, 2)],
+    &[(0, 2), (1, 1), (2, 0), (2, 2)],
+];
+
+/// One lane of the tower product, in the columns' own field.
+fn tower_lane<T: ColVal>(lane: usize, x: [T; 3], y: [T; 3]) -> T {
+    TOWER_LANES[lane].iter().fold(T::ZERO, |acc, &(j, k)| acc + x[j] * y[k])
+}
+
+/// `JUMP`'s six identities: `b = cond·w` and `cond·(b+1) = 0`, each written out over
+/// the three lanes (§sec:tab-jump).
+///
+/// The two relations together force `b = [cond ≠ 0]`: when `cond ≠ 0` the second
+/// gives `b = 1` (and the first `w = cond⁻¹`); when `cond = 0` the first gives
+/// `b = 0`. The two selections need no identity: the state push carries each as its
+/// own degree-2 coordinate (§sec:m3). `b` is a single `K` column, so it meets the
+/// product's low lane, and gating `cond` by it mixes no lanes.
 fn jump_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     use jump::*;
-    let c = T::word(cols[C_LO], cols[C_HI], cols[C_TOP]);
-    let w = T::word(cols[W_LO], cols[W_HI], cols[W_TOP]);
+    let c = [cols[C_LO], cols[C_HI], cols[C_TOP]];
+    let w = [cols[W_LO], cols[W_HI], cols[W_TOP]];
     let b1 = cols[B] + T::ONE;
-    // `b = cond·w` and `cond·(b+1) = 0` together force `b = [cond ≠ 0]`:
-    // when `cond ≠ 0` the second gives `b = 1` (and the first `w = cond⁻¹`);
-    // when `cond = 0` the first gives `b = 0`. The two selections need no identity:
-    // the state push carries each as its own degree-2 coordinate (§sec:m3).
-    let ind_def = pows[0] * (cols[B].to_e() + c * w);
-    let ind_nz = pows[1] * b1.mul_e(c);
-    ind_def + ind_nz
+    let cw = |lane: usize| tower_lane(lane, c, w);
+    T::dot(
+        pows,
+        &[cols[B] + cw(0), cw(1), cw(2), c[0] * b1, c[1] * b1, c[2] * b1],
+        F192::ZERO,
+    )
 }
 
 // ---- shared bus vocabulary ---------------------------------------------------
@@ -431,9 +465,8 @@ mod arith {
 }
 
 /// The result word's three K-lanes as forms over the operand lanes. For `XOR`
-/// that is the lane-wise sum; for `MUL` it is the tower product with `y³ = y+1`
-/// (§sec:tab-mul), whose five partial sums fold into `c0 = p0+p3`,
-/// `c1 = p1+p3+p4`, `c2 = p2+p4`.
+/// that is the lane-wise sum; for `MUL` it is the tower product, unrolled through
+/// [`TOWER_LANES`].
 fn arith_result(is_xor: bool) -> [Coord; 3] {
     use arith::*;
     if is_xor {
@@ -444,15 +477,8 @@ fn arith_result(is_xor: bool) -> [Coord; 3] {
         ];
     }
     let (a, b) = ([VA_LO, VA_HI, VA_TOP], [VB_LO, VB_HI, VB_TOP]);
-    let p = |i: usize, j: usize| Prod(a[i], b[j], 0);
-    [
-        // p0 + p3
-        Coord::Sum(vec![p(0, 0), p(1, 2), p(2, 1)]),
-        // p1 + p3 + p4
-        Coord::Sum(vec![p(0, 1), p(1, 0), p(1, 2), p(2, 1), p(2, 2)]),
-        // p2 + p4
-        Coord::Sum(vec![p(0, 2), p(1, 1), p(2, 0), p(2, 2)]),
-    ]
+    let lane = |i: usize| Coord::Sum(TOWER_LANES[i].iter().map(|&(j, k)| Prod(a[j], b[k], 0)).collect());
+    [lane(0), lane(1), lane(2)]
 }
 
 impl Table for Arith {
@@ -697,7 +723,7 @@ impl Table for JumpTable {
         &[RC, RD, RF, RBC]
     }
     fn n_constraints(&self) -> usize {
-        2 // the two indicator identities; the selections ride the state push
+        6 // the two indicator identities, lane by lane; the selections ride the state push
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
         jump_identity(pows, cols)
@@ -971,5 +997,62 @@ impl Table for Blake3Table {
             [r.ra[0], r.ra[1], r.rb[0], r.rb[1], r.rcv[0], r.rcv[1], r.rc[0], r.rc[1]]
         });
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use primitives::field::powers;
+
+    const C: F192 = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
+
+    /// The hand-unrolled tower product IS `E`'s multiplication, lane by lane. Both
+    /// `MUL`'s result coordinate and `JUMP`'s inverse identity are written out from
+    /// [`TOWER_LANES`], and neither can be checked against the field at run time (one
+    /// is a bus coordinate, the other a `K` identity), so pin the unrolling here.
+    #[test]
+    fn the_unrolled_tower_product_is_the_field_product() {
+        let lanes = |v: F192| [F64(v.c0), F64(v.c1), F64(v.c2)];
+        let (x, y) = (C, C * C + F192::ONE);
+        let got = [0, 1, 2].map(|i| tower_lane(i, lanes(x), lanes(y)).0);
+        assert_eq!(F192::new(got[0], got[1], got[2]), x * y);
+    }
+
+    /// `JUMP`'s six identities vanish on an honest row, taken or not, and every lane
+    /// of both relations catches its own forgery: a wrong indicator, and an inverse
+    /// that is not `cond⁻¹`.
+    #[test]
+    fn the_jump_identities_bind_every_lane() {
+        let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 6);
+        for cond in [F192::ZERO, C] {
+            let mut row = vec![F64::ZERO; jump::N];
+            let w = if cond.is_zero() { F192::ZERO } else { cond.inv() };
+            for (i, (c, v)) in [(cond.c0, w.c0), (cond.c1, w.c1), (cond.c2, w.c2)]
+                .into_iter()
+                .enumerate()
+            {
+                row[jump::C_LO + i] = F64(c);
+                row[jump::W_LO + i] = F64(v);
+            }
+            row[jump::B] = if cond.is_zero() { F64::ZERO } else { F64::ONE };
+            assert_eq!(jump_identity(&pows, &row), F192::ZERO, "cond = {cond:?}");
+            // On a zero condition the inverse is unconstrained, being multiplied by
+            // zero: what has to be pinned there is the indicator alone.
+            let forgeable: &[usize] = if cond.is_zero() {
+                &[jump::B]
+            } else {
+                &[jump::B, jump::W_LO, jump::W_HI, jump::W_TOP]
+            };
+            for &col in forgeable {
+                let mut forged = row.clone();
+                forged[col] += F64::ONE;
+                assert_ne!(
+                    jump_identity(&pows, &forged),
+                    F192::ZERO,
+                    "column {col}, cond = {cond:?}"
+                );
+            }
+        }
     }
 }

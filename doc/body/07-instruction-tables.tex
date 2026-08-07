@@ -80,14 +80,14 @@ A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ a
 \[
   b=c\cdot w,\qquad c\,(b+1)=0 .
 \]
-When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
+When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Both are relations between \emph{words}, and an identity is $\K$-valued (\S\ref{sec:air}), so each is written out over the three lanes: six identities, with the tower product $c\cdot w$ unrolled as in \S\ref{sec:tab-mul} and the gating $c\,(b+1)$ lane by lane, $b$ lying in $\K$. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
 \[
   \nxt{\pc}=b\cdot d+(b+1)\,s,\qquad \nxt{\fp}=b\cdot f+(b+1)\,\fp,
 \]
 degree two in the columns, so neither successor is a column: the state push carries them. The destination and the frame are addresses on every row, taken or not, so each is a single $\K$-column read through a flush with literal zeros in its upper limbs, the same device as the \texttt{DEREF} pointer, and it is bus balance that puts the stored words in $\K$.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_c,o_d,o_f$; the condition $c$ (three $\K$-limbs); the destination $d$ and frame $f$ (one $\K$-limb each); inverse $w$ (three $\K$-limbs, $c^{-1}$ in $\E$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is no column, only a term of the two selections.)
-\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$ ($\E$-relations on the limbs), and nothing else. \texttt{JUMP} is the one table left with an identity, because $b$ is the one quantity no interaction pins.
+\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$, six $\K$ identities once each is taken lane by lane, and nothing else. \texttt{JUMP} is the one table left with an identity, because $b$ is the one quantity no interaction pins. On a zero condition $w$ is unconstrained, being multiplied by zero; what the identities pin there is $b=0$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},b\,d+b\,(\gen\cdot\pc)+\gen\cdot\pc,\;b\,f+b\,\fp+\fp}$, the two selections written out in characteristic $2$.

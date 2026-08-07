@@ -301,11 +301,6 @@ def interpolate(a: F192, b: F192, point: F192) -> F192:
     return a + point * (a + b)
 
 
-def _word(get: Callable[[str], F192], prefix: str) -> F192:
-    """The E-element the three K-lane columns ``<prefix>_0..2`` read as."""
-    return get(f"{prefix}_0") + Y * (get(f"{prefix}_1") + Y * get(f"{prefix}_2"))
-
-
 def _ceil_log(value: int) -> int:
     return max(0, (value - 1).bit_length())
 
@@ -1305,23 +1300,31 @@ class Table:
         return tuple(i for i, name in enumerate(self.columns) if name.startswith("cnt"))
 
 
+# The tower product in E = K[y]/(y^3+y+1), lane by lane: lane i sums ``x[j]*y[k]``
+# over TOWER_LANES[i], the five partials of doc sec:tab-mul folded into
+# ``c0 = p0+p3``, ``c1 = p1+p3+p4``, ``c2 = p2+p4``. Written once: MUL's result
+# coordinate and JUMP's inverse identity need the same unrolling, and every identity
+# is K-valued (doc sec:air), so a word relation is three lane relations.
+TOWER_LANES = (
+    ((0, 0), (1, 2), (2, 1)),
+    ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)),
+    ((0, 2), (1, 1), (2, 0), (2, 2)),
+)
+
+
+def _tower_lanes(x: Sequence[F192], y: Sequence[F192]) -> tuple[F192, ...]:
+    """The tower product of two words given as their K-lanes."""
+    return tuple(sum((x[j] * y[k] for j, k in lane), ZERO) for lane in TOWER_LANES)
+
+
 def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[Coordinate, ...]:
     """The result word's three K-lanes as forms over the two operands' lanes.
 
-    XOR is the lane-wise sum; MUL is the tower product with ``y**3 = y + 1``, whose
-    partials fold into ``c0 = p0+p3``, ``c1 = p1+p3+p4``, ``c2 = p2+p4``.
+    XOR is the lane-wise sum; MUL is the tower product, unrolled through TOWER_LANES.
     """
     if not multiply:
         return tuple(_sum((_col(a[i]), _col(b[i]))) for i in range(3))
-
-    def p(i: int, j: int) -> Coordinate:
-        return _prod(a[i], b[j])
-
-    return (
-        _sum((p(0, 0), p(1, 2), p(2, 1))),
-        _sum((p(0, 1), p(1, 0), p(1, 2), p(2, 1), p(2, 2))),
-        _sum((p(0, 2), p(1, 1), p(2, 0), p(2, 2))),
-    )
+    return tuple(_sum(_prod(a[j], b[k]) for j, k in lane) for lane in TOWER_LANES)
 
 
 def _flushes_arith(t: Table) -> Flushes:
@@ -1399,10 +1402,15 @@ def _jump_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
 
     No table binds an address, an arithmetic result, a DEREF store or a JUMP
     successor, the bus reading each as a degree-2 coordinate, so JUMP's
-    is-nonzero indicator is the whole AIR of the machine.
+    is-nonzero indicator is the whole AIR of the machine. Both relations are between
+    WORDS, and an identity is K-valued, so each is written out over the three lanes:
+    the product through TOWER_LANES, the gating directly (``b`` lies in K).
     """
-    condition, inverse, flag = _word(get, "c"), _word(get, "w"), get("b")
-    return (flag + condition * inverse, condition * (flag + ONE))
+    condition = [get(f"c_{i}") for i in range(3)]
+    inverse = [get(f"w_{i}") for i in range(3)]
+    flag = get("b")
+    product = _tower_lanes(condition, inverse)
+    return (flag + product[0], product[1], product[2], *(limb * (flag + ONE) for limb in condition))
 
 
 def _flushes_blake3(t: Table) -> Flushes:
@@ -1481,7 +1489,7 @@ TABLES = (
     Table("mul", 1, ARITH_COLUMNS, _flushes_arith),
     Table("set", 2, SET_COLUMNS, _flushes_set),
     Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
-    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 2),
+    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 6),
     Table("blake3", 5, BLAKE3_COLUMNS, _flushes_blake3),
     Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )
