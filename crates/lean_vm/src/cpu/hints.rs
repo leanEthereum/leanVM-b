@@ -195,6 +195,10 @@ pub enum RHint {
     /// Write the first `len` K-coordinate limbs of `m[fp+value]` to
     /// `m[fp+base..]`. Computed advice; callers constrain the result.
     FieldLimbs { value: Off, base: Off, len: u32 },
+    /// Write `m[fp+value]⁻¹` to `m[fp+dst]`, or `0` when the value is zero.
+    /// Untrusted: `assert a != b` multiplies the two back together and asserts
+    /// `1`, which a zero value cannot satisfy ([`lower_assert_ne`]).
+    Inverse { value: Off, dst: Off },
     /// Prover-side debug print (`print(...)` in the zkDSL): display the value
     /// of `m[fp+cell]` at this program point. Witness generation only.
     Print { label: String, cell: Off },

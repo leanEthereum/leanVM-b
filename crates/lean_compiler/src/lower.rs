@@ -816,14 +816,12 @@ impl FnLower<'_> {
         }
     }
 
-    /// `assert a != b`: one `XOR` and one conditional `JUMP` on `a + b`. When
-    /// the sides differ (`a + b ≠ 0`) the jump is taken to the continuation, so
-    /// execution proceeds; when they are equal it falls through to a `SET` +
-    /// unconditional `JUMP` to the poison pc `g^-1` ([`KVal::Poison`]), which
-    /// lies outside the committed bytecode cube, so the bytecode bus cannot
-    /// balance a read there, so no valid proof continues. Same `JUMP`-nonzero
-    /// primitive as [`Self::lower_if`], no prover hint (unlike `(a-b)·inv == 1`).
-    /// A compile-time-equal pair is a hard compile error.
+    /// `assert a != b`: `XOR` for `x = a + b`, a hinted `inv = x⁻¹`, then
+    /// `MUL p = x·inv` and `SET p = 1`, the write-once conflict being the
+    /// assertion (as for `assert a == b`). Sound because `x = 0` forces `p = 0`
+    /// whatever the hint, and `p` cannot then be `1`. Three rows and no `JUMP`,
+    /// against the five (`XOR`, two `SET`, two `JUMP`) a branch to the poison pc
+    /// used to cost. A compile-time-equal pair is a hard compile error.
     fn lower_assert_ne(&mut self, a: &Expr, b: &Expr) {
         // Compile-time literals (e.g. after `Const`-arg substitution): a
         // trivially-true pair emits nothing, an equal pair is a hard error.
@@ -836,29 +834,14 @@ impl FnLower<'_> {
         let (la, lb) = (self.expr(a), self.expr(b));
         let x = self.fresh();
         self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = a + b: nonzero ⇔ a != b
-        let sfp = self.self_fp();
-        let one = self.one();
-        // a != b: skip the poison and continue at the join (patched below).
-        let cont = self.fresh();
-        let cset = self.code.len();
+        let inv = self.fresh();
+        self.pending.push(Hint::Resolved(RHint::Inverse { value: x, dst: inv }));
+        let p = self.fresh();
+        self.emit(LOp::Mul { a: x, b: inv, c: p });
         self.emit(LOp::Set {
-            o: cont,
-            k: KVal::Local(0),
+            o: p,
+            k: KVal::Const(F192::ONE),
         });
-        self.emit(LOp::Jump {
-            oc: x,
-            od: cont,
-            of: sfp,
-        });
-        // a == b: fall through to the poison jump (g^-1, an unreachable pc).
-        let pd = self.fresh();
-        self.emit(LOp::Set { o: pd, k: KVal::Poison });
-        self.emit(LOp::Jump {
-            oc: one,
-            od: pd,
-            of: sfp,
-        });
-        self.patch_local(cset, self.code.len());
     }
 
     /// The frame cell holding `g^{k-1}`, the range-check product target, set

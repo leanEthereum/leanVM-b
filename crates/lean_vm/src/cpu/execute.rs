@@ -314,6 +314,7 @@ impl Program {
                         RHint::BitDecompose { .. } => "BitDecompose",
                         RHint::BitDecomposeExp { .. } => "BitDecomposeExp",
                         RHint::FieldLimbs { .. } => "FieldLimbs",
+                        RHint::Inverse { .. } => "Inverse",
                         RHint::Print { .. } => "Print",
                     });
                     match h {
@@ -457,6 +458,10 @@ impl Program {
                             for j in 0..*len {
                                 m.put(fp + base + j, F192::new(limbs[j as usize], 0, 0));
                             }
+                        }
+                        RHint::Inverse { value, dst } => {
+                            let v = m.get(fp + value);
+                            m.put(fp + dst, if v.is_zero() { F192::ZERO } else { v.inv() });
                         }
                     }
                     m.dbg_hint = None;
