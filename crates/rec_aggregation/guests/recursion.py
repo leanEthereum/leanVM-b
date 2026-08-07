@@ -199,7 +199,6 @@ LIG_PACKED_ROW_CAP = LIG_PACKED_ROW_CAP_PLACEHOLDER
 LIG_TREE_DEPTH = LIG_TREE_DEPTH_PLACEHOLDER
 LIG_SQUEEZES = LIG_SQUEEZES_PLACEHOLDER
 LIG_POSITIONS_OFF = LIG_POSITIONS_OFF_PLACEHOLDER
-LIG_LOG_QUERIES = LIG_LOG_QUERIES_PLACEHOLDER
 LIG_LOG_MSG_COLS = LIG_LOG_MSG_COLS_PLACEHOLDER
 LIG_RESIDUAL_FOLD_OFF = LIG_RESIDUAL_FOLD_OFF_PLACEHOLDER
 LIG_RESIDUAL_PREFIX_LEN = LIG_RESIDUAL_PREFIX_LEN_PLACEHOLDER
@@ -696,12 +695,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     #   2. bind the next level's Merkle root (or, at the last level, the
     #      final message final_msg);
     #   3. query-phase grinding, then squeeze the packed query positions;
-    #   4. per query: hash the leaf row (blake3 chain), accumulate the
-    #      alpha-batched row dot against the fold eq weights, and verify the
-    #      Merkle authentication path against the bound root
-    #      (verify_merkle_path);
-    #   5. read the level's intro message, sample beta, and fold the query sum
-    #      into the running target.
+    #   4. squeeze the level's one batching challenge, then per query: hash
+    #      the leaf row (blake3 chain), accumulate the lam-weighted row dot
+    #      against the fold eq weights, and verify the Merkle authentication
+    #      path against the bound root (verify_merkle_path);
+    #   5. read the level's intro message and fold every claim of the level
+    #      (its OOD claims, then the query sum) into the running target with
+    #      powers of lam.
     # Then finish the tail sumcheck and evaluate every transparent basis once
     # at its terminal point; the final-message MLE enters as one multiplier.
     #
@@ -753,13 +753,18 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # ...and guest-filled accumulators (one slot per fold / per level / per query):
     fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
     level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
-    alpha_weights = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_QUERIES[m_idx]))
+    query_weights = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_QUERIES[m_idx]))
     query_positions = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
     query_bit_ptrs = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
     # Explicit OOD claims bind every recursive Johnson-list commitment. L0
     # needs none: the opening claim itself is its post-commit binding value.
+    # An OOD claim is read before its level's query positions but batched after
+    # them (one challenge per level), so its value and intro message wait here.
     ood_z = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES * LIG_LOG_MSG_COLS_CAP))
     ood_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
+    ood_ys = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
+    ood_u0s = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
+    ood_u2s = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
 
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
@@ -799,12 +804,9 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 fs, ood_y, msg_cursor = fs_next(fs, msg_cursor)
                 fs, ood_u0, msg_cursor = fs_next(fs, msg_cursor)
                 fs, ood_u2, msg_cursor = fs_next(fs, msg_cursor)
-                fs, ood_beta = squeeze(fs)
-                ood_betas[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_beta
-                round_quad_c += ood_beta * ood_u0
-                round_quad_b += ood_beta * (ood_y + ood_u2)
-                round_quad_a += ood_beta * ood_u2
-                sumcheck_target += ood_beta * ood_y
+                ood_ys[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_y
+                ood_u0s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_u0
+                ood_u2s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_u2
         q_nonce = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
         msg_cursor = msg_cursor * GEN
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
@@ -825,15 +827,20 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             decode_query_bits(packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
         fs = [sqz_chain_0[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]], sqz_chain_1[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]]
 
-        query_alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
-        for t in unroll(0, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            fs, alpha_v = squeeze(fs)
-            query_alphas[GEN ** t] = alpha_v
+        # One batching challenge for the level, drawn once every claim it
+        # batches is fixed: its OOD claims above and these query positions.
+        # Claim tau of the level is weighted lam^tau, the running claim
+        # keeping lam^0 (Annex B, Protocol 1 step 1): query i is claim
+        # n_ood + 1 + i, so its weight splits into lam^i here and the level
+        # scalar lam^(n_ood+1) below.
+        fs, lam = squeeze(fs)
+        lam_pow = 1
+        for i in unroll(0, LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
+            query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx] + i)] = lam_pow
+            lam_pow = lam_pow * lam
         row_eq_weights = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
         for i in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
             row_eq_weights[GEN ** i] = eq_weight(fold_challenges * GEN ** LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl], LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl], i, 0)
-        for i in unroll(0, LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx] + i)] = eq_weight(query_alphas, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl], i, 0)
 
         query_sum_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         query_sum_chain[GEN ** 0] = 0
@@ -895,7 +902,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 leaf_hash_state = leaf_digest
             node_0 = leaf_hash_state[0]
             node_1 = leaf_hash_state[1]
-            query_sum_chain[xe * GEN] = query_sum_chain[xe] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xe] * row_dot
+            query_sum_chain[xe * GEN] = query_sum_chain[xe] + query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xe] * row_dot
             direction_bits = query_bit_ptrs[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xe]
             path_base = xe ** (2 * LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
             path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * path_base
@@ -908,10 +915,26 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
         # Every level, including the last, ties its commitment in through an
-        # intro message before drawing its separation challenge.
+        # intro message. The level's claims then enter the running one with
+        # powers of `lam`: the OOD claims held above first, then this query
+        # batch.
         fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
         fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
-        fs, beta_lvl = squeeze(fs)
+        if lvl == LIG_YR_LEVEL[m_idx]:
+            beta_lvl = lam  # no OOD claim at the last level: no new oracle
+        else:
+            ood_scalar = lam
+            for os in unroll(0, LIG_OOD_SAMPLES[m_idx * LIG_MAX_LEVELS + lvl + 1]):
+                ood_y = ood_ys[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
+                ood_u0 = ood_u0s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
+                ood_u2 = ood_u2s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
+                ood_betas[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_scalar
+                round_quad_c += ood_scalar * ood_u0
+                round_quad_b += ood_scalar * (ood_y + ood_u2)
+                round_quad_a += ood_scalar * ood_u2
+                sumcheck_target += ood_scalar * ood_y
+                ood_scalar = ood_scalar * lam
+            beta_lvl = ood_scalar
         level_betas[GEN ** lvl] = beta_lvl
         round_quad_c += beta_lvl * intro_u0
         round_quad_b += beta_lvl * (level_query_sum + intro_u2)
@@ -973,7 +996,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
                 basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
                 prefix_eq *= basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] + basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] * basis_chain
-            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
+            residual_chain[xr * GEN] = residual_chain[xr] + query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
 
     # Explicit OOD eq bases at the same terminal point.

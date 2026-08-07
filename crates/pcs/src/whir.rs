@@ -38,7 +38,6 @@ use fiat_shamir::sponge::Sponge;
 use primitives::log2_strict_usize;
 use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
-    log2_ceil_usize,
     multilinear::eq_eval,
     pretty_integer,
 };
@@ -791,13 +790,16 @@ enum Witness<'a> {
 /// Mirror of `whir::SumcheckProver` with the two-phase witness.
 struct SumcheckProver<'a> {
     f: Witness<'a>,
-    /// Single combined basis poly: after every `glue(beta)` the introduced
-    /// basis is folded in as `combined_basis += beta * b_new`.
+    /// Single combined basis poly: `glue_pending(lambda)` folds each claim
+    /// introduced since the last glue in as `combined_basis += lambda^tau *
+    /// b_new`, `tau` counting from 1 (the running claim is `tau = 0`).
     combined_basis: ArenaVec<F192>,
     t_r: F192,
     transcript: Vec<SumcheckMessage>,
     round: usize,
-    pending_glue: Option<(ArenaVec<F192>, F192)>,
+    /// The level's claims, in Protocol 1 step 1 order: the OOD claims, then the
+    /// query batch. Drained by `glue_pending`.
+    pending: Vec<(ArenaVec<F192>, F192)>,
 }
 
 impl<'a> SumcheckProver<'a> {
@@ -811,7 +813,7 @@ impl<'a> SumcheckProver<'a> {
             t_r: h1,
             transcript: Vec::new(),
             round: 0,
-            pending_glue: None,
+            pending: Vec::new(),
         };
         inst.transcript.push(msg);
         (inst, msg)
@@ -851,7 +853,7 @@ impl<'a> SumcheckProver<'a> {
             }
         };
         self.transcript.push(msg);
-        self.pending_glue = Some((b_new, h_new));
+        self.pending.push((b_new, h_new));
         msg
     }
 
@@ -866,29 +868,37 @@ impl<'a> SumcheckProver<'a> {
         assert_eq!(b_new.len(), f.len());
         let (msg, h_new) = round_msg_and_eval_lsb_ext(f, &b_new);
         self.transcript.push(msg);
-        self.pending_glue = Some((b_new, h_new));
+        self.pending.push((b_new, h_new));
         (msg, h_new)
     }
 
-    /// Combine the introduced basis into `combined_basis` with separation
-    /// `alpha`: `combined_basis[j] += alpha * b_new[j]`, `T_r += alpha * h_new`.
-    fn glue(&mut self, alpha: F192) {
-        let (b_new, h_new) = self.pending_glue.take().expect("glue without introduce_new");
-        assert_eq!(b_new.len(), self.combined_basis.len());
-        const PAR_THRESHOLD: usize = 4096;
-        if self.combined_basis.len() < PAR_THRESHOLD {
-            for (acc, &v) in self.combined_basis.iter_mut().zip(b_new.iter()) {
-                *acc += alpha * v;
-            }
-        } else {
-            let chunk = parallel::recommended_chunk_size(self.combined_basis.len());
-            parallel::chunks_mut_zip(&mut self.combined_basis, &b_new, chunk, |_, accs, news| {
-                for (acc, &v) in accs.iter_mut().zip(news) {
-                    *acc += alpha * v;
+    /// Batch every claim introduced since the last glue into the running one
+    /// with powers of the level's single batching challenge (PCS annex,
+    /// Protocol 1 step 1): claim `tau` (counting from 1) contributes
+    /// `combined_basis[j] += lambda^tau * b_new[j]`, `T_r += lambda^tau *
+    /// h_new`. The running claim keeps `lambda^0 = 1`.
+    fn glue_pending(&mut self, lambda: F192) {
+        let pending = std::mem::take(&mut self.pending);
+        assert!(!pending.is_empty(), "glue without introduce_new");
+        let mut scalar = F192::ONE;
+        for (b_new, h_new) in pending {
+            scalar *= lambda;
+            assert_eq!(b_new.len(), self.combined_basis.len());
+            const PAR_THRESHOLD: usize = 4096;
+            if self.combined_basis.len() < PAR_THRESHOLD {
+                for (acc, &v) in self.combined_basis.iter_mut().zip(b_new.iter()) {
+                    *acc += scalar * v;
                 }
-            });
+            } else {
+                let chunk = parallel::recommended_chunk_size(self.combined_basis.len());
+                parallel::chunks_mut_zip(&mut self.combined_basis, &b_new, chunk, |_, accs, news| {
+                    for (acc, &v) in accs.iter_mut().zip(news) {
+                        *acc += scalar * v;
+                    }
+                });
+            }
+            self.t_r += scalar * h_new;
         }
-        self.t_r += alpha * h_new;
     }
 
     /// The folded witness (post-first-fold: always E). Panics if called
@@ -1000,8 +1010,10 @@ fn fan_rows_to_ordered<T: Clone>(queries: &[usize], rows_sorted: &[Vec<T>]) -> O
 
 /// Prover side of the OOD claims taken right after a level's root enters the
 /// transcript: sample `z`, evaluate the folded witness there, absorb the claim
-/// and its intro message, glue with a fresh separation. Mirror of the
-/// verifiers' [`replay_ood`], operation for operation.
+/// and its intro message. The claim stays pending: the level's batching
+/// challenge is drawn only once its query positions are fixed too, and
+/// `glue_pending` then folds every claim of the level in with its own power.
+/// Mirror of the verifiers' [`replay_ood`], operation for operation.
 fn absorb_ood(
     sc: &mut SumcheckProver<'_>,
     sponge: &mut Sponge,
@@ -1016,7 +1028,6 @@ fn absorb_ood(
         ood_values.push(y);
         sponge.observe(intro.u_0);
         sponge.observe(intro.u_2);
-        sc.glue(sponge.sample());
     }
 }
 
@@ -1156,7 +1167,10 @@ pub fn recursive_prover_with_basis(
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
     let queries_0 = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0).0;
-    let alpha_0 = sponge.sample_vec(log2_ceil_usize(num_queries_0));
+    // One batching challenge for the whole level, drawn once every claim it
+    // batches is fixed: the OOD claims above and these query positions.
+    let lambda_0 = sponge.sample();
+    let weights_0 = power_weights(lambda_0, num_queries_0);
     let _t = std::time::Instant::now();
     // Ordered (dup-possible) rows for the local induce math ...
     let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
@@ -1183,19 +1197,18 @@ pub fn recursive_prover_with_basis(
         &opened_rows_0,
         &r_lane_fold,
         &queries_0,
-        &alpha_0,
+        &weights_0,
     );
     if trace {
         t_induce += _t.elapsed();
     }
 
-    // Introduce + glue basis_0.
+    // Introduce basis_0, then batch the level's claims with powers of lambda_0.
     let _t = std::time::Instant::now();
     let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
     sponge.observe(intro_msg_0.u_0);
     sponge.observe(intro_msg_0.u_2);
-    let beta_0 = sponge.sample();
-    sc_prover.glue(beta_0);
+    sc_prover.glue_pending(lambda_0);
     if trace {
         t_intro_glue += _t.elapsed();
     }
@@ -1238,9 +1251,10 @@ pub fn recursive_prover_with_basis(
             grinding_nonces.push(nonce_last);
             let num_queries_last = config.queries[i + 1];
             let queries_last = sample_queries_ordered_with_raw(sponge, wtns_prev.block_len, num_queries_last).0;
-            // The final commitment's basis challenge is drawn only after `yr`
+            // The final level's batching challenge is drawn only after `yr`
             // and its queries are bound, matching the verifier exactly.
-            let alpha_last = sponge.sample_vec(log2_ceil_usize(num_queries_last));
+            let lambda_last = sponge.sample();
+            let weights_last = power_weights(lambda_last, num_queries_last);
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
             // verifier fans these to ordered for its last-level induce.
@@ -1255,20 +1269,20 @@ pub fn recursive_prover_with_basis(
             // sumcheck rounds. This closes on one weight evaluation instead of
             // a sweep over the residual cube.
             let rows_last: Vec<Vec<F192>> = queries_last.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
-            let enforced_sum_last = induce_sumcheck_enforced_sum(&rows_last, &level_rs, &queries_last, &alpha_last);
+            let enforced_sum_last = induce_sumcheck_enforced_sum(&rows_last, &level_rs, &queries_last, &weights_last);
             let n_res = sc_prover.f_ext().len().trailing_zeros() as usize;
             let basis_last = induce_sumcheck_evaluate_at_residual(
                 n_res,
                 &eval_sk_at_vks(n_res),
                 &queries_last,
-                &alpha_last,
+                &weights_last,
                 &[],
                 n_res,
             );
             let intro_msg_last = sc_prover.introduce_new(basis_last, enforced_sum_last);
             sponge.observe(intro_msg_last.u_0);
             sponge.observe(intro_msg_last.u_2);
-            sc_prover.glue(sponge.sample());
+            sc_prover.glue_pending(lambda_last);
             for j in 0..n_res {
                 let ri = sponge.sample();
                 let msg = sc_prover.fold(ri);
@@ -1352,7 +1366,8 @@ pub fn recursive_prover_with_basis(
         grinding_nonces.push(nonce_i);
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered_with_raw(sponge, wtns_prev.block_len, num_queries_i).0;
-        let alpha_i = sponge.sample_vec(log2_ceil_usize(num_queries_i));
+        let lambda_i = sponge.sample();
+        let weights_i = power_weights(lambda_i, num_queries_i);
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
         let opened_rows_i: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
@@ -1373,7 +1388,7 @@ pub fn recursive_prover_with_basis(
         let sks_vks_i = eval_sk_at_vks(n_next);
         let _t = std::time::Instant::now();
         let (basis_i_induced, enforced_sum_i) =
-            induce_sumcheck_poly(n_next, &sks_vks_i, &opened_rows_i, &level_rs, &queries_i, &alpha_i);
+            induce_sumcheck_poly(n_next, &sks_vks_i, &opened_rows_i, &level_rs, &queries_i, &weights_i);
         if trace {
             t_induce += _t.elapsed();
         }
@@ -1382,8 +1397,7 @@ pub fn recursive_prover_with_basis(
         let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
         sponge.observe(intro_msg_i.u_0);
         sponge.observe(intro_msg_i.u_2);
-        let beta_i = sponge.sample();
-        sc_prover.glue(beta_i);
+        sc_prover.glue_pending(lambda_i);
         if trace {
             t_intro_glue += _t.elapsed();
         }
@@ -1553,25 +1567,25 @@ fn replay_fold_rounds(
     Some(rs)
 }
 
-/// One replayed OOD claim: the point `z` it was taken at and the separation
-/// `beta` it was glued with. The caller keeps whichever form it needs for the
-/// terminal weight (a dense eq table, or `z` itself).
+/// One replayed OOD claim: the point `z` it was taken at, its claimed value and
+/// the intro message that carries it into the running sumcheck. Both are held
+/// until the level's batching challenge is drawn (the prover holds the matching
+/// basis pending, see [`absorb_ood`]).
 struct OodReplay {
     z: Vec<F192>,
-    beta: F192,
+    y: F192,
+    intro_quad: RoundQuad,
 }
 
 /// Replay one OOD claim: draw `z`, read the claimed evaluation off the proof,
-/// absorb it and the intro message, then glue with a fresh `beta`. Mirror of
-/// the prover's [`absorb_ood`], operation for operation.
+/// absorb it and the intro message. Mirror of the prover's [`absorb_ood`],
+/// operation for operation.
 fn replay_ood(
     sponge: &mut Sponge,
     proof: &WhirProof,
     n_vars: usize,
     ood_idx: &mut usize,
     tx_idx: &mut usize,
-    t_r: &mut F192,
-    running_quad: &mut RoundQuad,
 ) -> Option<OodReplay> {
     let z = sponge.sample_vec(n_vars);
     let &y = proof.ood_values.get(*ood_idx)?;
@@ -1581,11 +1595,37 @@ fn replay_ood(
     *tx_idx += 1;
     sponge.observe(intro_msg.u_0);
     sponge.observe(intro_msg.u_2);
-    let intro_quad = RoundQuad::from_msg(intro_msg, y);
-    let beta = sponge.sample();
-    *running_quad = RoundQuad::fold(running_quad, &intro_quad, beta);
-    *t_r += beta * y;
-    Some(OodReplay { z, beta })
+    Some(OodReplay {
+        z,
+        y,
+        intro_quad: RoundQuad::from_msg(intro_msg, y),
+    })
+}
+
+/// Fold the level's pending claims into the running one with powers of its
+/// batching challenge, in Protocol 1 step 1 order (the OOD claims, then the
+/// query batch), and return the power each was scaled by, for the terminal
+/// weight. The running claim keeps `lambda^0 = 1`.
+fn batch_level_claims(
+    lambda: F192,
+    ood: &[OodReplay],
+    query_intro: &RoundQuad,
+    query_sum: F192,
+    t_r: &mut F192,
+    running_quad: &mut RoundQuad,
+) -> (Vec<F192>, F192) {
+    let mut scalar = F192::ONE;
+    let mut ood_scalars = Vec::with_capacity(ood.len());
+    for claim in ood {
+        scalar *= lambda;
+        *running_quad = RoundQuad::fold(running_quad, &claim.intro_quad, scalar);
+        *t_r += scalar * claim.y;
+        ood_scalars.push(scalar);
+    }
+    scalar *= lambda;
+    *running_quad = RoundQuad::fold(running_quad, query_intro, scalar);
+    *t_r += scalar * query_sum;
+    (ood_scalars, scalar)
 }
 
 /// Dense verifier for [`recursive_prover_with_basis`] (mirror of
@@ -1668,19 +1708,12 @@ pub fn recursive_verifier_with_basis(
     let root_1 = proof.recursive_roots[0];
     observe_root(sponge, &root_1);
 
+    let mut level_ood = Vec::with_capacity(ood_count(1));
     for _ in 0..ood_count(1) {
-        let Some(ood) = replay_ood(
-            sponge,
-            proof,
-            log_n - initial_k,
-            &mut ood_idx,
-            &mut tx_idx,
-            &mut t_r,
-            &mut running_quad,
-        ) else {
+        let Some(ood) = replay_ood(sponge, proof, log_n - initial_k, &mut ood_idx, &mut tx_idx) else {
             return false;
         };
-        ood_bases.push((build_eq_table_ext(&ood.z), initial_k, ood.beta));
+        level_ood.push(ood);
     }
 
     // PoW grinding check for L0's query phase (no-op at 0 bits but keeps the
@@ -1696,7 +1729,8 @@ pub fn recursive_verifier_with_basis(
 
     let num_queries_0 = config.queries[0];
     let queries_0 = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0).0;
-    let alpha_0 = sponge.sample_vec(log2_ceil_usize(num_queries_0));
+    let lambda_0 = sponge.sample();
+    let weights_0 = power_weights(lambda_0, num_queries_0);
     let sq_0 = sorted_unique_queries(&queries_0);
     if !verify_level_opens(
         expected_initial_root,
@@ -1725,10 +1759,10 @@ pub fn recursive_verifier_with_basis(
         &ordered_rows_0,
         &r_lane_fold,
         &queries_0,
-        &alpha_0,
+        &weights_0,
     );
 
-    // Intro + glue.
+    // Intro, then batch every claim of the level with powers of lambda_0.
     if tx_idx >= proof.sumcheck_transcript.len() {
         return false;
     }
@@ -1737,15 +1771,23 @@ pub fn recursive_verifier_with_basis(
     sponge.observe(intro_msg_0.u_0);
     sponge.observe(intro_msg_0.u_2);
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
-    let beta_0 = sponge.sample();
-    running_quad = RoundQuad::fold(&running_quad, &intro_quad_0, beta_0);
-    t_r += beta_0 * enforced_sum_0;
+    let (ood_scalars_0, query_scalar_0) = batch_level_claims(
+        lambda_0,
+        &level_ood,
+        &intro_quad_0,
+        enforced_sum_0,
+        &mut t_r,
+        &mut running_quad,
+    );
+    for (ood, scalar) in level_ood.iter().zip(&ood_scalars_0) {
+        ood_bases.push((build_eq_table_ext(&ood.z), initial_k, *scalar));
+    }
 
     // Basis poly tracking for the residual check. b_initial folds at ALL ris;
     // basis_0_induced starts after the lane folds.
     let mut basis_polys: Vec<ArenaVec<F192>> = vec![ArenaVec::from_slice(b_initial), basis_0_induced];
     let mut basis_ris_starts: Vec<usize> = vec![0, initial_k];
-    let mut basis_separations: Vec<F192> = vec![beta_0];
+    let mut basis_separations: Vec<F192> = vec![query_scalar_0];
     let mut ris: Vec<F192> = r_lane_fold.clone();
 
     let mut prev = PrevLevel {
@@ -1803,10 +1845,11 @@ pub fn recursive_verifier_with_basis(
 
             let num_queries_last = config.queries[i + 1];
             let queries_last = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_last).0;
-            // Final-level basis-induction challenge: sampled AFTER `yr` was
-            // observed and the queries are fixed, so a forged `yr` cannot be
-            // adapted to it (mirror of the original).
-            let alpha_last = sponge.sample_vec(log2_ceil_usize(num_queries_last));
+            // Final-level batching challenge: sampled AFTER `yr` was observed
+            // and the queries are fixed, so a forged `yr` cannot be adapted to
+            // it (mirror of the original).
+            let lambda_last = sponge.sample();
+            let weights_last = power_weights(lambda_last, num_queries_last);
             let sq_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
                 &prev.root,
@@ -1824,8 +1867,8 @@ pub fn recursive_verifier_with_basis(
             };
 
             // Bind the LAST commitment to `yr`: induce its opened rows into
-            // the sumcheck like every non-final level, batched with a fresh
-            // `beta_last` (see the original's binding-fix comment).
+            // the sumcheck like every non-final level, batched with the level's
+            // own lambda (see the original's binding-fix comment).
             let sks_vks_last = eval_sk_at_vks(n_current);
             let (basis_last_induced, enforced_sum_last) = induce_sumcheck_poly(
                 n_current,
@@ -1833,7 +1876,7 @@ pub fn recursive_verifier_with_basis(
                 &ordered_rows_last,
                 &level_rs,
                 &queries_last,
-                &alpha_last,
+                &weights_last,
             );
             let Some(&intro_msg_last) = proof.sumcheck_transcript.get(tx_idx) else {
                 return false;
@@ -1842,12 +1885,18 @@ pub fn recursive_verifier_with_basis(
             sponge.observe(intro_msg_last.u_0);
             sponge.observe(intro_msg_last.u_2);
             let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
-            let beta_last = sponge.sample();
-            running_quad = RoundQuad::fold(&running_quad, &intro_quad_last, beta_last);
-            t_r += beta_last * enforced_sum_last;
+            // No OOD at the final level: there is no new oracle to bind.
+            let (_, query_scalar_last) = batch_level_claims(
+                lambda_last,
+                &[],
+                &intro_quad_last,
+                enforced_sum_last,
+                &mut t_r,
+                &mut running_quad,
+            );
             basis_polys.push(basis_last_induced);
             basis_ris_starts.push(ris.len());
-            basis_separations.push(beta_last);
+            basis_separations.push(query_scalar_last);
 
             // Finish the residual sumcheck rounds, then evaluate every dense
             // basis and the transmitted final message at the one terminal point.
@@ -1897,20 +1946,14 @@ pub fn recursive_verifier_with_basis(
         next_root_idx += 1;
         observe_root(sponge, &root_next);
 
+        let mut level_ood = Vec::with_capacity(ood_count(i + 2));
         for _ in 0..ood_count(i + 2) {
-            let Some(ood) = replay_ood(
-                sponge,
-                proof,
-                n_current,
-                &mut ood_idx,
-                &mut tx_idx,
-                &mut t_r,
-                &mut running_quad,
-            ) else {
+            let Some(ood) = replay_ood(sponge, proof, n_current, &mut ood_idx, &mut tx_idx) else {
                 return false;
             };
-            ood_bases.push((build_eq_table_ext(&ood.z), ris.len(), ood.beta));
+            level_ood.push(ood);
         }
+        let ood_ris_start = ris.len();
 
         // PoW grinding check for this iteration's query phase.
         if nonce_idx >= proof.grinding_nonces.len() {
@@ -1924,7 +1967,8 @@ pub fn recursive_verifier_with_basis(
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_i).0;
         let sq_i = sorted_unique_queries(&queries_i);
-        let alpha_i = sponge.sample_vec(log2_ceil_usize(num_queries_i));
+        let lambda_i = sponge.sample();
+        let weights_i = power_weights(lambda_i, num_queries_i);
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
         }
@@ -1946,8 +1990,14 @@ pub fn recursive_verifier_with_basis(
         };
 
         let sks_vks_i = eval_sk_at_vks(n_current);
-        let (basis_i_induced, enforced_sum_i) =
-            induce_sumcheck_poly(n_current, &sks_vks_i, &ordered_rows_i, &level_rs, &queries_i, &alpha_i);
+        let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly(
+            n_current,
+            &sks_vks_i,
+            &ordered_rows_i,
+            &level_rs,
+            &queries_i,
+            &weights_i,
+        );
 
         if tx_idx >= proof.sumcheck_transcript.len() {
             return false;
@@ -1957,12 +2007,20 @@ pub fn recursive_verifier_with_basis(
         sponge.observe(intro_msg_i.u_0);
         sponge.observe(intro_msg_i.u_2);
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
-        let beta_i = sponge.sample();
-        running_quad = RoundQuad::fold(&running_quad, &intro_quad_i, beta_i);
-        t_r += beta_i * enforced_sum_i;
+        let (ood_scalars_i, query_scalar_i) = batch_level_claims(
+            lambda_i,
+            &level_ood,
+            &intro_quad_i,
+            enforced_sum_i,
+            &mut t_r,
+            &mut running_quad,
+        );
+        for (ood, scalar) in level_ood.iter().zip(&ood_scalars_i) {
+            ood_bases.push((build_eq_table_ext(&ood.z), ood_ris_start, *scalar));
+        }
         basis_polys.push(basis_i_induced);
         basis_ris_starts.push(ris.len());
-        basis_separations.push(beta_i);
+        basis_separations.push(query_scalar_i);
 
         if prev
             .advance(
@@ -2104,23 +2162,12 @@ where
     let root_1 = proof.recursive_roots[0];
     observe_root(sponge, &root_1);
 
+    let mut level_ood = Vec::with_capacity(ood_count(1));
     for _ in 0..ood_count(1) {
-        let Some(ood) = replay_ood(
-            sponge,
-            proof,
-            log_n - initial_k,
-            &mut ood_idx,
-            &mut tx_idx,
-            &mut t_r,
-            &mut running_quad,
-        ) else {
+        let Some(ood) = replay_ood(sponge, proof, log_n - initial_k, &mut ood_idx, &mut tx_idx) else {
             return false;
         };
-        ood_ctxs.push(OodCtx {
-            z: ood.z,
-            ris_start: initial_k,
-            beta: ood.beta,
-        });
+        level_ood.push(ood);
     }
 
     // PoW grinding check for L0's query phase.
@@ -2136,7 +2183,8 @@ where
     let num_queries_0 = config.queries[0];
     let (queries_0, raw_0) = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0);
     query_squeezes_out.push(raw_0);
-    let alpha_0 = sponge.sample_vec(log2_ceil_usize(num_queries_0));
+    let lambda_0 = sponge.sample();
+    let weights_0 = power_weights(lambda_0, num_queries_0);
     let sq_0 = sorted_unique_queries(&queries_0);
     if !verify_level_opens(
         expected_initial_root,
@@ -2156,7 +2204,7 @@ where
     // Compute enforced_sum cheaply at intro time. The induced basis poly's
     // residual evaluations are deferred to the final closed-form check.
     let n1 = log_n - initial_k;
-    let enforced_sum_0 = induce_sumcheck_enforced_sum(&ordered_rows_0, &r_lane_fold, &queries_0, &alpha_0);
+    let enforced_sum_0 = induce_sumcheck_enforced_sum(&ordered_rows_0, &r_lane_fold, &queries_0, &weights_0);
 
     if tx_idx >= proof.sumcheck_transcript.len() {
         return false;
@@ -2166,24 +2214,36 @@ where
     sponge.observe(intro_msg_0.u_0);
     sponge.observe(intro_msg_0.u_2);
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
-    let beta_0 = sponge.sample();
-    running_quad = RoundQuad::fold(&running_quad, &intro_quad_0, beta_0);
-    t_r += beta_0 * enforced_sum_0;
+    let (ood_scalars_0, query_scalar_0) = batch_level_claims(
+        lambda_0,
+        &level_ood,
+        &intro_quad_0,
+        enforced_sum_0,
+        &mut t_r,
+        &mut running_quad,
+    );
+    for (ood, scalar) in level_ood.into_iter().zip(ood_scalars_0) {
+        ood_ctxs.push(OodCtx {
+            z: ood.z,
+            ris_start: initial_k,
+            beta: scalar,
+        });
+    }
 
     // Per-level induced-basis evaluation context: small (no dense vec).
     struct LevelCtx {
         log_msg_cols: usize,
         queries: Vec<usize>,
-        alpha: Vec<F192>, // ceil(log2 Q) elements (eq-tensor combination)
+        weights: Vec<F192>, // one power of the level's lambda per query
         ris_start: usize,
         beta: F192,
     }
     let mut level_ctxs: Vec<LevelCtx> = vec![LevelCtx {
         log_msg_cols: n1,
         queries: queries_0.clone(),
-        alpha: alpha_0,
+        weights: weights_0,
         ris_start: initial_k,
-        beta: beta_0,
+        beta: query_scalar_0,
     }];
     let mut ris: Vec<F192> = r_lane_fold.clone();
 
@@ -2242,10 +2302,11 @@ where
             let num_queries_last = config.queries[i + 1];
             let (queries_last, raw_last) = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_last);
             query_squeezes_out.push(raw_last);
-            // Basis-induction challenge for the LAST commitment, sampled after
-            // `yr` was observed and the queries are fixed (mirror of the
-            // dense verifier, so both stay in lockstep).
-            let alpha_last = sponge.sample_vec(log2_ceil_usize(num_queries_last));
+            // Batching challenge for the LAST commitment, sampled after `yr`
+            // was observed and the queries are fixed (mirror of the dense
+            // verifier, so both stay in lockstep).
+            let lambda_last = sponge.sample();
+            let weights_last = power_weights(lambda_last, num_queries_last);
             let sq_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
                 &prev.root,
@@ -2263,7 +2324,7 @@ where
             };
 
             let enforced_sum_last =
-                induce_sumcheck_enforced_sum(&ordered_rows_last, &level_rs, &queries_last, &alpha_last);
+                induce_sumcheck_enforced_sum(&ordered_rows_last, &level_rs, &queries_last, &weights_last);
             let Some(&intro_msg_last) = proof.sumcheck_transcript.get(tx_idx) else {
                 return false;
             };
@@ -2271,15 +2332,21 @@ where
             sponge.observe(intro_msg_last.u_0);
             sponge.observe(intro_msg_last.u_2);
             let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
-            let beta_last = sponge.sample();
-            running_quad = RoundQuad::fold(&running_quad, &intro_quad_last, beta_last);
-            t_r += beta_last * enforced_sum_last;
+            // No OOD at the final level: there is no new oracle to bind.
+            let (_, query_scalar_last) = batch_level_claims(
+                lambda_last,
+                &[],
+                &intro_quad_last,
+                enforced_sum_last,
+                &mut t_r,
+                &mut running_quad,
+            );
             level_ctxs.push(LevelCtx {
                 log_msg_cols: n_current,
                 queries: queries_last.clone(),
-                alpha: alpha_last,
+                weights: weights_last,
                 ris_start: ris.len(),
-                beta: beta_last,
+                beta: query_scalar_last,
             });
 
             // Finish the sumcheck over the residual cube. Each basis and the
@@ -2316,7 +2383,7 @@ where
                     ctx.log_msg_cols,
                     &eval_sk_at_vks(ctx.log_msg_cols),
                     &ctx.queries,
-                    &ctx.alpha,
+                    &ctx.weights,
                     &point,
                     0,
                 );
@@ -2350,24 +2417,14 @@ where
         next_root_idx += 1;
         observe_root(sponge, &root_next);
 
+        let mut level_ood = Vec::with_capacity(ood_count(i + 2));
         for _ in 0..ood_count(i + 2) {
-            let Some(ood) = replay_ood(
-                sponge,
-                proof,
-                n_current,
-                &mut ood_idx,
-                &mut tx_idx,
-                &mut t_r,
-                &mut running_quad,
-            ) else {
+            let Some(ood) = replay_ood(sponge, proof, n_current, &mut ood_idx, &mut tx_idx) else {
                 return false;
             };
-            ood_ctxs.push(OodCtx {
-                z: ood.z,
-                ris_start: ris.len(),
-                beta: ood.beta,
-            });
+            level_ood.push(ood);
         }
+        let ood_ris_start = ris.len();
 
         // PoW grinding check for this iteration's query phase.
         if nonce_idx >= proof.grinding_nonces.len() {
@@ -2382,7 +2439,8 @@ where
         let (queries_i, raw_i) = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_i);
         query_squeezes_out.push(raw_i);
         let sq_i = sorted_unique_queries(&queries_i);
-        let alpha_i = sponge.sample_vec(log2_ceil_usize(num_queries_i));
+        let lambda_i = sponge.sample();
+        let weights_i = power_weights(lambda_i, num_queries_i);
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
         }
@@ -2403,7 +2461,7 @@ where
             None => return false,
         };
 
-        let enforced_sum_i = induce_sumcheck_enforced_sum(&ordered_rows_i, &level_rs, &queries_i, &alpha_i);
+        let enforced_sum_i = induce_sumcheck_enforced_sum(&ordered_rows_i, &level_rs, &queries_i, &weights_i);
 
         if tx_idx >= proof.sumcheck_transcript.len() {
             return false;
@@ -2413,15 +2471,27 @@ where
         sponge.observe(intro_msg_i.u_0);
         sponge.observe(intro_msg_i.u_2);
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
-        let beta_i = sponge.sample();
-        running_quad = RoundQuad::fold(&running_quad, &intro_quad_i, beta_i);
-        t_r += beta_i * enforced_sum_i;
+        let (ood_scalars_i, query_scalar_i) = batch_level_claims(
+            lambda_i,
+            &level_ood,
+            &intro_quad_i,
+            enforced_sum_i,
+            &mut t_r,
+            &mut running_quad,
+        );
+        for (ood, scalar) in level_ood.into_iter().zip(ood_scalars_i) {
+            ood_ctxs.push(OodCtx {
+                z: ood.z,
+                ris_start: ood_ris_start,
+                beta: scalar,
+            });
+        }
         level_ctxs.push(LevelCtx {
             log_msg_cols: n_current,
             queries: queries_i.clone(),
-            alpha: alpha_i,
+            weights: weights_i,
             ris_start: ris.len(),
-            beta: beta_i,
+            beta: query_scalar_i,
         });
 
         if prev
@@ -2769,12 +2839,12 @@ mod tests {
                 .map(|_| (0..lanes).map(|_| F64(rng.next_u64())).collect())
                 .collect();
             let v_challenges: Vec<F192> = (0..lanes_log).map(|_| rng.ext()).collect();
-            let alpha: Vec<F192> = (0..log2_ceil_usize(n_queries)).map(|_| rng.ext()).collect();
+            let weights = power_weights(rng.ext(), n_queries);
 
             let sks_vks = eval_sk_at_vks(log_msg_cols);
-            let dense = induce_sumcheck_poly(log_msg_cols, &sks_vks, &rows, &v_challenges, &qs, &alpha);
+            let dense = induce_sumcheck_poly(log_msg_cols, &sks_vks, &rows, &v_challenges, &qs, &weights);
             let via_ntt =
-                induce_sumcheck_poly_via_ntt_base(log_msg_cols, log_inv_rate, &rows, &v_challenges, &qs, &alpha);
+                induce_sumcheck_poly_via_ntt_base(log_msg_cols, log_inv_rate, &rows, &v_challenges, &qs, &weights);
             assert_eq!(dense.1, via_ntt.1, "enforced_sum mismatch");
             assert_eq!(&*dense.0, &*via_ntt.0, "basis_poly mismatch");
         }

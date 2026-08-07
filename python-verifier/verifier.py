@@ -1618,7 +1618,9 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         )
         ood_bits = (192.0 - list_log - log2(variables) if ood == 0
                     else ood * (192.0 - log2(variables)) - (2.0 * list_log - 1.0))
-        algebraic_bits = 192.0 - log2(max(RING_SWITCH_SOUNDNESS_DEGREE, ceil(log2(queries)), 2)) - list_log
+        # The batch polynomial's degree in the level's single lambda is
+        # J - 1 = queries + ood (residual, OOD, one claim per query).
+        algebraic_bits = 192.0 - log2(max(RING_SWITCH_SOUNDNESS_DEGREE, queries + ood, 2)) - list_log
         if ood_bits + 1e-12 < 128.0 or algebraic_bits + 1e-12 < 128.0:
             continue
         candidate = (queries, ood)
@@ -1755,10 +1757,10 @@ class QuadraticMessage:
 def _enforced_sum(
     rows: Sequence[Sequence[FieldValue]],
     folds: Sequence[F192],
-    alpha: Sequence[F192],
+    query_weights: Sequence[F192],
 ) -> F192:
     lane_weights = build_eq(folds)
-    query_weights = build_eq(alpha)[: len(rows)]
+    require(len(query_weights) == len(rows), "Ligerito query-weight count mismatch")
     total = ZERO
     for query_weight, row in zip(query_weights, rows):
         require(len(row) == len(lane_weights), "Ligerito row/fold width mismatch")
@@ -1786,14 +1788,14 @@ def _subspace_roots(log_n: int) -> list[F192]:
 def _induced_residual(
     message_log: int,
     queries: Sequence[int],
-    alpha: Sequence[F192],
+    query_weights: Sequence[F192],
     prefix: Sequence[F192],
     residual_log: int,
 ) -> list[F192]:
     require(len(prefix) + residual_log == message_log, "bad induced-basis dimensions")
+    require(len(query_weights) == len(queries), "Ligerito query-weight count mismatch")
     roots = _subspace_roots(message_log)
     inverses = [value.inv() if value else ZERO for value in roots]
-    query_weights = build_eq(alpha)[: len(queries)]
     prepared: list[tuple[F192, tuple[F192, ...]]] = []
     for query in queries:
         normalized: list[F192] = []
@@ -1879,6 +1881,9 @@ def verify_ligerito(
 
         message_log = log_n - len(folds)
         final_level = level == levels - 1
+        # The level's claims, held until its batching challenge is drawn: the
+        # OOD claims first, then the query batch (Annex B, Protocol 1 step 1).
+        pending_ood: list[tuple[tuple[F192, ...], int, F192, QuadraticMessage]] = []
         if final_level:
             residual = proof.final.residual
             require(len(residual) == 1 << message_log, "wrong Ligerito residual length")
@@ -1893,16 +1898,15 @@ def verify_ligerito(
                 value = proof.ood_values[ood_index]
                 ood_index += 1
                 transcript.observe(value)
-                intro = next_quad(value)
-                beta = transcript.sample()
-                running_quad = running_quad.add_scaled(intro, beta)
-                running_target += beta * value
-                ood_contexts.append((point, len(folds), beta))
+                pending_ood.append((point, len(folds), value, next_quad(value)))
 
         transcript.sponge.check_pow(proof.grinding_nonces[level], config.query_grinding[level])
         block_length = 1 << (message_log + rate)
         queries = sample_queries(transcript.sponge, block_length, config.queries[level])
-        alpha = transcript.samples(max(0, (len(queries) - 1).bit_length()))
+        # One batching challenge per level, drawn once every claim it batches is
+        # fixed: the OOD claims above and these query positions.
+        lam = transcript.sample()
+        query_weights = powers(lam, len(queries))
         if level == 0:
             opened = proof.initial
         elif final_level:
@@ -1921,15 +1925,22 @@ def verify_ligerito(
             )
         except VerificationError as exc:
             raise VerificationError(f"Ligerito level {level}: {exc}") from exc
-        enforced = _enforced_sum(rows, level_folds, alpha)
+        enforced = _enforced_sum(rows, level_folds, query_weights)
 
         # Every commitment, including the last one, enters through an intro
-        # message before its separation challenge.
+        # message; the level's claims are then batched with powers of `lam`,
+        # the running claim keeping lam^0 = 1.
         intro = next_quad(enforced)
-        beta = transcript.sample()
-        running_quad = running_quad.add_scaled(intro, beta)
-        running_target += beta * enforced
-        contexts.append((message_log, queries, alpha, len(folds), beta))
+        scalar = ONE
+        for point, start, value, ood_intro in pending_ood:
+            scalar *= lam
+            running_quad = running_quad.add_scaled(ood_intro, scalar)
+            running_target += scalar * value
+            ood_contexts.append((point, start, scalar))
+        scalar *= lam
+        running_quad = running_quad.add_scaled(intro, scalar)
+        running_target += scalar * enforced
+        contexts.append((message_log, queries, query_weights, len(folds), scalar))
 
         if final_level:
             # Finish the remaining sumcheck rounds and close on one evaluation
@@ -1948,13 +1959,13 @@ def verify_ligerito(
             weight_values = list(evaluate_basis(list(folds) + tail_folds, 0))
             require(len(weight_values) == 1, "basis point evaluation has the wrong length")
             weight = weight_values[0]
-            for context_log, context_queries, context_alpha, start, separation in contexts:
+            for context_log, context_queries, context_weights, start, separation in contexts:
                 fixed = context_log - message_log
                 point = list(folds[start : start + fixed]) + tail_folds
                 induced = _induced_residual(
                     context_log,
                     context_queries,
-                    context_alpha,
+                    context_weights,
                     point,
                     0,
                 )

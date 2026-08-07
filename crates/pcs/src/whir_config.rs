@@ -14,9 +14,8 @@
 //! per-verifier-message error table maps onto the per-level checks in
 //! [`WhirSecurityConfig::validate`]:
 //!
-//! - batching challenges -> `johnson_algebraic_bits` (this implementation
-//!   batches with an eq-vector challenge plus scalar glue challenges instead
-//!   of the doc's powers of a single alpha; see that function),
+//! - batching challenges -> `johnson_algebraic_bits` (one challenge per level,
+//!   powers of it over the level's claim list, as in the doc),
 //! - fold challenge `s_j` -> `2 L/|F| + 2^(l-j) eps`: the MCA part via
 //!   `paper_johnson_log_a` (worst round `j = 1`), the `2 L/|F|` part
 //!   under `johnson_algebraic_bits`,
@@ -26,9 +25,6 @@
 //! Round-by-round (RBR) soundness means every entry individually clears
 //! [`SECURITY_BITS`]: the Fiat--Shamir error per random-oracle query is the
 //! MAX of the entries, not their sum.
-//!
-
-use primitives::log2_ceil_usize;
 
 // ===================================================================
 // Config
@@ -535,30 +531,39 @@ fn johnson_interleaved_list_log2(log_inv_rate: usize, log_msg_cols: usize, eta: 
 }
 
 /// Worst algebraic verifier-challenge transition in the production opening:
-/// the implementation's counterpart of `thm:rbr`'s batch row (`(T−1)·L/|F|`
-/// for powers-of-alpha batching) and of the `2L/|F|` part of its fold row.
-/// This codebase batches differently from the doc: the per-level query
-/// consistency claims are combined with a multilinear eq-vector challenge,
-/// and each new claim (OOD, induced) is glued into the single running
-/// sumcheck with a fresh scalar challenge. A degree-`d` identity test
-/// unioned over a Johnson list of size `L` fails with probability at most
-/// `dL/|F|`. The relevant degrees are:
+/// `thm:rbr`'s batch row (`(J−1)·L/|F|` for the powers-of-lambda batching of
+/// the PCS annex, Protocol 1 step 1) and the `2L/|F|` part of its fold row.
+/// A degree-`d` identity test unioned over a Johnson list of size `L` fails
+/// with probability at most `dL/|F|`. The relevant degrees are:
 ///
 /// - the total degree of the GF64-to-GF192 ring-switch batching map (L0 only,
-///   but included at every level so the bound also dominates the eq-vector
-///   batch entering the next level's list, whatever its query count);
-/// - `ceil(log2(queries))` for the multilinear query-row batching; and
-/// - 2 for quadratic sumcheck (glue challenges have degree 1).
-fn johnson_algebraic_bits_for(log_inv_rate: usize, log_msg_cols: usize, eta: f64, queries: usize) -> f64 {
+///   but included at every level so the bound also dominates the claim batch
+///   entering the next level's list, whatever its query count);
+/// - `J − 1 = queries + ood_samples`, the batch polynomial's degree in the
+///   level's single lambda (residual + OOD + one claim per query); and
+/// - 2 for quadratic sumcheck.
+fn johnson_algebraic_bits_for(
+    log_inv_rate: usize,
+    log_msg_cols: usize,
+    eta: f64,
+    queries: usize,
+    ood_samples: usize,
+) -> f64 {
     let log2_l = johnson_interleaved_list_log2(log_inv_rate, log_msg_cols, eta);
     let degree = crate::ring_switch::RING_SWITCH_SOUNDNESS_DEGREE
-        .max(log2_ceil_usize(queries))
+        .max(queries + ood_samples)
         .max(2);
     ANALYSIS_LOG_Q - (degree as f64).log2() - log2_l
 }
 
 fn johnson_algebraic_bits(level: &WhirLevelConfig) -> f64 {
-    johnson_algebraic_bits_for(level.log_inv_rate, level.log_msg_cols, level.eta, level.queries)
+    johnson_algebraic_bits_for(
+        level.log_inv_rate,
+        level.log_msg_cols,
+        level.eta,
+        level.queries,
+        level.ood_samples,
+    )
 }
 
 /// OOD binding bits for a level. `mu_vars` is the level's multilinear
@@ -661,7 +666,7 @@ fn optimize_johnson_level(
         };
         let eps_ood = paper_ood_bits(log_inv_rate, log_msg_cols, eta, mu, ood_samples);
         if eps_ood + 1e-12 < target
-            || johnson_algebraic_bits_for(log_inv_rate, log_msg_cols, eta, queries) + 1e-12 < target
+            || johnson_algebraic_bits_for(log_inv_rate, log_msg_cols, eta, queries, ood_samples) + 1e-12 < target
         {
             continue;
         }

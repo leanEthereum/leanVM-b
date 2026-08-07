@@ -67,7 +67,7 @@ fn normalized_sks_at(x: F64, sks_vks: &[F64], inv_sks_vks: &[F64], out: &mut [F6
 }
 
 /// Write into `basis` the normalized LCH novel-basis polynomials evaluated at
-/// `x` (a K point), each scaled by the E-value `alpha`. The `sks_at_x`
+/// `x` (a K point), each scaled by the E-value `weight`. The `sks_at_x`
 /// recurrence stays in K; the basis expansion lifts into E via `mul_base`.
 fn evaluate_scaled_basis_inplace(
     sks_at_x: &mut [F64],
@@ -75,7 +75,7 @@ fn evaluate_scaled_basis_inplace(
     sks_vks: &[F64],
     inv_sks_vks: &[F64],
     x: F64,
-    alpha: F192,
+    weight: F192,
 ) {
     let log_n = basis.len().trailing_zeros() as usize;
     debug_assert_eq!(basis.len(), 1 << log_n);
@@ -84,7 +84,7 @@ fn evaluate_scaled_basis_inplace(
 
     normalized_sks_at(x, sks_vks, inv_sks_vks, &mut sks_at_x[..log_n]);
 
-    basis[0] = alpha;
+    basis[0] = weight;
     for k in 0..log_n {
         let s_at_x = sks_at_x[k];
         let current_len = 1 << k;
@@ -120,16 +120,18 @@ impl RowElem for F192 {
     }
 }
 
-/// `eq(alpha, i)` for `i < n_queries`: the per-query batching weights. `alpha`
-/// carries `ceil(log2(n_queries))` challenges, so the eq table always covers
-/// the queries.
-fn alpha_weights(alpha: &[F192], n_queries: usize) -> Vec<F192> {
-    if n_queries == 0 {
-        return Vec::new();
+/// `lambda^i` for `i < n_queries`: the per-query batching weights of the PCS
+/// annex, Protocol 1 step 1. Query claim `i` is claim number `n_ood + 1 + i` of
+/// the level, so the caller glues the batch with `lambda^(n_ood+1)` and these
+/// weights carry the remaining `lambda^i`.
+pub(crate) fn power_weights(lambda: F192, n_queries: usize) -> Vec<F192> {
+    let mut out = Vec::with_capacity(n_queries);
+    let mut pow = F192::ONE;
+    for _ in 0..n_queries {
+        out.push(pow);
+        pow *= lambda;
     }
-    let table = build_eq_table_ext(alpha);
-    debug_assert!(table.len() >= n_queries);
-    table.into_iter().take(n_queries).collect()
+    out
 }
 
 fn invert_sks(sks_vks: &[F64]) -> Vec<F64> {
@@ -139,8 +141,9 @@ fn invert_sks(sks_vks: &[F64]) -> Vec<F64> {
         .collect()
 }
 
-/// Dense induce: `basis_poly[j] = Σ_i eq(α, i) · W-hat_j(q_i)`,
-/// `enforced_sum = Σ_i eq(α, i) · <row_i, eq(v_challenges, ·)>`. Mirror of the
+/// Dense induce: `basis_poly[j] = Σ_i w_i · W-hat_j(q_i)`,
+/// `enforced_sum = Σ_i w_i · <row_i, eq(v_challenges, ·)>`, for the per-query
+/// batching weights `w` of [`power_weights`]. Mirror of the
 /// dense `whir::induce_sumcheck_poly` (per-thread chunked accumulation).
 pub(crate) fn induce_sumcheck_poly<T: RowElem>(
     log_msg_cols: usize,
@@ -148,7 +151,7 @@ pub(crate) fn induce_sumcheck_poly<T: RowElem>(
     opened_rows: &[Vec<T>],
     v_challenges: &[F192],
     queries: &[usize],
-    alpha: &[F192],
+    weights: &[F192],
 ) -> (ArenaVec<F192>, F192) {
     let n = 1usize << log_msg_cols;
     let n_queries = queries.len();
@@ -162,7 +165,7 @@ pub(crate) fn induce_sumcheck_poly<T: RowElem>(
     );
 
     let eq = build_eq_table_ext(v_challenges);
-    let alpha_pows = alpha_weights(alpha, n_queries);
+    debug_assert_eq!(weights.len(), n_queries);
     let inv_sks_vks = invert_sks(sks_vks);
 
     let n_threads = parallel::num_threads();
@@ -180,7 +183,7 @@ pub(crate) fn induce_sumcheck_poly<T: RowElem>(
         let mut local_sum = F192::ZERO;
 
         for i in start..end {
-            let ap = alpha_pows[i];
+            let ap = weights[i];
             local_sum += T::dot(&opened_rows[i], &eq) * ap;
 
             let q_field = F64(queries[i] as u64);
@@ -206,18 +209,18 @@ pub(crate) fn induce_sumcheck_poly<T: RowElem>(
 }
 
 /// Just the `enforced_sum` half of [`induce_sumcheck_poly`]:
-///   `enforced_sum = Σ_i eq(α, i) · <opened_rows[i], eq(v_challenges, ·)>`
+///   `enforced_sum = Σ_i w_i · <opened_rows[i], eq(v_challenges, ·)>`
 /// Cheap: O(num_queries x num_interleaved). The succinct verifier needs this
 /// at level intro time (before the residual challenges are known).
 pub(crate) fn induce_sumcheck_enforced_sum<T: RowElem>(
     opened_rows: &[Vec<T>],
     v_challenges: &[F192],
     queries: &[usize],
-    alpha: &[F192],
+    weights: &[F192],
 ) -> F192 {
     assert_eq!(opened_rows.len(), queries.len());
     let eq = build_eq_table_ext(v_challenges);
-    let weights = alpha_weights(alpha, queries.len());
+    debug_assert_eq!(weights.len(), queries.len());
     let mut sum = F192::ZERO;
     for (i, row) in opened_rows.iter().enumerate() {
         debug_assert_eq!(row.len(), eq.len());
@@ -229,7 +232,7 @@ pub(crate) fn induce_sumcheck_enforced_sum<T: RowElem>(
 /// SUCCINCT evaluator for the induced basis poly's MLE at residual points
 /// (mirror of `whir::induce_sumcheck_evaluate_at_residual`). Replaces the
 /// dense basis + `partial_eval_lsb` in the verifier via the closed form:
-///   `MLE(basis_poly)(p) = Σ_i eq(α, i) · Π_k (1 + p[k] · (1 + W-hat_k(q_i)))`
+///   `MLE(basis_poly)(p) = Σ_i w_i · Π_k (1 + p[k] · (1 + W-hat_k(q_i)))`
 /// where `q_i = F64(queries[i])` and the K-valued `W-hat_k(q_i)` lifts into E
 /// through the char-2 factor. `ris_for_basis` is the fixed residual prefix
 /// (length `log_msg_cols - yr_log_n`); returns evaluations at the `2^yr_log_n`
@@ -238,7 +241,7 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
     log_msg_cols: usize,
     sks_vks: &[F64],
     queries: &[usize],
-    alpha: &[F192],
+    weights: &[F192],
     ris_for_basis: &[F192],
     yr_log_n: usize,
 ) -> ArenaVec<F192> {
@@ -246,7 +249,7 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
     let n_queries = queries.len();
     let yr_len = 1usize << yr_log_n;
 
-    let alpha_pows = alpha_weights(alpha, n_queries);
+    debug_assert_eq!(weights.len(), n_queries);
     let inv_sks_vks = invert_sks(sks_vks);
     let prefix_len = ris_for_basis.len();
 
@@ -290,7 +293,7 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
                 let p_j = if (y >> j) & 1 == 1 { F192::ONE } else { F192::ZERO };
                 suffix_prod *= F192::ONE + p_j * (F192::ONE + F192::from(pq.suffix_w[j]));
             }
-            sum += alpha_pows[i] * pq.prefix_prod * suffix_prod;
+            sum += weights[i] * pq.prefix_prod * suffix_prod;
         }
         sum
     };
@@ -440,7 +443,7 @@ pub(crate) fn induce_sumcheck_poly_via_ntt_base(
     opened_rows: &[Vec<F64>],
     v_challenges: &[F192],
     queries: &[usize],
-    alpha: &[F192],
+    weights: &[F192],
 ) -> (ArenaVec<F192>, F192) {
     let n = 1usize << log_msg_cols;
     let log_block = log_msg_cols + log_inv_rate;
@@ -449,23 +452,23 @@ pub(crate) fn induce_sumcheck_poly_via_ntt_base(
     assert_eq!(opened_rows.len(), n_queries);
 
     let eq = build_eq_table_ext(v_challenges);
-    let alpha_pows = alpha_weights(alpha, n_queries);
+    debug_assert_eq!(weights.len(), n_queries);
 
     let mut enforced_sum = F192::ZERO;
     for i in 0..n_queries {
-        enforced_sum += F64::dot(&opened_rows[i], &eq) * alpha_pows[i];
+        enforced_sum += F64::dot(&opened_rows[i], &eq) * weights[i];
     }
 
     let mut coeffs = if log_block == 0 {
         // SAFETY: zero is a valid F192, and the loop below reads these slots.
         let mut c = unsafe { ArenaVec::<F192>::zeroed(block_len) };
         for i in 0..n_queries {
-            c[queries[i]] += alpha_pows[i];
+            c[queries[i]] += weights[i];
         }
         c
     } else {
         let ntt = AdditiveNttF64::standard(log_block);
-        ArenaVec::from_slice(&transpose_forward_ntt_sparse_ext(&ntt, queries, &alpha_pows, log_block))
+        ArenaVec::from_slice(&transpose_forward_ntt_sparse_ext(&ntt, queries, weights, log_block))
     };
     coeffs.truncate(n);
     (coeffs, enforced_sum)
@@ -496,11 +499,11 @@ pub(crate) fn induce_sumcheck_poly_auto_base(
     opened_rows: &[Vec<F64>],
     v_challenges: &[F192],
     queries: &[usize],
-    alpha: &[F192],
+    weights: &[F192],
 ) -> (ArenaVec<F192>, F192) {
     if induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, queries.len()) {
-        induce_sumcheck_poly_via_ntt_base(log_msg_cols, log_inv_rate, opened_rows, v_challenges, queries, alpha)
+        induce_sumcheck_poly_via_ntt_base(log_msg_cols, log_inv_rate, opened_rows, v_challenges, queries, weights)
     } else {
-        induce_sumcheck_poly(log_msg_cols, sks_vks, opened_rows, v_challenges, queries, alpha)
+        induce_sumcheck_poly(log_msg_cols, sks_vks, opened_rows, v_challenges, queries, weights)
     }
 }
