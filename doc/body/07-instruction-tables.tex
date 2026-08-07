@@ -1,11 +1,11 @@
 % !TeX root = ../drafts/07-instruction-tables.tex
 \section{The instruction tables}\label{sec:tables}
 
-Each instruction has its own table. Throughout, an operand address is written $\loc{o}=\fp\cdot o$ and is a bus coordinate, not a column: no table commits one, and none constrains one, since a coordinate may be any polynomial of degree at most $d=2$ in the table's columns (\S\ref{sec:m3}). The same holds of every value a row \emph{derives} from the ones it reads. Writing the derived value straight into the tuple that would have carried its column costs the columns nothing and removes the identity that used to tie the two, since bus balance now asserts it directly. That is why \texttt{XOR}, \texttt{MUL\_NATIVE} and \texttt{DEREF} have no constraint at all: an arithmetic result and a flag-selected store are both degree-2 forms, so both ride the memory flush that reads their cell.
+Each instruction has its own table.
 
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
-Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum. The result is no column: the destination cell's memory flush carries the sum itself, so bus balance is the assertion.
+Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum (in $\E$).
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; the two read values $v_A,v_B$ (each three $\K$-limbs); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} none.
@@ -19,34 +19,39 @@ Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum. The result is 
 
 \subsection{\texttt{MUL\_NATIVE}}\label{sec:tab-mul}
 
-Identical to \texttt{XOR} but for the product, which is degree two rather than one and so still fits a coordinate:
+Asserts $\loc{o_C}=\loc{o_A} \cdot \loc{o_B}$, the $192$-bit field multiplication (in $\E$).
 \begin{itemize}
-\item \textbf{Columns:} as \texttt{XOR}.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; the two read values $v_A,v_B$ (each three $\K$-limbs); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} none.
-\item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$ and the destination's three value coordinates carrying $v_Av_B$ in $\E$. With $y^3=y+1$, put
-\[
-p_0=v_{A,0}v_{B,0},\quad
-p_1=v_{A,0}v_{B,1}+v_{A,1}v_{B,0},\quad
-p_2=v_{A,0}v_{B,2}+v_{A,1}v_{B,1}+v_{A,2}v_{B,0},
-\]
-\[
-p_3=v_{A,1}v_{B,2}+v_{A,2}v_{B,1},\qquad
-p_4=v_{A,2}v_{B,2};
-\]
-the coordinates are then $p_0+p_3$, $p_1+p_3+p_4$ and $p_2+p_4$, twelve products over the nine pairs $v_{A,i}v_{B,j}$.
+\item \textbf{Flushes:}
+  \begin{itemize}
+  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{MUL},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory} ($X\in\{A,B\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X}$; and for the destination, the same pair at $\fp\cdot o_C$ with the three value coordinates carrying the product $v_Av_B$ in $\E$, of degree two. With $y^3=y+1$, put
+    \[
+    p_0=v_{A,0}v_{B,0},\quad
+    p_1=v_{A,0}v_{B,1}+v_{A,1}v_{B,0},\quad
+    p_2=v_{A,0}v_{B,2}+v_{A,1}v_{B,1}+v_{A,2}v_{B,0},
+    \]
+    \[
+    p_3=v_{A,1}v_{B,2}+v_{A,2}v_{B,1},\qquad
+    p_4=v_{A,2}v_{B,2};
+    \]
+    the coordinates are then $p_0+p_3$, $p_1+p_3+p_4$ and $p_2+p_4$, twelve products over the nine pairs $v_{A,i}v_{B,j}$.
+  \end{itemize}
 \end{itemize}
 
 \subsection{\texttt{SET\_CONSTANT}}\label{sec:tab-set}
 
-Asserts $\loc{o}=k$, how a constant enters the read-only memory: the row ties the committed cell to the bytecode immediate $k$.
+Asserts $\loc{o}=k$ for some constant $k \in \E$ (which is how a constant enters the read-only memory).
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operand $o$; immediate $k$ ($192$-bit, three $\K$-limbs $k_0,k_1,k_2$); memory count $r$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} none.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{SET},o,k_0,k_1,k_2,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$ (the immediate's three limbs ride the spare operand slots $5,6,7$).
-  \item \textbf{Memory:} \pull\ $\tup{\dsep{MEM},\fp\cdot o,r,k}$, \push\ $\tup{\dsep{MEM},\fp\cdot o,\gen\cdot r,k}$ (the value slot is the constant $k$, with all three limbs).
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{SET},o,k_0,k_1,k_2,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$ 
+  \item \textbf{Memory:} \pull\ $\tup{\dsep{MEM},\fp\cdot o,r,k}$, \push\ $\tup{\dsep{MEM},\fp\cdot o,\gen\cdot r,k}$ 
   \end{itemize}
 \end{itemize}
 
@@ -58,10 +63,10 @@ Asserts $\loc{o}=k$, how a constant enters the read-only memory: the row ties th
 \item the \emph{target} $v_2$, at the dereferenced address $p\cdot\beta$;
 \item the \emph{local} value $v_3$, at $\fp\cdot\gamma$.
 \end{itemize}
-The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$ (a free $\times\gen^{2}$ of $\pc$, no column of its own, \S\ref{sec:m3}), or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$. That selection is degree two, so $v_2$ is no column either: the target's memory flush carries it.
+The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$, or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $\alpha,\beta,\gamma$; flags $f_{\pc},f_{\fp}$; pointer $p$ (a single $\K$-limb); the local value $v_3$ (three $\K$-limbs); memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} none. The dereferenced address $p\cdot\beta$ is the one product coordinate not based at $\fp$; the pointer $p$ is a single $\K$ column and the pointer read carries literal zeros in its two upper limbs, so bus balance forces the stored pointer word into $\K$ (a genuine $\gen$-power) and the product with it. The flags need no validity check: the verifier reads them from the public program (\S\ref{sec:e2e-bc}).
+\item \textbf{Constraints:} none.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
@@ -101,7 +106,7 @@ degree two in the columns, so neither successor is a column: the state push carr
 Asserts that two source cells are $\K$-valued and packs them into one canonical $128$-bit word.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; source limbs $v_A,v_B\in\K$; memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} none. Value validity is enforced by the memory interactions rather than separate AIR equations.
+\item \textbf{Constraints:} none. 
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
