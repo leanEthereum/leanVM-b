@@ -33,63 +33,61 @@ Tolerating closed walks is what lets a table be filled to a power of two (\S\ref
 
 \paragraph{Setting.} A \emph{lookup array} $\lut$ holds $2^{\kappa}$ entries, entry $\lut[i]$ being a tuple of $\ncomp$ elements of $\K$. Its \emph{components} $\lut_0,\dots,\lut_{\ncomp-1}$ are the multilinears of height $2^{\kappa}$ holding one coordinate of the entry each: they are either committed or public. A \emph{read} is a row of a table (Definition~\ref{def:column}) naming an address $a\in\K$ and a value $v\in\K^{\ncomp}$, and is correct when $a=\gen^{i}$ and $v=\lut[i]$ for some $i<2^{\kappa}$.
 
-\paragraph{Tuple and columns.} The bus interaction uses a tuple of the form $\tup{\sep,\addr,\cnt,\val}$: a domain separator naming the array, the address, the count, then the entry in coordinates $3,\dots,\ncomp+2$. Every higher coordinate is zero, so $\ncomp\le m-3$ for the bus width $m$ (\S\ref{sec:m3}). Committed on top of $\lut$ are one finalize-count column $\cntfin$ of height $2^{\kappa}$, and one count column for each read a table performs. A read's address is not: it is a bus coordinate built from the reading row's columns. Nor is the advanced count $\gen\cdot\cnt$, the same thing one degree lower, the constant $\gen$ times the row's count column (\S\ref{sec:m3}).
+\paragraph{Tuple and columns.} The bus interaction uses a tuple of the form $\tup{\sep,\addr,\cnt,\val}$: a domain separator naming the array, the address, the count, then the entry in coordinates $3,\dots,\ncomp+2$. Every higher coordinate is zero, so $\ncomp\le m-3$ for the bus width $m$ (\S\ref{sec:m3}). Take every part of a read to be a committed column of the reading table: its address, its count, and the $\ncomp$ components of the value read. Committed on top of $\lut$ is one finalize-count column $\cntfin$ of height $2^{\kappa}$.
 
 \paragraph{Flush rules.} With $A[i]$ the number of reads of address $\gen^{i}$:
 \begin{itemize}
 \item \textbf{Seed:} for each $i<2^{\kappa}$, \push\ $\tup{\sep,\gen^{i},1,\lut[i]}$. A boundary block owned by no table, its address coordinate the index column of \S\ref{sec:idxcol}.
 \item \textbf{Read} of $v$ at $a$ with count $\cnt$: \pull\ $\tup{\sep,a,\cnt,v}$ and \push\ $\tup{\sep,a,\gen\cdot\cnt,v}$, both flushes of the reading row.
-\item \textbf{Finalize:} for each $i$, \pull\ $\tup{\sep,\gen^{i},\cntfin[i],\lut[i]}$, honestly $\gen^{A[i]}$: the seed's address and entry coordinates, differing in the count alone.
+\item \textbf{Finalize:} for each $i$, \pull\ $\tup{\sep,\gen^{i},\cntfin[i],\lut[i]}$. An honest prover commits $\cntfin[i]=\gen^{A[i]}$, the count the address has reached.
 \end{itemize}
 
-\paragraph{The count product.} A read at count $0$ pulls and pushes the same tuple, since $\gen\cdot0=0$, so the pair cancels and its value is never compared to the array. Every read count must therefore be nonzero. The bus runs a third grand product beside push and pull over the tables' count columns, batched into the same GKR pass (\S\ref{sec:gkr}), and the verifier checks its root is nonzero; a product vanishes iff a factor does, so one $\E$-element certifies every count of every array at once. Its leaves are the counts themselves, the case $\alpha=1,\gamma=0$ of \S\ref{sec:leafstack}. The seed count is the constant $1$ and $\gen\cdot\cnt$ vanishes only when $\cnt$ does, so the committed count columns are all the product has to cover.
-
-\paragraph{Instance caps.} The verifier checks the announced instance against public caps before any reduction (\S\ref{sec:e2e-unrolled}): at most $2^{32}$ rows per table, and an array height capped per array below. A row reads at most nine times, so the seven tables flush $\nread\le9\cdot7\cdot2^{32}<2^{38}$ reads, which is the hypothesis Lemma~\ref{lem:invcnt} needs. The counting below is exact; the only randomness in the section is the reduction of multiset equality to a grand product (\S\ref{sec:gp}).
+\paragraph{Completeness.} An honest prover gives the $t$-th read of $\gen^{i}$ the count $\gen^{t}$ and commits $\cntfin[i]=\gen^{A[i]}$: both sides then carry the counts $\gen^{0},\dots,\gen^{A[i]}$ at that address, so the bus balances.
 
 \begin{lemma}[Invariant count multisets]\label{lem:invcnt}
 Let $\rcnts$ be a finite multiset over $\K$ with $\gen\cdot\rcnts=\rcnts$. If $|\rcnts|<2^{64}-1$, every element of $\rcnts$ is $0$.
 \end{lemma}
 
 \begin{proof}
-Let $\mu$ be the multiplicity function of $\rcnts$. Multiplication by $\gen$ is a bijection of $\K$ and $\gen\cdot\rcnts$ has multiplicity function $c\mapsto\mu(\gen^{-1}c)$, so the hypothesis reads $\mu(\gen c)=\mu(c)$ for all $c$: $\mu$ is constant along the orbits $\{0\}$ and $\K^{\times}$, the latter of size $2^{64}-1$ since $\gen$ generates $\K^{\times}$. With $\mu_1$ its value there, $|\rcnts|=\mu(0)+\mu_1(2^{64}-1)<2^{64}-1$ forces $\mu_1=0$.
+Let $\mu:\K\to\mathbb{N}$ be the multiplicity function of $\rcnts$ (Definition~\ref{def:multiset}). Multiplication by $\gen$ is a bijection of $\K$ and $\gen\cdot\rcnts$ has multiplicity function $c\mapsto\mu(\gen^{-1}c)$, so the hypothesis reads $\mu(\gen c)=\mu(c)$ for all $c$. Every nonzero $c$ is a power of $\gen$, so iterating this gives one value $\mu_1$ on all of $\K^{\times}$, which has $2^{64}-1$ elements. Then $|\rcnts|=\mu(0)+\mu_1(2^{64}-1)<2^{64}-1$ forces $\mu_1=0$.
 \end{proof}
 
-An additive count would not do: $c\mapsto c+1$ is an involution in characteristic two, so $\mset{c,c+1}$ is invariant and the lemma fails at size $2$.
-
 \begin{theorem}[Lookup correctness]\label{thm:omc}
-Fix an array $\lut$ of $2^{\kappa}$ entries, a column $\cntfin$, and the flush rules above, and let read $j$ contribute the address $a_j\in\K$, count $c_j\in\K$ and value $v_j\in\K^{\ncomp}$ its row evaluates to. If the bus balances, every $c_j\neq0$, and the number of reads is $\nread<2^{64}-1$, then every read $j$ has $a_j=\gen^{i}$ and $v_j=\lut[i]$ for some $i<2^{\kappa}$.
+Let the flush rules above be the only flushes carrying $\lut$'s separator, and write $(a_j,c_j,v_j)$ for the address, count and value that read $j$ evaluates to. If the bus balances, every $c_j\neq0$, and there are fewer than $2^{64}-1$ reads, then every read is correct: $(a_j,v_j)=(\gen^{i},\lut[i])$ for some $i<2^{\kappa}$.
 \end{theorem}
 
 \begin{proof}
-Multiset equality survives restriction to the tuples whose chosen coordinates take chosen values, so fix $(a,v)\in\K\times\K^{\ncomp}$ and keep only the tuples carrying $\lut$'s separator, address $a$ and entry $v$. Separators are distinct constants (\S\ref{sec:m3}) and the array's tuples are zero above coordinate $\ncomp+2$, so what survives on each side is a multiset of counts, and balance says the two agree.
+Fix a read pair $(a,v)$ that is \emph{not} an entry of the array, so $(a,v)\neq(\gen^{i},\lut[i])$ for every $i<2^{\kappa}$. Balance equates the multiset of pushed tuples with the multiset of pulled ones; keep in each only the tuples carrying $\lut$'s separator, address $a$ and entry $v$, and the two are still equal. A seed and a finalization sit at the pairs $(\gen^{i},\lut[i])$, different from $(a,v)$, so neither survives. A read at $(a,v)$ does, on both sides at once: it pulls its count $c$ and pushes $\gen c$. So the survivors are exactly the reads at $(a,v)$.
 
-Let $\rcnts(a,v)=\mset{c_j:a_j=a,\ v_j=v}$. Read $j$ contributes $c_j$ pulled and $\gen c_j$ pushed, so the reads contribute $\rcnts(a,v)$ and $\gen\cdot\rcnts(a,v)$; the only other flushes of $\lut$ are the $2^{\kappa}$ seeds and the $2^{\kappa}$ finalizations, both families sitting at the pairs $(\gen^{i},\lut[i])$. So if $(a,v)\neq(\gen^{i},\lut[i])$ for every $i<2^{\kappa}$, nothing but reads survives the restriction and balance reads $\gen\cdot\rcnts(a,v)=\rcnts(a,v)$. As $|\rcnts(a,v)|\le\nread<2^{64}-1$, Lemma~\ref{lem:invcnt} makes every element of $\rcnts(a,v)$ zero, and $c_j\neq0$ then leaves $\rcnts(a,v)=\emptyset$.
+Writing $\rcnts$ for the multiset of counts of the reads at $(a,v)$, balance therefore says $\gen\cdot\rcnts=\rcnts$. There are fewer than $2^{64}-1$ of them, so Lemma~\ref{lem:invcnt} makes every count in $\rcnts$ zero; every count is nonzero by hypothesis, so $\rcnts$ is empty. No read happens at such an invalid $(a,v)$.
 
-Apply this to $(a,v)=(a_j,v_j)$ for any read $j$: that multiset contains $c_j$, so it is nonempty, so $(a_j,v_j)=(\gen^{i},\lut[i])$ for some $i<2^{\kappa}$.
 \end{proof}
-
-The three hypotheses are the three things the verifier checks: one bus root serving both sides, the count root nonzero, the caps.
 
 \begin{corollary}[Addresses come out in range]\label{cor:addrrange}
 Under the same hypotheses every read address is an entry address $\gen^{i}$, $i<2^{\kappa}$: no read at any other address, $0$ included, occurs in an accepted proof.
 \end{corollary}
 
-\paragraph{Nothing checks the finalize counts.} $\cntfin$ appears in no hypothesis of Theorem~\ref{thm:omc} and no step of its proof, and it is absent from the count product: it may be anything, $0$ included. A wrong value can only unbalance the bus.
+\paragraph{Nothing checks the finalize counts.} $\cntfin$ appears nowhere in Theorem~\ref{thm:omc} or its proof. A wrong value (such as $0$ for instance) cannot make a bad read pass; it can only unbalance the bus at that entry, making the proof invalid.
 
-\paragraph{Completeness.} Number the $A[i]$ reads of $\gen^{i}$ in any order, give read $t$ the count $\gen^{t}$, and commit $\cntfin[i]=\gen^{A[i]}$. At $(\gen^{i},\lut[i])$ the pulled counts are then $\mset{\gen^{0},\dots,\gen^{A[i]-1}}\uplus\mset{\gen^{A[i]}}$ and the pushed ones $\mset{\gen^{0}}\uplus\mset{\gen^{1},\dots,\gen^{A[i]}}$, the same multiset; elsewhere both sides are empty. An unread entry is the case $A[i]=0$, its seed and finalization the same tuple at count $1$, cancelling. Nothing here bounds $A[i]$, so the caps are a soundness condition only.
+\paragraph{Meeting the hypotheses.} Grand-product GKR checks balance (\S\ref{sec:gp}). It remains to check that all counts are nonzero, and the $\nread<2^{64}-1$ read bound, as follows.
+
+\paragraph{The count product.} All counts are nonzero exactly when their product is. The prover therefore sends that product, one $\E$-element, and the verifier checks it is nonzero. It is proven like any other grand product, by GKR over the stacking of every count column (\S\ref{sec:leafstack}), batched with the two other GKRs of the bus (push / pull) (\S\ref{sec:gkr}).
+
+\paragraph{Instance caps.} The verifier checks the announced sizes against public caps (\S\ref{sec:e2e-unrolled}): at most $2^{32}$ rows per table, at most $2^{32}$ memory cells (\S\ref{sec:memchan}) and at most $2^{32}$ bytecode instructions (\S\ref{sec:bytecode}). A row reads at most nine times, so the seven tables flush $\nread\le9\cdot7\cdot2^{32}<2^{38}$ reads, far under the $2^{64}-1$ that Lemma~\ref{lem:invcnt} needs.
+
+\paragraph{Relexing the hypotheses.} A bus entry may be any polynomial of degree at most $d$ in the row's columns (\S\ref{sec:m3}), so none of the three (address, count, value) need be committed. Example 1: we don't need to commit memory addresses of the form $\fp\cdot o$ (\S\ref{sec:memchan}) when $\fp$ and $o$ are already committed. Example 2: once the pull counter $\cnt$ is committed, no need to commit to the corrsponding push counter $\gen\cdot\cnt$.
 
 \subsection{Memory}\label{sec:memchan}
 
-The array is the memory image, $2^{\kappa}=2^{h}$ cells with $16\le h\le32$ (\S\ref{sec:vm}), at $\sep=\dsep{MEM}$. Its entry is a $192$-bit word, so $\ncomp=3$: the \emph{committed} columns $M_0,M_1,M_2$, riding coordinates $3,4,5$ (Definition~\ref{def:column}). A read's address is the bus coordinate $\gen^{k}\fp\cdot o$, a product of two of the reading row's columns (\S\ref{sec:m3}, \S\ref{sec:tables}), so Corollary~\ref{cor:addrrange} says that product lands in the image; \S\ref{sec:prog-range-checks} spends it as a range check, a \texttt{DEREF} through a word $x$ reading at $x\cdot\gen^{0}$ and balance alone then proving $x=\gen^{e}$ with $e<2^{h}$. Rows read one to eight cells, per table in \S\ref{sec:tables}.
+The memory is an array of $2^{h}$ cells, $16\le h\le32$ (\S\ref{sec:vm}). Bus interraction uses domain separation $\sep=\dsep{MEM}$. A memory word is $192$-bit (i.e. one $\E$-element), so $\ncomp=3$, memory is committed as 3 $\K$-valued multilinears in $h$ variables $M_0,M_1,M_2$.
 
 \subsection{Bytecode}\label{sec:bytecode}
 
-The array is the program, $2^{\kappa}=\nprog$ instructions capped at $2^{32}$, at $\sep=\dsep{BC}$. Its entry is an opcode plus eight operand or immediate slots, so $\ncomp=9$, all \emph{public}, shorter instructions zeroing their unused slots (\S\ref{sec:e2e-bc}); this is the array that attains $\ncomp=m-3$ and so fixes the bus width at $m=12$; nothing of it is committed, so the verifier evaluates the nine extensions itself and $\cntfin$ is the only opened part of either boundary block (\S\ref{sec:leafstack}). The address is the reading row's own $\pc$ column, and every row of every table reads exactly once, pulling the tuple with its opcode hardcoded. Theorem~\ref{thm:omc} then says the row's operands and immediates are the program's at that $\pc$, which is what ties the trace to the program. An instruction the program was padded up with is never read, the $A[i]=0$ case above.
+The bytecode is an array of $\nprog$ instructions, $\nprog\le2^{32}$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC}$. An instruction is an opcode plus eight operand or immediate slots, so $\ncomp=9$: the widest entry on the bus, which is what fixes $m=12$ (\S\ref{sec:m3}). The program is public, i.e. not committed, the verifier can evaluate it directly.
 
 \subsection{The index column}\label{sec:idxcol}
 
-Both arrays' boundary blocks run over every address $\gen^{0},\dots,\gen^{2^{\kappa}-1}$, so settling the grand product leaves the verifier needing this \emph{index column}'s extension at the point $\zeta$ GKR ends on (\S\ref{sec:leafstack}). It is not committed, and need not be: being $\gen$-powers it factors over the bits of the index. Place $\gen^{i}$ at the point $w\in\cube\kappa$ of $i$'s bits, so $i=\sum_k2^{k}w_k$ and $\gen^{\,i}=\prod_k(\gen^{\,2^{k}})^{w_k}$. Each factor is $1$ at $w_k=0$ and $\gen^{2^{k}}$ at $w_k=1$, hence already multilinear, so the extension is the same product with each bit relaxed:
+The seed and finalization blocks run over every address $\gen^{0},\dots,\gen^{2^{\kappa}-1}$, so the verifier needs the extension of that \emph{index column} $\mathrm{idx}$ at the point $\zeta$ (\S\ref{sec:leafstack}). It is not committed, and need not be: writing $w$ for the bits of $i$, $\gen^{\,i}=\prod_k(\gen^{\,2^{k}})^{w_k}$, whose $k$-th factor is $1+w_k(1+\gen^{\,2^{k}})$, which gives the efficient MLE formula:
 \[
-  \mle{\mathrm{idx}}(\zeta)\;=\;\prod_{k=0}^{\kappa-1}\bigl(1+\zeta_k\,(1+\gen^{\,2^{k}})\bigr).
+  \mle{\mathrm{idx}}(\zeta)\;=\;\prod_{k=0}^{\kappa-1}\bigl(1+\zeta_k\,(1+\gen^{\,2^{k}})\bigr),
 \]
-The verifier runs it off the repeated squares $\gen^{2^{0}},\gen^{2^{1}},\dots$ in $\kappa$ mixed $\K\times\E$ multiplications.
