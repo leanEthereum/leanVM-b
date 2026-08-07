@@ -48,30 +48,29 @@ const TOWER_LANES: [&[(usize, usize)]; 3] = [
     &[(0, 2), (1, 1), (2, 0), (2, 2)],
 ];
 
-/// One lane of the tower product, in the columns' own field.
+/// One lane of the tower product, in the columns' own field. Only the test that
+/// checks [`TOWER_LANES`] against the field needs it: `MUL`'s result rides the bus
+/// as a coordinate ([`arith_result`]), and `JUMP`'s condition is `K`-valued, so no
+/// identity assembles a tower product any more.
+#[cfg(test)]
 fn tower_lane<T: ColVal>(lane: usize, x: [T; 3], y: [T; 3]) -> T {
     TOWER_LANES[lane].iter().fold(T::ZERO, |acc, &(j, k)| acc + x[j] * y[k])
 }
 
-/// `JUMP`'s six identities: `b = cond·w` and `cond·(b+1) = 0`, each written out over
-/// the three lanes (§sec:tab-jump).
+/// `JUMP`'s two identities: `b = cond·w` and `cond·(b+1) = 0` (§sec:tab-jump).
 ///
 /// The two relations together force `b = [cond ≠ 0]`: when `cond ≠ 0` the second
 /// gives `b = 1` (and the first `w = cond⁻¹`); when `cond = 0` the first gives
 /// `b = 0`. The two selections need no identity: the state push carries each as its
-/// own degree-2 coordinate (§sec:m3). `b` is a single `K` column, so it meets the
-/// product's low lane, and gating `cond` by it mixes no lanes.
+/// own degree-2 coordinate (§sec:m3).
+///
+/// The condition is `K`-valued, so both identities are single-lane. Its memory
+/// flush carries literal zeros above the low limb (`memory_k`), so a word outside
+/// `K` cannot balance the bus; the interpreter rejects one outright.
 fn jump_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     use jump::*;
-    let c = [cols[C_LO], cols[C_HI], cols[C_TOP]];
-    let w = [cols[W_LO], cols[W_HI], cols[W_TOP]];
     let b1 = cols[B] + T::ONE;
-    let cw = |lane: usize| tower_lane(lane, c, w);
-    T::dot(
-        pows,
-        &[cols[B] + cw(0), cw(1), cw(2), c[0] * b1, c[1] * b1, c[2] * b1],
-        F192::ZERO,
-    )
+    T::dot(pows, &[cols[B] + cols[C] * cols[W], cols[C] * b1], F192::ZERO)
 }
 
 // ---- shared bus vocabulary ---------------------------------------------------
@@ -691,27 +690,24 @@ mod jump {
     pub const OC: usize = 2;
     pub const OD: usize = 3;
     pub const OF: usize = 4;
-    // The condition is an arbitrary F192 word. The destination and frame words are
-    // K-valued addresses, so each is a SINGLE lane read through `memory_k`: bus
-    // balance forces the stored words into K, exactly as for the DEREF pointer,
-    // which is what the two selection identities used to do on a taken branch.
-    pub const C_LO: usize = 5;
-    pub const C_HI: usize = 6;
-    pub const C_TOP: usize = 7;
-    pub const D: usize = 8;
-    pub const F: usize = 9;
-    pub const RC: usize = 10;
-    pub const RD: usize = 11;
-    pub const RF: usize = 12;
-    pub const RBC: usize = 13;
-    // Local witness columns (committed, never flushed): the inverse hint `w`
-    // (192-bit: c⁻¹ in E) and the taken indicator `b = [c ≠ 0]` it certifies
-    // (the `JUMP` table in `doc/body/07-instruction-tables.tex`). `b` is a single K-lane (0/1).
-    pub const W_LO: usize = 14;
-    pub const W_HI: usize = 15;
-    pub const W_TOP: usize = 16;
-    pub const B: usize = 17;
-    pub const N: usize = 18;
+    // The condition, destination and frame words are all K-valued, so each is a
+    // SINGLE lane read through `memory_k`: bus balance forces the stored words
+    // into K, exactly as for the DEREF pointer. A guest branches on g-powers,
+    // never on an arbitrary word: `assert a != b` takes an inverse hint instead
+    // of a branch (§sec:prog-div-ne).
+    pub const C: usize = 5;
+    pub const D: usize = 6;
+    pub const F: usize = 7;
+    pub const RC: usize = 8;
+    pub const RD: usize = 9;
+    pub const RF: usize = 10;
+    pub const RBC: usize = 11;
+    // Local witness columns (committed, never flushed): the inverse hint `w = c⁻¹`
+    // and the taken indicator `b = [c ≠ 0]` it certifies (the `JUMP` table in
+    // `doc/body/07-instruction-tables.tex`). Both are single K lanes.
+    pub const W: usize = 12;
+    pub const B: usize = 13;
+    pub const N: usize = 14;
 }
 
 impl Table for JumpTable {
@@ -723,7 +719,7 @@ impl Table for JumpTable {
         &[RC, RD, RF, RBC]
     }
     fn n_constraints(&self) -> usize {
-        6 // the two indicator identities, lane by lane; the selections ride the state push
+        2 // the two indicator identities; the selections ride the state push
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
         jump_identity(pows, cols)
@@ -748,7 +744,7 @@ impl Table for JumpTable {
             OP_JUMP,
             &[Col(OC), Col(OD), Col(OF), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        f.memory(Prod(FP, OC, 0), RC, C_LO, C_HI, C_TOP);
+        f.memory_k(Prod(FP, OC, 0), RC, C);
         f.memory_k(Prod(FP, OD, 0), RD, D);
         f.memory_k(Prod(FP, OF, 0), RF, F);
     }
@@ -767,13 +763,12 @@ impl Table for JumpTable {
             let (oc, od, of) = ins(r);
             [ctx.g_at(oc), ctx.g_at(od), ctx.g_at(of)]
         });
-        ctx.cols(out, rows, C_LO, |r| ctx.limbs(r.fp + ins(r).0));
-        // The destination and frame cells are K-valued on every row, taken or not
-        // (`cpu::execute` asserts it), so each is one lane and the memory flush
-        // carries literal zeros above it.
-        ctx.cols(out, rows, D, |r| {
-            let (_, od, of) = ins(r);
-            [F64(cell(r, od).c0), F64(cell(r, of).c0)]
+        // The condition, destination and frame cells are K-valued on every row,
+        // taken or not (`cpu::execute` rejects anything else), so each is one lane
+        // and the memory flush carries literal zeros above it.
+        ctx.cols(out, rows, C, |r| {
+            let (oc, od, of) = ins(r);
+            [F64(cell(r, oc).c0), F64(cell(r, od).c0), F64(cell(r, of).c0)]
         });
         // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in ONE
         // batched Montgomery inversion: a single field inverse plus ~2 multiplies
@@ -801,7 +796,7 @@ impl Table for JumpTable {
             }
             w
         };
-        ctx.cols_at(out, rows.len(), W_LO, |i| [F64(w[i].c0), F64(w[i].c1), F64(w[i].c2)]);
+        ctx.cols_at(out, rows.len(), W, |i| [F64(w[i].c0)]);
         ctx.col(out, rows, B, |r| if cond(r).is_zero() { F64::ZERO } else { F64::ONE });
         ctx.cols(out, rows, RC, |r| [r.rc, r.rd, r.rf]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -1024,17 +1019,18 @@ mod tests {
     /// that is not `cond⁻¹`.
     #[test]
     fn the_jump_identities_bind_every_lane() {
-        let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 6);
-        for cond in [F192::ZERO, C] {
+        let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 2);
+        // The condition is K-valued (`memory_k` on its read, §sec:tab-jump), so the
+        // pair is single-lane: `w = c⁻¹` in K too.
+        for cond in [F64::ZERO, F64(0x9e37_79b9_7f4a_7c15)] {
             let mut row = vec![F64::ZERO; jump::N];
-            let w = if cond.is_zero() { F192::ZERO } else { cond.inv() };
-            for (i, (c, v)) in [(cond.c0, w.c0), (cond.c1, w.c1), (cond.c2, w.c2)]
-                .into_iter()
-                .enumerate()
-            {
-                row[jump::C_LO + i] = F64(c);
-                row[jump::W_LO + i] = F64(v);
-            }
+            let w = if cond.is_zero() {
+                F64::ZERO
+            } else {
+                F64(F192::from(cond).inv().c0)
+            };
+            row[jump::C] = cond;
+            row[jump::W] = w;
             row[jump::B] = if cond.is_zero() { F64::ZERO } else { F64::ONE };
             assert_eq!(jump_identity(&pows, &row), F192::ZERO, "cond = {cond:?}");
             // On a zero condition the inverse is unconstrained, being multiplied by
@@ -1042,7 +1038,7 @@ mod tests {
             let forgeable: &[usize] = if cond.is_zero() {
                 &[jump::B]
             } else {
-                &[jump::B, jump::W_LO, jump::W_HI, jump::W_TOP]
+                &[jump::B, jump::W]
             };
             for &col in forgeable {
                 let mut forged = row.clone();

@@ -1377,9 +1377,8 @@ def _flushes_deref(t: Table) -> Flushes:
 
 
 def _flushes_jump(t: Table) -> Flushes:
-    pc, fp, o_c, o_d, o_f, dest, frame, b = t.cols("pc", "fp", "o_c", "o_d", "o_f", "dest", "frame", "b")
+    pc, fp, o_c, o_d, o_f, cond, dest, frame, b = t.cols("pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "b")
     cnt_c, cnt_d, cnt_f, cnt_bc = t.cols("cnt_c", "cnt_d", "cnt_f", "cnt_bc")
-    cond = t.cols("c_0", "c_1", "c_2")
     f = Flushes()
     # next_pc = b*dest + (b+1)*g*pc, next_fp = b*frame + (b+1)*fp, both derived.
     f.state_derived(
@@ -1389,9 +1388,9 @@ def _flushes_jump(t: Table) -> Flushes:
         _sum((_prod(b, frame), _prod(b, fp), _col(fp))),
     )
     f.bytecode(pc, cnt_bc, t.opcode, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
-    f.memory_word(_prod(fp, o_c), cnt_c, *cond)
-    # The destination and the frame are addresses on every row, taken or not, so
-    # each is one K-limb read through literal zeros in the upper lanes.
+    # The condition, the destination and the frame are K-valued on every row, taken
+    # or not, so each is one K-limb read through literal zeros in the upper lanes.
+    f.memory_base(_prod(fp, o_c), cnt_c, cond)
     f.memory_base(_prod(fp, o_d), cnt_d, dest)
     f.memory_base(_prod(fp, o_f), cnt_f, frame)
     return f
@@ -1402,15 +1401,12 @@ def _jump_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
 
     No table binds an address, an arithmetic result, a DEREF store or a JUMP
     successor, the bus reading each as a degree-2 coordinate, so JUMP's
-    is-nonzero indicator is the whole AIR of the machine. Both relations are between
-    WORDS, and an identity is K-valued, so each is written out over the three lanes:
-    the product through TOWER_LANES, the gating directly (``b`` lies in K).
+    is-nonzero indicator is the whole AIR of the machine. The condition is K-valued
+    (its memory read carries literal zeros above the low limb), so both relations
+    are single-lane.
     """
-    condition = [get(f"c_{i}") for i in range(3)]
-    inverse = [get(f"w_{i}") for i in range(3)]
-    flag = get("b")
-    product = _tower_lanes(condition, inverse)
-    return (flag + product[0], product[1], product[2], *(limb * (flag + ONE) for limb in condition))
+    condition, inverse, flag = get("c"), get("w"), get("b")
+    return (flag + condition * inverse, condition * (flag + ONE))
 
 
 def _flushes_blake3(t: Table) -> Flushes:
@@ -1469,9 +1465,9 @@ DEREF_COLUMNS = (
 )  # fmt: skip
 
 JUMP_COLUMNS = (
-    "pc", "fp", "o_c", "o_d", "o_f", "c_0", "c_1", "c_2", "dest", "frame",
+    "pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame",
     "cnt_c", "cnt_d", "cnt_f", "cnt_bc",
-    "w_0", "w_1", "w_2", "b",  # witness columns: neither read from memory nor in the bytecode
+    "w", "b",  # witness columns: neither read from memory nor in the bytecode
 )  # fmt: skip
 
 BLAKE3_COLUMNS = (
@@ -1489,7 +1485,7 @@ TABLES = (
     Table("mul", 1, ARITH_COLUMNS, _flushes_arith),
     Table("set", 2, SET_COLUMNS, _flushes_set),
     Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
-    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 6),
+    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 2),
     Table("blake3", 5, BLAKE3_COLUMNS, _flushes_blake3),
     Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )

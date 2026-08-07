@@ -81,23 +81,23 @@ The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{se
 
 \subsection{\texttt{JUMP}}\label{sec:tab-jump}
 
-A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary $192$-bit word. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a boolean indicator column $b=[\,c\neq0\,]$ (Definition~\ref{def:iverson}), which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
+A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero. The condition is $\K$-valued, like the destination and the frame: a program branches on $\gen$-powers, the one idiom that once branched on a word taking an inverse hint instead (\S\ref{sec:prog-div-ne}). It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a boolean indicator column $b=[\,c\neq0\,]$ (Definition~\ref{def:iverson}), which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
 \[
   b=c\cdot w,\qquad c\,(b+1)=0 .
 \]
-When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Both are relations between \emph{words}, and an identity is $\K$-valued (\S\ref{sec:air}), so each is written out over the three lanes: six identities, with the tower product $c\cdot w$ unrolled as in \S\ref{sec:tab-mul} and the gating $c\,(b+1)$ lane by lane, $b$ lying in $\K$. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
+When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ the first forces $b=0$. Both sides being $\K$-valued, the two are single identities rather than one per lane. Writing $s=\gen\cdot\pc$ for the fall-through, the next state is the selection
 \[
   \nxt{\pc}=b\cdot d+(b+1)\,s,\qquad \nxt{\fp}=b\cdot f+(b+1)\,\fp,
 \]
-degree two in the columns, so neither successor is a column: the state push carries them. The destination and the frame are addresses on every row, taken or not, so each is a single $\K$-column read through a flush with literal zeros in its upper limbs, the same device as the \texttt{DEREF} pointer, and it is bus balance that puts the stored words in $\K$.
+degree two in the columns, so neither successor is a column: the state push carries them. Condition, destination and frame are read on every row, taken or not, so each is a single $\K$-column read through a flush with literal zeros in its upper limbs, the same device as the \texttt{DEREF} pointer: bus balance is what puts the stored words in $\K$, and the interpreter rejects a program that branches on anything else.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_c,o_d,o_f$; the condition $c$ (three $\K$-limbs); the destination $d$ and frame $f$ (one $\K$-limb each); inverse $w$ (three $\K$-limbs, $c^{-1}$ in $\E$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is no column, only a term of the two selections.)
-\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$, six $\K$ identities once each is taken lane by lane, and nothing else. \texttt{JUMP} is the one table left with an identity, because $b$ is the one quantity no interaction pins. On a zero condition $w$ is unconstrained, being multiplied by zero; what the identities pin there is $b=0$.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_c,o_d,o_f$; the condition $c$, the destination $d$ and the frame $f$ (one $\K$-limb each); inverse $w$ (one $\K$-limb, $c^{-1}$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is no column, only a term of the two selections.)
+\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$, two $\K$ identities, and nothing else. \texttt{JUMP} is the one table left with an identity, because $b$ is the one quantity no interaction pins. On a zero condition $w$ is unconstrained, being multiplied by zero; what the identities pin there is $b=0$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},b\,d+b\,(\gen\cdot\pc)+\gen\cdot\pc,\;b\,f+b\,\fp+\fp}$, the two selections written out in characteristic $2$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{JMP},o_c,o_d,o_f,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} three reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: the condition $\tup{\dsep{MEM},\fp\cdot o_c,r_c,c}$ with all three limbs, then $\tup{\dsep{MEM},\fp\cdot o_d,r_d,d,0,0}$ and $\tup{\dsep{MEM},\fp\cdot o_f,r_f,f,0,0}$.
+  \item \textbf{Memory:} three reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: $\tup{\dsep{MEM},\fp\cdot o_c,r_c,c,0,0}$, $\tup{\dsep{MEM},\fp\cdot o_d,r_d,d,0,0}$ and $\tup{\dsep{MEM},\fp\cdot o_f,r_f,f,0,0}$, each with literal zeros above the low limb.
   \end{itemize}
 \end{itemize}
 
