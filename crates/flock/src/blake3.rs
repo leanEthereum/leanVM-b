@@ -1881,8 +1881,8 @@ impl Blake3Setup {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
-        let t_zerocheck = std::time::Instant::now();
         let packed_copy_time;
+        let zerocheck_time;
         let (zc_claim, s_hat_v_c) = {
             let t_packed_copy = std::time::Instant::now();
             let (a_packed, b_packed, c_packed) = if use_parallel {
@@ -1895,16 +1895,18 @@ impl Blake3Setup {
                 )
             };
             packed_copy_time = t_packed_copy.elapsed();
-            crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+            let t_zerocheck = std::time::Instant::now();
+            let claim = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
                 &a_packed,
                 &b_packed,
                 &c_packed,
                 self.r1cs.m,
                 &padding,
                 ps,
-            )
+            );
+            zerocheck_time = t_zerocheck.elapsed();
+            claim
         };
-        let zerocheck_time = t_zerocheck.elapsed();
 
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = crate::lincheck::QuirkyPoint {
@@ -1959,7 +1961,8 @@ impl Blake3Setup {
         };
         if trace {
             let reduction_time = t_reduction.elapsed();
-            let glue_time = reduction_time.saturating_sub(zerocheck_time + lincheck_time);
+            let accounted_time = packed_copy_time + zerocheck_time + lincheck_time;
+            let glue_time = reduction_time.saturating_sub(accounted_time);
             eprintln!(
                 "[flock prove] reduction: {:.2} ms (zerocheck: {:.2} ms, packed copy: {:.2} ms, lincheck: {:.2} ms, glue: {:.2} ms)",
                 reduction_time.as_secs_f64() * 1e3,
