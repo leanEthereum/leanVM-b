@@ -33,8 +33,6 @@ WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE3 cell �
 WORDS_PER_BLOCK = 2                 # … and a 32-byte accumulator block = two
 BYTES_PER_BLOCK = 32
 
-# The tower generator Y. `acc_lo + acc_hi·Y` embeds 128 BLAKE3 bits in F192.
-Y = 18446744073709551616
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
 # wots-pk | merkle.
@@ -176,7 +174,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # by CHAIN_LENGTH^i inside each 64-bit lane (DIGITS_PER_WORD digits per
     # lane, GF(2^64)'s monomial budget, with each lane's leftover top bits
     # ground to zero by the signer), reconstruct the two lanes of D's first
-    # cell, combined as `acc_lo + acc_hi·Y`.
+    # cell, packed by `pack64x2`.
     tips = StackBuf(TIP_CELLS)
     digit_product = 1
     chain_tweaks = tweak_table * GEN ** WORDS_PER_VALUE  # chain i's tweaks start at cell (1+CHAIN_STEPS·i)
@@ -209,8 +207,10 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         weight = weight * CHAIN_LENGTH
         chain_tweaks = chain_tweaks * GEN ** (WORDS_PER_VALUE * CHAIN_STEPS)
     assert digit_product == GEN ** TARGET_SUM
-    # Both lanes packed into D's first 128-bit cell.
-    assert acc_lo + acc_hi * Y == digest[0]
+    # Both lanes packed into D's first 128-bit cell. `pack64x2` IS that canonical
+    # embedding (lo, hi, 0), and it asserts both lanes into K on the way, where
+    # `acc_lo + acc_hi * Y` spent two 192-bit arithmetic rows to say the same.
+    assert pack64x2(acc_lo, acc_hi) == digest[0]
 
     # WOTS public-key leaf = standard BLAKE3 over prefix + 42 tips (704 bytes):
     # 11 full blocks, carrying the chaining value between instructions.

@@ -1150,7 +1150,9 @@ impl FnLower<'_> {
                     ptr: arr,
                     size: *n as u32,
                 });
-                arr
+                // A buffer pointer is an address, which `DEREF` requires to be a
+                // g-power: narrow, and so is every offset taken off it.
+                self.mark_narrow(arr)
             }
             Expr::HeapBufDyn(e) => {
                 // Evaluate the size first (its cell must be written when the
@@ -1158,7 +1160,7 @@ impl FnLower<'_> {
                 let size = self.expr(e);
                 let arr = self.fresh();
                 self.pending.push(Hint::AllocBufferDyn { ptr: arr, size });
-                arr
+                self.mark_narrow(arr)
             }
             Expr::StackBuf(_) => {
                 panic!("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
