@@ -159,6 +159,16 @@ struct FnLower<'a> {
     filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
+    /// Cells whose value is PROVABLY `K`-valued: a 64-bit constant, a g-power, an
+    /// address, or the result of an operation on such cells. `+`, `*` and `/` on
+    /// two of them emit the narrow instruction pair, which commits one lane per
+    /// operand instead of three (`lean_vm::cpu::Op::Xor64`). The analysis only ever
+    /// says YES when it can prove it: a cell it has not seen (a memory load, a
+    /// hint, a function argument, anything read off a proof stream) is treated as a
+    /// full 192-bit word, so being wrong costs width, never correctness. Cells are
+    /// write-once and each `fresh` is new, so a cell's width is fixed where it is
+    /// defined and this needs no per-branch bookkeeping.
+    narrow: std::collections::HashSet<Off>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
     /// but direct or indirect recursion would otherwise recurse forever in
     /// the compiler.
@@ -191,6 +201,31 @@ impl FnLower<'_> {
     fn emit(&mut self, op: LOp) {
         let hints = std::mem::take(&mut self.pending);
         self.code.push(LInstr { op, hints });
+    }
+
+    /// Record that `o` holds a `K`-valued word ([`FnLower::narrow`]).
+    fn mark_narrow(&mut self, o: Off) -> Off {
+        self.narrow.insert(o);
+        o
+    }
+
+    fn is_narrow(&self, o: Off) -> bool {
+        self.narrow.contains(&o)
+    }
+
+    /// Emit `dst = a + b` or `dst = a·b` at the width the operands prove.
+    fn emit_arith(&mut self, mul: bool, a: Off, b: Off, dst: Off) {
+        let narrow = self.is_narrow(a) && self.is_narrow(b);
+        // K is closed under both operations, so a narrow row's result is narrow.
+        self.emit(match (mul, narrow) {
+            (false, false) => LOp::Xor { a, b, c: dst },
+            (false, true) => LOp::Xor64 { a, b, c: dst },
+            (true, false) => LOp::Mul { a, b, c: dst },
+            (true, true) => LOp::Mul64 { a, b, c: dst },
+        });
+        if narrow {
+            self.mark_narrow(dst);
+        }
     }
 
     /// Bind `name` to `b`, dropping whatever the other three maps held for it:
@@ -239,7 +274,7 @@ impl FnLower<'_> {
             k: KVal::Const(F192::ONE),
         });
         self.one_off = Some(o);
-        o
+        self.mark_narrow(o)
     }
 
     /// A frame cell holding the constant `v`, SET lazily once per distinct
@@ -258,6 +293,9 @@ impl FnLower<'_> {
         let o = self.fresh();
         self.emit(LOp::Set { o, k: KVal::Const(v) });
         self.scope.const_cells.insert(key, o);
+        if v.c1 == 0 && v.c2 == 0 {
+            self.mark_narrow(o);
+        }
         o
     }
 
@@ -423,7 +461,7 @@ impl FnLower<'_> {
     /// `dst = src` (no MOV: multiply by `1`).
     fn copy(&mut self, src: Off, dst: Off) {
         let one = self.one();
-        self.emit(LOp::Mul { a: src, b: one, c: dst });
+        self.emit_arith(true, src, one, dst);
     }
 
     /// A frame cell holding this function's own `fp` (the g-power element),
@@ -692,10 +730,13 @@ impl FnLower<'_> {
             o: kcell,
             k: KVal::Local(0),
         }); // patched: table base T
+        // A dispatch target is a bytecode address, so both products are narrow.
         let x2 = self.fresh();
-        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
+        self.emit(LOp::Mul64 { a: xo, b: xo, c: x2 });
+        self.mark_narrow(x2);
         let d = self.fresh();
-        self.emit(LOp::Mul { a: kcell, b: x2, c: d });
+        self.emit(LOp::Mul64 { a: kcell, b: x2, c: d });
+        self.mark_narrow(d);
         self.emit(LOp::Jump { oc: one, od: d, of });
         kset
     }
@@ -777,7 +818,7 @@ impl FnLower<'_> {
         } else {
             let (la, lb) = (self.expr(lhs), self.expr(rhs));
             let x = self.fresh();
-            self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs: nonzero ⇔ !=
+            self.emit_arith(false, la, lb, x); // x = lhs + rhs: nonzero ⇔ !=
             x
         };
         // Hoisted on purpose: these SETs must dominate the join.
@@ -835,7 +876,7 @@ impl FnLower<'_> {
         }
         let (la, lb) = (self.expr(a), self.expr(b));
         let x = self.fresh();
-        self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = a + b: nonzero ⇔ a != b
+        self.emit_arith(false, la, lb, x); // x = a + b: nonzero ⇔ a != b
         let sfp = self.self_fp();
         let one = self.one();
         // a != b: skip the poison and continue at the join (patched below).
@@ -873,7 +914,7 @@ impl FnLower<'_> {
             k: KVal::Const(g_pow_u128((k - 1) as u128).into()),
         });
         self.scope.bounds.insert(k, o);
-        o
+        self.mark_narrow(o)
     }
 
     /// `hint_witness(dest, "name")`: resolve `dest` to a run of cells and
@@ -963,7 +1004,11 @@ impl FnLower<'_> {
             gamma: t1,
             mode: DerefMode::Cell,
         });
-        self.emit(LOp::Mul { a: x, b: y, c: kcell });
+        // `x` and the back-solved complement `y` are g-powers, which is what the
+        // check asserts, so the product is narrow whatever the analysis knows of `x`.
+        self.emit(LOp::Mul64 { a: x, b: y, c: kcell });
+        self.mark_narrow(x);
+        self.mark_narrow(y);
         self.emit(LOp::Deref {
             alpha: y,
             beta: 0,
@@ -1004,7 +1049,7 @@ impl FnLower<'_> {
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: o });
+                self.emit_arith(false, la, lb, o);
                 o
             }
             Expr::Mul(a, b) => {
@@ -1013,7 +1058,7 @@ impl FnLower<'_> {
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
-                self.emit(LOp::Mul { a: la, b: lb, c: o });
+                self.emit_arith(true, la, lb, o);
                 o
             }
             // Width, said explicitly. `+`, `*` and `/` are 192-bit, which any value
@@ -1050,7 +1095,14 @@ impl FnLower<'_> {
                 // `a` must already be written, which `self.expr(a)` guarantees.
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let q = self.fresh();
-                self.emit(LOp::Mul { a: q, b: lb, c: la });
+                // The quotient is the unset operand, so its width follows the two
+                // written cells: `q·b = a` with both narrow makes `q` narrow too.
+                if self.is_narrow(la) && self.is_narrow(lb) {
+                    self.emit(LOp::Mul64 { a: q, b: lb, c: la });
+                    self.mark_narrow(q);
+                } else {
+                    self.emit(LOp::Mul { a: q, b: lb, c: la });
+                }
                 q
             }
             Expr::Call(f, _) if f == "f192" => {
@@ -1244,12 +1296,14 @@ impl FnLower<'_> {
         let hi = 31 - k.leading_zeros(); // top set bit (k >= 1)
         let mut acc = base;
         for bit in (0..hi).rev() {
+            // `GEN ** n` walks g-powers, so the whole chain is narrow when its
+            // base is (`GEN ** i` for a runtime `i`, an address, a counter).
             let sq = self.fresh();
-            self.emit(LOp::Mul { a: acc, b: acc, c: sq });
+            self.emit_arith(true, acc, acc, sq);
             acc = sq;
             if (k >> bit) & 1 == 1 {
                 let m = self.fresh();
-                self.emit(LOp::Mul { a: acc, b: base, c: m });
+                self.emit_arith(true, acc, base, m);
                 acc = m;
             }
         }
@@ -1500,7 +1554,7 @@ impl FnLower<'_> {
                     self.expr_into(x, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
-                    self.emit(LOp::Xor { a: la, b: lb, c: dst });
+                    self.emit_arith(false, la, lb, dst);
                 }
             }
             Expr::Mul(a, b) => {
@@ -1508,7 +1562,7 @@ impl FnLower<'_> {
                     self.expr_into(x, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
-                    self.emit(LOp::Mul { a: la, b: lb, c: dst });
+                    self.emit_arith(true, la, lb, dst);
                 }
             }
             // A call writes its single return value straight into `dst` (an
@@ -1543,14 +1597,17 @@ impl FnLower<'_> {
                 if let Some(k) = self.try_gpow_index(c) {
                     let (la, lr) = (self.expr(arr), self.expr(r));
                     let ptr = self.fresh();
-                    self.emit(LOp::Mul { a: la, b: lr, c: ptr });
+                    self.emit(LOp::Mul64 { a: la, b: lr, c: ptr });
+                    self.mark_narrow(ptr);
                     return (ptr, k);
                 }
             }
         }
         let (la, li) = (self.expr(arr), self.expr(idx));
         let ptr = self.fresh();
-        self.emit(LOp::Mul { a: la, b: li, c: ptr });
+        // An address is a g-power, which `DEREF` requires of it anyway.
+        self.emit(LOp::Mul64 { a: la, b: li, c: ptr });
+        self.mark_narrow(ptr);
         (ptr, 0)
     }
 
@@ -2281,7 +2338,7 @@ impl FnLower<'_> {
                 // iteration returns, straight to the loop's original caller.
                 let (la, lb) = (self.expr(lhs), self.expr(rhs));
                 let x = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs; x != 0 ⇔ lhs != rhs
+                self.emit_arith(false, la, lb, x); // x = lhs + rhs; x != 0 ⇔ lhs != rhs
                 self.lower_call(callee, args, 0, Some(x), None, tail);
             }
             Stmt::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
@@ -2798,6 +2855,20 @@ pub(crate) fn lower_func(
     for (i, p) in f.params.iter().enumerate() {
         vars.insert(p.clone(), 2 + i as u32);
     }
+    // A `for` loop is a tail-recursive helper whose first parameter is its counter
+    // and whose `__bound` parameter is its stop value; both are g-powers by
+    // construction (`lower_for`), which is what makes a loop's counter arithmetic
+    // and its exit test narrow. Nothing else about a parameter is known here.
+    let narrow_params: Vec<Off> = if f.name.starts_with("__loop") {
+        f.params
+            .iter()
+            .enumerate()
+            .filter(|&(i, p)| i == 0 || p.starts_with("__bound"))
+            .map(|(i, _)| 2 + i as u32)
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
     // locals. A StackBuf(n) return occupies n consecutive physical slots.
     let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
@@ -2821,6 +2892,7 @@ pub(crate) fn lower_func(
         inline_stack_ret: None,
         alias: HashMap::new(),
         pending: Vec::new(),
+        narrow: narrow_params.into_iter().collect(),
         inline_calls: Vec::new(),
         queue,
         loop_ctr,

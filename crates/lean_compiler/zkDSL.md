@@ -1,6 +1,6 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: seven instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/main.tex`](../../doc/main.tex).
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: nine instructions (`XOR`, `MUL`, `XOR_64`, `MUL_64`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/main.tex`](../../doc/main.tex).
 
 Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `pack64x2`, and `blake3`, so editors and linters resolve the names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
 
@@ -27,6 +27,14 @@ Machine **words** (the contents of a memory cell, an immediate, a hashed value, 
 - `base ** e` with a **non-`GEN`** base and a compile-time exponent `e` is square-and-multiply: integer arithmetic in an index/bound position (`2 ** c`), or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i` raised to a stride to reach cell `i·stride`). The base may be runtime.
 
 A logical **index** `i` is carried as `g^i` in the 64-bit subfield (order `2^64 − 1`): incrementing is one multiplication by `GEN`, and memory/bytecode addresses are g-powers. This is the design idiom of the whole VM: loops, heap addressing, and range checks below all live in the exponent, in `K`.
+
+### Width: 64-bit where it can be proved, 192-bit otherwise
+
+`XOR` and `MUL` come in two widths. The 192-bit pair takes operands anywhere in `E`; the 64-bit pair (`XOR_64`, `MUL_64`) takes operands in `K` and commits ONE lane per operand instead of three, so its rows are 13 columns against 19 (`doc/body/07-instruction-tables.tex`). `K` is closed under both operations, so a narrow row's result is narrow too.
+
+You do not choose: the compiler does, and only when it can PROVE the operands are `K`-valued. A cell is provably narrow when it holds a 64-bit constant, a g-power, an address, a range-checked value (`assert log x < k` proves `x` is a g-power), a `for` loop's counter or bound, or the result of an operation on such cells. Anything else, a memory load, a hint, a function argument, a value off a proof stream, is treated as a full 192-bit word. Being unsure costs width, never correctness, and a wrong guess could not pass witness generation anyway: the interpreter asserts each narrow operand into `K`, and the memory bus carries literal zeros above the low lane, so a wider operand is a witness that cannot balance.
+
+`add_64` / `mul_64` / `div_64` and `add_192` / `mul_192` / `div_192` say it explicitly, for a value whose width the program knows and the compiler cannot see. Reach for the `_64` forms only with a measurement in hand: a table's height is a power of two (`doc` §sec:e2e-pad), so splitting arithmetic across the two tables makes BOTH round up, and unless most of a program's arithmetic moves, the padding costs more than the narrower rows save.
 
 ## Program shape
 

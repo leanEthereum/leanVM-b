@@ -132,6 +132,11 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         )
         .expect("parse"),
     );
+    // `DBG_DISASM=path`: dump the guest's disassembly, to read alongside a
+    // `DBG_PROF_DUMP` per-pc profile (as `recursion` does for its own guest).
+    if let Ok(path) = std::env::var("DBG_DISASM") {
+        std::fs::write(&path, lean_compiler::disassemble(&program.prog)).expect("write DBG_DISASM");
+    }
     program.set_witness("n_pks", vec![vec![cell(g_pow(n))]]);
     program.set_witness("msg", vec![quad(&message)]);
     program.set_witness(
