@@ -573,7 +573,10 @@ mod tests {
 
     #[test]
     fn claim_derived_node_skip_preserves_the_transcript() {
-        let taus = [5usize, 3, 5, 0, 1];
+        // `tau = 12` makes the first round's half-table exactly
+        // `PAR_THRESHOLD`, exercising the two-node reducer's parallel branch.
+        let taus = [12usize, 3, 5, 0, 1];
+        assert!((1usize << (taus[0] - 1)) >= PAR_THRESHOLD);
         let cols: Vec<Vec<Vec<F64>>> = taus
             .iter()
             .enumerate()
@@ -583,6 +586,7 @@ mod tests {
         let mut exceptional_zeta = ordinary_zeta.clone();
         exceptional_zeta[0] = F192::ONE;
         exceptional_zeta[3] = F192::ONE;
+        exceptional_zeta[11] = F192::ONE;
 
         for zeta in [&ordinary_zeta, &exceptional_zeta] {
             let (all_nodes, all_claims, sigmas) = attached_proof_with_mode(&taus, &cols, eta, zeta, false);

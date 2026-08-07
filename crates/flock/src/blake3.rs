@@ -1240,8 +1240,7 @@ fn packed_128_bytes(words: &[F192]) -> Vec<u8> {
 }
 
 #[inline(always)]
-fn write_packed_128(out: &mut [std::mem::MaybeUninit<u8>], word: F192) {
-    debug_assert_eq!(out.len(), 16);
+fn write_packed_128(out: &mut [std::mem::MaybeUninit<u8>; 16], word: F192) {
     debug_assert_eq!(word.c2, 0, "packed Flock witness escaped 128-bit subspace");
     for (slot, byte) in out[..8].iter_mut().zip(word.c0.to_le_bytes()) {
         slot.write(byte);
@@ -1268,9 +1267,21 @@ fn packed_128_bytes3_parallel(a: &[F192], b: &[F192], c: &[F192]) -> (Vec<u8>, V
         // SAFETY: `for_each` calls this body exactly once per `i`; equal-width
         // chunks are disjoint and remain live until the blocking dispatch ends.
         unsafe {
-            write_packed_128(a_chunks.get(i), a[i]);
-            write_packed_128(b_chunks.get(i), b[i]);
-            write_packed_128(c_chunks.get(i), c[i]);
+            let a_chunk: &mut [std::mem::MaybeUninit<u8>; 16] = a_chunks
+                .get(i)
+                .try_into()
+                .expect("parallel packed A chunk must contain exactly 16 bytes");
+            let b_chunk: &mut [std::mem::MaybeUninit<u8>; 16] = b_chunks
+                .get(i)
+                .try_into()
+                .expect("parallel packed B chunk must contain exactly 16 bytes");
+            let c_chunk: &mut [std::mem::MaybeUninit<u8>; 16] = c_chunks
+                .get(i)
+                .try_into()
+                .expect("parallel packed C chunk must contain exactly 16 bytes");
+            write_packed_128(a_chunk, a[i]);
+            write_packed_128(b_chunk, b[i]);
+            write_packed_128(c_chunk, c[i]);
         }
     });
     // SAFETY: the dispatch above initialized all 16 bytes of every chunk in all
