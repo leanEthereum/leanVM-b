@@ -486,12 +486,40 @@ pub(crate) fn induce_use_ntt_heuristic(log_msg_cols: usize, log_inv_rate: usize,
     log_msg_cols >= 12 && n_queries > 4 * (1usize << log_inv_rate) * log_block.max(1)
 }
 
+#[inline]
+pub(crate) fn induce_ntt_validated_shape(log_msg_cols: usize, log_inv_rate: usize, n_queries: usize) -> bool {
+    log_inv_rate == 2 && n_queries == 113 && (19..=21).contains(&log_msg_cols)
+}
+
+/// Preserve the inherited heuristic everywhere, then add only the production
+/// family measured on both x86-64 and AArch64.
+#[inline]
+pub(crate) fn induce_use_ntt_policy(log_msg_cols: usize, log_inv_rate: usize, n_queries: usize) -> bool {
+    induce_ntt_validated_shape(log_msg_cols, log_inv_rate, n_queries)
+        || induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, n_queries)
+}
+
+pub(crate) fn parse_induce_ntt_override(
+    value: Option<&std::ffi::OsStr>,
+    force_ntt_eligible: bool,
+) -> Result<Option<bool>, &'static str> {
+    match value {
+        None => Ok(None),
+        Some(value) if value == std::ffi::OsStr::new("0") => Ok(Some(false)),
+        Some(value) if value == std::ffi::OsStr::new("1") && force_ntt_eligible => Ok(Some(true)),
+        Some(value) if value == std::ffi::OsStr::new("1") => {
+            Err("forcing NTT is restricted to the validated shape family")
+        }
+        Some(_) => Err("expected the literal value 0 or 1"),
+    }
+}
+
 /// Dispatch between the dense [`induce_sumcheck_poly`] and the sparse
 /// [`induce_sumcheck_poly_via_ntt_base`] for L0 (base-field rows). Mirror of
-/// `whir::induce_sumcheck_poly_auto`: in the recursive PCS this fires
-/// only at the top level (large message domain, many queries); deeper levels
-/// stay dense. Both paths produce identical output, so a mis-dispatch only
-/// costs time.
+/// `whir::induce_sumcheck_poly_auto`: in the recursive PCS this fires only at
+/// the top level (large message domain, many queries); deeper levels stay
+/// dense. Both paths produce identical output. The environment variable is a
+/// fail-closed experiment replay hook, not the production policy.
 pub(crate) fn induce_sumcheck_poly_auto_base(
     log_msg_cols: usize,
     log_inv_rate: usize,
@@ -501,7 +529,21 @@ pub(crate) fn induce_sumcheck_poly_auto_base(
     queries: &[usize],
     weights: &[F192],
 ) -> (ArenaVec<F192>, F192) {
-    if induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, queries.len()) {
+    let n_queries = queries.len();
+    let heuristic = induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, n_queries);
+    let validated_shape = induce_ntt_validated_shape(log_msg_cols, log_inv_rate, n_queries);
+    let policy = induce_use_ntt_policy(log_msg_cols, log_inv_rate, n_queries);
+    let requested = std::env::var_os("LEANVM_PCS_L0_INDUCE_NTT");
+    let override_value = parse_induce_ntt_override(requested.as_deref(), validated_shape)
+        .unwrap_or_else(|reason| panic!("invalid LEANVM_PCS_L0_INDUCE_NTT override: {reason}"));
+    let selected = override_value.unwrap_or(policy);
+    if requested.is_some() {
+        eprintln!(
+            "LEANVM_PCS_L0_INDUCE schema=2 override={} validated_shape={validated_shape} heuristic={heuristic} policy={policy} selected={selected} log_msg_cols={log_msg_cols} log_inv_rate={log_inv_rate} queries={n_queries}",
+            if override_value == Some(true) { "ntt" } else { "dense" },
+        );
+    }
+    if selected {
         induce_sumcheck_poly_via_ntt_base(log_msg_cols, log_inv_rate, opened_rows, v_challenges, queries, weights)
     } else {
         induce_sumcheck_poly(log_msg_cols, sks_vks, opened_rows, v_challenges, queries, weights)

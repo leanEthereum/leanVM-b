@@ -75,13 +75,41 @@ pub const SECURITY_BITS: u32 = 128;
 /// overhead is not worth it for small inputs. Shared by [`constraints`], [`gkr`], [`leaf`].
 pub(crate) const PAR_THRESHOLD: usize = 1 << 11;
 
+fn gate0_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LEANVM_GATE0_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")))
+}
+
+fn gate0_trace_event(kind: &str, id: u64, name: &str) {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let process_ns = ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_nanos();
+    let unix_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    eprintln!(
+        "LEANVM_GATE0_EVENT schema=1 source=lean_vm kind={kind} id={id} name={name:?} unix_ns={unix_ns} process_ns={process_ns} pid={}",
+        std::process::id()
+    );
+}
+
 /// Run one prover stage inside its `tracing` span and, under `LEANVM_PROFILE`,
-/// report its wall time. Called through [`stage!`], which spells the stage's name
-/// once for both.
+/// report its wall time. `LEANVM_GATE0_TRACE=1` adds stable start and end
+/// lifecycle records without changing the proof transcript. Called through
+/// [`stage!`], which spells the stage's name once for both.
 pub(crate) fn stage_impl<T>(name: &str, span: tracing::Span, f: impl FnOnce() -> T) -> T {
     static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let trace = gate0_trace_enabled();
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if trace {
+        gate0_trace_event("start", id, name);
+    }
     let t = std::time::Instant::now();
     let out = span.in_scope(f);
+    if trace {
+        gate0_trace_event("end", id, name);
+    }
     if *PROFILE.get_or_init(|| std::env::var_os("LEANVM_PROFILE").is_some()) {
         eprintln!("[profile] {name:<20}: {:>8.2} ms", t.elapsed().as_secs_f64() * 1e3);
     }

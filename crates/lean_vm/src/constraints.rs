@@ -92,7 +92,7 @@ pub fn eta_offsets(n_constraints: impl Iterator<Item = usize>) -> Vec<usize> {
 /// time. Nothing is lifted into `E`, so a `K` round evaluates the identity and the
 /// bus forms in 64-bit arithmetic, and its scratch is a third the size.
 #[inline(always)]
-fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
+fn table_message_all_nodes<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
     cols: &[C],
     eval: &(dyn Fn(&[F192], &[T]) -> F192 + Sync),
     pows: &[F192],
@@ -133,6 +133,66 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
     [acc[0].reduce(), acc[1].reduce(), acc[2].reduce()]
 }
 
+/// Evaluate one Boolean node and `g`. The other Boolean node is recovered from
+/// the running sumcheck claim, so this removes one constraint evaluation at
+/// every active row while preserving the four transmitted round values exactly.
+#[inline(always)]
+fn table_message_with_derived_boolean<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
+    cols: &[C],
+    eval: &(dyn Fn(&[F192], &[T]) -> F192 + Sync),
+    pows: &[F192],
+    half: usize,
+    eqr: &[F192],
+    derive_zero: bool,
+) -> [F192; 2] {
+    let ncols = cols.len();
+    let summand = |i: usize, scratch: &mut [T]| -> [F192Unreduced; 2] {
+        let e = eqr[i];
+        let (vb, vg) = scratch.split_at_mut(ncols);
+        for (ci, c) in cols.iter().enumerate() {
+            let (lo, hi) = (c[i], c[i + half]);
+            vb[ci] = if derive_zero { hi } else { lo };
+            vg[ci] = T::at_g(lo, hi);
+        }
+        [e.mul_unreduced(eval(pows, vb)), e.mul_unreduced(eval(pows, vg))]
+    };
+    let acc = if half >= PAR_THRESHOLD {
+        parallel::map_reduce_with_state(
+            half,
+            || vec![T::ZERO; 2 * ncols],
+            || [F192Unreduced::ZERO; 2],
+            |scratch, acc, i| {
+                let value = summand(i, scratch);
+                acc[0] ^= value[0];
+                acc[1] ^= value[1];
+            },
+            |mut left, right| {
+                left[0] ^= right[0];
+                left[1] ^= right[1];
+                left
+            },
+        )
+    } else {
+        let mut scratch = vec![T::ZERO; 2 * ncols];
+        (0..half).fold([F192Unreduced::ZERO; 2], |mut acc, i| {
+            let value = summand(i, &mut scratch);
+            acc[0] ^= value[0];
+            acc[1] ^= value[1];
+            acc
+        })
+    };
+    [acc[0].reduce(), acc[1].reduce()]
+}
+
+fn node_skip_mode(value: Option<&std::ffi::OsStr>) -> Result<bool, &'static str> {
+    match value {
+        None => Ok(false),
+        Some(value) if value == std::ffi::OsStr::new("0") => Ok(false),
+        Some(value) if value == std::ffi::OsStr::new("1") => Ok(true),
+        Some(_) => Err("expected the literal value 0 or 1"),
+    }
+}
+
 /// Prove that every table's batched constraint vanishes on all of its rows, as ONE
 /// sumcheck over `max τ_t` variables. `cols[t]` holds table `t`'s involved columns
 /// (`2^{τ_t}` values each, folded in place). Returns the per-table claims, in input
@@ -144,6 +204,24 @@ pub fn prove(
     zeta: &[F192],
     sigma: &[F192],
     ps: &mut ProverState,
+) -> Vec<Claims> {
+    let requested = std::env::var_os("LEANVM_CONSTRAINT_NODE_SKIP");
+    let enabled = node_skip_mode(requested.as_deref())
+        .unwrap_or_else(|reason| panic!("invalid LEANVM_CONSTRAINT_NODE_SKIP override: {reason}"));
+    if requested.is_some() {
+        eprintln!("LEANVM_CONSTRAINT_NODE_SKIP schema=1 enabled={enabled}");
+    }
+    prove_with_node_skip(airs, cols, eta, zeta, sigma, ps, enabled)
+}
+
+fn prove_with_node_skip(
+    airs: &[Air<'_>],
+    cols: &[Vec<&[F64]>],
+    eta: F192,
+    zeta: &[F192],
+    sigma: &[F192],
+    ps: &mut ProverState,
+    node_skip: bool,
 ) -> Vec<Claims> {
     let n = airs.iter().map(|a| a.tau).max().unwrap_or(0);
     debug_assert!(zeta.len() >= n, "the eq point must cover the tallest table");
@@ -162,6 +240,7 @@ pub fn prove(
     let mut folded: Vec<Option<Vec<ArenaVec<F192>>>> = (0..airs.len()).map(|_| None).collect();
     // `k`, the challenges drawn so far, common to every air that is still waiting.
     let mut k = F192::ONE;
+    let mut claim = sigma.iter().copied().fold(F192::ZERO, |acc, value| acc + value);
     for j in 0..n {
         let m = n - 1 - j; // the variable this round binds
         // The waiting airs contribute the line `Y·k·Σσ`, whose slope `u` is all there
@@ -173,18 +252,51 @@ pub fn prove(
             .filter(|(a, _)| a.tau <= m)
             .fold(F192::ZERO, |acc, (_, &s)| acc + s);
         let u = k * waiting;
-        let mut msg = [F192::ZERO; 3];
-        for (t, air) in airs.iter().enumerate() {
-            if air.tau > m {
-                let w = &pows[offsets[t]..offsets[t] + air.n_constraints];
-                let p = if let Some(table) = &folded[t] {
-                    table_message(table, &*air.eval, w, 1 << m, &eqr)
-                } else {
-                    table_message(&cols[t], &*air.eval_k, w, 1 << m, &eqr)
-                };
-                msg = add3(msg, p.map(|x| weights[t] * x));
+        let msg = if node_skip {
+            // Normally recover p(0). If ζ_m = 1, its eq coefficient at zero
+            // vanishes, so recover p(1) instead. One Boolean endpoint and g are
+            // therefore sufficient for every field value without a fallback pass.
+            let derive_zero = zeta[m] != F192::ONE;
+            let mut sent = [F192::ZERO; 2];
+            for (t, air) in airs.iter().enumerate() {
+                if air.tau > m {
+                    let w = &pows[offsets[t]..offsets[t] + air.n_constraints];
+                    let p = if let Some(table) = &folded[t] {
+                        table_message_with_derived_boolean(table, &*air.eval, w, 1 << m, &eqr, derive_zero)
+                    } else {
+                        table_message_with_derived_boolean(&cols[t], &*air.eval_k, w, 1 << m, &eqr, derive_zero)
+                    };
+                    sent[0] += weights[t] * p[0];
+                    sent[1] += weights[t] * p[1];
+                }
             }
-        }
+            if derive_zero {
+                let p1 = sent[0];
+                let h1 = zeta[m] * p1 + u;
+                let p0 = (claim + h1) * (F192::ONE + zeta[m]).inv();
+                [p0, p1, sent[1]]
+            } else {
+                debug_assert_eq!(zeta[m], F192::ONE);
+                let p0 = sent[0];
+                let h0 = (F192::ONE + zeta[m]) * p0;
+                let p1 = claim + h0 + u;
+                [p0, p1, sent[1]]
+            }
+        } else {
+            let mut msg = [F192::ZERO; 3];
+            for (t, air) in airs.iter().enumerate() {
+                if air.tau > m {
+                    let w = &pows[offsets[t]..offsets[t] + air.n_constraints];
+                    let p = if let Some(table) = &folded[t] {
+                        table_message_all_nodes(table, &*air.eval, w, 1 << m, &eqr)
+                    } else {
+                        table_message_all_nodes(&cols[t], &*air.eval_k, w, 1 << m, &eqr)
+                    };
+                    msg = add3(msg, p.map(|x| weights[t] * x));
+                }
+            }
+            msg
+        };
         shrink_eq_high(&mut eqr);
         // Assemble `h` and send it whole. The cofactor `p` is degree 2, so its value
         // at the fourth node is an interpolation of three scalars, NOT another pass
@@ -194,9 +306,11 @@ pub fn prove(
         debug_assert_eq!(q[..3], nd[..], "the cubic's first three nodes are the cofactor's");
         let p4 = [msg[0], msg[1], msg[2], lagrange_eval(&nd, &msg, q[3])];
         let h: [F192; 4] = std::array::from_fn(|i| (F192::ONE + zeta[m] + q[i]) * p4[i] + q[i] * u);
+        debug_assert_eq!(h[0] + h[1], claim);
         // A separate pass: the challenge only exists once the message is bound.
         ps.add_scalars(&h);
         let rk = ps.sample();
+        claim = lagrange_eval(&q, &h, rk);
         rho[m] = rk;
         k *= rk;
         let eq_k = F192::ONE + zeta[m] + rk;
@@ -432,6 +546,75 @@ mod tests {
                 "a wrong claimed sum for table {bad} must be rejected"
             );
         }
+    }
+
+    fn attached_proof_with_mode(
+        taus: &[usize],
+        cols: &[Vec<Vec<F64>>],
+        eta: F192,
+        zeta: &[F192],
+        node_skip: bool,
+    ) -> (Proof, Vec<Claims>, Vec<F192>) {
+        let airs = airs_for(taus, true);
+        let pows = powers(eta, 3 * taus.len());
+        let sigmas: Vec<F192> = taus
+            .iter()
+            .enumerate()
+            .map(|(t, &tau)| pows[3 * t + 2] * primitives::multilinear::mle_eval(&cols[t][1], &zeta[..tau]))
+            .collect();
+        let views: Vec<Vec<&[F64]>> = cols
+            .iter()
+            .map(|table| table.iter().map(|col| &col[..]).collect())
+            .collect();
+        let mut ps = ProverState::new(b"zc-node-skip-exactness", &SEED);
+        let claims = prove_with_node_skip(&airs, &views, eta, zeta, &sigmas, &mut ps, node_skip);
+        (ps.into_proof(), claims, sigmas)
+    }
+
+    #[test]
+    fn claim_derived_node_skip_preserves_the_transcript() {
+        // `tau = 12` makes the first round's half-table exactly
+        // `PAR_THRESHOLD`, exercising the two-node reducer's parallel branch.
+        let taus = [12usize, 3, 5, 0, 1];
+        assert!((1usize << (taus[0] - 1)) >= PAR_THRESHOLD);
+        let cols: Vec<Vec<Vec<F64>>> = taus
+            .iter()
+            .enumerate()
+            .map(|(i, &tau)| good_table(tau, i as u64))
+            .collect();
+        let (eta, ordinary_zeta) = eta_zeta(&taus);
+        let mut exceptional_zeta = ordinary_zeta.clone();
+        exceptional_zeta[0] = F192::ONE;
+        exceptional_zeta[3] = F192::ONE;
+        exceptional_zeta[11] = F192::ONE;
+
+        for zeta in [&ordinary_zeta, &exceptional_zeta] {
+            let (all_nodes, all_claims, sigmas) = attached_proof_with_mode(&taus, &cols, eta, zeta, false);
+            let (node_skip, skip_claims, skip_sigmas) = attached_proof_with_mode(&taus, &cols, eta, zeta, true);
+
+            assert_eq!(sigmas, skip_sigmas);
+            assert_eq!(all_nodes.stream, node_skip.stream);
+            assert!(all_nodes.openings.is_empty());
+            assert!(node_skip.openings.is_empty());
+            assert_eq!(all_claims, skip_claims);
+
+            let airs = airs_for(&taus, true);
+            let target = sigmas.iter().copied().fold(F192::ZERO, |acc, value| acc + value);
+            let mut vs = VerifierState::new(b"zc-node-skip-exactness", &node_skip, &SEED);
+            assert_eq!(verify(&airs, eta, zeta, target, &mut vs), Ok(skip_claims));
+        }
+    }
+
+    #[test]
+    fn node_skip_override_parser_fails_closed() {
+        use std::ffi::OsStr;
+
+        assert_eq!(node_skip_mode(None), Ok(false));
+        assert_eq!(node_skip_mode(Some(OsStr::new("0"))), Ok(false));
+        assert_eq!(node_skip_mode(Some(OsStr::new("1"))), Ok(true));
+        assert!(node_skip_mode(Some(OsStr::new("true"))).is_err());
+        assert!(node_skip_mode(Some(OsStr::new("2"))).is_err());
+        assert!(node_skip_mode(Some(OsStr::new(""))).is_err());
     }
 
     /// Tampering any transmitted word breaks the chain: the batch is one sumcheck,

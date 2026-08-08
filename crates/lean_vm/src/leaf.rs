@@ -12,7 +12,7 @@ use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
-use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod};
+use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod, mle_eval_prod_vec4, mle_eval_vec4};
 use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
@@ -180,11 +180,18 @@ fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &m
     }
 }
 
-/// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i w_i c_i(z)` for
-/// the fingerprint weights `w = eq(α⃗, ·)`, followed implicitly by the identity `1`
-/// up to `2^μ`. The row-invariant weights and constant coordinates are folded once
-/// per block into `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192], gamma: F192) -> gkr::LeafVector {
+/// Build one side's explicit leaf values. Block `b` row `z` holds
+/// `γ − Σ_i w_i c_i(z)` for the fingerprint weights `w = eq(α⃗, ·)`; the
+/// identity suffix up to `2^μ` remains implicit.
+fn build_leaf_values(
+    blocks: &[Block],
+    lay: &Layout,
+    cols: &[&[F64]],
+    w: &[F192],
+    gamma: F192,
+    uninitialized_output: bool,
+    quaternary_capacity: bool,
+) -> ArenaVec<F192> {
     let explicit = blocks
         .iter()
         .enumerate()
@@ -192,7 +199,36 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
         .max()
         .unwrap_or(1);
     debug_assert!(explicit <= 1usize << lay.mu);
-    let mut leaves = ArenaVec::filled(F192::ONE, explicit);
+    let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
+    debug_assert!(blocks.is_empty() || covered == explicit);
+    let capacity = if quaternary_capacity {
+        explicit.next_multiple_of(4)
+    } else {
+        explicit
+    };
+    let mut leaves = if uninitialized_output && !blocks.is_empty() {
+        let canonical = layout(blocks);
+        assert_eq!(
+            lay.offsets, canonical.offsets,
+            "uninitialized leaf output requires canonical offsets"
+        );
+        assert_eq!(
+            lay.mu, canonical.mu,
+            "uninitialized leaf output requires the canonical depth"
+        );
+        assert_eq!(covered, explicit, "canonical leaf blocks must tile the explicit prefix");
+        let mut values = ArenaVec::with_capacity(capacity);
+        // SAFETY: `stack_offsets` packs the power-of-two blocks contiguously
+        // from zero. Their disjoint destination windows therefore cover all
+        // `explicit == covered` live slots, and each fill joins before return.
+        // Any quaternary-capacity tail remains outside `len` until GKR writes it.
+        unsafe { values.set_len(explicit) };
+        values
+    } else {
+        let mut values = ArenaVec::with_capacity(capacity);
+        values.resize(explicit, F192::ONE);
+        values
+    };
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
@@ -202,7 +238,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
             push_terms(c, w[i], &mut terms, &mut const_part);
         }
         let row = |z: usize| -> F192 {
-            // The α-weighted coordinate sum defers its reductions: each mixed
+            // The fingerprint-weighted coordinate sum defers its reductions: each mixed
             // product contributes its three raw limb products (3 PMULL, no
             // reduction tail), one combined reduction per row at the end,
             // bit-identical to summing reduced `mul_base` terms.
@@ -230,7 +266,26 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
             }
         }
     }
-    gkr::LeafVector::new(leaves)
+    leaves
+}
+
+/// Build one side's leaf vector. The row-invariant fingerprint weights and
+/// constant coordinates are folded once per block into `const_part`.
+pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192], gamma: F192) -> gkr::LeafVector {
+    let uninitialized_output = std::env::var("LEANVM_BUS_UNINIT_LEAVES").as_deref() == Ok("1");
+    let quaternary_capacity = std::env::var("LEANVM_BUS_LEAF_QUAD_CAPACITY").as_deref() == Ok("1");
+    let values = build_leaf_values(blocks, lay, cols, w, gamma, uninitialized_output, quaternary_capacity);
+    if std::env::var_os("LEANVM_BUS_UNINIT_LEAVES").is_some()
+        || std::env::var_os("LEANVM_BUS_LEAF_QUAD_CAPACITY").is_some()
+    {
+        let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
+        eprintln!(
+            "LEANVM_BUS_LEAF_OUTPUT schema=2 uninitialized={uninitialized_output} quad_capacity={quaternary_capacity} explicit={} capacity={} covered={covered}",
+            values.len(),
+            values.capacity(),
+        );
+    }
+    gkr::LeafVector::new(values)
 }
 
 /// One table's bus contribution on one side, as a form over that table's committed
@@ -396,13 +451,31 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F19
         .map(|c| c.value)
 }
 
+#[inline]
+fn eval_mle(table: &[F64], point: &[F192], vec4: bool) -> F192 {
+    if vec4 {
+        mle_eval_vec4(table, point)
+    } else {
+        mle_eval(table, point)
+    }
+}
+
+#[inline]
+fn eval_mle_prod(a: &[F64], b: &[F64], point: &[F192], vec4: bool) -> F192 {
+    if vec4 {
+        mle_eval_prod_vec4(a, b, point)
+    } else {
+        mle_eval_prod(a, b, point)
+    }
+}
+
 /// Prover-side decomposition: reads the real columns, writing each FRESH
 /// committed value onto the stream and recording the matching claim
 /// (block/coord order); duplicates reuse the recorded value.
 ///
 /// The fresh column MLE evaluations run in a parallel first pass: within one
 /// `decompose_formula` call no challenge is sampled between claims (`zeta`,
-/// `alpha`, `gamma` are fixed arguments and each claim's point is
+/// the fingerprint weights and `gamma` are fixed arguments and each claim's point is
 /// `zeta[..kappa]` of its block), so the values are independent of the
 /// transcript and only their `add_scalar` ORDER matters. The second pass
 /// replays them through the transcript in the original block/coord order,
@@ -418,6 +491,7 @@ fn decompose_prove(
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
     ps: &mut ProverState,
+    mle_vec4: bool,
 ) -> F192 {
     // Pass 1: enumerate the FRESH committed coords exactly as `decompose_formula`
     // visits them (blocks in order, coords in order, Col/GCol only, first
@@ -439,30 +513,20 @@ fn decompose_prove(
     }
     let vals: Vec<F192> = parallel::map_collect(jobs.len(), |i| {
         let (col, kappa) = jobs[i];
-        mle_eval(cols[col], &zeta[..kappa])
+        eval_mle(cols[col], &zeta[..kappa], mle_vec4)
     });
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
     let mut fresh_iter = jobs.iter().zip(vals.iter());
-    decompose_formula(
-        blocks,
-        lay,
-        zeta,
-        w,
-        gamma,
-        owners,
-        forms,
-        claims,
-        |col, zeta_lo| {
-            let (&(jc, jk), &v) = fresh_iter
-                .next()
-                .expect("job enumeration matches decompose_formula's col_val order");
-            debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
-            debug_assert_eq!(v, mle_eval(cols[col], zeta_lo), "job/coord order drift");
-            ps.add_scalar(v);
-            Ok(v)
-        },
-    )
+    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |col, zeta_lo| {
+        let (&(jc, jk), &v) = fresh_iter
+            .next()
+            .expect("job enumeration matches decompose_formula's col_val order");
+        debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
+        debug_assert_eq!(v, mle_eval(cols[col], zeta_lo), "job/coord order drift");
+        ps.add_scalar(v);
+        Ok(v)
+    })
     .expect("prover decomposition is infallible")
 }
 
@@ -489,15 +553,12 @@ fn decompose_verify(
 /// One reduced claim on the bytecode polynomial. The nine public encoding
 /// columns (opcode plus eight operand/immediate slots), padded to sixteen slots
 /// along four selector bits, form one multilinear polynomial B̃ in `κ_bc + 4`
-/// variables. After decomposition both parties absorb the nine column
-/// evaluations (push and pull share the GKR point ζ), sample four selector
-/// challenges `s`, and reduce them to
-/// `B̃(ζ_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
-/// true by construction (the verifier evaluated the columns itself); a
-/// recursive verifier defers exactly this one claim to its public input.
+/// variables. The fingerprint challenges `α⃗` are already its selector point,
+/// so the public share is `B̃(ζ_lo, α⃗)` with no extra transcript message or
+/// challenge. A recursive verifier defers exactly this one claim to its public input.
 #[derive(Clone, Debug)]
 pub struct BytecodeClaim {
-    /// `ζ_side_lo ++ s`, a point in `κ_bc + 4` variables.
+    /// `ζ_side_lo ++ α⃗`, a point in `κ_bc + 4` variables.
     pub point: Vec<F192>,
     /// `B̃(point)`.
     pub value: F192,
@@ -506,13 +567,17 @@ pub struct BytecodeClaim {
 /// The public (bytecode) coordinate evaluations of a side at its GKR point,
 /// block/coord order, with the bytecode block's `κ`.
 pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
+    public_evals_with_mode(blocks, zeta, false)
+}
+
+fn public_evals_with_mode(blocks: &[Block], zeta: &[F192], mle_vec4: bool) -> (usize, Vec<F192>) {
     let mut kappa = 0;
     let mut out = Vec::new();
     for blk in blocks {
         for c in &blk.coords {
             if let Coord::Public(vals) = c {
                 kappa = blk.kappa;
-                out.push(mle_eval(vals, &zeta[..blk.kappa]));
+                out.push(eval_mle(vals, &zeta[..blk.kappa], mle_vec4));
             }
         }
     }
@@ -585,13 +650,17 @@ fn sides<'a>(
 /// the weights are `eq(α⃗, ·)`, this IS the stacked polynomial at `(ζ, α⃗)`
 /// (§sec:e2e-bc): one evaluation, nothing transmitted, no extra challenge.
 pub fn public_share(blocks: &[Block], zeta: &[F192], w: &[F192]) -> (usize, F192) {
+    public_share_with_mode(blocks, zeta, w, false)
+}
+
+fn public_share_with_mode(blocks: &[Block], zeta: &[F192], w: &[F192], mle_vec4: bool) -> (usize, F192) {
     let mut kappa = 0;
     let mut acc = F192::ZERO;
     for blk in blocks {
         for (i, c) in blk.coords.iter().enumerate() {
             if let Coord::Public(vals) = c {
                 kappa = blk.kappa;
-                acc += w[i] * mle_eval(vals, &zeta[..blk.kappa]);
+                acc += w[i] * eval_mle(vals, &zeta[..blk.kappa], mle_vec4);
             }
         }
     }
@@ -600,15 +669,15 @@ pub fn public_share(blocks: &[Block], zeta: &[F192], w: &[F192]) -> (usize, F192
 
 /// Bytecode = ONE polynomial, and push/pull share the point ζ, so the whole program
 /// share of the leaf is one evaluation of it, at `(ζ, α⃗)`.
-fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], w: &[F192]) -> BytecodeClaim {
-    let (kbc, share) = public_share(blocks, point, w);
+fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], w: &[F192], mle_vec4: bool) -> BytecodeClaim {
+    let (kbc, share) = public_share_with_mode(blocks, point, w, mle_vec4);
     BytecodeClaim {
         point: [&point[..kbc], alphas].concat(),
         value: share,
     }
 }
 
-/// Prove the bus balances; returns the per-column claims to open (§sec:leafstack). `alpha`/
+/// Prove the bus balances; returns the per-column claims to open (§sec:leafstack). `alphas`/
 /// `gamma` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
 /// Everything the bus hands on: the framework blocks' column claims, the reduced
@@ -637,6 +706,24 @@ pub fn prove_balance(
     tables: &[(usize, usize)],
     ps: &mut ProverState,
 ) -> BusProof {
+    let detail_trace = std::env::var("LEANVM_BUS_DETAIL_TRACE").as_deref() == Ok("1");
+    let mle_vec4_requested = std::env::var("LEANVM_BUS_MLE_VEC4").as_deref() == Ok("1");
+    let mle_vec4_eligible = cfg!(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ));
+    assert!(
+        !mle_vec4_requested || mle_vec4_eligible,
+        "LEANVM_BUS_MLE_VEC4=1 requires an x86-64 VPCLMULQDQ/AVX-512F build"
+    );
+    let mle_vec4 = mle_vec4_requested && mle_vec4_eligible;
+    if std::env::var_os("LEANVM_BUS_MLE_VEC4").is_some() {
+        eprintln!(
+            "LEANVM_BUS_MLE schema=1 requested={mle_vec4_requested} \
+             eligible={mle_vec4_eligible} selected={mle_vec4}"
+        );
+    }
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
@@ -665,22 +752,37 @@ pub fn prove_balance(
     let bus_gkr = crate::stage!("Bus GKR", || {
         gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps)
     });
+    let post_gkr_started = detail_trace.then(std::time::Instant::now);
 
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
     // every table block becomes a form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
+    let sides = sides(
+        [push, pull, count],
+        [&push_lay, &pull_lay, &count_lay],
+        &w,
+        &count_w,
+        gamma,
+    );
+    let setup_ns = post_gkr_started.map_or(0, |started| started.elapsed().as_nanos());
     // Each table's columns at ζ[..τ], computed once and shared by the three sides
     // (a form's linear part factors through them). Nothing here travels, neither the
     // evaluations nor any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
     // framework decomposition ([`verify_balance`]) and the batch settles it. A
     // transmitted total would appear in exactly one check, which it could always be
     // solved to satisfy, and would settle nothing.
-    let table_evals = tables_at(cols, tables, &bus_gkr.point);
+    let table_evals_started = detail_trace.then(std::time::Instant::now);
+    let table_evals = tables_at(cols, tables, &bus_gkr.point, mle_vec4);
+    let table_evals_ns = table_evals_started.map_or(0, |started| started.elapsed().as_nanos());
+    let forms_started = detail_trace.then(std::time::Instant::now);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
+    let forms_setup_ns = forms_started.map_or(0, |started| started.elapsed().as_nanos());
     let mut frameworks = [F192::ZERO; 3];
+    let mut decompose_side_ns = [0u128; 3];
+    let decompose_started = detail_trace.then(std::time::Instant::now);
     crate::stage!("Bus decompose", || {
         for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
+            let side_started = detail_trace.then(std::time::Instant::now);
             frameworks[s] = decompose_prove(
                 blocks,
                 lay,
@@ -692,10 +794,18 @@ pub fn prove_balance(
                 &mut forms[s],
                 &mut claims,
                 ps,
+                mle_vec4,
             );
+            if let Some(started) = side_started {
+                decompose_side_ns[s] = started.elapsed().as_nanos();
+            }
         }
     });
-    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point);
+    let decompose_ns = decompose_started.map_or(0, |started| started.elapsed().as_nanos());
+    let prod_sums_started = detail_trace.then(std::time::Instant::now);
+    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point, mle_vec4);
+    let prod_sums_ns = prod_sums_started.map_or(0, |started| started.elapsed().as_nanos());
+    let sigmas_started = detail_trace.then(std::time::Instant::now);
     let sigmas: [Vec<F192>; 3] = std::array::from_fn(|s| {
         let sigmas: Vec<F192> = forms[s]
             .iter()
@@ -712,8 +822,21 @@ pub fn prove_balance(
         );
         sigmas
     });
+    let sigmas_ns = sigmas_started.map_or(0, |started| started.elapsed().as_nanos());
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
+    let bytecode_started = detail_trace.then(std::time::Instant::now);
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w, mle_vec4)];
+    let bytecode_ns = bytecode_started.map_or(0, |started| started.elapsed().as_nanos());
+    if let Some(started) = post_gkr_started {
+        eprintln!(
+            "LEANVM_BUS_DETAIL schema=1 setup_ns={setup_ns} table_evals_ns={table_evals_ns} \
+             forms_setup_ns={forms_setup_ns} decompose_ns={decompose_ns} \
+             decompose_side_ns={decompose_side_ns:?} prod_sums_ns={prod_sums_ns} \
+             sigmas_ns={sigmas_ns} bytecode_ns={bytecode_ns} \
+             total_post_gkr_ns={}",
+            started.elapsed().as_nanos()
+        );
+    }
     BusProof {
         claims,
         bytecode_claims,
@@ -725,12 +848,12 @@ pub fn prove_balance(
 
 /// Every table's committed columns at `ζ[..τ_t]`: one `eq` table per table, then an
 /// inner product per column. `tables[t] = (base, n_cols)` in the global schema.
-fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<Vec<F192>> {
+fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192], mle_vec4: bool) -> Vec<Vec<F192>> {
     tables
         .iter()
         .map(|&(base, n_cols)| {
             let tau = crate::log2_strict_usize(cols[base].len());
-            parallel::map_collect(n_cols, |c| mle_eval(cols[base + c], &zeta[..tau]))
+            parallel::map_collect(n_cols, |c| eval_mle(cols[base + c], &zeta[..tau], mle_vec4))
         })
         .collect()
 }
@@ -745,6 +868,7 @@ fn prod_sums_at(
     tables: &[(usize, usize)],
     forms: &[Vec<BusForm>; 3],
     zeta: &[F192],
+    mle_vec4: bool,
 ) -> Vec<Vec<(usize, usize, F192)>> {
     tables
         .iter()
@@ -759,7 +883,11 @@ fn prod_sums_at(
             pairs.dedup();
             parallel::map_collect(pairs.len(), |i| {
                 let (a, b) = pairs[i];
-                (a, b, mle_eval_prod(cols[base + a], cols[base + b], &zeta[..tau]))
+                (
+                    a,
+                    b,
+                    eval_mle_prod(cols[base + a], cols[base + b], &zeta[..tau], mle_vec4),
+                )
             })
         })
         .collect()
@@ -822,7 +950,13 @@ pub fn verify_balance(
     // here, the batch's target being what pins it, so no table column is opened at ζ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
+    let sides = sides(
+        [push, pull, count],
+        [&push_lay, &pull_lay, &count_lay],
+        &w,
+        &count_w,
+        gamma,
+    );
     let mut totals = [F192::ZERO; 3];
     for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
         let framework = decompose_verify(
@@ -842,7 +976,7 @@ pub fn verify_balance(
         totals[s] = framework + bus_gkr.values[s];
     }
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w, false)];
     Ok(BusVerify {
         claims,
         bytecode_claims,
@@ -855,7 +989,7 @@ pub fn verify_balance(
 
 #[cfg(test)]
 mod tests {
-    use super::soundness_bits;
+    use super::*;
 
     /// The bound is `(N_TUPLE_BITS + 1)·2^mu` plus the GKR terms: only the bus
     /// DEPTH costs bits now, the multilinear fingerprint having fixed each factor's
@@ -865,5 +999,64 @@ mod tests {
         assert!(soundness_bits(38) >= crate::SECURITY_BITS);
         assert!(soundness_bits(61) >= crate::SECURITY_BITS);
         assert!(soundness_bits(62) < crate::SECURITY_BITS);
+    }
+
+    #[test]
+    fn uninitialized_leaf_output_matches_one_filled_path() {
+        let columns = [
+            (0..32).map(|i| F64((3 * i + 1) as u64)).collect::<Vec<_>>(),
+            (0..32).map(|i| F64((5 * i + 7) as u64)).collect::<Vec<_>>(),
+        ];
+        let column_slices = columns.each_ref().map(Vec::as_slice);
+        let blocks = vec![
+            Block {
+                kappa: 3,
+                coords: vec![Coord::Col(0), Coord::GCol(1, 2), Coord::Const(F64(11))],
+            },
+            Block {
+                kappa: 5,
+                coords: vec![Coord::Prod(0, 1, 1), Coord::Index],
+            },
+            Block {
+                kappa: 2,
+                coords: vec![Coord::Sum(vec![Coord::Col(0), Coord::Const(F64(13))])],
+            },
+            Block {
+                kappa: 0,
+                coords: vec![Coord::Const(F64(17))],
+            },
+        ];
+        let lay = layout(&blocks);
+        let weights = [F192::new(17, 19, 23), F192::new(29, 31, 37), F192::new(41, 43, 47)];
+        let gamma = F192::new(29, 31, 37);
+        let one_filled = build_leaf_values(&blocks, &lay, &column_slices, &weights, gamma, false, false);
+        let uninitialized = build_leaf_values(&blocks, &lay, &column_slices, &weights, gamma, true, false);
+        let mut with_headroom = build_leaf_values(&blocks, &lay, &column_slices, &weights, gamma, true, true);
+        assert_eq!(uninitialized, one_filled);
+        assert_eq!(with_headroom, one_filled);
+        assert_eq!(uninitialized.len(), 45);
+        assert_eq!(uninitialized.capacity(), 45);
+        assert_eq!(with_headroom.capacity(), 48);
+        let pointer = with_headroom.as_ptr();
+        with_headroom.resize(48, F192::ONE);
+        assert_eq!(
+            with_headroom.as_ptr(),
+            pointer,
+            "quaternary padding must not reallocate"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "uninitialized leaf output requires canonical offsets")]
+    fn uninitialized_leaf_output_rejects_noncanonical_layout() {
+        let blocks = vec![Block {
+            kappa: 1,
+            coords: vec![Coord::Const(F64::ONE)],
+        }];
+        let bad_layout = Layout {
+            mu: 2,
+            offsets: vec![1],
+        };
+        let _ = build_leaf_values(&blocks, &bad_layout, &[], &[F192::ONE], F192::ONE, true, true);
     }
 }

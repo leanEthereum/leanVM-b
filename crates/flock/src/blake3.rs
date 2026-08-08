@@ -1239,6 +1239,71 @@ fn packed_128_bytes(words: &[F192]) -> Vec<u8> {
     out
 }
 
+#[inline(always)]
+fn write_packed_128(out: &mut [std::mem::MaybeUninit<u8>; 16], word: F192) {
+    debug_assert_eq!(word.c2, 0, "packed Flock witness escaped 128-bit subspace");
+    for (slot, byte) in out[..8].iter_mut().zip(word.c0.to_le_bytes()) {
+        slot.write(byte);
+    }
+    for (slot, byte) in out[8..].iter_mut().zip(word.c1.to_le_bytes()) {
+        slot.write(byte);
+    }
+}
+
+/// Serialize the three live packed witnesses in one parallel dispatch. Each
+/// task owns one 16-byte output chunk in every destination, so no task can race
+/// another and all bytes are initialized before the boxes are exposed as `u8`.
+fn packed_128_bytes3_parallel(a: &[F192], b: &[F192], c: &[F192]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    assert_eq!(a.len(), b.len(), "packed A and B lengths differ");
+    assert_eq!(a.len(), c.len(), "packed A and C lengths differ");
+    let byte_len = a.len().checked_mul(16).expect("packed byte length overflow");
+    let mut a_out = Box::<[u8]>::new_uninit_slice(byte_len);
+    let mut b_out = Box::<[u8]>::new_uninit_slice(byte_len);
+    let mut c_out = Box::<[u8]>::new_uninit_slice(byte_len);
+    let a_chunks = parallel::Chunks::new(&mut a_out, 16);
+    let b_chunks = parallel::Chunks::new(&mut b_out, 16);
+    let c_chunks = parallel::Chunks::new(&mut c_out, 16);
+    parallel::for_each(a.len(), |i| {
+        // SAFETY: `for_each` calls this body exactly once per `i`; equal-width
+        // chunks are disjoint and remain live until the blocking dispatch ends.
+        unsafe {
+            let a_chunk: &mut [std::mem::MaybeUninit<u8>; 16] = a_chunks
+                .get(i)
+                .try_into()
+                .expect("parallel packed A chunk must contain exactly 16 bytes");
+            let b_chunk: &mut [std::mem::MaybeUninit<u8>; 16] = b_chunks
+                .get(i)
+                .try_into()
+                .expect("parallel packed B chunk must contain exactly 16 bytes");
+            let c_chunk: &mut [std::mem::MaybeUninit<u8>; 16] = c_chunks
+                .get(i)
+                .try_into()
+                .expect("parallel packed C chunk must contain exactly 16 bytes");
+            write_packed_128(a_chunk, a[i]);
+            write_packed_128(b_chunk, b[i]);
+            write_packed_128(c_chunk, c[i]);
+        }
+    });
+    // SAFETY: the dispatch above initialized all 16 bytes of every chunk in all
+    // three boxes and returned only after every task completed.
+    unsafe {
+        (
+            a_out.assume_init().into_vec(),
+            b_out.assume_init().into_vec(),
+            c_out.assume_init().into_vec(),
+        )
+    }
+}
+
+fn packed_128_parallel_mode(value: Option<&std::ffi::OsStr>) -> Result<bool, &'static str> {
+    match value {
+        None => Ok(false),
+        Some(value) if value == std::ffi::OsStr::new("0") => Ok(false),
+        Some(value) if value == std::ffi::OsStr::new("1") => Ok(true),
+        Some(_) => Err("expected the literal value 0 or 1"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Convenience API: Blake3Setup
 // ---------------------------------------------------------------------------
@@ -1470,6 +1535,150 @@ mod tests {
     }
 
     #[test]
+    fn parallel_packed_128_copy_is_byte_exact() {
+        for &len in &[0usize, 1, 2, 7, 8, 31, 257, 4096] {
+            let words = |salt: u64| {
+                (0..len)
+                    .map(|i| {
+                        let i = i as u64;
+                        F192::new(
+                            i.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(salt),
+                            i.rotate_left(17) ^ salt.wrapping_mul(0xd6e8_feb8_6659_fd93),
+                            0,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (a, b, c) = (words(1), words(2), words(3));
+            let expected = (packed_128_bytes(&a), packed_128_bytes(&b), packed_128_bytes(&c));
+            assert_eq!(packed_128_bytes3_parallel(&a, &b, &c), expected, "length {len}");
+        }
+    }
+
+    #[test]
+    fn packed_128_parallel_override_parser_fails_closed() {
+        use std::ffi::OsStr;
+
+        assert_eq!(packed_128_parallel_mode(None), Ok(false));
+        assert_eq!(packed_128_parallel_mode(Some(OsStr::new("0"))), Ok(false));
+        assert_eq!(packed_128_parallel_mode(Some(OsStr::new("1"))), Ok(true));
+        assert!(packed_128_parallel_mode(Some(OsStr::new("true"))).is_err());
+        assert!(packed_128_parallel_mode(Some(OsStr::new("2"))).is_err());
+        assert!(packed_128_parallel_mode(Some(OsStr::new(""))).is_err());
+    }
+
+    #[test]
+    fn parallel_packed_128_copy_preserves_the_reduction_transcript() {
+        let setup = Blake3Setup::new(1);
+        let block = pinned_compression(std::array::from_fn(|i| 0x9e37_79b9u32.wrapping_mul(i as u32 + 1)));
+        let (z, a, b, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&[block], setup.n_blocks_log());
+
+        let prove = |use_parallel| {
+            let mut ps = fiat_shamir::transcript::ProverState::<()>::new(b"packed-128-copy-exactness", &[]);
+            setup.prove_reduction_precomputed_with_parallel(&z, &a, &b, &z_lincheck, &mut ps, use_parallel);
+            ps.into_proof()
+        };
+        let serial = prove(false);
+        let parallel = prove(true);
+        assert_eq!(serial.stream, parallel.stream);
+        assert!(serial.openings.is_empty());
+        assert!(parallel.openings.is_empty());
+
+        let mut vs = fiat_shamir::transcript::VerifierState::<()>::new(b"packed-128-copy-exactness", &parallel, &[]);
+        setup
+            .verify_reduction(&mut vs)
+            .expect("parallel-copy reduction verifies");
+        vs.finish().expect("parallel-copy proof is fully consumed");
+    }
+
+    #[test]
+    #[ignore = "manual production-shaped component benchmark"]
+    fn packed_128_copy_component_benchmark() {
+        parallel::init();
+        let log_words: usize = std::env::var("FLOCK_PACKED_128_BENCH_LOG_WORDS")
+            .ok()
+            .map(|value| {
+                value
+                    .parse()
+                    .expect("FLOCK_PACKED_128_BENCH_LOG_WORDS must be an integer")
+            })
+            .unwrap_or(22);
+        assert!((10..=25).contains(&log_words), "benchmark log-words must be in 10..=25");
+        let len = 1usize << log_words;
+        let words = |salt: u64| {
+            (0..len)
+                .map(|i| {
+                    let i = i as u64;
+                    F192::new(
+                        i.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(salt),
+                        i.rotate_left(17) ^ salt.wrapping_mul(0xd6e8_feb8_6659_fd93),
+                        0,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let (a, b, c) = (words(1), words(2), words(3));
+        let run = |use_parallel: bool| {
+            let start = std::time::Instant::now();
+            let out = if use_parallel {
+                packed_128_bytes3_parallel(&a, &b, &c)
+            } else {
+                (packed_128_bytes(&a), packed_128_bytes(&b), packed_128_bytes(&c))
+            };
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1e3;
+            let fingerprint = out.0[0]
+                ^ out.0[out.0.len() - 1]
+                ^ out.1[0]
+                ^ out.1[out.1.len() - 1]
+                ^ out.2[0]
+                ^ out.2[out.2.len() - 1];
+            std::hint::black_box((out, fingerprint));
+            (elapsed_ms, fingerprint)
+        };
+
+        let serial_warm = run(false);
+        let parallel_warm = run(true);
+        assert_eq!(serial_warm.1, parallel_warm.1);
+        println!(
+            "packed-copy warmup log_words={log_words} serial_ms={:.3} parallel_ms={:.3}",
+            serial_warm.0, parallel_warm.0
+        );
+
+        let mut serial = Vec::new();
+        let mut parallel = Vec::new();
+        for block in 0..12 {
+            let modes = if block % 2 == 0 {
+                [false, true, true, false]
+            } else {
+                [true, false, false, true]
+            };
+            for (position, use_parallel) in modes.into_iter().enumerate() {
+                let (elapsed_ms, fingerprint) = run(use_parallel);
+                assert_eq!(fingerprint, serial_warm.1);
+                if use_parallel {
+                    parallel.push(elapsed_ms);
+                } else {
+                    serial.push(elapsed_ms);
+                }
+                println!(
+                    "packed-copy observation block={block} position={position} mode={} elapsed_ms={elapsed_ms:.3} fingerprint={fingerprint}",
+                    if use_parallel { "parallel" } else { "serial" }
+                );
+            }
+        }
+        serial.sort_by(f64::total_cmp);
+        parallel.sort_by(f64::total_cmp);
+        let median = |values: &[f64]| (values[values.len() / 2 - 1] + values[values.len() / 2]) / 2.0;
+        let serial_median = median(&serial);
+        let parallel_median = median(&parallel);
+        println!(
+            "packed-copy result observations_per_mode={} serial_median_ms={serial_median:.3} parallel_median_ms={parallel_median:.3} speedup={:.3}",
+            serial.len(),
+            serial_median / parallel_median
+        );
+    }
+
+    #[test]
     fn setup_sizes_correctly() {
         for &(n_blocks, expected_n_log) in &[(1usize, 3), (8, 3), (9, 4), (16, 4), (17, 5), (1000, 10)] {
             let setup = Blake3Setup::new(n_blocks);
@@ -1638,6 +1847,31 @@ impl Blake3Setup {
         z_packed_lincheck: &[u8],
         ps: &mut fiat_shamir::transcript::ProverState<O>,
     ) -> PackedWitnessClaims {
+        let requested = std::env::var_os("FLOCK_PACKED_128_PARALLEL");
+        let use_parallel = packed_128_parallel_mode(requested.as_deref())
+            .unwrap_or_else(|reason| panic!("invalid FLOCK_PACKED_128_PARALLEL override: {reason}"));
+        if requested.is_some() {
+            eprintln!("FLOCK_PACKED_128_PARALLEL schema=1 enabled={use_parallel}");
+        }
+        self.prove_reduction_precomputed_with_parallel(
+            z_packed,
+            a_packed_words,
+            b_packed_words,
+            z_packed_lincheck,
+            ps,
+            use_parallel,
+        )
+    }
+
+    fn prove_reduction_precomputed_with_parallel<O>(
+        &self,
+        z_packed: &[F192],
+        a_packed_words: &[F192],
+        b_packed_words: &[F192],
+        z_packed_lincheck: &[u8],
+        ps: &mut fiat_shamir::transcript::ProverState<O>,
+        use_parallel: bool,
+    ) -> PackedWitnessClaims {
         let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
         let t_reduction = std::time::Instant::now();
 
@@ -1658,21 +1892,32 @@ impl Blake3Setup {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
-        let t_zerocheck = std::time::Instant::now();
+        let packed_copy_time;
+        let zerocheck_time;
         let (zc_claim, s_hat_v_c) = {
-            let a_packed = packed_128_bytes(a_packed_words);
-            let b_packed = packed_128_bytes(b_packed_words);
-            let c_packed = packed_128_bytes(z_packed);
-            crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+            let t_packed_copy = std::time::Instant::now();
+            let (a_packed, b_packed, c_packed) = if use_parallel {
+                packed_128_bytes3_parallel(a_packed_words, b_packed_words, z_packed)
+            } else {
+                (
+                    packed_128_bytes(a_packed_words),
+                    packed_128_bytes(b_packed_words),
+                    packed_128_bytes(z_packed),
+                )
+            };
+            packed_copy_time = t_packed_copy.elapsed();
+            let t_zerocheck = std::time::Instant::now();
+            let claim = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
                 &a_packed,
                 &b_packed,
                 &c_packed,
                 self.r1cs.m,
                 &padding,
                 ps,
-            )
+            );
+            zerocheck_time = t_zerocheck.elapsed();
+            claim
         };
-        let zerocheck_time = t_zerocheck.elapsed();
 
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = crate::lincheck::QuirkyPoint {
@@ -1727,11 +1972,13 @@ impl Blake3Setup {
         };
         if trace {
             let reduction_time = t_reduction.elapsed();
-            let glue_time = reduction_time.saturating_sub(zerocheck_time + lincheck_time);
+            let accounted_time = packed_copy_time + zerocheck_time + lincheck_time;
+            let glue_time = reduction_time.saturating_sub(accounted_time);
             eprintln!(
-                "[flock prove] reduction: {:.2} ms (zerocheck: {:.2} ms, lincheck: {:.2} ms, glue: {:.2} ms)",
+                "[flock prove] reduction: {:.2} ms (zerocheck: {:.2} ms, packed copy: {:.2} ms, lincheck: {:.2} ms, glue: {:.2} ms)",
                 reduction_time.as_secs_f64() * 1e3,
                 zerocheck_time.as_secs_f64() * 1e3,
+                packed_copy_time.as_secs_f64() * 1e3,
                 lincheck_time.as_secs_f64() * 1e3,
                 glue_time.as_secs_f64() * 1e3,
             );

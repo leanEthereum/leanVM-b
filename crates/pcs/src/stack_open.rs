@@ -51,7 +51,7 @@
 
 use crate::merkle::Hash;
 use fiat_shamir::sponge::Sponge;
-use primitives::field::{F64, F192, powers};
+use primitives::field::{F64, F192, F192BaseUnreduced, F192Unreduced, powers};
 use primitives::multilinear::eq_eval;
 use serde::{Deserialize, Serialize};
 
@@ -59,7 +59,7 @@ use super::pack::PACKING_WIDTH;
 use super::ring_switch::{self, RingSwitchProof};
 use super::whir::{ProverConfig, VerifierConfig};
 use super::whir::{
-    ProverData, WhirProof, build_eq_table_ext, recursive_prover_with_basis,
+    ProverData, WhirProof, build_eq_table_ext, recursive_prover_with_basis, recursive_prover_with_basis_direct_fold6,
     recursive_verifier_with_basis_succinct_with_squeezes,
 };
 
@@ -287,6 +287,307 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F192]) -> F192 {
 }
 
 // ---------------------------------------------------------------------------
+// Compact point and strided plans for the first six direct folds
+// ---------------------------------------------------------------------------
+
+/// Equality support after the six low coordinates have been split off.
+/// Boolean selector coordinates remain fixed instead of expanding a
+/// stack-sized equality table.
+struct DirectEqSupport {
+    fixed_ones: usize,
+    live_positions: Vec<usize>,
+    live_eq: Vec<F192>,
+}
+
+impl DirectEqSupport {
+    fn new(coords: &[F192]) -> Self {
+        assert!(coords.len() < usize::BITS as usize);
+        let mut fixed_ones = 0usize;
+        let mut live_positions = Vec::new();
+        let mut live_coords = Vec::new();
+        for (position, &coord) in coords.iter().enumerate() {
+            if coord == F192::ZERO {
+                continue;
+            }
+            if coord == F192::ONE {
+                fixed_ones |= 1usize << position;
+                continue;
+            }
+            live_positions.push(position);
+            live_coords.push(coord);
+        }
+        Self {
+            fixed_ones,
+            live_positions,
+            live_eq: build_eq_table_ext(&live_coords),
+        }
+    }
+
+    #[inline]
+    fn full_index(&self, compact_index: usize) -> usize {
+        let mut full = self.fixed_ones;
+        for (compact_bit, &full_bit) in self.live_positions.iter().enumerate() {
+            if (compact_index >> compact_bit) & 1 == 1 {
+                full |= 1usize << full_bit;
+            }
+        }
+        full
+    }
+
+    fn weighted_stack_sums(&self, stack: &[F64]) -> [F192; 64] {
+        let accumulate = |sums: &mut [F192BaseUnreduced; 64], compact_index: usize| {
+            let weight = self.live_eq[compact_index];
+            let base = 64 * self.full_index(compact_index);
+            for endpoint in 0..64 {
+                sums[endpoint] ^= weight.mul_base_unreduced(stack[base + endpoint]);
+            }
+        };
+        let xor = |mut lhs: [F192BaseUnreduced; 64], rhs: [F192BaseUnreduced; 64]| {
+            for endpoint in 0..64 {
+                lhs[endpoint] ^= rhs[endpoint];
+            }
+            lhs
+        };
+        let sums = if self.live_eq.len() < 1 << 10 {
+            let mut sums = [F192BaseUnreduced::ZERO; 64];
+            for compact_index in 0..self.live_eq.len() {
+                accumulate(&mut sums, compact_index);
+            }
+            sums
+        } else {
+            parallel::fold_reduce(self.live_eq.len(), || [F192BaseUnreduced::ZERO; 64], accumulate, xor)
+        };
+        sums.map(F192BaseUnreduced::reduce)
+    }
+
+    fn scatter_scaled(&self, dst: &mut [F192], scale: F192) {
+        if scale == F192::ZERO {
+            return;
+        }
+        for (compact_index, &weight) in self.live_eq.iter().enumerate() {
+            dst[self.full_index(compact_index)] += scale * weight;
+        }
+    }
+}
+
+struct DirectPointGroup {
+    support: DirectEqSupport,
+    low_weights: [F192; 64],
+}
+
+struct PendingDirectPointGroup {
+    tail: Vec<F192>,
+    low_weights: [F192; 64],
+}
+
+fn stack_claim_full_point(claim: &StackClaim, log_stack: usize) -> Vec<F192> {
+    let (mut full, selector, block_vars) = match claim {
+        StackClaim::Point { offset, low_point, .. } => {
+            let block_vars = low_point.len();
+            let block_len = 1usize << block_vars;
+            assert!(offset.is_multiple_of(block_len));
+            assert!(*offset + block_len <= 1usize << log_stack);
+            (low_point.clone(), *offset >> block_vars, block_vars)
+        }
+        StackClaim::Strided {
+            offset,
+            slot,
+            stride_log,
+            point,
+            ..
+        } => {
+            let stride = 1usize << stride_log;
+            let block_vars = stride_log + point.len();
+            let block_len = 1usize << block_vars;
+            assert!(*slot < stride);
+            assert!(offset.is_multiple_of(block_len));
+            assert!(*offset + block_len <= 1usize << log_stack);
+            let mut low = Vec::with_capacity(block_vars);
+            for bit in 0..*stride_log {
+                low.push(if (slot >> bit) & 1 == 1 { F192::ONE } else { F192::ZERO });
+            }
+            low.extend_from_slice(point);
+            (low, *offset >> block_vars, block_vars)
+        }
+    };
+    assert!(block_vars <= log_stack);
+    for bit in 0..log_stack - block_vars {
+        full.push(if (selector >> bit) & 1 == 1 {
+            F192::ONE
+        } else {
+            F192::ZERO
+        });
+    }
+    full
+}
+
+fn direct_point_groups(claims: &[StackClaim], gammas: &[F192], log_stack: usize) -> Vec<DirectPointGroup> {
+    assert!(log_stack >= 6);
+    assert_eq!(claims.len(), gammas.len());
+    let mut pending: Vec<PendingDirectPointGroup> = Vec::new();
+    for (claim, &gamma) in claims.iter().zip(gammas) {
+        let full = stack_claim_full_point(claim, log_stack);
+        let low = build_eq_table_ext(&full[..6]);
+        let tail = &full[6..];
+        let group = if let Some(index) = pending.iter().position(|group| group.tail == tail) {
+            &mut pending[index]
+        } else {
+            pending.push(PendingDirectPointGroup {
+                tail: tail.to_vec(),
+                low_weights: [F192::ZERO; 64],
+            });
+            pending.last_mut().expect("inserted direct point group")
+        };
+        for endpoint in 0..64 {
+            group.low_weights[endpoint] += gamma * low[endpoint];
+        }
+    }
+    pending
+        .into_iter()
+        .map(|group| DirectPointGroup {
+            support: DirectEqSupport::new(&group.tail),
+            low_weights: group.low_weights,
+        })
+        .collect()
+}
+
+fn add_direct_point_products(products: &mut [F192], stack: &[F64], groups: &[DirectPointGroup]) {
+    assert_eq!(products.len(), 64 * 64);
+    for group in groups {
+        let witness_sums = group.support.weighted_stack_sums(stack);
+        for witness_endpoint in 0..64 {
+            for basis_endpoint in 0..64 {
+                products[64 * witness_endpoint + basis_endpoint] +=
+                    witness_sums[witness_endpoint] * group.low_weights[basis_endpoint];
+            }
+        }
+    }
+}
+
+fn materialize_direct_point_basis_fold6(
+    folded_len: usize,
+    groups: Vec<DirectPointGroup>,
+    challenges: [F192; 6],
+) -> zk_alloc::ArenaVec<F192> {
+    let fold_weights = build_eq_table_ext(&challenges);
+    // SAFETY: all-zero bits are the canonical F192 zero.
+    let mut b_folded = unsafe { zk_alloc::ArenaVec::zeroed(folded_len) };
+    for group in groups {
+        let scale = group
+            .low_weights
+            .iter()
+            .zip(&fold_weights)
+            .fold(F192::ZERO, |acc, (&low, &fold)| acc + low * fold);
+        group.support.scatter_scaled(&mut b_folded, scale);
+    }
+    b_folded
+}
+
+#[inline]
+fn dot_base64(values: &[F64], weights: &[F192]) -> F192 {
+    assert_eq!(values.len(), 64);
+    assert_eq!(weights.len(), 64);
+    values
+        .iter()
+        .zip(weights)
+        .fold(F192BaseUnreduced::ZERO, |acc, (&value, &weight)| {
+            acc ^ weight.mul_base_unreduced(value)
+        })
+        .reduce()
+}
+
+/// Fold the base witness by six coordinates and compute message M6 in the
+/// same pass over the compact basis.
+fn fold6_witness_fused_m6(
+    witness: &[F64],
+    basis: &[F192],
+    challenges: &[F192; 6],
+) -> (zk_alloc::ArenaVec<F192>, super::whir::SumcheckMessage) {
+    let weights = build_eq_table_ext(challenges);
+    let out_len = witness.len() / 64;
+    assert!(out_len >= 2 && out_len.is_power_of_two());
+    assert_eq!(basis.len(), out_len);
+    const CHUNK: usize = 2048;
+    // SAFETY: each parallel chunk initializes one disjoint output window.
+    let mut folded = unsafe { zk_alloc::ArenaVec::<F192>::uninitialized(out_len) };
+    let out = parallel::SendPtr(folded.as_mut_ptr());
+    let (u_0, u_2) = parallel::map_reduce(
+        out_len.div_ceil(CHUNK),
+        || (F192Unreduced::ZERO, F192Unreduced::ZERO),
+        |chunk_index| {
+            let base = chunk_index * CHUNK;
+            let len = CHUNK.min(out_len - base);
+            assert!(base.is_multiple_of(2) && len.is_multiple_of(2));
+            // SAFETY: chunk indices own disjoint output windows.
+            let chunk = unsafe { out.slice(base, len) };
+            for (local, value) in chunk.iter_mut().enumerate() {
+                let high = base + local;
+                *value = dot_base64(&witness[64 * high..64 * (high + 1)], &weights);
+            }
+            let mut local_u_0 = F192Unreduced::ZERO;
+            let mut local_u_2 = F192Unreduced::ZERO;
+            for local in (0..len).step_by(2) {
+                let f0 = chunk[local];
+                let f1 = chunk[local + 1];
+                let b0 = basis[base + local];
+                let b1 = basis[base + local + 1];
+                local_u_0 ^= f0.mul_unreduced(b0);
+                local_u_2 ^= (f0 + f1).mul_unreduced(b0 + b1);
+            }
+            (local_u_0, local_u_2)
+        },
+        |(a0, a2), (b0, b2)| (a0 ^ b0, a2 ^ b2),
+    );
+    (
+        folded,
+        super::whir::SumcheckMessage {
+            u_0: u_0.reduce(),
+            u_2: u_2.reduce(),
+        },
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectFoldMode {
+    Dense,
+    Fold6,
+}
+
+impl DirectFoldMode {
+    fn trace_label(self) -> &'static str {
+        match self {
+            Self::Dense => "dense",
+            Self::Fold6 => "direct-fold6",
+        }
+    }
+}
+
+/// Fail-closed selector for the exact current six-round geometry.
+fn direct_fold_mode(
+    requested: Option<&str>,
+    stack: &[F64],
+    config: &ProverConfig,
+    ring: &RingSwitchOpen,
+) -> DirectFoldMode {
+    let qflock_len = 1usize.checked_shl(ring.qflock_vars as u32);
+    let eligible = config.initial_k == 6
+        && config.ood_samples.first().copied().unwrap_or(0) == 0
+        && stack.len().is_power_of_two()
+        && stack.len() >= 128
+        && ring.qflock_vars >= 6
+        && qflock_len.is_some_and(|len| {
+            len.is_multiple_of(64)
+                && ring.offset.is_multiple_of(64)
+                && ring.offset.checked_add(len).is_some_and(|end| end <= stack.len())
+        });
+    if requested == Some("1") && eligible {
+        DirectFoldMode::Fold6
+    } else {
+        DirectFoldMode::Dense
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Prover
 // ---------------------------------------------------------------------------
 
@@ -306,6 +607,20 @@ pub fn open_batch_mixed_whir_stacked(
     point_claims: &[StackClaim],
     ring: &RingSwitchOpen,
 ) -> BatchOpeningProof {
+    let requested = std::env::var("LEANVM_PCS_DIRECT_FOLD6").ok();
+    let mode = direct_fold_mode(requested.as_deref(), stack, config, ring);
+    open_batch_mixed_whir_stacked_impl(sponge, stack, prover_data, config, point_claims, ring, mode)
+}
+
+fn open_batch_mixed_whir_stacked_impl(
+    sponge: &mut Sponge,
+    stack: &[F64],
+    prover_data: &ProverData,
+    config: &ProverConfig,
+    point_claims: &[StackClaim],
+    ring: &RingSwitchOpen,
+    mode: DirectFoldMode,
+) -> BatchOpeningProof {
     let qflock_len = 1usize << ring.qflock_vars;
     assert!(
         ring.offset.is_multiple_of(qflock_len),
@@ -322,6 +637,19 @@ pub fn open_batch_mixed_whir_stacked(
     // Optional phase timing, answering to the same env var as the WHIR
     // prover/commit tracing (one env lookup per open, no work when unset).
     let trace = std::env::var_os("WHIR_TRACE").is_some();
+    if trace {
+        eprintln!(
+            "STACK_OPEN_DIRECT_FOLD schema=2 selected={} literal={} initial_k={} stack_log={} qflock_vars={} ring_offset={} point_claims={} ring_claims={}",
+            mode.trace_label(),
+            std::env::var("LEANVM_PCS_DIRECT_FOLD6").as_deref() == Ok("1"),
+            config.initial_k,
+            stack.len().trailing_zeros(),
+            ring.qflock_vars,
+            ring.offset,
+            point_claims.len(),
+            ring.claims.len(),
+        );
+    }
     let mut t = std::time::Instant::now();
     let mark = |label: &str, t: &mut std::time::Instant| {
         if trace {
@@ -332,6 +660,7 @@ pub fn open_batch_mixed_whir_stacked(
 
     // 1. Ring-switch reduction: observe every claim's s_hat_v, sample one
     //    shared linear map, then finish each claim against that map.
+    let gate0_ring_switch = super::whir::Gate0Span::new("stack_open_ring_switch");
     let qflock = &stack[ring.offset..ring.offset + qflock_len];
     let mut rs_proofs = Vec::with_capacity(ring.claims.len());
     let mut rs_states = Vec::with_capacity(ring.claims.len());
@@ -357,11 +686,31 @@ pub fn open_batch_mixed_whir_stacked(
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound.
     let gammas_rs = powers(sponge.sample(), ring.claims.len());
-    let rs_outputs: Vec<_> = rs_states
-        .into_iter()
-        .zip(gammas_rs)
-        .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
-        .collect();
+    let (rs_outputs, direct_ring_plans) = match mode {
+        DirectFoldMode::Dense => (
+            Some(
+                rs_states
+                    .into_iter()
+                    .zip(gammas_rs)
+                    .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
+                    .collect::<Vec<_>>(),
+            ),
+            None,
+        ),
+        DirectFoldMode::Fold6 => (
+            None,
+            Some(
+                rs_states
+                    .into_iter()
+                    .zip(gammas_rs)
+                    .map(|(state, gamma)| {
+                        ring_switch::prove_finish_direct_fold6_from_q_flock(state, qflock, &coordinate_weights, gamma)
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ),
+    };
+    drop(gate0_ring_switch);
     mark("ring-switch proves", &mut t);
 
     // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
@@ -370,6 +719,65 @@ pub fn open_batch_mixed_whir_stacked(
         sponge.observe(claim.value());
     }
     let gammas_pd = powers(sponge.sample(), point_claims.len());
+
+    if let Some(direct_ring_plans) = direct_ring_plans {
+        let mut target = direct_ring_plans
+            .iter()
+            .fold(F192::ZERO, |acc, plan| acc + plan.batched_sumcheck_claim());
+        target = point_claims
+            .iter()
+            .zip(&gammas_pd)
+            .fold(target, |acc, (claim, &gamma)| acc + gamma * claim.value());
+
+        let point_groups = direct_point_groups(point_claims, &gammas_pd, stack.len().trailing_zeros() as usize);
+        let mut products = vec![F192::ZERO; ring_switch::FOLD6_ENDPOINT_MATRIX_VALUES];
+        add_direct_point_products(&mut products, stack, &point_groups);
+        for plan in &direct_ring_plans {
+            plan.add_endpoint_products_into(&mut products);
+        }
+        mark("direct fold-6 plans", &mut t);
+
+        let ring_start = ring.offset / ring_switch::FOLD6_ENDPOINT_BANKS;
+        let ring_folded_len = qflock_len / ring_switch::FOLD6_ENDPOINT_BANKS;
+        let materialize = move |witness: &[F64], challenges: [F192; 6]| {
+            let folded_len = witness.len() / ring_switch::FOLD6_ENDPOINT_BANKS;
+            let mut b_folded = materialize_direct_point_basis_fold6(folded_len, point_groups, challenges);
+            let ring_end = ring_start + ring_folded_len;
+            assert!(ring_end <= b_folded.len());
+            let ring_dst = &mut b_folded[ring_start..ring_end];
+            for plan in direct_ring_plans {
+                let contribution = plan.materialize_basis_after_fold6(&challenges);
+                assert_eq!(contribution.len(), ring_folded_len);
+                let chunk = parallel::recommended_chunk_size(ring_dst.len());
+                parallel::chunks_mut_zip(ring_dst, &contribution, chunk, |_, dst, src| {
+                    for (dst, &value) in dst.iter_mut().zip(src) {
+                        *dst += value;
+                    }
+                });
+            }
+            let (f_folded, next_msg) = fold6_witness_fused_m6(witness, &b_folded, &challenges);
+            (f_folded, b_folded, next_msg)
+        };
+        let whir = {
+            let _gate0 = super::whir::Gate0Span::new("stack_open_whir");
+            recursive_prover_with_basis_direct_fold6(
+                config,
+                stack,
+                target,
+                &prover_data.codeword,
+                &prover_data.merkle_tree,
+                products,
+                materialize,
+                sponge,
+            )
+        };
+        return BatchOpeningProof {
+            ring_switches: rs_proofs,
+            whir,
+        };
+    }
+
+    let rs_outputs = rs_outputs.expect("dense mode has deferred ring-switch outputs");
 
     // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
     //    rs_eq_ind sum scattered at the q_flock slice, plus the point-claim
@@ -385,6 +793,7 @@ pub fn open_batch_mixed_whir_stacked(
     //
     // SAFETY: every slot is written before it is read: the fill covers everything
     // outside the q_flock block, and `combine_deferred_into` writes the block.
+    let gate0_basis = super::whir::Gate0Span::new("stack_open_build_basis");
     let mut b_stack = unsafe { zk_alloc::ArenaVec::<F192>::uninitialized(stack.len()) };
     {
         const ZERO_CHUNK: usize = 1 << 16;
@@ -398,19 +807,23 @@ pub fn open_batch_mixed_whir_stacked(
         mark("rs_eq_ind scatter", &mut t);
     }
     fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd);
+    drop(gate0_basis);
     mark("point-claim folds", &mut t);
 
     // 4. One WHIR over the full stack against the combined claim (the
     //    stack is borrowed by the prover; no copy).
-    let whir = recursive_prover_with_basis(
-        config,
-        stack,
-        b_stack,
-        target,
-        &prover_data.codeword,
-        &prover_data.merkle_tree,
-        sponge,
-    );
+    let whir = {
+        let _gate0 = super::whir::Gate0Span::new("stack_open_whir");
+        recursive_prover_with_basis(
+            config,
+            stack,
+            b_stack,
+            target,
+            &prover_data.codeword,
+            &prover_data.merkle_tree,
+            sponge,
+        )
+    };
     BatchOpeningProof {
         ring_switches: rs_proofs,
         whir,
@@ -570,6 +983,10 @@ mod tests {
     /// nonempty E-valued selector prefix from ris); the crossing regime is
     /// exercised by `stacked_open_residual_crosses_qflock`.
     fn build_instance(seed: u64) -> Instance {
+        build_instance_with_mode(seed, None, DirectFoldMode::Dense)
+    }
+
+    fn build_instance_with_mode(seed: u64, initial_k: Option<usize>, mode: DirectFoldMode) -> Instance {
         let log_n = 14usize;
         let col_vars = 12usize;
         let col_len = 1usize << col_vars;
@@ -640,7 +1057,14 @@ mod tests {
             }],
         };
 
-        let (pc, vc) = test_configs_for(log_n);
+        let (pc, vc) = if let Some(initial_k) = initial_k {
+            (
+                default_config(log_n, initial_k, 1).unwrap(),
+                default_verifier_config(log_n, initial_k, 1).unwrap(),
+            )
+        } else {
+            test_configs_for(log_n)
+        };
         // Pin the intended residual regime: the residual cube must sit
         // entirely above the q_flock coords, with at least one selector coord
         // covered by ris (the E-valued sel prefix) and the rest by y bits.
@@ -651,7 +1075,7 @@ mod tests {
         );
         let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
         let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_whir_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let proof = open_batch_mixed_whir_stacked_impl(&mut ch, &stack, &pd, &pc, &point_claims, &ring, mode);
 
         Instance {
             vc,
@@ -759,6 +1183,52 @@ mod tests {
         let bytes_a = bincode::serialize(&a.proof).unwrap();
         let bytes_b = bincode::serialize(&b.proof).unwrap();
         assert_eq!(bytes_a, bytes_b, "proof bytes must be deterministic");
+    }
+
+    #[test]
+    fn direct_fold6_proof_bytes_and_verifier_match_dense() {
+        let dense = build_instance_with_mode(0xd1ec_7f06, Some(6), DirectFoldMode::Dense);
+        let direct = build_instance_with_mode(0xd1ec_7f06, Some(6), DirectFoldMode::Fold6);
+        assert_eq!(dense.root, direct.root);
+        assert_eq!(dense.point_claims, direct.point_claims);
+        assert_eq!(dense.ring.claims, direct.ring.claims);
+        assert_eq!(
+            dense.proof, direct.proof,
+            "direct fold-6 proof object differs from dense"
+        );
+        let dense_bytes = bincode::serialize(&dense.proof).unwrap();
+        let direct_bytes = bincode::serialize(&direct.proof).unwrap();
+        assert_eq!(dense_bytes, direct_bytes, "direct fold-6 proof bytes differ from dense");
+        assert!(verify_instance(
+            &direct,
+            &direct.point_claims,
+            &direct.ring.claims,
+            &direct.proof,
+        ));
+    }
+
+    #[test]
+    fn direct_fold6_selector_is_literal_and_fail_closed() {
+        let stack = vec![F64::ZERO; 1 << 14];
+        let pc = default_config(14, 6, 1).unwrap();
+        let ring = RingSwitchOpen {
+            offset: 3 << 12,
+            qflock_vars: 8,
+            claims: Vec::new(),
+        };
+        assert_eq!(direct_fold_mode(None, &stack, &pc, &ring), DirectFoldMode::Dense);
+        assert_eq!(
+            direct_fold_mode(Some("true"), &stack, &pc, &ring),
+            DirectFoldMode::Dense
+        );
+        assert_eq!(direct_fold_mode(Some("1"), &stack, &pc, &ring), DirectFoldMode::Fold6);
+
+        let mut ineligible = ring;
+        ineligible.qflock_vars = 5;
+        assert_eq!(
+            direct_fold_mode(Some("1"), &stack, &pc, &ineligible),
+            DirectFoldMode::Dense,
+        );
     }
 
     /// Residual cube crossing INTO the q_flock slice (case split = n_ris in the
