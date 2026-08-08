@@ -1,10 +1,10 @@
 # Aggregation performance research handoff
 
-Date: 2026-08-07
+Date: 2026-08-08
 
 ## Purpose
 
-This branch preserves the exact measured seven-component research lineage and currently integrates upstream `main` at `f7b433052bceb623222f337556e7d7eca21c6ed1`. The two-kernel performance campaign remains bound to the earlier integration at `e9cd16d49ef33909d9732778451ec73fbbedfd4a`. It is intended for technical review and current-source reproduction. It is not proposed as a merge-ready production patch.
+This branch preserves the exact measured seven-component research lineage and currently integrates upstream `main` at `ffc1a6af29f87ea428d1f889de4fd161537c9752`. The two-kernel performance campaign remains bound to the earlier integration at `e9cd16d49ef33909d9732778451ec73fbbedfd4a`. It is intended for technical review and current-source reproduction. It is not proposed as a merge-ready production patch.
 
 ## Source identities
 
@@ -18,7 +18,7 @@ This branch preserves the exact measured seven-component research lineage and cu
 | Upstream integrated for the two-kernel campaign | `e9cd16d49ef33909d9732778451ec73fbbedfd4a` |
 | Measured-source integration merge | `ae08017b89fdc03bfa0af31d31b08bf3c11eaa9d` |
 | Current-source two-kernel measured candidate | `a5477b369ee44ef7aea91b0799f7b920b349632f` |
-| Current upstream integration | `f7b433052bceb623222f337556e7d7eca21c6ed1` |
+| Current upstream integration | `ffc1a6af29f87ea428d1f889de4fd161537c9752` |
 
 The earlier six-component all-off/on campaign binds to `b61a0ee`; the incremental L0/seven-component campaign binds to `256928f`. Neither binds to the integration merge. The integration merge initially established source compatibility and test acceptance only. The separate current-source campaign described below binds to descendant `a5477b3` and measures only the two additional kernels.
 
@@ -63,13 +63,17 @@ The AVX-512 component is not selected on this Apple host. The sealed regression 
 
 After integrating upstream `f7b4330`, the same unsealed M4 host passed `cargo testall`, `cargo test --release --workspace --all-features`, `cargo clippyall`, `cargo fmt --all -- --check`, `cargo docall`, Ruff formatting and lint checks for the Python verifier, and the complete LaTeX build. A forced `LEANVM_PCS_DIRECT_FOLD6=1` run passed both `recursion_2to1` variants and confirmed direct-fold6 selection on production-shaped openings under the new PCS batching protocol. The ignored `recursion_soundness_binds` adversarial suite also passed with direct-fold6 forced. These are compatibility and soundness-regression checks, not a replacement performance campaign.
 
+After integrating upstream `ffc1a6a`, the same unsealed M4 host again passed both complete release suites with zero failures, Clippy, formatting, documentation, Ruff, the LaTeX build, the native and mixed 2-to-1 recursion tests, and the ignored `recursion_soundness_binds` adversarial suite with direct-fold6 forced. A current canonical one-shot workload of two children, eight hashes and 64,000 iterations produced and verified a recursive proof. These checks establish compatibility only; they are not a performance campaign.
+
 ## Evidence boundary
 
 The evidence pack contains raw run order, command and environment records, 25 ms process-memory samples, host samples, phase events, serialized proofs, inspection logs, fixtures, source bundles and campaign checksum manifests. Its root manifest names 2,137 files and has SHA-256 `b6ae60e665294629bfc9dc599ed44472cf38fef4b487553f9aba5464b13dcd71`. The pack is retained outside this source branch and can be transferred separately.
 
 Before relabeling the earlier seven-component medians as a current-main result, rerun that complete comparison on this integration branch or a later descendant. Upstream commits after the old measured freeze changed the recursion guest, native recursion code and Python verifier. The two-kernel campaign below does not retroactively transfer the old seven-component percentages to the integrated head.
 
-The 2026-08-08 integration of `f7b4330` also includes `53631e8`, which replaced the per-query equality challenge with one power-weight batching challenge per PCS level. The conflict resolution keeps that current transcript and verifier protocol while retaining the research timing spans, direct-fold path and hardened L0 induction selector. Consequently, serialized proof hashes and performance receipts from before `53631e8` remain evidence only for their named frozen commits. They are not current-head proof-byte or performance claims. The retained fixture and proof-artifact envelopes still use wire version 2, but that version identifies their encoding rather than protocol compatibility. Fixtures and artifacts produced before `53631e8` must not be reused on the merged head; generate fresh inputs and outputs instead.
+The 2026-08-08 integration of `f7b4330` also includes `53631e8`, which replaced the per-query equality challenge with one power-weight batching challenge per PCS level. The conflict resolution keeps that current transcript and verifier protocol while retaining the research timing spans, direct-fold path and hardened L0 induction selector. Consequently, serialized proof hashes and performance receipts from before `53631e8` remain evidence only for their named frozen commits. They are not current-head proof-byte or performance claims.
+
+The later `ffc1a6a` integration replaces the Bus tuple's univariate power fingerprint with multilinear equality weights and aligns the bytecode deferred claim with those four fingerprint challenges. This changes the native, Python and recursive verifier transcript. The retained fixture and proof-artifact envelopes still use wire version 2, but that version identifies their encoding rather than protocol compatibility. Fixtures and artifacts produced before `ffc1a6a` must not be reused on the merged head; generate fresh inputs and outputs instead.
 
 ## Current-source two-kernel result
 

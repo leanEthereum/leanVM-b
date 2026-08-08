@@ -86,6 +86,9 @@ N_CLAIMS = N_CLAIMS_PLACEHOLDER
 # The stacked bytecode: BYTECODE_COLS encoding columns, stacked along
 # LOG2_BYTECODE_COLS selector bits into ONE multilinear. Push and pull share
 # their GKR point, so the columns are opened ONCE (BYTECODE_COLS values).
+# A bus tuple's coordinates index the 2^N_TUPLE_BITS fingerprint slots (doc sec:gp).
+N_TUPLE_BITS = 4
+N_TUPLE_SLOTS = 16
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # Zerocheck: the batch carries EVERY committed column of a table, because its bus
@@ -1151,7 +1154,16 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     fs, commit_root_1, cursor = fs_next(fs, cursor)
 
     # ---- bus challenges (F192 provides the soundness margin without grinding) ----
-    fs, alpha = squeeze(fs)
+    # A tuple is fingerprinted multilinearly: slot x weighs eq(alphas, x), so a leaf
+    # factor has total degree N_TUPLE_BITS in the challenges and the aligned bytecode
+    # polynomial is read off at the challenge vector itself (doc sec:gp, sec:e2e-bc).
+    bus_alpha = HeapBuf(N_TUPLE_BITS)
+    for t in unroll(0, N_TUPLE_BITS):
+        fs, av = squeeze(fs)
+        bus_alpha[GEN ** t] = av
+    fp_w = HeapBuf(N_TUPLE_SLOTS)
+    for x in unroll(0, N_TUPLE_SLOTS):
+        fp_w[GEN ** x] = eq_weight(bus_alpha, N_TUPLE_BITS, x, 0)
     fs, gamma = squeeze(fs)
 
     # ---- ONE GKR grand product: push, pull, and count RLC-batched ----
@@ -1368,8 +1380,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     assert gkr_roots[PUSH_SIDE] == gkr_roots[PULL_SIDE]
 
     # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
-    bytecode_vals = HeapBuf(BYTECODE_COLS)
-    hint_witness(bytecode_vals[0:BYTECODE_COLS], "bytecode_vals")
+    # The program's whole share of a bytecode leaf is ONE evaluation of the stacked
+    # polynomial: its slots are aligned with the tuple and the weights are eq(α⃗, ·),
+    # so the share IS that polynomial at (ζ_lo, α⃗) (doc sec:e2e-bc). One hinted
+    # value, no per-coordinate values and no selector challenge.
+    bytecode_hint = StackBuf(1)
+    hint_witness(bytecode_hint[0:1], "bytecode_val")
+    bc_share = bytecode_hint[0]
     # Reconstruct Ṽ₀(ζ) per side and assert it equals the GKR leaf value. The
     # committed-coordinate values ride the stream (observed, pooled); the Public
     # (bytecode) coordinate values are hinted (bytecode_vals) and exported as deferred
@@ -1388,7 +1405,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         selector_sum = 0
         zeta_zs = zeta
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            block_public_idx = 0
+            block_has_public = 0
             kappa_g = block_kappa[GEN ** b]
             assert log(kappa_g) < SIZE_BITS
             if s == PULL_SIDE:
@@ -1426,9 +1443,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             # fingerprint from that table's column evaluations. Only the framework blocks
             # (boundary, memory, bytecode) still decompose.
             if BLOCK_TABLE[b] == NO_TABLE:
-                # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
+                # inner fingerprint Σ_i w_i · coord_i(ζ_lo); the count side weighs
+                # slot 0 alone (α⃗ = 0), γ = 0.
                 inner_sum = 0
-                alpha_pow = GEN ** 0
                 for i in unroll(0, BLOCK_COORD_COUNT[b]):
                     ci = BLOCK_COORD_OFF[b] + i  # a compile-time index, so `ci` costs nothing
                     if COORD_TYPE[ci] == COORD_KIND_CONST:
@@ -1460,15 +1477,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                             if s == PUSH_SIDE:
                                 block_index_mle[GEN ** b] = coord_val
                     if COORD_TYPE[ci] == COORD_KIND_PUBLIC:
-                        # push and pull share zeta, so BOTH bytecode blocks read the
-                        # same public evaluations (indexed per block, not globally).
-                        coord_val = bytecode_vals[GEN ** block_public_idx]
-                        block_public_idx += 1
+                        # The public slots carry no value of their own here: their
+                        # alpha-weighted sum IS bc_share, added once per block below
+                        # (push and pull share zeta, so both get the same one).
+                        coord_val = 0
+                        block_has_public = 1
                     if s == COUNT_SIDE:
                         inner_sum += coord_val
                     else:
-                        inner_sum += alpha_pow * coord_val
-                        alpha_pow *= alpha
+                        inner_sum += fp_w[GEN ** i] * coord_val
+                # The bytecode blocks' public slots, all of them at once.
+                inner_sum += block_has_public * bc_share
                 if s == COUNT_SIDE:
                     acc += eq_hi * inner_sum
                 else:
@@ -1479,22 +1498,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # free value in its own check. The batched zerocheck's target pins it below.
         bus_table_total[GEN ** s] = acc + gkr_claims[s]
     claim_idx = N_BUS_CLAIMS  # AIR/PI/pin claims pool after the deduped bus claims
-
-    # ---- stacked-bytecode reduction ----
-    # The bytecode is ONE multilinear in BYTECODE_LOG + LOG2_BYTECODE_COLS
-    # variables (BYTECODE_COLS encoding columns stacked along the selector
-    # bits), and push/pull share zeta, so there is ONE opening point: absorb
-    # the values, sample the selector challenges, and reduce to the single
-    # claim B(zeta_lo, sel) = sum_c eq(sel, c) * v_c.
-    for k in unroll(0, BYTECODE_COLS):
-        fs = obs(fs, bytecode_vals[GEN ** k])
-    bytecode_sel = HeapBuf(LOG2_BYTECODE_COLS)
-    for t in unroll(0, LOG2_BYTECODE_COLS):
-        fs, sv = squeeze(fs)
-        bytecode_sel[GEN ** t] = sv
-    bytecode_reduced = 0
-    for c in unroll(0, BYTECODE_COLS):
-        bytecode_reduced += eq_weight(bytecode_sel, LOG2_BYTECODE_COLS, c, 0) * bytecode_vals[GEN ** c]
 
     # ---- ONE batched zerocheck for all seven tables ----
     # Mirrors lean_vm::constraints::verify. eta ONCE, each table folding its own
@@ -1637,8 +1640,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                             if sd == COUNT_SIDE:
                                 inner += cv
                             else:
-                                inner += apow * cv
-                                apow *= alpha
+                                inner += fp_w[GEN ** i] * cv
                         if sd == COUNT_SIDE:
                             form += block_eq_all[GEN ** b] * inner
                         else:
@@ -2223,8 +2225,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
     for k in unroll(0, LOG2_BYTECODE_COLS):
-        defer_out[GEN ** (BYTECODE_LOG + k)] = bytecode_sel[GEN ** k]
-    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS)] = bytecode_reduced
+        defer_out[GEN ** (BYTECODE_LOG + k)] = bus_alpha[GEN ** k]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS)] = bc_share
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] = lincheck_alpha
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] = zerocheck_z
     for k in unroll(0, LINCHECK_ROUNDS):

@@ -748,9 +748,19 @@ class ColumnClaim:
     value: F192
 
 
-# The bytecode is one multilinear over sixteen slots, nine of them used (doc
-# sec:e2e-bc), so its point carries four selector coordinates above the index.
-N_BYTECODE_SELECTORS = 4
+# A tuple is fingerprinted MULTILINEARLY: slot x weighs eq(alphas, x), not
+# alpha^x (doc sec:gp). Each leaf factor is then of total degree N_TUPLE_BITS in
+# the challenges, and the aligned bytecode polynomial is read off at the
+# challenge vector itself (doc sec:e2e-bc).
+N_TUPLE_BITS = 4
+
+
+def fingerprint_weights(alphas: Sequence[F192]) -> tuple[F192, ...]:
+    weights = [ONE] * (1 << N_TUPLE_BITS)
+    for bit, a in enumerate(alphas):
+        for x in range(len(weights)):
+            weights[x] *= a if (x >> bit) & 1 else a + ONE
+    return tuple(weights)
 
 
 @dataclass
@@ -803,7 +813,7 @@ def _decompose_bus_side(
     blocks: Sequence[BusBlock],
     layout: BusLayout,
     point: Sequence[F192],
-    alpha: F192,
+    weights: Sequence[F192],
     gamma: F192,
     forms: Sequence[BusForm],
     claims: list[ColumnClaim],
@@ -833,15 +843,12 @@ def _decompose_bus_side(
             table, base = block.owner
             form = forms[table]
             form.constant += selector_weight * gamma
-            coefficient = ONE
-            for coordinate in block.coordinates:
-                _accumulate_form(coordinate, selector_weight * coefficient, form, base)
-                coefficient *= alpha
+            for slot, coordinate in enumerate(block.coordinates):
+                _accumulate_form(coordinate, selector_weight * weights[slot], form, base)
             continue
 
         fingerprint = ZERO
-        coefficient = ONE
-        for coordinate in block.coordinates:
+        for slot, coordinate in enumerate(block.coordinates):
             if coordinate.constant is not None:
                 value = coordinate.constant
             elif coordinate.column is not None:
@@ -855,26 +862,11 @@ def _decompose_bus_side(
                 if public is None:
                     raise VerificationError("bus coordinate has no value source")
                 value = mle_eval(public, low)
-            fingerprint += coefficient * value
-            coefficient *= alpha
+            fingerprint += weights[slot] * value
         result += selector_weight * (gamma + fingerprint)
 
     # Unoccupied rows of the packed leaf cube contain the product identity.
     return result + ONE + selector_sum
-
-
-def _public_evaluations(blocks: Sequence[BusBlock], point: Sequence[F192]) -> list[F192]:
-    """Evaluate the public bytecode columns at the bus point.
-
-    Only the bytecode seed block has any: the program is public, so the verifier
-    forms its nine encoding columns itself (doc sec:bytecode).
-    """
-    values: list[F192] = []
-    for block in blocks:
-        for coordinate in block.coordinates:
-            if coordinate.public is not None:
-                values.append(mle_eval(coordinate.public, point[: block.log_rows]))
-    return values
 
 
 @dataclass(frozen=True)
@@ -897,7 +889,9 @@ def verify_bus_balance(
     require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
     require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
-    alpha = transcript.sample()
+    alphas = tuple(transcript.sample() for _ in range(N_TUPLE_BITS))
+    weights = fingerprint_weights(alphas)
+    count_weights = fingerprint_weights((ZERO,) * N_TUPLE_BITS)
     gamma = transcript.sample()
     padded_count_layout = BusLayout(push_layout.depth, count_layout.offsets)
     product = verify_product_triple(push_layout.depth, transcript)
@@ -912,17 +906,17 @@ def verify_bus_balance(
     claims: list[ColumnClaim] = []
     forms = tuple(tuple(BusForm([ZERO] * width) for width in WIDTHS) for _ in range(3))
     sides = (
-        (push, push_layout, alpha, gamma),
-        (pull, pull_layout, alpha, gamma),
-        (count, padded_count_layout, ONE, ZERO),
+        (push, push_layout, weights, gamma),
+        (pull, pull_layout, weights, gamma),
+        (count, padded_count_layout, count_weights, ZERO),
     )
     totals = []
-    for side, (blocks, side_layout, side_alpha, side_gamma) in enumerate(sides):
+    for side, (blocks, side_layout, side_weights, side_gamma) in enumerate(sides):
         known_contribution = _decompose_bus_side(
             blocks,
             side_layout,
             product.point,
-            side_alpha,
+            side_weights,
             side_gamma,
             forms[side],
             claims,
@@ -930,13 +924,9 @@ def verify_bus_balance(
         )
         totals.append(known_contribution + product.values[side])
 
-    # The recursive verifier defers a claim on the public bytecode polynomial.
-    # Native verification does not need its value, but must replay its transcript
-    # observations and selector challenges (doc sec:recursion).
-    public_values = _public_evaluations(push, product.point)
-    for value in public_values:
-        transcript.observe(value)
-    transcript.samples(N_BYTECODE_SELECTORS)
+    # The recursive verifier defers a claim on the public bytecode polynomial. Its
+    # point comes from alpha alone (doc sec:e2e-bc), so nothing is observed here and
+    # no selector challenge is drawn.
     return BusResult(tuple(claims), product.point, forms, (totals[0], totals[1], totals[2]))
 
 
