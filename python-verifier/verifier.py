@@ -3,17 +3,18 @@
 The command-line interface consumes a public statement JSON file and the
 project's bincode proof. No prover-side auxiliary data is accepted. The file is
 ordered along the verification path: arithmetic and hashing, proof transport,
-GKR/bus/AIR checks, VM layout, Ligerito, Flock, and final orchestration.
+GKR/bus/AIR checks, VM layout, WHIR, Flock, and final orchestration.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import cache
 from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
 from struct import pack, unpack
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 
 class VerificationError(Exception):
@@ -54,27 +55,22 @@ class F192:
     c2: int = 0
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "c0", self.c0 & MASK64)
-        object.__setattr__(self, "c1", self.c1 & MASK64)
-        object.__setattr__(self, "c2", self.c2 & MASK64)
-
-    @classmethod
-    def new(cls, c0: int, c1: int, c2: int = 0) -> F192:
-        return cls(c0, c1, c2)
+        if not all(isinstance(limb, int) and not isinstance(limb, bool) and 0 <= limb <= MASK64 for limb in (self.c0, self.c1, self.c2)):
+            raise ValueError("field limbs must be 64-bit unsigned integers")
 
     @classmethod
     def from_bytes(cls, data: bytes) -> F192:
         require(len(data) == 24, "a field element must contain exactly 24 bytes")
-        return cls(*(int.from_bytes(data[offset : offset + 8], "little") for offset in (0, 8, 16)))
+        return cls(*unpack("<3Q", data))
 
     def to_bytes(self) -> bytes:
-        return b"".join(limb.to_bytes(8, "little") for limb in (self.c0, self.c1, self.c2))
+        return pack("<3Q", self.c0, self.c1, self.c2)
 
     @staticmethod
     def _coerce(other: object) -> F192:
         if isinstance(other, F192):
             return other
-        if isinstance(other, int):
+        if isinstance(other, int) and not isinstance(other, bool) and 0 <= other <= MASK64:
             return F192(other)
         raise TypeError(f"cannot use {type(other).__name__} as a field element")
 
@@ -85,13 +81,12 @@ class F192:
         return bool(self.c0 or self.c1 or self.c2)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, (F192, int)):
-            return False
-        rhs = self._coerce(other)
-        return self.c0 == rhs.c0 and self.c1 == rhs.c1 and self.c2 == rhs.c2
+        if isinstance(other, F192):
+            return self.c0 == other.c0 and self.c1 == other.c1 and self.c2 == other.c2
+        return isinstance(other, int) and not isinstance(other, bool) and 0 <= other <= MASK64 and self.c0 == other and self.c1 == self.c2 == 0
 
     def __hash__(self) -> int:
-        return hash((self.c0, self.c1, self.c2))
+        return hash(int(self))
 
     def __add__(self, other: object) -> F192:
         rhs = self._coerce(other)
@@ -161,6 +156,17 @@ BLAKE3_IV = (
     0x5BE0CD19,
 )
 MSG_PERMUTATION = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
+BLAKE3_G_LANES = (
+    (0, 4, 8, 12),
+    (1, 5, 9, 13),
+    (2, 6, 10, 14),
+    (3, 7, 11, 15),
+    (0, 5, 10, 15),
+    (1, 6, 11, 12),
+    (2, 7, 8, 13),
+    (3, 4, 9, 14),
+)
+BLAKE3_MESSAGE_PAIRS = ((0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13), (14, 15))
 CHUNK_START, CHUNK_END, PARENT, ROOT = 1, 2, 4, 8
 
 
@@ -200,14 +206,8 @@ def blake3_compress_words(
     )
     schedule = list(block_words)
     for _ in range(7):
-        _g(v, 0, 4, 8, 12, schedule[0], schedule[1])
-        _g(v, 1, 5, 9, 13, schedule[2], schedule[3])
-        _g(v, 2, 6, 10, 14, schedule[4], schedule[5])
-        _g(v, 3, 7, 11, 15, schedule[6], schedule[7])
-        _g(v, 0, 5, 10, 15, schedule[8], schedule[9])
-        _g(v, 1, 6, 11, 12, schedule[10], schedule[11])
-        _g(v, 2, 7, 8, 13, schedule[12], schedule[13])
-        _g(v, 3, 4, 9, 14, schedule[14], schedule[15])
+        for lanes, (mx, my) in zip(BLAKE3_G_LANES, BLAKE3_MESSAGE_PAIRS, strict=True):
+            _g(v, *lanes, schedule[mx], schedule[my])
         schedule = [schedule[i] for i in MSG_PERMUTATION]
     return tuple((v[i] ^ v[i + 8]) & MASK32 for i in range(8)) + tuple((v[i + 8] ^ cv[i]) & MASK32 for i in range(8))
 
@@ -272,12 +272,7 @@ def blake3_hash(data: bytes) -> bytes:
 
 def digest_words(digest: bytes) -> tuple[int, int, int, int]:
     """Read the first 32 bytes of a digest as four little-endian 64-bit words."""
-    return (
-        int.from_bytes(digest[0:8], "little"),
-        int.from_bytes(digest[8:16], "little"),
-        int.from_bytes(digest[16:24], "little"),
-        int.from_bytes(digest[24:32], "little"),
-    )
+    return unpack("<4Q", digest[:32])
 
 
 def build_eq(point: Sequence[F192]) -> list[F192]:
@@ -324,7 +319,7 @@ def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
 def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
     require(len(left) == len(right), "eq: dimension mismatch")
     result = ONE
-    for x, y in zip(left, right):
+    for x, y in zip(left, right, strict=True):
         result *= ONE + x + y
     return result
 
@@ -332,7 +327,7 @@ def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
 QUAD_NODES = (ZERO, ONE, GEN, GEN * GEN)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _denominators(nodes: tuple[F192, ...]) -> tuple[F192, ...]:
     result = []
     for index, node in enumerate(nodes):
@@ -360,8 +355,9 @@ def lagrange_weights(nodes: Sequence[F192], point: F192) -> list[F192]:
 
 
 def lagrange_interpolate(nodes: Sequence[F192], values: Sequence[F192], point: F192) -> F192:
+    require(len(nodes) == len(values), "Lagrange node/value count mismatch")
     weights = lagrange_weights(nodes, point)
-    return sum((weight * value for weight, value in zip(weights, values)), ZERO)
+    return sum((weight * value for weight, value in zip(weights, values, strict=True)), ZERO)
 
 
 # Proof transport ------------------------------------------------------------
@@ -370,7 +366,7 @@ def lagrange_interpolate(nodes: Sequence[F192], values: Sequence[F192], point: F
 class BinaryReader:
     """Strict reader for bincode's fixed-width encoding used by the project."""
 
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes) -> None:
         self.data = data
         self.offset = 0
 
@@ -410,8 +406,11 @@ class BinaryReader:
         require(self.remaining == 0, "trailing proof encoding")
 
 
+FieldValue = F192 | int
+
+
 @dataclass(frozen=True)
-class Opening:
+class MerkleOpening:
     """One level's opened rows and the octopus authenticating them.
 
     Level 0 committed the K-valued witness, so its rows are base-field words;
@@ -422,7 +421,7 @@ class Opening:
     merkle_proof: tuple[bytes, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader, base_field: bool) -> Opening:
+    def read(cls, reader: BinaryReader, base_field: bool) -> MerkleOpening:
         row_count = reader.u64()
         require(row_count <= reader.remaining // 8, "invalid opened-row count")
         read_row = reader.base_fields if base_field else reader.fields
@@ -431,62 +430,78 @@ class Opening:
 
 
 @dataclass(frozen=True)
-class SumcheckMessage:
+class CompressedSumcheckMessage:
+    """A quadratic with its linear coefficient implied by the running claim."""
+
     constant: F192
     quadratic: F192
 
 
 @dataclass(frozen=True)
-class LigeritoProofData:
-    initial: Opening
+class WhirFinalProof:
+    residual: tuple[F192, ...]
+    opening: MerkleOpening
+
+
+@dataclass(frozen=True)
+class WhirProof:
+    initial_proof: MerkleOpening
     recursive_roots: tuple[bytes, ...]
-    recursive: tuple[Opening, ...]
-    residual: tuple[F192, ...]  # the last level's plaintext multilinear
-    final: Opening
-    sumcheck: tuple[SumcheckMessage, ...]
+    recursive_proofs: tuple[MerkleOpening, ...]
+    final_proof: WhirFinalProof
+    sumcheck_messages: tuple[CompressedSumcheckMessage, ...]
     grinding_nonces: tuple[int, ...]
     ood_values: tuple[F192, ...]
     fold_grinding_nonces: tuple[int, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> LigeritoProofData:
-        initial = Opening.read(reader, base_field=True)
-        roots = reader.hashes()
+    def read(cls, reader: BinaryReader) -> WhirProof:
+        initial_proof = MerkleOpening.read(reader, base_field=True)
+        recursive_roots = reader.hashes()
         count = reader.u64()
-        require(count <= 32, "too many Ligerito levels")
-        recursive = tuple(Opening.read(reader, base_field=False) for _ in range(count))
+        require(count <= 32, "too many WHIR levels")
+        recursive_proofs = tuple(MerkleOpening.read(reader, base_field=False) for _ in range(count))
         residual = tuple(reader.fields())
-        final = Opening.read(reader, base_field=False)
+        final_proof = WhirFinalProof(residual, MerkleOpening.read(reader, base_field=False))
         message_count = reader.u64()
         require(message_count <= reader.remaining // 48, "invalid sumcheck length")
-        sumcheck = tuple(SumcheckMessage(reader.field(), reader.field()) for _ in range(message_count))
+        sumcheck_messages = tuple(CompressedSumcheckMessage(reader.field(), reader.field()) for _ in range(message_count))
         nonce_count = reader.u64()
         require(nonce_count <= reader.remaining // 8, "invalid nonce-vector length")
-        nonces = tuple(reader.u64() for _ in range(nonce_count))
+        grinding_nonces = tuple(reader.u64() for _ in range(nonce_count))
         ood_values = tuple(reader.fields())
         fold_count = reader.u64()
         require(fold_count <= reader.remaining // 8, "invalid fold-nonce length")
-        fold_nonces = tuple(reader.u64() for _ in range(fold_count))
-        return cls(initial, roots, recursive, residual, final, sumcheck, nonces, ood_values, fold_nonces)
+        fold_grinding_nonces = tuple(reader.u64() for _ in range(fold_count))
+        return cls(
+            initial_proof=initial_proof,
+            recursive_roots=recursive_roots,
+            recursive_proofs=recursive_proofs,
+            final_proof=final_proof,
+            sumcheck_messages=sumcheck_messages,
+            grinding_nonces=grinding_nonces,
+            ood_values=ood_values,
+            fold_grinding_nonces=fold_grinding_nonces,
+        )
 
 
 @dataclass(frozen=True)
-class LigeritoOpening:
+class BatchOpeningProof:
     ring_switches: tuple[tuple[F192, ...], ...]
-    ligerito: LigeritoProofData
+    whir: WhirProof
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> LigeritoOpening:
+    def read(cls, reader: BinaryReader) -> BatchOpeningProof:
         count = reader.u64()
         require(count <= 16, "too many ring-switch proofs")
         ring_switches = tuple(tuple(reader.fields()) for _ in range(count))
-        return cls(ring_switches, LigeritoProofData.read(reader))
+        return cls(ring_switches, WhirProof.read(reader))
 
 
 @dataclass(frozen=True)
 class Proof:
     stream: tuple[F192, ...]
-    openings: tuple[LigeritoOpening, ...]
+    openings: tuple[BatchOpeningProof, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> Proof:
@@ -494,7 +509,7 @@ class Proof:
         stream = tuple(reader.fields())
         count = reader.u64()
         require(count <= 8, "too many PCS openings")
-        openings = tuple(LigeritoOpening.read(reader) for _ in range(count))
+        openings = tuple(BatchOpeningProof.read(reader) for _ in range(count))
         reader.finish()
         return cls(stream, openings)
 
@@ -520,7 +535,7 @@ def compress(left: Sequence[int], right: Sequence[int]) -> tuple[int, int, int, 
 
 
 class Sponge:
-    def __init__(self, label: bytes, statement: Sequence[F192]):
+    def __init__(self, label: bytes, statement: Sequence[F192]) -> None:
         self.state = (0, 0, 0, 0)
         self.absorb_bytes(b"leanvm-b/transcript/v2")
         self.absorb_bytes(label)
@@ -555,7 +570,7 @@ class Sponge:
 
 
 class Transcript:
-    def __init__(self, proof: Proof, label: bytes, statement: Sequence[F192]):
+    def __init__(self, proof: Proof, label: bytes, statement: Sequence[F192]) -> None:
         self.proof = proof
         self.sponge = Sponge(label, statement)
         self.stream_offset = 0
@@ -580,16 +595,10 @@ class Transcript:
     def observe(self, value: F192) -> None:
         self.sponge.observe(value)
 
-    def absorb_bytes(self, data: bytes) -> None:
-        self.sponge.absorb_bytes(data)
+    def check_pow(self, nonce: int | F192, bits: int) -> None:
+        self.sponge.check_pow(nonce, bits)
 
-    def grind(self, bits: int) -> None:
-        require(self.stream_offset < len(self.proof.stream), "missing grinding nonce")
-        encoded = self.proof.stream[self.stream_offset]
-        self.stream_offset += 1
-        self.sponge.check_pow(encoded, bits)
-
-    def opening(self) -> LigeritoOpening:
+    def opening(self) -> BatchOpeningProof:
         require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
         result = self.proof.openings[self.opening_offset]
         self.opening_offset += 1
@@ -697,7 +706,7 @@ class Coordinate:
     product: tuple[int, int, int] | None = None
     index: bool = False
     public: tuple[F192, ...] | None = None
-    terms: tuple["Coordinate", ...] | None = None
+    terms: tuple[Coordinate, ...] | None = None
 
     def __post_init__(self) -> None:
         sources = [value for value in vars(self).values() if value is not None and value is not False]
@@ -744,12 +753,6 @@ class ColumnClaim:
 N_BYTECODE_SELECTORS = 4
 
 
-@dataclass(frozen=True)
-class BytecodeClaim:
-    point: tuple[F192, ...]
-    value: F192
-
-
 @dataclass
 class BusForm:
     """A table's bus contribution as a degree-2 form over its committed columns.
@@ -766,7 +769,7 @@ class BusForm:
     def evaluate(self, values: Sequence[F192]) -> F192:
         require(len(values) == len(self.coefficients), "bus form width mismatch")
         return sum(
-            (coefficient * value for coefficient, value in zip(self.coefficients, values)),
+            (coefficient * value for coefficient, value in zip(self.coefficients, values, strict=True)),
             self.constant,
         ) + sum(
             (coefficient * values[a] * values[b] for a, b, coefficient in self.products),
@@ -860,31 +863,18 @@ def _decompose_bus_side(
     return result + ONE + selector_sum
 
 
-def _public_evaluations(blocks: Sequence[BusBlock], point: Sequence[F192]) -> tuple[int, list[F192]]:
-    """The public columns' evaluations and the height they sit at.
+def _public_evaluations(blocks: Sequence[BusBlock], point: Sequence[F192]) -> list[F192]:
+    """Evaluate the public bytecode columns at the bus point.
 
     Only the bytecode seed block has any: the program is public, so the verifier
     forms its nine encoding columns itself (doc sec:bytecode).
     """
-    log_rows = 0
     values: list[F192] = []
     for block in blocks:
         for coordinate in block.coordinates:
             if coordinate.public is not None:
-                log_rows = block.log_rows
                 values.append(mle_eval(coordinate.public, point[: block.log_rows]))
-    return log_rows, values
-
-
-def _stack_public_evaluations(values: Sequence[F192], selector_point: Sequence[F192]) -> F192:
-    require(len(values) <= 1 << len(selector_point), "too many public columns")
-    result = ZERO
-    for column, value in enumerate(values):
-        weight = ONE
-        for bit, challenge in enumerate(selector_point):
-            weight *= challenge if column >> bit & 1 else ONE + challenge
-        result += weight * value
-    return result
+    return values
 
 
 @dataclass(frozen=True)
@@ -893,7 +883,6 @@ class BusResult:
     point: tuple[F192, ...]  # the GKR point zeta, which the zerocheck reuses
     forms: tuple[tuple[BusForm, ...], ...]  # forms[side][table]
     totals: tuple[F192, F192, F192]  # what the tables owe each side, derived
-    bytecode_claim: BytecodeClaim
 
 
 def verify_bus_balance(
@@ -929,7 +918,7 @@ def verify_bus_balance(
     )
     totals = []
     for side, (blocks, side_layout, side_alpha, side_gamma) in enumerate(sides):
-        framework = _decompose_bus_side(
+        known_contribution = _decompose_bus_side(
             blocks,
             side_layout,
             product.point,
@@ -939,21 +928,16 @@ def verify_bus_balance(
             claims,
             transcript,
         )
-        totals.append(framework + product.values[side])
+        totals.append(known_contribution + product.values[side])
 
-    # The claim on the stacked bytecode polynomial. Nothing here consumes it: the
-    # program is public, so the nine columns above were evaluated directly. It is
-    # the recursive verifier that defers this claim instead (doc sec:recursion),
-    # and it is formed here because its transcript steps are shared.
-    public_log_rows, public_values = _public_evaluations(push, product.point)
+    # The recursive verifier defers a claim on the public bytecode polynomial.
+    # Native verification does not need its value, but must replay its transcript
+    # observations and selector challenges (doc sec:recursion).
+    public_values = _public_evaluations(push, product.point)
     for value in public_values:
         transcript.observe(value)
-    selector_point = transcript.samples(N_BYTECODE_SELECTORS)
-    bytecode_claim = BytecodeClaim(
-        tuple(product.point[:public_log_rows]) + tuple(selector_point),
-        _stack_public_evaluations(public_values, selector_point),
-    )
-    return BusResult(tuple(claims), product.point, forms, (totals[0], totals[1], totals[2]), bytecode_claim)
+    transcript.samples(N_BYTECODE_SELECTORS)
+    return BusResult(tuple(claims), product.point, forms, (totals[0], totals[1], totals[2]))
 
 
 # Batched AIR zerocheck ------------------------------------------------------
@@ -971,8 +955,8 @@ class Air:
         """This table's share of the batch's summand: its identities, then its bus forms."""
         terms = self.table.constraints(lambda name: columns[self.table.col(name)])
         require(len(constraint_powers) == len(terms), "AIR constraint weight mismatch")
-        identities = sum((weight * term for weight, term in zip(constraint_powers, terms)), ZERO)
-        buses = sum((weight * form.evaluate(columns) for weight, form in zip(form_powers, self.forms)), ZERO)
+        identities = sum((weight * term for weight, term in zip(constraint_powers, terms, strict=True)), ZERO)
+        buses = sum((weight * form.evaluate(columns) for weight, form in zip(form_powers, self.forms, strict=True)), ZERO)
         return identities + buses
 
 
@@ -1023,9 +1007,9 @@ def verify_constraints(
     claims: list[AirClaim] = []
     for table_index, air in enumerate(airs):
         evaluations = tuple(transcript.scalars(air.table.width))
-        own = constraint_powers[cursor : cursor + air.table.n_constraints]
+        table_constraint_powers = constraint_powers[cursor : cursor + air.table.n_constraints]
         cursor += air.table.n_constraints
-        final += weights[table_index] * air.evaluate(own, form_powers, evaluations)
+        final += weights[table_index] * air.evaluate(table_constraint_powers, form_powers, evaluations)
         claims.append(AirClaim(tuple(point[: air.log_height]), evaluations))
     require(final == claim, "AIR terminal mismatch")
     return claims
@@ -1047,10 +1031,12 @@ MEM_0, MEM_1, MEM_2, MEM_FINAL_CNT, BYTECODE_FINAL_CNT, QFLOCK = range(len(GLOBA
 # within an instance and the table's log height above them (doc sec:tab-blake3).
 FLOCK_LOG_BITS = 14
 PACKED_BITS = 64  # bits per committed K-element (doc sec:ringswitch)
-QFLOCK_SLOT_BITS = FLOCK_LOG_BITS - 6
+FLOCK_K_SKIP = PACKED_BITS.bit_length() - 1
+QFLOCK_SLOT_BITS = FLOCK_LOG_BITS - FLOCK_K_SKIP
+BLAKE3_CONSTANT_COLUMN = 512
 
 
-def parse_field(value: Any) -> F192:
+def parse_field(value: object) -> F192:
     if isinstance(value, F192):
         return value
     if isinstance(value, int) and not isinstance(value, bool):
@@ -1066,19 +1052,16 @@ def parse_field(value: Any) -> F192:
         require(0 <= integer < 1 << 192, f"field element is out of range: {value!r}")
         return F192(integer & MASK64, integer >> 64 & MASK64, integer >> 128)
     if isinstance(value, (list, tuple)) and len(value) == 3:
-        try:
-            limbs = tuple(int(limb) for limb in value)
-        except (TypeError, ValueError) as exc:
-            raise VerificationError(f"invalid field limbs: {value!r}") from exc
+        limbs = tuple(value)
         require(
-            all(0 <= limb < 1 << 64 for limb in limbs),
-            f"field limb is out of range: {value!r}",
+            all(isinstance(limb, int) and not isinstance(limb, bool) and 0 <= limb < 1 << 64 for limb in limbs),
+            f"field limbs must be 64-bit unsigned integers: {value!r}",
         )
         return F192(*limbs)
     raise VerificationError(f"invalid field element: {value!r}")
 
 
-def _u32(value: Any, name: str) -> int:
+def _u32(value: object, name: str) -> int:
     require(
         isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 1 << 32,
         f"{name} must be a 32-bit unsigned integer",
@@ -1109,13 +1092,18 @@ class Operation:
     tag: int
 
     @classmethod
-    def parse(cls, data: dict[str, Any]) -> Operation:
-        require(isinstance(data, dict), "each program operation must be an object")
+    def parse(cls, data: object) -> Operation:
+        if not isinstance(data, dict):
+            raise VerificationError("each program operation must be an object")
         name = str(data.get("op", "")).lower()
         require(name in OPCODES, f"unknown operation {name!r}")
 
+        def required(key: str) -> object:
+            require(key in data, f"{name}.{key} is required")
+            return data[key]
+
         def offsets_of(*keys: str) -> tuple[int, ...]:
-            return tuple(_u32(data[key], f"{name}.{key}") for key in keys)
+            return tuple(_u32(required(key), f"{name}.{key}") for key in keys)
 
         lanes: tuple[F192, ...] = ()
         immediate, tag = ZERO, DIGEST_TAGS.get(name, 0)
@@ -1123,22 +1111,23 @@ class Operation:
             offsets = offsets_of("a", "b", "c")
         elif name == "set":
             offsets = offsets_of("o")
-            immediate = parse_field(data["k"])
+            immediate = parse_field(required("k"))
             lanes = (F192(immediate.c0), F192(immediate.c1), F192(immediate.c2))
         elif name == "deref":
             offsets = offsets_of("alpha", "beta", "gamma")
-            mode = str(data["mode"]).lower()
+            mode = str(required("mode")).lower()
             require(mode in DEREF_MODE_TAGS, "deref.mode must be cell, pc, or fp")
             tag = DEREF_MODE_TAGS[mode]
             lanes = (ONE if mode == "pc" else ZERO, ONE if mode == "fp" else ZERO)
         elif name == "jump":
             offsets = offsets_of("oc", "od", "of")
         else:
-            inputs = data["ins"]
+            inputs = required("ins")
             require(isinstance(inputs, (list, tuple)) and len(inputs) == 4, "blake3.ins must contain four addresses")
             offsets = tuple(_u32(value, f"blake3.ins[{index}]") for index, value in enumerate(inputs))
             offsets += offsets_of("cv", "out")
-            immediate = parse_field(data["metadata"])
+            immediate = parse_field(required("metadata"))
+            require(immediate.c2 == 0, "blake3.metadata must fit in 128 bits")
             lanes = (F192(immediate.c0), F192(immediate.c1))
         return cls(name, offsets, lanes, immediate, tag)
 
@@ -1148,8 +1137,9 @@ class Program:
     operations: tuple[Operation, ...]
 
     @classmethod
-    def parse(cls, data: dict[str, Any]) -> Program:
-        require(isinstance(data, dict), "the public statement must be an object")
+    def parse(cls, data: object) -> Program:
+        if not isinstance(data, dict):
+            raise VerificationError("the public statement must be an object")
         encoded = data.get("program")
         if not isinstance(encoded, list):
             raise VerificationError("program must be an array")
@@ -1205,7 +1195,7 @@ def _gpow(index: int) -> F192:
 
 
 def _const(value: F192 | int) -> Coordinate:
-    return Coordinate(constant=parse_field(value))
+    return Coordinate(constant=value if isinstance(value, F192) else F192(value))
 
 
 def _col(index: int) -> Coordinate:
@@ -1300,21 +1290,12 @@ class Table:
         return tuple(i for i, name in enumerate(self.columns) if name.startswith("cnt"))
 
 
-# The tower product in E = K[y]/(y^3+y+1), lane by lane: lane i sums ``x[j]*y[k]``
-# over TOWER_LANES[i], the five partials of doc sec:tab-mul folded into
-# ``c0 = p0+p3``, ``c1 = p1+p3+p4``, ``c2 = p2+p4``. Written once: MUL's result
-# coordinate and JUMP's inverse identity need the same unrolling, and every identity
-# is K-valued (doc sec:air), so a word relation is three lane relations.
+# Operand pairs contributing to each lane after reducing y^3 = y + 1 in E = K[y]/(y^3 + y + 1).
 TOWER_LANES = (
     ((0, 0), (1, 2), (2, 1)),
     ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)),
     ((0, 2), (1, 1), (2, 0), (2, 2)),
 )
-
-
-def _tower_lanes(x: Sequence[F192], y: Sequence[F192]) -> tuple[F192, ...]:
-    """The tower product of two words given as their K-lanes."""
-    return tuple(sum((x[j] * y[k] for j, k in lane), ZERO) for lane in TOWER_LANES)
 
 
 def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[Coordinate, ...]:
@@ -1327,35 +1308,35 @@ def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[C
     return tuple(_sum(_prod(a[j], b[k]) for j, k in lane) for lane in TOWER_LANES)
 
 
-def _flushes_arith(t: Table) -> Flushes:
-    pc, fp, o_a, o_b, o_c, cnt_a, cnt_b, cnt_c, cnt_bc = t.cols("pc", "fp", "o_a", "o_b", "o_c", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
-    va, vb = t.cols("va_0", "va_1", "va_2"), t.cols("vb_0", "vb_1", "vb_2")
-    f = Flushes()
-    f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
-    f.memory_word(_prod(fp, o_a), cnt_a, *va)
-    f.memory_word(_prod(fp, o_b), cnt_b, *vb)
+def _flushes_arith(table: Table) -> Flushes:
+    pc, fp, o_a, o_b, o_c, cnt_a, cnt_b, cnt_c, cnt_bc = table.cols("pc", "fp", "o_a", "o_b", "o_c", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
+    va, vb = table.cols("va_0", "va_1", "va_2"), table.cols("vb_0", "vb_1", "vb_2")
+    flushes = Flushes()
+    flushes.state_step(pc, fp)
+    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    flushes.memory_word(_prod(fp, o_a), cnt_a, *va)
+    flushes.memory_word(_prod(fp, o_b), cnt_b, *vb)
     # The destination cell's flush carries the result itself, so bus balance is
     # the assertion and the result is no column.
-    f.memory(_prod(fp, o_c), cnt_c, _arith_result(t.name == "mul", va, vb))
-    return f
+    flushes.memory(_prod(fp, o_c), cnt_c, _arith_result(table.name == "mul", va, vb))
+    return flushes
 
 
-def _flushes_set(t: Table) -> Flushes:
-    pc, fp, o, cnt, cnt_bc = t.cols("pc", "fp", "o", "cnt", "cnt_bc")
-    k = t.cols("k_0", "k_1", "k_2")
-    f = Flushes()
-    f.state_step(pc, fp)
+def _flushes_set(table: Table) -> Flushes:
+    pc, fp, o, cnt, cnt_bc = table.cols("pc", "fp", "o", "cnt", "cnt_bc")
+    k = table.cols("k_0", "k_1", "k_2")
+    flushes = Flushes()
+    flushes.state_step(pc, fp)
     # The immediate's three limbs ride the spare operand slots.
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
-    f.memory_word(_prod(fp, o), cnt, *k)
-    return f
+    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
+    flushes.memory_word(_prod(fp, o), cnt, *k)
+    return flushes
 
 
-def _flushes_deref(t: Table) -> Flushes:
-    pc, fp, alpha, beta, gamma, f_pc, f_fp, ptr = t.cols("pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr")
-    cnt_ptr, cnt_target, cnt_local, cnt_bc = t.cols("cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
-    v3 = t.cols("v3_0", "v3_1", "v3_2")
+def _flushes_deref(table: Table) -> Flushes:
+    pc, fp, alpha, beta, gamma, f_pc, f_fp, ptr = table.cols("pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr")
+    cnt_ptr, cnt_target, cnt_local, cnt_bc = table.cols("cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
+    v3 = table.cols("v3_0", "v3_1", "v3_2")
 
     def gated(lane: int) -> list[Coordinate]:
         return [_col(lane), _prod(f_pc, lane), _prod(f_fp, lane)]
@@ -1363,37 +1344,37 @@ def _flushes_deref(t: Table) -> Flushes:
     # v2 = (1 + f_pc + f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp, lane-wise: only the low
     # lane takes the two K-valued sources.
     store = (
-        _sum(gated(v3[0]) + [_prod(f_pc, pc, 2), _prod(f_fp, fp)]),
+        _sum((*gated(v3[0]), _prod(f_pc, pc, 2), _prod(f_fp, fp))),
         _sum(gated(v3[1])),
         _sum(gated(v3[2])),
     )
-    f = Flushes()
-    f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
-    f.memory_base(_prod(fp, alpha), cnt_ptr, ptr)
-    f.memory(_prod(ptr, beta), cnt_target, store)
-    f.memory_word(_prod(fp, gamma), cnt_local, *v3)
-    return f
+    flushes = Flushes()
+    flushes.state_step(pc, fp)
+    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
+    flushes.memory_base(_prod(fp, alpha), cnt_ptr, ptr)
+    flushes.memory(_prod(ptr, beta), cnt_target, store)
+    flushes.memory_word(_prod(fp, gamma), cnt_local, *v3)
+    return flushes
 
 
-def _flushes_jump(t: Table) -> Flushes:
-    pc, fp, o_c, o_d, o_f, cond, dest, frame, b = t.cols("pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "b")
-    cnt_c, cnt_d, cnt_f, cnt_bc = t.cols("cnt_c", "cnt_d", "cnt_f", "cnt_bc")
-    f = Flushes()
+def _flushes_jump(table: Table) -> Flushes:
+    pc, fp, o_c, o_d, o_f, cond, dest, frame, b = table.cols("pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "b")
+    cnt_c, cnt_d, cnt_f, cnt_bc = table.cols("cnt_c", "cnt_d", "cnt_f", "cnt_bc")
+    flushes = Flushes()
     # next_pc = b*dest + (b+1)*g*pc, next_fp = b*frame + (b+1)*fp, both derived.
-    f.state_derived(
+    flushes.state_derived(
         pc,
         fp,
         _sum((_prod(b, dest), _prod(b, pc, 1), _gcol(pc))),
         _sum((_prod(b, frame), _prod(b, fp), _col(fp))),
     )
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
+    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
     # The condition, the destination and the frame are K-valued on every row, taken
     # or not, so each is one K-limb read through literal zeros in the upper lanes.
-    f.memory_base(_prod(fp, o_c), cnt_c, cond)
-    f.memory_base(_prod(fp, o_d), cnt_d, dest)
-    f.memory_base(_prod(fp, o_f), cnt_f, frame)
-    return f
+    flushes.memory_base(_prod(fp, o_c), cnt_c, cond)
+    flushes.memory_base(_prod(fp, o_d), cnt_d, dest)
+    flushes.memory_base(_prod(fp, o_f), cnt_f, frame)
+    return flushes
 
 
 def _jump_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
@@ -1409,12 +1390,12 @@ def _jump_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
     return (flag + condition * inverse, condition * (flag + ONE))
 
 
-def _flushes_blake3(t: Table) -> Flushes:
-    pc, fp, cnt_bc = t.cols("pc", "fp", "cnt_bc")
-    operands = t.cols("o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
-    f = Flushes()
-    f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, tuple(_col(i) for i in operands))
+def _flushes_blake3(table: Table) -> Flushes:
+    pc, fp, cnt_bc = table.cols("pc", "fp", "cnt_bc")
+    operands = table.cols("o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
+    flushes = Flushes()
+    flushes.state_step(pc, fp)
+    flushes.bytecode(pc, cnt_bc, table.opcode, tuple(_col(i) for i in operands))
     # The eight cells a row accesses: the four independently addressed message
     # chunks, then the two consecutive chaining-value cells and the two output
     # ones. Each carries two limbs of q_flock and a zero top limb.
@@ -1428,24 +1409,24 @@ def _flushes_blake3(t: Table) -> Flushes:
         ("o_out", 0, "out0"),
         ("o_out", 1, "out1"),
     ):
-        lo, hi = t.cols(f"{cell}_lo", f"{cell}_hi")
-        f.memory_128(_prod(fp, t.col(operand), exponent), t.col(f"cnt_{cell}"), lo, hi)
-    return f
+        lo, hi = table.cols(f"{cell}_lo", f"{cell}_hi")
+        flushes.memory_128(_prod(fp, table.col(operand), exponent), table.col(f"cnt_{cell}"), lo, hi)
+    return flushes
 
 
-def _flushes_pack(t: Table) -> Flushes:
-    pc, fp, o_a, o_b, o_c, v_a, v_b, cnt_a, cnt_b, cnt_c, cnt_bc = t.cols(
+def _flushes_pack(table: Table) -> Flushes:
+    pc, fp, o_a, o_b, o_c, v_a, v_b, cnt_a, cnt_b, cnt_c, cnt_bc = table.cols(
         "pc", "fp", "o_a", "o_b", "o_c", "v_a", "v_b", "cnt_a", "cnt_b", "cnt_c", "cnt_bc"
     )
-    f = Flushes()
-    f.state_step(pc, fp)
-    f.bytecode(pc, cnt_bc, t.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    flushes = Flushes()
+    flushes.state_step(pc, fp)
+    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
     # The literal zeros make the two source range assertions and the destination
     # packing exact through bus balance.
-    f.memory_base(_prod(fp, o_a), cnt_a, v_a)
-    f.memory_base(_prod(fp, o_b), cnt_b, v_b)
-    f.memory_128(_prod(fp, o_c), cnt_c, v_a, v_b)
-    return f
+    flushes.memory_base(_prod(fp, o_a), cnt_a, v_a)
+    flushes.memory_base(_prod(fp, o_b), cnt_b, v_b)
+    flushes.memory_128(_prod(fp, o_c), cnt_c, v_a, v_b)
+    return flushes
 
 
 # The column names of each table, in the order they are committed. Hand-laid in
@@ -1516,7 +1497,7 @@ BLAKE3_SLOT_BY_COLUMN = {
         "m3_hi": 17,
         "md_0": 18,
         "md_1": 19,
-    }.items()  # fmt: skip
+    }.items()
 }
 
 # The instruction names the statement JSON uses are the table names, and the bus
@@ -1554,7 +1535,7 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
     for op in program.operations:
         row = [_gpow(OPCODES[op.name]), *(_gpow(offset) for offset in op.offsets), *op.lanes]
         require(len(row) <= len(columns), f"{op.name} overflows the bytecode encoding")
-        for column, value in zip(columns, row + [ZERO] * (len(columns) - len(row))):
+        for column, value in zip(columns, row + [ZERO] * (len(columns) - len(row)), strict=True):
             column.append(value)
     return tuple(tuple(column) for column in columns)
 
@@ -1562,11 +1543,11 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
 def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
-        and len(table_logs) == 7
+        and len(table_logs) == len(TABLES)
         and all(0 <= height <= 32 for height in table_logs)
         # flock sizes its argument to at least 2^3 instances and the BLAKE3 table's value
         # columns share that instance cube, so a smaller height is not expressible.
-        and table_logs[5] >= 3,
+        and table_logs[BLAKE3.opcode] >= 3,
         "invalid announced table sizes",
     )
     table_logs = list(table_logs)
@@ -1606,16 +1587,16 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
         ),
     ]
     count: list[BusBlock] = []
-    for table, (base, height) in enumerate(zip(BASES, table_logs)):
-        flushes = TABLES[table].flushes(TABLES[table])
+    for table, base, height in zip(TABLES, BASES, table_logs, strict=True):
+        flushes = table.flushes(table)
         for coordinates in flushes.push:
             shifted = tuple(_offset_coordinate(c, base) for c in coordinates)
-            push.append(BusBlock(height, shifted, (table, base)))
+            push.append(BusBlock(height, shifted, (table.opcode, base)))
         for coordinates in flushes.pull:
             shifted = tuple(_offset_coordinate(c, base) for c in coordinates)
-            pull.append(BusBlock(height, shifted, (table, base)))
-        for local in TABLES[table].count_columns:
-            count.append(BusBlock(height, (_col(base + local),), (table, base)))
+            pull.append(BusBlock(height, shifted, (table.opcode, base)))
+        for local in table.count_columns:
+            count.append(BusBlock(height, (_col(base + local),), (table.opcode, base)))
 
     # Every column's height, in global numbering; None marks the BLAKE3 value
     # columns, which are committed inside q_flock rather than on their own.
@@ -1623,12 +1604,12 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
     kappas[MEM_0] = kappas[MEM_1] = kappas[MEM_2] = kappas[MEM_FINAL_CNT] = log_memory
     kappas[BYTECODE_FINAL_CNT] = bytecode_log
     kappas[QFLOCK] = table_logs[BLAKE3.opcode] + QFLOCK_SLOT_BITS
-    for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
+    for table, (base, width) in enumerate(zip(BASES, WIDTHS, strict=True)):
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_SLOT_BY_COLUMN:
         kappas[BASES[BLAKE3.opcode] + local] = None
     offsets, total_log = stack_offsets(kappas)
-    placements = [Placement(-1, 0) if variables is None else Placement(variables, offset) for variables, offset in zip(kappas, offsets)]
+    placements = [Placement(-1, 0) if variables is None else Placement(variables, offset) for variables, offset in zip(kappas, offsets, strict=True)]
     # Floor at the PCS minimum: WHIR's level ladder needs room, so a tiny
     # witness zero-pads up to it. Both sides derive this from the kappas.
     stack_log = max(15, total_log)
@@ -1636,12 +1617,12 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
 
 
 def build_airs(layout: Layout, bus_forms: Sequence[Sequence[BusForm]]) -> list[Air]:
-    return [Air(table, height, tuple(side[table.opcode] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs)]
+    return [Air(table, height, tuple(side[table.opcode] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs, strict=True)]
 
 
 def constraint_claims(claims: Sequence[AirClaim]) -> list[ColumnClaim]:
     result: list[ColumnClaim] = []
-    for base, claim in zip(BASES, claims):
+    for base, claim in zip(BASES, claims, strict=True):
         for local, value in enumerate(claim.evaluations):
             result.append(ColumnClaim(base + local, claim.point, value))
     return result
@@ -1652,10 +1633,10 @@ def virtual_slot(column: int) -> int | None:
     return BLAKE3_SLOT_BY_COLUMN.get(column - BASES[BLAKE3.opcode])
 
 
-# Ligerito opening ------------------------------------------------------------
+# WHIR opening ----------------------------------------------------------------
 
-# Ligerito ladder geometry. These mirror the Rust source of truth in
-# crates/pcs/src/ligerito_config.rs and must stay in sync with it: the prover
+# WHIR ladder geometry. These mirror the Rust source of truth in
+# crates/pcs/src/whir_config.rs and must stay in sync with it: the prover
 # derives its opening shape from those constants, so a mismatch here rejects a
 # valid proof. Change a factor there, change it here.
 INITIAL_FOLDING_FACTOR = 6
@@ -1666,23 +1647,23 @@ RESIDUAL_MAX_LOG = 5
 
 
 @dataclass(frozen=True)
-class LigeritoConfig:
-    rates: tuple[int, ...]
+class WhirConfig:
+    log_inv_rates: tuple[int, ...]
     folds: tuple[int, ...]
     queries: tuple[int, ...]
-    query_grinding: tuple[int, ...]
-    fold_grinding: tuple[int, ...]
+    query_grinding_bits: tuple[int, ...]
+    fold_grinding_bits: tuple[int, ...]
     ood_samples: tuple[int, ...]
 
 
-def _reduced_rate(rate: int, message_log: int) -> float:
-    return ((2.0**message_log) - 1.0) / (2.0 ** (message_log + rate))
+def _reduced_rate(log_inv_rate: int, message_log: int) -> float:
+    return ((2.0**message_log) - 1.0) / (2.0 ** (message_log + log_inv_rate))
 
 
-def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tuple[int, int]:
-    rho = _reduced_rate(rate, message_log)
+def _johnson_parameters(log_inv_rate: int, message_log: int, interleaved_log: int, level: int) -> tuple[int, int]:
+    rho = _reduced_rate(log_inv_rate, message_log)
     root_rho = sqrt(rho)
-    block_length = 1 << (message_log + rate)
+    block_length = 1 << (message_log + log_inv_rate)
     variables = message_log + interleaved_log
     best: tuple[int, int] | None = None
     for theorem_m in range(3, 4097):
@@ -1706,12 +1687,14 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         list_log = log2(1.0 / (2.0 * eta * root_rho))
         ood = (
             0
-            if interleaved_log == INITIAL_FOLDING_FACTOR
+            if level == 0
             else next(
                 (count for count in range(1, 9) if count * (192.0 - log2(variables)) - (2.0 * list_log - 1.0) + 1e-12 >= 128.0),
-                0,
+                None,
             )
         )
+        if ood is None:
+            continue
         ood_bits = 192.0 - list_log - log2(variables) if ood == 0 else ood * (192.0 - log2(variables)) - (2.0 * list_log - 1.0)
         # The batch polynomial's degree in the level's single lambda is
         # J - 1 = queries + ood (residual, OOD, one claim per query).
@@ -1722,36 +1705,39 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         if best is None or queries < best[0]:
             best = candidate
     if best is None:
-        raise VerificationError("no secure Ligerito configuration")
+        raise VerificationError("no secure WHIR configuration")
     return best
 
 
-def derive_config(log_n: int, initial_rate: int) -> LigeritoConfig:
+def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
     """Derive the production Johnson/OOD ladder used by the Rust PCS."""
-    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= initial_rate <= 4, "invalid Ligerito shape")
+    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= log_inv_rate <= 4, "invalid WHIR shape")
     folds = [INITIAL_FOLDING_FACTOR]
     message_logs = [log_n - INITIAL_FOLDING_FACTOR]
-    rates = [initial_rate]
+    log_inv_rates = [log_inv_rate]
     remaining = message_logs[0]
     prior_fold = INITIAL_FOLDING_FACTOR
     reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR
     while remaining > RESIDUAL_MAX_LOG:
         fold = min(SUBSEQUENT_FOLDING_FACTOR, remaining)
-        rates.append(rates[-1] + prior_fold - reduction)
+        log_inv_rates.append(log_inv_rates[-1] + prior_fold - reduction)
         remaining -= fold
         folds.append(fold)
         message_logs.append(remaining)
         prior_fold = fold
         reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
-    require(len(folds) >= 2, "Ligerito requires at least two levels")
-    parameters = tuple(_johnson_parameters(rate, columns, fold) for rate, columns, fold in zip(rates, message_logs, folds))
-    return LigeritoConfig(
-        tuple(rates),
-        tuple(folds),
-        tuple(value[0] for value in parameters),
-        (17,) * len(folds),
-        (0,) * len(folds),
-        tuple(value[1] for value in parameters),
+    require(len(folds) >= 2, "WHIR requires at least two levels")
+    parameters = tuple(
+        _johnson_parameters(level_rate, message_log, fold, level)
+        for level, (level_rate, message_log, fold) in enumerate(zip(log_inv_rates, message_logs, folds, strict=True))
+    )
+    return WhirConfig(
+        log_inv_rates=tuple(log_inv_rates),
+        folds=tuple(folds),
+        queries=tuple(value[0] for value in parameters),
+        query_grinding_bits=(17,) * len(folds),
+        fold_grinding_bits=(0,) * len(folds),
+        ood_samples=tuple(value[1] for value in parameters),
     )
 
 
@@ -1759,14 +1745,14 @@ def _hash_pair(left: bytes, right: bytes) -> bytes:
     return blake3_hash(left + right)
 
 
-FieldValue = F192 | int
-
-
 def _row_hash(row: Sequence[FieldValue], base_field: bool) -> bytes:
     if base_field:
         return blake3_hash(b"".join(int(value).to_bytes(8, "little") for value in row))
-    require(all(isinstance(value, F192) for value in row), "non-field value in extension row")
-    return blake3_hash(b"".join(value.to_bytes() for value in row if isinstance(value, F192)))
+    encoded = []
+    for value in row:
+        require(isinstance(value, F192), "non-field value in extension row")
+        encoded.append(value.to_bytes())
+    return blake3_hash(b"".join(encoded))
 
 
 def authenticate_rows(
@@ -1785,7 +1771,7 @@ def authenticate_rows(
     require(all(0 <= q < leaf_count for q in unique), "Merkle query is out of range")
     require(all(len(row) == row_width for row in rows), "opened row has the wrong width")
 
-    nodes = [(index, _row_hash(row, base_field)) for index, row in zip(unique, rows)]
+    nodes = [(index, _row_hash(row, base_field)) for index, row in zip(unique, rows, strict=True)]
     supplied = iter(octopus)
     for _ in range(leaf_count.bit_length() - 1):
         parents: list[tuple[int, bytes]] = []
@@ -1807,17 +1793,17 @@ def authenticate_rows(
     require(len(nodes) == 1 and nodes[0] == (0, root), "Merkle root mismatch")
     require(next(supplied, None) is None, "Merkle multiproof has trailing nodes")
 
-    by_query = dict(zip(unique, rows))
+    by_query = dict(zip(unique, rows, strict=True))
     return [by_query[q] for q in queries]
 
 
-def sample_queries(sponge: Sponge, block_length: int, count: int) -> list[int]:
+def sample_queries(transcript: Transcript, block_length: int, count: int) -> list[int]:
     depth = block_length.bit_length() - 1
-    require(block_length == 1 << depth and depth > 0, "invalid query domain")
+    require(block_length == 1 << depth and 0 < depth <= 192, "invalid query domain")
     per_word = 192 // depth
     result: list[int] = []
     while len(result) < count:
-        bits = int(sponge.sample())
+        bits = int(transcript.sample())
         for chunk in range(min(per_word, count - len(result))):
             result.append((bits >> (chunk * depth)) & (block_length - 1))
     return result
@@ -1830,7 +1816,7 @@ class QuadraticMessage:
     quadratic: F192
 
     def evaluate(self, point: F192) -> F192:
-        return self.constant + point * self.linear + point * point * self.quadratic
+        return self.constant + point * (self.linear + point * self.quadratic)
 
     def add_scaled(self, other: QuadraticMessage, scale: F192) -> QuadraticMessage:
         return QuadraticMessage(
@@ -1846,12 +1832,12 @@ def _enforced_sum(
     query_weights: Sequence[F192],
 ) -> F192:
     lane_weights = build_eq(folds)
-    require(len(query_weights) == len(rows), "Ligerito query-weight count mismatch")
+    require(len(query_weights) == len(rows), "WHIR query-weight count mismatch")
     total = ZERO
-    for query_weight, row in zip(query_weights, rows):
-        require(len(row) == len(lane_weights), "Ligerito row/fold width mismatch")
+    for query_weight, row in zip(query_weights, rows, strict=True):
+        require(len(row) == len(lane_weights), "WHIR row/fold width mismatch")
         total += query_weight * sum(
-            ((F192(x) if isinstance(x, int) else x) * y for x, y in zip(row, lane_weights)),
+            ((F192(x) if isinstance(x, int) else x) * y for x, y in zip(row, lane_weights, strict=True)),
             ZERO,
         )
     return total
@@ -1879,11 +1865,11 @@ def _induced_weight(message_log: int, queries: Sequence[int], query_weights: Seq
     the level's batching challenge.
     """
     require(len(point) == message_log, "bad induced-basis dimensions")
-    require(len(query_weights) == len(queries), "Ligerito query-weight count mismatch")
+    require(len(query_weights) == len(queries), "WHIR query-weight count mismatch")
     roots = _subspace_roots(message_log)
     inverses = [value.inv() if value else ZERO for value in roots]
     total = ZERO
-    for weight, query in zip(query_weights, queries):
+    for weight, query in zip(query_weights, queries, strict=True):
         basis = F192(query)
         product = weight
         for coordinate, challenge in enumerate(point):
@@ -1913,21 +1899,21 @@ class OodContext:
     scalar: F192
 
 
-def verify_ligerito(
+def verify_whir(
     transcript: Transcript,
-    proof: LigeritoProofData,
+    proof: WhirProof,
     log_n: int,
-    initial_rate: int,
+    log_inv_rate: int,
     target: F192,
     root: bytes,
     evaluate_basis: Callable[[Sequence[F192]], F192],
 ) -> None:
     """Verify the base-field multilevel opening with a one-point terminal check."""
-    config = derive_config(log_n, initial_rate)
+    config = derive_config(log_n, log_inv_rate)
     levels = len(config.folds)
-    require(len(proof.recursive_roots) == levels - 1, "wrong Ligerito root count")
-    require(len(proof.recursive) == levels - 2, "wrong Ligerito recursive-proof count")
-    require(len(proof.grinding_nonces) == levels, "wrong Ligerito nonce count")
+    require(len(proof.recursive_roots) == levels - 1, "wrong WHIR root count")
+    require(len(proof.recursive_proofs) == levels - 2, "wrong WHIR recursive-proof count")
+    require(len(proof.grinding_nonces) == levels, "wrong WHIR nonce count")
 
     def observe_root(value: bytes) -> None:
         require(len(value) == 32, "invalid Merkle root")
@@ -1938,8 +1924,8 @@ def verify_ligerito(
 
     def next_quad(claim: F192) -> QuadraticMessage:
         nonlocal message_index
-        require(message_index < len(proof.sumcheck), "truncated Ligerito sumcheck")
-        message = proof.sumcheck[message_index]
+        require(message_index < len(proof.sumcheck_messages), "truncated WHIR sumcheck")
+        message = proof.sumcheck_messages[message_index]
         message_index += 1
         transcript.observe(message.constant)
         transcript.observe(message.quadratic)
@@ -1956,13 +1942,13 @@ def verify_ligerito(
     ood_index = 0
     current_root = root
 
-    for level, (fold_count, rate) in enumerate(zip(config.folds, config.rates)):
+    for level, (fold_count, level_rate) in enumerate(zip(config.folds, config.log_inv_rates, strict=True)):
         level_folds: list[F192] = []
         for fold_index in range(fold_count):
-            bits = max(0, config.fold_grinding[level] - fold_index)
+            bits = max(0, config.fold_grinding_bits[level] - fold_index)
             if bits:
-                require(fold_nonce_index < len(proof.fold_grinding_nonces), "missing Ligerito fold nonce")
-                transcript.sponge.check_pow(proof.fold_grinding_nonces[fold_nonce_index], bits)
+                require(fold_nonce_index < len(proof.fold_grinding_nonces), "missing WHIR fold nonce")
+                transcript.check_pow(proof.fold_grinding_nonces[fold_nonce_index], bits)
                 fold_nonce_index += 1
             challenge = transcript.sample()
             folds.append(challenge)
@@ -1976,8 +1962,8 @@ def verify_ligerito(
         # OOD claims first, then the query batch (Annex B, Protocol 1 step 1).
         pending_ood: list[tuple[tuple[F192, ...], int, F192, QuadraticMessage]] = []
         if final_level:
-            residual = proof.residual
-            require(len(residual) == 1 << message_log, "wrong Ligerito residual length")
+            residual = proof.final_proof.residual
+            require(len(residual) == 1 << message_log, "wrong WHIR residual length")
             for value in residual:
                 transcript.observe(value)
         else:
@@ -1985,25 +1971,25 @@ def verify_ligerito(
             observe_root(next_root)
             for _ in range(config.ood_samples[level + 1]):
                 point = tuple(transcript.samples(message_log))
-                require(ood_index < len(proof.ood_values), "missing Ligerito OOD value")
+                require(ood_index < len(proof.ood_values), "missing WHIR OOD value")
                 value = proof.ood_values[ood_index]
                 ood_index += 1
                 transcript.observe(value)
                 pending_ood.append((point, len(folds), value, next_quad(value)))
 
-        transcript.sponge.check_pow(proof.grinding_nonces[level], config.query_grinding[level])
-        block_length = 1 << (message_log + rate)
-        queries = sample_queries(transcript.sponge, block_length, config.queries[level])
+        transcript.check_pow(proof.grinding_nonces[level], config.query_grinding_bits[level])
+        block_length = 1 << (message_log + level_rate)
+        queries = sample_queries(transcript, block_length, config.queries[level])
         # One batching challenge per level, drawn once every claim it batches is
         # fixed: the OOD claims above and these query positions.
         lam = transcript.sample()
         query_weights = powers(lam, len(queries))
         if level == 0:
-            opened = proof.initial
+            opened = proof.initial_proof
         elif final_level:
-            opened = proof.final
+            opened = proof.final_proof.opening
         else:
-            opened = proof.recursive[level - 1]
+            opened = proof.recursive_proofs[level - 1]
         try:
             rows = authenticate_rows(
                 current_root,
@@ -2015,7 +2001,7 @@ def verify_ligerito(
                 level == 0,
             )
         except VerificationError as exc:
-            raise VerificationError(f"Ligerito level {level}: {exc}") from exc
+            raise VerificationError(f"WHIR level {level}: {exc}") from exc
         enforced = _enforced_sum(rows, level_folds, query_weights)
 
         # Every commitment, including the last one, enters through an intro
@@ -2043,29 +2029,29 @@ def verify_ligerito(
                 tail_folds.append(challenge)
                 if round_index + 1 < message_log:
                     running_quad = next_quad(running_target)
-            require(message_index == len(proof.sumcheck), "trailing Ligerito sumcheck messages")
-            require(ood_index == len(proof.ood_values), "trailing Ligerito OOD values")
-            require(fold_nonce_index == len(proof.fold_grinding_nonces), "trailing Ligerito fold nonces")
+            require(message_index == len(proof.sumcheck_messages), "trailing WHIR sumcheck messages")
+            require(ood_index == len(proof.ood_values), "trailing WHIR OOD values")
+            require(fold_nonce_index == len(proof.fold_grinding_nonces), "trailing WHIR fold nonces")
             weight = evaluate_basis(list(folds) + tail_folds)
-            for ctx in contexts:
-                fixed = ctx.message_log - message_log
-                point = list(folds[ctx.fold_start : ctx.fold_start + fixed]) + tail_folds
-                weight += ctx.scalar * _induced_weight(ctx.message_log, ctx.queries, ctx.weights, point)
+            for context in contexts:
+                fixed_coordinates = context.message_log - message_log
+                point = list(folds[context.fold_start : context.fold_start + fixed_coordinates]) + tail_folds
+                weight += context.scalar * _induced_weight(context.message_log, context.queries, context.weights, point)
             for ood in ood_contexts:
-                fixed = len(ood.point) - message_log
+                fixed_coordinates = len(ood.point) - message_log
                 scale = ood.scalar
-                folded = folds[ood.fold_start : ood.fold_start + fixed]
-                for expected, actual in zip(ood.point[:fixed], folded):
+                folded = folds[ood.fold_start : ood.fold_start + fixed_coordinates]
+                for expected, actual in zip(ood.point[:fixed_coordinates], folded, strict=True):
                     scale *= ONE + expected + actual
-                for expected, actual in zip(ood.point[fixed:], tail_folds):
+                for expected, actual in zip(ood.point[fixed_coordinates:], tail_folds, strict=True):
                     scale *= ONE + expected + actual
                 weight += scale
             terminal = weight * mle_eval(residual, tail_folds)
-            require(terminal == running_target, "Ligerito terminal check failed")
+            require(terminal == running_target, "WHIR terminal check failed")
             return
         current_root = next_root
 
-    raise VerificationError("Ligerito verification ended without a terminal level")
+    raise VerificationError("WHIR verification ended without a terminal level")
 
 
 # Flock reduction -------------------------------------------------------------
@@ -2081,7 +2067,7 @@ PHI_BASIS = (
     F192(0x4418AE808B28BDD0),
 )
 PHI = tuple(sum((PHI_BASIS[bit] for bit in range(8) if value >> bit & 1), ZERO) for value in range(256))
-_MEDIUM_GENERATOR = F192.new(
+_MEDIUM_GENERATOR = F192(
     0x243F6A8885A308D3,
     0x13198A2E03707344,
     0xA4093822299F31D0,
@@ -2092,11 +2078,10 @@ _MEDIUM_POWERS = (
     _MEDIUM_GENERATOR**4,
     _MEDIUM_GENERATOR**8,
 )
-# flock's zerocheck folds its first PACKED_BITS variables in one univariate skip
-# (K_SKIP of them, since 2^K_SKIP = PACKED_BITS), and fixes the next N_INNER
+# flock's zerocheck replaces its first FLOCK_K_SKIP Boolean rounds with one
+# univariate skip over PACKED_BITS points, and fixes the next N_INNER
 # coordinates to public constants instead of sampling them. Their F2-linear
 # independence is what that optimization's soundness rests on.
-FLOCK_K_SKIP = 6
 FLOCK_N_INNER = 7
 
 FIXED_CHALLENGES = (
@@ -2151,7 +2136,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     skip = transcript.sample()
 
     c_evaluation = lagrange_interpolate(PHI[PACKED_BITS : 2 * PACKED_BITS], c_values, skip)
-    combined = [a + c for a, c in zip(ab_values, c_values)]
+    combined = [a + c for a, c in zip(ab_values, c_values, strict=True)]
     combined_evaluation = lagrange_interpolate(PHI[: 2 * PACKED_BITS], [ZERO] * PACKED_BITS + combined, skip)
     running = combined_evaluation + c_evaluation
     rounds = []
@@ -2167,19 +2152,9 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
 
 
 @dataclass(frozen=True)
-class LincheckResult:
-    point: QuirkyPoint
-    value: F192
-
-
-@dataclass(frozen=True)
-class Reduction:
+class FlockReduction:
     ab: ZClaim
     c: ZClaim
-
-
-def _claim_weights(point: QuirkyPoint) -> list[F192]:
-    return lagrange_weights(PHI[:PACKED_BITS], point.skip)
 
 
 RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
@@ -2197,7 +2172,7 @@ def _coordinate_weights(challenges: Sequence[F192]) -> list[F192]:
         limbs = [0, 0, 0]
         limbs[w // 64] = 1 << (w % 64)
         element = F192(*limbs)
-        for challenge, shift in zip(challenges, RING_MAP_SHIFTS):
+        for challenge, shift in zip(challenges, RING_MAP_SHIFTS, strict=True):
             frobenius = element
             for _ in range(shift):
                 frobenius *= frobenius
@@ -2238,44 +2213,47 @@ def _ring_weight(
     suffix_tensor = build_eq(suffix_point)
     query_tensor = build_eq(query)
     return sum(
-        (query_weight * _linear_map(suffix_weight, coordinate_weights) for query_weight, suffix_weight in zip(query_tensor, suffix_tensor)),
+        (
+            query_weight * _linear_map(suffix_weight, coordinate_weights)
+            for query_weight, suffix_weight in zip(query_tensor, suffix_tensor, strict=True)
+        ),
         ZERO,
     )
 
 
 def verify_stacked_opening(
     transcript: Transcript,
-    opening: LigeritoOpening,
+    opening: BatchOpeningProof,
     root: bytes,
     stack_log: int,
-    initial_rate: int,
+    log_inv_rate: int,
     qflock_offset: int,
     qflock_variables: int,
-    reduction: Reduction,
+    reduction: FlockReduction,
     point_claims: Sequence[tuple[Sequence[F192], F192]],
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
     require(len(opening.ring_switches) == len(ring_claims), "wrong ring-switch proof count")
     slices: list[Sequence[F192]] = []
-    for claim, values in zip(ring_claims, opening.ring_switches):
+    for claim, values in zip(ring_claims, opening.ring_switches, strict=True):
         require(len(values) == PACKED_BITS, "ring-switch proof has the wrong width")
         for value in values:
             transcript.observe(value)
-        expected = sum((a * b for a, b in zip(_claim_weights(claim.point), values)), ZERO)
+        expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
         require(expected == claim.value, "ring-switch claim mismatch")
         slices.append(values)
 
-    map_challenges = [transcript.sample() for _ in RING_MAP_SHIFTS]
+    map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
     coordinate_weights = _coordinate_weights(map_challenges)
-    ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights)), ZERO) for values in slices]
+    ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights, strict=True)), ZERO) for values in slices]
     ring_scales = powers(transcript.sample(), 2)
-    target = sum((scale * value for scale, value in zip(ring_scales, ring_values)), ZERO)
+    target = sum((scale * value for scale, value in zip(ring_scales, ring_values, strict=True)), ZERO)
 
     for _, value in point_claims:
         transcript.observe(value)
     point_scales = powers(transcript.sample(), len(point_claims))
-    target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims)), ZERO)
+    target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims, strict=True)), ZERO)
 
     selector = qflock_offset >> qflock_variables
 
@@ -2291,45 +2269,35 @@ def verify_stacked_opening(
         for bit, challenge in enumerate(high):
             selector_weight *= challenge if selector >> bit & 1 else ONE + challenge
         ring_value = sum(
-            (scale * _ring_weight(claim.point.ring_tail, low, coordinate_weights) for scale, claim in zip(ring_scales, ring_claims)),
+            (scale * _ring_weight(claim.point.ring_tail, low, coordinate_weights) for scale, claim in zip(ring_scales, ring_claims, strict=True)),
             ZERO,
         )
         value = selector_weight * ring_value
-        for scale, (claim_point, _) in zip(point_scales, point_claims):
+        for scale, (claim_point, _) in zip(point_scales, point_claims, strict=True):
             require(len(claim_point) == len(point), "stack point has the wrong dimension")
             factor = ONE
-            for expected, challenge in zip(claim_point, point):
+            for expected, challenge in zip(claim_point, point, strict=True):
                 factor *= ONE + expected + challenge
             value += scale * factor
         return value
 
-    verify_ligerito(
+    verify_whir(
         transcript,
-        opening.ligerito,
+        opening.whir,
         stack_log,
-        initial_rate,
+        log_inv_rate,
         target,
         root,
         evaluate_basis,
     )
 
 
-def verify_reduction(log_n: int, transcript: Transcript) -> Reduction:
-    zerocheck = verify_zerocheck(log_n, transcript)
-    inner_length = QFLOCK_SLOT_BITS  # the slot bits, the outer ones indexing instances
-    ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds[:inner_length], zerocheck.rounds[inner_length:])
-    lincheck = verify_lincheck(log_n, ab_point, zerocheck.a, zerocheck.b, transcript)
-    c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail[:inner_length], zerocheck.equality_tail[inner_length:])
-    return Reduction(ZClaim(lincheck.point, lincheck.value), ZClaim(c_point, zerocheck.c))
-
-
 def verify_lincheck(
-    log_n: int,
     point: QuirkyPoint,
     a: F192,
     b: F192,
     transcript: Transcript,
-) -> LincheckResult:
+) -> ZClaim:
     """Replay the fixed BLAKE3 matrix reduction."""
     alpha = transcript.sample()
     inner_weights = quirky_weights(point.skip, point.inner)
@@ -2344,14 +2312,24 @@ def verify_lincheck(
         running = at_infinity * challenge * challenge + linear * challenge + at_zero
         challenges.append(challenge)
     partial = transcript.scalars(PACKED_BITS)
-    rest_weights = build_eq(tuple(reversed(challenges)))
+    rounds = tuple(reversed(challenges))
+    rest_weights = build_eq(rounds)
     column_weights = [value * weight for weight in rest_weights for value in partial]
     terminal = blake3_bilinear(alpha, inner_weights, column_weights)
-    terminal += beta * column_weights[512]
+    terminal += beta * column_weights[BLAKE3_CONSTANT_COLUMN]
     require(terminal == running, "Flock lincheck terminal mismatch")
     skip = transcript.sample()
-    value = sum((x * y for x, y in zip(lagrange_weights(PHI[:PACKED_BITS], skip), partial)), ZERO)
-    return LincheckResult(QuirkyPoint(skip, tuple(reversed(challenges)), point.outer), value)
+    value = sum((x * y for x, y in zip(lagrange_weights(PHI[:PACKED_BITS], skip), partial, strict=True)), ZERO)
+    return ZClaim(QuirkyPoint(skip, rounds, point.outer), value)
+
+
+def verify_reduction(log_n: int, transcript: Transcript) -> FlockReduction:
+    zerocheck = verify_zerocheck(log_n, transcript)
+    inner_length = QFLOCK_SLOT_BITS  # the slot bits, the outer ones indexing instances
+    ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds[:inner_length], zerocheck.rounds[inner_length:])
+    ab = verify_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
+    c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail[:inner_length], zerocheck.equality_tail[inner_length:])
+    return FlockReduction(ab, ZClaim(c_point, zerocheck.c))
 
 
 def blake3_bilinear(
@@ -2360,10 +2338,10 @@ def blake3_bilinear(
     column_weights: Sequence[F192],
 ) -> F192:
     """Evaluate the two BLAKE3 R1CS matrix forms by walking the circuit."""
-    size = 1 << 14
+    size = 1 << FLOCK_LOG_BITS
     require(len(row_weights) == size, "bad BLAKE3 row-weight vector")
     require(len(column_weights) == size, "bad BLAKE3 column-weight vector")
-    constant = 512
+    constant = BLAKE3_CONSTANT_COLUMN
     message_base = 640
     counter_low = 1152
     counter_high = 1184
@@ -2372,10 +2350,6 @@ def blake3_bilinear(
     gates_base = 1280
     gate_stride = 250
     output_high = 15280
-    iv = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A)
-    lanes = ((0, 4, 8, 12), (1, 5, 9, 13), (2, 6, 10, 14), (3, 7, 11, 15), (0, 5, 10, 15), (1, 6, 11, 12), (2, 7, 8, 13), (3, 4, 9, 14))
-    message_pairs = ((0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13), (14, 15))
-    permutation = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
     left_total = ZERO
     right_total = ZERO
     constant_rows = ZERO
@@ -2389,7 +2363,7 @@ def blake3_bilinear(
         return tuple(column_weights[constant] if value >> bit & 1 else ZERO for bit in range(32))
 
     def xor(x: Sequence[F192], y: Sequence[F192]) -> tuple[F192, ...]:
-        return tuple(a + b for a, b in zip(x, y))
+        return tuple(a + b for a, b in zip(x, y, strict=True))
 
     def rotate_right(word: Sequence[F192], amount: int) -> tuple[F192, ...]:
         return tuple(word[(bit + amount) & 31] for bit in range(32))
@@ -2423,16 +2397,16 @@ def blake3_bilinear(
     for word in range(8):
         state[word] = slots(32 * word)
     for word in range(4):
-        state[8 + word] = literal(iv[word])
+        state[8 + word] = literal(BLAKE3_IV[word])
     state[12], state[13], state[14], state[15] = (slots(counter_low), slots(counter_high), slots(block_length), slots(flags))
 
     message_order = list(range(16))
     for round_index in range(7):
-        for gate_index, (lane_a, lane_b, lane_c, lane_d) in enumerate(lanes):
+        for gate_index, (lane_a, lane_b, lane_c, lane_d) in enumerate(BLAKE3_G_LANES):
             gate = round_index * 8 + gate_index
             gate_base = gates_base + gate_stride * gate
             a, b, c, d = state[lane_a], state[lane_b], state[lane_c], state[lane_d]
-            mx_index, my_index = message_pairs[gate_index]
+            mx_index, my_index = BLAKE3_MESSAGE_PAIRS[gate_index]
             mx = slots(message_base + 32 * message_order[mx_index])
             my = slots(message_base + 32 * message_order[my_index])
             temp0 = add(a, b, gate_base)
@@ -2453,7 +2427,7 @@ def blake3_bilinear(
             state[lane_b] = slots(b_base)
             state[lane_c] = c2
             state[lane_d] = slots(d_base)
-        message_order = [message_order[index] for index in permutation]
+        message_order = [message_order[index] for index in MSG_PERMUTATION]
 
     for word in range(8):
         low = xor(state[word], state[word + 8])
@@ -2499,7 +2473,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     # 2] Commitment: one Merkle root over the stacked witness.
     root_words = transcript.scalars(2)
     require(all(word.c2 == 0 for word in root_words), "commitment root has a nonzero top limb")
-    root = b"".join(limb.to_bytes(8, "little") for limb in (root_words[0].c0, root_words[0].c1, root_words[1].c0, root_words[1].c1))
+    root = pack("<4Q", root_words[0].c0, root_words[0].c1, root_words[1].c0, root_words[1].c1)
 
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf
     # decomposition, which leaves each table a degree-2 form and a total.
@@ -2513,7 +2487,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     n_identities = sum(table.n_constraints for table in TABLES)
     eta_powers = powers(eta, n_identities + 3)
     constraint_powers, form_powers = eta_powers[:n_identities], eta_powers[n_identities:]
-    target = sum((weight * total for weight, total in zip(form_powers, bus.totals)), ZERO)
+    target = sum((weight * total for weight, total in zip(form_powers, bus.totals, strict=True)), ZERO)
     air_claims = verify_constraints(
         build_airs(layout, bus.forms),
         constraint_powers,
@@ -2534,7 +2508,8 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_value = interpolate(public_input[0], public_input[1], public_challenge)
     public_top = (public_value + public_low + Y * public_high) / (Y * Y)
     claims.extend(
-        ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEM_0, MEM_1, MEM_2), (public_low, public_high, public_top))
+        ColumnClaim(column, tuple(public_point), value)
+        for column, value in zip((MEM_0, MEM_1, MEM_2), (public_low, public_high, public_top), strict=True)
     )
 
     # 6] Locate every claim in the stack: a column claim keeps its point and
