@@ -1673,15 +1673,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # flock's sub-proof scalars are ordinary stream words (add_scalar on the
     # native side); the cursor walks them, fetching and observing each in one
     # step (fs_next) at the point the transcript binds it.
-    # the full r vector: K_SKIP sampled skips, N_FIXED_CHALLENGE_ROUNDS fixed inner,
-    # the rest sampled outer. r is the zerocheck eq-randomness the prover builds
-    # round-1 FROM, so it is squeezed BEFORE round-1 is fetched (and round-1 before
-    # z, which evaluates it).
+    # The first K_SKIP Boolean rounds are replaced by the univariate skip and
+    # consume no equality challenges. The remaining r coordinates are
+    # N_FIXED_CHALLENGE_ROUNDS fixed inner values followed by sampled outer values.
+    # The prover builds round 1 from this equality tail, so its sampled part is
+    # squeezed before round 1 is fetched (and round 1 before z, which evaluates it).
     mr1cs_g = tau_blake3_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
     zerocheck_r = HeapBuf(mr1cs_g)
-    for i in unroll(0, K_SKIP):
-        fs, rv = squeeze(fs)
-        zerocheck_r[GEN ** i] = rv
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
     # outer samples at runtime count: m = K_LOG + tau_5 (certified).
@@ -1825,25 +1823,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             s_hat_row = z_partial
         else:
             s_hat_row = s_hat_v_c
-        # AB is lincheck's already-bound z_partial. Only C must be absorbed
-        # here before sampling the shared map.
+        # AB's value was already derived from lincheck's bound z_partial. Only
+        # C must be absorbed and checked here before sampling the shared map.
         if rs == 1:
             for i in unroll(0, (2 ** K_SKIP)):
                 fs = obs(fs, s_hat_row[GEN ** i])
-        # claim check: value == sum_i prefix_weights[i] * s_hat_v[i], where
-        # prefix_weights[i] = lambda_i(z_skip) = lag numerator * LAGRANGE_INV_S[i].
-        if rs == 0:
-            claim_z_skip = lincheck_z_skip
-            claim_val = lincheck_w
-        else:
-            claim_z_skip = zerocheck_z
-            claim_val = c_eval
-        claim_nums = StackBuf((2 ** K_SKIP))
-        lag64(claim_z_skip, claim_nums, 0)
-        claim_check = 0
-        for i in unroll(0, (2 ** K_SKIP)):
-            claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_row[GEN ** i]
-        assert claim_check == claim_val
+            claim_nums = StackBuf((2 ** K_SKIP))
+            lag64(zerocheck_z, claim_nums, 0)
+            claim_check = 0
+            for i in unroll(0, (2 ** K_SKIP)):
+                claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_row[GEN ** i]
+            assert claim_check == c_eval
     # Compose six two-term F2-linear maps with shifts 32,16,8,4,2,1. Their
     # expansion has all 64 Frobenius terms required for soundness, while direct
     # application costs 63 squarings and only six general multiplications.

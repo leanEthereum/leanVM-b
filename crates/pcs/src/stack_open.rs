@@ -136,8 +136,8 @@ pub struct RingSwitchOpen {
     /// `q_flock = stack[offset .. offset + 2^qflock_vars]` (no separate copy).
     pub qflock_vars: usize,
     /// Number of leading claims whose `s_hat_v` was already absorbed earlier
-    /// in this transcript. Those values are checked and used normally, but are
-    /// not absorbed a second time before the shared map challenges.
+    /// in this transcript. They are not absorbed a second time before the
+    /// shared map challenges.
     pub prebound: usize,
     pub claims: Vec<RingSwitchClaim>,
 }
@@ -151,8 +151,8 @@ pub struct RingSwitchVerify {
     /// log2 of q_flock's length in F64 words.
     pub qflock_vars: usize,
     /// Leading ring-switch messages reconstructed from earlier transcript data.
-    /// Their values are already bound, so they are checked and used without a
-    /// second absorption or a second copy in [`BatchOpeningProof`].
+    /// Their claim values were derived from the same bound vectors, so they are
+    /// used without a redundant check, absorption, or copy in [`BatchOpeningProof`].
     pub reconstructed: Vec<RingSwitchProof>,
     pub claims: Vec<RingSwitchClaim>,
 }
@@ -472,19 +472,14 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     }
     let rs_proofs: Vec<&RingSwitchProof> = ring.reconstructed.iter().chain(&proof.ring_switches).collect();
 
-    // 1. Ring-switch succinct verify: reconstructed leading messages are
-    //    already bound. Check every claim, absorb only transmitted messages,
-    //    then sample one shared linear map.
+    // 1. Ring-switch succinct verify: each reconstructed leading vector was
+    //    already bound and its claim value was derived from that same vector.
+    //    Check and absorb only transmitted messages, then sample one shared map.
     for (i, (claim, rs_proof)) in ring.claims.iter().zip(&rs_proofs).enumerate() {
-        if ring_switch::verify_prepare(
-            claim.value,
-            &claim.prefix_weights,
-            rs_proof,
-            i < ring.reconstructed.len(),
-            sponge,
-        )
-        .is_err()
-        {
+        if i < ring.reconstructed.len() {
+            continue;
+        }
+        if ring_switch::verify_prepare(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
             return None;
         }
     }

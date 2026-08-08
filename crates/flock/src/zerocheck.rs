@@ -5,12 +5,14 @@
 //! on the multilinear extensions â, b̂, ĉ at the protocol-derived point.
 //!
 //! Protocol shape (m = log_n, k_skip = [`K_SKIP`] = 6):
-//!   1. Verifier samples `r ∈ F_{2^192}^m` (the zerocheck challenge).
+//!   1. Verifier constructs `r ∈ F_{2^192}^{m-k_skip}` from fixed inner
+//!      coordinates and sampled outer coordinates.
 //!   2. Prover sends `P^{AB}(λ)` and `P^C(λ)` for λ ∈ Λ, |Λ| = 2^k_skip.
 //!   3. Verifier samples `z ∈ F_{2^192}` (univariate-skip fold point).
 //!   4. For each of the `m - k_skip` multilinear rounds, prover sends
 //!      `(P_r(1), P_r(∞))` and verifier samples `ρ_r`.
-//!   5. Prover sends final MLE evaluations `(â, b̂, ĉ)` at the resulting point.
+//!   5. Prover sends final MLE evaluations `(â, b̂)`; the verifier has already
+//!      derived `ĉ` from the round-1 C message.
 //!
 //! Both `prove` and `verify` are wired end-to-end. The prove→verify roundtrip
 //! is tested on honest witnesses; verify also rejects byte-mutated proofs and
@@ -40,13 +42,11 @@ use univariate_skip_optimized::{
 pub const K_SKIP: usize = 6;
 const N_INNER: usize = 7; // 3 small + 4 medium fixed-constant eq dimensions
 
-/// Build the zerocheck challenge vector in the shared prover/verifier order:
-/// sampled skip coordinates, fixed inner coordinates, then sampled outer ones.
-fn challenge_vector(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F192>) -> Vec<F192> {
-    let skip = sample_vec(K_SKIP);
+/// Build the equality coordinates that remain after the univariate skip.
+fn equality_tail(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F192>) -> Vec<F192> {
     let outer = sample_vec(m - K_SKIP - N_INNER);
-    skip.into_iter()
-        .chain(small_challenges())
+    small_challenges()
+        .into_iter()
         .chain(medium_challenges())
         .chain(outer)
         .collect()
@@ -73,8 +73,7 @@ pub use pcs::pack::PaddingSpec;
 ///   the rest variables one at a time to fresh `ρ_r` challenges.
 /// - `c_eval` is at `(z, r_rest)` — C is linear, so its eq-weighted sum
 ///   collapses immediately to an MLE evaluation at the original eq weights;
-///   no per-round folding needed. Here `r_rest = r[K_SKIP..m]` from the
-///   zerocheck challenge.
+///   no per-round folding needed.
 ///
 /// The downstream caller (R1CS prover + PCS) opens each commitment at its
 /// own claim point. Two openings for a, b at the same point; one for c at
@@ -86,8 +85,8 @@ pub struct ZerocheckClaim {
     pub z: F192,
     /// AB sumcheck bind challenges, one per multilinear round; length = `m - K_SKIP`.
     pub mlv_challenges: Vec<F192>,
-    /// Eq weights for the rest variables = the zerocheck challenge restricted
-    /// to `r[K_SKIP..m]`. This is the *rest part of the c-claim's point*.
+    /// Equality coordinates for the variables left after the univariate skip.
+    /// This is the rest part of the c-claim's point.
     /// Length = `m - K_SKIP`.
     pub r_rest: Vec<F192>,
     /// `â(z, mlv_challenges)`.
@@ -146,17 +145,14 @@ pub fn prove_packed_padded_capture_s_hat_v_c<O>(
     assert_eq!(c_packed.len(), expected_bytes);
     let n_mlv = m - k_skip;
 
-    // ---- Sample r (with protocol-fixed constants in the inner 7 dims) ----
+    // ---- Construct the equality tail (with fixed constants in the inner 7 dims) ----
     //
-    // r layout:
-    //   r[0..k_skip]                — sampled (used by verifier for the
-    //                                  final check at S; not by the URM)
-    //   r[k_skip..k_skip+3]         — protocol small-eq constants φ_8(0xF7..)
-    //   r[k_skip+3..k_skip+7]       — protocol medium-eq constants β_i
-    //   r[k_skip+7..m]              — sampled (the "outer" eq weights for
-    //                                  the URM and multilinear rounds)
+    // r_rest layout:
+    //   r_rest[0..3]                — protocol small-eq constants φ_8(0xF7..)
+    //   r_rest[3..7]                — protocol medium-eq constants β_i
+    //   r_rest[7..m-k_skip]         — sampled outer equality coordinates
     // Prover and verifier use the same tower-valued challenges directly.
-    let r = challenge_vector(m, |n| ps.sample_vec(n));
+    let r_rest = equality_tail(m, |n| ps.sample_vec(n));
 
     // ---- Round 1: URM (extract_c, parallel) ----
     //
@@ -171,7 +167,7 @@ pub fn prove_packed_padded_capture_s_hat_v_c<O>(
     let ntt_l = AdditiveNttGf8::new(k_skip, F8(1u8 << k_skip));
     let inv_table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
     let (round1_ab_opt, round1_c_opt, s_hat_v_c) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-        a_packed, b_packed, c_packed, m, k_skip, &r, &inv_table, padding,
+        a_packed, b_packed, c_packed, m, k_skip, &r_rest, &inv_table, padding,
     );
     let c_s = c_s();
     let round1_ab: Vec<F192> = round1_ab_opt.iter().map(|x| c_s * *x).collect();
@@ -209,7 +205,7 @@ pub fn prove_packed_padded_capture_s_hat_v_c<O>(
     let t_round2 = std::time::Instant::now();
     let fold_table = UniSkipFoldTable::new(k_skip, z);
     let mut mlv_arg = vec![F192::ONE; n_mlv];
-    mlv_arg[1..].copy_from_slice(&r[k_skip + 1..]);
+    mlv_arg[1..].copy_from_slice(&r_rest[1..]);
     let (mut a_mlv, mut b_mlv, msg_1, msg_inf) = uni_skip_fold_and_round_pair_optimized_packed_padded(
         a_packed,
         b_packed,
@@ -264,9 +260,9 @@ pub fn prove_packed_padded_capture_s_hat_v_c<O>(
 
         // r_next for the next round's message: length log_n_before - 1.
         // r_next[0] = ONE (Convention A factor); r_next[1..] are the eq
-        // weights for the remaining variables = r[k_skip + i + 2..m].
+        // weights for the remaining variables = r_rest[i + 2..].
         let mut r_next = vec![F192::ONE; log_n_before - 1];
-        r_next[1..].copy_from_slice(&r[k_skip + i + 2..]);
+        r_next[1..].copy_from_slice(&r_rest[i + 2..]);
 
         let (m1, mi) = if log_n_before >= 10 {
             let half = a_mlv.len() / 2;
@@ -330,7 +326,7 @@ pub fn prove_packed_padded_capture_s_hat_v_c<O>(
     let claim = ZerocheckClaim {
         z,
         mlv_challenges: mlv_rhos,
-        r_rest: r[k_skip..].to_vec(),
+        r_rest,
         a_eval: final_a_eval,
         b_eval: final_b_eval,
         c_eval: final_c_eval,
@@ -356,9 +352,9 @@ pub fn verify<O>(log_n: usize, vs: &mut VerifierState<'_, O>) -> Result<Zerochec
     let n_mlv = m - k_skip;
     let ell = 1usize << k_skip;
 
-    // ---- Re-derive r (in lockstep with prove_packed) ----
+    // ---- Re-derive the equality tail (in lockstep with prove_packed) ----
     // The verifier samples tower challenges directly, matching the prover.
-    let r = challenge_vector(m, |n| vs.sample_vec(n));
+    let r_rest = equality_tail(m, |n| vs.sample_vec(n));
 
     // ---- Read + bind round-1 messages off the stream, sample z ----
     let round1_ab: Vec<F192> = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
@@ -399,7 +395,7 @@ pub fn verify<O>(log_n: usize, vs: &mut VerifierState<'_, O>) -> Result<Zerochec
     //   G_{r-1}(ρ_{r-1}) = (1 + r_eq_r) · G_r(0) + r_eq_r · G_r(1).
     //
     // Round r (0-indexed i = r − 2) binds the i-th rest variable with eq weight
-    // r[k_skip + i]. The prover sends `(G(1), G(∞))` (Convention A — no
+    // r_rest[i]. The prover sends `(G(1), G(∞))` (Convention A — no
     // factor). Verifier:
     //   1. reconstruct G(0) from consistency `c_running = (1+r_eq)·G(0) + r_eq·G(1)`,
     //   2. observe message, sample ρ_i,
@@ -410,7 +406,7 @@ pub fn verify<O>(log_n: usize, vs: &mut VerifierState<'_, O>) -> Result<Zerochec
     for i in 0..n_mlv {
         let msg_1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
         let msg_inf = vs.next_scalar().map_err(VerifyError::Transcript)?;
-        let r_eq = r[k_skip + i];
+        let r_eq = r_rest[i];
         let one_plus_r_eq = F192::ONE + r_eq;
 
         let g1 = msg_1;
@@ -436,7 +432,6 @@ pub fn verify<O>(log_n: usize, vs: &mut VerifierState<'_, O>) -> Result<Zerochec
     // (lincheck's α) is drawn, so the α-batched reduction of these two claims is
     // sound. `final_c_eval` is the verifier's OWN interpolation of the
     // already-bound `round1_c` at `z` — never transported.
-    let r_rest: Vec<F192> = r[k_skip..].to_vec();
     let final_a_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
     let final_b_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
     if c_running != final_a_eval * final_b_eval {
