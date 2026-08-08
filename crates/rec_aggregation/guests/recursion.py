@@ -7,7 +7,7 @@ STREAM_CAP = STREAM_CAP_PLACEHOLDER
 FLOORS = [0, 0, 0, 0, 0, 3, 0]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
-# The batched zerocheck's round polynomial arrives WHOLE, as a cubic at {0,1,g,g^2}:
+# The table sumcheck's round polynomial arrives WHOLE, as a cubic at {0,1,g,g^2}:
 # one baked inverse denominator per node.
 LAG4_INV_0 = LAG4_INV_0_PLACEHOLDER
 LAG4_INV_1 = LAG4_INV_1_PLACEHOLDER
@@ -42,11 +42,10 @@ COORD_KIND_GCOL = 2
 COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
 COORD_KIND_PROD = 5
-COORD_KIND_SUM = 6
 # BLOCK_TABLE: the table a block's flush belongs to, or NO_TABLE for the framework
 # blocks (boundary, memory seed/finalize, bytecode seed/finalize). It is
 # also what marks a block as owned: an owned block's fingerprint is settled by the
-# batched zerocheck, off its table's column evaluations.
+# table sumcheck, off its table's column evaluations.
 NO_TABLE = NO_TABLE_PLACEHOLDER
 SIDE_BLOCK_START = SIDE_BLOCK_START_PLACEHOLDER
 N_BLOCKS = N_BLOCKS_PLACEHOLDER
@@ -68,7 +67,7 @@ COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
 # A TABLE block's coordinates, flattened into TERMS: coord c is
 # Σ_{j < COORD_TERM_COUNT[c]} term(COORD_TERM_OFF[c] + j), each term a
 # TERM_TYPE kind over that table's LOCAL column indices TERM_COL_A/TERM_COL_B,
-# scaled by TERM_CONST. Those coords raise no claim (the zerocheck settles them),
+# scaled by TERM_CONST. Those coords raise no claim (the table sumcheck settles them),
 # which is what lets one carry a value the row DERIVES from its columns: an
 # XOR/MUL result, a DEREF store, a JUMP successor. A framework coord has no terms.
 COORD_TERM_OFF = COORD_TERM_OFF_PLACEHOLDER
@@ -91,7 +90,7 @@ N_TUPLE_BITS = 4
 N_TUPLE_SLOTS = 16
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
-# Zerocheck: the batch carries EVERY committed column of a table, because its bus
+# Table sumcheck: the batch carries EVERY committed column of a table, because its bus
 # forms read the flushed ones and its constraint the rest; TABLE_COLS_CAP caps the
 # evaluation frame. ETA_OFFSET[t] starts table t's disjoint range of eta-powers.
 N_TABLE_COLS = N_TABLE_COLS_PLACEHOLDER
@@ -354,11 +353,9 @@ def squeeze_step(state_0, state_1):
     # Non-inlined sponge ratchet exposing BOTH output words (challenge and the
     # next state), so a query-squeeze loop can chain the state through a heap
     # buffer. Returns (challenge, next_state_0, next_state_1).
-    a = [state_0, state_1]
-    o = StackBuf(2)
-    sponge_compress(a, f192_from_limbs(0, 0, DS_SQ), 0, o)
-    challenge = challenge_from_state(o)
-    return challenge, o[0], o[1]
+    state = [state_0, state_1]
+    next_state, challenge = squeeze(state)
+    return challenge, next_state[0], next_state[1]
 
 
 def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
@@ -481,7 +478,7 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
             high_bits_prev = low_bits_prev + word               # bits [log-1, nbits)
             word_vs_2logprev = word + g_logs_pow2[g_log * INV_GEN]  # 0 iff word == 2^(log-1)
             assert high_bits_prev * word_vs_2logprev != 0  # word > 2^(log-1): minimal
-    return g_log, word, exp_prod
+    return g_log, exp_prod
 
 
 def g_power_of_word(value, g_squares, nbits: Const):
@@ -506,7 +503,7 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
     # verified and tied back: g^(the value the bits decode to) must equal g_N.
     bits = HeapBuf(GEN ** nbits)
     hint_decompose_bits_exponent(bits, g_N, nbits)
-    g_log, word, g_bits_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
+    g_log, g_bits_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert g_bits_value == g_N  # the hinted bits decode to N
     return g_log
 
@@ -595,20 +592,19 @@ def obs(state, x):
     return nb
 
 
+
 @inline
 def fs_next(state, cursor):
     # Fetch + observe + advance, in one act: read the word under `cursor`, fold it
     # into the sponge, and hand back the successor state, the word, AND the cursor
     # stepped one word on. Reading and absorbing are inseparable here, so no
-    # proof-stream word can enter the computation unbound — the soundness invariant
+    # proof-stream word can enter the computation unbound. This is the soundness invariant
     # the whole guest rests on. All three returns alias into the caller at zero
     # cost (state a StackBuf run, cursor a folded g-address), so the usual walk is
     # just `fs, x, cursor = fs_next(fs, cursor)` with no manual cursor arithmetic.
     x = cursor[GEN ** 0]
-    nb = StackBuf(2)
-    sponge_compress(state, x, DS_SCALAR, nb)
+    nb = obs(state, x)
     return nb, x, cursor * GEN
-
 
 @inline
 def absorb_nonce(state, x):
@@ -1017,7 +1013,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 zt = oz[GEN ** (z_folded + t)]
                 scalar *= (1 + zt + tail_challenges[GEN ** t])
             ood_inner += scalar
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]] + ood_inner, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx], tail_challenges, yr_at_tail
+    return sumcheck_target, fold_challenges, inner_chain[GEN ** LIG_N_LEVELS[m_idx]] + ood_inner, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx], tail_challenges, yr_at_tail
 
 
 def exponent_tables():
@@ -1058,7 +1054,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #      roots outright); 3x leaf decomposition, DERIVING
     #      each side's table share from its GKR claim (pooling the
     #      committed-coordinate claims); the stacked-bytecode reduction (deferred);
-    #   5. ONE batched zerocheck for all seven tables, n = max_t tau_t rounds at the
+    #   5. ONE table sumcheck for all seven tables, n = max_t tau_t rounds at the
     #      shared point zeta, target derived from the leaf claims (sumcheck_round4);
     #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
@@ -1439,7 +1435,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                     block_eq_hi[GEN ** b] = eq_hi
             selector_sum += eq_hi
             block_eq_all[GEN ** b] = eq_hi
-            # A TABLE's block streams no value here: the batched zerocheck settles its
+            # A TABLE's block streams no value here: the table sumcheck settles its
             # fingerprint from that table's column evaluations. Only the framework blocks
             # (boundary, memory, bytecode) still decompose.
             if BLOCK_TABLE[b] == NO_TABLE:
@@ -1495,11 +1491,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         acc += 1 + selector_sum
         # What the tables' blocks owe this side: its GKR leaf value less the
         # framework decomposition. DERIVED, not read: a transmitted total would be a
-        # free value in its own check. The batched zerocheck's target pins it below.
+        # free value in its own check. The table sumcheck's target pins it below.
         bus_table_total[GEN ** s] = acc + gkr_claims[s]
     claim_idx = N_BUS_CLAIMS  # AIR/PI/pin claims pool after the deduped bus claims
 
-    # ---- ONE batched zerocheck for all seven tables ----
+    # ---- ONE table sumcheck for all seven tables ----
     # Mirrors lean_vm::constraints::verify. eta ONCE, each table folding its own
     # identities with a DISJOINT range of its powers (ETA_OFFSET[t]); one shared
     # point zeta (the bus GKR's); n = max_t tau_t rounds. Rounds bind the HIGHEST
@@ -1652,14 +1648,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- public-input binding claim: MEM as ONE logical E-column ----
     # The VM's bind_pi_claim makes a SINGLE E-claim at [rm, 0..]:
     #   MEM(rm) = interp(pi_0, pi_1, rm) = pi_0 + rm*(pi_0 + pi_1)
-    # over the E-valued public input (no lane splitting, no Frobenius). The
-    # opening-boundary decompose transmits v_lo and v_hi; the top lane is
-    # deduced from MEM = v_lo + Y*v_hi + Y²*v_top.
+    # over the E-valued public input (no lane splitting, no Frobenius). One
+    # evaluation per limb rides the stream and the three must reassemble it:
+    # MEM = v_lo + Y*v_hi + Y²*v_top (doc sec:e2e-pi).
     fs, rm = squeeze(fs)
     mem = pi_0 + rm * (pi_0 + pi_1)
     fs, mem_lo, cursor = fs_next(fs, cursor)
     fs, mem_hi, cursor = fs_next(fs, cursor)
-    mem_top = (mem + mem_lo + mem_hi * Y_TOWER) * Y_INV * Y_INV
+    fs, mem_top, cursor = fs_next(fs, cursor)
+    assert mem == mem_lo + mem_hi * Y_TOWER + mem_top * Y_TOWER * Y_TOWER
     claim_pool[GEN ** claim_idx] = mem_lo
     claim_idx += 1
     claim_pool[GEN ** claim_idx] = mem_hi
@@ -1990,7 +1987,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # dispatch independently for every inner proof in a mixed-rate batch.
     config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
     assert log(config_sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, tail_challenges, yr_at_tail = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, fold_challenges, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, tail_challenges, yr_at_tail = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.

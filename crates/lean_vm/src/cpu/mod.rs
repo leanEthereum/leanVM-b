@@ -332,7 +332,7 @@ fn bus_wiring(program: &Program, l: &Layout) -> (BlockOwners, TableSpans) {
     (owners, table_spans())
 }
 
-/// The batched zerocheck carries every committed column of a table, because its bus
+/// The table sumcheck carries every committed column of a table, because its bus
 /// forms reference the flushed ones and its constraint the rest.
 fn table_spans() -> TableSpans {
     let sch = schema();
@@ -343,7 +343,7 @@ fn table_spans() -> TableSpans {
         .collect()
 }
 
-/// The per-table inputs to the batched zerocheck (§constraints), in schema order.
+/// The per-table inputs to the table sumcheck (§constraints), in schema order.
 /// Prover and verifier both call this, so their column order and constraint
 /// closures agree by construction.
 /// The airs carry every committed column of their table, so a constraint indexes the
@@ -555,7 +555,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let (owners, spans) = bus_wiring(program, &w.layout);
     // The columns are windows into `w.q`, so both stages read them in place: the
-    // batched zerocheck lifts each K-column into a fresh `E` copy on the round it
+    // table sumcheck lifts each K-column into a fresh `E` copy on the round it
     // joins and never writes the K-columns back.
     let (bus, table_claims) = {
         let l = &w.layout;
@@ -587,17 +587,21 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     };
     let l = &w.layout;
 
-    // The PI binding transmits the low/high memory-limb evaluations. The full
-    // F192 public-input interpolation then determines the top-limb evaluation.
+    // The PI binding transmits one evaluation per memory limb (§sec:e2e-pi); the
+    // verifier checks each against the public-input line at `r_pi`.
     let r_pi = ps.sample();
-    let pi_lo = primitives::multilinear::interp_k(F64(l.pi[0].c0), F64(l.pi[1].c0), r_pi);
-    let pi_hi = primitives::multilinear::interp_k(F64(l.pi[0].c1), F64(l.pi[1].c1), r_pi);
-    ps.add_scalar(pi_lo);
-    ps.add_scalar(pi_hi);
+    let pi_limbs = [
+        primitives::multilinear::interp_k(F64(l.pi[0].c0), F64(l.pi[1].c0), r_pi),
+        primitives::multilinear::interp_k(F64(l.pi[0].c1), F64(l.pi[1].c1), r_pi),
+        primitives::multilinear::interp_k(F64(l.pi[0].c2), F64(l.pi[1].c2), r_pi),
+    ];
+    for v in pi_limbs {
+        ps.add_scalar(v);
+    }
     // The input/output words bind via the memory bus (value columns are virtual and
     // route to q_flock, see `slot_claims`); cv/counter/blen/flags are constants baked
     // into flock's per-block matrices, so no pin claims are needed.
-    let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_lo, pi_hi);
+    let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
     // layouts retained from the fused q_flock build pass; it returns the `(ab, c)`
@@ -648,49 +652,27 @@ fn finish_claims(
     bus_claims: Vec<ColumnClaim>,
     table_claims: &[constraints::Claims],
     r_pi: F192,
-    pi_lo: F192,
-    pi_hi: F192,
+    pi_limbs: [F192; 3],
 ) -> Vec<pcs::SlotClaim> {
     let mut claims = bus_claims;
     claims.extend(constraint_claims(table_claims));
-    claims.extend(bind_pi_claim(r_pi, &l.placements, &l.pi, pi_lo, pi_hi));
+    claims.extend(bind_pi_claim(r_pi, &l.placements, pi_limbs));
     slot_claims(l, &claims)
 }
 
-/// The public-input binding (§sec:e2e-pi): the committed `MEM` at `(r, 0,…,0)` must equal
-/// `interp(pi[0], pi[1], r)`, split into its three physical `K` limbs. The
-/// prover transmits `MEM_LO(r)` and `MEM_HI(r)`; both sides derive `MEM_TOP(r)`
-/// from the full F192 interpolation. The opening discharges all three claims.
-/// `placements` and `pi` come from the prover's or verifier's layout, so both
-/// sides build byte-identical claims.
-fn bind_pi_claim(
-    r: F192,
-    placements: &[witness::Placement],
-    pi: &[F192; 2],
-    v_lo: F192,
-    v_hi: F192,
-) -> [ColumnClaim; 3] {
+/// The public-input binding (§sec:e2e-pi): the committed `MEM` at `(r, 0,…,0)` must
+/// equal `interp(pi[0], pi[1], r)`, one transmitted evaluation per physical `K`
+/// limb. The caller has already checked the three against the line; here they
+/// simply become the three claims the opening discharges. `placements` comes from
+/// the prover's or verifier's layout, so both sides build byte-identical claims.
+fn bind_pi_claim(r: F192, placements: &[witness::Placement], limbs: [F192; 3]) -> [ColumnClaim; 3] {
     let mut point = vec![F192::ZERO; placements[MEM_LO].n_vars];
     point[0] = r;
-    let y2 = F192::Y * F192::Y;
-    let v_top = (primitives::multilinear::interp(pi[0], pi[1], r) + v_lo + F192::Y * v_hi) * y2.inv();
-    [
-        ColumnClaim {
-            col: MEM_LO,
-            point: point.clone(),
-            value: v_lo,
-        },
-        ColumnClaim {
-            col: MEM_HI,
-            point: point.clone(),
-            value: v_hi,
-        },
-        ColumnClaim {
-            col: MEM_TOP,
-            point,
-            value: v_top,
-        },
-    ]
+    [MEM_LO, MEM_HI, MEM_TOP].map(|col| ColumnClaim {
+        col,
+        point: point.clone(),
+        value: limbs[col - MEM_LO],
+    })
 }
 
 /// Everything a recursion harness needs from an accepting verify run, named
@@ -751,9 +733,16 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     .map_err(Error::Constraint)?;
 
     let r_pi = vs.sample();
-    let pi_lo = vs.next_scalar().map_err(Error::Transcript)?;
-    let pi_hi = vs.next_scalar().map_err(Error::Transcript)?;
-    let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_lo, pi_hi);
+    let mut pi_limbs = [F192::ZERO; 3];
+    for v in &mut pi_limbs {
+        *v = vs.next_scalar().map_err(Error::Transcript)?;
+    }
+    // Each limb's claimed evaluation must sit on the public-input line (§sec:e2e-pi).
+    let want = primitives::multilinear::interp(l.pi[0], l.pi[1], r_pi);
+    if pi_limbs[0] + F192::Y * pi_limbs[1] + F192::Y * F192::Y * pi_limbs[2] != want {
+        return Err(Error::PublicInput);
+    }
+    let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Replay flock's reduction straight off the shared stream (each scalar bound
     // as it is read) to recover its `(ab, c)` validity claims on q_flock, then

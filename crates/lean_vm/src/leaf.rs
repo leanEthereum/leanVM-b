@@ -40,7 +40,7 @@ pub enum Coord {
     /// carries a value a row DERIVES from its columns (an `XOR`/`MUL` result, a
     /// `DEREF` store, a `JUMP` successor) without committing a column for it, and
     /// with it the identity that would have tied the two. Like [`Coord::Prod`],
-    /// only a table's blocks may carry one: the batched zerocheck settles them,
+    /// only a table's blocks may carry one: the table sumcheck settles them,
     /// while a framework block has to split into per-column openings.
     Sum(Vec<Coord>),
 }
@@ -237,7 +237,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
 /// columns: `Σ_c coeffs[c]·col_c(z) + Σ (a,b,c) c·col_a(z)·col_b(z) + constant`.
 /// Every coefficient is a public function of `α`, `γ` and the block selectors at
 /// `ζ`, because a table's bus blocks carry only `Const`/`Col`/`GCol`/`Prod`
-/// coordinates. The batched zerocheck sums this against `eq(ζ[..τ], ·)` instead of
+/// coordinates. The table sumcheck sums this against `eq(ζ[..τ], ·)` instead of
 /// opening each column at `ζ`, which is why those per-column claims no longer reach
 /// the PCS.
 ///
@@ -612,7 +612,7 @@ fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], w: &[F192])
 /// `gamma` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
 /// Everything the bus hands on: the framework blocks' column claims, the reduced
-/// bytecode claim, the shared GKR point (the batched zerocheck's eq point), and
+/// bytecode claim, the shared GKR point (the table sumcheck's eq point), and
 /// per side the tables' linear forms plus what each is claimed to sum to.
 pub struct BusProof {
     pub claims: Vec<ColumnClaim>,
@@ -773,7 +773,7 @@ pub struct BusVerify {
     pub claims: Vec<ColumnClaim>,
     pub bytecode_claims: Vec<BytecodeClaim>,
     pub count_root: F192,
-    /// The GKR point ζ, reused as the batched zerocheck's eq point.
+    /// The GKR point ζ, reused as the table sumcheck's eq point.
     pub point: Vec<F192>,
     /// `forms[side][table]`, for the zerocheck to settle.
     pub forms: [Vec<BusForm>; 3],

@@ -27,7 +27,7 @@ use primitives::{
 
 /// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
-/// the zerocheck settles, so no framework block can raise one at `zeta`.
+/// the table sumcheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
 const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
 const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
@@ -728,7 +728,7 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let valcols = blake3_value_columns();
     // Only the framework blocks raise claims: a table's coords are settled inside
-    // the batched zerocheck.
+    // the table sumcheck.
     let is_framework: Vec<bool> = lean_vm::cpu::block_kappa_sources(kbc)
         .into_iter()
         .map(|(src, _)| src < 2)
@@ -803,7 +803,7 @@ fn gen_verify(
     // a column read by two same-kappa blocks streams/opens once. Key: (col, kappa).
     let mut seen_claims: std::collections::HashSet<(usize, usize)> = Default::default();
     // Only the framework blocks raise claims: a table's coords are settled inside
-    // the batched zerocheck. Indexed by block, in `sides` order.
+    // the table sumcheck. Indexed by block, in `sides` order.
     let is_framework: Vec<bool> = lean_vm::cpu::block_kappa_sources(program.prog.len().trailing_zeros() as usize)
         .into_iter()
         .map(|(src, _)| src < 2)
@@ -1211,7 +1211,7 @@ fn gen_verify(
             "pi_cplen".to_string(),
             vec![F192::new(g_pow(log_mem.min(lenris)).0, 0, 0)],
         ),
-        // the batched zerocheck's round count: max_t tau_t, certified in-guest as a
+        // the table sumcheck's round count: max_t tau_t, certified in-guest as a
         // maximum (one of the taus, and dominating them all).
         (
             "zc_tau_max".to_string(),
@@ -1385,7 +1385,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let (mut coord_toff, mut coord_tcount) = (vec![], vec![]);
     let (mut term_type, mut term_const) = (vec![], vec![]);
     let (mut term_col_a, mut term_col_b) = (vec![], vec![]);
-    // A table's blocks raise no claim any more: the batched zerocheck settles them
+    // A table's blocks raise no claim any more: the table sumcheck settles them
     //, so only the framework blocks stream column values.
     let sch_pm = lean_vm::cpu::schema();
     let owner_pm: Vec<Option<usize>> = lean_vm::cpu::block_kappa_sources(kbc)
@@ -1503,7 +1503,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("STREAM_CAP", stream_cap.to_string());
     ps("MIN_LOG_MEM", lean_vm::cpu::MIN_LOG_MEM.to_string());
     ps("INV_GEN", u(F192::new(G.inv().0, 0, 0)).to_string());
-    // The batched zerocheck sends its round polynomial WHOLE, at {0, 1, g, g^2}, so
+    // The table sumcheck sends its round polynomial WHOLE, at {0, 1, g, g^2}, so
     // it interpolates a cubic: one baked inverse denominator per node.
     {
         let q = primitives::multilinear::quad_nodes();
@@ -1573,7 +1573,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("N_CLAIMS", ncl.to_string());
     ps("N_TABLES", l.taus.len().to_string());
-    // The batched zerocheck's eta layout, from the native verifier's own numbers:
+    // The table sumcheck's eta layout, from the native verifier's own numbers:
     // a disjoint range of identities per table, then THREE powers shared by every
     // table, one per bus side. Sharing is what lets the target be derived from the
     // three leaf claims instead of trusted (lean_vm::cpu::eta_form_base).

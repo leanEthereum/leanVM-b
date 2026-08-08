@@ -872,7 +872,7 @@ def _decompose_bus_side(
 @dataclass(frozen=True)
 class BusResult:
     claims: tuple[ColumnClaim, ...]
-    point: tuple[F192, ...]  # the GKR point zeta, which the zerocheck reuses
+    point: tuple[F192, ...]  # the GKR point zeta, which the table sumcheck reuses
     forms: tuple[tuple[BusForm, ...], ...]  # forms[side][table]
     totals: tuple[F192, F192, F192]  # what the tables owe each side, derived
 
@@ -930,7 +930,7 @@ def verify_bus_balance(
     return BusResult(tuple(claims), product.point, forms, (totals[0], totals[1], totals[2]))
 
 
-# Batched AIR zerocheck ------------------------------------------------------
+# Table sumcheck -------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -2472,7 +2472,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     # decomposition, which leaves each table a degree-2 form and a total.
     bus = verify_bus_balance(layout.push, layout.pull, layout.count, transcript)
 
-    # 4] Local constraints: one back-loaded zerocheck over all seven tables, at
+    # 4] Rows: one back-loaded table sumcheck over all seven tables, at
     # the bus point, starting from the target the three leaf claims derive.
     # Every table takes a disjoint range of eta powers for its constraints; the
     # three bus sides share the three above them (doc sec:air).
@@ -2493,17 +2493,18 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     claims.extend(constraint_claims(air_claims))
 
     # 5] Public input: the first two memory cells, as one claim per limb on the
-    # line through them. The prover sends two limbs; the third follows.
+    # line through them. The prover sends one evaluation per limb; the three must
+    # reassemble the line's value at the challenge (doc sec:e2e-pi).
     public_challenge = transcript.sample()
-    public_low, public_high = transcript.scalars(2)
+    public_limbs = transcript.scalars(3)
     public_point = [ZERO] * layout.placements[MEM_0].variables
     public_point[0] = public_challenge
     public_value = interpolate(public_input[0], public_input[1], public_challenge)
-    public_top = (public_value + public_low + Y * public_high) / (Y * Y)
-    claims.extend(
-        ColumnClaim(column, tuple(public_point), value)
-        for column, value in zip((MEM_0, MEM_1, MEM_2), (public_low, public_high, public_top), strict=True)
+    require(
+        public_limbs[0] + Y * public_limbs[1] + Y * Y * public_limbs[2] == public_value,
+        "public input limbs are off the line",
     )
+    claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEM_0, MEM_1, MEM_2), public_limbs, strict=True))
 
     # 6] Locate every claim in the stack: a column claim keeps its point and
     # gains its placement's selector bits; a BLAKE3 value claim is re-routed to
