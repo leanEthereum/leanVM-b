@@ -13,6 +13,7 @@ use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod, mle_eval_prod_vec4, mle_eval_vec4};
+use std::sync::Arc;
 use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
@@ -33,8 +34,10 @@ pub enum Coord {
     /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
     Index,
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
-    /// its MLE directly, so it raises no claim.
-    Public(Vec<F64>),
+    /// its MLE directly, so it raises no claim. The immutable owner is shared between the
+    /// canonical push and pull coordinates, which lets the prover reuse one evaluation only
+    /// after checking allocation identity as well as position and shape.
+    Public(Arc<[F64]>),
     /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
     /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
     /// carries a value a row DERIVES from its columns (an `XOR`/`MUL` result, a
@@ -379,9 +382,11 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
+    shared_public_evals: Option<&[SharedPublicEval]>,
     mut fresh: F,
 ) -> Result<F192, Error> {
     assert_eq!(zeta.len(), lay.mu);
+    let mut shared_public_evals = shared_public_evals.map(<[SharedPublicEval]>::iter);
     let mut acc = F192::ZERO;
     let mut sel_sum = F192::ZERO;
     for (b, blk) in blocks.iter().enumerate() {
@@ -431,11 +436,30 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 Coord::Prod(..) | Coord::Sum(..) => {
                     unreachable!("only a table's bus block carries a degree-2 coordinate")
                 }
-                Coord::Public(vals) => mle_eval(vals, zeta_lo),
+                Coord::Public(vals) => match shared_public_evals.as_mut() {
+                    Some(evals) => {
+                        let eval = evals
+                            .next()
+                            .expect("shared public evaluations cover every public coordinate");
+                        assert_eq!(
+                            (eval.block, eval.slot, eval.kappa),
+                            (b, i, blk.kappa),
+                            "shared public evaluation order drifted after authorization"
+                        );
+                        eval.value
+                    }
+                    None => mle_eval(vals, zeta_lo),
+                },
             };
             inner += w[i] * coord_val;
         }
         acc += eq_hi * (gamma + inner);
+    }
+    if let Some(evals) = shared_public_evals.as_mut() {
+        assert!(
+            evals.next().is_none(),
+            "shared public evaluation set contains an unconsumed coordinate"
+        );
     }
     // The padding rows (identity `1`) contribute the leftover mass `1 - Σ_b sel_b`.
     Ok(acc + (F192::ONE + sel_sum))
@@ -490,6 +514,7 @@ fn decompose_prove(
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
+    shared_public_evals: Option<&[SharedPublicEval]>,
     ps: &mut ProverState,
     mle_vec4: bool,
 ) -> F192 {
@@ -518,15 +543,26 @@ fn decompose_prove(
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
     let mut fresh_iter = jobs.iter().zip(vals.iter());
-    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |col, zeta_lo| {
-        let (&(jc, jk), &v) = fresh_iter
-            .next()
-            .expect("job enumeration matches decompose_formula's col_val order");
-        debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
-        debug_assert_eq!(v, mle_eval(cols[col], zeta_lo), "job/coord order drift");
-        ps.add_scalar(v);
-        Ok(v)
-    })
+    decompose_formula(
+        blocks,
+        lay,
+        zeta,
+        w,
+        gamma,
+        owners,
+        forms,
+        claims,
+        shared_public_evals,
+        |col, zeta_lo| {
+            let (&(jc, jk), &v) = fresh_iter
+                .next()
+                .expect("job enumeration matches decompose_formula's col_val order");
+            debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
+            debug_assert_eq!(v, mle_eval(cols[col], zeta_lo), "job/coord order drift");
+            ps.add_scalar(v);
+            Ok(v)
+        },
+    )
     .expect("prover decomposition is infallible")
 }
 
@@ -545,7 +581,7 @@ fn decompose_verify(
     claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
 ) -> Result<F192, Error> {
-    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |_, _| {
+    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, None, |_, _| {
         vs.next_scalar().map_err(|_| Error::Truncated)
     })
 }
@@ -562,6 +598,87 @@ pub struct BytecodeClaim {
     pub point: Vec<F192>,
     /// `B̃(point)`.
     pub value: F192,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SharedPublicEval {
+    block: usize,
+    slot: usize,
+    kappa: usize,
+    value: F192,
+}
+
+struct SharedPublicCoord<'a> {
+    block: usize,
+    slot: usize,
+    kappa: usize,
+    table: &'a Arc<[F64]>,
+}
+
+struct SharedPublicPlan<'a> {
+    coords: Vec<SharedPublicCoord<'a>>,
+}
+
+impl<'a> SharedPublicPlan<'a> {
+    fn authorize(push: &'a [Block], pull: &'a [Block], count: &'a [Block]) -> Option<Self> {
+        let public = |blocks: &'a [Block]| {
+            blocks
+                .iter()
+                .enumerate()
+                .flat_map(|(block, blk)| {
+                    blk.coords
+                        .iter()
+                        .enumerate()
+                        .filter_map(move |(slot, coord)| match coord {
+                            Coord::Public(table) => Some(SharedPublicCoord {
+                                block,
+                                slot,
+                                kappa: blk.kappa,
+                                table,
+                            }),
+                            _ => None,
+                        })
+                })
+                .collect::<Vec<_>>()
+        };
+        let push = public(push);
+        let pull = public(pull);
+        if push.is_empty() || push.len() != pull.len() || !public(count).is_empty() {
+            return None;
+        }
+        let shaped = |coord: &SharedPublicCoord<'_>| {
+            coord.kappa < usize::BITS as usize && coord.table.len() == 1usize << coord.kappa
+        };
+        let authorized = push.iter().zip(&pull).all(|(a, b)| {
+            (a.block, a.slot, a.kappa) == (b.block, b.slot, b.kappa)
+                && shaped(a)
+                && shaped(b)
+                && Arc::ptr_eq(a.table, b.table)
+        });
+        authorized.then_some(Self { coords: push })
+    }
+
+    fn evaluate(&self, point: &[F192], mle_vec4: bool) -> Vec<SharedPublicEval> {
+        self.coords
+            .iter()
+            .map(|coord| SharedPublicEval {
+                block: coord.block,
+                slot: coord.slot,
+                kappa: coord.kappa,
+                value: eval_mle(coord.table, &point[..coord.kappa], mle_vec4),
+            })
+            .collect()
+    }
+}
+
+fn public_share_from_shared(evals: &[SharedPublicEval], w: &[F192]) -> (usize, F192) {
+    let mut kappa = 0;
+    let mut share = F192::ZERO;
+    for eval in evals {
+        kappa = eval.kappa;
+        share += w[eval.slot] * eval.value;
+    }
+    (kappa, share)
 }
 
 /// The public (bytecode) coordinate evaluations of a side at its GKR point,
@@ -589,7 +706,7 @@ fn public_evals_with_mode(blocks: &[Block], zeta: &[F192], mle_vec4: bool) -> (u
 /// [`BytecodeClaim`]s are claims about; the outermost verifier evaluates it.
 pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     let mut kbc = 0;
-    let mut cols: Vec<(usize, &Vec<F64>)> = Vec::new();
+    let mut cols: Vec<(usize, &[F64])> = Vec::new();
     for blk in blocks {
         for (slot, c) in blk.coords.iter().enumerate() {
             if let Coord::Public(vals) = c {
@@ -706,6 +823,19 @@ pub fn prove_balance(
     tables: &[(usize, usize)],
     ps: &mut ProverState,
 ) -> BusProof {
+    prove_balance_with_public_reuse(push, pull, count, cols, owners, tables, true, ps)
+}
+
+pub(crate) fn prove_balance_with_public_reuse(
+    push: &[Block],
+    pull: &[Block],
+    count: &[Block],
+    cols: &[&[F64]],
+    owners: &[Vec<Option<(usize, usize)>>; 3],
+    tables: &[(usize, usize)],
+    reuse_public_evals: bool,
+    ps: &mut ProverState,
+) -> BusProof {
     let detail_trace = std::env::var("LEANVM_BUS_DETAIL_TRACE").as_deref() == Ok("1");
     let mle_vec4_requested = std::env::var("LEANVM_BUS_MLE_VEC4").as_deref() == Ok("1");
     let mle_vec4_eligible = cfg!(all(
@@ -774,6 +904,10 @@ pub fn prove_balance(
     let table_evals_started = detail_trace.then(std::time::Instant::now);
     let table_evals = tables_at(cols, tables, &bus_gkr.point, mle_vec4);
     let table_evals_ns = table_evals_started.map_or(0, |started| started.elapsed().as_nanos());
+    let shared_public_evals = reuse_public_evals
+        .then(|| SharedPublicPlan::authorize(push, pull, count))
+        .flatten()
+        .map(|plan| plan.evaluate(&bus_gkr.point, mle_vec4));
     let forms_started = detail_trace.then(std::time::Instant::now);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
     let forms_setup_ns = forms_started.map_or(0, |started| started.elapsed().as_nanos());
@@ -793,6 +927,7 @@ pub fn prove_balance(
                 &owners[s],
                 &mut forms[s],
                 &mut claims,
+                (s < 2).then_some(shared_public_evals.as_deref()).flatten(),
                 ps,
                 mle_vec4,
             );
@@ -825,7 +960,16 @@ pub fn prove_balance(
     let sigmas_ns = sigmas_started.map_or(0, |started| started.elapsed().as_nanos());
 
     let bytecode_started = detail_trace.then(std::time::Instant::now);
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w, mle_vec4)];
+    let bytecode_claims = vec![match shared_public_evals.as_deref() {
+        Some(evals) => {
+            let (kappa, value) = public_share_from_shared(evals, &w);
+            BytecodeClaim {
+                point: [&bus_gkr.point[..kappa], &alphas].concat(),
+                value,
+            }
+        }
+        None => bytecode_claim(push, &bus_gkr.point, &alphas, &w, mle_vec4),
+    }];
     let bytecode_ns = bytecode_started.map_or(0, |started| started.elapsed().as_nanos());
     if let Some(started) = post_gkr_started {
         eprintln!(
@@ -991,6 +1135,29 @@ pub fn verify_balance(
 mod tests {
     use super::*;
 
+    fn bytecode_blocks(kappa: usize) -> (Vec<Block>, Vec<Block>, Vec<Block>) {
+        let columns: Vec<Arc<[F64]>> = (0..9)
+            .map(|column| {
+                (0..1usize << kappa)
+                    .map(|row| F64(((column + 1) as u64) * 0x101 + (row as u64) * 0x1_0001))
+                    .collect::<Vec<_>>()
+                    .into()
+            })
+            .collect();
+        let side = |columns: &[Arc<[F64]>]| {
+            let mut coords = vec![Coord::Const(F64(7)), Coord::Index, Coord::Const(F64::ONE)];
+            coords.extend(columns.iter().map(|column| Coord::Public(Arc::clone(column))));
+            vec![Block { kappa, coords }]
+        };
+        let push = side(&columns);
+        let pull = side(&columns);
+        let count = vec![Block {
+            kappa,
+            coords: vec![Coord::Const(F64::ONE)],
+        }];
+        (push, pull, count)
+    }
+
     /// The bound is `(N_TUPLE_BITS + 1)·2^mu` plus the GKR terms: only the bus
     /// DEPTH costs bits now, the multilinear fingerprint having fixed each factor's
     /// degree at four in `α⃗` and one in `γ`, whatever the tuple's width.
@@ -1058,5 +1225,91 @@ mod tests {
             offsets: vec![1],
         };
         let _ = build_leaf_values(&blocks, &bad_layout, &[], &[F192::ONE], F192::ONE, true, true);
+    }
+
+    #[test]
+    fn canonical_layout_shares_public_column_identity() {
+        let program = [
+            crate::cpu::Op::Set { o: 0, k: F192::ONE },
+            crate::cpu::Op::Xor { a: 0, b: 0, c: 0 },
+        ];
+        let cpu_layout = crate::cpu::layout(
+            &program,
+            crate::cpu::MIN_LOG_MEM,
+            [0; crate::tables::N_TABLES],
+            [F192::ZERO; 2],
+        );
+        let plan = SharedPublicPlan::authorize(&cpu_layout.push, &cpu_layout.pull, &cpu_layout.count)
+            .expect("canonical layout shares its bytecode owners");
+        assert_eq!(plan.coords.len(), 9);
+        for coord in &plan.coords {
+            let Coord::Public(pull) = &cpu_layout.pull[coord.block].coords[coord.slot] else {
+                panic!("authorized pull coordinate must remain public")
+            };
+            assert_eq!(coord.kappa, 1);
+            assert_eq!(coord.table.len(), 1 << coord.kappa);
+            assert!(Arc::ptr_eq(coord.table, pull));
+        }
+    }
+
+    #[test]
+    fn shared_public_authorization_rejects_nonidentity_and_malformed_layouts() {
+        let (push, mut pull, count) = bytecode_blocks(3);
+        let Coord::Public(table) = &mut pull[0].coords[3] else {
+            unreachable!()
+        };
+        *table = Arc::from(table.as_ref());
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, mut pull, count) = bytecode_blocks(3);
+        let Coord::Public(table) = &mut pull[0].coords[3] else {
+            unreachable!()
+        };
+        Arc::make_mut(table)[0] += F64::ONE;
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, mut pull, count) = bytecode_blocks(3);
+        pull[0].coords.swap(3, 4);
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, mut pull, count) = bytecode_blocks(3);
+        pull[0].kappa = 2;
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, pull, mut count) = bytecode_blocks(3);
+        let Coord::Public(table) = &push[0].coords[3] else {
+            unreachable!()
+        };
+        count[0].coords.push(Coord::Public(Arc::clone(table)));
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+    }
+
+    #[test]
+    fn shared_public_evaluations_are_slot_exact_through_kbc19() {
+        for kappa in [0, 3, 6, 19] {
+            let (push, pull, count) = bytecode_blocks(kappa);
+            let plan = SharedPublicPlan::authorize(&push, &pull, &count).expect("shared test layout is authorized");
+            let point: Vec<F192> = (0..kappa)
+                .map(|i| F192::new(0x101 + i as u64, 0x211 + 3 * i as u64, 0x307 + 5 * i as u64))
+                .collect();
+            let alphas: Vec<F192> = (0..N_TUPLE_BITS)
+                .map(|i| F192::new(0x401 + i as u64, 0x503 + 7 * i as u64, 0x607 + 11 * i as u64))
+                .collect();
+            let weights = fingerprint_weights(&alphas);
+            let shared = plan.evaluate(&point, false);
+            let (shared_kappa, shared_share) = public_share_from_shared(&shared, &weights);
+            let (scalar_kappa, scalar_share) = public_share(&push, &point, &weights);
+            assert_eq!((shared_kappa, shared_share), (scalar_kappa, scalar_share));
+
+            let (_, scalar_evals) = public_evals(&push, &point);
+            assert_eq!(shared.iter().map(|eval| eval.value).collect::<Vec<_>>(), scalar_evals);
+            assert_eq!(
+                scalar_share,
+                mle_eval(
+                    &stacked_bytecode_table(&push),
+                    &[point.as_slice(), alphas.as_slice()].concat()
+                )
+            );
+        }
     }
 }
