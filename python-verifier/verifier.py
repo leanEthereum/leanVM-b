@@ -2118,9 +2118,8 @@ class ZerocheckResult:
 def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     require(log_n >= FLOCK_K_SKIP + FLOCK_N_INNER, "Flock zerocheck input is too small")
     require(len(FIXED_CHALLENGES) == FLOCK_N_INNER, "wrong fixed-challenge count")
-    sampled_prefix = transcript.samples(FLOCK_K_SKIP)
     sampled_outer = transcript.samples(log_n - FLOCK_K_SKIP - FLOCK_N_INNER)
-    equality_point = (*sampled_prefix, *FIXED_CHALLENGES, *sampled_outer)
+    equality_tail = (*FIXED_CHALLENGES, *sampled_outer)
     ab_values = transcript.scalars(PACKED_BITS)
     c_values = transcript.scalars(PACKED_BITS)
     skip = transcript.sample()
@@ -2130,7 +2129,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     combined_evaluation = lagrange_interpolate(PHI[: 2 * PACKED_BITS], [ZERO] * PACKED_BITS + combined, skip)
     running = combined_evaluation + c_evaluation
     rounds = []
-    for equality in equality_point[FLOCK_K_SKIP:]:
+    for equality in equality_tail:
         at_one, at_infinity = transcript.scalars(2)
         at_zero = (running + equality * at_one) / (ONE + equality)
         challenge = transcript.sample()
@@ -2138,7 +2137,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
         running = at_zero * (ONE + challenge) + at_one * challenge + at_infinity * challenge * (ONE + challenge)
     final_a, final_b = transcript.scalars(2)
     require(running == final_a * final_b, "Flock zerocheck terminal mismatch")
-    return ZerocheckResult(skip, tuple(rounds), tuple(equality_point[FLOCK_K_SKIP:]), final_a, final_b, c_evaluation)
+    return ZerocheckResult(skip, tuple(rounds), equality_tail, final_a, final_b, c_evaluation)
 
 
 @dataclass(frozen=True)
@@ -2230,11 +2229,11 @@ def verify_stacked_opening(
     slices: list[Sequence[F192]] = []
     for ring_index, (claim, values) in enumerate(zip(ring_claims, ring_switches, strict=True)):
         require(len(values) == PACKED_BITS, "ring-switch proof has the wrong width")
-        if ring_index != 0:  # A/B is lincheck's already-bound z_partial.
+        if ring_index != 0:  # A/B's value was already derived from the bound z_partial.
             for value in values:
                 transcript.observe(value)
-        expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
-        require(expected == claim.value, "ring-switch claim mismatch")
+            expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
+            require(expected == claim.value, "ring-switch claim mismatch")
         slices.append(values)
 
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))

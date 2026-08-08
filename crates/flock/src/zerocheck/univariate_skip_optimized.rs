@@ -6,7 +6,7 @@
 //!
 //! 1. **Geometric small-eq + shift_reduce inner** (3 inner-most rest-dims).
 //!    Protocol fixes the three small challenges to
-//!    `r[k_skip..k_skip+3] = φ_8([0xF7, 0x53, 0xB5])`, which makes
+//!    `r_rest[..3] = φ_8([0xF7, 0x53, 0xB5])`, which makes
 //!    `eq_small[K] = C_s · α^K` (geometric in the embedded AES root α).
 //!    The shift_reduce trick computes
 //!    `Σ_K eq_small[K] · φ_8(y_K)  =  C_s · φ_8(reduce(Σ_K y_K << K))`,
@@ -78,7 +78,7 @@ pub fn c_s() -> F192 {
 }
 
 /// The three F192 small challenges (embeddings of `SMALL_CHAL_F8`): caller
-/// must place these at `r[k_skip..k_skip+3]` for the naive cross-check to
+/// must place these at `r_rest[..3]` for the naive cross-check to
 /// produce a result related to the optimized output by exactly `C_s`.
 pub fn small_challenges() -> [F192; 3] {
     [
@@ -89,7 +89,7 @@ pub fn small_challenges() -> [F192; 3] {
 }
 
 /// The four F192 medium challenges `β_i = γ^{2^{i-1}} / (1 + γ^{2^{i-1}})`.
-/// Caller must place these at `r[k_skip+3..k_skip+7]` for the naive
+/// Caller must place these at `r_rest[3..7]` for the naive
 /// cross-check.
 pub fn medium_challenges() -> [F192; 4] {
     let g1 = medium_generator();
@@ -112,15 +112,15 @@ const fn medium_generator() -> F192 {
 /// `C_2 = (1+r_2)(1+r_3)` where `r_2 = φ_8(0x53)` (= `α^2/(1+α^2)`),
 /// `r_3 = φ_8(0xB5)` (= `α^4/(1+α^4)`). This is the residual small-eq
 /// constant after the first small friendly bit (`b_3[0]`, indexed by
-/// `r[k_skip] = φ_8(α)`) has been pulled out for the s_hat_v_c bank split:
+/// `r_rest[0] = φ_8(α)`) has been pulled out for the s_hat_v_c bank split:
 ///
 /// ```text
-/// eq([r[k_skip+1], r[k_skip+2]], (b_3[1], b_3[2])) = C_2 · α^{2 b_3[1] + 4 b_3[2]}
+/// eq([r_rest[1], r_rest[2]], (b_3[1], b_3[2])) = C_2 · α^{2 b_3[1] + 4 b_3[2]}
 /// ```
 ///
 /// Used in [`round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`] to
 /// post-scale the raw bank values into canonical `s_hat_v_c` (which
-/// `ring_switch::fold_1b_rows` would produce against suffix `r[k_skip+1..m]`).
+/// `ring_switch::fold_1b_rows` would produce against suffix `r_rest[1..]`).
 fn c_2_small() -> F192 {
     let r_2 = phi8(F8(SMALL_CHAL_F8[1]));
     let r_3 = phi8(F8(SMALL_CHAL_F8[2]));
@@ -622,10 +622,10 @@ fn shift_reduce_inner_ab_scalar(
 /// Preconditions:
 /// - `k_skip == K_SKIP` (= 6)
 /// - `m >= k_skip + N_INNER` (= 13)
-/// - `r.len() == m`. `r[k_skip..k_skip+7]` must hold the protocol-fixed small
+/// - `r_rest.len() == m - k_skip`. `r_rest[..7]` must hold the protocol-fixed small
 ///   and medium constants (see [`small_challenges`] /
 ///   [`medium_challenges`]) for the naive cross-check to line up. Only
-///   `r[k_skip+7..m]` is used internally.
+///   `r_rest[7..]` is used internally.
 /// - `inv_table.k == k_skip`.
 #[cfg(test)]
 fn round1_shift_reduce_extract_c(
@@ -634,7 +634,7 @@ fn round1_shift_reduce_extract_c(
     c: &[bool],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
 ) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(a.len(), 1usize << m);
@@ -643,7 +643,7 @@ fn round1_shift_reduce_extract_c(
     let a_packed = pack_bits(a);
     let b_packed = pack_bits(b);
     let c_packed = pack_bits(c);
-    round1_shift_reduce_extract_c_packed(&a_packed, &b_packed, &c_packed, m, k_skip, r, inv_table)
+    round1_shift_reduce_extract_c_packed(&a_packed, &b_packed, &c_packed, m, k_skip, r_rest, inv_table)
 }
 
 // ---------------------------------------------------------------------------
@@ -863,7 +863,7 @@ pub fn round1_shift_reduce_extract_c_packed(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
 ) -> (Vec<F192>, Vec<F192>) {
     round1_shift_reduce_extract_c_packed_padded(
@@ -872,7 +872,7 @@ pub fn round1_shift_reduce_extract_c_packed(
         c_packed,
         m,
         k_skip,
-        r,
+        r_rest,
         inv_table,
         &PaddingSpec::dense(m),
     )
@@ -888,19 +888,19 @@ pub fn round1_shift_reduce_extract_c_packed_padded(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
     padding: &PaddingSpec,
 ) -> (Vec<F192>, Vec<F192>) {
     let (ab, c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-        a_packed, b_packed, c_packed, m, k_skip, r, inv_table, padding,
+        a_packed, b_packed, c_packed, m, k_skip, r_rest, inv_table, padding,
     );
     (ab, c)
 }
 
 /// Same as [`round1_shift_reduce_extract_c_packed_padded`] but **also returns
 /// `s_hat_v_c`** — the length-128 vector ring-switch would otherwise produce
-/// via `fold_1b_rows` for the c-claim's PCS opening at suffix `r[k_skip+1..m]`.
+/// via `fold_1b_rows` for the c-claim's PCS opening at suffix `r_rest[1..]`.
 ///
 /// The wire output `(res_ab, res_c_lifted)` is byte-identical to
 /// [`round1_shift_reduce_extract_c_packed_padded`] — same eq weights, same
@@ -919,7 +919,7 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
     padding: &PaddingSpec,
 ) -> (Vec<F192>, Vec<F192>, Vec<F192>) {
@@ -933,10 +933,10 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     assert_eq!(a_packed.len(), total_bytes);
     assert_eq!(b_packed.len(), total_bytes);
     assert_eq!(c_packed.len(), total_bytes);
-    assert_eq!(r.len(), m);
+    assert_eq!(r_rest.len(), m - k_skip);
     assert_eq!(inv_table.k, k_skip);
 
-    let eq = SplitEq::new(&r[k_skip + N_INNER..]);
+    let eq = SplitEq::new(&r_rest[N_INNER..]);
     let big_lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
     let n_lo_and_inner = eq.n_lo + N_INNER;
@@ -991,7 +991,7 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     let res_c_lifted = ntt_extend_vec(&res_c_s_combined, inv_table);
 
     // s_hat_v_c canonical form: apply residual C_2 (small-eq constant for
-    // r[k_skip+1..k_skip+3]) and α⁻¹ (strips bank 1's extra α factor).
+    // r_rest[1..3]) and α⁻¹ (strips bank 1's extra α factor).
     let c_2 = c_2_small();
     let alpha_inv = alpha_inv();
     let c_2_alpha_inv = c_2 * alpha_inv;
@@ -1015,7 +1015,7 @@ fn round1_shift_reduce_extract_c_packed_serial(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
 ) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(k_skip, K_SKIP);
@@ -1024,10 +1024,10 @@ fn round1_shift_reduce_extract_c_packed_serial(
     assert_eq!(a_packed.len(), total_bytes);
     assert_eq!(b_packed.len(), total_bytes);
     assert_eq!(c_packed.len(), total_bytes);
-    assert_eq!(r.len(), m);
+    assert_eq!(r_rest.len(), m - k_skip);
     assert_eq!(inv_table.k, k_skip);
 
-    let eq = SplitEq::new(&r[k_skip + N_INNER..]);
+    let eq = SplitEq::new(&r_rest[N_INNER..]);
     let big_lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
     let n_lo_and_inner = eq.n_lo + N_INNER;
@@ -1157,23 +1157,15 @@ mod tests {
         );
     }
 
-    /// Build the full `r` vector with the protocol-fixed constants in the
-    /// small/medium slots. Only `r[k_skip + N_INNER..]` is the actual
-    /// randomness fed to the optimized URM.
-    fn build_protocol_r(m: usize, outer: &[F192]) -> Vec<F192> {
+    /// Build the equality tail with protocol-fixed constants followed by the
+    /// outer randomness used by the optimized URM.
+    fn build_protocol_r_rest(m: usize, outer: &[F192]) -> Vec<F192> {
         assert_eq!(outer.len(), m - K_SKIP - N_INNER);
-        let mut r = vec![F192::ZERO; m];
-        // r[0..K_SKIP]: not used by either function — can be anything.
-        for (i, &small) in small_challenges().iter().enumerate() {
-            r[K_SKIP + i] = small;
-        }
-        for (i, &med) in medium_challenges().iter().enumerate() {
-            r[K_SKIP + 3 + i] = med;
-        }
-        for (i, &x) in outer.iter().enumerate() {
-            r[K_SKIP + N_INNER + i] = x;
-        }
-        r
+        small_challenges()
+            .into_iter()
+            .chain(medium_challenges())
+            .chain(outer.iter().copied())
+            .collect()
     }
 
     fn make_inv_table() -> InvNttTableByteSingleGf8 {
@@ -1195,7 +1187,7 @@ mod tests {
             let b = rng.bits(1 << m);
             let c = rng.bits(1 << m);
             let outer = rng.ext_vec(m - K_SKIP - N_INNER);
-            let r = build_protocol_r(m, &outer);
+            let r = build_protocol_r_rest(m, &outer);
             let table = make_inv_table();
 
             let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, K_SKIP, &r);
@@ -1252,7 +1244,7 @@ mod tests {
             let b = rng.bits(1 << m);
             let c = rng.bits(1 << m);
             let outer = rng.ext_vec(m - K_SKIP - N_INNER);
-            let r = build_protocol_r(m, &outer);
+            let r = build_protocol_r_rest(m, &outer);
             let table = make_inv_table();
             let a_p = pack_bits(&a);
             let b_p = pack_bits(&b);
@@ -1316,7 +1308,7 @@ mod tests {
             }
 
             let outer = rng.ext_vec(m - K_SKIP - N_INNER);
-            let r = build_protocol_r(m, &outer);
+            let r = build_protocol_r_rest(m, &outer);
             let table = make_inv_table();
             let a_p = pack_bits(&a);
             let b_p = pack_bits(&b);
@@ -1396,20 +1388,17 @@ mod tests {
             let a = pack_bits(&rng.bits(1 << m));
             let b = pack_bits(&rng.bits(1 << m));
             let c = pack_bits(&rng.bits(1 << m));
-            let mut r = vec![F192::ZERO; m];
+            let mut r = vec![F192::ZERO; m - K_SKIP];
             // Friendly inner constants must match the optimization's
             // expectations: 3 small + 4 medium coordinates.
             for i in 0..3 {
-                r[K_SKIP + i] = phi8(F8(SMALL_CHAL_F8[i]));
+                r[i] = phi8(F8(SMALL_CHAL_F8[i]));
             }
             let medium = crate::zerocheck::univariate_skip_optimized::medium_challenges();
             for i in 0..4 {
-                r[K_SKIP + 3 + i] = medium[i];
+                r[3 + i] = medium[i];
             }
-            for i in 0..K_SKIP {
-                r[i] = rng.ext();
-            }
-            for i in (K_SKIP + N_INNER)..m {
+            for i in N_INNER..(m - K_SKIP) {
                 r[i] = rng.ext();
             }
 

@@ -74,7 +74,7 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Commits every column: each table's state, operands, read values and counts; the three memory limbs; the two finalize counts; and flock's packed witness $q_\flock$ (\S\ref{sec:tab-blake3}). A program that never executes \texttt{BLAKE3} still runs flock's least instance count of dummy compressions, so the proof shape stays uniform. The prover stacks the columns into $q$ and sends the commitment (\S\ref{sec:stacking}, Annex~\ref{annex:pcs}).
+\item \textbf{Prover.} Commits every column: each table's state, operands, read values and counts; the three memory limbs; the two finalize counts; and Flock's packed witness $\qflock$ (\S\ref{sec:tab-blake3}). A program that never executes \texttt{BLAKE3} still runs Flock's least instance count of dummy compressions, so the proof shape stays uniform. The prover stacks the columns into $q$ and sends the commitment (\S\ref{sec:stacking}, Annex~\ref{annex:pcs}).
 \item \textbf{Verifier.} Checks the announced sizes against the caps and derives the table, stack and leaf shapes (\S\ref{sec:leafstack}).
 \end{enumerate}
 
@@ -89,7 +89,7 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \paragraph{Row sumcheck.} One run for the seven tables' constraints and their bus forms (\S\ref{sec:air}).
 \begin{enumerate}
 \item \textbf{Verifier.} Sends the batch challenge $\eta\in\E$. Each table takes a disjoint range of its powers, one per constraint, and the $T$ bus forms take one power each, shared by every table. No point is drawn: the batch runs at the bus point, table $T_j$ tested at $\zeta_{<\tau_j}$ (\S\ref{sec:air}).
-\item \textbf{Prover \& Verifier.} Run the table sumcheck, $n=\max_j\tau_j$ rounds, a table of $2^{\tau}$ rows joining at round $n-\tau$. The target is the one the verifier derived from the three leaf claims. Each round costs four $\E$-elements. The end yields one claim per column of every table, at that table's own point $\rho_{<\tau_j}$; these enter the pool, and the bus forms are read off them. \texttt{BLAKE3}'s value columns are not committed here: their claims route to $q_\flock$ (\S\ref{sec:tab-blake3}).
+\item \textbf{Prover \& Verifier.} Run the table sumcheck, $n=\max_j\tau_j$ rounds, a table of $2^{\tau}$ rows joining at round $n-\tau$. The target is the one the verifier derived from the three leaf claims. Each round costs four $\E$-elements. The end yields one claim per column of every table, at that table's own point $\rho_{<\tau_j}$; these enter the pool, and the bus forms are read off them. \texttt{BLAKE3}'s value columns are not committed here: their claims route to $\qflock$ (\S\ref{sec:tab-blake3}).
 \end{enumerate}
 
 \paragraph{Public input.}
@@ -100,13 +100,13 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 
 \paragraph{BLAKE3 validity.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $q_\flock$ (\S\ref{sec:tab-blake3}).
-\item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $q_\flock$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
+\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $\qflock$ (\S\ref{sec:tab-blake3}, Annex~\ref{annex:flock}).
+\item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $\qflock$ region of the stack, with an MLE-friendly $\E$-valued weight (Definition~\ref{def:ipcs}); both join the pool.
 \end{enumerate}
 
 \paragraph{Opening.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a column at a point, its value already supplied; via the stacking selectors (\S\ref{sec:stacking}) it becomes a weighted sum $\sum_w W_j(w)\,\widetilde q(w)=c_j$ over the stacked witness. (The ring-switched claims arrive already in this form, their weights supported on the $q_\flock$ region.)
+\item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a column at a point, its value already supplied; via the stacking selectors (\S\ref{sec:stacking}) it becomes a weighted sum $\sum_w W_j(w)\,\widetilde q(w)=c_j$ over the stacked witness. (The ring-switched claims arrive already in this form, their weights supported on the $\qflock$ region.)
 \item \textbf{Verifier.} Sends the batching coefficients $\lambda_1,\dots,\lambda_J\in\E$, one per claim.
 \item \textbf{Prover \& Verifier.} Fold the $J$ claims into $W_\lambda=\sum_j\lambda_j W_j$ and $C_\lambda=\sum_j\lambda_j c_j$, and run the inner-product PCS opening on $\sum_w W_\lambda(w)\,\widetilde q(w)=C_\lambda$ (Annex~\ref{annex:pcs}), the verifier evaluating $W_\lambda$ itself. This one opening discharges every pooled claim; there is no separate reduction sumcheck.
 \item \textbf{Verifier.} Accepts if every check above passed: the caps, the one bus root for both sides, the nonzero count root, every sumcheck's rounds and final value, the public-input line, flock's reduction, and the PCS opening.

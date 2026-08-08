@@ -29,6 +29,22 @@
 \newcommand{\inner}[2]{\langle #1,\, #2 \rangle}
 \newcommand{\flock}{\mathrm{flock}}
 
+% ---------- Flock protocol (Annex C) ----------
+\newcommand{\qflock}{q_{\flock}}             % packed Boolean Flock witness
+\newcommand{\qext}[1]{#1^{\sharp}}           % 64-point univariate / multilinear extension
+\newcommand{\kblock}{\kappa_{\mathrm{block}}} % variables in one BLAKE3 witness block
+\newcommand{\kbatch}{\kappa_{\mathrm{batch}}} % log number of BLAKE3 instances
+\newcommand{\kbool}{\kappa_{\mathrm{bool}}}   % variables of the unpacked Boolean batch witness
+\newcommand{\kskip}{\kappa_{\mathrm{skip}}}   % variables replaced by the univariate skip
+\newcommand{\skipdom}{\mathcal{H}}            % 64 skip-domain nodes
+\newcommand{\skipcoset}{\mathcal{H}'}         % 64 transmitted round-one nodes
+\newcommand{\fembed}{\varphi_{8}}             % embedding of F_{2^8} into E
+\newcommand{\zskip}{\upsilon_{\mathrm{zc}}}   % zerocheck univariate challenge
+\newcommand{\lskip}{\upsilon_{\mathrm{lc}}}   % lincheck univariate challenge
+\newcommand{\zpartial}{z_{\mathrm{partial}}}  % 64-entry lincheck residual
+\newcommand{\lcab}{\alpha_{\mathrm{AB}}}      % lincheck A/B batching challenge
+\newcommand{\lcpin}{\beta_{\mathrm{pin}}}     % lincheck constant-wire challenge
+
 % ---------- VM ----------
 \newcommand{\loc}[1]{\mem[\fp\cdot #1]}
 \newcommand{\pc}{\mathbf{pc}}

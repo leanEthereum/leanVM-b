@@ -734,27 +734,23 @@ pub fn verify_succinct(
 ) -> Result<RingSwitchVerifierOutput, VerifyError> {
     // Single-claim wrapper; the STACKED verifier observes every claim, samples
     // one shared map, then finishes each claim.
-    verify_prepare(claim, prefix_weights, proof, false, sponge)?;
+    verify_prepare(claim, prefix_weights, proof, sponge)?;
     let challenges = sample_map_challenges(sponge);
     let coordinate_weights = build_coordinate_weights(&challenges);
     Ok(verify_finish(proof, &coordinate_weights))
 }
 
-/// Phase 1 of the ring-switch verifier: check the prefix-weight claim and
-/// absorb `s_hat_v` unless an earlier protocol phase already bound the same
-/// values. The caller samples the possibly shared map afterwards.
+/// Phase 1 of the ring-switch verifier: absorb `s_hat_v` and check the
+/// prefix-weight claim. The caller samples the possibly shared map afterwards.
 pub fn verify_prepare(
     claim: F192,
     prefix_weights: &[F192],
     proof: &RingSwitchProof,
-    prebound: bool,
     sponge: &mut Sponge,
 ) -> Result<(), VerifyError> {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
-    if !prebound {
-        observe_ext_slice(sponge, &proof.s_hat_v);
-    }
+    observe_ext_slice(sponge, &proof.s_hat_v);
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }

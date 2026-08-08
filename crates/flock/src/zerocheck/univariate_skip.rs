@@ -152,19 +152,26 @@ pub fn ntt_extend_vec(in_s: &[F192], inv_table: &InvNttTableByteSingleGf8) -> Ve
 ///
 /// Preconditions:
 /// - `a.len() == b.len() == c.len() == 2^m`
-/// - `r.len() == m`
+/// - `r_rest.len() == m - k_skip`
 /// - `k_skip <= m`
 ///
 /// Index convention: for index `i ∈ 0..2^m`, the low `k_skip` bits address
 /// the *skip* variables (`y_skip ∈ S`), the high `m - k_skip` bits address
 /// the *rest* variables (`y_rest`).
 #[cfg(test)]
-pub fn round1_naive(a: &[bool], b: &[bool], c: &[bool], m: usize, k_skip: usize, r: &[F192]) -> (Vec<F192>, Vec<F192>) {
+pub fn round1_naive(
+    a: &[bool],
+    b: &[bool],
+    c: &[bool],
+    m: usize,
+    k_skip: usize,
+    r_rest: &[F192],
+) -> (Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m, "k_skip must be ≤ m");
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
     assert_eq!(c.len(), 1usize << m);
-    assert_eq!(r.len(), m);
+    assert_eq!(r_rest.len(), m - k_skip);
 
     let ell = 1usize << k_skip;
     let n_chunks_x = 1usize << (m - k_skip);
@@ -173,9 +180,7 @@ pub fn round1_naive(a: &[bool], b: &[bool], c: &[bool], m: usize, k_skip: usize,
     let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
     let ntt_l = AdditiveNttGf8::new(k_skip, F8(ell as u8));
 
-    // eq table over the rest-of-r challenges; only r[k_skip..] is used here
-    // (the skip portion r[0..k_skip] is consumed by the verifier later).
-    let eq_full = build_eq(&r[k_skip..]);
+    let eq_full = build_eq(r_rest);
 
     let mut p_ab = vec![F192::ZERO; ell];
     let mut p_c = vec![F192::ZERO; ell];
@@ -228,7 +233,7 @@ pub fn round1_extract_c(
     c: &[bool],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
 ) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(a.len(), 1usize << m);
@@ -237,7 +242,7 @@ pub fn round1_extract_c(
     let a_packed = pack_bits(a);
     let b_packed = pack_bits(b);
     let c_packed = pack_bits(c);
-    round1_extract_c_packed(&a_packed, &b_packed, &c_packed, m, k_skip, r, inv_table)
+    round1_extract_c_packed(&a_packed, &b_packed, &c_packed, m, k_skip, r_rest, inv_table)
 }
 
 /// Packed-input variant of [`round1_extract_c`]. Skips the bool→byte packing —
@@ -251,22 +256,22 @@ pub fn round1_extract_c_packed(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
 ) -> (Vec<F192>, Vec<F192>) {
     let (res_ab, res_c_lifted, _) =
-        round1_extract_c_packed_with_s_hat_v(a_packed, b_packed, c_packed, m, k_skip, r, inv_table);
+        round1_extract_c_packed_with_s_hat_v(a_packed, b_packed, c_packed, m, k_skip, r_rest, inv_table);
     (res_ab, res_c_lifted)
 }
 
 /// Same as [`round1_extract_c_packed`] but **also returns `s_hat_v_c`** — the
 /// 128-entry vector ring-switch would otherwise produce via `fold_1b_rows` for
-/// the c-claim's PCS opening at point `r[k_skip..]`.
+/// the c-claim's PCS opening at point `r_rest`.
 ///
 /// # Trick
 ///
 /// Round 1's c-side already does the witness scan needed for `s_hat_v_c`; it
-/// just collapses one too many dims. The first friendly constant `r[k_skip]`
+/// just collapses one too many dims. The first friendly constant `r_rest[0]`
 /// (= φ_8(α)) applies to bit `i_inner[k_skip]` of the witness, which is also
 /// bit 0 of `x_rest` in this function's loop nest. So splitting the `partial_c`
 /// accumulator into **two banks**, one per value of that bit, gives us the
@@ -275,17 +280,17 @@ pub fn round1_extract_c_packed(
 /// Specifically, for `b_7 ∈ {0, 1}`:
 /// ```text
 /// res_c_s_{b_7}[lane] = Σ_{x_rest with bit-0 = b_7}
-///                        eq(r[k_skip..m], x_rest) · c_bit(lane, x_rest)
+///                        eq(r_rest, x_rest) · c_bit(lane, x_rest)
 /// ```
 /// The wire output `res_c_s` is recovered by `res_c_s_0 + res_c_s_1` (the eq
-/// factor for `r[k_skip]` is already absorbed in each bank), then NTT-extended
+/// factor for `r_rest[0]` is already absorbed in each bank), then NTT-extended
 /// as before to produce `res_c_lifted`.
 ///
-/// To get the canonical `s_hat_v_c` (eq weight WITHOUT the `r[k_skip]` factor),
-/// divide bank 0 by `1 + r[k_skip]` (= `eq(r[k_skip], 0)`) and bank 1 by
-/// `r[k_skip]` (= `eq(r[k_skip], 1)`):
+/// To get the canonical `s_hat_v_c` (eq weight WITHOUT the `r_rest[0]` factor),
+/// divide bank 0 by `1 + r_rest[0]` (= `eq(r_rest[0], 0)`) and bank 1 by
+/// `r_rest[0]` (= `eq(r_rest[0], 1)`):
 /// ```text
-/// s_hat_v_c[(lane, b_7)] = res_c_s_{b_7}[lane] / eq(r[k_skip], b_7)
+/// s_hat_v_c[(lane, b_7)] = res_c_s_{b_7}[lane] / eq(r_rest[0], b_7)
 /// ```
 /// Output layout (matches `fold_1b_rows`): `s_hat_v_c[lane | (b_7 << k_skip)]`
 /// for `lane ∈ [0, 2^k_skip)`, `b_7 ∈ {0, 1}`. Length = `2 · 2^k_skip` =
@@ -297,7 +302,7 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
 ) -> (Vec<F192>, Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m);
@@ -305,13 +310,13 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     assert_eq!(a_packed.len(), total_bytes);
     assert_eq!(b_packed.len(), total_bytes);
     assert_eq!(c_packed.len(), total_bytes);
-    assert_eq!(r.len(), m);
+    assert_eq!(r_rest.len(), m - k_skip);
     assert_eq!(inv_table.k, k_skip);
 
     let ell = 1usize << k_skip;
     let n_chunks = ell / 8;
 
-    let eq = SplitEq::new(&r[k_skip..]);
+    let eq = SplitEq::new(r_rest);
     let lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
 
@@ -351,8 +356,8 @@ pub fn round1_extract_c_packed_with_s_hat_v(
             }
 
             // C on S — route into bank 0 or bank 1 based on b_7. The eq
-            // factor `eq(r[k_skip], b_7)` is implicit in eq_lo because the
-            // SplitEq builds the tensor for r[k_skip..]; we strip that
+            // factor `eq(r_rest[0], b_7)` is implicit in eq_lo because the
+            // SplitEq builds the tensor for r_rest; we strip that
             // factor out at the end via division.
             let target = if b_7 == 0 { &mut partial_c_0 } else { &mut partial_c_1 };
             for s in 0..ell {
@@ -371,20 +376,20 @@ pub fn round1_extract_c_packed_with_s_hat_v(
         }
     }
 
-    // Wire output: combined bank sum = original res_c_s. (The eq(r[k_skip], 0)
-    // factor (= 1 + r[k_skip]) is baked into bank 0, eq(r[k_skip], 1) (= r[k_skip])
-    // into bank 1. Summing reconstitutes the eq(r[k_skip..m], x_rest) sum.)
+    // Wire output: combined bank sum = original res_c_s. (The eq(r_rest[0], 0)
+    // factor (= 1 + r_rest[0]) is baked into bank 0, eq(r_rest[0], 1) (= r_rest[0])
+    // into bank 1. Summing reconstitutes the eq(r_rest, x_rest) sum.)
     let mut res_c_s = vec![F192::ZERO; ell];
     for s in 0..ell {
         res_c_s[s] = res_c_s_0[s] + res_c_s_1[s];
     }
     let res_c_lifted = ntt_extend_vec(&res_c_s, inv_table);
 
-    // s_hat_v_c: strip the eq(r[k_skip], ·) factor from each bank by dividing
-    // by 1 + r[k_skip] (bank 0) and r[k_skip] (bank 1). No NTT extension —
+    // s_hat_v_c: strip the eq(r_rest[0], ·) factor from each bank by dividing
+    // by 1 + r_rest[0] (bank 0) and r_rest[0] (bank 1). No NTT extension —
     // lanes are already boolean indices, which is what ring-switch consumes.
-    let inv_zero = (F192::ONE + r[k_skip]).inv();
-    let inv_one = r[k_skip].inv();
+    let inv_zero = (F192::ONE + r_rest[0]).inv();
+    let inv_one = r_rest[0].inv();
     let mut s_hat_v_c = vec![F192::ZERO; 2 * ell];
     for lane in 0..ell {
         s_hat_v_c[lane] = res_c_s_0[lane] * inv_zero;
@@ -409,17 +414,17 @@ pub fn round1_evals_on_s(
     c: &[bool],
     m: usize,
     k_skip: usize,
-    r: &[F192],
+    r_rest: &[F192],
 ) -> (Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m);
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
     assert_eq!(c.len(), 1usize << m);
-    assert_eq!(r.len(), m);
+    assert_eq!(r_rest.len(), m - k_skip);
 
     let ell = 1usize << k_skip;
     let n_chunks_x = 1usize << (m - k_skip);
-    let eq_full = build_eq(&r[k_skip..]);
+    let eq_full = build_eq(r_rest);
 
     let mut p_ab = vec![F192::ZERO; ell];
     let mut p_c = vec![F192::ZERO; ell];
@@ -473,7 +478,7 @@ mod tests {
         let m = 7;
         let k_skip = 3;
         let mut rng = Rng::new(2);
-        let r = rng.ext_vec(m);
+        let r = rng.ext_vec(m - k_skip);
         let zeros = vec![false; 1 << m];
         let (p_ab, p_c) = round1_naive(&zeros, &zeros, &zeros, m, k_skip, &r);
         assert!(p_ab.iter().all(|v| v.is_zero()));
@@ -491,7 +496,7 @@ mod tests {
         let c1 = rng.bits(1 << m);
         let c2 = rng.bits(1 << m);
         let c_sum: Vec<bool> = c1.iter().zip(&c2).map(|(x, y)| x ^ y).collect();
-        let r = rng.ext_vec(m);
+        let r = rng.ext_vec(m - k_skip);
 
         let (ab1, pc1) = round1_naive(&a, &b, &c1, m, k_skip, &r);
         let (ab2, pc2) = round1_naive(&a, &b, &c2, m, k_skip, &r);
@@ -525,7 +530,7 @@ mod tests {
         let b = rng.bits(1 << m);
         // Honest c: c = a AND b for every i.
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
-        let r = rng.ext_vec(m);
+        let r = rng.ext_vec(m - k_skip);
 
         let (p_ab_s, p_c_s) = round1_evals_on_s(&a, &b, &c, m, k_skip, &r);
         for s in 0..p_ab_s.len() {
@@ -548,7 +553,7 @@ mod tests {
         let a = rng.bits(1 << m);
         let b = rng.bits(1 << m);
         let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m);
+        let r = rng.ext_vec(m - k_skip);
 
         let (p_ab_s, p_c_s) = round1_evals_on_s(&a, &b, &c, m, k_skip, &r);
         let combined: Vec<F192> = p_ab_s.iter().zip(&p_c_s).map(|(x, y)| *x + *y).collect();
@@ -564,7 +569,8 @@ mod tests {
 
     /// The `s_hat_v_c` output is byte-identical to what ring-switch's
     /// `fold_1b_rows` would produce on the C-witness against the canonical
-    /// suffix `r[k_skip + 1 ..]` (everything past `prefix0 = r[k_skip]`).
+    /// equality tail `r_rest`. Its two banks leave `r_rest[0]` unfolded, and
+    /// combining them with that coordinate recovers the ordinary packed fold.
     #[test]
     fn extract_c_with_s_hat_v_matches_fold_1b_rows() {
         use pcs::pack::pack_witness;
@@ -580,19 +586,18 @@ mod tests {
             let a = pack_bits(&rng.bits(1 << m));
             let b = pack_bits(&rng.bits(1 << m));
             let c = pack_bits(&z_bits);
-            let r = rng.ext_vec(m);
+            let r = rng.ext_vec(m - K_SKIP);
             let table = make_inv_table(K_SKIP);
 
             let (_, _, s_hat_v_c) = round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &table);
 
             // Reference: fold_1b_rows on the packed C-witness against the
-            // suffix tensor built from r[k_skip + 1 ..].
+            // complete equality tail.
             let packed_c = pack_witness(&z_bits, m);
-            let suffix = &r[K_SKIP..];
-            let suffix_tensor = build_eq(suffix);
+            let suffix_tensor = build_eq(&r);
             let want = fold_1b_rows(&packed_c, &suffix_tensor);
 
-            let c = r[K_SKIP];
+            let c = r[0];
             let folded: Vec<_> = (0..pcs::pack::PACKING_WIDTH)
                 .map(|i| (F192::ONE + c) * s_hat_v_c[i] + c * s_hat_v_c[i + pcs::pack::PACKING_WIDTH])
                 .collect();
@@ -612,7 +617,7 @@ mod tests {
             let a = rng.bits(1 << m);
             let b = rng.bits(1 << m);
             let c = rng.bits(1 << m);
-            let r = rng.ext_vec(m);
+            let r = rng.ext_vec(m - k_skip);
             let table = make_inv_table(k_skip);
 
             let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
@@ -650,7 +655,7 @@ mod tests {
         let a = rng.bits(1 << m);
         let b = rng.bits(1 << m);
         let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m);
+        let r = rng.ext_vec(m - k_skip);
 
         let (p_ab, p_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
         assert!(p_ab.iter().any(|v| !v.is_zero()));
