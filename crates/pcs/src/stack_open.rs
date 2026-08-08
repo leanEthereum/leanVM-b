@@ -11,7 +11,7 @@
 //!   bits, so its weight is nonzero only at `offset + slot + j * 2^stride_log`),
 //! - **ring-switched claims** ([`RingSwitchOpen`]): bit-MLE evaluation claims
 //!   on the packed sub-block `q_flock = stack[offset .. offset + 2^qflock_vars]`,
-//!   reduced per claim by [`super::ring_switch::prove_observe`] and the
+//!   reduced per claim by [`super::ring_switch::prove_prepare`] and the
 //!   deferred finish path to an inner-product
 //!   claim `<q_flock, rs_eq_ind> = sumcheck_claim` against the transparent
 //!   E-valued weight `rs_eq_ind`.
@@ -19,7 +19,7 @@
 //! All claims are gamma-folded into ONE combined weight `b_stack` over the
 //! whole stack plus one `target`, then proved by
 //! [`super::whir::recursive_prover_with_basis`]. The verifier replays
-//! the ring-switch reductions succinctly ([`super::ring_switch::verify_observe`]
+//! the ring-switch reductions succinctly ([`super::ring_switch::verify_prepare`]
 //! and [`super::ring_switch::verify_finish`], with no dense `rs_eq_ind`) and drives
 //! [`super::whir::recursive_verifier_with_basis_succinct`] with a
 //! terminal evaluator that reconstructs `MLE(b_stack)` once, at the final fold
@@ -117,7 +117,7 @@ pub struct RingSwitchClaim {
     pub value: F192,
     /// Prover-side optional precomputed `s_hat_v` (the 64 bit-slice MLE
     /// values at `suffix_point`, e.g. captured inside flock's reduction).
-    /// When present, [`super::ring_switch::prove_observe`] skips its
+    /// When present, [`super::ring_switch::prove_prepare`] skips its
     /// `fold_1b_rows` recomputation; the values are checked against the
     /// claim (`claim_check`) and the transcript is identical either way.
     /// Verifier-side bundles leave it `None`.
@@ -135,6 +135,10 @@ pub struct RingSwitchOpen {
     /// log2 of q_flock's length in F64 words; the opener slices
     /// `q_flock = stack[offset .. offset + 2^qflock_vars]` (no separate copy).
     pub qflock_vars: usize,
+    /// Number of leading claims whose `s_hat_v` was already absorbed earlier
+    /// in this transcript. Those values are checked and used normally, but are
+    /// not absorbed a second time before the shared map challenges.
+    pub prebound: usize,
     pub claims: Vec<RingSwitchClaim>,
 }
 
@@ -146,11 +150,15 @@ pub struct RingSwitchVerify {
     pub offset: usize,
     /// log2 of q_flock's length in F64 words.
     pub qflock_vars: usize,
+    /// Leading ring-switch messages reconstructed from earlier transcript data.
+    /// Their values are already bound, so they are checked and used without a
+    /// second absorption or a second copy in [`BatchOpeningProof`].
+    pub reconstructed: Vec<RingSwitchProof>,
     pub claims: Vec<RingSwitchClaim>,
 }
 
-/// Batched stacked opening proof: one ring-switch message per ring-switched
-/// claim plus one WHIR proof over the combined claim.
+/// Batched stacked opening proof: the ring-switch messages not reconstructed
+/// from earlier transcript data, plus one WHIR proof over the combined claim.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOpeningProof {
     pub ring_switches: Vec<RingSwitchProof>,
@@ -330,23 +338,25 @@ pub fn open_batch_mixed_whir_stacked(
         *t = std::time::Instant::now();
     };
 
-    // 1. Ring-switch reduction: observe every claim's s_hat_v, sample one
-    //    shared linear map, then finish each claim against that map.
+    assert!(ring.prebound <= ring.claims.len());
+    // 1. Ring-switch reduction: prepare every claim's s_hat_v, absorbing all
+    //    but the leading pre-bound claims, then sample one shared linear map.
     let qflock = &stack[ring.offset..ring.offset + qflock_len];
     let mut rs_proofs = Vec::with_capacity(ring.claims.len());
     let mut rs_states = Vec::with_capacity(ring.claims.len());
-    for claim in &ring.claims {
+    for (i, claim) in ring.claims.iter().enumerate() {
         assert_eq!(
             claim.suffix_point.len(),
             ring.qflock_vars,
             "ring-switch suffix point must have qflock_vars coords"
         );
-        let (proof, state) = ring_switch::prove_observe(
+        let (proof, state) = ring_switch::prove_prepare(
             qflock,
             &claim.prefix_weights,
             &claim.suffix_point,
             claim.value,
             claim.s_hat_v.as_deref(),
+            i < ring.prebound,
             sponge,
         );
         rs_proofs.push(proof);
@@ -451,21 +461,36 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     // `proof` is attacker-controlled (deserialized): validate its shape and
     // reject rather than panicking (`verify_succinct` asserts the
     // s_hat_v length internally).
-    if proof.ring_switches.len() != n_rs || proof.ring_switches.iter().any(|rs| rs.s_hat_v.len() != PACKING_WIDTH) {
+    if ring.reconstructed.len() + proof.ring_switches.len() != n_rs
+        || ring
+            .reconstructed
+            .iter()
+            .chain(&proof.ring_switches)
+            .any(|rs| rs.s_hat_v.len() != PACKING_WIDTH)
+    {
         return None;
     }
+    let rs_proofs: Vec<&RingSwitchProof> = ring.reconstructed.iter().chain(&proof.ring_switches).collect();
 
-    // 1. Ring-switch succinct verify: observe every claim's s_hat_v, sample one
-    //    shared linear map, then finish each claim (mirrors the prover and guest).
-    for (claim, rs_proof) in ring.claims.iter().zip(proof.ring_switches.iter()) {
-        if ring_switch::verify_observe(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
+    // 1. Ring-switch succinct verify: reconstructed leading messages are
+    //    already bound. Check every claim, absorb only transmitted messages,
+    //    then sample one shared linear map.
+    for (i, (claim, rs_proof)) in ring.claims.iter().zip(&rs_proofs).enumerate() {
+        if ring_switch::verify_prepare(
+            claim.value,
+            &claim.prefix_weights,
+            rs_proof,
+            i < ring.reconstructed.len(),
+            sponge,
+        )
+        .is_err()
+        {
             return None;
         }
     }
     let map_challenges = ring_switch::sample_map_challenges(sponge);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
-    let rs_outputs: Vec<_> = proof
-        .ring_switches
+    let rs_outputs: Vec<_> = rs_proofs
         .iter()
         .map(|rs_proof| ring_switch::verify_finish(rs_proof, &coordinate_weights))
         .collect();
@@ -631,6 +656,7 @@ mod tests {
         let ring = RingSwitchOpen {
             offset: qflock_offset,
             qflock_vars,
+            prebound: 0,
             claims: vec![RingSwitchClaim {
                 prefix_weights,
                 suffix_point,
@@ -672,6 +698,7 @@ mod tests {
         let ring = RingSwitchVerify {
             offset: inst.ring.offset,
             qflock_vars: inst.ring.qflock_vars,
+            reconstructed: Vec::new(),
             claims: ring_claims.to_vec(),
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
@@ -817,6 +844,7 @@ mod tests {
         let ring = RingSwitchOpen {
             offset: qflock_offset,
             qflock_vars,
+            prebound: 0,
             claims,
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
@@ -825,6 +853,7 @@ mod tests {
         let ring_v = RingSwitchVerify {
             offset: qflock_offset,
             qflock_vars,
+            reconstructed: Vec::new(),
             claims: ring.claims.clone(),
         };
         let mut ch = Sponge::new(DOMAIN, &[]);

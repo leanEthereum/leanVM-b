@@ -1185,8 +1185,8 @@ fn gen_verify(
             v
         }),
         ("rs_shatv".to_string(), {
-            // The ring-switch slices: each claim's 64-entry s_hat_v, observed from
-            // the opening STRUCT (RingSwitchProof), not the stream. Order [ab, c].
+            // Only C's 64-entry ring-switch slice travels in the opening. The
+            // guest reconstructs AB from lincheck's already-read z_partial.
             let lig = &proof.openings[0];
             let mut v = Vec::new();
             for rsw in &lig.ring_switches {

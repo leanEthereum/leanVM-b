@@ -1515,7 +1515,7 @@ mod tests {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
-        let _ = crate::lincheck::prove_padded_capture_z_vec(
+        let _ = crate::lincheck::prove_padded_capture_s_hat_v(
             &zlc,
             r1cs.m,
             r1cs.k_log,
@@ -1681,7 +1681,7 @@ impl Blake3Setup {
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
         let t_lincheck = std::time::Instant::now();
-        let (lc_claim, z_vec_pre) = crate::lincheck::prove_padded_capture_z_vec(
+        let lc_claim = crate::lincheck::prove_padded_capture_s_hat_v(
             z_packed_lincheck,
             self.r1cs.m,
             self.r1cs.k_log,
@@ -1709,11 +1709,7 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
-        let s_hat_v_ab = if self.r1cs.k_log >= pcs::pack::LOG_PACKING {
-            Some(pcs::ring_switch::s_hat_v_from_z_vec(&z_vec_pre, &lc_claim.r_inner_rest))
-        } else {
-            None
-        };
+        let s_hat_v_ab = (self.r1cs.k_log >= pcs::pack::LOG_PACKING).then_some(lc_claim.s_hat_v);
 
         let reduced = PackedWitnessClaims {
             ab: WitnessClaim {

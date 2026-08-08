@@ -1809,25 +1809,30 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    # The two ring-switch slices (ab, c) each carry PACKING = 2^LOG_PACKING = 64
-    # entries (one per packing bit) and live in the opening STRUCT
-    # (RingSwitchProof), observed into the sponge HERE (never on the stream).
+    # The two ring-switch slices (ab, c) each have PACKING = 2^LOG_PACKING = 64
+    # entries. AB is lincheck's z_partial, already absorbed from the stream;
+    # only C lives in the opening STRUCT and is absorbed HERE.
     # Claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip. Claim 1 (c):
     # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
     # in blake3_flock::ring_claim is already baked into the transmitted 64 values,
     # so the verifier just checks the plain prefix-weighted inner product.)
-    s_hat_v = HeapBuf(2 * (2 ** K_SKIP))
-    hint_witness(s_hat_v[0 : 2 * (2 ** K_SKIP)], "rs_shatv")
+    s_hat_v_c = HeapBuf(2 ** K_SKIP)
+    hint_witness(s_hat_v_c[0 : 2 ** K_SKIP], "rs_shatv")
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
     map_challenges = HeapBuf(6)
     c_table = HeapBuf(BASE_FIELD_BITS)
     z_vals = HeapBuf(2 * QFLOCK_VARS_CAP)
     for rs in unroll(0, 2):
-        # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
-        # observe_ext_slice) before the claim check and the shared map.
-        for i in unroll(0, (2 ** K_SKIP)):
-            fs = obs(fs, s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)])
+        if rs == 0:
+            s_hat_row = z_partial
+        else:
+            s_hat_row = s_hat_v_c
+        # AB is lincheck's already-bound z_partial. Only C must be absorbed
+        # here before sampling the shared map.
+        if rs == 1:
+            for i in unroll(0, (2 ** K_SKIP)):
+                fs = obs(fs, s_hat_row[GEN ** i])
         # claim check: value == sum_i prefix_weights[i] * s_hat_v[i], where
         # prefix_weights[i] = lambda_i(z_skip) = lag numerator * LAGRANGE_INV_S[i].
         if rs == 0:
@@ -1840,7 +1845,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         lag64(claim_z_skip, claim_nums, 0)
         claim_check = 0
         for i in unroll(0, (2 ** K_SKIP)):
-            claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)]
+            claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_row[GEN ** i]
         assert claim_check == claim_val
     # Compose six two-term F2-linear maps with shifts 32,16,8,4,2,1. Their
     # expansion has all 64 Frobenius terms required for soundness, while direct
@@ -1861,8 +1866,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 coefficient *= coefficient
             c_table[GEN ** (slot * 2 * shift + shift)] = map_challenge * coefficient
     # Evaluate both claims together and combine their 64 packing rows.
-    s_hat_row_0 = s_hat_v
-    s_hat_row_1 = s_hat_v * GEN ** (2 ** K_SKIP)
+    s_hat_row_0 = z_partial
+    s_hat_row_1 = s_hat_v_c
     x_pow_chain = HeapBuf((2 ** K_SKIP) + 1)
     x_pow_chain[GEN ** 0] = GEN ** 0
     t_chain_0 = HeapBuf((2 ** K_SKIP) + 1)

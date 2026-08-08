@@ -337,6 +337,10 @@ pub struct LincheckClaim {
     /// `ẑ((r_inner_skip, r_inner_rest), x_ab.x_outer)`, the single
     /// `z`-claim derived from the A and B consistency checks.
     pub w: F192,
+    /// The transmitted post-sumcheck vector. This is exactly the AB claim's
+    /// 64-entry ring-switch `s_hat_v`, so the opening verifier reuses it rather
+    /// than receiving the same values a second time.
+    pub s_hat_v: Vec<F192>,
 }
 
 /// Reasons the verifier may reject.
@@ -1159,15 +1163,10 @@ fn sumcheck_bind_both_and_eval_next(comb: &mut Vec<F192>, z: &mut Vec<F192>, r: 
 // API
 // ---------------------------------------------------------------------------
 
-/// The lincheck prover. Also returns the **pre-sumcheck** z_vec
-/// (`output[i_inner] = ẑ(i_inner, x_ab.x_outer)`, length `2^k_log`). The
-/// downstream PCS reuses this vector to compute the AB-claim's ring-switch
-/// `s_hat_v` via [`pcs::ring_switch::s_hat_v_from_z_vec`], skipping a
-/// `fold_1b_rows` pass at open time.
-///
-/// Pays one extra `2^k_log` F192 clone (~2 MB at k_log=17), taken before the
-/// sumcheck folds `z_vec` down in place.
-pub fn prove_padded_capture_z_vec<O>(
+/// The lincheck prover. Its claim retains the transmitted post-sumcheck
+/// `z_partial`, which is exactly the AB claim's 64-entry ring-switch `s_hat_v`.
+/// The opening reuses it without a second witness scan or transmission.
+pub fn prove_padded_capture_s_hat_v<O>(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
@@ -1176,7 +1175,7 @@ pub fn prove_padded_capture_z_vec<O>(
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
     ps: &mut ProverState<O>,
-) -> (LincheckClaim, Vec<F192>) {
+) -> LincheckClaim {
     let k = 1usize << k_log;
     let n_log = m - k_log;
     assert!(m >= k_log);
@@ -1226,9 +1225,6 @@ pub fn prove_padded_capture_z_vec<O>(
     let mut z_vec = partial_fold_packed_z_best(z_packed, m, k_log, useful_bits, &eq_x_outer);
     stage("partial_fold_z", t);
 
-    // 5. Capture the pre-sumcheck z_vec for downstream reuse (PCS open's
-    //    AB-claim s_hat_v, skipping fold_1b_rows).
-    let captured_z_vec = z_vec.clone();
     let t_sumcheck = std::time::Instant::now();
 
     // 6. Standard multilinear product-sumcheck over the high `inner_rest_len`
@@ -1284,15 +1280,15 @@ pub fn prove_padded_capture_z_vec<O>(
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
-    let claim = LincheckClaim {
+    LincheckClaim {
         alpha,
         beta,
         r_rounds,
         r_inner_skip,
         r_inner_rest,
         w,
-    };
-    (claim, captured_z_vec)
+        s_hat_v: z_partial,
+    }
 }
 
 /// Verify a lincheck proof. Walks the sponge in lockstep with the prover,
@@ -1430,6 +1426,7 @@ pub fn verify<O>(
         r_inner_skip,
         r_inner_rest,
         w,
+        s_hat_v: z_partial,
     })
 }
 
@@ -1444,7 +1441,7 @@ mod tests {
     use primitives::test_rng::Rng;
 
     /// Test shim for the old dense-prove entry: the capture variant with a
-    /// dense block and the captured `z_vec` discarded.
+    /// dense block and the captured `s_hat_v` discarded.
     fn prove(
         z_packed: &[u8],
         m: usize,
@@ -1454,8 +1451,7 @@ mod tests {
         x_ab: &QuirkyPoint,
         ps: &mut pcs::ProverState,
     ) -> LincheckClaim {
-        let (claim, _) = prove_padded_capture_z_vec(z_packed, m, k_log, k_skip, 1 << k_log, circuit, x_ab, ps);
-        claim
+        prove_padded_capture_s_hat_v(z_packed, m, k_log, k_skip, 1 << k_log, circuit, x_ab, ps)
     }
 
     /// Test shim: the padded fast fold with a dense (no-padding) block.

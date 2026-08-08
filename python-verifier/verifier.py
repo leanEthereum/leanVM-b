@@ -2145,6 +2145,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
 class FlockReduction:
     ab: ZClaim
     c: ZClaim
+    ab_s_hat_v: tuple[F192, ...]
 
 
 RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
@@ -2224,12 +2225,14 @@ def verify_stacked_opening(
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
-    require(len(opening.ring_switches) == len(ring_claims), "wrong ring-switch proof count")
+    require(len(opening.ring_switches) == 1, "wrong ring-switch proof count")
+    ring_switches = (reduction.ab_s_hat_v, *opening.ring_switches)
     slices: list[Sequence[F192]] = []
-    for claim, values in zip(ring_claims, opening.ring_switches, strict=True):
+    for ring_index, (claim, values) in enumerate(zip(ring_claims, ring_switches, strict=True)):
         require(len(values) == PACKED_BITS, "ring-switch proof has the wrong width")
-        for value in values:
-            transcript.observe(value)
+        if ring_index != 0:  # A/B is lincheck's already-bound z_partial.
+            for value in values:
+                transcript.observe(value)
         expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
         require(expected == claim.value, "ring-switch claim mismatch")
         slices.append(values)
@@ -2287,7 +2290,7 @@ def verify_lincheck(
     a: F192,
     b: F192,
     transcript: Transcript,
-) -> ZClaim:
+) -> tuple[ZClaim, tuple[F192, ...]]:
     """Replay the fixed BLAKE3 matrix reduction."""
     alpha = transcript.sample()
     inner_weights = quirky_weights(point.skip, point.inner)
@@ -2301,7 +2304,7 @@ def verify_lincheck(
         challenge = transcript.sample()
         running = at_infinity * challenge * challenge + linear * challenge + at_zero
         challenges.append(challenge)
-    partial = transcript.scalars(PACKED_BITS)
+    partial = tuple(transcript.scalars(PACKED_BITS))
     rounds = tuple(reversed(challenges))
     rest_weights = build_eq(rounds)
     column_weights = [value * weight for weight in rest_weights for value in partial]
@@ -2310,16 +2313,16 @@ def verify_lincheck(
     require(terminal == running, "Flock lincheck terminal mismatch")
     skip = transcript.sample()
     value = sum((x * y for x, y in zip(lagrange_weights(PHI[:PACKED_BITS], skip), partial, strict=True)), ZERO)
-    return ZClaim(QuirkyPoint(skip, rounds, point.outer), value)
+    return ZClaim(QuirkyPoint(skip, rounds, point.outer), value), partial
 
 
 def verify_reduction(log_n: int, transcript: Transcript) -> FlockReduction:
     zerocheck = verify_zerocheck(log_n, transcript)
     inner_length = QFLOCK_SLOT_BITS  # the slot bits, the outer ones indexing instances
     ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds[:inner_length], zerocheck.rounds[inner_length:])
-    ab = verify_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
+    ab, ab_s_hat_v = verify_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
     c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail[:inner_length], zerocheck.equality_tail[inner_length:])
-    return FlockReduction(ab, ZClaim(c_point, zerocheck.c))
+    return FlockReduction(ab, ZClaim(c_point, zerocheck.c), ab_s_hat_v)
 
 
 def blake3_bilinear(

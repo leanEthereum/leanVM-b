@@ -613,7 +613,15 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     drop(flock_reduction);
     let offset = w.layout.placements[QFLOCK].offset;
     let ring = crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced);
-    let mixed_open = crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
+    let mut mixed_open = crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
+    crate::blake3_flock::omit_replayed_ab(
+        &mut mixed_open,
+        reduced
+            .ab
+            .s_hat_v
+            .as_deref()
+            .expect("Flock AB ring-switch values are captured"),
+    );
     // flock's scalar sub-proof already rode the shared stream (add_scalar at its
     // protocol points); only the Merkle-bearing stacked opening needs the hint
     // channel.
@@ -755,7 +763,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::blake3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake3)?;
     let open = vs.next_opening().map_err(Error::Transcript)?;
-    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
+    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
     let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
