@@ -17,12 +17,13 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
-The bus balances when its pushed and pulled tuples form the same multiset (\S\ref{sec:m3}). Two random challenges, $\alpha$ then $\gamma$, reduce this to a single product.
+The bus balances when its pushed and pulled tuples form the same multiset (\S\ref{sec:m3}). Random challenges, $\alpha_0,\dots,\alpha_3$ then $\gamma$, reduce this to a single product.
 
-\emph{Fingerprint.} The verifier samples $\alpha\in\E$ and maps each width-$m$ tuple $\btup=(\btup_0,\dots,\btup_{m-1})$ to a single $\E$-element,
+\emph{Fingerprint.} Index a tuple's coordinates by the four bits of $i$, its $m=12$ of them living in $16$ slots. The verifier samples $\alpha=(\alpha_0,\dots,\alpha_3)\in\E^{4}$ and maps each tuple $\btup$ to a single $\E$-element,
 \[
-\pi_\alpha(\btup)\;=\;\sum_{i=0}^{m-1}\alpha^{i}\,\btup_i ,
+\pi_\alpha(\btup)\;=\;\sum_{i=0}^{15}\eq(\alpha,i)\,\btup_i ,
 \]
+weighting slot $i$ by the $\eq$ of Definition~\ref{def:eq} at the bits of $i$, the absent slots contributing nothing.
 
 \emph{Product check.} Both sides carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$. The verifier samples $\gamma\in\E$, and balance becomes
 \begin{equation}
@@ -45,7 +46,7 @@ For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and o
 Easy
 \end{proof}
 
-\emph{Completeness and soundness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\gamma$, so completeness is immediate. An unbalanced one makes $\Pi_P\neq\Pi_Q$, by the lemma, and \eqref{eq:gp} tests them at the one point $(\alpha,\gamma)$, so Corollary~\ref{cor:idtest} gives a soundness error of $m\,2^{\mu} / |\E|$. 
+\emph{Completeness and soundness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\gamma$, so completeness is immediate. An unbalanced one makes $\Pi_P\neq\Pi_Q$, by the lemma, and \eqref{eq:gp} tests them at the one point $(\alpha,\gamma)$, so Corollary~\ref{cor:idtest} gives a soundness error of $5\cdot 2^{\mu}/|\E|$: each of the $2^{\mu}$ factors is of total degree four in $\alpha$ and one in $\gamma$, whatever the tuple's width. 
 
 \subsection{Proving the grand product (GKR)}\label{sec:gkr}
 
@@ -87,13 +88,13 @@ drawing a fresh $\lambda$ after every layer, which binds each tree's own tail va
 
 The GKR grand-product argument reduces each side of \eqref{eq:gp} to a single evaluation $\widetilde V_0(\zeta)$ of its \emph{leaves}, the product's factors $\gamma-\pi_\alpha(\btup)$, one per bus tuple $\btup$.
 
-\paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,c_{i}(z)$, with $c_{i}(z)$ coordinate $i$ of the row's tuple. Each $c_i$ is a polynomial of degree at most $d$ in the row's columns (\S\ref{sec:m3}).
+\paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\gamma-\sum_{i}\eq(\alpha,i)\,c_{i}(z)$, with $c_{i}(z)$ coordinate $i$ of the row's tuple. Each $c_i$ is a polynomial of degree at most $d$ in the row's columns (\S\ref{sec:m3}).
 
 \paragraph{Layout.} Order the blocks largest first at aligned offsets, padding to $2^{\mu}$ leaves with $1$s, which leave the product unchanged. This is the stacking of \S\ref{sec:stacking} applied to blocks: block $b$, of $2^{\kappa_b}$ leaves, occupies the subcube $\{(z,\mathsf{sel}_b):z\in\cube{\kappa_b}\}$ for a fixed selector $\mathsf{sel}_b$.
 
 \paragraph{Decomposition.} Split $\zeta=(\zeta^{b}_{\mathrm{lo}},\zeta^{b}_{\mathrm{hi}})$ at block $b$'s boundary. Each block is a subcube, so the leaf MLE splits into a public selector times the block's own MLE, plus what the padding contributes:
 \begin{equation}\label{eq:gkr_leaves}
-  \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
+  \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i}\eq(\alpha,i)\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
 \end{equation}
 That last term is the padding's weight, for the final $\dots 1111$.
 

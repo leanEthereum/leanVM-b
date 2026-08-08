@@ -79,19 +79,40 @@ pub enum Error {
     Gkr(gkr::GkrError),
 }
 
+/// The fingerprint weights `eq(α⃗, x)` over the `2^N_TUPLE_BITS` slots (§sec:gp).
+/// A tuple is fingerprinted as `Σ_x eq(α⃗, x)·σ_x`, a MULTILINEAR combination
+/// rather than a power chain: each leaf factor is then of total degree
+/// `N_TUPLE_BITS` in the challenges instead of the tuple width, and slot `x`'s
+/// weight is an `eq` weight, which is what lets the aligned bytecode polynomial
+/// be read off at `α⃗` itself (§sec:e2e-bc).
+pub fn fingerprint_weights(alphas: &[F192]) -> Vec<F192> {
+    debug_assert_eq!(alphas.len(), N_TUPLE_BITS);
+    let mut w = vec![F192::ONE; 1 << N_TUPLE_BITS];
+    for (bit, &a) in alphas.iter().enumerate() {
+        for (x, wx) in w.iter_mut().enumerate() {
+            *wx *= if (x >> bit) & 1 == 1 { a } else { a + F192::ONE };
+        }
+    }
+    w
+}
+
+/// Bits indexing a bus tuple's coordinates: `m = 12` coordinates live in the
+/// `2^4` slots of the bytecode encoding (§sec:m3, §sec:e2e-bc).
+pub const N_TUPLE_BITS: usize = 4;
+
 /// Conservative sum of the degree bounds for every random-challenge failure in
 /// the bus argument. A side contains at most `2^mu` leaf factors, each of total
-/// `(alpha, gamma)` degree at most the tuple width. The second term covers all
+/// degree `N_TUPLE_BITS` in `α⃗` and one in `γ`. The second term covers all
 /// radix-four GKR batching and sumcheck challenges.
-fn soundness_degree_bound(mu: usize, tuple_width: usize) -> u128 {
+fn soundness_degree_bound(mu: usize) -> u128 {
     assert!(mu < u128::BITS as usize, "bus layout is too large to bound");
-    let fingerprint = tuple_width as u128 * (1u128 << mu);
+    let fingerprint = (N_TUPLE_BITS as u128 + 1) * (1u128 << mu);
     let gkr = 8u128 * (mu as u128 + 1).pow(2);
     fingerprint + gkr
 }
 
-fn soundness_bits(mu: usize, tuple_width: usize) -> u32 {
-    let degree = soundness_degree_bound(mu, tuple_width);
+fn soundness_bits(mu: usize) -> u32 {
+    let degree = soundness_degree_bound(mu);
     192u32.saturating_sub(u128::BITS - degree.leading_zeros())
 }
 
@@ -110,14 +131,15 @@ fn assert_grinding_unnecessary(
         "push/pull bus blocks are paired, so their layouts match"
     );
     assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
-    let tuple_width = push_blocks
+    let widest = push_blocks
         .iter()
         .chain(pull_blocks)
         .map(|block| block.coords.len())
         .max()
         .unwrap_or(0);
+    assert!(widest <= 1 << N_TUPLE_BITS, "a tuple's coordinates index its slots");
     assert!(
-        soundness_bits(push.mu, tuple_width) >= crate::SECURITY_BITS,
+        soundness_bits(push.mu) >= crate::SECURITY_BITS,
         "bus layout exceeds the unground F192 soundness budget"
     );
 }
@@ -158,11 +180,11 @@ fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &m
     }
 }
 
-/// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i α^i c_i(z)`,
-/// followed implicitly by the identity `1` up to `2^μ`. The row-invariant
-/// `α`-power chain and constant coordinates are folded once per block into
-/// `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192, gamma: F192) -> gkr::LeafVector {
+/// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i w_i c_i(z)` for
+/// the fingerprint weights `w = eq(α⃗, ·)`, followed implicitly by the identity `1`
+/// up to `2^μ`. The row-invariant weights and constant coordinates are folded once
+/// per block into `const_part`.
+pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192], gamma: F192) -> gkr::LeafVector {
     let explicit = blocks
         .iter()
         .enumerate()
@@ -176,10 +198,8 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], alpha: F192
     for (b, blk) in blocks.iter().enumerate() {
         let mut const_part = gamma;
         let mut terms: Vec<Term> = Vec::with_capacity(blk.coords.len());
-        let mut alpha_pow = F192::ONE;
-        for c in &blk.coords {
-            push_terms(c, alpha_pow, &mut terms, &mut const_part);
-            alpha_pow *= alpha;
+        for (i, c) in blk.coords.iter().enumerate() {
+            push_terms(c, w[i], &mut terms, &mut const_part);
         }
         let row = |z: usize| -> F192 {
             // The α-weighted coordinate sum defers its reductions: each mixed
@@ -299,7 +319,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
     blocks: &[Block],
     lay: &Layout,
     zeta: &[F192],
-    alpha: F192,
+    w: &[F192],
     gamma: F192,
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
@@ -325,10 +345,8 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
         if let Some((t, base)) = owners[b] {
             let form = &mut forms[t];
             form.constant += eq_hi * gamma;
-            let mut alpha_pow = F192::ONE;
-            for c in &blk.coords {
-                accumulate_form(c, eq_hi * alpha_pow, base, form);
-                alpha_pow *= alpha;
+            for (i, c) in blk.coords.iter().enumerate() {
+                accumulate_form(c, eq_hi * w[i], base, form);
             }
             continue;
         }
@@ -349,8 +367,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
             Ok(v)
         };
         let mut inner = F192::ZERO;
-        let mut alpha_pow = F192::ONE;
-        for c in &blk.coords {
+        for (i, c) in blk.coords.iter().enumerate() {
             let coord_val = match c {
                 Coord::Const(v) => F192::from(*v),
                 Coord::Index => index_mle(zeta_lo),
@@ -361,8 +378,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 }
                 Coord::Public(vals) => mle_eval(vals, zeta_lo),
             };
-            inner += alpha_pow * coord_val;
-            alpha_pow *= alpha;
+            inner += w[i] * coord_val;
         }
         acc += eq_hi * (gamma + inner);
     }
@@ -396,7 +412,7 @@ fn decompose_prove(
     lay: &Layout,
     cols: &[&[F64]],
     zeta: &[F192],
-    alpha: F192,
+    w: &[F192],
     gamma: F192,
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
@@ -432,7 +448,7 @@ fn decompose_prove(
         blocks,
         lay,
         zeta,
-        alpha,
+        w,
         gamma,
         owners,
         forms,
@@ -458,14 +474,14 @@ fn decompose_verify(
     blocks: &[Block],
     lay: &Layout,
     zeta: &[F192],
-    alpha: F192,
+    w: &[F192],
     gamma: F192,
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
 ) -> Result<F192, Error> {
-    decompose_formula(blocks, lay, zeta, alpha, gamma, owners, forms, claims, |_, _| {
+    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |_, _| {
         vs.next_scalar().map_err(|_| Error::Truncated)
     })
 }
@@ -508,20 +524,20 @@ pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
 /// [`BytecodeClaim`]s are claims about; the outermost verifier evaluates it.
 pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     let mut kbc = 0;
-    let mut cols: Vec<&Vec<F64>> = Vec::new();
+    let mut cols: Vec<(usize, &Vec<F64>)> = Vec::new();
     for blk in blocks {
-        for c in &blk.coords {
+        for (slot, c) in blk.coords.iter().enumerate() {
             if let Coord::Public(vals) = c {
                 kbc = blk.kappa;
-                cols.push(vals);
+                cols.push((slot, vals));
             }
         }
     }
-    assert!(cols.len() <= 1 << N_BYTECODE_SELECTORS);
     let mut table = vec![F64::ZERO; 1 << (N_BYTECODE_SELECTORS + kbc)];
-    for (c_idx, vals) in cols.iter().enumerate() {
+    for (slot, vals) in cols {
+        assert!(slot < 1 << N_BYTECODE_SELECTORS, "a public slot is a tuple coordinate");
         assert_eq!(vals.len(), 1 << kbc);
-        table[(c_idx << kbc)..((c_idx + 1) << kbc)].copy_from_slice(vals);
+        table[(slot << kbc)..((slot + 1) << kbc)].copy_from_slice(vals);
     }
     table
 }
@@ -547,59 +563,48 @@ pub fn stacked_bytecode_value(evals: &[F192], s: &[F192]) -> F192 {
 }
 
 /// The three bus sides in `[push, pull, count]` order with their fingerprint
-/// challenges. The count channel's leaf is the count itself (a single `Col`), so it
-/// runs at `α = 1`, `γ = 0` and its GKR root is the product of all counts.
+/// weights. The count channel's leaf is the count itself (a single `Col`), so it
+/// runs at `α⃗ = 0` (weight `1` on slot `0`, zero elsewhere), `γ = 0`, and its GKR
+/// root is the product of all counts.
 fn sides<'a>(
     blocks: [&'a [Block]; 3],
     lays: [&'a Layout; 3],
-    alpha: F192,
+    w: &'a [F192],
+    count_w: &'a [F192],
     gamma: F192,
-) -> [(&'a [Block], &'a Layout, F192, F192); 3] {
+) -> [(&'a [Block], &'a Layout, &'a [F192], F192); 3] {
     [
-        (blocks[0], lays[0], alpha, gamma),
-        (blocks[1], lays[1], alpha, gamma),
-        (blocks[2], lays[2], F192::ONE, F192::ZERO),
+        (blocks[0], lays[0], w, gamma),
+        (blocks[1], lays[1], w, gamma),
+        (blocks[2], lays[2], count_w, F192::ZERO),
     ]
 }
 
-/// The transcript operations the bytecode reduction needs, so prover and verifier
-/// share ONE copy of its observe-then-sample sequence.
-trait Absorb {
-    fn observe(&mut self, v: F192);
-    fn draw(&mut self) -> F192;
+/// `Σ_i w_i·P̃_i(ζ)` over a side's public coordinates, `i` being each one's slot,
+/// with the bytecode block's `κ`. Because the slots are aligned with the tuple and
+/// the weights are `eq(α⃗, ·)`, this IS the stacked polynomial at `(ζ, α⃗)`
+/// (§sec:e2e-bc): one evaluation, nothing transmitted, no extra challenge.
+pub fn public_share(blocks: &[Block], zeta: &[F192], w: &[F192]) -> (usize, F192) {
+    let mut kappa = 0;
+    let mut acc = F192::ZERO;
+    for blk in blocks {
+        for (i, c) in blk.coords.iter().enumerate() {
+            if let Coord::Public(vals) = c {
+                kappa = blk.kappa;
+                acc += w[i] * mle_eval(vals, &zeta[..blk.kappa]);
+            }
+        }
+    }
+    (kappa, acc)
 }
 
-impl Absorb for ProverState {
-    fn observe(&mut self, v: F192) {
-        self.observe_scalar(v);
-    }
-    fn draw(&mut self) -> F192 {
-        self.sample()
-    }
-}
-
-impl Absorb for VerifierState<'_> {
-    fn observe(&mut self, v: F192) {
-        self.observe_scalar(v);
-    }
-    fn draw(&mut self) -> F192 {
-        self.sample()
-    }
-}
-
-/// Bytecode = ONE polynomial, and push/pull share the point ζ, so the nine public
-/// columns are opened ONCE: bind the evaluations, sample the four selector
-/// challenges, emit the single reduced claim. Both sides run exactly this
-/// sequence, in this order.
-fn bytecode_claim(blocks: &[Block], point: &[F192], t: &mut impl Absorb) -> BytecodeClaim {
-    let (kbc, pv) = public_evals(blocks, point);
-    for &v in &pv {
-        t.observe(v);
-    }
-    let s: Vec<F192> = (0..N_BYTECODE_SELECTORS).map(|_| t.draw()).collect();
+/// Bytecode = ONE polynomial, and push/pull share the point ζ, so the whole program
+/// share of the leaf is one evaluation of it, at `(ζ, α⃗)`.
+fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], w: &[F192]) -> BytecodeClaim {
+    let (kbc, share) = public_share(blocks, point, w);
     BytecodeClaim {
-        point: [&point[..kbc], &s[..]].concat(),
-        value: stacked_bytecode_value(&pv, &s),
+        point: [&point[..kbc], alphas].concat(),
+        value: share,
     }
 }
 
@@ -636,7 +641,9 @@ pub fn prove_balance(
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
     assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay, &count_lay);
-    let alpha = ps.sample();
+    let alphas: Vec<F192> = (0..N_TUPLE_BITS).map(|_| ps.sample()).collect();
+    let w = fingerprint_weights(&alphas);
+    let count_w = fingerprint_weights(&[F192::ZERO; N_TUPLE_BITS]);
     // The GKR treats the count tree as identity-padded to the pair's depth, but
     // its prover keeps that all-one suffix implicit. Retain the smaller layout
     // for leaf construction and the full logical layout for decomposition.
@@ -648,9 +655,9 @@ pub fn prove_balance(
     // three-way outer split on top would only add a barrier.
     let [push_leaves, pull_leaves, count_leaves] = crate::stage!("Bus leaves", || {
         [
-            build_leaves(push, &push_lay, cols, alpha, gamma),
-            build_leaves(pull, &pull_lay, cols, alpha, gamma),
-            build_leaves(count, &count_build_lay, cols, F192::ONE, F192::ZERO),
+            build_leaves(push, &push_lay, cols, &w, gamma),
+            build_leaves(pull, &pull_lay, cols, &w, gamma),
+            build_leaves(count, &count_build_lay, cols, &count_w, F192::ZERO),
         ]
     });
     // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match
@@ -662,7 +669,7 @@ pub fn prove_balance(
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
     // every table block becomes a form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], alpha, gamma);
+    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
     // Each table's columns at ζ[..τ], computed once and shared by the three sides
     // (a form's linear part factors through them). Nothing here travels, neither the
     // evaluations nor any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
@@ -706,7 +713,7 @@ pub fn prove_balance(
         sigmas
     });
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, ps)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
     BusProof {
         claims,
         bytecode_claims,
@@ -789,7 +796,9 @@ pub fn verify_balance(
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
     assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay, &count_lay);
-    let alpha = vs.sample();
+    let alphas: Vec<F192> = (0..N_TUPLE_BITS).map(|_| vs.sample()).collect();
+    let w = fingerprint_weights(&alphas);
+    let count_w = fingerprint_weights(&[F192::ZERO; N_TUPLE_BITS]);
     // The count tree is padded to the pair's depth (identity leaves), so all
     // three verify as ONE RLC-batched GKR at ONE shared point.
     count_lay.mu = push_lay.mu;
@@ -813,7 +822,7 @@ pub fn verify_balance(
     // here, the batch's target being what pins it, so no table column is opened at ζ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], alpha, gamma);
+    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
     let mut totals = [F192::ZERO; 3];
     for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
         let framework = decompose_verify(
@@ -833,7 +842,7 @@ pub fn verify_balance(
         totals[s] = framework + bus_gkr.values[s];
     }
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, vs)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
     Ok(BusVerify {
         claims,
         bytecode_claims,
@@ -848,15 +857,13 @@ pub fn verify_balance(
 mod tests {
     use super::soundness_bits;
 
-    /// The bound is `tuple_width · 2^mu` plus the GKR terms, so a wider tuple or a
-    /// deeper bus costs bits. One factor of two more than before this test was
-    /// written: a side's factors are no longer doubled by the other side's padding
-    /// surplus, there being none.
+    /// The bound is `(N_TUPLE_BITS + 1)·2^mu` plus the GKR terms: only the bus
+    /// DEPTH costs bits now, the multilinear fingerprint having fixed each factor's
+    /// degree at four in `α⃗` and one in `γ`, whatever the tuple's width.
     #[test]
-    fn bus_soundness_accounts_for_tuple_width() {
-        assert!(soundness_bits(38, 12) >= crate::SECURITY_BITS);
-        assert!(soundness_bits(60, 12) >= crate::SECURITY_BITS);
-        assert!(soundness_bits(61, 12) < crate::SECURITY_BITS);
-        assert!(soundness_bits(58, 16) < soundness_bits(58, 1));
+    fn bus_soundness_tracks_depth_only() {
+        assert!(soundness_bits(38) >= crate::SECURITY_BITS);
+        assert!(soundness_bits(61) >= crate::SECURITY_BITS);
+        assert!(soundness_bits(62) < crate::SECURITY_BITS);
     }
 }

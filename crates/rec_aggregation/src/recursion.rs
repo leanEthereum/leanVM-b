@@ -19,7 +19,6 @@ use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use primitives::bench::Plan;
-use primitives::log2_ceil_usize;
 use primitives::multilinear::mle_eval;
 use primitives::{
     field::{F64, F192, G, g_pow},
@@ -800,7 +799,6 @@ fn gen_verify(
 
     // ---- pool sizes (the descriptors themselves are baked by `placeholder_map`) ----
     let mut nclaims = 0usize;
-    let mut nbcv = 0usize;
     // Claim dedup (mirrors leaf.rs): ALL three trees share their GKR point, so
     // a column read by two same-kappa blocks streams/opens once. Key: (col, kappa).
     let mut seen_claims: std::collections::HashSet<(usize, usize)> = Default::default();
@@ -822,10 +820,10 @@ fn gen_verify(
                             nclaims += 1;
                         }
                     }
-                    Coord::Public(_) => nbcv += 1,
-                    // A degree-2 coordinate lives only in a table block, which raises
-                    // no framework claim.
-                    Coord::Const(_) | Coord::Index | Coord::Prod(..) | Coord::Sum(..) => {}
+                    // A public coordinate raises no claim of its own: the program's
+                    // whole share is one deferred evaluation (§sec:e2e-bc). Nor does a
+                    // degree-2 coordinate, which lives only in a table block.
+                    Coord::Public(_) | Coord::Const(_) | Coord::Index | Coord::Prod(..) | Coord::Sum(..) => {}
                 }
             }
         }
@@ -926,12 +924,11 @@ fn gen_verify(
     assert!(grinds.next().is_none(), "every grind consumed");
 
     // ---- hints ----
-    // bcv: the deferred bytecode evaluations at the SHARED push/pull point
-    // (leaf's own scan, coord order; push and pull carry the same nine).
-    let (kbc2, bcv) = lean_vm::leaf::public_evals(&l.push, &zeta);
-    assert_eq!(kbc2, kbc);
-    assert_eq!(bcv.len(), nbcv / 2);
-    let bytecode_value = lean_vm::leaf::stacked_bytecode_value(&bcv, &sb);
+    // The program's whole share of a bytecode leaf: ONE value, the stacked
+    // polynomial at (ζ_lo, α⃗), the slot coordinates of the claim's own point being
+    // the fingerprint challenges (§sec:e2e-bc).
+    let bytecode_value = summary.bytecode_claims[0].value;
+    let bcv = vec![bytecode_value];
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
     // Per side, the kappa-descending packing order (as in leaf.rs::layout):
@@ -1197,7 +1194,7 @@ fn gen_verify(
             }
             v
         }),
-        ("bytecode_vals".to_string(), bcv),
+        ("bytecode_val".to_string(), bcv),
         ("matpart".to_string(), vec![matpart]),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
@@ -1950,12 +1947,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("QFLOCK_COMMITTED_COL", qflock_compact.to_string());
     ps("QFLOCK_VARS_CAP", (33 + slot_stride_log).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
-    // The stacked bytecode: nbcv/2 encoding columns per side, packed along
-    // log2_ceil_usize(cols) selector bits. The defer region is 2*kbc points + sel
-    // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
-    // + 1 matpart.
+    // The stacked bytecode: nbcv/2 encoding columns per side, aligned with the bus
+    // tuple, so their slots span the fingerprint's own bits. The defer region is
+    // 2*kbc points + sel bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds
+    // + 64 z_partial + 1 matpart.
     let bc_cols = nbcv / 2;
-    let log2_bc_cols = log2_ceil_usize(bc_cols);
+    let log2_bc_cols = lean_vm::leaf::N_TUPLE_BITS;
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());

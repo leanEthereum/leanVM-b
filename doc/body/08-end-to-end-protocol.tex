@@ -27,7 +27,7 @@ Every column is $\K$-valued, and so is every constraint on them (\S\ref{sec:prel
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $11$ of its bytecode tuple
+The program is public. The bus interraction carrying the bytecode lookup has the following shape:
 \[
   \tup{\dsep{BC},\pc,\cnt,\cdot}.
 \]
@@ -47,9 +47,7 @@ Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$ & $11$\\
 \hline
 \end{tabular}
 \end{center}
-By convention the bytecode is a single multilinear over $\K$. The program is padded to $\nprog=2^{\kbc}$ instructions (\S\ref{sec:idxcol}) and its slots to a power of two as well, so the bytecode is a multilinear in $\kbc+4$ variables: the low $\kbc$ index the instruction and the high four select one of sixteen slots, nine of them carrying the encoding above and seven zero. It is public, so the verifier forms its multilinear extension itself. Writing $\mathit{instr}$ for the nine used slots at $\pc$, the bytecode seed pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces every operand, flag, and immediate to match the program at its $\pc$.
-
-A padding instruction is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
+The program is padded to $\nprog=2^{\kbc}$ instructions (\S\ref{sec:idxcol}) and read as one $\K$-valued multilinear $P$ in $\kbc+4$ variables: the low $\kbc$ index the instruction, the high four its slot. Slot $i$ holds tuple coordinate $i$: the opcode at $3$, the operands and immediates at $4,\dots,11$, the rest zero. Writing slot bits low first, $P(z,1,1,0,0)$ is instruction $z$'s opcode, $P(z,0,0,1,0)$ its first operand, and $P(z,0,0,0,0)=P(z,0,0,1,1)=0$.
 
 \subsection{Filling the tables}\label{sec:e2e-pad}
 
