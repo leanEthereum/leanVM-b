@@ -120,6 +120,8 @@ Number the sides $s=1,\dots,T$, one per grand product (\S\ref{sec:gkr}), and wri
 \end{align*}
 the first for every constraint of every table, the second for every side. Both are $\eq$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns, which is what lets a single sumcheck carry them all.
 
+\paragraph{Constraints are $\K$-valued.} A constraint $C_{j,i}$ takes values in $\K$, like the columns it reads and like the bus coordinates (\S\ref{sec:m3}); only the $\eta$-powers and $\eq(\zeta,\cdot)$ that weight it lie in $\E$. A relation between machine words is therefore stated lane by lane, three $\K$ constraints rather than one $\E$ constraint, with the tower multiplication unrolled (\S\ref{sec:tab-mul}); the two have the same zero set, since $\{1,y,y^{2}\}$ is a $\K$-basis of $\E$. The prover gains by it: in the round a table joins the batch its columns are still $\K$-valued (below), so a $\K$ constraint is evaluated in $64$-bit arithmetic and meets $\E$ only in the mixed product against its $\eta$-power, while an $\E$ constraint would cost a full $\E$ multiplication per row.
+
 \paragraph{The point is already drawn.} A zerocheck tests its polynomial at a point drawn after the commitment (Definition~\ref{def:zerocheck}), and $\zeta$ is such a point: its coordinates are the challenges of the GKR pass (\S\ref{sec:gkr}), uniform in $\E$ and drawn after the witness was committed. The constraints played no part in producing them. So no fresh point is needed, and the constraints are zerochecked at $\zeta_{<\tau_j}$, where the bus forms already stand.
 
 \paragraph{One challenge.} The verifier samples $\eta\in\E$, after the totals are fixed. Each table mixes everything it owes into one polynomial in its own columns,

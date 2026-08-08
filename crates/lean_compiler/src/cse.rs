@@ -160,7 +160,7 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
                             bump(*base + k);
                         }
                     }
-                    RHint::Log2Ceil { dst, .. } => bump(*dst),
+                    RHint::Log2Ceil { dst, .. } | RHint::Inverse { dst, .. } => bump(*dst),
                     // These write HEAP cells through a pointer, not frame cells.
                     RHint::WitnessHeap { .. }
                     | RHint::BitDecompose { .. }
@@ -232,7 +232,7 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
                     map(value);
                     map(bits_ptr);
                 }
-                RHint::FieldLimbs { value, .. } => map(value),
+                RHint::FieldLimbs { value, .. } | RHint::Inverse { value, .. } => map(value),
                 RHint::Print { cell, .. } => map(cell),
                 RHint::Alloc { .. } | RHint::WitnessStack { .. } => {}
             },

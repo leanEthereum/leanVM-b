@@ -1,11 +1,11 @@
 % !TeX root = ../drafts/07-instruction-tables.tex
 \section{The instruction tables}\label{sec:tables}
 
-Each instruction has its own table. Throughout, an operand address is written $\loc{o}=\fp\cdot o$ and is a bus coordinate, not a column: no table commits one, and none constrains one, since a coordinate may be any polynomial of degree at most $d=2$ in the table's columns (\S\ref{sec:m3}). The same holds of every value a row \emph{derives} from the ones it reads. Writing the derived value straight into the tuple that would have carried its column costs the columns nothing and removes the identity that used to tie the two, since bus balance now asserts it directly. That is why \texttt{XOR}, \texttt{MUL\_NATIVE} and \texttt{DEREF} have no constraint at all: an arithmetic result and a flag-selected store are both degree-2 forms, so both ride the memory flush that reads their cell.
+Each instruction has its own table.
 
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
-Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum. The result is no column: the destination cell's memory flush carries the sum itself, so bus balance is the assertion.
+Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum (in $\E$).
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; the two read values $v_A,v_B$ (each three $\K$-limbs); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} none.
@@ -19,34 +19,39 @@ Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum. The result is 
 
 \subsection{\texttt{MUL\_NATIVE}}\label{sec:tab-mul}
 
-Identical to \texttt{XOR} but for the product, which is degree two rather than one and so still fits a coordinate:
+Asserts $\loc{o_C}=\loc{o_A} \cdot \loc{o_B}$, the $192$-bit field multiplication (in $\E$).
 \begin{itemize}
-\item \textbf{Columns:} as \texttt{XOR}.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; the two read values $v_A,v_B$ (each three $\K$-limbs); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} none.
-\item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$ and the destination's three value coordinates carrying $v_Av_B$ in $\E$. With $y^3=y+1$, put
-\[
-p_0=v_{A,0}v_{B,0},\quad
-p_1=v_{A,0}v_{B,1}+v_{A,1}v_{B,0},\quad
-p_2=v_{A,0}v_{B,2}+v_{A,1}v_{B,1}+v_{A,2}v_{B,0},
-\]
-\[
-p_3=v_{A,1}v_{B,2}+v_{A,2}v_{B,1},\qquad
-p_4=v_{A,2}v_{B,2};
-\]
-the coordinates are then $p_0+p_3$, $p_1+p_3+p_4$ and $p_2+p_4$, twelve products over the nine pairs $v_{A,i}v_{B,j}$.
+\item \textbf{Flushes:}
+  \begin{itemize}
+  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{MUL},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory} ($X\in\{A,B\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X}$; and for the destination, the same pair at $\fp\cdot o_C$ with the three value coordinates carrying the product $v_Av_B$ in $\E$, of degree two. With $y^3=y+1$, put
+    \[
+    p_0=v_{A,0}v_{B,0},\quad
+    p_1=v_{A,0}v_{B,1}+v_{A,1}v_{B,0},\quad
+    p_2=v_{A,0}v_{B,2}+v_{A,1}v_{B,1}+v_{A,2}v_{B,0},
+    \]
+    \[
+    p_3=v_{A,1}v_{B,2}+v_{A,2}v_{B,1},\qquad
+    p_4=v_{A,2}v_{B,2};
+    \]
+    the coordinates are then $p_0+p_3$, $p_1+p_3+p_4$ and $p_2+p_4$, twelve products over the nine pairs $v_{A,i}v_{B,j}$.
+  \end{itemize}
 \end{itemize}
 
 \subsection{\texttt{SET\_CONSTANT}}\label{sec:tab-set}
 
-Asserts $\loc{o}=k$, how a constant enters the read-only memory: the row ties the committed cell to the bytecode immediate $k$.
+Asserts $\loc{o}=k$ for some constant $k \in \E$ (which is how a constant enters the read-only memory).
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operand $o$; immediate $k$ ($192$-bit, three $\K$-limbs $k_0,k_1,k_2$); memory count $r$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} none.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{SET},o,k_0,k_1,k_2,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$ (the immediate's three limbs ride the spare operand slots $5,6,7$).
-  \item \textbf{Memory:} \pull\ $\tup{\dsep{MEM},\fp\cdot o,r,k}$, \push\ $\tup{\dsep{MEM},\fp\cdot o,\gen\cdot r,k}$ (the value slot is the constant $k$, with all three limbs).
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{SET},o,k_0,k_1,k_2,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$ 
+  \item \textbf{Memory:} \pull\ $\tup{\dsep{MEM},\fp\cdot o,r,k}$, \push\ $\tup{\dsep{MEM},\fp\cdot o,\gen\cdot r,k}$ 
   \end{itemize}
 \end{itemize}
 
@@ -58,10 +63,10 @@ Asserts $\loc{o}=k$, how a constant enters the read-only memory: the row ties th
 \item the \emph{target} $v_2$, at the dereferenced address $p\cdot\beta$;
 \item the \emph{local} value $v_3$, at $\fp\cdot\gamma$.
 \end{itemize}
-The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$ (a free $\times\gen^{2}$ of $\pc$, no column of its own, \S\ref{sec:m3}), or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$. That selection is degree two, so $v_2$ is no column either: the target's memory flush carries it.
+The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$, or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $\alpha,\beta,\gamma$; flags $f_{\pc},f_{\fp}$; pointer $p$ (a single $\K$-limb); the local value $v_3$ (three $\K$-limbs); memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} none. The dereferenced address $p\cdot\beta$ is the one product coordinate not based at $\fp$; the pointer $p$ is a single $\K$ column and the pointer read carries literal zeros in its two upper limbs, so bus balance forces the stored pointer word into $\K$ (a genuine $\gen$-power) and the product with it. The flags need no validity check: the verifier reads them from the public program (\S\ref{sec:e2e-bc}).
+\item \textbf{Constraints:} none.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
@@ -76,7 +81,7 @@ The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{se
 
 \subsection{\texttt{JUMP}}\label{sec:tab-jump}
 
-A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary $192$-bit word. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a boolean indicator column $b=[\,c\neq0\,]$ (Definition~\ref{def:iverson}), which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
+A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero. The condition must be $\K$-valued. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, the updated program counter, and the updated frame pointer $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a boolean indicator column $b=[\,c\neq0\,]$ (Definition~\ref{def:iverson}), which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
 \[
   b=c\cdot w,\qquad c\,(b+1)=0 .
 \]
@@ -84,15 +89,14 @@ When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ 
 \[
   \nxt{\pc}=b\cdot d+(b+1)\,s,\qquad \nxt{\fp}=b\cdot f+(b+1)\,\fp,
 \]
-degree two in the columns, so neither successor is a column: the state push carries them. The destination and the frame are addresses on every row, taken or not, so each is a single $\K$-column read through a flush with literal zeros in its upper limbs, the same device as the \texttt{DEREF} pointer, and it is bus balance that puts the stored words in $\K$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_c,o_d,o_f$; the condition $c$ (three $\K$-limbs); the destination $d$ and frame $f$ (one $\K$-limb each); inverse $w$ (three $\K$-limbs, $c^{-1}$ in $\E$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is no column, only a term of the two selections.)
-\item \textbf{Constraints:} the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$ ($\E$-relations on the limbs), and nothing else. \texttt{JUMP} is the one table left with an identity, because $b$ is the one quantity no interaction pins.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_c,o_d,o_f$; the condition $c$, the destination $d$ and the frame $f$ (one $\K$-limb each); inverse $w$ (one $\K$-limb, $c^{-1}$); indicator $b$ (one $\K$-limb, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Constraints:}  $b=c\cdot w$ and $c\,(b+1)=0$
 \item \textbf{Flushes:}
   \begin{itemize}
-  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},b\,d+b\,(\gen\cdot\pc)+\gen\cdot\pc,\;b\,f+b\,\fp+\fp}$, the two selections written out in characteristic $2$.
+  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},b\,d+b\,(\gen\cdot\pc)+\gen\cdot\pc,\;b\,f+b\,\fp+\fp}$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{JMP},o_c,o_d,o_f,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} three reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: the condition $\tup{\dsep{MEM},\fp\cdot o_c,r_c,c}$ with all three limbs, then $\tup{\dsep{MEM},\fp\cdot o_d,r_d,d,0,0}$ and $\tup{\dsep{MEM},\fp\cdot o_f,r_f,f,0,0}$.
+  \item \textbf{Memory:} three reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: $\tup{\dsep{MEM},\fp\cdot o_c,r_c,c,0,0}$, $\tup{\dsep{MEM},\fp\cdot o_d,r_d,d,0,0}$ and $\tup{\dsep{MEM},\fp\cdot o_f,r_f,f,0,0}$.
   \end{itemize}
 \end{itemize}
 
@@ -101,29 +105,29 @@ degree two in the columns, so neither successor is a column: the state push carr
 Asserts that two source cells are $\K$-valued and packs them into one canonical $128$-bit word.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; source limbs $v_A,v_B\in\K$; memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} none. Value validity is enforced by the memory interactions rather than separate AIR equations.
+\item \textbf{Constraints:} none. 
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{PACK},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} read $\tup{\dsep{MEM},\fp\cdot o_A,r_A,v_A,0,0}$ and $\tup{\dsep{MEM},\fp\cdot o_B,r_B,v_B,0,0}$, then read the destination as $\tup{\dsep{MEM},\fp\cdot o_C,r_C,v_A,v_B,0}$; each pull is paired with the corresponding push at count $\gen\cdot r$. The literal zeros make the two source range assertions and the destination packing exact through bus balance.
+  \item \textbf{Memory} ($X\in\{A,B\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X,0,0}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X,0,0}$; and for the destination, \pull\ $\tup{\dsep{MEM},\fp\cdot o_C,r_C,v_A,v_B,0}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_C,\gen\cdot r_C,v_A,v_B,0}$. The literal zeros are what make the two source range assertions and the destination packing exact.
   \end{itemize}
 \end{itemize}
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses a $64$-byte message block (four $128$-bit chunks) under a $32$-byte chaining value to the $32$-byte result at $c$. Each chunk occupies one $192$-bit cell through the canonical embedding with top limb zero. The message chunks are addressed independently at $\fp\cdot o_i$, while $\fp\cdot o_V$ is the base of the two consecutive chaining-value cells $\fp\cdot o_V,\gen\fp\cdot o_V$. The output similarly occupies $\fp\cdot o_C$ and $\gen\fp\cdot o_C$, so each row accesses eight cells. The $128$-bit immediate $\md$ packs the $64$-bit counter, $32$-bit block length, and $32$-bit flags required by the BLAKE3 specification; its two $\K$-lanes $\md_0,\md_1$ ride the bytecode tuple.
+Compresses a $64$-byte message block (four $128$-bit chunks) under a $32$-byte chaining value to the $32$-byte result at $c$. Each chunk occupies one $192$-bit cell through the canonical embedding with top limb zero. The message chunks are addressed independently at $\fp\cdot o_i$, while $\fp\cdot o_V$ is the base of the two consecutive chaining-value cells $\fp\cdot o_V,\fp\cdot o_V \cdot \gen$. The output similarly occupies $\fp\cdot o_C$ and $\fp\cdot o_C \cdot \gen$, so each row accesses eight cells. The $128$-bit immediate $\md$ packs the $64$-bit counter, $32$-bit block length, and $32$-bit flags required by the BLAKE3 specification; its two $\K$-lanes $\md_0,\md_1$ ride the bytecode tuple.
 
-Flock~\cite{flock-impl} proves the compression relation with a batched R1CS over a Boolean witness. The witness is packed into $q_\flock$, with $64$ bits per $\K$-element. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\flock$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
+Flock~\cite{flock-impl} proves the compression relation with a batched R1CS over a Boolean witness. The witness is packed into $q_\flock$, with $64$ bits per $\K$-element.
 
 The message, result, chaining value, and metadata are all contained in $q_\flock$. Each $64$-bit flock word occupies one packed slot, and each BLAKE3 cell contributes its two low limbs; the top limb is canonically zero. The eighteen limbs $v_{A0},\dots,v_{C3},v_{V0},\dots,v_{V3},\md_0,\md_1$ therefore need no separate commitment: each is a strided point evaluation of $q_\flock$. Linking these embedded values to the full memory interaction implicitly forces the top limb of every BLAKE3-accessed cell to zero, and the zero limbs are never committed. The generalized R1CS matrices take the chaining value, counter, block length, and flags as free input rows; the bus and bytecode interactions bind them.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_V,o_C$; per-cell memory counts $r_0,\dots,r_3$ (the four message cells), $r_{V0},r_{V1}$ (the two chaining-value cells), and $r_{C0},r_{C1}$ (the two output cells); bytecode count $r_{\mathrm{bc}}$. The eighteen value limbs above are committed "inside" $q_\flock$, see above; each cell's third limb is zero. The eight addresses are the products $\gen^{k}\fp\cdot o$, $k\in\{0,1\}$, so the paired cells cost neither a column nor a constraint.
-\item \textbf{Constraints:} none. The compression relation is handled by flock, and the addresses are bus coordinates.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_V,o_C$; per-cell memory counts $r_0,\dots,r_3$ (the four message cells), $r_{V0},r_{V1}$ (the two chaining-value cells), and $r_{C0},r_{C1}$ (the two output cells); bytecode count $r_{\mathrm{bc}}$. The eighteen value limbs above are committed "inside" $q_\flock$, see above; each cell's third limb is zero. The eight addresses are the products $\gen^{k}\fp\cdot o$, $k\in\{0,1\}$.
+\item \textbf{Constraints:} none. The compression relation is handled by flock.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_0,o_1,o_2,o_3,o_V,o_C,\md_0,\md_1}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} eight reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$, its embedded value carrying two limbs from $q_\flock$ and a zero top limb (\S\ref{sec:memchan}): four independently addressed message cells, the chaining value at $\fp\cdot o_V,\gen\fp\cdot o_V$, and the result at $\fp\cdot o_C,\gen\fp\cdot o_C$.
+  \item \textbf{Memory:} eight reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$, its embedded value carrying two limbs from $q_\flock$ and a zero top limb (\S\ref{sec:memchan}): four independently addressed message cells, the chaining value at $\fp\cdot o_V,\fp\cdot o_V \cdot \gen$, and the result at $\fp\cdot o_C,\fp\cdot o_C \cdot \gen$.
   \end{itemize}
 \end{itemize}

@@ -291,7 +291,6 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             KVal::Entry(name) => g_pow(entry[name] as usize).into(),
             KVal::EndSentinel => g_pow(sentinel as usize).into(),
             KVal::Local(i) => g_pow((base + i) as usize).into(),
-            KVal::Poison => primitives::field::G.inv().into(), // g^-1: outside the bytecode cube
         }
     };
     match op {

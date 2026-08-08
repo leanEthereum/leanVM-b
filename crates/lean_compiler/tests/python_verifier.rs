@@ -16,11 +16,11 @@ from snark_lib import *
 
 LOOP_STEPS = LOOP_STEPS_PLACEHOLDER
 
-def mix(value):
-    product = value * GEN
-    if product == 0:
+def mix(value, tag):
+    # A JUMP condition is K-valued (a g-power here), never an arbitrary word.
+    if tag == 0:
         return value
-    return product + value
+    return value * GEN + value
 
 def main():
     seed = [5, 7]
@@ -30,11 +30,11 @@ def main():
     chain = HeapBuf(LOOP_STEPS + 1)
     chain[1] = digest[0]
     for index in mul_range(1, GEN ** LOOP_STEPS):
-        chain[index * GEN] = mix(chain[index] + index) + index
+        chain[index * GEN] = mix(chain[index] + index, index) + index
 
     public = GEN ** 0
     public[1] = chain[GEN ** LOOP_STEPS]
-    public[GEN] = mix(digest[1])
+    public[GEN] = mix(digest[1], GEN ** 0)
     return
 "#;
 

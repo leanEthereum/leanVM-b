@@ -314,6 +314,7 @@ impl Program {
                         RHint::BitDecompose { .. } => "BitDecompose",
                         RHint::BitDecomposeExp { .. } => "BitDecomposeExp",
                         RHint::FieldLimbs { .. } => "FieldLimbs",
+                        RHint::Inverse { .. } => "Inverse",
                         RHint::Print { .. } => "Print",
                     });
                     match h {
@@ -457,6 +458,10 @@ impl Program {
                             for j in 0..*len {
                                 m.put(fp + base + j, F192::new(limbs[j as usize], 0, 0));
                             }
+                        }
+                        RHint::Inverse { value, dst } => {
+                            let v = m.get(fp + value);
+                            m.put(fp + dst, if v.is_zero() { F192::ZERO } else { v.inv() });
                         }
                     }
                     m.dbg_hint = None;
@@ -642,11 +647,13 @@ impl Program {
                 }
                 Op::Jump { oc, od, of } => {
                     let (ac, ad, af) = (fp + oc, fp + od, fp + of);
-                    let c = m.get(ac);
-                    // The destination and frame cells hold addresses, so they are
-                    // K-valued on EVERY row, taken or not: the table commits one
-                    // lane each and their memory flushes carry literal zeros above
-                    // it (§sec:tab-jump), which the bus would otherwise not balance.
+                    // All three cells are K-valued on EVERY row, taken or not: the
+                    // table commits one lane each and their memory flushes carry
+                    // literal zeros above it (§sec:tab-jump), which the bus would
+                    // otherwise not balance. A guest branches on g-powers; the one
+                    // idiom that once branched on a word, `assert a != b`, takes an
+                    // inverse hint instead (§sec:prog-div-ne).
+                    let c = as_addr(m.get(ac)).expect("JUMP condition is not a K-valued word");
                     let d = as_addr(m.get(ad)).expect("JUMP target is not a K-valued word");
                     let f = as_addr(m.get(af)).expect("JUMP fp is not a K-valued word");
                     // The is-nonzero witness `w = c⁻¹` is never used for control

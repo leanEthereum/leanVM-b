@@ -2499,13 +2499,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             ints(&flat(&|c| c.positions_offsets.clone(), maxlev)),
         );
         ps(
-            "LIG_LOG_QUERIES",
-            ints(&flat(
-                &|c| c.queries.iter().map(|&queries| log2_ceil_usize(queries)).collect(),
-                maxlev,
-            )),
-        );
-        ps(
             "LIG_LOG_MSG_COLS",
             ints(&flat(&|c| c.log_message_columns.clone(), maxlev)),
         );

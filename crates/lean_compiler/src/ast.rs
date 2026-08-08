@@ -94,12 +94,10 @@ pub enum Stmt {
     LetTuple(Vec<String>, String, Vec<Expr>),
     /// `assert a == b`: a proof-enforced equality.
     AssertEq(Expr, Expr),
-    /// `assert a != b`: a proof-enforced inequality. Lowers to a conditional
-    /// `JUMP` on `a + b`: when the sides differ (nonzero) execution skips to the
-    /// continuation; when they are equal it falls through to a jump to the
-    /// poison pc `g^-1` (`KVal::Poison`), which no valid trace can continue
-    /// past. See `FnLower::lower_assert_ne`. No prover hint (unlike the
-    /// `(a-b)·inv == 1` idiom it replaces).
+    /// `assert a != b`: a proof-enforced inequality. Lowers to `x = a + b`, a
+    /// hinted `inv = x⁻¹`, `p = x·inv` and `SET p = 1`, the write-once conflict
+    /// being the assertion: `x = 0` forces `p = 0` whatever the hint. See
+    /// `FnLower::lower_assert_ne`.
     AssertNe(Expr, Expr),
     /// `assert log X < log Y` (also `assert log X < k` with an integer
     /// exponent), a *range check in the exponent*: with `X = g^x`, proves
