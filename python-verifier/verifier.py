@@ -39,19 +39,91 @@ def _base_mul(left: int, right: int) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class F192:
-    """The tower field GF(2^192) = GF(2^64)[y]/(y^3 + y + 1)."""
+class K:
+    """GF(2^64) = F2[x]/(x^64 + x^4 + x^3 + x + 1): the field the witness is committed over.
 
-    c0: int = 0
-    c1: int = 0
-    c2: int = 0
+    A `K` behaves as its 64-bit representation under `__index__`, so transport
+    code (struct packing, byte splitting, bit masking) uses one directly without
+    unwrapping it, while arithmetic stays in the field.
+    """
+
+    value: int = 0
 
     def __post_init__(self) -> None:
-        if not all(isinstance(limb, int) and not isinstance(limb, bool) and 0 <= limb <= MASK64 for limb in (self.c0, self.c1, self.c2)):
-            raise ValueError("field limbs must be 64-bit unsigned integers")
+        if not isinstance(self.value, int) or isinstance(self.value, bool) or not 0 <= self.value <= MASK64:
+            raise ValueError("a K element is a 64-bit unsigned integer")
+
+    def __index__(self) -> int:
+        return self.value
+
+    def to_bytes(self, length: int = 8, byteorder: str = "little") -> bytes:
+        """Its transport image: one 64-bit little-endian word."""
+        return self.value.to_bytes(length, byteorder)
+
+    def __bool__(self) -> bool:
+        return bool(self.value)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, K):
+            return self.value == other.value
+        return isinstance(other, int) and not isinstance(other, bool) and self.value == other
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __add__(self, other: object) -> K:
+        rhs = _as_k(other)
+        # Deferring lets `K + E` and `K * E` fall through to E's reflected
+        # operator, which lifts the K side into the extension.
+        return NotImplemented if rhs is None else K(self.value ^ rhs.value)
+
+    __radd__ = __add__
+    __sub__ = __add__
+    __rsub__ = __add__
+
+    def __neg__(self) -> K:
+        return self
+
+    def __mul__(self, other: object) -> K:
+        rhs = _as_k(other)
+        return NotImplemented if rhs is None else K(_base_mul(self.value, rhs.value))
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        return f"K(0x{self.value:016x})"
+
+
+def _as_k(value: object) -> K | None:
+    """`value` as a K element, or None if it is not one (see `K.__add__`)."""
+    if isinstance(value, K):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MASK64:
+        return K(value)
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class E:
+    """K[y]/(y^3 + y + 1): the challenge field, a degree-3 extension of K.
+
+    The three limbs are K elements, so the tower product below is written in K
+    arithmetic rather than in raw 64-bit words. Limbs may be given as plain
+    integers, which are lifted.
+    """
+
+    c0: K = K()
+    c1: K = K()
+    c2: K = K()
+
+    def __post_init__(self) -> None:
+        for name in ("c0", "c1", "c2"):
+            limb = getattr(self, name)
+            if not isinstance(limb, K):
+                object.__setattr__(self, name, _as_k(limb))
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> F192:
+    def from_bytes(cls, data: bytes) -> E:
         require(len(data) == 24, "a field element must contain exactly 24 bytes")
         return cls(*unpack("<3Q", data))
 
@@ -59,50 +131,52 @@ class F192:
         return pack("<3Q", self.c0, self.c1, self.c2)
 
     @staticmethod
-    def _coerce(other: object) -> F192:
-        if isinstance(other, F192):
+    def _coerce(other: object) -> E:
+        if isinstance(other, E):
             return other
-        if isinstance(other, int) and not isinstance(other, bool) and 0 <= other <= MASK64:
-            return F192(other)
+        lifted = _as_k(other)
+        if lifted is not None:
+            return E(lifted)
         raise TypeError(f"cannot use {type(other).__name__} as a field element")
 
     def __int__(self) -> int:
-        return self.c0 | self.c1 << 64 | self.c2 << 128
+        return self.c0.value | self.c1.value << 64 | self.c2.value << 128
 
     def __bool__(self) -> bool:
         return bool(self.c0 or self.c1 or self.c2)
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, F192):
+        if isinstance(other, E):
             return self.c0 == other.c0 and self.c1 == other.c1 and self.c2 == other.c2
-        return isinstance(other, int) and not isinstance(other, bool) and 0 <= other <= MASK64 and self.c0 == other and self.c1 == self.c2 == 0
+        return isinstance(other, int) and not isinstance(other, bool) and 0 <= other <= MASK64 and self.c0 == other and not (self.c1 or self.c2)
 
     def __hash__(self) -> int:
         return hash(int(self))
 
-    def __add__(self, other: object) -> F192:
+    def __add__(self, other: object) -> E:
         rhs = self._coerce(other)
-        return F192(self.c0 ^ rhs.c0, self.c1 ^ rhs.c1, self.c2 ^ rhs.c2)
+        return E(self.c0 + rhs.c0, self.c1 + rhs.c1, self.c2 + rhs.c2)
 
     __radd__ = __add__
     __sub__ = __add__
     __rsub__ = __add__
 
-    def __neg__(self) -> F192:
+    def __neg__(self) -> E:
         return self
 
-    def __mul__(self, other: object) -> F192:
+    def __mul__(self, other: object) -> E:
         rhs = self._coerce(other)
-        p0 = _base_mul(self.c0, rhs.c0)
-        p1 = _base_mul(self.c0, rhs.c1) ^ _base_mul(self.c1, rhs.c0)
-        p2 = _base_mul(self.c0, rhs.c2) ^ _base_mul(self.c1, rhs.c1) ^ _base_mul(self.c2, rhs.c0)
-        p3 = _base_mul(self.c1, rhs.c2) ^ _base_mul(self.c2, rhs.c1)
-        p4 = _base_mul(self.c2, rhs.c2)
-        return F192(p0 ^ p3, p1 ^ p3 ^ p4, p2 ^ p4)
+        # y^3 = y + 1 folds the degree-4 product back into three limbs.
+        p0 = self.c0 * rhs.c0
+        p1 = self.c0 * rhs.c1 + self.c1 * rhs.c0
+        p2 = self.c0 * rhs.c2 + self.c1 * rhs.c1 + self.c2 * rhs.c0
+        p3 = self.c1 * rhs.c2 + self.c2 * rhs.c1
+        p4 = self.c2 * rhs.c2
+        return E(p0 + p3, p1 + p3 + p4, p2 + p4)
 
     __rmul__ = __mul__
 
-    def __pow__(self, exponent: int) -> F192:
+    def __pow__(self, exponent: int) -> E:
         if exponent < 0:
             return self.inv() ** -exponent
         base, out, n = self, ONE, exponent
@@ -113,26 +187,26 @@ class F192:
             n >>= 1
         return out
 
-    def inv(self) -> F192:
+    def inv(self) -> E:
         require(bool(self), "division by zero in GF(2^192)")
         return self ** (2**192 - 2)
 
-    def __truediv__(self, other: object) -> F192:
+    def __truediv__(self, other: object) -> E:
         rhs = self._coerce(other)
         return self * rhs.inv()
 
-    def __rtruediv__(self, other: object) -> F192:
+    def __rtruediv__(self, other: object) -> E:
         lhs = self._coerce(other)
         return lhs * self.inv()
 
     def __repr__(self) -> str:
-        return f"F192(0x{self.c2:016x}{self.c1:016x}{self.c0:016x})"
+        return f"E(0x{self.c2.value:016x}{self.c1.value:016x}{self.c0.value:016x})"
 
 
-ZERO = F192(0)
-ONE = F192(1)
-GEN = F192(2)
-Y = F192(0, 1)  # the tower generator, y^3 = y + 1
+ZERO = E(0)
+ONE = E(1)
+GEN = E(2)
+Y = E(0, 1)  # the tower generator, y^3 = y + 1
 
 
 # BLAKE3 --------------------------------------------------------------------
@@ -233,7 +307,7 @@ def _chunk_output(chunk: bytes, chunk_counter: int) -> tuple[Sequence[int], Sequ
     return cv, _words(last), chunk_counter, len(last), flags
 
 
-def blake3_hash(data: bytes) -> bytes:
+def blake3_hash(data: bytes) -> Digest:
     """Standard 32-byte unkeyed BLAKE3 hash."""
     chunks = [data[i : i + 1024] for i in range(0, len(data), 1024)] or [b""]
     stack: list[tuple[int, ...]] = []
@@ -255,22 +329,63 @@ def blake3_hash(data: bytes) -> bytes:
     for left in reversed(stack[:-1]):
         output = _parent_output(left, right)
         right = _output_cv(output)
-    return _output_root(output)
+    return Digest(_output_root(output))
 
 
-def digest_words(digest: bytes) -> tuple[int, int, int, int]:
-    """Read the first 32 bytes of a digest as four little-endian 64-bit words."""
-    return unpack("<4Q", digest[:32])
+@dataclass(frozen=True, slots=True)
+class Digest:
+    """256 bits: a BLAKE3 output, a Merkle node, the sponge state, the public input.
+
+    Two transcript encodings as a pair of E elements exist and are NOT
+    interchangeable. A Merkle root rides as 24 + 8 bytes ([`scalars`], mirroring
+    `pcs::merkle::hash_to_scalars`); the commitment root and the public input
+    ride as 16 + 16 ([`halves`]). Naming both here is what keeps one from being
+    read as the other.
+    """
+
+    value: bytes
+
+    def __post_init__(self) -> None:
+        require(len(self.value) == 32, "a digest is 256 bits")
+
+    @classmethod
+    def from_words(cls, words: Sequence[K | int]) -> Digest:
+        require(len(words) == 4, "a digest is four 64-bit words")
+        return cls(b"".join(_as_k(word).to_bytes() for word in words))
+
+    def words(self) -> tuple[K, K, K, K]:
+        w0, w1, w2, w3 = unpack("<4Q", self.value)
+        return (K(w0), K(w1), K(w2), K(w3))
+
+    def scalars(self) -> tuple[E, E]:
+        """The 24 + 8 encoding: three limbs, then one."""
+        w = self.words()
+        return (E(w[0], w[1], w[2]), E(w[3]))
+
+    @classmethod
+    def from_scalars(cls, low: E, high: E) -> Digest:
+        require(not (high.c1 or high.c2), "non-canonical digest")
+        return cls.from_words((low.c0, low.c1, low.c2, high.c0))
+
+    def halves(self) -> tuple[E, E]:
+        """The 16 + 16 encoding: two limbs each, top lanes spare."""
+        w = self.words()
+        return (E(w[0], w[1]), E(w[2], w[3]))
+
+    @classmethod
+    def from_halves(cls, low: E, high: E) -> Digest:
+        require(not (low.c2 or high.c2), "digest half has a nonzero top limb")
+        return cls.from_words((low.c0, low.c1, high.c0, high.c1))
 
 
-def eq_kernel(point: Sequence[F192]) -> list[F192]:
+def eq_kernel(point: Sequence[E]) -> list[E]:
     out = [ONE]
     for r in point:
         out = [v * (ONE + r) for v in out] + [v * r for v in out]
     return out
 
 
-def multilinear_eval(mle: Sequence[F192], point: Sequence[F192]) -> F192:
+def multilinear_eval(mle: Sequence[E], point: Sequence[E]) -> E:
     require(len(mle) == 2 ** len(point), "multilinear table has the wrong size")
     cur = list(mle)
     for r in point:
@@ -302,18 +417,18 @@ def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
     return offsets, log_ceil(max(total, 1))
 
 
-def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
+def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
     result = ONE
     for x, y in zip(left, right, strict=True):
         result *= ONE + x + y
     return result
 
 
-def _selector_point(selector: int, length: int) -> tuple[F192, ...]:
-    return tuple(F192(selector >> bit & 1) for bit in range(length))
+def _selector_point(selector: int, length: int) -> tuple[E, ...]:
+    return tuple(E(selector >> bit & 1) for bit in range(length))
 
 
-def selector_eq(selector: int, point: Sequence[F192]) -> F192:
+def selector_eq(selector: int, point: Sequence[E]) -> E:
     """eq(bits of `selector`, point).
 
     A bus block, and a column's placement in the stack, each occupy one subcube,
@@ -323,7 +438,7 @@ def selector_eq(selector: int, point: Sequence[F192]) -> F192:
     return eq_eval(_selector_point(selector, len(point)), point)
 
 
-def index_mle(point: Sequence[F192]) -> F192:
+def index_mle(point: Sequence[E]) -> E:
     """MLE of ``[1, g, g^2, ...]`` at an LSB-first point."""
     result = ONE
     generator_power = GEN
@@ -337,7 +452,7 @@ QUAD_NODES = (ZERO, ONE, GEN, GEN**2)
 
 
 @cache
-def _denominators(nodes: tuple[F192, ...]) -> tuple[F192, ...]:
+def _denominators(nodes: tuple[E, ...]) -> tuple[E, ...]:
     result = []
     for index, node in enumerate(nodes):
         denominator = ONE
@@ -348,7 +463,7 @@ def _denominators(nodes: tuple[F192, ...]) -> tuple[F192, ...]:
     return tuple(result)
 
 
-def lagrange_weights(nodes: Sequence[F192], point: F192) -> list[F192]:
+def lagrange_weights(nodes: Sequence[E], point: E) -> list[E]:
     fixed_nodes = tuple(nodes)
     differences = [point + node for node in fixed_nodes]
     prefix = [ONE]
@@ -363,7 +478,7 @@ def lagrange_weights(nodes: Sequence[F192], point: F192) -> list[F192]:
     return result
 
 
-def lagrange_interpolate(nodes: Sequence[F192], values: Sequence[F192], point: F192) -> F192:
+def lagrange_interpolate(nodes: Sequence[E], values: Sequence[E], point: E) -> E:
     weights = lagrange_weights(nodes, point)
     return sum((weight * value for weight, value in zip(weights, values, strict=True)), ZERO)
 
@@ -388,24 +503,23 @@ class BinaryReader:
     def u64(self) -> int:
         return int.from_bytes(self.take(8), "little")
 
-    def field(self) -> F192:
-        return F192.from_bytes(self.take(24))
+    def field(self) -> E:
+        return E.from_bytes(self.take(24))
 
-    def fields(self) -> list[F192]:
+    def fields(self) -> list[E]:
         length = self.u64()
         require(length <= self.remaining // 24, "invalid field-vector length")
         return [self.field() for _ in range(length)]
 
-    def base_fields(self) -> list[F192]:
-        """A row of K words, embedded in E: only their Merkle preimage is narrow."""
+    def base_fields(self) -> list[K]:
         length = self.u64()
         require(length <= self.remaining // 8, "invalid base-field-vector length")
-        return [F192(self.u64()) for _ in range(length)]
+        return [K(self.u64()) for _ in range(length)]
 
-    def hashes(self) -> tuple[bytes, ...]:
+    def hashes(self) -> tuple[Digest, ...]:
         length = self.u64()
         require(length <= self.remaining // 32, "invalid hash-vector length")
-        return tuple(self.take(32) for _ in range(length))
+        return tuple(Digest(self.take(32)) for _ in range(length))
 
     @property
     def remaining(self) -> int:
@@ -423,8 +537,8 @@ class MerkleOpening:
     every deeper level committed a folded E-valued one.
     """
 
-    opened_rows: tuple[tuple[F192, ...], ...]
-    merkle_proof: tuple[bytes, ...]
+    opened_rows: tuple[tuple[K, ...], ...] | tuple[tuple[E, ...], ...]
+    merkle_proof: tuple[Digest, ...]
 
     @classmethod
     def read(cls, reader: BinaryReader, base_field: bool) -> MerkleOpening:
@@ -460,7 +574,7 @@ class WhirProof:
 
 @dataclass(frozen=True)
 class Proof:
-    stream: tuple[F192, ...]
+    stream: tuple[E, ...]
     openings: tuple[WhirProof, ...]
 
     @classmethod
@@ -492,8 +606,7 @@ def compress(left: Sequence[int], right: Sequence[int]) -> tuple[int, int, int, 
     # The one removed-guard site with nothing downstream to catch a bad length:
     # a short operand would silently hash to a different value.
     require(len(left) == len(right) == 4, "compression operands must contain four words")
-    digest = blake3_hash(b"".join(x.to_bytes(8, "little") for x in (*left, *right)))
-    return digest_words(digest)
+    return unpack("<4Q", blake3_hash(b"".join(x.to_bytes(8, "little") for x in (*left, *right))).value)
 
 
 class Transcript:
@@ -504,7 +617,7 @@ class Transcript:
     and never advances the stream.
     """
 
-    def __init__(self, proof: Proof, label: bytes, statement: Sequence[F192]) -> None:
+    def __init__(self, proof: Proof, label: bytes, statement: Sequence[E]) -> None:
         self.proof = proof
         self.state = (0, 0, 0, 0)
         self.stream_offset = 0
@@ -514,7 +627,7 @@ class Transcript:
         for value in statement:
             self.observe(value)
 
-    def observe(self, value: F192) -> None:
+    def observe(self, value: E) -> None:
         self.state = compress(self.state, (value.c0, value.c1, value.c2, DS_SCALAR))
 
     def absorb_bytes(self, data: bytes) -> None:
@@ -526,25 +639,25 @@ class Transcript:
                 (int.from_bytes(block[:8], "little"), int.from_bytes(block[8:], "little"), DS_BYTE, 0),
             )
 
-    def sample(self) -> F192:
+    def sample(self) -> E:
         self.state = compress(self.state, (0, 0, DS_SQUEEZE, 0))
-        return F192(*self.state[:3])
+        return E(*self.state[:3])
 
-    def samples(self, count: int) -> list[F192]:
+    def samples(self, count: int) -> list[E]:
         return [self.sample() for _ in range(count)]
 
-    def _next(self) -> F192:
+    def _next(self) -> E:
         require(self.stream_offset < len(self.proof.stream), "proof stream exhausted")
         value = self.proof.stream[self.stream_offset]
         self.stream_offset += 1
         return value
 
-    def scalar(self) -> F192:
+    def scalar(self) -> E:
         value = self._next()
         self.observe(value)
         return value
 
-    def scalars(self, count: int) -> list[F192]:
+    def scalars(self, count: int) -> list[E]:
         return [self.scalar() for _ in range(count)]
 
     def grind_check(self, bits: int) -> None:
@@ -557,7 +670,7 @@ class Transcript:
         nonce = self._next()
         block = (nonce.c0, nonce.c1, nonce.c2, DS_POW)
         digest = compress(compress(self.state, (0, 0, DS_POW, 0)), block)[0]
-        valid = nonce == ZERO if bits == 0 else digest & ((1 << bits) - 1) == 0
+        valid = nonce == ZERO if bits == 0 else digest & (2**bits - 1) == 0
         self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")
 
@@ -577,20 +690,20 @@ class Transcript:
 
 @dataclass(frozen=True)
 class ProductTriple:
-    roots: tuple[F192, F192, F192]
-    point: tuple[F192, ...]
-    values: tuple[F192, F192, F192]
+    roots: tuple[E, E, E]
+    point: tuple[E, ...]
+    values: tuple[E, E, E]
 
 
 def quartic_eval_from_eq(
-    claim: F192,
-    equality_point: F192,
-    difference: F192,
-    c2: F192,
-    c3: F192,
-    c4: F192,
-    challenge: F192,
-) -> F192:
+    claim: E,
+    equality_point: E,
+    difference: E,
+    c2: E,
+    c3: E,
+    c4: E,
+    challenge: E,
+) -> E:
     c0 = claim + equality_point * difference
     c1 = difference + c2 + c3 + c4
     return c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
@@ -600,7 +713,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
     root_values = transcript.scalars(3)
     roots = (root_values[0], root_values[1], root_values[2])
     combine = transcript.sample()
-    point: list[F192] = []
+    point: list[E] = []
     values = list(roots)
 
     layer = depth
@@ -613,7 +726,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
         require(width == 2 or round_count == 0, "binary GKR layer is not root-most")
         claim = values[0] + combine * (values[1] + combine * values[2])
 
-        round_point: list[F192] = []
+        round_point: list[E] = []
         for prior in point[:round_count]:
             message = transcript.scalars(4)
             challenge = transcript.sample()
@@ -655,12 +768,12 @@ class Form:
     sumcheck's round polynomial does not grow.
     """
 
-    constant: F192 = ZERO
-    linear: dict[int, F192] = field(default_factory=dict)
-    quadratic: dict[tuple[int, int], F192] = field(default_factory=dict)
-    public: tuple[tuple[tuple[F192, ...] | str, F192], ...] = ()
+    constant: E = ZERO
+    linear: dict[int, E] = field(default_factory=dict)
+    quadratic: dict[tuple[int, int], E] = field(default_factory=dict)
+    public: tuple[tuple[tuple[E, ...] | str, E], ...] = ()
 
-    def add_scaled(self, other: Form, weight: F192) -> None:
+    def add_scaled(self, other: Form, weight: E) -> None:
         self.constant += weight * other.constant
         for column, coefficient in other.linear.items():
             self.linear[column] = self.linear.get(column, ZERO) + weight * coefficient
@@ -668,7 +781,7 @@ class Form:
             self.quadratic[pair] = self.quadratic.get(pair, ZERO) + weight * coefficient
         self.public += tuple((table, weight * coefficient) for table, coefficient in other.public)
 
-    def evaluate(self, column: Callable[[int], F192], point: Sequence[F192] = ()) -> F192:
+    def evaluate(self, column: Callable[[int], E], point: Sequence[E] = ()) -> E:
         """Substitute a value for every column, and the point for the public terms."""
         total = self.constant
         for index, coefficient in self.linear.items():
@@ -708,8 +821,8 @@ def bus_layout(blocks: Sequence[BusBlock]) -> BusLayout:
 @dataclass(frozen=True)
 class ColumnClaim:
     column: int
-    point: tuple[F192, ...]
-    value: F192
+    point: tuple[E, ...]
+    value: E
 
 
 # A tuple is fingerprinted MULTILINEARLY: slot x weighs eq(alphas, x), not
@@ -719,7 +832,7 @@ class ColumnClaim:
 N_TUPLE_BITS = 4
 
 
-def fingerprint_weights(alphas: Sequence[F192]) -> tuple[F192, ...]:
+def fingerprint_weights(alphas: Sequence[E]) -> tuple[E, ...]:
     weights = [ONE] * 2**N_TUPLE_BITS
     for bit, a in enumerate(alphas):
         for x in range(len(weights)):
@@ -730,16 +843,16 @@ def fingerprint_weights(alphas: Sequence[F192]) -> tuple[F192, ...]:
 def _decompose_bus_side(
     blocks: Sequence[BusBlock],
     layout: BusLayout,
-    point: Sequence[F192],
-    weights: Sequence[F192],
-    gamma: F192,
+    point: Sequence[E],
+    weights: Sequence[E],
+    gamma: E,
     forms: Sequence[Form],
     claims: list[ColumnClaim],
     transcript: Transcript,
-) -> F192:
+) -> E:
     require(len(point) == layout.depth, "bus point dimension mismatch")
 
-    def committed_value(column: int, low_point: tuple[F192, ...]) -> F192:
+    def committed_value(column: int, low_point: tuple[E, ...]) -> E:
         for prior in claims:
             if prior.column == column and prior.point == low_point:
                 return prior.value
@@ -778,9 +891,9 @@ def _decompose_bus_side(
 @dataclass(frozen=True)
 class BusResult:
     claims: tuple[ColumnClaim, ...]
-    point: tuple[F192, ...]  # the GKR point zeta, which the table sumcheck reuses
+    point: tuple[E, ...]  # the GKR point zeta, which the table sumcheck reuses
     forms: tuple[tuple[Form, ...], ...]  # forms[side][table]
-    totals: tuple[F192, F192, F192]  # what the tables owe each side, derived
+    totals: tuple[E, E, E]  # what the tables owe each side, derived
 
 
 def verify_bus_balance(
@@ -847,7 +960,7 @@ class Air:
     log_height: int
     forms: tuple[Form, ...]
 
-    def evaluate(self, constraint_powers: Sequence[F192], form_powers: Sequence[F192], columns: Sequence[F192]) -> F192:
+    def evaluate(self, constraint_powers: Sequence[E], form_powers: Sequence[E], columns: Sequence[E]) -> E:
         """This table's share of the batch's summand: its identities, then its bus forms."""
         terms = self.table.constraints(lambda name: columns[self.table.col(name)])
         identities = sum((weight * term for weight, term in zip(constraint_powers, terms, strict=True)), ZERO)
@@ -857,11 +970,11 @@ class Air:
 
 @dataclass(frozen=True)
 class AirClaim:
-    point: tuple[F192, ...]
-    evaluations: tuple[F192, ...]
+    point: tuple[E, ...]
+    evaluations: tuple[E, ...]
 
 
-def powers(base: F192, count: int) -> list[F192]:
+def powers(base: E, count: int) -> list[E]:
     result, current = [], ONE
     for _ in range(count):
         result.append(current)
@@ -871,10 +984,10 @@ def powers(base: F192, count: int) -> list[F192]:
 
 def verify_constraints(
     airs: Sequence[Air],
-    constraint_powers: Sequence[F192],
-    form_powers: Sequence[F192],
-    equality_point: Sequence[F192],
-    target: F192,
+    constraint_powers: Sequence[E],
+    form_powers: Sequence[E],
+    equality_point: Sequence[E],
+    target: E,
     transcript: Transcript,
 ) -> list[AirClaim]:
     depth = max((air.log_height for air in airs), default=0)
@@ -921,7 +1034,7 @@ MAX_LOG_BYTECODE = 32
 N_BYTECODE_SELECTORS = 4
 
 
-def bytecode_columns(bytecode: Sequence[int]) -> tuple[tuple[tuple[F192, ...], ...], int]:
+def bytecode_columns(bytecode: Sequence[K]) -> tuple[tuple[tuple[K, ...], ...], int]:
     """Split the stacked bytecode multilinear into its nine public columns.
 
     `bytecode` is 2^(N_BYTECODE_SELECTORS + kbc) K words, slot-major: slot `i`
@@ -933,23 +1046,21 @@ def bytecode_columns(bytecode: Sequence[int]) -> tuple[tuple[tuple[F192, ...], .
     require(length > 0 and not length & (length - 1), "bytecode length must be a power of two")
     kbc = length.bit_length() - 1 - N_BYTECODE_SELECTORS
     require(0 <= kbc <= MAX_LOG_BYTECODE, "bytecode does not have 2^N_BYTECODE_SELECTORS slots")
-    require(all(0 <= word <= MASK64 for word in bytecode), "a bytecode entry is not a 64-bit word")
-    rows = 1 << kbc
+    rows = 2**kbc
     used = 1 + N_BYTECODE_OPERANDS
     require(not any(bytecode[used * rows :]), "bytecode padding slots must be zero")
-    columns = tuple(tuple(F192(word) for word in bytecode[slot * rows : (slot + 1) * rows]) for slot in range(used))
+    columns = tuple(tuple(bytecode[slot * rows : (slot + 1) * rows]) for slot in range(used))
     return columns, kbc
 
 
-def transcript_statement(bytecode: Sequence[int], public_input: Sequence[F192]) -> tuple[F192, ...]:
+def transcript_statement(bytecode: Sequence[K], public_input: Sequence[E]) -> tuple[E, ...]:
     """The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
 
     The seed hashes the bytecode multilinear itself, not a structured program, so
     a verifier holding only the polynomial can reproduce it.
     """
-    seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST + b"".join(word.to_bytes(8, "little") for word in bytecode))
-    words = digest_words(seed)
-    return (F192(words[0], words[1]), F192(words[2], words[3]), *public_input)
+    seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST + b"".join(word.to_bytes() for word in bytecode))
+    return (*seed.halves(), *public_input)
 
 
 # The columns no instruction table owns (doc sec:e2e-unrolled, Commitment): the
@@ -988,12 +1099,12 @@ class Layout:
     table_logs: tuple[int, ...]
 
 
-def _gpow(index: int) -> F192:
+def _gpow(index: int) -> E:
     return GEN**index
 
 
-def _const(value: F192 | int) -> Form:
-    return Form(constant=value if isinstance(value, F192) else F192(value))
+def _const(value: E | int) -> Form:
+    return Form(constant=value if isinstance(value, E) else E(value))
 
 
 def _col(index: int) -> Form:
@@ -1015,7 +1126,7 @@ def _prod(a: int, b: int, exponent: int = 0) -> Form:
     return Form(quadratic={(a, b): _gpow(exponent)})
 
 
-def _public(values: Sequence[F192]) -> Form:
+def _public(values: Sequence[E]) -> Form:
     return Form(public=((tuple(values), ONE),))
 
 
@@ -1076,7 +1187,7 @@ class Table:
     opcode: int  # also its index in TABLES, so g^opcode is its bytecode tag
     columns: tuple[str, ...]
     flushes: Callable[[Table], Flushes]
-    constraints: Callable[[Callable[[str], F192]], tuple[F192, ...]] = lambda _: ()
+    constraints: Callable[[Callable[[str], E]], tuple[E, ...]] = lambda _: ()
     n_constraints: int = 0
 
     @property
@@ -1182,7 +1293,7 @@ def _flushes_jump(table: Table) -> Flushes:
     return flushes
 
 
-def _jump_constraints(get: Callable[[str], F192]) -> tuple[F192, ...]:
+def _jump_constraints(get: Callable[[str], E]) -> tuple[E, ...]:
     """``b = c*w`` and ``c*(b+1) = 0``: the one quantity no interaction pins.
 
     No table binds an address, an arithmetic result, a DEREF store or a JUMP
@@ -1313,7 +1424,7 @@ WIDTHS = tuple(t.width for t in TABLES)
 BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(TABLES)))
 
 
-def build_layout(public_columns: Sequence[Sequence[F192]], bytecode_log: int, log_memory: int, table_logs: Sequence[int]) -> Layout:
+def build_layout(public_columns: Sequence[Sequence[E]], bytecode_log: int, log_memory: int, table_logs: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
         and len(table_logs) == len(TABLES)
@@ -1493,26 +1604,28 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
     )
 
 
-def _hash_pair(left: bytes, right: bytes) -> bytes:
-    return blake3_hash(left + right)
+def _hash_pair(left: Digest, right: Digest) -> Digest:
+    return blake3_hash(left.value + right.value)
 
 
-def _row_hash(row: Sequence[F192], base_field: bool) -> bytes:
-    """The committer's leaf preimage: 8 bytes per K word, 24 per E word."""
-    if base_field:
-        return blake3_hash(b"".join(value.c0.to_bytes(8, "little") for value in row))
+def _row_hash(row: Sequence[K | E]) -> Digest:
+    """The committer's leaf preimage.
+
+    A field element's `to_bytes` is its transport image, 8 bytes for a K word and
+    24 for an E word, so the row's own element type gives the width. Level 0
+    committed the K witness; every deeper level a folded E one.
+    """
     return blake3_hash(b"".join(value.to_bytes() for value in row))
 
 
 def authenticate_rows(
-    root: bytes,
+    root: Digest,
     leaf_count: int,
     queries: Sequence[int],
-    rows: Sequence[Sequence[F192]],
+    rows: Sequence[Sequence[K | E]],
     row_width: int,
-    octopus: Sequence[bytes],
-    base_field: bool = False,
-) -> list[Sequence[F192]]:
+    octopus: Sequence[Digest],
+) -> list[Sequence[K | E]]:
     """Authenticate a compressed multiproof and restore transcript row order."""
     require(leaf_count > 0 and leaf_count & (leaf_count - 1) == 0, "invalid Merkle leaf count")
     unique = sorted(set(queries))
@@ -1520,7 +1633,7 @@ def authenticate_rows(
     require(all(0 <= q < leaf_count for q in unique), "Merkle query is out of range")
     require(all(len(row) == row_width for row in rows), "opened row has the wrong width")
 
-    nodes = [(index, _row_hash(row, base_field)) for index, row in zip(unique, rows, strict=True)]
+    nodes = [(index, _row_hash(row)) for index, row in zip(unique, rows, strict=True)]
     supplied = iter(octopus)
     for _ in range(leaf_count.bit_length() - 1):
         parents: list[tuple[int, bytes]] = []
@@ -1560,14 +1673,14 @@ def sample_queries(transcript: Transcript, block_length: int, count: int) -> lis
 
 @dataclass(frozen=True)
 class QuadraticMessage:
-    constant: F192
-    linear: F192
-    quadratic: F192
+    constant: E
+    linear: E
+    quadratic: E
 
-    def evaluate(self, point: F192) -> F192:
+    def evaluate(self, point: E) -> E:
         return self.constant + point * (self.linear + point * self.quadratic)
 
-    def add_scaled(self, other: QuadraticMessage, scale: F192) -> QuadraticMessage:
+    def add_scaled(self, other: QuadraticMessage, scale: E) -> QuadraticMessage:
         return QuadraticMessage(
             self.constant + scale * other.constant,
             self.linear + scale * other.linear,
@@ -1576,10 +1689,10 @@ class QuadraticMessage:
 
 
 def _enforced_sum(
-    rows: Sequence[Sequence[F192]],
-    folds: Sequence[F192],
-    query_weights: Sequence[F192],
-) -> F192:
+    rows: Sequence[Sequence[K | E]],
+    folds: Sequence[E],
+    query_weights: Sequence[E],
+) -> E:
     lane_weights = eq_kernel(folds)
     total = ZERO
     for query_weight, row in zip(query_weights, rows, strict=True):
@@ -1587,10 +1700,10 @@ def _enforced_sum(
     return total
 
 
-def _subspace_roots(log_n: int) -> list[F192]:
+def _subspace_roots(log_n: int) -> list[E]:
     roots = [ZERO] * (log_n + 1)
     roots[0] = ONE
-    layer = [F192(1 << i) for i in range(1, log_n + 1)]
+    layer = [E(2**i) for i in range(1, log_n + 1)]
     for level in range(log_n):
         for index in range(log_n - level):
             value = layer[index] * layer[index] + roots[level] * layer[index]
@@ -1601,7 +1714,7 @@ def _subspace_roots(log_n: int) -> list[F192]:
     return roots
 
 
-def _induced_weight(message_log: int, queries: Sequence[int], query_weights: Sequence[F192], point: Sequence[F192]) -> F192:
+def _induced_weight(message_log: int, queries: Sequence[int], query_weights: Sequence[E], point: Sequence[E]) -> E:
     """The level's batched query claims, as one weight at `point`.
 
     Each query contributes the novel-basis column weight of doc annex B, Lemma
@@ -1613,7 +1726,7 @@ def _induced_weight(message_log: int, queries: Sequence[int], query_weights: Seq
     inverses = [value.inv() if value else ZERO for value in roots]
     total = ZERO
     for weight, query in zip(query_weights, queries, strict=True):
-        basis = F192(query)
+        basis = E(query)
         product = weight
         for coordinate, challenge in enumerate(point):
             product *= ONE + challenge * (ONE + basis * inverses[coordinate])
@@ -1631,10 +1744,10 @@ class GluedClaim:
     terminal point, restricted to the level's own message coordinates.
     """
 
-    scalar: F192  # the power of lambda it was glued with
+    scalar: E  # the power of lambda it was glued with
     message_log: int  # the level's message width, which rebuilds its share of the point
     fold_start: int  # how many fold challenges preceded the level
-    weight_at: Callable[[Sequence[F192]], F192]
+    weight_at: Callable[[Sequence[E]], E]
 
 
 def verify_whir(
@@ -1642,26 +1755,23 @@ def verify_whir(
     proof: WhirProof,
     log_n: int,
     log_inv_rate: int,
-    target: F192,
-    root: bytes,
-    evaluate_basis: Callable[[Sequence[F192]], F192],
+    target: E,
+    root: Digest,
+    evaluate_basis: Callable[[Sequence[E]], E],
 ) -> None:
     """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, log_inv_rate)
     levels = len(config.folds)
     require(len(proof.recursive_proofs) == levels - 2, "wrong WHIR recursive-proof count")
 
-    def observe_root(value: bytes) -> None:
-        require(len(value) == 32, "invalid Merkle root")
-        transcript.observe(F192.from_bytes(value[:24]))
-        transcript.observe(F192(int.from_bytes(value[24:], "little")))
+    def observe_root(value: Digest) -> None:
+        for scalar in value.scalars():
+            transcript.observe(scalar)
 
-    def read_root() -> bytes:
-        low, high = transcript.scalar(), transcript.scalar()
-        require(high.c1 == 0 and high.c2 == 0, "non-canonical Merkle root")
-        return low.to_bytes() + high.c0.to_bytes(8, "little")
+    def read_root() -> Digest:
+        return Digest.from_scalars(transcript.scalar(), transcript.scalar())
 
-    def next_quad(claim: F192) -> QuadraticMessage:
+    def next_quad(claim: E) -> QuadraticMessage:
         constant, quadratic = transcript.scalar(), transcript.scalar()
         return QuadraticMessage(constant, claim + quadratic, quadratic)
 
@@ -1669,12 +1779,12 @@ def verify_whir(
     observe_root(root)
     running_target = target
     running_quad = next_quad(target)
-    folds: list[F192] = []
+    folds: list[E] = []
     glued: list[GluedClaim] = []
     current_root = root
 
     for level, (fold_count, level_rate) in enumerate(zip(config.folds, config.log_inv_rates, strict=True)):
-        level_folds: list[F192] = []
+        level_folds: list[E] = []
         for fold_index in range(fold_count):
             bits = max(0, config.fold_grinding_bits[level] - fold_index)
             if bits:
@@ -1689,7 +1799,7 @@ def verify_whir(
         final_level = level == levels - 1
         # The level's claims, held until its batching challenge is drawn: the
         # OOD claims first, then the query batch (Annex B, Protocol 1 step 1).
-        pending_ood: list[tuple[tuple[F192, ...], F192, QuadraticMessage]] = []
+        pending_ood: list[tuple[tuple[E, ...], E, QuadraticMessage]] = []
         if final_level:
             residual = tuple(transcript.scalars(2**message_log))
         else:
@@ -1720,7 +1830,6 @@ def verify_whir(
                 opened.opened_rows,
                 2**fold_count,
                 opened.merkle_proof,
-                level == 0,
             )
         except VerificationError as exc:
             raise VerificationError(f"WHIR level {level}: {exc}") from exc
@@ -1745,7 +1854,7 @@ def verify_whir(
         if final_level:
             # Finish the remaining sumcheck rounds and close on one evaluation
             # of every basis at the resulting point.
-            tail_folds: list[F192] = []
+            tail_folds: list[E] = []
             for round_index in range(message_log):
                 challenge = transcript.sample()
                 running_target = running_quad.evaluate(challenge)
@@ -1769,17 +1878,17 @@ def verify_whir(
 # Flock reduction -------------------------------------------------------------
 
 PHI_BASIS = (
-    F192(0x0000000000000001),
-    F192(0x033CE8BEDDC8A656),
-    F192(0x512620375ED2A108),
-    F192(0x0C9E636090AAFC01),
-    F192(0xBA4F3CD82801769C),
-    F192(0xBA26E7904ADB4A47),
-    F192(0x467698598926DC01),
-    F192(0x4418AE808B28BDD0),
+    E(0x0000000000000001),
+    E(0x033CE8BEDDC8A656),
+    E(0x512620375ED2A108),
+    E(0x0C9E636090AAFC01),
+    E(0xBA4F3CD82801769C),
+    E(0xBA26E7904ADB4A47),
+    E(0x467698598926DC01),
+    E(0x4418AE808B28BDD0),
 )
 PHI = tuple(sum((PHI_BASIS[bit] for bit in range(8) if value >> bit & 1), ZERO) for value in range(256))
-_MEDIUM_GENERATOR = F192(
+_MEDIUM_GENERATOR = E(
     0x243F6A8885A308D3,
     0x13198A2E03707344,
     0xA4093822299F31D0,
@@ -1804,7 +1913,7 @@ FIXED_CHALLENGES = (
 )
 
 
-def quirky_weights(skip_point: F192, rest: Sequence[F192]) -> list[F192]:
+def quirky_weights(skip_point: E, rest: Sequence[E]) -> list[E]:
     skip = lagrange_weights(PHI[:PACKED_BITS], skip_point)
     tail = eq_kernel(rest)
     return [a * b for b in tail for a in skip]
@@ -1812,29 +1921,29 @@ def quirky_weights(skip_point: F192, rest: Sequence[F192]) -> list[F192]:
 
 @dataclass(frozen=True)
 class QuirkyPoint:
-    skip: F192
-    inner: tuple[F192, ...]
-    outer: tuple[F192, ...]
+    skip: E
+    inner: tuple[E, ...]
+    outer: tuple[E, ...]
 
     @property
-    def ring_tail(self) -> tuple[F192, ...]:
+    def ring_tail(self) -> tuple[E, ...]:
         return self.inner + self.outer
 
 
 @dataclass(frozen=True)
 class ZClaim:
     point: QuirkyPoint
-    value: F192
+    value: E
 
 
 @dataclass(frozen=True)
 class ZerocheckResult:
-    skip: F192
-    rounds: tuple[F192, ...]
-    equality_tail: tuple[F192, ...]
-    a: F192
-    b: F192
-    c: F192
+    skip: E
+    rounds: tuple[E, ...]
+    equality_tail: tuple[E, ...]
+    a: E
+    b: E
+    c: E
 
 
 def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
@@ -1866,13 +1975,13 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
 class FlockReduction:
     ab: ZClaim
     c: ZClaim
-    ab_s_hat_v: tuple[F192, ...]
+    ab_s_hat_v: tuple[E, ...]
 
 
 RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
 
 
-def _coordinate_weights(challenges: Sequence[F192]) -> list[F192]:
+def _coordinate_weights(challenges: Sequence[E]) -> list[E]:
     """`ring_switch::build_coordinate_weights`: the images `Phi(basis_w)` of the
     F2-coordinate basis under the six composed two-term linearized maps. The
     verifier weights the transposed columns with these; the guest applies the
@@ -1881,8 +1990,8 @@ def _coordinate_weights(challenges: Sequence[F192]) -> list[F192]:
     for w in range(192):
         # b_w has only bit w set: limb w // 64, bit w % 64.
         limbs = [0, 0, 0]
-        limbs[w // 64] = 1 << (w % 64)
-        element = F192(*limbs)
+        limbs[w // 64] = 2 ** (w % 64)
+        element = E(*limbs)
         for challenge, shift in zip(challenges, RING_MAP_SHIFTS, strict=True):
             frobenius = element
             for _ in range(shift):
@@ -1892,19 +2001,19 @@ def _coordinate_weights(challenges: Sequence[F192]) -> list[F192]:
     return weights
 
 
-def _transpose(values: Sequence[F192]) -> list[F192]:
+def _transpose(values: Sequence[E]) -> list[E]:
     require(len(values) == PACKED_BITS, "ring-switch slice has the wrong length")
     output = [0] * 192
     for row, value in enumerate(values):
         bits = int(value)
         while bits:
             bit = (bits & -bits).bit_length() - 1
-            output[bit] ^= 1 << row
+            output[bit] ^= 2**row
             bits &= bits - 1
-    return [F192(value) for value in output]
+    return [E(value) for value in output]
 
 
-def _linear_map(value: F192, weights: Sequence[F192]) -> F192:
+def _linear_map(value: E, weights: Sequence[E]) -> E:
     result = ZERO
     bits = int(value)
     while bits:
@@ -1915,10 +2024,10 @@ def _linear_map(value: F192, weights: Sequence[F192]) -> F192:
 
 
 def _ring_weight(
-    suffix_point: Sequence[F192],
-    query: Sequence[F192],
-    coordinate_weights: Sequence[F192],
-) -> F192:
+    suffix_point: Sequence[E],
+    query: Sequence[E],
+    coordinate_weights: Sequence[E],
+) -> E:
     """Evaluate the transparent ring-switch weight at one query point."""
     suffix_tensor = eq_kernel(suffix_point)
     query_tensor = eq_kernel(query)
@@ -1934,17 +2043,17 @@ def _ring_weight(
 def verify_stacked_opening(
     transcript: Transcript,
     opening: WhirProof,
-    root: bytes,
+    root: Digest,
     stack_log: int,
     log_inv_rate: int,
     qflock_offset: int,
     qflock_variables: int,
     reduction: FlockReduction,
-    point_claims: Sequence[tuple[Sequence[F192], F192]],
+    point_claims: Sequence[tuple[Sequence[E], E]],
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
-    slices: list[Sequence[F192]] = [reduction.ab_s_hat_v]
+    slices: list[Sequence[E]] = [reduction.ab_s_hat_v]
     # A/B's values were already derived from the bound z_partial; only C is sent.
     for claim in ring_claims[1:]:
         values = tuple(transcript.scalars(PACKED_BITS))
@@ -1966,7 +2075,7 @@ def verify_stacked_opening(
 
     selector = qflock_offset >> qflock_variables
 
-    def evaluate_basis(point: Sequence[F192]) -> F192:
+    def evaluate_basis(point: Sequence[E]) -> E:
         """Every pooled claim's weight at the opening's terminal point.
 
         The two ring-switched claims are supported on the q_flock region, so
@@ -2000,10 +2109,10 @@ def verify_stacked_opening(
 
 def verify_lincheck(
     point: QuirkyPoint,
-    a: F192,
-    b: F192,
+    a: E,
+    b: E,
     transcript: Transcript,
-) -> tuple[ZClaim, tuple[F192, ...]]:
+) -> tuple[ZClaim, tuple[E, ...]]:
     """Replay the fixed BLAKE3 matrix reduction."""
     alpha = transcript.sample()
     inner_weights = quirky_weights(point.skip, point.inner)
@@ -2039,10 +2148,10 @@ def verify_reduction(log_n: int, transcript: Transcript) -> FlockReduction:
 
 
 def blake3_bilinear(
-    alpha: F192,
-    row_weights: Sequence[F192],
-    column_weights: Sequence[F192],
-) -> F192:
+    alpha: E,
+    row_weights: Sequence[E],
+    column_weights: Sequence[E],
+) -> E:
     """Evaluate the two BLAKE3 R1CS matrix forms by walking the circuit."""
     size = 2**FLOCK_LOG_BITS
     require(len(row_weights) == size, "bad BLAKE3 row-weight vector")
@@ -2060,21 +2169,21 @@ def blake3_bilinear(
     right_total = ZERO
     constant_rows = ZERO
 
-    def slots(base: int) -> tuple[F192, ...]:
+    def slots(base: int) -> tuple[E, ...]:
         return tuple(column_weights[base + bit] for bit in range(32))
 
     empty_word = (ZERO,) * 32
 
-    def literal(value: int) -> tuple[F192, ...]:
+    def literal(value: int) -> tuple[E, ...]:
         return tuple(column_weights[constant] if value >> bit & 1 else ZERO for bit in range(32))
 
-    def xor(x: Sequence[F192], y: Sequence[F192]) -> tuple[F192, ...]:
+    def xor(x: Sequence[E], y: Sequence[E]) -> tuple[E, ...]:
         return tuple(a + b for a, b in zip(x, y, strict=True))
 
-    def rotate_right(word: Sequence[F192], amount: int) -> tuple[F192, ...]:
+    def rotate_right(word: Sequence[E], amount: int) -> tuple[E, ...]:
         return tuple(word[(bit + amount) & 31] for bit in range(32))
 
-    def add(x: Sequence[F192], y: Sequence[F192], carry_base: int) -> tuple[F192, ...]:
+    def add(x: Sequence[E], y: Sequence[E], carry_base: int) -> tuple[E, ...]:
         nonlocal left_total, right_total
         carry = ZERO
         output = []
@@ -2088,7 +2197,7 @@ def blake3_bilinear(
                 carry += column_weights[carry_base + bit]
         return tuple(output)
 
-    def linear_rows(values: Sequence[F192], base: int) -> None:
+    def linear_rows(values: Sequence[E], base: int) -> None:
         nonlocal left_total, constant_rows
         for bit in range(32):
             left_total += row_weights[base + bit] * values[bit]
@@ -2150,7 +2259,7 @@ def blake3_bilinear(
 # Complete VM verification and CLI -------------------------------------------
 
 
-def verify_execution(bytecode: Sequence[int], public_input: bytes, proof: Proof) -> None:
+def verify_execution(bytecode: Sequence[K], public_input: bytes, proof: Proof) -> None:
     """Verify a complete leanVM-b execution proof against its public statement.
 
     The statement is exactly two things. `bytecode` is the stacked bytecode
@@ -2162,9 +2271,7 @@ def verify_execution(bytecode: Sequence[int], public_input: bytes, proof: Proof)
 
     The phases of doc sec:e2e-unrolled follow, in order.
     """
-    require(len(public_input) == 32, "public input must be 256 bits")
-    limbs = tuple(int.from_bytes(public_input[i : i + 8], "little") for i in range(0, 32, 8))
-    pi = (F192(limbs[0], limbs[1]), F192(limbs[2], limbs[3]))
+    pi = Digest(public_input).halves()
     public_columns, bytecode_log = bytecode_columns(bytecode)
     transcript = Transcript(proof, b"leanvm-b", transcript_statement(bytecode, pi))
 
@@ -2172,16 +2279,15 @@ def verify_execution(bytecode: Sequence[int], public_input: bytes, proof: Proof)
     # public caps before any reduction runs on it.
     announced = transcript.scalars(2 + len(TABLES))
     require(all(value.c1 == value.c2 == 0 for value in announced), "announced size has a nonzero high limb")
-    log_memory = announced[0].c0
-    table_logs = tuple(value.c0 for value in announced[1 : 1 + len(TABLES)])
-    log_inverse_rate = announced[-1].c0
+    # These limbs are announced sizes, not field elements: read them as integers.
+    log_memory = int(announced[0].c0)
+    table_logs = tuple(int(value.c0) for value in announced[1 : 1 + len(TABLES)])
+    log_inverse_rate = int(announced[-1].c0)
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
     layout = build_layout(public_columns, bytecode_log, log_memory, table_logs)
 
     # 2] Commitment: one Merkle root over the stacked witness.
-    root_words = transcript.scalars(2)
-    require(all(word.c2 == 0 for word in root_words), "commitment root has a nonzero top limb")
-    root = pack("<4Q", root_words[0].c0, root_words[0].c1, root_words[1].c0, root_words[1].c1)
+    root = Digest.from_halves(*transcript.scalars(2))
 
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf
     # decomposition, which leaves each table a degree-2 form and a total.
@@ -2224,7 +2330,7 @@ def verify_execution(bytecode: Sequence[int], public_input: bytes, proof: Proof)
     # 6] Locate every claim in the stack: a column claim keeps its point and
     # gains its placement's selector bits; a BLAKE3 value claim is re-routed to
     # the equal q_flock slot evaluation.
-    point_claims: list[tuple[tuple[F192, ...], F192]] = []
+    point_claims: list[tuple[tuple[E, ...], E]] = []
     qflock = layout.placements[QFLOCK]
     for claim in claims:
         # A BLAKE3 value column is committed inside q_flock rather than on its
@@ -2266,7 +2372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         encoded = arguments.bytecode.read_bytes()
         require(len(encoded) % 8 == 0, "bytecode is not a whole number of 64-bit words")
-        words = [int.from_bytes(encoded[i : i + 8], "little") for i in range(0, len(encoded), 8)]
+        words = [K(int.from_bytes(encoded[i : i + 8], "little")) for i in range(0, len(encoded), 8)]
         verify_execution(words, arguments.public_input.read_bytes(), Proof.load(arguments.proof))
     except (OSError, ValueError, KeyError, VerificationError) as exc:
         parser.exit(1, f"verification failed: {exc}\n")
