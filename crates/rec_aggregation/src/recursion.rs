@@ -13,12 +13,19 @@
 //! the outer VM proof and evaluates every deferred fixed polynomial.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use bincode::Options;
 use lean_compiler::{compile, parse, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use primitives::bench::Plan;
+use primitives::log2_ceil_usize;
 use primitives::multilinear::mle_eval;
 use primitives::{
     field::{F64, F192, G, g_pow},
@@ -31,6 +38,217 @@ use primitives::{
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
 const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
 const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
+const RECURSION_FIXTURE_MAGIC: [u8; 8] = *b"LVRFX002";
+const RECURSION_FIXTURE_VERSION: u32 = 2;
+const RECURSIVE_PROOF_ARTIFACT_MAGIC: [u8; 8] = *b"LVRPF002";
+const RECURSIVE_PROOF_ARTIFACT_VERSION: u32 = 2;
+const RECURSIVE_PROOF_ARTIFACT_HEADER_LEN: usize = 8 + 4 + 8 + 32;
+
+fn gate0_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LEANVM_GATE0_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")))
+}
+
+fn gate0_boundary_event(kind: &str, id: u64, name: &str) {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let process_ns = ORIGIN.get_or_init(Instant::now).elapsed().as_nanos();
+    let unix_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    eprintln!(
+        "LEANVM_GATE0_EVENT schema=1 source=rec_aggregation kind={kind} id={id} name={name:?} unix_ns={unix_ns} process_ns={process_ns} pid={}",
+        std::process::id()
+    );
+}
+
+fn measure_boundary<T>(name: &str, f: impl FnOnce() -> T) -> (T, Duration) {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
+    let trace = gate0_trace_enabled();
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if trace {
+        gate0_boundary_event("start", id, name);
+    }
+    let started = Instant::now();
+    let output = f();
+    let elapsed = started.elapsed();
+    if trace {
+        gate0_boundary_event("end", id, name);
+    }
+    (output, elapsed)
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RecursionChildV1 {
+    hashes: u64,
+    iters: u64,
+    log_inv_rate: u64,
+    public_input: [F192; 2],
+    proof: lean_vm::cpu::Proof,
+    cycles: u64,
+    committed: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RecursionFixtureV1 {
+    magic: [u8; 8],
+    version: u32,
+    inner_environment: [F192; 2],
+    children: Vec<RecursionChildV1>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecursionFixturePreparationReport {
+    pub child_count: usize,
+    pub child_proving: Duration,
+    pub child_verification: Duration,
+    pub total: Duration,
+    pub fixture_bytes: usize,
+    pub fixture_blake3: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecursionFixtureInspectionReport {
+    pub child_count: usize,
+    pub total: Duration,
+    pub fixture_bytes: usize,
+    pub fixture_blake3: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecursiveProofInspectionReport {
+    pub child_count: usize,
+    pub total: Duration,
+    pub artifact_bytes: usize,
+    pub artifact_blake3: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecursionBoundaryReport {
+    pub child_count: usize,
+    pub fixture_open_and_read: Duration,
+    pub fixture_decode_and_validate: Duration,
+    pub child_verify_and_hint_reconstruction: Duration,
+    pub outer_guest_compile: Duration,
+    pub outer_prove: Duration,
+    pub in_memory_verify: Duration,
+    pub durable_output: Duration,
+    pub boundary_total: Duration,
+    pub fixture_bytes: usize,
+    pub recursive_proof_bytes: usize,
+    pub artifact_bytes: usize,
+    pub fixture_blake3: String,
+    pub artifact_blake3: String,
+    pub outer_cycles: usize,
+    pub outer_counts: [usize; lean_vm::tables::N_TABLES],
+    pub outer_base_counts: [usize; lean_vm::tables::N_TABLES],
+    pub outer_log_mem: usize,
+    pub outer_mem_used: usize,
+    pub outer_committed: usize,
+    pub outer_stack_log: usize,
+}
+
+impl RecursionFixturePreparationReport {
+    pub fn print(&self) {
+        println!("recursion fixture preparation");
+        println!("  child proofs                : {}", pretty_integer(self.child_count));
+        println!(
+            "  child proving               : {:.6} s",
+            self.child_proving.as_secs_f64()
+        );
+        println!(
+            "  child verification          : {:.6} s",
+            self.child_verification.as_secs_f64()
+        );
+        println!("  total                       : {:.6} s", self.total.as_secs_f64());
+        println!("  fixture bytes               : {}", pretty_integer(self.fixture_bytes));
+        println!("  fixture BLAKE3              : {}", self.fixture_blake3);
+    }
+}
+
+impl RecursionFixtureInspectionReport {
+    pub fn print(&self) {
+        println!("recursion fixture read-only inspection");
+        println!("  child proofs                : {}", pretty_integer(self.child_count));
+        println!("  total                       : {:.6} s", self.total.as_secs_f64());
+        println!("  fixture bytes               : {}", pretty_integer(self.fixture_bytes));
+        println!("  fixture BLAKE3              : {}", self.fixture_blake3);
+    }
+}
+
+impl RecursiveProofInspectionReport {
+    pub fn print(&self) {
+        println!("recursive proof read-only inspection");
+        println!("  child statements            : {}", pretty_integer(self.child_count));
+        println!("  total                       : {:.6} s", self.total.as_secs_f64());
+        println!(
+            "  artifact bytes              : {}",
+            pretty_integer(self.artifact_bytes)
+        );
+        println!("  artifact BLAKE3             : {}", self.artifact_blake3);
+    }
+}
+
+impl RecursionBoundaryReport {
+    pub fn print(&self) {
+        println!("recursion input-ready to durable-output gate");
+        println!("  child proofs                : {}", pretty_integer(self.child_count));
+        println!(
+            "  fixture open and read       : {:.6} s",
+            self.fixture_open_and_read.as_secs_f64()
+        );
+        println!(
+            "  fixture decode and validate : {:.6} s",
+            self.fixture_decode_and_validate.as_secs_f64()
+        );
+        println!(
+            "  child verify and hint build : {:.6} s",
+            self.child_verify_and_hint_reconstruction.as_secs_f64()
+        );
+        println!(
+            "  outer guest compile         : {:.6} s",
+            self.outer_guest_compile.as_secs_f64()
+        );
+        println!(
+            "  outer proving               : {:.6} s",
+            self.outer_prove.as_secs_f64()
+        );
+        println!(
+            "  in-memory verify            : {:.6} s",
+            self.in_memory_verify.as_secs_f64()
+        );
+        println!(
+            "  durable output              : {:.6} s",
+            self.durable_output.as_secs_f64()
+        );
+        println!(
+            "  boundary total              : {:.6} s",
+            self.boundary_total.as_secs_f64()
+        );
+        println!("  fixture bytes               : {}", pretty_integer(self.fixture_bytes));
+        println!(
+            "  recursive proof bytes       : {}",
+            pretty_integer(self.recursive_proof_bytes)
+        );
+        println!(
+            "  artifact bytes              : {}",
+            pretty_integer(self.artifact_bytes)
+        );
+        println!("  fixture BLAKE3              : {}", self.fixture_blake3);
+        println!("  artifact BLAKE3             : {}", self.artifact_blake3);
+        println!(
+            "LEANVM_GATE0_GEOMETRY schema=2 children={} cycles={} counts={:?} base_counts={:?} log_mem={} mem_used={} committed={} stack_log={}",
+            self.child_count,
+            self.outer_cycles,
+            self.outer_counts,
+            self.outer_base_counts,
+            self.outer_log_mem,
+            self.outer_mem_used,
+            self.outer_committed,
+            self.outer_stack_log
+        );
+    }
+}
 
 /// Aggregation arity bound: the guest hints the count and range-checks its
 /// exponent against this (`NSUB_BOUND`), which is what makes its per-sub walks
@@ -270,6 +488,323 @@ pub enum RecursiveVerifyError {
     BytecodeClaim,
     MatrixAClaim,
     MatrixBClaim,
+}
+
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn child_public_input(index: usize) -> io::Result<[F192; 2]> {
+    let k = u64::try_from(index)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "child index does not fit in u64"))?;
+    let c0 = 0x1111_2222u64
+        .checked_add(k)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "too many child statements"))?;
+    let c1 = 0x7777_8888u64
+        .checked_add(k)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "too many child statements"))?;
+    Ok([F192::new(c0, 0x3333_4444, 0), F192::new(0x5555_6666, c1, 0)])
+}
+
+fn validate_fixture(fixture: &RecursionFixtureV1) -> io::Result<()> {
+    if fixture.magic != RECURSION_FIXTURE_MAGIC {
+        return Err(invalid_data("recursion fixture magic mismatch"));
+    }
+    if fixture.version != RECURSION_FIXTURE_VERSION {
+        return Err(invalid_data(format!(
+            "unsupported recursion fixture version {}",
+            fixture.version
+        )));
+    }
+    if fixture.children.is_empty() {
+        return Err(invalid_data("recursion fixture contains no child proofs"));
+    }
+    if fixture.children.len() >= NSUB_BOUND {
+        return Err(invalid_data(format!(
+            "recursion fixture has {} children, but the guest bound is strictly below {NSUB_BOUND}",
+            fixture.children.len()
+        )));
+    }
+    for (index, child) in fixture.children.iter().enumerate() {
+        if child.hashes == 0 || child.iters == 0 || child.cycles == 0 || child.committed == 0 {
+            return Err(invalid_data(format!("child {index} contains zero metadata")));
+        }
+        if !(1..=4).contains(&child.log_inv_rate) {
+            return Err(invalid_data(format!("child {index} has an invalid PCS rate")));
+        }
+        if child.public_input != child_public_input(index)? {
+            return Err(invalid_data(format!("child {index} public input is not canonical")));
+        }
+    }
+    Ok(())
+}
+
+fn encode_fixture(fixture: &RecursionFixtureV1) -> io::Result<Vec<u8>> {
+    bincode::DefaultOptions::new()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .serialize(fixture)
+        .map_err(|error| invalid_data(format!("recursion fixture encode: {error}")))
+}
+
+fn decode_fixture(bytes: &[u8]) -> io::Result<RecursionFixtureV1> {
+    bincode::DefaultOptions::new()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .with_limit(bytes.len() as u64)
+        .reject_trailing_bytes()
+        .deserialize(bytes)
+        .map_err(|error| invalid_data(format!("recursion fixture decode: {error}")))
+}
+
+fn encode_recursive_proof(proof: &RecursiveProof) -> io::Result<Vec<u8>> {
+    bincode::DefaultOptions::new()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .serialize(proof)
+        .map_err(|error| invalid_data(format!("recursive proof encode: {error}")))
+}
+
+fn decode_recursive_proof(bytes: &[u8]) -> io::Result<RecursiveProof> {
+    bincode::DefaultOptions::new()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .with_limit(bytes.len() as u64)
+        .reject_trailing_bytes()
+        .deserialize(bytes)
+        .map_err(|error| invalid_data(format!("recursive proof decode: {error}")))
+}
+
+fn encode_recursive_proof_artifact(proof: &RecursiveProof) -> io::Result<Vec<u8>> {
+    let payload = encode_recursive_proof(proof)?;
+    let payload_len =
+        u64::try_from(payload.len()).map_err(|_| invalid_data("recursive proof payload length does not fit in u64"))?;
+    let digest = blake3::hash(&payload);
+    let mut artifact = Vec::with_capacity(RECURSIVE_PROOF_ARTIFACT_HEADER_LEN + payload.len());
+    artifact.extend_from_slice(&RECURSIVE_PROOF_ARTIFACT_MAGIC);
+    artifact.extend_from_slice(&RECURSIVE_PROOF_ARTIFACT_VERSION.to_le_bytes());
+    artifact.extend_from_slice(&payload_len.to_le_bytes());
+    artifact.extend_from_slice(digest.as_bytes());
+    artifact.extend_from_slice(&payload);
+    Ok(artifact)
+}
+
+fn decode_recursive_proof_artifact(bytes: &[u8]) -> io::Result<RecursiveProof> {
+    if bytes.len() < RECURSIVE_PROOF_ARTIFACT_HEADER_LEN {
+        return Err(invalid_data("recursive proof artifact header is truncated"));
+    }
+    if bytes[..8] != RECURSIVE_PROOF_ARTIFACT_MAGIC {
+        return Err(invalid_data("recursive proof artifact magic mismatch"));
+    }
+    let version = u32::from_le_bytes(bytes[8..12].try_into().expect("fixed version slice"));
+    if version != RECURSIVE_PROOF_ARTIFACT_VERSION {
+        return Err(invalid_data(format!(
+            "unsupported recursive proof artifact version {version}"
+        )));
+    }
+    let payload_len = usize::try_from(u64::from_le_bytes(
+        bytes[12..20].try_into().expect("fixed length slice"),
+    ))
+    .map_err(|_| invalid_data("recursive proof payload length does not fit in usize"))?;
+    let expected_len = RECURSIVE_PROOF_ARTIFACT_HEADER_LEN
+        .checked_add(payload_len)
+        .ok_or_else(|| invalid_data("recursive proof artifact length overflow"))?;
+    if bytes.len() != expected_len {
+        return Err(invalid_data(format!(
+            "recursive proof artifact length mismatch: expected {expected_len}, got {}",
+            bytes.len()
+        )));
+    }
+    let payload = &bytes[RECURSIVE_PROOF_ARTIFACT_HEADER_LEN..];
+    if blake3::hash(payload).as_bytes() != &bytes[20..RECURSIVE_PROOF_ARTIFACT_HEADER_LEN] {
+        return Err(invalid_data("recursive proof artifact payload digest mismatch"));
+    }
+    decode_recursive_proof(payload)
+}
+
+fn read_all(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn output_parent(output: &Path) -> &Path {
+    output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn ensure_create_new_target(output: &Path) -> io::Result<()> {
+    if output.file_name().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("output path has no file name: {}", output.display()),
+        ));
+    }
+    if !std::fs::metadata(output_parent(output))?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("output parent is not a directory: {}", output_parent(output).display()),
+        ));
+    }
+    match std::fs::symlink_metadata(output) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("refusing to overwrite existing output: {}", output.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+struct PendingOutput {
+    path: PathBuf,
+    target: PathBuf,
+    file: Option<File>,
+    published: bool,
+}
+
+impl PendingOutput {
+    fn create(output: &Path) -> io::Result<Self> {
+        ensure_create_new_target(output)?;
+        let parent = output_parent(output);
+        let file_name = output.file_name().expect("output file name was checked");
+        for attempt in 0..128u32 {
+            let mut temp_name = OsString::from(".");
+            temp_name.push(file_name);
+            temp_name.push(format!(".tmp.{}.{attempt}", std::process::id()));
+            let path = parent.join(temp_name);
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        target: output.to_path_buf(),
+                        file: Some(file),
+                        published: false,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("could not allocate a temporary file beside {}", output.display()),
+        ))
+    }
+
+    fn write_and_sync(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let file = self.file.as_mut().expect("pending output remains open");
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        self.file.take();
+        Ok(())
+    }
+
+    fn readback(&self) -> io::Result<Vec<u8>> {
+        read_all(&self.path)
+    }
+
+    fn publish(mut self) -> io::Result<()> {
+        if self.file.is_some() {
+            return Err(io::Error::other("pending output must be synced before publication"));
+        }
+        let parent = output_parent(&self.target);
+        let sync_parent = || File::open(parent).and_then(|directory| directory.sync_all());
+        std::fs::hard_link(&self.path, &self.target)?;
+        if let Err(error) = sync_parent() {
+            let _ = std::fs::remove_file(&self.target);
+            let _ = sync_parent();
+            return Err(error);
+        }
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            let _ = std::fs::remove_file(&self.target);
+            let _ = sync_parent();
+            return Err(error);
+        }
+        if let Err(error) = sync_parent() {
+            let _ = std::fs::remove_file(&self.target);
+            let _ = sync_parent();
+            return Err(error);
+        }
+        self.published = true;
+        Ok(())
+    }
+}
+
+impl Drop for PendingOutput {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+struct RecursiveProofArtifactInfo {
+    artifact_bytes: usize,
+    proof_bytes: usize,
+    blake3: String,
+}
+
+fn persist_recursive_proof_artifact(
+    output: &Path,
+    proof: &RecursiveProof,
+    inner_program: &Program,
+) -> io::Result<RecursiveProofArtifactInfo> {
+    let proof_bytes = encode_recursive_proof(proof)?.len();
+    let encoded = encode_recursive_proof_artifact(proof)?;
+    let digest = blake3::hash(&encoded).to_hex().to_string();
+    let mut pending = PendingOutput::create(output)?;
+    pending.write_and_sync(&encoded)?;
+    let readback = pending.readback()?;
+    if readback != encoded {
+        return Err(invalid_data(
+            "recursive proof artifact readback differs from serialized bytes",
+        ));
+    }
+    decode_recursive_proof_artifact(&readback)?
+        .verify(inner_program)
+        .map_err(|error| invalid_data(format!("persisted recursive proof did not verify: {error:?}")))?;
+    pending.publish()?;
+    Ok(RecursiveProofArtifactInfo {
+        artifact_bytes: encoded.len(),
+        proof_bytes,
+        blake3: digest,
+    })
+}
+
+pub fn read_recursive_proof_artifact<P: AsRef<Path>>(path: P) -> io::Result<RecursiveProof> {
+    decode_recursive_proof_artifact(&read_all(path.as_ref())?)
+}
+
+pub fn inspect_recursive_proof_artifact<P: AsRef<Path>>(
+    artifact_path: P,
+) -> io::Result<RecursiveProofInspectionReport> {
+    let started = Instant::now();
+    let first_bytes = read_all(artifact_path.as_ref())?;
+    let first_proof = decode_recursive_proof_artifact(&first_bytes)?;
+    let child_count = first_proof.statement.sub_statements.len();
+    first_proof
+        .verify(&inner_program())
+        .map_err(|error| invalid_data(format!("recursive proof verification failed: {error:?}")))?;
+
+    let reopened_bytes = read_all(artifact_path.as_ref())?;
+    if reopened_bytes != first_bytes {
+        return Err(invalid_data("recursive proof artifact changed across reopen"));
+    }
+    let reopened_proof = decode_recursive_proof_artifact(&reopened_bytes)?;
+    reopened_proof
+        .verify(&inner_program())
+        .map_err(|error| invalid_data(format!("reopened recursive proof verification failed: {error:?}")))?;
+
+    Ok(RecursiveProofInspectionReport {
+        child_count,
+        total: started.elapsed(),
+        artifact_bytes: first_bytes.len(),
+        artifact_blake3: blake3::hash(&first_bytes).to_hex().to_string(),
+    })
 }
 
 fn fold_lsb(t: &mut Vec<F192>, r: F192) {
@@ -1325,6 +1860,78 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     }
 }
 
+fn build_batch_from_fixture(
+    program0: Program,
+    fixture: &RecursionFixtureV1,
+    outer_log_inv_rate: usize,
+) -> io::Result<Batch> {
+    let mut merged: Vec<(String, Vec<Vec<F192>>)> = Vec::new();
+    let mut subs = Vec::with_capacity(fixture.children.len());
+    let mut inner_stats = Vec::with_capacity(fixture.children.len());
+
+    for (index, child) in fixture.children.iter().enumerate() {
+        trace_start();
+        let summary_result = verify(&program0, &child.public_input, &child.proof);
+        let ops = trace_take();
+        let summary = summary_result
+            .map_err(|error| invalid_data(format!("child {index} proof verification failed: {error:?}")))?;
+        let declared_log_inv_rate = usize::try_from(child.log_inv_rate)
+            .map_err(|_| invalid_data(format!("child {index} PCS rate does not fit in usize")))?;
+        if summary.log_inv_rate != declared_log_inv_rate {
+            return Err(invalid_data(format!(
+                "child {index} proof uses PCS rate {}, but its fixture metadata declares {declared_log_inv_rate}",
+                summary.log_inv_rate
+            )));
+        }
+        let (hints, deferred) = gen_verify(&program0, child.public_input, &child.proof, &summary, &ops);
+
+        if merged.is_empty() {
+            merged = hints.into_iter().map(|(name, values)| (name, vec![values])).collect();
+        } else {
+            if merged.len() != hints.len() {
+                return Err(invalid_data(format!(
+                    "child {index} reconstructed a different hint stream count"
+                )));
+            }
+            for ((name, entries), (next_name, values)) in merged.iter_mut().zip(hints) {
+                if *name != next_name {
+                    return Err(invalid_data(format!(
+                        "child {index} reconstructed hint stream {next_name:?}, expected {name:?}"
+                    )));
+                }
+                entries.push(values);
+            }
+        }
+        subs.push(deferred);
+        inner_stats.push((
+            usize::try_from(child.cycles)
+                .map_err(|_| invalid_data("fixture child cycle count does not fit in usize"))?,
+            usize::try_from(child.committed)
+                .map_err(|_| invalid_data("fixture child committed size does not fit in usize"))?,
+        ));
+    }
+
+    let (aggregate_hints, guest_public_input, reduced) = aggregate_deferred_claims(&program0, &subs);
+    merged.extend(aggregate_hints.into_iter().map(|(name, values)| (name, vec![values])));
+    let statement = RecursiveStatement {
+        sub_statements: subs.iter().map(|deferred| deferred.public_input).collect(),
+        reduced,
+    };
+    if statement.public_input(lean_vm::cpu::fs_seed(&program0)) != guest_public_input {
+        return Err(invalid_data(
+            "native recursive statement reconstruction diverged from the guest",
+        ));
+    }
+
+    Ok(Batch {
+        merged,
+        program0,
+        statement,
+        inner_stats,
+        outer_log_inv_rate,
+    })
+}
+
 struct OpeningShape {
     n_levels: usize,
     yr_level: usize,
@@ -2019,6 +2626,211 @@ fn recursion_guest(inner_program: &Program) -> Program {
     (*recursion_guest_arc(inner_program)).clone()
 }
 
+pub fn prepare_recursion_fixture<P: AsRef<Path>>(
+    inner: &[(usize, usize)],
+    log_inv_rate: usize,
+    output: P,
+) -> io::Result<RecursionFixturePreparationReport> {
+    let output = output.as_ref();
+    let total_started = Instant::now();
+    ensure_create_new_target(output)?;
+    if inner.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a recursion fixture cannot be empty",
+        ));
+    }
+    if inner.len() >= NSUB_BOUND {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "recursion fixture has {} children, but the guest bound is strictly below {NSUB_BOUND}",
+                inner.len()
+            ),
+        ));
+    }
+
+    let canonical_program = inner_program();
+    let inner_environment = lean_vm::cpu::fs_seed(&canonical_program);
+    let mut children = Vec::with_capacity(inner.len());
+    let mut child_proving = Duration::ZERO;
+    let mut child_verification = Duration::ZERO;
+    for (index, &(hashes, iters)) in inner.iter().enumerate() {
+        if hashes == 0 || iters == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("child {index} has a zero loop bound"),
+            ));
+        }
+        let public_input = child_public_input(index)?;
+        let ((program, proof, cycles, committed), elapsed) = measure_boundary("fixture_child_prove", || {
+            prove_inner(public_input, hashes, iters, log_inv_rate)
+        });
+        child_proving += elapsed;
+        if lean_vm::cpu::fs_seed(&program) != inner_environment {
+            return Err(invalid_data(format!(
+                "child {index} was proved against a non-canonical inner environment"
+            )));
+        }
+        let (verification, elapsed) =
+            measure_boundary("fixture_child_verify", || verify(&program, &public_input, &proof));
+        verification.map_err(|error| invalid_data(format!("child {index} proof did not verify: {error:?}")))?;
+        child_verification += elapsed;
+        children.push(RecursionChildV1 {
+            hashes: u64::try_from(hashes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "hash count does not fit in u64"))?,
+            iters: u64::try_from(iters)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "iteration count does not fit in u64"))?,
+            log_inv_rate: u64::try_from(log_inv_rate)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PCS rate does not fit in u64"))?,
+            public_input,
+            proof,
+            cycles: u64::try_from(cycles).map_err(|_| invalid_data("child cycle count does not fit in u64"))?,
+            committed: u64::try_from(committed)
+                .map_err(|_| invalid_data("child committed size does not fit in u64"))?,
+        });
+    }
+
+    let fixture = RecursionFixtureV1 {
+        magic: RECURSION_FIXTURE_MAGIC,
+        version: RECURSION_FIXTURE_VERSION,
+        inner_environment,
+        children,
+    };
+    validate_fixture(&fixture)?;
+    let encoded = encode_fixture(&fixture)?;
+    let fixture_blake3 = blake3::hash(&encoded).to_hex().to_string();
+    let mut pending = PendingOutput::create(output)?;
+    pending.write_and_sync(&encoded)?;
+    let readback = pending.readback()?;
+    if readback != encoded {
+        return Err(invalid_data("recursion fixture readback differs from serialized bytes"));
+    }
+    let persisted = decode_fixture(&readback)?;
+    validate_fixture(&persisted)?;
+    if persisted.inner_environment != inner_environment {
+        return Err(invalid_data("persisted fixture inner environment mismatch"));
+    }
+    for (index, child) in persisted.children.iter().enumerate() {
+        verify(&canonical_program, &child.public_input, &child.proof)
+            .map_err(|error| invalid_data(format!("persisted child {index} proof did not verify: {error:?}")))?;
+    }
+    pending.publish()?;
+
+    Ok(RecursionFixturePreparationReport {
+        child_count: fixture.children.len(),
+        child_proving,
+        child_verification,
+        total: total_started.elapsed(),
+        fixture_bytes: encoded.len(),
+        fixture_blake3,
+    })
+}
+
+pub fn inspect_recursion_fixture<P: AsRef<Path>>(fixture_path: P) -> io::Result<RecursionFixtureInspectionReport> {
+    let started = Instant::now();
+    let first_bytes = read_all(fixture_path.as_ref())?;
+    let first_fixture = decode_fixture(&first_bytes)?;
+    validate_fixture(&first_fixture)?;
+    let program = inner_program();
+    if lean_vm::cpu::fs_seed(&program) != first_fixture.inner_environment {
+        return Err(invalid_data("fixture inner program environment mismatch"));
+    }
+    for (index, child) in first_fixture.children.iter().enumerate() {
+        verify(&program, &child.public_input, &child.proof)
+            .map_err(|error| invalid_data(format!("child {index} proof verification failed: {error:?}")))?;
+    }
+    let reopened_bytes = read_all(fixture_path.as_ref())?;
+    if reopened_bytes != first_bytes {
+        return Err(invalid_data("recursion fixture changed across reopen"));
+    }
+    let reopened_fixture = decode_fixture(&reopened_bytes)?;
+    validate_fixture(&reopened_fixture)?;
+    for (index, child) in reopened_fixture.children.iter().enumerate() {
+        verify(&program, &child.public_input, &child.proof)
+            .map_err(|error| invalid_data(format!("reopened child {index} proof verification failed: {error:?}")))?;
+    }
+    Ok(RecursionFixtureInspectionReport {
+        child_count: first_fixture.children.len(),
+        total: started.elapsed(),
+        fixture_bytes: first_bytes.len(),
+        fixture_blake3: blake3::hash(&first_bytes).to_hex().to_string(),
+    })
+}
+
+pub fn run_recursion_fixture_aggregation<P: AsRef<Path>, Q: AsRef<Path>>(
+    fixture_path: P,
+    output: Q,
+    outer_log_inv_rate: usize,
+    enable_tracing: bool,
+) -> io::Result<RecursionBoundaryReport> {
+    let output = output.as_ref();
+    ensure_create_new_target(output)?;
+    let boundary_started = Instant::now();
+
+    let (fixture_bytes_result, fixture_open_and_read) =
+        measure_boundary("fixture_open_and_read", || read_all(fixture_path.as_ref()));
+    let fixture_bytes = fixture_bytes_result?;
+    let fixture_blake3 = blake3::hash(&fixture_bytes).to_hex().to_string();
+
+    let (fixture_result, fixture_decode_and_validate) = measure_boundary("fixture_decode_and_validate", || {
+        let fixture = decode_fixture(&fixture_bytes)?;
+        validate_fixture(&fixture)?;
+        Ok::<_, io::Error>(fixture)
+    });
+    let fixture = fixture_result?;
+
+    let program = inner_program();
+    if lean_vm::cpu::fs_seed(&program) != fixture.inner_environment {
+        return Err(invalid_data("fixture inner program environment mismatch"));
+    }
+    let (batch_result, child_verify_and_hint_reconstruction) =
+        measure_boundary("child_verify_and_hint_reconstruction", || {
+            build_batch_from_fixture(program, &fixture, outer_log_inv_rate)
+        });
+    let batch = batch_result?;
+    let child_count = batch.inner_stats.len();
+
+    let (mut guest, outer_guest_compile) = measure_boundary("outer_guest_compile", || recursion_guest(&batch.program0));
+    if enable_tracing {
+        primitives::init_tracing();
+    }
+    let ((recursive_proof, stats), outer_prove) = measure_boundary("outer_prove", || batch.prove(&mut guest));
+    let (verification, in_memory_verify) =
+        measure_boundary("in_memory_verify", || recursive_proof.verify(&batch.program0));
+    verification.map_err(|error| invalid_data(format!("in-memory recursive proof verification failed: {error:?}")))?;
+
+    let (artifact_result, durable_output) = measure_boundary("durable_output", || {
+        persist_recursive_proof_artifact(output, &recursive_proof, &batch.program0)
+    });
+    let artifact = artifact_result?;
+    let outer_stack_log = log2_ceil_usize(stats.committed).max(lean_vm::pcs::MIN_MU);
+
+    Ok(RecursionBoundaryReport {
+        child_count,
+        fixture_open_and_read,
+        fixture_decode_and_validate,
+        child_verify_and_hint_reconstruction,
+        outer_guest_compile,
+        outer_prove,
+        in_memory_verify,
+        durable_output,
+        boundary_total: boundary_started.elapsed(),
+        fixture_bytes: fixture_bytes.len(),
+        recursive_proof_bytes: artifact.proof_bytes,
+        artifact_bytes: artifact.artifact_bytes,
+        fixture_blake3,
+        artifact_blake3: artifact.blake3,
+        outer_cycles: stats.cycles,
+        outer_counts: stats.counts,
+        outer_base_counts: stats.base_counts,
+        outer_log_mem: stats.log_mem,
+        outer_mem_used: stats.mem_used,
+        outer_committed: stats.committed,
+        outer_stack_log,
+    })
+}
+
 /// Run an `inner.len()`→1 recursive aggregation and verify the outer proof;
 /// each entry `(hashes, iters)` shapes one inner proof of the fixed inner
 /// program. Prints the benchmark report. The flow:
@@ -2038,6 +2850,97 @@ pub fn run_recursion(
 ) -> RecursiveProof {
     let rates = vec![log_inv_rate; inner.len()];
     run_recursion_with_rates(inner, &rates, log_inv_rate, enable_tracing, plan)
+}
+
+/// Run the unchanged native recursion path and publish its returned proof in
+/// the same deterministic artifact format used by the input-ready seam.
+pub fn run_recursion_with_artifact<P: AsRef<Path>>(
+    inner: &[(usize, usize)],
+    log_inv_rate: usize,
+    enable_tracing: bool,
+    output: P,
+    plan: Plan,
+) -> io::Result<RecursiveProof> {
+    let output = output.as_ref();
+    ensure_create_new_target(output)?;
+    let proof = run_recursion(inner, log_inv_rate, enable_tracing, plan);
+    let program = inner_program();
+    let artifact = persist_recursive_proof_artifact(output, &proof, &program)?;
+    println!(
+        "[recursive-proof-artifact-v2] path={} artifact_bytes={} proof_bytes={} blake3={}",
+        output.display(),
+        artifact.artifact_bytes,
+        artifact.proof_bytes,
+        artifact.blake3
+    );
+    Ok(proof)
+}
+
+/// Compare the unchanged native recursion path with the input-ready seam using
+/// real proofs. This stays ignored because it launches several proving passes.
+#[test]
+#[ignore]
+fn gate0_fixture_matches_native_proof_bytes() {
+    lean_vm::init_prover();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("leanvm-gate0-exactness-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&directory).expect("create exactness directory");
+    let fixture_path = directory.join("children.bin");
+    let native_path = directory.join("native.bin");
+    let seam_path = directory.join("seam.bin");
+    let inner = [(1usize, 1usize << 9)];
+
+    prepare_recursion_fixture(&inner, lean_vm::pcs::LOG_INV_RATE, &fixture_path).expect("prepare fixture");
+    inspect_recursion_fixture(&fixture_path).expect("inspect fixture");
+    run_recursion_with_artifact(&inner, lean_vm::pcs::LOG_INV_RATE, false, &native_path, Plan::default())
+        .expect("run native path");
+    run_recursion_fixture_aggregation(&fixture_path, &seam_path, lean_vm::pcs::LOG_INV_RATE, false)
+        .expect("run input-ready seam");
+
+    let native = std::fs::read(&native_path).expect("read native artifact");
+    let seam = std::fs::read(&seam_path).expect("read seam artifact");
+    assert_eq!(
+        native, seam,
+        "native and input-ready proof artifacts must be byte-identical"
+    );
+    read_recursive_proof_artifact(&native_path)
+        .expect("decode native artifact")
+        .verify(&inner_program())
+        .expect("native artifact verifies");
+    read_recursive_proof_artifact(&seam_path)
+        .expect("decode seam artifact")
+        .verify(&inner_program())
+        .expect("input-ready artifact verifies");
+
+    std::fs::remove_dir_all(&directory).expect("remove exactness directory");
+}
+
+#[test]
+fn gate0_pending_output_is_create_new_and_reopen_exact() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("leanvm-gate0-output-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&directory).expect("create output test directory");
+    let output = directory.join("artifact.bin");
+    let payload = b"gate0-durable-output-v1";
+
+    let mut pending = PendingOutput::create(&output).expect("create pending output");
+    pending.write_and_sync(payload).expect("write and sync pending output");
+    assert_eq!(pending.readback().expect("read pending output"), payload);
+    pending.publish().expect("publish pending output");
+    assert_eq!(std::fs::read(&output).expect("reopen published output"), payload);
+
+    match PendingOutput::create(&output) {
+        Err(error) => assert_eq!(error.kind(), io::ErrorKind::AlreadyExists),
+        Ok(_) => panic!("create-new output must reject an existing target"),
+    }
+    std::fs::remove_file(&output).expect("remove output test artifact");
+    std::fs::remove_dir(&directory).expect("remove output test directory");
 }
 
 /// Run recursion with one transcript-bound PCS rate per inner proof. The guest

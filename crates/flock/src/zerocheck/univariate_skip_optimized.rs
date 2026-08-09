@@ -1395,9 +1395,7 @@ mod tests {
                 r[i] = phi8(F8(SMALL_CHAL_F8[i]));
             }
             let medium = crate::zerocheck::univariate_skip_optimized::medium_challenges();
-            for i in 0..4 {
-                r[3 + i] = medium[i];
-            }
+            r[3..7].copy_from_slice(&medium);
             for i in N_INNER..(m - K_SKIP) {
                 r[i] = rng.ext();
             }

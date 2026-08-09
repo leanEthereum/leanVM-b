@@ -297,15 +297,15 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     // The program is PUBLIC (not committed): nine public columns over the
     // program cube, embedded in the bytecode seed/finalize blocks below.
     let column = |f: &(dyn Fn(&Op) -> F64 + Sync)| parallel::map_collect(prog.len(), |i| f(&prog[i]));
-    let prog_op: Vec<F64> = column(&opcode);
-    let prog_o1: Vec<F64> = column(&|o| operands(o).0);
-    let prog_o2: Vec<F64> = column(&|o| operands(o).1);
-    let prog_o3: Vec<F64> = column(&|o| operands(o).2);
-    let prog_fpc: Vec<F64> = column(&fpc);
-    let prog_ffp: Vec<F64> = column(&ffp);
-    let prog_extra0: Vec<F64> = column(&extra0);
-    let prog_extra1: Vec<F64> = column(&extra1);
-    let prog_extra2: Vec<F64> = column(&extra2);
+    let prog_op: std::sync::Arc<[F64]> = column(&opcode).into();
+    let prog_o1: std::sync::Arc<[F64]> = column(&|o| operands(o).0).into();
+    let prog_o2: std::sync::Arc<[F64]> = column(&|o| operands(o).1).into();
+    let prog_o3: std::sync::Arc<[F64]> = column(&|o| operands(o).2).into();
+    let prog_fpc: std::sync::Arc<[F64]> = column(&fpc).into();
+    let prog_ffp: std::sync::Arc<[F64]> = column(&ffp).into();
+    let prog_extra0: std::sync::Arc<[F64]> = column(&extra0).into();
+    let prog_extra1: std::sync::Arc<[F64]> = column(&extra1).into();
+    let prog_extra2: std::sync::Arc<[F64]> = column(&extra2).into();
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
@@ -360,15 +360,15 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
             Const(SEP_BYTECODE),
             Index,
             Const(one),
-            Public(prog_op.clone()),
-            Public(prog_o1.clone()),
-            Public(prog_o2.clone()),
-            Public(prog_o3.clone()),
-            Public(prog_fpc.clone()),
-            Public(prog_ffp.clone()),
-            Public(prog_extra0.clone()),
-            Public(prog_extra1.clone()),
-            Public(prog_extra2.clone()),
+            Public(std::sync::Arc::clone(&prog_op)),
+            Public(std::sync::Arc::clone(&prog_o1)),
+            Public(std::sync::Arc::clone(&prog_o2)),
+            Public(std::sync::Arc::clone(&prog_o3)),
+            Public(std::sync::Arc::clone(&prog_fpc)),
+            Public(std::sync::Arc::clone(&prog_ffp)),
+            Public(std::sync::Arc::clone(&prog_extra0)),
+            Public(std::sync::Arc::clone(&prog_extra1)),
+            Public(std::sync::Arc::clone(&prog_extra2)),
         ],
     ));
     pull.push(blk(

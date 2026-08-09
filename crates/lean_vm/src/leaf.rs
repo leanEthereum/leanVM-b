@@ -12,7 +12,8 @@ use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
-use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod};
+use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod, mle_eval_prod_vec4, mle_eval_vec4};
+use std::sync::Arc;
 use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
@@ -33,8 +34,10 @@ pub enum Coord {
     /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
     Index,
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
-    /// its MLE directly, so it raises no claim.
-    Public(Vec<F64>),
+    /// its MLE directly, so it raises no claim. The immutable owner is shared between the
+    /// canonical push and pull coordinates, which lets the prover reuse one evaluation only
+    /// after checking allocation identity as well as position and shape.
+    Public(Arc<[F64]>),
     /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
     /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
     /// carries a value a row DERIVES from its columns (an `XOR`/`MUL` result, a
@@ -180,11 +183,18 @@ fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &m
     }
 }
 
-/// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i w_i c_i(z)` for
-/// the fingerprint weights `w = eq(α⃗, ·)`, followed implicitly by the identity `1`
-/// up to `2^μ`. The row-invariant weights and constant coordinates are folded once
-/// per block into `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192], gamma: F192) -> gkr::LeafVector {
+/// Build one side's explicit leaf values. Block `b` row `z` holds
+/// `γ − Σ_i w_i c_i(z)` for the fingerprint weights `w = eq(α⃗, ·)`; the
+/// identity suffix up to `2^μ` remains implicit.
+fn build_leaf_values(
+    blocks: &[Block],
+    lay: &Layout,
+    cols: &[&[F64]],
+    w: &[F192],
+    gamma: F192,
+    uninitialized_output: bool,
+    quaternary_capacity: bool,
+) -> ArenaVec<F192> {
     let explicit = blocks
         .iter()
         .enumerate()
@@ -192,7 +202,36 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
         .max()
         .unwrap_or(1);
     debug_assert!(explicit <= 1usize << lay.mu);
-    let mut leaves = ArenaVec::filled(F192::ONE, explicit);
+    let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
+    debug_assert!(blocks.is_empty() || covered == explicit);
+    let capacity = if quaternary_capacity {
+        explicit.next_multiple_of(4)
+    } else {
+        explicit
+    };
+    let mut leaves = if uninitialized_output && !blocks.is_empty() {
+        let canonical = layout(blocks);
+        assert_eq!(
+            lay.offsets, canonical.offsets,
+            "uninitialized leaf output requires canonical offsets"
+        );
+        assert_eq!(
+            lay.mu, canonical.mu,
+            "uninitialized leaf output requires the canonical depth"
+        );
+        assert_eq!(covered, explicit, "canonical leaf blocks must tile the explicit prefix");
+        let mut values = ArenaVec::with_capacity(capacity);
+        // SAFETY: `stack_offsets` packs the power-of-two blocks contiguously
+        // from zero. Their disjoint destination windows therefore cover all
+        // `explicit == covered` live slots, and each fill joins before return.
+        // Any quaternary-capacity tail remains outside `len` until GKR writes it.
+        unsafe { values.set_len(explicit) };
+        values
+    } else {
+        let mut values = ArenaVec::with_capacity(capacity);
+        values.resize(explicit, F192::ONE);
+        values
+    };
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
@@ -202,7 +241,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
             push_terms(c, w[i], &mut terms, &mut const_part);
         }
         let row = |z: usize| -> F192 {
-            // The α-weighted coordinate sum defers its reductions: each mixed
+            // The fingerprint-weighted coordinate sum defers its reductions: each mixed
             // product contributes its three raw limb products (3 PMULL, no
             // reduction tail), one combined reduction per row at the end,
             // bit-identical to summing reduced `mul_base` terms.
@@ -230,7 +269,26 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
             }
         }
     }
-    gkr::LeafVector::new(leaves)
+    leaves
+}
+
+/// Build one side's leaf vector. The row-invariant fingerprint weights and
+/// constant coordinates are folded once per block into `const_part`.
+pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192], gamma: F192) -> gkr::LeafVector {
+    let uninitialized_output = std::env::var("LEANVM_BUS_UNINIT_LEAVES").as_deref() == Ok("1");
+    let quaternary_capacity = std::env::var("LEANVM_BUS_LEAF_QUAD_CAPACITY").as_deref() == Ok("1");
+    let values = build_leaf_values(blocks, lay, cols, w, gamma, uninitialized_output, quaternary_capacity);
+    if std::env::var_os("LEANVM_BUS_UNINIT_LEAVES").is_some()
+        || std::env::var_os("LEANVM_BUS_LEAF_QUAD_CAPACITY").is_some()
+    {
+        let covered: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
+        eprintln!(
+            "LEANVM_BUS_LEAF_OUTPUT schema=2 uninitialized={uninitialized_output} quad_capacity={quaternary_capacity} explicit={} capacity={} covered={covered}",
+            values.len(),
+            values.capacity(),
+        );
+    }
+    gkr::LeafVector::new(values)
 }
 
 /// One table's bus contribution on one side, as a form over that table's committed
@@ -324,9 +382,11 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
+    shared_public_evals: Option<&[SharedPublicEval]>,
     mut fresh: F,
 ) -> Result<F192, Error> {
     assert_eq!(zeta.len(), lay.mu);
+    let mut shared_public_evals = shared_public_evals.map(<[SharedPublicEval]>::iter);
     let mut acc = F192::ZERO;
     let mut sel_sum = F192::ZERO;
     for (b, blk) in blocks.iter().enumerate() {
@@ -376,11 +436,30 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 Coord::Prod(..) | Coord::Sum(..) => {
                     unreachable!("only a table's bus block carries a degree-2 coordinate")
                 }
-                Coord::Public(vals) => mle_eval(vals, zeta_lo),
+                Coord::Public(vals) => match shared_public_evals.as_mut() {
+                    Some(evals) => {
+                        let eval = evals
+                            .next()
+                            .expect("shared public evaluations cover every public coordinate");
+                        assert_eq!(
+                            (eval.block, eval.slot, eval.kappa),
+                            (b, i, blk.kappa),
+                            "shared public evaluation order drifted after authorization"
+                        );
+                        eval.value
+                    }
+                    None => mle_eval(vals, zeta_lo),
+                },
             };
             inner += w[i] * coord_val;
         }
         acc += eq_hi * (gamma + inner);
+    }
+    if let Some(evals) = shared_public_evals.as_mut() {
+        assert!(
+            evals.next().is_none(),
+            "shared public evaluation set contains an unconsumed coordinate"
+        );
     }
     // The padding rows (identity `1`) contribute the leftover mass `1 - Σ_b sel_b`.
     Ok(acc + (F192::ONE + sel_sum))
@@ -396,13 +475,31 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F19
         .map(|c| c.value)
 }
 
+#[inline]
+fn eval_mle(table: &[F64], point: &[F192], vec4: bool) -> F192 {
+    if vec4 {
+        mle_eval_vec4(table, point)
+    } else {
+        mle_eval(table, point)
+    }
+}
+
+#[inline]
+fn eval_mle_prod(a: &[F64], b: &[F64], point: &[F192], vec4: bool) -> F192 {
+    if vec4 {
+        mle_eval_prod_vec4(a, b, point)
+    } else {
+        mle_eval_prod(a, b, point)
+    }
+}
+
 /// Prover-side decomposition: reads the real columns, writing each FRESH
 /// committed value onto the stream and recording the matching claim
 /// (block/coord order); duplicates reuse the recorded value.
 ///
 /// The fresh column MLE evaluations run in a parallel first pass: within one
 /// `decompose_formula` call no challenge is sampled between claims (`zeta`,
-/// `alpha`, `gamma` are fixed arguments and each claim's point is
+/// the fingerprint weights and `gamma` are fixed arguments and each claim's point is
 /// `zeta[..kappa]` of its block), so the values are independent of the
 /// transcript and only their `add_scalar` ORDER matters. The second pass
 /// replays them through the transcript in the original block/coord order,
@@ -417,7 +514,9 @@ fn decompose_prove(
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
+    shared_public_evals: Option<&[SharedPublicEval]>,
     ps: &mut ProverState,
+    mle_vec4: bool,
 ) -> F192 {
     // Pass 1: enumerate the FRESH committed coords exactly as `decompose_formula`
     // visits them (blocks in order, coords in order, Col/GCol only, first
@@ -439,7 +538,7 @@ fn decompose_prove(
     }
     let vals: Vec<F192> = parallel::map_collect(jobs.len(), |i| {
         let (col, kappa) = jobs[i];
-        mle_eval(cols[col], &zeta[..kappa])
+        eval_mle(cols[col], &zeta[..kappa], mle_vec4)
     });
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
@@ -453,6 +552,7 @@ fn decompose_prove(
         owners,
         forms,
         claims,
+        shared_public_evals,
         |col, zeta_lo| {
             let (&(jc, jk), &v) = fresh_iter
                 .next()
@@ -481,7 +581,7 @@ fn decompose_verify(
     claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
 ) -> Result<F192, Error> {
-    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |_, _| {
+    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, None, |_, _| {
         vs.next_scalar().map_err(|_| Error::Truncated)
     })
 }
@@ -489,30 +589,116 @@ fn decompose_verify(
 /// One reduced claim on the bytecode polynomial. The nine public encoding
 /// columns (opcode plus eight operand/immediate slots), padded to sixteen slots
 /// along four selector bits, form one multilinear polynomial B̃ in `κ_bc + 4`
-/// variables. After decomposition both parties absorb the nine column
-/// evaluations (push and pull share the GKR point ζ), sample four selector
-/// challenges `s`, and reduce them to
-/// `B̃(ζ_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
-/// true by construction (the verifier evaluated the columns itself); a
-/// recursive verifier defers exactly this one claim to its public input.
+/// variables. The fingerprint challenges `α⃗` are already its selector point,
+/// so the public share is `B̃(ζ_lo, α⃗)` with no extra transcript message or
+/// challenge. A recursive verifier defers exactly this one claim to its public input.
 #[derive(Clone, Debug)]
 pub struct BytecodeClaim {
-    /// `ζ_side_lo ++ s`, a point in `κ_bc + 4` variables.
+    /// `ζ_side_lo ++ α⃗`, a point in `κ_bc + 4` variables.
     pub point: Vec<F192>,
     /// `B̃(point)`.
     pub value: F192,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SharedPublicEval {
+    block: usize,
+    slot: usize,
+    kappa: usize,
+    value: F192,
+}
+
+struct SharedPublicCoord<'a> {
+    block: usize,
+    slot: usize,
+    kappa: usize,
+    table: &'a Arc<[F64]>,
+}
+
+struct SharedPublicPlan<'a> {
+    coords: Vec<SharedPublicCoord<'a>>,
+}
+
+impl<'a> SharedPublicPlan<'a> {
+    fn authorize(push: &'a [Block], pull: &'a [Block], count: &'a [Block]) -> Option<Self> {
+        let public = |blocks: &'a [Block]| {
+            blocks
+                .iter()
+                .enumerate()
+                .flat_map(|(block, blk)| {
+                    blk.coords
+                        .iter()
+                        .enumerate()
+                        .filter_map(move |(slot, coord)| match coord {
+                            Coord::Public(table) => Some(SharedPublicCoord {
+                                block,
+                                slot,
+                                kappa: blk.kappa,
+                                table,
+                            }),
+                            _ => None,
+                        })
+                })
+                .collect::<Vec<_>>()
+        };
+        let push = public(push);
+        let pull = public(pull);
+        if push.is_empty() || push.len() != pull.len() || !public(count).is_empty() {
+            return None;
+        }
+        let common_kappa = push[0].kappa;
+        let shaped = |coord: &SharedPublicCoord<'_>| {
+            coord.kappa == common_kappa
+                && coord.kappa < usize::BITS as usize
+                && coord.slot < 1 << N_TUPLE_BITS
+                && coord.table.len() == 1usize << coord.kappa
+        };
+        let authorized = push.iter().zip(&pull).all(|(a, b)| {
+            (a.block, a.slot, a.kappa) == (b.block, b.slot, b.kappa)
+                && shaped(a)
+                && shaped(b)
+                && Arc::ptr_eq(a.table, b.table)
+        });
+        authorized.then_some(Self { coords: push })
+    }
+
+    fn evaluate(&self, point: &[F192], mle_vec4: bool) -> Vec<SharedPublicEval> {
+        self.coords
+            .iter()
+            .map(|coord| SharedPublicEval {
+                block: coord.block,
+                slot: coord.slot,
+                kappa: coord.kappa,
+                value: eval_mle(coord.table, &point[..coord.kappa], mle_vec4),
+            })
+            .collect()
+    }
+}
+
+fn public_share_from_shared(evals: &[SharedPublicEval], w: &[F192]) -> (usize, F192) {
+    let mut kappa = 0;
+    let mut share = F192::ZERO;
+    for eval in evals {
+        kappa = eval.kappa;
+        share += w[eval.slot] * eval.value;
+    }
+    (kappa, share)
+}
+
 /// The public (bytecode) coordinate evaluations of a side at its GKR point,
 /// block/coord order, with the bytecode block's `κ`.
 pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
+    public_evals_with_mode(blocks, zeta, false)
+}
+
+fn public_evals_with_mode(blocks: &[Block], zeta: &[F192], mle_vec4: bool) -> (usize, Vec<F192>) {
     let mut kappa = 0;
     let mut out = Vec::new();
     for blk in blocks {
         for c in &blk.coords {
             if let Coord::Public(vals) = c {
                 kappa = blk.kappa;
-                out.push(mle_eval(vals, &zeta[..blk.kappa]));
+                out.push(eval_mle(vals, &zeta[..blk.kappa], mle_vec4));
             }
         }
     }
@@ -524,7 +710,7 @@ pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
 /// [`BytecodeClaim`]s are claims about; the outermost verifier evaluates it.
 pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     let mut kbc = 0;
-    let mut cols: Vec<(usize, &Vec<F64>)> = Vec::new();
+    let mut cols: Vec<(usize, &[F64])> = Vec::new();
     for blk in blocks {
         for (slot, c) in blk.coords.iter().enumerate() {
             if let Coord::Public(vals) = c {
@@ -585,13 +771,17 @@ fn sides<'a>(
 /// the weights are `eq(α⃗, ·)`, this IS the stacked polynomial at `(ζ, α⃗)`
 /// (§sec:e2e-bc): one evaluation, nothing transmitted, no extra challenge.
 pub fn public_share(blocks: &[Block], zeta: &[F192], w: &[F192]) -> (usize, F192) {
+    public_share_with_mode(blocks, zeta, w, false)
+}
+
+fn public_share_with_mode(blocks: &[Block], zeta: &[F192], w: &[F192], mle_vec4: bool) -> (usize, F192) {
     let mut kappa = 0;
     let mut acc = F192::ZERO;
     for blk in blocks {
         for (i, c) in blk.coords.iter().enumerate() {
             if let Coord::Public(vals) = c {
                 kappa = blk.kappa;
-                acc += w[i] * mle_eval(vals, &zeta[..blk.kappa]);
+                acc += w[i] * eval_mle(vals, &zeta[..blk.kappa], mle_vec4);
             }
         }
     }
@@ -600,15 +790,15 @@ pub fn public_share(blocks: &[Block], zeta: &[F192], w: &[F192]) -> (usize, F192
 
 /// Bytecode = ONE polynomial, and push/pull share the point ζ, so the whole program
 /// share of the leaf is one evaluation of it, at `(ζ, α⃗)`.
-fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], w: &[F192]) -> BytecodeClaim {
-    let (kbc, share) = public_share(blocks, point, w);
+fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], w: &[F192], mle_vec4: bool) -> BytecodeClaim {
+    let (kbc, share) = public_share_with_mode(blocks, point, w, mle_vec4);
     BytecodeClaim {
         point: [&point[..kbc], alphas].concat(),
         value: share,
     }
 }
 
-/// Prove the bus balances; returns the per-column claims to open (§sec:leafstack). `alpha`/
+/// Prove the bus balances; returns the per-column claims to open (§sec:leafstack). `alphas`/
 /// `gamma` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
 /// Everything the bus hands on: the framework blocks' column claims, the reduced
@@ -637,6 +827,24 @@ pub fn prove_balance(
     tables: &[(usize, usize)],
     ps: &mut ProverState,
 ) -> BusProof {
+    let detail_trace = std::env::var("LEANVM_BUS_DETAIL_TRACE").as_deref() == Ok("1");
+    let mle_vec4_requested = std::env::var("LEANVM_BUS_MLE_VEC4").as_deref() == Ok("1");
+    let mle_vec4_eligible = cfg!(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ));
+    assert!(
+        !mle_vec4_requested || mle_vec4_eligible,
+        "LEANVM_BUS_MLE_VEC4=1 requires an x86-64 VPCLMULQDQ/AVX-512F build"
+    );
+    let mle_vec4 = mle_vec4_requested && mle_vec4_eligible;
+    if std::env::var_os("LEANVM_BUS_MLE_VEC4").is_some() {
+        eprintln!(
+            "LEANVM_BUS_MLE schema=1 requested={mle_vec4_requested} \
+             eligible={mle_vec4_eligible} selected={mle_vec4}"
+        );
+    }
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
@@ -665,22 +873,39 @@ pub fn prove_balance(
     let bus_gkr = crate::stage!("Bus GKR", || {
         gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps)
     });
+    let post_gkr_started = detail_trace.then(std::time::Instant::now);
 
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
     // every table block becomes a form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
+    let sides = sides(
+        [push, pull, count],
+        [&push_lay, &pull_lay, &count_lay],
+        &w,
+        &count_w,
+        gamma,
+    );
+    let setup_ns = post_gkr_started.map_or(0, |started| started.elapsed().as_nanos());
     // Each table's columns at ζ[..τ], computed once and shared by the three sides
     // (a form's linear part factors through them). Nothing here travels, neither the
     // evaluations nor any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
     // framework decomposition ([`verify_balance`]) and the batch settles it. A
     // transmitted total would appear in exactly one check, which it could always be
     // solved to satisfy, and would settle nothing.
-    let table_evals = tables_at(cols, tables, &bus_gkr.point);
+    let table_evals_started = detail_trace.then(std::time::Instant::now);
+    let table_evals = tables_at(cols, tables, &bus_gkr.point, mle_vec4);
+    let table_evals_ns = table_evals_started.map_or(0, |started| started.elapsed().as_nanos());
+    let shared_public_evals =
+        SharedPublicPlan::authorize(push, pull, count).map(|plan| plan.evaluate(&bus_gkr.point, mle_vec4));
+    let forms_started = detail_trace.then(std::time::Instant::now);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
+    let forms_setup_ns = forms_started.map_or(0, |started| started.elapsed().as_nanos());
     let mut frameworks = [F192::ZERO; 3];
+    let mut decompose_side_ns = [0u128; 3];
+    let decompose_started = detail_trace.then(std::time::Instant::now);
     crate::stage!("Bus decompose", || {
         for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
+            let side_started = detail_trace.then(std::time::Instant::now);
             frameworks[s] = decompose_prove(
                 blocks,
                 lay,
@@ -691,11 +916,20 @@ pub fn prove_balance(
                 &owners[s],
                 &mut forms[s],
                 &mut claims,
+                (s < 2).then_some(shared_public_evals.as_deref()).flatten(),
                 ps,
+                mle_vec4,
             );
+            if let Some(started) = side_started {
+                decompose_side_ns[s] = started.elapsed().as_nanos();
+            }
         }
     });
-    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point);
+    let decompose_ns = decompose_started.map_or(0, |started| started.elapsed().as_nanos());
+    let prod_sums_started = detail_trace.then(std::time::Instant::now);
+    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point, mle_vec4);
+    let prod_sums_ns = prod_sums_started.map_or(0, |started| started.elapsed().as_nanos());
+    let sigmas_started = detail_trace.then(std::time::Instant::now);
     let sigmas: [Vec<F192>; 3] = std::array::from_fn(|s| {
         let sigmas: Vec<F192> = forms[s]
             .iter()
@@ -712,8 +946,30 @@ pub fn prove_balance(
         );
         sigmas
     });
+    let sigmas_ns = sigmas_started.map_or(0, |started| started.elapsed().as_nanos());
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
+    let bytecode_started = detail_trace.then(std::time::Instant::now);
+    let bytecode_claims = vec![match shared_public_evals.as_deref() {
+        Some(evals) => {
+            let (kappa, value) = public_share_from_shared(evals, &w);
+            BytecodeClaim {
+                point: [&bus_gkr.point[..kappa], &alphas].concat(),
+                value,
+            }
+        }
+        None => bytecode_claim(push, &bus_gkr.point, &alphas, &w, mle_vec4),
+    }];
+    let bytecode_ns = bytecode_started.map_or(0, |started| started.elapsed().as_nanos());
+    if let Some(started) = post_gkr_started {
+        eprintln!(
+            "LEANVM_BUS_DETAIL schema=1 setup_ns={setup_ns} table_evals_ns={table_evals_ns} \
+             forms_setup_ns={forms_setup_ns} decompose_ns={decompose_ns} \
+             decompose_side_ns={decompose_side_ns:?} prod_sums_ns={prod_sums_ns} \
+             sigmas_ns={sigmas_ns} bytecode_ns={bytecode_ns} \
+             total_post_gkr_ns={}",
+            started.elapsed().as_nanos()
+        );
+    }
     BusProof {
         claims,
         bytecode_claims,
@@ -725,12 +981,12 @@ pub fn prove_balance(
 
 /// Every table's committed columns at `ζ[..τ_t]`: one `eq` table per table, then an
 /// inner product per column. `tables[t] = (base, n_cols)` in the global schema.
-fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<Vec<F192>> {
+fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192], mle_vec4: bool) -> Vec<Vec<F192>> {
     tables
         .iter()
         .map(|&(base, n_cols)| {
             let tau = crate::log2_strict_usize(cols[base].len());
-            parallel::map_collect(n_cols, |c| mle_eval(cols[base + c], &zeta[..tau]))
+            parallel::map_collect(n_cols, |c| eval_mle(cols[base + c], &zeta[..tau], mle_vec4))
         })
         .collect()
 }
@@ -745,6 +1001,7 @@ fn prod_sums_at(
     tables: &[(usize, usize)],
     forms: &[Vec<BusForm>; 3],
     zeta: &[F192],
+    mle_vec4: bool,
 ) -> Vec<Vec<(usize, usize, F192)>> {
     tables
         .iter()
@@ -759,7 +1016,11 @@ fn prod_sums_at(
             pairs.dedup();
             parallel::map_collect(pairs.len(), |i| {
                 let (a, b) = pairs[i];
-                (a, b, mle_eval_prod(cols[base + a], cols[base + b], &zeta[..tau]))
+                (
+                    a,
+                    b,
+                    eval_mle_prod(cols[base + a], cols[base + b], &zeta[..tau], mle_vec4),
+                )
             })
         })
         .collect()
@@ -822,7 +1083,13 @@ pub fn verify_balance(
     // here, the batch's target being what pins it, so no table column is opened at ζ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
+    let sides = sides(
+        [push, pull, count],
+        [&push_lay, &pull_lay, &count_lay],
+        &w,
+        &count_w,
+        gamma,
+    );
     let mut totals = [F192::ZERO; 3];
     for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
         let framework = decompose_verify(
@@ -842,7 +1109,7 @@ pub fn verify_balance(
         totals[s] = framework + bus_gkr.values[s];
     }
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w, false)];
     Ok(BusVerify {
         claims,
         bytecode_claims,
@@ -855,7 +1122,30 @@ pub fn verify_balance(
 
 #[cfg(test)]
 mod tests {
-    use super::soundness_bits;
+    use super::*;
+
+    fn bytecode_blocks(kappa: usize) -> (Vec<Block>, Vec<Block>, Vec<Block>) {
+        let columns: Vec<Arc<[F64]>> = (0..9)
+            .map(|column| {
+                (0..1usize << kappa)
+                    .map(|row| F64(((column + 1) as u64) * 0x101 + (row as u64) * 0x1_0001))
+                    .collect::<Vec<_>>()
+                    .into()
+            })
+            .collect();
+        let side = |columns: &[Arc<[F64]>]| {
+            let mut coords = vec![Coord::Const(F64(7)), Coord::Index, Coord::Const(F64::ONE)];
+            coords.extend(columns.iter().map(|column| Coord::Public(Arc::clone(column))));
+            vec![Block { kappa, coords }]
+        };
+        let push = side(&columns);
+        let pull = side(&columns);
+        let count = vec![Block {
+            kappa,
+            coords: vec![Coord::Const(F64::ONE)],
+        }];
+        (push, pull, count)
+    }
 
     /// The bound is `(N_TUPLE_BITS + 1)·2^mu` plus the GKR terms: only the bus
     /// DEPTH costs bits now, the multilinear fingerprint having fixed each factor's
@@ -865,5 +1155,156 @@ mod tests {
         assert!(soundness_bits(38) >= crate::SECURITY_BITS);
         assert!(soundness_bits(61) >= crate::SECURITY_BITS);
         assert!(soundness_bits(62) < crate::SECURITY_BITS);
+    }
+
+    #[test]
+    fn uninitialized_leaf_output_matches_one_filled_path() {
+        let columns = [
+            (0..32).map(|i| F64((3 * i + 1) as u64)).collect::<Vec<_>>(),
+            (0..32).map(|i| F64((5 * i + 7) as u64)).collect::<Vec<_>>(),
+        ];
+        let column_slices = columns.each_ref().map(Vec::as_slice);
+        let blocks = vec![
+            Block {
+                kappa: 3,
+                coords: vec![Coord::Col(0), Coord::GCol(1, 2), Coord::Const(F64(11))],
+            },
+            Block {
+                kappa: 5,
+                coords: vec![Coord::Prod(0, 1, 1), Coord::Index],
+            },
+            Block {
+                kappa: 2,
+                coords: vec![Coord::Sum(vec![Coord::Col(0), Coord::Const(F64(13))])],
+            },
+            Block {
+                kappa: 0,
+                coords: vec![Coord::Const(F64(17))],
+            },
+        ];
+        let lay = layout(&blocks);
+        let weights = [F192::new(17, 19, 23), F192::new(29, 31, 37), F192::new(41, 43, 47)];
+        let gamma = F192::new(29, 31, 37);
+        let one_filled = build_leaf_values(&blocks, &lay, &column_slices, &weights, gamma, false, false);
+        let uninitialized = build_leaf_values(&blocks, &lay, &column_slices, &weights, gamma, true, false);
+        let mut with_headroom = build_leaf_values(&blocks, &lay, &column_slices, &weights, gamma, true, true);
+        assert_eq!(uninitialized, one_filled);
+        assert_eq!(with_headroom, one_filled);
+        assert_eq!(uninitialized.len(), 45);
+        assert_eq!(uninitialized.capacity(), 45);
+        assert_eq!(with_headroom.capacity(), 48);
+        let pointer = with_headroom.as_ptr();
+        with_headroom.resize(48, F192::ONE);
+        assert_eq!(
+            with_headroom.as_ptr(),
+            pointer,
+            "quaternary padding must not reallocate"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "uninitialized leaf output requires canonical offsets")]
+    fn uninitialized_leaf_output_rejects_noncanonical_layout() {
+        let blocks = vec![Block {
+            kappa: 1,
+            coords: vec![Coord::Const(F64::ONE)],
+        }];
+        let bad_layout = Layout {
+            mu: 2,
+            offsets: vec![1],
+        };
+        let _ = build_leaf_values(&blocks, &bad_layout, &[], &[F192::ONE], F192::ONE, true, true);
+    }
+
+    #[test]
+    fn canonical_layout_shares_public_column_identity() {
+        let program = [
+            crate::cpu::Op::Set { o: 0, k: F192::ONE },
+            crate::cpu::Op::Xor { a: 0, b: 0, c: 0 },
+        ];
+        let cpu_layout = crate::cpu::layout(
+            &program,
+            crate::cpu::MIN_LOG_MEM,
+            [0; crate::tables::N_TABLES],
+            [F192::ZERO; 2],
+        );
+        let plan = SharedPublicPlan::authorize(&cpu_layout.push, &cpu_layout.pull, &cpu_layout.count)
+            .expect("canonical layout shares its bytecode owners");
+        assert_eq!(plan.coords.len(), 9);
+        for coord in &plan.coords {
+            let Coord::Public(pull) = &cpu_layout.pull[coord.block].coords[coord.slot] else {
+                panic!("authorized pull coordinate must remain public")
+            };
+            assert_eq!(coord.kappa, 1);
+            assert_eq!(coord.table.len(), 1 << coord.kappa);
+            assert!(Arc::ptr_eq(coord.table, pull));
+        }
+    }
+
+    #[test]
+    fn shared_public_authorization_rejects_nonidentity_and_malformed_layouts() {
+        let (push, mut pull, count) = bytecode_blocks(3);
+        let Coord::Public(table) = &mut pull[0].coords[3] else {
+            unreachable!()
+        };
+        *table = Arc::from(table.as_ref());
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, mut pull, count) = bytecode_blocks(3);
+        let Coord::Public(table) = &mut pull[0].coords[3] else {
+            unreachable!()
+        };
+        Arc::make_mut(table)[0] += F64::ONE;
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, mut pull, count) = bytecode_blocks(3);
+        pull[0].coords.swap(3, 4);
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, mut pull, count) = bytecode_blocks(3);
+        pull[0].kappa = 2;
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (mut push, mut pull, count) = bytecode_blocks(3);
+        let (push_other_kappa, pull_other_kappa, _) = bytecode_blocks(2);
+        push.extend(push_other_kappa);
+        pull.extend(pull_other_kappa);
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (push, pull, mut count) = bytecode_blocks(3);
+        let Coord::Public(table) = &push[0].coords[3] else {
+            unreachable!()
+        };
+        count[0].coords.push(Coord::Public(Arc::clone(table)));
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+    }
+
+    #[test]
+    fn shared_public_evaluations_are_slot_exact_through_kbc19() {
+        for kappa in [0, 3, 6, 19] {
+            let (push, pull, count) = bytecode_blocks(kappa);
+            let plan = SharedPublicPlan::authorize(&push, &pull, &count).expect("shared test layout is authorized");
+            let point: Vec<F192> = (0..kappa)
+                .map(|i| F192::new(0x101 + i as u64, 0x211 + 3 * i as u64, 0x307 + 5 * i as u64))
+                .collect();
+            let alphas: Vec<F192> = (0..N_TUPLE_BITS)
+                .map(|i| F192::new(0x401 + i as u64, 0x503 + 7 * i as u64, 0x607 + 11 * i as u64))
+                .collect();
+            let weights = fingerprint_weights(&alphas);
+            let shared = plan.evaluate(&point, false);
+            let (shared_kappa, shared_share) = public_share_from_shared(&shared, &weights);
+            let (scalar_kappa, scalar_share) = public_share(&push, &point, &weights);
+            assert_eq!((shared_kappa, shared_share), (scalar_kappa, scalar_share));
+
+            let (_, scalar_evals) = public_evals(&push, &point);
+            assert_eq!(shared.iter().map(|eval| eval.value).collect::<Vec<_>>(), scalar_evals);
+            assert_eq!(
+                scalar_share,
+                mle_eval(
+                    &stacked_bytecode_table(&push),
+                    &[point.as_slice(), alphas.as_slice()].concat()
+                )
+            );
+        }
     }
 }

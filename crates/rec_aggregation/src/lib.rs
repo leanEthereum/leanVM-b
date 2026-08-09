@@ -9,7 +9,12 @@ pub mod signers_cache;
 pub mod xmss_aggregation;
 
 pub use fibonacci::run_fibonacci;
-pub use recursion::{RecursiveProof, RecursiveVerifyError, run_recursion};
+pub use recursion::{
+    RecursionBoundaryReport, RecursionFixtureInspectionReport, RecursionFixturePreparationReport, RecursiveProof,
+    RecursiveProofInspectionReport, RecursiveVerifyError, inspect_recursion_fixture, inspect_recursive_proof_artifact,
+    prepare_recursion_fixture, read_recursive_proof_artifact, run_recursion, run_recursion_fixture_aggregation,
+    run_recursion_with_artifact,
+};
 pub use xmss_aggregation::run_xmss_aggregation;
 
 /// The pieces every workload's benchmark report ends with.

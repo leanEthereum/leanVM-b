@@ -123,7 +123,7 @@ struct Layer {
 
 /// Build only the levels consumed by radix four: `0,2,4,…`, plus a final
 /// binary root when the logical depth is odd.
-fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
+fn build_layers(leaves: LeafVector, mu: usize, quaternary_capacity: bool) -> Vec<Layer> {
     assert!(!leaves.leaves.is_empty());
     assert!(leaves.leaves.len() <= 1usize << mu);
     let mut layers: Vec<Layer> = (0..=mu).map(|_| Layer::default()).collect();
@@ -132,6 +132,9 @@ fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
     while level + 2 <= mu {
         let Layer { values: current } = &layers[level];
         let full_rows = current.len() / 4;
+        let has_tail = current.len() % 4 != 0 && current.len() > 2;
+        let output_rows = full_rows + usize::from(has_tail);
+        let output_capacity = output_rows.next_multiple_of(4);
         let product = |row: usize| {
             let [left, right] = mul_pair(
                 [current[4 * row], current[4 * row + 2]],
@@ -144,11 +147,29 @@ fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
         } else if current.len() == 2 {
             ArenaVec::from_iter([current[0] * current[1]])
         } else if full_rows >= PAR_THRESHOLD {
-            ArenaVec::par_collect(full_rows, product)
+            if quaternary_capacity {
+                // `par_collect` deliberately allocates exactly `full_rows`.
+                // Appending the identity-padded tail, or padding this output for
+                // the next quaternary sumcheck, would therefore double and copy
+                // the buffer.  Reserve both known shapes while keeping the live
+                // prefix limited to initialized rows.
+                let mut output = ArenaVec::with_capacity(output_capacity);
+                // SAFETY: the parallel fill below writes every slot in
+                // `0..full_rows` exactly once and joins before `output` escapes.
+                unsafe { output.set_len(full_rows) };
+                parallel::fill(&mut output, product);
+                output
+            } else {
+                ArenaVec::par_collect(full_rows, product)
+            }
+        } else if quaternary_capacity {
+            let mut output = ArenaVec::with_capacity(output_capacity);
+            output.extend((0..full_rows).map(product));
+            output
         } else {
             (0..full_rows).map(product).collect()
         };
-        if current.len() % 4 != 0 && current.len() > 2 {
+        if has_tail {
             let row = full_rows;
             let child = |index| current.get(4 * row + index).copied().unwrap_or(F192::ONE);
             let [left, right] = mul_pair([child(0), child(2)], [child(1), child(3)]);
@@ -255,11 +276,28 @@ impl QuaternaryLayerState {
         message.map(F192Unreduced::reduce)
     }
 
-    fn fold(&mut self, challenge: F192) {
+    fn fold(&mut self, challenge: F192, uninitialized_output: bool) {
         let stored_rows = self.values.len() / 4;
         let full_rows = stored_rows / 2;
         let rows = stored_rows.div_ceil(2);
-        self.next.resize(4 * rows, F192::ZERO);
+        let next_len = 4 * rows;
+        if uninitialized_output {
+            if self.next.capacity() == 0 {
+                // SAFETY: the full-row path writes `4 * full_rows` slots and the
+                // odd-row path writes the remaining four slots, when present.
+                // Since `rows = ceil(stored_rows / 2)`, together they initialize
+                // exactly `next_len` slots before the buffer is read or swapped.
+                self.next = unsafe { ArenaVec::uninitialized(next_len) };
+            } else {
+                // After the first fold the two buffers alternate. The previous
+                // input is always at least as long as this geometrically shrinking
+                // output, so retaining its initialized prefix needs no fill.
+                debug_assert!(self.next.len() >= next_len);
+                self.next.truncate(next_len);
+            }
+        } else {
+            self.next.resize(next_len, F192::ZERO);
+        }
         let (values, next) = (&self.values, &mut self.next);
         let fold_row = |row: usize, destination: &mut [F192]| {
             let lo = 8 * row;
@@ -316,6 +354,14 @@ pub struct ProductTriple {
 
 /// Prove three identity-padded grand products as one RLC-batched radix-four GKR.
 pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> ProductTriple {
+    let detail_trace = std::env::var("LEANVM_GKR_DETAIL_TRACE").as_deref() == Ok("1");
+    let uninitialized_fold_output = std::env::var("LEANVM_GKR_UNINIT_FOLD").as_deref() == Ok("1");
+    let quaternary_layer_capacity = std::env::var("LEANVM_GKR_QUATERNARY_LAYER_CAPACITY").as_deref() == Ok("1");
+    if std::env::var_os("LEANVM_GKR_UNINIT_FOLD").is_some() {
+        eprintln!("LEANVM_GKR_FOLD_OUTPUT schema=1 uninitialized={uninitialized_fold_output}");
+    }
+    let total_started = detail_trace.then(std::time::Instant::now);
+    let leaf_lengths: [usize; 3] = std::array::from_fn(|lane| leaves[lane].leaves.len());
     let mu = crate::log2_ceil_usize(leaves[0].leaves.len());
     assert!(
         leaves
@@ -323,7 +369,24 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
             .all(|lane| !lane.leaves.is_empty() && lane.leaves.len() <= 1 << mu),
         "batched trees must be nonempty prefixes of the first tree's logical tree"
     );
-    let mut layers = leaves.map(|lane| build_layers(lane, mu));
+    let build_started = detail_trace.then(std::time::Instant::now);
+    let mut layers = leaves.map(|lane| build_layers(lane, mu, quaternary_layer_capacity));
+    let build_ns = build_started.map_or(0, |started| started.elapsed().as_nanos());
+    let retained_layer_values: [usize; 3] =
+        std::array::from_fn(|tree| layers[tree].iter().map(|layer| layer.values.len()).sum());
+    let retained_layer_bytes = retained_layer_values
+        .iter()
+        .sum::<usize>()
+        .saturating_mul(std::mem::size_of::<F192>());
+    if std::env::var_os("LEANVM_GKR_QUATERNARY_LAYER_CAPACITY").is_some() {
+        let retained_layer_capacities: [usize; 3] =
+            std::array::from_fn(|tree| layers[tree].iter().map(|layer| layer.values.capacity()).sum());
+        eprintln!(
+            "LEANVM_GKR_LAYER_CAPACITY schema=2 quaternary_capacity={quaternary_layer_capacity} \
+             retained_values={retained_layer_values:?} \
+             retained_capacities={retained_layer_capacities:?}"
+        );
+    }
     let roots = [
         layers[0][mu].values[0],
         layers[1][mu].values[0],
@@ -337,6 +400,11 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
     let mut values = roots;
 
     let mut layer = mu;
+    let mut message_ns = 0u128;
+    let mut fold_ns = 0u128;
+    let mut equality_ns = 0u128;
+    let mut message_rounds = 0usize;
+    let mut equality_peak_entries = 0usize;
     while layer > 0 {
         let round_count = mu - layer;
         if layer % 2 == 1 {
@@ -367,23 +435,41 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
             let Layer { values } = std::mem::take(&mut layers[tree][layer - 2]);
             QuaternaryLayerState::new(values, width)
         });
+        let equality_started = detail_trace.then(std::time::Instant::now);
         let mut equality = if round_count > 0 {
             eq_table(&point[1..])
         } else {
             Vec::new()
         };
+        equality_peak_entries = equality_peak_entries.max(equality.len());
+        if let Some(started) = equality_started {
+            equality_ns += started.elapsed().as_nanos();
+        }
         let mut round_point = Vec::with_capacity(round_count);
         for _ in 0..round_count {
+            let message_started = detail_trace.then(std::time::Instant::now);
             let messages = [0, 1, 2].map(|tree| trees[tree].round_message(&equality));
+            if let Some(started) = message_started {
+                message_ns += started.elapsed().as_nanos();
+            }
+            message_rounds += 1;
             ps.add_scalars(&[0, 1, 2, 3].map(|coefficient| {
                 messages[0][coefficient] + lambda * (messages[1][coefficient] + lambda * messages[2][coefficient])
             }));
             let challenge = ps.sample();
             round_point.push(challenge);
+            let fold_started = detail_trace.then(std::time::Instant::now);
             for tree in &mut trees {
-                tree.fold(challenge);
+                tree.fold(challenge, uninitialized_fold_output);
             }
+            if let Some(started) = fold_started {
+                fold_ns += started.elapsed().as_nanos();
+            }
+            let equality_started = detail_trace.then(std::time::Instant::now);
             shrink_eq_low(&mut equality);
+            if let Some(started) = equality_started {
+                equality_ns += started.elapsed().as_nanos();
+            }
         }
 
         for tree in &trees {
@@ -403,6 +489,13 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
         point = vec![low_challenge, high_challenge];
         point.extend_from_slice(&round_point);
         layer -= 2;
+    }
+
+    if let Some(started) = total_started {
+        eprintln!(
+            "LEANVM_GKR_DETAIL schema=1 mu={mu} leaf_lengths={leaf_lengths:?} retained_layer_values={retained_layer_values:?} retained_layer_bytes={retained_layer_bytes} build_ns={build_ns} message_ns={message_ns} fold_ns={fold_ns} equality_ns={equality_ns} message_rounds={message_rounds} equality_peak_entries={equality_peak_entries} total_ns={}",
+            started.elapsed().as_nanos(),
+        );
     }
 
     ProductTriple { roots, point, values }
@@ -605,6 +698,61 @@ mod tests {
             assert_eq!(verified.point, proved.point);
             assert_eq!(verified.values, proved.values);
             vs.finish().expect("proof stream is consumed");
+        }
+    }
+
+    #[test]
+    fn quaternary_layer_capacity_matches_exact_capacity_path() {
+        for mu in 3..=12 {
+            for len in [3usize, 5, 6, 7, (1usize << (mu - 1)) + 1, (1usize << mu) - 3] {
+                let len = len.min(1usize << mu);
+                let values = (0..len)
+                    .map(|row| F192::new((11 * row + 1) as u64, (7 * row + 3) as u64, row as u64))
+                    .collect::<Vec<_>>();
+                let exact = build_layers(LeafVector::new(ArenaVec::from_slice(&values)), mu, false);
+                let quaternary = build_layers(LeafVector::new(ArenaVec::from_slice(&values)), mu, true);
+                assert_eq!(exact.len(), quaternary.len());
+                for (exact_layer, quaternary_layer) in exact.iter().zip(&quaternary) {
+                    assert_eq!(exact_layer.values, quaternary_layer.values);
+                }
+                let mut level = 2;
+                while level <= mu {
+                    let parent_len = quaternary[level - 2].values.len();
+                    let layer = &quaternary[level].values;
+                    let expected_capacity = if parent_len > 2 {
+                        layer.len().next_multiple_of(4)
+                    } else {
+                        layer.len()
+                    };
+                    assert_eq!(layer.capacity(), expected_capacity);
+                    level += 2;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn uninitialized_fold_output_matches_zero_filled_path() {
+        for stored_rows in [2usize, 3, 4, 5, 8, 17, 32, 65] {
+            let values = (0..4 * stored_rows)
+                .map(|i| F192::new((13 * i + 1) as u64, (7 * i + 3) as u64, (5 * i + 9) as u64))
+                .collect::<Vec<_>>();
+            let width = stored_rows.next_power_of_two();
+            let mut zero_filled = QuaternaryLayerState::new(ArenaVec::from_slice(&values), width);
+            let mut uninitialized = QuaternaryLayerState::new(ArenaVec::from_slice(&values), width);
+            let mut round = 0usize;
+            while zero_filled.values.len() > 4 {
+                let challenge = F192::new(
+                    (17 * round + 2) as u64,
+                    (19 * round + 5) as u64,
+                    (23 * round + 7) as u64,
+                );
+                zero_filled.fold(challenge, false);
+                uninitialized.fold(challenge, true);
+                assert_eq!(uninitialized.values, zero_filled.values);
+                assert_eq!(uninitialized.logical_rows, zero_filled.logical_rows);
+                round += 1;
+            }
         }
     }
 }
