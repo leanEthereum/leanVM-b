@@ -497,52 +497,9 @@ fn build_eq_split_ext(point: &[F192]) -> (Vec<F192>, Vec<F192>) {
     (build_eq_table_ext(&point[..n_lo]), build_eq_table_ext(&point[n_lo..]))
 }
 
-/// [`fold_ext_elems`] over the FACTORED tensor: each entry is reconstructed on
-/// the fly (`eq_lo[a] * eq_hi[b]`, one multiply) and folded: the full
-/// `2^n`-entry tensor is never materialized. Bit-identical output.
-#[cfg(test)]
-pub fn fold_ext_elems_split(eq_lo: &[F192], eq_hi: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
-    let tables = build_fold_byte_table_ext(coordinate_weights);
-    let n_lo = eq_lo.len();
-    debug_assert!(n_lo.is_power_of_two());
-    let mask = n_lo - 1;
-    let shift = n_lo.trailing_zeros();
-    parallel::map_collect(n_lo * eq_hi.len(), |y| {
-        fold_one_slot_ext(eq_lo[y & mask] * eq_hi[y >> shift], &tables)
-    })
-}
-
-/// Bytewise-table accelerated [`fold_ext_elems_naive`]: 24 lookup tables of
-/// 256 E entries each, so a position costs 24 lookups + 23 XORs with no
-/// data-dependent bit-scan. Parallel across positions.
-#[cfg(test)]
-pub fn fold_ext_elems(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
-    let tables = build_fold_byte_table_ext(coordinate_weights);
-    parallel::map_collect(suffix_tensor.len(), |i| fold_one_slot_ext(suffix_tensor[i], &tables))
-}
-
 // ---------------------------------------------------------------------------
 // Prover / verifier of the reduction
 // ---------------------------------------------------------------------------
-
-/// What both prover and (dense) verifier compute as a result of the
-/// reduction: the transparent weight vector and the WHIR target.
-#[cfg(test)]
-#[derive(Clone, Debug)]
-pub struct RingSwitchOutput {
-    pub rs_eq_ind: Vec<F192>,
-    pub sumcheck_claim: F192,
-}
-
-/// Verifier-side output of [`verify_finish`]: everything needed to drive
-/// the WHIR consistency check without materializing `rs_eq_ind`.
-#[derive(Clone, Debug)]
-pub struct RingSwitchVerifierOutput {
-    pub sumcheck_claim: F192,
-    /// Images of the coordinate basis under the batching map; feed them to
-    /// [`eval_rs_eq`] at the WHIR final point.
-    pub coordinate_weights: Vec<F192>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
@@ -551,60 +508,12 @@ pub enum VerifyError {
     Truncated,
 }
 
-/// Prover side of the reduction.
+/// Prover-side scratch carried from [`prove_prepare`] into finalization.
 ///
-/// Inputs:
-/// - `packed_witness`: `2^L` K words (L = m - 6), from
-///   [`super::pack::pack_witness`].
-/// - `prefix_weights`: the 64 per-bit-column weights of the consumed claim
-///   (the eq tensor of the 6 prefix coords for a plain point; phi_8 Lagrange
-///   weights mapped directly in the tower for flock's skip claim).
-/// - `suffix_point`: the L outer coords (in E) addressing words.
-/// - `claim`: the claimed value `sum_i prefix_weights[i] * s_hat_v[i]`;
-///   asserted against the witness (an honest caller always passes a
-///   consistent claim, so this is a cheap integration check, 64 E-mults).
-/// - `ps` to send `s_hat_v` and sample the row-batching map challenges.
-///
-/// Output: the message `s_hat_v` (64 E values, sent on the transcript) plus
-/// the WHIR inputs `(rs_eq_ind, sumcheck_claim)`; open with
-/// `recursive_prover_with_basis(config, packed, rs_eq_ind, sumcheck_claim, ..)`.
-#[cfg(test)]
-pub fn prove(
-    packed_witness: &[F64],
-    prefix_weights: &[F192],
-    suffix_point: &[F192],
-    claim: F192,
-    precomputed_s_hat_v: Option<&[F192]>,
-    ps: &mut impl Transmitter,
-) -> (Vec<F192>, RingSwitchOutput) {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
-    assert_eq!(
-        packed_witness.len(),
-        1usize << suffix_point.len(),
-        "packed witness must have 2^|suffix_point| words"
-    );
-
-    // Single-claim wrapper: observe s_hat_v, sample its map, finish. The
-    // STACKED opener instead calls `prove_prepare` for every claim, samples one
-    // shared map after all messages are bound, then `prove_finish` per claim
-    // (matching the extension-field opener + the recursion guest).
-    let state = prove_prepare(
-        packed_witness,
-        prefix_weights,
-        suffix_point,
-        claim,
-        precomputed_s_hat_v,
-        false,
-        ps,
-    );
-    let challenges = sample_map_challenges(ps);
-    let coordinate_weights = build_coordinate_weights(&challenges);
-    let out = prove_finish(&state, &coordinate_weights);
-    (state.s_hat_v, out)
-}
-
-/// Prover-side scratch carried from [`prove_prepare`] into finalization
-/// (the batching-independent data: the slice-MLE vector and the factored eq tensor).
+/// The two phases exist because one map is shared by every claim, and it can
+/// only be sampled once all of them have been sent. So each claim's
+/// map-independent work (its slice-MLE vector and its factored eq tensor) has
+/// to survive that barrier.
 #[derive(Clone)]
 pub struct RingSwitchProveState {
     s_hat_v: Vec<F192>,
@@ -655,67 +564,6 @@ pub fn prove_prepare(
     RingSwitchProveState { s_hat_v, eq_lo, eq_hi }
 }
 
-/// Phase 2 of the ring-switch prover: given the shared coordinate weights, produce
-/// the batched sumcheck claim and the transparent weight vector `rs_eq_ind`.
-#[cfg(test)]
-pub fn prove_finish(state: &RingSwitchProveState, coordinate_weights: &[F192]) -> RingSwitchOutput {
-    let s_hat_u = transpose_s_hat(&state.s_hat_v);
-    let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
-    let rs_eq_ind = fold_ext_elems_split(&state.eq_lo, &state.eq_hi, coordinate_weights);
-    RingSwitchOutput {
-        rs_eq_ind,
-        sumcheck_claim,
-    }
-}
-
-/// Verifier side of the reduction (dense: materializes `rs_eq_ind`).
-///
-/// Mirrors [`prove`]'s transcript exactly; returns `ClaimMismatch` if
-/// `sum_i prefix_weights[i] * s_hat_v[i] != claim`.
-#[cfg(test)]
-pub fn verify(
-    claim: F192,
-    prefix_weights: &[F192],
-    suffix_point: &[F192],
-    vs: &mut impl Receiver,
-) -> Result<RingSwitchOutput, VerifyError> {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
-
-    let s_hat_v = verify_prepare(claim, prefix_weights, vs)?;
-
-    let challenges = sample_map_challenges(vs);
-    let coordinate_weights = build_coordinate_weights(&challenges);
-
-    let s_hat_u = transpose_s_hat(&s_hat_v);
-    let sumcheck_claim = inner_product_base_ext(&s_hat_u, &coordinate_weights);
-
-    let suffix_tensor = build_eq_table_ext(suffix_point);
-    let rs_eq_ind = fold_ext_elems(&suffix_tensor, &coordinate_weights);
-
-    Ok(RingSwitchOutput {
-        rs_eq_ind,
-        sumcheck_claim,
-    })
-}
-
-/// Polylog-cost verifier: same transcript as [`verify`] but does NOT build
-/// the dense `rs_eq_ind`. Pair with [`eval_rs_eq`] at the WHIR final
-/// point (e.g. inside `recursive_verifier_with_basis_succinct`'s terminal
-/// weight closure).
-#[cfg(test)]
-pub fn verify_succinct(
-    claim: F192,
-    prefix_weights: &[F192],
-    vs: &mut impl Receiver,
-) -> Result<RingSwitchVerifierOutput, VerifyError> {
-    // Single-claim wrapper; the STACKED verifier reads every claim, samples
-    // one shared map, then finishes each claim.
-    let s_hat_v = verify_prepare(claim, prefix_weights, vs)?;
-    let challenges = sample_map_challenges(vs);
-    let coordinate_weights = build_coordinate_weights(&challenges);
-    Ok(verify_finish(&s_hat_v, &coordinate_weights))
-}
-
 /// Phase 1 of the ring-switch verifier: read `s_hat_v` off the stream and check
 /// the prefix-weight claim. The caller samples the possibly shared map
 /// afterwards.
@@ -729,14 +577,10 @@ pub fn verify_prepare(claim: F192, prefix_weights: &[F192], vs: &mut impl Receiv
 }
 
 /// Phase 2 of the ring-switch verifier: given the shared coordinate weights,
-/// produce the batched sumcheck claim.
-pub fn verify_finish(s_hat_v: &[F192], coordinate_weights: &[F192]) -> RingSwitchVerifierOutput {
-    let s_hat_u = transpose_s_hat(s_hat_v);
-    let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
-    RingSwitchVerifierOutput {
-        sumcheck_claim,
-        coordinate_weights: coordinate_weights.to_vec(),
-    }
+/// produce the batched sumcheck claim. Pair it with [`eval_rs_eq`] at the WHIR
+/// final point, which takes the same weights, so `rs_eq_ind` is never built.
+pub fn verify_finish(s_hat_v: &[F192], coordinate_weights: &[F192]) -> F192 {
+    inner_product_base_ext(&transpose_s_hat(s_hat_v), coordinate_weights)
 }
 
 // ---------------------------------------------------------------------------
@@ -775,8 +619,8 @@ pub fn verify_finish(s_hat_v: &[F192], coordinate_weights: &[F192]) -> RingSwitc
 /// * `z_vals`: the ring-switch suffix point,
 ///   length L = m - 6.
 /// * `query`: the WHIR final challenges, length L, same coordinate order.
-/// * `coordinate_weights`: the 192 coordinate batching weights (from
-///   [`RingSwitchVerifierOutput`]).
+/// * `coordinate_weights`: the 192 coordinate batching weights, the same ones
+///   passed to [`verify_finish`].
 pub fn eval_rs_eq(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) -> F192 {
     assert_eq!(
         z_vals.len(),
@@ -833,16 +677,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let dense = states
+        // Reference: one dense weight vector per claim, combined afterwards.
+        let dense_basis = fold_dense(&build_eq_table_ext(&point), &coordinate_weights);
+        let expected_target = states.iter().zip(gammas).fold(F192::ZERO, |acc, (state, gamma)| {
+            acc + gamma * inner_product_base_ext(&transpose_s_hat(&state.s_hat_v), &coordinate_weights)
+        });
+        let expected_basis = dense_basis
             .iter()
-            .map(|state| prove_finish(state, &coordinate_weights))
-            .collect::<Vec<_>>();
-        let expected_target = dense
-            .iter()
-            .zip(gammas)
-            .fold(F192::ZERO, |acc, (out, gamma)| acc + gamma * out.sumcheck_claim);
-        let expected_basis = (0..1usize << point.len())
-            .map(|i| gammas[0] * dense[0].rs_eq_ind[i] + gammas[1] * dense[1].rs_eq_ind[i])
+            .map(|&w| (gammas[0] + gammas[1]) * w)
             .collect::<Vec<_>>();
 
         let deferred = states
@@ -944,6 +786,13 @@ mod tests {
         assert_eq!(apply_composed_map(value, &challenges), expanded);
     }
 
+    /// The byte-table fold of a dense tensor: the kernel `combine_deferred_into`
+    /// runs per slot, without its factored-eq slot generation.
+    fn fold_dense(tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
+        let tables = build_fold_byte_table_ext(coordinate_weights);
+        tensor.iter().map(|&e| fold_one_slot_ext(e, &tables)).collect()
+    }
+
     /// Reference s_hat_v: brute-force partial evaluation of each bit-column
     /// MLE at the suffix point (direct bit-extract loop, no fold kernel).
     fn s_hat_v_reference(packed: &[F64], suffix_point: &[F192]) -> Vec<F192> {
@@ -1043,53 +892,34 @@ mod tests {
 
         const DOMAIN: &[u8] = b"rs-claim-test";
         let mut ps = fiat_shamir::transcript::ProverState::<()>::new(DOMAIN, &[]);
-        prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ps);
+        prove_prepare(&packed, &prefix_weights, suffix_point, claim, None, false, &mut ps);
         let fs = ps.into_proof();
+        let read = |fs: &fiat_shamir::transcript::Proof<()>, claim| {
+            let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
+            verify_prepare(claim, &prefix_weights, &mut vs)
+        };
 
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
-        assert!(verify(claim, &prefix_weights, suffix_point, &mut vs).is_ok());
+        assert_eq!(read(&fs, claim).unwrap(), s_ref);
+        assert_eq!(read(&fs, claim + F192::ONE).unwrap_err(), VerifyError::ClaimMismatch);
 
-        // Wrong claim value.
-        let bad_claim = claim + F192::ONE;
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
-        assert_eq!(
-            verify(bad_claim, &prefix_weights, suffix_point, &mut vs).unwrap_err(),
-            VerifyError::ClaimMismatch
-        );
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
-        assert_eq!(
-            verify_succinct(bad_claim, &prefix_weights, &mut vs).unwrap_err(),
-            VerifyError::ClaimMismatch
-        );
-
-        // Tampered s_hat_v on the stream.
         let mut bad = fs.clone();
         bad.stream[17].c0 ^= 1;
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &bad, &[]);
-        assert_eq!(
-            verify(claim, &prefix_weights, suffix_point, &mut vs).unwrap_err(),
-            VerifyError::ClaimMismatch
-        );
+        assert_eq!(read(&bad, claim).unwrap_err(), VerifyError::ClaimMismatch);
 
-        // Truncated s_hat_v.
         let mut short = fs.clone();
         short.stream.pop();
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &short, &[]);
-        assert_eq!(
-            verify(claim, &prefix_weights, suffix_point, &mut vs).unwrap_err(),
-            VerifyError::Truncated
-        );
+        assert_eq!(read(&short, claim).unwrap_err(), VerifyError::Truncated);
     }
 
-    /// The bytewise-table rs_eq_ind fold must match the naive bit-scan on
-    /// arbitrary (not necessarily eq-structured) input.
+    /// The byte-table fold behind `combine_deferred_into` must match the naive
+    /// bit-scan on arbitrary (not necessarily eq-structured) input.
     #[test]
     fn rs_eq_ind_fast_matches_naive() {
         let mut rng = Rng::new(3);
         let tensor = rng.ext_vec(1usize << 8);
         let coordinate_weights = rng.ext_vec(DEGREE_E);
         assert_eq!(
-            fold_ext_elems(&tensor, &coordinate_weights),
+            fold_dense(&tensor, &coordinate_weights),
             fold_ext_elems_naive(&tensor, &coordinate_weights)
         );
     }
@@ -1103,7 +933,7 @@ mod tests {
         let z = rng.ext_vec(l);
         let challenges = std::array::from_fn(|_| rng.ext());
         let coordinate_weights = build_coordinate_weights(&challenges);
-        let rs_eq_ind = fold_ext_elems(&build_eq_table_ext(&z), &coordinate_weights);
+        let rs_eq_ind = fold_dense(&build_eq_table_ext(&z), &coordinate_weights);
 
         let query = rng.ext_vec(l);
         let eq_query = build_eq_table_ext(&query);
@@ -1171,14 +1001,22 @@ mod tests {
         };
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
 
+        // Drive the production two-phase API with a single claim: send s_hat_v,
+        // sample the shared map, then finish with a batching scalar of one.
         let mut ps = fiat_shamir::transcript::ProverState::<()>::new(E2E_DOMAIN, &[]);
-        let (rs_s_hat_v, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ps);
-        assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
+        let state = prove_prepare(&packed, &prefix_weights, &suffix_point, claim, None, false, &mut ps);
+        let rs_s_hat_v = state.s_hat_v.clone();
+        let coordinate_weights = build_coordinate_weights(&sample_map_challenges(&mut ps));
+        let out = prove_finish_deferred(state, &coordinate_weights, F192::ONE);
+        let sumcheck_claim = out.batched_sumcheck_claim;
+        let mut rs_eq_ind = vec![F192::ZERO; packed.len()];
+        combine_deferred_into(&[out], &mut rs_eq_ind);
+        assert_eq!(inner_product_base_ext(&packed, &rs_eq_ind), sumcheck_claim);
         let whir_proof = recursive_prover_with_basis(
             &pc,
             &packed,
-            zk_alloc::ArenaVec::from_slice(&out.rs_eq_ind),
-            out.sumcheck_claim,
+            zk_alloc::ArenaVec::from_slice(&rs_eq_ind),
+            sumcheck_claim,
             &pd.codeword,
             &pd.merkle_tree,
             &mut ps,
@@ -1196,40 +1034,42 @@ mod tests {
         }
     }
 
-    /// Dense verification: ring-switch verify (rebuilds rs_eq_ind), then the
-    /// dense whir verifier with b_initial = rs_eq_ind.
-    fn verify_e2e_dense(e: &E2e) -> bool {
-        let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
-        let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &mut vs) {
-            Ok(o) => o,
-            Err(_) => return false,
-        };
-        recursive_verifier_with_basis(
-            &e.vc,
-            &e.whir_proof,
-            &out.rs_eq_ind,
-            out.sumcheck_claim,
-            &e.root,
-            &mut vs,
-        )
+    /// Read the claim off the stream and finish it against the shared map:
+    /// the verifier's half of the two phases, shared by both paths below.
+    fn verify_e2e_reduction(
+        e: &E2e,
+        vs: &mut fiat_shamir::transcript::VerifierState<'_, ()>,
+    ) -> Option<(Vec<F192>, F192)> {
+        let s_hat_v = verify_prepare(e.claim, &e.prefix_weights, vs).ok()?;
+        let coordinate_weights = build_coordinate_weights(&sample_map_challenges(vs));
+        let sumcheck_claim = verify_finish(&s_hat_v, &coordinate_weights);
+        Some((coordinate_weights, sumcheck_claim))
     }
 
-    /// Succinct verification: verify_succinct (no rs_eq_ind), then the
-    /// succinct WHIR verifier whose terminal closure evaluates
-    /// MLE(rs_eq_ind) once via `eval_rs_eq`.
+    /// Dense verification: rebuild `rs_eq_ind` and hand it to the dense whir
+    /// verifier as `b_initial`.
+    fn verify_e2e_dense(e: &E2e) -> bool {
+        let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
+        let Some((coordinate_weights, sumcheck_claim)) = verify_e2e_reduction(e, &mut vs) else {
+            return false;
+        };
+        let rs_eq_ind = fold_dense(&build_eq_table_ext(&e.suffix_point), &coordinate_weights);
+        recursive_verifier_with_basis(&e.vc, &e.whir_proof, &rs_eq_ind, sumcheck_claim, &e.root, &mut vs)
+    }
+
+    /// Succinct verification: no `rs_eq_ind`, the succinct whir verifier's
+    /// terminal closure evaluates its MLE once via `eval_rs_eq`.
     fn verify_e2e_succinct(e: &E2e) -> bool {
         let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
-        let out = match verify_succinct(e.claim, &e.prefix_weights, &mut vs) {
-            Ok(o) => o,
-            Err(_) => return false,
+        let Some((coordinate_weights, sumcheck_claim)) = verify_e2e_reduction(e, &mut vs) else {
+            return false;
         };
         let z = e.suffix_point.clone();
-        let coordinate_weights = out.coordinate_weights.clone();
         recursive_verifier_with_basis_succinct(
             &e.vc,
             &e.whir_proof,
             e.log_n,
-            out.sumcheck_claim,
+            sumcheck_claim,
             &e.root,
             |point| eval_rs_eq(&z, point, &coordinate_weights),
             &mut vs,

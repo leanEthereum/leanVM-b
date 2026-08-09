@@ -469,14 +469,10 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     }
     let map_challenges = ring_switch::sample_map_challenges(vs);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
-    let rs_outputs: Vec<_> = rs_proofs
-        .iter()
-        .map(|rs_proof| ring_switch::verify_finish(rs_proof, &coordinate_weights))
-        .collect();
     let gammas_rs = powers(vs.sample(), n_rs);
     let mut target = F192::ZERO;
-    for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
-        target += *g * out.sumcheck_claim;
+    for (s_hat_v, g) in rs_proofs.iter().zip(gammas_rs.iter()) {
+        target += *g * ring_switch::verify_finish(s_hat_v, &coordinate_weights);
     }
 
     // 2. Point-claim values + gammas; fold into the target.
@@ -497,8 +493,8 @@ pub fn verify_opening_batch_mixed_whir_stacked(
             sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
         }
         let mut rs_part = F192::ZERO;
-        for ((claim, g), out) in ring.claims.iter().zip(gammas_rs.iter()).zip(rs_outputs.iter()) {
-            rs_part += *g * ring_switch::eval_rs_eq(&claim.suffix_point, x_lo, &out.coordinate_weights);
+        for (claim, g) in ring.claims.iter().zip(gammas_rs.iter()) {
+            rs_part += *g * ring_switch::eval_rs_eq(&claim.suffix_point, x_lo, &coordinate_weights);
         }
         let mut acc = rs_part * sel_eq;
         for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
