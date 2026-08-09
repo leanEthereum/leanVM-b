@@ -989,27 +989,17 @@ fn gen_verify(
             out
         })
         .collect();
-    let path_of = |lv: usize| -> &Vec<[u8; 32]> {
-        if lv == 0 {
-            &lig.whir.initial_proof.merkle_proof
-        } else if lv == r {
-            &lig.whir.final_proof.merkle_proof
-        } else {
-            &lig.whir.recursive_proofs[lv - 1].merkle_proof
-        }
-    };
     // Level 0 rows are embedded F64 values. For levels ≥1, each F192 word is
     // flattened into three embedded limbs so the guest can reproduce the exact
     // 24-byte Merkle-leaf preimage before reconstructing the field value.
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
         let path_exp = if lv == 0 {
-            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_base(
+            let (rows_exp, path_exp) = pcs::whir::expand_level_opening(
                 shapes.block_len[lv],
                 &positions[lv],
-                &lig.whir.initial_proof.opened_rows,
+                &lig.whir.initial_proof,
                 numinter[lv],
-                path_of(lv),
             )
             .expect("expand base (level 0) stacked opening");
             for row in &rows_exp {
@@ -1019,19 +1009,14 @@ fn gen_verify(
             }
             path_exp
         } else {
-            let rows_ref = if lv == r {
-                &lig.whir.final_proof.opened_rows
+            let opening = if lv == r {
+                &lig.whir.final_proof
             } else {
-                &lig.whir.recursive_proofs[lv - 1].opened_rows
+                &lig.whir.recursive_proofs[lv - 1]
             };
-            let (rows_exp, path_exp) = pcs::whir::expand_level_opening_ext(
-                shapes.block_len[lv],
-                &positions[lv],
-                rows_ref,
-                numinter[lv],
-                path_of(lv),
-            )
-            .expect("expand ext (level ≥1) stacked opening");
+            let (rows_exp, path_exp) =
+                pcs::whir::expand_level_opening(shapes.block_len[lv], &positions[lv], opening, numinter[lv])
+                    .expect("expand ext (level ≥1) stacked opening");
             for row in &rows_exp {
                 for &x in row {
                     lrows_flat.extend([F192::new(x.c0, 0, 0), F192::new(x.c1, 0, 0), F192::new(x.c2, 0, 0)]);

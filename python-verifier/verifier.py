@@ -311,6 +311,15 @@ def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
         result *= ONE + x + y
     return result
 
+def index_mle(point: Sequence[F192]) -> F192:
+    """MLE of ``[1, g, g^2, ...]`` at an LSB-first point."""
+    result = ONE
+    generator_power = GEN
+    for challenge in point:
+        result *= ONE + challenge * (ONE + generator_power)
+        generator_power *= generator_power
+    return result
+
 
 QUAD_NODES = (ZERO, ONE, GEN, GEN**2)
 
@@ -415,14 +424,6 @@ class MerkleOpening:
         read_row = reader.base_fields if base_field else reader.fields
         rows = tuple(tuple(read_row()) for _ in range(row_count))
         return cls(rows, reader.hashes())
-
-
-@dataclass(frozen=True)
-class CompressedSumcheckMessage:
-    """A quadratic with its linear coefficient implied by the running claim."""
-
-    constant: F192
-    quadratic: F192
 
 
 @dataclass(frozen=True)
@@ -697,16 +698,6 @@ class BusLayout:
 def bus_layout(blocks: Sequence[BusBlock]) -> BusLayout:
     offsets, depth = stack_offsets([block.log_rows for block in blocks])
     return BusLayout(depth, tuple(offsets))
-
-
-def index_mle(point: Sequence[F192]) -> F192:
-    """MLE of ``[1, g, g^2, ...]`` at an LSB-first point."""
-    result = ONE
-    generator_power = GEN
-    for challenge in point:
-        result *= ONE + challenge * (ONE + generator_power)
-        generator_power *= generator_power
-    return result
 
 
 @dataclass(frozen=True)

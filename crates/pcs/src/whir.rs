@@ -937,34 +937,24 @@ impl<'a> SumcheckProver<'a> {
     }
 }
 
-/// L0 opened rows: F64 (the commitment field).
+/// One level's opened rows and the octopus authenticating them (the same shape
+/// the Python verifier reads as `MerkleOpening`). L0 committed the `F64`
+/// witness, so `T = F64` there; every deeper level committed a folded `E`-valued
+/// one, so `T = F192`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InitialProof {
-    /// One row per query (`num_interleaved` F64 entries), sorted by query
-    /// position to align with the Merkle multi-proof.
-    pub opened_rows: Vec<Vec<F64>>,
-    pub merkle_proof: Vec<Hash>,
-}
-
-/// Deeper-level opened rows: E-valued.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecursiveProof {
-    pub opened_rows: Vec<Vec<F192>>,
-    pub merkle_proof: Vec<Hash>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FinalProof {
-    pub opened_rows: Vec<Vec<F192>>,
+pub struct MerkleOpening<T> {
+    /// One row per query (`num_interleaved` entries), sorted by query position
+    /// to align with the Merkle multi-proof.
+    pub opened_rows: Vec<Vec<T>>,
     pub merkle_proof: Vec<Hash>,
 }
 
 /// The L0 root is the caller's statement, not proof data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WhirProof {
-    pub initial_proof: InitialProof,
-    pub recursive_proofs: Vec<RecursiveProof>,
-    pub final_proof: FinalProof,
+    pub initial_proof: MerkleOpening<F64>,
+    pub recursive_proofs: Vec<MerkleOpening<F192>>,
+    pub final_proof: MerkleOpening<F192>,
 }
 
 /// Sample `count` query positions in transcript order: no dedup, no sort.
@@ -1044,11 +1034,12 @@ fn stored_opening<T: Copy>(
     row: impl Fn(usize) -> Vec<T>,
     tree: &[Hash],
     block_len: usize,
-) -> (Vec<Vec<T>>, Vec<Hash>) {
+) -> MerkleOpening<T> {
     let sorted = sorted_unique_queries(queries);
-    let rows = sorted.iter().map(|&q| row(q)).collect();
-    let multi_proof = merkle::merkle_multi_proof(tree, block_len, &sorted);
-    (rows, multi_proof)
+    MerkleOpening {
+        opened_rows: sorted.iter().map(|&q| row(q)).collect(),
+        merkle_proof: merkle::merkle_multi_proof(tree, block_len, &sorted),
+    }
 }
 
 /// Prove `Σ_x witness(x) · b_initial(x) = target` against the L0 commitment
@@ -1177,14 +1168,10 @@ pub fn recursive_prover_with_basis(
     let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
     // ... but the stored proof carries the sorted-unique rows + one octopus over
     // the sorted-unique positions (the verifier re-fans them to ordered).
-    let (stored_rows_0, merkle_proof_0) = stored_opening(&queries_0, |q| l0_row(q).to_vec(), l0_tree, block_len_0);
+    let initial_proof = stored_opening(&queries_0, |q| l0_row(q).to_vec(), l0_tree, block_len_0);
     if trace {
         t_opens += _t.elapsed();
     }
-    let initial_proof = InitialProof {
-        opened_rows: stored_rows_0,
-        merkle_proof: merkle_proof_0,
-    };
 
     // Induce basis_0 from the L0 opens. L0 dominates the induce phase, where
     // the sparse-prefix transposed-NTT path wins; the dispatcher auto-selects
@@ -1215,7 +1202,7 @@ pub fn recursive_prover_with_basis(
 
     // Recursive levels.
     let mut wtns_prev = wtns_1;
-    let mut recursive_proofs: Vec<RecursiveProof> = Vec::new();
+    let mut recursive_proofs: Vec<MerkleOpening<F192>> = Vec::new();
 
     for i in 0..r {
         let k_i = config.level_ks[i];
@@ -1253,7 +1240,7 @@ pub fn recursive_prover_with_basis(
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
             // verifier fans these to ordered for its last-level induce.
-            let (opened_rows_last, merkle_proof_last) = stored_opening(
+            let final_proof = stored_opening(
                 &queries_last,
                 |q| wtns_prev.row(q).to_vec(),
                 &wtns_prev.tree,
@@ -1318,10 +1305,7 @@ pub fn recursive_prover_with_basis(
             return WhirProof {
                 initial_proof,
                 recursive_proofs,
-                final_proof: FinalProof {
-                    opened_rows: opened_rows_last,
-                    merkle_proof: merkle_proof_last,
-                },
+                final_proof,
             };
         }
 
@@ -1356,7 +1340,7 @@ pub fn recursive_prover_with_basis(
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
         let opened_rows_i: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
-        let (stored_rows_i, merkle_proof_i) = stored_opening(
+        let recursive_proof_i = stored_opening(
             &queries_i,
             |q| wtns_prev.row(q).to_vec(),
             &wtns_prev.tree,
@@ -1365,10 +1349,7 @@ pub fn recursive_prover_with_basis(
         if trace {
             t_opens += _t.elapsed();
         }
-        recursive_proofs.push(RecursiveProof {
-            opened_rows: stored_rows_i,
-            merkle_proof: merkle_proof_i,
-        });
+        recursive_proofs.push(recursive_proof_i);
 
         let sks_vks_i = eval_sk_at_vks(n_next);
         let _t = std::time::Instant::now();
@@ -1420,17 +1401,16 @@ fn verify_level_opens<T: Copy>(
     root: &Hash,
     block_len: usize,
     queries: &[usize],
-    opened_rows: &[Vec<T>],
+    opening: &MerkleOpening<T>,
     expected_num_interleaved: usize,
-    multi_proof: &[Hash],
 ) -> bool {
-    if queries.len() != opened_rows.len() {
+    if queries.len() != opening.opened_rows.len() {
         return false;
     }
-    let Some(leaf_hashes) = leaf_hashes_of(opened_rows, expected_num_interleaved) else {
+    let Some(leaf_hashes) = leaf_hashes_of(&opening.opened_rows, expected_num_interleaved) else {
         return false;
     };
-    merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, multi_proof)
+    merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, &opening.merkle_proof)
 }
 
 /// Transcript-order queries with duplicates removed, ascending. The initial opening
@@ -1447,39 +1427,15 @@ fn sorted_unique_queries(queries: &[usize]) -> Vec<usize> {
 /// guest re-hashes: one row and one full Merkle path per query, in transcript
 /// order (duplicates included). Authenticates nothing itself; the caller
 /// re-checks each restored path against the root.
-pub fn expand_level_opening<T: Clone + Copy>(
+pub fn expand_level_opening<T: Copy>(
     block_len: usize,
     queries: &[usize],
-    rows_sorted: &[Vec<T>],
+    opening: &MerkleOpening<T>,
     expected_num_interleaved: usize,
-    multi_proof: &[Hash],
 ) -> Option<(Vec<Vec<T>>, Vec<Hash>)> {
-    let leaf_hashes = leaf_hashes_of(rows_sorted, expected_num_interleaved)?;
-    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, multi_proof)?;
-    Some((fan_rows_to_ordered(queries, rows_sorted)?, flat_paths))
-}
-
-/// Level-0 (`F64` rows) instance of [`expand_level_opening`]; the recursion
-/// harness calls the two element types by name.
-pub fn expand_level_opening_base(
-    block_len: usize,
-    queries: &[usize],
-    rows_sorted: &[Vec<F64>],
-    expected_num_interleaved: usize,
-    multi_proof: &[Hash],
-) -> Option<(Vec<Vec<F64>>, Vec<Hash>)> {
-    expand_level_opening(block_len, queries, rows_sorted, expected_num_interleaved, multi_proof)
-}
-
-/// Deeper-level (`F192` rows) instance of [`expand_level_opening`].
-pub fn expand_level_opening_ext(
-    block_len: usize,
-    queries: &[usize],
-    rows_sorted: &[Vec<F192>],
-    expected_num_interleaved: usize,
-    multi_proof: &[Hash],
-) -> Option<(Vec<Vec<F192>>, Vec<Hash>)> {
-    expand_level_opening(block_len, queries, rows_sorted, expected_num_interleaved, multi_proof)
+    let leaf_hashes = leaf_hashes_of(&opening.opened_rows, expected_num_interleaved)?;
+    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, &opening.merkle_proof)?;
+    Some((fan_rows_to_ordered(queries, &opening.opened_rows)?, flat_paths))
 }
 
 /// The already-committed level whose rows the next query phase opens: its root
@@ -1676,9 +1632,8 @@ pub fn recursive_verifier_with_basis(
         expected_initial_root,
         block_len_0,
         &sq_0,
-        &proof.initial_proof.opened_rows,
+        &proof.initial_proof,
         num_interleaved_0,
-        &proof.initial_proof.merkle_proof,
     ) {
         return false;
     }
@@ -1770,9 +1725,8 @@ pub fn recursive_verifier_with_basis(
                 &prev.root,
                 prev.block_len(),
                 &sq_last,
-                &proof.final_proof.opened_rows,
+                &proof.final_proof,
                 prev.num_interleaved(),
-                &proof.final_proof.merkle_proof,
             ) {
                 return false;
             }
@@ -1873,14 +1827,7 @@ pub fn recursive_verifier_with_basis(
         }
         let rp = &proof.recursive_proofs[recursive_proof_idx];
         recursive_proof_idx += 1;
-        if !verify_level_opens(
-            &prev.root,
-            prev.block_len(),
-            &sq_i,
-            &rp.opened_rows,
-            prev.num_interleaved(),
-            &rp.merkle_proof,
-        ) {
+        if !verify_level_opens(&prev.root, prev.block_len(), &sq_i, rp, prev.num_interleaved()) {
             return false;
         }
         let ordered_rows_i = match fan_rows_to_ordered(&queries_i, &rp.opened_rows) {
@@ -2062,9 +2009,8 @@ where
         expected_initial_root,
         block_len_0,
         &sq_0,
-        &proof.initial_proof.opened_rows,
+        &proof.initial_proof,
         num_interleaved_0,
-        &proof.initial_proof.merkle_proof,
     ) {
         return false;
     }
@@ -2159,9 +2105,8 @@ where
                 &prev.root,
                 prev.block_len(),
                 &sq_last,
-                &proof.final_proof.opened_rows,
+                &proof.final_proof,
                 prev.num_interleaved(),
-                &proof.final_proof.merkle_proof,
             ) {
                 return false;
             }
@@ -2277,14 +2222,7 @@ where
         }
         let rp = &proof.recursive_proofs[recursive_proof_idx];
         recursive_proof_idx += 1;
-        if !verify_level_opens(
-            &prev.root,
-            prev.block_len(),
-            &sq_i,
-            &rp.opened_rows,
-            prev.num_interleaved(),
-            &rp.merkle_proof,
-        ) {
+        if !verify_level_opens(&prev.root, prev.block_len(), &sq_i, rp, prev.num_interleaved()) {
             return false;
         }
         let ordered_rows_i = match fan_rows_to_ordered(&queries_i, &rp.opened_rows) {
