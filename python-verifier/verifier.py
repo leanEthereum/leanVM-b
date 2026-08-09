@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, reduce
 from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
+from operator import mul
 from struct import pack, unpack
 from typing import Any
 
@@ -185,7 +186,6 @@ def blake3_compress_words(
     flags: int,
 ) -> tuple[int, ...]:
     """The BLAKE3 compression function, returning all 16 output words."""
-    require(len(cv) == 8 and len(block_words) == 16, "invalid BLAKE3 compression input")
     v = (
         list(cv)
         + list(BLAKE3_IV[:4])
@@ -224,7 +224,6 @@ def _output_root(output: tuple[Sequence[int], Sequence[int], int, int, int]) -> 
 
 
 def _chunk_output(chunk: bytes, chunk_counter: int) -> tuple[Sequence[int], Sequence[int], int, int, int]:
-    require(len(chunk) <= 1024, "a BLAKE3 chunk cannot exceed 1024 bytes")
     cv: Sequence[int] = BLAKE3_IV
     blocks = [chunk[i : i + 64] for i in range(0, len(chunk), 64)] or [b""]
     for i, block in enumerate(blocks[:-1]):
@@ -305,11 +304,25 @@ def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
 
 
 def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
-    require(len(left) == len(right), "eq: dimension mismatch")
     result = ONE
     for x, y in zip(left, right, strict=True):
         result *= ONE + x + y
     return result
+
+
+def _selector_point(selector: int, length: int) -> tuple[F192, ...]:
+    return tuple(F192(selector >> bit & 1) for bit in range(length))
+
+
+def selector_eq(selector: int, point: Sequence[F192]) -> F192:
+    """eq(bits of `selector`, point).
+
+    A bus block, and a column's placement in the stack, each occupy one subcube,
+    so the high bits of the offset are its selector (doc sec:stacking) and this
+    is the weight that subcube carries at `point`.
+    """
+    return eq_eval(_selector_point(selector, len(point)), point)
+
 
 def index_mle(point: Sequence[F192]) -> F192:
     """MLE of ``[1, g, g^2, ...]`` at an LSB-first point."""
@@ -352,7 +365,6 @@ def lagrange_weights(nodes: Sequence[F192], point: F192) -> list[F192]:
 
 
 def lagrange_interpolate(nodes: Sequence[F192], values: Sequence[F192], point: F192) -> F192:
-    require(len(nodes) == len(values), "Lagrange node/value count mismatch")
     weights = lagrange_weights(nodes, point)
     return sum((weight * value for weight, value in zip(weights, values, strict=True)), ZERO)
 
@@ -385,10 +397,11 @@ class BinaryReader:
         require(length <= self.remaining // 24, "invalid field-vector length")
         return [self.field() for _ in range(length)]
 
-    def base_fields(self) -> list[int]:
+    def base_fields(self) -> list[F192]:
+        """A row of K words, embedded in E: only their Merkle preimage is narrow."""
         length = self.u64()
         require(length <= self.remaining // 8, "invalid base-field-vector length")
-        return [self.u64() for _ in range(length)]
+        return [F192(self.u64()) for _ in range(length)]
 
     def hashes(self) -> tuple[bytes, ...]:
         length = self.u64()
@@ -403,9 +416,6 @@ class BinaryReader:
         require(self.remaining == 0, "trailing proof encoding")
 
 
-FieldValue = F192 | int
-
-
 @dataclass(frozen=True)
 class MerkleOpening:
     """One level's opened rows and the octopus authenticating them.
@@ -414,7 +424,7 @@ class MerkleOpening:
     every deeper level committed a folded E-valued one.
     """
 
-    opened_rows: tuple[tuple[FieldValue, ...], ...]
+    opened_rows: tuple[tuple[F192, ...], ...]
     merkle_proof: tuple[bytes, ...]
 
     @classmethod
@@ -446,26 +456,13 @@ class WhirProof:
         require(count <= 32, "too many WHIR levels")
         recursive_proofs = tuple(MerkleOpening.read(reader, base_field=False) for _ in range(count))
         final_proof = MerkleOpening.read(reader, base_field=False)
-        return cls(
-            initial_proof=initial_proof,
-            recursive_proofs=recursive_proofs,
-            final_proof=final_proof,
-        )
-
-
-@dataclass(frozen=True)
-class BatchOpeningProof:
-    whir: WhirProof
-
-    @classmethod
-    def read(cls, reader: BinaryReader) -> BatchOpeningProof:
-        return cls(WhirProof.read(reader))
+        return cls(initial_proof, recursive_proofs, final_proof)
 
 
 @dataclass(frozen=True)
 class Proof:
     stream: tuple[F192, ...]
-    openings: tuple[BatchOpeningProof, ...]
+    openings: tuple[WhirProof, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> Proof:
@@ -473,7 +470,7 @@ class Proof:
         stream = tuple(reader.fields())
         count = reader.u64()
         require(count <= 8, "too many PCS openings")
-        openings = tuple(BatchOpeningProof.read(reader) for _ in range(count))
+        openings = tuple(WhirProof.read(reader) for _ in range(count))
         reader.finish()
         return cls(stream, openings)
 
@@ -493,14 +490,26 @@ DS_POW = 5
 
 
 def compress(left: Sequence[int], right: Sequence[int]) -> tuple[int, int, int, int]:
+    # The one removed-guard site with nothing downstream to catch a bad length:
+    # a short operand would silently hash to a different value.
     require(len(left) == len(right) == 4, "compression operands must contain four words")
     digest = blake3_hash(b"".join(x.to_bytes(8, "little") for x in (*left, *right)))
     return digest_words(digest)
 
 
-class Sponge:
-    def __init__(self, label: bytes, statement: Sequence[F192]) -> None:
+class Transcript:
+    """The verifier's half of the channel: a sponge over a received proof.
+
+    `scalar` reads and binds in one act, so no stream word can enter the
+    computation unbound. `observe` binds a value both sides derive themselves,
+    and never advances the stream.
+    """
+
+    def __init__(self, proof: Proof, label: bytes, statement: Sequence[F192]) -> None:
+        self.proof = proof
         self.state = (0, 0, 0, 0)
+        self.stream_offset = 0
+        self.opening_offset = 0
         self.absorb_bytes(b"leanvm-b/transcript/v2")
         self.absorb_bytes(label)
         for value in statement:
@@ -522,58 +531,38 @@ class Sponge:
         self.state = compress(self.state, (0, 0, DS_SQUEEZE, 0))
         return F192(*self.state[:3])
 
-    def check_pow(self, nonce: int | F192, bits: int) -> None:
-        require(0 <= bits < 64, "invalid grinding width")
-        encoded = nonce if isinstance(nonce, F192) else F192(nonce)
-        block = (encoded.c0, encoded.c1, encoded.c2, DS_POW)
-        base = compress(self.state, (0, 0, DS_POW, 0))
-        digest = compress(base, block)[0]
-        valid = encoded == F192(0) if bits == 0 else digest & ((1 << bits) - 1) == 0
-        self.state = compress(self.state, block)
-        require(valid, "invalid grinding nonce")
+    def samples(self, count: int) -> list[F192]:
+        return [self.sample() for _ in range(count)]
 
-
-class Transcript:
-    def __init__(self, proof: Proof, label: bytes, statement: Sequence[F192]) -> None:
-        self.proof = proof
-        self.sponge = Sponge(label, statement)
-        self.stream_offset = 0
-        self.opening_offset = 0
-
-    def scalar(self) -> F192:
+    def _next(self) -> F192:
         require(self.stream_offset < len(self.proof.stream), "proof stream exhausted")
         value = self.proof.stream[self.stream_offset]
         self.stream_offset += 1
-        self.sponge.observe(value)
+        return value
+
+    def scalar(self) -> F192:
+        value = self._next()
+        self.observe(value)
         return value
 
     def scalars(self, count: int) -> list[F192]:
         return [self.scalar() for _ in range(count)]
 
-    def sample(self) -> F192:
-        return self.sponge.sample()
-
-    def samples(self, count: int) -> list[F192]:
-        return [self.sample() for _ in range(count)]
-
-    def observe(self, value: F192) -> None:
-        self.sponge.observe(value)
-
-    def check_pow(self, nonce: int | F192, bits: int) -> None:
-        self.sponge.check_pow(nonce, bits)
-
     def grind_check(self, bits: int) -> None:
         """Read the transmitted nonce and check its proof of work.
 
-        The nonce rides the stream as raw transport: `check_pow` absorbs it
+        The nonce rides the stream as raw transport: the check absorbs it
         itself, so it must not be observed a second time here.
         """
-        require(self.stream_offset < len(self.proof.stream), "proof stream exhausted")
-        nonce = self.proof.stream[self.stream_offset]
-        self.stream_offset += 1
-        self.sponge.check_pow(nonce, bits)
+        require(0 <= bits < 64, "invalid grinding width")
+        nonce = self._next()
+        block = (nonce.c0, nonce.c1, nonce.c2, DS_POW)
+        digest = compress(compress(self.state, (0, 0, DS_POW, 0)), block)[0]
+        valid = nonce == ZERO if bits == 0 else digest & ((1 << bits) - 1) == 0
+        self.state = compress(self.state, block)
+        require(valid, "invalid grinding nonce")
 
-    def opening(self) -> BatchOpeningProof:
+    def opening(self) -> WhirProof:
         require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
         result = self.proof.openings[self.opening_offset]
         self.opening_offset += 1
@@ -617,38 +606,30 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
 
     layer = depth
     while layer > 0:
+        # Layers are taken two at a time (radix four). An odd depth leaves one
+        # binary layer, which can only be the root-most one, where no prior point
+        # exists to fold against.
+        width = 1 if layer % 2 else 2
         round_count = depth - layer
+        require(width == 2 or round_count == 0, "binary GKR layer is not root-most")
         claim = values[0] + combine * (values[1] + combine * values[2])
-        if layer % 2 == 1:
-            require(round_count == 0, "binary GKR layer is not root-most")
-            tails = [transcript.scalars(2) for _ in range(3)]
-            products = [tail[0] * tail[1] for tail in tails]
-            expected = products[0] + combine * (products[1] + combine * products[2])
-            require(claim == expected, f"GKR layer {layer}: binary tail mismatch")
-            challenge = transcript.sample()
-            values = [multilinear_eval(tail, [challenge]) for tail in tails]
-            combine = transcript.sample()
-            point = [challenge]
-            layer -= 1
-            continue
 
         round_point: list[F192] = []
         for prior in point[:round_count]:
             message = transcript.scalars(4)
             challenge = transcript.sample()
             round_point.append(challenge)
-            claim = quartic_eval_from_eq(claim, prior, message[0], message[1], message[2], message[3], challenge)
+            claim = quartic_eval_from_eq(claim, prior, *message, challenge)
 
-        tails = [transcript.scalars(4) for _ in range(3)]
-        products = [tail[0] * tail[1] * tail[2] * tail[3] for tail in tails]
+        tails = [transcript.scalars(2**width) for _ in range(3)]
+        products = [reduce(mul, tail) for tail in tails]
         expected = products[0] + combine * (products[1] + combine * products[2])
-        require(claim == expected, f"GKR layer {layer}: radix-four tail mismatch")
-        low_challenge = transcript.sample()
-        high_challenge = transcript.sample()
-        values = [multilinear_eval(tail, [low_challenge, high_challenge]) for tail in tails]
+        require(claim == expected, f"GKR layer {layer}: tail mismatch")
+        challenges = transcript.samples(width)
+        values = [multilinear_eval(tail, challenges) for tail in tails]
         combine = transcript.sample()
-        point = [low_challenge, high_challenge, *round_point]
-        layer -= 2
+        point = [*challenges, *round_point]
+        layer -= width
 
     return ProductTriple(roots, tuple(point), (values[0], values[1], values[2]))
 
@@ -656,37 +637,62 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
 # Bus balance and decomposition ---------------------------------------------
 
 
-@dataclass(frozen=True)
-class Coordinate:
-    """One coordinate of a bus tuple.
+INDEX = "index"  # the g-power column g^i, evaluated from the point rather than committed
 
-    Exactly one payload is set. ``column`` and ``generator_column`` refer to
-    committed global columns; ``product`` is ``(a, b, k)`` for ``g^k * col_a *
-    col_b``, an address ``fp*g^o`` carried without committing it; ``public`` is a
-    dense public multilinear table; ``terms`` is a sum of the above, any degree-2
-    form over a table's columns, which is what carries a value a row derives from
-    its columns without committing one for it.
+
+@dataclass
+class Form:
+    """A degree-2 polynomial over columns: a bus coordinate and a bus form both.
+
+    A coordinate of a bus tuple and a table's accumulated bus contribution are
+    the same object, which is why one type serves as both. ``linear`` and
+    ``quadratic`` are keyed by column (local to a table for the blocks it owns,
+    global for the framework blocks); ``quadratic`` is what carries an address
+    ``fp*g^o`` or an arithmetic result without committing a column for it.
+    ``public`` holds the terms a row derives from its position instead of its
+    columns: a dense public table, or [`INDEX`].
+
+    Degree stays at 2, which the AIR identities already are, so the table
+    sumcheck's round polynomial does not grow.
     """
 
-    constant: F192 | None = None
-    column: int | None = None
-    generator_column: int | None = None
-    product: tuple[int, int, int] | None = None
-    index: bool = False
-    public: tuple[F192, ...] = ()
-    terms: tuple[Coordinate, ...] = ()
+    constant: F192 = ZERO
+    linear: dict[int, F192] = field(default_factory=dict)
+    quadratic: dict[tuple[int, int], F192] = field(default_factory=dict)
+    public: tuple[tuple[tuple[F192, ...] | str, F192], ...] = ()
 
-    def __post_init__(self) -> None:
-        optional = (self.constant, self.column, self.generator_column, self.product)
-        sources = sum(value is not None for value in optional) + self.index + bool(self.public) + bool(self.terms)
-        require(sources == 1, "a bus coordinate must have exactly one source")
+    def add_scaled(self, other: Form, weight: F192) -> None:
+        self.constant += weight * other.constant
+        for column, coefficient in other.linear.items():
+            self.linear[column] = self.linear.get(column, ZERO) + weight * coefficient
+        for pair, coefficient in other.quadratic.items():
+            self.quadratic[pair] = self.quadratic.get(pair, ZERO) + weight * coefficient
+        self.public += tuple((table, weight * coefficient) for table, coefficient in other.public)
+
+    def evaluate(self, column: Callable[[int], F192], point: Sequence[F192] = ()) -> F192:
+        """Substitute a value for every column, and the point for the public terms."""
+        total = self.constant
+        for index, coefficient in self.linear.items():
+            total += coefficient * column(index)
+        for (a, b), coefficient in self.quadratic.items():
+            total += coefficient * column(a) * column(b)
+        for table, coefficient in self.public:
+            total += coefficient * (index_mle(point) if table is INDEX else multilinear_eval(table, point))
+        return total
 
 
 @dataclass(frozen=True)
 class BusBlock:
+    """One block of a bus side: 2^log_rows rows of one tuple shape.
+
+    A block a table owns names that table's columns in ITS OWN local indices,
+    which is what its bus form is written over; the framework blocks (memory,
+    bytecode, boundary) name global columns.
+    """
+
     log_rows: int
-    coordinates: tuple[Coordinate, ...]
-    owner: tuple[int, int] | None = None
+    coordinates: tuple[Form, ...]
+    owner: int | None = None
 
 
 @dataclass(frozen=True)
@@ -722,57 +728,13 @@ def fingerprint_weights(alphas: Sequence[F192]) -> tuple[F192, ...]:
     return tuple(weights)
 
 
-@dataclass
-class BusForm:
-    """A table's bus contribution as a degree-2 form over its committed columns.
-
-    ``products`` holds ``(a, b, coefficient)`` in local indices, contributed by the
-    product coordinates. The form stays degree 2, which the AIR identities already
-    are, so the batch's round polynomial does not grow.
-    """
-
-    coefficients: list[F192]
-    products: list[tuple[int, int, F192]] = field(default_factory=list)
-    constant: F192 = ZERO
-
-    def evaluate(self, values: Sequence[F192]) -> F192:
-        require(len(values) == len(self.coefficients), "bus form width mismatch")
-        return sum(
-            (coefficient * value for coefficient, value in zip(self.coefficients, values, strict=True)),
-            self.constant,
-        ) + sum(
-            (coefficient * values[a] * values[b] for a, b, coefficient in self.products),
-            ZERO,
-        )
-
-
-def _accumulate_form(coordinate: Coordinate, weight: F192, form: BusForm, base: int) -> None:
-    """Accumulate one coordinate of a table's block into that table's form.
-
-    A sum's children share their coordinate's alpha-power, so a derived value lands
-    as the several coefficients and products it is made of.
-    """
-    if coordinate.constant is not None:
-        form.constant += weight * coordinate.constant
-    elif coordinate.column is not None:
-        form.coefficients[coordinate.column - base] += weight
-    elif coordinate.generator_column is not None:
-        form.coefficients[coordinate.generator_column - base] += weight * GEN
-    elif coordinate.product is not None:
-        a, b, exponent = coordinate.product
-        form.products.append((a - base, b - base, weight * _gpow(exponent)))
-    else:
-        for term in coordinate.terms:
-            _accumulate_form(term, weight, form, base)
-
-
 def _decompose_bus_side(
     blocks: Sequence[BusBlock],
     layout: BusLayout,
     point: Sequence[F192],
     weights: Sequence[F192],
     gamma: F192,
-    forms: Sequence[BusForm],
+    forms: Sequence[Form],
     claims: list[ColumnClaim],
     transcript: Transcript,
 ) -> F192:
@@ -791,32 +753,23 @@ def _decompose_bus_side(
     for block_index, block in enumerate(blocks):
         low = tuple(point[: block.log_rows])
         high = point[block.log_rows :]
-        selector = layout.offsets[block_index] >> block.log_rows
-        selector_bits = tuple(F192((selector >> bit) & 1) for bit in range(layout.depth - block.log_rows))
-        selector_weight = eq_eval(selector_bits, high)
+        selector_weight = selector_eq(layout.offsets[block_index] >> block.log_rows, high)
         selector_sum += selector_weight
 
         if block.owner is not None:
-            table, base = block.owner
-            form = forms[table]
+            # A table's block stays symbolic: it is accumulated into the form the
+            # table sumcheck will evaluate over that table's own columns.
+            form = forms[block.owner]
             form.constant += selector_weight * gamma
             for slot, coordinate in enumerate(block.coordinates):
-                _accumulate_form(coordinate, selector_weight * weights[slot], form, base)
+                form.add_scaled(coordinate, selector_weight * weights[slot])
             continue
 
-        fingerprint = ZERO
-        for slot, coordinate in enumerate(block.coordinates):
-            if coordinate.constant is not None:
-                value = coordinate.constant
-            elif coordinate.column is not None:
-                value = committed_value(coordinate.column, low)
-            elif coordinate.generator_column is not None:
-                value = GEN * committed_value(coordinate.generator_column, low)
-            elif coordinate.index:
-                value = index_mle(low)
-            else:
-                value = multilinear_eval(coordinate.public, low)
-            fingerprint += weights[slot] * value
+        # A framework block is evaluated here instead, its columns read as claims.
+        fingerprint = sum(
+            (weights[slot] * c.evaluate(lambda column: committed_value(column, low), low) for slot, c in enumerate(block.coordinates)),
+            ZERO,
+        )
         result += selector_weight * (gamma + fingerprint)
 
     # Unoccupied rows of the packed leaf cube contain the product identity.
@@ -827,7 +780,7 @@ def _decompose_bus_side(
 class BusResult:
     claims: tuple[ColumnClaim, ...]
     point: tuple[F192, ...]  # the GKR point zeta, which the table sumcheck reuses
-    forms: tuple[tuple[BusForm, ...], ...]  # forms[side][table]
+    forms: tuple[tuple[Form, ...], ...]  # forms[side][table]
     totals: tuple[F192, F192, F192]  # what the tables owe each side, derived
 
 
@@ -858,7 +811,7 @@ def verify_bus_balance(
     require(push_root == pull_root, "bus is unbalanced")
 
     claims: list[ColumnClaim] = []
-    forms = tuple(tuple(BusForm([ZERO] * width) for width in WIDTHS) for _ in range(3))
+    forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
     sides = (
         (push, push_layout, weights, gamma),
         (pull, pull_layout, weights, gamma),
@@ -893,14 +846,13 @@ class Air:
 
     table: Table
     log_height: int
-    forms: tuple[BusForm, ...]
+    forms: tuple[Form, ...]
 
     def evaluate(self, constraint_powers: Sequence[F192], form_powers: Sequence[F192], columns: Sequence[F192]) -> F192:
         """This table's share of the batch's summand: its identities, then its bus forms."""
         terms = self.table.constraints(lambda name: columns[self.table.col(name)])
-        require(len(constraint_powers) == len(terms), "AIR constraint weight mismatch")
         identities = sum((weight * term for weight, term in zip(constraint_powers, terms, strict=True)), ZERO)
-        buses = sum((weight * form.evaluate(columns) for weight, form in zip(form_powers, self.forms, strict=True)), ZERO)
+        buses = sum((weight * form.evaluate(lambda index: columns[index]) for weight, form in zip(form_powers, self.forms, strict=True)), ZERO)
         return identities + buses
 
 
@@ -1138,64 +1090,71 @@ def _gpow(index: int) -> F192:
     return GEN**index
 
 
-def _const(value: F192 | int) -> Coordinate:
-    return Coordinate(constant=value if isinstance(value, F192) else F192(value))
+def _const(value: F192 | int) -> Form:
+    return Form(constant=value if isinstance(value, F192) else F192(value))
 
 
-def _col(index: int) -> Coordinate:
-    return Coordinate(column=index)
+def _col(index: int) -> Form:
+    return Form(linear={index: ONE})
 
 
-def _gcol(index: int) -> Coordinate:
-    return Coordinate(generator_column=index)
+def _gcol(index: int) -> Form:
+    return Form(linear={index: GEN})
 
 
-def _sum(terms: Iterable[Coordinate]) -> Coordinate:
-    return Coordinate(terms=tuple(terms))
+def _sum(terms: Iterable[Form]) -> Form:
+    total = Form()
+    for term in terms:
+        total.add_scaled(term, ONE)
+    return total
 
 
-def _prod(a: int, b: int, exponent: int = 0) -> Coordinate:
-    return Coordinate(product=(a, b, exponent))
+def _prod(a: int, b: int, exponent: int = 0) -> Form:
+    return Form(quadratic={(a, b): _gpow(exponent)})
 
 
-def _public(values: Sequence[F192]) -> Coordinate:
-    return Coordinate(public=tuple(values))
+def _public(values: Sequence[F192]) -> Form:
+    return Form(public=((tuple(values), ONE),))
+
+
+_INDEX_COORDINATE = Form(public=((INDEX, ONE),))
 
 
 class Flushes:
     def __init__(self) -> None:
-        self.push: list[tuple[Coordinate, ...]] = []
-        self.pull: list[tuple[Coordinate, ...]] = []
+        self.push: list[tuple[Form, ...]] = []
+        self.pull: list[tuple[Form, ...]] = []
 
-    def pair(self, push: Sequence[Coordinate], pull: Sequence[Coordinate]) -> None:
+    def pair(self, push: Sequence[Form], pull: Sequence[Form]) -> None:
         self.push.append(tuple(push))
         self.pull.append(tuple(pull))
 
     def state_step(self, pc: int, fp: int) -> None:
         self.pair((_const(ONE), _gcol(pc), _col(fp)), (_const(ONE), _col(pc), _col(fp)))
 
-    def state_derived(self, pc: int, fp: int, npc: Coordinate, nfp: Coordinate) -> None:
+    def state_derived(self, pc: int, fp: int, npc: Form, nfp: Form) -> None:
         self.pair((_const(ONE), npc, nfp), (_const(ONE), _col(pc), _col(fp)))
 
-    def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Coordinate]) -> None:
+    def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Form]) -> None:
         prefix_push = (_const(GEN * GEN), _col(pc), _gcol(count), _const(_gpow(opcode)))
         prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), _const(_gpow(opcode)))
         self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
 
-    def memory(self, address: Coordinate, count: int, values: Sequence[Coordinate]) -> None:
+    def memory(self, address: Form, count: int, values: Sequence[Form]) -> None:
         self.pair(
             (_const(GEN), address, _gcol(count), *values),
             (_const(GEN), address, _col(count), *values),
         )
 
-    def memory_word(self, address: Coordinate, count: int, lo: int, hi: int, top: int) -> None:
-        self.memory(address, count, (_col(lo), _col(hi), _col(top)))
+    def memory_cols(self, address: Form, count: int, *columns: int) -> None:
+        """A word whose lanes are committed columns, low lane first.
 
-    def memory_base(self, address: Coordinate, count: int, value: int) -> None:
-        self.memory(address, count, (_col(value), _const(ZERO), _const(ZERO)))
-
-    def memory_128(self, address: Coordinate, count: int, lo: int, hi: int) -> None:
-        self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)))
+        Lanes past the ones named are literal zeros, which is what turns the
+        flush into a range assertion on the value: bus balance can only hold if
+        the cell really is that narrow.
+        """
+        lanes = [_col(column) for column in columns] + [_const(ZERO)] * (3 - len(columns))
+        self.memory(address, count, lanes)
 
 
 # The instruction tables (doc sec:tables) -------------------------------------
@@ -1242,7 +1201,7 @@ TOWER_LANES = (
 )
 
 
-def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[Coordinate, ...]:
+def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[Form, ...]:
     """The result word's three K-lanes as forms over the two operands' lanes.
 
     XOR is the lane-wise sum; MUL is the tower product, unrolled through TOWER_LANES.
@@ -1258,8 +1217,8 @@ def _flushes_arith(table: Table) -> Flushes:
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
-    flushes.memory_word(_prod(fp, o_a), cnt_a, *va)
-    flushes.memory_word(_prod(fp, o_b), cnt_b, *vb)
+    flushes.memory_cols(_prod(fp, o_a), cnt_a, *va)
+    flushes.memory_cols(_prod(fp, o_b), cnt_b, *vb)
     # The destination cell's flush carries the result itself, so bus balance is
     # the assertion and the result is no column.
     flushes.memory(_prod(fp, o_c), cnt_c, _arith_result(table.name == "mul", va, vb))
@@ -1273,7 +1232,7 @@ def _flushes_set(table: Table) -> Flushes:
     flushes.state_step(pc, fp)
     # The immediate's three limbs ride the spare operand slots.
     flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
-    flushes.memory_word(_prod(fp, o), cnt, *k)
+    flushes.memory_cols(_prod(fp, o), cnt, *k)
     return flushes
 
 
@@ -1282,7 +1241,7 @@ def _flushes_deref(table: Table) -> Flushes:
     cnt_ptr, cnt_target, cnt_local, cnt_bc = table.cols("cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
     v3 = table.cols("v3_0", "v3_1", "v3_2")
 
-    def gated(lane: int) -> list[Coordinate]:
+    def gated(lane: int) -> list[Form]:
         return [_col(lane), _prod(f_pc, lane), _prod(f_fp, lane)]
 
     # v2 = (1 + f_pc + f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp, lane-wise: only the low
@@ -1295,9 +1254,9 @@ def _flushes_deref(table: Table) -> Flushes:
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, table.opcode, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
-    flushes.memory_base(_prod(fp, alpha), cnt_ptr, ptr)
+    flushes.memory_cols(_prod(fp, alpha), cnt_ptr, ptr)
     flushes.memory(_prod(ptr, beta), cnt_target, store)
-    flushes.memory_word(_prod(fp, gamma), cnt_local, *v3)
+    flushes.memory_cols(_prod(fp, gamma), cnt_local, *v3)
     return flushes
 
 
@@ -1315,9 +1274,9 @@ def _flushes_jump(table: Table) -> Flushes:
     flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
     # The condition, the destination and the frame are K-valued on every row, taken
     # or not, so each is one K-limb read through literal zeros in the upper lanes.
-    flushes.memory_base(_prod(fp, o_c), cnt_c, cond)
-    flushes.memory_base(_prod(fp, o_d), cnt_d, dest)
-    flushes.memory_base(_prod(fp, o_f), cnt_f, frame)
+    flushes.memory_cols(_prod(fp, o_c), cnt_c, cond)
+    flushes.memory_cols(_prod(fp, o_d), cnt_d, dest)
+    flushes.memory_cols(_prod(fp, o_f), cnt_f, frame)
     return flushes
 
 
@@ -1354,7 +1313,7 @@ def _flushes_blake3(table: Table) -> Flushes:
         ("o_out", 1, "out1"),
     ):
         lo, hi = table.cols(f"{cell}_lo", f"{cell}_hi")
-        flushes.memory_128(_prod(fp, table.col(operand), exponent), table.col(f"cnt_{cell}"), lo, hi)
+        flushes.memory_cols(_prod(fp, table.col(operand), exponent), table.col(f"cnt_{cell}"), lo, hi)
     return flushes
 
 
@@ -1367,9 +1326,9 @@ def _flushes_pack(table: Table) -> Flushes:
     flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
     # The literal zeros make the two source range assertions and the destination
     # packing exact through bus balance.
-    flushes.memory_base(_prod(fp, o_a), cnt_a, v_a)
-    flushes.memory_base(_prod(fp, o_b), cnt_b, v_b)
-    flushes.memory_128(_prod(fp, o_c), cnt_c, v_a, v_b)
+    flushes.memory_cols(_prod(fp, o_a), cnt_a, v_a)
+    flushes.memory_cols(_prod(fp, o_b), cnt_b, v_b)
+    flushes.memory_cols(_prod(fp, o_c), cnt_c, v_a, v_b)
     return flushes
 
 
@@ -1456,19 +1415,6 @@ WIDTHS = tuple(t.width for t in TABLES)
 BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(TABLES)))
 
 
-def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
-    if coordinate.column is not None:
-        return _col(base + coordinate.column)
-    if coordinate.generator_column is not None:
-        return _gcol(base + coordinate.generator_column)
-    if coordinate.product is not None:
-        a, b, exponent = coordinate.product
-        return _prod(base + a, base + b, exponent)
-    if coordinate.terms:
-        return _sum(_offset_coordinate(term, base) for term in coordinate.terms)
-    return coordinate
-
-
 def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
     """The nine public bytecode columns: the opcode, then eight operand slots.
 
@@ -1498,49 +1444,33 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
     bytecode_log = len(program.operations).bit_length() - 1
     public_columns = _program_columns(program)
 
-    push = [
-        BusBlock(0, (_const(ONE), _const(ONE), _const(ONE))),
-        BusBlock(
-            log_memory,
-            (_const(GEN), Coordinate(index=True), _const(ONE), _col(MEM_0), _col(MEM_1), _col(MEM_2)),
-        ),
-        BusBlock(
-            bytecode_log,
-            (
-                _const(GEN * GEN),
-                Coordinate(index=True),
-                _const(ONE),
-                *(_public(column) for column in public_columns),
+    def frame(state: Form, memory_count: Form, bytecode_count: Form) -> list[BusBlock]:
+        """The blocks no table owns: the boundary state, then the two arrays.
+
+        The two sides run the same three blocks and differ only here. Push seeds
+        each array with count one; pull finalizes it with the committed final
+        count, and its boundary state is the last pc rather than the first.
+        """
+        return [
+            BusBlock(0, (_const(ONE), state, _const(ONE))),
+            BusBlock(log_memory, (_const(GEN), _INDEX_COORDINATE, memory_count, _col(MEM_0), _col(MEM_1), _col(MEM_2))),
+            BusBlock(
+                bytecode_log,
+                (_const(GEN * GEN), _INDEX_COORDINATE, bytecode_count, *(_public(column) for column in public_columns)),
             ),
-        ),
-    ]
-    pull = [
-        BusBlock(0, (_const(ONE), _const(_gpow(len(program.operations) - 1)), _const(ONE))),
-        BusBlock(
-            log_memory,
-            (_const(GEN), Coordinate(index=True), _col(MEM_FINAL_CNT), _col(MEM_0), _col(MEM_1), _col(MEM_2)),
-        ),
-        BusBlock(
-            bytecode_log,
-            (
-                _const(GEN * GEN),
-                Coordinate(index=True),
-                _col(BYTECODE_FINAL_CNT),
-                *(_public(column) for column in public_columns),
-            ),
-        ),
-    ]
+        ]
+
+    push = frame(_const(ONE), _const(ONE), _const(ONE))
+    pull = frame(_const(_gpow(len(program.operations) - 1)), _col(MEM_FINAL_CNT), _col(BYTECODE_FINAL_CNT))
     count: list[BusBlock] = []
-    for table, base, height in zip(TABLES, BASES, table_logs, strict=True):
+    for table, height in zip(TABLES, table_logs, strict=True):
         flushes = table.flushes(table)
         for coordinates in flushes.push:
-            shifted = tuple(_offset_coordinate(c, base) for c in coordinates)
-            push.append(BusBlock(height, shifted, (table.opcode, base)))
+            push.append(BusBlock(height, coordinates, table.opcode))
         for coordinates in flushes.pull:
-            shifted = tuple(_offset_coordinate(c, base) for c in coordinates)
-            pull.append(BusBlock(height, shifted, (table.opcode, base)))
+            pull.append(BusBlock(height, coordinates, table.opcode))
         for local in table.count_columns:
-            count.append(BusBlock(height, (_col(base + local),), (table.opcode, base)))
+            count.append(BusBlock(height, (_col(local),), table.opcode))
 
     # Every column's height, in global numbering; None marks the BLAKE3 value
     # columns, which are committed inside q_flock rather than on their own.
@@ -1560,7 +1490,7 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
     return Layout(tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_logs))
 
 
-def build_airs(layout: Layout, bus_forms: Sequence[Sequence[BusForm]]) -> list[Air]:
+def build_airs(layout: Layout, bus_forms: Sequence[Sequence[Form]]) -> list[Air]:
     return [Air(table, height, tuple(side[table.opcode] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs, strict=True)]
 
 
@@ -1686,25 +1616,22 @@ def _hash_pair(left: bytes, right: bytes) -> bytes:
     return blake3_hash(left + right)
 
 
-def _row_hash(row: Sequence[FieldValue], base_field: bool) -> bytes:
+def _row_hash(row: Sequence[F192], base_field: bool) -> bytes:
+    """The committer's leaf preimage: 8 bytes per K word, 24 per E word."""
     if base_field:
-        return blake3_hash(b"".join(int(value).to_bytes(8, "little") for value in row))
-    encoded = []
-    for value in row:
-        require(isinstance(value, F192), "non-field value in extension row")
-        encoded.append(value.to_bytes())
-    return blake3_hash(b"".join(encoded))
+        return blake3_hash(b"".join(value.c0.to_bytes(8, "little") for value in row))
+    return blake3_hash(b"".join(value.to_bytes() for value in row))
 
 
 def authenticate_rows(
     root: bytes,
     leaf_count: int,
     queries: Sequence[int],
-    rows: Sequence[Sequence[FieldValue]],
+    rows: Sequence[Sequence[F192]],
     row_width: int,
     octopus: Sequence[bytes],
     base_field: bool = False,
-) -> list[Sequence[FieldValue]]:
+) -> list[Sequence[F192]]:
     """Authenticate a compressed multiproof and restore transcript row order."""
     require(leaf_count > 0 and leaf_count & (leaf_count - 1) == 0, "invalid Merkle leaf count")
     unique = sorted(set(queries))
@@ -1768,19 +1695,14 @@ class QuadraticMessage:
 
 
 def _enforced_sum(
-    rows: Sequence[Sequence[FieldValue]],
+    rows: Sequence[Sequence[F192]],
     folds: Sequence[F192],
     query_weights: Sequence[F192],
 ) -> F192:
     lane_weights = eq_kernel(folds)
-    require(len(query_weights) == len(rows), "WHIR query-weight count mismatch")
     total = ZERO
     for query_weight, row in zip(query_weights, rows, strict=True):
-        require(len(row) == len(lane_weights), "WHIR row/fold width mismatch")
-        total += query_weight * sum(
-            ((F192(x) if isinstance(x, int) else x) * y for x, y in zip(row, lane_weights, strict=True)),
-            ZERO,
-        )
+        total += query_weight * sum((x * y for x, y in zip(row, lane_weights, strict=True)), ZERO)
     return total
 
 
@@ -1806,7 +1728,6 @@ def _induced_weight(message_log: int, queries: Sequence[int], query_weights: Seq
     the level's batching challenge.
     """
     require(len(point) == message_log, "bad induced-basis dimensions")
-    require(len(query_weights) == len(queries), "WHIR query-weight count mismatch")
     roots = _subspace_roots(message_log)
     inverses = [value.inv() if value else ZERO for value in roots]
     total = ZERO
@@ -1821,23 +1742,18 @@ def _induced_weight(message_log: int, queries: Sequence[int], query_weights: Seq
 
 
 @dataclass(frozen=True)
-class QueryContext:
-    """One level's batched query claim, as the terminal weight needs it back."""
+class GluedClaim:
+    """One claim folded into the running sumcheck, and the weight it owes back.
 
-    message_log: int
-    queries: tuple[int, ...]
-    weights: tuple[F192, ...]  # one power of the level's lambda per query
-    fold_start: int  # how many fold challenges preceded this level
-    scalar: F192  # the power of lambda the whole batch was glued with
+    A level's batched queries and an out-of-domain claim differ only in that
+    weight: both are a power of the level's lambda times a function of the
+    terminal point, restricted to the level's own message coordinates.
+    """
 
-
-@dataclass(frozen=True)
-class OodContext:
-    """One out-of-domain claim: its point, and how it was glued in."""
-
-    point: tuple[F192, ...]
-    fold_start: int
-    scalar: F192
+    scalar: F192  # the power of lambda it was glued with
+    message_log: int  # the level's message width, which rebuilds its share of the point
+    fold_start: int  # how many fold challenges preceded the level
+    weight_at: Callable[[Sequence[F192]], F192]
 
 
 def verify_whir(
@@ -1873,8 +1789,7 @@ def verify_whir(
     running_target = target
     running_quad = next_quad(target)
     folds: list[F192] = []
-    contexts: list[QueryContext] = []
-    ood_contexts: list[OodContext] = []
+    glued: list[GluedClaim] = []
     current_root = root
 
     for level, (fold_count, level_rate) in enumerate(zip(config.folds, config.log_inv_rates, strict=True)):
@@ -1893,7 +1808,7 @@ def verify_whir(
         final_level = level == levels - 1
         # The level's claims, held until its batching challenge is drawn: the
         # OOD claims first, then the query batch (Annex B, Protocol 1 step 1).
-        pending_ood: list[tuple[tuple[F192, ...], int, F192, QuadraticMessage]] = []
+        pending_ood: list[tuple[tuple[F192, ...], F192, QuadraticMessage]] = []
         if final_level:
             residual = tuple(transcript.scalars(2**message_log))
         else:
@@ -1901,7 +1816,7 @@ def verify_whir(
             for _ in range(config.ood_samples[level + 1]):
                 point = tuple(transcript.samples(message_log))
                 value = transcript.scalar()
-                pending_ood.append((point, len(folds), value, next_quad(value)))
+                pending_ood.append((point, value, next_quad(value)))
 
         transcript.grind_check(config.query_grinding_bits[level])
         block_length = 2 ** (message_log + level_rate)
@@ -1935,15 +1850,16 @@ def verify_whir(
         # the running claim keeping lam^0 = 1.
         intro = next_quad(enforced)
         scalar = ONE
-        for point, start, value, ood_intro in pending_ood:
+        for point, value, ood_intro in pending_ood:
             scalar *= lam
             running_quad = running_quad.add_scaled(ood_intro, scalar)
             running_target += scalar * value
-            ood_contexts.append(OodContext(point, start, scalar))
+            glued.append(GluedClaim(scalar, message_log, len(folds), lambda x, z=point: eq_eval(z, x)))
         scalar *= lam
         running_quad = running_quad.add_scaled(intro, scalar)
         running_target += scalar * enforced
-        contexts.append(QueryContext(message_log, tuple(queries), tuple(query_weights), len(folds), scalar))
+        batch = (message_log, tuple(queries), tuple(query_weights))
+        glued.append(GluedClaim(scalar, message_log, len(folds), lambda x, b=batch: _induced_weight(*b, x)))
 
         if final_level:
             # Finish the remaining sumcheck rounds and close on one evaluation
@@ -1955,20 +1871,12 @@ def verify_whir(
                 tail_folds.append(challenge)
                 if round_index + 1 < message_log:
                     running_quad = next_quad(running_target)
+            # Each glued claim is rebound at the terminal point: the fold
+            # challenges its level fixed after it was made, then the tail.
             weight = evaluate_basis(list(folds) + tail_folds)
-            for context in contexts:
-                fixed_coordinates = context.message_log - message_log
-                point = list(folds[context.fold_start : context.fold_start + fixed_coordinates]) + tail_folds
-                weight += context.scalar * _induced_weight(context.message_log, context.queries, context.weights, point)
-            for ood in ood_contexts:
-                fixed_coordinates = len(ood.point) - message_log
-                scale = ood.scalar
-                folded = folds[ood.fold_start : ood.fold_start + fixed_coordinates]
-                for expected, actual in zip(ood.point[:fixed_coordinates], folded, strict=True):
-                    scale *= ONE + expected + actual
-                for expected, actual in zip(ood.point[fixed_coordinates:], tail_folds, strict=True):
-                    scale *= ONE + expected + actual
-                weight += scale
+            for claim in glued:
+                fixed = claim.message_log - message_log
+                weight += claim.scalar * claim.weight_at(list(folds[claim.fold_start : claim.fold_start + fixed]) + tail_folds)
             terminal = weight * multilinear_eval(residual, tail_folds)
             require(terminal == running_target, "WHIR terminal check failed")
             return
@@ -2088,7 +1996,6 @@ def _coordinate_weights(challenges: Sequence[F192]) -> list[F192]:
     F2-coordinate basis under the six composed two-term linearized maps. The
     verifier weights the transposed columns with these; the guest applies the
     same composition directly."""
-    require(len(challenges) == len(RING_MAP_SHIFTS), "wrong ring-map challenge count")
     weights = []
     for w in range(192):
         # b_w has only bit w set: limb w // 64, bit w % 64.
@@ -2132,7 +2039,6 @@ def _ring_weight(
     coordinate_weights: Sequence[F192],
 ) -> F192:
     """Evaluate the transparent ring-switch weight at one query point."""
-    require(len(suffix_point) == len(query), "ring-switch query dimension mismatch")
     suffix_tensor = eq_kernel(suffix_point)
     query_tensor = eq_kernel(query)
     return sum(
@@ -2146,7 +2052,7 @@ def _ring_weight(
 
 def verify_stacked_opening(
     transcript: Transcript,
-    opening: BatchOpeningProof,
+    opening: WhirProof,
     root: bytes,
     stack_log: int,
     log_inv_rate: int,
@@ -2187,16 +2093,13 @@ def verify_stacked_opening(
         against the full stacked point.
         """
         low, high = point[:qflock_variables], point[qflock_variables:]
-        selector_weight = ONE
-        for bit, challenge in enumerate(high):
-            selector_weight *= challenge if selector >> bit & 1 else ONE + challenge
+        selector_weight = selector_eq(selector, high)
         ring_value = sum(
             (scale * _ring_weight(claim.point.ring_tail, low, coordinate_weights) for scale, claim in zip(ring_scales, ring_claims, strict=True)),
             ZERO,
         )
         value = selector_weight * ring_value
         for scale, (claim_point, _) in zip(point_scales, point_claims, strict=True):
-            require(len(claim_point) == len(point), "stack point has the wrong dimension")
             factor = ONE
             for expected, challenge in zip(claim_point, point, strict=True):
                 factor *= ONE + expected + challenge
@@ -2205,7 +2108,7 @@ def verify_stacked_opening(
 
     verify_whir(
         transcript,
-        opening.whir,
+        opening,
         stack_log,
         log_inv_rate,
         target,
@@ -2366,10 +2269,6 @@ def blake3_bilinear(
 # Complete VM verification and CLI -------------------------------------------
 
 
-def _selector_point(selector: int, length: int) -> tuple[F192, ...]:
-    return tuple(F192(selector >> bit & 1) for bit in range(length))
-
-
 def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     """Verify a complete leanVM-b execution proof against its public statement.
 
@@ -2441,21 +2340,16 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     point_claims: list[tuple[tuple[F192, ...], F192]] = []
     qflock = layout.placements[QFLOCK]
     for claim in claims:
+        # A BLAKE3 value column is committed inside q_flock rather than on its
+        # own, so its claim is re-routed to the equal evaluation of q_flock's
+        # slot: the same point, under a different placement, behind the slot bits.
         slot = virtual_slot(claim.column)
-        if slot is None:
-            placement = layout.placements[claim.column]
-            require(not placement.virtual, "claim targets an uncommitted column")
-            require(len(claim.point) == placement.variables, "column claim dimension mismatch")
-            selector = placement.offset >> placement.variables
-            full_point = claim.point + _selector_point(selector, layout.stack_log - placement.variables)
-        else:
-            require(
-                len(claim.point) + QFLOCK_SLOT_BITS == qflock.variables,
-                "BLAKE3 slot claim dimension mismatch",
-            )
-            selector = qflock.offset >> qflock.variables
-            full_point = _selector_point(slot, QFLOCK_SLOT_BITS) + claim.point + _selector_point(selector, layout.stack_log - qflock.variables)
-        point_claims.append((full_point, claim.value))
+        placement = qflock if slot is not None else layout.placements[claim.column]
+        prefix = _selector_point(slot, QFLOCK_SLOT_BITS) if slot is not None else ()
+        require(not placement.virtual, "claim targets an uncommitted column")
+        require(len(prefix) + len(claim.point) == placement.variables, "column claim dimension mismatch")
+        selector = placement.offset >> placement.variables
+        point_claims.append((prefix + claim.point + _selector_point(selector, layout.stack_log - placement.variables), claim.value))
 
     # 7] BLAKE3 validity, then the one opening that discharges every claim.
     reduction = verify_reduction(FLOCK_LOG_BITS + layout.table_logs[BLAKE3.opcode], transcript)
