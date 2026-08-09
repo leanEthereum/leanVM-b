@@ -515,15 +515,6 @@ impl Stats {
 /// Fiat-Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
-    prove_with_public_mle_reuse(program, public_input, log_inv_rate, true)
-}
-
-fn prove_with_public_mle_reuse(
-    program: &Program,
-    public_input: [F192; 2],
-    log_inv_rate: usize,
-    reuse_public_mles: bool,
-) -> (Proof, Stats) {
     ::pcs::whir::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     // One proof is one arena phase: every transient buffer below is bump-allocated
     // and reclaimed wholesale here, rather than faulted in and unmapped again per
@@ -570,16 +561,7 @@ fn prove_with_public_mle_reuse(
         let l = &w.layout;
         let cols = w.columns();
         let bus = crate::stage!("Prove bus", || {
-            leaf::prove_balance_with_public_reuse(
-                &l.push,
-                &l.pull,
-                &l.count,
-                &cols,
-                &owners,
-                &spans,
-                reuse_public_mles,
-                &mut ps,
-            )
+            leaf::prove_balance(&l.push, &l.pull, &l.count, &cols, &owners, &spans, &mut ps)
         });
         let table_claims = crate::stage!("Prove constraints", || {
             // One sumcheck for all seven tables (§constraints).
@@ -918,48 +900,6 @@ mod tests {
         let d = blake3_compress(a, b, cv_lanes(pi[0], pi[1]), md());
         assert_eq!(exec.mem[6], cell(d[0], d[1]));
         assert_eq!(exec.mem[7], cell(d[2], d[3]));
-    }
-
-    #[test]
-    #[ignore = "complete two-proof transcript exactness oracle"]
-    fn shared_public_mles_leave_complete_proof_byte_exact() {
-        crate::init_prover_pool();
-        let mut bytecode = vec![
-            Op::Set { o: 2, k: F192::ONE },
-            Op::Xor { a: 3, b: 4, c: 5 },
-            Op::Mul { a: 3, b: 4, c: 6 },
-            Op::Deref {
-                alpha: 2,
-                beta: 0,
-                gamma: 0,
-                mode: DerefMode::Cell,
-            },
-            Op::Pack64x2 { a: 3, b: 4, c: 7 },
-        ];
-        bytecode.extend(std::iter::repeat_n(
-            Op::Blake3 {
-                ins: [8, 9, 10, 11],
-                cv: 12,
-                out: 14,
-                metadata: md(),
-            },
-            8,
-        ));
-        bytecode.extend([
-            Op::Xor { a: 3, b: 4, c: 5 },
-            Op::Jump { oc: 3, od: 4, of: 4 },
-            Op::Xor { a: 0, b: 0, c: 0 },
-        ]);
-        let program = Program::from_bytecode(bytecode, 32);
-        let public_input = [w(7), w(11)];
-        let (scalar, _) = prove_with_public_mle_reuse(&program, public_input, 2, false);
-        verify(&program, &public_input, &scalar).expect("scalar public-MLE proof verifies");
-        let (shared, _) = prove_with_public_mle_reuse(&program, public_input, 2, true);
-        verify(&program, &public_input, &shared).expect("shared public-MLE proof verifies");
-        assert_eq!(
-            bincode::serialize(&shared).expect("shared proof serializes"),
-            bincode::serialize(&scalar).expect("scalar proof serializes")
-        );
     }
 
     /// BLAKE consumes the `(c0,c1,0)` embedding. This is not an extra AIR

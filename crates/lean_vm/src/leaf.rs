@@ -646,8 +646,12 @@ impl<'a> SharedPublicPlan<'a> {
         if push.is_empty() || push.len() != pull.len() || !public(count).is_empty() {
             return None;
         }
+        let common_kappa = push[0].kappa;
         let shaped = |coord: &SharedPublicCoord<'_>| {
-            coord.kappa < usize::BITS as usize && coord.table.len() == 1usize << coord.kappa
+            coord.kappa == common_kappa
+                && coord.kappa < usize::BITS as usize
+                && coord.slot < 1 << N_TUPLE_BITS
+                && coord.table.len() == 1usize << coord.kappa
         };
         let authorized = push.iter().zip(&pull).all(|(a, b)| {
             (a.block, a.slot, a.kappa) == (b.block, b.slot, b.kappa)
@@ -823,19 +827,6 @@ pub fn prove_balance(
     tables: &[(usize, usize)],
     ps: &mut ProverState,
 ) -> BusProof {
-    prove_balance_with_public_reuse(push, pull, count, cols, owners, tables, true, ps)
-}
-
-pub(crate) fn prove_balance_with_public_reuse(
-    push: &[Block],
-    pull: &[Block],
-    count: &[Block],
-    cols: &[&[F64]],
-    owners: &[Vec<Option<(usize, usize)>>; 3],
-    tables: &[(usize, usize)],
-    reuse_public_evals: bool,
-    ps: &mut ProverState,
-) -> BusProof {
     let detail_trace = std::env::var("LEANVM_BUS_DETAIL_TRACE").as_deref() == Ok("1");
     let mle_vec4_requested = std::env::var("LEANVM_BUS_MLE_VEC4").as_deref() == Ok("1");
     let mle_vec4_eligible = cfg!(all(
@@ -904,10 +895,8 @@ pub(crate) fn prove_balance_with_public_reuse(
     let table_evals_started = detail_trace.then(std::time::Instant::now);
     let table_evals = tables_at(cols, tables, &bus_gkr.point, mle_vec4);
     let table_evals_ns = table_evals_started.map_or(0, |started| started.elapsed().as_nanos());
-    let shared_public_evals = reuse_public_evals
-        .then(|| SharedPublicPlan::authorize(push, pull, count))
-        .flatten()
-        .map(|plan| plan.evaluate(&bus_gkr.point, mle_vec4));
+    let shared_public_evals =
+        SharedPublicPlan::authorize(push, pull, count).map(|plan| plan.evaluate(&bus_gkr.point, mle_vec4));
     let forms_started = detail_trace.then(std::time::Instant::now);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
     let forms_setup_ns = forms_started.map_or(0, |started| started.elapsed().as_nanos());
@@ -1274,6 +1263,12 @@ mod tests {
 
         let (push, mut pull, count) = bytecode_blocks(3);
         pull[0].kappa = 2;
+        assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
+
+        let (mut push, mut pull, count) = bytecode_blocks(3);
+        let (push_other_kappa, pull_other_kappa, _) = bytecode_blocks(2);
+        push.extend(push_other_kappa);
+        pull.extend(pull_other_kappa);
         assert!(SharedPublicPlan::authorize(&push, &pull, &count).is_none());
 
         let (push, pull, mut count) = bytecode_blocks(3);
