@@ -5,9 +5,10 @@
 pub use fiat_shamir::sponge::{Sponge, TraceOp, trace_start, trace_take};
 pub use fiat_shamir::transcript::Error;
 
-/// The one hash-bearing artifact on the `openings` channel: the batched
-/// stacked opening (its ring-switch messages + ONE WHIR proof).
-pub type Opening = ::pcs::stack_open::BatchOpeningProof;
+/// The one hash-bearing artifact on the `openings` channel: the stacked
+/// opening's Merkle data. Every scalar it transmits, ring-switch messages
+/// included, rides the stream instead.
+pub type Opening = ::pcs::whir::WhirProof;
 
 pub type Proof = fiat_shamir::transcript::Proof<Opening>;
 pub type ProverState = fiat_shamir::transcript::ProverState<Opening>;

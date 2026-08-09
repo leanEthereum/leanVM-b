@@ -995,13 +995,9 @@ fn gen_verify(
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
         let path_exp = if lv == 0 {
-            let (rows_exp, path_exp) = pcs::whir::expand_level_opening(
-                shapes.block_len[lv],
-                &positions[lv],
-                &lig.whir.initial_proof,
-                numinter[lv],
-            )
-            .expect("expand base (level 0) stacked opening");
+            let (rows_exp, path_exp) =
+                pcs::whir::expand_level_opening(shapes.block_len[lv], &positions[lv], &lig.initial_proof, numinter[lv])
+                    .expect("expand base (level 0) stacked opening");
             for row in &rows_exp {
                 for &x in row {
                     lrows_flat.push(F192::new(x.0, 0, 0));
@@ -1010,9 +1006,9 @@ fn gen_verify(
             path_exp
         } else {
             let opening = if lv == r {
-                &lig.whir.final_proof
+                &lig.final_proof
             } else {
-                &lig.whir.recursive_proofs[lv - 1]
+                &lig.recursive_proofs[lv - 1]
             };
             let (rows_exp, path_exp) =
                 pcs::whir::expand_level_opening(shapes.block_len[lv], &positions[lv], opening, numinter[lv])

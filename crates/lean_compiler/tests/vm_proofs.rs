@@ -50,7 +50,7 @@ fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
 fn a_tampered_opening_is_rejected() {
     let (program, pi, mut proof) = hashing_proof();
     let opening = proof.openings.last_mut().expect("stacked WHIR opening");
-    opening.whir.initial_proof.opened_rows[0][0].0 ^= 1;
+    opening.initial_proof.opened_rows[0][0].0 ^= 1;
     assert!(
         verify(&program, &pi, &proof).is_err(),
         "a tampered validity proof must be rejected"

@@ -53,7 +53,6 @@ use crate::merkle::Hash;
 use fiat_shamir::transcript::{Receiver, Transmitter};
 use primitives::field::{F64, F192, powers};
 use primitives::multilinear::eq_eval;
-use serde::{Deserialize, Serialize};
 
 use super::pack::PACKING_WIDTH;
 use super::ring_switch;
@@ -143,7 +142,7 @@ pub struct RingSwitchOpen {
 }
 
 /// Verifier counterpart of [`RingSwitchOpen`]: identical statement data
-/// (the proof travels separately as [`BatchOpeningProof`]).
+/// (the Merkle openings travel separately, as the [`WhirProof`]).
 #[derive(Clone, Debug)]
 pub struct RingSwitchVerify {
     /// q_flock's offset inside the committed stack.
@@ -155,14 +154,6 @@ pub struct RingSwitchVerify {
     /// used without being re-sent or re-checked.
     pub reconstructed: Vec<Vec<F192>>,
     pub claims: Vec<RingSwitchClaim>,
-}
-
-/// Batched stacked opening proof: the Merkle half of one WHIR proof over the
-/// combined claim. Every scalar the opening transmits, ring-switch messages
-/// included, rides the transcript stream.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BatchOpeningProof {
-    pub whir: WhirProof,
 }
 
 /// What the stacked-opening verifier hands back on accept: the recursion
@@ -313,7 +304,7 @@ pub fn open_batch_mixed_whir_stacked(
     config: &ProverConfig,
     point_claims: &[StackClaim],
     ring: &RingSwitchOpen,
-) -> BatchOpeningProof {
+) -> WhirProof {
     let qflock_len = 1usize << ring.qflock_vars;
     assert!(
         ring.offset.is_multiple_of(qflock_len),
@@ -410,7 +401,7 @@ pub fn open_batch_mixed_whir_stacked(
 
     // 4. One WHIR over the full stack against the combined claim (the
     //    stack is borrowed by the prover; no copy).
-    let whir = recursive_prover_with_basis(
+    recursive_prover_with_basis(
         config,
         stack,
         b_stack,
@@ -418,8 +409,7 @@ pub fn open_batch_mixed_whir_stacked(
         &prover_data.codeword,
         &prover_data.merkle_tree,
         ps,
-    );
-    BatchOpeningProof { whir }
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +428,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     root: &Hash,
     point_claims: &[StackClaim],
     ring: &RingSwitchVerify,
-    proof: &BatchOpeningProof,
+    proof: &WhirProof,
 ) -> Option<StackedOpeningSummary> {
     let n_rs = ring.claims.len();
     let qflock_vars = ring.qflock_vars;
@@ -506,7 +496,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     let mut query_squeezes: Vec<Vec<F192>> = Vec::new();
     let ok = recursive_verifier_with_basis_succinct_with_squeezes(
         config,
-        &proof.whir,
+        proof,
         log_n,
         target,
         root,
@@ -555,7 +545,7 @@ mod tests {
         root: Hash,
         point_claims: Vec<StackClaim>,
         ring: RingSwitchOpen,
-        proof: BatchOpeningProof,
+        proof: WhirProof,
         fs: fiat_shamir::transcript::Proof<()>,
     }
 
@@ -670,7 +660,7 @@ mod tests {
         inst: &Instance,
         point_claims: &[StackClaim],
         ring_claims: &[RingSwitchClaim],
-        proof: &BatchOpeningProof,
+        proof: &WhirProof,
         fs: &fiat_shamir::transcript::Proof<()>,
     ) -> bool {
         let ring = RingSwitchVerify {

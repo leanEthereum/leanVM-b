@@ -18,8 +18,7 @@ use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192};
 
 pub use ::pcs::stack_open::{
-    BatchOpeningProof, RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim,
-    StackedOpeningSummary,
+    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim, StackedOpeningSummary,
 };
 use ::pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
 use ::pcs::whir::{Commitment, ProverData, commit as whir_commit, configs_for_rate};
@@ -152,7 +151,7 @@ pub fn open(
     q: &[F64],
     points: &[SlotClaim],
     ring: &RingSwitchOpen,
-) -> BatchOpeningProof {
+) -> ::pcs::whir::WhirProof {
     debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
     let cfg = whir_configs(c.mu, c.log_inv_rate);
     open_batch_mixed_whir_stacked(ps, q, &c.prover_data, &cfg.0, points, ring)
@@ -166,7 +165,7 @@ pub fn verify(
     vs: &mut VerifierState,
     points: &[SlotClaim],
     ring: &RingSwitchVerify,
-    open: &BatchOpeningProof,
+    open: &::pcs::whir::WhirProof,
     mu: usize,
     log_inv_rate: usize,
     root: &[u8; 32],
