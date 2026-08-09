@@ -1,7 +1,7 @@
 % !TeX root = ../drafts/a-ring-switching.tex
 \section{Ring switching}\label{annex:rs}
 
-Turning $64$ evaluation claims over $\E$ into one opening of a commitment whose values are $64$ bits wide. This annex is the general construction; \S\ref{sec:ringswitch} instantiates it on the packed flock witness $q_\flock$.
+Turning $64$ evaluation claims over $\E$ into one opening of a commitment whose values are $64$ bits wide. This annex is the general construction; \S\ref{sec:ringswitch} instantiates it on the packed Flock witness $\qflock$.
 
 \subsection{Setting}\label{rs:setting}
 
@@ -12,11 +12,11 @@ e_w=x^iy^j\in\E,\qquad w=64j+i,\quad 0\le i<64,\quad 0\le j<3.
 
 The witness is $64$ bit-valued multilinears $Q_0,\dots,Q_{63}:\cube{\nflock}\to\{0,1\}$. We commit to them packed, one $\K$ element per point:
 \[
-Q_\flock:\cube{\nflock}\to\K,\qquad Q_\flock(u)=\sum_{i=0}^{63}Q_i(u)\,x^i.
+\qflock:\cube{\nflock}\to\K,\qquad \qflock(u)=\sum_{i=0}^{63}Q_i(u)\,x^i.
 \]
-The commitment scheme proves statements of one shape. Given a target $T\in\E$ and a transparent weight $W:\cube{\nflock}\to\E$, one that the verifier can evaluate for itself, an opening proves
+The commitment scheme proves statements of one shape. Given a target $T\in\E$ and an MLE-friendly weight $W:\cube{\nflock}\to\E$ (Definition~\ref{def:ipcs}), an opening proves
 \[
-\sum_{u\in\cube{\nflock}}W(u)\,Q_\flock(u)=T.
+\sum_{u\in\cube{\nflock}}W(u)\,\qflock(u)=T.
 \]
 The weight is $\E$-valued, the committed values are $\K$-valued, and the sum is taken in $\E$.
 
@@ -38,7 +38,7 @@ Ring switching~\cite{DP26} turns those $64$ claims into a single statement the o
 Fix an $\F_2$-linear map $\Phi:\E\to\E$:
 \begin{equation}
 \begin{split}
-\sum_{u\in\cube{\nflock}}\Phi\bigl(\eq(r,u)\bigr)\,Q_\flock(u)
+\sum_{u\in\cube{\nflock}}\Phi\bigl(\eq(r,u)\bigr)\,\qflock(u)
 &=\sum_{i=0}^{63}x^i\sum_{u\in\cube{\nflock}}Q_i(u)\,\Phi\bigl(\eq(r,u)\bigr)\\
 &=\sum_{i=0}^{63}x^i\,\Phi\Bigl(\sum_{u\in\cube{\nflock}}Q_i(u)\,\eq(r,u)\Bigr)
 =\sum_{i=0}^{63}x^i\,\Phi(s_i).
@@ -49,7 +49,7 @@ The reduction is:
 \begin{enumerate}
 \item once the $s_i$ are fixed, the verifier draws $\Phi$ at random;
 \item it computes the target $T=\sum_{i=0}^{63}x^i\Phi(s_i)$;
-\item the commitment scheme opens $Q_\flock$ against the weight $W:\cube{\nflock}\to\E$, $W(u)=\Phi\bigl(\eq(r,u)\bigr)$, with target $T$; if that opening accepts, the verifier accepts the $64$ claims.
+\item the commitment scheme opens $\qflock$ against the weight $W:\cube{\nflock}\to\E$, $W(u)=\Phi\bigl(\eq(r,u)\bigr)$, with target $T$; if that opening accepts, the verifier accepts the $64$ claims.
 \end{enumerate}
 Everything now turns on which $\Phi$ we can afford to draw.
 
@@ -135,7 +135,7 @@ so by Schwartz--Zippel (Lemma~\ref{lem:sz}) the check passes with probability le
 
 \subsection{Evaluating the weight}\label{rs:weight}
 
-An opening reduces $\sum_{u\in\cube{\nflock}}W(u)\,Q_\flock(u)=T$ to a claim about $Q_\flock$ at a random point $r'\in\E^{\nflock}$, and the verifier must evaluate the multilinear extension of $W$ at $r'$, written $\mle{W}(r')$, by itself. Two facts turn that into a short formula.
+An opening reduces $\sum_{u\in\cube{\nflock}}W(u)\,\qflock(u)=T$ to a claim about $\qflock$ at a random point $r'\in\E^{\nflock}$, and the verifier must evaluate the multilinear extension of $W$ at $r'$, written $\mle{W}(r')$, by itself. Two facts turn that into a short formula.
 
 \emph{Fact 1 ($\eq$ in characteristic $2$).} In each factor the two $a_nb_n$ terms cancel, identically in $a$ and $b$:
 \[

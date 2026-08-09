@@ -325,7 +325,7 @@ pub trait Table: Sync {
     /// `i` by `pows[i]`, this table's slice of the batch's `eta`-powers. The slice is
     /// is exactly [`n_constraints`](Table::n_constraints) long: an identity indexed
     /// past its end panics rather than silently reaching into the next table's
-    /// range. The batched zerocheck carries every committed column of a table, in
+    /// range. The table sumcheck carries every committed column of a table, in
     /// local order, so `cols` is indexed directly. Returns `0` on every valid row (§sec:air).
     /// The default is the constraint-free case; a table that declares constraints
     /// and forgets to evaluate them trips the assert instead of dropping them.

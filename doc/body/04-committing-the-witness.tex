@@ -25,5 +25,4 @@ via the PCS (Annex~\ref{annex:pcs}).
 
 \subsection{Committing to booleans via Ring-Switching}\label{sec:ringswitch}
 
-Flock's BLAKE3 argument (\S\ref{sec:tab-blake3}) requires to commit a boolean multilinear (i.e. taking values in $\Ftwo$ on the boolean hypercube) in $\nflock + 6$ variables. Ring-Switching~\cite{DP26} enables us to transform a commitment in $\K$ into a commitment in $\Ftwo$, see Annex~\ref{annex:rs}. As a result, the Flock witness is committed as a $\K$-valued multilinear in $\nflock$ variables (using stacking \ref{sec:stacking}).
-
+Flock's BLAKE3 argument (\S\ref{sec:tab-blake3}) requires a commitment to a Boolean multilinear in $\nflock+\kskip$ variables. Ring switching~\cite{DP26} lets the prover pack its low $\kskip=6$ coordinates into the $\K$-valued multilinear $\qflock$ in $\nflock$ variables (Annex~\ref{annex:rs}), which occupies one region of the stack in \S\ref{sec:stacking}.

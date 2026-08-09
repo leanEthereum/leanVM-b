@@ -43,7 +43,7 @@ use primitives::multilinear::{
 };
 use zk_alloc::ArenaVec;
 
-/// One table's involved columns' evaluations at its zerocheck point.
+/// One table's involved columns' evaluations at its table-sumcheck point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claims {
     pub rho: Vec<F192>,
@@ -353,7 +353,7 @@ fn prove_with_node_skip(
         .collect()
 }
 
-/// Verify the batched zerocheck, returning the per-table claims for the caller to
+/// Verify the table sumcheck, returning the per-table claims for the caller to
 /// settle against the commitment.
 pub fn verify(
     airs: &[Air<'_>],

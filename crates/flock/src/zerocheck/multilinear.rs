@@ -1014,19 +1014,16 @@ mod tests {
             let b = rng.bits(1 << m);
             let c = rng.bits(1 << m);
 
-            // Build r with protocol-fixed constants in the middle 7 dims,
+            // Build the equality tail with the seven protocol-fixed constants,
             // matching how `prove` constructs it.
-            let mut r = vec![F192::ZERO; m];
-            for slot in r[..K_SKIP].iter_mut() {
-                *slot = rng.ext();
-            }
+            let mut r = vec![F192::ZERO; m - K_SKIP];
             for (i, v) in small_challenges().iter().enumerate() {
-                r[K_SKIP + i] = *v;
+                r[i] = *v;
             }
             for (i, v) in medium_challenges().iter().enumerate() {
-                r[K_SKIP + 3 + i] = *v;
+                r[3 + i] = *v;
             }
-            for slot in r[K_SKIP + N_INNER..].iter_mut() {
+            for slot in r[N_INNER..].iter_mut() {
                 *slot = rng.ext();
             }
             let z = rng.ext();
@@ -1045,10 +1042,10 @@ mod tests {
             let c_eval_via_interpolation = c_s() * interpolate_at_z_on_lambda(&round1_c, K_SKIP, z);
 
             // Path B: direct fold of c at z (Lagrange) then bind each
-            // r_rest = r[K_SKIP..m] element with fold_in_place_single.
+            // r_rest element with fold_in_place_single.
             let weights = lagrange_weights_naive(K_SKIP, z);
             let mut c_mlv = fold_at_z_naive(&c, m, K_SKIP, &weights);
-            for &r_val in &r[K_SKIP..] {
+            for &r_val in &r {
                 fold_in_place_single(&mut c_mlv, r_val);
             }
             assert_eq!(c_mlv.len(), 1);

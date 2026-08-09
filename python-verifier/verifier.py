@@ -872,7 +872,7 @@ def _decompose_bus_side(
 @dataclass(frozen=True)
 class BusResult:
     claims: tuple[ColumnClaim, ...]
-    point: tuple[F192, ...]  # the GKR point zeta, which the zerocheck reuses
+    point: tuple[F192, ...]  # the GKR point zeta, which the table sumcheck reuses
     forms: tuple[tuple[BusForm, ...], ...]  # forms[side][table]
     totals: tuple[F192, F192, F192]  # what the tables owe each side, derived
 
@@ -930,7 +930,7 @@ def verify_bus_balance(
     return BusResult(tuple(claims), product.point, forms, (totals[0], totals[1], totals[2]))
 
 
-# Batched AIR zerocheck ------------------------------------------------------
+# Table sumcheck -------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -2118,9 +2118,8 @@ class ZerocheckResult:
 def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     require(log_n >= FLOCK_K_SKIP + FLOCK_N_INNER, "Flock zerocheck input is too small")
     require(len(FIXED_CHALLENGES) == FLOCK_N_INNER, "wrong fixed-challenge count")
-    sampled_prefix = transcript.samples(FLOCK_K_SKIP)
     sampled_outer = transcript.samples(log_n - FLOCK_K_SKIP - FLOCK_N_INNER)
-    equality_point = (*sampled_prefix, *FIXED_CHALLENGES, *sampled_outer)
+    equality_tail = (*FIXED_CHALLENGES, *sampled_outer)
     ab_values = transcript.scalars(PACKED_BITS)
     c_values = transcript.scalars(PACKED_BITS)
     skip = transcript.sample()
@@ -2130,7 +2129,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     combined_evaluation = lagrange_interpolate(PHI[: 2 * PACKED_BITS], [ZERO] * PACKED_BITS + combined, skip)
     running = combined_evaluation + c_evaluation
     rounds = []
-    for equality in equality_point[FLOCK_K_SKIP:]:
+    for equality in equality_tail:
         at_one, at_infinity = transcript.scalars(2)
         at_zero = (running + equality * at_one) / (ONE + equality)
         challenge = transcript.sample()
@@ -2138,13 +2137,14 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
         running = at_zero * (ONE + challenge) + at_one * challenge + at_infinity * challenge * (ONE + challenge)
     final_a, final_b = transcript.scalars(2)
     require(running == final_a * final_b, "Flock zerocheck terminal mismatch")
-    return ZerocheckResult(skip, tuple(rounds), tuple(equality_point[FLOCK_K_SKIP:]), final_a, final_b, c_evaluation)
+    return ZerocheckResult(skip, tuple(rounds), equality_tail, final_a, final_b, c_evaluation)
 
 
 @dataclass(frozen=True)
 class FlockReduction:
     ab: ZClaim
     c: ZClaim
+    ab_s_hat_v: tuple[F192, ...]
 
 
 RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
@@ -2224,14 +2224,16 @@ def verify_stacked_opening(
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
-    require(len(opening.ring_switches) == len(ring_claims), "wrong ring-switch proof count")
+    require(len(opening.ring_switches) == 1, "wrong ring-switch proof count")
+    ring_switches = (reduction.ab_s_hat_v, *opening.ring_switches)
     slices: list[Sequence[F192]] = []
-    for claim, values in zip(ring_claims, opening.ring_switches, strict=True):
+    for ring_index, (claim, values) in enumerate(zip(ring_claims, ring_switches, strict=True)):
         require(len(values) == PACKED_BITS, "ring-switch proof has the wrong width")
-        for value in values:
-            transcript.observe(value)
-        expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
-        require(expected == claim.value, "ring-switch claim mismatch")
+        if ring_index != 0:  # A/B's value was already derived from the bound z_partial.
+            for value in values:
+                transcript.observe(value)
+            expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
+            require(expected == claim.value, "ring-switch claim mismatch")
         slices.append(values)
 
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
@@ -2287,7 +2289,7 @@ def verify_lincheck(
     a: F192,
     b: F192,
     transcript: Transcript,
-) -> ZClaim:
+) -> tuple[ZClaim, tuple[F192, ...]]:
     """Replay the fixed BLAKE3 matrix reduction."""
     alpha = transcript.sample()
     inner_weights = quirky_weights(point.skip, point.inner)
@@ -2301,7 +2303,7 @@ def verify_lincheck(
         challenge = transcript.sample()
         running = at_infinity * challenge * challenge + linear * challenge + at_zero
         challenges.append(challenge)
-    partial = transcript.scalars(PACKED_BITS)
+    partial = tuple(transcript.scalars(PACKED_BITS))
     rounds = tuple(reversed(challenges))
     rest_weights = build_eq(rounds)
     column_weights = [value * weight for weight in rest_weights for value in partial]
@@ -2310,16 +2312,16 @@ def verify_lincheck(
     require(terminal == running, "Flock lincheck terminal mismatch")
     skip = transcript.sample()
     value = sum((x * y for x, y in zip(lagrange_weights(PHI[:PACKED_BITS], skip), partial, strict=True)), ZERO)
-    return ZClaim(QuirkyPoint(skip, rounds, point.outer), value)
+    return ZClaim(QuirkyPoint(skip, rounds, point.outer), value), partial
 
 
 def verify_reduction(log_n: int, transcript: Transcript) -> FlockReduction:
     zerocheck = verify_zerocheck(log_n, transcript)
     inner_length = QFLOCK_SLOT_BITS  # the slot bits, the outer ones indexing instances
     ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds[:inner_length], zerocheck.rounds[inner_length:])
-    ab = verify_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
+    ab, ab_s_hat_v = verify_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
     c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail[:inner_length], zerocheck.equality_tail[inner_length:])
-    return FlockReduction(ab, ZClaim(c_point, zerocheck.c))
+    return FlockReduction(ab, ZClaim(c_point, zerocheck.c), ab_s_hat_v)
 
 
 def blake3_bilinear(
@@ -2469,7 +2471,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     # decomposition, which leaves each table a degree-2 form and a total.
     bus = verify_bus_balance(layout.push, layout.pull, layout.count, transcript)
 
-    # 4] Local constraints: one back-loaded zerocheck over all seven tables, at
+    # 4] Rows: one back-loaded table sumcheck over all seven tables, at
     # the bus point, starting from the target the three leaf claims derive.
     # Every table takes a disjoint range of eta powers for its constraints; the
     # three bus sides share the three above them (doc sec:air).
@@ -2490,17 +2492,18 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     claims.extend(constraint_claims(air_claims))
 
     # 5] Public input: the first two memory cells, as one claim per limb on the
-    # line through them. The prover sends two limbs; the third follows.
+    # line through them. The prover sends one evaluation per limb; the three must
+    # reassemble the line's value at the challenge (doc sec:e2e-pi).
     public_challenge = transcript.sample()
-    public_low, public_high = transcript.scalars(2)
+    public_limbs = transcript.scalars(3)
     public_point = [ZERO] * layout.placements[MEM_0].variables
     public_point[0] = public_challenge
     public_value = interpolate(public_input[0], public_input[1], public_challenge)
-    public_top = (public_value + public_low + Y * public_high) / (Y * Y)
-    claims.extend(
-        ColumnClaim(column, tuple(public_point), value)
-        for column, value in zip((MEM_0, MEM_1, MEM_2), (public_low, public_high, public_top), strict=True)
+    require(
+        public_limbs[0] + Y * public_limbs[1] + Y * Y * public_limbs[2] == public_value,
+        "public input limbs are off the line",
     )
+    claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEM_0, MEM_1, MEM_2), public_limbs, strict=True))
 
     # 6] Locate every claim in the stack: a column claim keeps its point and
     # gains its placement's selector bits; a BLAKE3 value claim is re-routed to

@@ -83,6 +83,7 @@ fn prover_ring(reduced: &PackedWitnessClaims, qflock_vars: usize) -> RingSwitchO
     RingSwitchOpen {
         offset: 0,
         qflock_vars,
+        prebound: 1,
         claims: vec![
             ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
             ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
@@ -90,10 +91,13 @@ fn prover_ring(reduced: &PackedWitnessClaims, qflock_vars: usize) -> RingSwitchO
     }
 }
 
-fn verifier_ring(ab: &ZClaim, c: &ZClaim, qflock_vars: usize) -> RingSwitchVerify {
+fn verifier_ring(ab: &ZClaim, c: &ZClaim, ab_s_hat_v: &[F192], qflock_vars: usize) -> RingSwitchVerify {
     RingSwitchVerify {
         offset: 0,
         qflock_vars,
+        reconstructed: vec![pcs::ring_switch::RingSwitchProof {
+            s_hat_v: ab_s_hat_v.to_vec(),
+        }],
         claims: vec![ring_claim(ab, None, qflock_vars), ring_claim(c, None, qflock_vars)],
     }
 }
@@ -156,8 +160,10 @@ fn blake3_batch_prove_verify() {
         let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
         drop((z_packed, a_packed, b_packed, z_lincheck));
         let ring = prover_ring(&reduced, mu);
-        let opening =
+        let mut opening =
             open_batch_mixed_whir_stacked(ps.sponge_mut(), &q_flock, &prover_data, &prover_config, &[], &ring);
+        assert_eq!(opening.ring_switches[0].s_hat_v, reduced.ab.s_hat_v.as_deref().unwrap());
+        opening.ring_switches.remove(0);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 
@@ -188,7 +194,7 @@ fn blake3_batch_prove_verify() {
         let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
         let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
-        let ring = verifier_ring(&replay.ab, &replay.c, mu);
+        let ring = verifier_ring(&replay.ab, &replay.c, &replay.lc_claim.s_hat_v, mu);
         verify_opening_batch_mixed_whir_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
             .expect("stacked PCS opening verifies");
         vs.finish().expect("transcript fully consumed");

@@ -377,6 +377,7 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
     crate::pcs::RingSwitchOpen {
         offset,
         qflock_vars,
+        prebound: 1,
         claims: vec![
             ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
             ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
@@ -388,13 +389,38 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
 /// claims (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the
 /// same statement data; the transmitted opening travels separately (read off the
 /// `openings` hint channel by the caller).
-pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: ZClaim, c: ZClaim) -> crate::pcs::RingSwitchVerify {
+pub fn ring_switch_verify(
+    n_blocks: usize,
+    offset: usize,
+    ab: ZClaim,
+    c: ZClaim,
+    ab_s_hat_v: &[F192],
+) -> crate::pcs::RingSwitchVerify {
     let qflock_vars = qflock_kappa(n_blocks);
     crate::pcs::RingSwitchVerify {
         offset,
         qflock_vars,
+        reconstructed: vec![::pcs::ring_switch::RingSwitchProof {
+            s_hat_v: ab_s_hat_v.to_vec(),
+        }],
         claims: vec![ring_claim(&ab, None, qflock_vars), ring_claim(&c, None, qflock_vars)],
     }
+}
+
+/// Drop the AB ring-switch message from the opening after checking that it is
+/// the same `z_partial` already sent by lincheck. Verifiers reconstruct and
+/// use it as an already-bound ring-switch message.
+pub fn omit_replayed_ab(opening: &mut crate::pcs::BatchOpeningProof, ab_s_hat_v: &[F192]) {
+    assert_eq!(
+        opening.ring_switches.len(),
+        2,
+        "Flock opening must carry AB and C ring-switch messages"
+    );
+    assert_eq!(
+        opening.ring_switches[0].s_hat_v, ab_s_hat_v,
+        "lincheck and AB ring-switch values drifted"
+    );
+    opening.ring_switches.remove(0);
 }
 
 #[cfg(test)]
@@ -559,7 +585,20 @@ mod tests {
         let committed = crate::pcs::commit(&mut ps, &stacked.q, crate::pcs::LOG_INV_RATE);
         let (_z, reduced) = prove_reduction(&blocks, &mut ps);
         let ring = ring_switch_open(blocks.len(), offset, &reduced);
-        let open = crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
+        let mut open = crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
+        omit_replayed_ab(
+            &mut open,
+            reduced
+                .ab
+                .s_hat_v
+                .as_deref()
+                .expect("Flock AB ring-switch values are captured"),
+        );
+        assert_eq!(
+            open.ring_switches.len(),
+            1,
+            "only C's ring-switch message travels in the opening"
+        );
         ps.hint_opening(open);
         let bundle = ps.into_proof();
 
@@ -568,7 +607,7 @@ mod tests {
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
             let open = vs.next_opening().map_err(|_| "opening hint")?;
-            let ring = ring_switch_verify(blocks.len(), offset, replay.ab, replay.c);
+            let ring = ring_switch_verify(blocks.len(), offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
             crate::pcs::verify(&mut vs, points, &ring, open, stacked.m, crate::pcs::LOG_INV_RATE, &root)
                 .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")
