@@ -64,9 +64,11 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
 /// to everything fixed about the proving environment: the flock circuit
 /// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
-/// and the bytecode itself, hashed as the stacked multilinear
-/// ([`layout::bytecode_table`]) rather than as the assembler's structured
-/// digest, so a verifier holding only that polynomial can reproduce the seed.
+/// and the bytecode, via [`Program::bytecode_hash`]: BLAKE3 over the stacked
+/// multilinear ([`layout::bytecode_table`]) rather than over an assembler
+/// digest, so a verifier holding only that polynomial reproduces the seed. That
+/// inner hash is cached on the program, so the table is walked once per program
+/// rather than once per proof.
 /// It leads every transcript, so all
 /// challenges depend on the circuit version and the program before anything
 /// else; a recursion guest carries the INNER program's seed in its public
@@ -75,9 +77,7 @@ pub fn fs_seed(program: &Program) -> [F192; 2] {
     let mut h = blake3::Hasher::new();
     h.update(b"leanvm-b-fs-seed-v1");
     h.update(&crate::blake3_flock::family_digest());
-    for w in layout::bytecode_table(&program.prog) {
-        h.update(&w.0.to_le_bytes());
-    }
+    h.update(&program.bytecode_hash);
     let d = *h.finalize().as_bytes();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
     [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)]
@@ -157,11 +157,12 @@ pub struct Program {
     pub prog: Vec<Op>, // bytecode (size B, power of two)
     pub pc0: u32,
     pub fp0: u32,
-    /// A binding digest of `prog` ([`program_digest`]), computed once at assembly
-    /// and seeded into the transcript so every challenge depends on the exact
-    /// program. Trusted to match `prog`: always set by [`Program::assemble`] from
-    /// the bytecode, so a `Program` value cannot carry a digest inconsistent with
-    /// its own `prog`.
+    /// BLAKE3 over the stacked bytecode multilinear, computed once at assembly
+    /// so proving and verifying the same program do not rehash it (that table is
+    /// 16·2^kbc words, tens of megabytes at production sizes). Trusted to match
+    /// `prog`: always set by [`Program::assemble`] from the bytecode, so a
+    /// `Program` cannot carry a hash inconsistent with its own `prog`.
+    pub(crate) bytecode_hash: [u8; 32],
     /// Prover-side frame/buffer allocation hints (keyed by global pc) and the
     /// size of `main`'s frame: the nondeterminism [`Program::execute`] needs to
     /// run the program. Public verification (§ `verify`) ignores them.
@@ -196,8 +197,16 @@ impl Program {
         hints: HashMap<u32, Vec<hints::RHint>>,
         main_frame: u32,
     ) -> Self {
+        let bytecode_hash = {
+            let mut h = blake3::Hasher::new();
+            for w in layout::bytecode_table(&prog) {
+                h.update(&w.0.to_le_bytes());
+            }
+            *h.finalize().as_bytes()
+        };
         Self {
             prog,
+            bytecode_hash,
             pc0,
             fp0,
             hints,

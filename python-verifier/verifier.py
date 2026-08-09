@@ -336,11 +336,10 @@ def blake3_hash(data: bytes) -> Digest:
 class Digest:
     """256 bits: a BLAKE3 output, a Merkle node, the sponge state, the public input.
 
-    Two transcript encodings as a pair of E elements exist and are NOT
-    interchangeable. A Merkle root rides as 24 + 8 bytes ([`scalars`], mirroring
-    `pcs::merkle::hash_to_scalars`); the commitment root and the public input
-    ride as 16 + 16 ([`halves`]). Naming both here is what keeps one from being
-    read as the other.
+    One transcript encoding, everywhere: two 128-bit halves, each an E element
+    carrying a K pair with a spare top lane (`pcs::merkle::hash_to_scalars`).
+    128 bits is the VM's digest unit, which is what `PACK64X2` builds, so the
+    recursion guest reads every digest with the same two-cell shape.
     """
 
     value: bytes
@@ -357,24 +356,14 @@ class Digest:
         w0, w1, w2, w3 = unpack("<4Q", self.value)
         return (K(w0), K(w1), K(w2), K(w3))
 
-    def scalars(self) -> tuple[E, E]:
-        """The 24 + 8 encoding: three limbs, then one."""
-        w = self.words()
-        return (E(w[0], w[1], w[2]), E(w[3]))
-
-    @classmethod
-    def from_scalars(cls, low: E, high: E) -> Digest:
-        require(not (high.c1 or high.c2), "non-canonical digest")
-        return cls.from_words((low.c0, low.c1, low.c2, high.c0))
-
     def halves(self) -> tuple[E, E]:
-        """The 16 + 16 encoding: two limbs each, top lanes spare."""
+        """Its two 128-bit halves, the one form a digest travels in."""
         w = self.words()
         return (E(w[0], w[1]), E(w[2], w[3]))
 
     @classmethod
     def from_halves(cls, low: E, high: E) -> Digest:
-        require(not (low.c2 or high.c2), "digest half has a nonzero top limb")
+        require(not (low.c2 or high.c2), "a digest half is 128-bit")
         return cls.from_words((low.c0, low.c1, high.c0, high.c1))
 
 
@@ -1057,9 +1046,11 @@ def transcript_statement(bytecode: Sequence[K], public_input: Sequence[E]) -> tu
     """The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
 
     The seed hashes the bytecode multilinear itself, not a structured program, so
-    a verifier holding only the polynomial can reproduce it.
+    a verifier holding only the polynomial can reproduce it. Rust caches that
+    inner hash on `Program`, which is why it is a separate step here.
     """
-    seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST + b"".join(word.to_bytes() for word in bytecode))
+    bytecode_hash = blake3_hash(b"".join(word.to_bytes() for word in bytecode))
+    seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST + bytecode_hash.value)
     return (*seed.halves(), *public_input)
 
 
@@ -1765,11 +1756,11 @@ def verify_whir(
     require(len(proof.recursive_proofs) == levels - 2, "wrong WHIR recursive-proof count")
 
     def observe_root(value: Digest) -> None:
-        for scalar in value.scalars():
+        for scalar in value.halves():
             transcript.observe(scalar)
 
     def read_root() -> Digest:
-        return Digest.from_scalars(transcript.scalar(), transcript.scalar())
+        return Digest.from_halves(transcript.scalar(), transcript.scalar())
 
     def next_quad(claim: E) -> QuadraticMessage:
         constant, quadratic = transcript.scalar(), transcript.scalar()

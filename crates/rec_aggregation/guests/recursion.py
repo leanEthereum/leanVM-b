@@ -324,29 +324,14 @@ def sponge_compress(state, scalar, tail, out):
     return
 
 
-@inline
-def hash_state_to_words(cell_0, cell_1):
-    # Convert canonical BLAKE3 cells (d0,d1,0), (d2,d3,0) to the two scalar
-    # words used when WHIR observes a Merkle root: (d0,d1,d2), (d3,0,0).
-    lo = StackBuf(2)
-    hi = StackBuf(2)
-    hint_f192_limbs(lo, cell_0)
-    hint_f192_limbs(hi, cell_1)
-    pack64x2_into(lo[0], lo[1], cell_0)
-    pack64x2_into(hi[0], hi[1], cell_1)
-    return cell_0 + Y_TOWER * Y_TOWER * hi[0], hi[1]  # cell_0 IS lo[0] + Y·lo[1] (pinned above)
-
-
-@inline
-def hash_words_to_state(word_0, word_1):
-    # Inverse of hash_state_to_words. PACK64X2 also proves word_1 is in K.
+def canonical_cell(word, out_cell):
+    # Prove a transcript word is a canonical BLAKE3 cell (d, d', 0): PACK64X2
+    # writes the pack of two hinted K limbs, and the equality pins the word to
+    # it, so a nonzero top lane cannot slip through.
     limbs = StackBuf(3)
-    hint_f192_limbs(limbs, word_0)
-    state = StackBuf(2)
-    pack64x2_into(limbs[0], limbs[1], state[0])
-    pack64x2_into(limbs[2], word_1, state[1])
-    assert word_0 == state[0] + Y_TOWER * Y_TOWER * limbs[2]  # state[0] is the pack of the low two limbs
-    return state
+    hint_f192_limbs(limbs, word)
+    pack64x2_into(limbs[0], limbs[1], out_cell)
+    assert word == out_cell
 
 
 def squeeze_step(state_0, state_1):
@@ -713,13 +698,12 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # the terminal pins its hinted claim lengths against.
     fs = [fs0, fs1]
 
-    # The K opener binds the initial Merkle root as its two F192 scalars (like
-    # the extension-field opener's add_scalars(hash_to_scalars(root))), not as a byte
-    # string. Level roots are likewise scalar-observed (via fs_next below).
-    commit_root_word_0, commit_root_word_1 = hash_state_to_words(commit_root_0, commit_root_1)
+    # The K opener binds the initial Merkle root as its two F192 scalars, not as
+    # a byte string, and every digest uses ONE 128/128 encoding, so those scalars
+    # are exactly the root's two cells. Level roots are likewise scalar-observed.
     fs = obs(fs, target)
-    fs = obs(fs, commit_root_word_0)
-    fs = obs(fs, commit_root_word_1)
+    fs = obs(fs, commit_root_0)
+    fs = obs(fs, commit_root_1)
 
     # The opening's scalars (sumcheck messages, level roots, nonces, final
     # message) ride the SHARED stream: msg_cursor is just the main stream
@@ -789,7 +773,9 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         else:
             fs, next_root_a, msg_cursor = fs_next(fs, msg_cursor)
             fs, next_root_b, msg_cursor = fs_next(fs, msg_cursor)
-            next_root = hash_words_to_state(next_root_a, next_root_b)
+            next_root = StackBuf(2)
+            canonical_cell(next_root_a, next_root[0])
+            canonical_cell(next_root_b, next_root[1])
             level_roots_0[GEN ** (lvl + 1)] = next_root[0]
             level_roots_1[GEN ** (lvl + 1)] = next_root[1]
             # OOD binding for the newly observed level-(lvl+1) commitment.

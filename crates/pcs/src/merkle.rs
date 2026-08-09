@@ -47,27 +47,29 @@ const B3_ROOT: u8 = 8;
 /// keeping input references and output rows cache-resident.
 const HASH_GROUP: usize = 1024;
 
-/// Encode a Merkle hash as the two little-endian field words used by transcripts.
+/// Encode a Merkle hash as the two field words transcripts carry it in: two
+/// 128-bit halves, each a K pair with a spare top lane. Every digest in the
+/// protocol uses this one split (the commitment root, the public input, the
+/// guest's MD state), so the VM sees one shape everywhere.
 #[inline]
 pub fn hash_to_scalars(hash: &Hash) -> [F192; 2] {
     let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
-    [F192::new(w(0), w(8), w(16)), F192::new(w(24), 0, 0)]
+    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
 }
 
-/// Decode the two field words used by transcripts back into a Merkle hash.
+/// Decode [`hash_to_scalars`].
 #[inline]
 pub fn scalars_to_hash(scalars: &[F192]) -> Hash {
     assert_eq!(scalars.len(), 2, "a Merkle hash is exactly two field words");
-    let mut hash = [0u8; 32];
-    hash[0..8].copy_from_slice(&scalars[0].c0.to_le_bytes());
-    hash[8..16].copy_from_slice(&scalars[0].c1.to_le_bytes());
-    assert_eq!(
-        (scalars[1].c1, scalars[1].c2),
-        (0, 0),
-        "packed Merkle hash tail must be K-valued"
+    assert!(
+        scalars.iter().all(|s| s.c2 == 0),
+        "a packed Merkle hash half is 128-bit"
     );
-    hash[16..24].copy_from_slice(&scalars[0].c2.to_le_bytes());
-    hash[24..32].copy_from_slice(&scalars[1].c0.to_le_bytes());
+    let mut hash = [0u8; 32];
+    for (i, s) in scalars.iter().enumerate() {
+        hash[16 * i..16 * i + 8].copy_from_slice(&s.c0.to_le_bytes());
+        hash[16 * i + 8..16 * i + 16].copy_from_slice(&s.c1.to_le_bytes());
+    }
     hash
 }
 

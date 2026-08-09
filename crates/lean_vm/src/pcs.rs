@@ -15,7 +15,7 @@
 //! ingredient is sampled from `E` with the same error terms as before.
 
 use crate::transcript::{ProverState, VerifierState};
-use primitives::field::{F64, F192};
+use primitives::field::F64;
 
 pub use ::pcs::stack_open::{
     RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim, StackedOpeningSummary,
@@ -92,7 +92,7 @@ pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Com
         "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
     );
     let (commitment, prover_data) = whir_commit(witness, LOG_BATCH, log_inv_rate);
-    ps.add_scalars(&root_to_scalars(&commitment.root));
+    ps.add_scalars(&::pcs::merkle::hash_to_scalars(&commitment.root));
     Committed {
         commitment,
         prover_data,
@@ -107,31 +107,14 @@ pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Com
 // points are prior challenges, and the offsets are public (reconstructed
 // identically from the announced layout).
 
-/// A Merkle root (32 bytes) as two field scalars, so it travels the transcript
-/// stream like any other transmitted value (leanVM parses its root the same way).
-fn root_to_scalars(root: &[u8; 32]) -> [F192; 2] {
-    let w = |o: usize| u64::from_le_bytes(root[o..o + 8].try_into().unwrap());
-    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
-}
-
-fn scalars_to_root(s: &[F192]) -> Result<[u8; 32], crate::transcript::Error> {
-    assert_eq!(s.len(), 2, "a Merkle root is exactly two field words");
-    if s.iter().any(|word| word.c2 != 0) {
-        return Err(crate::transcript::Error::NonCanonicalEncoding);
-    }
-    let mut root = [0u8; 32];
-    root[0..8].copy_from_slice(&s[0].c0.to_le_bytes());
-    root[8..16].copy_from_slice(&s[0].c1.to_le_bytes());
-    root[16..24].copy_from_slice(&s[1].c0.to_le_bytes());
-    root[24..32].copy_from_slice(&s[1].c1.to_le_bytes());
-    Ok(root)
-}
-
 /// Verifier counterpart of [`commit`]'s root binding: read the committed root
 /// from the stream at the start of verification, before sampling any challenge.
 pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transcript::Error> {
     let root_s = vs.next_scalars(2)?;
-    scalars_to_root(&root_s)
+    if root_s.iter().any(|word| word.c2 != 0) {
+        return Err(crate::transcript::Error::NonCanonicalEncoding);
+    }
+    Ok(::pcs::merkle::scalars_to_hash(&root_s))
 }
 
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
