@@ -4,7 +4,7 @@
 //! drifting.
 
 use lean_compiler::{compile, parse_with_replacements};
-use lean_vm::cpu::{DerefMode, Op, Program, prove, verify};
+use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192, g_pow};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -66,61 +66,6 @@ fn public_input() -> [F192; 2] {
     [value, digest[1] * generator + digest[1]]
 }
 
-fn field_json(value: F192) -> String {
-    format!("[{}, {}, {}]", value.c0, value.c1, value.c2)
-}
-
-fn operation_json(operation: Op) -> String {
-    match operation {
-        Op::Xor { a, b, c } => format!(r#"    {{"op":"xor","a":{a},"b":{b},"c":{c}}}"#),
-        Op::Mul { a, b, c } => format!(r#"    {{"op":"mul","a":{a},"b":{b},"c":{c}}}"#),
-        Op::Set { o, k } => format!(r#"    {{"op":"set","o":{o},"k":{}}}"#, field_json(k)),
-        Op::Deref {
-            alpha,
-            beta,
-            gamma,
-            mode,
-        } => {
-            let mode = match mode {
-                DerefMode::Cell => "cell",
-                DerefMode::Pc => "pc",
-                DerefMode::Fp => "fp",
-            };
-            format!(r#"    {{"op":"deref","alpha":{alpha},"beta":{beta},"gamma":{gamma},"mode":"{mode}"}}"#)
-        }
-        Op::Jump { oc, od, of } => {
-            format!(r#"    {{"op":"jump","oc":{oc},"od":{od},"of":{of}}}"#)
-        }
-        Op::Pack64x2 { a, b, c } => {
-            format!(r#"    {{"op":"pack64x2","a":{a},"b":{b},"c":{c}}}"#)
-        }
-        Op::Blake3 { ins, cv, out, metadata } => format!(
-            r#"    {{"op":"blake3","ins":[{},{},{},{}],"cv":{cv},"out":{out},"metadata":{}}}"#,
-            ins[0],
-            ins[1],
-            ins[2],
-            ins[3],
-            field_json(metadata),
-        ),
-    }
-}
-
-fn statement_json(program: &Program, public_input: [F192; 2]) -> String {
-    let operations = program
-        .prog
-        .iter()
-        .copied()
-        .map(operation_json)
-        .collect::<Vec<_>>()
-        .join(",\n");
-    format!(
-        "{{\n  \"public_input\": [{}, {}],\n  \"program\": [\n{}\n  ]\n}}\n",
-        field_json(public_input[0]),
-        field_json(public_input[1]),
-        operations,
-    )
-}
-
 #[test]
 fn test_python_verifier() {
     let replacements = BTreeMap::from([("LOOP_STEPS_PLACEHOLDER".to_string(), LOOP_STEPS.to_string())]);
@@ -132,16 +77,29 @@ fn test_python_verifier() {
     let directory = std::env::temp_dir().join(format!("leanvm-python-verifier-test-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test directory");
     let proof_path = directory.join("proof.bin");
-    let statement_path = directory.join("statement.json");
+    let bytecode_path = directory.join("bytecode.bin");
+    let public_input_path = directory.join("public_input.bin");
     let encoded = bincode::serialize(&proof).expect("serialize proof");
     std::fs::write(&proof_path, &encoded).expect("write proof");
-    std::fs::write(&statement_path, statement_json(&program, public_input)).expect("write statement");
+    // The statement the verifier takes is the bytecode multilinear plus 256 bits
+    // of public input, not a structured program.
+    let table: Vec<u8> = lean_vm::cpu::layout::bytecode_table(&program.prog)
+        .iter()
+        .flat_map(|w| w.0.to_le_bytes())
+        .collect();
+    std::fs::write(&bytecode_path, &table).expect("write bytecode");
+    let pi: Vec<u8> = public_input
+        .iter()
+        .flat_map(|v| [v.c0.to_le_bytes(), v.c1.to_le_bytes()].concat())
+        .collect();
+    std::fs::write(&public_input_path, &pi).expect("write public input");
 
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python-verifier/verifier.py");
     let verification_started = Instant::now();
     let output = Command::new("python3")
         .arg(&verifier)
-        .arg(&statement_path)
+        .arg(&bytecode_path)
+        .arg(&public_input_path)
         .arg(&proof_path)
         .output()
         .expect("run native Python verifier");
@@ -163,7 +121,8 @@ fn test_python_verifier() {
     .expect("write malformed announcement");
     let output = Command::new("python3")
         .arg(&verifier)
-        .arg(&statement_path)
+        .arg(&bytecode_path)
+        .arg(&public_input_path)
         .arg(&proof_path)
         .output()
         .expect("run Python verifier on malformed announcement");
@@ -180,7 +139,8 @@ fn test_python_verifier() {
     .expect("write malformed root");
     let output = Command::new("python3")
         .arg(verifier)
-        .arg(statement_path)
+        .arg(bytecode_path)
+        .arg(public_input_path)
         .arg(proof_path)
         .output()
         .expect("run Python verifier on malformed root");

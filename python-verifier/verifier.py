@@ -7,7 +7,6 @@ from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
 from operator import mul
 from struct import pack, unpack
-from typing import Any
 
 
 class VerificationError(Exception):
@@ -916,6 +915,43 @@ def verify_constraints(
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
 MAX_LOG_BYTECODE = 32
 
+# The bytecode's nine public columns (opcode + eight operand/immediate slots)
+# stack along 2^N_BYTECODE_SELECTORS slots of the polynomial the verifier is
+# handed (`lean_vm::cpu::layout::bytecode_table`).
+N_BYTECODE_SELECTORS = 4
+
+
+def bytecode_columns(bytecode: Sequence[int]) -> tuple[tuple[tuple[F192, ...], ...], int]:
+    """Split the stacked bytecode multilinear into its nine public columns.
+
+    `bytecode` is 2^(N_BYTECODE_SELECTORS + kbc) K words, slot-major: slot `i`
+    is tuple coordinate `i` of a bytecode bus tuple, which is what lets the bus
+    claim land on this polynomial directly (doc sec:e2e-bc). Slots past the nine
+    the encoding uses are zero, and are checked to be.
+    """
+    length = len(bytecode)
+    require(length > 0 and not length & (length - 1), "bytecode length must be a power of two")
+    kbc = length.bit_length() - 1 - N_BYTECODE_SELECTORS
+    require(0 <= kbc <= MAX_LOG_BYTECODE, "bytecode does not have 2^N_BYTECODE_SELECTORS slots")
+    require(all(0 <= word <= MASK64 for word in bytecode), "a bytecode entry is not a 64-bit word")
+    rows = 1 << kbc
+    used = 1 + N_BYTECODE_OPERANDS
+    require(not any(bytecode[used * rows :]), "bytecode padding slots must be zero")
+    columns = tuple(tuple(F192(word) for word in bytecode[slot * rows : (slot + 1) * rows]) for slot in range(used))
+    return columns, kbc
+
+
+def transcript_statement(bytecode: Sequence[int], public_input: Sequence[F192]) -> tuple[F192, ...]:
+    """The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
+
+    The seed hashes the bytecode multilinear itself, not a structured program, so
+    a verifier holding only the polynomial can reproduce it.
+    """
+    seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST + b"".join(word.to_bytes(8, "little") for word in bytecode))
+    words = digest_words(seed)
+    return (F192(words[0], words[1]), F192(words[2], words[3]), *public_input)
+
+
 # The columns no instruction table owns (doc sec:e2e-unrolled, Commitment): the
 # memory image's three limbs, the two finalize counts, and flock's packed
 # witness. They come first in the global column numbering, the tables after.
@@ -930,140 +966,6 @@ PACKED_BITS = 64  # bits per committed K-element (doc sec:ringswitch)
 FLOCK_K_SKIP = PACKED_BITS.bit_length() - 1
 QFLOCK_SLOT_BITS = FLOCK_LOG_BITS - FLOCK_K_SKIP
 BLAKE3_CONSTANT_COLUMN = 512
-
-
-def parse_field(value: object) -> F192:
-    if isinstance(value, F192):
-        return value
-    if isinstance(value, int) and not isinstance(value, bool):
-        integer = value
-    elif isinstance(value, str):
-        try:
-            integer = int(value, 0)
-        except ValueError as exc:
-            raise VerificationError(f"invalid field element: {value!r}") from exc
-    else:
-        integer = None
-    if integer is not None:
-        require(0 <= integer < 2**192, f"field element is out of range: {value!r}")
-        return F192(integer & MASK64, integer >> 64 & MASK64, integer >> 128)
-    if isinstance(value, (list, tuple)) and len(value) == 3:
-        limbs = tuple(value)
-        require(
-            all(isinstance(limb, int) and not isinstance(limb, bool) and 0 <= limb < 2**64 for limb in limbs),
-            f"field limbs must be 64-bit unsigned integers: {value!r}",
-        )
-        return F192(*limbs)
-    raise VerificationError(f"invalid field element: {value!r}")
-
-
-def _u32(value: object, name: str) -> int:
-    require(
-        isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2**32,
-        f"{name} must be a 32-bit unsigned integer",
-    )
-    return value
-
-
-# The ISA discriminant the program digest binds, per instruction; DEREF's comes
-# from its store mode instead.
-DIGEST_TAGS = {"xor": 0, "mul": 1, "set": 2, "jump": 6, "blake3": 7, "pack64x2": 9}
-DEREF_MODE_TAGS = {"cell": 3, "pc": 4, "fp": 5}
-
-
-@dataclass(frozen=True)
-class Operation:
-    """One parsed instruction, normalized to what the two encodings need.
-
-    ``offsets`` are the validated frame offsets in bytecode-slot order and
-    ``lanes`` the slots that follow them (SET's immediate limbs, DEREF's mode
-    flags, BLAKE3's metadata). ``tag`` is the ISA discriminant the program digest
-    binds, which is not the bus opcode: DEREF carries its store mode instead.
-    """
-
-    name: str
-    offsets: tuple[int, ...]
-    lanes: tuple[F192, ...]
-    immediate: F192
-    tag: int
-
-    @classmethod
-    def parse(cls, data: object) -> Operation:
-        if not isinstance(data, dict):
-            raise VerificationError("each program operation must be an object")
-        name = str(data.get("op", "")).lower()
-        require(name in OPCODES, f"unknown operation {name!r}")
-
-        def required(key: str) -> object:
-            require(key in data, f"{name}.{key} is required")
-            return data[key]
-
-        def offsets_of(*keys: str) -> tuple[int, ...]:
-            return tuple(_u32(required(key), f"{name}.{key}") for key in keys)
-
-        lanes: tuple[F192, ...] = ()
-        immediate, tag = ZERO, DIGEST_TAGS.get(name, 0)
-        if name in {"xor", "mul", "pack64x2"}:
-            offsets = offsets_of("a", "b", "c")
-        elif name == "set":
-            offsets = offsets_of("o")
-            immediate = parse_field(required("k"))
-            lanes = (F192(immediate.c0), F192(immediate.c1), F192(immediate.c2))
-        elif name == "deref":
-            offsets = offsets_of("alpha", "beta", "gamma")
-            mode = str(required("mode")).lower()
-            require(mode in DEREF_MODE_TAGS, "deref.mode must be cell, pc, or fp")
-            tag = DEREF_MODE_TAGS[mode]
-            lanes = (ONE if mode == "pc" else ZERO, ONE if mode == "fp" else ZERO)
-        elif name == "jump":
-            offsets = offsets_of("oc", "od", "of")
-        else:
-            inputs = required("ins")
-            require(isinstance(inputs, (list, tuple)) and len(inputs) == 4, "blake3.ins must contain four addresses")
-            offsets = tuple(_u32(value, f"blake3.ins[{index}]") for index, value in enumerate(inputs))
-            offsets += offsets_of("cv", "out")
-            immediate = parse_field(required("metadata"))
-            require(immediate.c2 == 0, "blake3.metadata must fit in 128 bits")
-            lanes = (F192(immediate.c0), F192(immediate.c1))
-        return cls(name, offsets, lanes, immediate, tag)
-
-
-@dataclass(frozen=True)
-class Program:
-    operations: tuple[Operation, ...]
-
-    @classmethod
-    def parse(cls, data: object) -> Program:
-        if not isinstance(data, dict):
-            raise VerificationError("the public statement must be an object")
-        encoded = data.get("program")
-        if not isinstance(encoded, list):
-            raise VerificationError("program must be an array")
-        operations = tuple(Operation.parse(item) for item in encoded)
-        require(bool(operations) and not len(operations) & (len(operations) - 1), "program length must be a nonzero power of two")
-        # One of the public instance caps the counting arguments rest on (doc
-        # sec:bytecode, sec:memchan): reject an oversized announcement outright.
-        require(len(operations) <= 2**MAX_LOG_BYTECODE, "program exceeds the bytecode cap")
-        return cls(operations)
-
-    def digest(self) -> tuple[int, int, int, int]:
-        """The program's binding digest, as the assembler computes it."""
-        words = [len(self.operations), 3]
-        for op in self.operations:
-            a, b, c = (*op.offsets[:3], 0, 0)[:3]
-            # BLAKE3 is the only instruction with more than three offsets: its
-            # fourth message chunk shares a word with the chaining value, and the
-            # output address takes the next.
-            x, y = (op.offsets[3] | op.offsets[4] << 32, op.offsets[5]) if op.name == "blake3" else (0, 0)
-            k = op.immediate
-            words.extend((a | b << 32, c | op.tag << 32, k.c0, k.c1, k.c2, x, y))
-        return digest_words(blake3_hash(b"".join(word.to_bytes(8, "little") for word in words)))
-
-    def transcript_statement(self, public_input: Sequence[F192]) -> tuple[F192, ...]:
-        program_digest = self.digest()
-        seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST + b"".join(word.to_bytes(8, "little") for word in program_digest))
-        words = digest_words(seed)
-        return (F192(words[0], words[1]), F192(words[2], words[3]), *public_input)
 
 
 @dataclass(frozen=True)
@@ -1403,10 +1305,6 @@ BLAKE3_SLOT_BY_COLUMN = {
     }.items()
 }
 
-# The instruction names the statement JSON uses are the table names, and the bus
-# opcode is the table's index (doc sec:e2e-const).
-OPCODES = {table.name: table.opcode for table in TABLES}
-
 # Coordinates 4..11 of a bytecode tuple: eight operand or immediate slots.
 N_BYTECODE_OPERANDS = 8
 
@@ -1415,22 +1313,7 @@ WIDTHS = tuple(t.width for t in TABLES)
 BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(TABLES)))
 
 
-def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
-    """The nine public bytecode columns: the opcode, then eight operand slots.
-
-    Each reference operand is a g-power; the immediate lanes ride the slots the
-    instruction leaves spare, and shorter instructions zero the rest.
-    """
-    columns: list[list[F192]] = [[] for _ in range(1 + N_BYTECODE_OPERANDS)]
-    for op in program.operations:
-        row = [_gpow(OPCODES[op.name]), *(_gpow(offset) for offset in op.offsets), *op.lanes]
-        require(len(row) <= len(columns), f"{op.name} overflows the bytecode encoding")
-        for column, value in zip(columns, row + [ZERO] * (len(columns) - len(row)), strict=True):
-            column.append(value)
-    return tuple(tuple(column) for column in columns)
-
-
-def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -> Layout:
+def build_layout(public_columns: Sequence[Sequence[F192]], bytecode_log: int, log_memory: int, table_logs: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
         and len(table_logs) == len(TABLES)
@@ -1441,8 +1324,6 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
         "invalid announced table sizes",
     )
     table_logs = list(table_logs)
-    bytecode_log = len(program.operations).bit_length() - 1
-    public_columns = _program_columns(program)
 
     def frame(state: Form, memory_count: Form, bytecode_count: Form) -> list[BusBlock]:
         """The blocks no table owns: the boundary state, then the two arrays.
@@ -1461,7 +1342,7 @@ def build_layout(program: Program, log_memory: int, table_logs: Sequence[int]) -
         ]
 
     push = frame(_const(ONE), _const(ONE), _const(ONE))
-    pull = frame(_const(_gpow(len(program.operations) - 1)), _col(MEM_FINAL_CNT), _col(BYTECODE_FINAL_CNT))
+    pull = frame(_const(_gpow(2**bytecode_log - 1)), _col(MEM_FINAL_CNT), _col(BYTECODE_FINAL_CNT))
     count: list[BusBlock] = []
     for table, height in zip(TABLES, table_logs, strict=True):
         flushes = table.flushes(table)
@@ -2269,17 +2150,23 @@ def blake3_bilinear(
 # Complete VM verification and CLI -------------------------------------------
 
 
-def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
+def verify_execution(bytecode: Sequence[int], public_input: bytes, proof: Proof) -> None:
     """Verify a complete leanVM-b execution proof against its public statement.
 
-    The phases of doc sec:e2e-unrolled, in order.
+    The statement is exactly two things. `bytecode` is the stacked bytecode
+    multilinear, 2^(N_BYTECODE_SELECTORS + kbc) K words (see
+    [`bytecode_columns`]); nothing about the instructions' structure is needed,
+    only the polynomial the bus claim lands on. `public_input` is 256 bits, the
+    two 128-bit halves that are memory cells 0 and 1, each a field element whose
+    top lane is zero.
+
+    The phases of doc sec:e2e-unrolled follow, in order.
     """
-    program = Program.parse(statement)
-    encoded_input = statement.get("public_input")
-    if not isinstance(encoded_input, list) or len(encoded_input) != 2:
-        raise VerificationError("public input must contain two field elements")
-    public_input = tuple(parse_field(value) for value in encoded_input)
-    transcript = Transcript(proof, b"leanvm-b", program.transcript_statement(public_input))
+    require(len(public_input) == 32, "public input must be 256 bits")
+    limbs = tuple(int.from_bytes(public_input[i : i + 8], "little") for i in range(0, 32, 8))
+    pi = (F192(limbs[0], limbs[1]), F192(limbs[2], limbs[3]))
+    public_columns, bytecode_log = bytecode_columns(bytecode)
+    transcript = Transcript(proof, b"leanvm-b", transcript_statement(bytecode, pi))
 
     # 1] Statement binding: the announced instance shape, checked against the
     # public caps before any reduction runs on it.
@@ -2289,7 +2176,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     table_logs = tuple(value.c0 for value in announced[1 : 1 + len(TABLES)])
     log_inverse_rate = announced[-1].c0
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
-    layout = build_layout(program, log_memory, table_logs)
+    layout = build_layout(public_columns, bytecode_log, log_memory, table_logs)
 
     # 2] Commitment: one Merkle root over the stacked witness.
     root_words = transcript.scalars(2)
@@ -2327,7 +2214,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_limbs = transcript.scalars(3)
     public_point = [ZERO] * layout.placements[MEM_0].variables
     public_point[0] = public_challenge
-    public_value = multilinear_eval(public_input, [public_challenge])
+    public_value = multilinear_eval(pi, [public_challenge])
     require(
         public_limbs[0] + Y * public_limbs[1] + Y * Y * public_limbs[2] == public_value,
         "public input limbs are off the line",
@@ -2370,14 +2257,17 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
-    import json
 
     parser = argparse.ArgumentParser(description="Verify a leanVM-b execution proof")
-    parser.add_argument("statement", type=Path, help="public statement JSON")
+    parser.add_argument("bytecode", type=Path, help="stacked bytecode multilinear, little-endian 64-bit words")
+    parser.add_argument("public_input", type=Path, help="256-bit public input")
     parser.add_argument("proof", type=Path, help="bincode proof")
     arguments = parser.parse_args(argv)
     try:
-        verify_execution(json.loads(arguments.statement.read_text()), Proof.load(arguments.proof))
+        encoded = arguments.bytecode.read_bytes()
+        require(len(encoded) % 8 == 0, "bytecode is not a whole number of 64-bit words")
+        words = [int.from_bytes(encoded[i : i + 8], "little") for i in range(0, len(encoded), 8)]
+        verify_execution(words, arguments.public_input.read_bytes(), Proof.load(arguments.proof))
     except (OSError, ValueError, KeyError, VerificationError) as exc:
         parser.exit(1, f"verification failed: {exc}\n")
     print("verification succeeded")

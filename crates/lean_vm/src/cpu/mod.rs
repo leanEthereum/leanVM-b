@@ -24,7 +24,7 @@ mod execute;
 pub mod filler;
 pub mod hints;
 mod isa;
-mod layout;
+pub mod layout;
 mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
@@ -61,70 +61,13 @@ const MAX_LOG_ROWS: usize = 32;
 /// `2^32` instructions.
 const MAX_LOG_BYTECODE: usize = 32;
 
-/// A binding digest of the program bytecode (BLAKE3 of every instruction's
-/// canonical encoding: opcode, operands, and the DEREF store-mode), as two field
-/// elements. Seeded into the transcript alongside the public input, so EVERY
-/// challenge depends on the exact program.
-///
-/// Without this the program's instruction content would enter verification only
-/// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
-/// `ζ`, a single point an attacker recovers from a finished proof. It could then
-/// craft a different program `P'` agreeing with `P`'s bytecode columns at that one
-/// `ζ` and re-present the same proof for `P'` (adaptive-statement forgery). Seeding
-/// `H(program)` before any challenge makes the whole statement (program, public
-/// input) bound up front, so a different program yields a different sponge from
-/// the very first squeeze. Both sides hold the program, so both compute this
-/// identically; the announced sizes ride the stream (`announce_public`).
-fn program_digest(prog: &[Op]) -> [F64; 4] {
-    // VM-native: encode the program as a field-element slice and hash its exact
-    // little-endian bytes with standard BLAKE3 ([`crate::vmhash::hash_slice`]).
-    let mut words: Vec<F64> = Vec::with_capacity(7 * prog.len() + 2);
-    // Domain/version marker; standard BLAKE3 binds the total byte length.
-    words.push(F64(prog.len() as u64));
-    words.push(F64(3));
-    for op in prog {
-        // Fixed seven-word encoding per instruction: two operand-offset words
-        // packed with the tag, the 192-bit immediate's three lanes, then two
-        // words for BLAKE3's remaining offsets (zero for other opcodes).
-        let (tag, a, b, c, k, x, y) = match *op {
-            Op::Xor { a, b, c } => (0u8, a, b, c, F192::ZERO, 0u64, 0u64),
-            Op::Mul { a, b, c } => (1, a, b, c, F192::ZERO, 0, 0),
-            Op::Set { o, k } => (2, o, 0, 0, k, 0, 0),
-            Op::Deref {
-                alpha,
-                beta,
-                gamma,
-                mode,
-            } => {
-                (3 + mode as u8, alpha, beta, gamma, F192::ZERO, 0, 0) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
-            }
-            Op::Jump { oc, od, of } => (6, oc, od, of, F192::ZERO, 0, 0),
-            Op::Blake3 { ins, cv, out, metadata } => (
-                7,
-                ins[0],
-                ins[1],
-                ins[2],
-                metadata,
-                ins[3] as u64 | ((cv as u64) << 32),
-                out as u64,
-            ),
-            Op::Pack64x2 { a, b, c } => (9, a, b, c, F192::ZERO, 0, 0),
-        };
-        words.push(F64(a as u64 | ((b as u64) << 32)));
-        words.push(F64(c as u64 | ((tag as u64) << 32)));
-        words.push(F64(k.c0));
-        words.push(F64(k.c1));
-        words.push(F64(k.c2));
-        words.push(F64(x));
-        words.push(F64(y));
-    }
-    crate::vmhash::hash_slice(&words)
-}
-
 /// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
 /// to everything fixed about the proving environment: the flock circuit
 /// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
-/// and the program's bytecode digest. It leads every transcript, so all
+/// and the bytecode itself, hashed as the stacked multilinear
+/// ([`layout::bytecode_table`]) rather than as the assembler's structured
+/// digest, so a verifier holding only that polynomial can reproduce the seed.
+/// It leads every transcript, so all
 /// challenges depend on the circuit version and the program before anything
 /// else; a recursion guest carries the INNER program's seed in its public
 /// input, pinning both with one word pair.
@@ -132,7 +75,7 @@ pub fn fs_seed(program: &Program) -> [F192; 2] {
     let mut h = blake3::Hasher::new();
     h.update(b"leanvm-b-fs-seed-v1");
     h.update(&crate::blake3_flock::family_digest());
-    for w in program.digest {
+    for w in layout::bytecode_table(&program.prog) {
         h.update(&w.0.to_le_bytes());
     }
     let d = *h.finalize().as_bytes();
@@ -219,7 +162,6 @@ pub struct Program {
     /// program. Trusted to match `prog`: always set by [`Program::assemble`] from
     /// the bytecode, so a `Program` value cannot carry a digest inconsistent with
     /// its own `prog`.
-    pub(crate) digest: [F64; 4],
     /// Prover-side frame/buffer allocation hints (keyed by global pc) and the
     /// size of `main`'s frame: the nondeterminism [`Program::execute`] needs to
     /// run the program. Public verification (§ `verify`) ignores them.
@@ -254,12 +196,10 @@ impl Program {
         hints: HashMap<u32, Vec<hints::RHint>>,
         main_frame: u32,
     ) -> Self {
-        let digest = program_digest(&prog);
         Self {
             prog,
             pc0,
             fp0,
-            digest,
             hints,
             main_frame,
             witness: HashMap::new(),

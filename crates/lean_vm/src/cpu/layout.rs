@@ -173,7 +173,7 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
 /// `(source, adj)` with kappa = value(source) + adj, source 0 = the constant
 /// 0, 1 = log_mem, 2 + t = tau_t. For the recursion guest's in-circuit pin
 /// of every hinted block kappa. Keep in lockstep with the block
-/// construction in [`layout`].
+/// construction in [`fn@layout`].
 pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
     let mut push = vec![(0, 0), (1, 0), (0, log_bytecode)];
     let mut pull = vec![(0, 0), (1, 0), (0, log_bytecode)];
@@ -213,22 +213,11 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLE
 /// A table's height is its row count: the fill blocks bring every count up to a power of
 /// two (`cpu::filler`), so `2^taus[t]` rows were all executed and no flush has padding
 /// tuples to divide back out of the bus.
-pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
-    let bytecode_size = prog.len();
-    let log_bytecode = crate::log2_strict_usize(bytecode_size);
-
-    // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
-    // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
-    // there), with fp returned to 0. All public, no trace needed.
-    let pc0 = 0u32;
-    let fp0 = 0u32;
-    let final_pc = (bytecode_size - 1) as u32;
-    let final_fp = 0u32;
-
-    let one = F64::ONE;
-    // The public program columns map operand *offsets* (small, ≤ frame size) to
-    // g-powers (not memory addresses), so precompute only up to the largest
-    // operand, an O(1) lookup each, rather than over the whole 2^log_mem memory.
+/// The nine PUBLIC bytecode columns over the program cube, in bytecode-slot
+/// order: the opcode, then eight operand/immediate slots. The program is not
+/// committed, so these ride the seed/finalize blocks as `Coord::Public` and
+/// stack into the polynomial [`bytecode_table`] returns.
+pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
     let max_op = prog
         .iter()
         .map(|op| match *op {
@@ -306,6 +295,60 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     let prog_extra0: Vec<F64> = column(&extra0);
     let prog_extra1: Vec<F64> = column(&extra1);
     let prog_extra2: Vec<F64> = column(&extra2);
+    [
+        prog_op,
+        prog_o1,
+        prog_o2,
+        prog_o3,
+        prog_fpc,
+        prog_ffp,
+        prog_extra0,
+        prog_extra1,
+        prog_extra2,
+    ]
+}
+
+/// The stacked bytecode polynomial: those nine columns padded to
+/// `2^N_BYTECODE_SELECTORS` slots, slot-major, one K value per entry.
+///
+/// This is the multilinear an outermost verifier is handed in place of a
+/// structured program, and what the transcript seed binds ([`super::fs_seed`]).
+pub fn bytecode_table(prog: &[Op]) -> Vec<F64> {
+    let kbc = crate::log2_strict_usize(prog.len());
+    let mut table = vec![F64::ZERO; 1 << (crate::leaf::N_BYTECODE_SELECTORS + kbc)];
+    for (slot, column) in bytecode_columns(prog).into_iter().enumerate() {
+        table[(slot << kbc)..((slot + 1) << kbc)].copy_from_slice(&column);
+    }
+    table
+}
+
+pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
+    let bytecode_size = prog.len();
+    let log_bytecode = crate::log2_strict_usize(bytecode_size);
+
+    // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
+    // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
+    // there), with fp returned to 0. All public, no trace needed.
+    let pc0 = 0u32;
+    let fp0 = 0u32;
+    let final_pc = (bytecode_size - 1) as u32;
+    let final_fp = 0u32;
+
+    let one = F64::ONE;
+    // The public program columns map operand *offsets* (small, ≤ frame size) to
+    // g-powers (not memory addresses), so precompute only up to the largest
+    // operand, an O(1) lookup each, rather than over the whole 2^log_mem memory.
+    let [
+        prog_op,
+        prog_o1,
+        prog_o2,
+        prog_o3,
+        prog_fpc,
+        prog_ffp,
+        prog_extra0,
+        prog_extra1,
+        prog_extra2,
+    ] = bytecode_columns(prog);
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
