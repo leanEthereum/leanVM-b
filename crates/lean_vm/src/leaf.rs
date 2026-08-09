@@ -192,7 +192,25 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
         .max()
         .unwrap_or(1);
     debug_assert!(explicit <= 1usize << lay.mu);
-    let mut leaves = ArenaVec::filled(F192::ONE, explicit);
+    // `stack_offsets` packs the power-of-two blocks contiguously from zero, so the
+    // blocks tile `0..explicit` and every slot below is written by one of them: the
+    // identity fill would be overwritten in full, and this is the largest buffer in
+    // the proof. The `covered` test is what licenses skipping it, so a layout that
+    // ever left a hole falls back to filling rather than reading uninitialized rows.
+    // Capacity is rounded to whole four-tuples because `gkr::QuaternaryLayerState`
+    // pads this level to that before reading it, and growing it here would copy it.
+    let covered: usize = blocks.iter().map(|blk| 1usize << blk.kappa).sum();
+    let mut leaves = if covered == explicit {
+        let mut values = ArenaVec::with_capacity(explicit.next_multiple_of(4));
+        // SAFETY: the per-block fills below cover `0..explicit` exactly, and each
+        // joins before this function returns.
+        unsafe { values.set_len(explicit) };
+        values
+    } else {
+        let mut values = ArenaVec::with_capacity(explicit.next_multiple_of(4));
+        values.resize(explicit, F192::ONE);
+        values
+    };
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
