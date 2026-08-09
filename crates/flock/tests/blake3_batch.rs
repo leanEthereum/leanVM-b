@@ -160,8 +160,7 @@ fn blake3_batch_prove_verify() {
         let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
         drop((z_packed, a_packed, b_packed, z_lincheck));
         let ring = prover_ring(&reduced, mu);
-        let mut opening =
-            open_batch_mixed_whir_stacked(ps.sponge_mut(), &q_flock, &prover_data, &prover_config, &[], &ring);
+        let mut opening = open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
         assert_eq!(opening.ring_switches[0].s_hat_v, reduced.ab.s_hat_v.as_deref().unwrap());
         opening.ring_switches.remove(0);
         let open_s = t.elapsed().as_secs_f64();
@@ -195,7 +194,7 @@ fn blake3_batch_prove_verify() {
         let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = verifier_ring(&replay.ab, &replay.c, &replay.lc_claim.s_hat_v, mu);
-        verify_opening_batch_mixed_whir_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
+        verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring, &opening)
             .expect("stacked PCS opening verifies");
         vs.finish().expect("transcript fully consumed");
     });

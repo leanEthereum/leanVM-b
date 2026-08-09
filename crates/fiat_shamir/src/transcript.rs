@@ -61,6 +61,38 @@ pub enum Error {
     NonCanonicalEncoding,
 }
 
+/// What a protocol step needs from the transcript when it only draws challenges:
+/// one implementation then serves both sides. WHIR's query sampler and every
+/// shared sub-step take `&mut impl Challenger`, so no caller outside this crate
+/// ever holds the sponge itself: it is reachable only through these three
+/// traits and the two states that implement them.
+pub trait Challenger {
+    fn sample(&mut self) -> F192;
+    fn sample_vec(&mut self, n: usize) -> Vec<F192>;
+    /// Bind a value both sides derive themselves (never transmitted), so it is
+    /// side-agnostic and lives here rather than on the two halves below.
+    fn observe_scalar(&mut self, x: F192);
+}
+
+/// The prover half of a transmitting sub-protocol (WHIR and its sumchecks):
+/// send a scalar, or grind. Taking `&mut impl Transmitter` rather than
+/// `&mut ProverState<O>` keeps the opening type `O` out of signatures that do
+/// not name it.
+pub trait Transmitter: Challenger {
+    fn add_scalar(&mut self, x: F192);
+    fn add_scalars(&mut self, xs: &[F192]);
+    fn grind(&mut self, bits: u32);
+}
+
+/// The verifier half, mirroring [`Transmitter`] call for call.
+pub trait Receiver: Challenger {
+    fn next_scalar(&mut self) -> Result<F192, Error>;
+    fn next_scalars(&mut self, n: usize) -> Result<Vec<F192>, Error> {
+        (0..n).map(|_| self.next_scalar()).collect()
+    }
+    fn grind_check(&mut self, bits: u32) -> Result<(), Error>;
+}
+
 /// Prover side: writes scalars into the stream and opening hints to the side.
 pub struct ProverState<O> {
     sponge: Sponge,
@@ -96,13 +128,13 @@ impl<O> ProverState<O> {
         self.sponge.sample()
     }
 
+    pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
+        self.sponge.sample_vec(n)
+    }
+
     /// Prover mirror of [`VerifierState::observe_scalar`].
     pub fn observe_scalar(&mut self, x: F192) {
         self.sponge.observe(x);
-    }
-
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        self.sponge.sample_vec(n)
     }
 
     pub fn hint_opening(&mut self, opening: O) {
@@ -118,12 +150,6 @@ impl<O> ProverState<O> {
     pub fn grind(&mut self, bits: u32) {
         let nonce = self.sponge.grind_pow(bits);
         self.stream.push(F192::new(nonce, 0, 0));
-    }
-
-    /// The raw sponge, for side-agnostic sub-steps shared by prover and
-    /// verifier (e.g. the WHIR query sampler).
-    pub fn sponge_mut(&mut self) -> &mut Sponge {
-        &mut self.sponge
     }
 
     pub fn into_proof(self) -> Proof<O> {
@@ -213,15 +239,16 @@ impl<'a, O> VerifierState<'a, O> {
         }
     }
 
+    /// How many stream words have been read so far: the cursor a caller needs
+    /// to locate a sub-protocol's scalars without counting back from the tail.
+    pub fn stream_offset(&self) -> usize {
+        self.offset
+    }
+
     /// The sponge's current chaining value (recursion harnesses snapshot the
     /// phase-boundary states as guest debug checkpoints).
     pub fn sponge_state(&self) -> [F64; 4] {
         self.sponge.state()
-    }
-
-    /// The raw sponge (mirror of [`ProverState::sponge_mut`]).
-    pub fn sponge_mut(&mut self) -> &mut Sponge {
-        &mut self.sponge
     }
 
     /// Assert the whole proof was consumed (no trailing/extra data).
@@ -231,6 +258,51 @@ impl<'a, O> VerifierState<'a, O> {
         } else {
             Err(Error::NotFullyConsumed)
         }
+    }
+}
+
+impl<O> Transmitter for ProverState<O> {
+    fn add_scalar(&mut self, x: F192) {
+        Self::add_scalar(self, x)
+    }
+    fn add_scalars(&mut self, xs: &[F192]) {
+        Self::add_scalars(self, xs)
+    }
+    fn grind(&mut self, bits: u32) {
+        Self::grind(self, bits)
+    }
+}
+
+impl<O> Receiver for VerifierState<'_, O> {
+    fn next_scalar(&mut self) -> Result<F192, Error> {
+        Self::next_scalar(self)
+    }
+    fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
+        Self::grind_check(self, bits)
+    }
+}
+
+impl<O> Challenger for ProverState<O> {
+    fn sample(&mut self) -> F192 {
+        Self::sample(self)
+    }
+    fn sample_vec(&mut self, n: usize) -> Vec<F192> {
+        Self::sample_vec(self, n)
+    }
+    fn observe_scalar(&mut self, x: F192) {
+        Self::observe_scalar(self, x)
+    }
+}
+
+impl<O> Challenger for VerifierState<'_, O> {
+    fn sample(&mut self) -> F192 {
+        Self::sample(self)
+    }
+    fn sample_vec(&mut self, n: usize) -> Vec<F192> {
+        Self::sample_vec(self, n)
+    }
+    fn observe_scalar(&mut self, x: F192) {
+        Self::observe_scalar(self, x)
     }
 }
 

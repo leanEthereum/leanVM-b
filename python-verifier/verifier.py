@@ -312,7 +312,7 @@ def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
     return result
 
 
-QUAD_NODES = (ZERO, ONE, GEN, GEN ** 2)
+QUAD_NODES = (ZERO, ONE, GEN, GEN**2)
 
 
 @cache
@@ -426,50 +426,29 @@ class CompressedSumcheckMessage:
 
 
 @dataclass(frozen=True)
-class WhirFinalProof:
-    residual: tuple[F192, ...]
-    opening: MerkleOpening
-
-
-@dataclass(frozen=True)
 class WhirProof:
+    """The hash-bearing half of a WHIR opening: one Merkle opening per level.
+
+    Every scalar the protocol transmits (sumcheck messages, level roots, OOD
+    claims, the residual, both kinds of grinding nonce) rides the proof stream
+    instead, read in protocol order by `verify_whir`.
+    """
+
     initial_proof: MerkleOpening
-    recursive_roots: tuple[bytes, ...]
     recursive_proofs: tuple[MerkleOpening, ...]
-    final_proof: WhirFinalProof
-    sumcheck_messages: tuple[CompressedSumcheckMessage, ...]
-    grinding_nonces: tuple[int, ...]
-    ood_values: tuple[F192, ...]
-    fold_grinding_nonces: tuple[int, ...]
+    final_proof: MerkleOpening
 
     @classmethod
     def read(cls, reader: BinaryReader) -> WhirProof:
         initial_proof = MerkleOpening.read(reader, base_field=True)
-        recursive_roots = reader.hashes()
         count = reader.u64()
         require(count <= 32, "too many WHIR levels")
         recursive_proofs = tuple(MerkleOpening.read(reader, base_field=False) for _ in range(count))
-        residual = tuple(reader.fields())
-        final_proof = WhirFinalProof(residual, MerkleOpening.read(reader, base_field=False))
-        message_count = reader.u64()
-        require(message_count <= reader.remaining // 48, "invalid sumcheck length")
-        sumcheck_messages = tuple(CompressedSumcheckMessage(reader.field(), reader.field()) for _ in range(message_count))
-        nonce_count = reader.u64()
-        require(nonce_count <= reader.remaining // 8, "invalid nonce-vector length")
-        grinding_nonces = tuple(reader.u64() for _ in range(nonce_count))
-        ood_values = tuple(reader.fields())
-        fold_count = reader.u64()
-        require(fold_count <= reader.remaining // 8, "invalid fold-nonce length")
-        fold_grinding_nonces = tuple(reader.u64() for _ in range(fold_count))
+        final_proof = MerkleOpening.read(reader, base_field=False)
         return cls(
             initial_proof=initial_proof,
-            recursive_roots=recursive_roots,
             recursive_proofs=recursive_proofs,
             final_proof=final_proof,
-            sumcheck_messages=sumcheck_messages,
-            grinding_nonces=grinding_nonces,
-            ood_values=ood_values,
-            fold_grinding_nonces=fold_grinding_nonces,
         )
 
 
@@ -584,6 +563,17 @@ class Transcript:
         self.sponge.observe(value)
 
     def check_pow(self, nonce: int | F192, bits: int) -> None:
+        self.sponge.check_pow(nonce, bits)
+
+    def grind_check(self, bits: int) -> None:
+        """Read the transmitted nonce and check its proof of work.
+
+        The nonce rides the stream as raw transport: `check_pow` absorbs it
+        itself, so it must not be observed a second time here.
+        """
+        require(self.stream_offset < len(self.proof.stream), "proof stream exhausted")
+        nonce = self.proof.stream[self.stream_offset]
+        self.stream_offset += 1
         self.sponge.check_pow(nonce, bits)
 
     def opening(self) -> BatchOpeningProof:
@@ -1875,25 +1865,21 @@ def verify_whir(
     """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, log_inv_rate)
     levels = len(config.folds)
-    require(len(proof.recursive_roots) == levels - 1, "wrong WHIR root count")
     require(len(proof.recursive_proofs) == levels - 2, "wrong WHIR recursive-proof count")
-    require(len(proof.grinding_nonces) == levels, "wrong WHIR nonce count")
 
     def observe_root(value: bytes) -> None:
         require(len(value) == 32, "invalid Merkle root")
         transcript.observe(F192.from_bytes(value[:24]))
         transcript.observe(F192(int.from_bytes(value[24:], "little")))
 
-    message_index = 0
+    def read_root() -> bytes:
+        low, high = transcript.scalar(), transcript.scalar()
+        require(high.c1 == 0 and high.c2 == 0, "non-canonical Merkle root")
+        return low.to_bytes() + high.c0.to_bytes(8, "little")
 
     def next_quad(claim: F192) -> QuadraticMessage:
-        nonlocal message_index
-        require(message_index < len(proof.sumcheck_messages), "truncated WHIR sumcheck")
-        message = proof.sumcheck_messages[message_index]
-        message_index += 1
-        transcript.observe(message.constant)
-        transcript.observe(message.quadratic)
-        return QuadraticMessage(message.constant, claim + message.quadratic, message.quadratic)
+        constant, quadratic = transcript.scalar(), transcript.scalar()
+        return QuadraticMessage(constant, claim + quadratic, quadratic)
 
     transcript.observe(target)
     observe_root(root)
@@ -1902,8 +1888,6 @@ def verify_whir(
     folds: list[F192] = []
     contexts: list[QueryContext] = []
     ood_contexts: list[OodContext] = []
-    fold_nonce_index = 0
-    ood_index = 0
     current_root = root
 
     for level, (fold_count, level_rate) in enumerate(zip(config.folds, config.log_inv_rates, strict=True)):
@@ -1911,9 +1895,7 @@ def verify_whir(
         for fold_index in range(fold_count):
             bits = max(0, config.fold_grinding_bits[level] - fold_index)
             if bits:
-                require(fold_nonce_index < len(proof.fold_grinding_nonces), "missing WHIR fold nonce")
-                transcript.check_pow(proof.fold_grinding_nonces[fold_nonce_index], bits)
-                fold_nonce_index += 1
+                transcript.grind_check(bits)
             challenge = transcript.sample()
             folds.append(challenge)
             level_folds.append(challenge)
@@ -1926,22 +1908,15 @@ def verify_whir(
         # OOD claims first, then the query batch (Annex B, Protocol 1 step 1).
         pending_ood: list[tuple[tuple[F192, ...], int, F192, QuadraticMessage]] = []
         if final_level:
-            residual = proof.final_proof.residual
-            require(len(residual) == 2**message_log, "wrong WHIR residual length")
-            for value in residual:
-                transcript.observe(value)
+            residual = tuple(transcript.scalars(2**message_log))
         else:
-            next_root = proof.recursive_roots[level]
-            observe_root(next_root)
+            next_root = read_root()
             for _ in range(config.ood_samples[level + 1]):
                 point = tuple(transcript.samples(message_log))
-                require(ood_index < len(proof.ood_values), "missing WHIR OOD value")
-                value = proof.ood_values[ood_index]
-                ood_index += 1
-                transcript.observe(value)
+                value = transcript.scalar()
                 pending_ood.append((point, len(folds), value, next_quad(value)))
 
-        transcript.check_pow(proof.grinding_nonces[level], config.query_grinding_bits[level])
+        transcript.grind_check(config.query_grinding_bits[level])
         block_length = 2 ** (message_log + level_rate)
         queries = sample_queries(transcript, block_length, config.queries[level])
         # One batching challenge per level, drawn once every claim it batches is
@@ -1951,7 +1926,7 @@ def verify_whir(
         if level == 0:
             opened = proof.initial_proof
         elif final_level:
-            opened = proof.final_proof.opening
+            opened = proof.final_proof
         else:
             opened = proof.recursive_proofs[level - 1]
         try:
@@ -1993,9 +1968,6 @@ def verify_whir(
                 tail_folds.append(challenge)
                 if round_index + 1 < message_log:
                     running_quad = next_quad(running_target)
-            require(message_index == len(proof.sumcheck_messages), "trailing WHIR sumcheck messages")
-            require(ood_index == len(proof.ood_values), "trailing WHIR OOD values")
-            require(fold_nonce_index == len(proof.fold_grinding_nonces), "trailing WHIR fold nonces")
             weight = evaluate_basis(list(folds) + tail_folds)
             for context in contexts:
                 fixed_coordinates = context.message_log - message_log

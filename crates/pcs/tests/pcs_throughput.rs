@@ -21,7 +21,6 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use fiat_shamir::sponge::Sponge;
 use pcs::whir::{
     build_eq_table_ext, commit, configs_for, configs_for_rate, inner_product_base_ext, recursive_prover_with_basis,
 };
@@ -79,7 +78,7 @@ fn pcs_throughput() {
             });
             commit_times.push(elapsed);
 
-            let mut ch = Sponge::new(b"pcs-throughput", &[]);
+            let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"pcs-throughput", &[]);
             let (proof, elapsed) = tracing::info_span!("PCS open").in_scope(|| {
                 let t = Instant::now();
                 let proof = recursive_prover_with_basis(

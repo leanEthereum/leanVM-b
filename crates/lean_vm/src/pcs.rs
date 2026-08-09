@@ -155,7 +155,7 @@ pub fn open(
 ) -> BatchOpeningProof {
     debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
     let cfg = whir_configs(c.mu, c.log_inv_rate);
-    open_batch_mixed_whir_stacked(ps.sponge_mut(), q, &c.prover_data, &cfg.0, points, ring)
+    open_batch_mixed_whir_stacked(ps, q, &c.prover_data, &cfg.0, points, ring)
 }
 
 /// Verify the opening (mirror of [`open`]): flock's ring-switched `(ab, c)` claims
@@ -172,5 +172,5 @@ pub fn verify(
     root: &[u8; 32],
 ) -> Result<StackedOpeningSummary, Error> {
     let cfg = whir_configs(mu, log_inv_rate);
-    verify_opening_batch_mixed_whir_stacked(vs.sponge_mut(), &cfg.1, mu, root, points, ring, open).ok_or(Error::Whir)
+    verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, mu, root, points, ring, open).ok_or(Error::Whir)
 }

@@ -71,7 +71,7 @@
 //!
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 
-use fiat_shamir::sponge::Sponge;
+use fiat_shamir::transcript::Challenger;
 use primitives::bits::transpose_8x8_bits;
 use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
@@ -162,17 +162,17 @@ fn apply_composed_map(mut value: F192, challenges: &[F192; COMPOSITION_SHIFTS.le
 
 /// Sample the composed map's challenges after every ring-switch message has
 /// been bound.
-pub fn sample_map_challenges(sponge: &mut Sponge) -> [F192; COMPOSITION_SHIFTS.len()] {
-    std::array::from_fn(|_| sponge.sample())
+pub fn sample_map_challenges(ch: &mut impl Challenger) -> [F192; COMPOSITION_SHIFTS.len()] {
+    std::array::from_fn(|_| ch.sample())
 }
 
 // ---------------------------------------------------------------------------
-// Sponge helpers: every 24-byte pattern is a valid F192.
+// Transcript helpers: every 24-byte pattern is a valid F192.
 // ---------------------------------------------------------------------------
 
-fn observe_ext_slice(sponge: &mut Sponge, values: &[F192]) {
+fn observe_ext_slice(ch: &mut impl Challenger, values: &[F192]) {
     for &e in values {
-        sponge.observe(e);
+        ch.observe_scalar(e);
     }
 }
 
@@ -574,7 +574,7 @@ pub enum VerifyError {
 /// - `claim`: the claimed value `sum_i prefix_weights[i] * s_hat_v[i]`;
 ///   asserted against the witness (an honest caller always passes a
 ///   consistent claim, so this is a cheap integration check, 64 E-mults).
-/// - `sponge` for sampling the row-batching map challenges.
+/// - `ch` for sampling the row-batching map challenges.
 ///
 /// Output: the proof message `s_hat_v` (64 E values) plus the WHIR
 /// inputs `(rs_eq_ind, sumcheck_claim)`; open with
@@ -586,7 +586,7 @@ pub fn prove(
     suffix_point: &[F192],
     claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
-    sponge: &mut Sponge,
+    ch: &mut impl Challenger,
 ) -> (RingSwitchProof, RingSwitchOutput) {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
@@ -606,9 +606,9 @@ pub fn prove(
         claim,
         precomputed_s_hat_v,
         false,
-        sponge,
+        ch,
     );
-    let challenges = sample_map_challenges(sponge);
+    let challenges = sample_map_challenges(ch);
     let coordinate_weights = build_coordinate_weights(&challenges);
     let out = prove_finish(&state, &coordinate_weights);
     (proof, out)
@@ -634,7 +634,7 @@ pub fn prove_prepare(
     claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
     prebound: bool,
-    sponge: &mut Sponge,
+    ch: &mut impl Challenger,
 ) -> (RingSwitchProof, RingSwitchProveState) {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
@@ -661,7 +661,7 @@ pub fn prove_prepare(
         "ring_switch::prove: supplied claim does not match the witness"
     );
     if !prebound {
-        observe_ext_slice(sponge, &s_hat_v);
+        observe_ext_slice(ch, &s_hat_v);
     }
     (
         RingSwitchProof {
@@ -694,19 +694,19 @@ pub fn verify(
     prefix_weights: &[F192],
     suffix_point: &[F192],
     proof: &RingSwitchProof,
-    sponge: &mut Sponge,
+    ch: &mut impl Challenger,
 ) -> Result<RingSwitchOutput, VerifyError> {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
 
     // No domain label (matches `prove`'s single-claim wrapper + the extension-field opener).
-    observe_ext_slice(sponge, &proof.s_hat_v);
+    observe_ext_slice(ch, &proof.s_hat_v);
 
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
 
-    let challenges = sample_map_challenges(sponge);
+    let challenges = sample_map_challenges(ch);
     let coordinate_weights = build_coordinate_weights(&challenges);
 
     let s_hat_u = transpose_s_hat(&proof.s_hat_v);
@@ -730,12 +730,12 @@ pub fn verify_succinct(
     claim: F192,
     prefix_weights: &[F192],
     proof: &RingSwitchProof,
-    sponge: &mut Sponge,
+    ch: &mut impl Challenger,
 ) -> Result<RingSwitchVerifierOutput, VerifyError> {
     // Single-claim wrapper; the STACKED verifier observes every claim, samples
     // one shared map, then finishes each claim.
-    verify_prepare(claim, prefix_weights, proof, sponge)?;
-    let challenges = sample_map_challenges(sponge);
+    verify_prepare(claim, prefix_weights, proof, ch)?;
+    let challenges = sample_map_challenges(ch);
     let coordinate_weights = build_coordinate_weights(&challenges);
     Ok(verify_finish(proof, &coordinate_weights))
 }
@@ -746,11 +746,11 @@ pub fn verify_prepare(
     claim: F192,
     prefix_weights: &[F192],
     proof: &RingSwitchProof,
-    sponge: &mut Sponge,
+    ch: &mut impl Challenger,
 ) -> Result<(), VerifyError> {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
-    observe_ext_slice(sponge, &proof.s_hat_v);
+    observe_ext_slice(ch, &proof.s_hat_v);
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
@@ -1070,20 +1070,20 @@ mod tests {
         }
         assert_eq!(claim, direct, "prefix x suffix split must factor the MLE");
 
-        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
         let (proof, _out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
 
-        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
         assert!(verify(claim, &prefix_weights, suffix_point, &proof, &mut ch).is_ok());
 
         // Wrong claim value.
         let bad_claim = claim + F192::ONE;
-        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
         assert_eq!(
             verify(bad_claim, &prefix_weights, suffix_point, &proof, &mut ch).unwrap_err(),
             VerifyError::ClaimMismatch
         );
-        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
         assert_eq!(
             verify_succinct(bad_claim, &prefix_weights, &proof, &mut ch).unwrap_err(),
             VerifyError::ClaimMismatch
@@ -1092,7 +1092,7 @@ mod tests {
         // Tampered s_hat_v.
         let mut bad = proof.clone();
         bad.s_hat_v[17].c0 ^= 1;
-        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
         assert_eq!(
             verify(claim, &prefix_weights, suffix_point, &bad, &mut ch).unwrap_err(),
             VerifyError::ClaimMismatch
@@ -1162,6 +1162,7 @@ mod tests {
         root: Hash,
         rs_proof: RingSwitchProof,
         whir_proof: WhirProof,
+        fs: fiat_shamir::transcript::Proof<()>,
     }
 
     const E2E_DOMAIN: &[u8] = b"ring-switch-e2e-test";
@@ -1188,8 +1189,8 @@ mod tests {
         };
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
 
-        let mut ch = Sponge::new(E2E_DOMAIN, &[]);
-        let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ch);
+        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(E2E_DOMAIN, &[]);
+        let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ps);
         assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
         let whir_proof = recursive_prover_with_basis(
             &pc,
@@ -1198,7 +1199,7 @@ mod tests {
             out.sumcheck_claim,
             &pd.codeword,
             &pd.merkle_tree,
-            &mut ch,
+            &mut ps,
         );
         E2e {
             vc,
@@ -1209,14 +1210,15 @@ mod tests {
             root: cm.root,
             rs_proof,
             whir_proof,
+            fs: ps.into_proof(),
         }
     }
 
     /// Dense verification: ring-switch verify (rebuilds rs_eq_ind), then the
     /// dense whir verifier with b_initial = rs_eq_ind.
     fn verify_e2e_dense(e: &E2e) -> bool {
-        let mut ch = Sponge::new(E2E_DOMAIN, &[]);
-        let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &e.rs_proof, &mut ch) {
+        let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
+        let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &e.rs_proof, &mut vs) {
             Ok(o) => o,
             Err(_) => return false,
         };
@@ -1226,7 +1228,7 @@ mod tests {
             &out.rs_eq_ind,
             out.sumcheck_claim,
             &e.root,
-            &mut ch,
+            &mut vs,
         )
     }
 
@@ -1234,8 +1236,8 @@ mod tests {
     /// succinct WHIR verifier whose terminal closure evaluates
     /// MLE(rs_eq_ind) once via `eval_rs_eq`.
     fn verify_e2e_succinct(e: &E2e) -> bool {
-        let mut ch = Sponge::new(E2E_DOMAIN, &[]);
-        let out = match verify_succinct(e.claim, &e.prefix_weights, &e.rs_proof, &mut ch) {
+        let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
+        let out = match verify_succinct(e.claim, &e.prefix_weights, &e.rs_proof, &mut vs) {
             Ok(o) => o,
             Err(_) => return false,
         };
@@ -1248,7 +1250,7 @@ mod tests {
             out.sumcheck_claim,
             &e.root,
             |point| eval_rs_eq(&z, point, &coordinate_weights),
-            &mut ch,
+            &mut vs,
         )
     }
 
@@ -1287,6 +1289,7 @@ mod tests {
             suffix_point: e.suffix_point.clone(),
             claim: e.claim,
             root: e.root,
+            fs: e.fs.clone(),
         };
         bad.rs_proof.s_hat_v[5].c1 ^= 1;
         assert!(!verify_e2e_dense(&bad), "bit-flipped s_hat_v accepted");

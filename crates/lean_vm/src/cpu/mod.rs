@@ -679,7 +679,7 @@ fn bind_pi_claim(r: F192, placements: &[witness::Placement], limbs: [F192; 3]) -
 /// and typed: the deferred bytecode claims, the count-channel root, flock's
 /// reduction claims, and the stacked-opening summary (ring-switch challenges +
 /// WHIR fold/query data). The sub-proof scalars themselves live on
-/// `proof.stream` at fixed offsets from its tail. Ordinary callers just
+/// `proof.stream`, ending at `flock_stream_end`. Ordinary callers just
 /// `?`-discard it.
 pub struct VerifySummary {
     /// Transcript-bound inverse-rate logarithm used by this proof's PCS.
@@ -689,6 +689,10 @@ pub struct VerifySummary {
     pub zc_claim: flock::zerocheck::ZerocheckClaim,
     pub lc_claim: flock::lincheck::LincheckClaim,
     pub opening: pcs::StackedOpeningSummary,
+    /// Stream cursor just after flock's reduction, i.e. where the PCS opening's
+    /// own scalars start. The recursion harness reads flock's lincheck tail
+    /// from here rather than counting back from the end of the stream.
+    pub flock_stream_end: usize,
 }
 
 /// Verify a proof against the public statement (program + public input): replay
@@ -751,6 +755,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::blake3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake3)?;
+    let flock_stream_end = vs.stream_offset();
     let open = vs.next_opening().map_err(Error::Transcript)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
     let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, log_inv_rate, &root).map_err(Error::Open)?;
@@ -762,6 +767,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
         lc_claim: replay.lc_claim,
         opening,
         log_inv_rate,
+        flock_stream_end,
     })
 }
 

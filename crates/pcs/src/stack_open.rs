@@ -50,7 +50,7 @@
 //! selector eq).
 
 use crate::merkle::Hash;
-use fiat_shamir::sponge::Sponge;
+use fiat_shamir::transcript::{Receiver, Transmitter};
 use primitives::field::{F64, F192, powers};
 use primitives::multilinear::eq_eval;
 use serde::{Deserialize, Serialize};
@@ -307,7 +307,7 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F192]) -> F192 {
 /// match the commit's `log_batch_size` / `log_inv_rate` (enforced by shape
 /// asserts inside the WHIR prover).
 pub fn open_batch_mixed_whir_stacked(
-    sponge: &mut Sponge,
+    ps: &mut impl Transmitter,
     stack: &[F64],
     prover_data: &ProverData,
     config: &ProverConfig,
@@ -357,16 +357,16 @@ pub fn open_batch_mixed_whir_stacked(
             claim.value,
             claim.s_hat_v.as_deref(),
             i < ring.prebound,
-            sponge,
+            ps,
         );
         rs_proofs.push(proof);
         rs_states.push(state);
     }
-    let map_challenges = ring_switch::sample_map_challenges(sponge);
+    let map_challenges = ring_switch::sample_map_challenges(ps);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound.
-    let gammas_rs = powers(sponge.sample(), ring.claims.len());
+    let gammas_rs = powers(ps.sample(), ring.claims.len());
     let rs_outputs: Vec<_> = rs_states
         .into_iter()
         .zip(gammas_rs)
@@ -377,9 +377,9 @@ pub fn open_batch_mixed_whir_stacked(
     // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
     //    sound: every gamma_pd is sampled after all values are observed).
     for claim in point_claims {
-        sponge.observe(claim.value());
+        ps.observe_scalar(claim.value());
     }
-    let gammas_pd = powers(sponge.sample(), point_claims.len());
+    let gammas_pd = powers(ps.sample(), point_claims.len());
 
     // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
     //    rs_eq_ind sum scattered at the q_flock slice, plus the point-claim
@@ -419,7 +419,7 @@ pub fn open_batch_mixed_whir_stacked(
         target,
         &prover_data.codeword,
         &prover_data.merkle_tree,
-        sponge,
+        ps,
     );
     BatchOpeningProof {
         ring_switches: rs_proofs,
@@ -437,7 +437,7 @@ pub fn open_batch_mixed_whir_stacked(
 /// lifted weight. `log_n` is the committed stack's log size in F64 words and
 /// `root` the L0 commitment root ([`super::whir::Commitment::root`]).
 pub fn verify_opening_batch_mixed_whir_stacked(
-    sponge: &mut Sponge,
+    vs: &mut impl Receiver,
     config: &VerifierConfig,
     log_n: usize,
     root: &Hash,
@@ -479,17 +479,17 @@ pub fn verify_opening_batch_mixed_whir_stacked(
         if i < ring.reconstructed.len() {
             continue;
         }
-        if ring_switch::verify_prepare(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
+        if ring_switch::verify_prepare(claim.value, &claim.prefix_weights, rs_proof, vs).is_err() {
             return None;
         }
     }
-    let map_challenges = ring_switch::sample_map_challenges(sponge);
+    let map_challenges = ring_switch::sample_map_challenges(vs);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
     let rs_outputs: Vec<_> = rs_proofs
         .iter()
         .map(|rs_proof| ring_switch::verify_finish(rs_proof, &coordinate_weights))
         .collect();
-    let gammas_rs = powers(sponge.sample(), n_rs);
+    let gammas_rs = powers(vs.sample(), n_rs);
     let mut target = F192::ZERO;
     for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
         target += *g * out.sumcheck_claim;
@@ -497,9 +497,9 @@ pub fn verify_opening_batch_mixed_whir_stacked(
 
     // 2. Point-claim values + gammas; fold into the target.
     for claim in point_claims {
-        sponge.observe(claim.value());
+        vs.observe_scalar(claim.value());
     }
-    let gammas_pd = powers(sponge.sample(), point_claims.len());
+    let gammas_pd = powers(vs.sample(), point_claims.len());
     for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
         target += *g * claim.value();
     }
@@ -531,7 +531,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
         target,
         root,
         eval_b_at,
-        sponge,
+        vs,
         &mut query_squeezes,
     );
     ok.then_some(StackedOpeningSummary {
@@ -576,6 +576,7 @@ mod tests {
         point_claims: Vec<StackClaim>,
         ring: RingSwitchOpen,
         proof: BatchOpeningProof,
+        fs: fiat_shamir::transcript::Proof<()>,
     }
 
     /// Synthetic stack of 2^14 F64 words: three aligned 2^12-word columns
@@ -671,8 +672,8 @@ mod tests {
             "test shape must keep the residual cube above q_flock (yr_log_n = {yr_log_n})"
         );
         let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
-        let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_whir_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(DOMAIN, &[]);
+        let proof = open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
             vc,
@@ -681,6 +682,7 @@ mod tests {
             point_claims,
             ring,
             proof,
+            fs: ps.into_proof(),
         }
     }
 
@@ -689,6 +691,7 @@ mod tests {
         point_claims: &[StackClaim],
         ring_claims: &[RingSwitchClaim],
         proof: &BatchOpeningProof,
+        fs: &fiat_shamir::transcript::Proof<()>,
     ) -> bool {
         let ring = RingSwitchVerify {
             offset: inst.ring.offset,
@@ -696,8 +699,8 @@ mod tests {
             reconstructed: Vec::new(),
             claims: ring_claims.to_vec(),
         };
-        let mut ch = Sponge::new(DOMAIN, &[]);
-        verify_opening_batch_mixed_whir_stacked(&mut ch, &inst.vc, inst.log_n, &inst.root, point_claims, &ring, proof)
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
+        verify_opening_batch_mixed_whir_stacked(&mut vs, &inst.vc, inst.log_n, &inst.root, point_claims, &ring, proof)
             .is_some()
     }
 
@@ -705,7 +708,7 @@ mod tests {
     fn stacked_open_roundtrip_and_tampering() {
         let inst = build_instance(1);
         assert!(
-            verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.proof),
+            verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.proof, &inst.fs),
             "honest stacked opening rejected"
         );
 
@@ -717,7 +720,7 @@ mod tests {
             unreachable!()
         }
         assert!(
-            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.proof),
+            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.proof, &inst.fs),
             "tampered Point value accepted"
         );
 
@@ -729,7 +732,7 @@ mod tests {
             unreachable!()
         }
         assert!(
-            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.proof),
+            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.proof, &inst.fs),
             "tampered Strided value accepted"
         );
 
@@ -737,7 +740,7 @@ mod tests {
         let mut bad_ring = inst.ring.claims.clone();
         bad_ring[0].value += F192::ONE;
         assert!(
-            !verify_instance(&inst, &inst.point_claims, &bad_ring, &inst.proof),
+            !verify_instance(&inst, &inst.point_claims, &bad_ring, &inst.proof, &inst.fs),
             "tampered ring-switch value accepted"
         );
 
@@ -745,30 +748,26 @@ mod tests {
         let mut bad_proof = inst.proof.clone();
         bad_proof.ring_switches[0].s_hat_v[17].c0 ^= 1;
         assert!(
-            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof),
+            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof, &inst.fs),
             "tampered s_hat_v accepted"
         );
 
-        // Tampered WHIR proof scalars.
-        let mut bad_proof = inst.proof.clone();
-        bad_proof.whir.sumcheck_transcript[0].u_0.c0 ^= 1;
-        assert!(
-            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof),
-            "tampered sumcheck u_0 accepted"
-        );
-        let mut bad_proof = inst.proof.clone();
-        bad_proof.whir.final_proof.yr[0].c1 ^= 1;
-        assert!(
-            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof),
-            "tampered final yr accepted"
-        );
+        // Tampered WHIR scalars: they all ride the transcript stream now.
+        for idx in [0usize, inst.fs.stream.len() - 1] {
+            let mut bad_fs = inst.fs.clone();
+            bad_fs.stream[idx] += F192::ONE;
+            assert!(
+                !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.proof, &bad_fs),
+                "tampered stream word {idx} accepted"
+            );
+        }
 
         // Proof-shape tamper: dropping the ring-switch message must return
         // false (not panic).
         let mut bad_proof = inst.proof.clone();
         bad_proof.ring_switches[0].s_hat_v.pop();
         assert!(
-            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof),
+            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof, &inst.fs),
             "short s_hat_v accepted"
         );
     }
@@ -842,8 +841,9 @@ mod tests {
             prebound: 0,
             claims,
         };
-        let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_whir_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(DOMAIN, &[]);
+        let proof = open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
+        let fs = ps.into_proof();
 
         let ring_v = RingSwitchVerify {
             offset: qflock_offset,
@@ -851,9 +851,9 @@ mod tests {
             reconstructed: Vec::new(),
             claims: ring.claims.clone(),
         };
-        let mut ch = Sponge::new(DOMAIN, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut ch, &vc, log_n, &cm.root, &point_claims, &ring_v, &proof,)
+            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &ring_v, &proof,)
                 .is_some(),
             "honest crossing-regime opening rejected"
         );
@@ -861,9 +861,9 @@ mod tests {
         // And the crossing-regime ring claim is still bound: flip its value.
         let mut bad_ring = ring_v;
         bad_ring.claims[0].value += F192::ONE;
-        let mut ch = Sponge::new(DOMAIN, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut ch, &vc, log_n, &cm.root, &point_claims, &bad_ring, &proof,)
+            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring, &proof,)
                 .is_none(),
             "tampered crossing-regime ring value accepted"
         );

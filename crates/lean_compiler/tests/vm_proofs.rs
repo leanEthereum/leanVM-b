@@ -44,12 +44,13 @@ fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
 }
 
 /// flock's validity proof rides the stacked WHIR opening, the proof's one hint
-/// channel. Tampering a sumcheck round message there must be rejected.
+/// channel. Nothing in that channel is bound by the sponge (only by the Merkle
+/// structure), so tampering an opened row there must still be rejected.
 #[test]
 fn a_tampered_opening_is_rejected() {
     let (program, pi, mut proof) = hashing_proof();
     let opening = proof.openings.last_mut().expect("stacked WHIR opening");
-    opening.whir.sumcheck_transcript[0].u_0 += F192::ONE;
+    opening.whir.initial_proof.opened_rows[0][0].0 ^= 1;
     assert!(
         verify(&program, &pi, &proof).is_err(),
         "a tampered validity proof must be rejected"

@@ -874,13 +874,10 @@ fn gen_verify(
     let (depth, per) = (&stack.depth, &stack.per_squeeze);
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
-    // The K stacked opening lives ENTIRELY in `proof.openings` (structs,
-    // observed into the sponge for Fiat-Shamir, never `add_scalar`'d), and
-    // ring-switch `s_hat_v` is likewise observed from its struct, not streamed.
-    // So `proof.stream` ends with flock's reduction: the last 64 scalars are
-    // lincheck's `z_partial`, immediately preceded by the `(e1, e_inf)` pairs of
-    // the `lcrounds` lincheck sumcheck rounds.
-    let ns = proof.stream.len();
+    // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
+    // scalars start: its last 64 scalars are lincheck's `z_partial`, immediately
+    // preceded by the `(e1, e_inf)` pairs of the `lcrounds` lincheck rounds.
+    let ns = summary.flock_stream_end;
     let lcr: Vec<F192> = proof.stream[ns - 64 - 2 * lcrounds..ns - 64].to_vec();
     let lcz: Vec<F192> = proof.stream[ns - 64..ns].to_vec();
 
@@ -1086,99 +1083,17 @@ fn gen_verify(
 
     let hints = vec![
         ("stream".to_string(), {
+            // The guest replays the WHIR opening off the same stream the native
+            // verifier reads: every transmitted scalar (sumcheck messages, level
+            // roots, OOD claims, grind nonces, `yr`) is already there in protocol
+            // order, so there is nothing to reassemble. The guest's `open_stacked`
+            // picks it up at `msg_cursor = cursor`, which sits where the flock
+            // reduction stopped; the ring-switch messages are struct-observed and
+            // still do not advance that cursor.
             let mut v = proof.stream.clone();
-            // Append the WHIR opening's msg-cursor sequence, in EXACT
-            // F64-verifier order (see whir::recursive_verifier_with_basis_
-            // succinct): the interleaved raw grind nonces + observed scalars
-            // (start_msg, per-fold [grind-nonce?, msg u0/u2], level roots as two
-            // hash_to_scalars, query-grind nonce, every level's intro msg,
-            // final yr, and the remaining tail-round messages).
-            // The guest's open_stacked reads these via `msg_cursor = cursor`,
-            // which sits at proof.stream.len() after the flock reduction — the
-            // ring-switch is struct-observed and no longer advances the cursor.
-            let lp = &proof.openings[0].whir;
-            let fb = |lvl: usize| -> u32 { vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
-            let (mut tx, mut fni, mut qi, mut rri, mut oi) = (0usize, 0usize, 0usize, 0usize, 0usize);
-            let msg = |tx: &mut usize| -> [F192; 2] {
-                let m = lp.sumcheck_transcript[*tx];
-                *tx += 1;
-                [m.u_0, m.u_2]
-            };
-            // intro start_msg
-            v.extend_from_slice(&msg(&mut tx));
-            // L0 fold rounds
-            for j in 0..vcfg.initial_k {
-                if fb(0).saturating_sub(j as u32) > 0 {
-                    v.push(F192::new(lp.fold_grinding_nonces[fni], 0, 0));
-                    fni += 1;
-                }
-                v.extend_from_slice(&msg(&mut tx));
-            }
-            // L1 root, its OOD claims, then the L0 query phase and induced
-            // basis introduction.
-            v.extend_from_slice(&pcs::merkle::hash_to_scalars(&lp.recursive_roots[rri]));
-            rri += 1;
-            for _ in 0..vcfg.ood_samples[1] {
-                v.push(lp.ood_values[oi]);
-                oi += 1;
-                v.extend_from_slice(&msg(&mut tx));
-            }
-            v.push(F192::new(lp.grinding_nonces[qi], 0, 0));
-            qi += 1;
-            v.extend_from_slice(&msg(&mut tx));
-            // recursive levels 1..=r (loop index i = level-1)
-            for i in 0..vcfg.level_steps {
-                for j in 0..vcfg.level_ks[i] {
-                    if fb(i + 1).saturating_sub(j as u32) > 0 {
-                        v.push(F192::new(lp.fold_grinding_nonces[fni], 0, 0));
-                        fni += 1;
-                    }
-                    v.extend_from_slice(&msg(&mut tx));
-                }
-                if i == vcfg.level_steps - 1 {
-                    // last level: final message yr, then the query-grind nonce
-                    // (the verifier reads grinding_nonces[qi] without advancing),
-                    // its intro message, and every tail-round message except
-                    // the closing round, which sends none.
-                    v.extend_from_slice(&lp.final_proof.yr);
-                    v.push(F192::new(lp.grinding_nonces[qi], 0, 0));
-                    v.extend_from_slice(&msg(&mut tx));
-                    for _ in 1..shapes.yr_log_n {
-                        v.extend_from_slice(&msg(&mut tx));
-                    }
-                } else {
-                    v.extend_from_slice(&pcs::merkle::hash_to_scalars(&lp.recursive_roots[rri]));
-                    rri += 1;
-                    for _ in 0..vcfg.ood_samples[i + 2] {
-                        v.push(lp.ood_values[oi]);
-                        oi += 1;
-                        v.extend_from_slice(&msg(&mut tx));
-                    }
-                    v.push(F192::new(lp.grinding_nonces[qi], 0, 0));
-                    qi += 1;
-                    v.extend_from_slice(&msg(&mut tx));
-                }
-            }
-            // Sanity: the reconstruction must consume the struct exactly.
-            assert_eq!(
-                tx,
-                lp.sumcheck_transcript.len(),
-                "whir_msgs: sumcheck_transcript not fully consumed"
-            );
-            assert_eq!(
-                fni,
-                lp.fold_grinding_nonces.len(),
-                "whir_msgs: fold nonces not fully consumed"
-            );
-            assert_eq!(
-                rri,
-                lp.recursive_roots.len(),
-                "whir_msgs: recursive_roots not fully consumed"
-            );
-            assert_eq!(oi, lp.ood_values.len(), "whir_msgs: OOD values not fully consumed");
             assert!(
                 v.len() <= stream_cap,
-                "stream+whir_msgs {} exceeds stream_cap {stream_cap}",
+                "stream {} exceeds stream_cap {stream_cap}",
                 v.len()
             );
             v.resize(stream_cap, F192::ZERO);

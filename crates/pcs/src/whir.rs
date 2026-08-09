@@ -34,7 +34,7 @@
 
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
-use fiat_shamir::sponge::Sponge;
+use fiat_shamir::transcript::{Challenger, Receiver, Transmitter};
 use primitives::log2_strict_usize;
 use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
@@ -58,10 +58,23 @@ use crate::whir_ntt_ext::*;
 /// Bind a Merkle root into the transcript as two `F192` scalars rather than
 /// as a byte string. Binds the root before any challenge exactly as `absorb_bytes`
 /// would; keeping the scalar form matches the recursion guest's replay.
-fn observe_root(sponge: &mut Sponge, root: &crate::merkle::Hash) {
+fn observe_root(ch: &mut impl Challenger, root: &crate::merkle::Hash) {
     for s in crate::merkle::hash_to_scalars(root) {
-        sponge.observe(s);
+        ch.observe_scalar(s);
     }
+}
+
+/// Transmit a Merkle root as its two transcript scalars (`observe_root` is for
+/// the one root both sides already hold, the L0 commitment).
+fn send_root(ps: &mut impl Transmitter, root: &crate::merkle::Hash) {
+    ps.add_scalars(&crate::merkle::hash_to_scalars(root));
+}
+
+/// Verifier mirror of [`send_root`].
+fn recv_root(vs: &mut impl Receiver) -> Option<crate::merkle::Hash> {
+    let lo = vs.next_scalar().ok()?;
+    let hi = vs.next_scalar().ok()?;
+    Some(crate::merkle::scalars_to_hash(&[lo, hi]))
 }
 
 // ===================================================================
@@ -504,6 +517,19 @@ pub struct SumcheckMessage {
     pub u_2: F192,
 }
 
+/// Transmit one sumcheck round message.
+fn send_msg(ps: &mut impl Transmitter, m: SumcheckMessage) {
+    ps.add_scalar(m.u_0);
+    ps.add_scalar(m.u_2);
+}
+
+/// Verifier mirror of [`send_msg`].
+fn recv_msg(vs: &mut impl Receiver) -> Option<SumcheckMessage> {
+    let u_0 = vs.next_scalar().ok()?;
+    let u_2 = vs.next_scalar().ok()?;
+    Some(SumcheckMessage { u_0, u_2 })
+}
+
 /// Round-quadratic in coefficient form `c + b X + a X^2` (verifier side).
 #[derive(Clone, Copy, Debug)]
 struct RoundQuad {
@@ -909,10 +935,6 @@ impl<'a> SumcheckProver<'a> {
             Witness::Base(_) => panic!("witness still in base phase (no fold yet)"),
         }
     }
-
-    fn transcript(&self) -> &[SumcheckMessage] {
-        &self.transcript
-    }
 }
 
 /// L0 opened rows: F64 (the commitment field).
@@ -933,8 +955,6 @@ pub struct RecursiveProof {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalProof {
-    /// Remaining polynomial sent in clear at the last recursive step.
-    pub yr: Vec<F192>,
     pub opened_rows: Vec<Vec<F192>>,
     pub merkle_proof: Vec<Hash>,
 }
@@ -943,18 +963,8 @@ pub struct FinalProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WhirProof {
     pub initial_proof: InitialProof,
-    pub recursive_roots: Vec<Hash>,
     pub recursive_proofs: Vec<RecursiveProof>,
     pub final_proof: FinalProof,
-    pub sumcheck_transcript: Vec<SumcheckMessage>,
-    /// Per-level query-phase PoW nonces (0 when the level grinds 0 bits).
-    pub grinding_nonces: Vec<u64>,
-    /// Claimed multilinear OOD evaluations, flattened in transcript order.
-    #[serde(default)]
-    pub ood_values: Vec<F192>,
-    /// Fold-challenge PoW nonces, flattened in transcript order (one per fold
-    /// challenge at every level with `fold_grinding_bits > 0`).
-    pub fold_grinding_nonces: Vec<u64>,
 }
 
 /// Sample `count` query positions in transcript order: no dedup, no sort.
@@ -970,13 +980,17 @@ pub struct WhirProof {
 /// the recursion harness reads all three limbs off them to re-derive positions.
 /// There is deliberately no position-only variant, because two copies of this
 /// loop would let the prover and the verifier drift apart silently.
-fn sample_queries_ordered_with_raw(sponge: &mut Sponge, block_len: usize, count: usize) -> (Vec<usize>, Vec<F192>) {
+fn sample_queries_ordered_with_raw(
+    ch: &mut impl Challenger,
+    block_len: usize,
+    count: usize,
+) -> (Vec<usize>, Vec<F192>) {
     let d = block_len.trailing_zeros() as usize;
     let per = 192 / d;
     let mut out = Vec::with_capacity(count);
     let mut raw = Vec::with_capacity(count.div_ceil(per));
     while out.len() < count {
-        let v = sponge.sample();
+        let v = ch.sample();
         raw.push(v);
         for j in 0..per.min(count - out.len()) {
             let off = j * d;
@@ -1009,25 +1023,17 @@ fn fan_rows_to_ordered<T: Clone>(queries: &[usize], rows_sorted: &[Vec<T>]) -> O
 }
 
 /// Prover side of the OOD claims taken right after a level's root enters the
-/// transcript: sample `z`, evaluate the folded witness there, absorb the claim
+/// transcript: sample `z`, evaluate the folded witness there, send the claim
 /// and its intro message. The claim stays pending: the level's batching
 /// challenge is drawn only once its query positions are fixed too, and
 /// `glue_pending` then folds every claim of the level in with its own power.
 /// Mirror of the verifiers' [`replay_ood`], operation for operation.
-fn absorb_ood(
-    sc: &mut SumcheckProver<'_>,
-    sponge: &mut Sponge,
-    n_vars: usize,
-    count: usize,
-    ood_values: &mut Vec<F192>,
-) {
+fn send_ood(sc: &mut SumcheckProver<'_>, ps: &mut impl Transmitter, n_vars: usize, count: usize) {
     for _ in 0..count {
-        let z = sponge.sample_vec(n_vars);
+        let z = ps.sample_vec(n_vars);
         let (intro, y) = sc.introduce_new_with_eval(build_eq_table_ext_parallel(&z));
-        sponge.observe(y);
-        ood_values.push(y);
-        sponge.observe(intro.u_0);
-        sponge.observe(intro.u_2);
+        ps.add_scalar(y);
+        send_msg(ps, intro);
     }
 }
 
@@ -1063,7 +1069,7 @@ pub fn recursive_prover_with_basis(
     target: F192,
     l0_codeword: &[F64],
     l0_tree: &[Hash],
-    sponge: &mut Sponge,
+    ps: &mut impl Transmitter,
 ) -> WhirProof {
     let log_n = witness.len().trailing_zeros() as usize;
     let r = config.level_steps;
@@ -1099,7 +1105,7 @@ pub fn recursive_prover_with_basis(
     // (No opener domain-label absorb: the extension-field opener has none and the recursion
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
-    sponge.observe(target);
+    ps.observe_scalar(target);
 
     // L0 codeword + tree are borrowed (reused from `commit`).
     let initial_root: Hash = l0_tree[l0_tree.len() - 1];
@@ -1107,18 +1113,15 @@ pub fn recursive_prover_with_basis(
         let start = q * num_interleaved_0;
         &l0_codeword[start..start + num_interleaved_0]
     };
-    observe_root(sponge, &initial_root);
+    observe_root(ps, &initial_root);
 
-    let mut fold_grinding_nonces: Vec<u64> = Vec::new();
-    let mut ood_values: Vec<F192> = Vec::new();
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
     let sumcheck_span = tracing::info_span!("Sumcheck");
     let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| SumcheckProver::new(witness, b_initial, target));
-    sponge.observe(start_msg.u_0);
-    sponge.observe(start_msg.u_2);
+    send_msg(ps, start_msg);
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
@@ -1127,12 +1130,11 @@ pub fn recursive_prover_with_basis(
         // the original's App. C.3 `mca-commutes` comment.
         let bits = fold_bits(0).saturating_sub(j as u32);
         if bits > 0 {
-            fold_grinding_nonces.push(sponge.grind_pow(bits));
+            ps.grind(bits);
         }
-        let r_j = sponge.sample();
+        let r_j = ps.sample();
         let msg = sumcheck_span.in_scope(|| sc_prover.fold(r_j));
-        sponge.observe(msg.u_0);
-        sponge.observe(msg.u_2);
+        send_msg(ps, msg);
         r_lane_fold.push(r_j);
     }
     drop(sumcheck_span);
@@ -1153,23 +1155,22 @@ pub fn recursive_prover_with_basis(
     if trace {
         t_commits += _t.elapsed();
     }
-    observe_root(sponge, &wtns_1.root());
+    send_root(ps, &wtns_1.root());
 
     // Bind the L1 Johnson list before drawing L0 queries. Each claimed random
     // MLE evaluation is introduced into the running sumcheck.
-    absorb_ood(&mut sc_prover, sponge, n1, ood_count(1), &mut ood_values);
+    send_ood(&mut sc_prover, ps, n1, ood_count(1));
 
     // Query-phase PoW grinding for L0 (0 bits in the production profile; the
     // canonical 0 nonce is still absorbed to keep the transcript in lockstep).
-    let pow_nonce_0 = sponge.grind_pow(config.grinding_bits[0] as u32);
-    let mut grinding_nonces: Vec<u64> = vec![pow_nonce_0];
+    ps.grind(config.grinding_bits[0] as u32);
 
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0).0;
+    let queries_0 = sample_queries_ordered_with_raw(ps, block_len_0, num_queries_0).0;
     // One batching challenge for the whole level, drawn once every claim it
     // batches is fixed: the OOD claims above and these query positions.
-    let lambda_0 = sponge.sample();
+    let lambda_0 = ps.sample();
     let weights_0 = power_weights(lambda_0, num_queries_0);
     let _t = std::time::Instant::now();
     // Ordered (dup-possible) rows for the local induce math ...
@@ -1206,8 +1207,7 @@ pub fn recursive_prover_with_basis(
     // Introduce basis_0, then batch the level's claims with powers of lambda_0.
     let _t = std::time::Instant::now();
     let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
-    sponge.observe(intro_msg_0.u_0);
-    sponge.observe(intro_msg_0.u_2);
+    send_msg(ps, intro_msg_0);
     sc_prover.glue_pending(lambda_0);
     if trace {
         t_intro_glue += _t.elapsed();
@@ -1215,7 +1215,6 @@ pub fn recursive_prover_with_basis(
 
     // Recursive levels.
     let mut wtns_prev = wtns_1;
-    let mut recursive_roots: Vec<Hash> = vec![wtns_prev.root()];
     let mut recursive_proofs: Vec<RecursiveProof> = Vec::new();
 
     for i in 0..r {
@@ -1228,12 +1227,11 @@ pub fn recursive_prover_with_basis(
             // the L0 loop.
             let bits = fold_bits(i + 1).saturating_sub(j as u32);
             if bits > 0 {
-                fold_grinding_nonces.push(sponge.grind_pow(bits));
+                ps.grind(bits);
             }
-            let ri = sponge.sample();
+            let ri = ps.sample();
             let msg = sumcheck_span.in_scope(|| sc_prover.fold(ri));
-            sponge.observe(msg.u_0);
-            sponge.observe(msg.u_2);
+            send_msg(ps, msg);
             level_rs.push(ri);
         }
         drop(sumcheck_span);
@@ -1243,17 +1241,14 @@ pub fn recursive_prover_with_basis(
 
         if i == r - 1 {
             let yr = sc_prover.f_ext().to_vec();
-            for v in &yr {
-                sponge.observe(*v);
-            }
+            ps.add_scalars(&yr);
             // PoW grinding for the last level before sampling its queries.
-            let nonce_last = sponge.grind_pow(config.grinding_bits[i + 1] as u32);
-            grinding_nonces.push(nonce_last);
+            ps.grind(config.grinding_bits[i + 1] as u32);
             let num_queries_last = config.queries[i + 1];
-            let queries_last = sample_queries_ordered_with_raw(sponge, wtns_prev.block_len, num_queries_last).0;
+            let queries_last = sample_queries_ordered_with_raw(ps, wtns_prev.block_len, num_queries_last).0;
             // The final level's batching challenge is drawn only after `yr`
             // and its queries are bound, matching the verifier exactly.
-            let lambda_last = sponge.sample();
+            let lambda_last = ps.sample();
             let weights_last = power_weights(lambda_last, num_queries_last);
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
@@ -1280,18 +1275,17 @@ pub fn recursive_prover_with_basis(
                 n_res,
             );
             let intro_msg_last = sc_prover.introduce_new(basis_last, enforced_sum_last);
-            sponge.observe(intro_msg_last.u_0);
-            sponge.observe(intro_msg_last.u_2);
+            send_msg(ps, intro_msg_last);
             sc_prover.glue_pending(lambda_last);
             for j in 0..n_res {
-                let ri = sponge.sample();
+                let ri = ps.sample();
                 let msg = sc_prover.fold(ri);
+                // The last round's message is redundant: the verifier gets that
+                // claim from `yr`, so it is never transmitted.
                 if j + 1 < n_res {
-                    sponge.observe(msg.u_0);
-                    sponge.observe(msg.u_2);
+                    send_msg(ps, msg);
                 }
             }
-            let transmitted_sumcheck_len = sc_prover.transcript().len() - usize::from(n_res > 0);
             if trace {
                 t_opens += _t.elapsed();
                 let total = t_total.elapsed();
@@ -1323,17 +1317,11 @@ pub fn recursive_prover_with_basis(
             }
             return WhirProof {
                 initial_proof,
-                recursive_roots,
                 recursive_proofs,
                 final_proof: FinalProof {
-                    yr,
                     opened_rows: opened_rows_last,
                     merkle_proof: merkle_proof_last,
                 },
-                sumcheck_transcript: sc_prover.transcript()[..transmitted_sumcheck_len].to_vec(),
-                grinding_nonces,
-                ood_values,
-                fold_grinding_nonces,
             };
         }
 
@@ -1355,18 +1343,15 @@ pub fn recursive_prover_with_basis(
         if trace {
             t_commits += _t.elapsed();
         }
-        let root_next = wtns_next.root();
-        observe_root(sponge, &root_next);
-        recursive_roots.push(root_next);
+        send_root(ps, &wtns_next.root());
 
-        absorb_ood(&mut sc_prover, sponge, n_next, ood_count(i + 2), &mut ood_values);
+        send_ood(&mut sc_prover, ps, n_next, ood_count(i + 2));
 
         // PoW grinding for this iteration's query phase.
-        let nonce_i = sponge.grind_pow(config.grinding_bits[i + 1] as u32);
-        grinding_nonces.push(nonce_i);
+        ps.grind(config.grinding_bits[i + 1] as u32);
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_queries_ordered_with_raw(sponge, wtns_prev.block_len, num_queries_i).0;
-        let lambda_i = sponge.sample();
+        let queries_i = sample_queries_ordered_with_raw(ps, wtns_prev.block_len, num_queries_i).0;
+        let lambda_i = ps.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
@@ -1395,8 +1380,7 @@ pub fn recursive_prover_with_basis(
 
         let _t = std::time::Instant::now();
         let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
-        sponge.observe(intro_msg_i.u_0);
-        sponge.observe(intro_msg_i.u_2);
+        send_msg(ps, intro_msg_i);
         sc_prover.glue_pending(lambda_i);
         if trace {
             t_intro_glue += _t.elapsed();
@@ -1532,16 +1516,13 @@ impl PrevLevel {
 
 /// Replay one level's fold challenges: the tapered fold-challenge PoW, the
 /// challenge itself, then the round message that follows it. Both verifiers
-/// call this so the sponge sees exactly the operations the prover performed, in
+/// call this so the transcript sees the same operations the prover performed, in
 /// the prover's order. Returns the challenges in order, `None` on any
 /// transcript or PoW mismatch.
 fn replay_fold_rounds(
-    sponge: &mut Sponge,
-    proof: &WhirProof,
+    vs: &mut impl Receiver,
     k: usize,
     level_fold_bits: u32,
-    fold_nonce_idx: &mut usize,
-    tx_idx: &mut usize,
     t_r: &mut F192,
     running_quad: &mut RoundQuad,
 ) -> Option<Vec<F192>> {
@@ -1549,19 +1530,12 @@ fn replay_fold_rounds(
     for j in 0..k {
         let bits = level_fold_bits.saturating_sub(j as u32);
         if bits > 0 {
-            let &nonce = proof.fold_grinding_nonces.get(*fold_nonce_idx)?;
-            if !sponge.verify_pow(nonce, bits) {
-                return None;
-            }
-            *fold_nonce_idx += 1;
+            vs.grind_check(bits).ok()?;
         }
-        let ri = sponge.sample();
+        let ri = vs.sample();
         rs.push(ri);
         *t_r = running_quad.eval(ri);
-        let &msg = proof.sumcheck_transcript.get(*tx_idx)?;
-        *tx_idx += 1;
-        sponge.observe(msg.u_0);
-        sponge.observe(msg.u_2);
+        let msg = recv_msg(vs)?;
         *running_quad = RoundQuad::from_msg(msg, *t_r);
     }
     Some(rs)
@@ -1570,7 +1544,7 @@ fn replay_fold_rounds(
 /// One replayed OOD claim: the point `z` it was taken at, its claimed value and
 /// the intro message that carries it into the running sumcheck. Both are held
 /// until the level's batching challenge is drawn (the prover holds the matching
-/// basis pending, see [`absorb_ood`]).
+/// basis pending, see [`send_ood`]).
 struct OodReplay {
     z: Vec<F192>,
     y: F192,
@@ -1578,23 +1552,12 @@ struct OodReplay {
 }
 
 /// Replay one OOD claim: draw `z`, read the claimed evaluation off the proof,
-/// absorb it and the intro message. Mirror of the prover's [`absorb_ood`],
+/// read it and the intro message. Mirror of the prover's [`send_ood`],
 /// operation for operation.
-fn replay_ood(
-    sponge: &mut Sponge,
-    proof: &WhirProof,
-    n_vars: usize,
-    ood_idx: &mut usize,
-    tx_idx: &mut usize,
-) -> Option<OodReplay> {
-    let z = sponge.sample_vec(n_vars);
-    let &y = proof.ood_values.get(*ood_idx)?;
-    *ood_idx += 1;
-    sponge.observe(y);
-    let &intro_msg = proof.sumcheck_transcript.get(*tx_idx)?;
-    *tx_idx += 1;
-    sponge.observe(intro_msg.u_0);
-    sponge.observe(intro_msg.u_2);
+fn replay_ood(vs: &mut impl Receiver, n_vars: usize) -> Option<OodReplay> {
+    let z = vs.sample_vec(n_vars);
+    let y = vs.next_scalar().ok()?;
+    let intro_msg = recv_msg(vs)?;
     Some(OodReplay {
         z,
         y,
@@ -1641,7 +1604,7 @@ pub fn recursive_verifier_with_basis(
     b_initial: &[F192],
     target: F192,
     expected_initial_root: &Hash,
-    sponge: &mut Sponge,
+    vs: &mut impl Receiver,
 ) -> bool {
     let log_n = b_initial.len().trailing_zeros() as usize;
     let initial_k = config.initial_k;
@@ -1662,8 +1625,8 @@ pub fn recursive_verifier_with_basis(
     // (No opener domain-label absorb: the extension-field opener has none and the recursion
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
-    sponge.observe(target);
-    observe_root(sponge, expected_initial_root);
+    vs.observe_scalar(target);
+    observe_root(vs, expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -1672,45 +1635,27 @@ pub fn recursive_verifier_with_basis(
 
     // Replay sumcheck: start msg, then initial_k folds.
     let mut t_r = target;
-    let mut tx_idx = 0usize;
-    if tx_idx >= proof.sumcheck_transcript.len() {
+    let Some(start_msg) = recv_msg(vs) else {
         return false;
-    }
-    let start_msg = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    sponge.observe(start_msg.u_0);
-    sponge.observe(start_msg.u_2);
+    };
     let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
-    let mut fold_nonce_idx = 0usize;
-    let mut ood_idx = 0usize;
     let mut ood_bases: Vec<(Vec<F192>, usize, F192)> = Vec::new();
 
-    let Some(r_lane_fold) = replay_fold_rounds(
-        sponge,
-        proof,
-        initial_k,
-        fold_bits(0),
-        &mut fold_nonce_idx,
-        &mut tx_idx,
-        &mut t_r,
-        &mut running_quad,
-    ) else {
+    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, fold_bits(0), &mut t_r, &mut running_quad) else {
         return false;
     };
 
     // Observe wtns_1 root + open wtns_0.
-    if proof.recursive_roots.is_empty() {
+    let Some(root_1) = recv_root(vs) else {
         return false;
-    }
-    let root_1 = proof.recursive_roots[0];
-    observe_root(sponge, &root_1);
+    };
 
     let mut level_ood = Vec::with_capacity(ood_count(1));
     for _ in 0..ood_count(1) {
-        let Some(ood) = replay_ood(sponge, proof, log_n - initial_k, &mut ood_idx, &mut tx_idx) else {
+        let Some(ood) = replay_ood(vs, log_n - initial_k) else {
             return false;
         };
         level_ood.push(ood);
@@ -1718,18 +1663,13 @@ pub fn recursive_verifier_with_basis(
 
     // PoW grinding check for L0's query phase (no-op at 0 bits but keeps the
     // FS state in lockstep with the prover).
-    let mut nonce_idx = 0usize;
-    if nonce_idx >= proof.grinding_nonces.len() {
+    if vs.grind_check(config.grinding_bits[0] as u32).is_err() {
         return false;
     }
-    if !sponge.verify_pow(proof.grinding_nonces[nonce_idx], config.grinding_bits[0] as u32) {
-        return false;
-    }
-    nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0).0;
-    let lambda_0 = sponge.sample();
+    let queries_0 = sample_queries_ordered_with_raw(vs, block_len_0, num_queries_0).0;
+    let lambda_0 = vs.sample();
     let weights_0 = power_weights(lambda_0, num_queries_0);
     let sq_0 = sorted_unique_queries(&queries_0);
     if !verify_level_opens(
@@ -1763,13 +1703,9 @@ pub fn recursive_verifier_with_basis(
     );
 
     // Intro, then batch every claim of the level with powers of lambda_0.
-    if tx_idx >= proof.sumcheck_transcript.len() {
+    let Some(intro_msg_0) = recv_msg(vs) else {
         return false;
-    }
-    let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    sponge.observe(intro_msg_0.u_0);
-    sponge.observe(intro_msg_0.u_2);
+    };
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
     let (ood_scalars_0, query_scalar_0) = batch_level_claims(
         lambda_0,
@@ -1796,7 +1732,6 @@ pub fn recursive_verifier_with_basis(
         log_msg_cols: n1 - config.level_ks[0],
         log_inv_rate: config.log_inv_rates[1],
     };
-    let mut next_root_idx = 1usize;
     let mut recursive_proof_idx = 0usize;
     let mut n_current = n1;
 
@@ -1808,47 +1743,27 @@ pub fn recursive_verifier_with_basis(
         if n_current < k_i {
             return false;
         }
-        let Some(level_rs) = replay_fold_rounds(
-            sponge,
-            proof,
-            k_i,
-            fold_bits(i + 1),
-            &mut fold_nonce_idx,
-            &mut tx_idx,
-            &mut t_r,
-            &mut running_quad,
-        ) else {
+        let Some(level_rs) = replay_fold_rounds(vs, k_i, fold_bits(i + 1), &mut t_r, &mut running_quad) else {
             return false;
         };
         ris.extend_from_slice(&level_rs);
         n_current -= k_i;
 
         if i == r - 1 {
-            if ood_idx != proof.ood_values.len() || fold_nonce_idx != proof.fold_grinding_nonces.len() {
+            let Ok(yr) = vs.next_scalars(1 << n_current) else {
                 return false;
-            }
-            let yr = &proof.final_proof.yr;
-            if yr.len() != 1 << n_current {
-                return false;
-            }
-            for v in yr {
-                sponge.observe(*v);
-            }
+            };
             // PoW grinding check for the last level.
-            if nonce_idx >= proof.grinding_nonces.len() {
+            if vs.grind_check(config.grinding_bits[i + 1] as u32).is_err() {
                 return false;
             }
-            if !sponge.verify_pow(proof.grinding_nonces[nonce_idx], config.grinding_bits[i + 1] as u32) {
-                return false;
-            }
-            // (last nonce: nonce_idx is not advanced past it)
 
             let num_queries_last = config.queries[i + 1];
-            let queries_last = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_last).0;
+            let queries_last = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_last).0;
             // Final-level batching challenge: sampled AFTER `yr` was observed
             // and the queries are fixed, so a forged `yr` cannot be adapted to
             // it (mirror of the original).
-            let lambda_last = sponge.sample();
+            let lambda_last = vs.sample();
             let weights_last = power_weights(lambda_last, num_queries_last);
             let sq_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
@@ -1878,12 +1793,9 @@ pub fn recursive_verifier_with_basis(
                 &queries_last,
                 &weights_last,
             );
-            let Some(&intro_msg_last) = proof.sumcheck_transcript.get(tx_idx) else {
+            let Some(intro_msg_last) = recv_msg(vs) else {
                 return false;
             };
-            tx_idx += 1;
-            sponge.observe(intro_msg_last.u_0);
-            sponge.observe(intro_msg_last.u_2);
             let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
             // No OOD at the final level: there is no new oracle to bind.
             let (_, query_scalar_last) = batch_level_claims(
@@ -1902,21 +1814,15 @@ pub fn recursive_verifier_with_basis(
             // basis and the transmitted final message at the one terminal point.
             let mut ris_tail = Vec::with_capacity(n_current);
             for j in 0..n_current {
-                let ri = sponge.sample();
+                let ri = vs.sample();
                 t_r = running_quad.eval(ri);
                 ris_tail.push(ri);
                 if j + 1 < n_current {
-                    let Some(&msg) = proof.sumcheck_transcript.get(tx_idx) else {
+                    let Some(msg) = recv_msg(vs) else {
                         return false;
                     };
-                    tx_idx += 1;
-                    sponge.observe(msg.u_0);
-                    sponge.observe(msg.u_2);
                     running_quad = RoundQuad::from_msg(msg, t_r);
                 }
-            }
-            if tx_idx != proof.sumcheck_transcript.len() {
-                return false;
             }
             ris.extend_from_slice(&ris_tail);
             let mut weight = F192::ZERO;
@@ -1936,19 +1842,16 @@ pub fn recursive_verifier_with_basis(
                 }
                 weight += *beta * at[0];
             }
-            return weight * mle_eval_ext(yr, &ris_tail) == t_r;
+            return weight * mle_eval_ext(&yr, &ris_tail) == t_r;
         }
 
-        if next_root_idx >= proof.recursive_roots.len() {
+        let Some(root_next) = recv_root(vs) else {
             return false;
-        }
-        let root_next = proof.recursive_roots[next_root_idx];
-        next_root_idx += 1;
-        observe_root(sponge, &root_next);
+        };
 
         let mut level_ood = Vec::with_capacity(ood_count(i + 2));
         for _ in 0..ood_count(i + 2) {
-            let Some(ood) = replay_ood(sponge, proof, n_current, &mut ood_idx, &mut tx_idx) else {
+            let Some(ood) = replay_ood(vs, n_current) else {
                 return false;
             };
             level_ood.push(ood);
@@ -1956,18 +1859,14 @@ pub fn recursive_verifier_with_basis(
         let ood_ris_start = ris.len();
 
         // PoW grinding check for this iteration's query phase.
-        if nonce_idx >= proof.grinding_nonces.len() {
+        if vs.grind_check(config.grinding_bits[i + 1] as u32).is_err() {
             return false;
         }
-        if !sponge.verify_pow(proof.grinding_nonces[nonce_idx], config.grinding_bits[i + 1] as u32) {
-            return false;
-        }
-        nonce_idx += 1;
 
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_i).0;
+        let queries_i = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_i).0;
         let sq_i = sorted_unique_queries(&queries_i);
-        let lambda_i = sponge.sample();
+        let lambda_i = vs.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
@@ -1999,13 +1898,9 @@ pub fn recursive_verifier_with_basis(
             &weights_i,
         );
 
-        if tx_idx >= proof.sumcheck_transcript.len() {
+        let Some(intro_msg_i) = recv_msg(vs) else {
             return false;
-        }
-        let intro_msg_i = proof.sumcheck_transcript[tx_idx];
-        tx_idx += 1;
-        sponge.observe(intro_msg_i.u_0);
-        sponge.observe(intro_msg_i.u_2);
+        };
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
         let (ood_scalars_i, query_scalar_i) = batch_level_claims(
             lambda_i,
@@ -2052,7 +1947,7 @@ pub fn recursive_verifier_with_basis_succinct<F>(
     target: F192,
     expected_initial_root: &Hash,
     eval_b_at: F,
-    sponge: &mut Sponge,
+    vs: &mut impl Receiver,
 ) -> bool
 where
     F: Fn(&[F192]) -> F192,
@@ -2065,7 +1960,7 @@ where
         target,
         expected_initial_root,
         eval_b_at,
-        sponge,
+        vs,
         &mut discard,
     )
 }
@@ -2092,7 +1987,7 @@ pub fn recursive_verifier_with_basis_succinct_with_squeezes<F>(
     target: F192,
     expected_initial_root: &Hash,
     eval_b_at: F,
-    sponge: &mut Sponge,
+    vs: &mut impl Receiver,
     query_squeezes_out: &mut Vec<Vec<F192>>,
 ) -> bool
 where
@@ -2113,8 +2008,8 @@ where
     // (No opener domain-label absorb: the extension-field opener has none and the recursion
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
-    sponge.observe(target);
-    observe_root(sponge, expected_initial_root);
+    vs.observe_scalar(target);
+    observe_root(vs, expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -2122,20 +2017,13 @@ where
     let num_interleaved_0 = 1usize << initial_k;
 
     let mut t_r = target;
-    let mut tx_idx = 0usize;
-    if tx_idx >= proof.sumcheck_transcript.len() {
+    let Some(start_msg) = recv_msg(vs) else {
         return false;
-    }
-    let start_msg = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    sponge.observe(start_msg.u_0);
-    sponge.observe(start_msg.u_2);
+    };
     let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
-    let mut fold_nonce_idx = 0usize;
-    let mut ood_idx = 0usize;
     struct OodCtx {
         z: Vec<F192>,
         ris_start: usize,
@@ -2143,47 +2031,31 @@ where
     }
     let mut ood_ctxs: Vec<OodCtx> = Vec::new();
 
-    let Some(r_lane_fold) = replay_fold_rounds(
-        sponge,
-        proof,
-        initial_k,
-        fold_bits(0),
-        &mut fold_nonce_idx,
-        &mut tx_idx,
-        &mut t_r,
-        &mut running_quad,
-    ) else {
+    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, fold_bits(0), &mut t_r, &mut running_quad) else {
         return false;
     };
 
-    if proof.recursive_roots.is_empty() {
+    let Some(root_1) = recv_root(vs) else {
         return false;
-    }
-    let root_1 = proof.recursive_roots[0];
-    observe_root(sponge, &root_1);
+    };
 
     let mut level_ood = Vec::with_capacity(ood_count(1));
     for _ in 0..ood_count(1) {
-        let Some(ood) = replay_ood(sponge, proof, log_n - initial_k, &mut ood_idx, &mut tx_idx) else {
+        let Some(ood) = replay_ood(vs, log_n - initial_k) else {
             return false;
         };
         level_ood.push(ood);
     }
 
     // PoW grinding check for L0's query phase.
-    let mut nonce_idx = 0usize;
-    if nonce_idx >= proof.grinding_nonces.len() {
+    if vs.grind_check(config.grinding_bits[0] as u32).is_err() {
         return false;
     }
-    if !sponge.verify_pow(proof.grinding_nonces[nonce_idx], config.grinding_bits[0] as u32) {
-        return false;
-    }
-    nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
-    let (queries_0, raw_0) = sample_queries_ordered_with_raw(sponge, block_len_0, num_queries_0);
+    let (queries_0, raw_0) = sample_queries_ordered_with_raw(vs, block_len_0, num_queries_0);
     query_squeezes_out.push(raw_0);
-    let lambda_0 = sponge.sample();
+    let lambda_0 = vs.sample();
     let weights_0 = power_weights(lambda_0, num_queries_0);
     let sq_0 = sorted_unique_queries(&queries_0);
     if !verify_level_opens(
@@ -2206,13 +2078,9 @@ where
     let n1 = log_n - initial_k;
     let enforced_sum_0 = induce_sumcheck_enforced_sum(&ordered_rows_0, &r_lane_fold, &queries_0, &weights_0);
 
-    if tx_idx >= proof.sumcheck_transcript.len() {
+    let Some(intro_msg_0) = recv_msg(vs) else {
         return false;
-    }
-    let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    sponge.observe(intro_msg_0.u_0);
-    sponge.observe(intro_msg_0.u_2);
+    };
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
     let (ood_scalars_0, query_scalar_0) = batch_level_claims(
         lambda_0,
@@ -2253,7 +2121,6 @@ where
         log_msg_cols: n1 - config.level_ks[0],
         log_inv_rate: config.log_inv_rates[1],
     };
-    let mut next_root_idx = 1usize;
     let mut recursive_proof_idx = 0usize;
     let mut n_current = n1;
 
@@ -2264,48 +2131,28 @@ where
         if n_current < k_i {
             return false;
         }
-        let Some(level_rs) = replay_fold_rounds(
-            sponge,
-            proof,
-            k_i,
-            fold_bits(i + 1),
-            &mut fold_nonce_idx,
-            &mut tx_idx,
-            &mut t_r,
-            &mut running_quad,
-        ) else {
+        let Some(level_rs) = replay_fold_rounds(vs, k_i, fold_bits(i + 1), &mut t_r, &mut running_quad) else {
             return false;
         };
         ris.extend_from_slice(&level_rs);
         n_current -= k_i;
 
         if i == r - 1 {
-            if ood_idx != proof.ood_values.len() || fold_nonce_idx != proof.fold_grinding_nonces.len() {
+            let Ok(yr) = vs.next_scalars(1 << n_current) else {
                 return false;
-            }
-            let yr = &proof.final_proof.yr;
-            if yr.len() != 1 << n_current {
-                return false;
-            }
-            for v in yr {
-                sponge.observe(*v);
-            }
+            };
             // PoW grinding check for the last level's query phase.
-            if nonce_idx >= proof.grinding_nonces.len() {
+            if vs.grind_check(config.grinding_bits[i + 1] as u32).is_err() {
                 return false;
             }
-            if !sponge.verify_pow(proof.grinding_nonces[nonce_idx], config.grinding_bits[i + 1] as u32) {
-                return false;
-            }
-            // (last nonce: nonce_idx is not advanced past it)
 
             let num_queries_last = config.queries[i + 1];
-            let (queries_last, raw_last) = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_last);
+            let (queries_last, raw_last) = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_last);
             query_squeezes_out.push(raw_last);
             // Batching challenge for the LAST commitment, sampled after `yr`
             // was observed and the queries are fixed (mirror of the dense
             // verifier, so both stay in lockstep).
-            let lambda_last = sponge.sample();
+            let lambda_last = vs.sample();
             let weights_last = power_weights(lambda_last, num_queries_last);
             let sq_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
@@ -2325,12 +2172,9 @@ where
 
             let enforced_sum_last =
                 induce_sumcheck_enforced_sum(&ordered_rows_last, &level_rs, &queries_last, &weights_last);
-            let Some(&intro_msg_last) = proof.sumcheck_transcript.get(tx_idx) else {
+            let Some(intro_msg_last) = recv_msg(vs) else {
                 return false;
             };
-            tx_idx += 1;
-            sponge.observe(intro_msg_last.u_0);
-            sponge.observe(intro_msg_last.u_2);
             let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
             // No OOD at the final level: there is no new oracle to bind.
             let (_, query_scalar_last) = batch_level_claims(
@@ -2354,21 +2198,15 @@ where
             let yr_log_n = n_current;
             let mut ris_tail = Vec::with_capacity(yr_log_n);
             for j in 0..yr_log_n {
-                let ri = sponge.sample();
+                let ri = vs.sample();
                 t_r = running_quad.eval(ri);
                 ris_tail.push(ri);
                 if j + 1 < yr_log_n {
-                    let Some(&msg) = proof.sumcheck_transcript.get(tx_idx) else {
+                    let Some(msg) = recv_msg(vs) else {
                         return false;
                     };
-                    tx_idx += 1;
-                    sponge.observe(msg.u_0);
-                    sponge.observe(msg.u_2);
                     running_quad = RoundQuad::from_msg(msg, t_r);
                 }
-            }
-            if tx_idx != proof.sumcheck_transcript.len() {
-                return false;
             }
 
             let mut weight = F192::ZERO;
@@ -2407,19 +2245,16 @@ where
             let mut full_point = ris.clone();
             full_point.extend_from_slice(&ris_tail);
             weight += eval_b_at(&full_point);
-            return weight * mle_eval_ext(yr, &ris_tail) == t_r;
+            return weight * mle_eval_ext(&yr, &ris_tail) == t_r;
         }
 
-        if next_root_idx >= proof.recursive_roots.len() {
+        let Some(root_next) = recv_root(vs) else {
             return false;
-        }
-        let root_next = proof.recursive_roots[next_root_idx];
-        next_root_idx += 1;
-        observe_root(sponge, &root_next);
+        };
 
         let mut level_ood = Vec::with_capacity(ood_count(i + 2));
         for _ in 0..ood_count(i + 2) {
-            let Some(ood) = replay_ood(sponge, proof, n_current, &mut ood_idx, &mut tx_idx) else {
+            let Some(ood) = replay_ood(vs, n_current) else {
                 return false;
             };
             level_ood.push(ood);
@@ -2427,19 +2262,15 @@ where
         let ood_ris_start = ris.len();
 
         // PoW grinding check for this iteration's query phase.
-        if nonce_idx >= proof.grinding_nonces.len() {
+        if vs.grind_check(config.grinding_bits[i + 1] as u32).is_err() {
             return false;
         }
-        if !sponge.verify_pow(proof.grinding_nonces[nonce_idx], config.grinding_bits[i + 1] as u32) {
-            return false;
-        }
-        nonce_idx += 1;
 
         let num_queries_i = config.queries[i + 1];
-        let (queries_i, raw_i) = sample_queries_ordered_with_raw(sponge, prev.block_len(), num_queries_i);
+        let (queries_i, raw_i) = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_i);
         query_squeezes_out.push(raw_i);
         let sq_i = sorted_unique_queries(&queries_i);
-        let lambda_i = sponge.sample();
+        let lambda_i = vs.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
@@ -2463,13 +2294,9 @@ where
 
         let enforced_sum_i = induce_sumcheck_enforced_sum(&ordered_rows_i, &level_rs, &queries_i, &weights_i);
 
-        if tx_idx >= proof.sumcheck_transcript.len() {
+        let Some(intro_msg_i) = recv_msg(vs) else {
             return false;
-        }
-        let intro_msg_i = proof.sumcheck_transcript[tx_idx];
-        tx_idx += 1;
-        sponge.observe(intro_msg_i.u_0);
-        sponge.observe(intro_msg_i.u_2);
+        };
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
         let (ood_scalars_i, query_scalar_i) = batch_level_claims(
             lambda_i,
@@ -2578,6 +2405,8 @@ mod tests {
         target: F192,
         root: Hash,
         proof: WhirProof,
+        /// The transcript half: every scalar WHIR transmitted.
+        fs: fiat_shamir::transcript::Proof<()>,
     }
 
     fn prove_instance(log_n: usize, seed: u64) -> Instance {
@@ -2588,7 +2417,7 @@ mod tests {
         let point: Vec<F192> = (0..log_n).map(|_| rng.ext()).collect();
         let b_initial = build_eq_table_ext(&point);
         let target = inner_product_base_ext(&witness, &b_initial);
-        let mut ch = Sponge::new(b"whir-test", &[]);
+        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(b"whir-test", &[]);
         let proof = recursive_prover_with_basis(
             &pc,
             &witness,
@@ -2596,7 +2425,7 @@ mod tests {
             target,
             &pd.codeword,
             &pd.merkle_tree,
-            &mut ch,
+            &mut ps,
         );
         Instance {
             vc,
@@ -2606,17 +2435,18 @@ mod tests {
             target,
             root: cm.root,
             proof,
+            fs: ps.into_proof(),
         }
     }
 
-    fn verify_instance(inst: &Instance, proof: &WhirProof) -> bool {
-        let mut ch = Sponge::new(b"whir-test", &[]);
-        recursive_verifier_with_basis(&inst.vc, proof, &inst.b_initial, inst.target, &inst.root, &mut ch)
+    fn verify_instance(inst: &Instance, proof: &WhirProof, fs: &fiat_shamir::transcript::Proof<()>) -> bool {
+        let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", fs, &[]);
+        recursive_verifier_with_basis(&inst.vc, proof, &inst.b_initial, inst.target, &inst.root, &mut vs)
     }
 
     /// Succinct verify with the eq weight evaluated at the terminal fold point.
-    fn verify_succinct_instance(inst: &Instance, proof: &WhirProof) -> bool {
-        let mut ch = Sponge::new(b"whir-test", &[]);
+    fn verify_succinct_instance(inst: &Instance, proof: &WhirProof, fs: &fiat_shamir::transcript::Proof<()>) -> bool {
+        let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", fs, &[]);
         let point = &inst.point;
         recursive_verifier_with_basis_succinct(
             &inst.vc,
@@ -2625,15 +2455,20 @@ mod tests {
             inst.target,
             &inst.root,
             |fold_point| eq_eval(point, fold_point),
-            &mut ch,
+            &mut vs,
         )
     }
 
     /// Both verifiers on the same proof, asserting they agree; returns the
     /// shared verdict.
-    fn verify_both_agree(inst: &Instance, proof: &WhirProof, what: &str) -> bool {
-        let dense = verify_instance(inst, proof);
-        let succinct = verify_succinct_instance(inst, proof);
+    fn verify_both_agree(
+        inst: &Instance,
+        proof: &WhirProof,
+        fs: &fiat_shamir::transcript::Proof<()>,
+        what: &str,
+    ) -> bool {
+        let dense = verify_instance(inst, proof, fs);
+        let succinct = verify_succinct_instance(inst, proof, fs);
         assert_eq!(dense, succinct, "dense/succinct verdict split on {what}");
         dense
     }
@@ -2696,7 +2531,7 @@ mod tests {
             pc16.queries[0]
         ));
         let inst = prove_instance(18, 8);
-        assert!(verify_instance(&inst, &inst.proof), "honest proof rejected");
+        assert!(verify_instance(&inst, &inst.proof, &inst.fs), "honest proof rejected");
     }
 
     /// The succinct verifier accepts an honest proof at log_n = 18, the one
@@ -2706,7 +2541,7 @@ mod tests {
     fn succinct_roundtrips() {
         let inst = prove_instance(18, 8);
         assert!(
-            verify_succinct_instance(&inst, &inst.proof),
+            verify_succinct_instance(&inst, &inst.proof, &inst.fs),
             "succinct verifier rejected an honest proof at log_n=18"
         );
     }
@@ -2719,66 +2554,46 @@ mod tests {
     fn dense_and_succinct_agree() {
         for (log_n, seed) in [(12usize, 11u64), (16, 12)] {
             let inst = prove_instance(log_n, seed);
-            assert!(verify_both_agree(&inst, &inst.proof, "honest proof"));
+            assert!(verify_both_agree(&inst, &inst.proof, &inst.fs, "honest proof"));
 
             let mut rng = Rng::new(seed ^ 0xABCD);
-            type Tamper = fn(&mut WhirProof, u64);
+            // Openings ride the proof struct; every scalar rides the stream.
+            type Tamper = fn(&mut WhirProof, &mut fiat_shamir::transcript::Proof<()>, u64);
             let tampers: &[(&str, Tamper)] = &[
-                ("L0 opened row", |p, r| {
+                ("L0 opened row", |p, _, r| {
                     let row = (r as usize) % p.initial_proof.opened_rows.len();
                     p.initial_proof.opened_rows[row][0].0 ^= 1;
                 }),
-                ("final-level opened row", |p, r| {
+                ("final-level opened row", |p, _, r| {
                     let row = (r as usize) % p.final_proof.opened_rows.len();
                     p.final_proof.opened_rows[row][0].c0 ^= 1;
                 }),
-                ("sumcheck u_0", |p, r| {
-                    let idx = (r as usize) % p.sumcheck_transcript.len();
-                    p.sumcheck_transcript[idx].u_0.c0 ^= 1;
-                }),
-                ("sumcheck u_2", |p, r| {
-                    let idx = (r as usize) % p.sumcheck_transcript.len();
-                    p.sumcheck_transcript[idx].u_2.c1 ^= 1;
-                }),
-                ("yr value", |p, r| {
-                    let idx = (r as usize) % p.final_proof.yr.len();
-                    p.final_proof.yr[idx].c0 ^= 1;
-                }),
-                ("recursive root", |p, _| {
-                    p.recursive_roots[0][0] ^= 1;
-                }),
-                ("merkle proof node", |p, r| {
+                ("merkle proof node", |p, _, r| {
                     let idx = (r as usize) % p.initial_proof.merkle_proof.len();
                     p.initial_proof.merkle_proof[idx][0] ^= 1;
-                }),
-                ("grinding nonce", |p, _| {
-                    p.grinding_nonces[0] ^= 1;
                 }),
             ];
             for (what, tamper) in tampers {
                 let mut bad = inst.proof.clone();
-                tamper(&mut bad, rng.next_u64());
+                let mut bad_fs = inst.fs.clone();
+                tamper(&mut bad, &mut bad_fs, rng.next_u64());
                 assert!(
-                    !verify_both_agree(&inst, &bad, what),
+                    !verify_both_agree(&inst, &bad, &bad_fs, what),
                     "tampered {what} accepted at log_n={log_n}"
                 );
             }
-            // Fold-grinding nonce tamper (present only under the Secure
-            // profile's nonzero L0 fold grinding, i.e. log_n = 16 here).
-            if !inst.proof.fold_grinding_nonces.is_empty() {
-                let mut bad = inst.proof.clone();
-                bad.fold_grinding_nonces[0] ^= 1;
+            // Every transmitted scalar (sumcheck messages, level roots, OOD
+            // claims, `yr`, both kinds of grinding nonce) is one stream word, so
+            // one sweep covers what used to be five per-field tampers: a bound
+            // word re-rolls the challenges after it, a nonce word fails its PoW.
+            let n_stream = inst.fs.stream.len();
+            assert!(n_stream > 0, "WHIR transmitted nothing");
+            for idx in (0..n_stream).step_by(1 + n_stream / 24) {
+                let mut bad_fs = inst.fs.clone();
+                bad_fs.stream[idx] += F192::ONE;
                 assert!(
-                    !verify_both_agree(&inst, &bad, "fold-grinding nonce"),
-                    "tampered fold-grinding nonce accepted at log_n={log_n}"
-                );
-            }
-            if !inst.proof.ood_values.is_empty() {
-                let mut bad = inst.proof.clone();
-                bad.ood_values[0] += F192::ONE;
-                assert!(
-                    !verify_both_agree(&inst, &bad, "OOD value"),
-                    "tampered OOD value accepted at log_n={log_n}"
+                    !verify_both_agree(&inst, &inst.proof, &bad_fs, "stream word"),
+                    "tampered stream word {idx} accepted at log_n={log_n}"
                 );
             }
         }
@@ -2789,6 +2604,10 @@ mod tests {
         let a = prove_instance(12, 7);
         let b = prove_instance(12, 7);
         assert_eq!(a.proof, b.proof, "same inputs must yield identical proofs");
+        assert_eq!(
+            a.fs.stream, b.fs.stream,
+            "same inputs must yield an identical transcript"
+        );
     }
 
     /// The E-valued interleaved NTT with K-twiddles must act lane-wise on the
