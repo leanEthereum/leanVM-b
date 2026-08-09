@@ -1,11 +1,3 @@
-"""Dependency-free verifier for leanVM-b execution proofs.
-
-The command-line interface consumes a public statement JSON file and the
-project's bincode proof. No prover-side auxiliary data is accepted. The file is
-ordered along the verification path: arithmetic and hashing, proof transport,
-GKR/bus/AIR checks, VM layout, WHIR, Flock, and final orchestration.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
@@ -18,7 +10,7 @@ from typing import Any
 
 
 class VerificationError(Exception):
-    """The proof or public statement is malformed or inconsistent."""
+    """Invalid proof."""
 
 
 def require(condition: bool, message: str) -> None:
@@ -28,9 +20,9 @@ def require(condition: bool, message: str) -> None:
 
 # Field arithmetic and BLAKE3 -------------------------------------------------
 
-MASK32 = (1 << 32) - 1
-MASK64 = (1 << 64) - 1
-RING_SWITCH_SOUNDNESS_DEGREE = (1 << 31) + (1 << 15) + (1 << 7) + (1 << 3) + (1 << 1) + 1
+MASK32 = 2**32 - 1
+MASK64 = 2**64 - 1
+RING_SWITCH_SOUNDNESS_DEGREE = 2**31 + 2**15 + 2**7 + 2**3 + 2 + 1
 
 
 def _base_mul(left: int, right: int) -> int:
@@ -123,7 +115,7 @@ class F192:
 
     def inv(self) -> F192:
         require(bool(self), "division by zero in GF(2^192)")
-        return self ** ((1 << 192) - 2)
+        return self ** (2**192 - 2)
 
     def __truediv__(self, other: object) -> F192:
         rhs = self._coerce(other)
@@ -259,8 +251,6 @@ def blake3_hash(data: bytes) -> bytes:
             total >>= 1
         stack.append(cv)
         last_output = output
-    if last_output is None:
-        raise VerificationError("BLAKE3 produced no chunks")
     # For more than one chunk, combine the right edge with saved left subtrees.
     output = last_output
     right = _output_cv(output)
@@ -275,45 +265,43 @@ def digest_words(digest: bytes) -> tuple[int, int, int, int]:
     return unpack("<4Q", digest[:32])
 
 
-def build_eq(point: Sequence[F192]) -> list[F192]:
+def eq_kernel(point: Sequence[F192]) -> list[F192]:
     out = [ONE]
     for r in point:
         out = [v * (ONE + r) for v in out] + [v * r for v in out]
     return out
 
 
-def mle_eval(evals: Sequence[F192], point: Sequence[F192]) -> F192:
-    require(len(evals) == 1 << len(point), "multilinear table has the wrong size")
-    cur = list(evals)
+def multilinear_eval(mle: Sequence[F192], point: Sequence[F192]) -> F192:
+    require(len(mle) == 2 ** len(point), "multilinear table has the wrong size")
+    cur = list(mle)
     for r in point:
         cur = [cur[2 * i] * (ONE + r) + cur[2 * i + 1] * r for i in range(len(cur) // 2)]
     return cur[0]
 
 
-# Shared verification helpers -------------------------------------------------
-def interpolate(a: F192, b: F192, point: F192) -> F192:
-    """Evaluate the line through ``a`` and ``b`` at ``point``."""
-    return a + point * (a + b)
-
-
-def _ceil_log(value: int) -> int:
+def log_ceil(value: int) -> int:
     return max(0, (value - 1).bit_length())
 
 
 def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
-    """Stack 2^size blocks largest first at aligned offsets (doc sec:stacking).
+    """Place a block of 2^size at the next multiple of its own size, largest first.
 
-    The one layout rule, shared by the witness columns and the three leaf
-    vectors; a None size marks a virtual entry, which takes no room. Returns the
-    per-entry offsets and the log of the padded total.
+    Sorting by descending size is what makes every offset a multiple of the
+    block's own length, so a block occupies one subcube and its selector is the
+    high bits of its offset (doc sec:stacking). Ties keep input order, so both
+    sides derive the same layout from the sizes alone.
+
+    A None size is an entry that is committed elsewhere and takes no room here.
+    Returns the offset of each entry and the log2 of the padded total.
     """
     offsets = [0] * len(sizes)
     total = 0
     present = [(index, size) for index, size in enumerate(sizes) if size is not None]
     for index, size in sorted(present, key=lambda item: (-item[1], item[0])):
         offsets[index] = total
-        total += 1 << size
-    return offsets, _ceil_log(max(total, 1))
+        total += 2**size
+    return offsets, log_ceil(max(total, 1))
 
 
 def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
@@ -324,7 +312,7 @@ def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
     return result
 
 
-QUAD_NODES = (ZERO, ONE, GEN, GEN * GEN)
+QUAD_NODES = (ZERO, ONE, GEN, GEN ** 2)
 
 
 @cache
@@ -651,7 +639,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
             expected = products[0] + combine * (products[1] + combine * products[2])
             require(claim == expected, f"GKR layer {layer}: binary tail mismatch")
             challenge = transcript.sample()
-            values = [interpolate(tail[0], tail[1], challenge) for tail in tails]
+            values = [multilinear_eval(tail, [challenge]) for tail in tails]
             combine = transcript.sample()
             point = [challenge]
             layer -= 1
@@ -670,14 +658,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
         require(claim == expected, f"GKR layer {layer}: radix-four tail mismatch")
         low_challenge = transcript.sample()
         high_challenge = transcript.sample()
-        values = [
-            interpolate(
-                interpolate(tail[0], tail[1], low_challenge),
-                interpolate(tail[2], tail[3], low_challenge),
-                high_challenge,
-            )
-            for tail in tails
-        ]
+        values = [multilinear_eval(tail, [low_challenge, high_challenge]) for tail in tails]
         combine = transcript.sample()
         point = [low_challenge, high_challenge, *round_point]
         layer -= 2
@@ -705,12 +686,13 @@ class Coordinate:
     generator_column: int | None = None
     product: tuple[int, int, int] | None = None
     index: bool = False
-    public: tuple[F192, ...] | None = None
-    terms: tuple[Coordinate, ...] | None = None
+    public: tuple[F192, ...] = ()
+    terms: tuple[Coordinate, ...] = ()
 
     def __post_init__(self) -> None:
-        sources = [value for value in vars(self).values() if value is not None and value is not False]
-        require(len(sources) == 1, "a bus coordinate must have exactly one source")
+        optional = (self.constant, self.column, self.generator_column, self.product)
+        sources = sum(value is not None for value in optional) + self.index + bool(self.public) + bool(self.terms)
+        require(sources == 1, "a bus coordinate must have exactly one source")
 
 
 @dataclass(frozen=True)
@@ -756,7 +738,7 @@ N_TUPLE_BITS = 4
 
 
 def fingerprint_weights(alphas: Sequence[F192]) -> tuple[F192, ...]:
-    weights = [ONE] * (1 << N_TUPLE_BITS)
+    weights = [ONE] * 2**N_TUPLE_BITS
     for bit, a in enumerate(alphas):
         for x in range(len(weights)):
             weights[x] *= a if (x >> bit) & 1 else a + ONE
@@ -802,11 +784,9 @@ def _accumulate_form(coordinate: Coordinate, weight: F192, form: BusForm, base: 
     elif coordinate.product is not None:
         a, b, exponent = coordinate.product
         form.products.append((a - base, b - base, weight * _gpow(exponent)))
-    elif coordinate.terms is not None:
+    else:
         for term in coordinate.terms:
             _accumulate_form(term, weight, form, base)
-    else:
-        raise VerificationError("table bus block has a virtual coordinate")
 
 
 def _decompose_bus_side(
@@ -858,10 +838,7 @@ def _decompose_bus_side(
             elif coordinate.index:
                 value = index_mle(low)
             else:
-                public = coordinate.public
-                if public is None:
-                    raise VerificationError("bus coordinate has no value source")
-                value = mle_eval(public, low)
+                value = multilinear_eval(coordinate.public, low)
             fingerprint += weights[slot] * value
         result += selector_weight * (gamma + fingerprint)
 
@@ -1039,12 +1016,12 @@ def parse_field(value: object) -> F192:
     else:
         integer = None
     if integer is not None:
-        require(0 <= integer < 1 << 192, f"field element is out of range: {value!r}")
+        require(0 <= integer < 2**192, f"field element is out of range: {value!r}")
         return F192(integer & MASK64, integer >> 64 & MASK64, integer >> 128)
     if isinstance(value, (list, tuple)) and len(value) == 3:
         limbs = tuple(value)
         require(
-            all(isinstance(limb, int) and not isinstance(limb, bool) and 0 <= limb < 1 << 64 for limb in limbs),
+            all(isinstance(limb, int) and not isinstance(limb, bool) and 0 <= limb < 2**64 for limb in limbs),
             f"field limbs must be 64-bit unsigned integers: {value!r}",
         )
         return F192(*limbs)
@@ -1053,7 +1030,7 @@ def parse_field(value: object) -> F192:
 
 def _u32(value: object, name: str) -> int:
     require(
-        isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 1 << 32,
+        isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2**32,
         f"{name} must be a 32-bit unsigned integer",
     )
     return value
@@ -1137,7 +1114,7 @@ class Program:
         require(bool(operations) and not len(operations) & (len(operations) - 1), "program length must be a nonzero power of two")
         # One of the public instance caps the counting arguments rest on (doc
         # sec:bytecode, sec:memchan): reject an oversized announcement outright.
-        require(len(operations) <= 1 << MAX_LOG_BYTECODE, "program exceeds the bytecode cap")
+        require(len(operations) <= 2**MAX_LOG_BYTECODE, "program exceeds the bytecode cap")
         return cls(operations)
 
     def digest(self) -> tuple[int, int, int, int]:
@@ -1510,7 +1487,7 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
     if coordinate.product is not None:
         a, b, exponent = coordinate.product
         return _prod(base + a, base + b, exponent)
-    if coordinate.terms is not None:
+    if coordinate.terms:
         return _sum(_offset_coordinate(term, base) for term in coordinate.terms)
     return coordinate
 
@@ -1653,9 +1630,9 @@ def _reduced_rate(log_inv_rate: int, message_log: int) -> float:
 def _johnson_parameters(log_inv_rate: int, message_log: int, interleaved_log: int, level: int) -> tuple[int, int]:
     rho = _reduced_rate(log_inv_rate, message_log)
     root_rho = sqrt(rho)
-    block_length = 1 << (message_log + log_inv_rate)
+    block_length = 2 ** (message_log + log_inv_rate)
     variables = message_log + interleaved_log
-    best: tuple[int, int] | None = None
+    best = (2**62, 0)
     for theorem_m in range(3, 4097):
         eta = root_rho / theorem_m
         while ceil(root_rho / eta) > theorem_m:
@@ -1691,11 +1668,8 @@ def _johnson_parameters(log_inv_rate: int, message_log: int, interleaved_log: in
         algebraic_bits = 192.0 - log2(max(RING_SWITCH_SOUNDNESS_DEGREE, queries + ood, 2)) - list_log
         if ood_bits + 1e-12 < 128.0 or algebraic_bits + 1e-12 < 128.0:
             continue
-        candidate = (queries, ood)
-        if best is None or queries < best[0]:
-            best = candidate
-    if best is None:
-        raise VerificationError("no secure WHIR configuration")
+        if queries < best[0]:
+            best = (queries, ood)
     return best
 
 
@@ -1789,7 +1763,7 @@ def authenticate_rows(
 
 def sample_queries(transcript: Transcript, block_length: int, count: int) -> list[int]:
     depth = block_length.bit_length() - 1
-    require(block_length == 1 << depth and 0 < depth <= 192, "invalid query domain")
+    require(block_length == 2**depth and 0 < depth <= 192, "invalid query domain")
     per_word = 192 // depth
     result: list[int] = []
     while len(result) < count:
@@ -1821,7 +1795,7 @@ def _enforced_sum(
     folds: Sequence[F192],
     query_weights: Sequence[F192],
 ) -> F192:
-    lane_weights = build_eq(folds)
+    lane_weights = eq_kernel(folds)
     require(len(query_weights) == len(rows), "WHIR query-weight count mismatch")
     total = ZERO
     for query_weight, row in zip(query_weights, rows, strict=True):
@@ -1953,7 +1927,7 @@ def verify_whir(
         pending_ood: list[tuple[tuple[F192, ...], int, F192, QuadraticMessage]] = []
         if final_level:
             residual = proof.final_proof.residual
-            require(len(residual) == 1 << message_log, "wrong WHIR residual length")
+            require(len(residual) == 2**message_log, "wrong WHIR residual length")
             for value in residual:
                 transcript.observe(value)
         else:
@@ -1968,7 +1942,7 @@ def verify_whir(
                 pending_ood.append((point, len(folds), value, next_quad(value)))
 
         transcript.check_pow(proof.grinding_nonces[level], config.query_grinding_bits[level])
-        block_length = 1 << (message_log + level_rate)
+        block_length = 2 ** (message_log + level_rate)
         queries = sample_queries(transcript, block_length, config.queries[level])
         # One batching challenge per level, drawn once every claim it batches is
         # fixed: the OOD claims above and these query positions.
@@ -1986,7 +1960,7 @@ def verify_whir(
                 block_length,
                 queries,
                 opened.opened_rows,
-                1 << fold_count,
+                2**fold_count,
                 opened.merkle_proof,
                 level == 0,
             )
@@ -2036,7 +2010,7 @@ def verify_whir(
                 for expected, actual in zip(ood.point[fixed_coordinates:], tail_folds, strict=True):
                     scale *= ONE + expected + actual
                 weight += scale
-            terminal = weight * mle_eval(residual, tail_folds)
+            terminal = weight * multilinear_eval(residual, tail_folds)
             require(terminal == running_target, "WHIR terminal check failed")
             return
         current_root = next_root
@@ -2084,7 +2058,7 @@ FIXED_CHALLENGES = (
 
 def quirky_weights(skip_point: F192, rest: Sequence[F192]) -> list[F192]:
     skip = lagrange_weights(PHI[:PACKED_BITS], skip_point)
-    tail = build_eq(rest)
+    tail = eq_kernel(rest)
     return [a * b for b in tail for a in skip]
 
 
@@ -2200,8 +2174,8 @@ def _ring_weight(
 ) -> F192:
     """Evaluate the transparent ring-switch weight at one query point."""
     require(len(suffix_point) == len(query), "ring-switch query dimension mismatch")
-    suffix_tensor = build_eq(suffix_point)
-    query_tensor = build_eq(query)
+    suffix_tensor = eq_kernel(suffix_point)
+    query_tensor = eq_kernel(query)
     return sum(
         (
             query_weight * _linear_map(suffix_weight, coordinate_weights)
@@ -2305,7 +2279,7 @@ def verify_lincheck(
         challenges.append(challenge)
     partial = tuple(transcript.scalars(PACKED_BITS))
     rounds = tuple(reversed(challenges))
-    rest_weights = build_eq(rounds)
+    rest_weights = eq_kernel(rounds)
     column_weights = [value * weight for weight in rest_weights for value in partial]
     terminal = blake3_bilinear(alpha, inner_weights, column_weights)
     terminal += beta * column_weights[BLAKE3_CONSTANT_COLUMN]
@@ -2330,7 +2304,7 @@ def blake3_bilinear(
     column_weights: Sequence[F192],
 ) -> F192:
     """Evaluate the two BLAKE3 R1CS matrix forms by walking the circuit."""
-    size = 1 << FLOCK_LOG_BITS
+    size = 2**FLOCK_LOG_BITS
     require(len(row_weights) == size, "bad BLAKE3 row-weight vector")
     require(len(column_weights) == size, "bad BLAKE3 column-weight vector")
     constant = BLAKE3_CONSTANT_COLUMN
@@ -2498,7 +2472,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_limbs = transcript.scalars(3)
     public_point = [ZERO] * layout.placements[MEM_0].variables
     public_point[0] = public_challenge
-    public_value = interpolate(public_input[0], public_input[1], public_challenge)
+    public_value = multilinear_eval(public_input, [public_challenge])
     require(
         public_limbs[0] + Y * public_limbs[1] + Y * Y * public_limbs[2] == public_value,
         "public input limbs are off the line",
