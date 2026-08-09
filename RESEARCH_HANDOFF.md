@@ -4,7 +4,7 @@ Date: 2026-08-08
 
 ## Purpose
 
-This branch preserves the exact measured seven-component research lineage and currently integrates upstream `main` at `ffc1a6af29f87ea428d1f889de4fd161537c9752`. The two-kernel performance campaign remains bound to the earlier integration at `e9cd16d49ef33909d9732778451ec73fbbedfd4a`. It is intended for technical review and current-source reproduction. It is not proposed as a merge-ready production patch.
+This branch preserves the exact measured seven-component research lineage, integrates upstream `main` at `4982d7eb9972c6ea9fdeba52787c6af0401c4824`, and contains a production-only extraction of the validated public-MLE shared-owner path. The two-kernel performance campaign remains bound to the earlier integration at `e9cd16d49ef33909d9732778451ec73fbbedfd4a`. The branch is intended for technical review and current-source reproduction. Although the shared-owner extraction has no runtime research selector, the complete branch is still a research handoff rather than a merge-ready production patch.
 
 ## Source identities
 
@@ -18,7 +18,9 @@ This branch preserves the exact measured seven-component research lineage and cu
 | Upstream integrated for the two-kernel campaign | `e9cd16d49ef33909d9732778451ec73fbbedfd4a` |
 | Measured-source integration merge | `ae08017b89fdc03bfa0af31d31b08bf3c11eaa9d` |
 | Current-source two-kernel measured candidate | `a5477b369ee44ef7aea91b0799f7b920b349632f` |
-| Current upstream integration | `ffc1a6af29f87ea428d1f889de4fd161537c9752` |
+| Public-MLE shared-owner measured candidate | `e5d33ab1e756166daa88c283cd5e089bc1668693` |
+| Current upstream integration | `4982d7eb9972c6ea9fdeba52787c6af0401c4824` |
+| Shared-owner production extraction | `7ed548795bc9f04a65010d9705f2a5c980828c61`, finalized by `04ba272b14f406b5b629b58de4476983dd8d824b` |
 
 The earlier six-component all-off/on campaign binds to `b61a0ee`; the incremental L0/seven-component campaign binds to `256928f`. Neither binds to the integration merge. The integration merge initially established source compatibility and test acceptance only. The separate current-source campaign described below binds to descendant `a5477b3` and measures only the two additional kernels.
 
@@ -74,6 +76,32 @@ Before relabeling the earlier seven-component medians as a current-main result, 
 The 2026-08-08 integration of `f7b4330` also includes `53631e8`, which replaced the per-query equality challenge with one power-weight batching challenge per PCS level. The conflict resolution keeps that current transcript and verifier protocol while retaining the research timing spans, direct-fold path and hardened L0 induction selector. Consequently, serialized proof hashes and performance receipts from before `53631e8` remain evidence only for their named frozen commits. They are not current-head proof-byte or performance claims.
 
 The later `ffc1a6a` integration replaces the Bus tuple's univariate power fingerprint with multilinear equality weights and aligns the bytecode deferred claim with those four fingerprint challenges. This changes the native, Python and recursive verifier transcript. The retained fixture and proof-artifact envelopes still use wire version 2, but that version identifies their encoding rather than protocol compatibility. Fixtures and artifacts produced before `ffc1a6a` must not be reused on the merged head; generate fresh inputs and outputs instead.
+
+The current `4982d7e` integration additionally deduplicates the Flock ring-switch message, transports and validates all three public-input limbs, and removes redundant skip challenges and reconstructed-AB checking. These are protocol changes despite one source-changing commit carrying a documentation-style subject. The merge retains the upstream pre-bound ring-switch semantics and all native, Python and recursive verifier changes while preserving the Gate-0 timing span. Proofs and fixtures from before this integration remain historical artifacts only.
+
+## Current-head public-MLE shared-owner result
+
+The production extraction builds the nine public bytecode columns once as immutable `Arc<[F64]>` owners and shares them across the Bus push and pull layouts. The prover authorizes reuse only when block index, tuple slot, common bytecode dimension, table length and allocation identity all agree and no public coordinate appears on the count side. If any check fails, it uses the original scalar evaluations. The verifier, transcript and proof format are unchanged. The experimental ownership selector, legacy-owner duplication, diagnostics, CLI option and campaign plumbing are not present in the production path.
+
+A current-protocol N2 system campaign measured the mechanism on composed experimental commit `e5d33ab1e756166daa88c283cd5e089bc1668693` (tree `25175fd1b1edfbeb8c94cb4c0768d367ad9a9c2d`), with upstream `4982d7e` as an ancestor. The shared arm reused nine public-column evaluations across both decompositions and the bytecode claim; the control arm performed 27 evaluations.
+
+The canonical workload was two children, eight BLAKE3 hashes per child, 64,000 iterations per child and inverse-rate log 2. It ran on an AMD EPYC 9534 with CPUs 8 through 15 pinned to NUMA node 0 under inherited memory policy. One excluded `CH` pilot preceded the fixed measured order `(CHHC HCCH) × 5`, giving 40 fresh measured processes and 20 adjacent pairs with no retries, replacements, adaptive extension or outlier deletion.
+
+| Preregistered endpoint | Result |
+|---|---:|
+| Favorable complete-boundary pairs | 20 / 20 |
+| Paired median complete-boundary reduction | 69.5405 ms (1.689693%) |
+| Paired median Bus reduction | 52.5209925 ms |
+| Boundary-delta MAD | 25.7795 ms |
+| Material non-Bus regression | None |
+| Median sampled cgroup footprint, shared minus control | -29,503,488 B (-28.14 MiB; -0.3520%) |
+| Proof exactness and verification | 44 / 44 byte-identical at 229,124 B; accepted |
+
+All eight preregistered promotion gates passed. The final campaign seal covers 1,110 entries with SHA-256 `aa36dc23b4a0812cf8436bd800188dc54aec2aa89a4128012eb3fcdcb2c3b668`. An immutable repair corrected a post-run validator's platform-contract projection without changing campaign data or a decision rule; the repaired validator and a separate raw reconstruction both reproduced the source identity, exact proofs, V5 sampler evidence, pair statistics, gates and seals.
+
+The timing result belongs to `e5d33ab`, not bare upstream `4982d7e` and not automatically to this selector-free extraction. The experimental flag-absent arm exercised the intended production path, so the campaign is strong mechanism-transfer evidence, but the extracted PR commit has not received a separate performance campaign. The result is limited to single-process N2 on one host; it does not establish N4/N8 scaling, concurrent-prover admission, cross-host portability or completion of the full aggregation objective. Its memory endpoint is a 25 ms whole-cgroup sample, not an exact per-process peak, and CPU placement was proven without hard memory binding.
+
+On the selector-free integrated branch, `cargo testall`, `cargo clippyall`, `cargo fmt --all -- --check`, `cargo docall`, Ruff lint for the Python verifier and the complete LaTeX build pass locally. GitHub's Rust and documentation workflows require a leanEthereum maintainer to approve execution for this fork PR; no hosted result is claimed here.
 
 ## Current-source two-kernel result
 
