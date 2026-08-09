@@ -474,16 +474,25 @@ pub(crate) fn induce_sumcheck_poly_via_ntt_base(
     (coeffs, enforced_sum)
 }
 
-/// The original's cost-based dispatch heuristic, verbatim: the dense path
-/// costs `O(n_queries * 2^log_msg_cols)`, the NTT path one pass over the
-/// `2^log_block` codeword domain, so the NTT wins exactly when
-/// `n_queries > 4 * 2^log_inv_rate * log_block`. Same constants as the
-/// original so both field versions choose the same strategy at the same
-/// shapes.
+/// Queries per blowup at which the sparse NTT overtakes the dense expansion.
+/// Both paths scale with the message, so their ratio depends on
+/// `n_queries / 2^log_inv_rate` alone: one constant, no size term. The original
+/// heuristic also charged the NTT `log_block` passes, which put its threshold an
+/// order of magnitude high and every rate-2 and rate-3 shape on the slow path;
+/// timing the two at `log_msg_cols` 18 to 21 on both AVX512 and NEON puts the
+/// crossover at `4.4·2^rate` to `6.5·2^rate` warm and no higher than `7.8·2^rate`
+/// on cold pages, so `8` is above every one of them and can only ever cost a win,
+/// never mis-pick the NTT. Rate 3 supplies 9.4 and so clears it by the least; it
+/// was measured end to end rather than trusted. The `>= 12` floor is the
+/// original's: nothing here measured a smaller message, and it is what keeps the
+/// `log_n = 16` roundtrip dense, where the expansion is the faster path anyway.
+const NTT_QUERIES_PER_BLOWUP: usize = 8;
+
+/// Cost-based dispatch: the NTT overtakes the dense expansion once a level
+/// opens more than [`NTT_QUERIES_PER_BLOWUP`] queries per unit of blowup.
 #[inline]
 pub(crate) fn induce_use_ntt_heuristic(log_msg_cols: usize, log_inv_rate: usize, n_queries: usize) -> bool {
-    let log_block = log_msg_cols + log_inv_rate;
-    log_msg_cols >= 12 && n_queries > 4 * (1usize << log_inv_rate) * log_block.max(1)
+    log_msg_cols >= 12 && n_queries > NTT_QUERIES_PER_BLOWUP * (1usize << log_inv_rate)
 }
 
 /// Dispatch between the dense [`induce_sumcheck_poly`] and the sparse
