@@ -56,7 +56,7 @@ use primitives::multilinear::eq_eval;
 use serde::{Deserialize, Serialize};
 
 use super::pack::PACKING_WIDTH;
-use super::ring_switch::{self, RingSwitchProof};
+use super::ring_switch;
 use super::whir::{ProverConfig, VerifierConfig};
 use super::whir::{
     ProverData, WhirProof, build_eq_table_ext, recursive_prover_with_basis,
@@ -150,18 +150,18 @@ pub struct RingSwitchVerify {
     pub offset: usize,
     /// log2 of q_flock's length in F64 words.
     pub qflock_vars: usize,
-    /// Leading ring-switch messages reconstructed from earlier transcript data.
+    /// Leading ring-switch messages reconstructed from earlier stream data.
     /// Their claim values were derived from the same bound vectors, so they are
-    /// used without a redundant check, absorption, or copy in [`BatchOpeningProof`].
-    pub reconstructed: Vec<RingSwitchProof>,
+    /// used without being re-sent or re-checked.
+    pub reconstructed: Vec<Vec<F192>>,
     pub claims: Vec<RingSwitchClaim>,
 }
 
-/// Batched stacked opening proof: the ring-switch messages not reconstructed
-/// from earlier transcript data, plus one WHIR proof over the combined claim.
+/// Batched stacked opening proof: the Merkle half of one WHIR proof over the
+/// combined claim. Every scalar the opening transmits, ring-switch messages
+/// included, rides the transcript stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOpeningProof {
-    pub ring_switches: Vec<RingSwitchProof>,
     pub whir: WhirProof,
 }
 
@@ -339,10 +339,9 @@ pub fn open_batch_mixed_whir_stacked(
     };
 
     assert!(ring.prebound <= ring.claims.len());
-    // 1. Ring-switch reduction: prepare every claim's s_hat_v, absorbing all
-    //    but the leading pre-bound claims, then sample one shared linear map.
+    // 1. Ring-switch reduction: prepare every claim's s_hat_v, sending all but
+    //    the leading pre-bound claims, then sample one shared linear map.
     let qflock = &stack[ring.offset..ring.offset + qflock_len];
-    let mut rs_proofs = Vec::with_capacity(ring.claims.len());
     let mut rs_states = Vec::with_capacity(ring.claims.len());
     for (i, claim) in ring.claims.iter().enumerate() {
         assert_eq!(
@@ -350,7 +349,7 @@ pub fn open_batch_mixed_whir_stacked(
             ring.qflock_vars,
             "ring-switch suffix point must have qflock_vars coords"
         );
-        let (proof, state) = ring_switch::prove_prepare(
+        let state = ring_switch::prove_prepare(
             qflock,
             &claim.prefix_weights,
             &claim.suffix_point,
@@ -359,7 +358,6 @@ pub fn open_batch_mixed_whir_stacked(
             i < ring.prebound,
             ps,
         );
-        rs_proofs.push(proof);
         rs_states.push(state);
     }
     let map_challenges = ring_switch::sample_map_challenges(ps);
@@ -421,10 +419,7 @@ pub fn open_batch_mixed_whir_stacked(
         &prover_data.merkle_tree,
         ps,
     );
-    BatchOpeningProof {
-        ring_switches: rs_proofs,
-        whir,
-    }
+    BatchOpeningProof { whir }
 }
 
 // ---------------------------------------------------------------------------
@@ -458,30 +453,19 @@ pub fn verify_opening_batch_mixed_whir_stacked(
         assert_eq!(claim.prefix_weights.len(), PACKING_WIDTH);
         assert_eq!(claim.suffix_point.len(), qflock_vars);
     }
-    // `proof` is attacker-controlled (deserialized): validate its shape and
-    // reject rather than panicking (`verify_succinct` asserts the
-    // s_hat_v length internally).
-    if ring.reconstructed.len() + proof.ring_switches.len() != n_rs
-        || ring
-            .reconstructed
-            .iter()
-            .chain(&proof.ring_switches)
-            .any(|rs| rs.s_hat_v.len() != PACKING_WIDTH)
-    {
+    if ring.reconstructed.len() > n_rs || ring.reconstructed.iter().any(|s| s.len() != PACKING_WIDTH) {
         return None;
     }
-    let rs_proofs: Vec<&RingSwitchProof> = ring.reconstructed.iter().chain(&proof.ring_switches).collect();
 
-    // 1. Ring-switch succinct verify: each reconstructed leading vector was
-    //    already bound and its claim value was derived from that same vector.
-    //    Check and absorb only transmitted messages, then sample one shared map.
-    for (i, (claim, rs_proof)) in ring.claims.iter().zip(&rs_proofs).enumerate() {
-        if i < ring.reconstructed.len() {
-            continue;
-        }
-        if ring_switch::verify_prepare(claim.value, &claim.prefix_weights, rs_proof, vs).is_err() {
+    // 1. Ring-switch verify: each reconstructed leading vector was already bound
+    //    and its claim value was derived from that same vector, so only the
+    //    remaining ones are read off the stream. Then sample one shared map.
+    let mut rs_proofs = ring.reconstructed.clone();
+    for claim in ring.claims.iter().skip(ring.reconstructed.len()) {
+        let Ok(s_hat_v) = ring_switch::verify_prepare(claim.value, &claim.prefix_weights, vs) else {
             return None;
-        }
+        };
+        rs_proofs.push(s_hat_v);
     }
     let map_challenges = ring_switch::sample_map_challenges(vs);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
@@ -744,16 +728,10 @@ mod tests {
             "tampered ring-switch value accepted"
         );
 
-        // Tampered s_hat_v: breaks the claim check.
-        let mut bad_proof = inst.proof.clone();
-        bad_proof.ring_switches[0].s_hat_v[17].c0 ^= 1;
-        assert!(
-            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof, &inst.fs),
-            "tampered s_hat_v accepted"
-        );
-
-        // Tampered WHIR scalars: they all ride the transcript stream now.
-        for idx in [0usize, inst.fs.stream.len() - 1] {
+        // Every scalar the opening sends rides the stream: the leading 64 are
+        // the transmitted s_hat_v (caught by the claim check), the rest are
+        // WHIR's. Tampering any of them must be rejected.
+        for idx in [17usize, inst.fs.stream.len() - 1] {
             let mut bad_fs = inst.fs.clone();
             bad_fs.stream[idx] += F192::ONE;
             assert!(
@@ -762,13 +740,12 @@ mod tests {
             );
         }
 
-        // Proof-shape tamper: dropping the ring-switch message must return
-        // false (not panic).
-        let mut bad_proof = inst.proof.clone();
-        bad_proof.ring_switches[0].s_hat_v.pop();
+        // Shape tamper: a truncated stream must return false, not panic.
+        let mut short_fs = inst.fs.clone();
+        short_fs.stream.pop();
         assert!(
-            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_proof, &inst.fs),
-            "short s_hat_v accepted"
+            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.proof, &short_fs),
+            "short stream accepted"
         );
     }
 

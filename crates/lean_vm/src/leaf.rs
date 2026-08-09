@@ -462,25 +462,15 @@ fn decompose_prove(
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
     let mut fresh_iter = jobs.iter().zip(vals.iter());
-    decompose_formula(
-        blocks,
-        lay,
-        zeta,
-        w,
-        gamma,
-        owners,
-        forms,
-        claims,
-        |col, zeta_lo| {
-            let (&(jc, jk), &v) = fresh_iter
-                .next()
-                .expect("job enumeration matches decompose_formula's col_val order");
-            debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
-            debug_assert_eq!(v, mle_eval(cols[col], zeta_lo), "job/coord order drift");
-            ps.add_scalar(v);
-            Ok(v)
-        },
-    )
+    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |col, zeta_lo| {
+        let (&(jc, jk), &v) = fresh_iter
+            .next()
+            .expect("job enumeration matches decompose_formula's col_val order");
+        debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
+        debug_assert_eq!(v, mle_eval(cols[col], zeta_lo), "job/coord order drift");
+        ps.add_scalar(v);
+        Ok(v)
+    })
     .expect("prover decomposition is infallible")
 }
 
@@ -687,7 +677,13 @@ pub fn prove_balance(
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
     // every table block becomes a form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
+    let sides = sides(
+        [push, pull, count],
+        [&push_lay, &pull_lay, &count_lay],
+        &w,
+        &count_w,
+        gamma,
+    );
     // Each table's columns at ζ[..τ], computed once and shared by the three sides
     // (a form's linear part factors through them). Nothing here travels, neither the
     // evaluations nor any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
@@ -840,7 +836,13 @@ pub fn verify_balance(
     // here, the batch's target being what pins it, so no table column is opened at ζ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
-    let sides = sides([push, pull, count], [&push_lay, &pull_lay, &count_lay], &w, &count_w, gamma);
+    let sides = sides(
+        [push, pull, count],
+        [&push_lay, &pull_lay, &count_lay],
+        &w,
+        &count_w,
+        gamma,
+    );
     let mut totals = [F192::ZERO; 3];
     for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
         let framework = decompose_verify(

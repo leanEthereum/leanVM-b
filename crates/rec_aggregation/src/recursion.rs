@@ -1099,16 +1099,6 @@ fn gen_verify(
             v.resize(stream_cap, F192::ZERO);
             v
         }),
-        ("rs_shatv".to_string(), {
-            // Only C's 64-entry ring-switch slice travels in the opening. The
-            // guest reconstructs AB from lincheck's already-read z_partial.
-            let lig = &proof.openings[0];
-            let mut v = Vec::new();
-            for rsw in &lig.ring_switches {
-                v.extend_from_slice(&rsw.s_hat_v);
-            }
-            v
-        }),
         ("bytecode_val".to_string(), bcv),
         ("matpart".to_string(), vec![matpart]),
         ("merkle_leaf_rows".to_string(), lrows_flat),

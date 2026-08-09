@@ -71,10 +71,9 @@
 //!
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 
-use fiat_shamir::transcript::Challenger;
+use fiat_shamir::transcript::{Challenger, Receiver, Transmitter};
 use primitives::bits::transpose_8x8_bits;
 use primitives::field::{F64, F192};
-use serde::{Deserialize, Serialize};
 
 use super::pack::PACKING_WIDTH;
 use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
@@ -169,12 +168,6 @@ pub fn sample_map_challenges(ch: &mut impl Challenger) -> [F192; COMPOSITION_SHI
 // ---------------------------------------------------------------------------
 // Transcript helpers: every 24-byte pattern is a valid F192.
 // ---------------------------------------------------------------------------
-
-fn observe_ext_slice(ch: &mut impl Challenger, values: &[F192]) {
-    for &e in values {
-        ch.observe_scalar(e);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Building blocks
@@ -532,12 +525,6 @@ pub fn fold_ext_elems(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Ve
 // Prover / verifier of the reduction
 // ---------------------------------------------------------------------------
 
-/// The prover message: the 64 bit-slice MLEs at the suffix point.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RingSwitchProof {
-    pub s_hat_v: Vec<F192>,
-}
-
 /// What both prover and (dense) verifier compute as a result of the
 /// reduction: the transparent weight vector and the WHIR target.
 #[cfg(test)]
@@ -560,6 +547,8 @@ pub struct RingSwitchVerifierOutput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
     ClaimMismatch,
+    /// The stream ran out before the 64 `s_hat_v` words were read.
+    Truncated,
 }
 
 /// Prover side of the reduction.
@@ -574,10 +563,10 @@ pub enum VerifyError {
 /// - `claim`: the claimed value `sum_i prefix_weights[i] * s_hat_v[i]`;
 ///   asserted against the witness (an honest caller always passes a
 ///   consistent claim, so this is a cheap integration check, 64 E-mults).
-/// - `ch` for sampling the row-batching map challenges.
+/// - `ps` to send `s_hat_v` and sample the row-batching map challenges.
 ///
-/// Output: the proof message `s_hat_v` (64 E values) plus the WHIR
-/// inputs `(rs_eq_ind, sumcheck_claim)`; open with
+/// Output: the message `s_hat_v` (64 E values, sent on the transcript) plus
+/// the WHIR inputs `(rs_eq_ind, sumcheck_claim)`; open with
 /// `recursive_prover_with_basis(config, packed, rs_eq_ind, sumcheck_claim, ..)`.
 #[cfg(test)]
 pub fn prove(
@@ -586,8 +575,8 @@ pub fn prove(
     suffix_point: &[F192],
     claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
-    ch: &mut impl Challenger,
-) -> (RingSwitchProof, RingSwitchOutput) {
+    ps: &mut impl Transmitter,
+) -> (Vec<F192>, RingSwitchOutput) {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
         packed_witness.len(),
@@ -599,19 +588,19 @@ pub fn prove(
     // STACKED opener instead calls `prove_prepare` for every claim, samples one
     // shared map after all messages are bound, then `prove_finish` per claim
     // (matching the extension-field opener + the recursion guest).
-    let (proof, state) = prove_prepare(
+    let state = prove_prepare(
         packed_witness,
         prefix_weights,
         suffix_point,
         claim,
         precomputed_s_hat_v,
         false,
-        ch,
+        ps,
     );
-    let challenges = sample_map_challenges(ch);
+    let challenges = sample_map_challenges(ps);
     let coordinate_weights = build_coordinate_weights(&challenges);
     let out = prove_finish(&state, &coordinate_weights);
-    (proof, out)
+    (state.s_hat_v, out)
 }
 
 /// Prover-side scratch carried from [`prove_prepare`] into finalization
@@ -623,10 +612,10 @@ pub struct RingSwitchProveState {
     eq_hi: Vec<F192>,
 }
 
-/// Phase 1 of the ring-switch prover: compute and check `s_hat_v`, then absorb
-/// it unless an earlier protocol phase already bound the same values. Returns
-/// the proof and scratch for finalization. The caller samples the possibly
-/// shared map afterwards.
+/// Phase 1 of the ring-switch prover: compute and check `s_hat_v`, then send it
+/// unless an earlier protocol phase already put the same values on the stream
+/// (`prebound`, e.g. lincheck's `z_partial`). Returns the scratch for
+/// finalization. The caller samples the possibly shared map afterwards.
 pub fn prove_prepare(
     packed_witness: &[F64],
     prefix_weights: &[F192],
@@ -634,8 +623,8 @@ pub fn prove_prepare(
     claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
     prebound: bool,
-    ch: &mut impl Challenger,
-) -> (RingSwitchProof, RingSwitchProveState) {
+    ps: &mut impl Transmitter,
+) -> RingSwitchProveState {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
         packed_witness.len(),
@@ -661,14 +650,9 @@ pub fn prove_prepare(
         "ring_switch::prove: supplied claim does not match the witness"
     );
     if !prebound {
-        observe_ext_slice(ch, &s_hat_v);
+        ps.add_scalars(&s_hat_v);
     }
-    (
-        RingSwitchProof {
-            s_hat_v: s_hat_v.clone(),
-        },
-        RingSwitchProveState { s_hat_v, eq_lo, eq_hi },
-    )
+    RingSwitchProveState { s_hat_v, eq_lo, eq_hi }
 }
 
 /// Phase 2 of the ring-switch prover: given the shared coordinate weights, produce
@@ -693,23 +677,16 @@ pub fn verify(
     claim: F192,
     prefix_weights: &[F192],
     suffix_point: &[F192],
-    proof: &RingSwitchProof,
-    ch: &mut impl Challenger,
+    vs: &mut impl Receiver,
 ) -> Result<RingSwitchOutput, VerifyError> {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
-    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
 
-    // No domain label (matches `prove`'s single-claim wrapper + the extension-field opener).
-    observe_ext_slice(ch, &proof.s_hat_v);
+    let s_hat_v = verify_prepare(claim, prefix_weights, vs)?;
 
-    if claim_check(prefix_weights, &proof.s_hat_v) != claim {
-        return Err(VerifyError::ClaimMismatch);
-    }
-
-    let challenges = sample_map_challenges(ch);
+    let challenges = sample_map_challenges(vs);
     let coordinate_weights = build_coordinate_weights(&challenges);
 
-    let s_hat_u = transpose_s_hat(&proof.s_hat_v);
+    let s_hat_u = transpose_s_hat(&s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, &coordinate_weights);
 
     let suffix_tensor = build_eq_table_ext(suffix_point);
@@ -729,38 +706,32 @@ pub fn verify(
 pub fn verify_succinct(
     claim: F192,
     prefix_weights: &[F192],
-    proof: &RingSwitchProof,
-    ch: &mut impl Challenger,
+    vs: &mut impl Receiver,
 ) -> Result<RingSwitchVerifierOutput, VerifyError> {
-    // Single-claim wrapper; the STACKED verifier observes every claim, samples
+    // Single-claim wrapper; the STACKED verifier reads every claim, samples
     // one shared map, then finishes each claim.
-    verify_prepare(claim, prefix_weights, proof, ch)?;
-    let challenges = sample_map_challenges(ch);
+    let s_hat_v = verify_prepare(claim, prefix_weights, vs)?;
+    let challenges = sample_map_challenges(vs);
     let coordinate_weights = build_coordinate_weights(&challenges);
-    Ok(verify_finish(proof, &coordinate_weights))
+    Ok(verify_finish(&s_hat_v, &coordinate_weights))
 }
 
-/// Phase 1 of the ring-switch verifier: absorb `s_hat_v` and check the
-/// prefix-weight claim. The caller samples the possibly shared map afterwards.
-pub fn verify_prepare(
-    claim: F192,
-    prefix_weights: &[F192],
-    proof: &RingSwitchProof,
-    ch: &mut impl Challenger,
-) -> Result<(), VerifyError> {
+/// Phase 1 of the ring-switch verifier: read `s_hat_v` off the stream and check
+/// the prefix-weight claim. The caller samples the possibly shared map
+/// afterwards.
+pub fn verify_prepare(claim: F192, prefix_weights: &[F192], vs: &mut impl Receiver) -> Result<Vec<F192>, VerifyError> {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH);
-    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
-    observe_ext_slice(ch, &proof.s_hat_v);
-    if claim_check(prefix_weights, &proof.s_hat_v) != claim {
+    let s_hat_v = vs.next_scalars(PACKING_WIDTH).map_err(|_| VerifyError::Truncated)?;
+    if claim_check(prefix_weights, &s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
-    Ok(())
+    Ok(s_hat_v)
 }
 
 /// Phase 2 of the ring-switch verifier: given the shared coordinate weights,
 /// produce the batched sumcheck claim.
-pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> RingSwitchVerifierOutput {
-    let s_hat_u = transpose_s_hat(&proof.s_hat_v);
+pub fn verify_finish(s_hat_v: &[F192], coordinate_weights: &[F192]) -> RingSwitchVerifierOutput {
+    let s_hat_u = transpose_s_hat(s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
     RingSwitchVerifierOutput {
         sumcheck_claim,
@@ -1070,32 +1041,43 @@ mod tests {
         }
         assert_eq!(claim, direct, "prefix x suffix split must factor the MLE");
 
-        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
-        let (proof, _out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
+        const DOMAIN: &[u8] = b"rs-claim-test";
+        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(DOMAIN, &[]);
+        prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ps);
+        let fs = ps.into_proof();
 
-        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
-        assert!(verify(claim, &prefix_weights, suffix_point, &proof, &mut ch).is_ok());
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
+        assert!(verify(claim, &prefix_weights, suffix_point, &mut vs).is_ok());
 
         // Wrong claim value.
         let bad_claim = claim + F192::ONE;
-        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert_eq!(
-            verify(bad_claim, &prefix_weights, suffix_point, &proof, &mut ch).unwrap_err(),
+            verify(bad_claim, &prefix_weights, suffix_point, &mut vs).unwrap_err(),
             VerifyError::ClaimMismatch
         );
-        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert_eq!(
-            verify_succinct(bad_claim, &prefix_weights, &proof, &mut ch).unwrap_err(),
+            verify_succinct(bad_claim, &prefix_weights, &mut vs).unwrap_err(),
             VerifyError::ClaimMismatch
         );
 
-        // Tampered s_hat_v.
-        let mut bad = proof.clone();
-        bad.s_hat_v[17].c0 ^= 1;
-        let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"rs-claim-test", &[]);
+        // Tampered s_hat_v on the stream.
+        let mut bad = fs.clone();
+        bad.stream[17].c0 ^= 1;
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &bad, &[]);
         assert_eq!(
-            verify(claim, &prefix_weights, suffix_point, &bad, &mut ch).unwrap_err(),
+            verify(claim, &prefix_weights, suffix_point, &mut vs).unwrap_err(),
             VerifyError::ClaimMismatch
+        );
+
+        // Truncated s_hat_v.
+        let mut short = fs.clone();
+        short.stream.pop();
+        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &short, &[]);
+        assert_eq!(
+            verify(claim, &prefix_weights, suffix_point, &mut vs).unwrap_err(),
+            VerifyError::Truncated
         );
     }
 
@@ -1160,7 +1142,7 @@ mod tests {
         suffix_point: Vec<F192>,
         claim: F192,
         root: Hash,
-        rs_proof: RingSwitchProof,
+        rs_s_hat_v: Vec<F192>,
         whir_proof: WhirProof,
         fs: fiat_shamir::transcript::Proof<()>,
     }
@@ -1190,7 +1172,7 @@ mod tests {
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
 
         let mut ps = fiat_shamir::transcript::ProverState::<()>::new(E2E_DOMAIN, &[]);
-        let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ps);
+        let (rs_s_hat_v, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ps);
         assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
         let whir_proof = recursive_prover_with_basis(
             &pc,
@@ -1208,7 +1190,7 @@ mod tests {
             suffix_point,
             claim,
             root: cm.root,
-            rs_proof,
+            rs_s_hat_v,
             whir_proof,
             fs: ps.into_proof(),
         }
@@ -1218,7 +1200,7 @@ mod tests {
     /// dense whir verifier with b_initial = rs_eq_ind.
     fn verify_e2e_dense(e: &E2e) -> bool {
         let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
-        let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &e.rs_proof, &mut vs) {
+        let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &mut vs) {
             Ok(o) => o,
             Err(_) => return false,
         };
@@ -1237,7 +1219,7 @@ mod tests {
     /// MLE(rs_eq_ind) once via `eval_rs_eq`.
     fn verify_e2e_succinct(e: &E2e) -> bool {
         let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
-        let out = match verify_succinct(e.claim, &e.prefix_weights, &e.rs_proof, &mut vs) {
+        let out = match verify_succinct(e.claim, &e.prefix_weights, &mut vs) {
             Ok(o) => o,
             Err(_) => return false,
         };
@@ -1278,10 +1260,12 @@ mod tests {
     #[test]
     fn end_to_end_rejects_tampering() {
         let e = prove_e2e(13, 13, false);
+        // s_hat_v is the first thing the reduction sends, so it leads the stream.
+        assert_eq!(e.fs.stream[..PACKING_WIDTH], e.rs_s_hat_v[..]);
 
         // Plain bit flip: caught by the claim check.
         let mut bad = E2e {
-            rs_proof: e.rs_proof.clone(),
+            rs_s_hat_v: e.rs_s_hat_v.clone(),
             whir_proof: e.whir_proof.clone(),
             vc: e.vc.clone(),
             log_n: e.log_n,
@@ -1291,7 +1275,7 @@ mod tests {
             root: e.root,
             fs: e.fs.clone(),
         };
-        bad.rs_proof.s_hat_v[5].c1 ^= 1;
+        bad.fs.stream[5].c1 ^= 1;
         assert!(!verify_e2e_dense(&bad), "bit-flipped s_hat_v accepted");
         assert!(!verify_e2e_succinct(&bad), "bit-flipped s_hat_v accepted (succinct)");
 
@@ -1304,11 +1288,11 @@ mod tests {
         let w0 = e.prefix_weights[0];
         let w1 = e.prefix_weights[1];
         assert!(!w0.is_zero() && !d.is_zero());
-        bad.rs_proof = e.rs_proof.clone();
-        bad.rs_proof.s_hat_v[1] += d;
-        bad.rs_proof.s_hat_v[0] += w1 * d * w0.inv();
+        bad.fs = e.fs.clone();
+        bad.fs.stream[1] += d;
+        bad.fs.stream[0] += w1 * d * w0.inv();
         assert_eq!(
-            claim_check(&bad.prefix_weights, &bad.rs_proof.s_hat_v),
+            claim_check(&bad.prefix_weights, &bad.fs.stream[..PACKING_WIDTH]),
             e.claim,
             "forgery must be claim-preserving for this test to bite"
         );
@@ -1319,7 +1303,7 @@ mod tests {
         );
 
         // Tampered claim value.
-        bad.rs_proof = e.rs_proof.clone();
+        bad.fs = e.fs.clone();
         bad.claim = e.claim + F192::ONE;
         assert!(!verify_e2e_dense(&bad), "tampered claim accepted");
         assert!(!verify_e2e_succinct(&bad), "tampered claim accepted (succinct)");

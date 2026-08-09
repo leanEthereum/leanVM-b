@@ -454,15 +454,11 @@ class WhirProof:
 
 @dataclass(frozen=True)
 class BatchOpeningProof:
-    ring_switches: tuple[tuple[F192, ...], ...]
     whir: WhirProof
 
     @classmethod
     def read(cls, reader: BinaryReader) -> BatchOpeningProof:
-        count = reader.u64()
-        require(count <= 16, "too many ring-switch proofs")
-        ring_switches = tuple(tuple(reader.fields()) for _ in range(count))
-        return cls(ring_switches, WhirProof.read(reader))
+        return cls(WhirProof.read(reader))
 
 
 @dataclass(frozen=True)
@@ -2170,17 +2166,14 @@ def verify_stacked_opening(
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
-    require(len(opening.ring_switches) == 1, "wrong ring-switch proof count")
-    ring_switches = (reduction.ab_s_hat_v, *opening.ring_switches)
-    slices: list[Sequence[F192]] = []
-    for ring_index, (claim, values) in enumerate(zip(ring_claims, ring_switches, strict=True)):
-        require(len(values) == PACKED_BITS, "ring-switch proof has the wrong width")
-        if ring_index != 0:  # A/B's value was already derived from the bound z_partial.
-            for value in values:
-                transcript.observe(value)
-            expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
-            require(expected == claim.value, "ring-switch claim mismatch")
+    slices: list[Sequence[F192]] = [reduction.ab_s_hat_v]
+    # A/B's values were already derived from the bound z_partial; only C is sent.
+    for claim in ring_claims[1:]:
+        values = tuple(transcript.scalars(PACKED_BITS))
+        expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
+        require(expected == claim.value, "ring-switch claim mismatch")
         slices.append(values)
+    require(len(slices[0]) == PACKED_BITS, "ring-switch proof has the wrong width")
 
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
     coordinate_weights = _coordinate_weights(map_challenges)

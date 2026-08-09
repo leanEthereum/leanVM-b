@@ -1805,35 +1805,26 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
     # The two ring-switch slices (ab, c) each have PACKING = 2^LOG_PACKING = 64
-    # entries. AB is lincheck's z_partial, already absorbed from the stream;
-    # only C lives in the opening STRUCT and is absorbed HERE.
+    # entries. AB is lincheck's z_partial, already read; only C is sent, as the
+    # next 64 stream words.
     # Claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip. Claim 1 (c):
     # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
     # in blake3_flock::ring_claim is already baked into the transmitted 64 values,
     # so the verifier just checks the plain prefix-weighted inner product.)
-    s_hat_v_c = HeapBuf(2 ** K_SKIP)
-    hint_witness(s_hat_v_c[0 : 2 ** K_SKIP], "rs_shatv")
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
     map_challenges = HeapBuf(6)
     c_table = HeapBuf(BASE_FIELD_BITS)
     z_vals = HeapBuf(2 * QFLOCK_VARS_CAP)
-    for rs in unroll(0, 2):
-        if rs == 0:
-            s_hat_row = z_partial
-        else:
-            s_hat_row = s_hat_v_c
-        # AB's value was already derived from lincheck's bound z_partial. Only
-        # C must be absorbed and checked here before sampling the shared map.
-        if rs == 1:
-            for i in unroll(0, (2 ** K_SKIP)):
-                fs = obs(fs, s_hat_row[GEN ** i])
-            claim_nums = StackBuf((2 ** K_SKIP))
-            lag64(zerocheck_z, claim_nums, 0)
-            claim_check = 0
-            for i in unroll(0, (2 ** K_SKIP)):
-                claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_row[GEN ** i]
-            assert claim_check == c_eval
+    claim_nums = StackBuf(2 ** K_SKIP)
+    lag64(zerocheck_z, claim_nums, 0)
+    claim_check = 0
+    s_hat_v_c = HeapBuf(2 ** K_SKIP)  # C's row: fetch + observe each word
+    for i in unroll(0, 2 ** K_SKIP):
+        fs, w, cursor = fs_next(fs, cursor)
+        s_hat_v_c[GEN ** i] = w
+        claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * w
+    assert claim_check == c_eval
     # Compose six two-term F2-linear maps with shifts 32,16,8,4,2,1. Their
     # expansion has all 64 Frobenius terms required for soundness, while direct
     # application costs 63 squarings and only six general multiplications.

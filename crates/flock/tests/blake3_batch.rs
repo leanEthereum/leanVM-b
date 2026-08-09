@@ -95,9 +95,7 @@ fn verifier_ring(ab: &ZClaim, c: &ZClaim, ab_s_hat_v: &[F192], qflock_vars: usiz
     RingSwitchVerify {
         offset: 0,
         qflock_vars,
-        reconstructed: vec![pcs::ring_switch::RingSwitchProof {
-            s_hat_v: ab_s_hat_v.to_vec(),
-        }],
+        reconstructed: vec![ab_s_hat_v.to_vec()],
         claims: vec![ring_claim(ab, None, qflock_vars), ring_claim(c, None, qflock_vars)],
     }
 }
@@ -160,9 +158,7 @@ fn blake3_batch_prove_verify() {
         let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
         drop((z_packed, a_packed, b_packed, z_lincheck));
         let ring = prover_ring(&reduced, mu);
-        let mut opening = open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
-        assert_eq!(opening.ring_switches[0].s_hat_v, reduced.ab.s_hat_v.as_deref().unwrap());
-        opening.ring_switches.remove(0);
+        let opening = open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 
