@@ -1,5 +1,6 @@
 import XmssSecurity.MainTheorem
 import XmssSecurity.ForgeryCases
+import XmssSecurity.HiddenValue
 import XmssSecurity.Merkle
 import XmssSecurity.RandomOracle
 import XmssSecurity.SecurityBudget

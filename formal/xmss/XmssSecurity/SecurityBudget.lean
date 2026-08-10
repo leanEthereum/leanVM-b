@@ -13,7 +13,7 @@ def targetSecurityBits : Nat := 120
 /-- The elementary bad events used by the current classical reduction. -/
 inductive BadEvent where
   | encoding
-  | backwardChain (chain : ChainIndex)
+  | chain (chain : ChainIndex)
   | suffixCollision (step : Fin verificationChainHashes)
   | leaf
   | merkle (level : Fin treeHeight)

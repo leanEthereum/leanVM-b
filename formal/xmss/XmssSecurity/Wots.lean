@@ -190,6 +190,41 @@ theorem suffixCollision_of_sameEncoding_of_values_ne {α : Type}
   · exact (hi heq).elim
   · exact ⟨⟨i, ⟨offset, hoffset⟩⟩, by simpa using hstepNe, by simpa using hstepEq⟩
 
+def IsFreshChainValueAt {α : Type} (step : ChainIndex → Nat → α → α)
+    (encoding : Encoding) (forgedValue secret : ChainIndex → α) (i : ChainIndex) : Prop :=
+  forgedValue i = signChain (step i) (encoding i) (secret i)
+
+def HasFreshChainValue {α : Type} (step : ChainIndex → Nat → α → α)
+    (encoding : Encoding) (forgedValue secret : ChainIndex → α) : Prop :=
+  ∃ i, IsFreshChainValueAt step encoding forgedValue secret i
+
+/-- A fresh-epoch WOTS opening either reveals an honest hidden chain value or creates a suffix collision. -/
+theorem freshChainValue_or_suffixCollision {α : Type}
+    (step : ChainIndex → Nat → α → α) (encoding : Encoding)
+    (forgedValue secret : ChainIndex → α)
+    (hendpoints : ∀ i,
+      recoverChain (step i) (encoding i) (forgedValue i) = publicChain (step i) (secret i)) :
+    HasFreshChainValue step encoding forgedValue secret ∨
+      HasSuffixCollisionWitness step encoding encoding
+        (fun i => signChain (step i) (encoding i) (secret i)) forgedValue := by
+  classical
+  by_cases hall : ∀ i, forgedValue i = signChain (step i) (encoding i) (secret i)
+  · left
+    exact ⟨⟨0, by native_decide⟩, hall _⟩
+  · right
+    push Not at hall
+    obtain ⟨i, hi⟩ := hall
+    have hcollision := eq_or_hasStepCollision (step i) (encoding i).val
+      (chainLength - 1 - (encoding i).val) (forgedValue i)
+      (signChain (step i) (encoding i) (secret i)) (by
+        change recoverChain (step i) (encoding i) (forgedValue i) =
+          recoverChain (step i) (encoding i) (signChain (step i) (encoding i) (secret i))
+        rw [recover_signChain_eq_publicChain]
+        exact hendpoints i)
+    rcases hcollision with heq | ⟨offset, hoffset, hstepNe, hstepEq⟩
+    · exact (hi heq).elim
+    · exact ⟨⟨i, ⟨offset, hoffset⟩⟩, by simpa using hstepNe, by simpa using hstepEq⟩
+
 def HasLeafCollision {α β : Type} (leafHash : (ChainIndex → α) → β)
     (left right : ChainIndex → α) : Prop :=
   left ≠ right ∧ leafHash left = leafHash right

@@ -20,7 +20,7 @@ noncomputable def SameEpochBadEventOccurs {EncodingInput : Type}
     (signedPath forgedPath : Nat → Digest)
     (hsignedValid : TargetSum.Valid signedEncoding) : BadEvent → Prop
   | .encoding => signedInput ≠ forgedInput ∧ encodingHash signedInput = encodingHash forgedInput
-  | .backwardChain chain =>
+  | .chain chain =>
       Wots.IsBackwardWitnessAt step signedEncoding forgedEncoding signedValue forgedValue chain
   | .suffixCollision slot =>
       ∃ position : TargetSum.SuffixPosition signedEncoding,
@@ -126,9 +126,98 @@ theorem sameEpoch_forgery_has_badEvent {EncodingInput : Type}
     hencoding | hbackward | hsuffix | hleaf | hmerkle
   · exact ⟨.encoding, hencoding⟩
   · obtain ⟨chain, hchain⟩ := hbackward
-    exact ⟨.backwardChain chain, hchain⟩
+    exact ⟨.chain chain, hchain⟩
   · obtain ⟨position, hposition⟩ := hsuffix
     exact ⟨.suffixCollision (TargetSum.enumerateSuffixPositions signedEncoding hsignedValid position),
+      position, rfl, hposition⟩
+  · exact ⟨.leaf, hleaf⟩
+  · obtain ⟨level, hlevel⟩ := hmerkle
+    exact ⟨.merkle level, hlevel⟩
+
+noncomputable def FreshEpochBadEventOccurs
+    (step : ChainIndex → Nat → Digest → Digest)
+    (leafHash : (ChainIndex → Digest) → Digest)
+    (nodeHash : Nat → Digest → Digest → Digest)
+    (forgedEncoding : Encoding)
+    (forgedValue secret : ChainIndex → Digest)
+    (forgedPath honestPath : Nat → Digest)
+    (hforgedValid : TargetSum.Valid forgedEncoding) : BadEvent → Prop
+  | .encoding => False
+  | .chain chain => Wots.IsFreshChainValueAt step forgedEncoding forgedValue secret chain
+  | .suffixCollision slot =>
+      ∃ position : TargetSum.SuffixPosition forgedEncoding,
+        TargetSum.enumerateSuffixPositions forgedEncoding hforgedValid position = slot ∧
+        Wots.IsSuffixCollisionAt step forgedEncoding forgedEncoding
+          (fun i => Wots.signChain (step i) (forgedEncoding i) (secret i)) forgedValue position
+  | .leaf => Wots.HasLeafCollision leafHash
+      (recoveredEndpoints step forgedEncoding forgedValue)
+      (fun i => Wots.publicChain (step i) (secret i))
+  | .merkle level => Merkle.IsXmssPathCollisionAt nodeHash forgedPath honestPath
+      (leafHash (recoveredEndpoints step forgedEncoding forgedValue))
+      (leafHash (fun i => Wots.publicChain (step i) (secret i))) level
+
+/-- The deterministic core of the fresh-epoch forgery reduction. -/
+theorem classify_freshEpoch_forgery
+    (step : ChainIndex → Nat → Digest → Digest)
+    (leafHash : (ChainIndex → Digest) → Digest)
+    (nodeHash : Nat → Digest → Digest → Digest)
+    (forgedEncoding : Encoding)
+    (forgedValue secret : ChainIndex → Digest)
+    (forgedPath honestPath : Nat → Digest)
+    (hroot : Merkle.ascend nodeHash forgedPath 0 treeHeight
+        (leafHash (recoveredEndpoints step forgedEncoding forgedValue)) =
+      Merkle.ascend nodeHash honestPath 0 treeHeight
+        (leafHash (fun i => Wots.publicChain (step i) (secret i)))) :
+    Wots.HasFreshChainValue step forgedEncoding forgedValue secret ∨
+      Wots.HasSuffixCollisionWitness step forgedEncoding forgedEncoding
+        (fun i => Wots.signChain (step i) (forgedEncoding i) (secret i)) forgedValue ∨
+      Wots.HasLeafCollision leafHash
+        (recoveredEndpoints step forgedEncoding forgedValue)
+        (fun i => Wots.publicChain (step i) (secret i)) ∨
+      Merkle.HasXmssPathCollision nodeHash forgedPath honestPath
+        (leafHash (recoveredEndpoints step forgedEncoding forgedValue))
+        (leafHash (fun i => Wots.publicChain (step i) (secret i))) := by
+  rcases Merkle.sameXmssPath_or_hasCollision nodeHash forgedPath honestPath
+      (leafHash (recoveredEndpoints step forgedEncoding forgedValue))
+      (leafHash (fun i => Wots.publicChain (step i) (secret i))) hroot with
+    ⟨hleaf, _hpath⟩ | hmerkle
+  · rcases Wots.eq_or_hasLeafCollision leafHash
+      (recoveredEndpoints step forgedEncoding forgedValue)
+      (fun i => Wots.publicChain (step i) (secret i)) hleaf with
+      hendpoints | hleafCollision
+    · have hendpoints' : ∀ i,
+          Wots.recoverChain (step i) (forgedEncoding i) (forgedValue i) =
+            Wots.publicChain (step i) (secret i) := by
+        intro i
+        exact congrFun hendpoints i
+      rcases Wots.freshChainValue_or_suffixCollision step forgedEncoding forgedValue secret
+          hendpoints' with hchain | hsuffix
+      · exact Or.inl hchain
+      · exact Or.inr <| Or.inl hsuffix
+    · exact Or.inr <| Or.inr <| Or.inl hleafCollision
+  · exact Or.inr <| Or.inr <| Or.inr hmerkle
+
+/-- Every fresh-epoch forgery selects one of the same 175 indexed bad-event slots. -/
+theorem freshEpoch_forgery_has_badEvent
+    (step : ChainIndex → Nat → Digest → Digest)
+    (leafHash : (ChainIndex → Digest) → Digest)
+    (nodeHash : Nat → Digest → Digest → Digest)
+    (forgedEncoding : Encoding)
+    (forgedValue secret : ChainIndex → Digest)
+    (forgedPath honestPath : Nat → Digest)
+    (hforgedValid : TargetSum.Valid forgedEncoding)
+    (hroot : Merkle.ascend nodeHash forgedPath 0 treeHeight
+        (leafHash (recoveredEndpoints step forgedEncoding forgedValue)) =
+      Merkle.ascend nodeHash honestPath 0 treeHeight
+        (leafHash (fun i => Wots.publicChain (step i) (secret i)))) :
+    ∃ event, FreshEpochBadEventOccurs step leafHash nodeHash forgedEncoding forgedValue secret
+      forgedPath honestPath hforgedValid event := by
+  rcases classify_freshEpoch_forgery step leafHash nodeHash forgedEncoding forgedValue secret
+      forgedPath honestPath hroot with hchain | hsuffix | hleaf | hmerkle
+  · obtain ⟨chain, hchain⟩ := hchain
+    exact ⟨.chain chain, hchain⟩
+  · obtain ⟨position, hposition⟩ := hsuffix
+    exact ⟨.suffixCollision (TargetSum.enumerateSuffixPositions forgedEncoding hforgedValid position),
       position, rfl, hposition⟩
   · exact ⟨.leaf, hleaf⟩
   · obtain ⟨level, hlevel⟩ := hmerkle
