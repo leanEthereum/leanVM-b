@@ -163,6 +163,10 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     blake3(tweak_pp, msg_block, after_msg, step=0)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
+    # The spec's pad: cell 1 is randomness bytes 16..24 then 8 zero bytes. A PACK64X2
+    # source is read as (lo, 0, 0) where BLAKE3 reads (lo, hi, 0); the dest is unused.
+    rand_pad = StackBuf(1)
+    pack64x2_into(rand_block[1], 0, rand_pad[0])
     digest = StackBuf(WORDS_PER_BLOCK)
     zero_block = StackBuf(WORDS_PER_BLOCK)
     zero_block[0] = 0
