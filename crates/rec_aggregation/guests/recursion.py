@@ -1930,6 +1930,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 tie_slack = col / prev_col
                 assert log(tie_slack) < N_COMMITTED_COLS
         col_off_g[col] = g_total  # write-once: a duplicate permutation entry collides
+        # In range without a local check: kappa is a certified log <= 32 (log_mem or
+        # a tau), the baked bytecode log, or q_flock's tau_5 + 8, the one certified
+        # log carrying a nonzero adjustment, which the rs_len_g range check ~200
+        # lines below pins to <= LIG_TOTAL_FOLDS <= 24.
         g_total *= g_squares[kappa_g]
         prev_col = col
         prev_kappa = kappa_g
