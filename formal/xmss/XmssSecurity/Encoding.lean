@@ -1,9 +1,6 @@
 import XmssSecurity.Parameters
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 import Mathlib.Data.Fintype.BigOperators
-import Mathlib.Data.Fintype.EquivFin
-import Mathlib.Tactic.NormNum
-import ToMathlib.General
 
 namespace XmssSecurity.TargetSum
 
@@ -47,13 +44,109 @@ noncomputable def enumerateSuffixPositions (x : Encoding) (hx : Valid x) :
 /-- The two unused digest bits accompany the 42 three-bit digits. -/
 abbrev EncodingView := Encoding × Fin 4
 
-theorem card_digest_eq_encodingView : Fintype.card Digest = Fintype.card EncodingView := by
-  norm_num [Digest, EncodingView, Encoding, ChainIndex, Digit, digestBits, numChains,
-    chainLength, winternitzBits, Fintype.card_congr BitVec.equivFin.toEquiv]
+def digitsPerHalf : Nat := numChains / 2
 
-/-- A security-level view of the concrete bit layout. Only its bijectivity matters to the proof. -/
-noncomputable def digestView : Digest ≃ EncodingView :=
-  Fintype.equivOfCardEq card_digest_eq_encodingView
+theorem digitsPerHalf_eq : digitsPerHalf = 21 := by
+  native_decide
+
+/-- Offset of a three-bit digit, skipping padding bits 63 and 127. -/
+def digitOffset (i : ChainIndex) : Nat :=
+  winternitzBits * i.val + if i.val < digitsPerHalf then 0 else 1
+
+theorem digitOffset_boundaries :
+    digitOffset ⟨0, by native_decide⟩ = 0 ∧
+    digitOffset ⟨20, by native_decide⟩ = 60 ∧
+    digitOffset ⟨21, by native_decide⟩ = 64 ∧
+    digitOffset ⟨41, by native_decide⟩ = 124 := by
+  native_decide
+
+def digestEncoding (digest : Digest) : Encoding :=
+  fun i => (digest.extractLsb' (digitOffset i) winternitzBits).toFin
+
+def digestPadding (digest : Digest) : Fin 4 :=
+  ⟨(if digest.getLsbD 63 then 1 else 0) +
+    (if digest.getLsbD 127 then 2 else 0), by
+      cases digest.getLsbD 63 <;> cases digest.getLsbD 127 <;> simp⟩
+
+/-- The concrete little-endian layout used by `IncEnc`: 21 digits, one padding bit, 21 digits, and one padding bit. -/
+def digestView (digest : Digest) : EncodingView :=
+  (digestEncoding digest, digestPadding digest)
+
+theorem digestPadding_eq_zero_iff {digest : Digest} :
+    digestPadding digest = 0 ↔
+      digest.getLsbD 63 = false ∧ digest.getLsbD 127 = false := by
+  generalize hlow : digest.getLsbD 63 = low
+  generalize hhigh : digest.getLsbD 127 = high
+  cases low <;> cases high <;> simp [digestPadding, hlow, hhigh]
+
+theorem digestPadding_eq_iff {left right : Digest} :
+    digestPadding left = digestPadding right ↔
+      left.getLsbD 63 = right.getLsbD 63 ∧
+      left.getLsbD 127 = right.getLsbD 127 := by
+  generalize hl0 : left.getLsbD 63 = leftLow
+  generalize hl1 : left.getLsbD 127 = leftHigh
+  generalize hr0 : right.getLsbD 63 = rightLow
+  generalize hr1 : right.getLsbD 127 = rightHigh
+  cases leftLow <;> cases leftHigh <;> cases rightLow <;> cases rightHigh <;>
+    simp [digestPadding, hl0, hl1, hr0, hr1]
+
+theorem digestView_injective : Function.Injective digestView := by
+  intro left right hview
+  have hencoding : digestEncoding left = digestEncoding right :=
+    congrArg Prod.fst hview
+  have hpadding : digestPadding left = digestPadding right :=
+    congrArg Prod.snd hview
+  have hpaddingBits := digestPadding_eq_iff.mp hpadding
+  apply BitVec.eq_of_getLsbD_eq
+  intro bit hbit
+  have hbelow128 : bit < 128 := by simpa [digestBits] using hbit
+  by_cases heq63 : bit = 63
+  · simpa [heq63] using hpaddingBits.1
+  by_cases heq127 : bit = 127
+  · simpa [heq127] using hpaddingBits.2
+  by_cases hlow : bit < 63
+  · let chain : ChainIndex := ⟨bit / winternitzBits, by
+      change bit / 3 < 42
+      omega⟩
+    let offsetBit := bit % winternitzBits
+    have hoffsetBit : offsetBit < winternitzBits := by
+      exact Nat.mod_lt bit (by native_decide)
+    have hoffset : digitOffset chain + offsetBit = bit := by
+      unfold digitOffset
+      change 3 * (bit / 3) + (if bit / 3 < 21 then 0 else 1) + bit % 3 = bit
+      rw [if_pos (by omega)]
+      have hdiv := Nat.mod_add_div bit 3
+      omega
+    have hextract :
+        left.extractLsb' (digitOffset chain) winternitzBits =
+          right.extractLsb' (digitOffset chain) winternitzBits := by
+      apply BitVec.toFin_injective
+      exact congrFun hencoding chain
+    have hlocalBit := congrArg (fun value => value.getLsbD offsetBit) hextract
+    simpa [BitVec.getLsbD_extractLsb', hoffsetBit, hoffset] using hlocalBit
+  · have hge64 : 64 ≤ bit := by omega
+    have hbelow127 : bit < 127 := by omega
+    let shifted := bit - 64
+    let chain : ChainIndex := ⟨digitsPerHalf + shifted / winternitzBits, by
+      change 21 + (bit - 64) / 3 < 42
+      omega⟩
+    let offsetBit := shifted % winternitzBits
+    have hoffsetBit : offsetBit < winternitzBits := by
+      exact Nat.mod_lt shifted (by native_decide)
+    have hoffset : digitOffset chain + offsetBit = bit := by
+      unfold digitOffset
+      change 3 * (21 + (bit - 64) / 3) +
+        (if 21 + (bit - 64) / 3 < 21 then 0 else 1) + (bit - 64) % 3 = bit
+      rw [if_neg (by omega)]
+      have hdiv := Nat.mod_add_div (bit - 64) 3
+      omega
+    have hextract :
+        left.extractLsb' (digitOffset chain) winternitzBits =
+          right.extractLsb' (digitOffset chain) winternitzBits := by
+      apply BitVec.toFin_injective
+      exact congrFun hencoding chain
+    have hlocalBit := congrArg (fun value => value.getLsbD offsetBit) hextract
+    simpa [BitVec.getLsbD_extractLsb', hoffsetBit, hoffset] using hlocalBit
 
 def ValidView (view : EncodingView) : Prop :=
   view.2 = 0 ∧ Valid view.1
@@ -94,8 +187,8 @@ theorem decodeDigest_eq_some_iff {digest : Digest} {x : Encoding} :
 /-- A valid target-sum encoding and zero padding determine one exact 128-bit digest. -/
 theorem digest_eq_of_decodeDigest_eq_some {left right : Digest} {x : Encoding}
     (hleft : decodeDigest left = some x) (hright : decodeDigest right = some x) :
-    left = right := by
-  apply digestView.injective
+  left = right := by
+  apply digestView_injective
   rw [(decodeDigest_eq_some_iff.mp hleft).1, (decodeDigest_eq_some_iff.mp hright).1]
 
 /-- Two distinct encoding-hash inputs decoding to the same valid encoding form a target collision. -/
