@@ -29,6 +29,16 @@ abbrev Digit := Fin chainLength
 abbrev Encoding := ChainIndex → Digit
 abbrev HashInput := List UInt8
 
+theorem hashOutputBits_eq : hashOutputBits = digestBits + digestBits := by
+  native_decide
+
+def splitHashOutput (output : HashOutput) : BitVec (digestBits + digestBits) :=
+  output.cast hashOutputBits_eq
+
+/-- Keep the first 128 output bits, represented as the low bits of the little-endian bit vector. -/
+def truncateHash (output : HashOutput) : Digest :=
+  (splitHashOutput output).extractLsb' 0 digestBits
+
 structure PublicKey where
   root : Digest
   parameter : PublicParameter

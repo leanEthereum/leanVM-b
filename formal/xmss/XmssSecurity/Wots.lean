@@ -115,4 +115,91 @@ theorem extract_of_distinct_valid_encodings {α : Type}
   · exact Nat.le_pred_of_lt (signedEncoding i).isLt
   · simpa only [recoverChain] using hendpoints i
 
+def IsBackwardWitnessAt {α : Type} (step : ChainIndex → Nat → α → α)
+    (signedEncoding forgedEncoding : Encoding)
+    (signedValue forgedValue : ChainIndex → α) (i : ChainIndex) : Prop :=
+  forgedEncoding i < signedEncoding i ∧
+  walk (step i) (forgedEncoding i).val
+    ((signedEncoding i).val - (forgedEncoding i).val) (forgedValue i) = signedValue i
+
+def HasBackwardWitness {α : Type} (step : ChainIndex → Nat → α → α)
+    (signedEncoding forgedEncoding : Encoding)
+    (signedValue forgedValue : ChainIndex → α) : Prop :=
+  ∃ i, IsBackwardWitnessAt step signedEncoding forgedEncoding signedValue forgedValue i
+
+def IsSuffixCollisionAt {α : Type} (step : ChainIndex → Nat → α → α)
+    (signedEncoding forgedEncoding : Encoding)
+    (signedValue forgedValue : ChainIndex → α)
+    (position : TargetSum.SuffixPosition signedEncoding) : Prop :=
+  let i := position.1
+  let offset := position.2.val
+  let forgedAtSigned := walk (step i) (forgedEncoding i).val
+    ((signedEncoding i).val - (forgedEncoding i).val) (forgedValue i)
+  walk (step i) (signedEncoding i).val offset forgedAtSigned ≠
+      walk (step i) (signedEncoding i).val offset (signedValue i) ∧
+    step i ((signedEncoding i).val + offset)
+        (walk (step i) (signedEncoding i).val offset forgedAtSigned) =
+      step i ((signedEncoding i).val + offset)
+        (walk (step i) (signedEncoding i).val offset (signedValue i))
+
+def HasSuffixCollisionWitness {α : Type} (step : ChainIndex → Nat → α → α)
+    (signedEncoding forgedEncoding : Encoding)
+    (signedValue forgedValue : ChainIndex → α) : Prop :=
+  ∃ position, IsSuffixCollisionAt step signedEncoding forgedEncoding signedValue forgedValue position
+
+/-- The WOTS extraction alternatives are indexed by 42 chains and exactly 99 valid suffix positions. -/
+theorem classify_distinct_valid_encodings {α : Type}
+    (step : ChainIndex → Nat → α → α)
+    (signedEncoding forgedEncoding : Encoding)
+    (signedValue forgedValue : ChainIndex → α)
+    (hsigned : TargetSum.Valid signedEncoding) (hforged : TargetSum.Valid forgedEncoding)
+    (hne : signedEncoding ≠ forgedEncoding)
+    (hendpoints : ∀ i,
+      recoverChain (step i) (forgedEncoding i) (forgedValue i) =
+        recoverChain (step i) (signedEncoding i) (signedValue i)) :
+    HasBackwardWitness step signedEncoding forgedEncoding signedValue forgedValue ∨
+      HasSuffixCollisionWitness step signedEncoding forgedEncoding signedValue forgedValue := by
+  obtain ⟨i, hi, hbackward | hcollision⟩ :=
+    extract_of_distinct_valid_encodings step signedEncoding forgedEncoding signedValue forgedValue
+      hsigned hforged hne hendpoints
+  · exact Or.inl ⟨i, hi, hbackward⟩
+  · right
+    obtain ⟨offset, hoffset, hne, heq⟩ := hcollision
+    exact ⟨⟨i, ⟨offset, hoffset⟩⟩, hne, heq⟩
+
+/-- With the same encoding, different chain values recovering the same endpoints expose a suffix collision. -/
+theorem suffixCollision_of_sameEncoding_of_values_ne {α : Type}
+    (step : ChainIndex → Nat → α → α) (encoding : Encoding)
+    (signedValue forgedValue : ChainIndex → α)
+    (hne : signedValue ≠ forgedValue)
+    (hendpoints : ∀ i,
+      recoverChain (step i) (encoding i) (forgedValue i) =
+        recoverChain (step i) (encoding i) (signedValue i)) :
+    HasSuffixCollisionWitness step encoding encoding signedValue forgedValue := by
+  have hcoordinate : ∃ i, forgedValue i ≠ signedValue i := by
+    by_contra h
+    push Not at h
+    apply hne
+    funext i
+    exact (h i).symm
+  obtain ⟨i, hi⟩ := hcoordinate
+  have hcollision := eq_or_hasStepCollision (step i) (encoding i).val
+    (chainLength - 1 - (encoding i).val) (forgedValue i) (signedValue i)
+    (by simpa only [recoverChain] using hendpoints i)
+  rcases hcollision with heq | ⟨offset, hoffset, hstepNe, hstepEq⟩
+  · exact (hi heq).elim
+  · exact ⟨⟨i, ⟨offset, hoffset⟩⟩, by simpa using hstepNe, by simpa using hstepEq⟩
+
+def HasLeafCollision {α β : Type} (leafHash : (ChainIndex → α) → β)
+    (left right : ChainIndex → α) : Prop :=
+  left ≠ right ∧ leafHash left = leafHash right
+
+/-- Equal WOTS leaves come from equal recovered endpoint vectors or one leaf-hash collision. -/
+theorem eq_or_hasLeafCollision {α β : Type} (leafHash : (ChainIndex → α) → β)
+    (left right : ChainIndex → α) (hleaf : leafHash left = leafHash right) :
+    left = right ∨ HasLeafCollision leafHash left right := by
+  by_cases heq : left = right
+  · exact Or.inl heq
+  · exact Or.inr ⟨heq, hleaf⟩
+
 end XmssSecurity.Wots
