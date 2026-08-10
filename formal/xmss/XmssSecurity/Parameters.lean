@@ -1,0 +1,43 @@
+import Mathlib.Data.BitVec
+
+namespace XmssSecurity
+
+def digestBits : Nat := 128
+def hashOutputBits : Nat := 256
+def messageBits : Nat := 256
+def publicParameterBits : Nat := 128
+def randomnessBits : Nat := 192
+def treeHeight : Nat := 32
+def lifetime : Nat := 2 ^ treeHeight
+def winternitzBits : Nat := 3
+def chainLength : Nat := 2 ^ winternitzBits
+def numChains : Nat := 42
+def targetSum : Nat := 195
+
+abbrev Digest := BitVec digestBits
+abbrev HashOutput := BitVec hashOutputBits
+abbrev Message := BitVec messageBits
+abbrev PublicParameter := BitVec publicParameterBits
+abbrev Randomness := BitVec randomnessBits
+abbrev Epoch := Fin lifetime
+abbrev ChainIndex := Fin numChains
+abbrev Digit := Fin chainLength
+abbrev Encoding := ChainIndex → Digit
+abbrev HashInput := List UInt8
+
+structure PublicKey where
+  root : Digest
+  parameter : PublicParameter
+deriving DecidableEq
+
+structure SecretKey where
+  parameter : PublicParameter
+  chainStart : Epoch → ChainIndex → Digest
+
+structure Signature where
+  randomness : Randomness
+  chainValue : ChainIndex → Digest
+  authPath : Fin treeHeight → Digest
+deriving DecidableEq
+
+end XmssSecurity
