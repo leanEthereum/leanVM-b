@@ -32,6 +32,28 @@ def leafPayload (endpoints : ChainIndex → Digest) : HashInput :=
 def nodePayload (left right : Digest) : HashInput :=
   digestBytes left ++ digestBytes right
 
+private theorem flatMap_injective_of_eq_length {α β : Type}
+    (encode : α → List β) (hinjective : Function.Injective encode)
+    (encodedLength : Nat) (hlength : ∀ value, (encode value).length = encodedLength)
+    {left right : List α} (hsameLength : left.length = right.length)
+    (heq : left.flatMap encode = right.flatMap encode) : left = right := by
+  induction left generalizing right with
+  | nil =>
+      cases right with
+      | nil => rfl
+      | cons => simp at hsameLength
+  | cons head tail ih =>
+      cases right with
+      | nil => simp at hsameLength
+      | cons rightHead rightTail =>
+          simp only [List.flatMap_cons] at heq
+          obtain ⟨hhead, htail⟩ := List.append_inj heq (by simp [hlength])
+          congr
+          · exact hinjective hhead
+          · apply ih
+            · simpa using Nat.succ.inj hsameLength
+            · exact htail
+
 theorem encodingPayload_injective :
     Function.Injective fun input : Message × Randomness => encodingPayload input.1 input.2 := by
   rintro ⟨leftMessage, leftRandomness⟩ ⟨rightMessage, rightRandomness⟩ heq
@@ -41,6 +63,12 @@ theorem encodingPayload_injective :
     List.append_left_injective (List.replicate 8 0) heq
   obtain ⟨hmessage, hrandomness⟩ := List.append_inj hpairs (by simp [messageBytes])
   exact Prod.ext (messageBytes_injective hmessage) (randomnessBytes_injective hrandomness)
+
+theorem leafPayload_injective : Function.Injective leafPayload := by
+  intro left right heq
+  apply List.ofFn_injective
+  exact flatMap_injective_of_eq_length digestBytes digestBytes_injective 16
+    (fun value => by simp [digestBytes]) (by simp) heq
 
 theorem nodePayload_injective :
     Function.Injective fun input : Digest × Digest => nodePayload input.1 input.2 := by
