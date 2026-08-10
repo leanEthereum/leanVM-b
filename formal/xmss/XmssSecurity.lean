@@ -1,2 +1,3 @@
 import XmssSecurity.MainTheorem
+import XmssSecurity.RandomOracle
 import XmssSecurity.Wots
