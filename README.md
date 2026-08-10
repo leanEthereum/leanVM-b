@@ -21,6 +21,8 @@ Machine: Mac M4 Max
 
 ### XMSS aggregation
 
+Our XMSS is specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/XMSS.pdf).
+
 ```bash
 cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3
 ```
