@@ -16,7 +16,7 @@
 //! `eval_constraint` takes.
 
 use crate::colval::ColVal;
-use crate::cpu::{Brow, Drow, Jrow, Op, Srow, Trace, Xrow};
+use crate::cpu::{Brow, Drow, Jrow, Op, Srow, Trace};
 use crate::leaf::Coord::{self, Col, Const, GCol, Prod};
 use primitives::field::{F64, F192, mul_by_g};
 
@@ -504,18 +504,25 @@ impl Table for Arith {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use arith::*;
         let rows = if self.is_xor { &ctx.trace.xor } else { &ctx.trace.mul };
-        let addrs = |r: &Xrow| {
-            let (a, b, _) = ctx.ternary_operands(r.pc);
-            [r.fp + a, r.fp + b]
-        };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        // The offsets and both operand words come out of ONE bytecode decode: split
+        // across passes, the row's instruction is fetched once per pass.
         ctx.cols(out, rows, OA, |r| {
             let (a, b, c) = ctx.ternary_operands(r.pc);
-            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c)]
+            let (va, vb) = (ctx.limbs(r.fp + a), ctx.limbs(r.fp + b));
+            [
+                ctx.g_at(a),
+                ctx.g_at(b),
+                ctx.g_at(c),
+                va[0],
+                va[1],
+                va[2],
+                vb[0],
+                vb[1],
+                vb[2],
+            ]
         });
-        ctx.cols(out, rows, VA_LO, |r| ctx.limbs(addrs(r)[0]));
-        ctx.cols(out, rows, VB_LO, |r| ctx.limbs(addrs(r)[1]));
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
@@ -658,14 +665,6 @@ impl Table for DerefTable {
         };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        ctx.cols(out, rows, OAL, |r| {
-            let (alpha, beta, gamma, _) = ins(r);
-            [ctx.g_at(alpha), ctx.g_at(beta), ctx.g_at(gamma)]
-        });
-        ctx.cols(out, rows, FPC, |r| {
-            let mode = ins(r).3;
-            [mode.f_pc(), mode.f_fp()]
-        });
         debug_assert!(
             rows.iter().all(|r| {
                 let p = ctx.mem[(r.fp + ins(r).0) as usize];
@@ -673,8 +672,23 @@ impl Table for DerefTable {
             }),
             "deref pointer must be K-valued"
         );
-        ctx.col(out, rows, P, |r| F64(ctx.mem[(r.fp + ins(r).0) as usize].c0));
-        ctx.cols(out, rows, V3_LO, |r| ctx.limbs(r.fp + ins(r).2));
+        // The three offsets, the two mode flags, the pointer lane and the local
+        // word all follow from ONE bytecode decode.
+        ctx.cols(out, rows, OAL, |r| {
+            let (alpha, beta, gamma, mode) = ins(r);
+            let v3 = ctx.limbs(r.fp + gamma);
+            [
+                ctx.g_at(alpha),
+                ctx.g_at(beta),
+                ctx.g_at(gamma),
+                mode.f_pc(),
+                mode.f_fp(),
+                F64(ctx.mem[(r.fp + alpha) as usize].c0),
+                v3[0],
+                v3[1],
+                v3[2],
+            ]
+        });
         ctx.cols(out, rows, R1, |r| [r.r1, r.r2, r.r3]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
@@ -759,30 +773,37 @@ impl Table for JumpTable {
         let cond = |r: &Jrow| cell(r, ins(r).0);
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        // The three offsets and the three cells they name come out of ONE decode.
+        // Those cells are K-valued on every row, taken or not (`cpu::execute`
+        // rejects anything else), so each is one lane and the memory flush carries
+        // literal zeros above it.
         ctx.cols(out, rows, OC, |r| {
             let (oc, od, of) = ins(r);
-            [ctx.g_at(oc), ctx.g_at(od), ctx.g_at(of)]
-        });
-        // The condition, destination and frame cells are K-valued on every row,
-        // taken or not (`cpu::execute` rejects anything else), so each is one lane
-        // and the memory flush carries literal zeros above it.
-        ctx.cols(out, rows, C, |r| {
-            let (oc, od, of) = ins(r);
-            [F64(cell(r, oc).c0), F64(cell(r, od).c0), F64(cell(r, of).c0)]
+            [
+                ctx.g_at(oc),
+                ctx.g_at(od),
+                ctx.g_at(of),
+                F64(cell(r, oc).c0),
+                F64(cell(r, od).c0),
+                F64(cell(r, of).c0),
+            ]
         });
         // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in ONE
         // batched Montgomery inversion: a single field inverse plus ~2 multiplies
         // per row, instead of an inverse per taken branch. `prefix[i]` is the
         // running product of the nonzero conditions before row `i`, so `acc` ends
-        // as their full product (nonzero, hence invertible).
-        let w = {
+        // as their full product (nonzero, hence invertible). The taken indicator
+        // `b = [c ≠ 0]` falls out of the same pass, so it costs no extra decode.
+        let (w, b) = {
             let mut acc = F192::ONE;
             let mut prefix: Vec<F192> = Vec::with_capacity(rows.len());
-            for r in rows {
+            let mut b = vec![F64::ZERO; rows.len()];
+            for (i, r) in rows.iter().enumerate() {
                 prefix.push(acc);
                 let c = cond(r);
                 if !c.is_zero() {
                     acc *= c;
+                    b[i] = F64::ONE;
                 }
             }
             let mut inv = acc.inv();
@@ -794,10 +815,9 @@ impl Table for JumpTable {
                     inv *= c;
                 }
             }
-            w
+            (w, b)
         };
-        ctx.cols_at(out, rows.len(), W, |i| [F64(w[i].c0)]);
-        ctx.col(out, rows, B, |r| if cond(r).is_zero() { F64::ZERO } else { F64::ONE });
+        ctx.cols_at(out, rows.len(), W, |i| [F64(w[i].c0), b[i]]);
         ctx.cols(out, rows, RC, |r| [r.rc, r.rd, r.rf]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
@@ -854,19 +874,18 @@ impl Table for Pack64x2Table {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use pack64::*;
         let rows = &ctx.trace.pack64x2;
-        let addrs = |r: &Xrow| {
-            let (a, b, c) = ctx.ternary_operands(r.pc);
-            [r.fp + a, r.fp + b, r.fp + c]
-        };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        // The offsets and the two source lanes come out of ONE bytecode decode.
         ctx.cols(out, rows, OA, |r| {
             let (a, b, c) = ctx.ternary_operands(r.pc);
-            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c)]
-        });
-        ctx.cols(out, rows, VA, |r| {
-            let a = addrs(r);
-            [F64(ctx.mem[a[0] as usize].c0), F64(ctx.mem[a[1] as usize].c0)]
+            [
+                ctx.g_at(a),
+                ctx.g_at(b),
+                ctx.g_at(c),
+                F64(ctx.mem[(r.fp + a) as usize].c0),
+                F64(ctx.mem[(r.fp + b) as usize].c0),
+            ]
         });
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -980,10 +999,22 @@ impl Table for Blake3Table {
             let (w0, w1) = (ctx.mem[c0 as usize], ctx.mem[c1 as usize]);
             [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
         };
-        ctx.cols(out, rows, VA0, |r| word_pair(ad(r)[0], ad(r)[1]));
-        ctx.cols(out, rows, VB0, |r| word_pair(ad(r)[2], ad(r)[3]));
-        ctx.cols(out, rows, VC0, |r| word_pair(ad(r)[5], ad(r)[5] + 1));
-        ctx.cols(out, rows, VCV0, |r| word_pair(ad(r)[4], ad(r)[4] + 1));
+        ctx.cols(out, rows, VA0, |r| {
+            let a = ad(r);
+            word_pair(a[0], a[1])
+        });
+        ctx.cols(out, rows, VB0, |r| {
+            let a = ad(r);
+            word_pair(a[2], a[3])
+        });
+        ctx.cols(out, rows, VC0, |r| {
+            let a = ad(r);
+            word_pair(a[5], a[5] + 1)
+        });
+        ctx.cols(out, rows, VCV0, |r| {
+            let a = ad(r);
+            word_pair(a[4], a[4] + 1)
+        });
         ctx.cols(out, rows, MD0, |r| {
             let md = blake3_metadata(ctx.prog, r.pc);
             [F64(md.c0), F64(md.c1)]

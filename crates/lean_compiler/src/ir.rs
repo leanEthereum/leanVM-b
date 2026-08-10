@@ -117,10 +117,19 @@ pub(crate) struct Lowered {
     pub(crate) filler: Vec<lean_vm::cpu::filler::Block>,
 }
 
-/// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
-/// heap slice (the buffer pointer's cell plus the first g-power offset), which
-/// must be bridged through the stack (`BLAKE3` addresses only frame cells).
-pub(crate) enum B3Operand {
-    Stack(Off),
-    Heap { ptr: Off, lo: u32 },
+/// A resolved run of consecutive cells ([`crate::lower::FnLower::cell_run`]): a
+/// frame (stack) run, used in place, or a heap slice (the buffer pointer's cell
+/// plus the first g-power offset), which a `blake3` operand must bridge through
+/// the stack since `BLAKE3` addresses only frame cells.
+pub(crate) enum CellRun {
+    Stack { base: Off, len: u32 },
+    Heap { ptr: Off, lo: u32, len: u32 },
+}
+
+impl CellRun {
+    pub(crate) fn cells(&self) -> u32 {
+        match *self {
+            CellRun::Stack { len, .. } | CellRun::Heap { len, .. } => len,
+        }
+    }
 }

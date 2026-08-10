@@ -73,14 +73,6 @@ thread_local! {
     static IN_TASK: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The calling worker's id in `0..num_threads()` (`0` off-pool). Indexes
-/// per-worker state.
-#[must_use]
-#[inline]
-fn current_worker_id() -> usize {
-    WORKER_ID.get()
-}
-
 /// A type-erased work unit. The `&dyn Fn`'s lifetime is erased to `'static`; it
 /// is dereferenced only inside a dispatch window during which the dispatcher
 /// blocks, so the borrow outlives every call. Range-based (`f(start, end)`) so a
@@ -98,16 +90,31 @@ struct Worker {
     handle: OnceLock<Thread>,
 }
 
+/// One atomic per cache line: `generation`, `counter` and `working` are hammered
+/// by different parties inside the same dispatch window, so packing them together
+/// makes every completion decrement invalidate the line every spinner is reading.
+/// 128 rather than 64 because x86-64 prefetches the adjacent line of a pair.
+#[repr(align(128))]
+struct Line(AtomicUsize);
+
+impl std::ops::Deref for Line {
+    type Target = AtomicUsize;
+    #[inline]
+    fn deref(&self) -> &AtomicUsize {
+        &self.0
+    }
+}
+
 struct Pool {
     /// The current job: written by the sole dispatcher before the `generation`
     /// bump, read by workers after observing it (the bump supplies the ordering).
     job: UnsafeCell<Option<Job>>,
     /// Bumped once per dispatch; idle workers watch it (spin, then park).
-    generation: AtomicUsize,
+    generation: Line,
     /// Next item index to claim; reset per dispatch.
-    counter: AtomicUsize,
+    counter: Line,
     /// Background workers still draining; the dispatcher spins this to zero.
-    working: AtomicUsize,
+    working: Line,
     /// Park flag and unpark handle per worker.
     workers: Vec<Worker>,
     /// Serializes dispatchers: one driver at a time.
@@ -146,9 +153,9 @@ fn pool() -> &'static Pool {
         set_qos(Qos::Interactive);
         let p: &'static Pool = Box::leak(Box::new(Pool {
             job: UnsafeCell::new(None),
-            generation: AtomicUsize::new(0),
-            counter: AtomicUsize::new(0),
-            working: AtomicUsize::new(0),
+            generation: Line(AtomicUsize::new(0)),
+            counter: Line(AtomicUsize::new(0)),
+            working: Line(AtomicUsize::new(0)),
             workers: (0..n)
                 .map(|_| Worker {
                     parked: AtomicBool::new(false),
@@ -363,15 +370,11 @@ pub fn chunks_mut<T: Send, F>(data: &mut [T], chunk: usize, f: F)
 where
     F: Fn(usize, &mut [T]) + Sync,
 {
-    assert!(chunk > 0, "chunk size must be non-zero");
-    let len = data.len();
-    let base = SendPtr(data.as_mut_ptr());
-    for_each(len.div_ceil(chunk), |i| {
-        let start = i * chunk;
-        // SAFETY: distinct `i` give disjoint in-bounds ranges, and `data` stays
+    let view = Chunks::new(data, chunk);
+    for_each(view.count(), |i| {
+        // SAFETY: distinct `i` give disjoint in-bounds chunks, and `data` stays
         // borrowed for the whole dispatch.
-        let slice = unsafe { base.slice(start, chunk.min(len - start)) };
-        f(i, slice);
+        f(i, unsafe { view.get(i) });
     });
 }
 
@@ -513,17 +516,22 @@ pub fn find_first<P: Fn(usize) -> bool + Sync>(n_tasks: usize, pred: P) -> Optio
     }
 }
 
+/// One slot per cache line: a worker writes through its accumulator on the
+/// per-item path, so a dense array would false-share the boundary lines.
+#[repr(align(64))]
+struct Slot<S>(Option<S>);
+
 /// Give each worker its own persistent `Option<S>` while it drains `0..n_tasks`:
 /// `run(slot, start, end)` fires once per claim with that worker's slot, so state
 /// accumulates across its claims. Returns the slots (the rest `None`) for the
 /// caller to combine.
-fn drain_into_slots<S: Send>(n_tasks: usize, run: impl Fn(&mut Option<S>, usize, usize) + Sync) -> Vec<Option<S>> {
-    let mut slots: Vec<Option<S>> = (0..num_threads()).map(|_| None).collect();
+fn drain_into_slots<S: Send>(n_tasks: usize, run: impl Fn(&mut Option<S>, usize, usize) + Sync) -> Vec<Slot<S>> {
+    let mut slots: Vec<Slot<S>> = (0..num_threads()).map(|_| Slot(None)).collect();
     let ptr = SendPtr(slots.as_mut_ptr());
     for_each_chunk(n_tasks, |start, end| {
-        // SAFETY: `current_worker_id() < num_threads()` is unique per live
-        // worker, so the slots are disjoint; `slots` outlives the dispatch.
-        let slot = unsafe { &mut *ptr.add(current_worker_id()) };
+        // SAFETY: `WORKER_ID.get() < num_threads()` is unique per live worker, so
+        // the slots are disjoint; `slots` outlives the dispatch.
+        let slot = unsafe { &mut (*ptr.add(WORKER_ID.get())).0 };
         run(slot, start, end);
     });
     slots
@@ -549,7 +557,7 @@ where
     });
     // `identity()` seeds the combine as a left identity, which makes the empty
     // and single-worker cases fall out without a special path.
-    slots.into_iter().flatten().fold(identity(), &reduce)
+    slots.into_iter().filter_map(|s| s.0).fold(identity(), &reduce)
 }
 
 /// Parallel fold-then-reduce: each worker builds one accumulator with `init`,
@@ -591,7 +599,7 @@ where
     });
     slots
         .into_iter()
-        .flatten()
+        .filter_map(|s| s.0)
         .map(|(_, acc)| acc)
         .fold(init_acc(), &combine)
 }

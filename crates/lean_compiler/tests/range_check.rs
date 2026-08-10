@@ -6,19 +6,12 @@
 //! range-check trick, transported to g-powers; the only nondeterminism is the
 //! end-of-run resolution of the two touched cells.
 
-use lean_compiler::{compile, compile_without_filler, parse};
+use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192, g_pow};
 
-/// The program's own instruction mix: a build without the fill blocks, executed but not
-/// proven. Proving needs them, since a table's height has to be a power of two with no
-/// padding rows, but their dummy rows would drown out exactly what these counts are
-/// measuring.
-fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
-    compile_without_filler(&parse(src).expect("parse"))
-        .execute(pi)
-        .base_counts
-}
+mod common;
+use common::mix;
 
 /// Both bound forms (`log GEN ** k` and a plain integer exponent) with the
 /// boundary elements (`g^{k-1}`, `1 = g^0`), end-to-end: prove + verify, and a

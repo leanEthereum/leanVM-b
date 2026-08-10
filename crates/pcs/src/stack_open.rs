@@ -57,9 +57,7 @@ use primitives::multilinear::eq_eval;
 use super::pack::PACKING_WIDTH;
 use super::ring_switch;
 use super::whir::{ProverConfig, VerifierConfig};
-use super::whir::{
-    ProverData, build_eq_table_ext, recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
-};
+use super::whir::{ProverData, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
 
 // ---------------------------------------------------------------------------
 // Claim types
@@ -159,36 +157,93 @@ pub struct RingSwitchVerify {
 // Shared claim folding / evaluation
 // ---------------------------------------------------------------------------
 
+/// The b_stack range a claim's weight is supported on. Every range is an
+/// aligned dyadic interval (the offset asserts below), so two of them are
+/// nested or disjoint and never partially overlap. `Strided` reports its whole
+/// block rather than the strided positions inside it, which is conservative in
+/// the direction that matters: it only ever makes a later claim accumulate.
+fn claim_range(claim: &StackClaim) -> (usize, usize) {
+    match claim {
+        StackClaim::Point { offset, low_point, .. } => (*offset, *offset + (1usize << low_point.len())),
+        StackClaim::Strided {
+            offset,
+            stride_log,
+            point,
+            ..
+        } => (*offset, *offset + (1usize << (stride_log + point.len()))),
+    }
+}
+
+/// Per-claim "this claim may WRITE its range instead of accumulating into it",
+/// plus the ranges those writes cover. A `Point` claim qualifies when nothing
+/// written earlier (the q_flock block, which `combine_deferred_into` fills, or
+/// an earlier claim) lands anywhere in its range: claims are folded in list
+/// order, so its slice is still untouched when its turn comes, and in char 2
+/// writing where a zero would have been is bit-identical.
+///
+/// The returned ranges are pairwise disjoint, so the caller only has to zero
+/// the gaps between them.
+fn claim_write_plan(claims: &[StackClaim], qflock: (usize, usize)) -> (Vec<bool>, Vec<(usize, usize)>) {
+    let mut touched = vec![qflock];
+    let mut written = vec![qflock];
+    let mut write_first = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let range = claim_range(claim);
+        let free = touched.iter().all(|&(s, e)| range.1 <= s || e <= range.0);
+        let first = free && matches!(claim, StackClaim::Point { .. });
+        if first {
+            written.push(range);
+        }
+        touched.push(range);
+        write_first.push(first);
+    }
+    (write_first, written)
+}
+
 /// Fold the gamma-weighted point claims into the stack weight `b_stack` and
 /// running `target` (pure: the caller has already observed the claim values
 /// and sampled `gammas` in transcript order). A `Point` builds eq over ONLY
 /// its aligned slice, a `Strided` scatters the eq of its high coords at the
-/// slot's stride. Both scatter with `+=`, so overlapping slices accumulate
-/// correctly; the OUTER loop therefore stays serial (several bus claims can
-/// land on one column region), and parallelism lives inside each claim: the
-/// gamma-seeded eq build ([`super::whir::add_eq_table_ext_seeded`], parallel
-/// above its level floor, expanding its last coordinate straight into
-/// `b_stack` so the table's largest level is never staged in scratch) and the
-/// strided scatter. Small slices stay fully serial (with many tiny point
-/// claims, pool dispatch would cost more than the fold itself). The gamma
-/// seeding and the serial/parallel splits are exact-field/order-preserving,
+/// slot's stride. Every claim but the first one on a range scatters with `+=`,
+/// so overlapping slices accumulate correctly; the OUTER loop therefore stays
+/// serial (several bus claims can land on one column region), and parallelism
+/// lives inside each claim: the gamma-seeded eq build (parallel above its level
+/// floor) and the strided scatter. Small slices stay fully serial (with many
+/// tiny point claims, pool dispatch would cost more than the fold itself). The
+/// gamma seeding and the serial/parallel splits are exact-field/order-preserving,
 /// so `b_stack`'s bytes (and hence the proof) are unchanged relative to the
 /// build-then-multiply form.
-fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[StackClaim], gammas: &[F192]) {
-    // One reusable eq scratch, sized to half the largest Point claim, since
-    // `add_eq_table_ext_seeded` expands the last coordinate straight into
-    // `b_stack`. A fresh multi-MB allocation per claim would pay the first-touch
-    // page faults anew.
-    let max_half = claims
+///
+/// `write_first` comes from [`claim_write_plan`]: where it is set, the claim's
+/// slice is uninitialized and the eq table is written straight into it by
+/// [`super::whir::build_eq_table_ext_seeded`]; elsewhere
+/// [`super::whir::add_eq_table_ext_seeded`] accumulates, expanding its last
+/// coordinate straight into `b_stack` so the table's largest level is never
+/// staged in scratch.
+fn fold_stacked_point_claims(
+    b_stack: &mut [F192],
+    target: &mut F192,
+    claims: &[StackClaim],
+    gammas: &[F192],
+    write_first: &[bool],
+) {
+    // One reusable eq scratch: half the largest accumulating Point claim (the
+    // seeded add expands the last coordinate straight into `b_stack`, and a
+    // write-first Point needs no scratch at all), or the whole eq table of the
+    // largest Strided claim. A fresh multi-MB allocation per claim would pay the
+    // first-touch page faults anew.
+    let scratch_len = claims
         .iter()
-        .map(|c| match c {
+        .zip(write_first)
+        .map(|(c, &first)| match c {
+            StackClaim::Point { .. } if first => 0,
             StackClaim::Point { low_point, .. } => 1usize << low_point.len().saturating_sub(1),
-            StackClaim::Strided { .. } => 0,
+            StackClaim::Strided { point, .. } => 1usize << point.len(),
         })
         .max()
         .unwrap_or(0);
-    let mut scratch = zk_alloc::alloc_uninit(max_half);
-    for (claim, g) in claims.iter().zip(gammas.iter()) {
+    let mut scratch = zk_alloc::alloc_uninit(scratch_len);
+    for ((claim, g), &first) in claims.iter().zip(gammas.iter()).zip(write_first) {
         let g = *g;
         match claim {
             StackClaim::Point {
@@ -202,7 +257,11 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
                     "StackClaim::Point: offset must be 2^|low_point|-aligned"
                 );
                 let dst = &mut b_stack[*offset..*offset + len];
-                super::whir::add_eq_table_ext_seeded(low_point, g, &mut scratch, dst);
+                if first {
+                    super::whir::build_eq_table_ext_seeded(low_point, g, dst);
+                } else {
+                    super::whir::add_eq_table_ext_seeded(low_point, g, &mut scratch, dst);
+                }
                 *target += g * *value;
             }
             StackClaim::Strided {
@@ -224,9 +283,12 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
                     "StackClaim::Strided: offset must be 2^(stride_log + |point|)-aligned"
                 );
                 let base = *offset + *slot;
-                let eq = build_eq_table_ext(point);
+                let len = 1usize << point.len();
+                super::whir::build_eq_table_ext_seeded(point, g, &mut scratch[..len]);
+                // SAFETY: the build above initialized exactly this prefix.
+                let eq = unsafe { std::slice::from_raw_parts(scratch.as_ptr().cast::<F192>(), len) };
                 for (j, &ej) in eq.iter().enumerate() {
-                    b_stack[base + j * stride] += g * ej;
+                    b_stack[base + j * stride] += ej;
                 }
                 *target += g * *value;
             }
@@ -362,26 +424,37 @@ pub fn open_batch_mixed_whir_stacked(
         .iter()
         .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
-    // claims otherwise fault pages one claim at a time. The scatters that follow
-    // accumulate, so their slots have to start at zero, with one exception:
-    // `combine_deferred_into` writes the whole q_flock block, so zeroing it first
-    // would be a quarter of a gigabyte of stores thrown away.
+    // claims otherwise fault pages one claim at a time. A scatter that lands on
+    // slots an earlier one already touched has to accumulate, so those slots
+    // start at zero; a range whose first writer covers all of it does not, and
+    // zeroing it would be stores thrown away. `combine_deferred_into` writes the
+    // whole q_flock block, and `claim_write_plan` finds the point claims that
+    // likewise write a whole untouched range.
     //
-    // SAFETY: every slot is written before it is read: the fill covers everything
-    // outside the q_flock block, and `combine_deferred_into` writes the block.
+    // SAFETY: every slot is written before it is read: the fill covers every gap
+    // between the written ranges, `combine_deferred_into` writes the q_flock
+    // block, and each `write_first` claim writes its whole slice before any
+    // later claim can accumulate into it.
+    let (write_first, mut written) = claim_write_plan(point_claims, (ring.offset, ring.offset + qflock_len));
     let mut b_stack = unsafe { zk_alloc::ArenaVec::<F192>::uninitialized(stack.len()) };
     {
         const ZERO_CHUNK: usize = 1 << 16;
-        let (head, rest) = b_stack.split_at_mut(ring.offset);
-        let (block, tail) = rest.split_at_mut(qflock_len);
-        for part in [head, tail] {
-            parallel::chunks_mut(part, ZERO_CHUNK, |_, chunk| chunk.fill(F192::ZERO));
+        written.sort_unstable();
+        let mut cursor = 0usize;
+        let zero = |part: &mut [F192]| parallel::chunks_mut(part, ZERO_CHUNK, |_, c| c.fill(F192::ZERO));
+        for (start, end) in written {
+            if start > cursor {
+                zero(&mut b_stack[cursor..start]);
+            }
+            cursor = cursor.max(end);
         }
+        zero(&mut b_stack[cursor..]);
         mark("b_stack zero fill", &mut t);
+        let block = &mut b_stack[ring.offset..ring.offset + qflock_len];
         ring_switch::combine_deferred_into(&rs_outputs, block);
         mark("rs_eq_ind scatter", &mut t);
     }
-    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd);
+    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd, &write_first);
     mark("point-claim folds", &mut t);
 
     // 4. One WHIR over the full stack against the combined claim (the
@@ -489,24 +562,9 @@ mod tests {
     use super::*;
     use crate::pack::{LOG_PACKING, pack_witness};
     use crate::ring_switch::{claim_check, fold_1b_rows};
-    use crate::whir::{commit, configs_for, inner_product_base_ext};
-    use crate::whir::{default_config, default_verifier_config};
+    use crate::whir::{build_eq_table_ext, commit, default_config, inner_product_base_ext};
+    use crate::whir_config::test_configs_for;
     use primitives::test_rng::Rng;
-
-    /// Configs for a K-stack of `2^log_n` words: prefer the production
-    /// Secure-profile derivation; fall back to the ad-hoc default_config
-    /// shape below its feasibility floor (same fallback the sibling K test
-    /// modules use).
-    fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
-        match configs_for(log_n) {
-            Ok(pv) => pv,
-            Err(_) => {
-                let pc = default_config(log_n, 5, 1).unwrap();
-                let vc = default_verifier_config(log_n, 5, 1).unwrap();
-                (pc, vc)
-            }
-        }
-    }
 
     const DOMAIN: &[u8] = b"stack-open-test";
 
@@ -757,7 +815,7 @@ mod tests {
         // Fixed fallback config so the residual cube size is known: the
         // crossing regime needs qflock_vars > log_n - yr_log_n.
         let pc = default_config(log_n, 5, 1).unwrap();
-        let vc = default_verifier_config(log_n, 5, 1).unwrap();
+        let vc = pc.clone();
         let yr_log_n = log_n - pc.initial_k - pc.level_ks.iter().sum::<usize>();
         assert!(
             qflock_vars > log_n - yr_log_n,

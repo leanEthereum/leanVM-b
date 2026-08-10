@@ -80,8 +80,8 @@ impl Sponge {
     /// op of the recorded transcript.)
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         let mut s = Self { cv: [F64::ZERO; 4] };
-        s.absorb_bytes_untraced(b"leanvm-b/transcript/v2");
-        s.absorb_bytes_untraced(label);
+        s.absorb_bytes(b"leanvm-b/transcript/v2");
+        s.absorb_bytes(label);
         for &x in statement {
             s.observe_untraced(x);
         }
@@ -103,12 +103,7 @@ impl Sponge {
     /// then its 16-byte (two-word) chunks as tagged blocks (the domain tag
     /// occupies the third lane, leaving two data words per block), so a field
     /// element, a raw integer, and a byte string cannot alias.
-    pub fn absorb_bytes(&mut self, bytes: &[u8]) {
-        self.absorb_bytes_untraced(bytes);
-        trace(|| TraceOp::AbsorbBytes(bytes.to_vec()));
-    }
-
-    fn absorb_bytes_untraced(&mut self, bytes: &[u8]) {
+    fn absorb_bytes(&mut self, bytes: &[u8]) {
         self.cv = compress(self.cv, [F64(bytes.len() as u64), F64::ZERO, DS_LEN, F64::ZERO]);
         for chunk in bytes.chunks(16) {
             let mut buf = [0u8; 16];
@@ -153,7 +148,7 @@ impl Sponge {
     }
 
     /// The grinding digest word this state yields for `nonce` (read-only preview;
-    /// [`Self::verify_pow`] is the mutating check).
+    /// [`Self::verify_pow_field`] is the mutating check).
     fn pow_digest(&self, nonce: F192) -> F64 {
         compress(self.pow_base(), [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW])[0]
     }
@@ -166,7 +161,6 @@ impl Sponge {
         for op in ops {
             match op {
                 TraceOp::Observe(x) => self.observe_untraced(*x),
-                TraceOp::AbsorbBytes(b) => self.absorb_bytes_untraced(b),
                 TraceOp::Sample(v) => {
                     assert_eq!(self.sample_untraced(), *v, "trace replay diverged")
                 }
@@ -176,7 +170,6 @@ impl Sponge {
                         "trace replay: grind failed"
                     )
                 }
-                TraceOp::StreamRaw(_) | TraceOp::MerklePhase => {}
             }
         }
     }
@@ -225,12 +218,7 @@ impl Sponge {
     /// PoW against the current state, then bind it regardless (so the sponge stays
     /// in lockstep with an honest prover; a failed check rejects at the call
     /// site). `bits = 0` accepts only the canonical nonce `0`, which keeps proofs
-    /// non-malleable at zero-bit grinding sites.
-    pub fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
-        self.verify_pow_field(F192::new(nonce, 0, 0), bits)
-    }
-
-    /// Verify a nonce transported as a field word. Allowing the complete field
+    /// non-malleable at zero-bit grinding sites. Allowing the complete field
     /// domain does not weaken grinding: each candidate still requires one hash
     /// and succeeds with probability 2^-bits. Honest provers remain canonical
     /// and search the deterministic u64 subset in [`Self::grind_pow`].
@@ -255,21 +243,15 @@ impl Sponge {
     }
 }
 
-/// One transcript operation, recorded by the (diagnostic) trace
-/// ([`trace_start`] / [`trace_take`]). The sponge records its own absorbs /
-/// squeezes / grind checks; transport-only events ([`TraceOp::StreamRaw`],
-/// [`TraceOp::MerklePhase`]) are recorded by the caller owning the transport
-/// channel via [`trace`]. The in-circuit verifier replays exactly this op
-/// sequence, so the trace of a real verify run is both the guest program's
-/// mechanical spec and its checkpoint data.
+/// One sponge operation, recorded by the (diagnostic) trace ([`trace_start`] /
+/// [`trace_take`]): the absorbs, squeezes and grind checks a verify run
+/// performs, in order. The in-circuit verifier replays exactly this sequence,
+/// so the trace of a real verify run is both the guest program's mechanical
+/// spec and its checkpoint data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceOp {
-    /// A stream word consumed without binding (grinding nonces).
-    StreamRaw(F192),
     /// An absorbed scalar (transmitted or derived: the sponge cannot tell).
     Observe(F192),
-    /// `absorb_bytes` (labels, roots).
-    AbsorbBytes(Vec<u8>),
     Sample(F192),
     /// A grinding check: the nonce, the required bits, and the digest word the
     /// pre-absorb state yields for that nonce (so trace consumers never need
@@ -279,8 +261,6 @@ pub enum TraceOp {
         bits: u32,
         digest: F64,
     },
-    /// One opening phase's Merkle data consumed.
-    MerklePhase,
 }
 
 thread_local! {
@@ -297,10 +277,9 @@ pub fn trace_take() -> Vec<TraceOp> {
     TRACE.with(|t| t.borrow_mut().take().unwrap_or_default())
 }
 
-/// Record one op if a trace is active (the closure only runs then). The sponge
-/// calls this for its own ops; transport owners call it for theirs.
+/// Record one op if a trace is active (the closure only runs then).
 #[inline]
-pub fn trace(op: impl FnOnce() -> TraceOp) {
+fn trace(op: impl FnOnce() -> TraceOp) {
     TRACE.with(|t| {
         if let Some(v) = t.borrow_mut().as_mut() {
             v.push(op());
@@ -349,7 +328,7 @@ mod tests {
         bytes[..8].copy_from_slice(&x.c0.to_le_bytes());
         bytes[8..16].copy_from_slice(&x.c1.to_le_bytes());
         bytes[16..].copy_from_slice(&x.c2.to_le_bytes());
-        b.absorb_bytes_untraced(&bytes);
+        b.absorb_bytes(&bytes);
         assert_ne!(a.sample(), b.sample());
     }
 

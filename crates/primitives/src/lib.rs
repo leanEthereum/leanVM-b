@@ -295,21 +295,14 @@ pub fn log2_ceil_usize(n: usize) -> usize {
     if n <= 1 { 0 } else { (n - 1).ilog2() as usize + 1 }
 }
 
-/// Arena-backed parallel collects. This lives here rather than in `zk_alloc` so
-/// the allocator itself stays free of a thread-pool dependency.
-pub trait ParCollectArena<T>: Sized {
-    /// Parallel `(0..n).map(build).collect()`: one allocation on the calling
-    /// thread, filled in place by the workers — no per-worker intermediate
-    /// vectors to allocate and copy out of.
-    fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self;
-}
-
-impl<T: Send> ParCollectArena<T> for zk_alloc::ArenaVec<T> {
-    fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self {
-        // SAFETY: the fill below writes every slot in `0..n` exactly once, and
-        // the dispatch joins before the buffer is observable.
-        let mut out = unsafe { Self::uninitialized(n) };
-        parallel::fill(&mut out, build);
-        out
-    }
+/// Arena-backed parallel `(0..n).map(build).collect()`: one allocation on the
+/// calling thread, filled in place by the workers — no per-worker intermediate
+/// vectors to allocate and copy out of. This lives here rather than in
+/// `zk_alloc` so the allocator itself stays free of a thread-pool dependency.
+pub fn par_collect_arena<T: Send>(n: usize, build: impl Fn(usize) -> T + Sync) -> zk_alloc::ArenaVec<T> {
+    // SAFETY: the fill below writes every slot in `0..n` exactly once, and
+    // the dispatch joins before the buffer is observable.
+    let mut out = unsafe { zk_alloc::ArenaVec::uninitialized(n) };
+    parallel::fill(&mut out, build);
+    out
 }

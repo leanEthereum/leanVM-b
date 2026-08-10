@@ -18,7 +18,7 @@
 //! is tested on honest witnesses; verify also rejects byte-mutated proofs and
 //! shape-corrupted ones.
 
-use fiat_shamir::transcript::{ProverState, VerifierState};
+use fiat_shamir::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F8, F192};
 use zk_alloc::ArenaVec;
 
@@ -199,20 +199,18 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
 
     // ---- Round 2: fused fold + first multilinear message ----
     //
-    // Convention A wrapping: pass `mlv_arg[0] = ONE` so the function's output
-    // `mlv_arg[0] · G(1)` becomes the bare `G(1)` we send on the wire. The
-    // verifier samples ρ_1 after observing this message.
+    // The kernel takes the eq challenges of the variables it does NOT bind and
+    // returns the bare `(G(1), G(∞))` that goes on the wire. The verifier
+    // samples ρ_1 after observing this message.
     let t_round2 = std::time::Instant::now();
     let fold_table = UniSkipFoldTable::new(k_skip, z);
-    let mut mlv_arg = vec![F192::ONE; n_mlv];
-    mlv_arg[1..].copy_from_slice(&r_rest[1..]);
     let (mut a_mlv, mut b_mlv, msg_1, msg_inf) = uni_skip_fold_and_round_pair_optimized_packed_padded(
         a_packed,
         b_packed,
         m,
         k_skip,
         &fold_table,
-        &mlv_arg,
+        &r_rest[1..],
         padding,
     );
 
@@ -258,11 +256,8 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
         let rho_prev = mlv_rhos[i];
         let log_n_before = a_mlv.len().trailing_zeros() as usize;
 
-        // r_next for the next round's message: length log_n_before - 1.
-        // r_next[0] = ONE (Convention A factor); r_next[1..] are the eq
-        // weights for the remaining variables = r_rest[i + 2..].
-        let mut r_next = vec![F192::ONE; log_n_before - 1];
-        r_next[1..].copy_from_slice(&r_rest[i + 2..]);
+        // The eq weights of the variables the next round does not bind.
+        let r_eq = &r_rest[i + 2..];
 
         let (m1, mi) = if log_n_before >= 10 {
             let half = a_mlv.len() / 2;
@@ -272,7 +267,7 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
                 &mut a_nxt[..half],
                 &mut b_nxt[..half],
                 rho_prev,
-                &r_next,
+                r_eq,
             );
             // Swap current <-> scratch, then shrink the new current to the
             // folded size. The old (larger) buffer becomes scratch; we only
@@ -285,7 +280,7 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
             (m1, mi)
         } else {
             fold_in_place_pair(&mut a_mlv, &mut b_mlv, rho_prev);
-            round_pair_naive(&a_mlv, &b_mlv, &r_next)
+            round_pair_naive(&a_mlv, &b_mlv, r_eq)
         };
 
         ps.add_scalar(m1);
@@ -479,7 +474,7 @@ mod tests {
     ///
     /// structural sanity here catches:
     ///   - mismatched sponge observe/sample sequence
-    ///   - wrong slice lengths in r / mlv_arg / r_next at any round
+    ///   - wrong slice lengths in the eq-challenge tail at any round
     ///   - any unreachable assert in the underlying functions
     #[test]
     fn prove_runs_end_to_end() {

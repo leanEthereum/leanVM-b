@@ -36,7 +36,7 @@
 
 use crate::PAR_THRESHOLD;
 use crate::colval::ColVal;
-use crate::transcript::{ProverState, VerifierState};
+use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F64, F192, F192Unreduced, powers};
 use primitives::multilinear::{
     add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,

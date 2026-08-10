@@ -23,7 +23,7 @@
 //! domain tags, grinding, and the diagnostic trace) lives in [`crate::sponge`].
 
 use crate::merkle::{Hash, MerkleOpening, MerklePaths, hash_to_scalars, scalars_to_hash};
-use crate::sponge::{Sponge, TraceOp, trace};
+use crate::sponge::Sponge;
 use primitives::field::{F64, F192};
 
 /// A complete proof: the scalar transcript stream plus the Merkle phases:
@@ -161,50 +161,6 @@ impl ProverState {
         }
     }
 
-    /// Transmit a scalar into the proof AND bind it into the sponge (the two are
-    /// inseparable: you cannot send without binding).
-    #[inline]
-    pub fn add_scalar(&mut self, x: F192) {
-        self.sponge.observe(x);
-        self.stream.push(x);
-    }
-
-    pub fn add_scalars(&mut self, xs: &[F192]) {
-        for &x in xs {
-            self.add_scalar(x);
-        }
-    }
-
-    pub fn sample(&mut self) -> F192 {
-        self.sponge.sample()
-    }
-
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        self.sponge.sample_vec(n)
-    }
-
-    /// Prover mirror of [`VerifierState::observe_scalar`].
-    pub fn observe_scalar(&mut self, x: F192) {
-        self.sponge.observe(x);
-    }
-
-    /// Hand the next opening phase's Merkle data to the verifier. Not absorbed:
-    /// its binding is the Merkle structure itself.
-    pub fn hint_merkle(&mut self, paths: MerklePaths) {
-        self.merkle_paths.push(paths);
-    }
-
-    /// Proof-of-work grind of `bits` before the next challenge, raising that
-    /// challenge's Schwartz–Zippel soundness by `bits` (the prover must redo
-    /// the PoW to re-roll the challenge). Grinds, binds the nonce into the
-    /// sponge, and transmits it on the stream as raw transport (already bound
-    /// by the grind, so it is NOT re-absorbed). `bits = 0` is the canonical
-    /// no-work nonce `0`.
-    pub fn grind(&mut self, bits: u32) {
-        let nonce = self.sponge.grind_pow(bits);
-        self.stream.push(F192::new(nonce, 0, 0));
-    }
-
     pub fn into_proof(self) -> Proof {
         Proof {
             stream: self.stream,
@@ -238,66 +194,12 @@ impl<'a> VerifierState<'a> {
         }
     }
 
-    /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
-    #[inline]
-    pub fn next_scalar(&mut self) -> Result<F192, Error> {
-        let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
-        self.offset += 1;
-        self.sponge.observe(x);
-        Ok(x)
-    }
-
-    pub fn next_scalars(&mut self, n: usize) -> Result<Vec<F192>, Error> {
-        (0..n).map(|_| self.next_scalar()).collect()
-    }
-
     /// Advance the stream cursor by one **without** binding into the sponge: the
     /// read counterpart of the raw nonce push in [`ProverState::grind`].
     fn take_raw(&mut self) -> Result<F192, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
-        trace(|| TraceOp::StreamRaw(x));
         Ok(x)
-    }
-
-    pub fn sample(&mut self) -> F192 {
-        self.sponge.sample()
-    }
-
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        self.sponge.sample_vec(n)
-    }
-
-    /// Absorb a value both parties compute themselves (never transmitted):
-    /// protocol steps that bind derived values before sampling, e.g. the
-    /// stacked-bytecode claim reduction (`leaf::verify_balance`).
-    pub fn observe_scalar(&mut self, x: F192) {
-        self.sponge.observe(x);
-    }
-
-    /// Verifier mirror of [`ProverState::hint_merkle`]: pull the next opening
-    /// phase, authenticate every queried row against `root`, and return the rows
-    /// in `queries` order.
-    ///
-    /// The only way to reach a phase's rows, so none can be used unauthenticated.
-    /// The check also yields each query's full sibling path, which is recorded
-    /// for [`Self::into_raw_proof`].
-    pub fn next_merkle_batch(
-        &mut self,
-        root: &Hash,
-        num_leaves: usize,
-        queries: &[usize],
-        leaf_words: usize,
-    ) -> Result<Vec<Vec<F64>>, Error> {
-        let paths: &'a MerklePaths = self.merkle_paths.get(self.phase).ok_or(Error::MissingHint)?;
-        self.phase += 1;
-        trace(|| TraceOp::MerklePhase);
-        let openings = paths
-            .open(root, num_leaves, queries, leaf_words)
-            .ok_or(Error::InvalidMerkleOpening)?;
-        let rows = openings.iter().map(|o| o.leaf_data.clone()).collect();
-        self.raw_openings.extend(openings);
-        Ok(rows)
     }
 
     /// The redundant form of the proof just verified: every scalar it read, plus
@@ -310,28 +212,10 @@ impl<'a> VerifierState<'a> {
         }
     }
 
-    /// Verifier mirror of [`ProverState::grind`]: read the transmitted nonce and
-    /// check it clears the `bits` proof-of-work, then bind it (so the sponge
-    /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
-    pub fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
-        let nonce = self.take_raw()?;
-        if self.sponge.verify_pow_field(nonce, bits) {
-            Ok(())
-        } else {
-            Err(Error::PowFailed)
-        }
-    }
-
     /// How many stream words have been read so far: the cursor a caller needs
     /// to locate a sub-protocol's scalars without counting back from the tail.
     pub fn stream_offset(&self) -> usize {
         self.offset
-    }
-
-    /// The sponge's current chaining value (recursion harnesses snapshot the
-    /// phase-boundary states as guest debug checkpoints).
-    pub fn sponge_state(&self) -> [F64; 4] {
-        self.sponge.state()
     }
 
     /// Assert the whole proof was consumed (no trailing/extra data).
@@ -345,21 +229,46 @@ impl<'a> VerifierState<'a> {
 }
 
 impl Transmitter for ProverState {
+    /// Hand the next opening phase's Merkle data to the verifier. Not absorbed:
+    /// its binding is the Merkle structure itself.
     fn hint_merkle(&mut self, paths: MerklePaths) {
-        Self::hint_merkle(self, paths)
+        self.merkle_paths.push(paths);
     }
+
+    /// Transmit a scalar into the proof AND bind it into the sponge (the two are
+    /// inseparable: you cannot send without binding).
+    #[inline]
     fn add_scalar(&mut self, x: F192) {
-        Self::add_scalar(self, x)
+        self.sponge.observe(x);
+        self.stream.push(x);
     }
+
     fn add_scalars(&mut self, xs: &[F192]) {
-        Self::add_scalars(self, xs)
+        for &x in xs {
+            self.add_scalar(x);
+        }
     }
+
+    /// Proof-of-work grind of `bits` before the next challenge, raising that
+    /// challenge's Schwartz–Zippel soundness by `bits` (the prover must redo
+    /// the PoW to re-roll the challenge). Grinds, binds the nonce into the
+    /// sponge, and transmits it on the stream as raw transport (already bound
+    /// by the grind, so it is NOT re-absorbed). `bits = 0` is the canonical
+    /// no-work nonce `0`.
     fn grind(&mut self, bits: u32) {
-        Self::grind(self, bits)
+        let nonce = self.sponge.grind_pow(bits);
+        self.stream.push(F192::new(nonce, 0, 0));
     }
 }
 
-impl Receiver for VerifierState<'_> {
+impl<'a> Receiver for VerifierState<'a> {
+    /// Verifier mirror of [`Transmitter::hint_merkle`]: pull the next opening
+    /// phase, authenticate every queried row against `root`, and return the rows
+    /// in `queries` order.
+    ///
+    /// The only way to reach a phase's rows, so none can be used unauthenticated.
+    /// The check also yields each query's full sibling path, which is recorded
+    /// for [`VerifierState::into_raw_proof`].
     fn next_merkle_batch(
         &mut self,
         root: &Hash,
@@ -367,37 +276,62 @@ impl Receiver for VerifierState<'_> {
         queries: &[usize],
         leaf_words: usize,
     ) -> Result<Vec<Vec<F64>>, Error> {
-        Self::next_merkle_batch(self, root, num_leaves, queries, leaf_words)
+        let paths: &'a MerklePaths = self.merkle_paths.get(self.phase).ok_or(Error::MissingHint)?;
+        self.phase += 1;
+        let openings = paths
+            .open(root, num_leaves, queries, leaf_words)
+            .ok_or(Error::InvalidMerkleOpening)?;
+        let rows = openings.iter().map(|o| o.leaf_data.clone()).collect();
+        self.raw_openings.extend(openings);
+        Ok(rows)
     }
+
+    /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
+    #[inline]
     fn next_scalar(&mut self) -> Result<F192, Error> {
-        Self::next_scalar(self)
+        let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
+        self.offset += 1;
+        self.sponge.observe(x);
+        Ok(x)
     }
+
+    /// Verifier mirror of [`Transmitter::grind`]: read the transmitted nonce and
+    /// check it clears the `bits` proof-of-work, then bind it (so the sponge
+    /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
     fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
-        Self::grind_check(self, bits)
+        let nonce = self.take_raw()?;
+        if self.sponge.verify_pow_field(nonce, bits) {
+            Ok(())
+        } else {
+            Err(Error::PowFailed)
+        }
     }
 }
 
 impl Challenger for ProverState {
     fn sample(&mut self) -> F192 {
-        Self::sample(self)
+        self.sponge.sample()
     }
     fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        Self::sample_vec(self, n)
+        self.sponge.sample_vec(n)
     }
     fn observe_scalar(&mut self, x: F192) {
-        Self::observe_scalar(self, x)
+        self.sponge.observe(x);
     }
 }
 
 impl Challenger for VerifierState<'_> {
     fn sample(&mut self) -> F192 {
-        Self::sample(self)
+        self.sponge.sample()
     }
     fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        Self::sample_vec(self, n)
+        self.sponge.sample_vec(n)
     }
+    /// Absorb a value both parties compute themselves (never transmitted):
+    /// protocol steps that bind derived values before sampling, e.g. the
+    /// stacked-bytecode claim reduction (`leaf::verify_balance`).
     fn observe_scalar(&mut self, x: F192) {
-        Self::observe_scalar(self, x)
+        self.sponge.observe(x);
     }
 }
 

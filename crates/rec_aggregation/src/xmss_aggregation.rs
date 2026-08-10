@@ -136,24 +136,17 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     program.set_witness("msg", vec![quad(&message)]);
     program.set_witness(
         "tweaks",
-        tweaks
-            .chunks(2)
-            .map(|c| {
-                let mut block = pair(&c[0]);
-                block.extend(pair(&c[1]));
-                block
-            })
-            .collect(),
+        tweaks.chunks(2).map(|c| vec![val16(&c[0]), val16(&c[1])]).collect(),
     );
-    // A merkle slot-bit as one 16-byte cell (bit in the low byte, rest zero).
-    let bit_word = |l: usize| vec![cell(F64(((slot >> l) & 1) as u64))];
+    // Two merkle slot-bits per block, each one 16-byte cell (bit in the low byte, rest zero).
     program.set_witness(
         "merkle_bits",
         (0..LOG_LIFETIME / 2)
             .map(|u| {
-                let mut block = bit_word(2 * u);
-                block.extend(bit_word(2 * u + 1));
-                block
+                vec![
+                    cell(F64(((slot >> (2 * u)) & 1) as u64)),
+                    cell(F64(((slot >> (2 * u + 1)) & 1) as u64)),
+                ]
             })
             .collect(),
     );
@@ -161,11 +154,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         "pks",
         signers
             .iter()
-            .map(|(pk, _)| {
-                let mut block = pair(&pk.merkle_root);
-                block.extend(pair(&pk.public_param));
-                block
-            })
+            .map(|(pk, _)| vec![val16(&pk.merkle_root), val16(&pk.public_param)])
             .collect(),
     );
     // Per-signature streams, signature-major order.

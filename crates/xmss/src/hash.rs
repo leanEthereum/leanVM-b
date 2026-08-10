@@ -24,7 +24,6 @@ pub type Tweak = [u8; TWEAK_LEN];
 
 /// A full 32-byte BLAKE3 chaining value/output.
 pub const STATE_LEN: usize = 32;
-pub type State = [u8; STATE_LEN];
 
 /// `[tweak_type (1) | sub_position (4) | index (4) | zeros (7)]`, little-endian.
 /// `index` is the slot (chain / wots_pk / encoding) or the Merkle node index;

@@ -64,7 +64,7 @@ impl Program {
         let mut bytecode_count: Vec<F64> = vec![F64::ONE; self.prog.len()];
 
         let mut next_free = self.main_frame;
-        let (mut pc, mut fp) = (self.pc0, self.fp0);
+        let (mut pc, mut fp) = (0u32, 0u32);
         let mut steps = 0usize;
         // Per-pc hint index. `self.hints` is keyed by pc, so probing it each step
         // costs a hash of the counter for what is almost always a miss; the

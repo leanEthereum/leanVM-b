@@ -30,10 +30,8 @@ def main():
 
     println!("\n=== zkDSL source ===\n{src}");
     println!(
-        "=== compiled ISA ({} instructions, pc0 = {}, fp0 = {}) ===",
-        pretty_integer(program.prog.len()),
-        pretty_integer(program.pc0),
-        pretty_integer(program.fp0),
+        "=== compiled ISA ({} instructions) ===",
+        pretty_integer(program.prog.len())
     );
     let text = disassemble(&program.prog);
     print!("{text}");

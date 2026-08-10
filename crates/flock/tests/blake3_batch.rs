@@ -20,85 +20,15 @@ use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
 use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, PackedWitnessClaims, generate_witness_with_ab_packed_and_lincheck,
-    min_n_blocks_log, pinned_compression,
+    Blake3Setup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
+    pinned_compression, ring_switch_open, ring_switch_verify,
 };
-use flock::proof::ZClaim;
-use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
-use pcs::stack_open::{
-    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_whir_stacked,
-    verify_opening_batch_mixed_whir_stacked,
-};
+use pcs::pack::LOG_PACKING;
+use pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
 use pcs::whir::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
 use pcs::whir::{commit, configs_for};
 use primitives::bench::{Plan, Timing};
-use primitives::multilinear::lagrange_weights_naive;
-use primitives::{
-    field::{F64, F192},
-    pretty_integer,
-    test_rng::Rng,
-};
-
-/// Split the two K coefficients of each packed tower element. Flock's fused
-/// witness generator uses 128-bit containers; the PCS commits 64 bits/word.
-fn flatten_packed(packed: &[F192]) -> Vec<F64> {
-    let mut out = Vec::with_capacity(2 * packed.len());
-    for value in packed {
-        out.push(F64(value.c0));
-        out.push(F64(value.c1));
-    }
-    out
-}
-
-/// Adapt one Flock evaluation claim to the 64-bit ring switch. Lincheck
-/// captures its 64 slices directly; the fused zerocheck kernel captures two
-/// banks around the first suffix coordinate, which are folded here.
-fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> RingSwitchClaim {
-    let mut suffix_point = z.point.x_inner_rest.clone();
-    suffix_point.extend_from_slice(&z.point.x_outer);
-    assert_eq!(suffix_point.len(), qflock_vars);
-
-    let s_hat_v = captured.and_then(|s| match s.len() {
-        PACKING_WIDTH => Some(s.to_vec()),
-        n if n == 2 * PACKING_WIDTH && !z.point.x_inner_rest.is_empty() => {
-            let c = z.point.x_inner_rest[0];
-            Some(
-                (0..PACKING_WIDTH)
-                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH])
-                    .collect(),
-            )
-        }
-        _ => None,
-    });
-
-    RingSwitchClaim {
-        prefix_weights: lagrange_weights_naive(LOG_PACKING, z.point.z_skip),
-        suffix_point,
-        value: z.value,
-        s_hat_v,
-    }
-}
-
-fn prover_ring(reduced: &PackedWitnessClaims, qflock_vars: usize) -> RingSwitchOpen {
-    RingSwitchOpen {
-        offset: 0,
-        qflock_vars,
-        prebound: 1,
-        claims: vec![
-            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
-            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
-        ],
-    }
-}
-
-fn verifier_ring(ab: &ZClaim, c: &ZClaim, ab_s_hat_v: &[F192], qflock_vars: usize) -> RingSwitchVerify {
-    RingSwitchVerify {
-        offset: 0,
-        qflock_vars,
-        reconstructed: vec![ab_s_hat_v.to_vec()],
-        claims: vec![ring_claim(ab, None, qflock_vars), ring_claim(c, None, qflock_vars)],
-    }
-}
+use primitives::{field::F64, pretty_integer, test_rng::Rng};
 
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
@@ -142,7 +72,7 @@ fn blake3_batch_prove_verify() {
         let _phase = zk_alloc::enter_phase();
         let t = Instant::now();
         let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
-        let q_flock = flatten_packed(&z_packed);
+        let q_flock: Vec<F64> = z_packed.iter().map(|&w| F64(w)).collect();
         let witness_s = t.elapsed().as_secs_f64();
         assert_eq!(q_flock.len(), 1 << mu);
 
@@ -157,7 +87,7 @@ fn blake3_batch_prove_verify() {
         let t = Instant::now();
         let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
         drop((z_packed, a_packed, b_packed, z_lincheck));
-        let ring = prover_ring(&reduced, mu);
+        let ring = ring_switch_open(n, 0, &reduced);
         open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
@@ -189,7 +119,7 @@ fn blake3_batch_prove_verify() {
         let mut vs = VerifierState::new(b"flock-blake3-batch", &transcript, &[]);
         let root = vs.next_root().expect("commitment root");
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
-        let ring = verifier_ring(&replay.ab, &replay.c, &replay.lc_claim.s_hat_v, mu);
+        let ring = ring_switch_verify(n, 0, &replay.ab, &replay.c, &replay.lc_claim.s_hat_v);
         assert!(
             verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring),
             "stacked PCS opening verifies"

@@ -70,9 +70,9 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
         .unwrap()
 }
 
-fn gen_wots_secret_key(seed: &[u8; 32], slot: u32, public_param: &PublicParam) -> WotsSecretKey {
+fn gen_wots_secret_key(seed: &[u8; 32], slot: u32) -> WotsSecretKey {
     let pre_images = std::array::from_fn(|i| prf(seed, PRF_DOMAINSEP_WOTS_SECRET_KEY, slot as u64, i as u64));
-    WotsSecretKey::new(pre_images, public_param, slot)
+    WotsSecretKey::new(pre_images)
 }
 
 fn gen_public_param(seed: &[u8; 32]) -> PublicParam {
@@ -103,8 +103,8 @@ fn log2_ceil(n: u64) -> usize {
 fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, lo: u64, hi: u64) -> Vec<Digest> {
     (lo..=hi)
         .map(|slot| {
-            gen_wots_secret_key(seed, slot as u32, public_param)
-                .public_key()
+            gen_wots_secret_key(seed, slot as u32)
+                .public_key(public_param, slot as u32)
                 .hash(public_param, slot as u32)
         })
         .collect()
@@ -220,7 +220,6 @@ pub fn xmss_key_gen(
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum XmssSignatureError {
     SlotOutOfRange,
-    InvalidRandomness,
 }
 
 /// WARNING: XMSS is a stateful signature scheme, never sign twice with the same
@@ -235,11 +234,9 @@ pub fn xmss_sign(
     if slot < secret_key.slot_start || slot > secret_key.slot_end {
         return Err(XmssSignatureError::SlotOutOfRange);
     }
-    let (randomness, ..) = find_randomness_for_wots_encoding(message, slot, &secret_key.public_param, rng);
-    let wots_secret_key = gen_wots_secret_key(&secret_key.seed, slot, &secret_key.public_param);
-    let wots_signature = wots_secret_key
-        .sign_with_randomness(message, slot, &secret_key.public_param, randomness)
-        .ok_or(XmssSignatureError::InvalidRandomness)?;
+    let (randomness, encoding, _) = find_randomness_for_wots_encoding(message, slot, &secret_key.public_param, rng);
+    let wots_secret_key = gen_wots_secret_key(&secret_key.seed, slot);
+    let wots_signature = wots_secret_key.sign(&encoding, randomness, slot, &secret_key.public_param);
 
     // Cache the bottom subtree covering `slot` (reused across its 2^split_level
     // slots), then read the authentication path.

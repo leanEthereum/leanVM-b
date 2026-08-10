@@ -66,34 +66,6 @@ fn normalized_sks_at(x: F64, sks_vks: &[F64], inv_sks_vks: &[F64], out: &mut [F6
     }
 }
 
-/// Write into `basis` the normalized LCH novel-basis polynomials evaluated at
-/// `x` (a K point), each scaled by the E-value `weight`. The `sks_at_x`
-/// recurrence stays in K; the basis expansion lifts into E via `mul_base`.
-fn evaluate_scaled_basis_inplace(
-    sks_at_x: &mut [F64],
-    basis: &mut [F192],
-    sks_vks: &[F64],
-    inv_sks_vks: &[F64],
-    x: F64,
-    weight: F192,
-) {
-    let log_n = basis.len().trailing_zeros() as usize;
-    debug_assert_eq!(basis.len(), 1 << log_n);
-    debug_assert!(sks_at_x.len() >= log_n);
-    debug_assert!(inv_sks_vks.len() > log_n);
-
-    normalized_sks_at(x, sks_vks, inv_sks_vks, &mut sks_at_x[..log_n]);
-
-    basis[0] = weight;
-    for k in 0..log_n {
-        let s_at_x = sks_at_x[k];
-        let current_len = 1 << k;
-        for i in 0..current_len {
-            basis[i + current_len] = basis[i].mul_base(s_at_x);
-        }
-    }
-}
-
 /// Row entries of an opened level: `F64` at L0 (mixed `mul_base` dot against
 /// the E-valued eq weights), `F192` at every deeper level (full E dot).
 pub(crate) trait RowElem: Copy + Sync {
@@ -144,7 +116,12 @@ fn invert_sks(sks_vks: &[F64]) -> Vec<F64> {
 /// Dense induce: `basis_poly[j] = Σ_i w_i · W-hat_j(q_i)`,
 /// `enforced_sum = Σ_i w_i · <row_i, eq(v_challenges, ·)>`, for the per-query
 /// batching weights `w` of [`power_weights`]. Mirror of the
-/// dense `whir::induce_sumcheck_poly` (per-thread chunked accumulation).
+/// dense `whir::induce_sumcheck_poly` (per-worker accumulation).
+///
+/// The LCH doubling recurrence runs into a HALF-size scratch and its last level
+/// expands straight into the worker's accumulator, so each query touches the
+/// accumulator once instead of writing a full-size table and adding it back.
+/// Addition in E is XOR, so reassociating across workers is bit-exact.
 pub(crate) fn induce_sumcheck_poly<T: RowElem>(
     log_msg_cols: usize,
     sks_vks: &[F64],
@@ -167,45 +144,56 @@ pub(crate) fn induce_sumcheck_poly<T: RowElem>(
     let eq = build_eq_table_ext(v_challenges);
     debug_assert_eq!(weights.len(), n_queries);
     let inv_sks_vks = invert_sks(sks_vks);
+    debug_assert!(inv_sks_vks.len() > log_msg_cols);
 
-    let n_threads = parallel::num_threads();
-    let chunk_size = (n_queries + n_threads - 1) / n_threads.max(1);
-
-    let partials: Vec<(Vec<F192>, F192)> = parallel::map_collect(n_threads, |t| {
-        let start = t * chunk_size;
-        let end = (start + chunk_size).min(n_queries);
-        if start >= end {
-            return (vec![F192::ZERO; n], F192::ZERO);
-        }
-        let mut accum_basis = vec![F192::ZERO; n];
-        let mut local_basis = vec![F192::ZERO; n];
-        let mut sks_at_x = vec![F64::ZERO; log_msg_cols.max(1)];
-        let mut local_sum = F192::ZERO;
-
-        for i in start..end {
+    let half = 1usize << log_msg_cols.saturating_sub(1);
+    parallel::map_reduce_with_state(
+        n_queries,
+        || (vec![F64::ZERO; log_msg_cols.max(1)], vec![F192::ZERO; half]),
+        // SAFETY: zero is a valid F192, and the expansion below accumulates into it.
+        || (unsafe { ArenaVec::<F192>::zeroed(n) }, F192::ZERO),
+        |(sks_at_x, scratch), (accum_basis, local_sum), i| {
             let ap = weights[i];
-            local_sum += T::dot(&opened_rows[i], &eq) * ap;
+            *local_sum += T::dot(&opened_rows[i], &eq) * ap;
 
-            let q_field = F64(queries[i] as u64);
-            evaluate_scaled_basis_inplace(&mut sks_at_x, &mut local_basis, sks_vks, &inv_sks_vks, q_field, ap);
-            for (acc, &v) in accum_basis.iter_mut().zip(local_basis.iter()) {
-                *acc += v;
+            if log_msg_cols == 0 {
+                accum_basis[0] += ap;
+                return;
             }
-        }
-        (accum_basis, local_sum)
-    });
-
-    // SAFETY: zero is a valid F192, and the accumulate loop below reads it.
-    let mut basis_poly = unsafe { ArenaVec::<F192>::zeroed(n) };
-    let mut enforced_sum = F192::ZERO;
-    for (lb, ls) in partials {
-        for (acc, &v) in basis_poly.iter_mut().zip(lb.iter()) {
-            *acc += v;
-        }
-        enforced_sum += ls;
-    }
-
-    (basis_poly, enforced_sum)
+            let q_field = F64(queries[i] as u64);
+            normalized_sks_at(q_field, sks_vks, &inv_sks_vks, &mut sks_at_x[..log_msg_cols]);
+            scratch[0] = ap;
+            for k in 0..log_msg_cols - 1 {
+                let s_at_x = sks_at_x[k];
+                let (lo, hi) = scratch.split_at_mut(1usize << k);
+                for (h, &l) in hi.iter_mut().zip(lo.iter()) {
+                    *h = l.mul_base(s_at_x);
+                }
+            }
+            let s_at_x = sks_at_x[log_msg_cols - 1];
+            let (lo, hi) = accum_basis.split_at_mut(half);
+            for ((l, h), &v) in lo.iter_mut().zip(hi.iter_mut()).zip(scratch.iter()) {
+                *l += v;
+                *h += v.mul_base(s_at_x);
+            }
+        },
+        |(mut basis_poly, sum), (partial, partial_sum)| {
+            const PAR_THRESHOLD: usize = 4096;
+            if n < PAR_THRESHOLD {
+                for (acc, &v) in basis_poly.iter_mut().zip(partial.iter()) {
+                    *acc += v;
+                }
+            } else {
+                let chunk = parallel::recommended_chunk_size(n);
+                parallel::chunks_mut_zip(&mut basis_poly, &partial, chunk, |_, accs, vs| {
+                    for (acc, &v) in accs.iter_mut().zip(vs) {
+                        *acc += v;
+                    }
+                });
+            }
+            (basis_poly, sum + partial_sum)
+        },
+    )
 }
 
 /// Just the `enforced_sum` half of [`induce_sumcheck_poly`]:
@@ -298,7 +286,7 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
         sum
     };
     if yr_len > PAR_FLOOR {
-        <ArenaVec<F192> as primitives::ParCollectArena<F192>>::par_collect(yr_len, compute_y)
+        primitives::par_collect_arena(yr_len, compute_y)
     } else {
         (0..yr_len).map(compute_y).collect()
     }
@@ -363,7 +351,7 @@ fn transpose_forward_ntt_sparse_ext(
     positions: &[usize],
     values: &[F192],
     log_d: usize,
-) -> Vec<F192> {
+) -> ArenaVec<F192> {
     let _span = tracing::info_span!(
         "NTT",
         kind = "transpose induce",
@@ -377,7 +365,8 @@ fn transpose_forward_ntt_sparse_ext(
     let k = if log_d >= 12 { 8usize.min(log_d) } else { 0 };
 
     if k == 0 {
-        let mut data = vec![F192::ZERO; n];
+        // SAFETY: zero is a valid F192, and the scatter below reads these slots.
+        let mut data = unsafe { ArenaVec::<F192>::zeroed(n) };
         for (&p, &v) in positions.iter().zip(values) {
             data[p] += v;
         }
@@ -422,7 +411,8 @@ fn transpose_forward_ntt_sparse_ext(
 
     // Densify (active windows only; the rest stay zero, which is the correct
     // post-step-(k-1) state for an all-zero window).
-    let mut data = vec![F192::ZERO; n];
+    // SAFETY: zero is a valid F192, and the inactive windows must read as zero.
+    let mut data = unsafe { ArenaVec::<F192>::zeroed(n) };
     for (w, buf) in &win_vec {
         data[(w << k)..((w + 1) << k)].copy_from_slice(buf);
     }
@@ -468,7 +458,7 @@ pub(crate) fn induce_sumcheck_poly_via_ntt_base(
         c
     } else {
         let ntt = AdditiveNttF64::standard(log_block);
-        ArenaVec::from_slice(&transpose_forward_ntt_sparse_ext(&ntt, queries, weights, log_block))
+        transpose_forward_ntt_sparse_ext(&ntt, queries, weights, log_block)
     };
     coeffs.truncate(n);
     (coeffs, enforced_sum)

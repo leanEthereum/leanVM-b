@@ -335,12 +335,11 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
 
 /// Mirror the guest's aggregation transcript and prove the two batching
 /// sumchecks: dense for bytecode and two-phase sparse for the matrices. Returns
-/// the guest hints, deferred claims, and outer public input.
-#[allow(clippy::type_complexity)]
+/// the guest hints and the deferred claims they reduce to.
 fn aggregate_deferred_claims(
     program: &Program,
     subs: &[DeferredSubproof],
-) -> (Vec<(String, Vec<F192>)>, [F192; 2], DeferredClaims) {
+) -> (Vec<(String, Vec<F192>)>, DeferredClaims) {
     let nsub = subs.len();
     let kbc = subs[0].bytecode_log;
     let kbcv = kbc + lean_vm::leaf::N_BYTECODE_SELECTORS;
@@ -544,29 +543,11 @@ fn aggregate_deferred_claims(
         assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
     }
 
-    // ---- outer public input: FS seed + sub statements + reduced claims ----
     // The inner proving environment (flock circuit family + program bytecode)
     // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);
-    let mut e = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
-    e.observe(nsub_word(nsub));
-    e.observe(seed[0]);
-    e.observe(seed[1]);
-    for d in subs {
-        e.observe(d.public_input[0]);
-        e.observe(d.public_input[1]);
-    }
-    for &v in &r_bc {
-        e.observe(v);
-    }
-    e.observe(v_bc);
     let r_m: Vec<F192> = r_row.iter().chain(&r_col).copied().collect();
-    for &v in &r_m {
-        e.observe(v);
-    }
-    e.observe(v_a);
-    e.observe(v_b);
 
     let hints = vec![
         ("nsub".to_string(), vec![nsub_word(nsub)]),
@@ -578,7 +559,6 @@ fn aggregate_deferred_claims(
     ];
     (
         hints,
-        pack_state(e.state()),
         DeferredClaims {
             bytecode_point: r_bc,
             bytecode_value: v_bc,
@@ -793,41 +773,7 @@ fn gen_verify(
     let smu: Vec<usize> = lays.iter().map(|x| x.mu).collect();
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
-    let mumax = 40usize;
-    let stream_cap = 8192usize;
-    assert!(*smu.iter().max().unwrap() <= mumax && proof.stream.len() <= stream_cap);
-
-    // ---- pool sizes (the descriptors themselves are baked by `placeholder_map`) ----
-    let mut nclaims = 0usize;
-    // Claim dedup (mirrors leaf.rs): ALL three trees share their GKR point, so
-    // a column read by two same-kappa blocks streams/opens once. Key: (col, kappa).
-    let mut seen_claims: std::collections::HashSet<(usize, usize)> = Default::default();
-    // Only the framework blocks raise claims: a table's coords are settled inside
-    // the table sumcheck. Indexed by block, in `sides` order.
-    let is_framework: Vec<bool> = lean_vm::cpu::block_kappa_sources(program.prog.len().trailing_zeros() as usize)
-        .into_iter()
-        .map(|(src, _)| src < 2)
-        .collect();
-    let mut vi = 0usize;
-    for blocks in sides.iter() {
-        for blk in blocks.iter() {
-            let framework = is_framework[vi];
-            vi += 1;
-            for c in &blk.coords {
-                match c {
-                    Coord::Col(i) | Coord::GCol(i, _) => {
-                        if framework && seen_claims.insert((*i, blk.kappa)) {
-                            nclaims += 1;
-                        }
-                    }
-                    // A public coordinate raises no claim of its own: the program's
-                    // whole share is one deferred evaluation (§sec:e2e-bc). Nor does a
-                    // degree-2 coordinate, which lives only in a table block.
-                    Coord::Public(_) | Coord::Const(_) | Coord::Index | Coord::Prod(..) | Coord::Sum(..) => {}
-                }
-            }
-        }
-    }
+    assert!(*smu.iter().max().unwrap() <= MU_CAP && proof.stream.len() <= STREAM_CAP);
 
     // ---- typed extraction: proof structs + the verifier's summary ----
     // Drift check: replaying the recorded trace from the seed must reproduce
@@ -853,7 +799,6 @@ fn gen_verify(
 
     let taus = l.taus;
     // Flock replay data, all named struct fields.
-    let n_log_b3 = l.taus[5];
     let lcrounds = flock::blake3::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
@@ -861,9 +806,6 @@ fn gen_verify(
     let lc_alpha = summary.lc_claim.alpha;
     let lc_beta = summary.lc_claim.beta;
     let lrr = summary.lc_claim.r_rounds.clone();
-
-    let evtot_e: usize = lean_vm::tables::tables().iter().map(|t| t.n_committed_columns()).sum();
-    let ncl = nclaims + evtot_e + 3; // bus + constraint + the three PI memory-limb claims
 
     // ---- the stacked opening: config + the opening summary ----
     let stack = whir_shape(l.m, summary.log_inv_rate);
@@ -873,16 +815,15 @@ fn gen_verify(
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
     // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
-    // scalars start: its last 64 scalars are lincheck's `z_partial`, immediately
-    // preceded by the `(e1, e_inf)` pairs of the `lcrounds` lincheck rounds.
+    // scalars start: its last 64 scalars are lincheck's `z_partial` (which the
+    // summary already carries as `s_hat_v`), immediately preceded by the
+    // `(e1, e_inf)` pairs of the `lcrounds` lincheck rounds.
     let ns = summary.flock_stream_end;
     let lcr: Vec<F192> = proof.stream[ns - 64 - 2 * lcrounds..ns - 64].to_vec();
-    let lcz: Vec<F192> = proof.stream[ns - 64..ns].to_vec();
+    let lcz: Vec<F192> = summary.lc_claim.s_hat_v.clone();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
-    let r1cs = flock::blake3::build_block_r1cs(n_log_b3);
-    let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
     let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
     for i in 0..lcrounds {
         let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
@@ -892,10 +833,10 @@ fn gen_verify(
     }
     let mut pinw = lc_beta;
     for (j, &rv) in lrr.iter().enumerate() {
-        let bit = (pincol >> (flock::blake3::K_LOG - 1 - j)) & 1;
+        let bit = (flock::blake3::Z_CONST_POS >> (flock::blake3::K_LOG - 1 - j)) & 1;
         pinw *= if bit == 1 { rv } else { F192::ONE + rv };
     }
-    pinw *= lcz[pincol % 64];
+    pinw *= lcz[flock::blake3::Z_CONST_POS % 64];
     let matpart = lrun + pinw;
 
     // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
@@ -925,20 +866,19 @@ fn gen_verify(
     let bcv = vec![bytecode_value];
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
-    // Per side, the kappa-descending packing order (as in leaf.rs::layout):
+    // Per side, the packing order read straight off `leaf::layout`'s offsets:
     // sort_order[side_base + rank] = g^{side-local index of the rank-r block}.
     // The guest only perm-checks it and derives offsets; any aligned tiling is
     // sound, so this canonical order just has to match the committed leaf.
     let mut sort_order: Vec<F192> = Vec::new();
     let mut gbase = 0usize;
-    for blocks in sides.iter() {
-        let n = blocks.len();
-        let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&a, &b| blocks[b].kappa.cmp(&blocks[a].kappa).then(a.cmp(&b)));
+    for (s, blocks) in sides.iter().enumerate() {
+        let mut order: Vec<usize> = (0..blocks.len()).collect();
+        order.sort_by_key(|&i| lays[s].offsets[i]);
         for &i in &order {
             sort_order.push(F192::new(g_pow(gbase + i).0, 0, 0)); // g^{global block index}
         }
-        gbase += n;
+        gbase += blocks.len();
     }
     // The stacked commitment uses witness::placements_of: committed columns
     // sorted by descending kappa, then by their native column index. Transport
@@ -997,7 +937,6 @@ fn gen_verify(
         };
         nover_v.push(nvt.saturating_sub(lenris));
     });
-    assert_eq!(nover_v.len(), ncl, "descriptor count == pool size");
 
     let deferred = DeferredSubproof {
         public_input: pi,
@@ -1023,12 +962,8 @@ fn gen_verify(
             // reduction stopped; the ring-switch messages are struct-observed and
             // still do not advance that cursor.
             let mut v = proof.stream.clone();
-            assert!(
-                v.len() <= stream_cap,
-                "stream {} exceeds stream_cap {stream_cap}",
-                v.len()
-            );
-            v.resize(stream_cap, F192::ZERO);
+            assert!(v.len() <= STREAM_CAP, "stream {} exceeds cap {STREAM_CAP}", v.len());
+            v.resize(STREAM_CAP, F192::ZERO);
             v
         }),
         ("bytecode_val".to_string(), bcv),
@@ -1040,7 +975,7 @@ fn gen_verify(
         // amount by which the claim's total vars exceed the fold rounds.
         (
             "claim_nover".to_string(),
-            (0..ncl).map(|j| F192::new(g_pow(nover_v[j]).0, 0, 0)).collect(),
+            nover_v.iter().map(|&n| F192::new(g_pow(n).0, 0, 0)).collect(),
         ),
         // the pi claim's low dimension is min(log_mem, lenris); certify it as
         // a min (<= both, == one) so pi is pinned like every other claim.
@@ -1065,6 +1000,12 @@ fn gen_verify(
 /// residual-log cap).
 const MU_MIN: usize = 22;
 const MU_MAX: usize = 28;
+
+/// The guest's baked buffer caps, which `placeholder_map` compiles in and
+/// `gen_verify` admits against: one definition, so a hinted shape can never
+/// outgrow the buffer the guest was compiled with.
+const MU_CAP: usize = 40;
+const STREAM_CAP: usize = 8192;
 
 /// Everything needed to run one N→1 recursion batch EXCEPT compiling the
 /// guest: the merged per-sub witness entries, the outer statement, and the
@@ -1139,17 +1080,12 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         subs.push(defer);
     }
     let (program0, _, _, _, _) = &protos[0];
-    let (agg_hints, gpi, reduced) = aggregate_deferred_claims(program0, &subs);
+    let (agg_hints, reduced) = aggregate_deferred_claims(program0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
     let statement = RecursiveStatement {
         sub_statements: subs.iter().map(|d| d.public_input).collect(),
         reduced,
     };
-    assert_eq!(
-        statement.public_input(lean_vm::cpu::fs_seed(program0)),
-        gpi,
-        "native recursive statement reconstruction must mirror the guest",
-    );
     // Move the representative Program out (Program is not Clone) now that all
     // aggregation borrows have ended. No representative proof is retained.
     let (program0, _, _, _, _) = protos.swap_remove(0);
@@ -1202,9 +1138,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     );
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
-    let mumax = 40usize;
-    let stream_cap = 8192usize;
-    let taus = l.taus;
     let lcrounds = flock::blake3::K_LOG - 6;
 
     // ---- flattened block/coord descriptors (structural) ----
@@ -1337,7 +1270,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let mut ps = |k: &str, v: String| {
         rep.insert(format!("{k}_PLACEHOLDER"), v);
     };
-    ps("STREAM_CAP", stream_cap.to_string());
+    ps("STREAM_CAP", STREAM_CAP.to_string());
     ps("MIN_LOG_MEM", lean_vm::cpu::MIN_LOG_MEM.to_string());
     ps("INV_GEN", u(F192::new(G.inv().0, 0, 0)).to_string());
     // The table sumcheck sends its round polynomial WHOLE, at {0, 1, g, g^2}, so
@@ -1349,10 +1282,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             ps(&format!("LAG4_INV_{i}"), f192_literal(den.inv()));
         }
     }
-    ps("MU_CAP", mumax.to_string());
+    ps("MU_CAP", MU_CAP.to_string());
     ps("NO_TABLE", l.taus.len().to_string());
-    ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
-    ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
+    ps("GKR_ROUNDS_CAP", (MU_CAP * (MU_CAP + 1) / 2 + MU_CAP + 2).to_string());
+    ps("GKR_POINTS_CAP", ((MU_CAP + 1) * MU_CAP).to_string());
     ps("SIDE_BLOCK_START", ints(&sblk));
     ps("N_BLOCKS", nblocks.to_string());
     let bks = lean_vm::cpu::block_kappa_sources(kbc);
@@ -1428,7 +1361,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .collect();
     ps("N_TABLE_COLS", ints(&committed));
     ps("TABLE_COLS_CAP", (committed.iter().max().unwrap() + 1).to_string());
-    const MINB3: usize = 3;
     let fixed_challenges: Vec<F192> = flock::zerocheck::univariate_skip_optimized::small_challenges()
         .into_iter()
         .chain(flock::zerocheck::univariate_skip_optimized::medium_challenges())
@@ -1478,10 +1410,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
-    let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3))
-        .const_pin
-        .expect("blake3 r1cs has a const pin");
-    ps("PIN_COLUMN", pincol.to_string());
+    ps("PIN_COLUMN", flock::blake3::Z_CONST_POS.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
     // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
     // qflock point-claim slot must use THIS, not LOG2_FIELD_BITS.

@@ -158,15 +158,10 @@ fn hash_pairs_level_uninit(
 ) {
     debug_assert_eq!(read.len(), 2 * write.len());
     let read_bytes = unsafe { core::slice::from_raw_parts(read.as_ptr().cast::<u8>(), read.len() * 32) };
-    const SERIAL_LEVEL_NODES: usize = 1024;
-    if write.len() <= SERIAL_LEVEL_NODES {
-        hash_many_oneshot_uninit::<64>(platform, read_bytes, write);
-    } else {
-        for_each_hash_group(write, |lo, outputs| {
-            let len = outputs.len();
-            hash_many_oneshot_uninit::<64>(platform, &read_bytes[lo * 64..(lo + len) * 64], outputs);
-        });
-    }
+    for_each_hash_group(write, |lo, outputs| {
+        let len = outputs.len();
+        hash_many_oneshot_uninit::<64>(platform, &read_bytes[lo * 64..(lo + len) * 64], outputs);
+    });
 }
 
 /// Compute the full Merkle tree (flat layout, see module docs) for `data`
@@ -199,9 +194,6 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
     hash_leaves_batched_uninit(platform, data, leaf_size, &mut tree[..num_leaves]);
 
     // 2. Internal levels: parallel within a level, sequential across levels.
-    // Small upper levels can't fill the cores, so a pool dispatch per level
-    // costs more than the hashing itself; hash those in one serial SIMD batch
-    // and only fan out the wide lower levels.
     let mut read_start = 0usize;
     let mut read_len = num_leaves;
     while read_len > 1 {

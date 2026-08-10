@@ -16,7 +16,7 @@ use crate::pcs;
 use crate::tables::{
     self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
 };
-use crate::transcript::{ProverState, VerifierState};
+use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use crate::witness;
 use primitives::field::{F64, F192, g_pow};
 
@@ -155,8 +155,6 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
 #[derive(Clone)]
 pub struct Program {
     pub prog: Vec<Op>, // bytecode (size B, power of two)
-    pub pc0: u32,
-    pub fp0: u32,
     /// BLAKE3 over the stacked bytecode multilinear, computed once at assembly
     /// so proving and verifying the same program do not rehash it (that table is
     /// 16·2^kbc words, tens of megabytes at production sizes). Trusted to match
@@ -186,29 +184,26 @@ pub struct Program {
     pub fn_ranges: Vec<(String, u32, u32)>,
 }
 
+/// The bytecode digest reinterprets the stacked table as bytes, which is its
+/// `to_le_bytes` image only on a little-endian target.
+const _: () = assert!(cfg!(target_endian = "little"));
+
 impl Program {
     /// Assemble a [`Program`], computing its bytecode digest
     /// from `prog`. The single funnel for construction, so the digest is always
     /// consistent with the bytecode.
-    pub fn assemble(
-        prog: Vec<Op>,
-        pc0: u32,
-        fp0: u32,
-        hints: HashMap<u32, Vec<hints::RHint>>,
-        main_frame: u32,
-    ) -> Self {
+    pub fn assemble(prog: Vec<Op>, hints: HashMap<u32, Vec<hints::RHint>>, main_frame: u32) -> Self {
         let bytecode_hash = {
-            let mut h = blake3::Hasher::new();
-            for w in layout::bytecode_table(&prog) {
-                h.update(&w.0.to_le_bytes());
-            }
-            *h.finalize().as_bytes()
+            let table = layout::bytecode_table(&prog);
+            // SAFETY: F64 is #[repr(transparent)] over u64, so the slice's byte image is
+            // exactly the concatenation of its `to_le_bytes` on little-endian targets.
+            let bytes: &[u8] =
+                unsafe { core::slice::from_raw_parts(table.as_ptr().cast::<u8>(), core::mem::size_of_val(&table[..])) };
+            *blake3::Hasher::new().update(bytes).finalize().as_bytes()
         };
         Self {
             prog,
             bytecode_hash,
-            pc0,
-            fp0,
             hints,
             main_frame,
             witness: HashMap::new(),
@@ -233,7 +228,7 @@ impl Program {
     /// sentinel in its last slot: the run halts on reaching `g^{len-1}` (§sec:state).
     #[cfg(test)]
     pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
-        Self::assemble(prog, 0, 0, HashMap::new(), main_frame)
+        Self::assemble(prog, HashMap::new(), main_frame)
     }
 }
 
@@ -298,18 +293,19 @@ fn table_spans() -> TableSpans {
 /// The airs carry every committed column of their table, so a constraint indexes the
 /// value array directly and each table's three bus forms can be
 /// evaluated on the same values. The identities take the air's own `η`-range; the
-/// three forms take the shared powers at [`eta_form_base`].
-fn airs<'a>(
+/// three forms take the shared powers at [`eta_form_base`], folded into the forms'
+/// coefficients once rather than multiplied onto every row's form value.
+fn airs(
     taus: &[usize; tables::N_TABLES],
-    forms: &'a [Vec<leaf::BusForm>; 3],
+    forms: &[Vec<leaf::BusForm>; 3],
     form_pows: [F192; 3],
-) -> Vec<constraints::Air<'a>> {
+) -> Vec<constraints::Air<'static>> {
     tables::tables()
         .iter()
         .zip(taus)
         .enumerate()
         .map(|(t, (&table, &tau))| {
-            let bus: Vec<&leaf::BusForm> = (0..3).map(|s| &forms[s][t]).collect();
+            let bus: Vec<leaf::BusForm> = (0..3).map(|s| forms[s][t].scaled(form_pows[s])).collect();
             let bus_k = bus.clone();
             constraints::Air {
                 tau,
@@ -317,18 +313,13 @@ fn airs<'a>(
                 n_constraints: table.n_constraints(),
                 eval: Box::new(move |p, vals| {
                     let air = table.eval_constraint(p, vals);
-                    bus.iter()
-                        .zip(form_pows)
-                        .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
+                    bus.iter().fold(air, |acc, form| acc + form.eval(vals))
                 }),
                 // The same expression over K columns: the identity's K-only products
                 // stay 64-bit and each bus form becomes a mixed dot product.
                 eval_k: Box::new(move |p, vals| {
                     let air = table.eval_constraint_k(p, vals);
-                    bus_k
-                        .iter()
-                        .zip(form_pows)
-                        .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
+                    bus_k.iter().fold(air, |acc, form| acc + form.eval(vals))
                 }),
             }
         })

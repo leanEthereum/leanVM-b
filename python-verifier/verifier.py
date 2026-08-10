@@ -87,11 +87,6 @@ class K:
         return NotImplemented if rhs is None else K(self.value ^ rhs.value)
 
     __radd__ = __add__
-    __sub__ = __add__
-    __rsub__ = __add__
-
-    def __neg__(self) -> K:
-        return self
 
     def __mul__(self, other: object) -> K:
         rhs = _as_k(other)
@@ -167,11 +162,6 @@ class E:
         return E(self.c0 + rhs.c0, self.c1 + rhs.c1, self.c2 + rhs.c2)
 
     __radd__ = __add__
-    __sub__ = __add__
-    __rsub__ = __add__
-
-    def __neg__(self) -> E:
-        return self
 
     def __mul__(self, other: object) -> E:
         rhs = self.lift(other)
@@ -203,10 +193,6 @@ class E:
     def __truediv__(self, other: object) -> E:
         rhs = self.lift(other)
         return self * rhs.inv()
-
-    def __rtruediv__(self, other: object) -> E:
-        lhs = self.lift(other)
-        return lhs * self.inv()
 
     def __repr__(self) -> str:
         return f"E(0x{self.c2.value:016x}{self.c1.value:016x}{self.c0.value:016x})"
@@ -353,24 +339,15 @@ class Digest:
     def __post_init__(self) -> None:
         require(len(self.value) == 32, "a digest is 256 bits")
 
-    @classmethod
-    def from_words(cls, words: Sequence[K | int]) -> Digest:
-        require(len(words) == 4, "a digest is four 64-bit words")
-        return cls(b"".join(K.lift(word).to_bytes() for word in words))
-
-    def words(self) -> tuple[K, K, K, K]:
-        w0, w1, w2, w3 = unpack("<4Q", self.value)
-        return (K(w0), K(w1), K(w2), K(w3))
-
     def halves(self) -> tuple[E, E]:
         """Its two 128-bit halves, the one form a digest travels in."""
-        w = self.words()
-        return (E(w[0], w[1]), E(w[2], w[3]))
+        w0, w1, w2, w3 = unpack("<4Q", self.value)
+        return (E(w0, w1), E(w2, w3))
 
     @classmethod
     def from_halves(cls, low: E, high: E) -> Digest:
         require(not (low.c2 or high.c2), "a digest half is 128-bit")
-        return cls.from_words((low.c0, low.c1, high.c0, high.c1))
+        return cls(pack("<4Q", low.c0, low.c1, high.c0, high.c1))
 
 
 def eq_kernel(point: Sequence[E]) -> list[E]:
@@ -416,6 +393,15 @@ def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
     result = ONE
     for x, y in zip(left, right, strict=True):
         result *= ONE + x + y
+    return result
+
+
+def dot(left: Sequence[K | E], right: Sequence[K | E]) -> E:
+    """`Σ_i left[i] · right[i]` in E. Either side may be K-valued; lifting the
+    left one is what `K * E`'s reflected operator would do anyway."""
+    result = ZERO
+    for x, y in zip(left, right, strict=True):
+        result += E.lift(x) * y
     return result
 
 
@@ -474,8 +460,7 @@ def lagrange_weights(nodes: Sequence[E], point: E) -> list[E]:
 
 
 def lagrange_interpolate(nodes: Sequence[E], values: Sequence[E], point: E) -> E:
-    weights = lagrange_weights(nodes, point)
-    return sum((weight * value for weight, value in zip(weights, values, strict=True)), ZERO)
+    return dot(lagrange_weights(nodes, point), values)
 
 
 # Proof transport ------------------------------------------------------------
@@ -838,14 +823,6 @@ class ColumnClaim:
 N_TUPLE_BITS = 4
 
 
-def fingerprint_weights(alphas: Sequence[E]) -> tuple[E, ...]:
-    weights = [ONE] * 2**N_TUPLE_BITS
-    for bit, a in enumerate(alphas):
-        for x in range(len(weights)):
-            weights[x] *= a if (x >> bit) & 1 else a + ONE
-    return tuple(weights)
-
-
 def _decompose_bus_side(
     blocks: Sequence[BusBlock],
     layout: BusLayout,
@@ -914,9 +891,8 @@ def verify_bus_balance(
     require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
     require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
-    alphas = tuple(transcript.sample() for _ in range(N_TUPLE_BITS))
-    weights = fingerprint_weights(alphas)
-    count_weights = fingerprint_weights((ZERO,) * N_TUPLE_BITS)
+    weights = eq_kernel(transcript.samples(N_TUPLE_BITS))
+    count_weights = eq_kernel((ZERO,) * N_TUPLE_BITS)
     gamma = transcript.sample()
     padded_count_layout = BusLayout(push_layout.depth, count_layout.offsets)
     product = verify_product_triple(push_layout.depth, transcript)
@@ -969,8 +945,8 @@ class Air:
     def evaluate(self, constraint_powers: Sequence[E], form_powers: Sequence[E], columns: Sequence[E]) -> E:
         """This table's share of the batch's summand: its identities, then its bus forms."""
         terms = self.table.constraints(lambda name: columns[self.table.col(name)])
-        identities = sum((weight * term for weight, term in zip(constraint_powers, terms, strict=True)), ZERO)
-        buses = sum((weight * form.evaluate(lambda index: columns[index]) for weight, form in zip(form_powers, self.forms, strict=True)), ZERO)
+        identities = dot(constraint_powers, terms)
+        buses = dot(form_powers, [form.evaluate(lambda index: columns[index]) for form in self.forms])
         return identities + buses
 
 
@@ -1663,7 +1639,7 @@ def _enforced_sum(
     lane_weights = eq_kernel(folds)
     total = ZERO
     for query_weight, row in zip(query_weights, rows, strict=True):
-        total += query_weight * sum((x * y for x, y in zip(row, lane_weights, strict=True)), ZERO)
+        total += query_weight * dot(row, lane_weights)
     return total
 
 
@@ -1729,19 +1705,13 @@ def verify_whir(
     config = derive_config(log_n, log_inv_rate)
     levels = len(config.folds)
 
-    def observe_root(value: Digest) -> None:
-        for scalar in value.halves():
-            transcript.observe(scalar)
-
-    def read_root() -> Digest:
-        return Digest.from_halves(transcript.scalar(), transcript.scalar())
-
     def next_quad(claim: E) -> QuadraticMessage:
         constant, quadratic = transcript.scalar(), transcript.scalar()
         return QuadraticMessage(constant, claim + quadratic, quadratic)
 
     transcript.observe(target)
-    observe_root(root)
+    for half in root.halves():
+        transcript.observe(half)
     running_target = target
     running_quad = next_quad(target)
     folds: list[E] = []
@@ -1768,7 +1738,7 @@ def verify_whir(
         if final_level:
             residual = tuple(transcript.scalars(2**message_log))
         else:
-            next_root = read_root()
+            next_root = Digest.from_halves(*transcript.scalars(2))
             for _ in range(config.ood_samples[level + 1]):
                 point = tuple(transcript.samples(message_log))
                 value = transcript.scalar()
@@ -1921,7 +1891,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
         at_zero = (running + equality * at_one) / (ONE + equality)
         challenge = transcript.sample()
         rounds.append(challenge)
-        running = at_zero * (ONE + challenge) + at_one * challenge + at_infinity * challenge * (ONE + challenge)
+        running = QuadraticMessage(at_zero, at_zero + at_one + at_infinity, at_infinity).evaluate(challenge)
     final_a, final_b = transcript.scalars(2)
     require(running == final_a * final_b, "Flock zerocheck terminal mismatch")
     return ZerocheckResult(skip, tuple(rounds), equality_tail, final_a, final_b, c_evaluation)
@@ -1987,13 +1957,7 @@ def _ring_weight(
     """Evaluate the transparent ring-switch weight at one query point."""
     suffix_tensor = eq_kernel(suffix_point)
     query_tensor = eq_kernel(query)
-    return sum(
-        (
-            query_weight * _linear_map(suffix_weight, coordinate_weights)
-            for query_weight, suffix_weight in zip(query_tensor, suffix_tensor, strict=True)
-        ),
-        ZERO,
-    )
+    return dot(query_tensor, [_linear_map(weight, coordinate_weights) for weight in suffix_tensor])
 
 
 def verify_stacked_opening(
@@ -2008,25 +1972,21 @@ def verify_stacked_opening(
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
-    slices: list[Sequence[E]] = [reduction.ab_s_hat_v]
     # A/B's values were already derived from the bound z_partial; only C is sent.
-    for claim in ring_claims[1:]:
-        values = tuple(transcript.scalars(PACKED_BITS))
-        expected = sum((a * b for a, b in zip(lagrange_weights(PHI[:PACKED_BITS], claim.point.skip), values, strict=True)), ZERO)
-        require(expected == claim.value, "ring-switch claim mismatch")
-        slices.append(values)
-    require(len(slices[0]) == PACKED_BITS, "ring-switch proof has the wrong width")
+    c_values = tuple(transcript.scalars(PACKED_BITS))
+    require(lagrange_interpolate(PHI[:PACKED_BITS], c_values, reduction.c.point.skip) == reduction.c.value, "ring-switch claim mismatch")
+    slices = (reduction.ab_s_hat_v, c_values)
 
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
     coordinate_weights = _coordinate_weights(map_challenges)
-    ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights, strict=True)), ZERO) for values in slices]
+    ring_values = [dot(_transpose(values), coordinate_weights) for values in slices]
     ring_scales = powers(transcript.sample(), 2)
-    target = sum((scale * value for scale, value in zip(ring_scales, ring_values, strict=True)), ZERO)
+    target = dot(ring_scales, ring_values)
 
     for _, value in point_claims:
         transcript.observe(value)
     point_scales = powers(transcript.sample(), len(point_claims))
-    target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims, strict=True)), ZERO)
+    target += dot(point_scales, [value for _, value in point_claims])
 
     selector = qflock_offset >> qflock_variables
 
@@ -2039,16 +1999,10 @@ def verify_stacked_opening(
         """
         low, high = point[:qflock_variables], point[qflock_variables:]
         selector_weight = selector_eq(selector, high)
-        ring_value = sum(
-            (scale * _ring_weight(claim.point.ring_tail, low, coordinate_weights) for scale, claim in zip(ring_scales, ring_claims, strict=True)),
-            ZERO,
-        )
+        ring_value = dot(ring_scales, [_ring_weight(claim.point.ring_tail, low, coordinate_weights) for claim in ring_claims])
         value = selector_weight * ring_value
         for scale, (claim_point, _) in zip(point_scales, point_claims, strict=True):
-            factor = ONE
-            for expected, challenge in zip(claim_point, point, strict=True):
-                factor *= ONE + expected + challenge
-            value += scale * factor
+            value += scale * eq_eval(claim_point, point)
         return value
 
     verify_whir(
@@ -2076,9 +2030,8 @@ def verify_lincheck(
     for _ in range(8):
         at_one, at_infinity = transcript.scalars(2)
         at_zero = running + at_one
-        linear = at_zero + at_one + at_infinity
         challenge = transcript.sample()
-        running = at_infinity * challenge * challenge + linear * challenge + at_zero
+        running = QuadraticMessage(at_zero, at_zero + at_one + at_infinity, at_infinity).evaluate(challenge)
         challenges.append(challenge)
     partial = tuple(transcript.scalars(PACKED_BITS))
     rounds = tuple(reversed(challenges))
@@ -2088,7 +2041,7 @@ def verify_lincheck(
     terminal += beta * column_weights[BLAKE3_CONSTANT_COLUMN]
     require(terminal == running, "Flock lincheck terminal mismatch")
     skip = transcript.sample()
-    value = sum((x * y for x, y in zip(lagrange_weights(PHI[:PACKED_BITS], skip), partial, strict=True)), ZERO)
+    value = lagrange_interpolate(PHI[:PACKED_BITS], partial, skip)
     return ZClaim(QuirkyPoint(skip, rounds, point.outer), value), partial
 
 
@@ -2255,7 +2208,7 @@ def verify_execution(bytecode: Sequence[K], public_input: bytes, proof: Proof) -
     n_identities = sum(table.n_constraints for table in TABLES)
     eta_powers = powers(eta, n_identities + 3)
     constraint_powers, form_powers = eta_powers[:n_identities], eta_powers[n_identities:]
-    target = sum((weight * total for weight, total in zip(form_powers, bus.totals, strict=True)), ZERO)
+    target = dot(form_powers, bus.totals)
     air_claims = verify_constraints(
         build_airs(layout, bus.forms),
         constraint_powers,

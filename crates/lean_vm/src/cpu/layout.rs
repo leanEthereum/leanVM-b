@@ -329,26 +329,15 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
     // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
     // there), with fp returned to 0. All public, no trace needed.
-    let pc0 = 0u32;
-    let fp0 = 0u32;
     let final_pc = (bytecode_size - 1) as u32;
-    let final_fp = 0u32;
 
     let one = F64::ONE;
     // The public program columns map operand *offsets* (small, ≤ frame size) to
     // g-powers (not memory addresses), so precompute only up to the largest
     // operand, an O(1) lookup each, rather than over the whole 2^log_mem memory.
-    let [
-        prog_op,
-        prog_o1,
-        prog_o2,
-        prog_o3,
-        prog_fpc,
-        prog_ffp,
-        prog_extra0,
-        prog_extra1,
-        prog_extra2,
-    ] = bytecode_columns(prog);
+    // Shared between the seed and finalize blocks: at kbc = 19 a copy is tens of
+    // megabytes per column.
+    let prog_cols: [std::sync::Arc<Vec<F64>>; 9] = bytecode_columns(prog).map(std::sync::Arc::new);
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
@@ -359,17 +348,10 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
 
     // Shared blocks (cross-instruction infra, not owned by any single table).
     // boundary state.
-    push.push(blk(
-        0,
-        vec![Const(SEP_STATE), Const(g_pow(pc0 as usize)), Const(g_pow(fp0 as usize))],
-    ));
+    push.push(blk(0, vec![Const(SEP_STATE), Const(one), Const(one)]));
     pull.push(blk(
         0,
-        vec![
-            Const(SEP_STATE),
-            Const(g_pow(final_pc as usize)),
-            Const(g_pow(final_fp as usize)),
-        ],
+        vec![Const(SEP_STATE), Const(g_pow(final_pc as usize)), Const(one)],
     ));
     // memory seed + finalize (every address real, no padding). The value is the
     // full three-limb 192-bit word.
@@ -397,40 +379,17 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     ));
     // bytecode seed + finalize (program columns are public; padding entries
     // self-cancel at count 1, so the whole 2^log_bytecode is "real").
-    push.push(blk(
-        log_bytecode,
-        vec![
-            Const(SEP_BYTECODE),
-            Index,
-            Const(one),
-            Public(prog_op.clone()),
-            Public(prog_o1.clone()),
-            Public(prog_o2.clone()),
-            Public(prog_o3.clone()),
-            Public(prog_fpc.clone()),
-            Public(prog_ffp.clone()),
-            Public(prog_extra0.clone()),
-            Public(prog_extra1.clone()),
-            Public(prog_extra2.clone()),
-        ],
-    ));
-    pull.push(blk(
-        log_bytecode,
-        vec![
-            Const(SEP_BYTECODE),
-            Index,
-            Col(BFCNT),
-            Public(prog_op),
-            Public(prog_o1),
-            Public(prog_o2),
-            Public(prog_o3),
-            Public(prog_fpc),
-            Public(prog_ffp),
-            Public(prog_extra0),
-            Public(prog_extra1),
-            Public(prog_extra2),
-        ],
-    ));
+    let bytecode_block = |count: Coord| {
+        blk(
+            log_bytecode,
+            [Const(SEP_BYTECODE), Index, count]
+                .into_iter()
+                .chain(prog_cols.iter().cloned().map(Public))
+                .collect(),
+        )
+    };
+    push.push(bytecode_block(Const(one)));
+    pull.push(bytecode_block(Col(BFCNT)));
 
     // Per-table blocks: each table declares its flushes and read-count columns in
     // local indices; offset them to the table's global columns.
@@ -527,7 +486,10 @@ impl Program {
             for c in 0..table.n_committed_columns() {
                 let i = sch.base[t] + c;
                 if l.placements[i].is_virtual() {
-                    virt.push((i, zk_alloc::ArenaVec::filled(F64::ZERO, 1 << l.taus[t])));
+                    // SAFETY: a virtual window is a table column, `FillCtx::cols_at`
+                    // writes every row of every window it is given, and `fill_table`
+                    // asserts each table wrote all of its columns.
+                    virt.push((i, unsafe { zk_alloc::ArenaVec::<F64>::uninitialized(1 << l.taus[t]) }));
                 }
             }
         }
@@ -566,10 +528,6 @@ impl Program {
             let blocks: Vec<_> = parallel::map_collect(tr.blake3.len(), |i| {
                 let r = &tr.blake3[i];
                 let a = tables::blake3_addresses(&self.prog, r);
-                let pair = |c: u32| {
-                    let (lo, hi) = (exec.mem[c as usize], exec.mem[c as usize + 1]);
-                    [F64(lo.c0), F64(lo.c1), F64(hi.c0), F64(hi.c1)]
-                };
                 let chunk = |c0: u32, c1: u32| {
                     let (w0, w1) = (exec.mem[c0 as usize], exec.mem[c1 as usize]);
                     [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
@@ -577,7 +535,7 @@ impl Program {
                 crate::blake3_flock::compression(
                     chunk(a[0], a[1]),
                     chunk(a[2], a[3]),
-                    pair(a[4]),
+                    chunk(a[4], a[4] + 1),
                     tables::blake3_metadata(&self.prog, r.pc),
                 )
             });

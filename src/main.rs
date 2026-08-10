@@ -25,7 +25,7 @@ struct Cli {
         long,
         global = true,
         default_value_t = 1,
-        value_parser = parse_log_inv_rate
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=4)
     )]
     log_inv_rate: usize,
 
@@ -35,7 +35,12 @@ struct Cli {
 
     /// Measured proving passes to average, after the warmup pass. Reported with
     /// a 95% confidence half-width once above 1.
-    #[arg(long, global = true, default_value_t = 1, value_parser = parse_repeat)]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 1,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
     repeat: usize,
 
     /// Idle seconds before each measured pass. On a thermally limited host (any
@@ -78,20 +83,6 @@ enum Command {
         #[arg(long, default_value = "2000000")]
         n: usize,
     },
-}
-
-fn parse_log_inv_rate(value: &str) -> Result<usize, String> {
-    match value.parse::<usize>() {
-        Ok(rate) if (1..=4).contains(&rate) => Ok(rate),
-        _ => Err("log_inv_rate must be one of 1, 2, 3, or 4".to_string()),
-    }
-}
-
-fn parse_repeat(value: &str) -> Result<usize, String> {
-    match value.parse::<usize>() {
-        Ok(n) if n >= 1 => Ok(n),
-        _ => Err("repeat must be a positive integer".to_string()),
-    }
 }
 
 fn main() {

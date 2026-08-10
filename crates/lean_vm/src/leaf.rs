@@ -10,9 +10,10 @@
 use crate::PAR_THRESHOLD;
 use crate::colval::ColVal;
 use crate::gkr;
-use crate::transcript::{ProverState, VerifierState};
+use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod};
+use std::sync::Arc;
 use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
@@ -33,8 +34,9 @@ pub enum Coord {
     /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
     Index,
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
-    /// its MLE directly, so it raises no claim.
-    Public(Vec<F64>),
+    /// its MLE directly, so it raises no claim. Shared rather than owned: push and
+    /// pull carry the same nine columns, tens of megabytes at production sizes.
+    Public(Arc<Vec<F64>>),
     /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
     /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
     /// carries a value a row DERIVES from its columns (an `XOR`/`MUL` result, a
@@ -171,7 +173,7 @@ fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &m
         Coord::GCol(i, k) => terms.push(Term::Col(*i, w.mul_base(g_pow(*k as usize)))),
         Coord::Prod(i, j, k) => terms.push(Term::Prod(*i, *j, w.mul_base(g_pow(*k as usize)))),
         Coord::Index => terms.push(Term::Index(w)),
-        Coord::Public(vals) => terms.push(Term::Public(vals, w)),
+        Coord::Public(vals) => terms.push(Term::Public(vals.as_slice(), w)),
         Coord::Sum(cs) => {
             for c in cs {
                 push_terms(c, w, terms, constant);
@@ -183,8 +185,16 @@ fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &m
 /// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i w_i c_i(z)` for
 /// the fingerprint weights `w = eq(α⃗, ·)`, followed implicitly by the identity `1`
 /// up to `2^μ`. The row-invariant weights and constant coordinates are folded once
-/// per block into `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192], gamma: F192) -> gkr::LeafVector {
+/// per block into `const_part`. `gpow` supplies `g^z` for [`Coord::Index`] and is
+/// the caller's, shared by the three sides.
+pub fn build_leaves(
+    blocks: &[Block],
+    lay: &Layout,
+    cols: &[&[F64]],
+    w: &[F192],
+    gamma: F192,
+    gpow: &[F64],
+) -> ArenaVec<F192> {
     let explicit = blocks
         .iter()
         .enumerate()
@@ -211,8 +221,6 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
         values.resize(explicit, F192::ONE);
         values
     };
-    let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
-    let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
         let mut const_part = gamma;
         let mut terms: Vec<Term> = Vec::with_capacity(blk.coords.len());
@@ -248,7 +256,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[&[F64]], w: &[F192],
             }
         }
     }
-    gkr::LeafVector::new(leaves)
+    leaves
 }
 
 /// One table's bus contribution on one side, as a form over that table's committed
@@ -276,6 +284,18 @@ impl BusForm {
             coeffs: vec![F192::ZERO; n_cols],
             prods: Vec::new(),
             constant: F192::ZERO,
+        }
+    }
+
+    /// The same form scaled by `w`. Every coefficient is `E`-valued already, so
+    /// folding the side's `η`-power in here costs three multiplies once per table
+    /// instead of one per [`eval`](Self::eval), which the zerocheck calls per row
+    /// per round.
+    pub fn scaled(&self, w: F192) -> Self {
+        Self {
+            coeffs: self.coeffs.iter().map(|&c| c * w).collect(),
+            prods: self.prods.iter().map(|&(a, b, c)| (a, b, c * w)).collect(),
+            constant: self.constant * w,
         }
     }
 
@@ -394,7 +414,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 Coord::Prod(..) | Coord::Sum(..) => {
                     unreachable!("only a table's bus block carries a degree-2 coordinate")
                 }
-                Coord::Public(vals) => mle_eval(vals, zeta_lo),
+                Coord::Public(vals) => mle_eval(vals.as_slice(), zeta_lo),
             };
             inner += w[i] * coord_val;
         }
@@ -511,33 +531,17 @@ pub struct BytecodeClaim {
     pub value: F192,
 }
 
-/// The public (bytecode) coordinate evaluations of a side at its GKR point,
-/// block/coord order, with the bytecode block's `κ`.
-pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
-    let mut kappa = 0;
-    let mut out = Vec::new();
-    for blk in blocks {
-        for c in &blk.coords {
-            if let Coord::Public(vals) = c {
-                kappa = blk.kappa;
-                out.push(mle_eval(vals, &zeta[..blk.kappa]));
-            }
-        }
-    }
-    (kappa, out)
-}
-
 /// The stacked bytecode polynomial as a dense table: nine public encoding
 /// columns padded to sixteen selector slots. This is the polynomial
 /// [`BytecodeClaim`]s are claims about; the outermost verifier evaluates it.
 pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     let mut kbc = 0;
-    let mut cols: Vec<(usize, &Vec<F64>)> = Vec::new();
+    let mut cols: Vec<(usize, &[F64])> = Vec::new();
     for blk in blocks {
         for (slot, c) in blk.coords.iter().enumerate() {
             if let Coord::Public(vals) = c {
                 kbc = blk.kappa;
-                cols.push((slot, vals));
+                cols.push((slot, vals.as_slice()));
             }
         }
     }
@@ -554,21 +558,6 @@ pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
 /// columns (opcode + eight operand/immediate slots = nine) stack along
 /// `2^N_BYTECODE_SELECTORS` slots.
 pub const N_BYTECODE_SELECTORS: usize = 4;
-
-/// `Σ_c eq(s, c)·v_c`: one side's public-column evaluations reduced to the
-/// stacked-polynomial value at selector point `s`.
-pub fn stacked_bytecode_value(evals: &[F192], s: &[F192]) -> F192 {
-    debug_assert_eq!(s.len(), N_BYTECODE_SELECTORS);
-    let mut acc = F192::ZERO;
-    for (c, &v) in evals.iter().enumerate() {
-        let mut e = F192::ONE;
-        for (t, &st) in s.iter().enumerate() {
-            e *= if (c >> t) & 1 == 1 { st } else { F192::ONE + st };
-        }
-        acc += e * v;
-    }
-    acc
-}
 
 /// The three bus sides in `[push, pull, count]` order with their fingerprint
 /// weights. The count channel's leaf is the count itself (a single `Col`), so it
@@ -599,7 +588,7 @@ pub fn public_share(blocks: &[Block], zeta: &[F192], w: &[F192]) -> (usize, F192
         for (i, c) in blk.coords.iter().enumerate() {
             if let Coord::Public(vals) = c {
                 kappa = blk.kappa;
-                acc += w[i] * mle_eval(vals, &zeta[..blk.kappa]);
+                acc += w[i] * mle_eval(vals.as_slice(), &zeta[..blk.kappa]);
             }
         }
     }
@@ -658,14 +647,24 @@ pub fn prove_balance(
     let count_build_lay = count_lay.clone();
     count_lay.mu = push_lay.mu;
     let gamma = ps.sample();
+    // The `g^z` table backing `Coord::Index`, built once for the three sides: push
+    // and pull would otherwise build the same table twice and count, which carries
+    // no `Index` coordinate, would build one it never reads.
+    let index_k = [push, pull, count]
+        .into_iter()
+        .flatten()
+        .filter(|b| b.coords.iter().any(|c| matches!(c, Coord::Index)))
+        .map(|b| b.kappa)
+        .max();
+    let gpow = index_k.map_or_else(Vec::new, |k| primitives::field::g_powers(1usize << k));
     // Three independent leaf vectors, built one after another: each `build_leaves`
     // already fans its own blocks out across the whole pool, so nesting a
     // three-way outer split on top would only add a barrier.
     let [push_leaves, pull_leaves, count_leaves] = crate::stage!("Bus leaves", || {
         [
-            build_leaves(push, &push_lay, cols, &w, gamma),
-            build_leaves(pull, &pull_lay, cols, &w, gamma),
-            build_leaves(count, &count_build_lay, cols, &count_w, F192::ZERO),
+            build_leaves(push, &push_lay, cols, &w, gamma, &gpow),
+            build_leaves(pull, &pull_lay, cols, &w, gamma, &gpow),
+            build_leaves(count, &count_build_lay, cols, &count_w, F192::ZERO, &gpow),
         ]
     });
     // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match

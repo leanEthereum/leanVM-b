@@ -42,7 +42,6 @@ use primitives::{
     multilinear::eq_eval,
     pretty_integer,
 };
-use serde::{Deserialize, Serialize};
 use zk_alloc::ArenaVec;
 
 pub use super::whir_config::{
@@ -51,7 +50,7 @@ pub use super::whir_config::{
     SUBSEQUENT_FOLDING_FACTOR, VerifierConfig, WhirLevelConfig, WhirSecurityConfig, validate_log_inv_rate,
 };
 #[cfg(test)]
-pub use super::whir_config::{default_config, default_verifier_config, udr_queries};
+pub use super::whir_config::{default_config, udr_queries};
 
 pub use crate::whir_induce::*;
 use crate::whir_ntt_ext::*;
@@ -108,7 +107,7 @@ pub(crate) fn build_eq_table_ext_parallel(point: &[F192]) -> ArenaVec<F192> {
     unsafe { zk_alloc::assume_init(out) }
 }
 
-trait EqTableSlot {
+pub(crate) trait EqTableSlot {
     fn put(&mut self, value: F192);
     unsafe fn get(&self) -> F192;
 }
@@ -184,7 +183,9 @@ pub(crate) fn add_eq_table_ext_seeded(
 }
 
 /// In-place seeded core of [`build_eq_table_ext_parallel`]: fills
-/// `out[..2^point.len()]` with `seed * eq(point, .)`.
+/// `out[..2^point.len()]` with `seed * eq(point, .)`. Write-only, so it also
+/// serves the first claim landing on a range of `stack_open`'s `b_stack`, which
+/// then needs no prior zeroing.
 ///
 /// Seeding folds a batching scalar into the table for free: every entry is
 /// `seed` times a product of point factors, and field multiplication is
@@ -192,7 +193,7 @@ pub(crate) fn add_eq_table_ext_seeded(
 /// byte for byte while skipping one full multiply pass. `out` must have
 /// length exactly `2^point.len()`; every slot is written before any is read, so
 /// a reused scratch buffer is fine.
-fn build_eq_table_ext_seeded<S: EqTableSlot + Send>(point: &[F192], seed: F192, out: &mut [S]) {
+pub(crate) fn build_eq_table_ext_seeded<S: EqTableSlot + Send>(point: &[F192], seed: F192, out: &mut [S]) {
     let n = point.len();
     assert_eq!(out.len(), 1usize << n, "out must have length 2^point.len()");
     out[0].put(seed);
@@ -490,10 +491,10 @@ pub(crate) fn ligero_commit_ext(
 // lifts the witness into E and all later rounds are pure E.
 
 /// (u_0, u_2) per round in E.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SumcheckMessage {
-    pub u_0: F192,
-    pub u_2: F192,
+#[derive(Clone, Copy, Debug)]
+struct SumcheckMessage {
+    u_0: F192,
+    u_2: F192,
 }
 
 /// Transmit one sumcheck round message.
@@ -800,7 +801,6 @@ struct SumcheckProver<'a> {
     /// b_new`, `tau` counting from 1 (the running claim is `tau = 0`).
     combined_basis: ArenaVec<F192>,
     t_r: F192,
-    transcript: Vec<SumcheckMessage>,
     round: usize,
     /// The level's claims, in Protocol 1 step 1 order: the OOD claims, then the
     /// query batch. Drained by `glue_pending`.
@@ -812,15 +812,13 @@ impl<'a> SumcheckProver<'a> {
         let _span = tracing::info_span!("Sumcheck round", round = 0, log_size = f.len().trailing_zeros()).entered();
         assert_eq!(f.len(), b1.len());
         let msg = round_msg_lsb(f, &b1);
-        let mut inst = Self {
+        let inst = Self {
             f: Witness::Base(f),
             combined_basis: b1,
             t_r: h1,
-            transcript: Vec::new(),
             round: 0,
             pending: Vec::new(),
         };
-        inst.transcript.push(msg);
         (inst, msg)
     }
 
@@ -840,7 +838,6 @@ impl<'a> SumcheckProver<'a> {
         // makes the next round's `fold_out_buf` a bump instead of a fresh mapping.
         drop(std::mem::replace(&mut self.f, Witness::Ext(nf)));
         drop(std::mem::replace(&mut self.combined_basis, nb));
-        self.transcript.push(msg);
         msg
     }
 
@@ -857,7 +854,6 @@ impl<'a> SumcheckProver<'a> {
                 round_msg_lsb(f, &b_new)
             }
         };
-        self.transcript.push(msg);
         self.pending.push((b_new, h_new));
         msg
     }
@@ -872,7 +868,6 @@ impl<'a> SumcheckProver<'a> {
         };
         assert_eq!(b_new.len(), f.len());
         let (msg, h_new) = round_msg_and_eval_lsb_ext(f, &b_new);
-        self.transcript.push(msg);
         self.pending.push((b_new, h_new));
         (msg, h_new)
     }
@@ -1072,8 +1067,13 @@ pub fn recursive_prover_with_basis(
     let log_inv_rate_1 = config.log_inv_rates[1];
     let _t = std::time::Instant::now();
     let ntt_1 = AdditiveNttF64::standard(log_msg_cols_1 + log_inv_rate_1);
-    let f1 = sc_prover.f_ext().to_vec();
-    let wtns_1 = ligero_commit_ext(&f1, log_msg_cols_1, log_num_interleaved_1, log_inv_rate_1, &ntt_1);
+    let wtns_1 = ligero_commit_ext(
+        sc_prover.f_ext(),
+        log_msg_cols_1,
+        log_num_interleaved_1,
+        log_inv_rate_1,
+        &ntt_1,
+    );
     if trace {
         t_commits += _t.elapsed();
     }
@@ -1159,8 +1159,7 @@ pub fn recursive_prover_with_basis(
         }
 
         if i == r - 1 {
-            let yr = sc_prover.f_ext().to_vec();
-            ps.add_scalars(&yr);
+            ps.add_scalars(sc_prover.f_ext());
             // PoW grinding for the last level before sampling its queries.
             ps.grind(config.grinding_bits[i + 1] as u32);
             let num_queries_last = config.queries[i + 1];
@@ -1244,9 +1243,8 @@ pub fn recursive_prover_with_basis(
         let log_inv_rate_next = config.log_inv_rates[i + 2];
         let _t = std::time::Instant::now();
         let ntt_next = AdditiveNttF64::standard(log_msg_cols_next + log_inv_rate_next);
-        let f_evals = sc_prover.f_ext().to_vec();
         let wtns_next = ligero_commit_ext(
-            &f_evals,
+            sc_prover.f_ext(),
             log_msg_cols_next,
             log_num_interleaved_next,
             log_inv_rate_next,
@@ -2094,7 +2092,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::whir::{QUERY_GRINDING_BITS, default_config, default_verifier_config};
+    use crate::whir::QUERY_GRINDING_BITS;
+    use crate::whir_config::test_configs_for;
     use primitives::test_rng::Rng;
 
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
@@ -2131,22 +2130,6 @@ mod tests {
             assert_eq!(b, want_b);
             assert_eq!(c, want_c);
             assert_eq!(d, want_d);
-        }
-    }
-
-    /// Configs for a K-witness of `2^log_n` elements. Prefers the strict
-    /// Secure-profile derivation (the production path, [`configs_for`]);
-    /// its ladder needs L0 block_len >= ~300 queries, i.e. log_n >= 14, so
-    /// smaller test sizes fall back to the ad-hoc `default_config` shape
-    /// (test-only; same fallback the main crate uses for small instances).
-    fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
-        match super::configs_for(log_n) {
-            Ok(pv) => pv,
-            Err(_) => {
-                let pc = default_config(log_n, 5, 1).unwrap();
-                let vc = default_verifier_config(log_n, 5, 1).unwrap();
-                (pc, vc)
-            }
         }
     }
 
@@ -2390,9 +2373,9 @@ mod tests {
             let mut c2: Vec<F64> = ext.iter().map(|e| F64(e.c2)).collect();
             let mut ext_t = ext.clone();
             forward_transform_interleaved_ext_from_layer(&ntt, &mut ext_t, lanes, start_layer);
-            ntt.forward_transform_interleaved_from_layer(&mut c0, lanes, start_layer);
-            ntt.forward_transform_interleaved_from_layer(&mut c1, lanes, start_layer);
-            ntt.forward_transform_interleaved_from_layer(&mut c2, lanes, start_layer);
+            ntt.forward_transform_interleaved_parallel_from_layer(&mut c0, lanes, start_layer);
+            ntt.forward_transform_interleaved_parallel_from_layer(&mut c1, lanes, start_layer);
+            ntt.forward_transform_interleaved_parallel_from_layer(&mut c2, lanes, start_layer);
             for i in 0..n {
                 assert_eq!(ext_t[i], F192::new(c0[i].0, c1[i].0, c2[i].0), "mismatch at {i}");
             }

@@ -4,14 +4,13 @@
 //!
 //! The module is two disjoint halves:
 //!
-//! - **Live in production**: the [`build_eq`] re-export, [`pack_bits`], [`SplitEq`] and
-//!   [`ntt_extend_vec`]. The optimized round-1 kernel
-//!   ([`super::univariate_skip_optimized`]) and the round-2 kernel ([`super::multilinear`])
-//!   are built on these.
-//! - **Test-only oracles**, below the banner and all `#[cfg(test)]`: `round1_naive`,
-//!   `round1_extract_c`, `round1_extract_c_packed`, `round1_extract_c_packed_with_s_hat_v` and
-//!   `round1_evals_on_s`. They translate the protocol formula directly, so the optimized kernels
-//!   can be diffed against something obviously correct.
+//! - **Live in production**: the [`build_eq`] re-export, [`SplitEq`] and [`ntt_extend_vec`].
+//!   The optimized round-1 kernel ([`super::univariate_skip_optimized`]) and the round-2
+//!   kernel ([`super::multilinear`]) are built on these.
+//! - **Test-only oracles**, below the banner and all `#[cfg(test)]`: `pack_bits`,
+//!   `round1_naive` and `round1_extract_c_packed_with_s_hat_v`. They translate the protocol
+//!   formula directly, so the optimized kernels can be diffed against something obviously
+//!   correct.
 //!
 //! The round-1 message is `(P^{AB}, P^C)`, each a length-`2^k_skip` vector
 //! of F192 values. They are evaluations on the NTT domain `Λ` of the
@@ -42,6 +41,7 @@ use primitives::field::{F8, F192, phi8_192 as phi8};
 pub use primitives::multilinear::eq_table as build_eq;
 
 /// Pack a bit vector LSB-first into bytes.
+#[cfg(test)]
 pub fn pack_bits(bits: &[bool]) -> Vec<u8> {
     let n_bytes = bits.len().div_ceil(8);
     // Each output byte depends on 8 contiguous input bits — disjoint, so
@@ -215,56 +215,7 @@ pub fn round1_naive(
     (p_ab, p_c)
 }
 
-/// Round-1 prover message (extract_c form, scalar, algorithmically optimized
-/// but without the geometric-eq shift_reduce trick).
-///
-/// Same output as [`round1_naive`], but it uses `InvNttTableByteSingleGf8::apply`
-/// (one L1 lookup pass) instead of two F8 NTT calls per row, splits the eq table
-/// into lo/hi halves, and accumulates C on S so it NTT-extends to Λ once at the
-/// end rather than per row.
-///
-/// Output: `(res_AB, res_C_lifted)`, each length `2^k_skip` F192 vector.
-/// Both are evaluations on Λ. Output equals `round1_naive(..)` byte-for-byte
-/// (no C_s factor — see module-level comment).
-#[cfg(test)]
-pub fn round1_extract_c(
-    a: &[bool],
-    b: &[bool],
-    c: &[bool],
-    m: usize,
-    k_skip: usize,
-    r_rest: &[F192],
-    inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F192>, Vec<F192>) {
-    assert_eq!(a.len(), 1usize << m);
-    assert_eq!(b.len(), 1usize << m);
-    assert_eq!(c.len(), 1usize << m);
-    let a_packed = pack_bits(a);
-    let b_packed = pack_bits(b);
-    let c_packed = pack_bits(c);
-    round1_extract_c_packed(&a_packed, &b_packed, &c_packed, m, k_skip, r_rest, inv_table)
-}
-
-/// Packed-input variant of [`round1_extract_c`]. Skips the bool→byte packing —
-/// caller passes pre-packed bytes (LSB-first within each byte, as produced
-/// by [`pack_bits`]). Use this when the caller already has packed witnesses
-/// or wants to factor packing out of timed work.
-#[cfg(test)]
-pub fn round1_extract_c_packed(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    c_packed: &[u8],
-    m: usize,
-    k_skip: usize,
-    r_rest: &[F192],
-    inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F192>, Vec<F192>) {
-    let (res_ab, res_c_lifted, _) =
-        round1_extract_c_packed_with_s_hat_v(a_packed, b_packed, c_packed, m, k_skip, r_rest, inv_table);
-    (res_ab, res_c_lifted)
-}
-
-/// Same as [`round1_extract_c_packed`] but **also returns `s_hat_v_c`** — the
+/// Packed-input round-1 message in extract_c form, which **also returns `s_hat_v_c`** — the
 /// 128-entry vector ring-switch would otherwise produce via `fold_1b_rows` for
 /// the c-claim's PCS opening at point `r_rest`.
 ///
@@ -399,52 +350,6 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     (res_ab, res_c_lifted, s_hat_v_c)
 }
 
-/// Round-1 polynomial values evaluated AT S.
-///
-/// Returns `(P^{AB} at S, P^C at S)` — i.e. evaluations of the same round-1
-/// polynomial on the input domain S instead of the extension domain Λ.
-/// Computed directly from the boolean witness, skipping the NTT extension.
-///
-/// For an honest prover (`a·b = c` everywhere on the hypercube),
-/// `P^{AB}(λ) + P^C(λ) = 0` for every `λ ∈ S`.
-#[cfg(test)]
-pub fn round1_evals_on_s(
-    a: &[bool],
-    b: &[bool],
-    c: &[bool],
-    m: usize,
-    k_skip: usize,
-    r_rest: &[F192],
-) -> (Vec<F192>, Vec<F192>) {
-    assert!(k_skip <= m);
-    assert_eq!(a.len(), 1usize << m);
-    assert_eq!(b.len(), 1usize << m);
-    assert_eq!(c.len(), 1usize << m);
-    assert_eq!(r_rest.len(), m - k_skip);
-
-    let ell = 1usize << k_skip;
-    let n_chunks_x = 1usize << (m - k_skip);
-    let eq_full = build_eq(r_rest);
-
-    let mut p_ab = vec![F192::ZERO; ell];
-    let mut p_c = vec![F192::ZERO; ell];
-
-    for x_rest in 0..n_chunks_x {
-        let base = x_rest * ell;
-        let eq_x = eq_full[x_rest];
-        for s in 0..ell {
-            if a[base + s] && b[base + s] {
-                p_ab[s] += eq_x;
-            }
-            if c[base + s] {
-                p_c[s] += eq_x;
-            }
-        }
-    }
-
-    (p_ab, p_c)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -511,56 +416,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn round1_at_s_zero_for_honest_witness() {
-        // The strongest correctness check we can write without the optimized
-        // version: for an honest witness with a · b = c on the hypercube,
-        // the round-1 polynomial P^{AB}(λ) + P^C(λ) is zero at every λ ∈ S.
-        // (At S the extension polynomial equals the original boolean values,
-        // so P at S is just the eq-weighted sum of (a·b ⊕ c) = 0.)
-        //
-        // We use `round1_evals_on_s` as the test oracle since it computes P at S
-        // directly without the NTT. The protocol's actual round-1 message
-        // (`round1_naive`) lives at Λ; cross-checking S↔Λ via NTT
-        // interpolation is left for the optimized-vs-naive comparison.
-        let m = 8;
-        let k_skip = 3;
-        let mut rng = Rng::new(5);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        // Honest c: c = a AND b for every i.
-        let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
-        let r = rng.ext_vec(m - k_skip);
-
-        let (p_ab_s, p_c_s) = round1_evals_on_s(&a, &b, &c, m, k_skip, &r);
-        for s in 0..p_ab_s.len() {
-            assert_eq!(
-                p_ab_s[s] + p_c_s[s],
-                F192::ZERO,
-                "P at S should be 0 for honest witness, but failed at s={s}"
-            );
-        }
-    }
-
-    #[test]
-    fn round1_at_s_nonzero_for_random_witness() {
-        // Sanity: for an arbitrary (likely-not-honest) witness, P at S is
-        // generally nonzero. This guards against round1_evals_on_s returning
-        // zero trivially.
-        let m = 8;
-        let k_skip = 3;
-        let mut rng = Rng::new(6);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m - k_skip);
-
-        let (p_ab_s, p_c_s) = round1_evals_on_s(&a, &b, &c, m, k_skip, &r);
-        let combined: Vec<F192> = p_ab_s.iter().zip(&p_c_s).map(|(x, y)| *x + *y).collect();
-        let nonzero = combined.iter().any(|v| !v.is_zero());
-        assert!(nonzero, "P at S should be nonzero for a random witness");
-    }
-
     fn make_inv_table(k_skip: usize) -> InvNttTableByteSingleGf8 {
         let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
         let ntt_l = AdditiveNttGf8::new(k_skip, F8(1u8 << k_skip));
@@ -621,7 +476,15 @@ mod tests {
             let table = make_inv_table(k_skip);
 
             let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
-            let (opt_ab, opt_c) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
+            let (opt_ab, opt_c, _) = round1_extract_c_packed_with_s_hat_v(
+                &pack_bits(&a),
+                &pack_bits(&b),
+                &pack_bits(&c),
+                m,
+                k_skip,
+                &r,
+                &table,
+            );
 
             assert_eq!(naive_ab, opt_ab, "AB mismatch at m={m}, k_skip={k_skip}");
             assert_eq!(naive_c, opt_c, "C mismatch at m={m}, k_skip={k_skip}");

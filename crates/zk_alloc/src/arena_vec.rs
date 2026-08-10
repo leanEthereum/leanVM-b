@@ -250,11 +250,6 @@ impl<T> ArenaVec<T> {
         }
     }
 
-    #[inline]
-    pub fn clear(&mut self) {
-        self.truncate(0);
-    }
-
     /// Decompose into raw parts, leaking the buffer. Inverse of
     /// [`from_raw_parts`](Self::from_raw_parts).
     #[inline]

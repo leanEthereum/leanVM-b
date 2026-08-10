@@ -60,14 +60,14 @@ pub fn powers(x: F192, n: usize) -> Vec<F192> {
     out
 }
 
-/// `[g^0, g^1, …, g^{n-1}]`, built in parallel: each chunk seeds with one g-power
-/// (`x_pow`, `O(log)`) and fills by `mul_by_g`, breaking the serial prefix chain
-/// across cores.
+/// `[g^0, g^1, …, g^{n-1}]`, built in parallel: each chunk seeds with one
+/// [`g_pow`] (`O(log)`) and fills by `mul_by_g`, breaking the serial prefix
+/// chain across cores.
 pub fn g_powers(n: usize) -> Vec<F64> {
     const CHUNK: usize = 1 << 12;
     let mut v = vec![F64::ZERO; n];
     parallel::chunks_mut(&mut v, CHUNK, |ci, chunk| {
-        let mut acc = x_pow(ci * CHUNK);
+        let mut acc = g_pow(ci * CHUNK);
         for slot in chunk.iter_mut() {
             *slot = acc;
             acc = mul_by_g(acc);
@@ -76,12 +76,13 @@ pub fn g_powers(n: usize) -> Vec<F64> {
     v
 }
 
-/// `x^k` in the monomial basis of `K` by square-and-multiply (`O(log k)`). Used
-/// for domain separators, opcodes, and the g-power index encoding.
-pub fn x_pow(k: usize) -> F64 {
+/// `g^i = x^i` in the monomial basis of `K` by square-and-multiply (`O(log i)`):
+/// domain separators, opcodes, and the g-power encoding of index `i` (§sec:vm).
+#[inline]
+pub fn g_pow(i: usize) -> F64 {
     let mut result = F64::ONE;
     let mut base = G; // x = g
-    let mut e = k;
+    let mut e = i;
     while e > 0 {
         if e & 1 == 1 {
             result *= base;
@@ -97,12 +98,6 @@ pub fn x_pow(k: usize) -> F64 {
 /// instance uses (the verifier's instance caps, §cpu). For `k < 64`, `g^k` is
 /// the monomial `x^k` (bit `k`), which the XMSS encoding check relies on.
 pub const G: F64 = F64::G;
-
-/// `g^i`, the g-power encoding of index `i` (§sec:vm).
-#[inline]
-pub fn g_pow(i: usize) -> F64 {
-    x_pow(i)
-}
 
 /// MLE of the index column `[g^0, …, g^{2^n−1}]` over the `n`-variable cube,
 /// evaluated at an `E`-point: `∏_k (1 + ζ_k·(1 + g^{2^k}))` in `O(n)` (§sec:idxcol).

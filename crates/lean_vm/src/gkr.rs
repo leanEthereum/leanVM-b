@@ -7,8 +7,7 @@
 //! into `E` upstream, [`crate::leaf`]).
 
 use crate::PAR_THRESHOLD;
-use crate::transcript::{ProverState, VerifierState};
-use primitives::ParCollectArena;
+use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F192, F192Unreduced};
 use primitives::multilinear::{eq_table, interp, quartic_eval_from_eq, shrink_eq_low};
 use zk_alloc::ArenaVec;
@@ -103,34 +102,18 @@ fn window_rows(total: usize) -> usize {
     total.div_ceil(tasks).clamp(32, 1 << 12)
 }
 
-/// One tree's dense leaves.
-pub struct LeafVector {
-    leaves: ArenaVec<F192>,
-}
-
-impl LeafVector {
-    pub fn new(leaves: ArenaVec<F192>) -> Self {
-        Self { leaves }
-    }
-}
-
-#[derive(Default)]
-struct Layer {
-    /// One level of the grand-product tree: at mu = 22 the leaf level alone is
-    /// hundreds of megabytes, and every level dies with the proof.
-    values: ArenaVec<F192>,
-}
-
 /// Build only the levels consumed by radix four: `0,2,4,…`, plus a final
 /// binary root when the logical depth is odd.
-fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
-    assert!(!leaves.leaves.is_empty());
-    assert!(leaves.leaves.len() <= 1usize << mu);
-    let mut layers: Vec<Layer> = (0..=mu).map(|_| Layer::default()).collect();
-    layers[0] = Layer { values: leaves.leaves };
+fn build_layers(leaves: ArenaVec<F192>, mu: usize) -> Vec<ArenaVec<F192>> {
+    assert!(!leaves.is_empty());
+    assert!(leaves.len() <= 1usize << mu);
+    // At mu = 22 the leaf level alone is hundreds of megabytes, and every level
+    // dies with the proof.
+    let mut layers: Vec<ArenaVec<F192>> = (0..=mu).map(|_| ArenaVec::new()).collect();
+    layers[0] = leaves;
     let mut level = 0;
     while level + 2 <= mu {
-        let Layer { values: current } = &layers[level];
+        let current = &layers[level];
         let full_rows = current.len() / 4;
         let product = |row: usize| {
             let [left, right] = mul_pair(
@@ -144,26 +127,24 @@ fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
         } else if current.len() == 2 {
             ArenaVec::from_iter([current[0] * current[1]])
         } else if full_rows >= PAR_THRESHOLD {
-            ArenaVec::par_collect(full_rows, product)
+            primitives::par_collect_arena(full_rows, product)
         } else {
             (0..full_rows).map(product).collect()
         };
-        if current.len() % 4 != 0 && current.len() > 2 {
+        if !current.len().is_multiple_of(4) && current.len() > 2 {
             let row = full_rows;
             let child = |index| current.get(4 * row + index).copied().unwrap_or(F192::ONE);
             let [left, right] = mul_pair([child(0), child(2)], [child(1), child(3)]);
             next.push(left * right);
         }
         level += 2;
-        layers[level] = Layer { values: next };
+        layers[level] = next;
     }
     if level < mu {
-        layers[mu] = Layer {
-            values: match layers[level].values.as_slice() {
-                [root] => ArenaVec::from_iter([*root]),
-                [left, right] => ArenaVec::from_iter([*left * *right]),
-                _ => unreachable!("the final binary layer has at most two explicit nodes"),
-            },
+        layers[mu] = match layers[level].as_slice() {
+            [root] => ArenaVec::from_iter([*root]),
+            [left, right] => ArenaVec::from_iter([*left * *right]),
+            _ => unreachable!("the final binary layer has at most two explicit nodes"),
         };
     }
     layers
@@ -208,9 +189,13 @@ impl QuaternaryLayerState {
         values.resize(4 * values.len().max(1).div_ceil(4), F192::ONE);
         debug_assert_eq!(values.len() % 4, 0);
         debug_assert!(values.len() <= 4 * width);
+        let rows = (values.len() / 4).div_ceil(2);
         Self {
             values,
-            next: ArenaVec::new(),
+            // SAFETY: the first `fold` writes every slot of `next[..4 * rows]` before
+            // any read (its windows cover the full pairs, its tail block the odd row),
+            // and neither `round_message` nor `children` reads `next`.
+            next: unsafe { ArenaVec::uninitialized(4 * rows) },
             logical_rows: width,
         }
     }
@@ -259,7 +244,7 @@ impl QuaternaryLayerState {
         let stored_rows = self.values.len() / 4;
         let full_rows = stored_rows / 2;
         let rows = stored_rows.div_ceil(2);
-        self.next.resize(4 * rows, F192::ZERO);
+        self.next.truncate(4 * rows);
         let (values, next) = (&self.values, &mut self.next);
         let fold_row = |row: usize, destination: &mut [F192]| {
             let lo = 8 * row;
@@ -315,20 +300,14 @@ pub struct ProductTriple {
 }
 
 /// Prove three identity-padded grand products as one RLC-batched radix-four GKR.
-pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> ProductTriple {
-    let mu = crate::log2_ceil_usize(leaves[0].leaves.len());
+pub fn prove_product_triple(leaves: [ArenaVec<F192>; 3], ps: &mut ProverState) -> ProductTriple {
+    let mu = crate::log2_ceil_usize(leaves[0].len());
     assert!(
-        leaves
-            .iter()
-            .all(|lane| !lane.leaves.is_empty() && lane.leaves.len() <= 1 << mu),
+        leaves.iter().all(|lane| !lane.is_empty() && lane.len() <= 1 << mu),
         "batched trees must be nonempty prefixes of the first tree's logical tree"
     );
     let mut layers = leaves.map(|lane| build_layers(lane, mu));
-    let roots = [
-        layers[0][mu].values[0],
-        layers[1][mu].values[0],
-        layers[2][mu].values[0],
-    ];
+    let roots = [layers[0][mu][0], layers[1][mu][0], layers[2][mu][0]];
     for root in roots {
         ps.add_scalar(root);
     }
@@ -342,7 +321,7 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
         if layer % 2 == 1 {
             debug_assert_eq!(round_count, 0, "only the root-most layer may be binary");
             let tails = [0, 1, 2].map(|tree| {
-                let below = &layers[tree][layer - 1].values;
+                let below = &layers[tree][layer - 1];
                 match below.as_slice() {
                     [left, right] => [*left, *right],
                     [left] => [*left, F192::ONE],
@@ -363,10 +342,8 @@ pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> Pr
         }
 
         let width = 1usize << round_count;
-        let mut trees = [0, 1, 2].map(|tree| {
-            let Layer { values } = std::mem::take(&mut layers[tree][layer - 2]);
-            QuaternaryLayerState::new(values, width)
-        });
+        let mut trees =
+            [0, 1, 2].map(|tree| QuaternaryLayerState::new(std::mem::take(&mut layers[tree][layer - 2]), width));
         let mut equality = if round_count > 0 {
             eq_table(&point[1..])
         } else {
@@ -541,10 +518,7 @@ mod tests {
                 .each_ref()
                 .map(|lane| lane.iter().copied().fold(F192::ONE, |product, value| product * value));
             let mut ps = ProverState::new(b"radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(
-                leaves.each_ref().map(|l| LeafVector::new(ArenaVec::from_slice(l))),
-                &mut ps,
-            );
+            let proved = prove_product_triple(leaves.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())), &mut ps);
             assert_eq!(proved.roots, expected_roots);
             for lane in 0..3 {
                 assert_eq!(proved.values[lane], mle_eval_e(&leaves[lane], &proved.point));
@@ -576,7 +550,7 @@ mod tests {
             });
             let mut sparse_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
             let proved = prove_product_triple(
-                leaves.each_ref().map(|l| LeafVector::new(ArenaVec::from_slice(l))),
+                leaves.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())),
                 &mut sparse_ps,
             );
             for lane in 0..3 {
@@ -592,7 +566,7 @@ mod tests {
             let proof = sparse_ps.into_proof();
             let mut dense_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
             let dense_proved = prove_product_triple(
-                dense.each_ref().map(|l| LeafVector::new(ArenaVec::from_slice(l))),
+                dense.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())),
                 &mut dense_ps,
             );
             assert_eq!(dense_proved.roots, proved.roots);

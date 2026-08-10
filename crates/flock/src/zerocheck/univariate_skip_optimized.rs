@@ -38,21 +38,17 @@ use primitives::bits::bit_transpose_64bytes;
 use primitives::field::gf2_8::gf8_reduce;
 use primitives::field::{F8, F192, PHI_8_TABLE_192 as PHI_8_TABLE, phi8_192 as phi8};
 
-use super::PaddingSpec;
 #[cfg(test)]
 use super::univariate_skip::pack_bits;
 use super::univariate_skip::{SplitEq, ntt_extend_vec};
+use super::{K_SKIP, N_INNER, PaddingSpec};
 
 // ---------------------------------------------------------------------------
 // Protocol constants — fixed by the optimization design.
 // ---------------------------------------------------------------------------
 
-/// Number of variables folded in round 1 for the shift_reduce variant.
-pub const K_SKIP: usize = 6;
 const ELL: usize = 64;
 const N_CHUNKS: usize = 8;
-/// Total inner-most dims absorbed by the optimization: 3 small + 4 medium.
-const N_INNER: usize = 7;
 const N_MEDIUM: usize = 4;
 
 /// The three small-eq challenges (as F_8 values, then embedded via φ_8).
@@ -613,39 +609,6 @@ fn shift_reduce_inner_ab_scalar(
 // Main optimized round-1 prover message.
 // ---------------------------------------------------------------------------
 
-/// Compute the round-1 prover message via the full shift_reduce + extract_c
-/// optimization, in scalar Rust.
-///
-/// Output relative to `round1_naive`:
-/// `C_s · (res_AB[i] + res_C_lifted[i]) = naive_p_ab[i] + naive_p_c[i]`
-///
-/// Preconditions:
-/// - `k_skip == K_SKIP` (= 6)
-/// - `m >= k_skip + N_INNER` (= 13)
-/// - `r_rest.len() == m - k_skip`. `r_rest[..7]` must hold the protocol-fixed small
-///   and medium constants (see [`small_challenges`] /
-///   [`medium_challenges`]) for the naive cross-check to line up. Only
-///   `r_rest[7..]` is used internally.
-/// - `inv_table.k == k_skip`.
-#[cfg(test)]
-fn round1_shift_reduce_extract_c(
-    a: &[bool],
-    b: &[bool],
-    c: &[bool],
-    m: usize,
-    k_skip: usize,
-    r_rest: &[F192],
-    inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F192>, Vec<F192>) {
-    assert_eq!(a.len(), 1usize << m);
-    assert_eq!(b.len(), 1usize << m);
-    assert_eq!(c.len(), 1usize << m);
-    let a_packed = pack_bits(a);
-    let b_packed = pack_bits(b);
-    let c_packed = pack_bits(c);
-    round1_shift_reduce_extract_c_packed(&a_packed, &b_packed, &c_packed, m, k_skip, r_rest, inv_table)
-}
-
 // ---------------------------------------------------------------------------
 // Two-bank C accumulator that produces s_hat_v_c alongside round 1.
 //
@@ -851,61 +814,13 @@ fn build_b_med_counts(padding: &PaddingSpec) -> (usize, Vec<u8>) {
     (within_outer_mask, counts)
 }
 
-/// Packed-input variant of `round1_shift_reduce_extract_c`. **Parallel by
-/// default** via the `parallel` pool: the outer x_hi loop is distributed across
-/// workers, each with its own scratch + local accumulator. Reduction is a
-/// per-lane F192 XOR across workers (commutative + associative).
-///
-/// To run single-threaded for debugging, set `LEANVM_NUM_THREADS=1`.
-pub fn round1_shift_reduce_extract_c_packed(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    c_packed: &[u8],
-    m: usize,
-    k_skip: usize,
-    r_rest: &[F192],
-    inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F192>, Vec<F192>) {
-    round1_shift_reduce_extract_c_packed_padded(
-        a_packed,
-        b_packed,
-        c_packed,
-        m,
-        k_skip,
-        r_rest,
-        inv_table,
-        &PaddingSpec::dense(m),
-    )
-}
-
-/// Padding-aware variant of [`round1_shift_reduce_extract_c_packed`]. Skips
-/// 512-bit b_med sub-windows that fall entirely in the zero padding of every
-/// witness block per `padding`. Output is byte-identical to the dense path
-/// when the padding bits are honestly zero.
-pub fn round1_shift_reduce_extract_c_packed_padded(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    c_packed: &[u8],
-    m: usize,
-    k_skip: usize,
-    r_rest: &[F192],
-    inv_table: &InvNttTableByteSingleGf8,
-    padding: &PaddingSpec,
-) -> (Vec<F192>, Vec<F192>) {
-    let (ab, c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-        a_packed, b_packed, c_packed, m, k_skip, r_rest, inv_table, padding,
-    );
-    (ab, c)
-}
-
-/// Same as [`round1_shift_reduce_extract_c_packed_padded`] but **also returns
-/// `s_hat_v_c`** — the length-128 vector ring-switch would otherwise produce
+/// The round-1 prover message, padding-aware, **also returning `s_hat_v_c`** — the length-128 vector ring-switch would otherwise produce
 /// via `fold_1b_rows` for the c-claim's PCS opening at suffix `r_rest[1..]`.
 ///
-/// The wire output `(res_ab, res_c_lifted)` is byte-identical to
-/// [`round1_shift_reduce_extract_c_packed_padded`] — same eq weights, same
-/// `C_s` drop convention. `s_hat_v_c` is returned in **canonical form**
-/// (matches `fold_1b_rows`), with the residual `C_2` and `α⁻¹` scaling
+/// Skips 512-bit b_med sub-windows that fall entirely in the zero padding of
+/// every witness block per `padding`, which is byte-identical to the dense
+/// path when those bits are honestly zero. `s_hat_v_c` is `s_hat_v_c` is returned in **canonical form**
+/// in **canonical form** (matches `fold_1b_rows`), with the residual `C_2` and `α⁻¹` scaling
 /// applied internally so the caller can feed it straight into
 /// `pcs::ring_switch::prove_batched_padded_with_precomputed`.
 ///
@@ -1002,69 +917,6 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     }
 
     (res_ab.to_vec(), res_c_lifted, s_hat_v_c)
-}
-
-/// Serial reference — same I/O as [`round1_shift_reduce_extract_c_packed`],
-/// no thread pool. Kept under `#[cfg(test)]` as the cross-check oracle for the
-/// parallel version: future "optimizations" to the parallel path must still
-/// produce identical output to this straight-line loop.
-#[cfg(test)]
-fn round1_shift_reduce_extract_c_packed_serial(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    c_packed: &[u8],
-    m: usize,
-    k_skip: usize,
-    r_rest: &[F192],
-    inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F192>, Vec<F192>) {
-    assert_eq!(k_skip, K_SKIP);
-    assert!(m >= k_skip + N_INNER);
-    let total_bytes = (1usize << m) / 8;
-    assert_eq!(a_packed.len(), total_bytes);
-    assert_eq!(b_packed.len(), total_bytes);
-    assert_eq!(c_packed.len(), total_bytes);
-    assert_eq!(r_rest.len(), m - k_skip);
-    assert_eq!(inv_table.k, k_skip);
-
-    let eq = SplitEq::new(&r_rest[N_INNER..]);
-    let big_lo_size = 1usize << eq.n_lo;
-    let hi_size = 1usize << eq.n_hi;
-    let n_lo_and_inner = eq.n_lo + N_INNER;
-
-    let d_inv_val = d_inv();
-    let eq_lo_scaled: Vec<F192> = eq.lo.iter().map(|v| *v * d_inv_val).collect();
-    let convert = convert_table();
-
-    let (within_outer_mask, b_med_counts) = build_b_med_counts(&PaddingSpec::dense(m));
-
-    let mut state = WorkerState::new();
-    for x_hi in 0..hi_size {
-        process_one_x_hi(
-            x_hi,
-            big_lo_size,
-            n_lo_and_inner,
-            within_outer_mask,
-            &b_med_counts,
-            a_packed,
-            b_packed,
-            c_packed,
-            inv_table,
-            &eq_lo_scaled,
-            eq.hi[x_hi],
-            convert,
-            &mut state,
-        );
-    }
-
-    let res_c_s: Vec<F192> = state
-        .local_res_c_s_0
-        .iter()
-        .zip(state.local_res_c_s_1)
-        .map(|(a, b)| *a + b)
-        .collect();
-    let res_c_lifted = ntt_extend_vec(&res_c_s, inv_table);
-    (state.local_res_ab.to_vec(), res_c_lifted)
 }
 
 #[cfg(test)]
@@ -1191,7 +1043,16 @@ mod tests {
             let table = make_inv_table();
 
             let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, K_SKIP, &r);
-            let (opt_ab, opt_c) = round1_shift_reduce_extract_c(&a, &b, &c, m, K_SKIP, &r, &table);
+            let (opt_ab, opt_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+                &pack_bits(&a),
+                &pack_bits(&b),
+                &pack_bits(&c),
+                m,
+                K_SKIP,
+                &r,
+                &table,
+                &PaddingSpec::dense(m),
+            );
 
             // Combined: C_s · (opt_AB + opt_C) == naive_AB + naive_C
             for i in 0..ELL {
@@ -1228,34 +1089,6 @@ mod tests {
         let [g1, g2, g4, g8] = powers;
         let d = (F192::ONE + g1) * (F192::ONE + g2) * (F192::ONE + g4) * (F192::ONE + g8);
         assert_eq!(d * d_inv_val, F192::ONE);
-    }
-
-    #[test]
-    fn parallel_matches_serial() {
-        use crate::zerocheck::univariate_skip::pack_bits;
-
-        // At small m the parallel overhead dominates, but the *output* must
-        // still match the serial version bit-for-bit. F192 XOR-sum reduction
-        // is commutative + associative, so any thread-scheduling order yields
-        // the same result.
-        for &m in &[13usize, 14, 15] {
-            let mut rng = Rng::new(0xCAFE_F00D + m as u64);
-            let a = rng.bits(1 << m);
-            let b = rng.bits(1 << m);
-            let c = rng.bits(1 << m);
-            let outer = rng.ext_vec(m - K_SKIP - N_INNER);
-            let r = build_protocol_r_rest(m, &outer);
-            let table = make_inv_table();
-            let a_p = pack_bits(&a);
-            let b_p = pack_bits(&b);
-            let c_p = pack_bits(&c);
-
-            let (par_ab, par_c) = round1_shift_reduce_extract_c_packed(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table);
-            let (ser_ab, ser_c) = round1_shift_reduce_extract_c_packed_serial(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table);
-
-            assert_eq!(par_ab, ser_ab, "parallel AB ≠ serial AB at m={m}");
-            assert_eq!(par_c, ser_c, "parallel C ≠ serial C at m={m}");
-        }
     }
 
     /// **Padding skip is byte-identical to the dense path.** On a witness
@@ -1314,13 +1147,17 @@ mod tests {
             let b_p = pack_bits(&b);
             let c_p = pack_bits(&c);
 
-            let (dense_ab, dense_c) = round1_shift_reduce_extract_c_packed(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table);
+            let dense = PaddingSpec::dense(m);
+            let (dense_ab, dense_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &dense,
+            );
             let padding = PaddingSpec {
                 k_log,
                 useful_bits_per_block: useful_bits,
             };
-            let (padded_ab, padded_c) =
-                round1_shift_reduce_extract_c_packed_padded(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &padding);
+            let (padded_ab, padded_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &padding,
+            );
 
             assert_eq!(
                 dense_ab, padded_ab,

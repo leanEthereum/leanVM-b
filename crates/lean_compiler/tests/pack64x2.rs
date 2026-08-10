@@ -1,17 +1,10 @@
-use lean_compiler::{compile, compile_without_filler, parse};
+use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192};
 
-/// The program's own instruction mix: a build without the fill blocks, executed but not
-/// proven. Proving needs them, since a table's height has to be a power of two with no
-/// padding rows, but their dummy rows would drown out exactly what these counts are
-/// measuring.
-fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
-    compile_without_filler(&parse(src).expect("parse"))
-        .execute(pi)
-        .base_counts
-}
+mod common;
+use common::mix;
 
 #[test]
 fn pack64x2_proves_and_verifies() {

@@ -118,10 +118,11 @@
 //!   per byte.
 
 use crate::r1cs::SparseBinaryMatrix;
-use fiat_shamir::transcript::{ProverState, VerifierState};
+use fiat_shamir::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use pcs::ring_switch::inner_product_ext;
 use primitives::field::F192;
 use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
+#[cfg(test)]
 use zk_alloc::ArenaVec;
 
 // ---------------------------------------------------------------------------
@@ -360,13 +361,8 @@ pub enum VerifyError {
         expected: usize,
         got: usize,
     },
-    /// One of the base matrices isn't `2^k_log × 2^k_log`.
-    BadMatrixShape {
-        which: &'static str,
-        expected: usize,
-        got_rows: usize,
-        got_cols: usize,
-    },
+    /// The circuit's column count isn't `2^k_log`.
+    BadNCols { expected: usize, got: usize },
     /// `k_skip` exceeds `k_log` (the matrix inner dimension).
     KSkipExceedsKLog { k_skip: usize, k_log: usize },
     /// The scalar consistency check failed for one of (A, B, C).
@@ -938,13 +934,13 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> ArenaVec<u
     unsafe { zk_alloc::assume_init(z_packed) }
 }
 
-/// Same output as `pack_z_lincheck`, but reads bits from a 128-bit packed
-/// witness embedded in F192. In the polynomial basis, logical bit `i` is bit
-/// `i % 128` of `z_packed_words[i / 128]`.
-pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> ArenaVec<u8> {
+/// Same output as `pack_z_lincheck`, but reads bits from the bit-packed `u64`
+/// witness: logical bit `i` is bit `i % 64` of `z_packed_words[i / 64]`.
+#[cfg(test)]
+pub fn pack_z_lincheck_from_packed(z_packed_words: &[u64], m: usize, k_log: usize) -> ArenaVec<u8> {
     let k = 1usize << k_log;
     let n_total = 1usize << m;
-    assert_eq!(z_packed_words.len(), n_total / 128);
+    assert_eq!(z_packed_words.len(), n_total / 64);
     let n_outer = n_total / k;
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
 
@@ -957,14 +953,7 @@ pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m
             for r in 0..8 {
                 let i_outer = 8 * byte_idx + r;
                 let logical_idx = i_inner + i_outer * k;
-                let packed_word = logical_idx / 128;
-                let local_bit = logical_idx % 128;
-                let bit = if local_bit < 64 {
-                    (z_packed_words[packed_word].c0 >> local_bit) & 1 == 1
-                } else {
-                    (z_packed_words[packed_word].c1 >> (local_bit - 64)) & 1 == 1
-                };
-                if bit {
+                if (z_packed_words[logical_idx / 64] >> (logical_idx % 64)) & 1 == 1 {
                     byte |= 1u8 << r;
                 }
             }
@@ -1248,8 +1237,8 @@ pub fn prove_padded_capture_s_hat_v(
                 e1 = ne1;
                 einf = neinf;
             } else {
-                // Final round: just fold; z_vec collapses to z_partial.
-                sumcheck_bind_top_in_place_par(&mut comb_vec, r);
+                // Final round: only z_vec is read afterwards (as z_partial), so
+                // comb_vec's last fold would be dead work.
                 sumcheck_bind_top_in_place_par(&mut z_vec, r);
             }
         }
@@ -1328,11 +1317,9 @@ pub fn verify(
         });
     }
     if circuit.n_cols() != k {
-        return Err(VerifyError::BadMatrixShape {
-            which: "circuit",
+        return Err(VerifyError::BadNCols {
             expected: k,
-            got_rows: k,
-            got_cols: circuit.n_cols(),
+            got: circuit.n_cols(),
         });
     }
 

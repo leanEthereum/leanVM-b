@@ -224,14 +224,24 @@ pub fn default_config(log_n: usize, log_batch_size: usize, log_inv_rate: usize) 
     })
 }
 
-/// The [`VerifierConfig`] matching [`default_config`] (test-support only).
+/// Configs for a K-witness of `2^log_n` words: prefer the production
+/// Secure-profile derivation ([`crate::whir::configs_for`]), and fall back to
+/// the ad-hoc [`default_config`] shape at the test sizes below its feasibility
+/// floor. `VerifierConfig` is `ProverConfig`, so the fallback pair is one
+/// derivation cloned.
 #[cfg(test)]
-pub fn default_verifier_config(
-    log_n: usize,
-    log_batch_size: usize,
-    log_inv_rate: usize,
-) -> Result<VerifierConfig, String> {
-    default_config(log_n, log_batch_size, log_inv_rate)
+pub(crate) fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
+    if let Ok(pv) = crate::whir::configs_for(log_n) {
+        return pv;
+    }
+    for log_batch_size in (1..=5).rev() {
+        for log_inv_rate in 1..=4 {
+            if let Ok(config) = default_config(log_n, log_batch_size, log_inv_rate) {
+                return (config.clone(), config);
+            }
+        }
+    }
+    panic!("no feasible whir config at log_n = {log_n}");
 }
 
 /// Level-ladder shape: per-level dims (index 0 = L0) plus the residual.

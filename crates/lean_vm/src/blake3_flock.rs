@@ -55,9 +55,9 @@ pub const FLAGS: u32 = flock::blake3::PINNED_FLAGS;
 /// constraint proving so reduction needs no second witness pass.
 pub(crate) struct PreparedReductionWitness {
     n_blocks: usize,
-    z_packed: ArenaVec<F192>,
-    a_packed: ArenaVec<F192>,
-    b_packed: ArenaVec<F192>,
+    z_packed: ArenaVec<u64>,
+    a_packed: ArenaVec<u64>,
+    b_packed: ArenaVec<u64>,
     z_lincheck: ArenaVec<u8>,
 }
 
@@ -190,23 +190,15 @@ pub fn qflock_kappa(n: usize) -> usize {
     K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
 }
 
-/// Flatten flock's packed witness (128 bits per `F192` word, bit `i` at
-/// position `i`) into the committed `F64` packing (64 bits per word): word `j`
-/// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
-/// 64..128), which is exactly `pack_witness`'s convention on the same bit string.
-fn flatten_packed_into(packed: &[F192], out: &mut [F64]) {
-    debug_assert!(
-        packed.iter().all(|w| w.c2 == 0),
-        "Flock's 128-bit packed witness escaped its subspace"
-    );
-    assert_eq!(out.len(), packed.len() * 2, "q_flock's window is the wrong size");
-    // In parallel, straight into the committed column's window: at scale this reads
-    // 400 MB and writes 270 MB, so neither a push loop nor an intermediate buffer
-    // that is copied again afterwards is affordable.
-    parallel::fill(out, |i| {
-        let w = packed[i / 2];
-        F64(if i % 2 == 0 { w.c0 } else { w.c1 })
-    });
+/// Lift flock's packed witness (64 bits per word, bit `i` at position `i`) into
+/// the committed `F64` column: word for word, which is exactly `pack_witness`'s
+/// convention on the same bit string.
+fn flatten_packed_into(packed: &[u64], out: &mut [F64]) {
+    assert_eq!(out.len(), packed.len(), "q_flock's window is the wrong size");
+    // In parallel, straight into the committed column's window: at scale this
+    // moves 270 MB, so an intermediate buffer copied again afterwards is not
+    // affordable.
+    parallel::fill(out, |i| F64(packed[i]));
 }
 
 /// Build the committed `q_flock` column (flock's packed witness) for `blocks`, padded
@@ -297,7 +289,7 @@ pub fn family_digest() -> [u8; 32] {
 #[cfg(test)]
 fn prove_reduction(blocks: &[Compression], ps: &mut ProverState) -> (Vec<F64>, PackedWitnessClaims) {
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
-    let mut q_flock = vec![F64::ZERO; z_packed.len() * 2];
+    let mut q_flock = vec![F64::ZERO; z_packed.len()];
     flatten_packed_into(&z_packed, &mut q_flock);
     (q_flock, reduced)
 }

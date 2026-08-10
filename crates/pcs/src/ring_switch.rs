@@ -166,10 +166,6 @@ pub fn sample_map_challenges(ch: &mut impl Challenger) -> [F192; COMPOSITION_SHI
 }
 
 // ---------------------------------------------------------------------------
-// Transcript helpers: every 24-byte pattern is a valid F192.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Building blocks
 // ---------------------------------------------------------------------------
 
@@ -649,11 +645,11 @@ mod tests {
     use crate::merkle::Hash;
     use crate::pack::LOG_PACKING;
     use crate::pack::pack_witness;
-    use crate::whir::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
+    use crate::whir::VerifierConfig;
     use crate::whir::{
-        commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
-        recursive_verifier_with_basis_succinct,
+        commit, recursive_prover_with_basis, recursive_verifier_with_basis, recursive_verifier_with_basis_succinct,
     };
+    use crate::whir_config::test_configs_for;
     use primitives::test_rng::Rng;
 
     /// Number of Frobenius terms the composed batching map expands to: the
@@ -943,27 +939,6 @@ mod tests {
     }
 
     // -- end-to-end: reduction + whir opening --------------------------
-
-    /// Configs for a K-witness of `2^log_n` words: prefer the production
-    /// Secure-profile derivation; fall back to the ad-hoc default_config
-    /// shape at test sizes below its feasibility floor (same fallback the
-    /// whir tests use).
-    fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
-        if let Ok(pv) = configs_for(log_n) {
-            return pv;
-        }
-        for bs in (1..=5).rev() {
-            for rate in 1..=4 {
-                if let (Ok(pc), Ok(vc)) = (
-                    default_config(log_n, bs, rate),
-                    default_verifier_config(log_n, bs, rate),
-                ) {
-                    return (pc, vc);
-                }
-            }
-        }
-        panic!("no feasible whir config at log_n = {log_n}");
-    }
 
     struct E2e {
         vc: VerifierConfig,

@@ -4,7 +4,6 @@
 
 use crate::r1cs::SparseBinaryMatrix;
 use primitives::bits::transpose_8_u64s_to_64_bytes;
-use primitives::field::F192;
 use zk_alloc::ArenaVec;
 
 /// OR the low 32 bits of `val` into `buf` starting at bit-offset `bit_off`.
@@ -100,8 +99,9 @@ pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
 // ---------------------------------------------------------------------------
 
 /// Drive the parallel chunked witness build for `n_blocks` instances padded
-/// to `2^n_blocks_log` slots. Returns `(z, a, b, z_lincheck)` packed in
-/// F192 form (z/a/b) and byte-stripe form (z_lincheck).
+/// to `2^n_blocks_log` slots. Returns `(z, a, b, z_lincheck)`: the three
+/// bit-packed `u64` tables (`K / 64` words per instance) and the lincheck
+/// byte stripe.
 ///
 /// `per_block(initial, z_u64, a_u64, b_u64)` populates one block's worth of
 /// `(z, a, b)` data: 3 zero-initialized `u64`-buffers of length `K / 64`.
@@ -120,12 +120,11 @@ pub(crate) fn drive_witness_packed_and_lincheck<S: Sync, F>(
     n_blocks_log: usize,
     k_log: usize,
     per_block: F,
-) -> (ArenaVec<F192>, ArenaVec<F192>, ArenaVec<F192>, ArenaVec<u8>)
+) -> (ArenaVec<u64>, ArenaVec<u64>, ArenaVec<u64>, ArenaVec<u8>)
 where
     F: Fn(&S, &mut [u64], &mut [u64], &mut [u64]) + Sync,
 {
     let k = 1usize << k_log;
-    let packed_per_block = k / 128;
     let u64_per_block = k / 64;
     let n_total = 1usize << n_blocks_log;
     let n_blocks = initial_states.len();
@@ -138,28 +137,28 @@ where
         "lincheck stripe layout requires n_total ≥ 8 and divisible by 8"
     );
 
-    let total_packed = n_total * packed_per_block;
+    let total_words = n_total * u64_per_block;
     // z/a/b are allocated uninitialized and zeroed *inside* the parallel loop
-    // (one memset per 8-block group), so the ~192 MB zero-fill scales with the
+    // (one memset per 8-block group), so the ~128 MB zero-fill scales with the
     // thread count instead of running serially on the main thread before the
     // parallel build. The per-block builders OR 1-bits into pre-zeroed words,
-    // so each group must be zeroed before its `per_block` calls. `z_lincheck`
-    // stays `vec![0u8; _]` (lazy `alloc_zeroed`/mmap, no eager memset).
+    // so each group must be zeroed before its `per_block` calls.
     // SAFETY (x3): the parallel loop below writes every element of z/a/b before
     // any is read: each group memsets its own slice, then ORs bits into it.
-    let mut z = unsafe { ArenaVec::<F192>::uninitialized(total_packed) };
-    let mut a = unsafe { ArenaVec::<F192>::uninitialized(total_packed) };
-    let mut b = unsafe { ArenaVec::<F192>::uninitialized(total_packed) };
-    // SAFETY: zero is a valid u8. The stripe is fully overwritten by the
-    // transpose below, but a slot for a skipped padding block is not, so it must
-    // start zeroed.
-    let mut z_lincheck = unsafe { ArenaVec::<u8>::zeroed((n_total / 8) * k) };
+    let mut z = unsafe { ArenaVec::<u64>::uninitialized(total_words) };
+    let mut a = unsafe { ArenaVec::<u64>::uninitialized(total_words) };
+    let mut b = unsafe { ArenaVec::<u64>::uninitialized(total_words) };
+    // SAFETY: group `g` writes chunk `g` of the stripe table in full, since the
+    // transpose stores all 64 bytes of each of the `u64_per_block` destination
+    // windows and `u64_per_block * 64 == k == stripe.len()`. The chunk counts
+    // match, so every chunk is claimed by exactly one group.
+    let mut z_lincheck = unsafe { ArenaVec::<u8>::uninitialized((n_total / 8) * k) };
 
     // Four output tables at two widths, indexed by the same group: `z`/`a`/`b`
     // take eight blocks' packed words, `z_lincheck` takes one byte stripe.
-    let z_chunks = parallel::Chunks::new(&mut z, 8 * packed_per_block);
-    let a_chunks = parallel::Chunks::new(&mut a, 8 * packed_per_block);
-    let b_chunks = parallel::Chunks::new(&mut b, 8 * packed_per_block);
+    let z_chunks = parallel::Chunks::new(&mut z, 8 * u64_per_block);
+    let a_chunks = parallel::Chunks::new(&mut a, 8 * u64_per_block);
+    let b_chunks = parallel::Chunks::new(&mut b, 8 * u64_per_block);
     let stripe_chunks = parallel::Chunks::new(&mut z_lincheck, k);
     debug_assert_eq!(z_chunks.count(), stripe_chunks.count());
     parallel::for_each(z_chunks.count(), |g| {
@@ -167,13 +166,9 @@ where
         // all four tables stay borrowed for the whole dispatch.
         let (z_grp, a_grp, b_grp, stripe) =
             unsafe { (z_chunks.get(g), a_chunks.get(g), b_chunks.get(g), stripe_chunks.get(g)) };
-        // The circuit witness remains 128-bit packed even though protocol
-        // scalars are F192. Build contiguous u64 pairs, then embed each
-        // pair as (lo, hi, 0); F192's 24-byte stride cannot be viewed as a
-        // contiguous u64-pair array.
-        let mut z_words = vec![0u64; 8 * u64_per_block];
-        let mut a_words = vec![0u64; 8 * u64_per_block];
-        let mut b_words = vec![0u64; 8 * u64_per_block];
+        z_grp.fill(0);
+        a_grp.fill(0);
+        b_grp.fill(0);
         for k_in in 0..8 {
             let global_idx = 8 * g + k_in;
             let init: &S = if global_idx < n_blocks {
@@ -187,33 +182,23 @@ where
                 continue;
             };
             let range = k_in * u64_per_block..(k_in + 1) * u64_per_block;
-            let z_u64 = &mut z_words[range.clone()];
-            let a_u64 = &mut a_words[range.clone()];
-            let b_u64 = &mut b_words[range];
+            let z_u64 = &mut z_grp[range.clone()];
+            let a_u64 = &mut a_grp[range.clone()];
+            let b_u64 = &mut b_grp[range];
             per_block(init, z_u64, a_u64, b_u64);
-        }
-
-        for (dst, words) in z_grp.iter_mut().zip(z_words.chunks_exact(2)) {
-            *dst = F192::new(words[0], words[1], 0);
-        }
-        for (dst, words) in a_grp.iter_mut().zip(a_words.chunks_exact(2)) {
-            *dst = F192::new(words[0], words[1], 0);
-        }
-        for (dst, words) in b_grp.iter_mut().zip(b_words.chunks_exact(2)) {
-            *dst = F192::new(words[0], words[1], 0);
         }
 
         // Bit-transpose 8 z chunks into the lincheck stripe.
         for i in 0..u64_per_block {
             let lanes: [u64; 8] = [
-                z_words[i],
-                z_words[u64_per_block + i],
-                z_words[2 * u64_per_block + i],
-                z_words[3 * u64_per_block + i],
-                z_words[4 * u64_per_block + i],
-                z_words[5 * u64_per_block + i],
-                z_words[6 * u64_per_block + i],
-                z_words[7 * u64_per_block + i],
+                z_grp[i],
+                z_grp[u64_per_block + i],
+                z_grp[2 * u64_per_block + i],
+                z_grp[3 * u64_per_block + i],
+                z_grp[4 * u64_per_block + i],
+                z_grp[5 * u64_per_block + i],
+                z_grp[6 * u64_per_block + i],
+                z_grp[7 * u64_per_block + i],
             ];
             transpose_8_u64s_to_64_bytes(&lanes, &mut stripe[i * 64..i * 64 + 64]);
         }
@@ -225,19 +210,9 @@ where
 /// Sort `v` and remove pairs of duplicates (GF(2) cancellation). Keeps R1CS
 /// rows in canonical (sorted, square-free) form.
 pub(crate) fn xor_dedup(mut v: Vec<usize>) -> Vec<usize> {
-    v.sort();
-    let mut out = Vec::with_capacity(v.len());
-    let mut i = 0;
-    while i < v.len() {
-        let val = v[i];
-        let mut count = 0;
-        while i < v.len() && v[i] == val {
-            count += 1;
-            i += 1;
-        }
-        if count % 2 == 1 {
-            out.push(val);
-        }
-    }
-    out
+    v.sort_unstable();
+    v.chunk_by(|a, b| a == b)
+        .filter(|run| run.len() % 2 == 1)
+        .map(|run| run[0])
+        .collect()
 }

@@ -8,7 +8,6 @@ use crate::*;
 #[derive(Debug)]
 pub struct WotsSecretKey {
     pre_images: [Digest; V],
-    public_key: WotsPublicKey,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,33 +21,34 @@ pub struct WotsSignature {
 }
 
 impl WotsSecretKey {
-    pub fn new(pre_images: [Digest; V], public_param: &PublicParam, slot: u32) -> Self {
-        Self {
-            pre_images,
-            public_key: WotsPublicKey(std::array::from_fn(|i| {
-                iterate_hash(&pre_images[i], CHAIN_LENGTH - 1, public_param, slot, i, 0)
-            })),
-        }
+    pub const fn new(pre_images: [Digest; V]) -> Self {
+        Self { pre_images }
     }
 
-    pub const fn public_key(&self) -> &WotsPublicKey {
-        &self.public_key
+    /// Walk every chain to its tip. Only key generation needs this; signing
+    /// stops each chain at its encoding digit.
+    pub fn public_key(&self, public_param: &PublicParam, slot: u32) -> WotsPublicKey {
+        WotsPublicKey(std::array::from_fn(|i| {
+            iterate_hash(&self.pre_images[i], CHAIN_LENGTH - 1, public_param, slot, i, 0)
+        }))
     }
 
-    pub fn sign_with_randomness(
+    /// `encoding` and `randomness` come as a pair from
+    /// [`find_randomness_for_wots_encoding`], which only returns a randomness
+    /// whose encoding is valid.
+    pub fn sign(
         &self,
-        message: &Message,
+        encoding: &[u8; V],
+        randomness: Randomness,
         slot: u32,
         public_param: &PublicParam,
-        randomness: Randomness,
-    ) -> Option<WotsSignature> {
-        let encoding = wots_encode(message, slot, public_param, &randomness)?;
-        Some(WotsSignature {
+    ) -> WotsSignature {
+        WotsSignature {
             chain_tips: std::array::from_fn(|i| {
                 iterate_hash(&self.pre_images[i], encoding[i] as usize, public_param, slot, i, 0)
             }),
             randomness,
-        })
+        }
     }
 }
 

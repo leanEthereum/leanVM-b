@@ -14,8 +14,7 @@
 //! commitment only shrinks the level-0 symbols to 8 bytes; every random
 //! ingredient is sampled from `E` with the same error terms as before.
 
-use crate::transcript::{ProverState, VerifierState};
-use fiat_shamir::transcript::{Receiver, Transmitter};
+use crate::transcript::{ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::F64;
 
 pub use ::pcs::stack_open::{RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim};

@@ -191,7 +191,8 @@ impl Mul for F192 {
         }
         #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
         {
-            self.mul_unreduced(rhs).reduce()
+            // SAFETY: pclmulqdq is enabled at compile time.
+            unsafe { x86_64::mul_karatsuba(self, rhs) }
         }
         #[cfg(not(any(
             all(target_arch = "aarch64", target_feature = "aes"),
@@ -439,16 +440,16 @@ pub mod aarch64 {
         }
     }
 
-    /// Karatsuba-3: 6 PMULL products (optimal bilinear count for 3 terms),
-    /// NEON XOR combination, y-fold, then 3 PMULL base reductions. 9 PMULL
-    /// total. Default `Mul` implementation.
+    /// Karatsuba-3: 6 PMULL products (optimal bilinear count for 3 terms)
+    /// combined by NEON XORs into the 5 coefficients of the degree-4 product
+    /// over `K`.
     ///
     /// # Safety
     /// Requires the `aes` target feature (compiles to PMULL); only call where
     /// `aes` is statically enabled or has been runtime-detected.
     #[inline]
     #[target_feature(enable = "aes")]
-    pub unsafe fn mul_karatsuba(a: F192, b: F192) -> F192 {
+    unsafe fn karatsuba_coeffs(a: F192, b: F192) -> [uint64x2_t; 5] {
         // SAFETY: function carries the aes target feature.
         unsafe {
             let p0 = pmull(a.c0, b.c0);
@@ -463,19 +464,33 @@ pub mod aarch64 {
             // c2 = p02 ^ p0 ^ p1 ^ p2
             let t01 = veorq_u64(p0, p1);
             let t12 = veorq_u64(p1, p2);
-            let c1 = veorq_u64(p01, t01);
-            let c2 = veorq_u64(veorq_u64(p02, p0), t12);
-            let c3 = veorq_u64(p12, t12);
+            [
+                p0,
+                veorq_u64(p01, t01),
+                veorq_u64(veorq_u64(p02, p0), t12),
+                veorq_u64(p12, t12),
+                p2,
+            ]
+        }
+    }
 
-            // y-fold: d0 = c0^c3, d1 = c1^c3^c4, d2 = c2^c4 (c4 = p2).
-            let d0 = veorq_u64(p0, c3);
-            let d1 = veorq_u64(veorq_u64(c1, c3), p2);
-            let d2 = veorq_u64(c2, p2);
-
+    /// Karatsuba products, y-fold, then 3 PMULL base reductions. 9 PMULL
+    /// total. Default `Mul` implementation.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature (compiles to PMULL); only call where
+    /// `aes` is statically enabled or has been runtime-detected.
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul_karatsuba(a: F192, b: F192) -> F192 {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let [c0, c1, c2, c3, c4] = karatsuba_coeffs(a, b);
+            // y-fold: d0 = c0^c3, d1 = c1^c3^c4, d2 = c2^c4.
             F192 {
-                c0: base_reduce(d0),
-                c1: base_reduce(d1),
-                c2: base_reduce(d2),
+                c0: base_reduce(veorq_u64(c0, c3)),
+                c1: base_reduce(veorq_u64(veorq_u64(c1, c3), c4)),
+                c2: base_reduce(veorq_u64(c2, c4)),
             }
         }
     }
@@ -490,31 +505,19 @@ pub mod aarch64 {
     pub unsafe fn mul_unreduced_neon(a: F192, b: F192) -> F192Unreduced {
         // SAFETY: function carries the aes target feature.
         unsafe {
-            let p0 = pmull(a.c0, b.c0);
-            let p1 = pmull(a.c1, b.c1);
-            let p2 = pmull(a.c2, b.c2);
-            let p01 = pmull(a.c0 ^ a.c1, b.c0 ^ b.c1);
-            let p02 = pmull(a.c0 ^ a.c2, b.c0 ^ b.c2);
-            let p12 = pmull(a.c1 ^ a.c2, b.c1 ^ b.c2);
-
-            let t01 = veorq_u64(p0, p1);
-            let t12 = veorq_u64(p1, p2);
-            let c1 = veorq_u64(p01, t01);
-            let c2 = veorq_u64(veorq_u64(p02, p0), t12);
-            let c3 = veorq_u64(p12, t12);
-
+            let c = karatsuba_coeffs(a, b);
             F192Unreduced {
                 w: [
-                    vgetq_lane_u64::<0>(p0),
-                    vgetq_lane_u64::<1>(p0),
-                    vgetq_lane_u64::<0>(c1),
-                    vgetq_lane_u64::<1>(c1),
-                    vgetq_lane_u64::<0>(c2),
-                    vgetq_lane_u64::<1>(c2),
-                    vgetq_lane_u64::<0>(c3),
-                    vgetq_lane_u64::<1>(c3),
-                    vgetq_lane_u64::<0>(p2),
-                    vgetq_lane_u64::<1>(p2),
+                    vgetq_lane_u64::<0>(c[0]),
+                    vgetq_lane_u64::<1>(c[0]),
+                    vgetq_lane_u64::<0>(c[1]),
+                    vgetq_lane_u64::<1>(c[1]),
+                    vgetq_lane_u64::<0>(c[2]),
+                    vgetq_lane_u64::<1>(c[2]),
+                    vgetq_lane_u64::<0>(c[3]),
+                    vgetq_lane_u64::<1>(c[3]),
+                    vgetq_lane_u64::<0>(c[4]),
+                    vgetq_lane_u64::<1>(c[4]),
                 ],
             }
         }
@@ -550,15 +553,78 @@ pub mod aarch64 {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
 pub mod x86_64 {
-    use super::{F192, F192Unreduced};
+    use super::{F192, F192Unreduced, kclmul};
     use crate::field::gf2_64::x86_64::clmul;
-    use core::arch::x86_64::__m128i;
+    use core::arch::x86_64::*;
 
+    /// The six Karatsuba products combined into the 5 coefficients of the
+    /// degree-4 product over `K`, kept in vector registers.
+    ///
+    /// # Safety
+    ///
+    /// The caller must run on a CPU with PCLMULQDQ and SSE2 support.
     #[inline]
     #[target_feature(enable = "pclmulqdq", enable = "sse2")]
-    unsafe fn product(a: u64, b: u64) -> u128 {
-        // SAFETY: the function carries pclmulqdq and both representations are 128 bits.
-        unsafe { core::mem::transmute::<__m128i, u128>(clmul(a, b)) }
+    unsafe fn karatsuba_coeffs(a: F192, b: F192) -> [__m128i; 5] {
+        // SAFETY: the function carries pclmulqdq.
+        unsafe {
+            let p0 = clmul(a.c0, b.c0);
+            let p1 = clmul(a.c1, b.c1);
+            let p2 = clmul(a.c2, b.c2);
+            let p01 = clmul(a.c0 ^ a.c1, b.c0 ^ b.c1);
+            let p02 = clmul(a.c0 ^ a.c2, b.c0 ^ b.c2);
+            let p12 = clmul(a.c1 ^ a.c2, b.c1 ^ b.c2);
+
+            // c0 = p0                    c3 = p12 ^ p1 ^ p2
+            // c1 = p01 ^ p0 ^ p1         c4 = p2
+            // c2 = p02 ^ p0 ^ p1 ^ p2
+            let t01 = _mm_xor_si128(p0, p1);
+            let t12 = _mm_xor_si128(p1, p2);
+            [
+                p0,
+                _mm_xor_si128(p01, t01),
+                _mm_xor_si128(_mm_xor_si128(p02, p0), t12),
+                _mm_xor_si128(p12, t12),
+                p2,
+            ]
+        }
+    }
+
+    /// Fold one 128-bit coefficient into GF(2^64), moving it out of the vector
+    /// side once, as (lo, hi).
+    ///
+    /// # Safety
+    ///
+    /// The caller must run on a CPU with SSE2 support.
+    #[inline]
+    #[target_feature(enable = "sse2")]
+    unsafe fn base_reduce(d: __m128i) -> u64 {
+        super::base_reduce_128(
+            _mm_cvtsi128_si64(d) as u64,
+            _mm_cvtsi128_si64(_mm_unpackhi_epi64(d, d)) as u64,
+        )
+    }
+
+    /// Karatsuba-3 with the tower fold kept in vector registers: 6 CLMUL, XOR
+    /// combination, y-fold, then the three base reductions. Default `Mul`
+    /// implementation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must run on a CPU with PCLMULQDQ and SSE2 support.
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn mul_karatsuba(a: F192, b: F192) -> F192 {
+        // SAFETY: the function carries pclmulqdq and sse2.
+        unsafe {
+            let [c0, c1, c2, c3, c4] = karatsuba_coeffs(a, b);
+            // y-fold: d0 = c0^c3, d1 = c1^c3^c4, d2 = c2^c4.
+            F192 {
+                c0: base_reduce(_mm_xor_si128(c0, c3)),
+                c1: base_reduce(_mm_xor_si128(_mm_xor_si128(c1, c3), c4)),
+                c2: base_reduce(_mm_xor_si128(c2, c4)),
+            }
+        }
     }
 
     /// Six-product Karatsuba multiplication before either field reduction.
@@ -569,33 +635,58 @@ pub mod x86_64 {
     #[inline]
     #[target_feature(enable = "pclmulqdq", enable = "sse2")]
     pub unsafe fn mul_unreduced(a: F192, b: F192) -> F192Unreduced {
-        // SAFETY: the function carries pclmulqdq.
-        unsafe {
-            let p0 = product(a.c0, b.c0);
-            let p1 = product(a.c1, b.c1);
-            let p2 = product(a.c2, b.c2);
-            let p01 = product(a.c0 ^ a.c1, b.c0 ^ b.c1);
-            let p02 = product(a.c0 ^ a.c2, b.c0 ^ b.c2);
-            let p12 = product(a.c1 ^ a.c2, b.c1 ^ b.c2);
+        let p0 = kclmul(a.c0, b.c0);
+        let p1 = kclmul(a.c1, b.c1);
+        let p2 = kclmul(a.c2, b.c2);
+        let p01 = kclmul(a.c0 ^ a.c1, b.c0 ^ b.c1);
+        let p02 = kclmul(a.c0 ^ a.c2, b.c0 ^ b.c2);
+        let p12 = kclmul(a.c1 ^ a.c2, b.c1 ^ b.c2);
 
-            let c1 = p01 ^ p0 ^ p1;
-            let c2 = p02 ^ p0 ^ p1 ^ p2;
-            let c3 = p12 ^ p1 ^ p2;
-            F192Unreduced {
-                w: [
-                    p0 as u64,
-                    (p0 >> 64) as u64,
-                    c1 as u64,
-                    (c1 >> 64) as u64,
-                    c2 as u64,
-                    (c2 >> 64) as u64,
-                    c3 as u64,
-                    (c3 >> 64) as u64,
-                    p2 as u64,
-                    (p2 >> 64) as u64,
-                ],
-            }
+        let c1 = p01 ^ p0 ^ p1;
+        let c2 = p02 ^ p0 ^ p1 ^ p2;
+        let c3 = p12 ^ p1 ^ p2;
+        F192Unreduced {
+            w: [
+                p0 as u64,
+                (p0 >> 64) as u64,
+                c1 as u64,
+                (c1 >> 64) as u64,
+                c2 as u64,
+                (c2 >> 64) as u64,
+                c3 as u64,
+                (c3 >> 64) as u64,
+                p2 as u64,
+                (p2 >> 64) as u64,
+            ],
         }
+    }
+
+    /// The six Karatsuba products of two independent pairs, combined into the
+    /// 5 coefficients of the degree-4 product over `K`, one pair per 128-bit
+    /// lane of a YMM register.
+    ///
+    /// # Safety
+    /// Requires VPCLMULQDQ and AVX2 support.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+    unsafe fn karatsuba_coeffs_vec2(a: [F192; 2], b: [F192; 2]) -> [__m256i; 5] {
+        let pack = |x0: u64, x1: u64| _mm256_set_epi64x(0, x1 as i64, 0, x0 as i64);
+        let (a0, a1, a2) = (pack(a[0].c0, a[1].c0), pack(a[0].c1, a[1].c1), pack(a[0].c2, a[1].c2));
+        let (b0, b1, b2) = (pack(b[0].c0, b[1].c0), pack(b[0].c1, b[1].c1), pack(b[0].c2, b[1].c2));
+        let p0 = _mm256_clmulepi64_epi128::<0x00>(a0, b0);
+        let p1 = _mm256_clmulepi64_epi128::<0x00>(a1, b1);
+        let p2 = _mm256_clmulepi64_epi128::<0x00>(a2, b2);
+        let p01 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a1), _mm256_xor_si256(b0, b1));
+        let p02 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a2), _mm256_xor_si256(b0, b2));
+        let p12 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a1, a2), _mm256_xor_si256(b1, b2));
+        [
+            p0,
+            _mm256_xor_si256(p01, _mm256_xor_si256(p0, p1)),
+            _mm256_xor_si256(p02, _mm256_xor_si256(p0, _mm256_xor_si256(p1, p2))),
+            _mm256_xor_si256(p12, _mm256_xor_si256(p1, p2)),
+            p2,
+        ]
     }
 
     /// Two independent tower-field products in the two 128-bit lanes of a
@@ -605,31 +696,9 @@ pub mod x86_64 {
     /// # Safety
     /// Requires VPCLMULQDQ and AVX2 support.
     #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[inline]
     #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
     pub unsafe fn mul_vec2(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
-        use core::arch::x86_64::*;
-
-        #[inline]
-        #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
-        unsafe fn products(a: [F192; 2], b: [F192; 2]) -> [__m256i; 5] {
-            let pack = |x0: u64, x1: u64| _mm256_set_epi64x(0, x1 as i64, 0, x0 as i64);
-            let (a0, a1, a2) = (pack(a[0].c0, a[1].c0), pack(a[0].c1, a[1].c1), pack(a[0].c2, a[1].c2));
-            let (b0, b1, b2) = (pack(b[0].c0, b[1].c0), pack(b[0].c1, b[1].c1), pack(b[0].c2, b[1].c2));
-            let p0 = _mm256_clmulepi64_epi128::<0x00>(a0, b0);
-            let p1 = _mm256_clmulepi64_epi128::<0x00>(a1, b1);
-            let p2 = _mm256_clmulepi64_epi128::<0x00>(a2, b2);
-            let p01 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a1), _mm256_xor_si256(b0, b1));
-            let p02 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a2), _mm256_xor_si256(b0, b2));
-            let p12 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a1, a2), _mm256_xor_si256(b1, b2));
-            [
-                p0,
-                _mm256_xor_si256(p01, _mm256_xor_si256(p0, p1)),
-                _mm256_xor_si256(p02, _mm256_xor_si256(p0, _mm256_xor_si256(p1, p2))),
-                _mm256_xor_si256(p12, _mm256_xor_si256(p1, p2)),
-                p2,
-            ]
-        }
-
         #[inline]
         #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
         unsafe fn reduce_base(value: __m256i) -> __m256i {
@@ -640,7 +709,7 @@ pub mod x86_64 {
         }
 
         unsafe {
-            let [p0, p1, p2, p3, p4] = products(a, b);
+            let [p0, p1, p2, p3, p4] = karatsuba_coeffs_vec2(a, b);
             let d0 = reduce_base(_mm256_xor_si256(p0, p3));
             let d1 = reduce_base(_mm256_xor_si256(p1, _mm256_xor_si256(p3, p4)));
             let d2 = reduce_base(_mm256_xor_si256(p2, p4));
@@ -659,31 +728,12 @@ pub mod x86_64 {
     /// # Safety
     /// Requires VPCLMULQDQ and AVX2 support.
     #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[inline]
     #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
     pub unsafe fn mul_unreduced_vec2(a: [F192; 2], b: [F192; 2]) -> [F192Unreduced; 2] {
-        use core::arch::x86_64::*;
-
         unsafe {
-            let pack = |x0: u64, x1: u64| _mm256_set_epi64x(0, x1 as i64, 0, x0 as i64);
-            let (a0, a1, a2) = (pack(a[0].c0, a[1].c0), pack(a[0].c1, a[1].c1), pack(a[0].c2, a[1].c2));
-            let (b0, b1, b2) = (pack(b[0].c0, b[1].c0), pack(b[0].c1, b[1].c1), pack(b[0].c2, b[1].c2));
-            let p0 = _mm256_clmulepi64_epi128::<0x00>(a0, b0);
-            let d1 = _mm256_clmulepi64_epi128::<0x00>(a1, b1);
-            let p4 = _mm256_clmulepi64_epi128::<0x00>(a2, b2);
-            let p1 = _mm256_xor_si256(
-                _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a1), _mm256_xor_si256(b0, b1)),
-                _mm256_xor_si256(p0, d1),
-            );
-            let p2 = _mm256_xor_si256(
-                _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a2), _mm256_xor_si256(b0, b2)),
-                _mm256_xor_si256(p0, _mm256_xor_si256(d1, p4)),
-            );
-            let p3 = _mm256_xor_si256(
-                _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a1, a2), _mm256_xor_si256(b1, b2)),
-                _mm256_xor_si256(d1, p4),
-            );
             let mut words = [[0u64; 4]; 5];
-            for (out, value) in words.iter_mut().zip([p0, p1, p2, p3, p4]) {
+            for (out, value) in words.iter_mut().zip(karatsuba_coeffs_vec2(a, b)) {
                 _mm256_storeu_si256(out.as_mut_ptr().cast(), value);
             }
             std::array::from_fn(|lane| {
@@ -695,18 +745,17 @@ pub mod x86_64 {
         }
     }
 
-    /// Four independent tower-field products in four AVX-512 128-bit lanes.
+    /// The six Karatsuba products of four independent pairs, combined into the
+    /// 5 coefficients of the degree-4 product over `K`, one pair per 128-bit
+    /// lane of a ZMM register.
     ///
     /// # Safety
     /// Requires VPCLMULQDQ and AVX-512F support.
     #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[inline]
     #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
-    pub unsafe fn mul_vec4(a: [F192; 4], b: [F192; 4]) -> [F192; 4] {
-        use core::arch::x86_64::*;
-
-        #[inline]
-        #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
-        unsafe fn pack(values: [F192; 4], coefficient: usize) -> __m512i {
+    unsafe fn karatsuba_coeffs_vec4(a: [F192; 4], b: [F192; 4]) -> [__m512i; 5] {
+        let pack = |values: [F192; 4], coefficient: usize| {
             let get = |value: F192| [value.c0, value.c1, value.c2][coefficient] as i64;
             _mm512_set_epi64(
                 0,
@@ -718,8 +767,32 @@ pub mod x86_64 {
                 0,
                 get(values[0]),
             )
-        }
+        };
+        let (a0, a1, a2) = (pack(a, 0), pack(a, 1), pack(a, 2));
+        let (b0, b1, b2) = (pack(b, 0), pack(b, 1), pack(b, 2));
+        let p0 = _mm512_clmulepi64_epi128::<0x00>(a0, b0);
+        let p1 = _mm512_clmulepi64_epi128::<0x00>(a1, b1);
+        let p2 = _mm512_clmulepi64_epi128::<0x00>(a2, b2);
+        let p01 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a1), _mm512_xor_si512(b0, b1));
+        let p02 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a2), _mm512_xor_si512(b0, b2));
+        let p12 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a1, a2), _mm512_xor_si512(b1, b2));
+        [
+            p0,
+            _mm512_xor_si512(p01, _mm512_xor_si512(p0, p1)),
+            _mm512_xor_si512(p02, _mm512_xor_si512(p0, _mm512_xor_si512(p1, p2))),
+            _mm512_xor_si512(p12, _mm512_xor_si512(p1, p2)),
+            p2,
+        ]
+    }
 
+    /// Four independent tower-field products in four AVX-512 128-bit lanes.
+    ///
+    /// # Safety
+    /// Requires VPCLMULQDQ and AVX-512F support.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+    pub unsafe fn mul_vec4(a: [F192; 4], b: [F192; 4]) -> [F192; 4] {
         #[inline]
         #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
         unsafe fn reduce_base(value: __m512i) -> __m512i {
@@ -730,18 +803,7 @@ pub mod x86_64 {
         }
 
         unsafe {
-            let (a0, a1, a2) = (pack(a, 0), pack(a, 1), pack(a, 2));
-            let (b0, b1, b2) = (pack(b, 0), pack(b, 1), pack(b, 2));
-            let p0 = _mm512_clmulepi64_epi128::<0x00>(a0, b0);
-            let p1 = _mm512_clmulepi64_epi128::<0x00>(a1, b1);
-            let p2 = _mm512_clmulepi64_epi128::<0x00>(a2, b2);
-            let p01 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a1), _mm512_xor_si512(b0, b1));
-            let p02 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a2), _mm512_xor_si512(b0, b2));
-            let p12 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a1, a2), _mm512_xor_si512(b1, b2));
-            let p3 = _mm512_xor_si512(p12, _mm512_xor_si512(p1, p2));
-            let p4 = p2;
-            let p2 = _mm512_xor_si512(p02, _mm512_xor_si512(p0, _mm512_xor_si512(p1, p2)));
-            let p1 = _mm512_xor_si512(p01, _mm512_xor_si512(p0, p1));
+            let [p0, p1, p2, p3, p4] = karatsuba_coeffs_vec4(a, b);
             let d0 = reduce_base(_mm512_xor_si512(p0, p3));
             let d1 = reduce_base(_mm512_xor_si512(p1, _mm512_xor_si512(p3, p4)));
             let d2 = reduce_base(_mm512_xor_si512(p2, p4));
@@ -760,43 +822,12 @@ pub mod x86_64 {
     /// # Safety
     /// Requires VPCLMULQDQ and AVX-512F support.
     #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[inline]
     #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
     pub unsafe fn mul_unreduced_vec4(a: [F192; 4], b: [F192; 4]) -> [F192Unreduced; 4] {
-        use core::arch::x86_64::*;
-
         unsafe {
-            let pack = |values: [F192; 4], coefficient: usize| {
-                let get = |value: F192| [value.c0, value.c1, value.c2][coefficient] as i64;
-                _mm512_set_epi64(
-                    0,
-                    get(values[3]),
-                    0,
-                    get(values[2]),
-                    0,
-                    get(values[1]),
-                    0,
-                    get(values[0]),
-                )
-            };
-            let (a0, a1, a2) = (pack(a, 0), pack(a, 1), pack(a, 2));
-            let (b0, b1, b2) = (pack(b, 0), pack(b, 1), pack(b, 2));
-            let p0 = _mm512_clmulepi64_epi128::<0x00>(a0, b0);
-            let d1 = _mm512_clmulepi64_epi128::<0x00>(a1, b1);
-            let p4 = _mm512_clmulepi64_epi128::<0x00>(a2, b2);
-            let p1 = _mm512_xor_si512(
-                _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a1), _mm512_xor_si512(b0, b1)),
-                _mm512_xor_si512(p0, d1),
-            );
-            let p2 = _mm512_xor_si512(
-                _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a2), _mm512_xor_si512(b0, b2)),
-                _mm512_xor_si512(p0, _mm512_xor_si512(d1, p4)),
-            );
-            let p3 = _mm512_xor_si512(
-                _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a1, a2), _mm512_xor_si512(b1, b2)),
-                _mm512_xor_si512(d1, p4),
-            );
             let mut words = [[0u64; 8]; 5];
-            for (out, value) in words.iter_mut().zip([p0, p1, p2, p3, p4]) {
+            for (out, value) in words.iter_mut().zip(karatsuba_coeffs_vec4(a, b)) {
                 _mm512_storeu_si512(out.as_mut_ptr().cast(), value);
             }
             std::array::from_fn(|lane| {
@@ -816,27 +847,24 @@ pub mod x86_64 {
     #[inline]
     #[target_feature(enable = "pclmulqdq", enable = "sse2")]
     pub unsafe fn square(a: F192) -> F192 {
-        // SAFETY: the function carries pclmulqdq.
-        unsafe {
-            let s0 = product(a.c0, a.c0);
-            let s1 = product(a.c1, a.c1);
-            let s2 = product(a.c2, a.c2);
-            F192Unreduced {
-                w: [
-                    s0 as u64,
-                    (s0 >> 64) as u64,
-                    0,
-                    0,
-                    s1 as u64,
-                    (s1 >> 64) as u64,
-                    0,
-                    0,
-                    s2 as u64,
-                    (s2 >> 64) as u64,
-                ],
-            }
-            .reduce()
+        let s0 = kclmul(a.c0, a.c0);
+        let s1 = kclmul(a.c1, a.c1);
+        let s2 = kclmul(a.c2, a.c2);
+        F192Unreduced {
+            w: [
+                s0 as u64,
+                (s0 >> 64) as u64,
+                0,
+                0,
+                s1 as u64,
+                (s1 >> 64) as u64,
+                0,
+                0,
+                s2 as u64,
+                (s2 >> 64) as u64,
+            ],
         }
+        .reduce()
     }
 }
 
