@@ -1992,13 +1992,14 @@ def verify_stacked_opening(
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
     coordinate_weights = _coordinate_weights(map_challenges)
     ring_values = [dot(_transpose(values), coordinate_weights) for values in slices]
-    ring_scales = powers(transcript.sample(), 2)
-    target = dot(ring_scales, ring_values)
 
+    # One challenge for both families over disjoint power ranges: the ring-switch
+    # pair takes its low powers, the claim pool the rest.
     for _, value in point_claims:
         transcript.observe(value)
-    point_scales = powers(transcript.sample(), len(point_claims))
-    target += dot(point_scales, [value for _, value in point_claims])
+    scales = powers(transcript.sample(), len(ring_claims) + len(point_claims))
+    ring_scales, point_scales = scales[: len(ring_claims)], scales[len(ring_claims) :]
+    target = dot(ring_scales, ring_values) + dot(point_scales, [value for _, value in point_claims])
 
     selector = qflock_offset >> qflock_variables
 

@@ -1882,21 +1882,20 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zcr7 = zerocheck_r * GEN ** K_SKIP
     for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
         zv_hi[xt] = zcr7[xt]
-    # gamma-combine the two transposed sumcheck claims (computed in-circuit).
-    fs, gamma_rs = squeeze(fs)  # ONE challenge; the two claims take its powers 1, gamma_rs
-    target = transposed_claims[0] + gamma_rs * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
-    # ...then every pooled point claim, each observed.
+    # Observe every pooled point claim, then ONE batching challenge for both
+    # families: N_CLAIMS - 1 fewer sponge compressions than a challenge per claim.
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, claim_pool[GEN ** j])
-    fs, gamma = squeeze(fs)  # ONE challenge for the whole pool: N_CLAIMS - 1 fewer sponge compressions
+    fs, gamma = squeeze(fs)
+    # Disjoint power ranges, as for the eta-powers above: the two ring-switch
+    # claims take gamma^0 and gamma^1, the pool gamma^2 onward.
+    target = transposed_claims[0] + gamma * transposed_claims[1]
     gamma_pool = HeapBuf(N_CLAIMS)
-    gamma_pool[GEN ** 0] = 1  # powers of one challenge, as for the eta-powers above
-    target += claim_pool[GEN ** 0]
-    gv = 1
-    for j in unroll(1, N_CLAIMS):
-        gv *= gamma
+    gv = gamma * gamma
+    for j in unroll(0, N_CLAIMS):
         gamma_pool[GEN ** j] = gv
         target += gv * claim_pool[GEN ** j]
+        gv *= gamma
 
     # ================= the WHIR opening core (stacked, m = STACK) ========
 
@@ -2135,7 +2134,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_eq_vals[1] = e_acc_1
     # ring-switch weight: extend by the selector bits over the fold_challenges
     # coords [qflockv, lenris).
-    rs_weight = rs_eq_vals[0] + gamma_rs * rs_eq_vals[1]
+    rs_weight = rs_eq_vals[0] + gamma * rs_eq_vals[1]
     # rs_len = lenris - qflockv, DERIVED as g^lenris / g^qflockv (not hinted). The
     # selector loop then reads fold_challenges[qflockv .. qflockv+rs_len) = [qflockv ..
     # lenris), inside its written [0, lenris) extent; a qflockv > lenris would make

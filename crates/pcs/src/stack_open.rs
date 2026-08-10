@@ -29,9 +29,9 @@
 //! ## Transcript order (identical on both sides)
 //!
 //! label -> per ring-switched claim ([`super::ring_switch`]'s own label +
-//! `s_hat_v_i` observed + shared linear map sampled) -> gamma_rs (one per claim) ->
-//! per point claim (label + value observed) -> gamma_pd (one per claim) ->
-//! WHIR, with domain-separated labels for every phase.
+//! `s_hat_v_i` observed + shared linear map sampled) -> per point claim (label +
+//! value observed) -> gamma (ONE challenge for both families) -> WHIR, with
+//! domain-separated labels for every phase.
 //!
 //! ## The combined weight
 //!
@@ -40,14 +40,18 @@
 //! `qflock_vars`, LSB-first) is
 //!
 //! ```text
-//! b(x) = eq(sel, x_hi) * sum_i gamma_rs_i * MLE(rs_eq_ind_i)(x_lo)
-//!      + sum_j gamma_pd_j * eq(claim_j, x)
+//! b(x) = eq(sel, x_hi) * sum_i gamma^i * MLE(rs_eq_ind_i)(x_lo)
+//!      + sum_j gamma^(n_rs + j) * eq(claim_j, x)
 //! ```
 //!
 //! which is exactly what the dense `b_stack` scatter produces (each claim's
 //! weight lives on its aligned slice, so scattering the low-dimensional eq /
 //! rs_eq_ind tensor at the slice offset IS multiplying by the boolean
 //! selector eq).
+//!
+//! Both families take DISJOINT power ranges of ONE challenge, as the table
+//! sumcheck's eta ranges do, so every claim carries a distinct power (the
+//! batching step of `thm:rbr`).
 
 use crate::merkle::Hash;
 use fiat_shamir::transcript::{Receiver, Transmitter};
@@ -400,22 +404,21 @@ pub fn open_batch_mixed_whir_stacked(
     }
     let map_challenges = ring_switch::sample_map_challenges(ps);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
-    // Per-claim batching gammas, sampled AFTER all ring-switch messages are
-    // bound.
-    let gammas_rs = powers(ps.sample(), ring.claims.len());
-    let rs_outputs: Vec<_> = rs_states
-        .into_iter()
-        .zip(gammas_rs)
-        .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
-        .collect();
-    mark("ring-switch proves", &mut t);
 
-    // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
-    //    sound: every gamma_pd is sampled after all values are observed).
+    // 2. Point-claim values, then the ONE batching challenge both families take
+    //    disjoint power ranges of.
     for claim in point_claims {
         ps.observe_scalar(claim.value());
     }
-    let gammas_pd = powers(ps.sample(), point_claims.len());
+    let gammas = powers(ps.sample(), ring.claims.len() + point_claims.len());
+    let (gammas_rs, gammas_pd) = gammas.split_at(ring.claims.len());
+
+    let rs_outputs: Vec<_> = rs_states
+        .into_iter()
+        .zip(gammas_rs.iter().copied())
+        .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
+        .collect();
+    mark("ring-switch proves", &mut t);
 
     // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
     //    rs_eq_ind sum scattered at the q_flock slice, plus the point-claim
@@ -454,7 +457,7 @@ pub fn open_batch_mixed_whir_stacked(
         ring_switch::combine_deferred_into(&rs_outputs, block);
         mark("rs_eq_ind scatter", &mut t);
     }
-    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd, &write_first);
+    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, gammas_pd, &write_first);
     mark("point-claim folds", &mut t);
 
     // 4. One WHIR over the full stack against the combined claim (the
@@ -516,17 +519,19 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     }
     let map_challenges = ring_switch::sample_map_challenges(vs);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
-    let gammas_rs = powers(vs.sample(), n_rs);
+
+    // 2. Point-claim values, then the one batching challenge, then fold both
+    //    families into the target over disjoint power ranges.
+    for claim in point_claims {
+        vs.observe_scalar(claim.value());
+    }
+    let gammas = powers(vs.sample(), n_rs + point_claims.len());
+    let (gammas_rs, gammas_pd) = gammas.split_at(n_rs);
+
     let mut target = F192::ZERO;
     for (s_hat_v, g) in rs_proofs.iter().zip(gammas_rs.iter()) {
         target += *g * ring_switch::verify_finish(s_hat_v, &coordinate_weights);
     }
-
-    // 2. Point-claim values + gammas; fold into the target.
-    for claim in point_claims {
-        vs.observe_scalar(claim.value());
-    }
-    let gammas_pd = powers(vs.sample(), point_claims.len());
     for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
         target += *g * claim.value();
     }
