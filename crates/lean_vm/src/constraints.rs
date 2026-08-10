@@ -53,7 +53,6 @@ pub struct Claims {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Truncated,
-    RoundInconsistent { round: usize },
     FinalMismatch,
 }
 
@@ -195,7 +194,8 @@ pub fn prove(
         let p4 = [msg[0], msg[1], msg[2], lagrange_eval(&nd, &msg, q[3])];
         let h: [F192; 4] = std::array::from_fn(|i| (F192::ONE + zeta[m] + q[i]) * p4[i] + q[i] * u);
         // A separate pass: the challenge only exists once the message is bound.
-        ps.add_scalars(&h);
+        // `h(0)` does not ride the wire; `h(0) + h(1) = claim` fixes it.
+        ps.add_round_poly(&h);
         let rk = ps.sample();
         rho[m] = rk;
         k *= rk;
@@ -264,10 +264,9 @@ pub fn verify(
     let mut rho = vec![F192::ZERO; n];
     for j in 0..n {
         let m = n - 1 - j;
-        let h = vs.next_scalars(4).map_err(|_| Error::Truncated)?;
-        if h[0] + h[1] != claim {
-            return Err(Error::RoundInconsistent { round: j });
-        }
+        // `h(0)` is derived from the running claim rather than transmitted, so
+        // the round-consistency check it used to enable holds by construction.
+        let h = vs.next_round_poly(4, claim, None).map_err(|_| Error::Truncated)?;
         let rk = vs.sample();
         rho[m] = rk;
         claim = lagrange_eval(&nd, &h, rk);

@@ -758,14 +758,14 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
 fn gen_verify(
     program: &Program,
     pi: [F192; 2],
-    proof: &lean_vm::cpu::Proof,
     summary: &lean_vm::cpu::VerifySummary,
     ops: &[TraceOp],
 ) -> (Vec<(String, Vec<F192>)>, DeferredSubproof) {
+    let raw = &summary.raw.stream;
     let l = lean_vm::cpu::layout(
         &program.prog,
-        proof.stream[0].c0 as usize,
-        std::array::from_fn(|i| proof.stream[1 + i].c0 as usize),
+        raw[0].c0 as usize,
+        std::array::from_fn(|i| raw[1 + i].c0 as usize),
         pi,
     );
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
@@ -773,7 +773,7 @@ fn gen_verify(
     let smu: Vec<usize> = lays.iter().map(|x| x.mu).collect();
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
-    assert!(*smu.iter().max().unwrap() <= MU_CAP && proof.stream.len() <= STREAM_CAP);
+    assert!(*smu.iter().max().unwrap() <= MU_CAP && raw.len() <= STREAM_CAP);
 
     // ---- typed extraction: proof structs + the verifier's summary ----
     // Drift check: replaying the recorded trace from the seed must reproduce
@@ -817,17 +817,16 @@ fn gen_verify(
     // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
     // scalars start: its last 64 scalars are lincheck's `z_partial` (which the
     // summary already carries as `s_hat_v`), immediately preceded by the
-    // `(e1, e_inf)` pairs of the `lcrounds` lincheck rounds.
+    // `(e0, e1, e_inf)` triples of the `lcrounds` lincheck rounds.
     let ns = summary.flock_stream_end;
-    let lcr: Vec<F192> = proof.stream[ns - 64 - 2 * lcrounds..ns - 64].to_vec();
+    let lcr: Vec<F192> = raw[ns - 64 - 3 * lcrounds..ns - 64].to_vec();
     let lcz: Vec<F192> = summary.lc_claim.s_hat_v.clone();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
     let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
     for i in 0..lcrounds {
-        let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
-        let e0 = lrun + e1;
+        let (e0, e1, ei, rv) = (lcr[3 * i], lcr[3 * i + 1], lcr[3 * i + 2], lrr[i]);
         let c1q = e0 + e1 + ei;
         lrun = (ei * rv + c1q) * rv + e0;
     }
@@ -900,7 +899,7 @@ fn gen_verify(
         .iter()
         .map(|&global| F192::new(g_pow(compact_col[global]).0, 0, 0))
         .collect();
-    let log_mem = proof.stream[0].c0 as usize;
+    let log_mem = raw[0].c0 as usize;
 
     // ---- Phase E2 hints (the stacked WHIR opening) ----
     let lenris: usize = klvl.iter().sum();
@@ -961,7 +960,7 @@ fn gen_verify(
             // picks it up at `msg_cursor = cursor`, which sits where the flock
             // reduction stopped; the ring-switch messages are struct-observed and
             // still do not advance that cursor.
-            let mut v = proof.stream.clone();
+            let mut v = raw.clone();
             assert!(v.len() <= STREAM_CAP, "stream {} exceeds cap {STREAM_CAP}", v.len());
             v.resize(STREAM_CAP, F192::ZERO);
             v
@@ -1061,12 +1060,12 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
         let ops = trace_take();
-        protos.push((program, pi, proof, summary, ops));
+        protos.push((program, pi, summary, ops));
     }
     let mut merged: Vec<(String, Vec<Vec<F192>>)> = Vec::new();
     let mut subs = Vec::new();
-    for (program, pi, proof, summary, ops) in &protos {
-        let (hints, defer) = gen_verify(program, *pi, proof, summary, ops);
+    for (program, pi, summary, ops) in &protos {
+        let (hints, defer) = gen_verify(program, *pi, summary, ops);
         // one witness ENTRY per sub-proof and stream: verify_sub pops the
         // next entry of every stream on each call.
         if merged.is_empty() {
@@ -1079,7 +1078,7 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         }
         subs.push(defer);
     }
-    let (program0, _, _, _, _) = &protos[0];
+    let (program0, _, _, _) = &protos[0];
     let (agg_hints, reduced) = aggregate_deferred_claims(program0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
     let statement = RecursiveStatement {
@@ -1088,7 +1087,7 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     };
     // Move the representative Program out (Program is not Clone) now that all
     // aggregation borrows have ended. No representative proof is retained.
-    let (program0, _, _, _, _) = protos.swap_remove(0);
+    let (program0, _, _, _) = protos.swap_remove(0);
     Batch {
         merged,
         program0,
@@ -1369,8 +1368,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Flock univariate skip: 6 skipped variables, then the fixed inner rounds.
     ps("K_SKIP", "6".to_string());
     ps("N_FIXED_CHALLENGE_ROUNDS", fixed_challenges.len().to_string());
-    let one_plus_challenge_inv: Vec<F192> = fixed_challenges.iter().map(|&c| (F192::ONE + c).inv()).collect();
-    ps("ONE_PLUS_CHALLENGE_INV", flds(&one_plus_challenge_inv));
     let phi: Vec<F192> = primitives::field::PHI_8_TABLE_192[..128].to_vec();
     ps("PHI8_NODES", flds(&phi));
     // Tower F192 = F64[Y]/(Y^3+Y+1), Y = new(0,1,0). Y_TOWER embeds Y for

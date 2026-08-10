@@ -671,6 +671,20 @@ class Transcript:
             rows.append(opening.leaf_data)
         return rows
 
+    def round_poly(self, count: int, claim: E, equality: E | None = None) -> list[E]:
+        """Read one sumcheck round polynomial and check it answers `claim`.
+
+        Vanilla sumcheck: every evaluation is on the stream, `h(0)` included, so
+        nothing is reconstructed here. What the wire saved by omitting `h(0)` is
+        exactly the identity checked here, `h(0) + h(1) = claim`, or its
+        eq-weighted form `(1 + r)·h(0) + r·h(1) = claim` for a round whose eq
+        factor the protocol pulled out.
+        """
+        evaluations = self.scalars(count)
+        split = evaluations[0] + evaluations[1] if equality is None else (ONE + equality) * evaluations[0] + equality * evaluations[1]
+        require(split == claim, "sumcheck round does not answer the running claim")
+        return evaluations
+
     def finish(self) -> None:
         require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
         require(self.opening_offset == len(self.proof.merkle_openings), "Merkle openings not fully consumed")
@@ -980,11 +994,7 @@ def verify_constraints(
     point = [ZERO] * depth
     for round_index in range(depth):
         variable = depth - 1 - round_index
-        message = transcript.scalars(4)
-        require(
-            message[0] + message[1] == claim,
-            f"AIR round {round_index}: inconsistent sumcheck",
-        )
+        message = transcript.round_poly(4, claim)
         challenge = transcript.sample()
         point[variable] = challenge
         equality = ONE + equality_point[variable] + challenge
@@ -1614,6 +1624,9 @@ def sample_queries(transcript: Transcript, block_length: int, count: int) -> lis
     return result
 
 
+ROUND_POLY_LABEL = "sumcheck round"
+
+
 @dataclass(frozen=True)
 class QuadraticMessage:
     constant: E
@@ -1706,8 +1719,8 @@ def verify_whir(
     levels = len(config.folds)
 
     def next_quad(claim: E) -> QuadraticMessage:
-        constant, quadratic = transcript.scalar(), transcript.scalar()
-        return QuadraticMessage(constant, claim + quadratic, quadratic)
+        at_zero, at_one, at_infinity = transcript.round_poly(3, claim)
+        return QuadraticMessage(at_zero, at_zero + at_one + at_infinity, at_infinity)
 
     transcript.observe(target)
     for half in root.halves():
@@ -1887,8 +1900,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     running = combined_evaluation + c_evaluation
     rounds = []
     for equality in equality_tail:
-        at_one, at_infinity = transcript.scalars(2)
-        at_zero = (running + equality * at_one) / (ONE + equality)
+        at_zero, at_one, at_infinity = transcript.round_poly(3, running, equality)
         challenge = transcript.sample()
         rounds.append(challenge)
         running = QuadraticMessage(at_zero, at_zero + at_one + at_infinity, at_infinity).evaluate(challenge)
@@ -2028,8 +2040,7 @@ def verify_lincheck(
     running = alpha * a + b + beta
     challenges = []
     for _ in range(8):
-        at_one, at_infinity = transcript.scalars(2)
-        at_zero = running + at_one
+        at_zero, at_one, at_infinity = transcript.round_poly(3, running)
         challenge = transcript.sample()
         running = QuadraticMessage(at_zero, at_zero + at_one + at_infinity, at_infinity).evaluate(challenge)
         challenges.append(challenge)

@@ -119,6 +119,18 @@ pub enum VerifyError {
 // API: prove / verify.
 // ---------------------------------------------------------------------------
 
+/// Send one multilinear round and advance the running claim, the prover mirror
+/// of the verifier's loop. `G(0)` never rides the wire: the eq split
+/// `(1 + r_eq)·G(0) + r_eq·G(1) = claim` fixes it. All three evaluations bind.
+fn send_round(ps: &mut impl Transmitter, claim: F192, r_eq: F192, g1: F192, g_inf: F192, rhos: &mut Vec<F192>) -> F192 {
+    let g0 = (claim + r_eq * g1) * (F192::ONE + r_eq).inv();
+    ps.add_round_poly(&[g0, g1, g_inf]);
+    let rho = ps.sample();
+    rhos.push(rho);
+    // G(X) = G(0)·(1+X) + G(1)·X + G(inf)·X·(1+X).
+    g0 + rho * (g0 + g1 + (F192::ONE + rho) * g_inf)
+}
+
 /// THE zerocheck prover entry: proves `a·b ⊕ c = 0` over the padded cube and
 /// ALSO returns the canonical `s_hat_v_c` produced by the fused two-bank
 /// round-1 kernel
@@ -221,10 +233,15 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
         );
     }
     let t_tail = std::time::Instant::now();
-    ps.add_scalar(msg_1);
-    ps.add_scalar(msg_inf);
+    // The running claim, mirrored from the verifier exactly (same interpolation
+    // of the same round-1 values at the same z). `(1+r)·G(0) + r·G(1) = claim`
+    // is what lets the wire drop `G(0)`, so the prover has to know it too.
+    let mut c_running = {
+        let combined: Vec<F192> = round1_ab.iter().zip(&round1_c).map(|(x, y)| *x + *y).collect();
+        interpolate_at_z_combined(&combined, k_skip, z) + final_c_eval
+    };
     let mut mlv_rhos: Vec<F192> = Vec::with_capacity(n_mlv);
-    mlv_rhos.push(ps.sample());
+    c_running = send_round(ps, c_running, r_rest[0], msg_1, msg_inf, &mut mlv_rhos);
 
     // ---- Rounds 3..(n_mlv + 1): AB only (c is done) ----
     //
@@ -283,9 +300,7 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
             round_pair_naive(&a_mlv, &b_mlv, r_eq)
         };
 
-        ps.add_scalar(m1);
-        ps.add_scalar(mi);
-        mlv_rhos.push(ps.sample());
+        c_running = send_round(ps, c_running, r_rest[i + 1], m1, mi, &mut mlv_rhos);
     }
 
     // ---- Final binding at ρ_{n_mlv} (the last challenge) ----
@@ -399,14 +414,11 @@ pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim
     //      interpolation through G(0), G(1), G(∞)).
     let mut mlv_rhos: Vec<F192> = Vec::with_capacity(n_mlv);
     for i in 0..n_mlv {
-        let msg_1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
-        let msg_inf = vs.next_scalar().map_err(VerifyError::Transcript)?;
         let r_eq = r_rest[i];
-        let one_plus_r_eq = F192::ONE + r_eq;
-
-        let g1 = msg_1;
-        let g_inf = msg_inf;
-        let g0 = (c_running + r_eq * g1) * one_plus_r_eq.inv();
+        let g = vs
+            .next_round_poly(3, c_running, Some(r_eq))
+            .map_err(VerifyError::Transcript)?;
+        let (g0, g1, g_inf) = (g[0], g[1], g[2]);
 
         let rho = vs.sample();
         mlv_rhos.push(rho);

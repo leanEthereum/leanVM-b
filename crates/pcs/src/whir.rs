@@ -497,17 +497,24 @@ struct SumcheckMessage {
     u_2: F192,
 }
 
-/// Transmit one sumcheck round message.
-fn send_msg(ps: &mut impl Transmitter, m: SumcheckMessage) {
-    ps.add_scalar(m.u_0);
-    ps.add_scalar(m.u_2);
+/// Transmit one sumcheck round message as the round polynomial's evaluations
+/// `h(0), h(1), h(inf)`, which is the one shape every sumcheck in the stack
+/// sends. `h(0)` does not ride the wire (`claim` fixes it), so this still costs
+/// the two scalars the coefficient form did.
+fn send_msg(ps: &mut impl Transmitter, m: SumcheckMessage, claim: F192) {
+    ps.add_round_poly(&[m.u_0, claim + m.u_0, m.u_2]);
 }
 
-/// Verifier mirror of [`send_msg`].
-fn recv_msg(vs: &mut impl Receiver) -> Option<SumcheckMessage> {
-    let u_0 = vs.next_scalar().ok()?;
-    let u_2 = vs.next_scalar().ok()?;
-    Some(SumcheckMessage { u_0, u_2 })
+/// Verifier mirror of [`send_msg`], straight to the coefficient form the folds
+/// use: `h(0) = c`, `h(inf) = a` (the leading coefficient), and `b` is what the
+/// three evaluations interpolate to.
+fn recv_quad(vs: &mut impl Receiver, claim: F192) -> Option<RoundQuad> {
+    let h = vs.next_round_poly(3, claim, None).ok()?;
+    Some(RoundQuad {
+        c: h[0],
+        b: h[0] + h[1] + h[2],
+        a: h[2],
+    })
 }
 
 /// Round-quadratic in coefficient form `c + b X + a X^2` (verifier side).
@@ -519,6 +526,8 @@ struct RoundQuad {
 }
 
 impl RoundQuad {
+    /// The quadratic a round message stands for, given the claim it answers:
+    /// `h(0) + h(1) = claim` fixes the linear coefficient.
     #[inline]
     fn from_msg(msg: SumcheckMessage, t_r: F192) -> Self {
         Self {
@@ -800,11 +809,15 @@ struct SumcheckProver<'a> {
     /// introduced since the last glue in as `combined_basis += lambda^tau *
     /// b_new`, `tau` counting from 1 (the running claim is `tau = 0`).
     combined_basis: ArenaVec<F192>,
+    /// The running claim and the quadratic that answers it, maintained exactly
+    /// as the verifier maintains its pair: a message is now sent as evaluations,
+    /// and `h(0) + h(1) = t_r` is what lets the wire drop one of them.
     t_r: F192,
+    quad: RoundQuad,
     round: usize,
     /// The level's claims, in Protocol 1 step 1 order: the OOD claims, then the
     /// query batch. Drained by `glue_pending`.
-    pending: Vec<(ArenaVec<F192>, F192)>,
+    pending: Vec<(ArenaVec<F192>, F192, RoundQuad)>,
 }
 
 impl<'a> SumcheckProver<'a> {
@@ -816,13 +829,22 @@ impl<'a> SumcheckProver<'a> {
             f: Witness::Base(f),
             combined_basis: b1,
             t_r: h1,
+            quad: RoundQuad::from_msg(msg, h1),
             round: 0,
             pending: Vec::new(),
         };
         (inst, msg)
     }
 
+    /// The claim the message just produced answers, which its `h(0)` is dropped
+    /// against.
+    #[inline]
+    fn claim(&self) -> F192 {
+        self.t_r
+    }
+
     fn fold(&mut self, r: F192) -> SumcheckMessage {
+        self.t_r = self.quad.eval(r);
         self.round += 1;
         let log_size = match &self.f {
             Witness::Base(f) => f.len().trailing_zeros(),
@@ -838,6 +860,7 @@ impl<'a> SumcheckProver<'a> {
         // makes the next round's `fold_out_buf` a bump instead of a fresh mapping.
         drop(std::mem::replace(&mut self.f, Witness::Ext(nf)));
         drop(std::mem::replace(&mut self.combined_basis, nb));
+        self.quad = RoundQuad::from_msg(msg, self.t_r);
         msg
     }
 
@@ -854,7 +877,7 @@ impl<'a> SumcheckProver<'a> {
                 round_msg_lsb(f, &b_new)
             }
         };
-        self.pending.push((b_new, h_new));
+        self.pending.push((b_new, h_new, RoundQuad::from_msg(msg, h_new)));
         msg
     }
 
@@ -868,7 +891,7 @@ impl<'a> SumcheckProver<'a> {
         };
         assert_eq!(b_new.len(), f.len());
         let (msg, h_new) = round_msg_and_eval_lsb_ext(f, &b_new);
-        self.pending.push((b_new, h_new));
+        self.pending.push((b_new, h_new, RoundQuad::from_msg(msg, h_new)));
         (msg, h_new)
     }
 
@@ -881,7 +904,7 @@ impl<'a> SumcheckProver<'a> {
         let pending = std::mem::take(&mut self.pending);
         assert!(!pending.is_empty(), "glue without introduce_new");
         let mut scalar = F192::ONE;
-        for (b_new, h_new) in pending {
+        for (b_new, h_new, quad_new) in pending {
             scalar *= lambda;
             assert_eq!(b_new.len(), self.combined_basis.len());
             const PAR_THRESHOLD: usize = 4096;
@@ -898,6 +921,7 @@ impl<'a> SumcheckProver<'a> {
                 });
             }
             self.t_r += scalar * h_new;
+            self.quad = RoundQuad::fold(&self.quad, &quad_new, scalar);
         }
     }
 
@@ -951,7 +975,7 @@ fn send_ood(sc: &mut SumcheckProver<'_>, ps: &mut impl Transmitter, n_vars: usiz
         let z = ps.sample_vec(n_vars);
         let (intro, y) = sc.introduce_new_with_eval(build_eq_table_ext_parallel(&z));
         ps.add_scalar(y);
-        send_msg(ps, intro);
+        send_msg(ps, intro, y);
     }
 }
 
@@ -1038,7 +1062,7 @@ pub fn recursive_prover_with_basis(
     let _t = std::time::Instant::now();
     let sumcheck_span = tracing::info_span!("Sumcheck");
     let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| SumcheckProver::new(witness, b_initial, target));
-    send_msg(ps, start_msg);
+    send_msg(ps, start_msg, target);
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
@@ -1051,7 +1075,7 @@ pub fn recursive_prover_with_basis(
         }
         let r_j = ps.sample();
         let msg = sumcheck_span.in_scope(|| sc_prover.fold(r_j));
-        send_msg(ps, msg);
+        send_msg(ps, msg, sc_prover.claim());
         r_lane_fold.push(r_j);
     }
     drop(sumcheck_span);
@@ -1127,7 +1151,7 @@ pub fn recursive_prover_with_basis(
     // Introduce basis_0, then batch the level's claims with powers of lambda_0.
     let _t = std::time::Instant::now();
     let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
-    send_msg(ps, intro_msg_0);
+    send_msg(ps, intro_msg_0, enforced_sum_0);
     sc_prover.glue_pending(lambda_0);
     if trace {
         t_intro_glue += _t.elapsed();
@@ -1150,7 +1174,7 @@ pub fn recursive_prover_with_basis(
             }
             let ri = ps.sample();
             let msg = sumcheck_span.in_scope(|| sc_prover.fold(ri));
-            send_msg(ps, msg);
+            send_msg(ps, msg, sc_prover.claim());
             level_rs.push(ri);
         }
         drop(sumcheck_span);
@@ -1193,7 +1217,7 @@ pub fn recursive_prover_with_basis(
                 n_res,
             );
             let intro_msg_last = sc_prover.introduce_new(basis_last, enforced_sum_last);
-            send_msg(ps, intro_msg_last);
+            send_msg(ps, intro_msg_last, enforced_sum_last);
             sc_prover.glue_pending(lambda_last);
             for j in 0..n_res {
                 let ri = ps.sample();
@@ -1201,7 +1225,7 @@ pub fn recursive_prover_with_basis(
                 // The last round's message is redundant: the verifier gets that
                 // claim from `yr`, so it is never transmitted.
                 if j + 1 < n_res {
-                    send_msg(ps, msg);
+                    send_msg(ps, msg, sc_prover.claim());
                 }
             }
             if trace {
@@ -1286,7 +1310,7 @@ pub fn recursive_prover_with_basis(
 
         let _t = std::time::Instant::now();
         let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
-        send_msg(ps, intro_msg_i);
+        send_msg(ps, intro_msg_i, enforced_sum_i);
         sc_prover.glue_pending(lambda_i);
         if trace {
             t_intro_glue += _t.elapsed();
@@ -1370,8 +1394,7 @@ fn replay_fold_rounds(
         let ri = vs.sample();
         rs.push(ri);
         *t_r = running_quad.eval(ri);
-        let msg = recv_msg(vs)?;
-        *running_quad = RoundQuad::from_msg(msg, *t_r);
+        *running_quad = recv_quad(vs, *t_r)?;
     }
     Some(rs)
 }
@@ -1392,12 +1415,8 @@ struct OodReplay {
 fn replay_ood(vs: &mut impl Receiver, n_vars: usize) -> Option<OodReplay> {
     let z = vs.sample_vec(n_vars);
     let y = vs.next_scalar().ok()?;
-    let intro_msg = recv_msg(vs)?;
-    Some(OodReplay {
-        z,
-        y,
-        intro_quad: RoundQuad::from_msg(intro_msg, y),
-    })
+    let intro_quad = recv_quad(vs, y)?;
+    Some(OodReplay { z, y, intro_quad })
 }
 
 /// Fold the level's pending claims into the running one with powers of its
@@ -1469,10 +1488,9 @@ pub fn recursive_verifier_with_basis(
 
     // Replay sumcheck: start msg, then initial_k folds.
     let mut t_r = target;
-    let Some(start_msg) = recv_msg(vs) else {
+    let Some(mut running_quad) = recv_quad(vs, t_r) else {
         return false;
     };
-    let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
@@ -1531,10 +1549,9 @@ pub fn recursive_verifier_with_basis(
     );
 
     // Intro, then batch every claim of the level with powers of lambda_0.
-    let Some(intro_msg_0) = recv_msg(vs) else {
+    let Some(intro_quad_0) = recv_quad(vs, enforced_sum_0) else {
         return false;
     };
-    let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
     let (ood_scalars_0, query_scalar_0) = batch_level_claims(
         lambda_0,
         &level_ood,
@@ -1613,10 +1630,9 @@ pub fn recursive_verifier_with_basis(
                 &queries_last,
                 &weights_last,
             );
-            let Some(intro_msg_last) = recv_msg(vs) else {
+            let Some(intro_quad_last) = recv_quad(vs, enforced_sum_last) else {
                 return false;
             };
-            let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
             // No OOD at the final level: there is no new oracle to bind.
             let (_, query_scalar_last) = batch_level_claims(
                 lambda_last,
@@ -1638,10 +1654,10 @@ pub fn recursive_verifier_with_basis(
                 t_r = running_quad.eval(ri);
                 ris_tail.push(ri);
                 if j + 1 < n_current {
-                    let Some(msg) = recv_msg(vs) else {
+                    let Some(q) = recv_quad(vs, t_r) else {
                         return false;
                     };
-                    running_quad = RoundQuad::from_msg(msg, t_r);
+                    running_quad = q;
                 }
             }
             ris.extend_from_slice(&ris_tail);
@@ -1709,10 +1725,9 @@ pub fn recursive_verifier_with_basis(
             &weights_i,
         );
 
-        let Some(intro_msg_i) = recv_msg(vs) else {
+        let Some(intro_quad_i) = recv_quad(vs, enforced_sum_i) else {
             return false;
         };
-        let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
         let (ood_scalars_i, query_scalar_i) = batch_level_claims(
             lambda_i,
             &level_ood,
@@ -1793,10 +1808,9 @@ where
     let num_interleaved_0 = 1usize << initial_k;
 
     let mut t_r = target;
-    let Some(start_msg) = recv_msg(vs) else {
+    let Some(mut running_quad) = recv_quad(vs, t_r) else {
         return false;
     };
-    let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
@@ -1848,10 +1862,9 @@ where
     let n1 = log_n - initial_k;
     let enforced_sum_0 = induce_sumcheck_enforced_sum(&ordered_rows_0, &r_lane_fold, &queries_0, &weights_0);
 
-    let Some(intro_msg_0) = recv_msg(vs) else {
+    let Some(intro_quad_0) = recv_quad(vs, enforced_sum_0) else {
         return false;
     };
-    let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
     let (ood_scalars_0, query_scalar_0) = batch_level_claims(
         lambda_0,
         &level_ood,
@@ -1934,10 +1947,9 @@ where
 
             let enforced_sum_last =
                 induce_sumcheck_enforced_sum(&ordered_rows_last, &level_rs, &queries_last, &weights_last);
-            let Some(intro_msg_last) = recv_msg(vs) else {
+            let Some(intro_quad_last) = recv_quad(vs, enforced_sum_last) else {
                 return false;
             };
-            let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
             // No OOD at the final level: there is no new oracle to bind.
             let (_, query_scalar_last) = batch_level_claims(
                 lambda_last,
@@ -1964,10 +1976,10 @@ where
                 t_r = running_quad.eval(ri);
                 ris_tail.push(ri);
                 if j + 1 < yr_log_n {
-                    let Some(msg) = recv_msg(vs) else {
+                    let Some(q) = recv_quad(vs, t_r) else {
                         return false;
                     };
-                    running_quad = RoundQuad::from_msg(msg, t_r);
+                    running_quad = q;
                 }
             }
 
@@ -2046,10 +2058,9 @@ where
 
         let enforced_sum_i = induce_sumcheck_enforced_sum(&ordered_rows_i, &level_rs, &queries_i, &weights_i);
 
-        let Some(intro_msg_i) = recv_msg(vs) else {
+        let Some(intro_quad_i) = recv_quad(vs, enforced_sum_i) else {
             return false;
         };
-        let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
         let (ood_scalars_i, query_scalar_i) = batch_level_claims(
             lambda_i,
             &level_ood,

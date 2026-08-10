@@ -1226,10 +1226,16 @@ pub fn prove_padded_capture_s_hat_v(
         // round's message falls out of binding the previous round (fold +
         // next-eval fused into one pass, see `sumcheck_bind_both_and_eval_next`).
         let (mut e1, mut einf) = sumcheck_round_eval_par(&comb_vec, &z_vec);
+        // The running claim, mirrored from the verifier: `q(0) + q(1) = claim`
+        // is what lets the wire drop `q(0)`, so the prover has to know it too.
+        // Round 0's claim is the whole inner product, one O(k) pass over the
+        // column vectors and negligible beside the sumcheck itself.
+        let mut running = inner_product_ext(&comb_vec, &z_vec);
         for t in 0..inner_rest_len {
-            ps.add_scalar(e1);
-            ps.add_scalar(einf);
+            let e0 = running + e1;
+            ps.add_round_poly(&[e0, e1, einf]);
             let r = ps.sample();
+            running = (einf * r + (e0 + e1 + einf)) * r + e0;
             r_rounds.push(r);
             if t + 1 < inner_rest_len {
                 // Fused: bind both tables at r AND compute round (t+1)'s message.
@@ -1351,11 +1357,11 @@ pub fn verify(
     let mut running = target;
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
     for _ in 0..inner_rest_len {
-        let e1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
-        let einf = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        // `q(0) + q(1) = claim` in char 2, so `q(0)` never rides the wire.
+        let q = vs.next_round_poly(3, running, None).map_err(VerifyError::Transcript)?;
+        let (e0, e1, einf) = (q[0], q[1], q[2]);
         let r = vs.sample();
-        // q(0) = claim + q(1) in char 2; q(X) = einf·X² + c1·X + e0.
-        let e0 = running + e1;
+        // q(X) = einf·X² + c1·X + e0.
         let c1 = e0 + e1 + einf;
         running = (einf * r + c1) * r + e0;
         r_rounds.push(r);

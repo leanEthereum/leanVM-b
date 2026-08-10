@@ -49,18 +49,19 @@ pub struct Proof {
 }
 
 /// The proof the recursion guest and the Python verifier consume: nothing
-/// shared, nothing pruned.
+/// shared, nothing pruned, nothing to reconstruct.
 ///
-/// Same protocol, redundant encoding. Each query carries its own full Merkle
-/// path instead of an octopus over the batch, so a consumer walks one path per
-/// query with no dedup bookkeeping, which is the difference between a page of
-/// index arithmetic and a loop in the zkDSL. [`Proof`] is what goes over the
-/// wire; a verifier run produces this as a by-product
-/// ([`VerifierState::into_raw_proof`]), so the expansion is written once.
+/// Same protocol, redundant encoding. [`Proof`] is minimal because it drops
+/// every value a verifier can recompute; this is the same proof with all of
+/// them written out, which is what lets a consumer be one read-and-absorb loop.
+/// A verifier run produces it as a by-product
+/// ([`VerifierState::into_raw_proof`]), so each expansion is written once, in
+/// Rust, instead of three times in three languages.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawProof {
-    /// Identical to [`Proof::stream`]: no scalar is omitted from the wire form
-    /// today. Carried here anyway so a consumer needs this struct alone.
+    /// Every scalar a verifier reads AND binds, in binding order. Longer than
+    /// [`Proof::stream`] by one evaluation per sumcheck round, the `h(0)` the
+    /// wire omits.
     pub stream: Vec<F192>,
     /// One opening per query, phases concatenated in the order they ran.
     pub merkle_openings: Vec<MerkleOpening>,
@@ -118,6 +119,18 @@ pub trait Transmitter: Challenger {
     fn add_root(&mut self, root: &Hash) {
         self.add_scalars(&hash_to_scalars(root));
     }
+
+    /// Send one sumcheck round polynomial, as its evaluations with `h(0)` FIRST.
+    ///
+    /// `h(0)` does not ride the wire: the running claim already fixes it (see
+    /// [`Receiver::next_round_poly`]), and a minimal proof never repeats a value
+    /// the verifier can recompute. It IS bound, along with every other
+    /// evaluation, in this order.
+    fn add_round_poly(&mut self, evals: &[F192]) {
+        assert!(evals.len() >= 2, "a round polynomial has at least h(0) and h(1)");
+        self.observe_scalar(evals[0]);
+        self.add_scalars(&evals[1..]);
+    }
 }
 
 /// The verifier half, mirroring [`Transmitter`] call for call.
@@ -141,6 +154,15 @@ pub trait Receiver: Challenger {
     fn next_root(&mut self) -> Result<Hash, Error> {
         scalars_to_hash(&[self.next_scalar()?, self.next_scalar()?])
     }
+
+    /// Mirror of [`Transmitter::add_round_poly`]: read the `n_evals - 1`
+    /// transmitted evaluations, recover `h(0)`, and bind the whole polynomial.
+    ///
+    /// The running `claim` is what fixes `h(0)`. A plain round splits it as
+    /// `h(0) + h(1) = claim` (char 2), so `h(0) = claim + h(1)`. A round whose
+    /// `eq` weight `r` the caller factored out of `h` splits it as
+    /// `(1 + r)·h(0) + r·h(1) = claim` instead.
+    fn next_round_poly(&mut self, n_evals: usize, claim: F192, eq: Option<F192>) -> Result<Vec<F192>, Error>;
     fn grind_check(&mut self, bits: u32) -> Result<(), Error>;
 }
 
@@ -177,6 +199,7 @@ pub struct VerifierState<'a> {
     offset: usize,
     merkle_paths: &'a [MerklePaths],
     phase: usize,
+    raw_stream: Vec<F192>,
     raw_openings: Vec<MerkleOpening>,
 }
 
@@ -190,16 +213,27 @@ impl<'a> VerifierState<'a> {
             offset: 0,
             merkle_paths: &proof.merkle_paths,
             phase: 0,
+            raw_stream: Vec::new(),
             raw_openings: Vec::new(),
         }
     }
 
-    /// Advance the stream cursor by one **without** binding into the sponge: the
-    /// read counterpart of the raw nonce push in [`ProverState::grind`].
+    /// Advance the wire cursor by one **without** binding or recording: the read
+    /// counterpart of the raw nonce push in [`ProverState::grind`], and the
+    /// first half of reading a round polynomial (whose evaluations bind only
+    /// once `h(0)` is known).
     fn take_raw(&mut self) -> Result<F192, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
         Ok(x)
+    }
+
+    /// Bind a scalar read off the wire, and record it: [`RawProof::stream`] IS
+    /// the sequence of these, in this order.
+    #[inline]
+    fn bind(&mut self, x: F192) {
+        self.sponge.observe(x);
+        self.raw_stream.push(x);
     }
 
     /// The redundant form of the proof just verified: every scalar it read, plus
@@ -207,15 +241,16 @@ impl<'a> VerifierState<'a> {
     /// verification that accepted, since a rejected one stops part way.
     pub fn into_raw_proof(self) -> RawProof {
         RawProof {
-            stream: self.stream.to_vec(),
+            stream: self.raw_stream,
             merkle_openings: self.raw_openings,
         }
     }
 
-    /// How many stream words have been read so far: the cursor a caller needs
-    /// to locate a sub-protocol's scalars without counting back from the tail.
+    /// How many scalars have been read and bound so far: the cursor into
+    /// [`RawProof::stream`] a caller needs to locate a sub-protocol's scalars
+    /// without counting back from the tail.
     pub fn stream_offset(&self) -> usize {
-        self.offset
+        self.raw_stream.len()
     }
 
     /// Assert the whole proof was consumed (no trailing/extra data).
@@ -289,10 +324,33 @@ impl<'a> Receiver for VerifierState<'a> {
     /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
     #[inline]
     fn next_scalar(&mut self) -> Result<F192, Error> {
-        let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
-        self.offset += 1;
-        self.sponge.observe(x);
+        let x = self.take_raw()?;
+        self.bind(x);
         Ok(x)
+    }
+
+    fn next_round_poly(&mut self, n_evals: usize, claim: F192, eq: Option<F192>) -> Result<Vec<F192>, Error> {
+        assert!(n_evals >= 2, "a round polynomial has at least h(0) and h(1)");
+        let mut evals = vec![F192::ZERO; n_evals];
+        for e in &mut evals[1..] {
+            *e = self.take_raw()?;
+        }
+        evals[0] = match eq {
+            None => claim + evals[1],
+            // `(1 + r)·h(0) + r·h(1) = claim`. At `r = 1` that leaves h(0) free,
+            // so it is not a usable weight; every caller's `r` is a challenge.
+            Some(r) => {
+                let one_plus_r = F192::ONE + r;
+                if one_plus_r.is_zero() {
+                    return Err(Error::NonCanonicalEncoding);
+                }
+                (claim + r * evals[1]) * one_plus_r.inv()
+            }
+        };
+        for &e in &evals {
+            self.bind(e);
+        }
+        Ok(evals)
     }
 
     /// Verifier mirror of [`Transmitter::grind`]: read the transmitted nonce and
@@ -300,6 +358,9 @@ impl<'a> Receiver for VerifierState<'a> {
     /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
     fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
         let nonce = self.take_raw()?;
+        // Bound by the PoW absorb inside `verify_pow_field` rather than by
+        // `observe`, but still a scalar the consumer reads at this position.
+        self.raw_stream.push(nonce);
         if self.sponge.verify_pow_field(nonce, bits) {
             Ok(())
         } else {

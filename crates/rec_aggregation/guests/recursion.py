@@ -121,7 +121,6 @@ N_TABLES = N_TABLES_PLACEHOLDER
 K_SKIP = K_SKIP_PLACEHOLDER
 N_FIXED_CHALLENGE_ROUNDS = N_FIXED_CHALLENGE_ROUNDS_PLACEHOLDER
 FIXED_CHALLENGES = FIXED_CHALLENGES_PLACEHOLDER
-ONE_PLUS_CHALLENGE_INV = ONE_PLUS_CHALLENGE_INV_PLACEHOLDER
 PHI8_NODES = PHI8_NODES_PLACEHOLDER
 # Tower F192 = F64[Y]/(Y^3+Y+1). Y_TOWER embeds Y for reassembling
 # e192(lo,hi,top)=lo+hi*Y+top*Y². Y_INV is also used at the opening boundary
@@ -709,11 +708,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # message) ride the SHARED stream: msg_cursor is just the main stream
     # cursor, walked on in protocol order.
     msg_cursor = cursor
-    fs, msg_u0, msg_cursor = fs_next(fs, msg_cursor)
-    fs, msg_u2, msg_cursor = fs_next(fs, msg_cursor)
-    round_quad_c = msg_u0
-    round_quad_b = target + msg_u2
-    round_quad_a = msg_u2
+    fs, msg_h0, msg_cursor = fs_next(fs, msg_cursor)
+    fs, msg_h1, msg_cursor = fs_next(fs, msg_cursor)
+    fs, msg_hinf, msg_cursor = fs_next(fs, msg_cursor)
+    assert msg_h0 + msg_h1 == target
+    round_quad_c = msg_h0
+    round_quad_b = msg_h0 + msg_h1 + msg_hinf
+    round_quad_a = msg_hinf
     sumcheck_target = target
 
     # Opening data for every level, all consumed by the level loop below (each
@@ -746,8 +747,9 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     ood_z = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES * LIG_LOG_MSG_COLS_CAP))
     ood_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
     ood_ys = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
-    ood_u0s = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
-    ood_u2s = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
+    ood_h0s = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
+    ood_h1s = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
+    ood_hinfs = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
 
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
@@ -760,11 +762,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             fs, fold_challenge = squeeze(fs)
             fold_challenges[GEN ** fold_idx] = fold_challenge
             sumcheck_target = (round_quad_a * fold_challenge + round_quad_b) * fold_challenge + round_quad_c  # evaluate this level's folded quadratic at the fold challenge
-            fs, msg_a, msg_cursor = fs_next(fs, msg_cursor)
-            fs, msg_b, msg_cursor = fs_next(fs, msg_cursor)
-            round_quad_c = msg_a
-            round_quad_b = sumcheck_target + msg_b
-            round_quad_a = msg_b
+            fs, msg_h0, msg_cursor = fs_next(fs, msg_cursor)  # the round polynomial at 0, 1, infinity
+            fs, msg_h1, msg_cursor = fs_next(fs, msg_cursor)
+            fs, msg_hinf, msg_cursor = fs_next(fs, msg_cursor)
+            assert msg_h0 + msg_h1 == sumcheck_target  # vanilla sumcheck: the round must answer the running claim
+            round_quad_c = msg_h0
+            round_quad_b = msg_h0 + msg_h1 + msg_hinf
+            round_quad_a = msg_hinf
 
         if lvl == LIG_YR_LEVEL[m_idx]:
             for iy in unroll(0, LIG_YR_LEN[m_idx]):
@@ -787,11 +791,14 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                     fs, oz_challenge = squeeze(fs)
                     oz[GEN ** t] = oz_challenge
                 fs, ood_y, msg_cursor = fs_next(fs, msg_cursor)
-                fs, ood_u0, msg_cursor = fs_next(fs, msg_cursor)
-                fs, ood_u2, msg_cursor = fs_next(fs, msg_cursor)
+                fs, ood_h0, msg_cursor = fs_next(fs, msg_cursor)
+                fs, ood_h1, msg_cursor = fs_next(fs, msg_cursor)
+                fs, ood_hinf, msg_cursor = fs_next(fs, msg_cursor)
+                assert ood_h0 + ood_h1 == ood_y
                 ood_ys[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_y
-                ood_u0s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_u0
-                ood_u2s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_u2
+                ood_h0s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_h0
+                ood_h1s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_h1
+                ood_hinfs[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_hinf
         q_nonce = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
         msg_cursor = msg_cursor * GEN
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
@@ -903,27 +910,30 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         # intro message. The level's claims then enter the running one with
         # powers of `lam`: the OOD claims held above first, then this query
         # batch.
-        fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
-        fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
+        fs, intro_h0, msg_cursor = fs_next(fs, msg_cursor)
+        fs, intro_h1, msg_cursor = fs_next(fs, msg_cursor)
+        fs, intro_hinf, msg_cursor = fs_next(fs, msg_cursor)
+        assert intro_h0 + intro_h1 == level_query_sum
         if lvl == LIG_YR_LEVEL[m_idx]:
             beta_lvl = lam  # no OOD claim at the last level: no new oracle
         else:
             ood_scalar = lam
             for os in unroll(0, LIG_OOD_SAMPLES[m_idx * LIG_MAX_LEVELS + lvl + 1]):
                 ood_y = ood_ys[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
-                ood_u0 = ood_u0s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
-                ood_u2 = ood_u2s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
+                ood_h0 = ood_h0s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
+                ood_h1 = ood_h1s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
+                ood_hinf = ood_hinfs[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)]
                 ood_betas[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_scalar
-                round_quad_c += ood_scalar * ood_u0
-                round_quad_b += ood_scalar * (ood_y + ood_u2)
-                round_quad_a += ood_scalar * ood_u2
+                round_quad_c += ood_scalar * ood_h0
+                round_quad_b += ood_scalar * (ood_h0 + ood_h1 + ood_hinf)
+                round_quad_a += ood_scalar * ood_hinf
                 sumcheck_target += ood_scalar * ood_y
                 ood_scalar = ood_scalar * lam
             beta_lvl = ood_scalar
         level_betas[GEN ** lvl] = beta_lvl
-        round_quad_c += beta_lvl * intro_u0
-        round_quad_b += beta_lvl * (level_query_sum + intro_u2)
-        round_quad_a += beta_lvl * intro_u2
+        round_quad_c += beta_lvl * intro_h0
+        round_quad_b += beta_lvl * (intro_h0 + intro_h1 + intro_hinf)
+        round_quad_a += beta_lvl * intro_hinf
         sumcheck_target += beta_lvl * level_query_sum
 
     # ---- finish the sumcheck over the tail coordinates ----
@@ -932,11 +942,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         fs, tail_c = squeeze(fs)
         tail_challenges[GEN ** j] = tail_c
         sumcheck_target = round_quad_c + tail_c * round_quad_b + tail_c * tail_c * round_quad_a
-        fs, msg_a, msg_cursor = fs_next(fs, msg_cursor)
-        fs, msg_b, msg_cursor = fs_next(fs, msg_cursor)
-        round_quad_c = msg_a
-        round_quad_b = sumcheck_target + msg_b
-        round_quad_a = msg_b
+        fs, msg_h0, msg_cursor = fs_next(fs, msg_cursor)
+        fs, msg_h1, msg_cursor = fs_next(fs, msg_cursor)
+        fs, msg_hinf, msg_cursor = fs_next(fs, msg_cursor)
+        assert msg_h0 + msg_h1 == sumcheck_target
+        round_quad_c = msg_h0
+        round_quad_b = msg_h0 + msg_h1 + msg_hinf
+        round_quad_a = msg_hinf
     # The closing round sends no following message.
     fs, tail_last = squeeze(fs)
     tail_challenges[GEN ** (LIG_YR_LOG_LEN[m_idx] - 1)] = tail_last
@@ -1711,9 +1723,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zerocheck_rhos = HeapBuf(mr1cs_rounds_g)
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
-        fs, gamma_c, cursor = fs_next(fs, cursor)  # (gamma_c, g_inf) per round, walked in order
+        fs, gamma_ab, cursor = fs_next(fs, cursor)  # G at 0, 1, infinity per round, walked in order
+        fs, gamma_c, cursor = fs_next(fs, cursor)
         fs, g_inf, cursor = fs_next(fs, cursor)
-        gamma_ab = (zc_running + r_eq * gamma_c) * ONE_PLUS_CHALLENGE_INV[i]  # recover the g(alpha) evaluation from g(0)+g(1)=claim and the eq weight
+        assert (1 + r_eq) * gamma_ab + r_eq * gamma_c == zc_running  # vanilla: the round answers the eq-split claim
         fs, rho_v = squeeze(fs)
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab + rho_v * (gamma_ab + gamma_c + (1 + rho_v) * g_inf)
@@ -1733,9 +1746,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         round_running = flock_round_running[xi]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
         cur_i = flock_round_cursor[xi]
+        round_fs, gamma_ab, cur_i = fs_next(round_fs, cur_i)
         round_fs, gamma_c, cur_i = fs_next(round_fs, cur_i)
         round_fs, g_inf, cur_i = fs_next(round_fs, cur_i)
-        gamma_ab = (round_running + r_eq * gamma_c) / (1 + r_eq)
+        assert (1 + r_eq) * gamma_ab + r_eq * gamma_c == round_running
         round_fs, rho_v = squeeze(round_fs)
         zerocheck_rhos[xi] = rho_v
         round_running = gamma_ab + rho_v * (gamma_ab + gamma_c + (1 + rho_v) * g_inf)
@@ -1761,11 +1775,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta  # lincheck seed: alpha*a + b + beta (batches the two matrix claims)
     lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
     for i in unroll(0, LINCHECK_ROUNDS):
-        fs, e1, cursor = fs_next(fs, cursor)  # (e1, e_inf) per round, walked in order
+        fs, e0, cursor = fs_next(fs, cursor)  # q at 0, 1, infinity per round, walked in order
+        fs, e1, cursor = fs_next(fs, cursor)
         fs, ei, cursor = fs_next(fs, cursor)
+        assert e0 + e1 == lc_running  # vanilla: the round answers the running claim
         fs, rv = squeeze(fs)
         lincheck_rs[GEN ** i] = rv
-        e0 = lc_running + e1
         c1q = e0 + e1 + ei
         lc_running = (ei * rv + c1q) * rv + e0  # fold the degree-2 round poly at the challenge rv
     z_partial = HeapBuf(2 ** K_SKIP)  # post-sumcheck collapse: fetch + observe each word
