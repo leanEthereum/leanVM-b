@@ -58,7 +58,7 @@ use super::pack::PACKING_WIDTH;
 use super::ring_switch;
 use super::whir::{ProverConfig, VerifierConfig};
 use super::whir::{
-    ProverData, build_eq_table_ext, recursive_prover_with_basis, recursive_verifier_with_basis_succinct_with_squeezes,
+    ProverData, build_eq_table_ext, recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
 };
 
 // ---------------------------------------------------------------------------
@@ -153,20 +153,6 @@ pub struct RingSwitchVerify {
     /// used without being re-sent or re-checked.
     pub reconstructed: Vec<Vec<F192>>,
     pub claims: Vec<RingSwitchClaim>,
-}
-
-/// What the stacked-opening verifier hands back on accept: the recursion
-/// harness's hook for the WHIR fold/query data.
-#[derive(Clone, Debug, Default)]
-pub struct StackedOpeningSummary {
-    pub lig: LigVerifierSummary,
-}
-
-/// See [`StackedOpeningSummary`].
-#[derive(Clone, Debug, Default)]
-pub struct LigVerifierSummary {
-    /// The raw query-sampling squeezes, per level in transcript order.
-    pub query_squeezes: Vec<Vec<F192>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +413,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     root: &Hash,
     point_claims: &[StackClaim],
     ring: &RingSwitchVerify,
-) -> Option<StackedOpeningSummary> {
+) -> bool {
     let n_rs = ring.claims.len();
     let qflock_vars = ring.qflock_vars;
     // Caller (statement) invariants: panic on misuse, like the extension-field layer.
@@ -442,7 +428,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
         assert_eq!(claim.suffix_point.len(), qflock_vars);
     }
     if ring.reconstructed.len() > n_rs || ring.reconstructed.iter().any(|s| s.len() != PACKING_WIDTH) {
-        return None;
+        return false;
     }
 
     // 1. Ring-switch verify: each reconstructed leading vector was already bound
@@ -451,7 +437,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     let mut rs_proofs = ring.reconstructed.clone();
     for claim in ring.claims.iter().skip(ring.reconstructed.len()) {
         let Ok(s_hat_v) = ring_switch::verify_prepare(claim.value, &claim.prefix_weights, vs) else {
-            return None;
+            return false;
         };
         rs_proofs.push(s_hat_v);
     }
@@ -491,19 +477,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
         acc
     };
 
-    let mut query_squeezes: Vec<Vec<F192>> = Vec::new();
-    let ok = recursive_verifier_with_basis_succinct_with_squeezes(
-        config,
-        log_n,
-        target,
-        root,
-        eval_b_at,
-        vs,
-        &mut query_squeezes,
-    );
-    ok.then_some(StackedOpeningSummary {
-        lig: LigVerifierSummary { query_squeezes },
-    })
+    recursive_verifier_with_basis_succinct(config, log_n, target, root, eval_b_at, vs)
 }
 
 // ---------------------------------------------------------------------------
@@ -665,7 +639,6 @@ mod tests {
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
         verify_opening_batch_mixed_whir_stacked(&mut vs, &inst.vc, inst.log_n, &inst.root, point_claims, &ring)
-            .is_some()
     }
 
     #[test]
@@ -810,7 +783,7 @@ mod tests {
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &ring_v).is_some(),
+            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &ring_v),
             "honest crossing-regime opening rejected"
         );
 
@@ -819,7 +792,7 @@ mod tests {
         bad_ring.claims[0].value += F192::ONE;
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring).is_none(),
+            !verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring),
             "tampered crossing-regime ring value accepted"
         );
     }

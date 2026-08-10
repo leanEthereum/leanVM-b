@@ -73,6 +73,12 @@ fn test_python_verifier() {
     let program = compile(&ast);
     let public_input = public_input();
     let (proof, stats) = prove(&program, public_input, 1);
+    // Python reads the RAW proof: same protocol, each query carrying its own
+    // full Merkle path instead of one octopus over the batch. A Rust verify
+    // expands the wire form, so the pruning is written once.
+    let raw = verify(&program, &public_input, &proof)
+        .expect("honest proof verifies")
+        .raw;
 
     let directory = std::env::temp_dir().join(format!("leanvm-python-verifier-test-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test directory");
@@ -80,7 +86,7 @@ fn test_python_verifier() {
     let bytecode_path = directory.join("bytecode.bin");
     let public_input_path = directory.join("public_input.bin");
     let encoded = bincode::serialize(&proof).expect("serialize proof");
-    std::fs::write(&proof_path, &encoded).expect("write proof");
+    std::fs::write(&proof_path, bincode::serialize(&raw).expect("serialize raw proof")).expect("write proof");
     // The statement the verifier takes is the bytecode multilinear plus 256 bits
     // of public input, not a structured program.
     let table: Vec<u8> = lean_vm::cpu::layout::bytecode_table(&program.prog)
@@ -114,9 +120,11 @@ fn test_python_verifier() {
     let mut malformed_announcement = proof.clone();
     malformed_announcement.stream[0].c1 = 1;
     assert!(verify(&program, &public_input, &malformed_announcement).is_err());
+    let mut raw_announcement = raw.clone();
+    raw_announcement.stream[0].c1 = 1;
     std::fs::write(
         &proof_path,
-        bincode::serialize(&malformed_announcement).expect("serialize malformed announcement"),
+        bincode::serialize(&raw_announcement).expect("serialize malformed announcement"),
     )
     .expect("write malformed announcement");
     let output = Command::new("python3")
@@ -132,9 +140,11 @@ fn test_python_verifier() {
     let root_offset = lean_vm::tables::N_TABLES + 2;
     malformed_root.stream[root_offset].c2 = 1;
     assert!(verify(&program, &public_input, &malformed_root).is_err());
+    let mut raw_root = raw.clone();
+    raw_root.stream[root_offset].c2 = 1;
     std::fs::write(
         &proof_path,
-        bincode::serialize(&malformed_root).expect("serialize malformed root"),
+        bincode::serialize(&raw_root).expect("serialize malformed root"),
     )
     .expect("write malformed root");
     let output = Command::new("python3")

@@ -22,17 +22,9 @@
 //! The [`Sponge`] itself (the VM-native Merkle–Damgård chaining value, its
 //! domain tags, grinding, and the diagnostic trace) lives in [`crate::sponge`].
 
+use crate::merkle::{Hash, MerkleOpening, MerklePaths, hash_to_scalars, scalars_to_hash};
 use crate::sponge::{Sponge, TraceOp, trace};
 use primitives::field::{F64, F192};
-
-/// One opening phase's Merkle data: the opened rows and the sibling hashes that
-/// authenticate them. Leaf data is `F64` because that is what a Merkle preimage
-/// is; an `E`-valued row of width `w` is `3w` words, packed by the opener.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct MerklePaths {
-    pub leaf_data: Vec<Vec<F64>>,
-    pub sibling_hashes: Vec<[u8; 32]>,
-}
 
 /// A complete proof: the scalar transcript stream plus the Merkle phases:
 /// **two** channels, no bolted-on side field. The commitment root and every
@@ -56,12 +48,32 @@ pub struct Proof {
     pub merkle_paths: Vec<MerklePaths>,
 }
 
+/// The proof the recursion guest and the Python verifier consume: nothing
+/// shared, nothing pruned.
+///
+/// Same protocol, redundant encoding. Each query carries its own full Merkle
+/// path instead of an octopus over the batch, so a consumer walks one path per
+/// query with no dedup bookkeeping, which is the difference between a page of
+/// index arithmetic and a loop in the zkDSL. [`Proof`] is what goes over the
+/// wire; a verifier run produces this as a by-product
+/// ([`VerifierState::into_raw_proof`]), so the expansion is written once.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RawProof {
+    /// Identical to [`Proof::stream`]: no scalar is omitted from the wire form
+    /// today. Carried here anyway so a consumer needs this struct alone.
+    pub stream: Vec<F192>,
+    /// One opening per query, phases concatenated in the order they ran.
+    pub merkle_openings: Vec<MerkleOpening>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The verifier tried to read past the end of the proof stream.
     ExceededStream,
     /// A required opening hint was missing.
     MissingHint,
+    /// An opening phase did not authenticate against its root, or was malformed.
+    InvalidMerkleOpening,
     /// Verification finished without consuming the whole proof.
     NotFullyConsumed,
     /// A grinding nonce failed its proof-of-work check.
@@ -82,6 +94,15 @@ pub trait Challenger {
     /// Bind a value both sides derive themselves (never transmitted), so it is
     /// side-agnostic and lives here rather than on the two halves below.
     fn observe_scalar(&mut self, x: F192);
+
+    /// Bind a root both sides already hold (a commitment that is part of the
+    /// statement) as its two scalars, not as a byte string, so the recursion
+    /// guest replays one shape for every digest.
+    fn observe_root(&mut self, root: &Hash) {
+        for s in hash_to_scalars(root) {
+            self.observe_scalar(s);
+        }
+    }
 }
 
 /// The prover half of a transmitting sub-protocol (WHIR and its sumchecks):
@@ -91,14 +112,34 @@ pub trait Transmitter: Challenger {
     fn add_scalar(&mut self, x: F192);
     fn add_scalars(&mut self, xs: &[F192]);
     fn grind(&mut self, bits: u32);
+
+    /// Transmit a root as its two scalars ([`Challenger::observe_root`] is for
+    /// the one root the verifier already holds).
+    fn add_root(&mut self, root: &Hash) {
+        self.add_scalars(&hash_to_scalars(root));
+    }
 }
 
 /// The verifier half, mirroring [`Transmitter`] call for call.
 pub trait Receiver: Challenger {
-    fn next_merkle(&mut self) -> Result<&MerklePaths, Error>;
+    /// Pull the next opening phase and authenticate it: see
+    /// [`VerifierState::next_merkle_batch`].
+    fn next_merkle_batch(
+        &mut self,
+        root: &Hash,
+        num_leaves: usize,
+        queries: &[usize],
+        leaf_words: usize,
+    ) -> Result<Vec<Vec<F64>>, Error>;
     fn next_scalar(&mut self) -> Result<F192, Error>;
     fn next_scalars(&mut self, n: usize) -> Result<Vec<F192>, Error> {
         (0..n).map(|_| self.next_scalar()).collect()
+    }
+
+    /// Mirror of [`Transmitter::add_root`]. Both halves are prover-chosen, so a
+    /// non-canonical one is rejected here rather than reaching a decoder.
+    fn next_root(&mut self) -> Result<Hash, Error> {
+        scalars_to_hash(&[self.next_scalar()?, self.next_scalar()?])
     }
     fn grind_check(&mut self, bits: u32) -> Result<(), Error>;
 }
@@ -180,6 +221,7 @@ pub struct VerifierState<'a> {
     offset: usize,
     merkle_paths: &'a [MerklePaths],
     phase: usize,
+    raw_openings: Vec<MerkleOpening>,
 }
 
 impl<'a> VerifierState<'a> {
@@ -192,6 +234,7 @@ impl<'a> VerifierState<'a> {
             offset: 0,
             merkle_paths: &proof.merkle_paths,
             phase: 0,
+            raw_openings: Vec::new(),
         }
     }
 
@@ -232,12 +275,39 @@ impl<'a> VerifierState<'a> {
         self.sponge.observe(x);
     }
 
-    /// Verifier mirror of [`ProverState::hint_merkle`].
-    pub fn next_merkle(&mut self) -> Result<&'a MerklePaths, Error> {
-        let paths = self.merkle_paths.get(self.phase).ok_or(Error::MissingHint)?;
+    /// Verifier mirror of [`ProverState::hint_merkle`]: pull the next opening
+    /// phase, authenticate every queried row against `root`, and return the rows
+    /// in `queries` order.
+    ///
+    /// The only way to reach a phase's rows, so none can be used unauthenticated.
+    /// The check also yields each query's full sibling path, which is recorded
+    /// for [`Self::into_raw_proof`].
+    pub fn next_merkle_batch(
+        &mut self,
+        root: &Hash,
+        num_leaves: usize,
+        queries: &[usize],
+        leaf_words: usize,
+    ) -> Result<Vec<Vec<F64>>, Error> {
+        let paths: &'a MerklePaths = self.merkle_paths.get(self.phase).ok_or(Error::MissingHint)?;
         self.phase += 1;
         trace(|| TraceOp::MerklePhase);
-        Ok(paths)
+        let openings = paths
+            .open(root, num_leaves, queries, leaf_words)
+            .ok_or(Error::InvalidMerkleOpening)?;
+        let rows = openings.iter().map(|o| o.leaf_data.clone()).collect();
+        self.raw_openings.extend(openings);
+        Ok(rows)
+    }
+
+    /// The redundant form of the proof just verified: every scalar it read, plus
+    /// one unpruned opening per query in phase order. Meaningful only after a
+    /// verification that accepted, since a rejected one stops part way.
+    pub fn into_raw_proof(self) -> RawProof {
+        RawProof {
+            stream: self.stream.to_vec(),
+            merkle_openings: self.raw_openings,
+        }
     }
 
     /// Verifier mirror of [`ProverState::grind`]: read the transmitted nonce and
@@ -290,8 +360,14 @@ impl Transmitter for ProverState {
 }
 
 impl Receiver for VerifierState<'_> {
-    fn next_merkle(&mut self) -> Result<&MerklePaths, Error> {
-        Self::next_merkle(self)
+    fn next_merkle_batch(
+        &mut self,
+        root: &Hash,
+        num_leaves: usize,
+        queries: &[usize],
+        leaf_words: usize,
+    ) -> Result<Vec<Vec<F64>>, Error> {
+        Self::next_merkle_batch(self, root, num_leaves, queries, leaf_words)
     }
     fn next_scalar(&mut self) -> Result<F192, Error> {
         Self::next_scalar(self)

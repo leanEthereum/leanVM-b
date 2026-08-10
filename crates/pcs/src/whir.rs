@@ -34,7 +34,8 @@
 
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
-use fiat_shamir::transcript::{Challenger, MerklePaths, Receiver, Transmitter};
+use fiat_shamir::merkle::MerklePaths;
+use fiat_shamir::transcript::{Challenger, Receiver, Transmitter};
 use primitives::log2_strict_usize;
 use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
@@ -54,28 +55,6 @@ pub use super::whir_config::{default_config, default_verifier_config, udr_querie
 
 pub use crate::whir_induce::*;
 use crate::whir_ntt_ext::*;
-
-/// Bind a Merkle root into the transcript as two `F192` scalars rather than
-/// as a byte string. Binds the root before any challenge exactly as `absorb_bytes`
-/// would; keeping the scalar form matches the recursion guest's replay.
-fn observe_root(ch: &mut impl Challenger, root: &crate::merkle::Hash) {
-    for s in crate::merkle::hash_to_scalars(root) {
-        ch.observe_scalar(s);
-    }
-}
-
-/// Transmit a Merkle root as its two transcript scalars (`observe_root` is for
-/// the one root both sides already hold, the L0 commitment).
-fn send_root(ps: &mut impl Transmitter, root: &crate::merkle::Hash) {
-    ps.add_scalars(&crate::merkle::hash_to_scalars(root));
-}
-
-/// Verifier mirror of [`send_root`].
-fn recv_root(vs: &mut impl Receiver) -> Option<crate::merkle::Hash> {
-    let lo = vs.next_scalar().ok()?;
-    let hi = vs.next_scalar().ok()?;
-    Some(crate::merkle::scalars_to_hash(&[lo, hi]))
-}
 
 // ===================================================================
 // Multilinear helpers over E
@@ -946,22 +925,12 @@ impl<'a> SumcheckProver<'a> {
 /// `config.queries`). Duplicates are harmless, a repeated position re-opens the
 /// same Merkle-authenticated row.
 ///
-/// Also returns the raw squeezed words `v` (native `F192`, one per squeeze):
-/// the recursion harness reads all three limbs off them to re-derive positions.
-/// There is deliberately no position-only variant, because two copies of this
-/// loop would let the prover and the verifier drift apart silently.
-fn sample_queries_ordered_with_raw(
-    ch: &mut impl Challenger,
-    block_len: usize,
-    count: usize,
-) -> (Vec<usize>, Vec<F192>) {
+fn sample_queries_ordered(ch: &mut impl Challenger, block_len: usize, count: usize) -> Vec<usize> {
     let d = block_len.trailing_zeros() as usize;
     let per = 192 / d;
     let mut out = Vec::with_capacity(count);
-    let mut raw = Vec::with_capacity(count.div_ceil(per));
     while out.len() < count {
         let v = ch.sample();
-        raw.push(v);
         for j in 0..per.min(count - out.len()) {
             let off = j * d;
             let limbs = [v.c0, v.c1, v.c2];
@@ -973,23 +942,7 @@ fn sample_queries_ordered_with_raw(
             out.push(chunk as usize & (block_len - 1));
         }
     }
-    (out, raw)
-}
-
-/// Fan stored sorted-unique rows back to transcript (ordered, dup-possible)
-/// order, so the induce math sees `opened_rows[i]` ↔ `queries[i]`. The rows must
-/// already be authenticated (via the octopus check) against the level root.
-fn fan_rows_to_ordered<T: Clone>(queries: &[usize], rows_sorted: &[Vec<T>]) -> Option<Vec<Vec<T>>> {
-    let sorted = sorted_unique_queries(queries);
-    if sorted.len() != rows_sorted.len() {
-        return None;
-    }
-    let mut out = Vec::with_capacity(queries.len());
-    for &q in queries {
-        let slot = sorted.binary_search(&q).ok()?;
-        out.push(rows_sorted[slot].clone());
-    }
-    Some(out)
+    out
 }
 
 /// Prover side of the OOD claims taken right after a level's root enters the
@@ -1012,19 +965,10 @@ fn ext_row_words(row: &[F192]) -> Vec<F64> {
     row.iter().flat_map(|v| [F64(v.c0), F64(v.c1), F64(v.c2)]).collect()
 }
 
-/// The inverse of [`ext_row_words`], with the width the level announces.
-fn ext_row_from_words(words: &[F64], width: usize) -> Option<Vec<F192>> {
-    (words.len() == 3 * width).then(|| words.chunks(3).map(|c| F192::new(c[0].0, c[1].0, c[2].0)).collect())
-}
-
-/// One level's opening phase: the sorted-unique rows plus one octopus over
-/// those positions. The verifier re-fans them to transcript order.
-fn stored_opening(queries: &[usize], row: impl Fn(usize) -> Vec<F64>, tree: &[Hash], block_len: usize) -> MerklePaths {
-    let sorted = sorted_unique_queries(queries);
-    MerklePaths {
-        leaf_data: sorted.iter().map(|&q| row(q)).collect(),
-        sibling_hashes: merkle::merkle_multi_proof(tree, block_len, &sorted),
-    }
+/// The inverse of [`ext_row_words`]. The row was already checked to be `3w`
+/// words wide, which is what makes the regrouping exact.
+fn ext_row_from_words(words: &[F64]) -> Vec<F192> {
+    words.chunks(3).map(|c| F192::new(c[0].0, c[1].0, c[2].0)).collect()
 }
 
 /// Prove `Σ_x witness(x) · b_initial(x) = target` against the L0 commitment
@@ -1091,7 +1035,7 @@ pub fn recursive_prover_with_basis(
         let start = q * num_interleaved_0;
         &l0_codeword[start..start + num_interleaved_0]
     };
-    observe_root(ps, &initial_root);
+    ps.observe_root(&initial_root);
 
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
@@ -1133,7 +1077,7 @@ pub fn recursive_prover_with_basis(
     if trace {
         t_commits += _t.elapsed();
     }
-    send_root(ps, &wtns_1.root());
+    ps.add_root(&wtns_1.root());
 
     // Bind the L1 Johnson list before drawing L0 queries. Each claimed random
     // MLE evaluation is introduced into the running sumcheck.
@@ -1145,7 +1089,7 @@ pub fn recursive_prover_with_basis(
 
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_queries_ordered_with_raw(ps, block_len_0, num_queries_0).0;
+    let queries_0 = sample_queries_ordered(ps, block_len_0, num_queries_0);
     // One batching challenge for the whole level, drawn once every claim it
     // batches is fixed: the OOD claims above and these query positions.
     let lambda_0 = ps.sample();
@@ -1155,7 +1099,9 @@ pub fn recursive_prover_with_basis(
     let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
     // ... but the stored proof carries the sorted-unique rows + one octopus over
     // the sorted-unique positions (the verifier re-fans them to ordered).
-    ps.hint_merkle(stored_opening(&queries_0, |q| l0_row(q).to_vec(), l0_tree, block_len_0));
+    ps.hint_merkle(MerklePaths::prune(l0_tree, block_len_0, &queries_0, |q| {
+        l0_row(q).to_vec()
+    }));
     if trace {
         t_opens += _t.elapsed();
     }
@@ -1218,7 +1164,7 @@ pub fn recursive_prover_with_basis(
             // PoW grinding for the last level before sampling its queries.
             ps.grind(config.grinding_bits[i + 1] as u32);
             let num_queries_last = config.queries[i + 1];
-            let queries_last = sample_queries_ordered_with_raw(ps, wtns_prev.block_len, num_queries_last).0;
+            let queries_last = sample_queries_ordered(ps, wtns_prev.block_len, num_queries_last);
             // The final level's batching challenge is drawn only after `yr`
             // and its queries are bound, matching the verifier exactly.
             let lambda_last = ps.sample();
@@ -1226,11 +1172,11 @@ pub fn recursive_prover_with_basis(
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
             // verifier fans these to ordered for its last-level induce.
-            ps.hint_merkle(stored_opening(
-                &queries_last,
-                |q| ext_row_words(wtns_prev.row(q)),
+            ps.hint_merkle(MerklePaths::prune(
                 &wtns_prev.tree,
                 wtns_prev.block_len,
+                &queries_last,
+                |q| ext_row_words(wtns_prev.row(q)),
             ));
             // Tie the last commitment into the running claim through the same
             // intro/glue step as every other level, then finish the remaining
@@ -1309,24 +1255,24 @@ pub fn recursive_prover_with_basis(
         if trace {
             t_commits += _t.elapsed();
         }
-        send_root(ps, &wtns_next.root());
+        ps.add_root(&wtns_next.root());
 
         send_ood(&mut sc_prover, ps, n_next, ood_count(i + 2));
 
         // PoW grinding for this iteration's query phase.
         ps.grind(config.grinding_bits[i + 1] as u32);
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_queries_ordered_with_raw(ps, wtns_prev.block_len, num_queries_i).0;
+        let queries_i = sample_queries_ordered(ps, wtns_prev.block_len, num_queries_i);
         let lambda_i = ps.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
         let opened_rows_i: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
-        ps.hint_merkle(stored_opening(
-            &queries_i,
-            |q| ext_row_words(wtns_prev.row(q)),
+        ps.hint_merkle(MerklePaths::prune(
             &wtns_prev.tree,
             wtns_prev.block_len,
+            &queries_i,
+            |q| ext_row_words(wtns_prev.row(q)),
         ));
         if trace {
             t_opens += _t.elapsed();
@@ -1358,77 +1304,19 @@ pub fn recursive_prover_with_basis(
 // Dense verifier
 // ===================================================================
 
-/// Hash one opened row as its raw little-endian byte image, the same image the
-/// committer fed to `merkle_tree`. `F64` is repr(transparent) over u64 and
-/// `F192` is repr(C) over three u64 limbs, so in both cases the row occupies
-/// exactly `row.len() * size_of::<T>()` initialized bytes with no padding.
-fn hash_row<T: Copy>(row: &[T]) -> Hash {
-    // SAFETY: see above; `size_of_val` is `row.len() * size_of::<T>()`, so the
-    // cast covers exactly the initialized bytes of `row`.
-    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(row.as_ptr() as *const u8, core::mem::size_of_val(row)) };
-    merkle::hash_leaf(bytes)
-}
-
-/// Leaf hashes for the opened rows, or `None` if any row has the wrong width.
-fn leaf_hashes_of<T: Copy>(rows: &[Vec<T>], expected_num_interleaved: usize) -> Option<Vec<Hash>> {
-    rows.iter()
-        .map(|row| (row.len() == expected_num_interleaved).then(|| hash_row(row)))
-        .collect()
-}
-
-/// A K row is its leaf words unchanged; L0 is the only level that commits one.
-fn k_row_from_words(words: &[F64], width: usize) -> Option<Vec<F64>> {
-    (words.len() == width).then(|| words.to_vec())
-}
-
-/// Pull the next Merkle phase, decode its leaf words into rows, authenticate
-/// them against `root` with the one octopus the phase carries, and fan them
-/// back to transcript (dup-possible) order. `decode` rejects any row of the
-/// wrong width, which is what pins the leaf image the octopus is checked
-/// against.
-fn recv_level_rows<T: Copy>(
+/// Pull the next Merkle phase, authenticated against `root`, and decode its
+/// leaf words into the rows the level committed. `leaf_words` announces the row
+/// width, which pins the leaf image the octopus is checked against.
+fn recv_level_rows<T>(
     vs: &mut impl Receiver,
     root: &Hash,
     block_len: usize,
     queries: &[usize],
-    decode: impl Fn(&[F64]) -> Option<Vec<T>>,
-) -> Option<Vec<Vec<T>>> {
-    let phase = vs.next_merkle().ok()?;
-    let sorted = sorted_unique_queries(queries);
-    if sorted.len() != phase.leaf_data.len() {
-        return None;
-    }
-    let rows = phase.leaf_data.iter().map(|w| decode(w)).collect::<Option<Vec<_>>>()?;
-    let leaf_hashes: Vec<Hash> = rows.iter().map(|r| hash_row(r)).collect();
-    if !merkle::verify_merkle_multi_proof(root, block_len, &sorted, &leaf_hashes, &phase.sibling_hashes) {
-        return None;
-    }
-    fan_rows_to_ordered(queries, &rows)
-}
-
-/// Transcript-order queries with duplicates removed, ascending. The initial opening
-/// stores one opened row per distinct query position (sorted); the recursion
-/// harness expands back to per-query order below.
-fn sorted_unique_queries(queries: &[usize]) -> Vec<usize> {
-    let mut s = queries.to_vec();
-    s.sort_unstable();
-    s.dedup();
-    s
-}
-
-/// Expand one level's stored opening into the flat per-query form the recursion
-/// guest re-hashes: one row and one full Merkle path per query, in transcript
-/// order (duplicates included). Authenticates nothing itself; the caller
-/// re-checks each restored path against the root.
-pub fn expand_level_opening(
-    block_len: usize,
-    queries: &[usize],
-    phase: &MerklePaths,
     leaf_words: usize,
-) -> Option<(Vec<Vec<F64>>, Vec<Hash>)> {
-    let leaf_hashes = leaf_hashes_of(&phase.leaf_data, leaf_words)?;
-    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, &phase.sibling_hashes)?;
-    Some((fan_rows_to_ordered(queries, &phase.leaf_data)?, flat_paths))
+    decode: impl Fn(&[F64]) -> T,
+) -> Option<Vec<T>> {
+    let rows = vs.next_merkle_batch(root, block_len, queries, leaf_words).ok()?;
+    Some(rows.iter().map(|row| decode(row)).collect())
 }
 
 /// The already-committed level whose rows the next query phase opens: its root
@@ -1574,7 +1462,7 @@ pub fn recursive_verifier_with_basis(
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
     vs.observe_scalar(target);
-    observe_root(vs, expected_initial_root);
+    vs.observe_root(expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -1597,7 +1485,7 @@ pub fn recursive_verifier_with_basis(
     };
 
     // Observe wtns_1 root + open wtns_0.
-    let Some(root_1) = recv_root(vs) else {
+    let Ok(root_1) = vs.next_root() else {
         return false;
     };
 
@@ -1616,12 +1504,17 @@ pub fn recursive_verifier_with_basis(
     }
 
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_queries_ordered_with_raw(vs, block_len_0, num_queries_0).0;
+    let queries_0 = sample_queries_ordered(vs, block_len_0, num_queries_0);
     let lambda_0 = vs.sample();
     let weights_0 = power_weights(lambda_0, num_queries_0);
-    let Some(ordered_rows_0) = recv_level_rows(vs, expected_initial_root, block_len_0, &queries_0, |w| {
-        k_row_from_words(w, num_interleaved_0)
-    }) else {
+    let Some(ordered_rows_0) = recv_level_rows(
+        vs,
+        expected_initial_root,
+        block_len_0,
+        &queries_0,
+        num_interleaved_0,
+        <[F64]>::to_vec,
+    ) else {
         return false;
     };
 
@@ -1692,15 +1585,21 @@ pub fn recursive_verifier_with_basis(
             }
 
             let num_queries_last = config.queries[i + 1];
-            let queries_last = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_last).0;
+            let queries_last = sample_queries_ordered(vs, prev.block_len(), num_queries_last);
             // Final-level batching challenge: sampled AFTER `yr` was observed
             // and the queries are fixed, so a forged `yr` cannot be adapted to
             // it (mirror of the original).
             let lambda_last = vs.sample();
             let weights_last = power_weights(lambda_last, num_queries_last);
-            let Some(ordered_rows_last) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_last, |w| {
-                ext_row_from_words(w, prev.num_interleaved())
-            }) else {
+            let leaf_words = 3 * prev.num_interleaved();
+            let Some(ordered_rows_last) = recv_level_rows(
+                vs,
+                &prev.root,
+                prev.block_len(),
+                &queries_last,
+                leaf_words,
+                ext_row_from_words,
+            ) else {
                 return false;
             };
 
@@ -1768,7 +1667,7 @@ pub fn recursive_verifier_with_basis(
             return weight * mle_eval_ext(&yr, &ris_tail) == t_r;
         }
 
-        let Some(root_next) = recv_root(vs) else {
+        let Ok(root_next) = vs.next_root() else {
             return false;
         };
 
@@ -1787,12 +1686,18 @@ pub fn recursive_verifier_with_basis(
         }
 
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_i).0;
+        let queries_i = sample_queries_ordered(vs, prev.block_len(), num_queries_i);
         let lambda_i = vs.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
-        let Some(ordered_rows_i) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_i, |w| {
-            ext_row_from_words(w, prev.num_interleaved())
-        }) else {
+        let leaf_words = 3 * prev.num_interleaved();
+        let Some(ordered_rows_i) = recv_level_rows(
+            vs,
+            &prev.root,
+            prev.block_len(),
+            &queries_i,
+            leaf_words,
+            ext_row_from_words,
+        ) else {
             return false;
         };
 
@@ -1845,32 +1750,6 @@ pub fn recursive_verifier_with_basis(
 // Succinct verifier
 // ===================================================================
 
-/// Thin wrapper of [`recursive_verifier_with_basis_succinct_with_squeezes`]
-/// that discards the query squeezes: the signature every non-recursion caller
-/// uses.
-pub fn recursive_verifier_with_basis_succinct<F>(
-    config: &VerifierConfig,
-    log_n: usize,
-    target: F192,
-    expected_initial_root: &Hash,
-    eval_b_at: F,
-    vs: &mut impl Receiver,
-) -> bool
-where
-    F: Fn(&[F192]) -> F192,
-{
-    let mut discard = Vec::new();
-    recursive_verifier_with_basis_succinct_with_squeezes(
-        config,
-        log_n,
-        target,
-        expected_initial_root,
-        eval_b_at,
-        vs,
-        &mut discard,
-    )
-}
-
 /// Succinct verifier for [`recursive_prover_with_basis`] (mirror of
 /// `whir::recursive_verifier_with_basis_succinct`): instead of a dense
 /// `b_initial` (2^log_n E-values) it takes a closure `eval_b_at` that evaluates
@@ -1881,19 +1760,13 @@ where
 /// `induce_sumcheck_evaluate_at_residual`. `log_n` is the committed
 /// K-witness log size (b's logical dimension). Transcript replay is
 /// byte-identical to the dense verifier.
-///
-/// On accept, fills `query_squeezes_out` with the raw query-sampling squeezes
-/// per level in transcript order (the recursion harness reads `.c0/.c1` off
-/// them to re-derive query positions). Left partially filled on reject; use it
-/// only on `true`.
-pub fn recursive_verifier_with_basis_succinct_with_squeezes<F>(
+pub fn recursive_verifier_with_basis_succinct<F>(
     config: &VerifierConfig,
     log_n: usize,
     target: F192,
     expected_initial_root: &Hash,
     eval_b_at: F,
     vs: &mut impl Receiver,
-    query_squeezes_out: &mut Vec<Vec<F192>>,
 ) -> bool
 where
     // Called once at the terminal check with the full fold point.
@@ -1914,7 +1787,7 @@ where
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
     vs.observe_scalar(target);
-    observe_root(vs, expected_initial_root);
+    vs.observe_root(expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -1940,7 +1813,7 @@ where
         return false;
     };
 
-    let Some(root_1) = recv_root(vs) else {
+    let Ok(root_1) = vs.next_root() else {
         return false;
     };
 
@@ -1958,13 +1831,17 @@ where
     }
 
     let num_queries_0 = config.queries[0];
-    let (queries_0, raw_0) = sample_queries_ordered_with_raw(vs, block_len_0, num_queries_0);
-    query_squeezes_out.push(raw_0);
+    let queries_0 = sample_queries_ordered(vs, block_len_0, num_queries_0);
     let lambda_0 = vs.sample();
     let weights_0 = power_weights(lambda_0, num_queries_0);
-    let Some(ordered_rows_0) = recv_level_rows(vs, expected_initial_root, block_len_0, &queries_0, |w| {
-        k_row_from_words(w, num_interleaved_0)
-    }) else {
+    let Some(ordered_rows_0) = recv_level_rows(
+        vs,
+        expected_initial_root,
+        block_len_0,
+        &queries_0,
+        num_interleaved_0,
+        <[F64]>::to_vec,
+    ) else {
         return false;
     };
 
@@ -2039,16 +1916,21 @@ where
             }
 
             let num_queries_last = config.queries[i + 1];
-            let (queries_last, raw_last) = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_last);
-            query_squeezes_out.push(raw_last);
+            let queries_last = sample_queries_ordered(vs, prev.block_len(), num_queries_last);
             // Batching challenge for the LAST commitment, sampled after `yr`
             // was observed and the queries are fixed (mirror of the dense
             // verifier, so both stay in lockstep).
             let lambda_last = vs.sample();
             let weights_last = power_weights(lambda_last, num_queries_last);
-            let Some(ordered_rows_last) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_last, |w| {
-                ext_row_from_words(w, prev.num_interleaved())
-            }) else {
+            let leaf_words = 3 * prev.num_interleaved();
+            let Some(ordered_rows_last) = recv_level_rows(
+                vs,
+                &prev.root,
+                prev.block_len(),
+                &queries_last,
+                leaf_words,
+                ext_row_from_words,
+            ) else {
                 return false;
             };
 
@@ -2130,7 +2012,7 @@ where
             return weight * mle_eval_ext(&yr, &ris_tail) == t_r;
         }
 
-        let Some(root_next) = recv_root(vs) else {
+        let Ok(root_next) = vs.next_root() else {
             return false;
         };
 
@@ -2149,13 +2031,18 @@ where
         }
 
         let num_queries_i = config.queries[i + 1];
-        let (queries_i, raw_i) = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_i);
-        query_squeezes_out.push(raw_i);
+        let queries_i = sample_queries_ordered(vs, prev.block_len(), num_queries_i);
         let lambda_i = vs.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
-        let Some(ordered_rows_i) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_i, |w| {
-            ext_row_from_words(w, prev.num_interleaved())
-        }) else {
+        let leaf_words = 3 * prev.num_interleaved();
+        let Some(ordered_rows_i) = recv_level_rows(
+            vs,
+            &prev.root,
+            prev.block_len(),
+            &queries_i,
+            leaf_words,
+            ext_row_from_words,
+        ) else {
             return false;
         };
 
@@ -2457,6 +2344,26 @@ mod tests {
                     !verify_both_agree(&inst, &bad_fs, "stream word"),
                     "tampered stream word {idx} accepted at log_n={log_n}"
                 );
+            }
+        }
+    }
+
+    /// Every stream word is prover-chosen, including the limbs of a level root
+    /// and of every digest half. A tampered word must be REJECTED, never panic
+    /// the verifier: `next_root` rejects a non-canonical half rather than
+    /// handing it to a decoder that asserts.
+    #[test]
+    fn tampered_stream_words_reject_without_panicking() {
+        let inst = prove_instance(12, 11);
+        for idx in 0..inst.fs.stream.len() {
+            for tamper in [F192::ONE, F192::new(0, 0, 1)] {
+                let mut bad = inst.fs.clone();
+                bad.stream[idx] += tamper;
+                let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify_instance(&inst, &bad)));
+                match verdict {
+                    Ok(accepted) => assert!(!accepted, "tampered stream word {idx} accepted"),
+                    Err(_) => panic!("verifier panicked on tampered stream word {idx}"),
+                }
             }
         }
     }

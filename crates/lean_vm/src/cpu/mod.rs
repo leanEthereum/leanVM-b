@@ -625,11 +625,13 @@ pub struct VerifySummary {
     pub count_root: F192,
     pub zc_claim: flock::zerocheck::ZerocheckClaim,
     pub lc_claim: flock::lincheck::LincheckClaim,
-    pub opening: pcs::StackedOpeningSummary,
     /// Stream cursor just after flock's reduction, i.e. where the PCS opening's
     /// own scalars start. The recursion harness reads flock's lincheck tail
     /// from here rather than counting back from the end of the stream.
     pub flock_stream_end: usize,
+    /// The proof this run just verified, in the unpruned form the recursion
+    /// guest and the Python verifier consume.
+    pub raw: fiat_shamir::transcript::RawProof,
 }
 
 /// Verify a proof against the public statement (program + public input): replay
@@ -694,16 +696,16 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let replay = crate::blake3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake3)?;
     let flock_stream_end = vs.stream_offset();
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
-    let opening = pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
+    pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
         count_root: bus.count_root,
         zc_claim: replay.zc_claim,
         lc_claim: replay.lc_claim,
-        opening,
         log_inv_rate,
         flock_stream_end,
+        raw: vs.into_raw_proof(),
     })
 }
 

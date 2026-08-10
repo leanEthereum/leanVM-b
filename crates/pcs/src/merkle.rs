@@ -2,6 +2,11 @@
 //! Binary Merkle tree with BLAKE3, SIMD-batching independent hashes across
 //! leaves and internal levels through BLAKE3's multi-input backend.
 //!
+//! The committer's half. What a proof actually carries (the digest encoding,
+//! the leaf/node hashes, one phase's pruned octopus) lives in
+//! [`fiat_shamir::merkle`], beside the transcript that transports it; this
+//! module only builds the tree those phases are cut from.
+//!
 //! Layout for `num_leaves = 2^k` leaves:
 //!   tree[0..num_leaves]                              = leaf hashes (level k)
 //!   tree[num_leaves..3·num_leaves/2]                 = level k−1
@@ -21,11 +26,10 @@
 #[cfg(target_arch = "aarch64")]
 mod blake3_neon8;
 
+pub use fiat_shamir::merkle::{Hash, hash_leaf, hash_pair};
 use parallel::SendPtr;
-use primitives::{field::F192, pretty_integer};
+use primitives::pretty_integer;
 use zk_alloc::ArenaVec;
-
-pub type Hash = [u8; 32];
 
 // Standard unkeyed BLAKE3 IV and single-chunk root flags, used to drive the
 // crate's multi-input SIMD backend directly.
@@ -46,49 +50,6 @@ const B3_ROOT: u8 = 8;
 /// Hashes per pool task: enough to amortize the widest SIMD batch while
 /// keeping input references and output rows cache-resident.
 const HASH_GROUP: usize = 1024;
-
-/// Encode a Merkle hash as the two field words transcripts carry it in: two
-/// 128-bit halves, each a K pair with a spare top lane. Every digest in the
-/// protocol uses this one split (the commitment root, the public input, the
-/// guest's MD state), so the VM sees one shape everywhere.
-#[inline]
-pub fn hash_to_scalars(hash: &Hash) -> [F192; 2] {
-    let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
-    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
-}
-
-/// Decode [`hash_to_scalars`].
-#[inline]
-pub fn scalars_to_hash(scalars: &[F192]) -> Hash {
-    assert_eq!(scalars.len(), 2, "a Merkle hash is exactly two field words");
-    assert!(
-        scalars.iter().all(|s| s.c2 == 0),
-        "a packed Merkle hash half is 128-bit"
-    );
-    let mut hash = [0u8; 32];
-    for (i, s) in scalars.iter().enumerate() {
-        hash[16 * i..16 * i + 8].copy_from_slice(&s.c0.to_le_bytes());
-        hash[16 * i + 8..16 * i + 16].copy_from_slice(&s.c1.to_le_bytes());
-    }
-    hash
-}
-
-/// Hash one leaf with standard BLAKE3.
-#[inline]
-pub fn hash_leaf(data: &[u8]) -> Hash {
-    *blake3::hash(data).as_bytes()
-}
-
-/// Hash a pair of children into a parent node (64 B → 32 B): the 64→32 BLAKE3
-/// compression `f(a, b) = BLAKE3(a‖b)`, which IS leanVM-b's `Blake3` opcode
-/// (`vmhash::compress`).
-#[inline]
-fn hash_pair(left: &Hash, right: &Hash) -> Hash {
-    let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(left);
-    buf[32..].copy_from_slice(right);
-    *blake3::hash(&buf).as_bytes()
-}
 
 /// SIMD-batch independent standard BLAKE3 hashes of contiguous `N`-byte
 /// inputs. A whole-block input no longer than 1024 bytes is exactly one chunk;
@@ -255,293 +216,6 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
 
     // SAFETY: leaves and each successive internal level initialize the full tree.
     unsafe { zk_alloc::assume_init(tree) }
-}
-
-// ---------------------------------------------------------------------------
-// Merkle path opening and verification.
-// ---------------------------------------------------------------------------
-
-/// Verify a Merkle opening: recomputes the root from `leaf_hash`, the path,
-/// and the leaf index. Returns true iff the recomputed root matches `root`.
-/// The opening paths go through [`verify_merkle_multi_proof`] /
-/// [`restore_multi_proof`]; this single-path form is the tests' oracle.
-#[cfg(test)]
-fn verify_merkle_proof(root: &Hash, leaf_hash: &Hash, index: usize, proof: &[Hash]) -> bool {
-    let mut acc = *leaf_hash;
-    let mut idx = index;
-    for sibling in proof {
-        // If idx is even, our node is the LEFT child; sibling is on the RIGHT.
-        let (left, right) = if idx & 1 == 0 { (acc, *sibling) } else { (*sibling, acc) };
-        acc = hash_pair(&left, &right);
-        idx >>= 1;
-    }
-    &acc == root
-}
-
-// ---------------------------------------------------------------------------
-// Multi-proof (Octopus / batched opening): one shared proof for multiple leaf
-// positions, deduplicating siblings that lie on multiple paths.
-// ---------------------------------------------------------------------------
-
-/// Build a Merkle multi-proof for `positions`. Returns the sibling hashes
-/// needed to verify ALL positions against the root, in the canonical
-/// bottom-up sorted-by-position traversal order.
-///
-/// `positions` need not be sorted or unique; the function sorts + dedupes
-/// internally. For `q` queries in a tree of depth `d`, the output is at
-/// most `q · d` hashes (matching `q` independent paths) and typically much
-/// smaller (siblings shared across multiple paths are emitted once).
-///
-/// Verify by expanding with [`restore_multi_proof`] and recomputing the root
-/// from each restored path.
-pub fn merkle_multi_proof(tree: &[Hash], num_leaves: usize, positions: &[usize]) -> Vec<Hash> {
-    assert!(num_leaves.is_power_of_two() && num_leaves > 0);
-    assert_eq!(tree.len(), 2 * num_leaves - 1);
-
-    if positions.is_empty() || num_leaves == 1 {
-        return Vec::new();
-    }
-
-    let mut active: Vec<usize> = positions.to_vec();
-    active.sort_unstable();
-    active.dedup();
-    debug_assert!(active.iter().all(|&p| p < num_leaves));
-
-    let mut proof = Vec::new();
-    let mut level_start = 0usize;
-    let mut level_len = num_leaves;
-
-    while level_len > 1 {
-        let mut next = Vec::with_capacity(active.len());
-        let mut i = 0;
-        while i < active.len() {
-            let p = active[i];
-            let sib_active = i + 1 < active.len() && active[i + 1] == (p ^ 1);
-            if sib_active {
-                // Both children active, so no sibling hash is needed; both fold
-                // into the same parent.
-                i += 2;
-            } else {
-                // Sibling not in active set; emit it.
-                proof.push(tree[level_start + (p ^ 1)]);
-                i += 1;
-            }
-            next.push(p >> 1);
-        }
-        // `next` is sorted-unique by construction: the input was sorted-unique;
-        // consecutive sibling pairs (handled above) collapse to one; otherwise
-        // p >> 1 preserves strict ordering.
-        active = next;
-        level_start += level_len;
-        level_len >>= 1;
-    }
-
-    proof
-}
-
-/// Verify a Merkle multi-proof produced by [`merkle_multi_proof`].
-///
-/// `sorted_unique_positions` and `leaf_hashes` must be aligned and sorted:
-/// `leaf_hashes[i]` is the hash of the leaf at `sorted_unique_positions[i]`,
-/// and the position list is strictly ascending. Returns true iff the
-/// reconstructed root equals `root` and the proof is consumed exactly.
-pub fn verify_merkle_multi_proof(
-    root: &Hash,
-    num_leaves: usize,
-    sorted_unique_positions: &[usize],
-    leaf_hashes: &[Hash],
-    proof: &[Hash],
-) -> bool {
-    if !num_leaves.is_power_of_two() || num_leaves == 0 {
-        return false;
-    }
-    if sorted_unique_positions.len() != leaf_hashes.len() {
-        return false;
-    }
-    if sorted_unique_positions.is_empty() {
-        // Vacuous; nothing to verify. Treat as "ok" iff the proof is empty.
-        return proof.is_empty();
-    }
-    // Verify the position list is sorted strictly ascending + in range.
-    for (i, &p) in sorted_unique_positions.iter().enumerate() {
-        if p >= num_leaves {
-            return false;
-        }
-        if i > 0 && sorted_unique_positions[i - 1] >= p {
-            return false;
-        }
-    }
-    // Edge case: 1-leaf tree, no proof needed.
-    if num_leaves == 1 {
-        return proof.is_empty() && leaf_hashes[0] == *root;
-    }
-
-    let mut active: Vec<(usize, Hash)> = sorted_unique_positions
-        .iter()
-        .copied()
-        .zip(leaf_hashes.iter().copied())
-        .collect();
-    let mut proof_iter = proof.iter().copied();
-    let mut level_len = num_leaves;
-
-    while level_len > 1 {
-        let mut next = Vec::with_capacity(active.len());
-        let mut i = 0;
-        while i < active.len() {
-            let (p, h) = active[i];
-            let sib_active = i + 1 < active.len() && active[i + 1].0 == (p ^ 1);
-            let (left, right) = if sib_active {
-                let (_, h_sib) = active[i + 1];
-                // Sorted strictly ascending → active[i+1].0 = p + 1 (= p ^ 1
-                // since p is even when p ^ 1 = p + 1). So p is LEFT child.
-                debug_assert_eq!(p & 1, 0);
-                i += 2;
-                (h, h_sib)
-            } else {
-                let sib = match proof_iter.next() {
-                    Some(s) => s,
-                    None => return false,
-                };
-                i += 1;
-                if p & 1 == 0 { (h, sib) } else { (sib, h) }
-            };
-            next.push((p >> 1, hash_pair(&left, &right)));
-        }
-        active = next;
-        level_len >>= 1;
-    }
-
-    // After the loop, `active` has exactly one element (the root). Reject
-    // any leftover proof bytes.
-    if proof_iter.next().is_some() {
-        return false;
-    }
-    active.len() == 1 && active[0].1 == *root
-}
-
-/// Reconstruct the full per-query Merkle paths from a *pruned* (octopus) proof,
-/// the inverse of [`merkle_multi_proof`]. Given the ORIGINAL `queries` (unsorted,
-/// possibly duplicate), the distinct leaves' hashes (`leaf_hashes`, aligned with
-/// the sorted-unique query set), and the pruned `sibling_hashes`, it rebuilds for
-/// each query its full `log2(num_leaves)`-sibling path: the *expanded* form a
-/// recursion-friendly single-path root recomputation consumes. Returns the paths
-/// concatenated flat (one `height`-long path per query, in query order), or `None`
-/// on any inconsistency (wrong sibling count, unresolvable node). It authenticates
-/// nothing itself; the caller verifies each restored path against the root.
-pub fn restore_multi_proof(
-    num_leaves: usize,
-    queries: &[usize],
-    leaf_hashes: &[Hash],
-    sibling_hashes: &[Hash],
-) -> Option<Vec<Hash>> {
-    if !num_leaves.is_power_of_two() || num_leaves == 0 {
-        return None;
-    }
-    let height = num_leaves.trailing_zeros() as usize;
-    let mut sorted: Vec<usize> = queries.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    if sorted.len() != leaf_hashes.len() || sorted.last().is_some_and(|&p| p >= num_leaves) {
-        return None;
-    }
-    // Rebuild every tree node on the query paths bottom-up, pulling a pruned
-    // sibling only where that sibling is not itself a queried subtree (which we
-    // just computed). `known[lvl]` records the nodes present at each level.
-    let mut supplied = sibling_hashes.iter();
-    let mut known: Vec<Vec<(usize, Hash)>> = Vec::with_capacity(height);
-    let mut nodes: Vec<(usize, Hash)> = sorted.iter().copied().zip(leaf_hashes.iter().copied()).collect();
-    for _ in 0..height {
-        let mut level = Vec::with_capacity(2 * nodes.len());
-        let mut parents = Vec::with_capacity(nodes.len());
-        let mut i = 0;
-        while i < nodes.len() {
-            let idx = nodes[i].0;
-            let paired = idx & 1 == 0 && nodes.get(i + 1).is_some_and(|&(j, _)| j == (idx | 1));
-            let (left, right) = if paired {
-                (nodes[i].1, nodes[i + 1].1)
-            } else if idx & 1 == 0 {
-                (nodes[i].1, *supplied.next()?)
-            } else {
-                (*supplied.next()?, nodes[i].1)
-            };
-            parents.push((idx >> 1, hash_pair(&left, &right)));
-            level.push((idx & !1, left));
-            level.push((idx | 1, right));
-            i += if paired { 2 } else { 1 };
-        }
-        known.push(level);
-        nodes = parents;
-    }
-    if supplied.next().is_some() {
-        return None; // extra siblings ⇒ malformed proof
-    }
-    // Read each distinct leaf's full sibling path out of the reconstructed levels.
-    let per_distinct: Vec<Vec<Hash>> = sorted
-        .iter()
-        .map(|&leaf| {
-            (0..height)
-                .map(|lvl| {
-                    let sib = (leaf >> lvl) ^ 1;
-                    let level = &known[lvl];
-                    level
-                        .binary_search_by_key(&sib, |&(j, _)| j)
-                        .ok()
-                        .map(|pos| level[pos].1)
-                })
-                .collect::<Option<Vec<_>>>()
-        })
-        .collect::<Option<Vec<_>>>()?;
-    // Fan back out to the original (unsorted, possibly duplicate) query order.
-    let mut out = Vec::with_capacity(queries.len() * height);
-    for &q in queries {
-        let slot = sorted.binary_search(&q).ok()?;
-        out.extend_from_slice(&per_distinct[slot]);
-    }
-    Some(out)
-}
-
-#[cfg(test)]
-mod prune_tests {
-    use super::*;
-
-    /// `merkle_multi_proof` (prune) then `restore_multi_proof` (expand) reproduces
-    /// each query's full path, and every restored path authenticates to the root,
-    /// including unsorted, duplicate queries. Extra siblings are rejected.
-    #[test]
-    fn prune_restore_roundtrip() {
-        let num_leaves = 8usize;
-        let leaf_size = 4usize;
-        let height = 3usize;
-        let data: Vec<u8> = (0..(num_leaves * leaf_size) as u8).collect();
-        let tree = merkle_tree(&data, num_leaves);
-        let root = tree[tree.len() - 1];
-
-        let queries = [5usize, 1, 5, 3, 1]; // unsorted, with duplicates
-        let mut sorted = queries.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup(); // [1, 3, 5]
-        let leaf_hashes: Vec<Hash> = sorted
-            .iter()
-            .map(|&q| hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size]))
-            .collect();
-
-        let pruned = merkle_multi_proof(&tree, num_leaves, &sorted);
-        let flat = restore_multi_proof(num_leaves, &queries, &leaf_hashes, &pruned).expect("restore");
-        assert_eq!(flat.len(), queries.len() * height);
-        for (i, &q) in queries.iter().enumerate() {
-            let leaf = hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size]);
-            let path = &flat[i * height..(i + 1) * height];
-            assert!(
-                verify_merkle_proof(&root, &leaf, q, path),
-                "restored path for query {q} (pos {i}) must verify"
-            );
-        }
-
-        // An extra (unconsumed) sibling is a malformed proof.
-        let mut extra = pruned.clone();
-        extra.push([0u8; 32]);
-        assert!(restore_multi_proof(num_leaves, &queries, &leaf_hashes, &extra).is_none());
-    }
 }
 
 #[cfg(test)]

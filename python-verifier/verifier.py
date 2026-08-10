@@ -525,46 +525,57 @@ class BinaryReader:
 
 
 @dataclass(frozen=True)
-class MerklePaths:
-    """One opening phase: the leaf words opened at each queried position, and the
-    octopus authenticating them.
+class MerkleOpening:
+    """One query's opening: its leaf words and the full sibling path to the root.
 
     A leaf is its raw K words, which is what the committer hashed, so an E-valued
     row of width `w` arrives as `3w` of them and is regrouped by the reader.
+    Unpruned: two queries of the same phase repeat whatever siblings they share,
+    which is what makes checking one a walk up one path.
     """
 
-    leaf_data: tuple[tuple[K, ...], ...]
-    sibling_hashes: tuple[Digest, ...]
+    leaf_data: tuple[K, ...]
+    path: tuple[Digest, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> MerklePaths:
-        row_count = reader.u64()
-        require(row_count <= reader.remaining // 8, "invalid opened-row count")
-        return cls(tuple(tuple(reader.base_fields()) for _ in range(row_count)), reader.hashes())
+    def read(cls, reader: BinaryReader) -> MerkleOpening:
+        return cls(tuple(reader.base_fields()), reader.hashes())
+
+    def root(self, leaf_index: int) -> Digest:
+        """The root this opening claims, recomputed from its leaf and path."""
+        node = _row_hash(self.leaf_data)
+        for sibling in self.path:
+            node = _hash_pair(node, sibling) if leaf_index & 1 == 0 else _hash_pair(sibling, node)
+            leaf_index >>= 1
+        return node
 
 
 @dataclass(frozen=True)
 class Proof:
-    """The two channels: every transmitted scalar, and one entry per opening phase.
+    """The two channels: every transmitted scalar, and one Merkle opening per query.
+
+    This is the RAW proof, the redundant encoding. What travels over the wire
+    prunes each phase to a single octopus over its whole query batch; a Rust
+    verifier run expands that back out, and this file (like the recursion guest)
+    reads the expansion. Same protocol, same checks, no dedup bookkeeping.
 
     Nothing here names WHIR. Its sumcheck messages, level roots, OOD claims,
     residual and grinding nonces are ordinary stream words read in protocol
-    order by `verify_whir`; its per-level Merkle data is one phase each, pulled
-    in the order the phases ran.
+    order by `verify_whir`; its openings are pulled a query batch at a time.
     """
 
     stream: tuple[E, ...]
-    merkle_paths: tuple[MerklePaths, ...]
+    merkle_openings: tuple[MerkleOpening, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> Proof:
         reader = BinaryReader(data)
         stream = tuple(reader.fields())
         count = reader.u64()
-        require(count <= 64, "too many opening phases")
-        merkle_paths = tuple(MerklePaths.read(reader) for _ in range(count))
+        require(count <= reader.remaining // 16, "invalid opening count")
+        merkle_openings = tuple(MerkleOpening.read(reader) for _ in range(count))
         reader.finish()
-        return cls(stream, merkle_paths)
+        return cls(stream, merkle_openings)
 
     @classmethod
     def load(cls, path: str | Path) -> Proof:
@@ -601,7 +612,7 @@ class Transcript:
         self.proof = proof
         self.state = (0, 0, 0, 0)
         self.stream_offset = 0
-        self.phase_offset = 0
+        self.opening_offset = 0
         self.absorb_bytes(b"leanvm-b/transcript/v2")
         self.absorb_bytes(label)
         for value in statement:
@@ -654,16 +665,30 @@ class Transcript:
         self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")
 
-    def merkle(self) -> MerklePaths:
-        """Pull the next opening phase. Not absorbed: its binding is the Merkle structure."""
-        require(self.phase_offset < len(self.proof.merkle_paths), "opening phase missing")
-        result = self.proof.merkle_paths[self.phase_offset]
-        self.phase_offset += 1
-        return result
+    def merkle(self, root: Digest, block_length: int, queries: Sequence[int], leaf_words: int) -> list[tuple[K, ...]]:
+        """Pull one opening per query and authenticate each against `root`.
+
+        Not absorbed: an opening's binding is the Merkle structure itself, which
+        is checked here rather than by the sponge. Returns the rows in query
+        order, so a repeated position simply re-opens the same authenticated row.
+        """
+        height = block_length.bit_length() - 1
+        require(block_length == 2**height, "invalid Merkle leaf count")
+        rows = []
+        for query in queries:
+            require(self.opening_offset < len(self.proof.merkle_openings), "Merkle opening missing")
+            opening = self.proof.merkle_openings[self.opening_offset]
+            self.opening_offset += 1
+            require(0 <= query < block_length, "Merkle query is out of range")
+            require(len(opening.leaf_data) == leaf_words, "opened row has the wrong width")
+            require(len(opening.path) == height, "Merkle path has the wrong length")
+            require(opening.root(query) == root, "Merkle root mismatch")
+            rows.append(opening.leaf_data)
+        return rows
 
     def finish(self) -> None:
         require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
-        require(self.phase_offset == len(self.proof.merkle_paths), "opening phases not fully consumed")
+        require(self.opening_offset == len(self.proof.merkle_openings), "Merkle openings not fully consumed")
 
 
 # GKR product triple ---------------------------------------------------------
@@ -1601,47 +1626,6 @@ def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
     return tuple(E(*words[i : i + 3]) for i in range(0, len(words), 3))
 
 
-def authenticate_rows(
-    root: Digest,
-    leaf_count: int,
-    queries: Sequence[int],
-    rows: Sequence[Sequence[K]],
-    row_width: int,
-    octopus: Sequence[Digest],
-) -> list[Sequence[K]]:
-    """Authenticate a compressed multiproof and restore transcript row order."""
-    require(leaf_count > 0 and leaf_count & (leaf_count - 1) == 0, "invalid Merkle leaf count")
-    unique = sorted(set(queries))
-    require(len(unique) == len(rows), f"opened-row count {len(rows)} does not match {len(unique)} distinct queries")
-    require(all(0 <= q < leaf_count for q in unique), "Merkle query is out of range")
-    require(all(len(row) == row_width for row in rows), "opened row has the wrong width")
-
-    nodes = [(index, _row_hash(row)) for index, row in zip(unique, rows, strict=True)]
-    supplied = iter(octopus)
-    for _ in range(leaf_count.bit_length() - 1):
-        parents: list[tuple[int, Digest]] = []
-        cursor = 0
-        while cursor < len(nodes):
-            index, value = nodes[cursor]
-            paired = index & 1 == 0 and cursor + 1 < len(nodes) and nodes[cursor + 1][0] == index + 1
-            if paired:
-                left, right = value, nodes[cursor + 1][1]
-                cursor += 2
-            else:
-                sibling = next(supplied, None)
-                if sibling is None:
-                    raise VerificationError("truncated Merkle multiproof")
-                left, right = (value, sibling) if index & 1 == 0 else (sibling, value)
-                cursor += 1
-            parents.append((index >> 1, _hash_pair(left, right)))
-        nodes = parents
-    require(len(nodes) == 1 and nodes[0] == (0, root), "Merkle root mismatch")
-    require(next(supplied, None) is None, "Merkle multiproof has trailing nodes")
-
-    by_query = dict(zip(unique, rows, strict=True))
-    return [by_query[q] for q in queries]
-
-
 def sample_queries(transcript: Transcript, block_length: int, count: int) -> list[int]:
     depth = block_length.bit_length() - 1
     require(block_length == 2**depth and 0 < depth <= 192, "invalid query domain")
@@ -1800,16 +1784,8 @@ def verify_whir(
         # Level 0 committed the K witness, one leaf word per lane; every deeper
         # level a folded E one, three words per lane.
         lanes = 2**fold_count
-        opened = transcript.merkle()
         try:
-            words = authenticate_rows(
-                current_root,
-                block_length,
-                queries,
-                opened.leaf_data,
-                lanes if level == 0 else 3 * lanes,
-                opened.sibling_hashes,
-            )
+            words = transcript.merkle(current_root, block_length, queries, lanes if level == 0 else 3 * lanes)
         except VerificationError as exc:
             raise VerificationError(f"WHIR level {level}: {exc}") from exc
         rows: list[Sequence[K | E]] = list(words) if level == 0 else [_ext_row(row) for row in words]

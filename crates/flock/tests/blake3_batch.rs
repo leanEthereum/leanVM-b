@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use fiat_shamir::transcript::{ProverState, VerifierState};
+use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
 use flock::blake3::{
     Blake3Setup, Compression, K_LOG, PackedWitnessClaims, generate_witness_with_ab_packed_and_lincheck,
     min_n_blocks_log, pinned_compression,
@@ -151,7 +151,7 @@ fn blake3_batch_prove_verify() {
 
         let t = Instant::now();
         let (commitment, prover_data) = commit(&q_flock, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
-        ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
+        ps.add_root(&commitment.root);
         let commit_s = t.elapsed().as_secs_f64();
 
         let t = Instant::now();
@@ -187,11 +187,13 @@ fn blake3_batch_prove_verify() {
 
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
         let mut vs = VerifierState::new(b"flock-blake3-batch", &transcript, &[]);
-        let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
+        let root = vs.next_root().expect("commitment root");
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = verifier_ring(&replay.ab, &replay.c, &replay.lc_claim.s_hat_v, mu);
-        verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring)
-            .expect("stacked PCS opening verifies");
+        assert!(
+            verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring),
+            "stacked PCS opening verifies"
+        );
         vs.finish().expect("transcript fully consumed");
     });
 

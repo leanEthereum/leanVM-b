@@ -15,11 +15,10 @@
 //! ingredient is sampled from `E` with the same error terms as before.
 
 use crate::transcript::{ProverState, VerifierState};
+use fiat_shamir::transcript::{Receiver, Transmitter};
 use primitives::field::F64;
 
-pub use ::pcs::stack_open::{
-    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim, StackedOpeningSummary,
-};
+pub use ::pcs::stack_open::{RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim};
 use ::pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
 use ::pcs::whir::{Commitment, ProverData, commit as whir_commit, configs_for_rate};
 use ::pcs::whir::{ProverConfig, VerifierConfig};
@@ -92,7 +91,7 @@ pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Com
         "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
     );
     let (commitment, prover_data) = whir_commit(witness, LOG_BATCH, log_inv_rate);
-    ps.add_scalars(&::pcs::merkle::hash_to_scalars(&commitment.root));
+    ps.add_root(&commitment.root);
     Committed {
         commitment,
         prover_data,
@@ -110,11 +109,7 @@ pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Com
 /// Verifier counterpart of [`commit`]'s root binding: read the committed root
 /// from the stream at the start of verification, before sampling any challenge.
 pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transcript::Error> {
-    let root_s = vs.next_scalars(2)?;
-    if root_s.iter().any(|word| word.c2 != 0) {
-        return Err(crate::transcript::Error::NonCanonicalEncoding);
-    }
-    Ok(::pcs::merkle::scalars_to_hash(&root_s))
+    vs.next_root()
 }
 
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
@@ -143,7 +138,9 @@ pub fn verify(
     mu: usize,
     log_inv_rate: usize,
     root: &[u8; 32],
-) -> Result<StackedOpeningSummary, Error> {
+) -> Result<(), Error> {
     let cfg = whir_configs(mu, log_inv_rate);
-    verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, mu, root, points, ring).ok_or(Error::Whir)
+    verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, mu, root, points, ring)
+        .then_some(())
+        .ok_or(Error::Whir)
 }

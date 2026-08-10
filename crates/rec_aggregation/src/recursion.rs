@@ -870,8 +870,6 @@ fn gen_verify(
     let (vcfg, shapes) = (&stack.config, &stack.levels);
     let nlev = shapes.levels;
     let klvl = &shapes.ks;
-    let queries = &vcfg.queries;
-    let (depth, per) = (&stack.depth, &stack.per_squeeze);
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
     // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
@@ -900,7 +898,6 @@ fn gen_verify(
     pinw *= lcz[pincol % 64];
     let matpart = lrun + pinw;
 
-    let whir_raw = summary.opening.lig.query_squeezes.clone();
     // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
     // per the config schedule) then ONE query-phase
     // grind. The nonces themselves ride the shared stream now (raw words);
@@ -966,49 +963,16 @@ fn gen_verify(
     let log_mem = proof.stream[0].c0 as usize;
 
     // ---- Phase E2 hints (the stacked WHIR opening) ----
-    let numinter: Vec<usize> = klvl.iter().map(|&k| 1usize << k).collect();
     let lenris: usize = klvl.iter().sum();
-    // positions per level from the packed squeezes.
-    let positions: Vec<Vec<usize>> = (0..nlev)
-        .map(|lv| {
-            let d = depth[lv];
-            let mut out = Vec::with_capacity(queries[lv]);
-            for v in &whir_raw[lv] {
-                for j in 0..per[lv].min(queries[lv] - out.len()) {
-                    let off = j * d;
-                    let limbs = [v.c0, v.c1, v.c2];
-                    let (li, sh) = (off / 64, off % 64);
-                    let mut chunk = limbs[li] >> sh;
-                    if sh + d > 64 {
-                        chunk |= limbs[li + 1] << (64 - sh);
-                    }
-                    out.push(chunk as usize & (shapes.block_len[lv] - 1));
-                }
-            }
-            out
-        })
-        .collect();
-    // One Merkle phase per level, in level order. A leaf is its `F64` words, so
-    // both shapes flatten the same way: level 0 commits one word per interleaved
-    // K value, every later level three per `E` value, which is exactly the
-    // 24-byte preimage the guest re-hashes before reconstructing the field value.
+    // The verifier already authenticated every queried row and expanded the
+    // pruned phases into one full path per query, in level order. The guest
+    // re-hashes exactly that: a leaf is its `F64` words (one per interleaved K
+    // value at level 0, three per `E` value deeper), then a walk up the path.
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
-    for lv in 0..nlev {
-        let leaf_words = if lv == 0 { numinter[lv] } else { 3 * numinter[lv] };
-        let (rows_exp, path_exp) = pcs::whir::expand_level_opening(
-            shapes.block_len[lv],
-            &positions[lv],
-            &proof.merkle_paths[lv],
-            leaf_words,
-        )
-        .expect("expand stacked opening level");
-        for row in &rows_exp {
-            for &x in row {
-                lrows_flat.push(F192::new(x.0, 0, 0));
-            }
-        }
-        for &h in &path_exp {
-            lpaths_flat.extend_from_slice(&pack_hash_state(&h));
+    for opening in &summary.raw.merkle_openings {
+        lrows_flat.extend(opening.leaf_data.iter().map(|x| F192::new(x.0, 0, 0)));
+        for h in &opening.path {
+            lpaths_flat.extend_from_slice(&pack_hash_state(h));
         }
     }
     // claim descriptors, in exact clv order.
