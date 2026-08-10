@@ -1,0 +1,228 @@
+% Build with: latexmk -pdf main.tex
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[section]
+\theoremstyle{remark}
+\newtheorem{remark}[definition]{Remark}
+
+\newcommand{\bits}[1]{\{0,1\}^{#1}}
+\newcommand{\getsr}{\stackrel{\$}{\gets}}
+\newcommand{\Th}{\mathsf{TH}}
+\newcommand{\IncEnc}{\mathsf{IncEnc}}
+\newcommand{\Gen}{\mathsf{Gen}}
+\newcommand{\Sig}{\mathsf{Sig}}
+\newcommand{\Ver}{\mathsf{Ver}}
+\newcommand{\SIG}{\mathsf{SIG}}
+\newcommand{\Chain}{\mathsf{Chain}}
+\newcommand{\hash}{\mathsf{H}}
+\newcommand{\LE}{\mathsf{LE}}
+\newcommand{\Trunc}{\mathsf{Trunc}}
+\newcommand{\concat}{\mathbin\Vert}
+\newcommand{\ep}{\mathit{ep}}
+\newcommand{\sk}{\mathit{sk}}
+\newcommand{\pk}{\mathit{pk}}
+\newcommand{\rootnode}{\mathit{root}}
+
+\emergencystretch=1.5em
+
+\title{XMSS for Ethereum consensus, specification draft.}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS, the signature scheme used by Ethereum validators. Aggregating XMSS requires a post-quantum snark. This technical note specifies an optimized XMSS instance with the following properties:
+\begin{itemize}
+  \item \textbf{NIST security level~1~} \cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, when the hash function is modelled as a (resp. quantum) random oracle.\footnote{The security proof is not yet complete.}
+  \item \textbf{public key: 32 bytes}.
+  \item \textbf{signature: 1208 bytes} (smaller than the 1280-byte IPv6 MTU~\cite{RFC8200}).
+  \item snark-friendly encoding, optimized for aggregation via leanVM-b~\cite{leanVMb}, requiring 15 bits of grinding on average.
+  \item 133 hashes per vefication.
+\end{itemize}
+\end{abstract}
+
+\section{Definitions and notation}
+
+\begin{definition}[Synchronized signature scheme]
+A synchronized signature scheme with lifetime $L$ is a tuple $\SIG=(\Gen,\Sig,\Ver)$, where $\Gen$ and $\Sig$ are randomized and $\Ver$ is deterministic:
+\[
+  \Gen\longrightarrow(\pk,\sk),\qquad
+  \Sig(\sk,\ep,m)\longrightarrow\sigma\in\Sigma\cup\{\bot\},\qquad
+  \Ver(\pk,\ep,m,\sigma)\longrightarrow\{0,1\},
+\]
+where $\Sigma$ is the signature space, $m\in\bits{\ell_{\mathrm{msg}}}$, and $\ep\in\{0,\ldots,L-1\}$. Whenever $(\pk,\sk)$ is output by $\Gen$ and $\Sig(\sk,\ep,m)$ returns $\sigma\neq\bot$, correctness requires $\Ver(\pk,\ep,m,\sigma)=1$. For each key pair, $\Sig(\sk,\ep,\cdot)$ may be invoked at most once for any fixed epoch $\ep$.
+\end{definition}
+
+XMSS is a synchronized signature scheme in which epoch $\ep$ selects a Winternitz one-time key authenticated by leaf $\ep$ of a Merkle tree~\cite{RFC8391}. This specification sets $\ell_{\mathrm{msg}}=256$ and $L=2^h=2^{32}$.
+
+Byte strings are concatenated with $\concat$. Bits and integer encodings are little endian. $\LE_r(a)$ is the unsigned $r$-bit encoding of $a$. All indices are zero based.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Symbol & Value & Meaning\\
+\midrule
+$n$ & $128$ bits & hash value and Merkle node length\\
+$|P|$ & $128$ bits & public hash parameter length\\
+$|m|$ & $256$ bits & message length\\
+$|\rho|$ & $192$ bits & encoding randomness length\\
+$w$ & $3$ & log-length of Winternitz chains\\
+$v$ & $42$ & number of Winternitz chains\\
+$T$ & $195$ & required encoding digit sum\\
+$h$ & $32$ & Merkle tree height\\
+$L$ & $2^{32}$ & lifetime\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Let $\hash:\bits{*}\to\bits{256}$ be a cryptographic hash function, and let $\Trunc_n$ keep the first $n$ output bits. Define
+\[
+  \Th(P,T,M)=\Trunc_n\!\left(\hash(T\concat P\concat M)\right).
+\]
+
+\begin{definition}[Tweak encoding]
+For a one-byte type $t$ and unsigned 32-bit integers $p$ and $j$, define the 16-byte tweak
+\[
+  \mathsf{enc}(t,p,j)=\LE_8(t)\concat\LE_{32}(p)\concat\LE_{32}(j)\concat 0^{56}.
+\]
+\end{definition}
+
+Define
+\[
+\begin{aligned}
+  \mathsf{tweak}(\ep,i,k) &= \mathsf{enc}(0,2^wi+k-1,\ep),\\
+  \mathsf{tweak}_{\mathrm{pkwots}}(\ep) &= \mathsf{enc}(1,0,\ep),\\
+  \mathsf{tweak}_{\mathrm{mt}}(\ell,j) &= \mathsf{enc}(2,\ell,j),\\
+  \mathsf{tweak}_{\mathrm{enc}}(\ep) &= \mathsf{enc}(3,0,\ep).
+\end{aligned}
+\]
+
+The target-sum code is~\cite{DKKW25}
+\[
+  \mathcal C=\left\{(x_0,\ldots,x_{v-1})\in\{0,\ldots,2^w - 1\}^{v}:\sum_{i=0}^{v-1}x_i=T\right\}.
+\]
+Define $\IncEnc(P,m,\rho,\ep)$ by computing
+\[
+  D=\Th\!\left(P,\mathsf{tweak}_{\mathrm{enc}}(\ep),m\concat\rho\concat 0^{64}\right).
+\]
+Write $D=D_0\concat D_1$, where $D_0$ and $D_1$ are $n/2$-bit strings. For $q\in\{0,1\}$, let $d_q\in\{0,\ldots,2^{n/2}-1\}$ be the integer whose $n/2$-bit little-endian encoding is $D_q$. For $0\leq r<v/2$, set
+\[
+  x_{qv/2+r}=\left\lfloor\frac{d_q}{2^{wr}}\right\rfloor\bmod 2^w.
+\]
+Return $x=(x_0,\ldots,x_{v-1})$ if bit $wv/2$ of both $d_0$ and $d_1$ is zero and $\sum_i x_i=T$; otherwise return $\bot$.
+
+\begin{definition}[Hash chain]
+For a chain index $i$, epoch $\ep$, starting position $k$, step count $a$, and value $z\in\bits{n}$, define $\Chain_{\Th,i,\ep}(P,k,a,z)$ recursively by
+\[
+  \Chain_{\Th,i,\ep}(P,k,0,z)=z
+\]
+and, when $k+a<2^w-1$,
+\[
+  \Chain_{\Th,i,\ep}(P,k,a+1,z)=\Th\!\left(P,\mathsf{tweak}(\ep,i,k+a+1),\Chain_{\Th,i,\ep}(P,k,a,z)\right).
+\]
+The valid range is $0\leq k\leq2^w-1$ and $0\leq a\leq2^w-1-k$.
+\end{definition}
+
+The one-time public key and its Merkle leaf are
+\[
+\begin{aligned}
+  \mathit{pk}_{\ep,i} &= \Chain_{\Th,i,\ep}(P,0,2^w-1,\mathit{sk}_{\ep,i}), &&0\leq i<v,\\
+  Q_{\ep} &= \Th\!\left(P,\mathsf{tweak}_{\mathrm{pkwots}}(\ep),\mathit{pk}_{\ep,0}\concat\cdots\concat\mathit{pk}_{\ep,v-1}\right).
+\end{aligned}
+\]
+
+\section{Key generation}
+
+The algorithm $\Gen$ independently samples $P\getsr\bits{n}$ and $\mathit{sk}_{\ep,i}\getsr\bits{n}$ for $0\leq\ep<L$ and $0\leq i<v$. Define
+\[
+  X_{0,j}=Q_j,
+  \qquad 0\leq j<L.
+\]
+For $1\leq\ell\leq h$, define
+\[
+  X_{\ell,j}=\Th\!\left(P,\mathsf{tweak}_{\mathrm{mt}}(\ell,j),X_{\ell-1,2j}\concat X_{\ell-1,2j+1}\right),
+  \qquad 0\leq j<2^{h-\ell}.
+\]
+Set $\rootnode=X_{h,0}$ and return
+\[
+  \pk=(\rootnode,P),
+  \qquad
+  \sk=\left(P,(\mathit{sk}_{\ep,i})_{0\leq\ep<L,\,0\leq i<v}\right).
+\]
+The sampled secret values may instead be generated from a master secret using a pseudorandom function. The public key is serialized as $\rootnode\concat P$.
+
+\begin{remark}[Restricted key generation]
+Key generation may be restricted to a smaller interval of epochs by replacing subtrees outside that interval with random nodes. The resulting key signs only epochs in that interval.
+\end{remark}
+
+\section{Signing}
+
+$\Sig(\sk,\ep,m)$ returns $\bot$ if epoch $\ep$ has already been used and otherwise marks it used. It independently samples $\rho\getsr\bits{192}$ until $x=\IncEnc(P,m,\rho,\ep)\neq\bot$, then computes
+\[
+  \sigma_{\mathrm{OTS},i}=\Chain_{\Th,i,\ep}(P,0,x_i,\mathit{sk}_{\ep,i}),
+  \qquad 0\leq i<v,
+\]
+and the authentication path
+\[
+  A_\ell=X_{\ell,\,\left\lfloor\ep/2^\ell\right\rfloor\mathbin{\mathsf{xor}}1},
+  \qquad 0\leq\ell<h.
+\]
+It returns
+\[
+  \sigma=(\rho,\sigma_{\mathrm{OTS}},\mathit{path}_{\ep}),
+  \qquad
+  \mathit{path}_{\ep}=(A_0,\ldots,A_{h-1}).
+\]
+$\Sig$ is not guaranteed to terminate, but after $2^{23}$ attempts a valid encoding should have been found except with probability less than $2^{-256}$ when $\hash$ is modeled as a random oracle.
+
+\section{Verification}
+
+$\Ver(\pk,\ep,m,\bot)=0$. For $\sigma\neq\bot$, $\Ver(\pk,\ep,m,\sigma)$ parses $\pk=(\rootnode,P)$ and $\sigma=(\rho,(y_i)_i,(A_\ell)_\ell)$, then:
+\begin{enumerate}[leftmargin=2em]
+\item Compute $x=\IncEnc(P,m,\rho,\ep)$ and reject if $x=\bot$.
+\item For every $0\leq i<v$, compute $\mathit{pk}'_{\ep,i}=\Chain_{\Th,i,\ep}(P,x_i,2^w-1-x_i,y_i)$.
+\item Set $Z_0=\Th(P,\mathsf{tweak}_{\mathrm{pkwots}}(\ep),\mathit{pk}'_{\ep,0}\concat\cdots\concat\mathit{pk}'_{\ep,v-1})$.
+\item For $0\leq\ell<h$, let $j=\lfloor\ep/2^{\ell+1}\rfloor$. If bit $\ell$ of $\ep$ is zero, set $Z_{\ell+1}=\Th(P,\mathsf{tweak}_{\mathrm{mt}}(\ell+1,j),Z_\ell\concat A_\ell)$; otherwise set $Z_{\ell+1}=\Th(P,\mathsf{tweak}_{\mathrm{mt}}(\ell+1,j),A_\ell\concat Z_\ell)$.
+\item Accept if and only if $Z_h=\rootnode$.
+\end{enumerate}
+
+\section{Security}
+
+\subsection{Classical security}
+
+The tight classical ROM proof for XMSS as specified in RFC~8391 (with checksum) loses the logarithm of the Winternitz $w=3$ bits of security~\cite{BDGHMS23}, and hence gives about 125 bits of classical security. That proof does not cover our target-sum encoding. Further work is needed to translate the proof to our construction.
+\vspace{5mm}
+
+As a side note, we expect a tighter (fully ROM-based) analysis to give  $\geq 127$ bits security. \textbf{TODO: prove it.}
+
+\subsection{Quantum security}
+
+If $\hash$ is modeled as a quantum-accessible random oracle, we claim NIST security category~1 (i.e. $\approx 64$ bits od quantum security), subject to the caveats below. Indeed, FIPS~205 assigns category~1 to the SLH-DSA parameter sets with a 128-bit hash digest~\cite{FIPS205}. The security proof for the XMSS layers of SPHINCS+ applies to random messages~\cite{HK22}. We then apply the reduction of a chosen-message forgery to a random-message forgery from \cite{GHHM21}.
+
+This claim has two caveats:
+\begin{enumerate}[leftmargin=2em]
+\item The reduction is not lossless. Since $\ep$ is included in $\mathsf{tweak}_{\mathrm{enc}}(\ep)$, the indexed XMSS bound of~\cite{GHHM21} is the relevant one. An adversary making at most $q_s$ signing queries and $q_H$ quantum random-oracle queries adds
+\[
+  \frac{8(q_s+q_H)^2}{2^{128}}+\frac{3q_s}{2}\sqrt{\frac{q_H+q_s}{2^{192}}}
+\]
+to the underlying forging probability. For $q_s\leq2^{32}$, the first term gives roughly 61 bits of security, about 3 bits short of 64, while the second term is negligible.
+\item This specification does not use the WOTS+ encoding standardized in FIPS~205. SLH-DSA appends a Winternitz checksum to the base-$16$ message digits, whereas this specification rejection-samples a base-$8$ target-sum codeword. The SPHINCS+ proof and the cited reduction therefore do not directly prove this construction secure. A complete proof must handle the target-sum encoding and its rejection sampling.
+\end{enumerate}
+
+\bibliographystyle{alphaurl}
+\bibliography{refs}
+
+\end{document}

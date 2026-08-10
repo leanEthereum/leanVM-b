@@ -4,11 +4,15 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'doc/**'
+      - 'doc/leanvm/**'
+      - 'doc/xmss/**'
+      - 'doc/images/**'
       - '.github/workflows/doc.yml'
   pull_request:
     paths:
-      - 'doc/**'
+      - 'doc/leanvm/**'
+      - 'doc/xmss/**'
+      - 'doc/images/**'
       - '.github/workflows/doc.yml'
   workflow_dispatch:
 
@@ -27,11 +31,19 @@ jobs:
       - name: Compile LaTeX
         uses: xu-cheng/latex-action@v3
         with:
-          working_directory: doc
+          working_directory: doc/leanvm
           root_file: main.tex
       - name: Fail on an undefined reference or citation
         run: |
-          ! grep -qE 'Reference .* undefined|Citation .* undefined|multiply defined' doc/.build/main.log
+          ! grep -qE 'Reference .* undefined|Citation .* undefined|multiply defined' doc/leanvm/.build/main.log
+      - name: Compile XMSS specification
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: doc/xmss
+          root_file: main.tex
+      - name: Fail on an undefined XMSS reference or citation
+        run: |
+          ! grep -qE 'Reference .* undefined|Citation .* undefined|multiply defined' doc/xmss/.build/main.log
 
   build-pdf:
     if: github.event_name != 'pull_request'
@@ -43,17 +55,28 @@ jobs:
       - name: Compile LaTeX
         uses: xu-cheng/latex-action@v3
         with:
-          working_directory: doc
+          working_directory: doc/leanvm
           root_file: main.tex
-      - name: Name the artifact
-        run: cp doc/.build/main.pdf leanVM-b.pdf
-      - name: Publish PDF as release asset
+      - name: Compile XMSS specification
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: doc/xmss
+          root_file: main.tex
+      - name: Name the artifacts
+        run: |
+          cp doc/leanvm/.build/main.pdf leanVM-b.pdf
+          cp doc/xmss/.build/main.pdf XMSS.pdf
+      - name: Publish PDFs as release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: doc-latest
           name: leanVM-b documentation
           body: |
-            Auto-built from `doc/main.tex` on every push to `main`.
-            Contains the specification, Annex A (ring switching) and Annex B (the PCS).
+            Auto-built on every push to `main`.
+
+            `leanVM-b.pdf` contains the leanVM-b specification.
+            `XMSS.pdf` contains the XMSS specification.
           make_latest: false
-          files: leanVM-b.pdf
+          files: |
+            leanVM-b.pdf
+            XMSS.pdf

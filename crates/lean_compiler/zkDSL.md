@@ -1,6 +1,6 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: seven instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/main.tex`](../../doc/main.tex).
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: seven instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
 
 Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `pack64x2`, and `blake3`, so editors and linters resolve the names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
 

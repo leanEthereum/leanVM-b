@@ -2271,7 +2271,7 @@ def main():
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
     # samples the RLC coefficients, and verifies the two batching sumchecks of
-    # doc/main.tex §Deferred evaluation claims. Only the reduced claims (one per
+    # doc/leanvm/main.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
     # Every per-sub walk below is a runtime loop, so its loop-carried state (the
     # sponge, the running claim, the accumulated weight) rides a chain buffer

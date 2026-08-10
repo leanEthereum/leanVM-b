@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-750%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 750 XMSS/s"></a>
-  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.55s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.55s"></a>
+  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-850%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 750 XMSS/s"></a>
+  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.48s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.55s"></a>
 </p>
 
 Warning: highly experimental.
@@ -22,17 +22,17 @@ Machine: Mac M4 Max
 ### XMSS aggregation
 
 ```bash
-cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3
+cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3
 ```
 
 ```
-XMSS aggregation, 890 signatures
-  cycles (VM steps)           : 1,513,581 = 2^20.53   (1,700.653 / XMSS)
+XMSS aggregation, 900 signatures
+  cycles (VM steps)           : 1,528,252 = 2^20.543   (1,698.058 / XMSS)
     proven rows               : 1,966,081 = 2^20.907  (filled to powers of two)
-    details                   : DEREF 2^18.956 (33.6%)  SET 2^18.383 (22.6%)  MUL 2^18.16 (19.3%)  BLAKE3 2^16.989 (8.6%)  XOR 2^16.937 (8.3%)  JUMP 2^16.809 (7.6%)  MEMORY 2^21.701  TOTAL_COMMITTED 2^26.195
-  proof size                  : 359.0 KiB
-  proving                     : 1.186 s ± 5.9%   750.188 XMSS/s      peak memory 20.494 GiB
-  verifying                   : 0.00323 s
+    details                   : DEREF 2^18.97 (33.6%)  SET 2^18.397 (22.6%)  MUL 2^18.176 (19.4%)  BLAKE3 2^16.996 (8.6%)  XOR 2^16.953 (8.3%)  JUMP 2^16.825 (7.6%)  MEMORY 2^21.718  TOTAL_COMMITTED 2^26.185
+  proof size                  : 356.0 KiB
+  proving                     : 1.055 s ± 2.9%   852.69 XMSS/s      peak memory 18.717 GiB
+  verifying                   : 0.00366 s
 ```
 
 ### Recursion
@@ -43,13 +43,13 @@ cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
 ```
 
 ```
-recursion 2→1: 2 inner proofs of 1,472,224 cycles each
-  guest cycles (VM steps)     : 738,674 = 2^19.495   (0.251 / inner cycle)
+recursion 2→1: 2 inner proofs of 1,472,223 cycles each
+  guest cycles (VM steps)     : 727,289 = 2^19.472   (0.247 / inner cycle)
     proven rows               : 933,888 = 2^19.833  (filled to powers of two)
-    details                   : DEREF 2^17.995 (35.4%)  MUL 2^17.783 (30.5%)  XOR 2^17.344 (22.5%)  SET 2^15.233 (5.2%)  PACK64X2 2^14.353 (2.8%)  BLAKE3 2^14.109 (2.4%)  JUMP 2^13.022 (1.1%)  MEMORY 2^19.847  TOTAL_COMMITTED 2^24.667
-  proof size                  : 225.3 KiB
-recursion proving         : 0.543 s ± 6.5%      peak memory 14.165 GiB
-verification              : 0.0281 s
+    details                   : DEREF 2^17.975 (35.4%)  MUL 2^17.753 (30.4%)  XOR 2^17.321 (22.5%)  SET 2^15.252 (5.4%)  PACK64X2 2^14.305 (2.8%)  BLAKE3 2^14.088 (2.4%)  JUMP 2^13.016 (1.1%)  MEMORY 2^19.802  TOTAL_COMMITTED 2^24.664
+  proof size                  : 223.6 KiB
+recursion proving         : 0.481 s ± 5.4%      peak memory 12.965 GiB
+verification              : 0.0278 s
 ```
 
 ### Fibonacci
@@ -62,10 +62,10 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 ```
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   cycles (VM steps)           : 2,127,881
-    details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%)  JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
-  proof size                  : 335.1 KiB
-  proving                     : 0.64 s ± 7.3%   3,325,361 cycles/s      peak memory 10.999 GiB
-  verifying                   : 0.00237 s
+    details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%)  JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964 TOTAL_COMMITTED 2^25.263
+  proof size                  : 334.6 KiB
+  proving                     : 0.584 s ± 2.7%   3,640,905 cycles/s      peak memory 10.48 GiB
+  verifying                   : 0.00284 s
 ```
 
 ## Security

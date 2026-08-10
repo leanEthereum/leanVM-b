@@ -10,10 +10,10 @@ fn keygen_sign_verify() {
     let seed: [u8; 32] = std::array::from_fn(|i| i as u8);
     let message = test_message();
 
-    for slot in [0u32, 1234, u32::MAX] {
-        let (sk, pk) = xmss_key_gen(seed, slot.saturating_sub(1), slot.saturating_add(2)).unwrap();
-        let sig = xmss_sign(&mut StdRng::seed_from_u64(slot as u64), &sk, &message, slot).unwrap();
-        xmss_verify(&pk, &message, &sig, slot).unwrap();
+    for epoch in [0u32, 1234, u32::MAX] {
+        let (sk, pk) = xmss_key_gen(seed, epoch.saturating_sub(1), epoch.saturating_add(2)).unwrap();
+        let sig = xmss_sign(&mut StdRng::seed_from_u64(epoch as u64), &sk, &message, epoch).unwrap();
+        xmss_verify(&pk, &message, &sig, epoch).unwrap();
     }
 }
 
@@ -21,10 +21,10 @@ fn keygen_sign_verify() {
 fn serialize_deserialize_and_size() {
     let seed: [u8; 32] = std::array::from_fn(|i| i as u8);
     let message = test_message();
-    let slot = 110;
+    let epoch = 110;
 
     let (sk, pk) = xmss_key_gen(seed, 100, 115).unwrap();
-    let sig = xmss_sign(&mut StdRng::seed_from_u64(0), &sk, &message, slot).unwrap();
+    let sig = xmss_sign(&mut StdRng::seed_from_u64(0), &sk, &message, epoch).unwrap();
 
     let pk_bytes = bincode::serialize(&pk).unwrap();
     assert_eq!(pk_bytes.len(), PUB_KEY_FLAT_SIZE); // 32 bytes
@@ -36,7 +36,7 @@ fn serialize_deserialize_and_size() {
     let sig2: XmssSignature = bincode::deserialize(&sig_bytes).unwrap();
     assert_eq!(sig, sig2);
 
-    xmss_verify(&pk2, &message, &sig2, slot).unwrap();
+    xmss_verify(&pk2, &message, &sig2, epoch).unwrap();
 }
 
 #[test]
@@ -54,50 +54,50 @@ fn deterministic_keygen() {
 fn tampered_signatures_rejected() {
     let seed = [9u8; 32];
     let message = test_message();
-    let slot = 7;
+    let epoch = 7;
     let (sk, pk) = xmss_key_gen(seed, 0, 15).unwrap();
-    let sig = xmss_sign(&mut StdRng::seed_from_u64(1), &sk, &message, slot).unwrap();
-    xmss_verify(&pk, &message, &sig, slot).unwrap();
+    let sig = xmss_sign(&mut StdRng::seed_from_u64(1), &sk, &message, epoch).unwrap();
+    xmss_verify(&pk, &message, &sig, epoch).unwrap();
 
     // Wrong message.
     let mut bad_message = message;
     bad_message[0] ^= 1;
-    assert!(xmss_verify(&pk, &bad_message, &sig, slot).is_err());
+    assert!(xmss_verify(&pk, &bad_message, &sig, epoch).is_err());
 
-    // Wrong slot.
-    assert!(xmss_verify(&pk, &message, &sig, slot + 1).is_err());
+    // Wrong epoch.
+    assert!(xmss_verify(&pk, &message, &sig, epoch + 1).is_err());
 
     // Tampered chain tip.
     let mut bad = sig.clone();
     bad.wots_signature.chain_tips[5][0] ^= 1;
-    assert!(xmss_verify(&pk, &message, &bad, slot).is_err());
+    assert!(xmss_verify(&pk, &message, &bad, epoch).is_err());
 
     // Tampered randomness (either the encoding no longer hits the target sum,
     // or the recovered WOTS key changes; both must fail).
     let mut bad = sig.clone();
     bad.wots_signature.randomness[0] ^= 1;
-    assert!(xmss_verify(&pk, &message, &bad, slot).is_err());
+    assert!(xmss_verify(&pk, &message, &bad, epoch).is_err());
 
     // Tampered Merkle path.
     let mut bad = sig.clone();
     bad.merkle_proof[10][3] ^= 1;
     assert_eq!(
-        xmss_verify(&pk, &message, &bad, slot),
+        xmss_verify(&pk, &message, &bad, epoch),
         Err(XmssVerifyError::InvalidMerklePath)
     );
 
     // Signing outside the key's range.
     assert_eq!(
         xmss_sign(&mut StdRng::seed_from_u64(2), &sk, &message, 16),
-        Err(XmssSignatureError::SlotOutOfRange)
+        Err(XmssSignatureError::EpochOutOfRange)
     );
 }
 
 /// The signer grinds the randomness until `wots_encode` accepts, so the cost of
 /// producing a signature is set by how rare a valid encoding is. Measure it: the
 /// two leftover digest bits contribute 2 bits, and `sum(e_i) == TARGET_SUM` at
-/// 194 (3.2 sd above the mean of 147, over 42 uniform 3-bit digits) contributes
-/// ~12.5, matching the ~2^14 quoted in the crate docs. The band is ~10 sigma for
+/// 195 (3.3 sd above the mean of 147, over 42 uniform 3-bit digits) contributes
+/// ~12.8, matching the sub-2^15 cost quoted in the crate docs. The band is ~10 sigma for
 /// 200 samples, so only a real change to the predicate (a dropped validity bit,
 /// a different TARGET_SUM, a different digit layout) moves it out.
 #[test]

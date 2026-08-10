@@ -1,9 +1,12 @@
 // CREDIT: https://github.com/leanEthereum/leanVM (XMSS construction).
-//! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
+//! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented). The
+//! concrete scheme is defined in the [XMSS specification].
 //!
 //! Every hash is standard BLAKE3 of the exact byte string
 //! `tweak | pp | payload`, truncated to n = 128 bits. See the `hash` module for the
 //! constructions and per-call compression counts.
+//!
+//! [XMSS specification]: https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/XMSS.pdf
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -28,20 +31,20 @@ pub const W: usize = 3;
 pub const CHAIN_LENGTH: usize = 1 << W; // 8
 /// Chain hashes the VERIFIER walks, summed over all chains: `sum(chain_length -
 /// 1 - e_i)`. Constant because the encoding sum is fixed to [`TARGET_SUM`].
-pub const NUM_CHAIN_HASHES: usize = 100;
+pub const NUM_CHAIN_HASHES: usize = 99;
 /// A WOTS encoding `(e_0, .., e_{v-1})` is valid iff every `e_i < CHAIN_LENGTH`,
 /// `sum(e_i) = TARGET_SUM`, and the 2 leftover digest bits are zero (see
 /// [`wots_encode`]). The signer grinds the randomness until the encoding is
-/// valid (no checksum chains). 194 sits above the mean (147) so verification
-/// walks fewer chain steps; grinding is ~2^14 encode attempts (~2^12 for the
-/// sum, 2^2 for the zero bits).
-pub const TARGET_SUM: usize = V * (CHAIN_LENGTH - 1) - NUM_CHAIN_HASHES; // 194
+/// valid (no checksum chains). 195 sits above the mean (147) so verification
+/// walks fewer chain steps; grinding takes fewer than 2^15 encode attempts on
+/// average.
+pub const TARGET_SUM: usize = V * (CHAIN_LENGTH - 1) - NUM_CHAIN_HASHES; // 195
 pub const RANDOMNESS_LEN: usize = 24;
 pub const MESSAGE_LEN: usize = 32;
 pub const PUBLIC_PARAM_LEN: usize = 16;
 
 // XMSS
-/// Merkle tree height: a key is valid for up to `2^32` slots.
+/// Merkle tree height: a key is valid for up to `2^32` epochs.
 pub const LOG_LIFETIME: usize = 32;
 
 /// Serialized sizes (exact under bincode: fixed arrays, no length prefixes).

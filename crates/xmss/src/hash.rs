@@ -7,8 +7,8 @@
 //! users. Standard BLAKE3 binds the exact payload length.
 //!
 //! Compression counts per call: chain step 1, Merkle node 1, message encoding
-//! 2, WOTS public key 11. A full XMSS verification is a constant 145
-//! compressions: 2 (encoding) + 100 (chains, fixed by the target sum) + 11
+//! 2, WOTS public key 11. A full XMSS verification is a constant 144
+//! compressions: 2 (encoding) + 99 (chains, fixed by the target sum) + 11
 //! (tips) + 32 (Merkle path).
 
 use crate::*;
@@ -26,7 +26,7 @@ pub type Tweak = [u8; TWEAK_LEN];
 pub const STATE_LEN: usize = 32;
 
 /// `[tweak_type (1) | sub_position (4) | index (4) | zeros (7)]`, little-endian.
-/// `index` is the slot (chain / wots_pk / encoding) or the Merkle node index;
+/// `index` is the epoch (chain / wots_pk / encoding) or the Merkle node index;
 /// `sub_position` is the chain position or the Merkle level.
 pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
     let mut tweak = [0u8; TWEAK_LEN];

@@ -1,6 +1,6 @@
 //! Disk cache for the XMSS signatures the aggregation benchmark consumes.
 //!
-//! Generating a signer (a full `xmss_key_gen` over slots `0..=15` plus one
+//! Generating a signer (a full `xmss_key_gen` over epochs `0..=15` plus one
 //! grinding `xmss_sign`, ~2^14 encode attempts) is the untimed setup cost of
 //! [`crate::run_xmss_aggregation`]; for large batches it dwarfs the proving we
 //! actually want to measure. Every signer is a pure function of its index and
@@ -40,14 +40,14 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use xmss::*;
 
-/// A cached signer: its public key and one signature over [`message`] at [`SLOT`].
+/// A cached signer: its public key and one signature over [`message`] at [`EPOCH`].
 type CachedSignature = (XmssPublicKey, XmssSignature);
 
 /// Bump to invalidate every existing cache file by hand.
 const SCHEMA_VERSION: u32 = 1;
 
-/// The slot every benchmark signature is produced (and verified) at.
-pub const SLOT: u32 = 7;
+/// The epoch every benchmark signature is produced and verified at.
+pub const EPOCH: u32 = 7;
 /// Key validity range passed to `xmss_key_gen` (inclusive).
 const KEY_START: u32 = 0;
 const KEY_END: u32 = 15;
@@ -63,7 +63,7 @@ pub fn message() -> Message {
 fn compute_signer(index: usize) -> CachedSignature {
     let seed = [10 + index as u8; 32];
     let (sk, pk) = xmss_key_gen(seed, KEY_START, KEY_END).expect("keygen");
-    let sig = xmss_sign(&mut StdRng::seed_from_u64(index as u64), &sk, &message(), SLOT).expect("sign");
+    let sig = xmss_sign(&mut StdRng::seed_from_u64(index as u64), &sk, &message(), EPOCH).expect("sign");
     (pk, sig)
 }
 
@@ -88,7 +88,7 @@ fn encoding_fingerprint() -> (u64, [u8; V]) {
     for counter in 0u64.. {
         let mut randomness = [0u8; RANDOMNESS_LEN];
         randomness[..8].copy_from_slice(&counter.to_le_bytes());
-        if let Some(digits) = wots_encode(&msg, SLOT, &pp, &randomness) {
+        if let Some(digits) = wots_encode(&msg, EPOCH, &pp, &randomness) {
             return (counter, digits);
         }
     }
@@ -96,14 +96,14 @@ fn encoding_fingerprint() -> (u64, [u8; V]) {
 }
 
 /// 64-bit fingerprint of everything that determines the signers. Any change
-/// (slot, key range, message, the XMSS structural constants, the hash
+/// (epoch, key range, message, the XMSS structural constants, the hash
 /// construction via [`hash_fingerprint`], or the encoding predicate via
 /// [`encoding_fingerprint`]) yields a new filename, so stale caches are
 /// silently bypassed rather than mis-loaded.
 fn footprint() -> u64 {
     let mut h = DefaultHasher::new();
     SCHEMA_VERSION.hash(&mut h);
-    SLOT.hash(&mut h);
+    EPOCH.hash(&mut h);
     KEY_START.hash(&mut h);
     KEY_END.hash(&mut h);
     message().hash(&mut h);
@@ -124,7 +124,7 @@ fn cache_path() -> PathBuf {
 
 /// Load the pool from disk, treating any failure (missing file, read error,
 /// decode error, schema mismatch) as an empty cache. Every loaded signer is
-/// re-verified against the current code (~145 compressions each, milliseconds
+/// re-verified against the current code (~144 compressions each, milliseconds
 /// for a full pool) and the pool truncated at the first invalid one: a stale
 /// cache the footprint failed to segregate regenerates from the surviving
 /// prefix instead of panicking mid-benchmark.
@@ -137,7 +137,7 @@ fn try_load_cache() -> Option<Vec<CachedSignature>> {
     let msg = message();
     let valid = signers
         .iter()
-        .take_while(|(pk, sig)| xmss_verify(pk, &msg, sig, SLOT).is_ok())
+        .take_while(|(pk, sig)| xmss_verify(pk, &msg, sig, EPOCH).is_ok())
         .count();
     if valid < signers.len() {
         eprintln!(
@@ -186,7 +186,7 @@ fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
 static POOL: Mutex<Vec<CachedSignature>> = Mutex::new(Vec::new());
 
 /// The `n` benchmark signers, each `(public key, signature over [`message`] at
-/// [`SLOT`])`. Served from the in-process pool, then disk, generating (and
+/// [`EPOCH`])`. Served from the in-process pool, then disk, generating (and
 /// caching) only the signers not already available.
 pub fn get_signers(n: usize) -> Vec<CachedSignature> {
     let mut pool = POOL.lock().unwrap();
@@ -221,7 +221,7 @@ mod tests {
 
         let msg = message();
         for (i, (pk, sig)) in large.iter().enumerate() {
-            xmss_verify(pk, &msg, sig, SLOT).unwrap_or_else(|e| panic!("cached signer {i} failed to verify: {e:?}"));
+            xmss_verify(pk, &msg, sig, EPOCH).unwrap_or_else(|e| panic!("cached signer {i} failed to verify: {e:?}"));
         }
     }
 }
