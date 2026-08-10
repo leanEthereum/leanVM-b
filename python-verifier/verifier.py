@@ -7,6 +7,7 @@ from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
 from operator import mul
 from struct import pack, unpack
+from typing import SupportsIndex
 
 
 class VerificationError(Exception):
@@ -56,9 +57,17 @@ class K:
     def __index__(self) -> int:
         return self.value
 
-    def to_bytes(self, length: int = 8, byteorder: str = "little") -> bytes:
+    def to_bytes(self) -> bytes:
         """Its transport image: one 64-bit little-endian word."""
-        return self.value.to_bytes(length, byteorder)
+        return self.value.to_bytes(8, "little")
+
+    @staticmethod
+    def lift(value: object) -> K:
+        """`value` as a K element; anything that is not one is an error."""
+        lifted = _as_k(value)
+        if lifted is None:
+            raise TypeError(f"cannot use {type(value).__name__} as a base-field element")
+        return lifted
 
     def __bool__(self) -> bool:
         return bool(self.value)
@@ -103,7 +112,7 @@ def _as_k(value: object) -> K | None:
     return None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class E:
     """K[y]/(y^3 + y + 1): the challenge field, a degree-3 extension of K.
 
@@ -112,15 +121,14 @@ class E:
     integers, which are lifted.
     """
 
-    c0: K = K()
-    c1: K = K()
-    c2: K = K()
+    c0: K
+    c1: K
+    c2: K
 
-    def __post_init__(self) -> None:
-        for name in ("c0", "c1", "c2"):
-            limb = getattr(self, name)
-            if not isinstance(limb, K):
-                object.__setattr__(self, name, _as_k(limb))
+    def __init__(self, c0: K | int = 0, c1: K | int = 0, c2: K | int = 0) -> None:
+        object.__setattr__(self, "c0", K.lift(c0))
+        object.__setattr__(self, "c1", K.lift(c1))
+        object.__setattr__(self, "c2", K.lift(c2))
 
     @classmethod
     def from_bytes(cls, data: bytes) -> E:
@@ -131,13 +139,14 @@ class E:
         return pack("<3Q", self.c0, self.c1, self.c2)
 
     @staticmethod
-    def _coerce(other: object) -> E:
-        if isinstance(other, E):
-            return other
-        lifted = _as_k(other)
+    def lift(value: object) -> E:
+        """`value` as an extension element; anything that is not one is an error."""
+        if isinstance(value, E):
+            return value
+        lifted = _as_k(value)
         if lifted is not None:
             return E(lifted)
-        raise TypeError(f"cannot use {type(other).__name__} as a field element")
+        raise TypeError(f"cannot use {type(value).__name__} as a field element")
 
     def __int__(self) -> int:
         return self.c0.value | self.c1.value << 64 | self.c2.value << 128
@@ -154,7 +163,7 @@ class E:
         return hash(int(self))
 
     def __add__(self, other: object) -> E:
-        rhs = self._coerce(other)
+        rhs = self.lift(other)
         return E(self.c0 + rhs.c0, self.c1 + rhs.c1, self.c2 + rhs.c2)
 
     __radd__ = __add__
@@ -165,7 +174,7 @@ class E:
         return self
 
     def __mul__(self, other: object) -> E:
-        rhs = self._coerce(other)
+        rhs = self.lift(other)
         # y^3 = y + 1 folds the degree-4 product back into three limbs.
         p0 = self.c0 * rhs.c0
         p1 = self.c0 * rhs.c1 + self.c1 * rhs.c0
@@ -192,11 +201,11 @@ class E:
         return self ** (2**192 - 2)
 
     def __truediv__(self, other: object) -> E:
-        rhs = self._coerce(other)
+        rhs = self.lift(other)
         return self * rhs.inv()
 
     def __rtruediv__(self, other: object) -> E:
-        lhs = self._coerce(other)
+        lhs = self.lift(other)
         return lhs * self.inv()
 
     def __repr__(self) -> str:
@@ -291,7 +300,7 @@ def _output_cv(output: tuple[Sequence[int], Sequence[int], int, int, int]) -> tu
 
 
 def _output_root(output: tuple[Sequence[int], Sequence[int], int, int, int]) -> bytes:
-    cv, block, _counter, block_len, flags = output
+    cv, block, _, block_len, flags = output
     words = blake3_compress_words(cv, block, 0, block_len, flags | ROOT)
     return pack("<16I", *words)[:32]
 
@@ -310,21 +319,18 @@ def _chunk_output(chunk: bytes, chunk_counter: int) -> tuple[Sequence[int], Sequ
 def blake3_hash(data: bytes) -> Digest:
     """Standard 32-byte unkeyed BLAKE3 hash."""
     chunks = [data[i : i + 1024] for i in range(0, len(data), 1024)] or [b""]
-    stack: list[tuple[int, ...]] = []
-    last_output = None
-    for chunk_index, chunk in enumerate(chunks):
+    output = _chunk_output(chunks[0], 0)
+    stack = [_output_cv(output)]
+    for chunk_index, chunk in enumerate(chunks[1:], start=1):
         output = _chunk_output(chunk, chunk_index)
         cv = _output_cv(output)
         total = chunk_index + 1
         while total & 1 == 0:
-            left = stack.pop()
-            output = _parent_output(left, cv)
+            output = _parent_output(stack.pop(), cv)
             cv = _output_cv(output)
             total >>= 1
         stack.append(cv)
-        last_output = output
     # For more than one chunk, combine the right edge with saved left subtrees.
-    output = last_output
     right = _output_cv(output)
     for left in reversed(stack[:-1]):
         output = _parent_output(left, right)
@@ -350,7 +356,7 @@ class Digest:
     @classmethod
     def from_words(cls, words: Sequence[K | int]) -> Digest:
         require(len(words) == 4, "a digest is four 64-bit words")
-        return cls(b"".join(_as_k(word).to_bytes() for word in words))
+        return cls(b"".join(K.lift(word).to_bytes() for word in words))
 
     def words(self) -> tuple[K, K, K, K]:
         w0, w1, w2, w3 = unpack("<4Q", self.value)
@@ -374,9 +380,9 @@ def eq_kernel(point: Sequence[E]) -> list[E]:
     return out
 
 
-def multilinear_eval(mle: Sequence[E], point: Sequence[E]) -> E:
+def multilinear_eval(mle: Sequence[K | E], point: Sequence[E]) -> E:
     require(len(mle) == 2 ** len(point), "multilinear table has the wrong size")
-    cur = list(mle)
+    cur = [E.lift(value) for value in mle]
     for r in point:
         cur = [cur[2 * i] * (ONE + r) + cur[2 * i + 1] * r for i in range(len(cur) // 2)]
     return cur[0]
@@ -533,9 +539,9 @@ class MerkleOpening:
     def read(cls, reader: BinaryReader, base_field: bool) -> MerkleOpening:
         row_count = reader.u64()
         require(row_count <= reader.remaining // 8, "invalid opened-row count")
-        read_row = reader.base_fields if base_field else reader.fields
-        rows = tuple(tuple(read_row()) for _ in range(row_count))
-        return cls(rows, reader.hashes())
+        if base_field:
+            return cls(tuple(tuple(reader.base_fields()) for _ in range(row_count)), reader.hashes())
+        return cls(tuple(tuple(reader.fields()) for _ in range(row_count)), reader.hashes())
 
 
 @dataclass(frozen=True)
@@ -591,11 +597,12 @@ DS_SQUEEZE = 4
 DS_POW = 5
 
 
-def compress(left: Sequence[int], right: Sequence[int]) -> tuple[int, int, int, int]:
+def compress(left: Sequence[SupportsIndex], right: Sequence[SupportsIndex]) -> tuple[int, int, int, int]:
+    """Hash two four-word operands, a word being a plain integer or the K element standing for it."""
     # The one removed-guard site with nothing downstream to catch a bad length:
     # a short operand would silently hash to a different value.
     require(len(left) == len(right) == 4, "compression operands must contain four words")
-    return unpack("<4Q", blake3_hash(b"".join(x.to_bytes(8, "little") for x in (*left, *right))).value)
+    return unpack("<4Q", blake3_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
 
 
 class Transcript:
@@ -717,10 +724,10 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
 
         round_point: list[E] = []
         for prior in point[:round_count]:
-            message = transcript.scalars(4)
+            difference, c2, c3, c4 = transcript.scalars(4)
             challenge = transcript.sample()
             round_point.append(challenge)
-            claim = quartic_eval_from_eq(claim, prior, *message, challenge)
+            claim = quartic_eval_from_eq(claim, prior, difference, c2, c3, c4, challenge)
 
         tails = [transcript.scalars(2**width) for _ in range(3)]
         products = [reduce(mul, tail) for tail in tails]
@@ -760,7 +767,7 @@ class Form:
     constant: E = ZERO
     linear: dict[int, E] = field(default_factory=dict)
     quadratic: dict[tuple[int, int], E] = field(default_factory=dict)
-    public: tuple[tuple[tuple[E, ...] | str, E], ...] = ()
+    public: tuple[tuple[Sequence[K | E] | str, E], ...] = ()
 
     def add_scaled(self, other: Form, weight: E) -> None:
         self.constant += weight * other.constant
@@ -778,7 +785,7 @@ class Form:
         for (a, b), coefficient in self.quadratic.items():
             total += coefficient * column(a) * column(b)
         for table, coefficient in self.public:
-            total += coefficient * (index_mle(point) if table is INDEX else multilinear_eval(table, point))
+            total += coefficient * (index_mle(point) if isinstance(table, str) else multilinear_eval(table, point))
         return total
 
 
@@ -1117,7 +1124,7 @@ def _prod(a: int, b: int, exponent: int = 0) -> Form:
     return Form(quadratic={(a, b): _gpow(exponent)})
 
 
-def _public(values: Sequence[E]) -> Form:
+def _public(values: Sequence[K | E]) -> Form:
     return Form(public=((tuple(values), ONE),))
 
 
@@ -1415,7 +1422,7 @@ WIDTHS = tuple(t.width for t in TABLES)
 BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(TABLES)))
 
 
-def build_layout(public_columns: Sequence[Sequence[E]], bytecode_log: int, log_memory: int, table_logs: Sequence[int]) -> Layout:
+def build_layout(public_columns: Sequence[Sequence[K | E]], bytecode_log: int, log_memory: int, table_logs: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
         and len(table_logs) == len(TABLES)
@@ -1627,7 +1634,7 @@ def authenticate_rows(
     nodes = [(index, _row_hash(row)) for index, row in zip(unique, rows, strict=True)]
     supplied = iter(octopus)
     for _ in range(leaf_count.bit_length() - 1):
-        parents: list[tuple[int, bytes]] = []
+        parents: list[tuple[int, Digest]] = []
         cursor = 0
         while cursor < len(nodes):
             index, value = nodes[cursor]
