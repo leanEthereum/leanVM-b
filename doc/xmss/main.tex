@@ -24,6 +24,7 @@
 \newcommand{\Sig}{\mathsf{Sig}}
 \newcommand{\Ver}{\mathsf{Ver}}
 \newcommand{\SIG}{\mathsf{SIG}}
+\newcommand{\Forge}{\mathsf{Forge}}
 \newcommand{\Chain}{\mathsf{Chain}}
 \newcommand{\hash}{\mathsf{H}}
 \newcommand{\LE}{\mathsf{LE}}
@@ -211,10 +212,20 @@ $\Ver(\pk,\ep,m,\bot)=0$. For $\sigma\neq\bot$, $\Ver(\pk,\ep,m,\sigma)$ parses 
 
 \subsection{Classical security}
 
-The tight classical ROM proof for XMSS as specified in RFC~8391 (with checksum) loses $\log_2$ of the Winternitz chain length~\cite{BDGHMS23}, that is $w=3$ bits of security, and hence gives about 125 bits of classical security. That proof does not cover our target-sum encoding. Further work is needed to translate the proof to our construction.
-\vspace{5mm}
+\begin{definition}[$x$ bits of classical security]
+Let $\SIG=(\Gen,\Sig,\Ver)$ be a synchronized signature scheme whose algorithms use a hash function $\hash:\bits{*}\to\bits{256}$. Consider the following game between a signer and an adversary $\mathcal A$, with $\hash$ sampled as a random oracle. The signer first runs $(\pk,\sk)\gets\Gen$ and gives $\pk$ to $\mathcal A$. The adversary may then adaptively take any of the following actions:
+\begin{enumerate}[leftmargin=2em]
+  \item Query the random oracle on any input and receive its 256-bit output.
+  \item Submit a message $m\in\bits{256}$ and an epoch $\ep\in\{0,\ldots,L-1\}$ that it has not used in an earlier signing query, and receive $\sigma\gets\Sig(\sk,\ep,m)$ from the signer.
+  \item Terminate with a claimed forgery $(m^*,\ep^*,\sigma^*)$.
+\end{enumerate}
+The adversary wins if $\Ver(\pk,\ep^*,m^*,\sigma^*)=1$ and the signer did not return $\sigma^*$ in response to a signing query for $(m^*,\ep^*)$. Thus, a valid signature on a message and epoch that were never signed wins, as does a different valid signature for a previously signed message and epoch.
 
-As a side note, we expect a tighter (fully ROM-based) analysis to give $\geq 127$ bits security. \textbf{TODO: prove this conjecture.}
+For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made by the adversary and by the signer, including during key generation and signing, is at most $q$. We say that $\SIG$ has $x$ bits of classical security if
+\[
+  \max_{q \geq 1}\frac{\Forge_{\SIG}(q)}{q}\leq 2^{-x}.
+\]
+\end{definition}
 
 \subsection{Quantum security}
 
