@@ -13,36 +13,35 @@ deriving DecidableEq
 
 /-- The specification's 16-byte tweak `tag || position || epoch || 0^56`. -/
 def encodeTweak (fields : TweakFields) : Tweak :=
-  ((fields.tag ++ fields.position) ++ fields.epoch) ++ (0#56)
+  (((0#56) ++ fields.epoch) ++ fields.position) ++ fields.tag
 
 @[simp]
 theorem encodeTweak_extract_tag (fields : TweakFields) :
-    (encodeTweak fields).extractLsb' 120 8 = fields.tag := by
-  rw [encodeTweak, BitVec.extractLsb'_append_eq_of_le (by omega)]
-  rw [BitVec.extractLsb'_append_eq_of_le (by omega)]
-  exact BitVec.extractLsb'_append_eq_left
+    (encodeTweak fields).extractLsb' 0 8 = fields.tag := by
+  rw [encodeTweak]
+  exact BitVec.extractLsb'_append_eq_right
 
 @[simp]
 theorem encodeTweak_extract_position (fields : TweakFields) :
-    (encodeTweak fields).extractLsb' 88 32 = fields.position := by
+    (encodeTweak fields).extractLsb' 8 32 = fields.position := by
   rw [encodeTweak, BitVec.extractLsb'_append_eq_of_le (by omega)]
-  rw [BitVec.extractLsb'_append_eq_of_le (by omega)]
   exact BitVec.extractLsb'_append_eq_right
 
 @[simp]
 theorem encodeTweak_extract_epoch (fields : TweakFields) :
-    (encodeTweak fields).extractLsb' 56 32 = fields.epoch := by
+    (encodeTweak fields).extractLsb' 40 32 = fields.epoch := by
   rw [encodeTweak, BitVec.extractLsb'_append_eq_of_le (by omega)]
+  rw [BitVec.extractLsb'_append_eq_of_le (by omega)]
   exact BitVec.extractLsb'_append_eq_right
 
 theorem encodeTweak_injective : Function.Injective encodeTweak := by
   intro left right heq
   have htag : left.tag = right.tag := by
-    simpa using congrArg (BitVec.extractLsb' 120 8) heq
+    simpa using congrArg (BitVec.extractLsb' 0 8) heq
   have hposition : left.position = right.position := by
-    simpa using congrArg (BitVec.extractLsb' 88 32) heq
+    simpa using congrArg (BitVec.extractLsb' 8 32) heq
   have hepoch : left.epoch = right.epoch := by
-    simpa using congrArg (BitVec.extractLsb' 56 32) heq
+    simpa using congrArg (BitVec.extractLsb' 40 32) heq
   cases left
   cases right
   simp_all

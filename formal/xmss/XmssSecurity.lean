@@ -1,3 +1,4 @@
+import XmssSecurity.ConcreteHash
 import XmssSecurity.MainTheorem
 import XmssSecurity.Execution
 import XmssSecurity.ForgeryCases
@@ -6,5 +7,6 @@ import XmssSecurity.Merkle
 import XmssSecurity.MixedOracle
 import XmssSecurity.RandomOracle
 import XmssSecurity.SecurityBudget
+import XmssSecurity.Serialization
 import XmssSecurity.Tweak
 import XmssSecurity.Wots
