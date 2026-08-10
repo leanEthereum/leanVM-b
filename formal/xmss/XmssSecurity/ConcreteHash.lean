@@ -1,7 +1,7 @@
 import XmssSecurity.Scheme
 import XmssSecurity.Serialization
 
-open OracleComp
+open OracleComp OracleSpec
 
 namespace XmssSecurity.Concrete
 
@@ -76,28 +76,33 @@ theorem nodePayload_injective :
   obtain ⟨hfirst, hsecond⟩ := List.append_inj heq (by simp [digestBytes])
   exact Prod.ext (digestBytes_injective hfirst) (digestBytes_injective hsecond)
 
-def oracleHash (input : HashInput) : OracleComp OracleWorld HashOutput :=
-  liftM (OracleWorld.query (.inr input))
+def oracleHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (input : HashInput) : m HashOutput :=
+  HasQuery.query (spec := HashSpec) (m := m) input
 
-def tweakableHash (parameter : PublicParameter) (domain : HashDomain)
-    (payload : HashInput) : OracleComp OracleWorld Digest := do
+def tweakableHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput) : m Digest := do
   let output ← oracleHash (tweakableHashInput parameter domain payload)
   return truncateHash output
 
-def encodingHash (parameter : PublicParameter) (epoch : Epoch)
-    (message : Message) (randomness : Randomness) : OracleComp OracleWorld Digest :=
+def encodingHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (parameter : PublicParameter) (epoch : Epoch)
+    (message : Message) (randomness : Randomness) : m Digest :=
   tweakableHash parameter (.encoding epoch) (encodingPayload message randomness)
 
-def chainHash (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (step : ChainStep) (value : Digest) : OracleComp OracleWorld Digest :=
+def chainHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
+    (step : ChainStep) (value : Digest) : m Digest :=
   tweakableHash parameter (.chain epoch chain step) (digestBytes value)
 
-def leafHash (parameter : PublicParameter) (epoch : Epoch)
-    (endpoints : ChainIndex → Digest) : OracleComp OracleWorld Digest :=
+def leafHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (parameter : PublicParameter) (epoch : Epoch)
+    (endpoints : ChainIndex → Digest) : m Digest :=
   tweakableHash parameter (.leaf epoch) (leafPayload endpoints)
 
-def nodeHash (parameter : PublicParameter) (level : MerkleLevel) (node : MerkleNode)
-    (left right : Digest) : OracleComp OracleWorld Digest :=
+def nodeHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (parameter : PublicParameter) (level : MerkleLevel) (node : MerkleNode)
+    (left right : Digest) : m Digest :=
   tweakableHash parameter (.merkle level node) (nodePayload left right)
 
 end XmssSecurity.Concrete

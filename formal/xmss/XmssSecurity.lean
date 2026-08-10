@@ -1,6 +1,9 @@
 import XmssSecurity.CacheView
+import XmssSecurity.CacheVerify
+import XmssSecurity.CacheReplay
 import XmssSecurity.ConcreteForgery
 import XmssSecurity.ConcreteHash
+import XmssSecurity.ConcreteVerify
 import XmssSecurity.MainTheorem
 import XmssSecurity.Execution
 import XmssSecurity.ForgeryCases
