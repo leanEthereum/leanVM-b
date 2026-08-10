@@ -14,9 +14,9 @@
 //!   re-observe data that already rode the stream: it is bound once already, and
 //!   binding it twice silently desynchronizes the two sides. A challenge is just
 //!   `sample()`d, bound to everything seeded/sent so far.
-//! - **`hint_*` (prover) / `next_*` (verifier)**: transport that is NOT absorbed
-//!   here, hash-bearing data (the WHIR `openings`, like leanVM's
-//!   `merkle_paths`) whose binding is the Merkle structure itself.
+//! - **`hint_merkle` (prover) / `next_merkle` (verifier)**: transport that is NOT
+//!   absorbed here, one opening phase of hash-bearing data whose binding is the
+//!   Merkle structure itself.
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
 //! The [`Sponge`] itself (the VM-native Merkle–Damgård chaining value, its
@@ -25,25 +25,35 @@
 use crate::sponge::{Sponge, TraceOp, trace};
 use primitives::field::{F64, F192};
 
-/// A complete proof: the scalar transcript stream plus the WHIR opening hint
-/// channel: **two** channels, no bolted-on side field. The commitment root and
-/// every transmitted scalar ride `stream`; the hash-bearing WHIR openings
-/// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its
+/// One opening phase's Merkle data: the opened rows and the sibling hashes that
+/// authenticate them. Leaf data is `F64` because that is what a Merkle preimage
+/// is; an `E`-valued row of width `w` is `3w` words, packed by the opener.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MerklePaths {
+    pub leaf_data: Vec<Vec<F64>>,
+    pub sibling_hashes: Vec<[u8; 32]>,
+}
+
+/// A complete proof: the scalar transcript stream plus the Merkle phases:
+/// **two** channels, no bolted-on side field. The commitment root and every
+/// transmitted scalar ride `stream`; the hash-bearing openings ride
+/// `merkle_paths`. flock's BLAKE3 sub-proof is carried the same way: its
 /// zerocheck / lincheck / ring-switch scalars are ordinary `add_scalar` words on
 /// `stream` (transmitted AND bound at their protocol points, like every other
-/// scalar) and its one WHIR opening rides `openings`.
+/// scalar) and its opening phases append to `merkle_paths`.
 ///
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
 /// an independent verifier process reconstructs it: everything lives in these two
 /// fields, and [`VerifierState`] re-derives every challenge from them via the
 /// shared sponge, so nothing travels out of band.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Proof<O> {
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Proof {
     /// Every transmitted field scalar, in protocol order (plus flock's scalar
     /// sub-proof as trailing raw transport words).
     pub stream: Vec<F192>,
-    /// WHIR openings (sumcheck messages + Merkle roots/paths), in order.
-    pub openings: Vec<O>,
+    /// One entry per opening phase, in the order the phases run. Nothing here
+    /// names WHIR: a phase pushes its rows and siblings, the next pulls them.
+    pub merkle_paths: Vec<MerklePaths>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,10 +85,9 @@ pub trait Challenger {
 }
 
 /// The prover half of a transmitting sub-protocol (WHIR and its sumchecks):
-/// send a scalar, or grind. Taking `&mut impl Transmitter` rather than
-/// `&mut ProverState<O>` keeps the opening type `O` out of signatures that do
-/// not name it.
+/// push an opening phase, send a scalar, or grind.
 pub trait Transmitter: Challenger {
+    fn hint_merkle(&mut self, paths: MerklePaths);
     fn add_scalar(&mut self, x: F192);
     fn add_scalars(&mut self, xs: &[F192]);
     fn grind(&mut self, bits: u32);
@@ -86,6 +95,7 @@ pub trait Transmitter: Challenger {
 
 /// The verifier half, mirroring [`Transmitter`] call for call.
 pub trait Receiver: Challenger {
+    fn next_merkle(&mut self) -> Result<&MerklePaths, Error>;
     fn next_scalar(&mut self) -> Result<F192, Error>;
     fn next_scalars(&mut self, n: usize) -> Result<Vec<F192>, Error> {
         (0..n).map(|_| self.next_scalar()).collect()
@@ -93,20 +103,20 @@ pub trait Receiver: Challenger {
     fn grind_check(&mut self, bits: u32) -> Result<(), Error>;
 }
 
-/// Prover side: writes scalars into the stream and opening hints to the side.
-pub struct ProverState<O> {
+/// Prover side: writes scalars into the stream and opening phases to the side.
+pub struct ProverState {
     sponge: Sponge,
     stream: Vec<F192>,
-    openings: Vec<O>,
+    merkle_paths: Vec<MerklePaths>,
 }
 
-impl<O> ProverState<O> {
+impl ProverState {
     /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         Self {
             sponge: Sponge::new(label, statement),
             stream: Vec::new(),
-            openings: Vec::new(),
+            merkle_paths: Vec::new(),
         }
     }
 
@@ -137,8 +147,10 @@ impl<O> ProverState<O> {
         self.sponge.observe(x);
     }
 
-    pub fn hint_opening(&mut self, opening: O) {
-        self.openings.push(opening);
+    /// Hand the next opening phase's Merkle data to the verifier. Not absorbed:
+    /// its binding is the Merkle structure itself.
+    pub fn hint_merkle(&mut self, paths: MerklePaths) {
+        self.merkle_paths.push(paths);
     }
 
     /// Proof-of-work grind of `bits` before the next challenge, raising that
@@ -152,34 +164,34 @@ impl<O> ProverState<O> {
         self.stream.push(F192::new(nonce, 0, 0));
     }
 
-    pub fn into_proof(self) -> Proof<O> {
+    pub fn into_proof(self) -> Proof {
         Proof {
             stream: self.stream,
-            openings: self.openings,
+            merkle_paths: self.merkle_paths,
         }
     }
 }
 
 /// Verifier side: reads scalars from a received [`Proof`] (borrowed) and pulls
-/// hints in order.
-pub struct VerifierState<'a, O> {
+/// opening phases in order.
+pub struct VerifierState<'a> {
     sponge: Sponge,
     stream: &'a [F192],
     offset: usize,
-    openings: &'a [O],
-    oi: usize,
+    merkle_paths: &'a [MerklePaths],
+    phase: usize,
 }
 
-impl<'a, O> VerifierState<'a, O> {
+impl<'a> VerifierState<'a> {
     /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
     /// It must match the prover's, or the sponges diverge and verification fails.
-    pub fn new(label: &[u8], proof: &'a Proof<O>, statement: &[F192]) -> Self {
+    pub fn new(label: &[u8], proof: &'a Proof, statement: &[F192]) -> Self {
         Self {
             sponge: Sponge::new(label, statement),
             stream: &proof.stream,
             offset: 0,
-            openings: &proof.openings,
-            oi: 0,
+            merkle_paths: &proof.merkle_paths,
+            phase: 0,
         }
     }
 
@@ -220,11 +232,12 @@ impl<'a, O> VerifierState<'a, O> {
         self.sponge.observe(x);
     }
 
-    pub fn next_opening(&mut self) -> Result<&'a O, Error> {
-        let o = self.openings.get(self.oi).ok_or(Error::MissingHint)?;
-        self.oi += 1;
-        trace(|| TraceOp::Opening);
-        Ok(o)
+    /// Verifier mirror of [`ProverState::hint_merkle`].
+    pub fn next_merkle(&mut self) -> Result<&'a MerklePaths, Error> {
+        let paths = self.merkle_paths.get(self.phase).ok_or(Error::MissingHint)?;
+        self.phase += 1;
+        trace(|| TraceOp::MerklePhase);
+        Ok(paths)
     }
 
     /// Verifier mirror of [`ProverState::grind`]: read the transmitted nonce and
@@ -253,7 +266,7 @@ impl<'a, O> VerifierState<'a, O> {
 
     /// Assert the whole proof was consumed (no trailing/extra data).
     pub fn finish(&self) -> Result<(), Error> {
-        if self.offset == self.stream.len() && self.oi == self.openings.len() {
+        if self.offset == self.stream.len() && self.phase == self.merkle_paths.len() {
             Ok(())
         } else {
             Err(Error::NotFullyConsumed)
@@ -261,7 +274,10 @@ impl<'a, O> VerifierState<'a, O> {
     }
 }
 
-impl<O> Transmitter for ProverState<O> {
+impl Transmitter for ProverState {
+    fn hint_merkle(&mut self, paths: MerklePaths) {
+        Self::hint_merkle(self, paths)
+    }
     fn add_scalar(&mut self, x: F192) {
         Self::add_scalar(self, x)
     }
@@ -273,7 +289,10 @@ impl<O> Transmitter for ProverState<O> {
     }
 }
 
-impl<O> Receiver for VerifierState<'_, O> {
+impl Receiver for VerifierState<'_> {
+    fn next_merkle(&mut self) -> Result<&MerklePaths, Error> {
+        Self::next_merkle(self)
+    }
     fn next_scalar(&mut self) -> Result<F192, Error> {
         Self::next_scalar(self)
     }
@@ -282,7 +301,7 @@ impl<O> Receiver for VerifierState<'_, O> {
     }
 }
 
-impl<O> Challenger for ProverState<O> {
+impl Challenger for ProverState {
     fn sample(&mut self) -> F192 {
         Self::sample(self)
     }
@@ -294,7 +313,7 @@ impl<O> Challenger for ProverState<O> {
     }
 }
 
-impl<O> Challenger for VerifierState<'_, O> {
+impl Challenger for VerifierState<'_> {
     fn sample(&mut self) -> F192 {
         Self::sample(self)
     }
@@ -319,7 +338,7 @@ mod tests {
     #[test]
     fn prover_verifier_lockstep() {
         let stmt = [f(7)];
-        let mut ps = ProverState::<()>::new(b"lbl", &stmt);
+        let mut ps = ProverState::new(b"lbl", &stmt);
         let c1 = ps.sample();
         ps.add_scalar(f(42));
         ps.grind(8);

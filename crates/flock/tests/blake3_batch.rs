@@ -146,7 +146,7 @@ fn blake3_batch_prove_verify() {
         let witness_s = t.elapsed().as_secs_f64();
         assert_eq!(q_flock.len(), 1 << mu);
 
-        let mut ps = ProverState::<()>::new(b"flock-blake3-batch", &[]);
+        let mut ps = ProverState::new(b"flock-blake3-batch", &[]);
         let t_prove = Instant::now();
 
         let t = Instant::now();
@@ -158,18 +158,18 @@ fn blake3_batch_prove_verify() {
         let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
         drop((z_packed, a_packed, b_packed, z_lincheck));
         let ring = prover_ring(&reduced, mu);
-        let opening = open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
+        open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 
-        ((ps.into_proof(), opening), [witness_s, commit_s, open_s, prove_s])
+        (ps.into_proof(), [witness_s, commit_s, open_s, prove_s])
     };
 
     // The per-stage timings ride alongside the pass result, so one `Plan` drives
     // the warmup, the cooldown, and the repetition for all four of them.
     let plan = Plan::from_env();
     let mut stages: [Timing; 4] = std::array::from_fn(|_| Timing::default());
-    let ((transcript, opening), _) = plan.warm_then_measure(|_final_pass| {
+    let (transcript, _) = plan.warm_then_measure(|_final_pass| {
         let (out, secs) = prove_pass();
         for (timing, s) in stages.iter_mut().zip(secs) {
             timing.push(s);
@@ -186,11 +186,11 @@ fn blake3_batch_prove_verify() {
     });
 
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
-        let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
+        let mut vs = VerifierState::new(b"flock-blake3-batch", &transcript, &[]);
         let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = verifier_ring(&replay.ab, &replay.c, &replay.lc_claim.s_hat_v, mu);
-        verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring, &opening)
+        verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring)
             .expect("stacked PCS opening verifies");
         vs.finish().expect("transcript fully consumed");
     });

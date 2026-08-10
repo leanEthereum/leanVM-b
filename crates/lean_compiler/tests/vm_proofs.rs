@@ -43,14 +43,14 @@ fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
     (program, pi, proof)
 }
 
-/// flock's validity proof rides the stacked WHIR opening, the proof's one hint
-/// channel. Nothing in that channel is bound by the sponge (only by the Merkle
-/// structure), so tampering an opened row there must still be rejected.
+/// The stacked WHIR opening rides the proof's Merkle phases. Nothing there is
+/// bound by the sponge (only by the Merkle structure), so tampering an opened
+/// row must still be rejected.
 #[test]
 fn a_tampered_opening_is_rejected() {
     let (program, pi, mut proof) = hashing_proof();
-    let opening = proof.openings.last_mut().expect("stacked WHIR opening");
-    opening.initial_proof.opened_rows[0][0].0 ^= 1;
+    let phase = proof.merkle_paths.first_mut().expect("stacked WHIR opening");
+    phase.leaf_data[0][0].0 ^= 1;
     assert!(
         verify(&program, &pi, &proof).is_err(),
         "a tampered validity proof must be rejected"

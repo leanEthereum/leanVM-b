@@ -1166,7 +1166,7 @@ fn sumcheck_bind_both_and_eval_next(comb: &mut Vec<F192>, z: &mut Vec<F192>, r: 
 /// The lincheck prover. Its claim retains the transmitted post-sumcheck
 /// `z_partial`, which is exactly the AB claim's 64-entry ring-switch `s_hat_v`.
 /// The opening reuses it without a second witness scan or transmission.
-pub fn prove_padded_capture_s_hat_v<O>(
+pub fn prove_padded_capture_s_hat_v(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
@@ -1174,7 +1174,7 @@ pub fn prove_padded_capture_s_hat_v<O>(
     useful_bits: usize,
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
-    ps: &mut ProverState<O>,
+    ps: &mut ProverState,
 ) -> LincheckClaim {
     let k = 1usize << k_log;
     let n_log = m - k_log;
@@ -1294,7 +1294,7 @@ pub fn prove_padded_capture_s_hat_v<O>(
 /// Verify a lincheck proof. Walks the sponge in lockstep with the prover,
 /// replays the α-batched product sumcheck against `v_a` and `v_b`, and
 /// derives the single output z-claim `w`.
-pub fn verify<O>(
+pub fn verify(
     m: usize,
     k_log: usize,
     k_skip: usize,
@@ -1302,7 +1302,7 @@ pub fn verify<O>(
     x_ab: &QuirkyPoint,
     v_a: F192,
     v_b: F192,
-    vs: &mut VerifierState<'_, O>,
+    vs: &mut VerifierState<'_>,
 ) -> Result<LincheckClaim, VerifyError> {
     let k = 1usize << k_log;
     let n_log = m - k_log;

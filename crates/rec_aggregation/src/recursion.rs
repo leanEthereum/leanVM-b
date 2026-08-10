@@ -868,7 +868,7 @@ fn gen_verify(
     // ---- the stacked opening: config + the opening summary ----
     let stack = whir_shape(l.m, summary.log_inv_rate);
     let (vcfg, shapes) = (&stack.config, &stack.levels);
-    let (nlev, r) = (shapes.levels, vcfg.level_steps);
+    let nlev = shapes.levels;
     let klvl = &shapes.ks;
     let queries = &vcfg.queries;
     let (depth, per) = (&stack.depth, &stack.per_squeeze);
@@ -966,7 +966,6 @@ fn gen_verify(
     let log_mem = proof.stream[0].c0 as usize;
 
     // ---- Phase E2 hints (the stacked WHIR opening) ----
-    let lig = &proof.openings[0];
     let numinter: Vec<usize> = klvl.iter().map(|&k| 1usize << k).collect();
     let lenris: usize = klvl.iter().sum();
     // positions per level from the packed squeezes.
@@ -989,37 +988,25 @@ fn gen_verify(
             out
         })
         .collect();
-    // Level 0 rows are embedded F64 values. For levels ≥1, each F192 word is
-    // flattened into three embedded limbs so the guest can reproduce the exact
-    // 24-byte Merkle-leaf preimage before reconstructing the field value.
+    // One Merkle phase per level, in level order. A leaf is its `F64` words, so
+    // both shapes flatten the same way: level 0 commits one word per interleaved
+    // K value, every later level three per `E` value, which is exactly the
+    // 24-byte preimage the guest re-hashes before reconstructing the field value.
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
-        let path_exp = if lv == 0 {
-            let (rows_exp, path_exp) =
-                pcs::whir::expand_level_opening(shapes.block_len[lv], &positions[lv], &lig.initial_proof, numinter[lv])
-                    .expect("expand base (level 0) stacked opening");
-            for row in &rows_exp {
-                for &x in row {
-                    lrows_flat.push(F192::new(x.0, 0, 0));
-                }
+        let leaf_words = if lv == 0 { numinter[lv] } else { 3 * numinter[lv] };
+        let (rows_exp, path_exp) = pcs::whir::expand_level_opening(
+            shapes.block_len[lv],
+            &positions[lv],
+            &proof.merkle_paths[lv],
+            leaf_words,
+        )
+        .expect("expand stacked opening level");
+        for row in &rows_exp {
+            for &x in row {
+                lrows_flat.push(F192::new(x.0, 0, 0));
             }
-            path_exp
-        } else {
-            let opening = if lv == r {
-                &lig.final_proof
-            } else {
-                &lig.recursive_proofs[lv - 1]
-            };
-            let (rows_exp, path_exp) =
-                pcs::whir::expand_level_opening(shapes.block_len[lv], &positions[lv], opening, numinter[lv])
-                    .expect("expand ext (level ≥1) stacked opening");
-            for row in &rows_exp {
-                for &x in row {
-                    lrows_flat.extend([F192::new(x.c0, 0, 0), F192::new(x.c1, 0, 0), F192::new(x.c2, 0, 0)]);
-                }
-            }
-            path_exp
-        };
+        }
         for &h in &path_exp {
             lpaths_flat.extend_from_slice(&pack_hash_state(&h));
         }

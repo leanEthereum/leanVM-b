@@ -567,17 +567,15 @@ mod tests {
         let committed = crate::pcs::commit(&mut ps, &stacked.q, crate::pcs::LOG_INV_RATE);
         let (_z, reduced) = prove_reduction(&blocks, &mut ps);
         let ring = ring_switch_open(blocks.len(), offset, &reduced);
-        let open = crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
-        ps.hint_opening(open);
+        crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
         let bundle = ps.into_proof();
 
         let run = |label: &'static [u8], points: &[crate::pcs::SlotClaim]| -> Result<(), &'static str> {
             let mut vs = VerifierState::new(label, &bundle, &[]);
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
-            let open = vs.next_opening().map_err(|_| "opening hint")?;
             let ring = ring_switch_verify(blocks.len(), offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
-            crate::pcs::verify(&mut vs, points, &ring, open, stacked.m, crate::pcs::LOG_INV_RATE, &root)
+            crate::pcs::verify(&mut vs, points, &ring, stacked.m, crate::pcs::LOG_INV_RATE, &root)
                 .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")
         };

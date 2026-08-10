@@ -125,13 +125,13 @@ pub enum VerifyError {
 /// ([`univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`]),
 /// which the downstream PCS open consumes to skip `fold_1b_rows` for the
 /// c-claim.
-pub fn prove_packed_padded_capture_s_hat_v_c<O>(
+pub fn prove_packed_padded_capture_s_hat_v_c(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
     m: usize,
     padding: &PaddingSpec,
-    ps: &mut ProverState<O>,
+    ps: &mut ProverState,
 ) -> (ZerocheckClaim, Vec<F192>) {
     let k_skip = K_SKIP;
     assert!(
@@ -342,7 +342,7 @@ pub fn prove_packed_padded_capture_s_hat_v_c<O>(
 /// On accept: returns the [`ZerocheckClaim`] the caller must check against
 /// its PCS opening of `â`, `b̂`, `ĉ`.
 /// On reject: returns a [`VerifyError`] indicating which check failed.
-pub fn verify<O>(log_n: usize, vs: &mut VerifierState<'_, O>) -> Result<ZerocheckClaim, VerifyError> {
+pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim, VerifyError> {
     let m = log_n;
     let k_skip = K_SKIP;
 

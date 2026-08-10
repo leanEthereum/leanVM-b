@@ -651,7 +651,7 @@ mod tests {
     use crate::pack::pack_witness;
     use crate::whir::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
     use crate::whir::{
-        WhirProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
+        commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
         recursive_verifier_with_basis_succinct,
     };
     use primitives::test_rng::Rng;
@@ -891,10 +891,10 @@ mod tests {
         assert_eq!(claim, direct, "prefix x suffix split must factor the MLE");
 
         const DOMAIN: &[u8] = b"rs-claim-test";
-        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(DOMAIN, &[]);
+        let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
         prove_prepare(&packed, &prefix_weights, suffix_point, claim, None, false, &mut ps);
         let fs = ps.into_proof();
-        let read = |fs: &fiat_shamir::transcript::Proof<()>, claim| {
+        let read = |fs: &fiat_shamir::transcript::Proof, claim| {
             let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
             verify_prepare(claim, &prefix_weights, &mut vs)
         };
@@ -973,8 +973,7 @@ mod tests {
         claim: F192,
         root: Hash,
         rs_s_hat_v: Vec<F192>,
-        whir_proof: WhirProof,
-        fs: fiat_shamir::transcript::Proof<()>,
+        fs: fiat_shamir::transcript::Proof,
     }
 
     const E2E_DOMAIN: &[u8] = b"ring-switch-e2e-test";
@@ -1003,7 +1002,7 @@ mod tests {
 
         // Drive the production two-phase API with a single claim: send s_hat_v,
         // sample the shared map, then finish with a batching scalar of one.
-        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(E2E_DOMAIN, &[]);
+        let mut ps = fiat_shamir::transcript::ProverState::new(E2E_DOMAIN, &[]);
         let state = prove_prepare(&packed, &prefix_weights, &suffix_point, claim, None, false, &mut ps);
         let rs_s_hat_v = state.s_hat_v.clone();
         let coordinate_weights = build_coordinate_weights(&sample_map_challenges(&mut ps));
@@ -1012,7 +1011,7 @@ mod tests {
         let mut rs_eq_ind = vec![F192::ZERO; packed.len()];
         combine_deferred_into(&[out], &mut rs_eq_ind);
         assert_eq!(inner_product_base_ext(&packed, &rs_eq_ind), sumcheck_claim);
-        let whir_proof = recursive_prover_with_basis(
+        recursive_prover_with_basis(
             &pc,
             &packed,
             zk_alloc::ArenaVec::from_slice(&rs_eq_ind),
@@ -1029,17 +1028,13 @@ mod tests {
             claim,
             root: cm.root,
             rs_s_hat_v,
-            whir_proof,
             fs: ps.into_proof(),
         }
     }
 
     /// Read the claim off the stream and finish it against the shared map:
     /// the verifier's half of the two phases, shared by both paths below.
-    fn verify_e2e_reduction(
-        e: &E2e,
-        vs: &mut fiat_shamir::transcript::VerifierState<'_, ()>,
-    ) -> Option<(Vec<F192>, F192)> {
+    fn verify_e2e_reduction(e: &E2e, vs: &mut fiat_shamir::transcript::VerifierState<'_>) -> Option<(Vec<F192>, F192)> {
         let s_hat_v = verify_prepare(e.claim, &e.prefix_weights, vs).ok()?;
         let coordinate_weights = build_coordinate_weights(&sample_map_challenges(vs));
         let sumcheck_claim = verify_finish(&s_hat_v, &coordinate_weights);
@@ -1054,7 +1049,7 @@ mod tests {
             return false;
         };
         let rs_eq_ind = fold_dense(&build_eq_table_ext(&e.suffix_point), &coordinate_weights);
-        recursive_verifier_with_basis(&e.vc, &e.whir_proof, &rs_eq_ind, sumcheck_claim, &e.root, &mut vs)
+        recursive_verifier_with_basis(&e.vc, &rs_eq_ind, sumcheck_claim, &e.root, &mut vs)
     }
 
     /// Succinct verification: no `rs_eq_ind`, the succinct whir verifier's
@@ -1067,7 +1062,6 @@ mod tests {
         let z = e.suffix_point.clone();
         recursive_verifier_with_basis_succinct(
             &e.vc,
-            &e.whir_proof,
             e.log_n,
             sumcheck_claim,
             &e.root,
@@ -1106,7 +1100,6 @@ mod tests {
         // Plain bit flip: caught by the claim check.
         let mut bad = E2e {
             rs_s_hat_v: e.rs_s_hat_v.clone(),
-            whir_proof: e.whir_proof.clone(),
             vc: e.vc.clone(),
             log_n: e.log_n,
             prefix_weights: e.prefix_weights.clone(),

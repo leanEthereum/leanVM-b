@@ -176,7 +176,7 @@ impl Sponge {
                         "trace replay: grind failed"
                     )
                 }
-                TraceOp::StreamRaw(_) | TraceOp::Opening => {}
+                TraceOp::StreamRaw(_) | TraceOp::MerklePhase => {}
             }
         }
     }
@@ -258,7 +258,7 @@ impl Sponge {
 /// One transcript operation, recorded by the (diagnostic) trace
 /// ([`trace_start`] / [`trace_take`]). The sponge records its own absorbs /
 /// squeezes / grind checks; transport-only events ([`TraceOp::StreamRaw`],
-/// [`TraceOp::Opening`]) are recorded by the caller owning the transport
+/// [`TraceOp::MerklePhase`]) are recorded by the caller owning the transport
 /// channel via [`trace`]. The in-circuit verifier replays exactly this op
 /// sequence, so the trace of a real verify run is both the guest program's
 /// mechanical spec and its checkpoint data.
@@ -279,8 +279,8 @@ pub enum TraceOp {
         bits: u32,
         digest: F64,
     },
-    /// An opening hint consumed (the WHIR hint channel).
-    Opening,
+    /// One opening phase's Merkle data consumed.
+    MerklePhase,
 }
 
 thread_local! {

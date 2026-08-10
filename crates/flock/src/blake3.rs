@@ -1600,10 +1600,10 @@ impl Blake3Setup {
     ///
     /// Does NOT open the PCS; the caller discharges the returned claims in the
     /// one stacked opening (`lean_vm`'s `pcs::open`).
-    pub fn prove_reduction<O>(
+    pub fn prove_reduction(
         &self,
         blocks: &[Compression],
-        ps: &mut fiat_shamir::transcript::ProverState<O>,
+        ps: &mut fiat_shamir::transcript::ProverState,
     ) -> (ArenaVec<F192>, PackedWitnessClaims) {
         assert!(
             blocks.len() <= self.n_block_slots(),
@@ -1630,13 +1630,13 @@ impl Blake3Setup {
     /// witness-generation-free counterpart of [`Self::prove_reduction`] for
     /// embedders that already generated the packed `z`, `A·z`, `B·z`, and
     /// lincheck-stripe buffers before committing the flattened witness.
-    pub fn prove_reduction_precomputed<O>(
+    pub fn prove_reduction_precomputed(
         &self,
         z_packed: &[F192],
         a_packed_words: &[F192],
         b_packed_words: &[F192],
         z_packed_lincheck: &[u8],
-        ps: &mut fiat_shamir::transcript::ProverState<O>,
+        ps: &mut fiat_shamir::transcript::ProverState,
     ) -> PackedWitnessClaims {
         let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
         let t_reduction = std::time::Instant::now();
@@ -1739,9 +1739,9 @@ impl Blake3Setup {
     /// lincheck straight off the shared transcript stream, recovering the two
     /// `(ab, c)` evaluation claims on the committed witness `q_flock`. Mirror of
     /// [`Self::prove_reduction`]; the PCS then discharges the returned claims.
-    pub fn verify_reduction<O>(
+    pub fn verify_reduction(
         &self,
-        vs: &mut fiat_shamir::transcript::VerifierState<'_, O>,
+        vs: &mut fiat_shamir::transcript::VerifierState<'_>,
     ) -> Result<ReductionReplay, verifier::VerifyError> {
         // Mirror of prove_reduction: the statement is bound by the embedding
         // protocol's seed (family digest) + announced count + commitment root.

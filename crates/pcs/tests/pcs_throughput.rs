@@ -78,10 +78,10 @@ fn pcs_throughput() {
             });
             commit_times.push(elapsed);
 
-            let mut ch = fiat_shamir::transcript::ProverState::<()>::new(b"pcs-throughput", &[]);
-            let (proof, elapsed) = tracing::info_span!("PCS open").in_scope(|| {
+            let mut ch = fiat_shamir::transcript::ProverState::new(b"pcs-throughput", &[]);
+            let elapsed = tracing::info_span!("PCS open").in_scope(|| {
                 let t = Instant::now();
-                let proof = recursive_prover_with_basis(
+                recursive_prover_with_basis(
                     &pc,
                     &witness,
                     zk_alloc::ArenaVec::from_slice(&b_initial),
@@ -90,10 +90,10 @@ fn pcs_throughput() {
                     &pd.merkle_tree,
                     &mut ch,
                 );
-                (proof, t.elapsed().as_secs_f64())
+                t.elapsed().as_secs_f64()
             });
             open_times.push(elapsed);
-            black_box((cm, proof));
+            black_box((cm, ch.into_proof()));
         });
     }
 

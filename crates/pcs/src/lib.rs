@@ -18,5 +18,5 @@ mod whir_ntt_ext;
 pub use pack::{LOG_PACKING, PaddingSpec, pack_witness};
 
 /// Transcript state aliases used by Flock's reduction-only tests.
-pub type ProverState = fiat_shamir::transcript::ProverState<whir::WhirProof>;
-pub type VerifierState<'a> = fiat_shamir::transcript::VerifierState<'a, whir::WhirProof>;
+pub type ProverState = fiat_shamir::transcript::ProverState;
+pub type VerifierState<'a> = fiat_shamir::transcript::VerifierState<'a>;

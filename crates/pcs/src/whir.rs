@@ -34,7 +34,7 @@
 
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
-use fiat_shamir::transcript::{Challenger, Receiver, Transmitter};
+use fiat_shamir::transcript::{Challenger, MerklePaths, Receiver, Transmitter};
 use primitives::log2_strict_usize;
 use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
@@ -937,26 +937,6 @@ impl<'a> SumcheckProver<'a> {
     }
 }
 
-/// One level's opened rows and the octopus authenticating them (the same shape
-/// the Python verifier reads as `MerkleOpening`). L0 committed the `F64`
-/// witness, so `T = F64` there; every deeper level committed a folded `E`-valued
-/// one, so `T = F192`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MerkleOpening<T> {
-    /// One row per query (`num_interleaved` entries), sorted by query position
-    /// to align with the Merkle multi-proof.
-    pub opened_rows: Vec<Vec<T>>,
-    pub merkle_proof: Vec<Hash>,
-}
-
-/// The L0 root is the caller's statement, not proof data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WhirProof {
-    pub initial_proof: MerkleOpening<F64>,
-    pub recursive_proofs: Vec<MerkleOpening<F192>>,
-    pub final_proof: MerkleOpening<F192>,
-}
-
 /// Sample `count` query positions in transcript order: no dedup, no sort.
 /// `block_len = 2^d`; each squeezed field element yields `⌊192/d⌋` positions as
 /// its disjoint d-bit chunks (low bits first). Mirror of
@@ -1027,18 +1007,23 @@ fn send_ood(sc: &mut SumcheckProver<'_>, ps: &mut impl Transmitter, n_vars: usiz
     }
 }
 
-/// The stored half of one level's opening: the sorted-unique rows plus one
-/// octopus over those positions. The verifier re-fans them to transcript order.
-fn stored_opening<T: Copy>(
-    queries: &[usize],
-    row: impl Fn(usize) -> Vec<T>,
-    tree: &[Hash],
-    block_len: usize,
-) -> MerkleOpening<T> {
+/// An `E` row as the `F64` words its Merkle leaf is hashed from.
+fn ext_row_words(row: &[F192]) -> Vec<F64> {
+    row.iter().flat_map(|v| [F64(v.c0), F64(v.c1), F64(v.c2)]).collect()
+}
+
+/// The inverse of [`ext_row_words`], with the width the level announces.
+fn ext_row_from_words(words: &[F64], width: usize) -> Option<Vec<F192>> {
+    (words.len() == 3 * width).then(|| words.chunks(3).map(|c| F192::new(c[0].0, c[1].0, c[2].0)).collect())
+}
+
+/// One level's opening phase: the sorted-unique rows plus one octopus over
+/// those positions. The verifier re-fans them to transcript order.
+fn stored_opening(queries: &[usize], row: impl Fn(usize) -> Vec<F64>, tree: &[Hash], block_len: usize) -> MerklePaths {
     let sorted = sorted_unique_queries(queries);
-    MerkleOpening {
-        opened_rows: sorted.iter().map(|&q| row(q)).collect(),
-        merkle_proof: merkle::merkle_multi_proof(tree, block_len, &sorted),
+    MerklePaths {
+        leaf_data: sorted.iter().map(|&q| row(q)).collect(),
+        sibling_hashes: merkle::merkle_multi_proof(tree, block_len, &sorted),
     }
 }
 
@@ -1052,7 +1037,9 @@ fn stored_opening<T: Copy>(
 ///
 /// Transcript order is identical to the original (target, roots, OOD claims,
 /// `(u_0, u_2)` stream, tapered fold grinds, query grinds, queries, alphas,
-/// betas, and `yr` in the clear at the end).
+/// betas, and `yr` in the clear at the end). Everything goes to `ps`: the
+/// scalars to its stream, one Merkle phase per level to its phase list, in
+/// level order.
 pub fn recursive_prover_with_basis(
     config: &ProverConfig,
     witness: &[F64],
@@ -1061,7 +1048,7 @@ pub fn recursive_prover_with_basis(
     l0_codeword: &[F64],
     l0_tree: &[Hash],
     ps: &mut impl Transmitter,
-) -> WhirProof {
+) {
     let log_n = witness.len().trailing_zeros() as usize;
     let r = config.level_steps;
     let initial_k = config.initial_k;
@@ -1168,7 +1155,7 @@ pub fn recursive_prover_with_basis(
     let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
     // ... but the stored proof carries the sorted-unique rows + one octopus over
     // the sorted-unique positions (the verifier re-fans them to ordered).
-    let initial_proof = stored_opening(&queries_0, |q| l0_row(q).to_vec(), l0_tree, block_len_0);
+    ps.hint_merkle(stored_opening(&queries_0, |q| l0_row(q).to_vec(), l0_tree, block_len_0));
     if trace {
         t_opens += _t.elapsed();
     }
@@ -1202,7 +1189,6 @@ pub fn recursive_prover_with_basis(
 
     // Recursive levels.
     let mut wtns_prev = wtns_1;
-    let mut recursive_proofs: Vec<MerkleOpening<F192>> = Vec::new();
 
     for i in 0..r {
         let k_i = config.level_ks[i];
@@ -1240,12 +1226,12 @@ pub fn recursive_prover_with_basis(
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
             // verifier fans these to ordered for its last-level induce.
-            let final_proof = stored_opening(
+            ps.hint_merkle(stored_opening(
                 &queries_last,
-                |q| wtns_prev.row(q).to_vec(),
+                |q| ext_row_words(wtns_prev.row(q)),
                 &wtns_prev.tree,
                 wtns_prev.block_len,
-            );
+            ));
             // Tie the last commitment into the running claim through the same
             // intro/glue step as every other level, then finish the remaining
             // sumcheck rounds. This closes on one weight evaluation instead of
@@ -1302,11 +1288,7 @@ pub fn recursive_prover_with_basis(
                     t_intro_glue.as_secs_f64()
                 );
             }
-            return WhirProof {
-                initial_proof,
-                recursive_proofs,
-                final_proof,
-            };
+            return;
         }
 
         let n_next = sc_prover.f_ext().len().trailing_zeros() as usize;
@@ -1340,16 +1322,15 @@ pub fn recursive_prover_with_basis(
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
         let opened_rows_i: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
-        let recursive_proof_i = stored_opening(
+        ps.hint_merkle(stored_opening(
             &queries_i,
-            |q| wtns_prev.row(q).to_vec(),
+            |q| ext_row_words(wtns_prev.row(q)),
             &wtns_prev.tree,
             wtns_prev.block_len,
-        );
+        ));
         if trace {
             t_opens += _t.elapsed();
         }
-        recursive_proofs.push(recursive_proof_i);
 
         let sks_vks_i = eval_sk_at_vks(n_next);
         let _t = std::time::Instant::now();
@@ -1395,22 +1376,34 @@ fn leaf_hashes_of<T: Copy>(rows: &[Vec<T>], expected_num_interleaved: usize) -> 
         .collect()
 }
 
-/// Verify all opened rows of one level against its root via a single
-/// multi-proof.
-fn verify_level_opens<T: Copy>(
+/// A K row is its leaf words unchanged; L0 is the only level that commits one.
+fn k_row_from_words(words: &[F64], width: usize) -> Option<Vec<F64>> {
+    (words.len() == width).then(|| words.to_vec())
+}
+
+/// Pull the next Merkle phase, decode its leaf words into rows, authenticate
+/// them against `root` with the one octopus the phase carries, and fan them
+/// back to transcript (dup-possible) order. `decode` rejects any row of the
+/// wrong width, which is what pins the leaf image the octopus is checked
+/// against.
+fn recv_level_rows<T: Copy>(
+    vs: &mut impl Receiver,
     root: &Hash,
     block_len: usize,
     queries: &[usize],
-    opening: &MerkleOpening<T>,
-    expected_num_interleaved: usize,
-) -> bool {
-    if queries.len() != opening.opened_rows.len() {
-        return false;
+    decode: impl Fn(&[F64]) -> Option<Vec<T>>,
+) -> Option<Vec<Vec<T>>> {
+    let phase = vs.next_merkle().ok()?;
+    let sorted = sorted_unique_queries(queries);
+    if sorted.len() != phase.leaf_data.len() {
+        return None;
     }
-    let Some(leaf_hashes) = leaf_hashes_of(&opening.opened_rows, expected_num_interleaved) else {
-        return false;
-    };
-    merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, &opening.merkle_proof)
+    let rows = phase.leaf_data.iter().map(|w| decode(w)).collect::<Option<Vec<_>>>()?;
+    let leaf_hashes: Vec<Hash> = rows.iter().map(|r| hash_row(r)).collect();
+    if !merkle::verify_merkle_multi_proof(root, block_len, &sorted, &leaf_hashes, &phase.sibling_hashes) {
+        return None;
+    }
+    fan_rows_to_ordered(queries, &rows)
 }
 
 /// Transcript-order queries with duplicates removed, ascending. The initial opening
@@ -1427,15 +1420,15 @@ fn sorted_unique_queries(queries: &[usize]) -> Vec<usize> {
 /// guest re-hashes: one row and one full Merkle path per query, in transcript
 /// order (duplicates included). Authenticates nothing itself; the caller
 /// re-checks each restored path against the root.
-pub fn expand_level_opening<T: Copy>(
+pub fn expand_level_opening(
     block_len: usize,
     queries: &[usize],
-    opening: &MerkleOpening<T>,
-    expected_num_interleaved: usize,
-) -> Option<(Vec<Vec<T>>, Vec<Hash>)> {
-    let leaf_hashes = leaf_hashes_of(&opening.opened_rows, expected_num_interleaved)?;
-    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, &opening.merkle_proof)?;
-    Some((fan_rows_to_ordered(queries, &opening.opened_rows)?, flat_paths))
+    phase: &MerklePaths,
+    leaf_words: usize,
+) -> Option<(Vec<Vec<F64>>, Vec<Hash>)> {
+    let leaf_hashes = leaf_hashes_of(&phase.leaf_data, leaf_words)?;
+    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, &phase.sibling_hashes)?;
+    Some((fan_rows_to_ordered(queries, &phase.leaf_data)?, flat_paths))
 }
 
 /// The already-committed level whose rows the next query phase opens: its root
@@ -1556,7 +1549,6 @@ fn batch_level_claims(
 #[cfg(test)]
 pub fn recursive_verifier_with_basis(
     config: &VerifierConfig,
-    proof: &WhirProof,
     b_initial: &[F192],
     target: F192,
     expected_initial_root: &Hash,
@@ -1627,20 +1619,10 @@ pub fn recursive_verifier_with_basis(
     let queries_0 = sample_queries_ordered_with_raw(vs, block_len_0, num_queries_0).0;
     let lambda_0 = vs.sample();
     let weights_0 = power_weights(lambda_0, num_queries_0);
-    let sq_0 = sorted_unique_queries(&queries_0);
-    if !verify_level_opens(
-        expected_initial_root,
-        block_len_0,
-        &sq_0,
-        &proof.initial_proof,
-        num_interleaved_0,
-    ) {
+    let Some(ordered_rows_0) = recv_level_rows(vs, expected_initial_root, block_len_0, &queries_0, |w| {
+        k_row_from_words(w, num_interleaved_0)
+    }) else {
         return false;
-    }
-    // Fan the authenticated sorted-unique rows back to transcript order for induce.
-    let ordered_rows_0 = match fan_rows_to_ordered(&queries_0, &proof.initial_proof.opened_rows) {
-        Some(x) => x,
-        None => return false,
     };
 
     // L0 induce with the same auto dispatch as the prover (dense vs sparse
@@ -1687,12 +1669,8 @@ pub fn recursive_verifier_with_basis(
         log_msg_cols: n1 - config.level_ks[0],
         log_inv_rate: config.log_inv_rates[1],
     };
-    let mut recursive_proof_idx = 0usize;
     let mut n_current = n1;
 
-    // The two indices advance independently of `i` (roots start at 1, recursive
-    // proofs at 0), so they are not loop counters clippy can fold into `i`.
-    #[allow(clippy::explicit_counter_loop)]
     for i in 0..r {
         let k_i = config.level_ks[i];
         if n_current < k_i {
@@ -1720,19 +1698,10 @@ pub fn recursive_verifier_with_basis(
             // it (mirror of the original).
             let lambda_last = vs.sample();
             let weights_last = power_weights(lambda_last, num_queries_last);
-            let sq_last = sorted_unique_queries(&queries_last);
-            if !verify_level_opens(
-                &prev.root,
-                prev.block_len(),
-                &sq_last,
-                &proof.final_proof,
-                prev.num_interleaved(),
-            ) {
+            let Some(ordered_rows_last) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_last, |w| {
+                ext_row_from_words(w, prev.num_interleaved())
+            }) else {
                 return false;
-            }
-            let ordered_rows_last = match fan_rows_to_ordered(&queries_last, &proof.final_proof.opened_rows) {
-                Some(x) => x,
-                None => return false,
             };
 
             // Bind the LAST commitment to `yr`: induce its opened rows into
@@ -1819,20 +1788,12 @@ pub fn recursive_verifier_with_basis(
 
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_i).0;
-        let sq_i = sorted_unique_queries(&queries_i);
         let lambda_i = vs.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
-        if recursive_proof_idx >= proof.recursive_proofs.len() {
+        let Some(ordered_rows_i) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_i, |w| {
+            ext_row_from_words(w, prev.num_interleaved())
+        }) else {
             return false;
-        }
-        let rp = &proof.recursive_proofs[recursive_proof_idx];
-        recursive_proof_idx += 1;
-        if !verify_level_opens(&prev.root, prev.block_len(), &sq_i, rp, prev.num_interleaved()) {
-            return false;
-        }
-        let ordered_rows_i = match fan_rows_to_ordered(&queries_i, &rp.opened_rows) {
-            Some(x) => x,
-            None => return false,
         };
 
         let sks_vks_i = eval_sk_at_vks(n_current);
@@ -1889,7 +1850,6 @@ pub fn recursive_verifier_with_basis(
 /// uses.
 pub fn recursive_verifier_with_basis_succinct<F>(
     config: &VerifierConfig,
-    proof: &WhirProof,
     log_n: usize,
     target: F192,
     expected_initial_root: &Hash,
@@ -1902,7 +1862,6 @@ where
     let mut discard = Vec::new();
     recursive_verifier_with_basis_succinct_with_squeezes(
         config,
-        proof,
         log_n,
         target,
         expected_initial_root,
@@ -1929,7 +1888,6 @@ where
 /// only on `true`.
 pub fn recursive_verifier_with_basis_succinct_with_squeezes<F>(
     config: &VerifierConfig,
-    proof: &WhirProof,
     log_n: usize,
     target: F192,
     expected_initial_root: &Hash,
@@ -2004,19 +1962,10 @@ where
     query_squeezes_out.push(raw_0);
     let lambda_0 = vs.sample();
     let weights_0 = power_weights(lambda_0, num_queries_0);
-    let sq_0 = sorted_unique_queries(&queries_0);
-    if !verify_level_opens(
-        expected_initial_root,
-        block_len_0,
-        &sq_0,
-        &proof.initial_proof,
-        num_interleaved_0,
-    ) {
+    let Some(ordered_rows_0) = recv_level_rows(vs, expected_initial_root, block_len_0, &queries_0, |w| {
+        k_row_from_words(w, num_interleaved_0)
+    }) else {
         return false;
-    }
-    let ordered_rows_0 = match fan_rows_to_ordered(&queries_0, &proof.initial_proof.opened_rows) {
-        Some(x) => x,
-        None => return false,
     };
 
     // Compute enforced_sum cheaply at intro time. The induced basis poly's
@@ -2067,11 +2016,8 @@ where
         log_msg_cols: n1 - config.level_ks[0],
         log_inv_rate: config.log_inv_rates[1],
     };
-    let mut recursive_proof_idx = 0usize;
     let mut n_current = n1;
 
-    // Two independent counters, advanced at different points inside the body.
-    #[allow(clippy::explicit_counter_loop)]
     for i in 0..r {
         let k_i = config.level_ks[i];
         if n_current < k_i {
@@ -2100,19 +2046,10 @@ where
             // verifier, so both stay in lockstep).
             let lambda_last = vs.sample();
             let weights_last = power_weights(lambda_last, num_queries_last);
-            let sq_last = sorted_unique_queries(&queries_last);
-            if !verify_level_opens(
-                &prev.root,
-                prev.block_len(),
-                &sq_last,
-                &proof.final_proof,
-                prev.num_interleaved(),
-            ) {
+            let Some(ordered_rows_last) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_last, |w| {
+                ext_row_from_words(w, prev.num_interleaved())
+            }) else {
                 return false;
-            }
-            let ordered_rows_last = match fan_rows_to_ordered(&queries_last, &proof.final_proof.opened_rows) {
-                Some(x) => x,
-                None => return false,
             };
 
             let enforced_sum_last =
@@ -2214,20 +2151,12 @@ where
         let num_queries_i = config.queries[i + 1];
         let (queries_i, raw_i) = sample_queries_ordered_with_raw(vs, prev.block_len(), num_queries_i);
         query_squeezes_out.push(raw_i);
-        let sq_i = sorted_unique_queries(&queries_i);
         let lambda_i = vs.sample();
         let weights_i = power_weights(lambda_i, num_queries_i);
-        if recursive_proof_idx >= proof.recursive_proofs.len() {
+        let Some(ordered_rows_i) = recv_level_rows(vs, &prev.root, prev.block_len(), &queries_i, |w| {
+            ext_row_from_words(w, prev.num_interleaved())
+        }) else {
             return false;
-        }
-        let rp = &proof.recursive_proofs[recursive_proof_idx];
-        recursive_proof_idx += 1;
-        if !verify_level_opens(&prev.root, prev.block_len(), &sq_i, rp, prev.num_interleaved()) {
-            return false;
-        }
-        let ordered_rows_i = match fan_rows_to_ordered(&queries_i, &rp.opened_rows) {
-            Some(x) => x,
-            None => return false,
         };
 
         let enforced_sum_i = induce_sumcheck_enforced_sum(&ordered_rows_i, &level_rs, &queries_i, &weights_i);
@@ -2342,9 +2271,8 @@ mod tests {
         b_initial: Vec<F192>,
         target: F192,
         root: Hash,
-        proof: WhirProof,
-        /// The transcript half: every scalar WHIR transmitted.
-        fs: fiat_shamir::transcript::Proof<()>,
+        /// The transcript: every scalar WHIR transmitted, plus its opening phases.
+        fs: fiat_shamir::transcript::Proof,
     }
 
     fn prove_instance(log_n: usize, seed: u64) -> Instance {
@@ -2355,8 +2283,8 @@ mod tests {
         let point: Vec<F192> = (0..log_n).map(|_| rng.ext()).collect();
         let b_initial = build_eq_table_ext(&point);
         let target = inner_product_base_ext(&witness, &b_initial);
-        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(b"whir-test", &[]);
-        let proof = recursive_prover_with_basis(
+        let mut ps = fiat_shamir::transcript::ProverState::new(b"whir-test", &[]);
+        recursive_prover_with_basis(
             &pc,
             &witness,
             ArenaVec::from_slice(&b_initial),
@@ -2372,23 +2300,21 @@ mod tests {
             b_initial,
             target,
             root: cm.root,
-            proof,
             fs: ps.into_proof(),
         }
     }
 
-    fn verify_instance(inst: &Instance, proof: &WhirProof, fs: &fiat_shamir::transcript::Proof<()>) -> bool {
+    fn verify_instance(inst: &Instance, fs: &fiat_shamir::transcript::Proof) -> bool {
         let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", fs, &[]);
-        recursive_verifier_with_basis(&inst.vc, proof, &inst.b_initial, inst.target, &inst.root, &mut vs)
+        recursive_verifier_with_basis(&inst.vc, &inst.b_initial, inst.target, &inst.root, &mut vs)
     }
 
     /// Succinct verify with the eq weight evaluated at the terminal fold point.
-    fn verify_succinct_instance(inst: &Instance, proof: &WhirProof, fs: &fiat_shamir::transcript::Proof<()>) -> bool {
+    fn verify_succinct_instance(inst: &Instance, fs: &fiat_shamir::transcript::Proof) -> bool {
         let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", fs, &[]);
         let point = &inst.point;
         recursive_verifier_with_basis_succinct(
             &inst.vc,
-            proof,
             inst.log_n,
             inst.target,
             &inst.root,
@@ -2399,14 +2325,9 @@ mod tests {
 
     /// Both verifiers on the same proof, asserting they agree; returns the
     /// shared verdict.
-    fn verify_both_agree(
-        inst: &Instance,
-        proof: &WhirProof,
-        fs: &fiat_shamir::transcript::Proof<()>,
-        what: &str,
-    ) -> bool {
-        let dense = verify_instance(inst, proof, fs);
-        let succinct = verify_succinct_instance(inst, proof, fs);
+    fn verify_both_agree(inst: &Instance, fs: &fiat_shamir::transcript::Proof, what: &str) -> bool {
+        let dense = verify_instance(inst, fs);
+        let succinct = verify_succinct_instance(inst, fs);
         assert_eq!(dense, succinct, "dense/succinct verdict split on {what}");
         dense
     }
@@ -2469,7 +2390,7 @@ mod tests {
             pc16.queries[0]
         ));
         let inst = prove_instance(18, 8);
-        assert!(verify_instance(&inst, &inst.proof, &inst.fs), "honest proof rejected");
+        assert!(verify_instance(&inst, &inst.fs), "honest proof rejected");
     }
 
     /// The succinct verifier accepts an honest proof at log_n = 18, the one
@@ -2479,7 +2400,7 @@ mod tests {
     fn succinct_roundtrips() {
         let inst = prove_instance(18, 8);
         assert!(
-            verify_succinct_instance(&inst, &inst.proof, &inst.fs),
+            verify_succinct_instance(&inst, &inst.fs),
             "succinct verifier rejected an honest proof at log_n=18"
         );
     }
@@ -2492,31 +2413,34 @@ mod tests {
     fn dense_and_succinct_agree() {
         for (log_n, seed) in [(12usize, 11u64), (16, 12)] {
             let inst = prove_instance(log_n, seed);
-            assert!(verify_both_agree(&inst, &inst.proof, &inst.fs, "honest proof"));
+            assert!(verify_both_agree(&inst, &inst.fs, "honest proof"));
 
             let mut rng = Rng::new(seed ^ 0xABCD);
-            // Openings ride the proof struct; every scalar rides the stream.
-            type Tamper = fn(&mut WhirProof, &mut fiat_shamir::transcript::Proof<()>, u64);
+            // One Merkle phase per level, in level order: phase 0 opens L0, the
+            // last phase opens the final level.
+            type Tamper = fn(&mut fiat_shamir::transcript::Proof, u64);
             let tampers: &[(&str, Tamper)] = &[
-                ("L0 opened row", |p, _, r| {
-                    let row = (r as usize) % p.initial_proof.opened_rows.len();
-                    p.initial_proof.opened_rows[row][0].0 ^= 1;
+                ("L0 opened row", |p, r| {
+                    let rows = &mut p.merkle_paths[0].leaf_data;
+                    let row = (r as usize) % rows.len();
+                    rows[row][0].0 ^= 1;
                 }),
-                ("final-level opened row", |p, _, r| {
-                    let row = (r as usize) % p.final_proof.opened_rows.len();
-                    p.final_proof.opened_rows[row][0].c0 ^= 1;
+                ("final-level opened row", |p, r| {
+                    let rows = &mut p.merkle_paths.last_mut().unwrap().leaf_data;
+                    let row = (r as usize) % rows.len();
+                    rows[row][0].0 ^= 1;
                 }),
-                ("merkle proof node", |p, _, r| {
-                    let idx = (r as usize) % p.initial_proof.merkle_proof.len();
-                    p.initial_proof.merkle_proof[idx][0] ^= 1;
+                ("merkle proof node", |p, r| {
+                    let sibs = &mut p.merkle_paths[0].sibling_hashes;
+                    let idx = (r as usize) % sibs.len();
+                    sibs[idx][0] ^= 1;
                 }),
             ];
             for (what, tamper) in tampers {
-                let mut bad = inst.proof.clone();
                 let mut bad_fs = inst.fs.clone();
-                tamper(&mut bad, &mut bad_fs, rng.next_u64());
+                tamper(&mut bad_fs, rng.next_u64());
                 assert!(
-                    !verify_both_agree(&inst, &bad, &bad_fs, what),
+                    !verify_both_agree(&inst, &bad_fs, what),
                     "tampered {what} accepted at log_n={log_n}"
                 );
             }
@@ -2530,7 +2454,7 @@ mod tests {
                 let mut bad_fs = inst.fs.clone();
                 bad_fs.stream[idx] += F192::ONE;
                 assert!(
-                    !verify_both_agree(&inst, &inst.proof, &bad_fs, "stream word"),
+                    !verify_both_agree(&inst, &bad_fs, "stream word"),
                     "tampered stream word {idx} accepted at log_n={log_n}"
                 );
             }
@@ -2541,11 +2465,7 @@ mod tests {
     fn proving_is_deterministic() {
         let a = prove_instance(12, 7);
         let b = prove_instance(12, 7);
-        assert_eq!(a.proof, b.proof, "same inputs must yield identical proofs");
-        assert_eq!(
-            a.fs.stream, b.fs.stream,
-            "same inputs must yield an identical transcript"
-        );
+        assert_eq!(a.fs, b.fs, "same inputs must yield an identical transcript");
     }
 
     /// The E-valued interleaved NTT with K-twiddles must act lane-wise on the

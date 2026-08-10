@@ -120,21 +120,14 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
 /// public-input claims, as block-sparse slot evaluations) AND flock's
 /// ring-switched BLAKE3 `(ab, c)` validity (`ring`) in ONE stacked WHIR.
-/// The points become the opener's `point_claims`; the returned proof is placed
-/// on the `openings` hint channel by the caller (`ps.hint_opening`), not on the
-/// scalar stream. The commitment root was already bound by [`commit`], and the
-/// point *values* rode the stream during their sub-protocols, so nothing extra
-/// is bound here.
+/// The points become the opener's `point_claims`; the opening's Merkle data
+/// rides the transcript's phase list, not the scalar stream. The commitment root
+/// was already bound by [`commit`], and the point *values* rode the stream
+/// during their sub-protocols, so nothing extra is bound here.
 ///
 /// There is no plain (non-ring-switch) path: the witness ALWAYS carries a `q_flock`
 /// sub-block (≥ 1 padding instance, §cpu), so every opening is stacked.
-pub fn open(
-    ps: &mut ProverState,
-    c: &Committed,
-    q: &[F64],
-    points: &[SlotClaim],
-    ring: &RingSwitchOpen,
-) -> ::pcs::whir::WhirProof {
+pub fn open(ps: &mut ProverState, c: &Committed, q: &[F64], points: &[SlotClaim], ring: &RingSwitchOpen) {
     debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
     let cfg = whir_configs(c.mu, c.log_inv_rate);
     open_batch_mixed_whir_stacked(ps, q, &c.prover_data, &cfg.0, points, ring)
@@ -142,17 +135,15 @@ pub fn open(
 
 /// Verify the opening (mirror of [`open`]): flock's ring-switched `(ab, c)` claims
 /// and every `points` slot evaluation are checked together in the ONE stacked
-/// WHIR against `root`. `open` is the transmitted proof, read off the
-/// `openings` hint channel at its protocol point by the caller.
+/// WHIR against `root`, pulling its Merkle phases off the transcript.
 pub fn verify(
     vs: &mut VerifierState,
     points: &[SlotClaim],
     ring: &RingSwitchVerify,
-    open: &::pcs::whir::WhirProof,
     mu: usize,
     log_inv_rate: usize,
     root: &[u8; 32],
 ) -> Result<StackedOpeningSummary, Error> {
     let cfg = whir_configs(mu, log_inv_rate);
-    verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, mu, root, points, ring, open).ok_or(Error::Whir)
+    verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, mu, root, points, ring).ok_or(Error::Whir)
 }

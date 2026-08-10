@@ -58,8 +58,7 @@ use super::pack::PACKING_WIDTH;
 use super::ring_switch;
 use super::whir::{ProverConfig, VerifierConfig};
 use super::whir::{
-    ProverData, WhirProof, build_eq_table_ext, recursive_prover_with_basis,
-    recursive_verifier_with_basis_succinct_with_squeezes,
+    ProverData, build_eq_table_ext, recursive_prover_with_basis, recursive_verifier_with_basis_succinct_with_squeezes,
 };
 
 // ---------------------------------------------------------------------------
@@ -142,7 +141,7 @@ pub struct RingSwitchOpen {
 }
 
 /// Verifier counterpart of [`RingSwitchOpen`]: identical statement data
-/// (the Merkle openings travel separately, as the [`WhirProof`]).
+/// (the Merkle openings ride the transcript's phase list).
 #[derive(Clone, Debug)]
 pub struct RingSwitchVerify {
     /// q_flock's offset inside the committed stack.
@@ -304,7 +303,7 @@ pub fn open_batch_mixed_whir_stacked(
     config: &ProverConfig,
     point_claims: &[StackClaim],
     ring: &RingSwitchOpen,
-) -> WhirProof {
+) {
     let qflock_len = 1usize << ring.qflock_vars;
     assert!(
         ring.offset.is_multiple_of(qflock_len),
@@ -428,7 +427,6 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     root: &Hash,
     point_claims: &[StackClaim],
     ring: &RingSwitchVerify,
-    proof: &WhirProof,
 ) -> Option<StackedOpeningSummary> {
     let n_rs = ring.claims.len();
     let qflock_vars = ring.qflock_vars;
@@ -496,7 +494,6 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     let mut query_squeezes: Vec<Vec<F192>> = Vec::new();
     let ok = recursive_verifier_with_basis_succinct_with_squeezes(
         config,
-        proof,
         log_n,
         target,
         root,
@@ -545,8 +542,7 @@ mod tests {
         root: Hash,
         point_claims: Vec<StackClaim>,
         ring: RingSwitchOpen,
-        proof: WhirProof,
-        fs: fiat_shamir::transcript::Proof<()>,
+        fs: fiat_shamir::transcript::Proof,
     }
 
     /// Synthetic stack of 2^14 F64 words: three aligned 2^12-word columns
@@ -642,8 +638,8 @@ mod tests {
             "test shape must keep the residual cube above q_flock (yr_log_n = {yr_log_n})"
         );
         let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
-        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
+        let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
+        open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
             vc,
@@ -651,7 +647,6 @@ mod tests {
             root: cm.root,
             point_claims,
             ring,
-            proof,
             fs: ps.into_proof(),
         }
     }
@@ -660,8 +655,7 @@ mod tests {
         inst: &Instance,
         point_claims: &[StackClaim],
         ring_claims: &[RingSwitchClaim],
-        proof: &WhirProof,
-        fs: &fiat_shamir::transcript::Proof<()>,
+        fs: &fiat_shamir::transcript::Proof,
     ) -> bool {
         let ring = RingSwitchVerify {
             offset: inst.ring.offset,
@@ -670,7 +664,7 @@ mod tests {
             claims: ring_claims.to_vec(),
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
-        verify_opening_batch_mixed_whir_stacked(&mut vs, &inst.vc, inst.log_n, &inst.root, point_claims, &ring, proof)
+        verify_opening_batch_mixed_whir_stacked(&mut vs, &inst.vc, inst.log_n, &inst.root, point_claims, &ring)
             .is_some()
     }
 
@@ -678,7 +672,7 @@ mod tests {
     fn stacked_open_roundtrip_and_tampering() {
         let inst = build_instance(1);
         assert!(
-            verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.proof, &inst.fs),
+            verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.fs),
             "honest stacked opening rejected"
         );
 
@@ -690,7 +684,7 @@ mod tests {
             unreachable!()
         }
         assert!(
-            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.proof, &inst.fs),
+            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.fs),
             "tampered Point value accepted"
         );
 
@@ -702,7 +696,7 @@ mod tests {
             unreachable!()
         }
         assert!(
-            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.proof, &inst.fs),
+            !verify_instance(&inst, &bad_points, &inst.ring.claims, &inst.fs),
             "tampered Strided value accepted"
         );
 
@@ -710,7 +704,7 @@ mod tests {
         let mut bad_ring = inst.ring.claims.clone();
         bad_ring[0].value += F192::ONE;
         assert!(
-            !verify_instance(&inst, &inst.point_claims, &bad_ring, &inst.proof, &inst.fs),
+            !verify_instance(&inst, &inst.point_claims, &bad_ring, &inst.fs),
             "tampered ring-switch value accepted"
         );
 
@@ -721,7 +715,7 @@ mod tests {
             let mut bad_fs = inst.fs.clone();
             bad_fs.stream[idx] += F192::ONE;
             assert!(
-                !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.proof, &bad_fs),
+                !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &bad_fs),
                 "tampered stream word {idx} accepted"
             );
         }
@@ -730,7 +724,7 @@ mod tests {
         let mut short_fs = inst.fs.clone();
         short_fs.stream.pop();
         assert!(
-            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &inst.proof, &short_fs),
+            !verify_instance(&inst, &inst.point_claims, &inst.ring.claims, &short_fs),
             "short stream accepted"
         );
     }
@@ -739,9 +733,9 @@ mod tests {
     fn stacked_open_proof_is_deterministic() {
         let a = build_instance(2);
         let b = build_instance(2);
-        assert_eq!(a.proof, b.proof, "same inputs must yield identical proofs");
-        let bytes_a = bincode::serialize(&a.proof).unwrap();
-        let bytes_b = bincode::serialize(&b.proof).unwrap();
+        assert_eq!(a.fs, b.fs, "same inputs must yield identical proofs");
+        let bytes_a = bincode::serialize(&a.fs).unwrap();
+        let bytes_b = bincode::serialize(&b.fs).unwrap();
         assert_eq!(bytes_a, bytes_b, "proof bytes must be deterministic");
     }
 
@@ -804,8 +798,8 @@ mod tests {
             prebound: 0,
             claims,
         };
-        let mut ps = fiat_shamir::transcript::ProverState::<()>::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
+        let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
+        open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
         let fs = ps.into_proof();
 
         let ring_v = RingSwitchVerify {
@@ -816,8 +810,7 @@ mod tests {
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &ring_v, &proof,)
-                .is_some(),
+            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &ring_v).is_some(),
             "honest crossing-regime opening rejected"
         );
 
@@ -826,8 +819,7 @@ mod tests {
         bad_ring.claims[0].value += F192::ONE;
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring, &proof,)
-                .is_none(),
+            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring).is_none(),
             "tampered crossing-regime ring value accepted"
         );
     }

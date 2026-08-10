@@ -64,7 +64,7 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
 /// to everything fixed about the proving environment: the flock circuit
 /// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
-/// and the bytecode, via [`Program::bytecode_hash`]: BLAKE3 over the stacked
+/// and the bytecode, via the hash cached on `Program`: BLAKE3 over the stacked
 /// multilinear ([`layout::bytecode_table`]) rather than over an assembler
 /// digest, so a verifier holding only that polynomial reproduces the seed. That
 /// inner hash is cached on the program, so the table is walked once per program
@@ -566,11 +566,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     drop(flock_reduction);
     let offset = w.layout.placements[QFLOCK].offset;
     let ring = crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced);
-    let mixed_open = crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
-    // flock's scalar sub-proof already rode the shared stream (add_scalar at its
-    // protocol points); only the Merkle-bearing stacked opening needs the hint
-    // channel.
-    ps.hint_opening(mixed_open);
+    crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     (
         ps.into_proof(),
         Stats {
@@ -697,9 +693,8 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::blake3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake3)?;
     let flock_stream_end = vs.stream_offset();
-    let open = vs.next_opening().map_err(Error::Transcript)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
-    let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, log_inv_rate, &root).map_err(Error::Open)?;
+    let opening = pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,

@@ -525,62 +525,46 @@ class BinaryReader:
 
 
 @dataclass(frozen=True)
-class MerkleOpening:
-    """One level's opened rows and the octopus authenticating them.
+class MerklePaths:
+    """One opening phase: the leaf words opened at each queried position, and the
+    octopus authenticating them.
 
-    Level 0 committed the K-valued witness, so its rows are base-field words;
-    every deeper level committed a folded E-valued one.
+    A leaf is its raw K words, which is what the committer hashed, so an E-valued
+    row of width `w` arrives as `3w` of them and is regrouped by the reader.
     """
 
-    opened_rows: tuple[tuple[K, ...], ...] | tuple[tuple[E, ...], ...]
-    merkle_proof: tuple[Digest, ...]
+    leaf_data: tuple[tuple[K, ...], ...]
+    sibling_hashes: tuple[Digest, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader, base_field: bool) -> MerkleOpening:
+    def read(cls, reader: BinaryReader) -> MerklePaths:
         row_count = reader.u64()
         require(row_count <= reader.remaining // 8, "invalid opened-row count")
-        if base_field:
-            return cls(tuple(tuple(reader.base_fields()) for _ in range(row_count)), reader.hashes())
-        return cls(tuple(tuple(reader.fields()) for _ in range(row_count)), reader.hashes())
-
-
-@dataclass(frozen=True)
-class WhirProof:
-    """The hash-bearing half of a WHIR opening: one Merkle opening per level.
-
-    Every scalar the protocol transmits (sumcheck messages, level roots, OOD
-    claims, the residual, both kinds of grinding nonce) rides the proof stream
-    instead, read in protocol order by `verify_whir`.
-    """
-
-    initial_proof: MerkleOpening
-    recursive_proofs: tuple[MerkleOpening, ...]
-    final_proof: MerkleOpening
-
-    @classmethod
-    def read(cls, reader: BinaryReader) -> WhirProof:
-        initial_proof = MerkleOpening.read(reader, base_field=True)
-        count = reader.u64()
-        require(count <= 32, "too many WHIR levels")
-        recursive_proofs = tuple(MerkleOpening.read(reader, base_field=False) for _ in range(count))
-        final_proof = MerkleOpening.read(reader, base_field=False)
-        return cls(initial_proof, recursive_proofs, final_proof)
+        return cls(tuple(tuple(reader.base_fields()) for _ in range(row_count)), reader.hashes())
 
 
 @dataclass(frozen=True)
 class Proof:
+    """The two channels: every transmitted scalar, and one entry per opening phase.
+
+    Nothing here names WHIR. Its sumcheck messages, level roots, OOD claims,
+    residual and grinding nonces are ordinary stream words read in protocol
+    order by `verify_whir`; its per-level Merkle data is one phase each, pulled
+    in the order the phases ran.
+    """
+
     stream: tuple[E, ...]
-    openings: tuple[WhirProof, ...]
+    merkle_paths: tuple[MerklePaths, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> Proof:
         reader = BinaryReader(data)
         stream = tuple(reader.fields())
         count = reader.u64()
-        require(count <= 8, "too many PCS openings")
-        openings = tuple(WhirProof.read(reader) for _ in range(count))
+        require(count <= 64, "too many opening phases")
+        merkle_paths = tuple(MerklePaths.read(reader) for _ in range(count))
         reader.finish()
-        return cls(stream, openings)
+        return cls(stream, merkle_paths)
 
     @classmethod
     def load(cls, path: str | Path) -> Proof:
@@ -617,7 +601,7 @@ class Transcript:
         self.proof = proof
         self.state = (0, 0, 0, 0)
         self.stream_offset = 0
-        self.opening_offset = 0
+        self.phase_offset = 0
         self.absorb_bytes(b"leanvm-b/transcript/v2")
         self.absorb_bytes(label)
         for value in statement:
@@ -670,15 +654,16 @@ class Transcript:
         self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")
 
-    def opening(self) -> WhirProof:
-        require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
-        result = self.proof.openings[self.opening_offset]
-        self.opening_offset += 1
+    def merkle(self) -> MerklePaths:
+        """Pull the next opening phase. Not absorbed: its binding is the Merkle structure."""
+        require(self.phase_offset < len(self.proof.merkle_paths), "opening phase missing")
+        result = self.proof.merkle_paths[self.phase_offset]
+        self.phase_offset += 1
         return result
 
     def finish(self) -> None:
         require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
-        require(self.opening_offset == len(self.proof.openings), "PCS openings not fully consumed")
+        require(self.phase_offset == len(self.proof.merkle_paths), "opening phases not fully consumed")
 
 
 # GKR product triple ---------------------------------------------------------
@@ -1606,24 +1591,24 @@ def _hash_pair(left: Digest, right: Digest) -> Digest:
     return blake3_hash(left.value + right.value)
 
 
-def _row_hash(row: Sequence[K | E]) -> Digest:
-    """The committer's leaf preimage.
+def _row_hash(row: Sequence[K]) -> Digest:
+    """The committer's leaf preimage: the row's words in their 8-byte transport image."""
+    return blake3_hash(b"".join(word.to_bytes() for word in row))
 
-    A field element's `to_bytes` is its transport image, 8 bytes for a K word and
-    24 for an E word, so the row's own element type gives the width. Level 0
-    committed the K witness; every deeper level a folded E one.
-    """
-    return blake3_hash(b"".join(value.to_bytes() for value in row))
+
+def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
+    """Regroup a level's leaf words into the E values they encode, three per lane."""
+    return tuple(E(*words[i : i + 3]) for i in range(0, len(words), 3))
 
 
 def authenticate_rows(
     root: Digest,
     leaf_count: int,
     queries: Sequence[int],
-    rows: Sequence[Sequence[K | E]],
+    rows: Sequence[Sequence[K]],
     row_width: int,
     octopus: Sequence[Digest],
-) -> list[Sequence[K | E]]:
+) -> list[Sequence[K]]:
     """Authenticate a compressed multiproof and restore transcript row order."""
     require(leaf_count > 0 and leaf_count & (leaf_count - 1) == 0, "invalid Merkle leaf count")
     unique = sorted(set(queries))
@@ -1750,7 +1735,6 @@ class GluedClaim:
 
 def verify_whir(
     transcript: Transcript,
-    proof: WhirProof,
     log_n: int,
     log_inv_rate: int,
     target: E,
@@ -1760,7 +1744,6 @@ def verify_whir(
     """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, log_inv_rate)
     levels = len(config.folds)
-    require(len(proof.recursive_proofs) == levels - 2, "wrong WHIR recursive-proof count")
 
     def observe_root(value: Digest) -> None:
         for scalar in value.halves():
@@ -1814,23 +1797,22 @@ def verify_whir(
         # fixed: the OOD claims above and these query positions.
         lam = transcript.sample()
         query_weights = powers(lam, len(queries))
-        if level == 0:
-            opened = proof.initial_proof
-        elif final_level:
-            opened = proof.final_proof
-        else:
-            opened = proof.recursive_proofs[level - 1]
+        # Level 0 committed the K witness, one leaf word per lane; every deeper
+        # level a folded E one, three words per lane.
+        lanes = 2**fold_count
+        opened = transcript.merkle()
         try:
-            rows = authenticate_rows(
+            words = authenticate_rows(
                 current_root,
                 block_length,
                 queries,
-                opened.opened_rows,
-                2**fold_count,
-                opened.merkle_proof,
+                opened.leaf_data,
+                lanes if level == 0 else 3 * lanes,
+                opened.sibling_hashes,
             )
         except VerificationError as exc:
             raise VerificationError(f"WHIR level {level}: {exc}") from exc
+        rows: list[Sequence[K | E]] = list(words) if level == 0 else [_ext_row(row) for row in words]
         enforced = _enforced_sum(rows, level_folds, query_weights)
 
         # Every commitment, including the last one, enters through an intro
@@ -2040,7 +2022,6 @@ def _ring_weight(
 
 def verify_stacked_opening(
     transcript: Transcript,
-    opening: WhirProof,
     root: Digest,
     stack_log: int,
     log_inv_rate: int,
@@ -2096,7 +2077,6 @@ def verify_stacked_opening(
 
     verify_whir(
         transcript,
-        opening,
         stack_log,
         log_inv_rate,
         target,
@@ -2344,10 +2324,8 @@ def verify_execution(bytecode: Sequence[K], public_input: bytes, proof: Proof) -
 
     # 7] BLAKE3 validity, then the one opening that discharges every claim.
     reduction = verify_reduction(FLOCK_LOG_BITS + layout.table_logs[BLAKE3.opcode], transcript)
-    opening = transcript.opening()
     verify_stacked_opening(
         transcript,
-        opening,
         root,
         layout.stack_log,
         log_inverse_rate,
