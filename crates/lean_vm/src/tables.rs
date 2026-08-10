@@ -1,4 +1,4 @@
-//! Per-instruction tables (`doc/body/07-instruction-tables.tex`). Each opcode is one [`Table`] impl that declares,
+//! Per-instruction tables (`doc/leanvm/body/07-instruction-tables.tex`). Each opcode is one [`Table`] impl that declares,
 //! in one place, its committed columns, how to fill them from the trace, its bus
 //! interactions (flushes), the read-count columns that feed the count channel,
 //! and its degree-2 constraint. Column indices here are *local* (`0..n_committed_columns`);
@@ -718,7 +718,7 @@ mod jump {
     pub const RBC: usize = 11;
     // Local witness columns (committed, never flushed): the inverse hint `w = c⁻¹`
     // and the taken indicator `b = [c ≠ 0]` it certifies (the `JUMP` table in
-    // `doc/body/07-instruction-tables.tex`). Both are single K lanes.
+    // `doc/leanvm/body/07-instruction-tables.tex`). Both are single K lanes.
     pub const W: usize = 12;
     pub const B: usize = 13;
     pub const N: usize = 14;
@@ -894,7 +894,7 @@ impl Table for Pack64x2Table {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (“BLAKE3” in `doc/body/07-instruction-tables.tex`): one standard compression. The four 128-bit message
+/// `BLAKE3` (“BLAKE3” in `doc/leanvm/body/07-instruction-tables.tex`): one standard compression. The four 128-bit message
 /// chunks are addressed *independently* at `fp·o_i` (`o_i = g^{ins[i]}`), each a
 /// single cell, with no forced contiguity between chunks, so a caller hashing e.g.
 /// `(tweak, pp)` need not copy them into adjacent cells. The chaining value and the

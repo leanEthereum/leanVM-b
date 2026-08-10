@@ -1,7 +1,7 @@
 //! XMSS: a Merkle tree of `2^LOG_LIFETIME` WOTS public-key hashes.
 //!
-//! Mirrors leanVM's memory-optimized secret key: for a range of R = slot_end -
-//! slot_start + 1 slots, storage is O(sqrt(R) + LOG_LIFETIME) instead of O(R).
+//! Mirrors leanVM's memory-optimized secret key: for a range of R = epoch_end -
+//! epoch_start + 1 epochs, storage is O(sqrt(R) + LOG_LIFETIME) instead of O(R).
 //! The key stores the top tree (in-range band plus a thin spine) and one cached
 //! bottom subtree, cut at `split_level = ceil(log2(R)) / 2`. Out-of-range nodes
 //! are deterministic `gen_random_node` fillers.
@@ -15,21 +15,21 @@ use crate::*;
 
 #[derive(Debug)]
 pub struct XmssSecretKey {
-    pub(crate) slot_start: u32, // inclusive
-    pub(crate) slot_end: u32,   // inclusive
+    pub(crate) epoch_start: u32, // inclusive
+    pub(crate) epoch_end: u32,   // inclusive
     pub(crate) public_param: PublicParam,
     pub(crate) seed: [u8; 32],
     pub(crate) split_level: usize, // bottom-subtree height (2^split_level leaves each)
-    // top[l - split_level] = level-l nodes for indices [slot_start >> l, slot_end >> l]
+    // top[l - split_level] = level-l nodes for indices [epoch_start >> l, epoch_end >> l]
     pub(crate) top: Vec<Vec<Digest>>,
     pub(crate) cache: Mutex<Option<BottomSubtree>>,
 }
 
-/// Bottom subtree covering the last-signed slot; its leaf range is derived from
+/// Bottom subtree covering the last-signed epoch; its leaf range is derived from
 /// `subtree_index`.
 #[derive(Debug)]
 pub(crate) struct BottomSubtree {
-    subtree_index: u64, // = slot >> split_level
+    subtree_index: u64, // = epoch >> split_level
     layers: Vec<Vec<Digest>>,
 }
 
@@ -70,8 +70,8 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
         .unwrap()
 }
 
-fn gen_wots_secret_key(seed: &[u8; 32], slot: u32) -> WotsSecretKey {
-    let pre_images = std::array::from_fn(|i| prf(seed, PRF_DOMAINSEP_WOTS_SECRET_KEY, slot as u64, i as u64));
+fn gen_wots_secret_key(seed: &[u8; 32], epoch: u32) -> WotsSecretKey {
+    let pre_images = std::array::from_fn(|i| prf(seed, PRF_DOMAINSEP_WOTS_SECRET_KEY, epoch as u64, i as u64));
     WotsSecretKey::new(pre_images)
 }
 
@@ -102,10 +102,10 @@ fn log2_ceil(n: u64) -> usize {
 /// [`xmss_key_gen`] fans out over.
 fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, lo: u64, hi: u64) -> Vec<Digest> {
     (lo..=hi)
-        .map(|slot| {
-            gen_wots_secret_key(seed, slot as u32)
-                .public_key(public_param, slot as u32)
-                .hash(public_param, slot as u32)
+        .map(|epoch| {
+            gen_wots_secret_key(seed, epoch as u32)
+                .public_key(public_param, epoch as u32)
+                .hash(public_param, epoch as u32)
         })
         .collect()
 }
@@ -146,10 +146,10 @@ fn build_up(
 }
 
 /// In-range leaf bounds of the bottom subtree with the given index.
-fn subtree_bounds(slot_start: u64, slot_end: u64, split_level: usize, subtree_index: u64) -> (u64, u64) {
+fn subtree_bounds(epoch_start: u64, epoch_end: u64, split_level: usize, subtree_index: u64) -> (u64, u64) {
     (
-        slot_start.max(subtree_index << split_level),
-        slot_end.min(((subtree_index + 1) << split_level) - 1),
+        epoch_start.max(subtree_index << split_level),
+        epoch_end.min(((subtree_index + 1) << split_level) - 1),
     )
 }
 
@@ -173,14 +173,14 @@ pub enum XmssKeyGenError {
 
 pub fn xmss_key_gen(
     seed: [u8; 32],
-    slot_start: u32,
-    slot_end: u32,
+    epoch_start: u32,
+    epoch_end: u32,
 ) -> Result<(XmssSecretKey, XmssPublicKey), XmssKeyGenError> {
-    if slot_start > slot_end {
+    if epoch_start > epoch_end {
         return Err(XmssKeyGenError::InvalidRange);
     }
     let public_param = gen_public_param(&seed);
-    let (lo, hi) = (slot_start as u64, slot_end as u64);
+    let (lo, hi) = (epoch_start as u64, epoch_end as u64);
 
     // ~sqrt(R) leaves per bottom subtree; always <= LOG_LIFETIME/2.
     let split_level = log2_ceil(hi - lo + 1).div_ceil(2);
@@ -206,8 +206,8 @@ pub fn xmss_key_gen(
         public_param,
     };
     let secret_key = XmssSecretKey {
-        slot_start,
-        slot_end,
+        epoch_start,
+        epoch_end,
         public_param,
         seed,
         split_level,
@@ -219,35 +219,35 @@ pub fn xmss_key_gen(
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum XmssSignatureError {
-    SlotOutOfRange,
+    EpochOutOfRange,
 }
 
 /// WARNING: XMSS is a stateful signature scheme, never sign twice with the same
-/// `slot`. (Even signing the same message twice at the same slot is insecure,
+/// `epoch`. (Even signing the same message twice at the same epoch is insecure,
 /// because the signature randomness is drawn fresh.)
 pub fn xmss_sign(
     rng: &mut impl CryptoRng,
     secret_key: &XmssSecretKey,
     message: &Message,
-    slot: u32,
+    epoch: u32,
 ) -> Result<XmssSignature, XmssSignatureError> {
-    if slot < secret_key.slot_start || slot > secret_key.slot_end {
-        return Err(XmssSignatureError::SlotOutOfRange);
+    if epoch < secret_key.epoch_start || epoch > secret_key.epoch_end {
+        return Err(XmssSignatureError::EpochOutOfRange);
     }
-    let (randomness, encoding, _) = find_randomness_for_wots_encoding(message, slot, &secret_key.public_param, rng);
-    let wots_secret_key = gen_wots_secret_key(&secret_key.seed, slot);
-    let wots_signature = wots_secret_key.sign(&encoding, randomness, slot, &secret_key.public_param);
+    let (randomness, encoding, _) = find_randomness_for_wots_encoding(message, epoch, &secret_key.public_param, rng);
+    let wots_secret_key = gen_wots_secret_key(&secret_key.seed, epoch);
+    let wots_signature = wots_secret_key.sign(&encoding, randomness, epoch, &secret_key.public_param);
 
-    // Cache the bottom subtree covering `slot` (reused across its 2^split_level
-    // slots), then read the authentication path.
-    let subtree_index = (slot as u64) >> secret_key.split_level;
+    // Cache the bottom subtree covering `epoch` (reused across its 2^split_level
+    // epochs), then read the authentication path.
+    let subtree_index = (epoch as u64) >> secret_key.split_level;
     let mut cache = secret_key.cache.lock().unwrap();
     if cache.as_ref().is_none_or(|s| s.subtree_index != subtree_index) {
         *cache = Some(secret_key.build_bottom_subtree(subtree_index));
     }
     let sub = cache.as_ref().unwrap();
     let merkle_proof = std::array::from_fn(|level| {
-        let neighbour_index = ((slot as u64) >> level) ^ 1;
+        let neighbour_index = ((epoch as u64) >> level) ^ 1;
         secret_key.merkle_sibling(level, neighbour_index, sub)
     });
     drop(cache);
@@ -268,8 +268,8 @@ impl XmssSecretKey {
     /// (Re)build the bottom subtree with the given index.
     fn build_bottom_subtree(&self, subtree_index: u64) -> BottomSubtree {
         let (lo, hi) = subtree_bounds(
-            self.slot_start as u64,
-            self.slot_end as u64,
+            self.epoch_start as u64,
+            self.epoch_end as u64,
             self.split_level,
             subtree_index,
         );
@@ -282,15 +282,15 @@ impl XmssSecretKey {
     fn merkle_sibling(&self, level: usize, neighbour_index: u64, sub: &BottomSubtree) -> Digest {
         let (lo, hi, level_base, layers) = if level >= self.split_level {
             (
-                self.slot_start as u64,
-                self.slot_end as u64,
+                self.epoch_start as u64,
+                self.epoch_end as u64,
                 self.split_level,
                 &self.top,
             )
         } else {
             let (lo, hi) = subtree_bounds(
-                self.slot_start as u64,
-                self.slot_end as u64,
+                self.epoch_start as u64,
+                self.epoch_end as u64,
                 self.split_level,
                 sub.subtree_index,
             );
@@ -315,16 +315,16 @@ pub fn xmss_verify(
     pub_key: &XmssPublicKey,
     message: &Message,
     signature: &XmssSignature,
-    slot: u32,
+    epoch: u32,
 ) -> Result<(), XmssVerifyError> {
     let wots_public_key = signature
         .wots_signature
-        .recover_public_key(message, slot, &pub_key.public_param)
+        .recover_public_key(message, epoch, &pub_key.public_param)
         .ok_or(XmssVerifyError::InvalidWots)?;
-    let mut current = wots_public_key.hash(&pub_key.public_param, slot);
+    let mut current = wots_public_key.hash(&pub_key.public_param, epoch);
     for (level, neighbour) in signature.merkle_proof.iter().enumerate() {
-        let is_left = ((slot as u64 >> level) & 1) == 0;
-        let parent_index = (slot as u64) >> (level + 1);
+        let is_left = ((epoch as u64 >> level) & 1) == 0;
+        let parent_index = (epoch as u64) >> (level + 1);
         let (left, right) = if is_left {
             (current, *neighbour)
         } else {

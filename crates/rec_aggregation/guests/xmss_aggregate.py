@@ -5,7 +5,7 @@
 # exponent and range checked. The fixed part (FIXED_BLOCKS blocks) is hinted,
 # absorbed, and stored into buffers — so everything a verification later reads
 # is bound by the hash the outer verifier recomputes. One runtime loop absorbs
-# each public key block and verifies its signature (same message and slot for
+# each public key block and verifies its signature (same message and epoch for
 # all). The IV size element is computed from n directly (the loop absorbs
 # exactly n pk blocks, so it needs no separate hint or consistency check).
 #
@@ -224,7 +224,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         blake3(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, step=q, end=(q + 1) // WOTS_PK_BLOCKS, root=(q + 1) // WOTS_PK_BLOCKS)
         leaf = next_leaf
 
-    # Merkle path from the leaf to the root: the hinted slot bit orders the
+    # Merkle path from the leaf to the root: the hinted epoch bit orders the
     # two children at each level; the tweak comes from the bound table. Level
     # l reads bit cell l and tweak cell (MERKLE_TWEAK_IDX+l): compile-time
     # (beta) indexes, one DEREF each.

@@ -26,7 +26,7 @@ pub type Tweak = [u8; TWEAK_LEN];
 pub const STATE_LEN: usize = 32;
 
 /// `[tweak_type (1) | sub_position (4) | index (4) | zeros (7)]`, little-endian.
-/// `index` is the slot (chain / wots_pk / encoding) or the Merkle node index;
+/// `index` is the epoch (chain / wots_pk / encoding) or the Merkle node index;
 /// `sub_position` is the chain position or the Merkle level.
 pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
     let mut tweak = [0u8; TWEAK_LEN];

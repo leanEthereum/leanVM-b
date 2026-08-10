@@ -901,7 +901,7 @@ impl FnLower<'_> {
 
     /// `assert log x < log GEN ** k`: the 3-cycle range check *in the
     /// exponent* (leanVM's DEREF trick, see
-    /// `doc/body/10-isa-programming.tex` §sec:prog-range-checks, transported to g-powers). With `x = g^e`:
+    /// `doc/leanvm/body/10-isa-programming.tex` §sec:prog-range-checks, transported to g-powers). With `x = g^e`:
     ///
     /// 1. `DEREF` through `x`: the dereferenced address `x·g^0` must be one of
     ///    the memory's `2^h` addresses `{g^0, …, g^{2^h-1}}` (doc §Memory), so

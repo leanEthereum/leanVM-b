@@ -1,5 +1,6 @@
 // CREDIT: https://github.com/leanEthereum/leanVM (XMSS construction).
-//! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
+//! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented). The
+//! concrete scheme is specified in `doc/xmss/main.tex`.
 //!
 //! Every hash is standard BLAKE3 of the exact byte string
 //! `tweak | pp | payload`, truncated to n = 128 bits. See the `hash` module for the
@@ -41,7 +42,7 @@ pub const MESSAGE_LEN: usize = 32;
 pub const PUBLIC_PARAM_LEN: usize = 16;
 
 // XMSS
-/// Merkle tree height: a key is valid for up to `2^32` slots.
+/// Merkle tree height: a key is valid for up to `2^32` epochs.
 pub const LOG_LIFETIME: usize = 32;
 
 /// Serialized sizes (exact under bincode: fixed arrays, no length prefixes).

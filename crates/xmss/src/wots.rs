@@ -27,9 +27,9 @@ impl WotsSecretKey {
 
     /// Walk every chain to its tip. Only key generation needs this; signing
     /// stops each chain at its encoding digit.
-    pub fn public_key(&self, public_param: &PublicParam, slot: u32) -> WotsPublicKey {
+    pub fn public_key(&self, public_param: &PublicParam, epoch: u32) -> WotsPublicKey {
         WotsPublicKey(std::array::from_fn(|i| {
-            iterate_hash(&self.pre_images[i], CHAIN_LENGTH - 1, public_param, slot, i, 0)
+            iterate_hash(&self.pre_images[i], CHAIN_LENGTH - 1, public_param, epoch, i, 0)
         }))
     }
 
@@ -40,12 +40,12 @@ impl WotsSecretKey {
         &self,
         encoding: &[u8; V],
         randomness: Randomness,
-        slot: u32,
+        epoch: u32,
         public_param: &PublicParam,
     ) -> WotsSignature {
         WotsSignature {
             chain_tips: std::array::from_fn(|i| {
-                iterate_hash(&self.pre_images[i], encoding[i] as usize, public_param, slot, i, 0)
+                iterate_hash(&self.pre_images[i], encoding[i] as usize, public_param, epoch, i, 0)
             }),
             randomness,
         }
@@ -56,16 +56,16 @@ impl WotsSignature {
     pub fn recover_public_key(
         &self,
         message: &Message,
-        slot: u32,
+        epoch: u32,
         public_param: &PublicParam,
     ) -> Option<WotsPublicKey> {
-        let encoding = wots_encode(message, slot, public_param, &self.randomness)?;
+        let encoding = wots_encode(message, epoch, public_param, &self.randomness)?;
         Some(WotsPublicKey(std::array::from_fn(|i| {
             iterate_hash(
                 &self.chain_tips[i],
                 CHAIN_LENGTH - 1 - encoding[i] as usize,
                 public_param,
-                slot,
+                epoch,
                 i,
                 encoding[i] as usize,
             )
@@ -76,20 +76,20 @@ impl WotsSignature {
 impl WotsPublicKey {
     /// The Merkle leaf: standard BLAKE3 over the tweak, public parameter, and
     /// 42 concatenated chain tips (704 bytes, 11 compressions in one chunk).
-    pub fn hash(&self, public_param: &PublicParam, slot: u32) -> Digest {
+    pub fn hash(&self, public_param: &PublicParam, epoch: u32) -> Digest {
         let mut data = [0u8; V * DIGEST_LEN];
         for (chunk, tip) in data.chunks_exact_mut(DIGEST_LEN).zip(&self.0) {
             chunk.copy_from_slice(tip);
         }
-        tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, slot, &data)
+        tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, epoch, &data)
     }
 }
 
 /// One chain step (1 compression). The position `chain_index * CHAIN_LENGTH +
 /// step` identifies the edge from chain value `step` to `step + 1`.
-fn chain_step(public_param: &PublicParam, slot: u32, chain_index: usize, step: usize, x: &Digest) -> Digest {
+fn chain_step(public_param: &PublicParam, epoch: u32, chain_index: usize, step: usize, x: &Digest) -> Digest {
     let position = (chain_index * CHAIN_LENGTH + step) as u32;
-    tweak_hash(public_param, TWEAK_TYPE_CHAIN, position, slot, x)
+    tweak_hash(public_param, TWEAK_TYPE_CHAIN, position, epoch, x)
 }
 
 /// Walk chain `chain_index` for `n` steps starting at chain value `start_step`.
@@ -97,18 +97,18 @@ fn iterate_hash(
     a: &Digest,
     n: usize,
     public_param: &PublicParam,
-    slot: u32,
+    epoch: u32,
     chain_index: usize,
     start_step: usize,
 ) -> Digest {
     (0..n).fold(*a, |acc, j| {
-        chain_step(public_param, slot, chain_index, start_step + j, &acc)
+        chain_step(public_param, epoch, chain_index, start_step + j, &acc)
     })
 }
 
 pub fn find_randomness_for_wots_encoding(
     message: &Message,
-    slot: u32,
+    epoch: u32,
     public_param: &PublicParam,
     rng: &mut impl CryptoRng,
 ) -> (Randomness, [u8; V], usize) {
@@ -116,7 +116,7 @@ pub fn find_randomness_for_wots_encoding(
     loop {
         num_iters += 1;
         let randomness: Randomness = rng.random();
-        if let Some(encoding) = wots_encode(message, slot, public_param, &randomness) {
+        if let Some(encoding) = wots_encode(message, epoch, public_param, &randomness) {
             return (randomness, encoding, num_iters);
         }
     }
@@ -136,14 +136,14 @@ pub fn find_randomness_for_wots_encoding(
 /// `8^i` monomial weights (see `tests/xmss_aggregate.py`).
 pub fn wots_encode(
     message: &Message,
-    slot: u32,
+    epoch: u32,
     public_param: &PublicParam,
     randomness: &Randomness,
 ) -> Option<[u8; V]> {
     let mut data = [0u8; 2 * STATE_LEN];
     data[..MESSAGE_LEN].copy_from_slice(message);
     data[MESSAGE_LEN..][..RANDOMNESS_LEN].copy_from_slice(randomness);
-    let digest = tweak_hash(public_param, TWEAK_TYPE_ENCODING, 0, slot, &data);
+    let digest = tweak_hash(public_param, TWEAK_TYPE_ENCODING, 0, epoch, &data);
 
     if digest[7] >> 7 != 0 || digest[DIGEST_LEN - 1] >> 7 != 0 {
         return None; // the leftover top bit of each 64-bit word must be zero

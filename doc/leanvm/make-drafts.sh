@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate doc/drafts/: one tiny driver per section, so that pressing the
+# Regenerate doc/leanvm/drafts/: one tiny driver per section, so that pressing the
 # LaTeX build key inside a section file compiles only that section.
 #
 # Run this after adding, renaming or renumbering a section.
