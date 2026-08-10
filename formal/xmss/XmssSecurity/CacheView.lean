@@ -34,6 +34,11 @@ def leafInput (parameter : PublicParameter) (epoch : Epoch)
   XmssSecurity.tweakableHashInput parameter (.leaf epoch)
     (Concrete.leafPayload endpoints)
 
+def merkleInput (parameter : PublicParameter) (level : MerkleLevel)
+    (node : MerkleNode) (left right : Digest) : HashInput :=
+  XmssSecurity.tweakableHashInput parameter (.merkle level node)
+    (Concrete.nodePayload left right)
+
 def encodingHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
     (epoch : Epoch) (input : Message × Randomness) : Digest :=
   digestAt cache (encodingInput parameter epoch input)
@@ -48,6 +53,10 @@ def chainStep (cache : QueryCache HashSpec) (parameter : PublicParameter)
 def leafHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
     (epoch : Epoch) (endpoints : ChainIndex → Digest) : Digest :=
   digestAt cache (leafInput parameter epoch endpoints)
+
+def merkleHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (level : MerkleLevel) (node : MerkleNode) (left right : Digest) : Digest :=
+  digestAt cache (merkleInput parameter level node left right)
 
 def nodeIndex (epoch : Epoch) (level : Nat) : MerkleNode :=
   ⟨epoch.val / 2 ^ (level + 1), by

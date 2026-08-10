@@ -1,4 +1,6 @@
 import XmssSecurity.Encoding
+import XmssSecurity.ConcreteKeygen
+import XmssSecurity.ConcreteSign
 import XmssSecurity.ConcreteVerify
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
@@ -12,13 +14,11 @@ namespace XmssSecurity
 
 namespace Concrete
 
-axiom keygen : OracleComp OracleWorld (PublicKey × SecretKey)
-
 axiom sign : PublicKey → SecretKey → Epoch → Message →
   OracleComp OracleWorld (Option Signature)
 
 noncomputable def scheme : Scheme where
-  keygen := keygen
+  keygen := Concrete.keygen
   sign := sign
   verify := Concrete.verify
 

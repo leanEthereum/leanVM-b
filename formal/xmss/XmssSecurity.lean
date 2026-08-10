@@ -3,6 +3,8 @@ import XmssSecurity.CacheVerify
 import XmssSecurity.CacheReplay
 import XmssSecurity.ConcreteForgery
 import XmssSecurity.ConcreteHash
+import XmssSecurity.ConcreteKeygen
+import XmssSecurity.ConcreteSign
 import XmssSecurity.ConcreteVerify
 import XmssSecurity.MainTheorem
 import XmssSecurity.Execution

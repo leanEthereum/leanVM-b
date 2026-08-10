@@ -1,4 +1,5 @@
 import XmssSecurity.CacheVerify
+import XmssSecurity.ConcreteSign
 import VCVio.OracleComp.QueryTracking.CachingOracle
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 
@@ -104,6 +105,135 @@ theorem eval_leafHash (cache : QueryCache HashSpec)
       CacheView.leafHash cache parameter epoch endpoints := by
   simp [Concrete.leafHash, CacheView.leafHash, CacheView.leafInput,
     CacheView.tweakableHash]
+
+@[simp]
+theorem eval_nodeHash (cache : QueryCache HashSpec)
+    (parameter : PublicParameter) (level : MerkleLevel) (node : MerkleNode)
+    (left right : Digest) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.nodeHash parameter level node left right : OracleComp HashSpec Digest) =
+      CacheView.merkleHash cache parameter level node left right := by
+  simp [Concrete.nodeHash, CacheView.merkleHash, CacheView.merkleInput,
+    CacheView.tweakableHash]
+
+def oneTimePublicKey (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (epoch : Epoch) : ChainIndex → Digest :=
+  fun chain => Wots.walk (CacheView.chainStep cache parameter epoch chain) 0
+    (chainLength - 1) (secret epoch chain)
+
+@[simp]
+theorem eval_oneTimePublicKey (cache : QueryCache HashSpec)
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch : Epoch) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.oneTimePublicKey parameter secret epoch :
+        OracleComp HashSpec (ChainIndex → Digest)) =
+      oneTimePublicKey cache parameter secret epoch := by
+  funext chain
+  simp [Concrete.oneTimePublicKey, oneTimePublicKey]
+
+def leafAt (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (epoch : Epoch) : Digest :=
+  CacheView.leafHash cache parameter epoch
+    (oneTimePublicKey cache parameter secret epoch)
+
+@[simp]
+theorem eval_leafAt (cache : QueryCache HashSpec)
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch : Epoch) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.leafAt parameter secret epoch : OracleComp HashSpec Digest) =
+      leafAt cache parameter secret epoch := by
+  simp [Concrete.leafAt, leafAt]
+
+def treeNode (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) : Nat → MerkleNode → Digest
+  | 0, node => leafAt cache parameter secret node
+  | levels + 1, node =>
+      if hlevel : levels < treeHeight then
+        CacheView.merkleHash cache parameter ⟨levels, hlevel⟩ node
+          (treeNode cache parameter secret levels (Concrete.childNode node false))
+          (treeNode cache parameter secret levels (Concrete.childNode node true))
+      else
+        0
+
+@[simp]
+theorem eval_treeNode (cache : QueryCache HashSpec)
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (levels : Nat) (node : MerkleNode) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.treeNode parameter secret levels node : OracleComp HashSpec Digest) =
+      treeNode cache parameter secret levels node := by
+  induction levels generalizing node with
+  | zero => simp [Concrete.treeNode, treeNode]
+  | succ levels ih =>
+      simp only [Concrete.treeNode, evalWithAnswerFn_bind, ih, treeNode]
+      split <;> simp_all
+
+def signedChainValues (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (epoch : Epoch) (encoding : Encoding) : ChainIndex → Digest :=
+  fun chain => Wots.walk
+    (CacheView.chainStep cache secretKey.parameter epoch chain) 0
+    (encoding chain).val (secretKey.chainStart epoch chain)
+
+@[simp]
+theorem eval_signedChainValues (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (epoch : Epoch) (encoding : Encoding) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.signedChainValues secretKey epoch encoding :
+        OracleComp HashSpec (ChainIndex → Digest)) =
+      signedChainValues cache secretKey epoch encoding := by
+  funext chain
+  simp [Concrete.signedChainValues, signedChainValues]
+
+def authenticationPath (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (epoch : Epoch) : Fin treeHeight → Digest :=
+  fun level => treeNode cache secretKey.parameter secretKey.chainStart level.val
+    (Concrete.authenticationPathNode epoch level)
+
+@[simp]
+theorem eval_authenticationPath (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (epoch : Epoch) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.authenticationPath secretKey epoch :
+        OracleComp HashSpec (Fin treeHeight → Digest)) =
+      authenticationPath cache secretKey epoch := by
+  funext level
+  simp [Concrete.authenticationPath, authenticationPath]
+
+def signWithEncoding (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (epoch : Epoch) (randomness : Randomness) (encoding : Encoding) : Signature :=
+  ⟨randomness, signedChainValues cache secretKey epoch encoding,
+    authenticationPath cache secretKey epoch⟩
+
+@[simp]
+theorem eval_signWithEncoding (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (epoch : Epoch) (randomness : Randomness)
+    (encoding : Encoding) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.signWithEncoding secretKey epoch randomness encoding :
+        OracleComp HashSpec Signature) =
+      signWithEncoding cache secretKey epoch randomness encoding := by
+  simp [Concrete.signWithEncoding, signWithEncoding]
+
+noncomputable def signAttempt (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) (randomness : Randomness) : Option Signature :=
+  match TargetSum.decodeDigest
+    (CacheView.encodingHash cache secretKey.parameter epoch (message, randomness)) with
+  | none => none
+  | some encoding => some (signWithEncoding cache secretKey epoch randomness encoding)
+
+@[simp]
+theorem eval_signAttempt (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (epoch : Epoch) (message : Message)
+    (randomness : Randomness) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.signAttempt secretKey epoch message randomness :
+        OracleComp HashSpec (Option Signature)) =
+      signAttempt cache secretKey epoch message randomness := by
+  unfold Concrete.signAttempt signAttempt
+  simp only [evalWithAnswerFn_bind, eval_encodingHash]
+  split <;> simp_all
 
 @[simp]
 theorem eval_authenticationRoot (cache : QueryCache HashSpec)
