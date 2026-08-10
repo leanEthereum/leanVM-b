@@ -6,4 +6,5 @@ import XmssSecurity.Merkle
 import XmssSecurity.MixedOracle
 import XmssSecurity.RandomOracle
 import XmssSecurity.SecurityBudget
+import XmssSecurity.Tweak
 import XmssSecurity.Wots
