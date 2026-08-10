@@ -1,6 +1,7 @@
 import XmssSecurity.Encoding
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
+import XmssSecurity.IndexedHiddenValue
 import XmssSecurity.Merkle
 import XmssSecurity.SecurityBudget
 import XmssSecurity.SecurityGame
@@ -14,14 +15,14 @@ axiom scheme : Scheme
 
 end Concrete
 
-/-- The remaining cryptographic hybrid exposes the 175 classified events as independent hidden digest targets. -/
+/-- The remaining cryptographic hybrid exposes each classified event as an epoch-indexed hidden digest table. -/
 theorem xmss_factorizes_to_hiddenTargets (q : Nat) (hq : 1 ≤ q)
     (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
-    ∃ strategyGenerator : ProbComp (List Bool → Digest),
+    ∃ strategyGenerator : BadEvent → ProbComp (List Bool → Epoch × Digest),
       forgeAdvantage Concrete.scheme adversary ≤
-        Pr[(fun hit : Bool => hit = true) |
-          HiddenValue.adaptiveGuessExperiment strategyGenerator q totalBadEventSlots] := by
+        ∑ event, Pr[(fun hit : Bool => hit = true) |
+          IndexedHiddenValue.adaptiveGuessExperiment (strategyGenerator event) q] := by
   sorry
 
 /-- Every bounded adversary has forging probability at most `q / 2^120`. -/
@@ -31,9 +32,12 @@ theorem xmss_forgeAdvantage_le (q : Nat) (hq : 1 ≤ q)
     forgeAdvantage Concrete.scheme adversary ≤ (q : ENNReal) / ((2 ^ 120 : Nat) : ENNReal) := by
   obtain ⟨strategyGenerator, hforge⟩ :=
     xmss_factorizes_to_hiddenTargets q hq adversary hbound
-  have hguess := HiddenValue.adaptive_guess_after_public_sampling_le_120
-    strategyGenerator q totalBadEventSlots (le_refl totalBadEventSlots)
-  exact hforge.trans (by simpa [targetSecurityBits] using hguess)
+  refine hforge.trans (badEvent_sum_le_120 q (fun event =>
+    Pr[(fun hit : Bool => hit = true) |
+      IndexedHiddenValue.adaptiveGuessExperiment (strategyGenerator event) q]) ?_)
+  intro event
+  exact IndexedHiddenValue.adaptive_guess_after_public_sampling_le
+    (strategyGenerator event) q
 
 /-- The concrete XMSS scheme has at least 120 bits of classical security in the random-oracle game. -/
 theorem xmss_has_120_bits_of_classical_security :
