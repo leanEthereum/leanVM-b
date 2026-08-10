@@ -44,4 +44,20 @@ theorem adaptive_guess_list_le_120 (q targetCount : Nat)
     _ ≤ (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) :=
       totalBadEventSlots_budget_le_120 q
 
+noncomputable def adaptiveGuessExperiment
+    (strategyGenerator : ProbComp (List Bool → Digest)) (q targetCount : Nat) : ProbComp Bool :=
+  strategyGenerator >>= fun strategy =>
+    hiddenReadList ($ᵗ Digest) q strategy targetCount
+
+/-- Public randomness may select the probing strategy before the independent hidden targets are drawn. -/
+theorem adaptive_guess_after_public_sampling_le_120
+    (strategyGenerator : ProbComp (List Bool → Digest)) (q targetCount : Nat)
+    (hcount : targetCount ≤ totalBadEventSlots) :
+    Pr[(fun hit : Bool => hit = true) |
+      adaptiveGuessExperiment strategyGenerator q targetCount] ≤
+      (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) := by
+  unfold adaptiveGuessExperiment
+  exact probEvent_bind_le_of_forall_le fun strategy _ =>
+    adaptive_guess_list_le_120 q targetCount strategy hcount
+
 end XmssSecurity.HiddenValue
