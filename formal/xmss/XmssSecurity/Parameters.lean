@@ -13,6 +13,10 @@ def winternitzBits : Nat := 3
 def chainLength : Nat := 2 ^ winternitzBits
 def numChains : Nat := 42
 def targetSum : Nat := 195
+def verificationChainHashes : Nat := numChains * (chainLength - 1) - targetSum
+
+theorem verificationChainHashes_eq : verificationChainHashes = 99 := by
+  native_decide
 
 abbrev Digest := BitVec digestBits
 abbrev HashOutput := BitVec hashOutputBits
