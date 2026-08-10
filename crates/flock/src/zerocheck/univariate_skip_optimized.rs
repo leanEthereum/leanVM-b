@@ -54,13 +54,14 @@ const N_MEDIUM: usize = 4;
 /// The three small-eq challenges (as F_8 values, then embedded via φ_8).
 /// Choosing these specific values is what makes `eq_small[K] = C_s · α^K`.
 ///
-/// **Soundness dependency.** These three constants — together with the
-/// four medium constants returned by [`medium_challenges`] — must be
-/// **F₂-linearly independent** in F₁₉₂. Zerocheck soundness relies on this
-/// (a witness aligned with the friendly subspace would otherwise let the
-/// prover cancel the URM message), and so does WHIR's L0 list-collapse
-/// argument (the SZ bound `(m−7)/|F|` for MLE collisions at `r` requires
-/// the seven friendly coords to span a 7-dim F₂-subspace). Asserted by
+/// **Soundness dependency.** These three constants, with the four medium ones
+/// returned by [`medium_challenges`], are the seven fixed zerocheck coordinates
+/// `a`. `lem:fixed-zerocheck` requires their `2^7` equality WEIGHTS
+/// `{eq(a, b)}` to be **F₂-linearly independent** in F₁₉₂, which is strictly
+/// stronger than independence of the seven coordinates. Zerocheck soundness
+/// relies on it (a witness aligned with the friendly subspace would otherwise
+/// let the prover cancel the URM message), and so does WHIR's L0 list-collapse
+/// argument (the SZ bound `(m-7)/|F|` for MLE collisions at `r`). Asserted by
 /// `tests::friendly_challenges_f2_independent`.
 const SMALL_CHAL_F8: [u8; 3] = [0xF7, 0x53, 0xB5];
 
@@ -953,49 +954,57 @@ mod tests {
         }
     }
 
-    /// **Soundness assumption.** Zerocheck and the WHIR PCS opening at
-    /// L0 both depend on the seven "friendly" constants — three small
+    /// **Soundness assumption.** Zerocheck and the WHIR PCS opening at L0 both
+    /// depend on the seven "friendly" constants `a`, three small
     /// (`φ_8(SMALL_CHAL_F8[k])`, k ∈ 0..3) and four medium
-    /// (`γ^{2^i}/(1+γ^{2^i})`, i ∈ 0..4) — being **F₂-linearly independent**
-    /// in F₁₉₂.
+    /// (`γ^{2^i}/(1+γ^{2^i})`, i ∈ 0..4), satisfying the hypothesis of
+    /// `lem:fixed-zerocheck` (doc/leanvm/body/03-proving-primitives.tex): the
+    /// `2^7` equality WEIGHTS `{eq(a, b) : b ∈ {0,1}^7}` are **F₂-linearly
+    /// independent** in F₁₉₂, i.e. they have rank 128.
     ///
-    /// Zerocheck needs this so that the prover's URM message can't be
-    /// trivially canceled by a malicious witness aligned with the friendly
-    /// subspace. WHIR's L0 list-collapse argument (which leans on the
-    /// zerocheck `(r, v)` claim as an OOD-equivalent) also depends on it
-    /// — see the soundness writeup. If any subset of these seven values is
-    /// F₂-dependent, the SZ bound `(m−7)/|F|` for collisions between
-    /// distinct candidate codewords' MLEs at `r` no longer holds, and a
-    /// cheating prover could engineer their witness so two candidates'
+    /// That is what the proof consumes, and it is strictly stronger than
+    /// independence of the seven `a_i` themselves: a single relation among their
+    /// products (say `a_1 a_2 = a_3`) drops the weight rank below 128 while
+    /// leaving the coordinates independent. Asserting only rank 7 of the `a_i`
+    /// would pass while the lemma's hypothesis failed.
+    ///
+    /// Zerocheck needs it so that the prover's URM message cannot be trivially
+    /// canceled by a malicious witness aligned with the friendly subspace. WHIR's
+    /// L0 list-collapse argument (which leans on the zerocheck `(r, v)` claim as
+    /// an OOD-equivalent) needs it too: without it the SZ bound `(m-7)/|F|` for
+    /// collisions between distinct candidate codewords' MLEs at `r` no longer
+    /// holds, and a cheating prover could engineer a witness so two candidates'
     /// MLEs agree at the friendly point with probability 1.
-    ///
-    /// The check: form the 7×192 binary matrix whose rows are the bit
-    /// representations of the seven constants, Gauss-eliminate over F₂,
-    /// assert rank = 7.
     #[test]
     fn friendly_challenges_f2_independent() {
-        let mut basis: Vec<[u64; 3]> = small_challenges()
+        let a: Vec<F192> = small_challenges()
             .iter()
             .chain(medium_challenges().iter())
-            .map(|f| [f.c0, f.c1, f.c2])
+            .copied()
             .collect();
-        assert_eq!(basis.len(), 7, "expected 3 small + 4 medium friendly values");
+        assert_eq!(a.len(), N_INNER, "expected 3 small + 4 medium friendly values");
 
-        // Row-reduce over F₂. For each column from MSB to LSB, find a row
-        // with that bit set (a pivot), swap it into place, and XOR it into
-        // every other row to clear that column. Final rank = number of
-        // pivots placed.
+        // One row per b: eq(a, b) = prod_i (b_i ? a_i : 1 + a_i).
+        let mut rows: Vec<[u64; 3]> = (0..1usize << N_INNER)
+            .map(|b| {
+                let w = a.iter().enumerate().fold(F192::ONE, |acc, (i, &ai)| {
+                    acc * if (b >> i) & 1 == 1 { ai } else { F192::ONE + ai }
+                });
+                [w.c0, w.c1, w.c2]
+            })
+            .collect();
+
+        // Row-reduce over F₂: per column from MSB down, find a pivot row, swap it
+        // into place, and XOR it into every other row with that bit set.
         let mut rank = 0usize;
         for col in (0..192).rev() {
-            let limb = col / 64;
-            let mask = 1u64 << (col % 64);
-            let pivot = (rank..basis.len()).find(|&i| basis[i][limb] & mask != 0);
-            if let Some(p) = pivot {
-                basis.swap(rank, p);
-                for i in 0..basis.len() {
-                    if i != rank && basis[i][limb] & mask != 0 {
-                        for limb in 0..3 {
-                            basis[i][limb] ^= basis[rank][limb];
+            let (limb, mask) = (col / 64, 1u64 << (col % 64));
+            if let Some(p) = (rank..rows.len()).find(|&i| rows[i][limb] & mask != 0) {
+                rows.swap(rank, p);
+                for i in 0..rows.len() {
+                    if i != rank && rows[i][limb] & mask != 0 {
+                        for l in 0..3 {
+                            rows[i][l] ^= rows[rank][l];
                         }
                     }
                 }
@@ -1003,9 +1012,10 @@ mod tests {
             }
         }
         assert_eq!(
-            rank, 7,
-            "friendly challenges must be F₂-linearly independent in F₁₉₂; \
-             zerocheck and WHIR L0 soundness depend on it"
+            rank,
+            1 << N_INNER,
+            "the 2^7 friendly equality weights must be F₂-linearly independent in F₁₉₂; \
+             zerocheck and WHIR L0 soundness depend on it (lem:fixed-zerocheck)"
         );
     }
 
