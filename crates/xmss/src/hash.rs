@@ -7,8 +7,8 @@
 //! users. Standard BLAKE3 binds the exact payload length.
 //!
 //! Compression counts per call: chain step 1, Merkle node 1, message encoding
-//! 2, WOTS public key 11. A full XMSS verification is a constant 145
-//! compressions: 2 (encoding) + 100 (chains, fixed by the target sum) + 11
+//! 2, WOTS public key 11. A full XMSS verification is a constant 144
+//! compressions: 2 (encoding) + 99 (chains, fixed by the target sum) + 11
 //! (tips) + 32 (Merkle path).
 
 use crate::*;

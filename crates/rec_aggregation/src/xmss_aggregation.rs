@@ -180,10 +180,10 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     // shape and reused across every proof — so it is one-time preprocessing (like a
     // proving key), not part of per-proof proving throughput. Warming it here makes
     // the timing below reflect steady-state repeated proving. The compression count
-    // is `181 + 146·n`: 181 aggregation-prefix blocks, then per signature
-    // one aggregate absorb + 2 encoding + 100 WOTS-chain + 11 WOTS-pubkey +
+    // is `181 + 145·n`: 181 aggregation-prefix blocks, then per signature
+    // one aggregate absorb + 2 encoding + 99 WOTS-chain + 11 WOTS-pubkey +
     // 32 Merkle-parent compressions.
-    lean_vm::blake3_flock::warm_setup(181 + 146 * n);
+    lean_vm::blake3_flock::warm_setup(181 + 145 * n);
 
     // Only the final measured pass of each stage is traced (see `run_recursion`).
     let ((proof, stats), prove_time) = plan.warm_then_measure(|last| {
@@ -195,7 +195,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     });
 
-    assert_eq!(stats.base_counts[5], 181 + 146 * n, "BLAKE3 instruction count");
+    assert_eq!(stats.base_counts[5], 181 + 145 * n, "BLAKE3 instruction count");
     let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 

@@ -96,8 +96,8 @@ fn tampered_signatures_rejected() {
 /// The signer grinds the randomness until `wots_encode` accepts, so the cost of
 /// producing a signature is set by how rare a valid encoding is. Measure it: the
 /// two leftover digest bits contribute 2 bits, and `sum(e_i) == TARGET_SUM` at
-/// 194 (3.2 sd above the mean of 147, over 42 uniform 3-bit digits) contributes
-/// ~12.5, matching the ~2^14 quoted in the crate docs. The band is ~10 sigma for
+/// 195 (3.3 sd above the mean of 147, over 42 uniform 3-bit digits) contributes
+/// ~12.8, matching the sub-2^15 cost quoted in the crate docs. The band is ~10 sigma for
 /// 200 samples, so only a real change to the predicate (a dropped validity bit,
 /// a different TARGET_SUM, a different digit layout) moves it out.
 #[test]

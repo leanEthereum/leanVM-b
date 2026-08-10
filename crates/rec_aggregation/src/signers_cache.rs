@@ -124,7 +124,7 @@ fn cache_path() -> PathBuf {
 
 /// Load the pool from disk, treating any failure (missing file, read error,
 /// decode error, schema mismatch) as an empty cache. Every loaded signer is
-/// re-verified against the current code (~145 compressions each, milliseconds
+/// re-verified against the current code (~144 compressions each, milliseconds
 /// for a full pool) and the pool truncated at the first invalid one: a stale
 /// cache the footprint failed to segregate regenerates from the surviving
 /// prefix instead of panicking mid-benchmark.

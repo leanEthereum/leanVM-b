@@ -13,17 +13,19 @@
 
 \theoremstyle{definition}
 \newtheorem{definition}{Definition}[section]
+\theoremstyle{remark}
+\newtheorem{remark}[definition]{Remark}
 
 \newcommand{\bits}[1]{\{0,1\}^{#1}}
 \newcommand{\getsr}{\stackrel{\$}{\gets}}
 \newcommand{\Th}{\mathsf{TH}}
 \newcommand{\IncEnc}{\mathsf{IncEnc}}
-\newcommand{\KeyGen}{\mathsf{KeyGen}}
-\newcommand{\Sign}{\mathsf{Sign}}
-\newcommand{\Verify}{\mathsf{Verify}}
+\newcommand{\Gen}{\mathsf{Gen}}
+\newcommand{\Sig}{\mathsf{Sig}}
+\newcommand{\Ver}{\mathsf{Ver}}
+\newcommand{\SIG}{\mathsf{SIG}}
 \newcommand{\Chain}{\mathsf{Chain}}
-\newcommand{\PRF}{\mathsf{PRF}}
-\newcommand{\Hash}{\mathsf{H}}
+\newcommand{\hash}{\mathsf{H}}
 \newcommand{\LE}{\mathsf{LE}}
 \newcommand{\Trunc}{\mathsf{Trunc}}
 \newcommand{\concat}{\mathbin\Vert}
@@ -42,26 +44,29 @@
 \maketitle
 
 \begin{abstract}
-As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS, the signature scheme used by Ethereum validators. Aggregating XMSS requires a post-quantum snark. This technical note specifies an optimized XMSS instance with three goals: NIST security category~1~\cite{NISTPQC,DKKW25}, a signature smaller than the 1280-byte IPv6 minimum link MTU~\cite{RFC8200}, and snark-friendly encoding, optimized for leanVM-b~\cite{leanVMb}.
+As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS, the signature scheme used by Ethereum validators. Aggregating XMSS requires a post-quantum snark. This technical note specifies an optimized XMSS instance with the following properties:
+\begin{itemize}
+  \item \textbf{NIST security level~1~} \cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, when the hash function is modelled as a (resp. quantum) random oracle.
+  \item \textbf{public key: 32 bytes}.
+  \item \textbf{signature: 1208 bytes} (smaller than the 1280-byte IPv6 MTU~\cite{RFC8200}).
+  \item snark-friendly encoding, optimized for aggregation via leanVM-b~\cite{leanVMb}, requiring 15 bits of grinding on average.
+  \item 133 hashes per vefication.
+\end{itemize}
 \end{abstract}
 
 \section{Definitions and notation}
 
 \begin{definition}[Synchronized signature scheme]
-A synchronized signature scheme with message space $\mathcal M$ and lifetime $L$ consists of randomized algorithms $\KeyGen$ and $\Sign$ and a deterministic algorithm $\Verify$:
+A synchronized signature scheme with lifetime $L$ is a tuple $\SIG=(\Gen,\Sig,\Ver)$, where $\Gen$ and $\Sig$ are randomized and $\Ver$ is deterministic:
 \[
-  \KeyGen\longrightarrow(\pk,\sk),\qquad
-  \Sign(\sk,\ep,m)\longrightarrow\sigma,\qquad
-  \Verify(\pk,\ep,m,\sigma)\longrightarrow\{0,1\},
+  \Gen\longrightarrow(\pk,\sk),\qquad
+  \Sig(\sk,\ep,m)\longrightarrow\sigma\in\Sigma\cup\{\bot\},\qquad
+  \Ver(\pk,\ep,m,\sigma)\longrightarrow\{0,1\},
 \]
-where $m\in\mathcal M$ is the message and $\ep\in\{0,\ldots,L-1\}$ is the epoch. Correctness requires
-\[
-  \Pr\!\left[\Verify(\pk,\ep,m,\sigma)=1:(\pk,\sk)\gets\KeyGen,\ \sigma\gets\Sign(\sk,\ep,m)\right]=1
-\]
-for every $m\in\mathcal M$ and $\ep\in\{0,\ldots,L-1\}$. For each key pair, $\Sign(\sk,\ep,\cdot)$ may be invoked at most once for any fixed epoch $\ep$.
+where $\Sigma$ is the signature space, $m\in\bits{\ell_{\mathrm{msg}}}$, and $\ep\in\{0,\ldots,L-1\}$. Whenever $(\pk,\sk)$ is output by $\Gen$ and $\Sig(\sk,\ep,m)$ returns $\sigma\neq\bot$, correctness requires $\Ver(\pk,\ep,m,\sigma)=1$. For each key pair, $\Sig(\sk,\ep,\cdot)$ may be invoked at most once for any fixed epoch $\ep$.
 \end{definition}
 
-XMSS is a synchronized signature scheme in which epoch $\ep$ selects a Winternitz one-time key authenticated by leaf $\ep$ of a Merkle tree~\cite{RFC8391}. This specification sets $\mathcal M=\bits{256}$ and $L=2^{32}$.
+XMSS is a synchronized signature scheme in which epoch $\ep$ selects a Winternitz one-time key authenticated by leaf $\ep$ of a Merkle tree~\cite{RFC8391}. This specification sets $\ell_{\mathrm{msg}}=256$ and $L=2^h=2^{32}$.
 
 Byte strings are concatenated with $\concat$. Bits and integer encodings are little endian. $\LE_r(a)$ is the unsigned $r$-bit encoding of $a$. All indices are zero based.
 
@@ -71,157 +76,128 @@ Byte strings are concatenated with $\concat$. Bits and integer encodings are lit
 Symbol & Value & Meaning\\
 \midrule
 $n$ & $128$ bits & hash value and Merkle node length\\
-$|s|$ & $256$ bits & master secret seed length\\
 $|P|$ & $128$ bits & public hash parameter length\\
 $|m|$ & $256$ bits & message length\\
 $|\rho|$ & $192$ bits & encoding randomness length\\
 $w$ & $3$ & log-length of Winternitz chains\\
-$T$ & $194$ & required encoding digit sum\\
+$v$ & $42$ & number of Winternitz chains\\
+$T$ & $195$ & required encoding digit sum\\
 $h$ & $32$ & Merkle tree height\\
 $L$ & $2^{32}$ & lifetime\\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Let $\Hash:\bits{*}\to\bits{256}$ be a cryptographic hash function, and let $\Trunc_{128}$ keep the first 16 output bytes. Define
+Let $\hash:\bits{*}\to\bits{256}$ be a cryptographic hash function, and let $\Trunc_n$ keep the first $n$ output bits. Define
 \[
-  \Th(P,\tau,M)=\Trunc_{128}\!\left(\Hash(\tau\concat P\concat M)\right).
+  \Th(P,T,M)=\Trunc_n\!\left(\hash(T\concat P\concat M)\right).
 \]
 
 \begin{definition}[Tweak encoding]
 For a one-byte type $t$ and unsigned 32-bit integers $p$ and $j$, define the 16-byte tweak
 \[
-  \tau(t,p,j)=\LE_8(t)\concat\LE_{32}(p)\concat\LE_{32}(j)\concat 0^{56}.
+  \mathsf{enc}(t,p,j)=\LE_8(t)\concat\LE_{32}(p)\concat\LE_{32}(j)\concat 0^{56}.
 \]
 \end{definition}
 
-The four public hash domains are fixed as follows.
-
-\begin{center}
-\begin{tabular}{@{}clll@{}}
-\toprule
-$t$ & Use & Sub-position $p$ & Index $j$\\
-\midrule
-$0$ & chain edge $k$ of chain $i$ & $8i+k$ & epoch $\ep$\\
-$1$ & Winternitz public-key leaf & $0$ & epoch $\ep$\\
-$2$ & Merkle node & parent level $\ell$ & node index $j$\\
-$3$ & message encoding & $0$ & epoch $\ep$\\
-\bottomrule
-\end{tabular}
-\end{center}
-
-For a 32-byte master seed $s$, define
-\[
-  \PRF_s(d,a,b)=\Trunc_{128}\!\left(\Hash\!\left(s\concat\LE_{32}(d)\concat\LE_{64}(a)\concat\LE_{64}(b)\right)\right).
-\]
-The three domains are
+Define
 \[
 \begin{aligned}
-  z_{\ep,i} &= \PRF_s(1000,\ep,i), &&\text{Winternitz secret chain start},\\
-  P &= \PRF_s(1001,0,0), &&\text{public hash parameter},\\
-  F_{\ell,j} &= \PRF_s(1002,\ell,j), &&\text{out-of-range Merkle filler}.
+  \mathsf{tweak}(\ep,i,k) &= \mathsf{enc}(0,2^wi+k-1,\ep),\\
+  \mathsf{tweak}_{\mathrm{pkwots}}(\ep) &= \mathsf{enc}(1,0,\ep),\\
+  \mathsf{tweak}_{\mathrm{mt}}(\ell,j) &= \mathsf{enc}(2,\ell,j),\\
+  \mathsf{tweak}_{\mathrm{enc}}(\ep) &= \mathsf{enc}(3,0,\ep).
 \end{aligned}
 \]
 
 The target-sum code is~\cite{DKKW25}
 \[
-  \mathcal C=\left\{(x_0,\ldots,x_{v-1})\in\{0,\ldots,7\}^{v}:\sum_{i=0}^{v-1}x_i=T\right\}.
+  \mathcal C=\left\{(x_0,\ldots,x_{v-1})\in\{0,\ldots,2^w - 1\}^{v}:\sum_{i=0}^{v-1}x_i=T\right\}.
 \]
 Define $\IncEnc(P,m,\rho,\ep)$ by computing
 \[
-  D=\Th\!\left(P,\tau(3,0,\ep),m\concat\rho\concat 0^{64}\right).
+  D=\Th\!\left(P,\mathsf{tweak}_{\mathrm{enc}}(\ep),m\concat\rho\concat 0^{64}\right).
 \]
-Interpret the two halves of $D$ as unsigned little-endian words $d_0,d_1$. For $q\in\{0,1\}$ and $0\leq r<21$, set
+Write $D=D_0\concat D_1$, where $D_0$ and $D_1$ are $n/2$-bit strings. For $q\in\{0,1\}$, let $d_q\in\{0,\ldots,2^{n/2}-1\}$ be the integer whose $n/2$-bit little-endian encoding is $D_q$. For $0\leq r<v/2$, set
 \[
-  x_{21q+r}=\left\lfloor\frac{d_q}{2^{3r}}\right\rfloor\bmod 8.
+  x_{qv/2+r}=\left\lfloor\frac{d_q}{2^{wr}}\right\rfloor\bmod 2^w.
 \]
-Return $x=(x_0,\ldots,x_{41})$ if bit $63$ of both $d_0$ and $d_1$ is zero and $\sum_i x_i=194$; otherwise return $\bot$.
+Return $x=(x_0,\ldots,x_{v-1})$ if bit $wv/2$ of both $d_0$ and $d_1$ is zero and $\sum_i x_i=T$; otherwise return $\bot$.
 
 \begin{definition}[Hash chain]
-For a chain index $i$, epoch $\ep$, starting position $k$, step count $a$, and value $z\in\bits{128}$, define $\Chain_{i,\ep}(P;k,a,z)$ recursively by
+For a chain index $i$, epoch $\ep$, starting position $k$, step count $a$, and value $z\in\bits{n}$, define $\Chain_{\Th,i,\ep}(P,k,a,z)$ recursively by
 \[
-  \Chain_{i,\ep}(P;k,0,z)=z
+  \Chain_{\Th,i,\ep}(P,k,0,z)=z
 \]
-and, when $k+a\leq6$,
+and, when $k+a<2^w-1$,
 \[
-  \Chain_{i,\ep}(P;k,a+1,z)=\Th\!\left(P,\tau(0,8i+k+a,\ep),\Chain_{i,\ep}(P;k,a,z)\right).
+  \Chain_{\Th,i,\ep}(P,k,a+1,z)=\Th\!\left(P,\mathsf{tweak}(\ep,i,k+a+1),\Chain_{\Th,i,\ep}(P,k,a,z)\right).
 \]
-The valid range is $0\leq k\leq7$ and $0\leq a\leq7-k$.
+The valid range is $0\leq k\leq2^w-1$ and $0\leq a\leq2^w-1-k$.
 \end{definition}
 
-The public chain tips and their Merkle leaf are
+The one-time public key and its Merkle leaf are
 \[
-  q_{\ep,i}=\Chain_{i,\ep}(P;0,7,z_{\ep,i}),
-  \qquad
-  Q_{\ep}=\Th\!\left(P,\tau(1,0,\ep),q_{\ep,0}\concat\cdots\concat q_{\ep,41}\right),
-  \qquad 0\leq i<42.
+\begin{aligned}
+  \mathit{pk}_{\ep,i} &= \Chain_{\Th,i,\ep}(P,0,2^w-1,\mathit{sk}_{\ep,i}), &&0\leq i<v,\\
+  Q_{\ep} &= \Th\!\left(P,\mathsf{tweak}_{\mathrm{pkwots}}(\ep),\mathit{pk}_{\ep,0}\concat\cdots\concat\mathit{pk}_{\ep,v-1}\right).
+\end{aligned}
 \]
 
 \section{Key generation}
 
-On input a nonempty interval $R=[\ep_{\min},\ep_{\max}]\subseteq\{0,\ldots,L-1\}$, $\KeyGen$ samples $s\getsr\bits{256}$ and derives $P$, the $z_{\ep,i}$, and the fillers $F_{\ell,j}$ as above. Let
+The algorithm $\Gen$ independently samples $P\getsr\bits{n}$ and $\mathit{sk}_{\ep,i}\getsr\bits{n}$ for $0\leq\ep<L$ and $0\leq i<v$. Define
 \[
-  I_{\ell,j}=\{j2^\ell,\ldots,(j+1)2^\ell-1\}
+  X_{0,j}=Q_j,
+  \qquad 0\leq j<L.
 \]
-and define
+For $1\leq\ell\leq h$, define
 \[
-  X_{0,j}=\begin{cases}
-    Q_j,&j\in R,\\
-    F_{0,j},&j\notin R.
-  \end{cases}
+  X_{\ell,j}=\Th\!\left(P,\mathsf{tweak}_{\mathrm{mt}}(\ell,j),X_{\ell-1,2j}\concat X_{\ell-1,2j+1}\right),
+  \qquad 0\leq j<2^{h-\ell}.
 \]
-For $1\leq\ell\leq32$, define
-\[
-  X_{\ell,j}=\begin{cases}
-    \Th\!\left(P,\tau(2,\ell,j),X_{\ell-1,2j}\concat X_{\ell-1,2j+1}\right),&I_{\ell,j}\cap R\neq\varnothing,\\
-    F_{\ell,j},&I_{\ell,j}\cap R=\varnothing.
-  \end{cases}
-\]
-Set $\rootnode=X_{32,0}$ and return
+Set $\rootnode=X_{h,0}$ and return
 \[
   \pk=(\rootnode,P),
   \qquad
-  \sk=(s,P,\ep_{\min},\ep_{\max}).
+  \sk=\left(P,(\mathit{sk}_{\ep,i})_{0\leq\ep<L,\,0\leq i<v}\right).
 \]
-The public key is serialized as $\rootnode\concat P$.
+The sampled secret values may instead be generated from a master secret using a pseudorandom function. The public key is serialized as $\rootnode\concat P$.
+
+\begin{remark}[Restricted key generation]
+Key generation may be restricted to a smaller interval of epochs by replacing subtrees outside that interval with random nodes. The resulting key signs only epochs in that interval.
+\end{remark}
 
 \section{Signing}
 
-$\Sign(\sk,\ep,m)$ rejects if $\ep\notin[\ep_{\min},\ep_{\max}]$ or epoch $\ep$ has already been used. It samples $\rho\getsr\bits{192}$ until $x=\IncEnc(P,m,\rho,\ep)\neq\bot$, then computes
+$\Sig(\sk,\ep,m)$ returns $\bot$ if epoch $\ep$ has already been used and otherwise marks it used. It independently samples $\rho\getsr\bits{192}$ until $x=\IncEnc(P,m,\rho,\ep)\neq\bot$, then computes
 \[
-  y_i=\Chain_{i,\ep}(P;0,x_i,z_{\ep,i}),
-  \qquad 0\leq i<42,
+  \sigma_{\mathrm{OTS},i}=\Chain_{\Th,i,\ep}(P,0,x_i,\mathit{sk}_{\ep,i}),
+  \qquad 0\leq i<v,
 \]
 and the authentication path
 \[
   A_\ell=X_{\ell,\,\left\lfloor\ep/2^\ell\right\rfloor\mathbin{\mathsf{xor}}1},
-  \qquad 0\leq\ell<32.
+  \qquad 0\leq\ell<h.
 \]
 It returns
 \[
-  \sigma=(\rho,(y_0,\ldots,y_{41}),(A_0,\ldots,A_{31})).
+  \sigma=(\rho,\sigma_{\mathrm{OTS}},\mathit{path}_{\ep}),
+  \qquad
+  \mathit{path}_{\ep}=(A_0,\ldots,A_{h-1}).
 \]
+$\Sig$ is not guaranteed to terminate, but after $2^{23}$ attempts a valid encoding should have been found except with probability less than $2^{-256}$ when $\hash$ is modeled as a random oracle.
 
 \section{Verification}
 
-$\Verify(\pk,\ep,m,\sigma)$ parses $\pk=(\rootnode,P)$ and $\sigma=(\rho,(y_i)_i,(A_\ell)_\ell)$, then:
+$\Ver(\pk,\ep,m,\bot)=0$. For $\sigma\neq\bot$, $\Ver(\pk,\ep,m,\sigma)$ parses $\pk=(\rootnode,P)$ and $\sigma=(\rho,(y_i)_i,(A_\ell)_\ell)$, then:
 \begin{enumerate}[leftmargin=2em]
 \item Compute $x=\IncEnc(P,m,\rho,\ep)$ and reject if $x=\bot$.
-\item For every $0\leq i<42$, compute $q'_i=\Chain_{i,\ep}(P;x_i,7-x_i,y_i)$.
-\item Set $Z_0=\Th(P,\tau(1,0,\ep),q'_0\concat\cdots\concat q'_{41})$.
-\item For $0\leq\ell<32$, let $j=\lfloor\ep/2^{\ell+1}\rfloor$. If bit $\ell$ of $\ep$ is zero, set $Z_{\ell+1}=\Th(P,\tau(2,\ell+1,j),Z_\ell\concat A_\ell)$; otherwise set $Z_{\ell+1}=\Th(P,\tau(2,\ell+1,j),A_\ell\concat Z_\ell)$.
-\item Accept if and only if $Z_{32}=\rootnode$.
+\item For every $0\leq i<v$, compute $\mathit{pk}'_{\ep,i}=\Chain_{\Th,i,\ep}(P,x_i,2^w-1-x_i,y_i)$.
+\item Set $Z_0=\Th(P,\mathsf{tweak}_{\mathrm{pkwots}}(\ep),\mathit{pk}'_{\ep,0}\concat\cdots\concat\mathit{pk}'_{\ep,v-1})$.
+\item For $0\leq\ell<h$, let $j=\lfloor\ep/2^{\ell+1}\rfloor$. If bit $\ell$ of $\ep$ is zero, set $Z_{\ell+1}=\Th(P,\mathsf{tweak}_{\mathrm{mt}}(\ell+1,j),Z_\ell\concat A_\ell)$; otherwise set $Z_{\ell+1}=\Th(P,\mathsf{tweak}_{\mathrm{mt}}(\ell+1,j),A_\ell\concat Z_\ell)$.
+\item Accept if and only if $Z_h=\rootnode$.
 \end{enumerate}
-
-\section{Representation and cost}
-
-The signature is serialized as
-\[
-  y_0\concat\cdots\concat y_{41}\concat\rho\concat A_0\concat\cdots\concat A_{31}.
-\]
-The public key is 32 bytes. The signature is $672+24+512=1208$ bytes. Fixed-size arrays have no length prefixes.
-
-Verification performs 134 evaluations of $\Hash$: one encoding hash, $\sum_{i=0}^{41}(7-x_i)=42\cdot7-194=100$ chain hashes, one leaf hash, and 32 Merkle hashes. Excluding encoding retries and tree construction, signing performs $\sum_i x_i=194$ chain hashes.
 
 \section{Security}
 
