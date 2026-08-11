@@ -5,9 +5,11 @@ import XmssSecurity.EncodingOracleSimulation
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
+import XmssSecurity.ChainOriginProbability
 import XmssSecurity.LeafEventProbability
 import XmssSecurity.Merkle
 import XmssSecurity.MerkleEventProbability
+import XmssSecurity.PublicRootUniformity
 import XmssSecurity.SecurityBudget
 import XmssSecurity.SecurityGame
 import XmssSecurity.SigningLogReplay
@@ -35,7 +37,11 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
           result.2.1 chain |
         detailedGameWithKeygenCache adversary] ≤
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  sorry
+  constructor
+  · exact winning_encoding_event_probability_le_two_terms q adversary hbound
+  · intro chain
+    refine (winningKeygenValueGuess_probability_le_origin adversary chain).trans ?_
+    sorry
 
 /-- Below the digest-space size, encoding and chain events cost two elementary terms and every other event costs one. -/
 theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)

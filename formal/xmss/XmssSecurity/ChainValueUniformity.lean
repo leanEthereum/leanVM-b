@@ -7,23 +7,21 @@ open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
-noncomputable local instance : SampleableType Digest :=
+noncomputable local instance chainValueSampleableDigest : SampleableType Digest :=
   SampleableType.ofFintype Digest
 
-theorem Concrete.chainHash_fresh_probability
-    (cache : QueryCache HashSpec) (parameter : PublicParameter) (epoch : Epoch)
-    (chain : ChainIndex) (step : ChainStep) (value target : Digest)
-    (hfresh : cache (Concrete.CacheView.chainInput parameter epoch chain step value) = none) :
+theorem Concrete.tweakableHash_fresh_probability
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (domain : HashDomain) (payload : HashInput) (target : Digest)
+    (hfresh : cache (tweakableHashInput parameter domain payload) = none) :
     Pr[fun result : Digest × QueryCache HashSpec => result.1 = target |
       (simulateQ randomOracle
-        (Concrete.chainHash parameter epoch chain step value :
+        (Concrete.tweakableHash parameter domain payload :
           OracleComp HashSpec Digest)).run cache] =
       ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-  unfold Concrete.chainHash Concrete.tweakableHash
+  unfold Concrete.tweakableHash
   rw [simulateQ_bind, StateT.run_bind]
-  let input := tweakableHashInput parameter (.chain epoch chain step)
-    (Concrete.digestBytes value)
-  change cache input = none at hfresh
+  let input := tweakableHashInput parameter domain payload
   have hsimulate :
       simulateQ randomOracle
           (Concrete.oracleHash input : OracleComp HashSpec HashOutput) =
@@ -37,6 +35,18 @@ theorem Concrete.chainHash_fresh_probability
     Function.comp_apply]
   rw [probEvent_map]
   exact Rom.uniform_truncate_probability target
+
+theorem Concrete.chainHash_fresh_probability
+    (cache : QueryCache HashSpec) (parameter : PublicParameter) (epoch : Epoch)
+    (chain : ChainIndex) (step : ChainStep) (value target : Digest)
+    (hfresh : cache (Concrete.CacheView.chainInput parameter epoch chain step value) = none) :
+    Pr[fun result : Digest × QueryCache HashSpec => result.1 = target |
+      (simulateQ randomOracle
+        (Concrete.chainHash parameter epoch chain step value :
+          OracleComp HashSpec Digest)).run cache] =
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  exact Concrete.tweakableHash_fresh_probability cache parameter
+    (.chain epoch chain step) (Concrete.digestBytes value) target hfresh
 
 /-- The last valid step of a WOTS chain is uniform whenever its typed address is absent from the initial cache. -/
 theorem Concrete.chainWalk_positive_probability_from_cache_le

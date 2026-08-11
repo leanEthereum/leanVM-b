@@ -6,16 +6,19 @@ open OracleComp ENNReal
 
 namespace XmssSecurity
 
-noncomputable local instance : SampleableType Digest :=
+noncomputable local instance secretTableSampleableDigest : SampleableType Digest :=
   SampleableType.ofFintype Digest
 
-noncomputable local instance : SampleableType (Epoch → Digest) :=
+noncomputable local instance secretTableSampleableEpochDigest :
+    SampleableType (Epoch → Digest) :=
   SampleableType.ofFintype (Epoch → Digest)
 
-noncomputable local instance : SampleableType (Epoch × ChainIndex → Digest) :=
+noncomputable local instance secretTableSampleableFlatSecret :
+    SampleableType (Epoch × ChainIndex → Digest) :=
   SampleableType.ofFintype (Epoch × ChainIndex → Digest)
 
-noncomputable local instance : SampleableType (Epoch → ChainIndex → Digest) :=
+noncomputable local instance secretTableSampleableSecret :
+    SampleableType (Epoch → ChainIndex → Digest) :=
   SampleableType.ofFintype (Epoch → ChainIndex → Digest)
 
 /-- For a fixed WOTS chain, all epoch seeds are jointly uniform and independent. -/

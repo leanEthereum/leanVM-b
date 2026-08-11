@@ -1,6 +1,6 @@
 import XmssSecurity.ChainOriginProbability
 import XmssSecurity.EncodingActionTrace
-import XmssSecurity.EncodingTraceBridge
+import XmssSecurity.EncodingPrehitProbability
 import XmssSecurity.EncodingTargetMap
 import XmssSecurity.SignCacheHitProbability
 import XmssSecurity.SigningCacheTrace
@@ -421,6 +421,81 @@ theorem sampledDetailedGame_external_collision_probability_le_of_bound
   exact encodingSamplingTrace_collision_probability_le
     (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
       keyResult.1.2 keyResult.2) q (hbound keyResult hkeyResult)
+
+theorem sampledDetailedGame_external_collision_probability_le
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    Pr[fun execution : (GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+          EncodingActionTrace =>
+      EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2 = true |
+      sampledDetailedGameWithEncodingTrace adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  exact sampledDetailedGame_external_collision_probability_le_of_bound q adversary
+    (fun keyResult hkeyResult =>
+      splitDetailedGameAfterKeygenWithEncodingTrace_encodingSample_bound
+        q adversary hbound keyResult hkeyResult)
+
+theorem winning_encoding_monitorHit_probability_le
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    Pr[fun execution : GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+        EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true |
+      detailedGameWithEncodingTrace adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) :=
+  (winning_encoding_monitorHit_probability_le_sampled_external adversary).trans
+    (sampledDetailedGame_external_collision_probability_le q adversary hbound)
+
+theorem winning_encoding_prehit_probability_le
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    Pr[fun execution : GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+        ∃ entry ∈ execution.2.1.2,
+          entry.EncodingInputPrehit execution.1.secretKey |
+      detailedGameWithEncodingTrace adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  calc
+    _ = Pr[fun execution : GameOutcome ×
+          (QueryCache HashSpec × SigningCacheTrace) =>
+        WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+          execution.2.2.HasEncodingInputPrehit execution.1.secretKey |
+        detailedGameWithSigningTrace adversary] := by
+      rw [← detailedGameWithEncodingTrace_projection, probEvent_map]
+      rfl
+    _ ≤ _ := detailedGameWithSigningTrace_winning_prehit_probability_le
+      q adversary hbound
+
+theorem winning_encoding_event_probability_le_two_terms
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+      2 * ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
+  calc
+    _ ≤
+        Pr[fun execution : GameOutcome ×
+            ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+          WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+            ∃ entry ∈ execution.2.1.2,
+              entry.EncodingInputPrehit execution.1.secretKey |
+          detailedGameWithEncodingTrace adversary] +
+        Pr[fun execution : GameOutcome ×
+            ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+          WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+            EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true |
+          detailedGameWithEncodingTrace adversary] :=
+      winning_encoding_event_probability_le_prehit_add_monitorHit adversary
+    _ ≤ (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) +
+        (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) :=
+      add_le_add (winning_encoding_prehit_probability_le q adversary hbound)
+        (winning_encoding_monitorHit_probability_le q adversary hbound)
+    _ = 2 * ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
+      rw [two_mul]
 
 /-- The concrete winning encoding event reduces inside the actual game distribution to the two signing-boundary orientations used by the probability argument. -/
 theorem winning_encoding_event_probability_le_signingTrace_orientations
