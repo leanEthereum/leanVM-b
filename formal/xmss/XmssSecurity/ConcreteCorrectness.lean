@@ -222,6 +222,16 @@ def publicKeyFromCache (cache : QueryCache HashSpec) (secretKey : SecretKey) : P
   ⟨treeNode cache secretKey.parameter secretKey.chainStart treeHeight Concrete.rootNode,
     secretKey.parameter⟩
 
+attribute [irreducible] publicKeyFromCache
+
+theorem publicKey_eq_publicKeyFromCache (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (root : Digest)
+    (hroot : root = treeNode cache secretKey.parameter secretKey.chainStart
+      treeHeight Concrete.rootNode) :
+    PublicKey.mk root secretKey.parameter = publicKeyFromCache cache secretKey := by
+  rw [publicKeyFromCache]
+  exact congrArg₂ PublicKey.mk hroot rfl
+
 theorem verifyFromCache_signWithEncoding (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (randomness : Randomness) (encoding : Encoding)
@@ -230,9 +240,9 @@ theorem verifyFromCache_signWithEncoding (cache : QueryCache HashSpec)
         some encoding) :
     Concrete.verifyFromCache cache (publicKeyFromCache cache secretKey) epoch message
       (signWithEncoding cache secretKey epoch randomness encoding) = true := by
+  unfold publicKeyFromCache
   apply (Concrete.verifyFromCache_eq_true_iff _ _ _ _ _).2
   refine ⟨encoding, hdecode, ?_⟩
-  simp only [publicKeyFromCache]
   rw [leafHash_recovered_signWithEncoding]
   exact authenticationPath_ascends_to_root cache secretKey epoch randomness encoding
 

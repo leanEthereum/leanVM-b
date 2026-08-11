@@ -42,13 +42,34 @@ def treeNode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       else
         pure 0
 
+@[simp]
+theorem treeNode_zero_eq {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (node : MerkleNode) :
+    treeNode (m := m) parameter secret 0 node =
+      leafAt (m := m) parameter secret node := rfl
+
+theorem treeNode_succ_eq {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (levels : Nat) (node : MerkleNode) :
+    treeNode (m := m) parameter secret (levels + 1) node = (do
+      let left ← treeNode (m := m) parameter secret levels (childNode node false)
+      let right ← treeNode (m := m) parameter secret levels (childNode node true)
+      if hlevel : levels < treeHeight then
+        nodeHash (m := m) parameter ⟨levels, hlevel⟩ node left right
+      else
+        pure 0) := rfl
+
+attribute [irreducible] treeNode
+
 def rootNode : MerkleNode :=
   ⟨0, by simp [lifetime]⟩
 
 noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
   let parameter ← liftM ($ᵗ PublicParameter)
   let secret ← liftM ($ᵗ (Epoch → ChainIndex → Digest))
-  let root ← treeNode parameter secret treeHeight rootNode
+  let root ← liftM
+    (treeNode parameter secret treeHeight rootNode : OracleComp HashSpec Digest)
   return (⟨root, parameter⟩, ⟨parameter, secret⟩)
 
 attribute [irreducible] keygen

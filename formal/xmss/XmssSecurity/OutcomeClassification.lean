@@ -89,9 +89,13 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
         (Concrete.CacheReplay.publicKeyFromCache cache outcome.secretKey) request.epoch
         request.message outcome.forgery.message signature outcome.forgery.signature
         hsignedVerify hforgedVerify hstrong
+    have hactualSignedEncoding' : TargetSum.decodeDigest
+        (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter request.epoch
+          (request.message, signature.randomness)) = some actualSignedEncoding := by
+      simpa only [Concrete.CacheReplay.publicKeyFromCache] using hactualSignedEncoding
     refine ⟨event, Or.inl ⟨request, signature, actualSignedEncoding, forgedEncoding,
-      hactualSignedEncoding, hentry, hepoch, ?_⟩⟩
-    exact hevent
+      hactualSignedEncoding', hentry, hepoch, ?_⟩⟩
+    simpa only [Concrete.CacheReplay.publicKeyFromCache] using hevent
   · obtain ⟨forgedEncoding, hforgedEncoding, hforgedRoot⟩ :=
       (Concrete.verifyFromCache_eq_true_iff cache
         (Concrete.CacheReplay.publicKeyFromCache cache outcome.secretKey)
@@ -99,6 +103,8 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
         hforgedVerify
     have hhonestRoot := Concrete.CacheReplay.authenticationPath_ascends_to_root cache
       outcome.secretKey outcome.forgery.epoch outcome.forgery.signature.randomness forgedEncoding
+    have hforgedRoot' := hforgedRoot
+    simp only [Concrete.CacheReplay.publicKeyFromCache] at hforgedRoot'
     have hroot :
         Merkle.ascend
             (Concrete.CacheView.nodeHash cache outcome.secretKey.parameter outcome.forgery.epoch)
@@ -119,7 +125,7 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
                 (Concrete.CacheView.chainStep cache outcome.secretKey.parameter
                   outcome.forgery.epoch chain)
                 (outcome.secretKey.chainStart outcome.forgery.epoch chain))) := by
-      exact hforgedRoot.trans hhonestRoot.symm
+      exact hforgedRoot'.trans hhonestRoot.symm
     have hforgedValid := (TargetSum.decodeDigest_eq_some_iff.mp hforgedEncoding).2
     obtain ⟨event, hevent⟩ := Concrete.freshEpoch_forgery_has_badEvent cache
       outcome.secretKey.parameter outcome.forgery.epoch forgedEncoding

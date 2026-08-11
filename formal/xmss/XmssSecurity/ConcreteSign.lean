@@ -42,6 +42,7 @@ noncomputable def signAttempt {m : Type → Type} [Monad m] [HasQuery HashSpec m
 noncomputable def sign (_publicKey : PublicKey) (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) : OracleComp OracleWorld (Option Signature) := do
   let randomness ← liftM ($ᵗ Randomness)
-  signAttempt secretKey epoch message randomness
+  liftM (signAttempt secretKey epoch message randomness :
+    OracleComp HashSpec (Option Signature))
 
 end XmssSecurity.Concrete

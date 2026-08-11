@@ -165,10 +165,13 @@ theorem eval_treeNode (cache : QueryCache HashSpec)
       (Concrete.treeNode parameter secret levels node : OracleComp HashSpec Digest) =
       treeNode cache parameter secret levels node := by
   induction levels generalizing node with
-  | zero => simp [Concrete.treeNode, treeNode]
+  | zero => simp [Concrete.treeNode_zero_eq, treeNode]
   | succ levels ih =>
-      simp only [Concrete.treeNode, evalWithAnswerFn_bind, ih, treeNode]
+      rw [Concrete.treeNode_succ_eq]
+      simp only [evalWithAnswerFn_bind, ih, treeNode]
       split <;> simp_all
+
+attribute [irreducible] treeNode
 
 def signedChainValues (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (epoch : Epoch) (encoding : Encoding) : ChainIndex → Digest :=
@@ -335,6 +338,38 @@ theorem eval_answerFn_finalCache_eq_of_mem_support {α : Type}
           eval_oracleHash finalCache input
       rw [hqueryEval]
       exact ih output middleCache finalCache result hrest
+
+/-- Replaying an execution against any extension of its final cache reproduces its result. -/
+theorem eval_answerFn_largerCache_eq_of_mem_support {α : Type}
+    (computation : OracleComp HashSpec α)
+    (initialCache resultCache largerCache : QueryCache HashSpec) (result : α)
+    (hmem : (result, resultCache) ∈
+      support ((simulateQ randomOracle computation).run initialCache))
+    (hle : resultCache ≤ largerCache) :
+    evalWithAnswerFn (answerFn largerCache) computation = result := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialCache resultCache result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, support_pure,
+        Set.mem_singleton_iff, Prod.mk.injEq] at hmem
+      exact hmem.1.symm
+  | query_bind input next ih =>
+      rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind,
+        mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, middleCache⟩, hquery, hrest⟩ := hmem
+      have hmiddle : middleCache input = some output :=
+        randomOracle_query_caches input initialCache output middleCache hquery
+      have hmiddleLe : middleCache ≤ resultCache :=
+        randomOracle_cache_le (next output) middleCache (result, resultCache) hrest
+      have hlarger : largerCache input = some output := hle (hmiddleLe hmiddle)
+      simp only [evalWithAnswerFn_bind]
+      have hqueryEval :
+          evalWithAnswerFn (answerFn largerCache)
+            (liftM (OracleSpec.query input) : OracleComp HashSpec HashOutput) = output := by
+        simpa [Concrete.oracleHash, answer, hlarger] using
+          eval_oracleHash largerCache input
+      rw [hqueryEval]
+      exact ih output middleCache resultCache result hrest hle
 
 theorem verifyFromCache_eq_of_mem_support
     (publicKey : PublicKey) (epoch : Epoch) (message : Message)
