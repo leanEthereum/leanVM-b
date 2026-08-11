@@ -8,6 +8,13 @@ namespace XmssSecurity.Concrete
 noncomputable local instance : SampleableType Randomness :=
   SampleableType.ofFintype Randomness
 
+noncomputable def signingRandomness : ProbComp Randomness :=
+  $ᵗ Randomness
+
+theorem signingRandomness_eq : signingRandomness = $ᵗ Randomness := rfl
+
+attribute [irreducible] signingRandomness
+
 def signedChainValues {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     (secretKey : SecretKey) (epoch : Epoch) (encoding : Encoding) :
     m (ChainIndex → Digest) :=
@@ -41,14 +48,14 @@ noncomputable def signAttempt {m : Type → Type} [Monad m] [HasQuery HashSpec m
 
 noncomputable def sign (_publicKey : PublicKey) (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) : OracleComp OracleWorld (Option Signature) := do
-  let randomness ← liftM ($ᵗ Randomness)
+  let randomness ← liftM signingRandomness
   liftM (signAttempt secretKey epoch message randomness :
     OracleComp HashSpec (Option Signature))
 
 theorem sign_eq (publicKey : PublicKey) (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) :
     sign publicKey secretKey epoch message = (do
-      let randomness ← liftM ($ᵗ Randomness)
+      let randomness ← liftM signingRandomness
       liftM (signAttempt secretKey epoch message randomness :
         OracleComp HashSpec (Option Signature))) := rfl
 

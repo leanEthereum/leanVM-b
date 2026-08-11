@@ -1,10 +1,317 @@
 import XmssSecurity.EncodingOracleSimulation
+import VCVio.OracleComp.QueryTracking.SubSpec
 
 open OracleComp OracleSpec
 
 namespace XmssSecurity
 
 set_option maxRecDepth 100000
+
+theorem encodingSamplingTraceImpl_support_trace_any
+    (input : EncodingSamplingWorld.Domain)
+    (result : EncodingSamplingWorld.Range input × EncodingActionTrace)
+    (hmem : result ∈ support (encodingSamplingTraceImpl input).run) :
+    result.2 = encodingSamplingTraceFragment input result.1 := by
+  have hrun :
+      (encodingSamplingTraceImpl input).run =
+        (fun output =>
+          (output, encodingSamplingTraceFragment input output)) <$>
+            encodingSamplingWorldImpl input := by
+    unfold encodingSamplingTraceImpl
+    rw [QueryImpl.withTraceAppend_apply, WriterT.run_bind']
+    rw [WriterT.run_monadLift']
+    simp [WriterT.run_tell]
+  rw [hrun, support_map] at hmem
+  obtain ⟨output, _houtput, heq⟩ := hmem
+  subst result
+  rfl
+
+theorem encodingUniformQuery_support_trace_empty
+    (index : unifSpec.Domain)
+    (result : unifSpec.Range index × EncodingActionTrace)
+    (hmem : result ∈ support
+      (simulateQ encodingSamplingTraceImpl (encodingUniformQuery index)).run) :
+    result.2 = [] := by
+  unfold encodingUniformQuery at hmem
+  rw [OracleComp.liftComp_query, simulateQ_map, WriterT.run_map', support_map]
+    at hmem
+  obtain ⟨outerResult, houter, hresultEq⟩ := hmem
+  simp only [OracleQuery.input_query] at houter
+  rw [simulateQ_liftM_query encodingSamplingTraceImpl
+    (unifSpec.query index)] at houter
+  simp only [QueryImpl.mapQuery, WriterT.run_map', support_map] at houter
+  obtain ⟨handledResult, hhandled, houterEq⟩ := houter
+  change handledResult ∈
+    support (encodingSamplingTraceImpl (.inl index)).run at hhandled
+  have htrace := encodingSamplingTraceImpl_support_trace_any
+    (.inl index) handledResult hhandled
+  have hresultTrace : result.2 = handledResult.2 := by
+    calc
+      result.2 = outerResult.2 := by
+        simpa using (congrArg Prod.snd hresultEq).symm
+      _ = handledResult.2 := by
+        simpa using (congrArg Prod.snd houterEq).symm
+  rw [hresultTrace, htrace]
+  rfl
+
+theorem encodingSamplingTrace_sign_epoch_count_le
+    (epoch : Epoch) (computation : OracleComp EncodingSamplingWorld α)
+    (fuel : Nat)
+    (hbound : computation.IsQueryBoundP
+      (fun input => input = Sum.inr ⟨.sign, some epoch⟩) fuel)
+    (result : α × EncodingActionTrace)
+    (hmem : result ∈ support
+      (simulateQ encodingSamplingTraceImpl computation).run) :
+    (EncodingMonitor.observedSignEpochs result.2).count epoch ≤ fuel := by
+  induction computation using OracleComp.inductionOn generalizing fuel result with
+  | pure value =>
+      simp only [simulateQ_pure, WriterT.run_pure', support_pure,
+        Set.mem_singleton_iff] at hmem
+      subst result
+      simp [EncodingMonitor.observedSignEpochs]
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, firstTrace⟩, hfirst, hrestMapped⟩ := hmem
+      rw [support_map] at hrestMapped
+      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+      rw [simulateQ_spec_query] at hfirst
+      have hfirstTrace := encodingSamplingTraceImpl_support_trace_any input
+        (output, firstTrace) hfirst
+      change firstTrace = encodingSamplingTraceFragment input output at hfirstTrace
+      have hfirstCount :
+          (EncodingMonitor.observedSignEpochs firstTrace).count epoch =
+            if input = Sum.inr ⟨.sign, some epoch⟩ then 1 else 0 := by
+        rw [hfirstTrace]
+        cases input with
+        | inl index =>
+            simp [encodingSamplingTraceFragment,
+              EncodingMonitor.observedSignEpochs]
+        | inr address =>
+            rcases address with ⟨kind, taggedEpoch⟩
+            cases kind with
+            | side =>
+                cases taggedEpoch <;> simp [encodingSamplingTraceFragment,
+                  EncodingMonitor.observedSignEpochs]
+            | query =>
+                cases taggedEpoch <;> simp [encodingSamplingTraceFragment,
+                  EncodingMonitor.observedSignEpochs]
+            | sign =>
+                cases taggedEpoch with
+                | none =>
+                    simp [encodingSamplingTraceFragment,
+                      EncodingMonitor.observedSignEpochs]
+                | some taggedEpoch =>
+                    by_cases heq : taggedEpoch = epoch
+                    · subst taggedEpoch
+                      simp [encodingSamplingTraceFragment,
+                        EncodingMonitor.observedSignEpochs]
+                    · simp [encodingSamplingTraceFragment,
+                        EncodingMonitor.observedSignEpochs, heq]
+      have hrestCount := ih output
+        (if input = Sum.inr ⟨.sign, some epoch⟩ then fuel - 1 else fuel)
+          (hbound.2 output) restResult hrest
+      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
+        simpa using congrArg Prod.snd heq
+      rw [← htraceEq, EncodingMonitor.observedSignEpochs_append,
+        List.count_append, hfirstCount]
+      split <;> rename_i htarget
+      · have hpositive : 0 < fuel := hbound.1.resolve_left (by simpa using htarget)
+        simp [htarget] at hrestCount
+        omega
+      · simpa [htarget] using hrestCount
+
+theorem atHashAddress_encoding_of_encodingInputEpoch?_eq_some
+    (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
+    (hepoch : encodingInputEpoch? parameter input = some epoch) :
+    AtHashAddress parameter (.encoding epoch) input := by
+  obtain ⟨payload, hinput⟩ :=
+    exists_encodingInput_of_encodingInputEpoch?_eq_some parameter input epoch hepoch
+  rw [← hinput, Concrete.CacheView.encodingInput]
+  exact (atHashAddress_tweakableHashInput_iff parameter
+    (.encoding epoch) (.encoding epoch) _).2 rfl
+
+theorem splitRandomOracle_sign_epochSample_bound_zero
+    (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
+    (cache : QueryCache HashSpec)
+    (hnot : ¬ AtHashAddress parameter (.encoding epoch) input) :
+    ((splitRandomOracle parameter .sign input).run cache).IsQueryBoundP
+      (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0 := by
+  unfold splitRandomOracle
+  cases hcache : cache input with
+  | some cached =>
+      rw [QueryImpl.withCaching_run_some _ hcache]
+      simp
+  | none =>
+      rw [QueryImpl.withCaching_run_none _ hcache,
+        OracleComp.isQueryBoundP_map_iff]
+      unfold freshEncodingSampleImpl encodingSampleAddress
+      cases hepoch : encodingInputEpoch? parameter input with
+      | none =>
+          simp only [encodingSampleAddressFromEpoch]
+          unfold encodingSampleQuery
+          rw [OracleComp.liftComp_query]
+          change (liftM (EncodingSamplingWorld.query
+            (Sum.inr ⟨.side, none⟩)) : OracleComp EncodingSamplingWorld _)
+              |>.IsQueryBoundP
+                (fun sampleInput =>
+                  sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+          rw [OracleComp.isQueryBoundP_query_iff]
+          simp
+      | some taggedEpoch =>
+          have hne : taggedEpoch ≠ epoch := by
+            intro heq
+            subst taggedEpoch
+            exact hnot
+              (atHashAddress_encoding_of_encodingInputEpoch?_eq_some
+                parameter input epoch hepoch)
+          simp only [encodingSampleAddressFromEpoch]
+          unfold encodingSampleQuery
+          rw [OracleComp.liftComp_query]
+          change (liftM (EncodingSamplingWorld.query
+            (Sum.inr ⟨.sign, some taggedEpoch⟩)) :
+              OracleComp EncodingSamplingWorld _)
+                |>.IsQueryBoundP
+                  (fun sampleInput =>
+                    sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+          rw [OracleComp.isQueryBoundP_query_iff]
+          simpa using hne
+
+theorem splitRandomOracle_sign_epochSample_bound
+    (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
+    (cache : QueryCache HashSpec) :
+    ((splitRandomOracle parameter .sign input).run cache).IsQueryBoundP
+      (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) 1 := by
+  exact (splitRandomOracle_encodingSample_bound parameter .sign input cache).of_imp
+    (by
+      intro sampleInput hsample
+      subst sampleInput
+      simp)
+
+theorem splitRandomOracle_query_sign_epochSample_bound_zero
+    (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
+    (cache : QueryCache HashSpec) :
+    ((splitRandomOracle parameter .query input).run cache).IsQueryBoundP
+      (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0 := by
+  unfold splitRandomOracle
+  cases hcache : cache input with
+  | some cached =>
+      rw [QueryImpl.withCaching_run_some _ hcache]
+      simp
+  | none =>
+      rw [QueryImpl.withCaching_run_none _ hcache,
+        OracleComp.isQueryBoundP_map_iff]
+      unfold freshEncodingSampleImpl encodingSampleAddress
+      cases hepoch : encodingInputEpoch? parameter input with
+      | none =>
+          simp only [encodingSampleAddressFromEpoch]
+          unfold encodingSampleQuery
+          rw [OracleComp.liftComp_query]
+          change (liftM (EncodingSamplingWorld.query
+            (Sum.inr ⟨.side, none⟩)) : OracleComp EncodingSamplingWorld _)
+              |>.IsQueryBoundP
+                (fun sampleInput =>
+                  sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+          rw [OracleComp.isQueryBoundP_query_iff]
+          simp
+      | some taggedEpoch =>
+          simp only [encodingSampleAddressFromEpoch]
+          unfold encodingSampleQuery
+          rw [OracleComp.liftComp_query]
+          change (liftM (EncodingSamplingWorld.query
+            (Sum.inr ⟨.query, some taggedEpoch⟩)) :
+              OracleComp EncodingSamplingWorld _)
+                |>.IsQueryBoundP
+                  (fun sampleInput =>
+                    sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+          rw [OracleComp.isQueryBoundP_query_iff]
+          simp
+
+theorem splitRandomOracle_simulateQ_sign_epochSample_bound
+    (parameter : PublicParameter) (epoch : Epoch)
+    (computation : OracleComp HashSpec α) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP
+      (AtHashAddress parameter (.encoding epoch)) fuel)
+    (cache : QueryCache HashSpec) :
+    ((simulateQ (splitRandomOracle parameter .sign) computation).run cache)
+      |>.IsQueryBoundP
+        (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) fuel := by
+  apply OracleComp.IsQueryBoundP.simulateQ_run_of_step hbound
+  · intro input _ state
+    exact splitRandomOracle_sign_epochSample_bound parameter input epoch state
+  · intro input hnot state
+    exact splitRandomOracle_sign_epochSample_bound_zero parameter input epoch state hnot
+
+def IsEncodingHashQueryAt (parameter : PublicParameter) (epoch : Epoch) :
+    OracleWorld.Domain → Prop
+  | .inl _ => False
+  | .inr hashInput => AtHashAddress parameter (.encoding epoch) hashInput
+
+noncomputable instance (parameter : PublicParameter) (epoch : Epoch) :
+    DecidablePred (IsEncodingHashQueryAt parameter epoch) :=
+  Classical.decPred _
+
+theorem Concrete.signAttempt_queryBound_encodingAddress
+    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
+    (message : Message) (randomness : Randomness) :
+    (Concrete.signAttempt secretKey epoch message randomness :
+      OracleComp HashSpec (Option Signature)).IsQueryBoundP
+        (AtHashAddress secretKey.parameter (.encoding targetEpoch))
+        (if epoch = targetEpoch then 1 else 0) := by
+  rw [Concrete.signAttempt]
+  by_cases hepoch : epoch = targetEpoch
+  · subst targetEpoch
+    rw [if_pos rfl]
+    refine OracleComp.isQueryBoundP_bind (m := 0) ?_ ?_
+    · simpa [Concrete.encodingHash] using
+        Concrete.tweakableHash_queryBound_atAddress secretKey.parameter
+          (.encoding epoch) (Concrete.encodingPayload message randomness)
+    · intro digest _
+      split
+      · simp
+      · apply (OracleComp.isQueryBoundP_map_iff _
+            (fun signature => some signature) 0).2
+        exact (Concrete.signWithEncoding_queryBound_zero_encodingAddress
+          secretKey epoch epoch randomness _)
+  · simp only [if_neg hepoch]
+    refine OracleComp.isQueryBoundP_bind (m := 0) ?_ ?_
+    · simpa [Concrete.encodingHash] using
+        Concrete.tweakableHash_queryBound_atOtherAddress secretKey.parameter
+          (.encoding targetEpoch) (.encoding epoch)
+            (Concrete.encodingPayload message randomness) (by
+              simpa only [HashDomain.encoding.injEq, ne_eq] using hepoch)
+    · intro digest _
+      split
+      · simp
+      · apply (OracleComp.isQueryBoundP_map_iff _
+            (fun signature => some signature) 0).2
+        exact Concrete.signWithEncoding_queryBound_zero_encodingAddress
+          secretKey epoch targetEpoch randomness _
+
+theorem splitXmssRom_sign_epochSample_bound
+    (parameter : PublicParameter) (epoch : Epoch)
+    (computation : OracleComp OracleWorld α) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP
+      (IsEncodingHashQueryAt parameter epoch) fuel)
+    (cache : QueryCache HashSpec) :
+    ((simulateQ (splitXmssRomImpl parameter .sign) computation).run cache)
+      |>.IsQueryBoundP
+        (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) fuel := by
+  apply OracleComp.IsQueryBoundP.simulateQ_run_add_inr_of_step
+    (p := IsEncodingHashQueryAt parameter epoch)
+    (q := fun sampleInput : EncodingSamplingWorld.Domain =>
+      sampleInput = Sum.inr ⟨.sign, some epoch⟩)
+    (fun input => by simp [IsEncodingHashQueryAt]) hbound
+  · intro input state
+    exact (splitUniformOracle_encodingSample_bound input state).of_imp (by
+      intro sampleInput hsample
+      subst sampleInput
+      simp)
+  · intro input _ state
+    exact splitRandomOracle_sign_epochSample_bound parameter input epoch state
+  · intro input hnot state
+    exact splitRandomOracle_sign_epochSample_bound_zero parameter input epoch state
+      (by simpa [IsEncodingHashQueryAt] using hnot)
 
 theorem freshEncodingSampleImpl_query_support_trace_of_epoch
     (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
@@ -409,6 +716,232 @@ theorem splitUniformOracle_traced_cache_eq
   obtain ⟨sample, _hsample, heq⟩ := hprojected
   exact (congrArg Prod.snd heq).symm
 
+theorem splitUniformOracle_traced_trace_eq_nil
+    (input : unifSpec.Domain) (cache : QueryCache HashSpec)
+    (result : (unifSpec.Range input × QueryCache HashSpec) ×
+      EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((splitUniformOracle input).run cache)).run)) :
+    result.2 = [] := by
+  unfold splitUniformOracle at hmem
+  rw [QueryImpl.liftTarget_apply, StateT.run_monadLift, simulateQ_bind,
+    WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨output, firstTrace⟩, hquery, hrestMapped⟩ := hmem
+  rw [support_map] at hrestMapped
+  obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+  simp only [simulateQ_pure, WriterT.run_pure', support_pure,
+    Set.mem_singleton_iff] at hrest
+  subst restResult
+  have hfirstTrace := encodingUniformQuery_support_trace_empty input
+    (output, firstTrace) hquery
+  change firstTrace = [] at hfirstTrace
+  have hresultTrace : firstTrace ++ [] = result.2 := by
+    simpa using congrArg Prod.snd heq
+  rw [← hresultTrace, hfirstTrace]
+  simp
+
+theorem splitRandomOracle_query_observedSignEpochs_eq_nil
+    (parameter : PublicParameter) (input : HashInput)
+    (cache : QueryCache HashSpec)
+    (result : (HashOutput × QueryCache HashSpec) × EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((splitRandomOracle parameter .query input).run cache)).run)) :
+    EncodingMonitor.observedSignEpochs result.2 = [] := by
+  by_contra hne
+  obtain ⟨epoch, hepoch⟩ := List.exists_mem_of_ne_nil
+    (EncodingMonitor.observedSignEpochs result.2) hne
+  have hpositive :
+      0 < (EncodingMonitor.observedSignEpochs result.2).count epoch :=
+    List.count_pos_iff.mpr hepoch
+  have hzero := encodingSamplingTrace_sign_epoch_count_le epoch
+    ((splitRandomOracle parameter .query input).run cache) 0
+      (splitRandomOracle_query_sign_epochSample_bound_zero parameter input epoch cache)
+      result hmem
+  omega
+
+theorem splitUniformOracle_simulateQ_trace_eq_nil
+    {computation : ProbComp α} (cache : QueryCache HashSpec)
+    (result : (α × QueryCache HashSpec) × EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ splitUniformOracle computation).run cache)).run)) :
+    result.2 = [] := by
+  induction computation using OracleComp.inductionOn generalizing cache result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
+        support_pure, Set.mem_singleton_iff] at hmem
+      subst result
+      rfl
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
+        WriterT.run_bind', mem_support_bind_iff] at hmem
+      obtain ⟨⟨⟨output, middleCache⟩, firstTrace⟩, hfirst,
+        hrestMapped⟩ := hmem
+      rw [support_map] at hrestMapped
+      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+      rw [simulateQ_spec_query] at hfirst
+      have hfirstTrace := splitUniformOracle_traced_trace_eq_nil input cache
+        ((output, middleCache), firstTrace) hfirst
+      change firstTrace = [] at hfirstTrace
+      have hrestTrace := ih output middleCache restResult hrest
+      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
+        simpa using congrArg Prod.snd heq
+      rw [← htraceEq, hfirstTrace, hrestTrace]
+      simp
+
+theorem splitXmssRom_simulateQ_query_observedSignEpochs_eq_nil
+    (parameter : PublicParameter) (computation : OracleComp OracleWorld α)
+    (cache : QueryCache HashSpec)
+    (result : (α × QueryCache HashSpec) × EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ (splitXmssRomImpl parameter .query) computation).run
+          cache)).run)) :
+    EncodingMonitor.observedSignEpochs result.2 = [] := by
+  induction computation using OracleComp.inductionOn generalizing cache result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
+        support_pure, Set.mem_singleton_iff] at hmem
+      subst result
+      rfl
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
+        WriterT.run_bind', mem_support_bind_iff] at hmem
+      obtain ⟨⟨⟨output, middleCache⟩, firstTrace⟩, hfirst,
+        hrestMapped⟩ := hmem
+      rw [support_map] at hrestMapped
+      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+      rw [simulateQ_spec_query] at hfirst
+      have hfirstEpochs :
+          EncodingMonitor.observedSignEpochs firstTrace = [] := by
+        cases input with
+        | inl uniformInput =>
+            have htrace := splitUniformOracle_traced_trace_eq_nil uniformInput cache
+              ((output, middleCache), firstTrace) hfirst
+            change firstTrace = [] at htrace
+            simp [htrace, EncodingMonitor.observedSignEpochs]
+        | inr hashInput =>
+            exact splitRandomOracle_query_observedSignEpochs_eq_nil parameter
+              hashInput cache ((output, middleCache), firstTrace) hfirst
+      have hrestEpochs := ih output middleCache restResult hrest
+      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
+        simpa using congrArg Prod.snd heq
+      rw [← htraceEq, EncodingMonitor.observedSignEpochs_append,
+        hfirstEpochs, hrestEpochs]
+      rfl
+
+theorem splitUniformOracle_trace_eq_nil_of_exists
+    (cache : QueryCache HashSpec)
+    (result : (α × QueryCache HashSpec) × EncodingActionTrace)
+    (hmem : ∃ computation : ProbComp α, result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ splitUniformOracle computation).run cache)).run)) :
+    result.2 = [] := by
+  obtain ⟨computation, hresult⟩ := hmem
+  exact splitUniformOracle_simulateQ_trace_eq_nil cache result hresult
+
+theorem Concrete.signingRandomness_split_trace_eq_nil
+    (cache : QueryCache HashSpec)
+    (result : (Randomness × QueryCache HashSpec) × EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ splitUniformOracle Concrete.signingRandomness).run cache)).run)) :
+    result.2 = [] := by
+  exact splitUniformOracle_simulateQ_trace_eq_nil
+    (computation := Concrete.signingRandomness) cache result hmem
+
+theorem Concrete.sign_traced_sign_epoch_count_le
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch targetEpoch : Epoch) (message : Message)
+    (cache : QueryCache HashSpec)
+    (result : (Option Signature × QueryCache HashSpec) ×
+      EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
+          (Concrete.scheme.sign publicKey secretKey epoch message)).run cache)).run)) :
+    (EncodingMonitor.observedSignEpochs result.2).count targetEpoch ≤
+      if epoch = targetEpoch then 1 else 0 := by
+  change result ∈ support
+    ((simulateQ encodingSamplingTraceImpl
+      ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
+        (Concrete.sign publicKey secretKey epoch message)).run cache)).run) at hmem
+  rw [Concrete.sign_eq, simulateQ_bind, StateT.run_bind, simulateQ_bind,
+    WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨randomness, middleCache⟩, firstTrace⟩, hfirst,
+    hrestMapped⟩ := hmem
+  rw [support_map] at hrestMapped
+  obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+  simp only [splitXmssRomImpl,
+    QueryImpl.simulateQ_add_liftM_left] at hfirst
+  simp only [splitXmssRomImpl,
+    QueryImpl.simulateQ_add_liftM_right] at hrest
+  have hfirstTrace : firstTrace = [] := by
+    have htrace := Concrete.signingRandomness_split_trace_eq_nil cache
+      ((randomness, middleCache), firstTrace) hfirst
+    exact htrace
+  have hrestCount :
+      (EncodingMonitor.observedSignEpochs restResult.2).count targetEpoch ≤
+        if epoch = targetEpoch then 1 else 0 := by
+    apply encodingSamplingTrace_sign_epoch_count_le targetEpoch
+      ((simulateQ (splitRandomOracle secretKey.parameter .sign)
+        (Concrete.signAttempt secretKey epoch message randomness)).run middleCache)
+      (if epoch = targetEpoch then 1 else 0)
+    · exact splitRandomOracle_simulateQ_sign_epochSample_bound
+        secretKey.parameter targetEpoch
+          (Concrete.signAttempt secretKey epoch message randomness)
+          (if epoch = targetEpoch then 1 else 0)
+          (Concrete.signAttempt_queryBound_encodingAddress secretKey epoch
+            targetEpoch message randomness) middleCache
+    · exact hrest
+  have htraceEq : firstTrace ++ restResult.2 = result.2 := by
+    simpa using congrArg Prod.snd heq
+  rw [← htraceEq, hfirstTrace]
+  simpa [EncodingMonitor.observedSignEpochs] using hrestCount
+
+theorem Concrete.sign_traced_signEpochs_sublist_singleton
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message)
+    (cache : QueryCache HashSpec)
+    (result : (Option Signature × QueryCache HashSpec) ×
+      EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
+          (Concrete.scheme.sign publicKey secretKey epoch message)).run cache)).run)) :
+    List.Sublist (EncodingMonitor.observedSignEpochs result.2) [epoch] := by
+  rw [List.sublist_singleton]
+  let epochs := EncodingMonitor.observedSignEpochs result.2
+  have hcount : epochs.count epoch ≤ 1 := by
+    simpa [epochs] using Concrete.sign_traced_sign_epoch_count_le publicKey secretKey
+      epoch epoch message cache result hmem
+  have hall : ∀ candidate ∈ epochs, candidate = epoch := by
+    intro candidate hcandidate
+    by_contra hne
+    have hzero := Concrete.sign_traced_sign_epoch_count_le publicKey secretKey
+      epoch candidate message cache result hmem
+    have hpositive : 0 < epochs.count candidate :=
+      List.count_pos_iff.mpr hcandidate
+    rw [if_neg (Ne.symm hne)] at hzero
+    change epochs.count candidate ≤ 0 at hzero
+    omega
+  have hcountLength : epochs.count epoch = epochs.length :=
+    List.count_eq_length.mpr fun candidate hcandidate =>
+      (hall candidate hcandidate).symm
+  have hlength : epochs.length ≤ 1 := by omega
+  cases hepochs : epochs with
+  | nil => exact Or.inl hepochs
+  | cons first rest =>
+      cases rest with
+      | nil =>
+          have hfirst : first = epoch := hall first (by simp [hepochs])
+          subst first
+          exact Or.inr hepochs
+      | cons second tail =>
+          simp [hepochs] at hlength
+
 theorem splitXmssRom_simulateQ_traced_cache_le
     (parameter : PublicParameter) (kind : EncodingSampleKind)
     (computation : OracleComp OracleWorld α)
@@ -733,6 +1266,62 @@ theorem splitEncodingTracedMappedAdversaryImpl_query_trace_sublist
           · simp [encodingActionTraceUpdate, encodingObservation?, signedInput,
               hfresh]
 
+theorem splitEncodingTracedMappedAdversaryImpl_query_externalSignEpochs_sublist
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialState :
+      (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)
+    (result : ((OracleWorld + SigningSpec).Range input ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((splitEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
+          initialState)).run)) :
+    List.Sublist
+      (initialState.1.2.epochs ++
+        EncodingMonitor.observedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  rw [splitEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨output, finalState⟩, externalTrace⟩, hbase, hfinal⟩ := hmem
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinal
+  subst result
+  rw [splitCacheTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hbase
+  obtain ⟨⟨⟨baseOutput, finalCache⟩, baseTrace⟩, hunlogged,
+    hbaseFinal⟩ := hbase
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hbaseFinal
+  cases hbaseFinal
+  cases input with
+  | inl worldInput =>
+      cases worldInput with
+      | inl uniformInput =>
+          have htrace := splitUniformOracle_traced_trace_eq_nil uniformInput
+            initialState.1.1 ((output, finalCache), baseTrace) hunlogged
+          change baseTrace = [] at htrace
+          simp [htrace, signingCacheTraceUpdate,
+            EncodingMonitor.observedSignEpochs]
+      | inr hashInput =>
+          have htrace := splitRandomOracle_query_observedSignEpochs_eq_nil
+            secretKey.parameter hashInput initialState.1.1
+              ((output, finalCache), baseTrace) hunlogged
+          change EncodingMonitor.observedSignEpochs baseTrace = [] at htrace
+          simp [htrace, signingCacheTraceUpdate]
+  | inr request =>
+      change ((output, finalCache), baseTrace) ∈ support
+        ((simulateQ encodingSamplingTraceImpl
+          ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
+            (Concrete.scheme.sign publicKey secretKey request.epoch
+              request.message)).run initialState.1.1)).run) at hunlogged
+      have htrace := Concrete.sign_traced_signEpochs_sublist_singleton
+        publicKey secretKey request.epoch request.message initialState.1.1
+          ((output, finalCache), baseTrace) hunlogged
+      have happend := (List.Sublist.refl initialState.1.2.epochs).append htrace
+      simpa [signingCacheTraceUpdate, SigningCacheTrace.epochs] using happend
+
 theorem splitEncodingTracedMappedAdversary_simulateQ_trace_sublist
     (publicKey : PublicKey) (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -775,6 +1364,54 @@ theorem splitEncodingTracedMappedAdversary_simulateQ_trace_sublist
       have htraceEq : firstTrace ++ restResult.2 = result.2 := by
         simpa using congrArg Prod.snd heq
       rw [← hstateEq, ← htraceEq]
+      simpa [List.append_assoc] using hcombined
+
+theorem splitEncodingTracedMappedAdversary_simulateQ_externalSignEpochs_sublist
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState :
+      (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)
+    (result : (α ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ
+          (splitEncodingTracedMappedAdversaryImpl publicKey secretKey)
+            computation).run initialState)).run)) :
+    List.Sublist
+      (initialState.1.2.epochs ++
+        EncodingMonitor.observedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialState result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
+        support_pure, Set.mem_singleton_iff] at hmem
+      subst result
+      simp [EncodingMonitor.observedSignEpochs]
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
+        WriterT.run_bind', mem_support_bind_iff] at hmem
+      obtain ⟨⟨⟨output, middleState⟩, firstTrace⟩, hfirst,
+        hrestMapped⟩ := hmem
+      rw [support_map] at hrestMapped
+      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+      rw [simulateQ_spec_query] at hfirst
+      have hfirstSub :=
+        splitEncodingTracedMappedAdversaryImpl_query_externalSignEpochs_sublist
+          publicKey secretKey input initialState
+            ((output, middleState), firstTrace) hfirst
+      have hrestSub := ih output middleState restResult hrest
+      have hcombined :=
+        (hfirstSub.append (List.Sublist.refl
+          (EncodingMonitor.observedSignEpochs restResult.2))).trans hrestSub
+      have hstateEq : restResult.1.2.1.2 = result.1.2.1.2 := by
+        simpa using congrArg (fun value => value.1.2.1.2) heq
+      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
+        simpa using congrArg Prod.snd heq
+      rw [← hstateEq, ← htraceEq,
+        EncodingMonitor.observedSignEpochs_append]
       simpa [List.append_assoc] using hcombined
 
 theorem splitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist
@@ -834,6 +1471,55 @@ theorem splitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist
         (List.sublist_append_left adversaryTrace verificationTrace)
     simpa [appendVerificationEncodingObservation, forgedInput, hfresh] using hsub
 
+theorem splitDetailedGameAfterKeygenWithEncodingTrace_externalSignEpochs_sublist
+    (adversary : Adversary Concrete.scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        (splitDetailedGameAfterKeygenWithEncodingTrace adversary publicKey
+          secretKey initialCache)).run)) :
+    List.Sublist (EncodingMonitor.observedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  unfold splitDetailedGameAfterKeygenWithEncodingTrace at hmem
+  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨forgery, adversaryState⟩, adversaryTrace⟩, hadversary,
+    hrestMapped⟩ := hmem
+  rw [support_map] at hrestMapped
+  obtain ⟨verificationResult, hverificationBlock, hresultEq⟩ := hrestMapped
+  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff]
+    at hverificationBlock
+  obtain ⟨⟨⟨verified, finalCache⟩, verificationTrace⟩, hverify,
+    hfinalMapped⟩ := hverificationBlock
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinalMapped
+  cases hfinalMapped
+  cases hresultEq
+  have hadversarySub :=
+    splitEncodingTracedMappedAdversary_simulateQ_externalSignEpochs_sublist
+      publicKey secretKey (adversary.main publicKey) ((initialCache, []), [])
+        ((forgery, adversaryState), adversaryTrace) hadversary
+  have hadversarySub' : List.Sublist
+      (EncodingMonitor.observedSignEpochs adversaryTrace)
+      adversaryState.1.2.epochs := by
+    simpa [SigningCacheTrace.epochs] using hadversarySub
+  have hverificationEpochs :=
+    splitXmssRom_simulateQ_query_observedSignEpochs_eq_nil secretKey.parameter
+      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
+        forgery.signature) adversaryState.1.1
+          ((verified, finalCache), verificationTrace) hverify
+  simp only [Prod.map_apply, id_eq]
+  change List.Sublist
+    (EncodingMonitor.observedSignEpochs
+      (adversaryTrace ++ (verificationTrace ++ [])))
+      adversaryState.1.2.epochs
+  rw [List.append_nil, EncodingMonitor.observedSignEpochs_append,
+    hverificationEpochs]
+  simpa using hadversarySub'
+
 theorem sampledDetailedGameWithEncodingTrace_trace_sublist
     (adversary : Adversary Concrete.scheme)
     (result : (GameOutcome ×
@@ -846,5 +1532,59 @@ theorem sampledDetailedGameWithEncodingTrace_trace_sublist
   obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
   exact splitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist adversary
     publicKey secretKey keyCache result hrest
+
+theorem sampledDetailedGameWithEncodingTrace_externalSignEpochs_sublist
+    (adversary : Adversary Concrete.scheme)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support (sampledDetailedGameWithEncodingTrace adversary)) :
+    List.Sublist (EncodingMonitor.observedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  unfold sampledDetailedGameWithEncodingTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  exact
+    splitDetailedGameAfterKeygenWithEncodingTrace_externalSignEpochs_sublist
+      adversary publicKey secretKey keyCache result hrest
+
+theorem sampledDetailedGameWithEncodingTrace_externalSignEpochs_nodup_of_winning
+    (adversary : Adversary Concrete.scheme)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support (sampledDetailedGameWithEncodingTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs result.1.2.1.1 result.1.1 .encoding) :
+    (EncodingMonitor.observedSignEpochs result.2).Nodup := by
+  have hsplit : result.1 ∈
+      support (splitDetailedGameWithEncodingTrace adversary) := by
+    rw [← sampledDetailedGameWithEncodingTrace_projection, support_map]
+    exact ⟨result, hmem, rfl⟩
+  have hmanual : result.1 ∈
+      support (detailedGameWithEncodingTrace adversary) := by
+    rw [mem_support_iff, probOutput_def] at hsplit ⊢
+    rw [splitDetailedGameWithEncodingTrace_evalDist_simulation] at hsplit
+    exact hsplit
+  have hsigningNodup :=
+    detailedGameWithEncodingTrace_signingEpochs_nodup_of_winning adversary
+      result.1 hmanual hevent
+  exact hsigningNodup.sublist
+    (sampledDetailedGameWithEncodingTrace_externalSignEpochs_sublist adversary
+      result hmem)
+
+theorem sampledDetailedGameWithEncodingTrace_external_monitorHit_of_winning
+    (adversary : Adversary Concrete.scheme)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support (sampledDetailedGameWithEncodingTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs result.1.2.1.1 result.1.1 .encoding)
+    (hhit : EncodingMonitor.runObserved EncodingMonitor.State.empty
+      result.1.2.2 = true) :
+    EncodingMonitor.runObserved EncodingMonitor.State.empty result.2 = true := by
+  exact EncodingMonitor.runObserved_empty_eq_true_mono_sublist
+    (sampledDetailedGameWithEncodingTrace_trace_sublist adversary result hmem)
+    (sampledDetailedGameWithEncodingTrace_externalSignEpochs_nodup_of_winning
+      adversary result hmem hevent) hhit
 
 end XmssSecurity

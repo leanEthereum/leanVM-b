@@ -297,17 +297,20 @@ theorem Concrete.sign_run_eq
             OracleComp HashSpec (Option Signature))).run cache) := by
   rw [Concrete.sign_eq, simulateQ_bind, StateT.run_bind]
   have hsampleRun :
-      (simulateQ xmssRomImpl (liftM ($ᵗ Randomness))).run cache =
-        (fun randomness => (randomness, cache)) <$> ($ᵗ Randomness) := by
+      (simulateQ xmssRomImpl
+        (liftM Concrete.signingRandomness)).run cache =
+        (fun randomness => (randomness, cache)) <$>
+          Concrete.signingRandomness := by
     change (simulateQ (unifFwdImpl HashSpec +
         (randomOracle : QueryImpl HashSpec
           (StateT (QueryCache HashSpec) ProbComp)))
-      (liftM ($ᵗ Randomness))).run cache = _
+      (liftM Concrete.signingRandomness)).run cache = _
     exact roSim.run_liftM
       (hashSpec := HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
-      ($ᵗ Randomness) cache
+      Concrete.signingRandomness cache
   rw [hsampleRun]
+  rw [Concrete.signingRandomness_eq]
   simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply, pure_bind]
   apply bind_congr
   intro randomness

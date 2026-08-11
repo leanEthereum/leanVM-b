@@ -1,5 +1,6 @@
 import XmssSecurity.ChainOriginProbability
 import XmssSecurity.EncodingActionTrace
+import XmssSecurity.EncodingTraceBridge
 import XmssSecurity.EncodingTargetMap
 import XmssSecurity.SignCacheHitProbability
 import XmssSecurity.SigningCacheTrace
@@ -326,7 +327,8 @@ theorem winning_encoding_event_probability_le_prehit_add_monitorHit
       detailedGameWithEncodingTrace adversary] +
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
-      EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true |
+      WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+        EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true |
       detailedGameWithEncodingTrace adversary] := by
   rw [winning_encoding_event_probability_eq_encodingTrace]
   let win := fun execution : GameOutcome ×
@@ -342,7 +344,8 @@ theorem winning_encoding_event_probability_le_prehit_add_monitorHit
   calc
     Pr[win | detailedGameWithEncodingTrace adversary] ≤
         Pr[fun execution =>
-          (win execution ∧ prehit execution) ∨ monitorHit execution |
+          (win execution ∧ prehit execution) ∨
+            (win execution ∧ monitorHit execution) |
           detailedGameWithEncodingTrace adversary] := by
       apply probEvent_mono
       intro execution hmem hwin
@@ -354,16 +357,70 @@ theorem winning_encoding_event_probability_le_prehit_add_monitorHit
         winning_encoding_event_trace_postSigning_decomposition adversary
           (execution.1, execution.2.1) hprojected hwin
       · exact Or.inl ⟨hwin, entry, hentry, hprehit⟩
-      · exact Or.inr
-          (detailedGameWithEncodingTrace_freshSigningCollision_monitorHit adversary
-            execution hmem hwin ⟨entry, hentry, hsigning⟩)
-      · exact Or.inr
-          (detailedGameWithEncodingTrace_postSigningFreshForgedCollision_monitorHit
-            adversary execution hmem hwin ⟨entry, hentry, hpostSigning⟩)
+      · exact Or.inr ⟨hwin,
+          detailedGameWithEncodingTrace_freshSigningCollision_monitorHit adversary
+            execution hmem hwin ⟨entry, hentry, hsigning⟩⟩
+      · exact Or.inr ⟨hwin,
+          detailedGameWithEncodingTrace_postSigningFreshForgedCollision_monitorHit
+            adversary execution hmem hwin ⟨entry, hentry, hpostSigning⟩⟩
     _ ≤ Pr[fun execution => win execution ∧ prehit execution |
           detailedGameWithEncodingTrace adversary] +
-        Pr[monitorHit | detailedGameWithEncodingTrace adversary] :=
+        Pr[fun execution => win execution ∧ monitorHit execution |
+          detailedGameWithEncodingTrace adversary] :=
       probEvent_or_le _ _ _
+
+theorem winning_encoding_monitorHit_probability_le_sampled_external
+    (adversary : Adversary Concrete.scheme) :
+    Pr[fun execution : GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+        EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true |
+      detailedGameWithEncodingTrace adversary] ≤
+    Pr[fun execution : (GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+          EncodingActionTrace =>
+      EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2 = true |
+      sampledDetailedGameWithEncodingTrace adversary] := by
+  calc
+    _ = Pr[fun execution : GameOutcome ×
+          ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+        WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+          EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true |
+        splitDetailedGameWithEncodingTrace adversary] := by
+      rw [probEvent_def, probEvent_def,
+        splitDetailedGameWithEncodingTrace_evalDist_simulation]
+    _ = Pr[fun execution : (GameOutcome ×
+          ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+            EncodingActionTrace =>
+        WinningOutcomeBadEventOccurs execution.1.2.1.1 execution.1.1 .encoding ∧
+          EncodingMonitor.runObserved EncodingMonitor.State.empty
+            execution.1.2.2 = true |
+        sampledDetailedGameWithEncodingTrace adversary] := by
+      rw [← sampledDetailedGameWithEncodingTrace_projection, probEvent_map]
+      rfl
+    _ ≤ _ := by
+      apply probEvent_mono
+      intro execution hmem hevent
+      exact sampledDetailedGameWithEncodingTrace_external_monitorHit_of_winning
+        adversary execution hmem hevent.1 hevent.2
+
+theorem sampledDetailedGame_external_collision_probability_le_of_bound
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : ∀ keyResult ∈
+      support ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅),
+      (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
+        keyResult.1.2 keyResult.2).IsQueryBoundP (· matches .inr _) q) :
+    Pr[fun execution : (GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+          EncodingActionTrace =>
+      EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2 = true |
+      sampledDetailedGameWithEncodingTrace adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  unfold sampledDetailedGameWithEncodingTrace
+  refine probEvent_bind_le_of_forall_le fun keyResult hkeyResult => ?_
+  exact encodingSamplingTrace_collision_probability_le
+    (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
+      keyResult.1.2 keyResult.2) q (hbound keyResult hkeyResult)
 
 /-- The concrete winning encoding event reduces inside the actual game distribution to the two signing-boundary orientations used by the probability argument. -/
 theorem winning_encoding_event_probability_le_signingTrace_orientations
