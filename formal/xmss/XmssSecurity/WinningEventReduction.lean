@@ -1,0 +1,92 @@
+import XmssSecurity.SigningLogReplay
+
+open OracleComp OracleSpec ENNReal
+
+namespace XmssSecurity
+
+/-- A classified bad event on an execution that actually wins the signature game. Keeping the winning condition exposes transcript validity without weakening the deterministic classification. -/
+def WinningOutcomeBadEventOccurs (cache : QueryCache HashSpec)
+    (outcome : GameOutcome) (event : BadEvent) : Prop :=
+  outcome.won = true ∧ OutcomeBadEventOccurs cache outcome event
+
+theorem SigningTranscript.length_le_lifetime {log : QueryLog SigningSpec}
+    (hvalid : SigningTranscript.Valid log) :
+    log.length ≤ lifetime := by
+  unfold SigningTranscript.Valid at hvalid
+  simpa using List.Nodup.length_le_card hvalid
+
+theorem SigningTranscript.returned_eq_of_same_epoch
+    {log : QueryLog SigningSpec} {leftRequest rightRequest : SignRequest}
+    {leftSignature rightSignature : Signature}
+    (hvalid : SigningTranscript.Valid log)
+    (hleft : SigningTranscript.Returned log leftRequest leftSignature)
+    (hright : SigningTranscript.Returned log rightRequest rightSignature)
+    (hepoch : leftRequest.epoch = rightRequest.epoch) :
+    leftRequest = rightRequest ∧ leftSignature = rightSignature := by
+  obtain ⟨leftEntry, hleftMem, hleftRequest, hleftSignature⟩ := hleft
+  obtain ⟨rightEntry, hrightMem, hrightRequest, hrightSignature⟩ := hright
+  unfold SigningTranscript.Valid at hvalid
+  have hentry : leftEntry = rightEntry :=
+    List.inj_on_of_nodup_map hvalid hleftMem hrightMem (by
+      simpa only [hleftRequest, hrightRequest] using hepoch)
+  subst rightEntry
+  constructor
+  · exact hleftRequest.symm.trans hrightRequest
+  · have hoptions : some leftSignature = some rightSignature := by
+      rw [← hleftSignature, ← hrightSignature]
+    exact Option.some.inj hoptions
+
+theorem WinningOutcomeBadEventOccurs.signingTranscript_valid
+    {cache : QueryCache HashSpec} {outcome : GameOutcome} {event : BadEvent}
+    (hevent : WinningOutcomeBadEventOccurs cache outcome event) :
+    SigningTranscript.Valid outcome.signingLog :=
+  ((GameOutcome.won_eq_true_iff outcome).mp hevent.1).1
+
+theorem WinningOutcomeBadEventOccurs.signingLog_length_le_lifetime
+    {cache : QueryCache HashSpec} {outcome : GameOutcome} {event : BadEvent}
+    (hevent : WinningOutcomeBadEventOccurs cache outcome event) :
+    outcome.signingLog.length ≤ lifetime :=
+  SigningTranscript.length_le_lifetime hevent.signingTranscript_valid
+
+theorem winningOutcomeBadEvent_probability_le_outcomeBadEvent
+    (adversary : Adversary Concrete.scheme) (event : BadEvent) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningOutcomeBadEventOccurs execution.2 execution.1 event |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      OutcomeBadEventOccurs execution.2 execution.1 event |
+      detailedGameWithCache Concrete.scheme adversary] := by
+  apply probEvent_mono''
+  intro execution hevent
+  exact hevent.2
+
+/-- The forging advantage is bounded by the union of bad events restricted to winning executions. -/
+theorem forgeAdvantage_le_winningOutcomeBadEvent_sum
+    (adversary : Adversary Concrete.scheme) :
+    forgeAdvantage Concrete.scheme adversary ≤
+      ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+        WinningOutcomeBadEventOccurs execution.2 execution.1 event |
+        detailedGameWithCache Concrete.scheme adversary] := by
+  rw [forgeAdvantage_eq_detailedGameWithCache]
+  calc
+    Pr[fun execution : GameOutcome × QueryCache HashSpec => execution.1.won = true |
+        detailedGameWithCache Concrete.scheme adversary] ≤
+      Pr[fun execution : GameOutcome × QueryCache HashSpec => ∃ event : BadEvent,
+        WinningOutcomeBadEventOccurs execution.2 execution.1 event |
+        detailedGameWithCache Concrete.scheme adversary] := by
+      apply probEvent_mono
+      intro execution hmem hwin
+      obtain ⟨event, hevent⟩ := winning_outcome_has_badEvent execution.2 execution.1
+        (detailed_execution_consistent adversary execution hmem) hwin
+      exact ⟨event, hwin, hevent⟩
+    _ ≤ ∑ event : BadEvent,
+        Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+          WinningOutcomeBadEventOccurs execution.2 execution.1 event |
+          detailedGameWithCache Concrete.scheme adversary] := by
+      simpa only [Finset.mem_univ, true_and] using
+        probEvent_exists_finset_le_sum (Finset.univ : Finset BadEvent)
+          (detailedGameWithCache Concrete.scheme adversary)
+          (fun event execution =>
+            WinningOutcomeBadEventOccurs execution.2 execution.1 event)
+
+end XmssSecurity

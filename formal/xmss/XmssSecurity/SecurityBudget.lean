@@ -130,15 +130,16 @@ theorem badEvent_sum_le_120 (q : Nat) (cost : BadEvent → ℝ≥0∞)
     _ ≤ (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) :=
       totalBadEventSlots_budget_le_120 q
 
-/-- Chain preimage events may pay for one hidden-value hit and one collision, while every other event pays for one elementary 128-bit event. -/
+/-- Encoding and chain events may each pay for two elementary terms, while every other event pays for one. -/
 def badEventWeight : BadEvent → Nat
+  | .encoding => 2
   | .chain _ => 2
   | _ => 1
 
 def totalBadEventWeight : Nat :=
   ∑ event : BadEvent, badEventWeight event
 
-theorem totalBadEventWeight_eq : totalBadEventWeight = 217 := by
+theorem totalBadEventWeight_eq : totalBadEventWeight = 218 := by
   native_decide
 
 theorem totalBadEventWeight_le_capacity :
@@ -159,7 +160,7 @@ theorem totalBadEventWeight_budget_le_120 (q : Nat) :
     _ = (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) :=
       capacity_budget_eq q
 
-/-- The 120-bit union bound still closes when every chain event costs two elementary 128-bit terms. -/
+/-- The 120-bit union bound still closes when encoding and chain events cost two elementary 128-bit terms. -/
 theorem badEvent_weighted_sum_le_120 (q : Nat) (cost : BadEvent → ℝ≥0∞)
     (hcost : ∀ event, cost event ≤
       (badEventWeight event : ℝ≥0∞) *

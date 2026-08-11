@@ -104,6 +104,29 @@ theorem encodingInput_injective (parameter : PublicParameter) (epoch : Epoch) :
   apply Concrete.encodingPayload_injective
   exact payload_eq_of_tweakableHashInput_eq parameter (.encoding epoch) heq
 
+/-- Serialized encoding inputs are separated by epoch as well as by message and randomness. -/
+theorem encodingInput_eq_iff (parameter : PublicParameter)
+    (leftEpoch rightEpoch : Epoch) (left right : Message × Randomness) :
+    encodingInput parameter leftEpoch left =
+        encodingInput parameter rightEpoch right ↔
+      leftEpoch = rightEpoch ∧ left = right := by
+  constructor
+  · intro heq
+    have hdomain : HashDomain.encoding leftEpoch = .encoding rightEpoch :=
+      domain_eq_of_tweakableHashInput_eq parameter heq
+    have hepoch : leftEpoch = rightEpoch := HashDomain.encoding.inj hdomain
+    subst rightEpoch
+    exact ⟨rfl, encodingInput_injective parameter leftEpoch heq⟩
+  · rintro ⟨rfl, rfl⟩
+    rfl
+
+theorem epoch_eq_of_encodingInput_eq (parameter : PublicParameter)
+    {leftEpoch rightEpoch : Epoch} {left right : Message × Randomness}
+    (heq : encodingInput parameter leftEpoch left =
+      encodingInput parameter rightEpoch right) :
+    leftEpoch = rightEpoch :=
+  (encodingInput_eq_iff parameter leftEpoch rightEpoch left right).mp heq |>.1
+
 theorem chainInput_injective (parameter : PublicParameter) (epoch : Epoch)
     (chain : ChainIndex) (position : ChainStep) :
     Function.Injective (chainInput parameter epoch chain position) := by

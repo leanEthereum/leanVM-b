@@ -1,6 +1,6 @@
 import XmssSecurity.Encoding
 import XmssSecurity.ConcreteScheme
-import XmssSecurity.ChainOriginProbability
+import XmssSecurity.EncodingEventProbability
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
@@ -10,8 +10,10 @@ import XmssSecurity.MerkleEventProbability
 import XmssSecurity.SecurityBudget
 import XmssSecurity.SecurityGame
 import XmssSecurity.SigningLogReplay
+import XmssSecurity.SigningCacheTrace
 import XmssSecurity.SuffixEventProbability
 import XmssSecurity.Wots
+import XmssSecurity.WinningEventReduction
 
 namespace XmssSecurity
 
@@ -23,9 +25,9 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
     (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 .encoding |
+      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
       detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) ∧
+      2 * ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) ∧
     ∀ chain : ChainIndex,
       Pr[fun result =>
         OutcomeGuessesKeygenChainValue result.1.2 result.2.2 result.1.1.2
@@ -34,13 +36,13 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
   sorry
 
-/-- Below the digest-space size, chain events cost two elementary terms and every other event costs one. -/
+/-- Below the digest-space size, encoding and chain events cost two elementary terms and every other event costs one. -/
 theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
     (hqlt : q < 2 ^ digestBits)
     (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) (event : BadEvent) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 event |
+      WinningOutcomeBadEventOccurs execution.2 execution.1 event |
       detailedGameWithCache Concrete.scheme adversary] ≤
       (badEventWeight event : ENNReal) *
         ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
@@ -51,8 +53,13 @@ theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
   | chain chain =>
       calc
         Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-            OutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
+            WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
             detailedGameWithCache Concrete.scheme adversary] ≤
+          Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+            OutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
+            detailedGameWithCache Concrete.scheme adversary] :=
+          winningOutcomeBadEvent_probability_le_outcomeBadEvent adversary (.chain chain)
+        _ ≤
           Pr[fun execution : GameOutcome × QueryCache HashSpec =>
               OutcomeChainValueRevealed execution.2 execution.1 chain |
               detailedGameWithCache Concrete.scheme adversary] +
@@ -68,20 +75,25 @@ theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
             ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
           simp [badEventWeight, two_mul]
   | suffixCollision slot =>
-      simpa [badEventWeight] using
-        suffixCollision_outcomeBadEvent_probability_le q adversary hbound slot
+      exact (winningOutcomeBadEvent_probability_le_outcomeBadEvent adversary
+        (.suffixCollision slot)).trans (by
+          simpa [badEventWeight] using
+            suffixCollision_outcomeBadEvent_probability_le q adversary hbound slot)
   | leaf =>
-      simpa [badEventWeight] using leaf_outcomeBadEvent_probability_le q adversary hbound
+      exact (winningOutcomeBadEvent_probability_le_outcomeBadEvent adversary .leaf).trans (by
+        simpa [badEventWeight] using leaf_outcomeBadEvent_probability_le q adversary hbound)
   | merkle level =>
-      simpa [badEventWeight] using
-        merkle_outcomeBadEvent_probability_le q adversary hbound level
+      exact (winningOutcomeBadEvent_probability_le_outcomeBadEvent adversary
+        (.merkle level)).trans (by
+          simpa [badEventWeight] using
+            merkle_outcomeBadEvent_probability_le q adversary hbound level)
 
 /-- Every concrete event satisfies its weighted bound; above `2^128` queries this follows from the trivial probability bound. -/
 theorem xmss_badEvent_probability_le (q : Nat) (hq : 1 ≤ q)
     (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) (event : BadEvent) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 event |
+      WinningOutcomeBadEventOccurs execution.2 execution.1 event |
       detailedGameWithCache Concrete.scheme adversary] ≤
       (badEventWeight event : ENNReal) *
         ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
@@ -98,15 +110,16 @@ theorem xmss_badEvent_probability_le (q : Nat) (hq : 1 ≤ q)
       _ ≤ (badEventWeight event : ENNReal) *
           ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
         cases event <;> simp [badEventWeight]
-        rw [two_mul]
-        exact le_add_right (α := ENNReal) le_rfl
+        all_goals
+          rw [two_mul]
+          exact le_add_right (α := ENNReal) le_rfl
 
 /-- Every bounded adversary has forging probability at most `q / 2^120`. -/
 theorem xmss_forgeAdvantage_le (q : Nat) (hq : 1 ≤ q)
     (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     forgeAdvantage Concrete.scheme adversary ≤ (q : ENNReal) / ((2 ^ 120 : Nat) : ENNReal) := by
-  refine (forgeAdvantage_le_outcomeBadEvent_sum adversary).trans ?_
+  refine (forgeAdvantage_le_winningOutcomeBadEvent_sum adversary).trans ?_
   apply badEvent_weighted_sum_le_120
   intro event
   exact xmss_badEvent_probability_le q hq adversary hbound event
