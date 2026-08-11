@@ -255,6 +255,211 @@ theorem drawList_truncate_probability (targets : List Digest) :
           (target :: targets).length) := by
           simp [tailProbability, pow_succ, mul_comm]
 
+theorem drawList_support_length
+    {Value : Type} (draw : ProbComp Value) :
+    ∀ (count : Nat) (values : List Value),
+      values ∈ support (OracleComp.drawList draw count) →
+      values.length = count := by
+  intro count
+  induction count with
+  | zero =>
+      intro values hvalues
+      simp only [OracleComp.drawList, support_pure,
+        Set.mem_singleton_iff] at hvalues
+      subst values
+      rfl
+  | succ count ih =>
+      intro values hvalues
+      rw [OracleComp.drawList, mem_support_bind_iff] at hvalues
+      obtain ⟨value, _hvalue, hrest⟩ := hvalues
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst values
+      simp [ih rest hrest]
+
+theorem drawList_digest_probability (targets : List Digest) :
+    Pr[= targets |
+      OracleComp.drawList ($ᵗ Digest) targets.length] =
+      ((((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ^ targets.length) := by
+  calc
+    Pr[= targets | OracleComp.drawList ($ᵗ Digest) targets.length] =
+        Pr[= targets | List.map truncateHash <$>
+          OracleComp.drawList ($ᵗ HashOutput) targets.length] :=
+      probOutput_congr rfl
+        (evalDist_map_truncate_drawList targets.length).symm
+    _ = Pr[fun outputs : List HashOutput =>
+          outputs.map truncateHash = targets |
+        OracleComp.drawList ($ᵗ HashOutput) targets.length] := by
+      rw [← probEvent_eq_eq_probOutput, probEvent_map]
+      rfl
+    _ = ((((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ^ targets.length) :=
+      drawList_truncate_probability targets
+
+theorem evalDist_listOfFn_uniform_eq_drawList (count : Nat) :
+    𝒟[List.ofFn <$> ($ᵗ (Fin count → Digest))] =
+      𝒟[OracleComp.drawList ($ᵗ Digest) count] := by
+  apply SPMF.ext
+  intro target
+  change Pr[= target | List.ofFn <$> ($ᵗ (Fin count → Digest))] =
+    Pr[= target | OracleComp.drawList ($ᵗ Digest) count]
+  by_cases hlength : target.length = count
+  · let targetFunction : Fin count → Digest := fun index =>
+      target.get (Fin.cast hlength.symm index)
+    have hofFn : List.ofFn targetFunction = target := by
+      calc
+        List.ofFn targetFunction = List.ofFn (List.get target) := by
+          exact List.ofFn_congr hlength (List.get target) |>.symm
+        _ = target := List.ofFn_get target
+    calc
+      Pr[= target | List.ofFn <$> ($ᵗ (Fin count → Digest))] =
+          Pr[= targetFunction | $ᵗ (Fin count → Digest)] := by
+        rw [← hofFn, probOutput_map_injective _ List.ofFn_injective]
+      _ = ((((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ^ count) := by
+        rw [probOutput_uniformSample, Fintype.card_fun, Fintype.card_fin,
+          HiddenValue.card_digest, Nat.cast_pow, ENNReal.inv_pow]
+      _ = Pr[= target |
+          OracleComp.drawList ($ᵗ Digest) count] := by
+        rw [← hlength]
+        exact (drawList_digest_probability target).symm
+  · have hleft : Pr[= target |
+        List.ofFn <$> ($ᵗ (Fin count → Digest))] = 0 := by
+      apply probOutput_eq_zero_of_not_mem_support
+      intro htarget
+      rw [support_map] at htarget
+      obtain ⟨values, _hvalues, heq⟩ := htarget
+      apply hlength
+      rw [← heq]
+      simp
+    have hright : Pr[= target |
+        OracleComp.drawList ($ᵗ Digest) count] = 0 := by
+      apply probOutput_eq_zero_of_not_mem_support
+      intro htarget
+      exact hlength
+        (drawList_support_length ($ᵗ Digest) count target htarget)
+    rw [hleft, hright]
+
+/-- The complete edge enumeration identifies an edge table with its ordered tape. -/
+noncomputable def chainEdgeTableTapeEquiv :
+    (ChainEdgeIndex → Digest) ≃
+      (Fin allChainEdges.length → Digest) :=
+  (Equiv.piCongrLeft (fun _ : ChainEdgeIndex => Digest)
+    (allChainEdges_nodup.getEquivOfForallMemList allChainEdges
+      mem_allChainEdges)).symm
+
+theorem listOfFn_chainEdgeTableTapeEquiv
+    (table : ChainEdgeIndex → Digest) :
+    List.ofFn (chainEdgeTableTapeEquiv table) =
+      allChainEdges.map table := by
+  rw [← List.ofFn_get (allChainEdges.map table)]
+  apply List.ext_get
+  · simp
+  · intro index hleft hright
+    simp [chainEdgeTableTapeEquiv]
+
+noncomputable def chainEdgeTableOfTape
+    (targets : List Digest) : ChainEdgeIndex → Digest :=
+  if hlength : targets.length = allChainEdges.length then
+    chainEdgeTableTapeEquiv.symm fun index =>
+      targets.get (Fin.cast hlength.symm index)
+  else
+    fun _ => 0
+
+@[simp]
+theorem chainEdgeTableOfTape_map
+    (table : ChainEdgeIndex → Digest) :
+    chainEdgeTableOfTape (allChainEdges.map table) = table := by
+  unfold chainEdgeTableOfTape
+  split
+  · rename_i hlength
+    apply chainEdgeTableTapeEquiv.injective
+    rw [chainEdgeTableTapeEquiv.apply_symm_apply]
+    funext index
+    simp [chainEdgeTableTapeEquiv]
+  · rename_i hlength
+    exact (hlength (by simp)).elim
+
+/-- Reading a uniform edge table in the complete edge order gives an i.i.d. uniform digest tape. -/
+theorem evalDist_uniformChainEdgeTableTape_eq_drawList :
+    𝒟[(fun table : ChainEdgeIndex → Digest => allChainEdges.map table) <$>
+      ($ᵗ (ChainEdgeIndex → Digest))] =
+    𝒟[OracleComp.drawList ($ᵗ Digest) allChainEdges.length] := by
+  calc
+    𝒟[(fun table : ChainEdgeIndex → Digest => allChainEdges.map table) <$>
+        ($ᵗ (ChainEdgeIndex → Digest))] =
+        𝒟[List.ofFn <$> (chainEdgeTableTapeEquiv <$>
+          ($ᵗ (ChainEdgeIndex → Digest)))] := by
+      simp only [Functor.map_map]
+      congr 2
+      funext table
+      exact (listOfFn_chainEdgeTableTapeEquiv table).symm
+    _ = 𝒟[List.ofFn <$>
+          ($ᵗ (Fin allChainEdges.length → Digest))] := by
+      rw [evalDist_map]
+      rw [evalDist_map_bijective_uniform_cross
+        (α := ChainEdgeIndex → Digest)
+        (β := Fin allChainEdges.length → Digest)
+        chainEdgeTableTapeEquiv chainEdgeTableTapeEquiv.bijective]
+      rw [← evalDist_map]
+    _ = 𝒟[OracleComp.drawList ($ᵗ Digest) allChainEdges.length] :=
+      evalDist_listOfFn_uniform_eq_drawList allChainEdges.length
+
+noncomputable def sampleHashOutputsWithDigests :
+    List Digest → ProbComp (List HashOutput)
+  | [] => pure []
+  | target :: targets => do
+      let output ← Rom.sampleHashOutputWithDigest target
+      let outputs ← sampleHashOutputsWithDigests targets
+      return output :: outputs
+
+@[simp]
+theorem sampleHashOutputsWithDigests_nil :
+    sampleHashOutputsWithDigests [] = pure [] := rfl
+
+theorem sampleHashOutputsWithDigests_cons
+    (target : Digest) (targets : List Digest) :
+    sampleHashOutputsWithDigests (target :: targets) = do
+      let output ← Rom.sampleHashOutputWithDigest target
+      let outputs ← sampleHashOutputsWithDigests targets
+      return output :: outputs := rfl
+
+noncomputable def batchProgrammedHashTape (count : Nat) :
+    ProbComp (List Digest × List HashOutput) := do
+  let targets ← OracleComp.drawList ($ᵗ Digest) count
+  let outputs ← sampleHashOutputsWithDigests targets
+  return (targets, outputs)
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 100000 in
+theorem evalDist_batchProgrammedHashTape_succ (count : Nat) :
+    𝒟[batchProgrammedHashTape (count + 1)] =
+    𝒟[Rom.sampledHashOutputWithDigest >>= fun first =>
+      batchProgrammedHashTape count >>= fun rest =>
+        pure (first.1 :: rest.1, first.2 :: rest.2)] := by
+  unfold batchProgrammedHashTape Rom.sampledHashOutputWithDigest
+  rw [OracleComp.drawList]
+  simp only [sampleHashOutputsWithDigests_cons, bind_assoc, pure_bind]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro target
+  exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
+
+/-- Batch-sampling uniform low digests and then programming their high halves is the sequential programmed tape. -/
+theorem evalDist_batchProgrammedHashTape_eq_programmedHashTape
+    (count : Nat) :
+    𝒟[batchProgrammedHashTape count] =
+      𝒟[Rom.programmedHashTape count] := by
+  induction count with
+  | zero => simp [batchProgrammedHashTape, OracleComp.drawList,
+      Rom.programmedHashTape]
+  | succ count ih =>
+      rw [evalDist_batchProgrammedHashTape_succ,
+        Rom.programmedHashTape]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro first
+      conv_lhs => rw [evalDist_bind]
+      conv_rhs => rw [evalDist_bind]
+      rw [ih]
+
 noncomputable def chainTableEdgeInputs
     (parameter : PublicParameter) (chain : ChainIndex)
     (table : ChainValueIndex → Digest) : List HashInput :=
@@ -298,6 +503,114 @@ theorem programChainTableEdgesTrace_cons
         parameter chain table edges
       return (output :: rest.1, rest.2)) := rfl
 
+def installChainTableEdgeOutputs
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
+    List ChainEdgeIndex → List HashOutput → QueryCache HashSpec
+  | [], _ => cache
+  | _, [] => cache
+  | edge :: edges, output :: outputs =>
+      installChainTableEdgeOutputs
+        (cache.cacheQuery
+          (chainTableEdgeInput parameter chain table edge) output)
+        parameter chain table edges outputs
+
+@[simp]
+theorem installChainTableEdgeOutputs_nil
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest)
+    (outputs : List HashOutput) :
+    installChainTableEdgeOutputs cache parameter chain table [] outputs = cache := rfl
+
+@[simp]
+theorem installChainTableEdgeOutputs_cons
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest)
+    (edge : ChainEdgeIndex) (edges : List ChainEdgeIndex)
+    (output : HashOutput) (outputs : List HashOutput) :
+    installChainTableEdgeOutputs cache parameter chain table
+      (edge :: edges) (output :: outputs) =
+      installChainTableEdgeOutputs
+        (cache.cacheQuery
+          (chainTableEdgeInput parameter chain table edge) output)
+        parameter chain table edges outputs := rfl
+
+/-- The programmed trace is independent output sampling followed by deterministic cache installation. -/
+theorem evalDist_programChainTableEdgesTrace_eq_install
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest) :
+    ∀ (edges : List ChainEdgeIndex) (cache : QueryCache HashSpec),
+      𝒟[programChainTableEdgesTrace cache parameter chain table edges] =
+      𝒟[(fun outputs =>
+          (outputs, installChainTableEdgeOutputs cache parameter chain table
+            edges outputs)) <$>
+        sampleHashOutputsWithDigests
+          (edges.map (chainTableEdgeTarget table))] := by
+  intro edges
+  induction edges with
+  | nil =>
+      intro cache
+      simp
+  | cons edge edges ih =>
+      intro cache
+      rw [programChainTableEdgesTrace_cons]
+      simp only [List.map_cons, sampleHashOutputsWithDigests_cons,
+        map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro output
+      conv_lhs => rw [evalDist_bind]
+      rw [ih]
+      simp [map_eq_bind_pure_comp, bind_assoc]
+
+/-- Programming fixed edge targets samples exactly the corresponding independent high-half output tape. -/
+theorem evalDist_programChainTableEdgesTrace_fst
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest) :
+    ∀ (edges : List ChainEdgeIndex) (cache : QueryCache HashSpec),
+      𝒟[Prod.fst <$>
+        programChainTableEdgesTrace cache parameter chain table edges] =
+      𝒟[sampleHashOutputsWithDigests
+        (edges.map (chainTableEdgeTarget table))] := by
+  intro edges
+  induction edges with
+  | nil =>
+      intro cache
+      simp
+  | cons edge edges ih =>
+      intro cache
+      simp only [List.map_cons]
+      rw [programChainTableEdgesTrace_cons,
+        sampleHashOutputsWithDigests_cons]
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro output
+      change 𝒟[(fun rest => output :: rest.1) <$>
+          programChainTableEdgesTrace
+            (cache.cacheQuery
+              (chainTableEdgeInput parameter chain table edge) output)
+            parameter chain table edges] =
+        𝒟[(fun outputs => output :: outputs) <$>
+          sampleHashOutputsWithDigests
+            (edges.map (chainTableEdgeTarget table))]
+      calc
+        𝒟[(fun rest => output :: rest.1) <$>
+            programChainTableEdgesTrace
+              (cache.cacheQuery
+                (chainTableEdgeInput parameter chain table edge) output)
+              parameter chain table edges] =
+            𝒟[(fun outputs => output :: outputs) <$> (Prod.fst <$>
+              programChainTableEdgesTrace
+                (cache.cacheQuery
+                  (chainTableEdgeInput parameter chain table edge) output)
+                parameter chain table edges)] := by
+          simp [Functor.map_map]
+        _ = 𝒟[(fun outputs => output :: outputs) <$>
+              sampleHashOutputsWithDigests
+                (edges.map (chainTableEdgeTarget table))] := by
+          rw [evalDist_map, ih, ← evalDist_map]
+
 theorem chainTableEdgeInputs_nodup
     (parameter : PublicParameter) (chain : ChainIndex)
     (table : ChainValueIndex → Digest) :
@@ -316,6 +629,153 @@ theorem chainTableEdgeTargets_length
     (table : ChainValueIndex → Digest) :
     (chainTableEdgeTargets table).length = lifetime * (chainLength - 1) := by
   simp [chainTableEdgeTargets, allChainEdges_length]
+
+theorem chainTableEdgeTarget_materialEquiv_symm
+    (seeds : Epoch → Digest) (edges : ChainEdgeIndex → Digest) :
+    chainTableEdgeTarget
+      (chainTableMaterialEquiv.symm (seeds, edges)) = edges := by
+  have hmaterial := chainTableMaterialEquiv.apply_symm_apply (seeds, edges)
+  exact congrArg Prod.snd hmaterial
+
+noncomputable def programmedUniformChainEdgeTape
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) :
+    ProbComp (List Digest × List HashOutput) := do
+  let edges ← $ᵗ (ChainEdgeIndex → Digest)
+  let table := chainTableMaterialEquiv.symm (seeds, edges)
+  let outputs ← Prod.fst <$>
+    programChainTableEdgesTrace ∅ parameter chain table allChainEdges
+  return (allChainEdges.map edges, outputs)
+
+noncomputable def sampledUniformChainEdgeTape
+    (seeds : Epoch → Digest) :
+    ProbComp (List Digest × List HashOutput) := do
+  let edges ← $ᵗ (ChainEdgeIndex → Digest)
+  let table := chainTableMaterialEquiv.symm (seeds, edges)
+  let outputs ← sampleHashOutputsWithDigests
+    (allChainEdges.map (chainTableEdgeTarget table))
+  return (allChainEdges.map edges, outputs)
+
+noncomputable def installedChainEdgeTapeResult
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest)
+    (tape : List Digest × List HashOutput) :
+    List Digest × (List HashOutput × QueryCache HashSpec) :=
+  let edges := chainEdgeTableOfTape tape.1
+  let table := chainTableMaterialEquiv.symm (seeds, edges)
+  (tape.1, (tape.2,
+    installChainTableEdgeOutputs ∅ parameter chain table
+      allChainEdges tape.2))
+
+noncomputable def programmedUniformChainEdgeCache
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) :
+    ProbComp (List Digest × (List HashOutput × QueryCache HashSpec)) := do
+  let edges ← $ᵗ (ChainEdgeIndex → Digest)
+  let table := chainTableMaterialEquiv.symm (seeds, edges)
+  let trace ← programChainTableEdgesTrace ∅ parameter chain table allChainEdges
+  return (allChainEdges.map edges, trace)
+
+noncomputable def uniformInstalledChainEdgeCache
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) :
+    ProbComp (List Digest × (List HashOutput × QueryCache HashSpec)) :=
+  installedChainEdgeTapeResult parameter chain seeds <$>
+    Rom.uniformHashTape allChainEdges.length
+
+theorem evalDist_programmedUniformChainEdgeTape_eq_sampled
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) :
+    𝒟[programmedUniformChainEdgeTape parameter chain seeds] =
+      𝒟[sampledUniformChainEdgeTape seeds] := by
+  unfold programmedUniformChainEdgeTape sampledUniformChainEdgeTape
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro edges
+  conv_lhs => rw [evalDist_bind]
+  conv_rhs => rw [evalDist_bind]
+  rw [evalDist_programChainTableEdgesTrace_fst]
+
+theorem evalDist_programmedChainEdgeCache_fixedTable_eq_installed
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) (edges : ChainEdgeIndex → Digest) :
+    let table := chainTableMaterialEquiv.symm (seeds, edges)
+    𝒟[(fun trace => (allChainEdges.map edges, trace)) <$>
+      programChainTableEdgesTrace ∅ parameter chain table allChainEdges] =
+    𝒟[installedChainEdgeTapeResult parameter chain seeds <$>
+      ((fun outputs => (allChainEdges.map edges, outputs)) <$>
+        sampleHashOutputsWithDigests
+          (allChainEdges.map (chainTableEdgeTarget table)))] := by
+  dsimp only
+  rw [evalDist_map, evalDist_programChainTableEdgesTrace_eq_install,
+    ← evalDist_map]
+  simp [Functor.map_map, installedChainEdgeTapeResult,
+    chainEdgeTableOfTape_map]
+
+/-- A uniform edge table programmed into the oracle has exactly the ordinary uniform output-tape distribution. -/
+theorem evalDist_programmedUniformChainEdgeTape_eq_uniformHashTape
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) :
+    𝒟[programmedUniformChainEdgeTape parameter chain seeds] =
+      𝒟[Rom.uniformHashTape allChainEdges.length] := by
+  calc
+    𝒟[programmedUniformChainEdgeTape parameter chain seeds] =
+        𝒟[sampledUniformChainEdgeTape seeds] :=
+      evalDist_programmedUniformChainEdgeTape_eq_sampled parameter chain seeds
+    _ = 𝒟[$ᵗ (ChainEdgeIndex → Digest) >>= fun edges =>
+          sampleHashOutputsWithDigests (allChainEdges.map edges) >>= fun outputs =>
+            pure (allChainEdges.map edges, outputs)] := by
+      unfold sampledUniformChainEdgeTape
+      simp only [chainTableEdgeTarget_materialEquiv_symm]
+    _ = 𝒟[((fun edges : ChainEdgeIndex → Digest =>
+          allChainEdges.map edges) <$> ($ᵗ (ChainEdgeIndex → Digest))) >>= fun targets =>
+          sampleHashOutputsWithDigests targets >>= fun outputs =>
+            pure (targets, outputs)] := by
+      simp [map_eq_bind_pure_comp, bind_assoc]
+    _ = 𝒟[OracleComp.drawList ($ᵗ Digest) allChainEdges.length >>= fun targets =>
+          sampleHashOutputsWithDigests targets >>= fun outputs =>
+            pure (targets, outputs)] := by
+      rw [evalDist_bind, evalDist_uniformChainEdgeTableTape_eq_drawList,
+        ← evalDist_bind]
+    _ = 𝒟[batchProgrammedHashTape allChainEdges.length] := by
+      rfl
+    _ = 𝒟[Rom.programmedHashTape allChainEdges.length] :=
+      evalDist_batchProgrammedHashTape_eq_programmedHashTape
+        allChainEdges.length
+    _ = 𝒟[Rom.uniformHashTape allChainEdges.length] :=
+      Rom.evalDist_programmedHashTape_eq_uniformHashTape allChainEdges.length
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 100000 in
+/-- The full programmed cache, not only its output tape, is a deterministic installation of an ordinary uniform tape. -/
+theorem evalDist_programmedUniformChainEdgeCache_eq_uniformInstalled
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) :
+    𝒟[programmedUniformChainEdgeCache parameter chain seeds] =
+      𝒟[uniformInstalledChainEdgeCache parameter chain seeds] := by
+  calc
+    𝒟[programmedUniformChainEdgeCache parameter chain seeds] =
+        𝒟[installedChainEdgeTapeResult parameter chain seeds <$>
+          sampledUniformChainEdgeTape seeds] := by
+      unfold programmedUniformChainEdgeCache sampledUniformChainEdgeTape
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro edges
+      simpa [map_eq_bind_pure_comp, bind_assoc] using
+        (evalDist_programmedChainEdgeCache_fixedTable_eq_installed
+          parameter chain seeds edges)
+    _ = 𝒟[installedChainEdgeTapeResult parameter chain seeds <$>
+          programmedUniformChainEdgeTape parameter chain seeds] := by
+      conv_lhs => rw [evalDist_map]
+      conv_rhs => rw [evalDist_map]
+      rw [← evalDist_programmedUniformChainEdgeTape_eq_sampled]
+    _ = 𝒟[installedChainEdgeTapeResult parameter chain seeds <$>
+          Rom.uniformHashTape allChainEdges.length] := by
+      rw [evalDist_map,
+        evalDist_programmedUniformChainEdgeTape_eq_uniformHashTape,
+        ← evalDist_map]
+    _ = 𝒟[uniformInstalledChainEdgeCache parameter chain seeds] := by
+      rfl
 
 set_option maxHeartbeats 1600000 in
 theorem presampledChainTableEdges_probability
