@@ -8,7 +8,7 @@
 //! transparently keep the two-`EOR` form.
 //!
 //! (`sha3` is the name of the ARMv8.2 feature *block* that carries `EOR3`,
-//! not a reference to the hash function — this crate hashes with BLAKE3.)
+//! not a reference to the hash function — this crate hashes with BLAKE2s.)
 
 use core::arch::aarch64::*;
 

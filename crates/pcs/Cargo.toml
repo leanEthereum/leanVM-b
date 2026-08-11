@@ -10,7 +10,6 @@ workspace = true
 parallel.workspace = true
 primitives.workspace = true
 fiat_shamir.workspace = true
-blake3.workspace = true
 serde.workspace = true
 zk_alloc.workspace = true
 tracing.workspace = true

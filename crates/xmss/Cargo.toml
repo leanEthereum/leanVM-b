@@ -7,8 +7,8 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+primitives.workspace = true
 parallel.workspace = true
-blake3.workspace = true
 rand.workspace = true
 serde.workspace = true
 

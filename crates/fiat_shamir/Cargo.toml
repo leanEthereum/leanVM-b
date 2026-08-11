@@ -9,5 +9,4 @@ workspace = true
 [dependencies]
 parallel.workspace = true
 primitives.workspace = true
-blake3.workspace = true
 serde.workspace = true

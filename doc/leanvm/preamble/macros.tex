@@ -32,8 +32,8 @@
 % ---------- Flock protocol (Annex C) ----------
 \newcommand{\qflock}{q_{\flock}}             % packed Boolean Flock witness
 \newcommand{\qext}[1]{#1^{\sharp}}           % 64-point univariate / multilinear extension
-\newcommand{\kblock}{\kappa_{\mathrm{block}}} % variables in one BLAKE3 witness block
-\newcommand{\kbatch}{\kappa_{\mathrm{batch}}} % log number of BLAKE3 instances
+\newcommand{\kblock}{\kappa_{\mathrm{block}}} % variables in one BLAKE2s witness block
+\newcommand{\kbatch}{\kappa_{\mathrm{batch}}} % log number of BLAKE2s instances
 \newcommand{\kbool}{\kappa_{\mathrm{bool}}}   % variables of the unpacked Boolean batch witness
 \newcommand{\kskip}{\kappa_{\mathrm{skip}}}   % variables replaced by the univariate skip
 \newcommand{\skipdom}{\mathcal{H}}            % 64 skip-domain nodes
@@ -54,7 +54,7 @@
 \newcommand{\addr}{\mathit{addr}}
 \newcommand{\val}{\mathit{val}}
 \newcommand{\cnt}{\mathit{count}}
-\newcommand{\md}{\mathrm{md}}       % BLAKE3 metadata immediate: counter, block length, flags
+\newcommand{\md}{\mathrm{md}}       % BLAKE2s metadata immediate: byte counter, final and last-node flags
 \newcommand{\cntfin}{\mathit{count}^{\mathrm{fin}}}  % committed finalize-count column
 \newcommand{\rcnts}{\mathcal{R}}          % multiset of read counts at one (address, value)
 \newcommand{\mset}[1]{\{\!\{#1\}\!\}}     % a multiset (plain braces stay sets)

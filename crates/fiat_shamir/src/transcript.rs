@@ -29,7 +29,7 @@ use primitives::field::{F64, F192};
 /// A complete proof: the scalar transcript stream plus the Merkle phases:
 /// **two** channels, no bolted-on side field. The commitment root and every
 /// transmitted scalar ride `stream`; the hash-bearing openings ride
-/// `merkle_paths`. flock's BLAKE3 sub-proof is carried the same way: its
+/// `merkle_paths`. flock's BLAKE2s sub-proof is carried the same way: its
 /// zerocheck / lincheck / ring-switch scalars are ordinary `add_scalar` words on
 /// `stream` (transmitted AND bound at their protocol points, like every other
 /// scalar) and its opening phases append to `merkle_paths`.

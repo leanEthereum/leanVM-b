@@ -138,7 +138,7 @@ def HeapBuf(n) -> _Elt:
 
 def StackBuf(n: int) -> _Elt:
     """Allocate `n` consecutive frame (stack) cells. A size-2 StackBuf holds a
-    256-bit value and is a valid `blake3` operand."""
+    256-bit value and is a valid `blake2s` operand."""
     _ = n
     return _Elt()
 
@@ -175,34 +175,34 @@ def hint_f192_limbs(dest, value) -> None:
     _ = dest, value
 
 
-def blake3(
+def blake2s(
     a,
     b,
     out,
     *,
     cv=None,
     counter: Optional[int] = None,
-    block_len: int = 64,
-    flags: Optional[int] = None,
-    step: Optional[int] = None,
-    end: int = 0,
-    root: int = 0,
-    parent: int = 0,
+    final: Optional[int] = None,
+    last_node: int = 0,
 ) -> None:
-    """One standard BLAKE3 compression of the two 256-bit message operands
+    """One standard BLAKE2s compression of the two 256-bit message operands
     `a`, `b`, written into the 2-cell run `out` (write-once: if `out` was
-    already written, this asserts it equals the digest).
+    already written, this asserts it equals the chaining value).
 
-    With no keywords this hashes exactly 64 bytes using the standard IV,
-    counter zero, block length 64, and CHUNK_START | CHUNK_END | ROOT. `cv`
-    selects a 2-cell chaining value and requires an explicit structured-mode
-    keyword such as `step` or `flags`; `counter`, `block_len`, and `flags` set
-    the compile-time metadata directly. In inferred-flag mode,
-    `step=0` marks CHUNK_START, while `end`, `root`, and `parent` add the
-    corresponding BLAKE3 flags. Bytes after `block_len` must be zero-filled by
-    the program.
+    With no keywords this hashes exactly 64 bytes: the parameterized BLAKE2s-256
+    initial chaining value, byte counter 64, final-block flag set. That is
+    `blake2s(a || b)`, the form every sponge step and Merkle node uses.
+
+    For a longer message, drive the blocks yourself. `counter` is the CUMULATIVE
+    byte count through this block (`64 * whole_blocks_before + bytes_in_this_block`)
+    and `final=1` marks the last block; `cv` carries the previous block's output
+    and requires `counter`, since a chained block is never the default one-block
+    hash. Setting any of `counter`, `final` or `last_node` makes `final` default
+    to 0, so a single short block needs `counter=<len>, final=1`. Bytes past the
+    block's real length must be zero-filled by the program. `last_node` is
+    BLAKE2s's tree-mode `f1` and is 0 everywhere here.
 
     Message, chaining-value, and output operands are size-2 StackBufs or
     2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
     bridged through the stack, one DEREF per cell)."""
-    _ = a, b, out, cv, counter, block_len, flags, step, end, root, parent
+    _ = a, b, out, cv, counter, final, last_node

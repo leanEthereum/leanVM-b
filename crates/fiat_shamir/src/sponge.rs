@@ -1,13 +1,12 @@
 // CREDIT: https://github.com/signalapp/libsignal/blob/main/rust/poksho/src/shosha256.rs, AGPL-3.0-only.
 //! The VM-native Fiat–Shamir sponge.
 //!
-//! A 256-bit chaining value evolved only by the fixed 64→32 BLAKE3 compression
-//! the VM's `Blake3` opcode computes, so prover, verifier, and a recursive
-//! verifier running on the VM all derive identical challenges with one
-//! `blake3` per step. That is the reason this replaces the streaming
-//! `blake3::Hasher` challenger: the multi-block chunk tree / flags / counter of
-//! the streaming hasher cannot be reproduced by the one 64-byte compression the
-//! machine has.
+//! A 256-bit chaining value evolved only by the fixed 64→32 BLAKE2s hash the
+//! VM's `Blake2s` opcode computes, so prover, verifier, and a recursive
+//! verifier running on the VM all derive identical challenges with one hash per
+//! step. Hashing exactly 64 bytes IS one BLAKE2s compression (counter 64,
+//! final-block flag set), which is why a single opcode covers the whole
+//! sponge.
 //!
 //! Scalars are `E = F192` (the tower challenge field): their three
 //! little-endian `K = F64` limbs occupy the first three compression lanes,
@@ -16,7 +15,7 @@
 //! Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
 //! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
 //! AGPL-3.0-only): a chaining value advanced by domain-separated absorb /
-//! squeeze steps. Here the underlying hash is the VM's BLAKE3 compression
+//! squeeze steps. Here the underlying hash is the VM's BLAKE2s compression
 //! rather than SHA-256, inputs are `K = GF(2^64)` field words, and, because
 //! every absorb is domain-tagged per compression, no explicit double-hash
 //! ratchet is needed.
@@ -28,16 +27,21 @@
 
 use primitives::field::{F64, F192};
 
-/// `f(a, b) = BLAKE3(a‖b)` on two 256-bit halves laid out little-endian into 64
-/// bytes, *exactly* the VM's `Blake3` opcode: 64 input bytes → 32-byte digest,
-/// split back into four field words. THE primitive; the sponge is a chain of
-/// these, so a zkDSL program replays it with one `blake3(...)` per step.
+/// `f(a, b) = BLAKE2s(a‖b)` on two 256-bit halves laid out little-endian into
+/// 64 bytes, *exactly* the VM's `Blake2s` opcode: 64 input bytes → 32-byte
+/// digest, split back into four field words. THE primitive; the sponge is a
+/// chain of these, so a zkDSL program replays it with one `blake2s(...)` per
+/// step.
+///
+/// A 64-byte input is one compression, so this is `compress(init_state(0), m,
+/// t = 64, last = true)` and nothing about the byte-level padding rules can
+/// leak into the in-circuit version.
 pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     let mut input = [0u8; 64];
     for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
         slot.copy_from_slice(&w.0.to_le_bytes());
     }
-    let d = *blake3::hash(&input).as_bytes();
+    let d = primitives::blake2s::hash(&input);
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
@@ -80,7 +84,7 @@ impl Sponge {
     /// op of the recorded transcript.)
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         let mut s = Self { cv: [F64::ZERO; 4] };
-        s.absorb_bytes(b"leanvm-b/transcript/v2");
+        s.absorb_bytes(b"leanvm-b/transcript/v3-blake2s");
         s.absorb_bytes(label);
         for &x in statement {
             s.observe_untraced(x);

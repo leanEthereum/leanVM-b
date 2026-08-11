@@ -3,7 +3,7 @@
 % Merged from the three source notes.  Where the same work carried two keys
 % (Diamond--Posen, Ligerito, WHIR), the duplicates were folded into one
 % entry.  Flock appears twice on purpose: Flock26 is the paper, flock-impl
-% is the implementation the BLAKE3 table wires into.
+% is the implementation the BLAKE2s table wires into.
 
 @inproceedings{DP26,
   author    = {Benjamin E. Diamond and Jim Posen},
@@ -175,11 +175,13 @@
   howpublished = {\url{https://www.binius.xyz/basics/binius-v0/m3/}},
 }
 
-@inproceedings{blake3,
-  author = {Aumasson, Jean-Philippe and O'Connor, Jack and Neves, Samuel and Wilcox-O'Hearn, Zooko},
-  title = {The BLAKE3 Hashing Framework},
-  type = {Internet-Draft},
+@techreport{blake2,
+  author = {Saarinen, Markku-Juhani O. and Aumasson, Jean-Philippe},
+  title = {The BLAKE2 Cryptographic Hash and Message Authentication Code (MAC)},
+  type = {RFC},
+  number = {7693},
   institution = {Internet Engineering Task Force},
-  year = {2024},
-  url = {https://www.ietf.org/archive/id/draft-aumasson-blake3-00.html}
+  year = {2015},
+  doi = {10.17487/RFC7693},
+  url = {https://www.rfc-editor.org/rfc/rfc7693}
 }

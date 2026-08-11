@@ -19,11 +19,11 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
 
-    // Warm the flock BLAKE3 R1CS setup once up front (Fibonacci runs no BLAKE3, so
+    // Warm the flock BLAKE2s R1CS setup once up front (Fibonacci runs no BLAKE2s, so
     // this warms the single padding instance). It is a fixed, one-time,
     // program-independent circuit build — not part of proving — so timing prove/
     // verify below reflects steady-state performance.
-    lean_vm::blake3_flock::warm_setup(0);
+    lean_vm::blake2s_flock::warm_setup(0);
 
     // Only the final measured pass of each stage is traced (see `run_recursion`).
     let ((proof, stats), prove_time) = plan.warm_then_measure(|last| {

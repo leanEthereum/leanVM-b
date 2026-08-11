@@ -1,6 +1,6 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
-//! (only `blake3` in this vendored subset).
+//! (only `blake2s` in this vendored subset).
 
 use crate::r1cs::SparseBinaryMatrix;
 use primitives::bits::transpose_8_u64s_to_64_bytes;
@@ -86,7 +86,7 @@ pub(crate) fn add_carry_parts(x: u32, y: u32) -> (u32, u32, u32, u32) {
 }
 
 /// One fused three-operand ADD's witness parts (see
-/// `blake3::write_add3_fused_rows` for the row algebra): the sum, then each
+/// `blake2s::write_add3_fused_rows` for the row algebra): the sum, then each
 /// layer's `(left, right, product)` triple.
 ///
 /// The majority triple is masked to bits 0..=30. The ripple triple is masked

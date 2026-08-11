@@ -136,14 +136,14 @@ impl BlockR1cs {
             .all(|((ai, bi), ci)| (*ai & *bi) == *ci)
     }
 
-    /// BLAKE3 hash of the circuit FAMILY: the per-block matrices and the
+    /// BLAKE2s hash of the circuit FAMILY: the per-block matrices and the
     /// shape parameters, explicitly WITHOUT the instance count `m`. The full
     /// instance is block-diagonal (`m` copies of these matrices), so a
     /// protocol that binds this digest and `m` separately has bound the whole
     /// statement; embedding protocols (leanVM-b) seed their transcript with it
     /// and announce the count.
     pub fn family_digest(&self) -> [u8; 32] {
-        let mut h = blake3::Hasher::new();
+        let mut h = primitives::blake2s::Hasher::new();
         h.update(b"flock-r1cs-family-v1");
         h.update(&(self.k_log as u64).to_le_bytes());
         h.update(&(self.k_skip as u64).to_le_bytes());
@@ -155,16 +155,16 @@ impl BlockR1cs {
         absorb_matrix(&mut h, &self.a_0);
         absorb_matrix(&mut h, &self.b_0);
         absorb_matrix(&mut h, &self.c_0);
-        *h.finalize().as_bytes()
+        h.finalize()
     }
 }
 
-/// Length-prefixed absorption of a sparse matrix into a BLAKE3 hasher.
+/// Length-prefixed absorption of a sparse matrix into a BLAKE2s hasher.
 /// `(num_rows, num_cols, [(row_len, col_indices...) for each row])`, all
 /// little-endian u64, so two matrices with different shapes/contents always
 /// produce different states.
-fn absorb_matrix(h: &mut blake3::Hasher, m: &SparseBinaryMatrix) {
-    // Flatten first: one bulk `update` hashes at full BLAKE3 throughput,
+fn absorb_matrix(h: &mut primitives::blake2s::Hasher, m: &SparseBinaryMatrix) {
+    // Flatten first: one bulk `update` hashes at full BLAKE2s throughput,
     // where per-entry 8-byte updates cost ~80 ms per matrix in call overhead.
     let nnz: usize = m.rows.iter().map(Vec::len).sum();
     let mut buf = Vec::with_capacity(8 * (2 + m.rows.len() + nnz));
@@ -200,7 +200,7 @@ pub(crate) fn apply_block_diag(m_0: &SparseBinaryMatrix, z: &[bool], k_log: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blake3_witness::identity;
+    use crate::witness::identity;
 
     #[test]
     fn identity_matrices_accept_any_witness() {

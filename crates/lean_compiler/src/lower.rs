@@ -51,7 +51,7 @@ fn field_pow(b: F192, k: u32) -> F192 {
 
 /// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
 /// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
-/// each use ([`FnLower::word_src`]), so `BLAKE3`, which addresses its four
+/// each use ([`FnLower::word_src`]), so `BLAKE2s`, which addresses its four
 /// two-cell input chunks independently, reads them in place without assembling
 /// copies.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -59,7 +59,7 @@ enum Alias {
     Cell(Off),
     /// A compile-time constant: forwarded at its uses to the pooled cell
     /// holding that value (`const_cell`), so a constant stored into a
-    /// `blake3` operand cell (the `obs`/`squeeze` tag words, padding
+    /// `blake2s` operand cell (the `obs`/`squeeze` tag words, padding
     /// halves) costs ONE `SET` per distinct value per function, not one
     /// per store. A zero constant routes through the zero pool.
     Const(F192),
@@ -106,7 +106,7 @@ struct Scope {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
     /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
-    /// 2-cell slice of a larger one, is a direct `blake3` operand). Kept
+    /// 2-cell slice of a larger one, is a direct `blake2s` operand). Kept
     /// separate from `vars` since a stack value is a run of cells, not a
     /// single scalar.
     stacks: HashMap<String, (Off, u32)>,
@@ -135,10 +135,10 @@ struct Scope {
     const_cells: HashMap<[u64; 3], Off>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
     zero_off: Option<Off>,
-    /// Two consecutive frame cells holding the standard BLAKE3 IV, emitted
+    /// Two consecutive frame cells holding the standard BLAKE2s IV, emitted
     /// lazily at the first dominating default-IV compression in this
     /// control-flow scope.
-    blake3_iv: Option<Off>,
+    blake2s_iv: Option<Off>,
 }
 
 struct FnLower<'a> {
@@ -295,7 +295,7 @@ impl FnLower<'_> {
     }
 
     /// A frame cell holding `0`, set lazily once: the source for forwarded zero
-    /// words (a `BLAKE3` padding half).
+    /// words (a `BLAKE2s` padding half).
     fn zero(&mut self) -> Off {
         if let Some(o) = self.scope.zero_off {
             return o;
@@ -306,18 +306,18 @@ impl FnLower<'_> {
         o
     }
 
-    fn default_blake3_cv(&mut self) -> Off {
-        if let Some(o) = self.scope.blake3_iv {
+    fn default_blake2s_cv(&mut self) -> Off {
+        if let Some(o) = self.scope.blake2s_iv {
             return o;
         }
         let o = self.alloc_stack(2);
-        for (k, value) in lean_vm::blake3_flock::IV_CELLS.into_iter().enumerate() {
+        for (k, value) in lean_vm::blake2s_flock::IV_CELLS.into_iter().enumerate() {
             self.set_const(o + k as u32, value);
             self.scope
                 .const_cells
                 .insert([value.c0, value.c1, value.c2], o + k as u32);
         }
-        self.scope.blake3_iv = Some(o);
+        self.scope.blake2s_iv = Some(o);
         o
     }
 
@@ -433,7 +433,7 @@ impl FnLower<'_> {
                             od: fr::ZERO,
                             of: fr::ZERO,
                         },
-                        FillerOp::Blake3 => LOp::Blake3 {
+                        FillerOp::Blake2s => LOp::Blake2s {
                             ins: [fr::DIGEST + 2, fr::DIGEST + 3, fr::DIGEST + 4, fr::DIGEST + 5],
                             cv: fr::SCRATCH,
                             c: fr::DIGEST,
@@ -493,7 +493,7 @@ impl FnLower<'_> {
     }
 
     /// Run `f` with branch-local scope: bindings AND the lazily cached cells
-    /// (`one`, `self_fp`, range-check bounds, default BLAKE3 IV) revert
+    /// (`one`, `self_fp`, range-check bounds, default BLAKE2s IV) revert
     /// afterwards, since a cell whose `SET` sits inside a conditionally-executed
     /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
@@ -952,7 +952,7 @@ impl FnLower<'_> {
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
                 if self.scope.stacks.contains_key(v) {
-                    panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
+                    panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake2s");
                 }
                 if let Some(&ga) = self.scope.gaddrs.get(v) {
                     return self.materialize(ga);
@@ -1064,7 +1064,7 @@ impl FnLower<'_> {
                     "`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`"
                 )
             }
-            Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake3 operand"),
+            Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake2s operand"),
             Expr::ListLit(..) => panic!("a list literal must be bound to a name: `x = [a, b]`"),
         }
     }
@@ -1088,7 +1088,7 @@ impl FnLower<'_> {
     /// A compile-time integer index: a literal, a name bound to a literal,
     /// or `+`/`*`/`//`/`%` of those (evaluated as *integer* arithmetic: this is
     /// index space, not the field). `None` when the expression is a runtime
-    /// value (which a heap slice start may be; see [`Self::blake3_operand`]).
+    /// value (which a heap slice start may be; see [`Self::blake2s_operand`]).
     fn try_const_index(&self, idx: &Expr) -> Option<u32> {
         match idx {
             // A literal that fits is an index; a ≥ 2^32 literal is a field value,
@@ -1260,26 +1260,26 @@ impl FnLower<'_> {
         }
     }
 
-    /// Resolve a `blake3` operand: a [`Self::cell_run`] pinned to exactly 2
+    /// Resolve a `blake2s` operand: a [`Self::cell_run`] pinned to exactly 2
     /// cells, a 256-bit value being two 128-bit cells. Stack operands are used
     /// in place; heap operands must be bridged through the stack, since
-    /// `BLAKE3` addresses only frame cells (see [`Self::blake3_input`]).
-    fn blake3_operand(&mut self, e: &Expr) -> CellRun {
+    /// `BLAKE2s` addresses only frame cells (see [`Self::blake2s_input`]).
+    fn blake2s_operand(&mut self, e: &Expr) -> CellRun {
         let run = self.cell_run(e);
         assert!(
             run.cells() == 2,
-            "a blake3 operand must span exactly 2 cells (two 128-bit words); slice a larger buffer: `buf[lo:lo + 2]`"
+            "a blake2s operand must span exactly 2 cells (two 128-bit words); slice a larger buffer: `buf[lo:lo + 2]`"
         );
         run
     }
 
-    /// A `blake3` *input* operand as its two independently-addressed 128-bit
+    /// A `blake2s` *input* operand as its two independently-addressed 128-bit
     /// chunk bases (each chunk is ONE 128-bit cell): stack runs in place; a heap
     /// slice is pulled into a fresh stack pair first, one `DEREF` per cell
     /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
     /// offset). The heap cells must already be written.
-    fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
-        match self.blake3_operand(e) {
+    fn blake2s_input(&mut self, e: &Expr) -> [Off; 2] {
+        match self.blake2s_operand(e) {
             // A stack operand: the two chunk cells are `o, o+1`; forward each
             // cell's real source where known (a copy or a zero), so a hash of
             // non-adjacent values needs no assembling copies.
@@ -1294,13 +1294,13 @@ impl FnLower<'_> {
         }
     }
 
-    /// A BLAKE3 chaining value must occupy two consecutive frame cells because
+    /// A BLAKE2s chaining value must occupy two consecutive frame cells because
     /// the opcode carries one base offset for both words. Preserve a genuine
     /// consecutive pair, including a heap pair already bridged by
-    /// [`Self::blake3_input`]; if deferred copy forwarding exposes two
+    /// [`Self::blake2s_input`]; if deferred copy forwarding exposes two
     /// non-adjacent sources, materialize them into a fresh consecutive run.
-    fn blake3_cv(&mut self, e: &Expr) -> Off {
-        let pair = self.blake3_input(e);
+    fn blake2s_cv(&mut self, e: &Expr) -> Off {
+        let pair = self.blake2s_input(e);
         if pair[1] == pair[0] + 1 {
             return pair[0];
         }
@@ -1599,8 +1599,8 @@ impl FnLower<'_> {
     /// describes those logical bindings to the surrounding let/tuple lowering.
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
-            callee != "blake3",
-            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
+            callee != "blake2s",
+            "blake2s is a statement: `blake2s(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
         self.inline_stack_ret = None;
         if self.defs.get(callee).is_some_and(|d| d.inline) {
@@ -1648,7 +1648,10 @@ impl FnLower<'_> {
     /// Evaluate `callee(args)` into `dsts`, inlining the callee when it is
     /// `@inline` ([`Self::try_inline`]), else a real call.
     fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
-        assert!(callee != "blake3", "blake3 is a statement, not a value-returning call");
+        assert!(
+            callee != "blake2s",
+            "blake2s is a statement, not a value-returning call"
+        );
         if !self.try_inline(callee, args, dsts) {
             if let Some(def) = self.defs.get(callee) {
                 assert_eq!(
@@ -2097,7 +2100,7 @@ impl FnLower<'_> {
                     RHint::BitDecomposeExp { value, bits_ptr, nbits }
                 }));
             }
-            "blake3" => self.lower_blake3(args),
+            "blake2s" => self.lower_blake2s(args),
             "pack64x2_into" => {
                 assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
                 let a = self.expr(&args[0]);
@@ -2124,23 +2127,23 @@ impl FnLower<'_> {
         true
     }
 
-    /// `blake3(a, b, out)`: the digest of the two 256-bit operands lands in the
+    /// `blake2s(a, b, out)`: the digest of the two 256-bit operands lands in the
     /// existing 2-cell run `out` (write-once: if `out` was already written, this
     /// asserts the digest equals it). A heap `out` slice takes the digest via a
     /// fresh stack pair and two `DEREF`s after the hash, the store direction
     /// being the same instruction as the load (write-once fills the unset side).
     /// Keyword arguments set the compile-time metadata.
-    fn lower_blake3(&mut self, args: &[Expr]) {
+    fn lower_blake2s(&mut self, args: &[Expr]) {
         let first_kw = args
             .iter()
             .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
             .unwrap_or(args.len());
-        assert_eq!(first_kw, 3, "blake3 takes three positional arguments: (a, b, out)");
+        assert_eq!(first_kw, 3, "blake2s takes three positional arguments: (a, b, out)");
         assert!(
             args[first_kw..]
                 .iter()
                 .all(|a| matches!(a, Expr::Call(name, v) if name.starts_with("__kw_") && v.len() == 1)),
-            "keyword arguments must follow the three positional blake3 arguments"
+            "keyword arguments must follow the three positional blake2s arguments"
         );
         let mut kwargs: HashMap<&str, &Expr> = HashMap::new();
         for kw in &args[first_kw..] {
@@ -2148,64 +2151,54 @@ impl FnLower<'_> {
             let key = name.strip_prefix("__kw_").unwrap();
             assert!(
                 kwargs.insert(key, &value[0]).is_none(),
-                "duplicate blake3 keyword `{key}`"
+                "duplicate blake2s keyword `{key}`"
             );
         }
-        let allowed = ["cv", "counter", "block_len", "flags", "step", "end", "root", "parent"];
-        assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown blake3 keyword");
-        let customized = kwargs
-            .keys()
-            .any(|k| matches!(*k, "counter" | "flags" | "step" | "end" | "root" | "parent"));
+        let allowed = ["cv", "counter", "final", "last_node"];
+        assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown blake2s keyword");
+        let customized = kwargs.keys().any(|k| matches!(*k, "counter" | "final" | "last_node"));
         assert!(
             !kwargs.contains_key("cv") || customized,
-            "blake3 with cv= requires step=, flags=, or another structured metadata keyword"
+            "blake2s with cv= requires counter=, since a chained block is not the default one-block hash"
         );
 
-        let a = self.blake3_input(&args[0]);
-        let b = self.blake3_input(&args[1]);
-        let (c, heap_out) = match self.blake3_operand(&args[2]) {
+        let a = self.blake2s_input(&args[0]);
+        let b = self.blake2s_input(&args[1]);
+        let (c, heap_out) = match self.blake2s_operand(&args[2]) {
             CellRun::Stack { base, .. } => (base, None),
             CellRun::Heap { ptr, lo, .. } => (self.alloc_stack(2), Some((ptr, lo))),
         };
         let cv = if let Some(value) = kwargs.get("cv") {
-            self.blake3_cv(value)
+            self.blake2s_cv(value)
         } else {
-            self.default_blake3_cv()
+            self.default_blake2s_cv()
         };
         let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
             kwargs.get(name).map(|e| this.const_index(e) as u128).unwrap_or(default)
         };
-        let counter = const_kw(self, "counter", 0);
-        assert!(counter <= u64::MAX as u128, "BLAKE3 counter does not fit in u64");
-        let block_len = const_kw(self, "block_len", 64);
-        assert!(block_len <= 64, "BLAKE3 block_len must be at most 64");
-        let step = kwargs.get("step").map(|e| self.const_index(e));
-        if let Some(step) = step {
-            assert!(step < 16, "BLAKE3 step must be in 0..16");
-        }
-        let mut flags = if kwargs.contains_key("flags") {
-            const_kw(self, "flags", 0)
-        } else if customized {
-            if step == Some(0) { 1 } else { 0 }
+        // BLAKE2s metadata is just the cumulative byte counter and two flags, so
+        // a multi-block hash is `counter = 64 * blocks_before + bytes_in_this_block`
+        // and `final = 1` on the last block. The default is the one-block hash of
+        // a full 64-byte input, which is what `vmhash::compress` and every Merkle
+        // node use.
+        let counter = const_kw(self, "counter", 64);
+        assert!(counter <= u64::MAX as u128, "BLAKE2s counter does not fit in u64");
+        let f0 = if const_kw(self, "final", if customized { 0 } else { 1 }) != 0 {
+            lean_vm::blake2s_flock::FINAL_FLAG
         } else {
-            lean_vm::blake3_flock::FLAGS as u128
+            0
         };
-        if const_kw(self, "end", 0) != 0 {
-            flags |= 1 << 1;
-        }
-        if const_kw(self, "parent", 0) != 0 {
-            flags |= 1 << 2;
-        }
-        if const_kw(self, "root", 0) != 0 {
-            flags |= 1 << 3;
-        }
-        assert!(flags <= u32::MAX as u128, "BLAKE3 flags do not fit in u32");
-        let metadata = lean_vm::blake3_flock::metadata(counter as u64, block_len as u32, flags as u32);
+        let f1 = if const_kw(self, "last_node", 0) != 0 {
+            u32::MAX
+        } else {
+            0
+        };
+        let metadata = lean_vm::blake2s_flock::metadata(counter as u64, f0, f1);
         // Each operand is two 128-bit chunk cells; the flexible opcode addresses
-        // the four input cells independently (`blake3_input` forwards the real
+        // the four input cells independently (`blake2s_input` forwards the real
         // chunk sources where it can). The digest occupies the two consecutive
         // output cells `c, g·c`.
-        self.emit(LOp::Blake3 {
+        self.emit(LOp::Blake2s {
             ins: [a[0], a[1], b[0], b[1]],
             cv,
             c,
@@ -2434,7 +2427,7 @@ fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
         Stmt::Call(f, _) => {
-            f == "blake3" || f == "pack64x2_into" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
+            f == "blake2s" || f == "pack64x2_into" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
         }
         Stmt::If { then, els, .. } => {
             then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))

@@ -4,14 +4,14 @@
 //!
 //! ## Why this fits where the naive encoding does not
 //!
-//! BLAKE2s's G is BLAKE3's G (same lane schedule, same rotations 16/12/8/7),
+//! BLAKE2s's G is BLAKE2s's G (same lane schedule, same rotations 16/12/8/7),
 //! so the only difference that matters here is 10 rounds against 7: 80 G
 //! calls instead of 56. The block dimension is the same `k_log = 14`, and the
 //! slot budget is unforgiving:
 //!
 //! ```text
 //!   16,384 slots − 1,280 prefix                        = 15,104 for G blocks
-//!   80 G × 250 (blake3's pinned stride)                = 20,000   over by 4,896
+//!   80 G × 250 (blake2s's pinned stride)                = 20,000   over by 4,896
 //!   80 G × 186 (unpinned, chained three-operand adds)  = 14,880   fits, 224 spare
 //!   80 G × 184 (unpinned, fused three-operand adds)    = 14,720   fits, 384 spare
 //! ```
@@ -21,9 +21,9 @@
 //! add, 61 for a three-operand one), so this encoding is not merely tight, it
 //! is the smallest possible at 10 rounds.
 //!
-//! ## No lin-id pins, unlike `blake3`
+//! ## No lin-id pins, unlike `blake2s`
 //!
-//! `blake3` materializes `b_new`/`d_new` per G (64 slots) to break the affine
+//! `blake2s` materializes `b_new`/`d_new` per G (64 slots) to break the affine
 //! cascade for half the lanes, which costs 250 slots per G but keeps the
 //! substituted matrices at ~16.7M nonzeros. That is unaffordable here: at 80 G
 //! it needs 19,840 slots. Nor is a cheaper partial break available. Resetting
@@ -66,14 +66,14 @@
 //! ```
 //!
 //! `h` and `out` each fill one clean 256-bit slot, the same I/O alignment
-//! `blake3` uses, so an embedding protocol can fold a chaining step with a
+//! `blake2s` uses, so an embedding protocol can fold a chaining step with a
 //! single tensor opening. Nothing else is materialized: every intermediate
 //! word, every state write and the whole message schedule stay symbolic
 //! affine forms substituted into their consumers.
 //!
 //! ## Constraint shape (`C = I`)
 //!
-//! Identical to `blake3`: every z slot is the output of exactly one row, with
+//! Identical to `blake2s`: every z slot is the output of exactly one row, with
 //! the row kinds being the constant wire, free inputs, lin-id words (only
 //! `out` here) and the ADD product rows. See the `gf2` module for the adder row
 //! algebra, which both circuits share.
@@ -84,16 +84,21 @@
 //! witness bits. Pinning them to a caller's values is the embedding
 //! protocol's job, via PCS openings at fixed indices.
 
-use crate::blake3_witness::{
-    BitRecord, add_carry_parts, add3_fused_parts, drive_witness_packed_and_lincheck, or_bit_at,
-    write_lin_word_ab_packed,
-};
 use crate::gf2::{
     ADD3_BITS, CARRY_BITS_PER_ADD, WalkAcc, WireWord, Word, walk_add, walk_add3_fused, wire_from_const,
     wire_from_slot_base, wire_rotr, wire_xor, write_add_carry_rows, write_add3_fused_rows, write_lin_word_rows,
 };
 use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
+use crate::verifier;
+use crate::witness::packed_bytes;
+use crate::witness::{
+    BitRecord, add_carry_parts, add3_fused_parts, drive_witness_packed_and_lincheck, or_bit_at,
+    write_lin_word_ab_packed,
+};
+use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
+use pcs::stack_open::{RingSwitchClaim, RingSwitchOpen, RingSwitchVerify};
 use primitives::field::F192;
+use primitives::multilinear::lagrange_weights_naive;
 use zk_alloc::ArenaVec;
 
 // ---------------------------------------------------------------------------
@@ -107,9 +112,8 @@ pub const K: usize = 1 << K_LOG;
 /// Univariate-skip dim, must match [`crate::zerocheck::K_SKIP`].
 pub const K_SKIP: usize = 6;
 
-/// Number of BLAKE2s rounds. The whole point of this module: three more than
-/// BLAKE3, at the same block dimension.
-pub const N_ROUNDS: usize = 10;
+/// Number of BLAKE2s rounds.
+pub const N_ROUNDS: usize = primitives::blake2s::ROUNDS;
 /// Number of G calls per round (4 column + 4 diagonal).
 pub const N_G_PER_ROUND: usize = 8;
 /// Total G calls per compression.
@@ -121,29 +125,12 @@ pub const WORD_BITS: usize = crate::gf2::WORD_BITS;
 /// nothing materialized.
 pub const G_STRIDE: usize = 2 * ADD3_BITS + 2 * CARRY_BITS_PER_ADD; // 184
 
-/// BLAKE2s initial values, the SHA-256 IV. Identical to BLAKE3's.
-pub const BLAKE2S_IV: [u32; 8] = crate::blake3::BLAKE3_IV;
+/// BLAKE2s initial values, the SHA-256 IV.
+pub use primitives::blake2s::IV as BLAKE2S_IV;
 
-/// BLAKE2s message schedule: `SIGMA[r][i]` is the message word feeding
-/// position `i` of round `r`. Cross-checked against `hashlib.blake2s` through
-/// the reference implementation in this module's tests.
-pub const SIGMA: [[usize; 16]; N_ROUNDS] = [
-    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
-    [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
-    [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
-    [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
-    [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
-    [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
-    [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
-    [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
-    [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
-];
-
-/// Lanes touched by G index `g` within a round: `[a, b, c, d]`. BLAKE2s and
-/// BLAKE3 run the same eight G's over the same lanes, so this is deliberately
-/// the same table rather than a second copy that could drift.
-pub use crate::blake3::G_LANES;
+/// BLAKE2s message schedule and per-G lane assignment, from the native hash so
+/// the circuit provably encodes the same schedule the prover computes.
+pub use primitives::blake2s::{G_LANES, SIGMA};
 
 // ---------------------------------------------------------------------------
 // Layout positions (bit indices into the per-block z slice of length K)
@@ -242,18 +229,28 @@ pub type Compression = ([u32; 8], [u32; 16], u64, u32, u32);
 
 /// BLAKE2s-256's initial chaining value: the IV with the parameter block
 /// (digest length 32, no key, fanout/depth 1) folded into word 0.
-pub fn param_iv() -> [u32; 8] {
-    let mut h = BLAKE2S_IV;
-    h[0] ^= 0x0101_0000 ^ 32;
-    h
+pub const fn param_iv() -> [u32; 8] {
+    primitives::blake2s::PARAM_IV
 }
 
-/// The padding instance: one full non-final block of zeros from the standard
-/// initial chaining value. Fills unused trailing slots so every batched block
-/// is a valid instance with constant wire 1, as the lincheck const-wire pin
-/// requires.
+/// The byte counter of a single 64-byte block.
+pub const PINNED_T: u64 = 64;
+/// The final-block flag `f0`: a one-block message is also its last block.
+pub const PINNED_F0: u32 = u32::MAX;
+
+/// A convenient one-block standard hash [`Compression`] of `m`: exactly
+/// `blake2s(m)` for a 64-byte message, which is the configuration the VM's
+/// `Blake2s` opcode and `fiat_shamir::sponge::compress` use. The circuit itself
+/// accepts arbitrary chaining values, counters and flags.
+pub fn pinned_compression(m: [u32; 16]) -> Compression {
+    (param_iv(), m, PINNED_T, PINNED_F0, 0)
+}
+
+/// The padding instance: `blake2s(0^64)`. Fills unused trailing slots so every
+/// batched block is a valid instance with constant wire 1, as the lincheck
+/// const-wire pin requires.
 pub fn padding_block() -> Compression {
-    (param_iv(), [0u32; 16], 64, 0, 0)
+    pinned_compression([0u32; 16])
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +357,16 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     (to_mat(a_rows), to_mat(b_rows))
 }
 
+/// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
+/// recomputing it means building and hashing ~89M matrix entries, which
+/// embedding protocols would otherwise pay inside their first prove. The
+/// `family_digest_matches_baked` test recomputes and compares: a circuit change
+/// fails it until this constant is updated alongside.
+pub const FAMILY_DIGEST: [u8; 32] = [
+    0xbd, 0x4b, 0x64, 0xdf, 0xf0, 0xe1, 0x1f, 0xab, 0x9f, 0x76, 0x5e, 0xe7, 0xff, 0x8f, 0x37, 0x9e, 0x77, 0xbe, 0x06,
+    0xee, 0x55, 0x45, 0xf9, 0x29, 0x1e, 0xb6, 0xc6, 0x8d, 0x7c, 0x62, 0xa1, 0xfb,
+];
+
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE2s
 /// compressions. `n_blocks_log ≥ 3` is required (lincheck needs `n_outer ≥ 8`).
 pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
@@ -372,7 +379,7 @@ pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
         useful_bits: USEFUL_BITS,
         a_0,
         b_0,
-        c_0: crate::blake3_witness::identity(K),
+        c_0: crate::witness::identity(K),
         layout: crate::r1cs::WitnessLayout::RowMajor,
         const_pin: Some(Z_CONST_POS),
         csc_cache: std::sync::OnceLock::new(),
@@ -491,7 +498,7 @@ impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit<'_> {
 // ---------------------------------------------------------------------------
 // Witness generation: emits the R1CS row-witnesses directly from the BLAKE2s
 // computation, as bit-packed u64 words. Row-witness semantics match
-// `build_matrices`, and are the same shapes `blake3` documents.
+// `build_matrices`, and are the same shapes `blake2s` documents.
 // ---------------------------------------------------------------------------
 
 // Record-relative positions, mirroring the `G_*` sub-block offsets.
@@ -601,7 +608,7 @@ fn build_block_witness_ab_packed_into(
 }
 
 /// Produce `(z, a, b, z_lincheck)` for `blocks.len()` compressions padded to
-/// `2^n_blocks_log` slots. Mirror of `blake3`'s generator; see it for the
+/// `2^n_blocks_log` slots. Mirror of `blake2s`'s generator; see it for the
 /// buffer shapes and the lincheck stripe indexing.
 pub fn generate_witness_with_ab_packed_and_lincheck(
     blocks: &[Compression],
@@ -615,6 +622,373 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
         K_LOG,
         |&(ref h, ref m, t, f0, f1), z, a, b| build_block_witness_ab_packed_into(h, m, t, f0, f1, z, a, b),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Convenience API: Blake2sSetup
+// ---------------------------------------------------------------------------
+
+/// Bundles the monolithic BLAKE2s compression R1CS for the smallest supported
+/// power-of-two shape that can hold `n_blocks` compressions.
+#[derive(Clone, Debug)]
+pub struct Blake2sSetup {
+    pub r1cs: BlockR1cs,
+}
+
+impl Blake2sSetup {
+    /// Build a setup for `n_blocks` BLAKE2s compressions.
+    pub fn new(n_blocks: usize) -> Self {
+        assert!(n_blocks >= 1, "n_blocks must be ≥ 1");
+        let n_log = min_n_blocks_log(n_blocks);
+        let r1cs = build_block_r1cs(n_log);
+        // Warm the CSC fold circuit here so its one-time build (a pass over
+        // ~89M nonzeros) stays out of the first prove/verify. The prove-cycle
+        // buffers need no pre-faulting: they come from the arena, which keeps its
+        // pages resident across proofs (see `zk_alloc`).
+        r1cs.csc_lincheck_circuit();
+        Self { r1cs }
+    }
+
+    pub fn m(&self) -> usize {
+        self.r1cs.m
+    }
+    pub fn n_blocks_log(&self) -> usize {
+        self.r1cs.m - self.r1cs.k_log
+    }
+    pub fn n_block_slots(&self) -> usize {
+        1usize << self.n_blocks_log()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+// The zerocheck, lincheck, and ring-switch scalars use the shared transcript;
+// the caller carries the WHIR opening.
+
+/// One claim on the committed packed BLAKE2s witness `q_flock`, as left by the
+/// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
+/// evaluation the PCS must discharge; `s_hat_v` is the prover-only ring-switch
+/// tensor weight the packed open consumes (`None` when `k_log < LOG_PACKING`,
+/// and unused on the verifier side, which recovers it from `proof.open`).
+#[derive(Clone, Debug)]
+pub struct WitnessClaim {
+    pub claim: crate::proof::ZClaim,
+    pub s_hat_v: Option<Vec<F192>>,
+}
+
+/// The two claims on the committed witness `q_flock` left by the Flock BLAKE2s
+/// zerocheck + lincheck reduction, for the PCS to discharge:
+/// - `ab`: the `A∘B` side, from lincheck.
+/// - `c` : the `C` side, from zerocheck (`C = I`, so a direct z-claim).
+///
+/// This is the clean seam between Flock's reduction and the PCS: the reduction
+/// produces these; the PCS opens them (see [`Blake2sSetup::prove_reduction`]).
+#[derive(Clone, Debug)]
+pub struct PackedWitnessClaims {
+    pub ab: WitnessClaim,
+    pub c: WitnessClaim,
+}
+
+/// The variable count (`log2` length) of the committed `q_flock` column for
+/// `n_blocks` executed compressions: `K_LOG + min_n_blocks_log − LOG_PACKING`.
+/// Always at least one instance: `n_blocks = 0` still commits one padding
+/// instance, keeping the proof shape uniform.
+pub fn qflock_kappa(n_blocks: usize) -> usize {
+    K_LOG + min_n_blocks_log(n_blocks.max(1)) - LOG_PACKING
+}
+
+/// One reduction claim as a tower [`RingSwitchClaim`]: the quirky point splits
+/// at the packing boundary. Its univariate-skip coordinate
+/// `z_skip` covers exactly the `k_skip = LOG_PACKING = 6` packed variables, so
+/// the packing prefix is the 64 φ8-Lagrange weights at `z_skip`, and the WHOLE
+/// multilinear tail `x_inner_rest ++ x_outer` is the suffix point (`q_flock`
+/// has `2^qflock_vars` words, and no coordinate is split off into the prefix).
+///
+/// `captured` is the prover-side precomputed `s_hat_v`. The reduction captures
+/// the bit-slice MLEs w.r.t. its OWN 128-bit packing, whose prefix absorbs
+/// `z_skip` AND the first inner-rest coordinate `c`; the 64-bit packing here
+/// keeps `c` in the suffix. The 64-wide values recombine linearly: 64-word
+/// `y = 2y' + b` is the b-half of 128-word `y'`, and bit `i` of that half is
+/// bit `i + 64b` of the 128-word, so `s64[i] = (1+c)·s128[i] + c·s128[i+64]`.
+/// Lincheck already captures the 64 slices the ring switch expects; zerocheck's
+/// fused kernel captures two 64-slice banks around the first suffix coordinate,
+/// and that coordinate is folded here without rescanning `q_flock`.
+fn ring_claim(z: &crate::proof::ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> RingSwitchClaim {
+    let mut suffix_point = z.point.x_inner_rest.clone();
+    suffix_point.extend_from_slice(&z.point.x_outer);
+    assert_eq!(
+        suffix_point.len(),
+        qflock_vars,
+        "ring-switch suffix must span the q_flock cube"
+    );
+
+    let s_hat_v = captured.and_then(|s| match s.len() {
+        PACKING_WIDTH => Some(s.to_vec()),
+        n if n == 2 * PACKING_WIDTH && !z.point.x_inner_rest.is_empty() => {
+            let c = z.point.x_inner_rest[0];
+            Some(
+                (0..PACKING_WIDTH)
+                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH])
+                    .collect(),
+            )
+        }
+        _ => None,
+    });
+
+    RingSwitchClaim {
+        prefix_weights: lagrange_weights_naive(LOG_PACKING, z.point.z_skip),
+        suffix_point,
+        value: z.value,
+        s_hat_v,
+    }
+}
+
+/// Package the prover's reduction claims as a [`RingSwitchOpen`], so the PCS
+/// discharges flock's `(ab, c)` validity in the same opening as the embedder's
+/// own point claims. `offset` is `q_flock`'s slot in the committed stack; the
+/// opener slices `q_flock` from there.
+pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessClaims) -> RingSwitchOpen {
+    let qflock_vars = qflock_kappa(n_blocks);
+    RingSwitchOpen {
+        offset,
+        qflock_vars,
+        prebound: 1,
+        claims: vec![
+            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
+            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
+        ],
+    }
+}
+
+/// Verifier counterpart of [`ring_switch_open`]: package the recovered
+/// `(ab, c)` claims as a [`RingSwitchVerify`], the same statement data. The
+/// transmitted opening travels separately.
+pub fn ring_switch_verify(
+    n_blocks: usize,
+    offset: usize,
+    ab: &crate::proof::ZClaim,
+    c: &crate::proof::ZClaim,
+    ab_s_hat_v: &[F192],
+) -> RingSwitchVerify {
+    let qflock_vars = qflock_kappa(n_blocks);
+    RingSwitchVerify {
+        offset,
+        qflock_vars,
+        reconstructed: vec![ab_s_hat_v.to_vec()],
+        claims: vec![ring_claim(ab, None, qflock_vars), ring_claim(c, None, qflock_vars)],
+    }
+}
+
+/// Everything [`Blake2sSetup::verify_reduction`] recovers: the two `(ab, c)`
+/// z-claims for the PCS and the zerocheck / lincheck claims.
+#[derive(Clone, Debug)]
+pub struct ReductionReplay {
+    pub ab: crate::proof::ZClaim,
+    pub c: crate::proof::ZClaim,
+    pub zc_claim: crate::zerocheck::ZerocheckClaim,
+    pub lc_claim: crate::lincheck::LincheckClaim,
+}
+
+/// The lincheck input point carried over from the zerocheck claim: the
+/// univariate-skip coordinate, then the multilinear challenges split at
+/// `inner_rest_len` into the inner-rest and outer halves.
+fn x_ab_of(zc: &crate::zerocheck::ZerocheckClaim, inner_rest_len: usize) -> crate::lincheck::QuirkyPoint {
+    crate::lincheck::QuirkyPoint {
+        z_skip: zc.z,
+        x_inner_rest: zc.mlv_challenges[..inner_rest_len].to_vec(),
+        x_outer: zc.mlv_challenges[inner_rest_len..].to_vec(),
+    }
+}
+
+/// The `(ab, c)` z-claims the reduction leaves for the PCS: `ab` at lincheck's
+/// output point, `c` at the zerocheck's own (`C = I`, so the c-claim is already
+/// a z-claim). Prover and verifier must derive them identically, so they share
+/// this one derivation.
+fn reduction_claims(
+    zc: &crate::zerocheck::ZerocheckClaim,
+    lc: &crate::lincheck::LincheckClaim,
+    x_outer: &[F192],
+    inner_rest_len: usize,
+) -> (crate::proof::ZClaim, crate::proof::ZClaim) {
+    let ab = crate::proof::ZClaim {
+        point: crate::lincheck::QuirkyPoint {
+            z_skip: lc.r_inner_skip,
+            x_inner_rest: lc.r_inner_rest.clone(),
+            x_outer: x_outer.to_vec(),
+        },
+        value: lc.w,
+    };
+    let c = crate::proof::ZClaim {
+        point: crate::lincheck::QuirkyPoint {
+            z_skip: zc.z,
+            x_inner_rest: zc.r_rest[..inner_rest_len].to_vec(),
+            x_outer: zc.r_rest[inner_rest_len..].to_vec(),
+        },
+        value: zc.c_eval,
+    };
+    (ab, c)
+}
+
+impl Blake2sSetup {
+    /// **Flock reduction (prover).** Run the BLAKE2s zerocheck and lincheck on
+    /// the shared transcript, reducing R1CS validity of `blocks` to two
+    /// evaluation claims on the committed packed witness `q_flock`. (The
+    /// statement is already transcript-bound: the embedding protocol seeds
+    /// with the circuit family digest and announces the count.) Returns:
+    /// - `z_packed`: the regenerated packed witness the PCS later opens against;
+    /// - the [`PackedWitnessClaims`] `(ab, c)` on `q_flock`, with ring-switch weights.
+    ///
+    /// Does NOT open the PCS; the caller discharges the returned claims in the
+    /// one stacked opening (`lean_vm`'s `pcs::open`).
+    pub fn prove_reduction(
+        &self,
+        blocks: &[Compression],
+        ps: &mut fiat_shamir::transcript::ProverState,
+    ) -> (ArenaVec<u64>, PackedWitnessClaims) {
+        assert!(
+            blocks.len() <= self.n_block_slots(),
+            "{} compressions exceed this setup's {} slots",
+            blocks.len(),
+            self.n_block_slots()
+        );
+        let n_log = self.n_blocks_log();
+        let t_witness = std::time::Instant::now();
+        let (z_packed, a_packed_words, b_packed_words, z_packed_lincheck) =
+            generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
+        if std::env::var_os("FLOCK_PROVE_TRACE").is_some() {
+            eprintln!(
+                "[flock prove] witness:   {:.2} ms",
+                t_witness.elapsed().as_secs_f64() * 1e3,
+            );
+        }
+        let reduced =
+            self.prove_reduction_precomputed(&z_packed, &a_packed_words, &b_packed_words, &z_packed_lincheck, ps);
+        (z_packed, reduced)
+    }
+
+    /// **Flock reduction from a prepared witness (prover).** This is the
+    /// witness-generation-free counterpart of [`Self::prove_reduction`] for
+    /// embedders that already generated the packed `z`, `A·z`, `B·z`, and
+    /// lincheck-stripe buffers before committing the flattened witness.
+    pub fn prove_reduction_precomputed(
+        &self,
+        z_packed: &[u64],
+        a_packed_words: &[u64],
+        b_packed_words: &[u64],
+        z_packed_lincheck: &[u8],
+        ps: &mut fiat_shamir::transcript::ProverState,
+    ) -> PackedWitnessClaims {
+        let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
+        let t_reduction = std::time::Instant::now();
+
+        // The fused generator packs 64 Boolean coordinates per word.
+        let packed_len = 1usize << (self.r1cs.m - 6);
+        assert_eq!(z_packed.len(), packed_len, "wrong packed witness length");
+        assert_eq!(a_packed_words.len(), packed_len, "wrong packed A·z length");
+        assert_eq!(b_packed_words.len(), packed_len, "wrong packed B·z length");
+        assert_eq!(z_packed_lincheck.len(), packed_len * 8, "wrong lincheck stripe length");
+
+        // No bind_statement here: the embedding protocol (leanVM-b) seeds its
+        // transcript with the circuit-FAMILY digest and binds the instance
+        // count and commitment root before any challenge, so the statement is
+        // already fully transcript-bound.
+
+        let padding = crate::zerocheck::PaddingSpec {
+            k_log: self.r1cs.k_log,
+            useful_bits_per_block: self.r1cs.useful_bits,
+        };
+        let t_zerocheck = std::time::Instant::now();
+        let (zc_claim, s_hat_v_c) = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+            packed_bytes(a_packed_words),
+            packed_bytes(b_packed_words),
+            packed_bytes(z_packed), // C = I, so c == z
+            self.r1cs.m,
+            &padding,
+            ps,
+        );
+        let zerocheck_time = t_zerocheck.elapsed();
+
+        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
+        let x_ab = x_ab_of(&zc_claim, inner_rest_len);
+        let t_lincheck = std::time::Instant::now();
+        let lc_claim = crate::lincheck::prove_padded_capture_s_hat_v(
+            z_packed_lincheck,
+            self.r1cs.m,
+            self.r1cs.k_log,
+            self.r1cs.k_skip,
+            self.r1cs.useful_bits,
+            self.r1cs.csc_lincheck_circuit(),
+            &x_ab,
+            ps,
+        );
+        let lincheck_time = t_lincheck.elapsed();
+
+        let (ab, c) = reduction_claims(&zc_claim, &lc_claim, &x_ab.x_outer, inner_rest_len);
+        let s_hat_v_ab = (self.r1cs.k_log >= LOG_PACKING).then_some(lc_claim.s_hat_v);
+
+        let reduced = PackedWitnessClaims {
+            ab: WitnessClaim {
+                claim: ab,
+                s_hat_v: s_hat_v_ab,
+            },
+            c: WitnessClaim {
+                claim: c,
+                s_hat_v: Some(s_hat_v_c),
+            },
+        };
+        if trace {
+            let reduction_time = t_reduction.elapsed();
+            let glue_time = reduction_time.saturating_sub(zerocheck_time + lincheck_time);
+            eprintln!(
+                "[flock prove] reduction: {:.2} ms (zerocheck: {:.2} ms, lincheck: {:.2} ms, glue: {:.2} ms)",
+                reduction_time.as_secs_f64() * 1e3,
+                zerocheck_time.as_secs_f64() * 1e3,
+                lincheck_time.as_secs_f64() * 1e3,
+                glue_time.as_secs_f64() * 1e3,
+            );
+        }
+        reduced
+    }
+
+    /// **Flock reduction (verifier).** Replay the BLAKE2s zerocheck and
+    /// lincheck straight off the shared transcript stream, recovering the two
+    /// `(ab, c)` evaluation claims on the committed witness `q_flock`. Mirror of
+    /// [`Self::prove_reduction`]; the PCS then discharges the returned claims.
+    pub fn verify_reduction(
+        &self,
+        vs: &mut fiat_shamir::transcript::VerifierState<'_>,
+    ) -> Result<ReductionReplay, verifier::VerifyError> {
+        // Mirror of prove_reduction: the statement is bound by the embedding
+        // protocol's seed (family digest) + announced count + commitment root.
+
+        let zc_claim = crate::zerocheck::verify(self.r1cs.m, vs).map_err(verifier::VerifyError::Zerocheck)?;
+        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
+        let x_ab = x_ab_of(&zc_claim, inner_rest_len);
+        // Walk-capable circuit: the verifier's lincheck consistency check is
+        // one circuit walk (O(circuit) field ops) instead of the ∝ NNZ CSC
+        // marginal fold. Same transcript, same accept/reject.
+        let lc_claim = crate::lincheck::verify(
+            self.r1cs.m,
+            self.r1cs.k_log,
+            self.r1cs.k_skip,
+            &WalkLincheckCircuit::new(&self.r1cs),
+            &x_ab,
+            zc_claim.a_eval,
+            zc_claim.b_eval,
+            vs,
+        )
+        .map_err(verifier::VerifyError::Lincheck)?;
+
+        let (ab, c) = reduction_claims(&zc_claim, &lc_claim, &x_ab.x_outer, inner_rest_len);
+        Ok(ReductionReplay {
+            ab,
+            c,
+            zc_claim,
+            lc_claim,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -681,6 +1055,15 @@ mod tests {
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn family_digest_matches_baked() {
+        assert_eq!(
+            build_block_r1cs(3).family_digest(),
+            FAMILY_DIGEST,
+            "circuit family changed - update FAMILY_DIGEST"
+        );
     }
 
     #[test]

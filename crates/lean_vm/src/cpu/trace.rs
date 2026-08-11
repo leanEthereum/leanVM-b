@@ -43,7 +43,7 @@ pub(crate) struct Jrow {
     pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE3` row: the eight per-cell memory access counts of the four
+/// `BLAKE2s` row: the eight per-cell memory access counts of the four
 /// message-chunk cells, the chaining value's two cells and the output's two. The
 /// addresses are `fp·g^{ins[i]}`, `fp·g^{cv}`, `fp·g^{out}` and the successors of
 /// the last two; the eighteen flock words are those cells' lanes plus the
@@ -64,7 +64,7 @@ pub(crate) struct Trace {
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
-    pub(crate) blake3: Vec<Brow>,
+    pub(crate) blake2s: Vec<Brow>,
     pub(crate) pack64x2: Vec<Xrow>,
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
@@ -79,7 +79,7 @@ impl Trace {
             self.set.len(),
             self.deref.len(),
             self.jump.len(),
-            self.blake3.len(),
+            self.blake2s.len(),
             self.pack64x2.len(),
         ]
     }

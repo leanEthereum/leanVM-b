@@ -1,11 +1,12 @@
 //! Symbolic GF(2) words and the 32-bit adder gadgets the hash circuits share.
 //!
-//! Both `blake3` and `blake2s` encode the same primitive: a 32-bit ARX round
-//! whose XORs and rotations are free over GF(2) and whose only nonlinear
-//! constraints are the product bits of the modular ADDs. This module owns that
-//! part, so the adder algebra (in particular the fused three-operand gadget,
-//! whose bit-0 and bit-31 boundaries are subtle) has exactly one
-//! implementation, exercised by both circuits' tests.
+//! BLAKE2s is a 32-bit ARX round whose XORs and rotations are free over GF(2)
+//! and whose only nonlinear constraints are the product bits of the modular
+//! ADDs. This module owns that part, separately from the hash's schedule and
+//! layout, because the adder algebra is where the subtlety lives: the fused
+//! three-operand gadget's bit-0 and bit-31 boundaries are what make the
+//! ten-round encoding fit, and they get their own tests here and in the
+//! circuit.
 //!
 //! Two representations of the same thing appear here, and they have to agree
 //! row for row:
@@ -17,10 +18,10 @@
 //!   ops without materializing the substituted matrices.
 //!
 //! Each gadget therefore comes in a `write_*` (rows) and a `walk_*` (wires)
-//! flavour, and a circuit's `bilinear_walk_*_matches_matrices` test is what
-//! pins the two together.
+//! flavour, and `blake2s`'s `bilinear_walk_matches_matrices` test is what pins
+//! the two together.
 
-use crate::blake3_witness::xor_dedup;
+use crate::witness::xor_dedup;
 use primitives::field::F192;
 
 /// Bits per word.

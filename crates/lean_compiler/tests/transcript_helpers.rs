@@ -26,7 +26,7 @@ def sponge_compress(state, scalar, tail, out):
     pack64x2_into(limbs[0], limbs[1], block[0])
     pack64x2_into(limbs[2], tail, block[1])
     assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
-    blake3(state, block, out)
+    blake2s(state, block, out)
     return
 
 @inline

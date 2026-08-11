@@ -5,9 +5,8 @@
 //! circuit (known-answer vectors, honest witness satisfies, walk agrees with
 //! the matrices). This establishes that the ten-round encoding is *provable*
 //! with the machinery as it stands: same zerocheck, same lincheck, same
-//! `k_log = 14` and `k_skip = 6`, no BLAKE3-specific assumption anywhere in
-//! the path. Only the PCS opening is left out, which is generic in the claims
-//! and already covered by `blake3_batch`.
+//! `k_log = 14` and `k_skip = 6`. Only the PCS opening is left out, which is
+//! generic in the claims and covered end to end by `blake2s_batch`.
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use flock::blake2s::{

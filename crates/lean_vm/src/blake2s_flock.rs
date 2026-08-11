@@ -1,8 +1,8 @@
-//! Bridge to the flock BLAKE3 prover ([`flock::blake3`]), single-PCS.
+//! Bridge to the flock BLAKE2s prover ([`flock::blake2s`]), single-PCS.
 //!
-//! `q_flock` (flock's packed BLAKE3 witness, 64 bits per `F64` word) is committed
+//! `q_flock` (flock's packed BLAKE2s witness, 64 bits per `F64` word) is committed
 //! as a column in leanVM-b's ONE stacked `F64` witness (§sec:stacking), with no separate flock
-//! commitment. The VM's `BLAKE3` table binds to it by point-eval equality (its
+//! commitment. The VM's `BLAKE2s` table binds to it by point-eval equality (its
 //! value columns and `q_flock`'s slots are point-evals of the same committed
 //! stack), and flock's R1CS validity is discharged by the same stacked WHIR:
 //! the reduction's two tower-field claims pass through
@@ -11,7 +11,7 @@
 //!
 //! ## The mapping
 //!
-//! The VM's `BLAKE3(a, b, cv, metadata) -> c` is one standard BLAKE3
+//! The VM's `BLAKE2s(a, b, cv, metadata) -> c` is one standard BLAKE2s
 //! compression. `metadata` packs `counter:u64 | block_len:u32 | flags:u32` in
 //! little-endian order. All inputs are witness values in `q_flock`; memory binds
 //! `a`, `b`, and `cv`, while the bytecode interaction binds `metadata`.
@@ -32,8 +32,8 @@
 
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
-use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, PackedWitnessClaims, ReductionReplay, blake3_compress,
+use flock::blake2s::{
+    Blake2sSetup, Compression, K_LOG, PackedWitnessClaims, ReductionReplay, blake2s_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
 };
 use flock::verifier::VerifyError;
@@ -48,7 +48,9 @@ pub use flock::proof::ZClaim;
 
 /// Default flags for a single 64-byte root block: `CHUNK_START(1) |
 /// CHUNK_END(2) | ROOT(8) = 11`.
-pub const FLAGS: u32 = flock::blake3::PINNED_FLAGS;
+pub const FINAL_FLAG: u32 = flock::blake2s::PINNED_F0;
+/// The byte counter of the one 64-byte block a hash-shaped compression absorbs.
+pub const PINNED_T: u64 = flock::blake2s::PINNED_T;
 
 /// Flock-native reduction buffers emitted in the same fused pass as the
 /// committed, flattened `q_flock`. They stay alive across commit, bus, and
@@ -90,7 +92,7 @@ pub const SLOT_METADATA: usize = 18;
 
 /// The eighteen within-instance value slots in canonical order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]`, matching
-/// `tables::BLAKE3_VALUE_COLS`.
+/// `tables::BLAKE2S_VALUE_COLS`.
 pub const SLOTS: [usize; 18] = [
     SLOT_A0,
     SLOT_A0 + 1,
@@ -123,7 +125,7 @@ fn pack_words(w: [u32; 2]) -> F64 {
     F64((w[0] as u64) | ((w[1] as u64) << 32))
 }
 
-/// Pack BLAKE3's compression metadata as one little-endian 128-bit value in
+/// Pack BLAKE2s's compression metadata as one little-endian 128-bit value in
 /// the two low K-lanes of a 192-bit word (top lane zero).
 pub const fn metadata(counter: u64, block_len: u32, flags: u32) -> F192 {
     F192::new(counter, (block_len as u64) | ((flags as u64) << 32), 0)
@@ -132,25 +134,30 @@ pub const fn metadata(counter: u64, block_len: u32, flags: u32) -> F192 {
 /// Unpack `counter:u64 | block_len:u32 | flags:u32` from a 192-bit word (the
 /// top lane must be zero).
 pub const fn unpack_metadata(x: F192) -> (u64, u32, u32) {
-    assert!(x.c2 == 0, "BLAKE3 metadata must have a zero top lane");
+    assert!(x.c2 == 0, "BLAKE2s metadata must have a zero top lane");
     (x.c0, x.c1 as u32, (x.c1 >> 32) as u32)
 }
 
-/// BLAKE3's standard IV as four flock words (the two chaining-value cells'
-/// low lanes, in canonical lane order).
-pub const IV: [F64; 4] = [
-    F64(0xbb67_ae85_6a09_e667),
-    F64(0xa54f_f53a_3c6e_f372),
-    F64(0x9b05_688c_510e_527f),
-    F64(0x5be0_cd19_1f83_d9ab),
-];
+/// BLAKE2s-256's initial chaining value as four flock words (the two
+/// chaining-value cells' low lanes, in canonical lane order). This is the IV
+/// with the parameter block (digest length 32, unkeyed, fanout and depth 1)
+/// folded into word 0, which is what makes a 64-byte compression equal
+/// `blake2s` of those 64 bytes.
+///
+/// Derived from [`flock::blake2s::param_iv`] rather than written out: the
+/// parameter block touches three bytes of word 0, and a hand-copied constant
+/// that XORs only the low byte still looks plausible.
+pub const IV: [F64; 4] = {
+    const fn w(lo: u32, hi: u32) -> F64 {
+        F64((lo as u64) | ((hi as u64) << 32))
+    }
+    let h = flock::blake2s::param_iv();
+    [w(h[0], h[1]), w(h[2], h[3]), w(h[4], h[5]), w(h[6], h[7])]
+};
 
-/// The standard IV as the two 192-bit VM memory cells a chaining value
-/// occupies (canonical 128-bit chunks, top limbs zero).
-pub const IV_CELLS: [F192; 2] = [
-    F192::new(0xbb67_ae85_6a09_e667, 0xa54f_f53a_3c6e_f372, 0),
-    F192::new(0x9b05_688c_510e_527f, 0x5be0_cd19_1f83_d9ab, 0),
-];
+/// The initial chaining value as the two 192-bit VM memory cells a chaining
+/// value occupies (canonical 128-bit chunks, top limbs zero).
+pub const IV_CELLS: [F192; 2] = [F192::new(IV[0].0, IV[1].0, 0), F192::new(IV[2].0, IV[3].0, 0)];
 
 /// The flock [`Compression`] for one VM instruction.
 pub fn compression(a: [F64; 4], b: [F64; 4], cv: [F64; 4], meta: F192) -> Compression {
@@ -169,15 +176,16 @@ pub fn compression(a: [F64; 4], b: [F64; 4], cv: [F64; 4], meta: F192) -> Compre
     (cv_words, m, counter, block_len, flags)
 }
 
-/// The low 256-bit output `c = (c0..c3)` of an arbitrary compression. This is
-/// `blake3::hash(a‖b)` only for the standard IV and one-block root metadata.
+/// The 256-bit output chaining value `c = (c0..c3)` of an arbitrary
+/// compression. This is `blake2s(a‖b)` only for the parameterized [`IV`] and
+/// one-block final metadata (counter 64, `f0` set).
 pub fn digest(block: &Compression) -> [F64; 4] {
-    let st = blake3_compress(&block.0, &block.1, block.2, block.3, block.4);
-    std::array::from_fn(|k| pack_words([st[2 * k], st[2 * k + 1]]))
+    let h = blake2s_compress(&block.0, &block.1, block.2, block.3, block.4);
+    std::array::from_fn(|k| pack_words([h[2 * k], h[2 * k + 1]]))
 }
 
 /// flock's `n_blocks_log` for `n` compressions (lincheck floor `≥ 3`). The VM's
-/// BLAKE3 table is sized to `2^n_blocks_log` rows so its value columns share
+/// BLAKE2s table is sized to `2^n_blocks_log` rows so its value columns share
 /// `q_flock`'s instance cube.
 pub fn n_blocks_log(n: usize) -> usize {
     min_n_blocks_log(n)
@@ -227,13 +235,13 @@ pub(crate) fn build_qflock_prepared(blocks: &[Compression], q_flock: &mut [F64])
 /// claim on `q_flock` is thus a boolean-selector (strided) claim with this stride.
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
-/// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by its power-of-two shape.
+/// Memoized BLAKE2s R1CS [`Blake2sSetup`], keyed by its power-of-two shape.
 /// Building it (the symbolic constraint walk over `2^K_LOG` slots) costs
 /// ~hundreds of ms, fixed per circuit shape, independent of `N` or the proof.
 /// So we build each shape once and reuse it across `prove`, `verify`, and
 /// repeated proofs; the per-setup caches then stay warm, making verification
 /// milliseconds rather than rebuilding the circuit each time.
-type SetupCell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Blake3Setup>>>;
+type SetupCell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Blake2sSetup>>>;
 
 fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, SetupCell>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, SetupCell>>> =
@@ -241,25 +249,25 @@ fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, S
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
+fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake2sSetup> {
     let shape = n_blocks_log(n_blocks);
     let cell = {
-        let mut cache = setup_cache().lock().expect("BLAKE3 setup cache poisoned");
+        let mut cache = setup_cache().lock().expect("BLAKE2s setup cache poisoned");
         std::sync::Arc::clone(
             cache
                 .entry(shape)
                 .or_insert_with(|| std::sync::Arc::new(std::sync::OnceLock::new())),
         )
     };
-    std::sync::Arc::clone(cell.get_or_init(|| std::sync::Arc::new(Blake3Setup::new(1usize << shape))))
+    std::sync::Arc::clone(cell.get_or_init(|| std::sync::Arc::new(Blake2sSetup::new(1usize << shape))))
 }
 
-/// Pre-build (and cache) the flock BLAKE3 R1CS setup. This is the fixed,
+/// Pre-build (and cache) the flock BLAKE2s R1CS setup. This is the fixed,
 /// circuit-shape-only cost (~hundreds of ms, independent of the witness or the
 /// number of proofs): building the `2^K_LOG`-slot R1CS.
 ///
-/// Callers pass the number of EXECUTED `BLAKE3` instructions; it is floored at 1
-/// (the padding instance a no-BLAKE3 program still carries), matching
+/// Callers pass the number of EXECUTED `BLAKE2s` instructions; it is floored at 1
+/// (the padding instance a no-BLAKE2s program still carries), matching
 /// `cpu::prove`/`verify`. Call it once up front so a subsequent prove/verify
 /// reflects steady-state (repeated-proving) performance: the ~hundreds-of-ms
 /// build is a one-time, program-independent cost, not part of proving. Idempotent.
@@ -267,7 +275,7 @@ pub fn warm_setup(n_blocks: usize) {
     let _ = setup_for(n_blocks.max(1));
 }
 
-/// The flock BLAKE3 circuit-FAMILY digest: a hash of the per-block R1CS
+/// The flock BLAKE2s circuit-FAMILY digest: a hash of the per-block R1CS
 /// matrices and shape parameters ([`family_digest`] on the R1CS), independent
 /// of the instance count. The full instance is block-diagonal (the count is
 /// announced and absorbed with the other sizes), so a transcript seeded with
@@ -275,10 +283,10 @@ pub fn warm_setup(n_blocks: usize) {
 /// front. Baked in flock (test-guarded): recomputing it costs ~300 ms of
 /// matrix building + hashing, which used to land inside the first `prove`.
 pub fn family_digest() -> [u8; 32] {
-    flock::blake3::FAMILY_DIGEST
+    flock::blake2s::FAMILY_DIGEST
 }
 
-/// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
+/// **Flock reduction only** (prover): run flock's BLAKE2s zerocheck + lincheck
 /// over `blocks` and return the two [`PackedWitnessClaims`] on the committed
 /// witness `q_flock`, `ab` (`A∘B`, lincheck) and `c` (`C`, zerocheck), along
 /// with the regenerated packed witness (already flattened to the committed
@@ -431,14 +439,14 @@ mod tests {
                         f(0x88 * (i + 1)),
                     ],
                     IV,
-                    metadata(0, 64, FLAGS),
+                    metadata(PINNED_T, FINAL_FLAG, 0),
                 )
             })
             .collect()
     }
 
     /// `q_flock`'s aligned packed slots hold the VM's 64-bit words in our field
-    /// representation, and the digest matches the `blake3` crate.
+    /// representation, and the digest matches the `blake2s` crate.
     #[test]
     fn qflock_words_match_layout() {
         let inputs: Vec<([F64; 4], [F64; 4])> = (0..5u64)
@@ -451,7 +459,7 @@ mod tests {
             .collect();
         let blocks: Vec<Compression> = inputs
             .iter()
-            .map(|&(a, b)| compression(a, b, IV, metadata(0, 64, FLAGS)))
+            .map(|&(a, b)| compression(a, b, IV, metadata(PINNED_T, FINAL_FLAG, 0)))
             .collect();
         let q_flock = build_qflock(&blocks);
         assert_eq!(q_flock.len(), 1 << qflock_kappa(blocks.len()));
@@ -466,7 +474,7 @@ mod tests {
             for (s, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
                 s.copy_from_slice(&w.0.to_le_bytes());
             }
-            let h = *blake3::hash(&input).as_bytes();
+            let h = primitives::blake2s::hash(&input);
             let word = |o: usize| F64(u64::from_le_bytes(h[o..o + 8].try_into().unwrap()));
             let d: [F64; 4] = std::array::from_fn(|k| word(8 * k));
             assert_eq!(digest(blk), d);
@@ -474,15 +482,15 @@ mod tests {
                 assert_eq!(slot(j, SLOT_C0 + k), d[k]);
             }
         }
-        // Input slots for this default-root test: cv = IV in slots 0..4, the
-        // zero counter word in slot 18, and the packed block_len‖flags word in
-        // slot 19.
-        let iv = flock::blake3::BLAKE3_IV;
+        // Input slots for this one-block hash: the parameterized initial chaining
+        // value in slots 0..4, the byte counter in slot 18, and the packed
+        // f0‖f1 flag word in slot 19.
+        let iv = flock::blake2s::param_iv();
         for k in 0..4 {
             assert_eq!(slot(0, k), pack_words([iv[2 * k], iv[2 * k + 1]]));
         }
-        assert_eq!(slot(0, 18), pack_words([0, 0]));
-        assert_eq!(slot(0, 19), pack_words([64, FLAGS]));
+        assert_eq!(slot(0, 18), pack_words([PINNED_T as u32, 0]));
+        assert_eq!(slot(0, 19), pack_words([FINAL_FLAG, 0]));
     }
 
     /// The Flock reduction (zerocheck + lincheck) is a clean, self-contained

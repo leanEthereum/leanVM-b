@@ -1,8 +1,8 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: seven instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: seven instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2s`, `PACK64X2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
 
-Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `pack64x2`, and `blake3`, so editors and linters resolve the names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
+Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `pack64x2`, and `blake2s`, so editors and linters resolve the names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` → `lean_compiler::compile` → `lean_vm::cpu::prove` / `verify`.
 
@@ -133,7 +133,7 @@ Functions may recurse. Each call gets a **fresh frame**: the frame pointer is pr
 ```python
 def hash_pair(buf, k: Const):
     h = StackBuf(2)
-    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
+    blake2s(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
     return h[0], h[1]
 ```
 
@@ -166,10 +166,10 @@ An `@inline` function may also **return a `StackBuf`**: the caller's binding ali
 def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
     tg = [x, DS_SCALAR]  # a list literal: an initialized StackBuf(2)
     nb = StackBuf(2)
-    blake3(cb, tg, nb)
+    blake2s(cb, tg, nb)
     return nb            # the call site's `cvb = obs(cvb, v)` aliases nb
 
-cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake3
+cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake2s
 ```
 
 An `@inline` call may also sit in **expression position**: embedded in arithmetic, as a store's RHS, or as a single-target `match_range` arm. An aliased return (a folded g-address) then materializes into a plain cell (free for a var; one `MUL` for a shifted pointer); a multi-cell `StackBuf` return still needs a `let` binding, since only a name can alias a cell run.
@@ -186,7 +186,7 @@ Three families of binding are folded and carried **virtually**, costing no instr
 
 - **g-powers and shifted pointers**: a cursor like `s = s * GEN` or a pointer view `p = buf * GEN ** k`. The offset folds into the `DEREF` address of each access; only a scalar use materializes it.
 - **field constants**: a value built from literals / `GEN ** k` by field `+` and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop. The arithmetic that advances it is compile-time (zero instructions); each use is one `SET` of the folded constant.
-- **stack-cell copies and zeros**: a store `sa[k] = other` or `sa[k] = 0` is recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]` forwards to the real source (write-once keeps it valid). This is what makes assembling a `BLAKE3` operand from scattered values free (see "BLAKE3").
+- **stack-cell copies and zeros**: a store `sa[k] = other` or `sa[k] = 0` is recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]` forwards to the real source (write-once keeps it valid). This is what makes assembling a `BLAKE2s` operand from scattered values free (see "BLAKE2s").
 
 ## Debugging
 
@@ -194,7 +194,7 @@ Three families of binding are folded and carried **virtually**, costing no instr
 
 ## Memory
 
-All memory is **write-once**: a cell is set once; a second write of the same value is a no-op, of a different value a proof failure. This turns stores into equality assertions and is used throughout (publishing, `blake3` outputs). Reading a cell nobody ever writes yields an unconstrained value (fixed to zero at the end of witness generation): don't.
+All memory is **write-once**: a cell is set once; a second write of the same value is a no-op, of a different value a proof failure. This turns stores into equality assertions and is used throughout (publishing, `blake2s` outputs). Reading a cell nobody ever writes yields an unconstrained value (fixed to zero at the end of witness generation): don't.
 
 ### `HeapBuf(n)`: heap buffers, indexed in the exponent
 
@@ -208,7 +208,7 @@ buf[i * GEN] = v      # the next cell along
 
 The index is a field element; cell `k` of the buffer lives at address `buf · g^k`. A read or store is one `DEREF`. A **runtime** index costs one extra `MUL` for the `buf·i` pointer, but a **compile-time g-power** offset (`buf[1]`, `buf[GEN ** k]`, or a cursor advanced by `× GEN ** m`) folds into the `DEREF`'s address immediate for free: no `MUL`, no `SET`, and the cursor arithmetic itself vanishes (so a `× GEN` walk over consecutive cells is zero instructions).
 
-**Compile-time indices are bounds-checked.** When the whole index is a compile-time exponent and the pointer resolves to a declared `HeapBuf` (directly, or through shifted aliases like `row = buf * GEN ** k`), the compiler rejects `index >= size`, and the same for the spans of `hint_witness` and `blake3` slices. **Runtime** indices are not checked (their value is unknown at compile time): there the buffer remains a region convention, and a stray access surfaces at proving time as a write-once conflict or wild deref.
+**Compile-time indices are bounds-checked.** When the whole index is a compile-time exponent and the pointer resolves to a declared `HeapBuf` (directly, or through shifted aliases like `row = buf * GEN ** k`), the compiler rejects `index >= size`, and the same for the spans of `hint_witness` and `blake2s` slices. **Runtime** indices are not checked (their value is unknown at compile time): there the buffer remains a region convention, and a stray access surfaces at proving time as a write-once conflict or wild deref.
 
 ### `StackBuf(n)`: frame-cell runs, indexed by compile-time integers
 
@@ -227,7 +227,7 @@ Stack indexes and slice bounds are **compile-time integers**, and index arithmet
 
 ### Slices: `buf[lo:hi]`
 
-`buf[lo:hi]` names a run of cells (`hi` exclusive). BLAKE3 operands must span exactly two cells; `hint_witness` accepts any supported literal length. Two forms:
+`buf[lo:hi]` names a run of cells (`hi` exclusive). BLAKE2s operands must span exactly two cells; `hint_witness` accepts any supported literal length. Two forms:
 
 - **compile-time bounds** (integers, as for stack indexes): frame cells `base+lo .. base+hi` of a `StackBuf`, or heap cells `ptr·g^lo .. ptr·g^hi` of a `HeapBuf`, so `hb[2:4]` is the pair `g^2, g^3`;
 - **runtime start, heap only**: `buf[i:i + k]` with a runtime g-power index `i` (e.g. a loop counter) and literal length `k` names the cells `buf·i`, `buf·i·g`, and so on; one `MUL` folds `i` into the pointer. The `hi` bound cannot be evaluated, only shape-checked: it must be syntactically `lo + k` (`buf[b * GEN ** 2 : b * GEN ** 2 + 2]` is fine). A `StackBuf` slice cannot have a runtime start: frame offsets are baked into the bytecode operands.
@@ -265,7 +265,7 @@ for i in unroll(0, 7):
 
 def chain(buf, n: Const):
     for i in unroll(0, n):           # a Const parameter as a bound
-        blake3(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
+        blake2s(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
     return
 ```
 
@@ -361,7 +361,7 @@ packed = pack64x2(lo, hi)
 
 This is useful before treating values supplied as GF(2^192) hints as serialized 64-bit limbs. The returned packed word may be ignored when only the range assertion is needed.
 
-The recursion transcript uses `challenge_from_state(state)` to reinterpret the first three 64-bit lanes of a canonical two-cell BLAKE3 digest as one extension field challenge. For `state = [s0, s1]`, it lowers exactly as follows (the limb hints cost no cycles, but are not trusted):
+The recursion transcript uses `challenge_from_state(state)` to reinterpret the first three 64-bit lanes of a canonical two-cell BLAKE2s digest as one extension field challenge. For `state = [s0, s1]`, it lowers exactly as follows (the limb hints cost no cycles, but are not trusted):
 
 ```python
 lo = StackBuf(2)
@@ -384,31 +384,31 @@ block = StackBuf(2)
 pack64x2_into(limbs[0], limbs[1], block[0])
 pack64x2_into(limbs[2], tail, block[1])
 assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
-blake3(state, block, out)
+blake2s(state, block, out)
 ```
 
-The first two rows range-check all four serialized lanes and form the exact 64-byte BLAKE3 block `[scalar.c0, scalar.c1, scalar.c2, tail]`; the equality prevents the advice from changing `scalar`. The final row is the VM's sole, canonical `BLAKE3` instruction.
+The first two rows range-check all four serialized lanes and form the exact 64-byte BLAKE2s block `[scalar.c0, scalar.c1, scalar.c2, tail]`; the equality prevents the advice from changing `scalar`. The final row is the VM's sole, canonical `BLAKE2s` instruction.
 
-## BLAKE3
+## BLAKE2s
 
 ```python
 h = StackBuf(2)
-blake3(a, b, h)                    # digest of (a, b) written into h
-blake3(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
-blake3(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
-blake3(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
+blake2s(a, b, h)                    # digest of (a, b) written into h
+blake2s(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
+blake2s(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
+blake2s(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
 
-# Blocks after the first in one BLAKE3 chunk. Keyword values are compile-time.
-blake3(a, b, next_cv, cv=cv, step=4)
-blake3(a, b, digest, cv=next_cv, step=15, end=1, root=1)
+# Blocks after the first in one BLAKE2s chunk. Keyword values are compile-time.
+blake2s(a, b, next_cv, cv=cv, step=4)
+blake2s(a, b, digest, cv=next_cv, step=15, end=1, root=1)
 ```
 
-The three positional arguments form a **statement**: one standard BLAKE3 compression consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes the standard hash of exactly 64 bytes: standard IV, counter 0, block length 64, and `CHUNK_START | CHUNK_END | ROOT` flags.
+The three positional arguments form a **statement**: one standard BLAKE2s compression consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes the standard hash of exactly 64 bytes: standard IV, counter 0, block length 64, and `CHUNK_START | CHUNK_END | ROOT` flags.
 
 Every compression also has a 256-bit chaining value and a compile-time 128-bit metadata immediate. The optional keywords are:
 
-- `cv=<pair>`: a consecutive 2-cell chaining value; omitting it selects the standard BLAKE3 IV. On each runtime path, a function emits two `SET`s at its first such hash only and reuses those cells thereafter. Supplying `cv=` also requires `step=`, `flags=`, or another structured metadata keyword so a chained block cannot accidentally inherit the one-shot root flags;
-- `counter=<u64>`: BLAKE3's chunk counter;
+- `cv=<pair>`: a consecutive 2-cell chaining value; omitting it selects the standard BLAKE2s IV. On each runtime path, a function emits two `SET`s at its first such hash only and reuses those cells thereafter. Supplying `cv=` also requires `step=`, `flags=`, or another structured metadata keyword so a chained block cannot accidentally inherit the one-shot root flags;
+- `counter=<u64>`: BLAKE2s's chunk counter;
 - `block_len=<0..64>`: the number of bytes in this message block;
 - `flags=<u32>`: an explicit flag word;
 - `step=<0..15>`: the block index within a 1024-byte chunk. In the inferred flag mode, `step=0` sets `CHUNK_START`; later steps do not;
@@ -418,14 +418,14 @@ The metadata is packed as `counter:u64 | block_len:u32 | flags:u32`, little-endi
 
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
-- **stack operands** are read/written in place, at zero copies; a self-hash `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
-- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the BLAKE3 subspace `c2 = 0`), so when a 256-bit operand is *assembled* from values that live in different places (the idiom `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)`), the copies vanish: a stack store of a plain copy or a zero is forwarded to its source (see "Variables"), and `BLAKE3` reads each chunk where it already is;
+- **stack operands** are read/written in place, at zero copies; a self-hash `blake2s(h, h, out)` aliases one 2-cell pair into both inputs;
+- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the BLAKE2s subspace `c2 = 0`), so when a 256-bit operand is *assembled* from values that live in different places (the idiom `p = StackBuf(2); p[0] = t0; p[1] = t1; blake2s(p, …)`), the copies vanish: a stack store of a plain copy or a zero is forwarded to its source (see "Variables"), and `BLAKE2s` reads each chunk where it already is;
 - the chaining value has only one opcode offset and therefore must be consecutive. If a 2-cell `cv` was assembled from non-adjacent copied cells, the compiler materializes those two cells into a fresh consecutive run;
 - **heap slices** are still bridged through the stack for the *input pull* (the operand's words come from the heap): +1 `DEREF` per heap cell, and the output, if a heap slice, is stored after: write-once memory fills whichever side is unset.
 
 If `out` was already written, the statement *asserts* the digest equals it, write-once turning the hash into a verification, which is exactly what a signature verifier wants.
 
-The compression, including its chaining value and metadata, is proven by the flock-derived BLAKE3 R1CS (`crates/flock`, see `doc.pdf` §BLAKE3); one instruction is one 64-byte-block compression.
+The compression, including its chaining value and metadata, is proven by the flock-derived BLAKE2s R1CS (`crates/flock`, see `doc.pdf` §BLAKE2s); one instruction is one 64-byte-block compression.
 
 ## Hints: `hint_witness(dest, "name")`
 
@@ -472,7 +472,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `blake3(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
+| `blake2s(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 ## Example
@@ -501,4 +501,4 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime `b`); precompiles beyond `BLAKE3` and `PACK64X2`.
+Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime `b`); precompiles beyond `BLAKE2s` and `PACK64X2`.

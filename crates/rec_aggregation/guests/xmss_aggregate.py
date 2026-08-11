@@ -9,7 +9,7 @@
 # all). The IV size element is computed from n directly (the loop absorbs
 # exactly n pk blocks, so it needs no separate hint or consistency check).
 #
-# BLAKE3 operands use the canonical 128-bit subspace of F192, so every 16-byte
+# BLAKE2s operands use the canonical 128-bit subspace of F192, so every 16-byte
 # native value (tweak, digest pair, chain tip, sibling, pp) is one cell with a
 # zero top limb, and a 32-byte hash block is two cells.
 # Tweak table layout (tweak index t at cell g^{t}):
@@ -29,11 +29,11 @@ LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER  # Merkle tree height
 CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
 CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
 
-WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE3 cell …
+WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE2s cell …
 WORDS_PER_BLOCK = 2                 # … and a 32-byte accumulator block = two
 BYTES_PER_BLOCK = 32
 
-# The tower generator Y. `acc_lo + acc_hi·Y` embeds 128 BLAKE3 bits in F192.
+# The tower generator Y. `acc_lo + acc_hi·Y` embeds 128 BLAKE2s bits in F192.
 Y = 18446744073709551616
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
@@ -57,7 +57,7 @@ DIGITS_PER_WORD = V / 2
 
 TIP_CELLS = WORDS_PER_VALUE * V    # the V chain tips, one cell each
 
-WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE3 block
+WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE2s block
 
 N_SIGS_BOUND = 2 ** 16             # range cap for the hinted batch count
 
@@ -97,7 +97,7 @@ def main():
     message[1] = msg_block[0]
     message[GEN] = msg_block[1]
     state = StackBuf(WORDS_PER_BLOCK)
-    blake3(iv, msg_block, state)
+    blake2s(iv, msg_block, state)
 
     # Block t fills cells g^{2t}..g^{2t+1}: compile-time indexes, so every
     # store is a single DEREF (the offset rides the beta immediate).
@@ -107,7 +107,7 @@ def main():
         tweak_table[GEN ** (WORDS_PER_BLOCK * t)] = block[0]
         tweak_table[GEN ** (WORDS_PER_BLOCK * t + 1)] = block[1]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake3(state, block, next_state)
+        blake2s(state, block, next_state)
         state = next_state
 
     for u in unroll(0, MERKLE_BIT_BLOCKS):
@@ -116,7 +116,7 @@ def main():
         merkle_bits[GEN ** (WORDS_PER_BLOCK * u)] = block[0]
         merkle_bits[GEN ** (WORDS_PER_BLOCK * u + 1)] = block[1]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake3(state, block, next_state)
+        blake2s(state, block, next_state)
         state = next_state
 
     # Per-signature buffers, sized in the exponent from n_sigs (see HeapBuf
@@ -134,7 +134,7 @@ def main():
         sig_state = agg_states * slot
         sig_pk = pubkeys * slot
         hint_witness(sig_pk[0:2], "pks")
-        blake3(sig_state[0:2], sig_pk[0:2], sig_state[2:4])
+        blake2s(sig_state[0:2], sig_pk[0:2], sig_state[2:4])
         verify_sig(message, tweak_table, merkle_bits, sig_pk)
 
     # Publish the final MD state (two 128-bit cells) = the aggregation public input.
@@ -150,7 +150,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # (one 128-bit cell each).
     pp = pk_ptr[GEN]
 
-    # Encoding digest D = BLAKE3(tweak | pp | msg | randomness | zero-pad), 96 bytes:
+    # Encoding digest D = BLAKE2s(tweak | pp | msg | randomness | zero-pad), 96 bytes:
     # one full 64-byte block followed by a 32-byte final block (24 bytes of
     # randomness and the specified 8-byte zero pad).
     tweak_pp = StackBuf(WORDS_PER_BLOCK)
@@ -160,18 +160,18 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     msg_block[0] = message[1]
     msg_block[1] = message[GEN]
     after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake3(tweak_pp, msg_block, after_msg, step=0)
+    blake2s(tweak_pp, msg_block, after_msg, counter=64, final=0)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
     # The spec's pad: cell 1 is randomness bytes 16..24 then 8 zero bytes. A PACK64X2
-    # source is read as (lo, 0, 0) where BLAKE3 reads (lo, hi, 0); the dest is unused.
+    # source is read as (lo, 0, 0) where BLAKE2s reads (lo, hi, 0); the dest is unused.
     rand_pad = StackBuf(1)
     pack64x2_into(rand_block[1], 0, rand_pad[0])
     digest = StackBuf(WORDS_PER_BLOCK)
     zero_block = StackBuf(WORDS_PER_BLOCK)
     zero_block[0] = 0
     zero_block[1] = 0
-    blake3(rand_block, zero_block, digest, cv=after_msg, step=1, end=1, root=1, block_len=32)
+    blake2s(rand_block, zero_block, digest, cv=after_msg, counter=96, final=1)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once — arm k walks the remaining
@@ -216,16 +216,16 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # Both lanes packed into D's first 128-bit cell.
     assert acc_lo + acc_hi * Y == digest[0]
 
-    # WOTS public-key leaf = standard BLAKE3 over prefix + 42 tips (704 bytes):
+    # WOTS public-key leaf = standard BLAKE2s over prefix + 42 tips (704 bytes):
     # 11 full blocks, carrying the chaining value between instructions.
     pk_tweak_pp = StackBuf(WORDS_PER_BLOCK)
     pk_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)]
     pk_tweak_pp[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake3(pk_tweak_pp, tips[0:2], leaf, step=0)
+    blake2s(pk_tweak_pp, tips[0:2], leaf, counter=64, final=0)
     for q in unroll(1, WOTS_PK_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake3(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, step=q, end=(q + 1) // WOTS_PK_BLOCKS, root=(q + 1) // WOTS_PK_BLOCKS)
+        blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the hinted epoch bit orders the
@@ -250,7 +250,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         merkle_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + l))]
         merkle_tweak_pp[1] = pp
         parent = StackBuf(WORDS_PER_BLOCK)
-        blake3(merkle_tweak_pp, children, parent)
+        blake2s(merkle_tweak_pp, children, parent)
         node = parent[0]
     assert node == pk_ptr[1]
     return
@@ -268,7 +268,7 @@ def walk(value, chain_tweaks, pp, k: Const):
         step_tweak[0] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
         step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake3(step_tweak, block, out, block_len=48)
+        blake2s(step_tweak, block, out, counter=48, final=1)
         block = StackBuf(WORDS_PER_BLOCK)
         block[0] = out[0]
         block[1] = 0

@@ -3,7 +3,7 @@ from snark_lib import *
 # The proof stream rides ONE padded witness hint (the guest walks only the
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
-# Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
+# Per-table tau floor: BLAKE2s is sized to flock's instance count (>= 2^3).
 FLOORS = [0, 0, 0, 0, 0, 3, 0]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
@@ -107,7 +107,7 @@ TABLE_MUL = 1
 TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
-TABLE_BLAKE3 = 5
+TABLE_BLAKE2s = 5
 TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
@@ -214,7 +214,7 @@ LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qflock capacity stride.
 # CLAIM_COMMITTED_COL maps each pooled logical claim to the compact index of the
-# committed column it must open. Virtual BLAKE3 value claims map to QFLOCK.
+# committed column it must open. Virtual BLAKE2s value claims map to QFLOCK.
 # CLAIM_QFLOCK_SLOT_BITS contains the fixed packed-slot bits for every logical
 # claim (zero for non-virtual claims), and QFLOCK_COMMITTED_COL identifies the
 # ring-switch target.
@@ -319,12 +319,12 @@ def sponge_compress(state, scalar, tail, out):
     pack64x2_into(lo[0], lo[1], block[0])
     top = (scalar + block[0]) * (Y_INV * Y_INV)
     pack64x2_into(top, tail, block[1])
-    blake3(state, block, out)
+    blake2s(state, block, out)
     return
 
 
 def canonical_cell(word, out_cell):
-    # Prove a transcript word is a canonical BLAKE3 cell (d, d', 0): PACK64X2
+    # Prove a transcript word is a canonical BLAKE2s cell (d, d', 0): PACK64X2
     # writes the pack of two hinted K limbs, and the equality pins the word to
     # it, so a nonzero top lane cannot slip through.
     limbs = StackBuf(3)
@@ -505,7 +505,7 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
         left = [node_0 + dir_bit * diff_0, node_1 + dir_bit * diff_1]
         right = [diff_0 + left[0], diff_1 + left[1]]
         parent = StackBuf(2)
-        blake3(left, right, parent)
+        blake2s(left, right, parent)
         node_0 = parent[0]
         node_1 = parent[1]
     return node_0, node_1
@@ -679,7 +679,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     #      final message final_msg);
     #   3. query-phase grinding, then squeeze the packed query positions;
     #   4. squeeze the level's one batching challenge, then per query: hash
-    #      the leaf row (blake3 chain), accumulate the lam-weighted row dot
+    #      the leaf row (blake2s chain), accumulate the lam-weighted row dot
     #      against the fold eq weights, and verify the Merkle authentication
     #      path against the bound root (verify_merkle_path);
     #   5. read the level's intro message and fold every claim of the level
@@ -884,13 +884,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                         # limbs (3w+1, 3w+2) are a pack; shift it by Y and add limb(3w).
                         row_word = lanes[3 * jw] + Y_TOWER * packed_row[(3 * jw + 1) // 2]
                     row_dot += row_word * row_eq_weights[GEN ** jw]
-            # Standard BLAKE3 of the packed row (a power of two of full 64-byte
+            # Standard BLAKE2s of the packed row (a power of two of full 64-byte
             # blocks, within one 1024-byte chunk).
             leaf_hash_state = StackBuf(2)
-            blake3(packed_row[0:2], packed_row[2:4], leaf_hash_state, step=0, end=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl], root=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+            blake2s(packed_row[0:2], packed_row[2:4], leaf_hash_state, counter=64, final=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
             for jb in unroll(1, LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl]):
                 leaf_digest = StackBuf(2)
-                blake3(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state, step=jb, end=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl], root=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+                blake2s(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state, counter=64 * (jb + 1), final=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
                 leaf_hash_state = leaf_digest
             node_0 = leaf_hash_state[0]
             node_1 = leaf_hash_state[1]
@@ -1054,7 +1054,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #      committed-coordinate claims); the stacked-bytecode reduction (deferred);
     #   5. ONE table sumcheck for all seven tables, n = max_t tau_t rounds at the
     #      shared point zeta, target derived from the leaf claims (sumcheck_round4);
-    #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
+    #   6. public-input claim + BLAKE2s pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
     #      evaluation deferred);
     #   8. ring-switch fronts (shared linear map, transpose in-circuit);
@@ -1119,7 +1119,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for t in unroll(0, N_TABLES):
         g_tau = g_power_of_word(sizes[t + 1], g_squares, LOG_WORD_BITS)
         assert log(g_tau) < COUNT_BITS
-        # A table's floor: flock sizes its BLAKE3 argument to at least 2^3 instances.
+        # A table's floor: flock sizes its BLAKE2s argument to at least 2^3 instances.
         assert log(g_tau / GEN ** FLOORS[t]) < COUNT_BITS
         dims_g[GEN ** (t + 1)] = g_tau
     # kappa_base maps a kappa source index to its certified announced log
@@ -1600,7 +1600,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             b1 = b + 1
             constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (b + c * w)
             constraint_eval += eta_pows[ETA_OFFSET[t] + 1] * (c * b1)
-        if t == TABLE_BLAKE3:
+        if t == TABLE_BLAKE2s:
             constraint_eval = 0
         if t == TABLE_PACK64X2:
             constraint_eval = 0
@@ -1663,7 +1663,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     claim_idx += 1
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-    tau_blake3_g = dims_g[GEN ** (TABLE_BLAKE3 + 1)]  # the BLAKE3 table's certified tau
+    tau_blake2s_g = dims_g[GEN ** (TABLE_BLAKE2s + 1)]  # the BLAKE2s table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
     # buffers are sized for that), and q_flock's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
@@ -1676,7 +1676,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # N_FIXED_CHALLENGE_ROUNDS fixed inner values followed by sampled outer values.
     # The prover builds round 1 from this equality tail, so its sampled part is
     # squeezed before round 1 is fetched (and round 1 before z, which evaluates it).
-    mr1cs_g = tau_blake3_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
+    mr1cs_g = tau_blake2s_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
     zerocheck_r = HeapBuf(mr1cs_g)
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
@@ -1731,7 +1731,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab + rho_v * (gamma_ab + gamma_c + (1 + rho_v) * g_inf)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
-    nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
+    nmlv_g = tau_blake2s_g * GEN ** (K_LOG - K_SKIP)
     flock_round_size = mr1cs_rounds_g * GEN ** 2
     flock_round_fs0 = HeapBuf(flock_round_size)
     flock_round_fs1 = HeapBuf(flock_round_size)
@@ -1810,7 +1810,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # next 64 stream words.
     # Claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip. Claim 1 (c):
     # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
-    # in blake3_flock::ring_claim is already baked into the transmitted 64 values,
+    # in blake2s_flock::ring_claim is already baked into the transmitted 64 values,
     # so the verifier just checks the plain prefix-weighted inner product.)
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
@@ -1876,11 +1876,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
     zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
     zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
-    for xt in mul_range(1, tau_blake3_g):
+    for xt in mul_range(1, tau_blake2s_g):
         zv_lo[xt] = zr_hi[xt]
     zv_hi = z_vals * GEN ** QFLOCK_VARS_CAP
     zcr7 = zerocheck_r * GEN ** K_SKIP
-    for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
+    for xt in mul_range(1, tau_blake2s_g * GEN ** SLOT_STRIDE_LOG):
         zv_hi[xt] = zcr7[xt]
     # Observe every pooled point claim, then ONE batching challenge for both
     # families: N_CLAIMS - 1 fewer sponge compressions than a challenge per claim.
@@ -2103,7 +2103,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # one contiguous FIELD_BITS-wide product row. Same product formula as the
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
-    qflockv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
+    qflockv_g = tau_blake2s_g * GEN ** SLOT_STRIDE_LOG
     # Evaluate both transparent weights in lockstep, sharing c_k and the
     # verifier-point factor in every inner iteration.
     z_row_src_1 = z_vals * GEN ** QFLOCK_VARS_CAP
@@ -2438,6 +2438,6 @@ def main():
     own_pi_1 = pub_ptr[GEN]
     out_word_0 = out_fs[0]
     out_word_1 = out_fs[1]
-    assert own_pi_0 == out_word_0  # the guest's OWN public input == blake3 of (inner digest | sub statements | reduced claims)
+    assert own_pi_0 == out_word_0  # the guest's OWN public input == blake2s of (inner digest | sub statements | reduced claims)
     assert own_pi_1 == out_word_1
     return
