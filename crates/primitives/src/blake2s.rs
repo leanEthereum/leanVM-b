@@ -232,132 +232,656 @@ pub fn keyed_hash(key: &[u8], data: &[u8]) -> [u8; OUT_LEN] {
 
 // ---------------------------------------------------------------------------
 // Batched (transposed) hashing
+//
+// `LANES` independent inputs are hashed together with the state transposed
+// across lanes: state word `i` becomes one SIMD vector holding that word for
+// every lane, so a round is elementwise 32-bit work with no cross-lane traffic.
+// Independent hashes of equal-length inputs step their block counters in
+// lockstep, which is what lets one vector counter serve the whole batch.
+//
+// The compression is written once, generically over [`Lanes32`], and
+// instantiated per backend. Two details are what make it fast, and both were
+// measured the wrong way round first:
+//
+// - **Every `SIGMA` index is a compile-time literal**, via the unrolled
+//   `rounds!` macro. Left as a runtime index, the compiler keeps the sixteen
+//   message vectors in registers and implements the lookup as a cross-lane
+//   permute: 44 `vpermt2d` per round against 112 instructions of real work.
+// - **The message block stays in memory**, reached by literal offset, so each
+//   `add` folds its load (`vpaddd zmm, zmm, mem`). Holding it in registers
+//   instead means 16 state + 16 message vectors, which is the entire AVX-512
+//   register file, and the round spills.
 // ---------------------------------------------------------------------------
 
-/// Independent inputs hashed per batch. The state is held as `[[u32; LANES];
-/// 16]`, so each round's arithmetic is `LANES`-wide elementwise `u32` work that
-/// the compiler turns into SIMD.
+/// One state word across all lanes of a batch: a vector of `WIDTH` 32-bit
+/// lanes. The batched compression is written once over this trait, so each
+/// backend supplies only add / xor / the four BLAKE2s rotations.
 ///
-/// Eight measured fastest of 4/8/16 on AVX-512 (1841 vs 1690 and 1530 MB/s):
-/// the working state and the message block together are 32 vectors, so 16 lanes
-/// spills them. Two things that look like wins are not: fully unrolling the
-/// rounds so every index is literal (1132 MB/s, same spill), and gathering each
-/// lane's block contiguously before transposing (no change, so the round
-/// function is the cost, not the load pattern).
+/// # Safety
 ///
-/// For scale, BLAKE2s's hand-written multi-input kernel does 5815 MB/s on the
-/// same shapes. A factor 10/7 of that gap is BLAKE2s having ten rounds per
-/// 64-byte block against BLAKE2s's seven; the remaining ~2.2x is hand-written
-/// intrinsics, which is the lever left if Merkle hashing becomes the bottleneck.
-pub const LANES: usize = 8;
+/// `load` and `store` take raw pointers to `WIDTH` contiguous `u32`, and
+/// implementors may use unaligned vector accesses, so callers must keep those
+/// `WIDTH` elements in bounds.
+trait Lanes32: Copy {
+    const WIDTH: usize;
 
-/// One state word across all lanes.
-type Lanes = [u32; LANES];
+    /// Load `WIDTH` contiguous `u32`.
+    ///
+    /// # Safety
+    /// `p` must be valid for reads of `WIDTH` `u32`.
+    unsafe fn load(p: *const u32) -> Self;
 
-#[inline(always)]
-fn v_add(a: Lanes, b: Lanes) -> Lanes {
-    std::array::from_fn(|i| a[i].wrapping_add(b[i]))
-}
+    /// Store `WIDTH` contiguous `u32`.
+    ///
+    /// # Safety
+    /// `p` must be valid for writes of `WIDTH` `u32`.
+    unsafe fn store(self, p: *mut u32);
 
-#[inline(always)]
-fn v_xor(a: Lanes, b: Lanes) -> Lanes {
-    std::array::from_fn(|i| a[i] ^ b[i])
-}
+    fn splat(x: u32) -> Self;
+    fn add(self, o: Self) -> Self;
+    fn xor(self, o: Self) -> Self;
+    /// Rotate every lane right by `N`, `N` one of BLAKE2s's 16, 12, 8, 7.
+    fn rotr<const N: u32>(self) -> Self;
 
-#[inline(always)]
-fn v_rotr(a: Lanes, n: u32) -> Lanes {
-    std::array::from_fn(|i| a[i].rotate_right(n))
-}
-
-/// One transposed compression across `LANES` independent inputs. `t` and
-/// `last` are shared, which holds because every batch here hashes equal-length
-/// inputs and so steps their block counters in lockstep.
-#[inline(always)]
-fn compress_lanes(h: &mut [Lanes; 8], m: &[Lanes; 16], t: u64, last: bool) {
-    let mut v = [[0u32; LANES]; 16];
-    v[..8].copy_from_slice(h);
-    for i in 0..8 {
-        v[8 + i] = [IV[i]; LANES];
-    }
-    v[12] = v_xor(v[12], [t as u32; LANES]);
-    v[13] = v_xor(v[13], [(t >> 32) as u32; LANES]);
-    if last {
-        v[14] = v_xor(v[14], [u32::MAX; LANES]);
-    }
-    for round in &SIGMA {
-        for (g, &[a, b, c, d]) in G_LANES.iter().enumerate() {
-            let (mx, my) = (m[round[2 * g]], m[round[2 * g + 1]]);
-            v[a] = v_add(v_add(v[a], v[b]), mx);
-            v[d] = v_rotr(v_xor(v[d], v[a]), 16);
-            v[c] = v_add(v[c], v[d]);
-            v[b] = v_rotr(v_xor(v[b], v[c]), 12);
-            v[a] = v_add(v_add(v[a], v[b]), my);
-            v[d] = v_rotr(v_xor(v[d], v[a]), 8);
-            v[c] = v_add(v[c], v[d]);
-            v[b] = v_rotr(v_xor(v[b], v[c]), 7);
+    /// Transpose one 64-byte block from each of `WIDTH` inputs into `buf`, so
+    /// that `buf[w * WIDTH + l]` is lane `l`'s word `w`.
+    ///
+    /// The default reads word by word, which the compiler turns into strided
+    /// vector gathers: 32 `vpgatherqd` per block, enough to cost more than the
+    /// ten rounds it feeds. Backends with a shuffle network override it.
+    ///
+    /// Write the finished chaining values out as `WIDTH` consecutive 32-byte
+    /// digests: the reverse transpose of [`Lanes32::transpose`], over 8 words
+    /// rather than 16.
+    ///
+    /// # Safety
+    /// `out` must be valid for writes of `WIDTH * OUT_LEN` bytes.
+    #[inline(always)]
+    unsafe fn store_digests(h: &[Self; 8], out: *mut u8) {
+        let mut words = [0u32; 8 * 16];
+        for (i, hi) in h.iter().enumerate() {
+            // SAFETY: `words` holds 8 * 16 >= 8 * WIDTH elements.
+            unsafe { hi.store(words.as_mut_ptr().add(i * Self::WIDTH)) };
+        }
+        for lane in 0..Self::WIDTH {
+            for i in 0..8 {
+                let bytes = words[i * Self::WIDTH + lane].to_le_bytes();
+                // SAFETY: `lane * 32 + i * 4 + 4 <= WIDTH * 32`.
+                unsafe {
+                    out.add(lane * OUT_LEN + 4 * i)
+                        .copy_from_nonoverlapping(bytes.as_ptr(), 4)
+                };
+            }
         }
     }
-    for i in 0..8 {
-        h[i] = v_xor(h[i], v_xor(v[i], v[i + 8]));
+
+    /// # Safety
+    /// Every `inputs[l]` must be valid for 64 readable bytes at `off`, and
+    /// `buf` must hold `16 * WIDTH` words.
+    #[inline(always)]
+    unsafe fn transpose(inputs: &[*const u8], off: usize, buf: &mut [u32]) {
+        debug_assert_eq!(inputs.len(), Self::WIDTH);
+        debug_assert!(buf.len() >= 16 * Self::WIDTH);
+        for (lane, &input) in inputs.iter().enumerate() {
+            for w in 0..16 {
+                // SAFETY: the caller guarantees 64 readable bytes at `off`.
+                let word = unsafe { input.add(off + 4 * w).cast::<u32>().read_unaligned() };
+                buf[w * Self::WIDTH + lane] = word.to_le();
+            }
+        }
     }
 }
 
-/// Transpose one 64-byte block from each lane into `[[u32; LANES]; 16]`.
+/// The portable backend, and the reference the SIMD ones are checked against.
 ///
-/// Each lane's block is read contiguously first, then transposed in registers.
-/// Gathering word-by-word across lanes instead strides by `LEN` per load, which
-/// neither vectorizes nor prefetches.
-#[inline(always)]
-fn gather_block<const LEN: usize>(inputs: &[&[u8; LEN]; LANES], block: usize) -> [Lanes; 16] {
-    let off = block * BLOCK_LEN;
-    let per_lane: [[u32; 16]; LANES] = std::array::from_fn(|lane| {
-        let b: &[u8; BLOCK_LEN] = inputs[lane][off..off + BLOCK_LEN].try_into().unwrap();
-        block_words(b)
-    });
-    std::array::from_fn(|w| std::array::from_fn(|lane| per_lane[lane][w]))
+/// Unused by the library whenever a SIMD backend is available for the target,
+/// since the dispatch is resolved at compile time, but always exercised by
+/// `every_backend_matches_scalar`.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+struct Scalar8([u32; 8]);
+
+impl Lanes32 for Scalar8 {
+    const WIDTH: usize = 8;
+
+    #[inline(always)]
+    unsafe fn load(p: *const u32) -> Self {
+        Self(std::array::from_fn(|i| unsafe { *p.add(i) }))
+    }
+    #[inline(always)]
+    unsafe fn store(self, p: *mut u32) {
+        for (i, x) in self.0.into_iter().enumerate() {
+            unsafe { *p.add(i) = x };
+        }
+    }
+    #[inline(always)]
+    fn splat(x: u32) -> Self {
+        Self([x; 8])
+    }
+    #[inline(always)]
+    fn add(self, o: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i].wrapping_add(o.0[i])))
+    }
+    #[inline(always)]
+    fn xor(self, o: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i] ^ o.0[i]))
+    }
+    #[inline(always)]
+    fn rotr<const N: u32>(self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i].rotate_right(N)))
+    }
 }
 
-/// Hash `LANES` inputs of `LEN` bytes each, writing `LANES` consecutive
-/// 32-byte digests to `out`. `LEN` must be a nonzero multiple of 64.
-#[inline]
-fn hash_lane_group<const LEN: usize>(inputs: &[&[u8; LEN]; LANES], out: &mut [u8]) {
-    const {
-        assert!(LEN > 0 && LEN.is_multiple_of(BLOCK_LEN));
+#[cfg(target_arch = "x86_64")]
+mod x86 {
+    use super::{Lanes32, OUT_LEN};
+    use core::arch::x86_64::*;
+
+    /// AVX2: eight lanes. There is no 32-bit vector rotate before AVX-512, so
+    /// the two byte-aligned rotations become one `vpshufb` and the other two a
+    /// shift pair; that asymmetry is why BLAKE2's rotation set is 16/12/8/7.
+    ///
+    /// Unused by the library on an AVX-512 target (the dispatch is compile
+    /// time), but always exercised by `every_backend_matches_scalar`.
+    #[cfg_attr(target_feature = "avx512f", allow(dead_code))]
+    #[derive(Clone, Copy)]
+    pub(super) struct Avx2(__m256i);
+
+    impl Lanes32 for Avx2 {
+        const WIDTH: usize = 8;
+
+        #[inline(always)]
+        unsafe fn load(p: *const u32) -> Self {
+            Self(unsafe { _mm256_loadu_si256(p.cast()) })
+        }
+        #[inline(always)]
+        unsafe fn store(self, p: *mut u32) {
+            unsafe { _mm256_storeu_si256(p.cast(), self.0) }
+        }
+        #[inline(always)]
+        fn splat(x: u32) -> Self {
+            Self(unsafe { _mm256_set1_epi32(x as i32) })
+        }
+        #[inline(always)]
+        fn add(self, o: Self) -> Self {
+            Self(unsafe { _mm256_add_epi32(self.0, o.0) })
+        }
+        #[inline(always)]
+        fn xor(self, o: Self) -> Self {
+            Self(unsafe { _mm256_xor_si256(self.0, o.0) })
+        }
+        #[inline(always)]
+        fn rotr<const N: u32>(self) -> Self {
+            // `vpshufb` masks for a 2-byte and a 1-byte right rotation of each
+            // 32-bit lane, given per 16-byte half.
+            const ROT16: [i8; 16] = [2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13];
+            const ROT8: [i8; 16] = [1, 2, 3, 0, 5, 6, 7, 4, 9, 10, 11, 8, 13, 14, 15, 12];
+            unsafe {
+                let shuf = |m: [i8; 16]| {
+                    let half = _mm_loadu_si128(m.as_ptr().cast());
+                    Self(_mm256_shuffle_epi8(self.0, _mm256_set_m128i(half, half)))
+                };
+                match N {
+                    16 => shuf(ROT16),
+                    8 => shuf(ROT8),
+                    12 => Self(_mm256_or_si256(
+                        _mm256_srli_epi32(self.0, 12),
+                        _mm256_slli_epi32(self.0, 20),
+                    )),
+                    7 => Self(_mm256_or_si256(
+                        _mm256_srli_epi32(self.0, 7),
+                        _mm256_slli_epi32(self.0, 25),
+                    )),
+                    _ => unreachable!("BLAKE2s rotates by 16, 12, 8 or 7"),
+                }
+            }
+        }
+
+        /// Two 8x8 32-bit transposes: each input's 64-byte block is two `ymm`,
+        /// words 0..8 and 8..16, and each half transposes independently.
+        #[inline(always)]
+        unsafe fn transpose(inputs: &[*const u8], off: usize, buf: &mut [u32]) {
+            debug_assert_eq!(inputs.len(), 8);
+            debug_assert!(buf.len() >= 128);
+            unsafe {
+                for half in 0..2 {
+                    let r: [__m256i; 8] =
+                        std::array::from_fn(|l| _mm256_loadu_si256(inputs[l].add(off + 32 * half).cast()));
+                    let mut t = [_mm256_setzero_si256(); 8];
+                    for k in 0..4 {
+                        t[2 * k] = _mm256_unpacklo_epi32(r[2 * k], r[2 * k + 1]);
+                        t[2 * k + 1] = _mm256_unpackhi_epi32(r[2 * k], r[2 * k + 1]);
+                    }
+                    let s: [__m256i; 8] = [
+                        _mm256_unpacklo_epi64(t[0], t[2]),
+                        _mm256_unpackhi_epi64(t[0], t[2]),
+                        _mm256_unpacklo_epi64(t[1], t[3]),
+                        _mm256_unpackhi_epi64(t[1], t[3]),
+                        _mm256_unpacklo_epi64(t[4], t[6]),
+                        _mm256_unpackhi_epi64(t[4], t[6]),
+                        _mm256_unpacklo_epi64(t[5], t[7]),
+                        _mm256_unpackhi_epi64(t[5], t[7]),
+                    ];
+                    for k in 0..4 {
+                        let w = 8 * half + k;
+                        _mm256_storeu_si256(
+                            buf.as_mut_ptr().add(w * 8).cast(),
+                            _mm256_permute2x128_si256(s[k], s[k + 4], 0x20),
+                        );
+                        _mm256_storeu_si256(
+                            buf.as_mut_ptr().add((w + 4) * 8).cast(),
+                            _mm256_permute2x128_si256(s[k], s[k + 4], 0x31),
+                        );
+                    }
+                }
+            }
+        }
     }
-    debug_assert_eq!(out.len(), LANES * OUT_LEN);
-    let n_blocks = LEN / BLOCK_LEN;
-    let mut h: [Lanes; 8] = std::array::from_fn(|i| [init_state(0)[i]; LANES]);
+
+    /// AVX-512: sixteen lanes, and `vprold` makes every rotation one
+    /// instruction.
+    #[cfg(target_feature = "avx512f")]
+    #[derive(Clone, Copy)]
+    pub(super) struct Avx512(__m512i);
+
+    #[cfg(target_feature = "avx512f")]
+    impl Lanes32 for Avx512 {
+        const WIDTH: usize = 16;
+
+        #[inline(always)]
+        unsafe fn load(p: *const u32) -> Self {
+            Self(unsafe { _mm512_loadu_si512(p.cast()) })
+        }
+        #[inline(always)]
+        unsafe fn store(self, p: *mut u32) {
+            unsafe { _mm512_storeu_si512(p.cast(), self.0) }
+        }
+        #[inline(always)]
+        fn splat(x: u32) -> Self {
+            Self(unsafe { _mm512_set1_epi32(x as i32) })
+        }
+        #[inline(always)]
+        fn add(self, o: Self) -> Self {
+            Self(unsafe { _mm512_add_epi32(self.0, o.0) })
+        }
+        #[inline(always)]
+        fn xor(self, o: Self) -> Self {
+            Self(unsafe { _mm512_xor_si512(self.0, o.0) })
+        }
+        #[inline(always)]
+        fn rotr<const N: u32>(self) -> Self {
+            unsafe {
+                match N {
+                    16 => Self(_mm512_ror_epi32(self.0, 16)),
+                    12 => Self(_mm512_ror_epi32(self.0, 12)),
+                    8 => Self(_mm512_ror_epi32(self.0, 8)),
+                    7 => Self(_mm512_ror_epi32(self.0, 7)),
+                    _ => unreachable!("BLAKE2s rotates by 16, 12, 8 or 7"),
+                }
+            }
+        }
+
+        /// An 8x16 -> 16x8 transpose for the digests. Phases 1 and 2 of the
+        /// block network over eight rows leave lane `4L + c`'s first four words
+        /// in `s[c]`'s 128-bit lane `L` and its last four in `s[4 + c]`'s, so
+        /// each digest is two 128-bit extracts rather than eight scalar stores.
+        #[inline(always)]
+        unsafe fn store_digests(h: &[Self; 8], out: *mut u8) {
+            unsafe {
+                let mut s = [_mm512_setzero_si512(); 8];
+                for a in 0..2 {
+                    let (r0, r1, r2, r3) = (h[4 * a].0, h[4 * a + 1].0, h[4 * a + 2].0, h[4 * a + 3].0);
+                    let lo01 = _mm512_unpacklo_epi32(r0, r1);
+                    let hi01 = _mm512_unpackhi_epi32(r0, r1);
+                    let lo23 = _mm512_unpacklo_epi32(r2, r3);
+                    let hi23 = _mm512_unpackhi_epi32(r2, r3);
+                    s[4 * a] = _mm512_unpacklo_epi64(lo01, lo23);
+                    s[4 * a + 1] = _mm512_unpackhi_epi64(lo01, lo23);
+                    s[4 * a + 2] = _mm512_unpacklo_epi64(hi01, hi23);
+                    s[4 * a + 3] = _mm512_unpackhi_epi64(hi01, hi23);
+                }
+                macro_rules! lane {
+                    ($l:expr, $c:expr) => {{
+                        let p = out.add((4 * $l + $c) * OUT_LEN);
+                        _mm_storeu_si128(p.cast(), _mm512_extracti32x4_epi32::<$l>(s[$c]));
+                        _mm_storeu_si128(p.add(16).cast(), _mm512_extracti32x4_epi32::<$l>(s[4 + $c]));
+                    }};
+                }
+                lane!(0, 0);
+                lane!(0, 1);
+                lane!(0, 2);
+                lane!(0, 3);
+                lane!(1, 0);
+                lane!(1, 1);
+                lane!(1, 2);
+                lane!(1, 3);
+                lane!(2, 0);
+                lane!(2, 1);
+                lane!(2, 2);
+                lane!(2, 3);
+                lane!(3, 0);
+                lane!(3, 1);
+                lane!(3, 2);
+                lane!(3, 3);
+            }
+        }
+
+        /// A 16x16 32-bit transpose: each input's 64-byte block is exactly one
+        /// `zmm`, so the block loads are sixteen full-width loads and the
+        /// transpose is a shuffle network. Two `unpack` phases put four rows'
+        /// worth of one column into each 128-bit lane, then two
+        /// `shuffle_i32x4` phases collect the four row groups.
+        #[inline(always)]
+        unsafe fn transpose(inputs: &[*const u8], off: usize, buf: &mut [u32]) {
+            debug_assert_eq!(inputs.len(), 16);
+            debug_assert!(buf.len() >= 256);
+            unsafe {
+                let r: [__m512i; 16] = std::array::from_fn(|l| _mm512_loadu_si512(inputs[l].add(off).cast()));
+                // Phase 1 and 2: `s[4 * a + c]`'s 128-bit lane L holds column
+                // `4L + c` of rows `4a .. 4a + 4`.
+                let mut s = [_mm512_setzero_si512(); 16];
+                for a in 0..4 {
+                    let (r0, r1, r2, r3) = (r[4 * a], r[4 * a + 1], r[4 * a + 2], r[4 * a + 3]);
+                    let lo01 = _mm512_unpacklo_epi32(r0, r1);
+                    let hi01 = _mm512_unpackhi_epi32(r0, r1);
+                    let lo23 = _mm512_unpacklo_epi32(r2, r3);
+                    let hi23 = _mm512_unpackhi_epi32(r2, r3);
+                    s[4 * a] = _mm512_unpacklo_epi64(lo01, lo23);
+                    s[4 * a + 1] = _mm512_unpackhi_epi64(lo01, lo23);
+                    s[4 * a + 2] = _mm512_unpacklo_epi64(hi01, hi23);
+                    s[4 * a + 3] = _mm512_unpackhi_epi64(hi01, hi23);
+                }
+                // Word `w` needs 128-bit lane `w / 4` of the four `s` entries
+                // whose `c` is `w % 4`. `IMM_L` broadcasts that lane, and 0x88
+                // then takes lanes 0 and 2 of each half.
+                macro_rules! word {
+                    ($w:expr) => {{
+                        const L: i32 = ($w / 4) as i32;
+                        const C: usize = ($w % 4) as usize;
+                        const IMM_L: i32 = L * 0x55;
+                        let p = _mm512_shuffle_i32x4::<IMM_L>(s[C], s[4 + C]);
+                        let q = _mm512_shuffle_i32x4::<IMM_L>(s[8 + C], s[12 + C]);
+                        _mm512_storeu_si512(
+                            buf.as_mut_ptr().add($w * 16).cast(),
+                            _mm512_shuffle_i32x4::<0x88>(p, q),
+                        );
+                    }};
+                }
+                word!(0);
+                word!(1);
+                word!(2);
+                word!(3);
+                word!(4);
+                word!(5);
+                word!(6);
+                word!(7);
+                word!(8);
+                word!(9);
+                word!(10);
+                word!(11);
+                word!(12);
+                word!(13);
+                word!(14);
+                word!(15);
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod arm {
+    use super::Lanes32;
+    use core::arch::aarch64::*;
+
+    /// NEON: four lanes. `vsri` (shift right and insert) gives a rotate in two
+    /// instructions, and a 16-bit element reverse gives `rotr 16` in one.
+    #[derive(Clone, Copy)]
+    pub(super) struct Neon(uint32x4_t);
+
+    impl Lanes32 for Neon {
+        const WIDTH: usize = 4;
+
+        #[inline(always)]
+        unsafe fn load(p: *const u32) -> Self {
+            Self(unsafe { vld1q_u32(p) })
+        }
+        #[inline(always)]
+        unsafe fn store(self, p: *mut u32) {
+            unsafe { vst1q_u32(p, self.0) }
+        }
+        #[inline(always)]
+        fn splat(x: u32) -> Self {
+            Self(unsafe { vdupq_n_u32(x) })
+        }
+        #[inline(always)]
+        fn add(self, o: Self) -> Self {
+            Self(unsafe { vaddq_u32(self.0, o.0) })
+        }
+        #[inline(always)]
+        fn xor(self, o: Self) -> Self {
+            Self(unsafe { veorq_u32(self.0, o.0) })
+        }
+        #[inline(always)]
+        fn rotr<const N: u32>(self) -> Self {
+            unsafe {
+                match N {
+                    // A 16-bit element reverse is the 2-byte rotation.
+                    16 => Self(vreinterpretq_u32_u16(vrev32q_u16(vreinterpretq_u16_u32(self.0)))),
+                    // `vsri` shifts right and inserts into the shifted-left
+                    // copy, so a rotate is two instructions.
+                    12 => Self(vsriq_n_u32::<12>(vshlq_n_u32::<20>(self.0), self.0)),
+                    8 => Self(vsriq_n_u32::<8>(vshlq_n_u32::<24>(self.0), self.0)),
+                    7 => Self(vsriq_n_u32::<7>(vshlq_n_u32::<25>(self.0), self.0)),
+                    _ => unreachable!("BLAKE2s rotates by 16, 12, 8 or 7"),
+                }
+            }
+        }
+    }
+}
+
+/// The G function and the round over LITERAL state and message indices, then
+/// all ten rounds. `$m` is a `*const u32` to the transposed block, so each
+/// message operand is a load at a constant offset rather than a register.
+macro_rules! g {
+    ($v:ident, $m:ident, $a:expr, $b:expr, $c:expr, $d:expr, $x:expr, $y:expr) => {{
+        $v[$a] = $v[$a].add($v[$b]).add(S::load($m.add($x * S::WIDTH)));
+        $v[$d] = $v[$d].xor($v[$a]).rotr::<16>();
+        $v[$c] = $v[$c].add($v[$d]);
+        $v[$b] = $v[$b].xor($v[$c]).rotr::<12>();
+        $v[$a] = $v[$a].add($v[$b]).add(S::load($m.add($y * S::WIDTH)));
+        $v[$d] = $v[$d].xor($v[$a]).rotr::<8>();
+        $v[$c] = $v[$c].add($v[$d]);
+        $v[$b] = $v[$b].xor($v[$c]).rotr::<7>();
+    }};
+}
+
+macro_rules! round {
+    ($v:ident, $m:ident, [$s0:expr, $s1:expr, $s2:expr, $s3:expr, $s4:expr, $s5:expr, $s6:expr, $s7:expr,
+      $s8:expr, $s9:expr, $s10:expr, $s11:expr, $s12:expr, $s13:expr, $s14:expr, $s15:expr]) => {{
+        g!($v, $m, 0, 4, 8, 12, $s0, $s1);
+        g!($v, $m, 1, 5, 9, 13, $s2, $s3);
+        g!($v, $m, 2, 6, 10, 14, $s4, $s5);
+        g!($v, $m, 3, 7, 11, 15, $s6, $s7);
+        g!($v, $m, 0, 5, 10, 15, $s8, $s9);
+        g!($v, $m, 1, 6, 11, 12, $s10, $s11);
+        g!($v, $m, 2, 7, 8, 13, $s12, $s13);
+        g!($v, $m, 3, 4, 9, 14, $s14, $s15);
+    }};
+}
+
+macro_rules! rounds {
+    ($v:ident, $m:ident) => {{
+        round!($v, $m, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        round!($v, $m, [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3]);
+        round!($v, $m, [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4]);
+        round!($v, $m, [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8]);
+        round!($v, $m, [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13]);
+        round!($v, $m, [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9]);
+        round!($v, $m, [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11]);
+        round!($v, $m, [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10]);
+        round!($v, $m, [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5]);
+        round!($v, $m, [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0]);
+    }};
+}
+
+/// One transposed compression across `S::WIDTH` lanes. `m` points to the
+/// block as 16 groups of `S::WIDTH` words (state word `w`, lane `l`, at
+/// `m[w * WIDTH + l]`). `t` and `last` are shared across the batch.
+///
+/// # Safety
+/// `m` must be valid for reads of `16 * S::WIDTH` `u32`.
+#[inline(always)]
+unsafe fn compress_lanes<S: Lanes32>(h: &mut [S; 8], m: *const u32, t: u64, last: bool) {
+    let mut v = [
+        h[0],
+        h[1],
+        h[2],
+        h[3],
+        h[4],
+        h[5],
+        h[6],
+        h[7],
+        S::splat(IV[0]),
+        S::splat(IV[1]),
+        S::splat(IV[2]),
+        S::splat(IV[3]),
+        S::splat(IV[4] ^ t as u32),
+        S::splat(IV[5] ^ (t >> 32) as u32),
+        S::splat(if last { !IV[6] } else { IV[6] }),
+        S::splat(IV[7]),
+    ];
+    unsafe { rounds!(v, m) };
+    for i in 0..8 {
+        h[i] = h[i].xor(v[i]).xor(v[i + 8]);
+    }
+}
+
+/// Hash `S::WIDTH` inputs of `len` bytes (a nonzero multiple of 64) into
+/// `S::WIDTH` consecutive 32-byte digests at `out`.
+///
+/// # Safety
+/// Every `inputs[l]` must be valid for `len` bytes, `out` for
+/// `S::WIDTH * OUT_LEN` bytes, and `len` a nonzero multiple of 64.
+#[inline(always)]
+unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, buf: &mut [u32; 16 * 16], out: *mut u8) {
+    debug_assert!(len > 0 && len.is_multiple_of(BLOCK_LEN));
+    let mut h: [S; 8] = std::array::from_fn(|i| S::splat(PARAM_IV[i]));
+    let n_blocks = len / BLOCK_LEN;
     for b in 0..n_blocks {
-        let m = gather_block(inputs, b);
-        compress_lanes(&mut h, &m, ((b + 1) * BLOCK_LEN) as u64, b + 1 == n_blocks);
-    }
-    // Un-transpose: lane `l`'s digest is word `i` of `h[i][l]`.
-    for (lane, digest) in out.chunks_exact_mut(OUT_LEN).enumerate() {
-        for (i, chunk) in digest.chunks_exact_mut(4).enumerate() {
-            chunk.copy_from_slice(&h[i][lane].to_le_bytes());
+        // SAFETY: `b < n_blocks` keeps the 64-byte window inside every input.
+        unsafe {
+            S::transpose(inputs, b * BLOCK_LEN, buf);
+            compress_lanes::<S>(&mut h, buf.as_ptr(), ((b + 1) * BLOCK_LEN) as u64, b + 1 == n_blocks);
         }
     }
+    // SAFETY: the caller guarantees `WIDTH * OUT_LEN` writable bytes at `out`.
+    unsafe { S::store_digests(&h, out) };
 }
+
+/// Drive the whole batch through one backend, scalar-tailing the last partial
+/// group.
+///
+/// # Safety
+/// `data` must hold `n * len` bytes and `out` `n * OUT_LEN`, with `len` a
+/// nonzero multiple of 64.
+#[inline(always)]
+unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
+    let n = out.len() / OUT_LEN;
+    let groups = n / S::WIDTH;
+    let mut ptrs = [std::ptr::null::<u8>(); 16];
+    // 16 words x 16 lanes is the widest backend. One buffer for the whole call
+    // keeps the transposed block on the stack, so the round's message operands
+    // are memory loads, without paying to clear it per group.
+    let mut buf = [0u32; 16 * 16];
+    for g in 0..groups {
+        let base = g * S::WIDTH;
+        for (l, slot) in ptrs[..S::WIDTH].iter_mut().enumerate() {
+            *slot = data[(base + l) * len..].as_ptr();
+        }
+        // SAFETY: each pointer has `len` readable bytes, and the output window
+        // `[base, base + WIDTH)` is inside `out`.
+        unsafe {
+            hash_group::<S>(&ptrs[..S::WIDTH], len, &mut buf, out.as_mut_ptr().add(base * OUT_LEN));
+        }
+    }
+    for i in groups * S::WIDTH..n {
+        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&hash(&data[i * len..(i + 1) * len]));
+    }
+}
+
+/// Independent inputs hashed per batch by the widest backend this build
+/// targets: 16 on AVX-512, 8 on AVX2, 4 on NEON. Public so callers can size
+/// their groups; the batched entry points handle any count and scalar-tail the
+/// remainder.
+///
+/// Measured single-threaded, 4.1 to 5.6 GB/s across the leaf sizes
+/// `pcs::merkle` dispatches (`batched_throughput`). BLAKE3's hand-written
+/// multi-input kernel does 5.6 to 8.3 GB/s on the same shapes, and BLAKE2s does
+/// ten rounds per 64-byte block against BLAKE3's seven, so 10/7 = 1.43x is the
+/// floor; this sits at 1.23x to 1.70x, median ~1.45x.
+///
+/// Getting there took three fixes, each worth recording because the first
+/// attempt at this was 3.16x off the floor rather than 1.45x:
+///
+/// - The `SIGMA` index must be a compile-time literal (the unrolled `rounds!`).
+///   As a runtime index the compiler holds the message in registers and turns
+///   the lookup into 44 `vpermt2d` per round, against 112 instructions of real
+///   work.
+/// - The transpose must be a shuffle network, not a loop. Word-by-word it
+///   becomes 32 `vpgatherqd` per block, which cost more than the ten rounds
+///   they feed.
+/// - The message block must stay in memory so each `add` folds its load. In
+///   registers it is 16 state plus 16 message vectors, the whole AVX-512
+///   register file, and the round spills.
+pub const LANES: usize = if cfg!(all(target_arch = "x86_64", target_feature = "avx512f")) {
+    16
+} else if cfg!(target_arch = "x86_64") {
+    8
+} else if cfg!(target_arch = "aarch64") {
+    4
+} else {
+    8
+};
 
 /// Batched BLAKE2s-256 of `data` split into `LEN`-byte inputs, writing one
 /// 32-byte digest per input to `out`.
 ///
 /// Byte-identical to [`hash`] per input; the batching only changes how the
-/// lanes are scheduled. `LEN` must be a nonzero multiple of 64. A trailing
-/// partial group (fewer than [`LANES`] inputs) falls back to the scalar path.
+/// lanes are scheduled. `LEN` must be a nonzero multiple of 64.
 pub fn hash_many<const LEN: usize>(data: &[u8], out: &mut [u8]) {
-    let n = out.len() / OUT_LEN;
-    debug_assert_eq!(data.len(), n * LEN);
-    debug_assert_eq!(out.len(), n * OUT_LEN);
-    let groups = n / LANES;
-    for g in 0..groups {
-        let base = g * LANES;
-        let inputs: [&[u8; LEN]; LANES] =
-            std::array::from_fn(|l| (&data[(base + l) * LEN..(base + l + 1) * LEN]).try_into().unwrap());
-        hash_lane_group::<LEN>(&inputs, &mut out[base * OUT_LEN..(base + LANES) * OUT_LEN]);
+    const {
+        assert!(LEN > 0 && LEN.is_multiple_of(BLOCK_LEN));
     }
-    for i in groups * LANES..n {
-        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&hash(&data[i * LEN..(i + 1) * LEN]));
+    hash_many_dyn(data, LEN, out);
+}
+
+/// [`hash_many`] with the input length known only at runtime. Same contract:
+/// `len` a nonzero multiple of 64.
+pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
+    assert!(
+        len > 0 && len.is_multiple_of(BLOCK_LEN),
+        "batched inputs are whole blocks"
+    );
+    let n = out.len() / OUT_LEN;
+    assert_eq!(data.len(), n * len);
+    assert_eq!(out.len(), n * OUT_LEN);
+    // SAFETY (each arm): the asserts above pin the buffer sizes the backends
+    // require, and every backend is gated on the feature its intrinsics need.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    unsafe {
+        hash_many_with::<x86::Avx512>(data, len, out)
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f"), target_feature = "avx2"))]
+    unsafe {
+        hash_many_with::<x86::Avx2>(data, len, out)
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        hash_many_with::<arm::Neon>(data, len, out)
+    }
+    #[cfg(not(any(all(target_arch = "x86_64", target_feature = "avx2"), target_arch = "aarch64")))]
+    unsafe {
+        hash_many_with::<Scalar8>(data, len, out)
     }
 }
 
@@ -439,6 +963,38 @@ mod tests {
                 assert_eq!(h.finalize(), want, "{n} bytes in {split}-byte updates");
             }
         }
+    }
+
+    /// Every SIMD backend compiled into this build agrees with the scalar
+    /// hash, not just the one the dispatch picks. Both the round arithmetic and
+    /// the transpose network are per-backend, so this is what keeps an untaken
+    /// path honest.
+    #[test]
+    fn every_backend_matches_scalar() {
+        fn check<S: Lanes32>(name: &str) {
+            for n in [1usize, S::WIDTH - 1, S::WIDTH, S::WIDTH + 1, 3 * S::WIDTH + 2] {
+                for len in [64usize, 128, 192, 1024] {
+                    let data: Vec<u8> = (0..n * len).map(|i| ((i * 37 + 11) & 0xff) as u8).collect();
+                    let mut got = vec![0u8; n * OUT_LEN];
+                    // SAFETY: `data` holds `n * len` bytes and `got` `n * 32`.
+                    unsafe { hash_many_with::<S>(&data, len, &mut got) };
+                    for i in 0..n {
+                        assert_eq!(
+                            &got[i * OUT_LEN..(i + 1) * OUT_LEN],
+                            &hash(&data[i * len..(i + 1) * len])[..],
+                            "{name}: input {i} of {n}, len {len}"
+                        );
+                    }
+                }
+            }
+        }
+        check::<Scalar8>("scalar");
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        check::<x86::Avx2>("avx2");
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+        check::<x86::Avx512>("avx512");
+        #[cfg(target_arch = "aarch64")]
+        check::<arm::Neon>("neon");
     }
 
     /// The transposed batch is byte-identical to the scalar hash per input,
