@@ -1,7 +1,5 @@
 import XmssSecurity.Encoding
-import XmssSecurity.ConcreteKeygen
-import XmssSecurity.ConcreteSign
-import XmssSecurity.ConcreteVerify
+import XmssSecurity.ConcreteScheme
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
@@ -11,15 +9,6 @@ import XmssSecurity.SecurityGame
 import XmssSecurity.Wots
 
 namespace XmssSecurity
-
-namespace Concrete
-
-noncomputable def scheme : Scheme where
-  keygen := Concrete.keygen
-  sign := Concrete.sign
-  verify := Concrete.verify
-
-end Concrete
 
 /-- The remaining cryptographic hybrid exposes each classified event as an epoch-indexed hidden digest table. -/
 theorem xmss_factorizes_to_hiddenTargets (q : Nat) (hq : 1 ≤ q)

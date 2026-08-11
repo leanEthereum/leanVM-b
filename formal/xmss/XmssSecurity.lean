@@ -5,10 +5,13 @@ import XmssSecurity.ConcreteForgery
 import XmssSecurity.ConcreteHash
 import XmssSecurity.ConcreteKeygen
 import XmssSecurity.ConcreteSign
+import XmssSecurity.ConcreteScheme
 import XmssSecurity.ConcreteCorrectness
 import XmssSecurity.ConcreteVerify
 import XmssSecurity.MainTheorem
 import XmssSecurity.Execution
+import XmssSecurity.DetailedExecution
+import XmssSecurity.OutcomeClassification
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
