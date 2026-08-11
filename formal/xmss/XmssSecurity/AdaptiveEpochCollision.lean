@@ -98,6 +98,478 @@ inductive Action where
   | sign (epoch : Epoch)
   | stop
 
+/-- A monitored action after its fresh random-oracle output has been revealed. -/
+inductive ObservedAction where
+  | query (epoch : Epoch) (output : HashOutput)
+  | sign (epoch : Epoch) (output : HashOutput)
+
+def ObservedAction.IsSignAt (target : Epoch) : ObservedAction → Prop
+  | .query _ _ => False
+  | .sign epoch _ => epoch = target
+
+def ObservedAction.signEpoch? : ObservedAction → Option Epoch
+  | .query _ _ => none
+  | .sign epoch _ => some epoch
+
+def observedSignEpochs : List ObservedAction → List Epoch
+  | [] => []
+  | .query _ _ :: actions => observedSignEpochs actions
+  | .sign epoch _ :: actions => epoch :: observedSignEpochs actions
+
+@[simp]
+theorem observedSignEpochs_append (left right : List ObservedAction) :
+    observedSignEpochs (left ++ right) =
+      observedSignEpochs left ++ observedSignEpochs right := by
+  induction left with
+  | nil => rfl
+  | cons action left ih =>
+      cases action <;> simp [observedSignEpochs, ih]
+
+def State.applyObserved (state : State) : ObservedAction → Option (State × Bool)
+  | .query epoch output =>
+      let digest := truncateHash output
+      match state.signed epoch with
+      | some target => some (state, digest = target)
+      | none => some (state.addPending epoch digest, false)
+  | .sign epoch output =>
+      match state.signed epoch with
+      | some _ => none
+      | none =>
+          let digest := truncateHash output
+          some (state.install epoch digest, digest ∈ state.pending epoch)
+
+def runObserved : State → List ObservedAction → Bool
+  | _state, [] => false
+  | state, action :: actions =>
+      match state.applyObserved action with
+      | none => false
+      | some (nextState, hit) => hit || runObserved nextState actions
+
+@[simp]
+theorem runObserved_nil (state : State) : runObserved state [] = false := rfl
+
+@[simp]
+theorem runObserved_cons (state : State) (action : ObservedAction)
+    (actions : List ObservedAction) :
+    runObserved state (action :: actions) =
+      match state.applyObserved action with
+      | none => false
+      | some (nextState, hit) => hit || runObserved nextState actions := rfl
+
+structure ReplayResult where
+  state : State
+  hit : Bool
+  valid : Bool
+
+def State.applyObservedTotal (state : State) : ObservedAction → ReplayResult
+  | .query epoch output =>
+      let digest := truncateHash output
+      match state.signed epoch with
+      | some target => ⟨state, digest = target, true⟩
+      | none => ⟨state.addPending epoch digest, false, true⟩
+  | .sign epoch output =>
+      match state.signed epoch with
+      | some _ => ⟨state, false, false⟩
+      | none =>
+          let digest := truncateHash output
+          ⟨state.install epoch digest, digest ∈ state.pending epoch, true⟩
+
+def replayObserved : State → List ObservedAction → ReplayResult
+  | state, [] => ⟨state, false, true⟩
+  | state, action :: actions =>
+      let head := state.applyObservedTotal action
+      let tail := replayObserved head.state actions
+      ⟨tail.state, head.hit || tail.hit, head.valid && tail.valid⟩
+
+@[simp]
+theorem replayObserved_nil (state : State) :
+    replayObserved state [] = ⟨state, false, true⟩ := rfl
+
+@[simp]
+theorem replayObserved_cons (state : State) (action : ObservedAction)
+    (actions : List ObservedAction) :
+    replayObserved state (action :: actions) =
+      let head := state.applyObservedTotal action
+      let tail := replayObserved head.state actions
+      ⟨tail.state, head.hit || tail.hit, head.valid && tail.valid⟩ := rfl
+
+theorem replayObserved_valid_iff (state : State) (actions : List ObservedAction) :
+    (replayObserved state actions).valid = true ↔
+      (∀ epoch ∈ observedSignEpochs actions, state.signed epoch = none) ∧
+        (observedSignEpochs actions).Nodup := by
+  induction actions generalizing state with
+  | nil => simp [replayObserved, observedSignEpochs]
+  | cons action actions ih =>
+      cases action with
+      | query epoch output =>
+          cases hsigned : state.signed epoch <;>
+            simp [replayObserved, State.applyObservedTotal, observedSignEpochs,
+              hsigned, ih, State.addPending]
+      | sign epoch output =>
+          cases hsigned : state.signed epoch with
+          | none =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned, Bool.true_and, ih,
+                observedSignEpochs, List.mem_cons, forall_eq_or_imp, List.nodup_cons]
+              have htail :
+                  (∀ candidate ∈ observedSignEpochs actions,
+                      (state.install epoch (truncateHash output)).signed candidate = none) ↔
+                    epoch ∉ observedSignEpochs actions ∧
+                      ∀ candidate ∈ observedSignEpochs actions,
+                        state.signed candidate = none := by
+                constructor
+                · intro hall
+                  constructor
+                  · intro hepoch
+                    have := hall epoch hepoch
+                    simp [State.install] at this
+                  · intro candidate hcandidate
+                    have hnone := hall candidate hcandidate
+                    have hne : candidate ≠ epoch := by
+                      intro heq
+                      subst candidate
+                      have := hall epoch hcandidate
+                      simp [State.install] at this
+                    simpa [State.install, hne] using hnone
+                · rintro ⟨hepoch, hall⟩ candidate hcandidate
+                  have hne : candidate ≠ epoch := by
+                    intro heq
+                    subst candidate
+                    exact hepoch hcandidate
+                  simpa [State.install, hne] using
+                    hall candidate hcandidate
+              rw [htail]
+              simp [and_assoc, and_comm]
+          | some target =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned, Bool.false_and,
+                Bool.false_eq_true, false_iff, observedSignEpochs, List.mem_cons,
+                forall_eq_or_imp]
+              simp
+
+@[simp]
+theorem replayObserved_empty_valid_iff (actions : List ObservedAction) :
+    (replayObserved State.empty actions).valid = true ↔
+      (observedSignEpochs actions).Nodup := by
+  rw [replayObserved_valid_iff]
+  simp [State.empty]
+
+theorem runObserved_eq_replayObserved_hit_of_valid
+    (state : State) (actions : List ObservedAction)
+    (hvalid : (replayObserved state actions).valid = true) :
+    runObserved state actions = (replayObserved state actions).hit := by
+  induction actions generalizing state with
+  | nil => rfl
+  | cons action actions ih =>
+      cases action with
+      | query epoch output =>
+          cases hsigned : state.signed epoch <;>
+            simp only [runObserved, State.applyObserved, hsigned, replayObserved,
+              State.applyObservedTotal, Bool.true_and] at hvalid ⊢
+          · rw [ih _ hvalid]
+          · rw [ih _ hvalid]
+      | sign epoch output =>
+          cases hsigned : state.signed epoch with
+          | none =>
+              simp only [runObserved, State.applyObserved, hsigned, replayObserved,
+                State.applyObservedTotal, Bool.true_and] at hvalid ⊢
+              rw [ih _ hvalid]
+          | some target =>
+              simp [replayObserved, State.applyObservedTotal, hsigned] at hvalid
+
+theorem replayObserved_append (state : State)
+    (left right : List ObservedAction) :
+    replayObserved state (left ++ right) =
+      let firstResult := replayObserved state left
+      let secondResult := replayObserved firstResult.state right
+      ⟨secondResult.state, firstResult.hit || secondResult.hit,
+        firstResult.valid && secondResult.valid⟩ := by
+  induction left generalizing state with
+  | nil => rfl
+  | cons action left ih =>
+      simp only [List.cons_append, replayObserved_cons]
+      rw [ih]
+      simp [Bool.or_assoc, Bool.and_assoc]
+
+theorem replayObserved_state_signed_eq_of_not_mem
+    (state : State) (actions : List ObservedAction) (epoch : Epoch)
+    (hnot : epoch ∉ observedSignEpochs actions) :
+    (replayObserved state actions).state.signed epoch = state.signed epoch := by
+  induction actions generalizing state with
+  | nil => rfl
+  | cons action actions ih =>
+      cases action with
+      | query queriedEpoch output =>
+          have htail : epoch ∉ observedSignEpochs actions := by
+            simpa [observedSignEpochs] using hnot
+          cases hsigned : state.signed queriedEpoch with
+          | some target =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              exact ih state htail
+          | none =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              exact (ih (state.addPending queriedEpoch (truncateHash output)) htail).trans
+                (by rfl)
+      | sign signedEpoch output =>
+          have hsignedNe : signedEpoch ≠ epoch := by
+            intro heq
+            subst signedEpoch
+            exact hnot (by simp [observedSignEpochs])
+          have htail : epoch ∉ observedSignEpochs actions := by
+            intro hmem
+            exact hnot (by simp [observedSignEpochs, hmem])
+          cases hsigned : state.signed signedEpoch with
+          | none =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              rw [ih (state.install signedEpoch (truncateHash output)) htail]
+              simp [State.install, Ne.symm hsignedNe]
+          | some target =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              exact ih state htail
+
+theorem replayObserved_pending_mono_of_not_mem
+    (state : State) (actions : List ObservedAction) (epoch : Epoch)
+    (hnot : epoch ∉ observedSignEpochs actions) :
+    state.pending epoch ⊆ (replayObserved state actions).state.pending epoch := by
+  induction actions generalizing state with
+  | nil => exact fun _ hmem => hmem
+  | cons action actions ih =>
+      cases action with
+      | query queriedEpoch output =>
+          have htail : epoch ∉ observedSignEpochs actions := by
+            simpa [observedSignEpochs] using hnot
+          cases hsigned : state.signed queriedEpoch with
+          | some target =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              exact ih state htail
+          | none =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              refine fun digest hdigest => ih (state.addPending queriedEpoch
+                (truncateHash output)) htail ?_
+              by_cases heq : queriedEpoch = epoch
+              · subst queriedEpoch
+                simpa [State.addPending] using Finset.mem_insert_of_mem hdigest
+              · simpa [State.addPending, Ne.symm heq] using hdigest
+      | sign signedEpoch output =>
+          have hsignedNe : signedEpoch ≠ epoch := by
+            intro heq
+            subst signedEpoch
+            exact hnot (by simp [observedSignEpochs])
+          have htail : epoch ∉ observedSignEpochs actions := by
+            intro hmem
+            exact hnot (by simp [observedSignEpochs, hmem])
+          cases hsigned : state.signed signedEpoch with
+          | some target =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              exact ih state htail
+          | none =>
+              rw [replayObserved_cons]
+              simp only [State.applyObservedTotal, hsigned]
+              refine fun digest hdigest => ih (state.install signedEpoch
+                (truncateHash output)) htail ?_
+              simpa [State.install, Ne.symm hsignedNe] using hdigest
+
+theorem replayObserved_hit_of_query_before_sign
+    (state : State) (epoch : Epoch) (queriedOutput signedOutput : HashOutput)
+    (middle after : List ObservedAction)
+    (hsigned : state.signed epoch = none)
+    (hnoMiddleSign : epoch ∉ observedSignEpochs middle)
+    (hcollision : truncateHash queriedOutput = truncateHash signedOutput) :
+    (replayObserved state
+      (.query epoch queriedOutput :: middle ++ .sign epoch signedOutput :: after)).hit =
+        true := by
+  simp only [List.cons_append]
+  rw [congrArg ReplayResult.hit (replayObserved_cons state
+    (.query epoch queriedOutput) (middle ++ .sign epoch signedOutput :: after))]
+  simp only [State.applyObservedTotal, hsigned, Bool.false_or]
+  rw [replayObserved_append]
+  let middleResult := replayObserved
+    (state.addPending epoch (truncateHash queriedOutput)) middle
+  have hmiddleSigned : middleResult.state.signed epoch = none := by
+    calc
+      middleResult.state.signed epoch =
+          (state.addPending epoch (truncateHash queriedOutput)).signed epoch :=
+        replayObserved_state_signed_eq_of_not_mem _ middle epoch hnoMiddleSign
+      _ = none := hsigned
+  have hinitialPending : truncateHash queriedOutput ∈
+      (state.addPending epoch (truncateHash queriedOutput)).pending epoch := by
+    simp [State.addPending]
+  have hmiddlePending : truncateHash signedOutput ∈ middleResult.state.pending epoch := by
+    rw [← hcollision]
+    exact replayObserved_pending_mono_of_not_mem _ middle epoch hnoMiddleSign
+      hinitialPending
+  change (middleResult.hit ||
+    (replayObserved middleResult.state (.sign epoch signedOutput :: after)).hit) = true
+  rw [congrArg ReplayResult.hit (replayObserved_cons middleResult.state
+    (.sign epoch signedOutput) after)]
+  simp [State.applyObservedTotal, hmiddleSigned, hmiddlePending]
+
+theorem replayObserved_hit_of_sign_before_query
+    (state : State) (epoch : Epoch) (signedOutput queriedOutput : HashOutput)
+    (middle after : List ObservedAction)
+    (hsigned : state.signed epoch = none)
+    (hnoMiddleSign : epoch ∉ observedSignEpochs middle)
+    (hcollision : truncateHash signedOutput = truncateHash queriedOutput) :
+    (replayObserved state
+      (.sign epoch signedOutput :: middle ++ .query epoch queriedOutput :: after)).hit =
+        true := by
+  simp only [List.cons_append]
+  rw [congrArg ReplayResult.hit (replayObserved_cons state
+    (.sign epoch signedOutput) (middle ++ .query epoch queriedOutput :: after))]
+  simp only [State.applyObservedTotal, hsigned]
+  rw [replayObserved_append]
+  let middleResult := replayObserved
+    (state.install epoch (truncateHash signedOutput)) middle
+  have hmiddleSigned : middleResult.state.signed epoch =
+      some (truncateHash signedOutput) := by
+    calc
+      middleResult.state.signed epoch =
+          (state.install epoch (truncateHash signedOutput)).signed epoch :=
+        replayObserved_state_signed_eq_of_not_mem _ middle epoch hnoMiddleSign
+      _ = some (truncateHash signedOutput) := by simp [State.install]
+  change (decide (truncateHash signedOutput ∈ state.pending epoch) ||
+    (middleResult.hit ||
+      (replayObserved middleResult.state (.query epoch queriedOutput :: after)).hit)) = true
+  rw [congrArg ReplayResult.hit (replayObserved_cons middleResult.state
+    (.query epoch queriedOutput) after)]
+  simp [State.applyObservedTotal, hmiddleSigned, hcollision]
+
+theorem runObserved_empty_eq_true_of_query_before_sign
+    (epoch : Epoch) (queriedOutput signedOutput : HashOutput)
+    (before middle after : List ObservedAction)
+    (hnoBeforeSign : epoch ∉ observedSignEpochs before)
+    (hnoMiddleSign : epoch ∉ observedSignEpochs middle)
+    (hcollision : truncateHash queriedOutput = truncateHash signedOutput)
+    (hvalid : (observedSignEpochs
+      (before ++ [.query epoch queriedOutput] ++ middle ++
+        [.sign epoch signedOutput] ++ after)).Nodup) :
+    runObserved State.empty
+      (before ++ [.query epoch queriedOutput] ++ middle ++
+        [.sign epoch signedOutput] ++ after) = true := by
+  let tail := .query epoch queriedOutput :: middle ++ .sign epoch signedOutput :: after
+  have hlist : before ++ [.query epoch queriedOutput] ++ middle ++
+      [.sign epoch signedOutput] ++ after = before ++ tail := by
+    simp [tail, List.append_assoc]
+  rw [hlist]
+  have hreplayValid : (replayObserved State.empty (before ++ tail)).valid = true :=
+    replayObserved_empty_valid_iff (before ++ tail) |>.2 (by simpa [← hlist] using hvalid)
+  rw [runObserved_eq_replayObserved_hit_of_valid _ _ hreplayValid]
+  rw [replayObserved_append]
+  let beforeResult := replayObserved State.empty before
+  have hbeforeSigned : beforeResult.state.signed epoch = none := by
+    calc
+      beforeResult.state.signed epoch = State.empty.signed epoch :=
+        replayObserved_state_signed_eq_of_not_mem State.empty before epoch hnoBeforeSign
+      _ = none := rfl
+  have htailHit : (replayObserved beforeResult.state tail).hit = true := by
+    exact replayObserved_hit_of_query_before_sign beforeResult.state epoch queriedOutput
+      signedOutput middle after hbeforeSigned hnoMiddleSign hcollision
+  change (beforeResult.hit || (replayObserved beforeResult.state tail).hit) = true
+  simp [htailHit]
+
+theorem runObserved_empty_eq_true_of_sign_before_query
+    (epoch : Epoch) (signedOutput queriedOutput : HashOutput)
+    (before middle after : List ObservedAction)
+    (hnoBeforeSign : epoch ∉ observedSignEpochs before)
+    (hnoMiddleSign : epoch ∉ observedSignEpochs middle)
+    (hcollision : truncateHash signedOutput = truncateHash queriedOutput)
+    (hvalid : (observedSignEpochs
+      (before ++ [.sign epoch signedOutput] ++ middle ++
+        [.query epoch queriedOutput] ++ after)).Nodup) :
+    runObserved State.empty
+      (before ++ [.sign epoch signedOutput] ++ middle ++
+        [.query epoch queriedOutput] ++ after) = true := by
+  let tail := .sign epoch signedOutput :: middle ++ .query epoch queriedOutput :: after
+  have hlist : before ++ [.sign epoch signedOutput] ++ middle ++
+      [.query epoch queriedOutput] ++ after = before ++ tail := by
+    simp [tail, List.append_assoc]
+  rw [hlist]
+  have hreplayValid : (replayObserved State.empty (before ++ tail)).valid = true :=
+    replayObserved_empty_valid_iff (before ++ tail) |>.2 (by simpa [← hlist] using hvalid)
+  rw [runObserved_eq_replayObserved_hit_of_valid _ _ hreplayValid]
+  rw [replayObserved_append]
+  let beforeResult := replayObserved State.empty before
+  have hbeforeSigned : beforeResult.state.signed epoch = none := by
+    calc
+      beforeResult.state.signed epoch = State.empty.signed epoch :=
+        replayObserved_state_signed_eq_of_not_mem State.empty before epoch hnoBeforeSign
+      _ = none := rfl
+  have htailHit : (replayObserved beforeResult.state tail).hit = true := by
+    exact replayObserved_hit_of_sign_before_query beforeResult.state epoch signedOutput
+      queriedOutput middle after hbeforeSigned hnoMiddleSign hcollision
+  change (beforeResult.hit || (replayObserved beforeResult.state tail).hit) = true
+  simp [htailHit]
+
+theorem observedSignEpochs_not_mem_around_sign
+    (epoch : Epoch) (output : HashOutput)
+    (before after : List ObservedAction)
+    (hvalid : (observedSignEpochs
+      (before ++ [.sign epoch output] ++ after)).Nodup) :
+    epoch ∉ observedSignEpochs before ∧ epoch ∉ observedSignEpochs after := by
+  have hnormalized :
+      (observedSignEpochs before ++ epoch :: observedSignEpochs after).Nodup := by
+    simpa [observedSignEpochs, List.append_assoc] using hvalid
+  have hparts := List.nodup_append.mp hnormalized
+  constructor
+  · intro hmem
+    exact hparts.2.2 epoch hmem epoch (by simp) rfl
+  · exact (List.nodup_cons.mp hparts.2.1).1
+
+theorem runObserved_empty_eq_true_of_query_before_sign_of_nodup
+    (epoch : Epoch) (queriedOutput signedOutput : HashOutput)
+    (before middle after : List ObservedAction)
+    (hcollision : truncateHash queriedOutput = truncateHash signedOutput)
+    (hvalid : (observedSignEpochs
+      (before ++ [.query epoch queriedOutput] ++ middle ++
+        [.sign epoch signedOutput] ++ after)).Nodup) :
+    runObserved State.empty
+      (before ++ [.query epoch queriedOutput] ++ middle ++
+        [.sign epoch signedOutput] ++ after) = true := by
+  have haround := observedSignEpochs_not_mem_around_sign epoch signedOutput
+    (before ++ [.query epoch queriedOutput] ++ middle) after (by
+      simpa [List.append_assoc] using hvalid)
+  have hnoPrefix : epoch ∉ observedSignEpochs before := by
+    intro hmem
+    apply haround.1
+    simp [hmem]
+  have hnoMiddle : epoch ∉ observedSignEpochs middle := by
+    intro hmem
+    apply haround.1
+    have : epoch ∈ observedSignEpochs before ++ observedSignEpochs middle :=
+      List.mem_append_right _ hmem
+    simpa [observedSignEpochs, List.append_assoc] using this
+  exact runObserved_empty_eq_true_of_query_before_sign epoch queriedOutput
+    signedOutput before middle after hnoPrefix hnoMiddle hcollision hvalid
+
+theorem runObserved_empty_eq_true_of_sign_before_query_of_nodup
+    (epoch : Epoch) (signedOutput queriedOutput : HashOutput)
+    (before middle after : List ObservedAction)
+    (hcollision : truncateHash signedOutput = truncateHash queriedOutput)
+    (hvalid : (observedSignEpochs
+      (before ++ [.sign epoch signedOutput] ++ middle ++
+        [.query epoch queriedOutput] ++ after)).Nodup) :
+    runObserved State.empty
+      (before ++ [.sign epoch signedOutput] ++ middle ++
+        [.query epoch queriedOutput] ++ after) = true := by
+  have haround := observedSignEpochs_not_mem_around_sign epoch signedOutput before
+    (middle ++ [.query epoch queriedOutput] ++ after) (by
+      simpa [List.append_assoc] using hvalid)
+  have hnoMiddle : epoch ∉ observedSignEpochs middle := by
+    intro hmem
+    apply haround.2
+    have : epoch ∈ observedSignEpochs middle ++ observedSignEpochs after :=
+      List.mem_append_left _ hmem
+    simpa [observedSignEpochs, List.append_assoc] using this
+  exact runObserved_empty_eq_true_of_sign_before_query epoch signedOutput
+    queriedOutput before middle after haround.1 hnoMiddle hcollision hvalid
+
 noncomputable def run : State → Nat → (List HashOutput → Action) → ProbComp Bool
   | _state, 0, _strategy => pure false
   | state, fuel + 1, strategy =>
@@ -308,5 +780,192 @@ theorem run_empty_true_probability_le (fuel : Nat)
       (fuel : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
   simpa [State.pendingCount_empty, div_eq_mul_inv] using
     run_true_probability_le State.empty fuel strategy
+
+inductive ControllerAction (σ : Type) where
+  | stop
+  | query (epoch : Epoch) (next : HashOutput → σ)
+  | sign (epoch : Epoch) (next : HashOutput → σ)
+
+/-- The adaptive collision monitor with an arbitrary probabilistic controller. The controller may retain all side information, while every observed encoding output is sampled independently. -/
+noncomputable def runProbabilistic {σ : Type}
+    (controller : σ → ProbComp (ControllerAction σ)) : State → Nat → σ → ProbComp Bool
+  | _state, 0, _control => pure false
+  | state, fuel + 1, control => do
+      let action ← controller control
+      match action with
+      | .stop => pure false
+      | .query epoch next => do
+          let output ← $ᵗ HashOutput
+          let digest := truncateHash output
+          match state.signed epoch with
+          | some target =>
+              if digest = target then
+                pure true
+              else
+                runProbabilistic controller state fuel (next output)
+          | none =>
+              runProbabilistic controller (state.addPending epoch digest) fuel
+                (next output)
+      | .sign epoch next =>
+          match state.signed epoch with
+          | some _ => pure false
+          | none => do
+              let output ← $ᵗ HashOutput
+              let digest := truncateHash output
+              if digest ∈ state.pending epoch then
+                pure true
+              else
+                runProbabilistic controller (state.install epoch digest) fuel
+                  (next output)
+
+/-- Probabilistic control and retained side information do not increase the adaptive epoch-collision bound. -/
+theorem runProbabilistic_true_probability_le {σ : Type}
+    (controller : σ → ProbComp (ControllerAction σ))
+    (state : State) (fuel : Nat) (control : σ) :
+    Pr[(fun hit : Bool => hit = true) |
+      runProbabilistic controller state fuel control] ≤
+      ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  induction fuel generalizing state control with
+  | zero =>
+      rw [runProbabilistic, probEvent_pure]
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      exact zero_le
+  | succ fuel ih =>
+      rw [runProbabilistic]
+      refine probEvent_bind_le_of_forall_le fun action _ => ?_
+      cases action with
+      | stop =>
+          rw [probEvent_pure]
+          simp only [Bool.false_eq_true, ↓reduceIte]
+          exact zero_le
+      | query epoch next =>
+          cases hsigned : state.signed epoch with
+          | none =>
+              change Pr[(fun hit : Bool => hit = true) |
+                ($ᵗ HashOutput) >>= fun output =>
+                  match state.signed epoch with
+                  | some target =>
+                      if truncateHash output = target then pure true
+                      else runProbabilistic controller state fuel (next output)
+                  | none =>
+                      runProbabilistic controller
+                        (state.addPending epoch (truncateHash output)) fuel
+                        (next output)] ≤ _
+              rw [hsigned]
+              refine probEvent_bind_le_of_forall_le
+                (mx := ($ᵗ HashOutput))
+                (my := fun output =>
+                  runProbabilistic controller
+                    (state.addPending epoch (truncateHash output)) fuel
+                    (next output))
+                (q := fun hit : Bool => hit = true) fun output _ => ?_
+              refine (ih (state.addPending epoch (truncateHash output))
+                (next output)).trans ?_
+              have hcount := state.pendingCount_addPending_le epoch
+                (truncateHash output)
+              have hnat : fuel + (state.addPending epoch
+                    (truncateHash output)).pendingCount ≤
+                  fuel.succ + state.pendingCount := by
+                calc
+                  fuel + (state.addPending epoch
+                      (truncateHash output)).pendingCount ≤
+                    fuel + (state.pendingCount + 1) :=
+                      Nat.add_le_add_left hcount fuel
+                  _ = fuel.succ + state.pendingCount := by omega
+              exact mul_le_mul' (Nat.cast_le.mpr hnat) le_rfl
+          | some target =>
+              change Pr[(fun hit : Bool => hit = true) |
+                ($ᵗ HashOutput) >>= fun output =>
+                  match state.signed epoch with
+                  | some target =>
+                      if truncateHash output = target then pure true
+                      else runProbabilistic controller state fuel (next output)
+                  | none =>
+                      runProbabilistic controller
+                        (state.addPending epoch (truncateHash output)) fuel
+                        (next output)] ≤ _
+              rw [hsigned]
+              refine (probEvent_bind_le_probEvent_add
+                (mx := ($ᵗ HashOutput))
+                (my := fun output =>
+                  if truncateHash output = target then pure true
+                  else runProbabilistic controller state fuel (next output))
+                (q := fun hit : Bool => hit = true)
+                (p := fun output : HashOutput => truncateHash output = target)
+                (ε := ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
+                  ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ?_).trans ?_
+              · intro output _ hmiss
+                simp only [hmiss, ↓reduceIte]
+                exact ih state (next output)
+              · rw [Rom.uniform_truncate_probability]
+                push_cast
+                ring_nf
+                exact le_rfl
+      | sign epoch next =>
+          cases hsigned : state.signed epoch with
+          | some target =>
+              change Pr[(fun hit : Bool => hit = true) |
+                match state.signed epoch with
+                | some _ => pure false
+                | none => ($ᵗ HashOutput) >>= fun output =>
+                    if truncateHash output ∈ state.pending epoch then pure true
+                    else runProbabilistic controller
+                      (state.install epoch (truncateHash output)) fuel
+                      (next output)] ≤ _
+              rw [hsigned, probEvent_pure]
+              simp only [Bool.false_eq_true, ↓reduceIte]
+              exact zero_le
+          | none =>
+              change Pr[(fun hit : Bool => hit = true) |
+                match state.signed epoch with
+                | some _ => pure false
+                | none => ($ᵗ HashOutput) >>= fun output =>
+                    if truncateHash output ∈ state.pending epoch then pure true
+                    else runProbabilistic controller
+                      (state.install epoch (truncateHash output)) fuel
+                      (next output)] ≤ _
+              rw [hsigned]
+              refine (probEvent_bind_le_probEvent_add
+                (mx := ($ᵗ HashOutput))
+                (my := fun output =>
+                  if truncateHash output ∈ state.pending epoch then pure true
+                  else runProbabilistic controller
+                    (state.install epoch (truncateHash output)) fuel (next output))
+                (q := fun hit : Bool => hit = true)
+                (p := fun output : HashOutput =>
+                  truncateHash output ∈ state.pending epoch)
+                (ε := ((fuel + (state.install epoch 0).pendingCount : Nat) : ℝ≥0∞) *
+                  ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ?_).trans ?_
+              · intro output _ hmiss
+                simp only [hmiss, ↓reduceIte]
+                have hcount :
+                    (state.install epoch (truncateHash output)).pendingCount =
+                      (state.install epoch 0).pendingCount := by
+                  exact state.pendingCount_install_eq epoch _ _
+                have htail := ih (state.install epoch (truncateHash output))
+                  (next output)
+                rw [hcount] at htail
+                exact htail
+              · refine add_le_add
+                  (uniform_truncate_mem_finset_le (state.pending epoch)) le_rfl |>.trans ?_
+                have hconserve := state.pendingCount_install_add epoch 0
+                have hnat :
+                  (state.pending epoch).card +
+                      (fuel + (state.install epoch 0).pendingCount) ≤
+                    fuel.succ + state.pendingCount := by omega
+                rw [← add_mul]
+                gcongr
+                rw [← Nat.cast_add]
+                exact Nat.cast_le.mpr hnat
+
+theorem runProbabilistic_empty_true_probability_le {σ : Type}
+    (controller : σ → ProbComp (ControllerAction σ))
+    (fuel : Nat) (control : σ) :
+    Pr[(fun hit : Bool => hit = true) |
+      runProbabilistic controller State.empty fuel control] ≤
+      (fuel : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  simpa [State.pendingCount_empty, div_eq_mul_inv] using
+    runProbabilistic_true_probability_le controller State.empty fuel control
 
 end XmssSecurity.EncodingMonitor

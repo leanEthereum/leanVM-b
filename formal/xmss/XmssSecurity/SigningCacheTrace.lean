@@ -104,7 +104,11 @@ def SigningCacheEntry.PostSigningFreshForgedEncodingCollision
   entry.FreshForgedEncodingCollision secretKey forgery finalCache ∧
     entry.finalCache
       (Concrete.CacheView.encodingInput secretKey.parameter forgery.epoch
-        (forgery.message, forgery.signature.randomness)) = none
+        (forgery.message, forgery.signature.randomness)) = none ∧
+    ∃ signature, entry.signature = some signature ∧
+      entry.initialCache
+        (Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch
+          (entry.request.message, signature.randomness)) = none
 
 def SigningCacheEntry.SuccessfulEncodingCached
     (secretKey : SecretKey) (entry : SigningCacheEntry) : Prop :=
@@ -283,6 +287,34 @@ theorem Concrete.sign_success_preserves_other_encodingInput
     (Concrete.signAttempt_queryBound_zero_at_other_encodingInput secretKey
       request.epoch targetEpoch request.message randomness targetInput hne')
     hnone hattempt
+
+set_option linter.constructorNameAsVariable false in
+theorem Concrete.sign_preserves_other_epoch_encodingInput
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (request : SignRequest) (initialCache finalCache : QueryCache HashSpec)
+    (result : Option Signature)
+    (hmem : (result, finalCache) ∈ support
+      ((simulateQ xmssRomImpl
+        (Concrete.sign publicKey secretKey request.epoch request.message)).run
+          initialCache))
+    (targetEpoch : Epoch) (targetInput : Message × Randomness)
+    (hne : request.epoch ≠ targetEpoch)
+    (hnone : initialCache
+      (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) = none) :
+    finalCache
+      (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) = none := by
+  rw [Concrete.sign_run_eq, mem_support_bind_iff] at hmem
+  obtain ⟨randomness, _hrandomness, hattempt⟩ := hmem
+  apply Concrete.CacheReplay.cache_none_of_zero_query_bound
+    (Concrete.signAttempt secretKey request.epoch request.message randomness :
+      OracleComp HashSpec (Option Signature))
+    (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput)
+    initialCache finalCache result
+  · apply Concrete.signAttempt_queryBound_zero_at_other_encodingInput
+    intro hinput
+    exact hne (Concrete.CacheView.epoch_eq_of_encodingInput_eq secretKey.parameter hinput)
+  · exact hnone
+  · exact hattempt
 
 /-- Across a valid signing trace, the same-epoch cache targets visible before each signature are disjointly charged to the final cache. -/
 theorem signingCacheTrace_cachedEncodingEntries_sum_le
@@ -1282,10 +1314,14 @@ theorem SigningCacheEntry.postSigningFreshForgedEncodingCollision_of_fresh
     (secretKey : SecretKey) (forgery : Forgery)
     (gameCache : QueryCache HashSpec) (entry : SigningCacheEntry)
     (hpreserves : entry.PreservesOtherEncodingInputs secretKey)
-    (hevent : entry.FreshForgedEncodingCollision secretKey forgery gameCache) :
+    (hevent : entry.FreshForgedEncodingCollision secretKey forgery gameCache)
+    (signature : Signature) (hsignature : entry.signature = some signature)
+    (hsignedFresh : entry.initialCache
+      (Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch
+        (entry.request.message, signature.randomness)) = none) :
     entry.PostSigningFreshForgedEncodingCollision secretKey forgery gameCache :=
   ⟨hevent, entry.freshForgedEncodingCollision_finalCache_none secretKey forgery
-    gameCache hpreserves hevent⟩
+    gameCache hpreserves hevent, signature, hsignature, hsignedFresh⟩
 
 theorem detailedGameWithSigningTrace_cache_enncard_le_of_mem_support
     (adversary : Adversary Concrete.scheme) (q : Nat)

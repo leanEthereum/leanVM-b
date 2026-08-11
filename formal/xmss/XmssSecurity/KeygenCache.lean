@@ -106,4 +106,31 @@ theorem Concrete.keygen_cache_unique_merkleAddress
     keyResult.2 hroot targetLevel targetNode left right leftOutput rightOutput
     hleftP hrightP hleft hright
 
+/-- Key generation evaluates only chain, leaf, and Merkle domains, so its cache contains no encoding input. -/
+theorem Concrete.keygen_cache_none_encodingInput
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hmem : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (targetEpoch : Epoch) (targetInput : Message × Randomness) :
+    keyResult.2
+      (Concrete.CacheView.encodingInput keyResult.1.2.parameter targetEpoch targetInput) =
+        none := by
+  obtain ⟨parameter, secret, root, hkey, hroot⟩ :=
+    Concrete.keygen_support_rootTree keyResult hmem
+  rw [hkey]
+  apply Concrete.CacheReplay.cache_none_of_zero_query_bound
+    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+      OracleComp HashSpec Digest)
+    (Concrete.CacheView.encodingInput parameter targetEpoch targetInput)
+    ∅ keyResult.2 root
+  · exact (Concrete.treeNode_queryBound_zero_encodingAddress parameter secret targetEpoch
+      treeHeight Concrete.rootNode).of_imp (by
+        intro input hinput
+        subst input
+        rw [Concrete.CacheView.encodingInput]
+        exact atHashAddress_tweakableHashInput_iff parameter
+          (.encoding targetEpoch) (.encoding targetEpoch) _ |>.2 rfl)
+  · simp
+  · exact hroot
+
 end XmssSecurity
