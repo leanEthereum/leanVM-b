@@ -1,6 +1,7 @@
 import XmssSecurity.Encoding
 import XmssSecurity.ConcreteScheme
 import XmssSecurity.EncodingEventProbability
+import XmssSecurity.EncodingOracleSimulation
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue

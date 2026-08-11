@@ -783,6 +783,7 @@ theorem run_empty_true_probability_le (fuel : Nat)
 
 inductive ControllerAction (σ : Type) where
   | stop
+  | skip (next : σ)
   | query (epoch : Epoch) (next : HashOutput → σ)
   | sign (epoch : Epoch) (next : HashOutput → σ)
 
@@ -794,6 +795,7 @@ noncomputable def runProbabilistic {σ : Type}
       let action ← controller control
       match action with
       | .stop => pure false
+      | .skip next => runProbabilistic controller state fuel next
       | .query epoch next => do
           let output ← $ᵗ HashOutput
           let digest := truncateHash output
@@ -839,6 +841,12 @@ theorem runProbabilistic_true_probability_le {σ : Type}
           rw [probEvent_pure]
           simp only [Bool.false_eq_true, ↓reduceIte]
           exact zero_le
+      | skip next =>
+          change Pr[(fun hit : Bool => hit = true) |
+            runProbabilistic controller state fuel next] ≤ _
+          refine (ih state next).trans ?_
+          gcongr
+          omega
       | query epoch next =>
           cases hsigned : state.signed epoch with
           | none =>
