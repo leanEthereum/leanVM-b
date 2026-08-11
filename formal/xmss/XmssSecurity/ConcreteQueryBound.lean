@@ -153,6 +153,19 @@ theorem Concrete.oneTimePublicKey_queryBound_chainAddress
         chain targetChain targetStep 0 (chainLength - 1) (secret epoch chain)
         (Or.inl hepoch)).mono (by omega)
 
+theorem Concrete.oneTimePublicKey_queryBound_zero_chainAddress_at_other_epoch
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch targetEpoch : Epoch) (targetChain : ChainIndex) (targetStep : ChainStep)
+    (hne : epoch ≠ targetEpoch) :
+    (Concrete.oneTimePublicKey parameter secret epoch :
+      OracleComp HashSpec (ChainIndex → Digest)).IsQueryBoundP
+        (AtHashAddress parameter (.chain targetEpoch targetChain targetStep)) 0 := by
+  rw [Concrete.oneTimePublicKey]
+  exact Concrete.sequenceFin_queryBound_zero _ _ fun chain =>
+    Concrete.chainWalk_queryBound_zero_at_other_chain parameter epoch targetEpoch
+      chain targetChain targetStep 0 (chainLength - 1) (secret epoch chain)
+      (Or.inl hne)
+
 theorem Concrete.leafAt_queryBound_chainAddress
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
     (epoch targetEpoch : Epoch) (targetChain : ChainIndex) (targetStep : ChainStep) :
@@ -162,6 +175,21 @@ theorem Concrete.leafAt_queryBound_chainAddress
   refine OracleComp.isQueryBoundP_bind (m := 0)
     (Concrete.oneTimePublicKey_queryBound_chainAddress parameter secret epoch
       targetEpoch targetChain targetStep) ?_
+  intro endpoints _
+  exact Concrete.tweakableHash_queryBound_atOtherAddress parameter
+    (.chain targetEpoch targetChain targetStep) (.leaf epoch)
+    (Concrete.leafPayload endpoints) (by simp)
+
+theorem Concrete.leafAt_queryBound_zero_chainAddress_at_other_epoch
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch targetEpoch : Epoch) (targetChain : ChainIndex) (targetStep : ChainStep)
+    (hne : epoch ≠ targetEpoch) :
+    (Concrete.leafAt parameter secret epoch : OracleComp HashSpec Digest).IsQueryBoundP
+      (AtHashAddress parameter (.chain targetEpoch targetChain targetStep)) 0 := by
+  rw [Concrete.leafAt]
+  refine OracleComp.isQueryBoundP_bind (m := 0)
+    (Concrete.oneTimePublicKey_queryBound_zero_chainAddress_at_other_epoch parameter secret
+      epoch targetEpoch targetChain targetStep hne) ?_
   intro endpoints _
   exact Concrete.tweakableHash_queryBound_atOtherAddress parameter
     (.chain targetEpoch targetChain targetStep) (.leaf epoch)
