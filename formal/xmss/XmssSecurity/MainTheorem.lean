@@ -13,41 +13,42 @@ namespace XmssSecurity
 
 open OracleSpec
 
-/-- The remaining cryptographic hybrid exposes each concrete event as an epoch-indexed hidden digest table. -/
-theorem xmss_badEvents_factorize_to_hiddenTargets (q : Nat) (hq : 1 ≤ q)
+/-- The remaining cryptographic argument below the digest-space size bounds one concrete event with 128-bit loss. -/
+theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
+    (hqlt : q < 2 ^ digestBits)
     (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
-    ∃ strategyGenerator : BadEvent → ProbComp (List Bool → Epoch × Digest),
-      ∀ event,
-        Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-          OutcomeBadEventOccurs execution.2 execution.1 event |
-          detailedGameWithCache Concrete.scheme adversary] ≤
-        Pr[(fun hit : Bool => hit = true) |
-          IndexedHiddenValue.adaptiveGuessExperiment (strategyGenerator event) q] := by
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) (event : BadEvent) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      OutcomeBadEventOccurs execution.2 execution.1 event |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
   sorry
+
+/-- Every concrete event has probability at most `q / 2^128`; above `2^128` queries this is the trivial probability bound. -/
+theorem xmss_badEvent_probability_le (q : Nat) (hq : 1 ≤ q)
+    (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) (event : BadEvent) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      OutcomeBadEventOccurs execution.2 execution.1 event |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
+  by_cases hqlt : q < 2 ^ digestBits
+  · exact xmss_badEvent_probability_le_below_digest_space q hq hqlt adversary hbound event
+  · apply probEvent_le_one.trans
+    rw [ENNReal.le_div_iff_mul_le]
+    · exact_mod_cast Nat.le_of_not_gt hqlt
+    · simp
+    · simp
 
 /-- Every bounded adversary has forging probability at most `q / 2^120`. -/
 theorem xmss_forgeAdvantage_le (q : Nat) (hq : 1 ≤ q)
     (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     forgeAdvantage Concrete.scheme adversary ≤ (q : ENNReal) / ((2 ^ 120 : Nat) : ENNReal) := by
-  obtain ⟨strategyGenerator, hfactor⟩ :=
-    xmss_badEvents_factorize_to_hiddenTargets q hq adversary hbound
   refine (forgeAdvantage_le_outcomeBadEvent_sum adversary).trans ?_
-  calc
-    ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-        OutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] ≤
-      ∑ event, Pr[(fun hit : Bool => hit = true) |
-        IndexedHiddenValue.adaptiveGuessExperiment (strategyGenerator event) q] := by
-      apply Finset.sum_le_sum
-      intro event _
-      exact hfactor event
-    _ ≤ (q : ENNReal) / ((2 ^ 120 : Nat) : ENNReal) := by
-      apply badEvent_sum_le_120
-      intro event
-      exact IndexedHiddenValue.adaptive_guess_after_public_sampling_le
-        (strategyGenerator event) q
+  apply badEvent_sum_le_120
+  intro event
+  exact xmss_badEvent_probability_le q hq adversary hbound event
 
 /-- The concrete XMSS scheme has at least 120 bits of classical security in the random-oracle game. -/
 theorem xmss_has_120_bits_of_classical_security :

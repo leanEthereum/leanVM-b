@@ -65,4 +65,13 @@ theorem forgeAdvantage_eq_detailedGameWithCache
     probEvent_map]
   rfl
 
+/-- Retaining the detailed outcome does not change the structural hash-query bound. -/
+theorem hasHashQueryBound_iff_detailedGameCore
+    (scheme : Scheme) (adversary : Adversary scheme) (q : Nat) :
+    HasHashQueryBound scheme adversary q ↔
+      (detailedGameCore scheme adversary).IsQueryBoundP (· matches .inr _) q := by
+  unfold HasHashQueryBound
+  rw [gameCore_eq_map_detailedGameCore]
+  exact OracleComp.isQueryBoundP_map_iff _ _ _
+
 end XmssSecurity
