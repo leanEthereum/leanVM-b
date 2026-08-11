@@ -14,6 +14,7 @@ import XmssSecurity.DetailedExecution
 import XmssSecurity.OutcomeClassification
 import XmssSecurity.ConcreteExecution
 import XmssSecurity.SigningLogReplay
+import XmssSecurity.ConcreteEventCollision
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
