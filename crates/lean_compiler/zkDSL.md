@@ -398,23 +398,23 @@ blake2s(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
 blake2s(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
 blake2s(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
 
-# Blocks after the first in one BLAKE2s chunk. Keyword values are compile-time.
-blake2s(a, b, next_cv, cv=cv, step=4)
-blake2s(a, b, digest, cv=next_cv, step=15, end=1, root=1)
+# A standard 80-byte hash as two blocks. Keyword values are compile-time.
+block0 = [1, 2, 3, 4]  # 64 bytes
+tail = [5, 0, 0, 0]    # 16 more, the rest of the block zero-filled
+blake2s(block0[0:2], block0[2:4], cv, counter=64, final=0)
+blake2s(tail[0:2], tail[2:4], out, cv=cv, counter=80, final=1)
 ```
 
-The three positional arguments form a **statement**: one standard BLAKE2s compression consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes the standard hash of exactly 64 bytes: standard IV, counter 0, block length 64, and `CHUNK_START | CHUNK_END | ROOT` flags.
+The three positional arguments form a **statement**: one standard BLAKE2s compression consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes the standard hash of exactly 64 bytes: the parameterized BLAKE2s-256 initial chaining value (digest length 32, unkeyed, fanout and depth 1), byte counter 64, final-block flag `f0` set. That is `blake2s(a || b)`, the form every sponge step and Merkle node uses.
 
-Every compression also has a 256-bit chaining value and a compile-time 128-bit metadata immediate. The optional keywords are:
+Every compression also has a 256-bit chaining value and a compile-time 128-bit metadata immediate. BLAKE2s takes the byte counter and the two flags as ordinary compression inputs, which is why one instruction is a complete hash of any length and there is no chunk tree to drive (see `primitives::blake2s`). The optional keywords are:
 
-- `cv=<pair>`: a consecutive 2-cell chaining value; omitting it selects the standard BLAKE2s IV. On each runtime path, a function emits two `SET`s at its first such hash only and reuses those cells thereafter. Supplying `cv=` also requires `step=`, `flags=`, or another structured metadata keyword so a chained block cannot accidentally inherit the one-shot root flags;
-- `counter=<u64>`: BLAKE2s's chunk counter;
-- `block_len=<0..64>`: the number of bytes in this message block;
-- `flags=<u32>`: an explicit flag word;
-- `step=<0..15>`: the block index within a 1024-byte chunk. In the inferred flag mode, `step=0` sets `CHUNK_START`; later steps do not;
-- `end=1`, `root=1`, `parent=1`: OR `CHUNK_END`, `ROOT`, or `PARENT` into the flags.
+- `cv=<pair>`: a consecutive 2-cell chaining value, the previous block's output; omitting it selects the parameterized IV above. On each runtime path, a function emits two `SET`s at its first such hash only and reuses those cells thereafter. Supplying `cv=` also requires one of the three below, since a chained block is never the default one-block hash;
+- `counter=<u64>`: BLAKE2s's byte counter `t`, **cumulative** through this block, so `64 * whole_blocks_before + bytes_in_this_block`. Defaults to 64;
+- `final=<0|1>`: BLAKE2s's final-block flag `f0`. It defaults to 1 for the bare three-argument call, but to **0** as soon as `counter=` or `last_node=` appears, so a chained hash must set `final=1` on its last block and a single short block needs `counter=<len>, final=1`. Any compile-time expression works, nonzero meaning set, which is what lets the guests write a predicate like `final=(q + 1) // BLOCKS_PER_HASH`;
+- `last_node=<0|1>`: BLAKE2s's tree-mode flag `f1`. Defaults to 0, and nothing here uses tree mode.
 
-The metadata is packed as `counter:u64 | block_len:u32 | flags:u32`, little-endian, and is part of the public bytecode. A partial final block must set its exact `block_len`, and every message byte after `block_len` must be zero: the compression circuit still sees the complete 64-byte block and does not enforce this padding rule. For a multi-block chunk, feed each result back with `cv=...`, set `step=0` on the first block, and set `end=1` on the last; set `root=1` only when that output is the hash root. Parent-node compressions use `parent=1`, the standard IV, and a 64-byte block containing the two child chaining values.
+The metadata is packed as `counter:u64 | f0:u32 | f1:u32`, little-endian, and is part of the public bytecode. There is no block-length field: the counter is what states how many of the 64 bytes are message, so only the last block may be partial and the program must zero-fill the bytes past its real length, which the compression circuit does not enforce. A multi-block hash therefore feeds each result back with `cv=`, advances `counter=` by the bytes actually absorbed, and sets `final=1` on the last block.
 
 Operands are size-2 `StackBuf`s or 2-cell slices:
 

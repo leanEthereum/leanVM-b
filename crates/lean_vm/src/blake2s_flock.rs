@@ -12,7 +12,7 @@
 //! ## The mapping
 //!
 //! The VM's `BLAKE2s(a, b, cv, metadata) -> c` is one standard BLAKE2s
-//! compression. `metadata` packs `counter:u64 | block_len:u32 | flags:u32` in
+//! compression. `metadata` packs `counter:u64 | f0:u32 | f1:u32` in
 //! little-endian order. All inputs are witness values in `q_flock`; memory binds
 //! `a`, `b`, and `cv`, while the bytecode interaction binds `metadata`.
 //!
@@ -24,7 +24,7 @@
 //!
 //! ```text
 //!   c0..c3 = slots 4..8      a0..a3 = slots 10..14    b0..b3 = slots 14..18
-//!   cv0..cv3 = slots 0..4    counter = slot 18        blen‖flags = slot 19
+//!   cv0..cv3 = slots 0..4    counter = slot 18        f0‖f1 = slot 19
 //! ```
 //!
 //! All compression inputs are free witness rows; the VM routes claims on all
@@ -46,8 +46,9 @@ use zk_alloc::ArenaVec;
 /// and later discharged by the PCS. Re-exported from [`flock::proof`].
 pub use flock::proof::ZClaim;
 
-/// Default flags for a single 64-byte root block: `CHUNK_START(1) |
-/// CHUNK_END(2) | ROOT(8) = 11`.
+/// BLAKE2s's final-block flag `f0`, which RFC 7693 sets to all ones on the last
+/// block. A hash-shaped compression is one 64-byte final block, so it is always
+/// set there.
 pub const FINAL_FLAG: u32 = flock::blake2s::PINNED_F0;
 /// The byte counter of the one 64-byte block a hash-shaped compression absorbs.
 pub const PINNED_T: u64 = flock::blake2s::PINNED_T;
@@ -82,7 +83,7 @@ impl PreparedReductionWitness {
 // Within-instance packed-word (slot) indices of the VM-visible words, fixed by
 // the aligned flock layout (bit bases asserted by `layout_constants` there):
 // `CV_BASE = 0` → cv words 0..4, `OUT_LO_BASE = 256` → c words 4..8, `M_BASE
-// = 640` → a words 10..14 and b words 14..18, metadata (counter, blen‖flags)
+// = 640` → a words 10..14 and b words 14..18, metadata (counter, f0‖f1)
 // words 18..20.
 pub const SLOT_CV0: usize = 0;
 pub const SLOT_C0: usize = 4;
@@ -127,12 +128,12 @@ fn pack_words(w: [u32; 2]) -> F64 {
 
 /// Pack BLAKE2s's compression metadata as one little-endian 128-bit value in
 /// the two low K-lanes of a 192-bit word (top lane zero).
-pub const fn metadata(counter: u64, block_len: u32, flags: u32) -> F192 {
-    F192::new(counter, (block_len as u64) | ((flags as u64) << 32), 0)
+pub const fn metadata(counter: u64, f0: u32, f1: u32) -> F192 {
+    F192::new(counter, (f0 as u64) | ((f1 as u64) << 32), 0)
 }
 
-/// Unpack `counter:u64 | block_len:u32 | flags:u32` from a 192-bit word (the
-/// top lane must be zero).
+/// Unpack `counter:u64 | f0:u32 | f1:u32` from a 192-bit word (the top lane
+/// must be zero).
 pub const fn unpack_metadata(x: F192) -> (u64, u32, u32) {
     assert!(x.c2 == 0, "BLAKE2s metadata must have a zero top lane");
     (x.c0, x.c1 as u32, (x.c1 >> 32) as u32)
@@ -172,8 +173,8 @@ pub fn compression(a: [F64; 4], b: [F64; 4], cv: [F64; 4], meta: F192) -> Compre
     for (i, &w) in cv.iter().enumerate() {
         cv_words[2 * i..2 * i + 2].copy_from_slice(&words_of(w));
     }
-    let (counter, block_len, flags) = unpack_metadata(meta);
-    (cv_words, m, counter, block_len, flags)
+    let (counter, f0, f1) = unpack_metadata(meta);
+    (cv_words, m, counter, f0, f1)
 }
 
 /// The 256-bit output chaining value `c = (c0..c3)` of an arbitrary

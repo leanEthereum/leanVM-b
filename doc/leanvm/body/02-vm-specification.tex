@@ -44,13 +44,13 @@ Instruction & Operands & Semantics\\
 
 \texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE2s operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\md$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
 \[
-  \md=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
+  \md=\mathit{counter}_{64}\;\Vert\;\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
 \]
-For a one-block $64$-byte hash, the chaining value is the standard IV and
+There is no block-length field: the byte counter is cumulative through the block being absorbed, so it is what says how many of the $64$ bytes are message, and only a final block may be partial. For a one-block $64$-byte hash, the chaining value is the parameterized BLAKE2s-256 IV (digest length $32$, unkeyed, fanout and depth $1$) and
 \[
-  \md=(0,64,\textsc{chunk-start}\mathbin{|}\textsc{chunk-end}\mathbin{|}\textsc{root}).
+  \md=(64,\;2^{32}-1,\;0),
 \]
-A longer standard BLAKE2s hash of any length passes each compression result back through $o_V$ and sets the metadata immediate to the running byte counter, with the final-block flag on the last block. BLAKE2s has no chunk tree and no parent-node mode, so that one chain covers every input length: this is why a single compression opcode is a complete hash primitive here. The BLAKE2s table (\S\ref{sec:tab-blake2s}) wires its memory and bytecode operands into a flock~\cite{flock-impl} R1CS proof.
+the final-block flag being all ones as RFC 7693~\cite{blake2} sets it on the last block, and the last-node flag zero: nothing here uses BLAKE2s's tree mode. A longer standard BLAKE2s hash of any length passes each compression result back through $o_V$ and sets the metadata immediate to the running byte counter, with the final-block flag on the last block. BLAKE2s has no chunk tree and no parent-node mode, so that one chain covers every input length: this is why a single compression opcode is a complete hash primitive here. The BLAKE2s table (\S\ref{sec:tab-blake2s}) wires its memory and bytecode operands into a flock~\cite{flock-impl} R1CS proof.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[

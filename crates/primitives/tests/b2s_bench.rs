@@ -27,14 +27,10 @@ fn time(reps: usize, mut f: impl FnMut()) -> f64 {
 /// Single-threaded batched throughput, at every leaf size `pcs::merkle`
 /// dispatches.
 ///
-/// On AVX-512, BLAKE3's hand-written multi-input kernel measured 5.6 to 8.3 GB/s
-/// on the same shapes and machine. BLAKE2s does ten rounds per 64-byte block
-/// against BLAKE3's seven, so 10/7 = 1.43x is the floor a same-quality
-/// implementation can reach; this sits at 1.23x to 1.70x of it, median ~1.45x.
-///
-/// On 4-lane NEON (M4 Max) it is 1.9 to 2.2 GB/s. That backend is bound by the
-/// G function's dependency chain rather than by issue width, so its two fixes
-/// were latency ones; see `blake2s::LANES`.
+/// 4.1 to 5.6 GB/s on AVX-512, and 1.9 to 2.2 GB/s on 4-lane NEON (M4 Max). The
+/// two backends run into different limits: AVX-512 is bound by issue width, so
+/// its fixes were instruction-count ones, while NEON is bound by the G
+/// function's dependency chain and needed latency ones. See `blake2s::LANES`.
 #[test]
 #[ignore = "manual throughput measurement"]
 fn batched_throughput() {

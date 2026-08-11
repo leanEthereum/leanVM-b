@@ -10,11 +10,11 @@
 //!   hashed together with the state transposed across lanes, which is how the
 //!   PCS Merkle tree gets SIMD out of hashes that are individually serial.
 //!
-//! Why BLAKE2s and not BLAKE2s: the VM proves one compression per opcode, and
-//! BLAKE2s's multi-block chunk tree (counter, flags, parent nodes) cannot be
-//! reproduced by a single compression, so its streaming hasher was never
-//! VM-native. BLAKE2s's compression takes the counter and the final-block flag
-//! as ordinary inputs, so one opcode covers every use here.
+//! Why BLAKE2s: the VM proves one compression per opcode, and BLAKE2s takes the
+//! byte counter and the final-block flag as ordinary compression inputs, so one
+//! opcode is a complete hash of any length. A hash whose multi-block mode is a
+//! tree of chunks, with its own counters, flags and parent nodes, would instead
+//! need that whole structure reproduced in-circuit.
 
 /// BLAKE2s initial values: the SHA-256 IV.
 pub const IV: [u32; 8] = [
@@ -393,7 +393,10 @@ impl Lanes32 for Scalar8 {
 
 #[cfg(target_arch = "x86_64")]
 mod x86 {
-    use super::{Lanes32, OUT_LEN};
+    use super::Lanes32;
+    // Only `Avx512::store_digests` uses it, and that impl is gated too.
+    #[cfg(target_feature = "avx512f")]
+    use super::OUT_LEN;
     use core::arch::x86_64::*;
 
     /// AVX2: eight lanes. There is no 32-bit vector rotate before AVX-512, so
@@ -1104,13 +1107,10 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
 /// remainder.
 ///
 /// Measured single-threaded on AVX-512, 4.1 to 5.6 GB/s across the leaf sizes
-/// `pcs::merkle` dispatches (`batched_throughput`). BLAKE3's hand-written
-/// multi-input kernel does 5.6 to 8.3 GB/s on the same shapes, and BLAKE2s does
-/// ten rounds per 64-byte block against BLAKE3's seven, so 10/7 = 1.43x is the
-/// floor; this sits at 1.23x to 1.70x, median ~1.45x.
+/// `pcs::merkle` dispatches (`batched_throughput`).
 ///
 /// Getting there took three fixes, each worth recording because the first
-/// attempt at this was 3.16x off the floor rather than 1.45x:
+/// attempt at this measured 1.7 to 1.9 GB/s on the same shapes:
 ///
 /// - The `SIGMA` index must be a compile-time literal (the unrolled `rounds!`).
 ///   As a runtime index the compiler holds the message in registers and turns
