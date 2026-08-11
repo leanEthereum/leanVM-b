@@ -28,6 +28,52 @@ noncomputable instance : IsUniformSpec EncodingSampleSpec :=
 noncomputable def uniformHashOutput : ProbComp HashOutput :=
   $ᵗ HashOutput
 
+theorem uniformHashOutput_if_truncate_eq_probability_le
+    (target : Digest) (resume : HashOutput → ProbComp Bool) (ε : ℝ≥0∞)
+    (hresume : ∀ output, truncateHash output ≠ target →
+      Pr[(fun hit : Bool => hit = true) | resume output] ≤ ε) :
+    Pr[(fun hit : Bool => hit = true) |
+      uniformHashOutput >>= fun output =>
+        if truncateHash output = target then pure true
+        else resume output] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ + ε := by
+  unfold uniformHashOutput
+  refine (probEvent_bind_le_probEvent_add
+    (mx := ($ᵗ HashOutput))
+    (my := fun output =>
+      if truncateHash output = target then pure true else resume output)
+    (q := fun hit : Bool => hit = true)
+    (p := fun output : HashOutput => truncateHash output = target)
+    (ε := ε) ?_).trans_eq ?_
+  · intro output _ hmiss
+    simp only [hmiss, ↓reduceIte]
+    exact hresume output hmiss
+  · rw [Rom.uniform_truncate_probability]
+
+theorem uniformHashOutput_if_truncate_mem_probability_le
+    (targets : Finset Digest) (resume : HashOutput → ProbComp Bool) (ε : ℝ≥0∞)
+    (hresume : ∀ output, truncateHash output ∉ targets →
+      Pr[(fun hit : Bool => hit = true) | resume output] ≤ ε) :
+    Pr[(fun hit : Bool => hit = true) |
+      uniformHashOutput >>= fun output =>
+        if truncateHash output ∈ targets then pure true
+        else resume output] ≤
+      (targets.card : ℝ≥0∞) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ + ε := by
+  unfold uniformHashOutput
+  refine (probEvent_bind_le_probEvent_add
+    (mx := ($ᵗ HashOutput))
+    (my := fun output =>
+      if truncateHash output ∈ targets then pure true else resume output)
+    (q := fun hit : Bool => hit = true)
+    (p := fun output : HashOutput => truncateHash output ∈ targets)
+    (ε := ε) ?_).trans ?_
+  · intro output _ hmiss
+    simp only [hmiss, ↓reduceIte]
+    exact hresume output hmiss
+  · exact add_le_add
+      (EncodingMonitor.uniform_truncate_mem_finset_le targets) le_rfl
+
 noncomputable def uniformWorldImpl : QueryImpl unifSpec ProbComp :=
   HasQuery.toQueryImpl
 
@@ -451,6 +497,369 @@ theorem encodingSamplingTrace_projection
       simulateQ encodingSamplingWorldImpl computation := by
   exact QueryImpl.fst_map_run_withTraceAppend
     encodingSamplingWorldImpl encodingSamplingTraceFragment computation
+
+noncomputable def applyEncodingQueryMonitor
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool := do
+  let output ← uniformHashOutput
+  match state.applyObserved (.query epoch output) with
+  | none => pure false
+  | some (nextState, hit) =>
+      if hit then pure true else resume output nextState
+
+noncomputable def applyEncodingSignMonitor
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool := do
+  let output ← uniformHashOutput
+  match state.applyObserved (.sign epoch output) with
+  | none => pure false
+  | some (nextState, hit) =>
+      if hit then pure true else resume output nextState
+
+noncomputable def applyEncodingSampleMonitor
+    (address : EncodingSampleAddress)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool :=
+  match address.kind, address.epoch with
+  | .query, some epoch => applyEncodingQueryMonitor epoch resume state
+  | .sign, some epoch => applyEncodingSignMonitor epoch resume state
+  | _, _ => uniformHashOutput >>= fun output => resume output state
+
+noncomputable def runStructuralEncodingMonitor
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) : ProbComp Bool :=
+  OracleComp.construct
+    (C := fun _ => EncodingMonitor.State → ProbComp Bool)
+    (fun _result _state => pure false)
+    (fun input _next recursivelyMonitor state =>
+      match input with
+      | .inl index => do
+          let output ← (liftM (unifSpec.query index) :
+            ProbComp (unifSpec.Range index))
+          recursivelyMonitor output state
+      | .inr address =>
+          applyEncodingSampleMonitor address recursivelyMonitor state)
+    computation state
+
+theorem applyEncodingQueryMonitor_true_probability_le
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) (fuel : Nat)
+    (hresume : ∀ output nextState,
+      Pr[(fun hit : Bool => hit = true) | resume output nextState] ≤
+        ((fuel + nextState.pendingCount : Nat) : ℝ≥0∞) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
+    Pr[(fun hit : Bool => hit = true) |
+      applyEncodingQueryMonitor epoch resume state] ≤
+      ((fuel.succ + state.pendingCount : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  cases hsigned : state.signed epoch with
+  | none =>
+      unfold applyEncodingQueryMonitor
+      simp only [EncodingMonitor.State.applyObserved, hsigned]
+      refine probEvent_bind_le_of_forall_le fun output _ => ?_
+      refine (hresume output
+        (state.addPending epoch (truncateHash output))).trans ?_
+      have hcount := state.pendingCount_addPending_le epoch
+        (truncateHash output)
+      have hnat : fuel + (state.addPending epoch
+            (truncateHash output)).pendingCount ≤
+          fuel.succ + state.pendingCount := by omega
+      exact mul_le_mul' (Nat.cast_le.mpr hnat) le_rfl
+  | some target =>
+      have hcollision := uniformHashOutput_if_truncate_eq_probability_le target
+        (fun output => resume output state)
+        (((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) (by
+        intro output _hmiss
+        exact hresume output state
+      )
+      have hrewrite :
+          applyEncodingQueryMonitor epoch resume state =
+            uniformHashOutput >>= fun output =>
+              if truncateHash output = target then pure true
+              else resume output state := by
+        unfold applyEncodingQueryMonitor
+        simp only [EncodingMonitor.State.applyObserved, hsigned,
+          decide_eq_true_eq]
+      rw [hrewrite]
+      refine hcollision.trans ?_
+      push_cast
+      ring_nf
+      exact le_rfl
+
+theorem applyEncodingSignMonitor_true_probability_le
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) (fuel : Nat)
+    (hresume : ∀ output nextState,
+      Pr[(fun hit : Bool => hit = true) | resume output nextState] ≤
+        ((fuel + nextState.pendingCount : Nat) : ℝ≥0∞) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
+    Pr[(fun hit : Bool => hit = true) |
+      applyEncodingSignMonitor epoch resume state] ≤
+      ((fuel.succ + state.pendingCount : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  cases hsigned : state.signed epoch with
+  | some target =>
+      simp [applyEncodingSignMonitor,
+        EncodingMonitor.State.applyObserved, hsigned]
+  | none =>
+      have hcollision := uniformHashOutput_if_truncate_mem_probability_le
+        (state.pending epoch)
+        (fun output => resume output
+          (state.install epoch (truncateHash output)))
+        (((fuel + (state.install epoch 0).pendingCount : Nat) : ℝ≥0∞) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) (by
+        intro output _hmiss
+        have hcount :
+            (state.install epoch (truncateHash output)).pendingCount =
+              (state.install epoch 0).pendingCount :=
+          state.pendingCount_install_eq epoch _ _
+        simpa [hcount] using hresume output
+          (state.install epoch (truncateHash output))
+      )
+      have hrewrite :
+          applyEncodingSignMonitor epoch resume state =
+            uniformHashOutput >>= fun output =>
+              if truncateHash output ∈ state.pending epoch then pure true
+              else resume output
+                (state.install epoch (truncateHash output)) := by
+        unfold applyEncodingSignMonitor
+        simp only [EncodingMonitor.State.applyObserved, hsigned,
+          decide_eq_true_eq]
+      rw [hrewrite]
+      refine hcollision.trans ?_
+      have hconserve := state.pendingCount_install_add epoch 0
+      have hnat :
+          (state.pending epoch).card +
+              (fuel + (state.install epoch 0).pendingCount) ≤
+            fuel.succ + state.pendingCount := by omega
+      rw [← add_mul]
+      gcongr
+      rw [← Nat.cast_add]
+      exact Nat.cast_le.mpr hnat
+
+theorem applyEncodingSampleMonitor_true_probability_le
+    (address : EncodingSampleAddress)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) (fuel : Nat)
+    (hresume : ∀ output nextState,
+      Pr[(fun hit : Bool => hit = true) | resume output nextState] ≤
+        ((fuel + nextState.pendingCount : Nat) : ℝ≥0∞) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
+    Pr[(fun hit : Bool => hit = true) |
+      applyEncodingSampleMonitor address resume state] ≤
+      ((fuel.succ + state.pendingCount : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  rcases address with ⟨kind, epoch⟩
+  cases epoch with
+  | none =>
+      cases kind <;> unfold applyEncodingSampleMonitor
+      all_goals
+        refine probEvent_bind_le_of_forall_le fun output _ => ?_
+        refine (hresume output state).trans ?_
+        gcongr
+        omega
+  | some epoch =>
+      cases kind with
+      | side =>
+          unfold applyEncodingSampleMonitor
+          refine probEvent_bind_le_of_forall_le fun output _ => ?_
+          refine (hresume output state).trans ?_
+          gcongr
+          omega
+      | query =>
+          unfold applyEncodingSampleMonitor
+          exact applyEncodingQueryMonitor_true_probability_le
+            epoch resume state fuel hresume
+      | sign =>
+          unfold applyEncodingSampleMonitor
+          exact applyEncodingSignMonitor_true_probability_le
+            epoch resume state fuel hresume
+
+theorem runStructuralEncodingMonitor_true_probability_le
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP (· matches .inr _) fuel) :
+    Pr[(fun hit : Bool => hit = true) |
+      runStructuralEncodingMonitor state computation] ≤
+      ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure result =>
+      rw [runStructuralEncodingMonitor, OracleComp.construct_pure, probEvent_pure]
+      simp
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | inl index =>
+          rw [runStructuralEncodingMonitor, OracleComp.construct_query_bind]
+          change Pr[(fun hit : Bool => hit = true) |
+            (liftM (unifSpec.query index) : ProbComp _) >>= fun output =>
+              runStructuralEncodingMonitor state (next output)] ≤ _
+          refine probEvent_bind_le_of_forall_le fun output _ => ?_
+          exact ih output state fuel (by simpa using hbound.2 output)
+      | inr address =>
+          cases fuel with
+          | zero =>
+              simp at hbound
+          | succ fuel =>
+              rw [runStructuralEncodingMonitor,
+                OracleComp.construct_query_bind]
+              exact applyEncodingSampleMonitor_true_probability_le address
+                (fun output nextState =>
+                  runStructuralEncodingMonitor nextState (next output)) state fuel
+                (fun output nextState => ih output nextState fuel
+                  (by simpa using hbound.2 output))
+
+noncomputable def runTracedEncodingMonitor
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) : ProbComp Bool :=
+  (fun result => EncodingMonitor.runObserved state result.2) <$>
+    (simulateQ encodingSamplingTraceImpl computation).run
+
+theorem runTracedEncodingMonitor_cons_probability_le
+    (state : EncodingMonitor.State) (action : EncodingMonitor.ObservedAction)
+    (computation : OracleComp EncodingSamplingWorld α)
+    (resume : EncodingMonitor.State → ProbComp Bool)
+    (hresume : ∀ nextState,
+      Pr[(fun hit : Bool => hit = true) |
+        runTracedEncodingMonitor nextState computation] ≤
+      Pr[(fun hit : Bool => hit = true) | resume nextState]) :
+    Pr[(fun hit : Bool => hit = true) |
+      (fun result =>
+        EncodingMonitor.runObserved state (action :: result.2)) <$>
+          (simulateQ encodingSamplingTraceImpl computation).run] ≤
+    Pr[(fun hit : Bool => hit = true) |
+      match state.applyObserved action with
+      | none => pure false
+      | some (nextState, hit) =>
+          if hit then pure true else resume nextState] := by
+  cases happly : state.applyObserved action with
+  | none =>
+      simp [EncodingMonitor.runObserved_cons, happly]
+  | some result =>
+      rcases result with ⟨nextState, hit⟩
+      cases hit with
+      | false =>
+          simpa only [runTracedEncodingMonitor,
+            EncodingMonitor.runObserved_cons, happly, Bool.false_or,
+            Bool.false_eq_true, ↓reduceIte] using hresume nextState
+      | true =>
+          simp [EncodingMonitor.runObserved_cons, happly]
+
+theorem runTracedEncodingMonitor_probability_le_structural
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) :
+    Pr[(fun hit : Bool => hit = true) |
+      runTracedEncodingMonitor state computation] ≤
+    Pr[(fun hit : Bool => hit = true) |
+      runStructuralEncodingMonitor state computation] := by
+  induction computation using OracleComp.inductionOn generalizing state with
+  | pure result =>
+      simp [runTracedEncodingMonitor, runStructuralEncodingMonitor,
+        encodingSamplingTraceImpl]
+  | query_bind input next ih =>
+      simp only [runTracedEncodingMonitor, simulateQ_query_bind,
+        WriterT.run_bind', runStructuralEncodingMonitor,
+        OracleComp.construct_query_bind]
+      cases input with
+      | inl index =>
+          simp only [OracleQuery.input_query,
+            monadLift_self, encodingSamplingTraceImpl,
+            QueryImpl.withTraceAppend_apply, encodingSamplingWorldImpl,
+            QueryImpl.add_apply_inl, uniformWorldImpl,
+            encodingSamplingTraceFragment, WriterT.run_bind',
+            WriterT.run_monadLift', WriterT.run_tell, WriterT.run_pure',
+            map_eq_bind_pure_comp, bind_assoc, pure_bind,
+            List.nil_append, Prod.map_apply, id_eq,
+            Function.comp_apply]
+          apply probEvent_bind_mono
+          intro output _houtput
+          change Pr[(fun hit : Bool => hit = true) |
+              runTracedEncodingMonitor state (next output)] ≤
+            Pr[(fun hit : Bool => hit = true) |
+              runStructuralEncodingMonitor state (next output)]
+          exact ih output state
+      | inr address =>
+          simp only [OracleQuery.input_query,
+            monadLift_self, encodingSamplingTraceImpl,
+            QueryImpl.withTraceAppend_apply, encodingSamplingWorldImpl,
+            QueryImpl.add_apply_inr, encodingOutputImpl,
+            encodingSamplingTraceFragment, WriterT.run_bind',
+            WriterT.run_monadLift', WriterT.run_tell, WriterT.run_pure',
+            map_eq_bind_pure_comp, bind_assoc, pure_bind,
+            Prod.map_apply, id_eq,
+            Function.comp_apply]
+          rcases address with ⟨kind, epoch⟩
+          cases epoch with
+          | none =>
+              cases kind <;> unfold applyEncodingSampleMonitor
+              all_goals
+                apply probEvent_bind_mono
+                intro output _houtput
+                change Pr[(fun hit : Bool => hit = true) |
+                    runTracedEncodingMonitor state (next output)] ≤
+                  Pr[(fun hit : Bool => hit = true) |
+                    runStructuralEncodingMonitor state (next output)]
+                exact ih output state
+          | some epoch =>
+              cases kind with
+              | side =>
+                  unfold applyEncodingSampleMonitor
+                  apply probEvent_bind_mono
+                  intro output _houtput
+                  change Pr[(fun hit : Bool => hit = true) |
+                      runTracedEncodingMonitor state (next output)] ≤
+                    Pr[(fun hit : Bool => hit = true) |
+                      runStructuralEncodingMonitor state (next output)]
+                  exact ih output state
+              | query =>
+                  unfold applyEncodingSampleMonitor applyEncodingQueryMonitor
+                  apply probEvent_bind_mono
+                  intro output _houtput
+                  exact runTracedEncodingMonitor_cons_probability_le state
+                    (.query epoch output) (next output)
+                    (fun nextState =>
+                      runStructuralEncodingMonitor nextState (next output))
+                    (fun nextState => ih output nextState)
+              | sign =>
+                  unfold applyEncodingSampleMonitor applyEncodingSignMonitor
+                  apply probEvent_bind_mono
+                  intro output _houtput
+                  exact runTracedEncodingMonitor_cons_probability_le state
+                    (.sign epoch output) (next output)
+                    (fun nextState =>
+                      runStructuralEncodingMonitor nextState (next output))
+                    (fun nextState => ih output nextState)
+
+theorem runTracedEncodingMonitor_empty_true_probability_le
+    (computation : OracleComp EncodingSamplingWorld α) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP (· matches .inr _) fuel) :
+    Pr[(fun hit : Bool => hit = true) |
+      runTracedEncodingMonitor EncodingMonitor.State.empty computation] ≤
+      (fuel : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  refine (runTracedEncodingMonitor_probability_le_structural
+    EncodingMonitor.State.empty computation).trans ?_
+  simpa [div_eq_mul_inv] using
+    runStructuralEncodingMonitor_true_probability_le
+      EncodingMonitor.State.empty computation fuel hbound
+
+theorem encodingSamplingTrace_collision_probability_le
+    (computation : OracleComp EncodingSamplingWorld α) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP (· matches .inr _) fuel) :
+    Pr[(fun result : α × EncodingActionTrace =>
+        EncodingMonitor.runObserved EncodingMonitor.State.empty result.2 = true) |
+      (simulateQ encodingSamplingTraceImpl computation).run] ≤
+      (fuel : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  change Pr[((fun hit : Bool => hit = true) ∘ fun result =>
+      EncodingMonitor.runObserved EncodingMonitor.State.empty result.2) |
+    (simulateQ encodingSamplingTraceImpl computation).run] ≤ _
+  rw [← probEvent_map]
+  exact runTracedEncodingMonitor_empty_true_probability_le computation fuel hbound
 
 theorem runEncodingSamplingMonitor_true_probability_le
     (fuel : Nat) (computation : OracleComp EncodingSamplingWorld α) :
