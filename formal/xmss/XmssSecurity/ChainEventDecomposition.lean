@@ -225,7 +225,7 @@ theorem chain_event_afterKeygen_revealed_or_collision
       exact fresh_suffix_witness_afterKeygen_orientation adversary keyResult hkeygen execution
         hafter forgedEncoding hevent.1 hforgedDecode' position hsuffix
   · left
-    obtain ⟨forgedEncoding, _hforgedValid, hforgedDecode, hchain⟩ := hfresh
+    obtain ⟨forgedEncoding, _hforgedValid, _hunsigned, hforgedDecode, hchain⟩ := hfresh
     refine ⟨hevent.1, forgedEncoding, hforgedDecode, ?_⟩
     exact hchain
 

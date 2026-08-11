@@ -173,7 +173,7 @@ theorem merkle_event_afterKeygen_orientation
     exact same_merkle_witness_afterKeygen_orientation adversary keyResult hkeygen execution
       hafter hevent.1 request signature signedEncoding forgedEncoding hsignedDecode
       hforgedDecode hreturned hepoch level hmerkle
-  · obtain ⟨forgedEncoding, hforgedValid, hforgedDecode, hmerkle⟩ := hfresh
+  · obtain ⟨forgedEncoding, hforgedValid, _hunsigned, hforgedDecode, hmerkle⟩ := hfresh
     exact fresh_merkle_witness_afterKeygen_orientation adversary keyResult hkeygen execution
       hafter hevent.1 forgedEncoding hforgedDecode level hmerkle
 

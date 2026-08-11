@@ -162,7 +162,7 @@ theorem outcomeBadEvent_has_cacheDigestCollision
       request.epoch request.message outcome.forgery.message signedEncoding forgedEncoding
       signature outcome.forgery.signature
       (TargetSum.decodeDigest_eq_some_iff.mp hsignedEncoding).2 event hevent hcollision
-  · obtain ⟨forgedEncoding, hforgedValid, _hforgedEncoding, hevent⟩ := hfresh
+  · obtain ⟨forgedEncoding, hforgedValid, _hunsigned, _hforgedEncoding, hevent⟩ := hfresh
     exact freshEpoch_badEvent_has_cacheDigestCollision cache outcome.secretKey.parameter
       outcome.forgery.epoch forgedEncoding outcome.forgery.signature
       (outcome.secretKey.chainStart outcome.forgery.epoch)

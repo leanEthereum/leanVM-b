@@ -241,4 +241,134 @@ theorem traced_chainValueProbes_length_le
   exact (chainValueProbes_length_le keyResult.1.2.parameter chain result.2
     result.1.1 encoding).trans (by omega)
 
+/-- The chain coordinate used by a winning chain event differs from the coordinate returned by every successful signature at the forged epoch. -/
+theorem WinningOutcomeBadEventOccurs.chain_coordinate_ne_returned
+    {cache : QueryCache HashSpec} {outcome : GameOutcome} {chain : ChainIndex}
+    (hevent : WinningOutcomeBadEventOccurs cache outcome (.chain chain))
+    (forgedEncoding : Encoding)
+    (hforgedDecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter
+        outcome.forgery.epoch
+        (outcome.forgery.message, outcome.forgery.signature.randomness)) =
+      some forgedEncoding)
+    (request : SignRequest) (signature : Signature) (signedEncoding : Encoding)
+    (hreturned : SigningTranscript.Returned outcome.signingLog request signature)
+    (hsignedDecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter request.epoch
+        (request.message, signature.randomness)) = some signedEncoding)
+    (hepoch : request.epoch = outcome.forgery.epoch) :
+    signedEncoding chain ≠ forgedEncoding chain := by
+  rcases hevent.2.2 with hsame | hfresh
+  · obtain ⟨eventRequest, eventSignature, eventSignedEncoding, eventForgedEncoding,
+      heventSignedDecode, heventForgedDecode, heventReturned, heventEpoch,
+      hchain⟩ := hsame
+    have hreturnedEq := SigningTranscript.returned_eq_of_same_epoch
+      hevent.signingTranscript_valid heventReturned hreturned
+      (heventEpoch.trans hepoch.symm)
+    obtain ⟨hrequest, hsignature⟩ := hreturnedEq
+    subst request
+    subst signature
+    have hsignedEncoding : eventSignedEncoding = signedEncoding := by
+      rw [heventSignedDecode] at hsignedDecode
+      exact Option.some.inj hsignedDecode
+    have hforgedEncoding : eventForgedEncoding = forgedEncoding := by
+      rw [heventEpoch] at heventForgedDecode
+      rw [heventForgedDecode] at hforgedDecode
+      exact Option.some.inj hforgedDecode
+    change Wots.IsBackwardWitnessAt
+      (fun candidateChain => Concrete.CacheView.chainStep cache
+        outcome.secretKey.parameter eventRequest.epoch candidateChain)
+      eventSignedEncoding eventForgedEncoding eventSignature.chainValue
+      outcome.forgery.signature.chainValue chain at hchain
+    rw [← hsignedEncoding, ← hforgedEncoding]
+    exact ne_of_gt hchain.1
+  · obtain ⟨_eventForgedEncoding, _hvalid, hunsigned, _hdecode, _hchain⟩ := hfresh
+    exact (hunsigned ⟨request, signature, hreturned, hepoch⟩).elim
+
+noncomputable def returnedChainValueIndices
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex) : Finset ChainValueIndex := by
+  classical
+  exact Finset.univ.filter fun index => ∃ request signature encoding,
+    SigningTranscript.Returned log request signature ∧
+      TargetSum.decodeDigest
+        (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
+          (request.message, signature.randomness)) = some encoding ∧
+      index = (request.epoch, encoding chain)
+
+@[simp]
+theorem mem_returnedChainValueIndices_iff
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex) (index : ChainValueIndex) :
+    index ∈ returnedChainValueIndices cache secretKey log chain ↔
+      ∃ request signature encoding,
+        SigningTranscript.Returned log request signature ∧
+          TargetSum.decodeDigest
+            (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
+              (request.message, signature.randomness)) = some encoding ∧
+          index = (request.epoch, encoding chain) := by
+  classical
+  simp only [returnedChainValueIndices, Finset.mem_filter, Finset.mem_univ, true_and]
+
+set_option maxRecDepth 10000 in
+set_option linter.constructorNameAsVariable false in
+theorem WinningOutcomeBadEventOccurs.forged_chain_coordinate_not_mem_returned
+    {cache : QueryCache HashSpec} {outcome : GameOutcome} {chain : ChainIndex}
+    (hevent : WinningOutcomeBadEventOccurs cache outcome (.chain chain))
+    (forgedEncoding : Encoding)
+    (hforgedDecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter
+        outcome.forgery.epoch
+        (outcome.forgery.message, outcome.forgery.signature.randomness)) =
+      some forgedEncoding) :
+    (outcome.forgery.epoch, forgedEncoding chain) ∉
+      returnedChainValueIndices cache outcome.secretKey outcome.signingLog chain := by
+  intro hmem
+  rw [mem_returnedChainValueIndices_iff] at hmem
+  obtain ⟨request, signature, signedEncoding, hreturned, hsignedDecode, hindex⟩ := hmem
+  have hepoch : request.epoch = outcome.forgery.epoch := by
+    exact congrArg Prod.fst hindex.symm
+  have hdigit : signedEncoding chain = forgedEncoding chain := by
+    exact congrArg Prod.snd hindex.symm
+  exact (hevent.chain_coordinate_ne_returned forgedEncoding hforgedDecode request signature
+    signedEncoding hreturned hsignedDecode hepoch) hdigit
+
+/-- Every chain value returned by the signer is the corresponding entry of the table fixed during key generation. -/
+theorem returned_chainValue_eq_keygenChainValueTable
+    (qAdversary : Adversary Concrete.scheme)
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeygen : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+    (execution : GameOutcome × QueryCache HashSpec)
+    (hafter : execution ∈ support
+      ((simulateQ xmssRomImpl
+        (detailedGameAfterKeygen Concrete.scheme qAdversary keyResult.1.1
+          keyResult.1.2)).run keyResult.2))
+    (request : SignRequest) (signature : Signature) (encoding : Encoding)
+    (hdecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
+        request.epoch (request.message, signature.randomness)) = some encoding)
+    (hreturned : SigningTranscript.Returned execution.1.signingLog request signature)
+    (chain : ChainIndex) :
+    signature.chainValue chain =
+      keygenChainValueTable keyResult.2 keyResult.1.2 chain
+        (request.epoch, encoding chain) := by
+  have hgame := afterKeygen_execution_mem_detailedGame qAdversary keyResult hkeygen
+    execution hafter
+  have hkeys := detailedGameAfterKeygen_keys_eq qAdversary keyResult.1.1 keyResult.1.2
+    keyResult.2 execution hafter
+  have hsignature := detailed_execution_returned_signature_eq qAdversary execution hgame
+    request signature encoding hdecode hreturned
+  have hcacheLe := xmssRom_cache_le
+    (detailedGameAfterKeygen Concrete.scheme qAdversary keyResult.1.1 keyResult.1.2)
+    keyResult.2 execution hafter
+  have hwalk := Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeygen execution.2
+    hcacheLe request.epoch chain (encoding chain).val
+    (Nat.le_pred_of_lt (encoding chain).isLt)
+  rw [hsignature, keygenChainValueTable]
+  simp only [Concrete.CacheReplay.signWithEncoding,
+    Concrete.CacheReplay.signedChainValues]
+  rw [hkeys.2]
+  exact hwalk.symm
+
 end XmssSecurity

@@ -621,7 +621,7 @@ theorem suffixCollision_event_afterKeygen_orientation
     exact same_suffix_witness_afterKeygen_orientation adversary keyResult hkeygen
       execution hafter hevent.1 request signature signedEncoding forgedEncoding
       hsignedDecode hforgedDecode hreturned hepoch position hsuffix
-  · obtain ⟨forgedEncoding, hforgedValid, hforgedDecode, hbad⟩ := hfresh
+  · obtain ⟨forgedEncoding, hforgedValid, _hunsigned, hforgedDecode, hbad⟩ := hfresh
     change ∃ position : TargetSum.SuffixPosition forgedEncoding,
       TargetSum.enumerateSuffixPositions forgedEncoding hforgedValid position = slot ∧
       Wots.IsSuffixCollisionAt

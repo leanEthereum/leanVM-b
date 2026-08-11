@@ -43,6 +43,9 @@ noncomputable def OutcomeBadEventOccurs (cache : QueryCache HashSpec)
       (TargetSum.decodeDigest_eq_some_iff.mp hsignedEncoding).2 event) ∨
   (∃ forgedEncoding,
     ∃ hforgedValid : TargetSum.Valid forgedEncoding,
+    (¬ ∃ request signature,
+      SigningTranscript.Returned outcome.signingLog request signature ∧
+        request.epoch = outcome.forgery.epoch) ∧
     TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter outcome.forgery.epoch
         (outcome.forgery.message, outcome.forgery.signature.randomness)) = some forgedEncoding ∧
@@ -148,7 +151,7 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
           (outcome.forgery.message, outcome.forgery.signature.randomness)) =
         some forgedEncoding := by
       simpa only [Concrete.CacheReplay.publicKeyFromCache] using hforgedEncoding
-    exact ⟨event, hverifed, Or.inr ⟨forgedEncoding, hforgedValid,
+    exact ⟨event, hverifed, Or.inr ⟨forgedEncoding, hforgedValid, hsigned,
       hforgedEncoding', hevent⟩⟩
 
 /-- Cache-consistent winning executions are bounded by the sum of their 175 concrete bad-event probabilities. -/

@@ -24,6 +24,7 @@ import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.HashAddress
 import XmssSecurity.IndexedHiddenValue
+import XmssSecurity.RevealedHiddenValue
 import XmssSecurity.KeygenCache
 import XmssSecurity.Merkle
 import XmssSecurity.MerkleQueryBound

@@ -304,6 +304,9 @@ theorem fresh_leaf_event_afterKeygen_orientation
     (hevent : OutcomeBadEventOccurs execution.2 execution.1 .leaf)
     (hfresh : ∃ forgedEncoding,
       ∃ hforgedValid : TargetSum.Valid forgedEncoding,
+      (¬ ∃ request signature,
+        SigningTranscript.Returned execution.1.signingLog request signature ∧
+          request.epoch = execution.1.forgery.epoch) ∧
       TargetSum.decodeDigest
         (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
           execution.1.forgery.epoch
@@ -318,7 +321,7 @@ theorem fresh_leaf_event_afterKeygen_orientation
         hforgedValid .leaf) :
     Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
       (keygenLeafTargetInput keyResult.1.2 keyResult.2) := by
-  obtain ⟨forgedEncoding, hforgedValid, hforgedDecode, hleafEvent⟩ := hfresh
+  obtain ⟨forgedEncoding, hforgedValid, _hunsigned, hforgedDecode, hleafEvent⟩ := hfresh
   exact fresh_leaf_witness_afterKeygen_orientation adversary keyResult hkeygen execution
     hafter forgedEncoding hforgedValid hevent.1 hforgedDecode hleafEvent
 
