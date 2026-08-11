@@ -29,6 +29,7 @@ import XmssSecurity.MerkleQueryBound
 import XmssSecurity.MixedOracle
 import XmssSecurity.FreshTarget
 import XmssSecurity.FreshLeafOrientation
+import XmssSecurity.LeafEventProbability
 import XmssSecurity.AdaptiveFreshTarget
 import XmssSecurity.PrefixTarget
 import XmssSecurity.RandomOracle

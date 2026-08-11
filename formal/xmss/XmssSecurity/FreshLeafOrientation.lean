@@ -170,6 +170,31 @@ theorem fresh_leaf_badEvent_is_collision
   simpa [Concrete.FreshEpochBadEventOccurs, XmssSecurity.FreshEpochBadEventOccurs,
     Wots.publicChain] using hevent
 
+/-- A successful detailed execution caches the forged leaf for its uniquely decoded encoding. -/
+theorem detailed_execution_verified_leaf_cached_as
+    (adversary : Adversary Concrete.scheme)
+    (execution : GameOutcome × QueryCache HashSpec)
+    (hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
+    (encoding : Encoding) (hverified : execution.1.verified = true)
+    (hdecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
+        execution.1.forgery.epoch
+        (execution.1.forgery.message, execution.1.forgery.signature.randomness)) =
+        some encoding) :
+    ∃ output, execution.2
+      (Concrete.CacheView.leafInput execution.1.secretKey.parameter execution.1.forgery.epoch
+        (recoveredEndpoints
+          (fun chain => Concrete.CacheView.chainStep execution.2
+            execution.1.secretKey.parameter execution.1.forgery.epoch chain)
+          encoding execution.1.forgery.signature.chainValue)) = some output := by
+  obtain ⟨actualEncoding, output, hactualDecode, hcached⟩ :=
+    detailed_execution_verified_leaf_cached adversary execution hgame hverified
+  have hencoding : actualEncoding = encoding := by
+    rw [hdecode] at hactualDecode
+    exact Option.some.inj hactualDecode.symm
+  subst actualEncoding
+  exact ⟨output, hcached⟩
+
 /-- A supported fresh leaf witness supplies both the verifier query and its concrete leaf collision. -/
 theorem detailed_execution_fresh_leaf_cached_collision
     (adversary : Adversary Concrete.scheme)
@@ -205,15 +230,12 @@ theorem detailed_execution_fresh_leaf_cached_collision
           (fun chain => Concrete.CacheView.chainStep execution.2
             execution.1.secretKey.parameter execution.1.forgery.epoch chain)
           forgedEncoding execution.1.forgery.signature.chainValue)
-        (Concrete.CacheReplay.oneTimePublicKey execution.2
+      (Concrete.CacheReplay.oneTimePublicKey execution.2
           execution.1.secretKey.parameter execution.1.secretKey.chainStart
           execution.1.forgery.epoch) := by
-  obtain ⟨actualEncoding, forgedOutput, hactualDecode, hforgedCached⟩ :=
-    detailed_execution_verified_leaf_cached adversary execution hgame hverified
-  have hencoding : actualEncoding = forgedEncoding := by
-    rw [hforgedDecode] at hactualDecode
-    exact Option.some.inj hactualDecode.symm
-  subst actualEncoding
+  obtain ⟨forgedOutput, hforgedCached⟩ :=
+    detailed_execution_verified_leaf_cached_as adversary execution hgame forgedEncoding
+      hverified hforgedDecode
   exact ⟨forgedOutput, hforgedCached,
     fresh_leaf_badEvent_is_collision execution.2 execution.1.secretKey
       execution.1.forgery.epoch forgedEncoding execution.1.forgery.signature

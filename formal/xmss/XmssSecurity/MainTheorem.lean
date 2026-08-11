@@ -3,6 +3,7 @@ import XmssSecurity.ConcreteScheme
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
+import XmssSecurity.LeafEventProbability
 import XmssSecurity.Merkle
 import XmssSecurity.SecurityBudget
 import XmssSecurity.SecurityGame
@@ -13,7 +14,19 @@ namespace XmssSecurity
 
 open OracleSpec
 
-/-- The remaining cryptographic argument below the digest-space size bounds one concrete event with 128-bit loss. -/
+/-- The remaining non-leaf cryptographic argument below the digest-space size bounds one concrete event with 128-bit loss. -/
+theorem xmss_nonLeaf_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
+    (hqlt : q < 2 ^ digestBits)
+    (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) (event : BadEvent)
+    (hne : event ≠ .leaf) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      OutcomeBadEventOccurs execution.2 execution.1 event |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
+  sorry
+
+/-- Every event below the digest-space size has cost at most `q / 2^128`; the leaf case is fully proved. -/
 theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
     (hqlt : q < 2 ^ digestBits)
     (adversary : Adversary Concrete.scheme)
@@ -22,7 +35,11 @@ theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
       OutcomeBadEventOccurs execution.2 execution.1 event |
       detailedGameWithCache Concrete.scheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  sorry
+  by_cases hleaf : event = .leaf
+  · subst event
+    exact leaf_outcomeBadEvent_probability_le q adversary hbound
+  · exact xmss_nonLeaf_badEvent_probability_le_below_digest_space q hq hqlt adversary
+      hbound event hleaf
 
 /-- Every concrete event has probability at most `q / 2^128`; above `2^128` queries this is the trivial probability bound. -/
 theorem xmss_badEvent_probability_le (q : Nat) (hq : 1 ≤ q)
