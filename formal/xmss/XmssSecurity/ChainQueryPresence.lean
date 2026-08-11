@@ -269,6 +269,47 @@ theorem Concrete.keygen_cache_chainInput_eq_none_of_ne
       · exact hcandidate
       · exact hhonest
 
+/-- Every positive honest chain value is the truncated output of its preceding key-generation query. -/
+theorem Concrete.keygen_cache_has_chainValue_preimage
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hmem : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (epoch : Epoch) (chain : ChainIndex) (digit : Digit)
+    (hpositive : 0 < digit.val) :
+    ∃ previous : ChainStep, ∃ output,
+      previous.val + 1 = digit.val ∧
+      keyResult.2
+        (Concrete.CacheView.chainInput keyResult.1.2.parameter epoch chain previous
+          (Wots.walk
+            (Concrete.CacheView.chainStep keyResult.2 keyResult.1.2.parameter epoch chain)
+            0 previous.val (keyResult.1.2.chainStart epoch chain))) = some output ∧
+      truncateHash output =
+        Wots.signChain
+          (Concrete.CacheView.chainStep keyResult.2 keyResult.1.2.parameter epoch chain)
+          digit (keyResult.1.2.chainStart epoch chain) := by
+  let previous : ChainStep := ⟨digit.val - 1, by
+    have hdigit := digit.isLt
+    omega⟩
+  obtain ⟨output, hcached⟩ :=
+    Concrete.keygen_cache_has_chainInput keyResult hmem epoch chain previous
+  refine ⟨previous, output, by dsimp only [previous]; omega, hcached, ?_⟩
+  let step := Concrete.CacheView.chainStep keyResult.2 keyResult.1.2.parameter epoch chain
+  calc
+    truncateHash output = Concrete.CacheView.digestAt keyResult.2
+        (Concrete.CacheView.chainInput keyResult.1.2.parameter epoch chain previous
+          (Wots.walk step 0 previous.val
+            (keyResult.1.2.chainStart epoch chain))) :=
+      (Concrete.CacheView.digestAt_eq_of_cache_eq_some hcached).symm
+    _ = step previous.val
+        (Wots.walk step 0 previous.val (keyResult.1.2.chainStart epoch chain)) := by
+      symm
+      exact Concrete.CacheView.chainStep_eq keyResult.2 keyResult.1.2.parameter epoch chain
+        previous.val _ previous.isLt
+    _ = Wots.signChain step digit (keyResult.1.2.chainStart epoch chain) := by
+      unfold Wots.signChain
+      rw [show digit.val = previous.val + 1 by dsimp only [previous]; omega]
+      simp only [Wots.walk, zero_add]
+
 theorem Concrete.keygen_chainWalk_eq_of_cache_le
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support

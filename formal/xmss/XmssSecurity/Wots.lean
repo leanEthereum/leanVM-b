@@ -127,6 +127,35 @@ def HasBackwardWitness {α : Type} (step : ChainIndex → Nat → α → α)
     (signedValue forgedValue : ChainIndex → α) : Prop :=
   ∃ i, IsBackwardWitnessAt step signedEncoding forgedEncoding signedValue forgedValue i
 
+theorem walk_signChain_to_later {α : Type} (step : Nat → α → α)
+    (earlier later : Nat) (secret : α) (hle : earlier ≤ later) :
+    walk step earlier (later - earlier) (walk step 0 earlier secret) =
+      walk step 0 later secret := by
+  simpa using (walk_split step 0 earlier later secret (Nat.zero_le earlier) hle).symm
+
+theorem backwardWitness_eq_honest_or_hasStepCollision {α : Type}
+    (step : ChainIndex → Nat → α → α)
+    (signedEncoding forgedEncoding : Encoding)
+    (signedValue forgedValue secret : ChainIndex → α) (i : ChainIndex)
+    (hsigned : signedValue i = signChain (step i) (signedEncoding i) (secret i))
+    (hwitness : IsBackwardWitnessAt step signedEncoding forgedEncoding signedValue forgedValue i) :
+    forgedValue i = signChain (step i) (forgedEncoding i) (secret i) ∨
+      HasStepCollision (step i) (forgedEncoding i).val
+        ((signedEncoding i).val - (forgedEncoding i).val)
+        (forgedValue i) (signChain (step i) (forgedEncoding i) (secret i)) := by
+  apply eq_or_hasStepCollision
+  calc
+    walk (step i) (forgedEncoding i).val
+        ((signedEncoding i).val - (forgedEncoding i).val) (forgedValue i) =
+      signedValue i := hwitness.2
+    _ = signChain (step i) (signedEncoding i) (secret i) := hsigned
+    _ = walk (step i) (forgedEncoding i).val
+        ((signedEncoding i).val - (forgedEncoding i).val)
+        (signChain (step i) (forgedEncoding i) (secret i)) := by
+      symm
+      exact walk_signChain_to_later (step i) (forgedEncoding i).val
+        (signedEncoding i).val (secret i) hwitness.1.le
+
 def IsSuffixCollisionAt {α : Type} (step : ChainIndex → Nat → α → α)
     (signedEncoding forgedEncoding : Encoding)
     (signedValue forgedValue : ChainIndex → α)

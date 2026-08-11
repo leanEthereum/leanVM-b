@@ -130,6 +130,61 @@ theorem badEvent_sum_le_120 (q : Nat) (cost : BadEvent → ℝ≥0∞)
     _ ≤ (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) :=
       totalBadEventSlots_budget_le_120 q
 
+/-- Chain preimage events may pay for one hidden-value hit and one collision, while every other event pays for one elementary 128-bit event. -/
+def badEventWeight : BadEvent → Nat
+  | .chain _ => 2
+  | _ => 1
+
+def totalBadEventWeight : Nat :=
+  ∑ event : BadEvent, badEventWeight event
+
+theorem totalBadEventWeight_eq : totalBadEventWeight = 217 := by
+  native_decide
+
+theorem totalBadEventWeight_le_capacity :
+    totalBadEventWeight ≤ badEventSlotCapacity := by
+  native_decide
+
+theorem totalBadEventWeight_budget_le_120 (q : Nat) :
+    (totalBadEventWeight : ℝ≥0∞) *
+        ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) ≤
+      (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) := by
+  calc
+    (totalBadEventWeight : ℝ≥0∞) *
+        ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) ≤
+      (badEventSlotCapacity : ℝ≥0∞) *
+        ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
+      gcongr
+      exact_mod_cast totalBadEventWeight_le_capacity
+    _ = (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) :=
+      capacity_budget_eq q
+
+/-- The 120-bit union bound still closes when every chain event costs two elementary 128-bit terms. -/
+theorem badEvent_weighted_sum_le_120 (q : Nat) (cost : BadEvent → ℝ≥0∞)
+    (hcost : ∀ event, cost event ≤
+      (badEventWeight event : ℝ≥0∞) *
+        ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞))) :
+    ∑ event, cost event ≤
+      (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) := by
+  calc
+    ∑ event, cost event ≤
+        ∑ event : BadEvent,
+          (badEventWeight event : ℝ≥0∞) *
+            ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
+      apply Finset.sum_le_sum
+      intro event _
+      exact hcost event
+    _ = (totalBadEventWeight : ℝ≥0∞) *
+          ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
+      rw [← Finset.sum_mul]
+      have hcast : (∑ event : BadEvent, (badEventWeight event : ℝ≥0∞)) =
+          (totalBadEventWeight : ℝ≥0∞) := by
+        exact_mod_cast (rfl : (∑ event : BadEvent, badEventWeight event) =
+          totalBadEventWeight)
+      rw [hcast]
+    _ ≤ (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) :=
+      totalBadEventWeight_budget_le_120 q
+
 /-- Classified bad events bounded individually at 128 bits yield the 120-bit target. -/
 theorem classified_event_le_120 {α : Type} (computation : OracleComp HashSpec α)
     (win : α → Prop) (occurs : BadEvent → α → Prop) (q : Nat)
