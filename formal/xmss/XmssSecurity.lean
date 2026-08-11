@@ -13,6 +13,7 @@ import XmssSecurity.ConcreteVerify
 import XmssSecurity.MainTheorem
 import XmssSecurity.Execution
 import XmssSecurity.DetailedExecution
+import XmssSecurity.DetailedQueryPresence
 import XmssSecurity.OutcomeClassification
 import XmssSecurity.ConcreteExecution
 import XmssSecurity.SigningLogReplay
@@ -27,6 +28,7 @@ import XmssSecurity.Merkle
 import XmssSecurity.MerkleQueryBound
 import XmssSecurity.MixedOracle
 import XmssSecurity.FreshTarget
+import XmssSecurity.FreshLeafOrientation
 import XmssSecurity.AdaptiveFreshTarget
 import XmssSecurity.PrefixTarget
 import XmssSecurity.RandomOracle

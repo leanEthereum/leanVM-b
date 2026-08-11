@@ -27,10 +27,14 @@ structure ConcreteOutcomeConsistent (cache : QueryCache HashSpec)
 
 noncomputable def OutcomeBadEventOccurs (cache : QueryCache HashSpec)
     (outcome : GameOutcome) (event : BadEvent) : Prop :=
-  (∃ request signature signedEncoding forgedEncoding,
+  outcome.verified = true ∧
+  ((∃ request signature signedEncoding forgedEncoding,
     ∃ hsignedEncoding : TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter request.epoch
         (request.message, signature.randomness)) = some signedEncoding,
+    TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter request.epoch
+        (outcome.forgery.message, outcome.forgery.signature.randomness)) = some forgedEncoding ∧
     SigningTranscript.Returned outcome.signingLog request signature ∧
     request.epoch = outcome.forgery.epoch ∧
     Concrete.SameEpochBadEventOccurs cache outcome.secretKey.parameter request.epoch
@@ -39,13 +43,16 @@ noncomputable def OutcomeBadEventOccurs (cache : QueryCache HashSpec)
       (TargetSum.decodeDigest_eq_some_iff.mp hsignedEncoding).2 event) ∨
   (∃ forgedEncoding,
     ∃ hforgedValid : TargetSum.Valid forgedEncoding,
+    TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter outcome.forgery.epoch
+        (outcome.forgery.message, outcome.forgery.signature.randomness)) = some forgedEncoding ∧
     Concrete.FreshEpochBadEventOccurs cache outcome.secretKey.parameter
       outcome.forgery.epoch forgedEncoding outcome.forgery.signature
       (outcome.secretKey.chainStart outcome.forgery.epoch)
       (Concrete.signaturePath
         (Concrete.CacheReplay.signWithEncoding cache outcome.secretKey
           outcome.forgery.epoch outcome.forgery.signature.randomness forgedEncoding))
-      hforgedValid event)
+      hforgedValid event))
 
 /-- Every consistent winning execution has one of the 175 concrete cache-level bad events. -/
 theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
@@ -84,7 +91,8 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
       · rw [hsignatureEntry]
         exact congrArg some hsame.2
     rw [← hepoch] at hforgedVerify
-    obtain ⟨actualSignedEncoding, forgedEncoding, hactualSignedEncoding, event, hevent⟩ :=
+    obtain ⟨actualSignedEncoding, forgedEncoding, hactualSignedEncoding,
+      hforgedEncoding, event, hevent⟩ :=
       Concrete.sameEpoch_badEvent_of_verifyFromCache cache
         (Concrete.CacheReplay.publicKeyFromCache cache outcome.secretKey) request.epoch
         request.message outcome.forgery.message signature outcome.forgery.signature
@@ -93,9 +101,10 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
         (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter request.epoch
           (request.message, signature.randomness)) = some actualSignedEncoding := by
       simpa only [Concrete.CacheReplay.publicKeyFromCache] using hactualSignedEncoding
-    refine ⟨event, Or.inl ⟨request, signature, actualSignedEncoding, forgedEncoding,
-      hactualSignedEncoding', hentry, hepoch, ?_⟩⟩
-    simpa only [Concrete.CacheReplay.publicKeyFromCache] using hevent
+    refine ⟨event, hverifed, Or.inl ⟨request, signature, actualSignedEncoding, forgedEncoding,
+      hactualSignedEncoding', ?_, hentry, hepoch, ?_⟩⟩
+    · simpa only [Concrete.CacheReplay.publicKeyFromCache] using hforgedEncoding
+    · simpa only [Concrete.CacheReplay.publicKeyFromCache] using hevent
   · obtain ⟨forgedEncoding, hforgedEncoding, hforgedRoot⟩ :=
       (Concrete.verifyFromCache_eq_true_iff cache
         (Concrete.CacheReplay.publicKeyFromCache cache outcome.secretKey)
@@ -133,7 +142,14 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
       (Concrete.signaturePath
         (Concrete.CacheReplay.signWithEncoding cache outcome.secretKey outcome.forgery.epoch
           outcome.forgery.signature.randomness forgedEncoding)) hforgedValid hroot
-    exact ⟨event, Or.inr ⟨forgedEncoding, hforgedValid, hevent⟩⟩
+    have hforgedEncoding' : TargetSum.decodeDigest
+        (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter
+          outcome.forgery.epoch
+          (outcome.forgery.message, outcome.forgery.signature.randomness)) =
+        some forgedEncoding := by
+      simpa only [Concrete.CacheReplay.publicKeyFromCache] using hforgedEncoding
+    exact ⟨event, hverifed, Or.inr ⟨forgedEncoding, hforgedValid,
+      hforgedEncoding', hevent⟩⟩
 
 /-- Cache-consistent winning executions are bounded by the sum of their 175 concrete bad-event probabilities. -/
 theorem forgeAdvantage_le_outcomeBadEvent_sum_of_consistent

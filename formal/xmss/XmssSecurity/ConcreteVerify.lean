@@ -55,6 +55,13 @@ def authenticationRoot {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       let current ← authenticationRoot parameter epoch signature levels leaf
       authenticationNodeHash parameter epoch levels current (signaturePath signature levels)
 
+def verifyAfterLeaf {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+    (publicKey : PublicKey) (epoch : Epoch) (signature : Signature) (leaf : Digest) : m Bool := do
+  let root ← authenticationRoot publicKey.parameter epoch signature treeHeight leaf
+  return decide (root = publicKey.root)
+
+attribute [irreducible] verifyAfterLeaf
+
 noncomputable def verify {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     (publicKey : PublicKey) (epoch : Epoch)
     (message : Message) (signature : Signature) : m Bool := do
@@ -64,7 +71,6 @@ noncomputable def verify {m : Type → Type} [Monad m] [HasQuery HashSpec m]
   | some encoding => do
       let endpoints ← recoverEndpoints publicKey.parameter epoch encoding signature
       let leaf ← leafHash publicKey.parameter epoch endpoints
-      let root ← authenticationRoot publicKey.parameter epoch signature treeHeight leaf
-      return decide (root = publicKey.root)
+      verifyAfterLeaf publicKey epoch signature leaf
 
 end XmssSecurity.Concrete

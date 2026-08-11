@@ -60,6 +60,9 @@ theorem sameEpoch_badEvent_of_verifyFromCache
       ∃ hsignedEncoding : TargetSum.decodeDigest
         (CacheView.encodingHash cache publicKey.parameter epoch
           (signedMessage, signedSignature.randomness)) = some signedEncoding,
+      ∃ _hforgedEncoding : TargetSum.decodeDigest
+        (CacheView.encodingHash cache publicKey.parameter epoch
+          (forgedMessage, forgedSignature.randomness)) = some forgedEncoding,
       ∃ event, SameEpochBadEventOccurs cache publicKey.parameter epoch
         signedMessage forgedMessage signedEncoding forgedEncoding
         signedSignature forgedSignature
@@ -73,6 +76,6 @@ theorem sameEpoch_badEvent_of_verifyFromCache
     cache publicKey.parameter epoch signedMessage forgedMessage
     signedEncoding forgedEncoding signedSignature forgedSignature
     hsignedEncoding hforgedEncoding hroot hstrong
-  exact ⟨signedEncoding, forgedEncoding, hsignedEncoding, event, hevent⟩
+  exact ⟨signedEncoding, forgedEncoding, hsignedEncoding, hforgedEncoding, event, hevent⟩
 
 end XmssSecurity.Concrete

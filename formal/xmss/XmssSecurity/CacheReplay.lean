@@ -263,6 +263,15 @@ theorem eval_authenticationRoot (cache : QueryCache HashSpec)
       · simp [Concrete.authenticationNodeHash, CacheView.nodeHash, hlevel]
 
 @[simp]
+theorem eval_verifyAfterLeaf (cache : QueryCache HashSpec) (publicKey : PublicKey)
+    (epoch : Epoch) (signature : Signature) (leaf : Digest) :
+    evalWithAnswerFn (answerFn cache)
+      (Concrete.verifyAfterLeaf publicKey epoch signature leaf : OracleComp HashSpec Bool) =
+      decide (Merkle.ascend (CacheView.nodeHash cache publicKey.parameter epoch)
+        (Concrete.signaturePath signature) 0 treeHeight leaf = publicKey.root) := by
+  simp [Concrete.verifyAfterLeaf]
+
+@[simp]
 theorem eval_verify (cache : QueryCache HashSpec) (publicKey : PublicKey)
     (epoch : Epoch) (message : Message) (signature : Signature) :
     evalWithAnswerFn (answerFn cache)
