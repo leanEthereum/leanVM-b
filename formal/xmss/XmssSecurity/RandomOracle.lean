@@ -1,4 +1,5 @@
 import XmssSecurity.Scheme
+import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
 import VCVio.OracleComp.QueryTracking.Unpredictability
 
 open OracleComp OracleSpec ENNReal
@@ -100,6 +101,146 @@ theorem evalDist_truncate_uniformHashOutput :
         Pr[= target | $ᵗ Digest]
       rw [probOutput_bind_const, probFailure_uniformSample]
       simp
+
+/-- Sample a 256-bit oracle answer whose low XMSS digest is fixed while its high half remains uniform. -/
+noncomputable def sampleHashOutputWithDigest (target : Digest) :
+    ProbComp HashOutput :=
+  (fun high => hashOutputEquivDigestPair.symm (high, target)) <$>
+    ($ᵗ Digest)
+
+@[simp]
+theorem truncateHash_hashOutputEquivDigestPair_symm
+    (halves : Digest × Digest) :
+    truncateHash (hashOutputEquivDigestPair.symm halves) = halves.2 := by
+  have heq := hashOutputEquivDigestPair.apply_symm_apply halves
+  exact congrArg Prod.snd heq
+
+theorem sampleHashOutputWithDigest_support_truncate
+    (target : Digest) (output : HashOutput)
+    (houtput : output ∈ support (sampleHashOutputWithDigest target)) :
+    truncateHash output = target := by
+  unfold sampleHashOutputWithDigest at houtput
+  rw [support_map] at houtput
+  obtain ⟨high, _hhigh, heq⟩ := houtput
+  subst output
+  simp
+
+/-- Drawing the programmed digest uniformly restores an ordinary uniform 256-bit oracle answer. -/
+theorem evalDist_uniformDigest_bind_sampleHashOutputWithDigest :
+    𝒟[$ᵗ Digest >>= sampleHashOutputWithDigest] =
+      𝒟[$ᵗ HashOutput] := by
+  calc
+    𝒟[$ᵗ Digest >>= sampleHashOutputWithDigest] =
+        𝒟[$ᵗ Digest >>= fun high =>
+          $ᵗ Digest >>= fun low =>
+            pure (hashOutputEquivDigestPair.symm (high, low))] := by
+      unfold sampleHashOutputWithDigest
+      exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
+    _ = 𝒟[hashOutputEquivDigestPair.symm <$>
+          independentDigestHalves] := by
+      simp [independentDigestHalves, map_eq_bind_pure_comp, bind_assoc]
+    _ = 𝒟[hashOutputEquivDigestPair.symm <$>
+          (hashOutputEquivDigestPair <$> ($ᵗ HashOutput))] := by
+      conv_lhs => rw [evalDist_map]
+      conv_rhs => rw [evalDist_map]
+      rw [evalDist_split_uniformHashOutput_eq_independent]
+    _ = 𝒟[$ᵗ HashOutput] := by
+      simp [Functor.map_map]
+
+noncomputable def sampledHashOutputWithDigest :
+    ProbComp (Digest × HashOutput) := do
+  let low ← $ᵗ Digest
+  let output ← sampleHashOutputWithDigest low
+  return (low, output)
+
+/-- A programmed answer together with its chosen low digest has the same joint distribution as a uniform answer together with its truncation. -/
+theorem evalDist_sampledHashOutputWithDigest_eq_uniform :
+    𝒟[sampledHashOutputWithDigest] =
+      𝒟[(fun output : HashOutput => (truncateHash output, output)) <$>
+        ($ᵗ HashOutput)] := by
+  calc
+    𝒟[sampledHashOutputWithDigest] =
+        𝒟[$ᵗ Digest >>= fun high =>
+          $ᵗ Digest >>= fun low =>
+            pure (low, hashOutputEquivDigestPair.symm (high, low))] := by
+      unfold sampledHashOutputWithDigest sampleHashOutputWithDigest
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
+    _ = 𝒟[(fun halves : Digest × Digest =>
+          (halves.2, hashOutputEquivDigestPair.symm halves)) <$>
+        independentDigestHalves] := by
+      simp [independentDigestHalves, map_eq_bind_pure_comp, bind_assoc]
+    _ = 𝒟[(fun halves : Digest × Digest =>
+          (halves.2, hashOutputEquivDigestPair.symm halves)) <$>
+        (hashOutputEquivDigestPair <$> ($ᵗ HashOutput))] := by
+      conv_lhs => rw [evalDist_map]
+      conv_rhs => rw [evalDist_map]
+      rw [evalDist_split_uniformHashOutput_eq_independent]
+    _ = 𝒟[(fun output : HashOutput => (truncateHash output, output)) <$>
+        ($ᵗ HashOutput)] := by
+      have hfunction :
+          (fun halves : Digest × Digest =>
+            (halves.2, hashOutputEquivDigestPair.symm halves)) ∘
+              hashOutputEquivDigestPair =
+            (fun output : HashOutput => (truncateHash output, output)) := by
+        funext output
+        apply Prod.ext
+        · rfl
+        · exact hashOutputEquivDigestPair.symm_apply_apply output
+      rw [Functor.map_map]
+      change 𝒟[((fun halves : Digest × Digest =>
+        (halves.2, hashOutputEquivDigestPair.symm halves)) ∘
+          hashOutputEquivDigestPair) <$> ($ᵗ HashOutput)] = _
+      rw [hfunction]
+
+noncomputable def uniformHashTape :
+    Nat → ProbComp (List Digest × List HashOutput)
+  | 0 => pure ([], [])
+  | count + 1 => do
+      let output ← $ᵗ HashOutput
+      let rest ← uniformHashTape count
+      return (truncateHash output :: rest.1, output :: rest.2)
+
+noncomputable def programmedHashTape :
+    Nat → ProbComp (List Digest × List HashOutput)
+  | 0 => pure ([], [])
+  | count + 1 => do
+      let first ← sampledHashOutputWithDigest
+      let rest ← programmedHashTape count
+      return (first.1 :: rest.1, first.2 :: rest.2)
+
+/-- Programming an i.i.d. low-digest tape and sampling independent high halves gives exactly the ordinary uniform hash-output tape. -/
+theorem evalDist_programmedHashTape_eq_uniformHashTape (count : Nat) :
+    𝒟[programmedHashTape count] = 𝒟[uniformHashTape count] := by
+  induction count with
+  | zero => simp [programmedHashTape, uniformHashTape]
+  | succ count ih =>
+      rw [programmedHashTape, uniformHashTape]
+      calc
+        𝒟[sampledHashOutputWithDigest >>= fun first =>
+            programmedHashTape count >>= fun rest =>
+              pure (first.1 :: rest.1, first.2 :: rest.2)] =
+            𝒟[((fun output : HashOutput => (truncateHash output, output)) <$>
+                ($ᵗ HashOutput)) >>= fun first =>
+              programmedHashTape count >>= fun rest =>
+                pure (first.1 :: rest.1, first.2 :: rest.2)] := by
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [evalDist_sampledHashOutputWithDigest_eq_uniform]
+        _ = 𝒟[((fun output : HashOutput => (truncateHash output, output)) <$>
+                ($ᵗ HashOutput)) >>= fun first =>
+              uniformHashTape count >>= fun rest =>
+                pure (first.1 :: rest.1, first.2 :: rest.2)] := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro first
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [ih]
+        _ = 𝒟[$ᵗ HashOutput >>= fun output =>
+              uniformHashTape count >>= fun rest =>
+                pure (truncateHash output :: rest.1, output :: rest.2)] := by
+          simp [map_eq_bind_pure_comp, bind_assoc]
 
 def matchingOutputs (target : Digest) : Finset HashOutput :=
   Finset.univ.filter (truncateHash · = target)

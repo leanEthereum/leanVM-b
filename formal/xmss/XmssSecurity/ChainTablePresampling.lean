@@ -38,6 +38,90 @@ def ChainTableEdgesMatch
     cache (chainTableEdgeInput parameter chain table edge) = some output ∧
       truncateHash output = chainTableEdgeTarget table edge
 
+noncomputable local instance presamplingSampleableChainTable :
+    SampleableType (ChainValueIndex → Digest) :=
+  SampleableType.ofFintype (ChainValueIndex → Digest)
+
+noncomputable local instance presamplingSampleableChainSeeds :
+    SampleableType (Epoch → Digest) :=
+  SampleableType.ofFintype (Epoch → Digest)
+
+noncomputable local instance presamplingSampleableChainEdges :
+    SampleableType (ChainEdgeIndex → Digest) :=
+  SampleableType.ofFintype (ChainEdgeIndex → Digest)
+
+noncomputable local instance presamplingSampleableChainCoordinates :
+    SampleableType ((Epoch → Digest) × (ChainEdgeIndex → Digest)) :=
+  SampleableType.ofFintype ((Epoch → Digest) × (ChainEdgeIndex → Digest))
+
+/-- A chain table is equivalently its epoch seeds and the target value of every positive edge. -/
+def chainTableMaterialEquiv :
+    (ChainValueIndex → Digest) ≃
+      ((Epoch → Digest) × (ChainEdgeIndex → Digest)) where
+  toFun table :=
+    (chainTableSeedTargets table, chainTableEdgeTarget table)
+  invFun material index :=
+    if hzero : index.2.val = 0 then
+      material.1 index.1
+    else
+      material.2
+        (index.1, ⟨index.2.val - 1, by
+          have hdigit := index.2.isLt
+          omega⟩)
+  left_inv table := by
+    funext index
+    by_cases hzero : index.2.val = 0
+    · simp only [hzero, ↓reduceDIte, chainTableSeedTargets]
+      congr 2
+      exact Fin.ext hzero.symm
+    · simp only [hzero, ↓reduceDIte, chainTableEdgeTarget]
+      congr 2
+      apply Fin.ext
+      simp [chainStepNextDigit]
+      omega
+  right_inv material := by
+    apply Prod.ext
+    · funext epoch
+      simp [chainTableSeedTargets]
+    · funext edge
+      simp only [chainTableEdgeTarget]
+      have hpositive : (chainStepNextDigit edge.2).val ≠ 0 := by
+        simp [chainStepNextDigit]
+      simp only [hpositive, ↓reduceDIte]
+      congr 2
+
+noncomputable def independentChainTableMaterial :
+    ProbComp ((Epoch → Digest) × (ChainEdgeIndex → Digest)) :=
+  Prod.mk <$> ($ᵗ (Epoch → Digest)) <*>
+    ($ᵗ (ChainEdgeIndex → Digest))
+
+/-- Splitting a uniform chain table gives independent uniform seed and positive-edge coordinate tables. -/
+theorem evalDist_split_uniformChainTable_eq_independent :
+    𝒟[chainTableMaterialEquiv <$> ($ᵗ (ChainValueIndex → Digest))] =
+      𝒟[independentChainTableMaterial] := by
+  apply SPMF.ext
+  intro target
+  change Pr[= target |
+      chainTableMaterialEquiv <$> ($ᵗ (ChainValueIndex → Digest))] =
+    Pr[= target | independentChainTableMaterial]
+  rw [probOutput_map_bijective_uniform_cross
+    (α := ChainValueIndex → Digest)
+    (β := (Epoch → Digest) × (ChainEdgeIndex → Digest))
+    chainTableMaterialEquiv chainTableMaterialEquiv.bijective]
+  calc
+    Pr[= target | $ᵗ ((Epoch → Digest) × (ChainEdgeIndex → Digest))] =
+        Pr[= target.1 | $ᵗ (Epoch → Digest)] *
+          Pr[= target.2 | $ᵗ (ChainEdgeIndex → Digest)] := by
+      rw [probOutput_uniformSample, probOutput_uniformSample,
+        probOutput_uniformSample, Fintype.card_prod, Nat.cast_mul,
+        ENNReal.mul_inv]
+      · exact Or.inr (ENNReal.natCast_ne_top _)
+      · exact Or.inl (ENNReal.natCast_ne_top _)
+    _ = Pr[= target | independentChainTableMaterial] := by
+      symm
+      rw [independentChainTableMaterial]
+      rw [probOutput_seq_map_prod_mk_eq_mul]
+
 theorem chainTableEdgeInput_injective
     (parameter : PublicParameter) (chain : ChainIndex)
     (table : ChainValueIndex → Digest) :
@@ -63,6 +147,63 @@ theorem allChainEdges_length :
   simp [allChainEdges, ChainEdgeIndex, Epoch, ChainStep]
 
 attribute [irreducible] allChainEdges
+
+theorem evalDist_map_truncate_drawList (count : Nat) :
+    𝒟[List.map truncateHash <$>
+      OracleComp.drawList ($ᵗ HashOutput) count] =
+      𝒟[OracleComp.drawList ($ᵗ Digest) count] := by
+  induction count with
+  | zero => simp [OracleComp.drawList]
+  | succ count ih =>
+      simp only [OracleComp.drawList, map_eq_bind_pure_comp, bind_assoc,
+        pure_bind, Function.comp_apply, List.map_cons]
+      calc
+        𝒟[$ᵗ HashOutput >>= fun output =>
+            OracleComp.drawList ($ᵗ HashOutput) count >>= fun outputs =>
+              pure (truncateHash output :: outputs.map truncateHash)] =
+            𝒟[(truncateHash <$> ($ᵗ HashOutput)) >>= fun output =>
+              (List.map truncateHash <$>
+                OracleComp.drawList ($ᵗ HashOutput) count) >>= fun outputs =>
+                pure (output :: outputs)] := by
+          simp [map_eq_bind_pure_comp, bind_assoc]
+        _ = 𝒟[$ᵗ Digest >>= fun output =>
+              (List.map truncateHash <$>
+                OracleComp.drawList ($ᵗ HashOutput) count) >>= fun outputs =>
+                pure (output :: outputs)] := by
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [Rom.evalDist_truncate_uniformHashOutput]
+        _ = 𝒟[$ᵗ Digest >>= fun output =>
+              OracleComp.drawList ($ᵗ Digest) count >>= fun outputs =>
+                pure (output :: outputs)] := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro output
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [ih]
+
+/-- The truncated values recorded by finite random-oracle presampling form an i.i.d. uniform digest tape. -/
+theorem evalDist_presampleCacheEntriesTrace_truncate
+    (cache : QueryCache HashSpec) (inputs : List HashInput) :
+    𝒟[(fun result : List HashOutput × QueryCache HashSpec =>
+        result.1.map truncateHash) <$>
+      OracleComp.presampleCacheEntriesTrace cache inputs] =
+      𝒟[OracleComp.drawList ($ᵗ Digest) inputs.length] := by
+  calc
+    𝒟[(fun result : List HashOutput × QueryCache HashSpec =>
+          result.1.map truncateHash) <$>
+        OracleComp.presampleCacheEntriesTrace cache inputs] =
+        𝒟[List.map truncateHash <$>
+          (Prod.fst <$>
+            OracleComp.presampleCacheEntriesTrace cache inputs)] := by
+      simp [Functor.map_map]
+    _ = 𝒟[List.map truncateHash <$>
+          OracleComp.drawList ($ᵗ HashOutput) inputs.length] := by
+      rw [evalDist_map,
+        OracleComp.evalDist_presampleCacheEntriesTrace_fst_eq_drawList,
+        ← evalDist_map]
+    _ = 𝒟[OracleComp.drawList ($ᵗ Digest) inputs.length] :=
+      evalDist_map_truncate_drawList inputs.length
 
 set_option maxHeartbeats 1600000 in
 set_option maxRecDepth 100000 in
@@ -122,6 +263,40 @@ noncomputable def chainTableEdgeInputs
 noncomputable def chainTableEdgeTargets
     (table : ChainValueIndex → Digest) : List Digest :=
   allChainEdges.map (chainTableEdgeTarget table)
+
+noncomputable def programChainTableEdgesTrace
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
+    List ChainEdgeIndex → ProbComp (List HashOutput × QueryCache HashSpec)
+  | [] => pure ([], cache)
+  | edge :: edges => do
+      let output ← Rom.sampleHashOutputWithDigest
+        (chainTableEdgeTarget table edge)
+      let rest ← programChainTableEdgesTrace
+        (cache.cacheQuery
+          (chainTableEdgeInput parameter chain table edge) output)
+        parameter chain table edges
+      return (output :: rest.1, rest.2)
+
+@[simp]
+theorem programChainTableEdgesTrace_nil
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
+    programChainTableEdgesTrace cache parameter chain table [] =
+      pure ([], cache) := rfl
+
+theorem programChainTableEdgesTrace_cons
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest)
+    (edge : ChainEdgeIndex) (edges : List ChainEdgeIndex) :
+    programChainTableEdgesTrace cache parameter chain table (edge :: edges) = (do
+      let output ← Rom.sampleHashOutputWithDigest
+        (chainTableEdgeTarget table edge)
+      let rest ← programChainTableEdgesTrace
+        (cache.cacheQuery
+          (chainTableEdgeInput parameter chain table edge) output)
+        parameter chain table edges
+      return (output :: rest.1, rest.2)) := rfl
 
 theorem chainTableEdgeInputs_nodup
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -200,6 +375,21 @@ theorem forall_of_forall₂_mapped
             exact ⟨_, hfirst, htargets.1⟩
           · exact ih _ hrest htargets.2 edge hedge
 
+theorem exists_right_of_forall₂
+    {Left Right : Type} {relation : Left → Right → Prop} :
+    ∀ {lefts : List Left} {rights : List Right},
+      List.Forall₂ relation lefts rights →
+      ∀ left ∈ lefts, ∃ right, relation left right := by
+  intro lefts rights hpairs
+  induction hpairs with
+  | nil => simp
+  | cons hfirst hrest ih =>
+      intro left hmem
+      rcases List.mem_cons.mp hmem with heq | hmem
+      · subst left
+        exact ⟨_, hfirst⟩
+      · exact ih left hmem
+
 set_option maxRecDepth 10000 in
 theorem presampleCacheEntriesTrace_edgesMatch
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -219,6 +409,78 @@ theorem presampleCacheEntriesTrace_edgesMatch
     (chainTableEdgeInput parameter chain table)
     (chainTableEdgeTarget table) truncateHash allChainEdges result.1 hinfo.2.2
     htargets edge (mem_allChainEdges edge)
+
+set_option linter.constructorNameAsVariable false in
+theorem programChainTableEdgesTrace_support_info
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest) :
+    ∀ (edges : List ChainEdgeIndex) (cache : QueryCache HashSpec),
+      edges.Nodup →
+      (∀ edge ∈ edges,
+        cache (chainTableEdgeInput parameter chain table edge) = none) →
+      ∀ result ∈ support
+        (programChainTableEdgesTrace cache parameter chain table edges),
+        result.1.length = edges.length ∧ cache ≤ result.2 ∧
+          List.Forall₂
+            (fun edge output =>
+              result.2 (chainTableEdgeInput parameter chain table edge) = some output ∧
+                truncateHash output = chainTableEdgeTarget table edge)
+            edges result.1 := by
+  intro edges
+  induction edges with
+  | nil =>
+      intro cache _hnodup _habsent result hresult
+      simp only [programChainTableEdgesTrace_nil, support_pure,
+        Set.mem_singleton_iff] at hresult
+      subst result
+      simp
+  | cons edge edges ih =>
+      intro cache hnodup habsent result hresult
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      rw [programChainTableEdgesTrace_cons, mem_support_bind_iff] at hresult
+      obtain ⟨output, houtput, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      have htailAbsent : ∀ target ∈ edges,
+          (cache.cacheQuery
+            (chainTableEdgeInput parameter chain table edge) output)
+            (chainTableEdgeInput parameter chain table target) = none := by
+        intro target htarget
+        rw [QueryCache.cacheQuery_of_ne]
+        · exact habsent target (by simp [htarget])
+        · intro heq
+          exact hnotMem
+            ((chainTableEdgeInput_injective parameter chain table) heq.symm ▸ htarget)
+      obtain ⟨hlength, hcacheLe, hpairs⟩ :=
+        ih (cache.cacheQuery
+          (chainTableEdgeInput parameter chain table edge) output)
+          htailNodup htailAbsent rest hrest
+      refine ⟨by simp [hlength], ?_, ?_⟩
+      · exact (QueryCache.le_cacheQuery cache
+          (habsent edge (by simp))).trans hcacheLe
+      · apply List.Forall₂.cons
+        · constructor
+          · exact hcacheLe (QueryCache.cacheQuery_self cache
+              (chainTableEdgeInput parameter chain table edge) output)
+          · exact Rom.sampleHashOutputWithDigest_support_truncate _ _ houtput
+        · exact hpairs
+
+/-- Programming every candidate edge with an independent uniform high half makes the candidate table hold in the resulting cache with probability one. -/
+theorem programAllChainTableEdgesTrace_edgesMatch
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest)
+    (result : List HashOutput × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (programChainTableEdgesTrace ∅ parameter chain table allChainEdges)) :
+    ChainTableEdgesMatch result.2 parameter chain table := by
+  have hinfo := programChainTableEdgesTrace_support_info parameter chain table
+    allChainEdges ∅ allChainEdges_nodup (by simp) result hresult
+  intro edge
+  obtain ⟨output, hcache, htruncate⟩ :=
+    exists_right_of_forall₂ hinfo.2.2 edge (mem_allChainEdges edge)
+  exact ⟨output, hcache, htruncate⟩
 
 theorem chainWalk_eq_of_chainTable_matches
     (cache : QueryCache HashSpec) (secretKey : SecretKey)
