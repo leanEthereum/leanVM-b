@@ -473,8 +473,8 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // lands in the shared setup cache, so the reduction's `setup_for` is a cache
     // hit. Pure warm-up: the result is fetched from the cache, nothing here joins
     // the handle. (A no-BLAKE2s program still warms the size-1 padding shape.)
-    let n_b3_warm = exec.trace.blake2s.len().max(1);
-    std::thread::spawn(move || crate::blake2s_flock::warm_setup(n_b3_warm));
+    let n_blake2s_warm = exec.trace.blake2s.len().max(1);
+    std::thread::spawn(move || crate::blake2s_flock::warm_setup(n_blake2s_warm));
     let cycles = exec.cycles;
     let mut w = crate::stage!("Build witness", || program.build(&exec));
     let counts = w.layout.taus.map(|t| 1usize << t);
@@ -491,9 +491,10 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // `w.q` (≥1 instance, a program with no BLAKE2s carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-BLAKE2s fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
-    // WHIR over this commitment (below). The input/output words bind via the
-    // memory bus (virtual value columns route to q_flock); the constant pins reuse a
-    // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
+    // WHIR over this commitment (below). Message, chaining-value, and output words
+    // bind through the memory bus; counter and flags bind through bytecode. Their
+    // virtual value columns route to q_flock, so no separate pin claims are needed.
+    // Mirrored in `verify`.
     let (owners, spans) = bus_wiring(program, &w.layout);
     // The columns are windows into `w.q`, so both stages read them in place: the
     // table sumcheck lifts each K-column into a fresh `E` copy on the round it
@@ -539,9 +540,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     for v in pi_limbs {
         ps.add_scalar(v);
     }
-    // The input/output words bind via the memory bus (value columns are virtual and
-    // route to q_flock, see `slot_claims`); cv/counter/blen/flags are constants baked
-    // into flock's per-block matrices, so no pin claims are needed.
+    // Memory binds the message, chaining-value, and output words; bytecode binds
+    // the counter and flags. All corresponding value columns are virtual and route
+    // to q_flock through `slot_claims`.
     let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
@@ -636,14 +637,12 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
-    // BLAKE2s ↔ flock (single PCS): flock's R1CS validity and every leanVM point
-    // claim are verified together by ONE WHIR opening at the end. The executed-
-    // BLAKE2s count is public (announced); its flock sub-proof rides the shared
-    // `stream`/`openings`, and presence is enforced by consumption below plus
-    // `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice versa,
-    // fails to fully consume). No dedicated binding challenge: the input/output
-    // words bind via the memory bus, the pins reuse a bus point.
-    let n_b3 = 1usize << l.taus[tables::BLAKE2S_TABLE];
+    // BLAKE2s to flock (single PCS): flock's R1CS validity and every leanVM point
+    // claim are verified together by ONE WHIR opening at the end. The padded
+    // BLAKE2s table size is public and announced; its flock sub-proof rides the
+    // shared stream and openings. Memory and bytecode bind every compression input
+    // and output by routing their virtual value-column claims to q_flock.
+    let n_blake2s = 1usize << l.taus[tables::BLAKE2S_TABLE];
 
     let (owners, spans) = bus_wiring(program, &l);
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &owners, &spans, &mut vs).map_err(Error::Bus)?;
@@ -682,8 +681,9 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // Replay flock's reduction straight off the shared stream (each scalar bound
     // as it is read) to recover its `(ab, c)` validity claims on q_flock, then
     // verify them alongside every point claim in the ONE WHIR opening
-    // (mirroring `prove`). `n_blocks = max(n_b3, 1)`, always ≥ 1 instance.
-    let n_blocks = n_b3.max(1);
+    // (mirroring `prove`). The padding convention always supplies at least one
+    // instance, including programs that execute no BLAKE2s instruction.
+    let n_blocks = n_blake2s.max(1);
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::blake2s_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
     let flock_stream_end = vs.stream_offset();

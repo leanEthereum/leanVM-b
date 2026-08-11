@@ -54,8 +54,9 @@ pub enum Op {
         /// (canonical 128-bit chunks, top limbs zero).
         cv: u32,
         out: u32,
-        /// `counter:u64 | block_len:u32 | flags:u32`, little-endian, in the two
-        /// low K-lanes of a 192-bit immediate (top lane always zero).
+        /// `counter:u64 | f0:u32 | f1:u32`, little-endian, in the two low
+        /// K-lanes of a 192-bit immediate (top lane always zero). `f0` is the
+        /// final-block flag and `f1` is the last-node flag.
         metadata: F192,
     },
 }
