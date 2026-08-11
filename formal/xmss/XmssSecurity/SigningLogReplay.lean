@@ -118,6 +118,7 @@ theorem detailed_execution_signingLog_consistent
   unfold detailedGameWithCache detailedGameCore at hgame
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hgame
   obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hgame
+  unfold detailedGameAfterKeygen at hrest
   simp only at hrest
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hrest
   obtain ⟨⟨⟨forgery, signingLog⟩, adversaryCache⟩, hadversary, hverifyRest⟩ := hrest

@@ -15,12 +15,17 @@ import XmssSecurity.OutcomeClassification
 import XmssSecurity.ConcreteExecution
 import XmssSecurity.SigningLogReplay
 import XmssSecurity.ConcreteEventCollision
+import XmssSecurity.ConcreteEventProbability
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
 import XmssSecurity.Merkle
 import XmssSecurity.MixedOracle
+import XmssSecurity.FreshTarget
+import XmssSecurity.AdaptiveFreshTarget
+import XmssSecurity.PrefixTarget
 import XmssSecurity.RandomOracle
+import XmssSecurity.QueryBoundSupport
 import XmssSecurity.SecurityBudget
 import XmssSecurity.Serialization
 import XmssSecurity.Tweak

@@ -24,11 +24,10 @@ theorem GameOutcome.won_eq_true_iff (outcome : GameOutcome) :
   classical
   simp [GameOutcome.won, and_assoc]
 
-noncomputable def detailedGameCore (scheme : Scheme) (adversary : Adversary scheme) :
-    OracleComp OracleWorld GameOutcome := by
+noncomputable def detailedGameAfterKeygen (scheme : Scheme) (adversary : Adversary scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey) : OracleComp OracleWorld GameOutcome := by
   classical
   exact do
-    let (publicKey, secretKey) ← scheme.keygen
     let forward :
         QueryImpl OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
       (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
@@ -38,10 +37,15 @@ noncomputable def detailedGameCore (scheme : Scheme) (adversary : Adversary sche
     let verified ← scheme.verify publicKey forgery.epoch forgery.message forgery.signature
     return ⟨publicKey, secretKey, forgery, signingLog, verified⟩
 
+noncomputable def detailedGameCore (scheme : Scheme) (adversary : Adversary scheme) :
+    OracleComp OracleWorld GameOutcome := do
+  let (publicKey, secretKey) ← scheme.keygen
+  detailedGameAfterKeygen scheme adversary publicKey secretKey
+
 theorem gameCore_eq_map_detailedGameCore (scheme : Scheme) (adversary : Adversary scheme) :
     gameCore scheme adversary = GameOutcome.won <$> detailedGameCore scheme adversary := by
   classical
-  simp [gameCore, detailedGameCore, GameOutcome.won]
+  simp [gameCore, detailedGameCore, detailedGameAfterKeygen, GameOutcome.won]
 
 noncomputable def detailedGameWithCache (scheme : Scheme) (adversary : Adversary scheme) :
     ProbComp (GameOutcome × QueryCache HashSpec) :=
