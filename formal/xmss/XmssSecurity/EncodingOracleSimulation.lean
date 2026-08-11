@@ -22,6 +22,9 @@ abbrev EncodingSampleSpec : OracleSpec EncodingSampleAddress :=
   EncodingSampleAddress →ₒ HashOutput
 abbrev EncodingSamplingWorld := unifSpec + EncodingSampleSpec
 
+noncomputable instance : IsUniformSpec EncodingSampleSpec :=
+  IsUniformSpec.ofFintypeInhabited _
+
 noncomputable def uniformHashOutput : ProbComp HashOutput :=
   $ᵗ HashOutput
 
@@ -87,6 +90,26 @@ theorem simulateQ_encodingUniformQuery (index : unifSpec.Domain) :
     QueryImpl.simulateQ_add_liftComp_left]
   exact QueryImpl.simulateQ_toQueryImpl _
 
+theorem encodingUniformQuery_encodingSample_bound
+    (index : unifSpec.Domain) :
+    (encodingUniformQuery index).IsQueryBoundP (· matches .inr _) 0 := by
+  unfold encodingUniformQuery
+  rw [OracleComp.liftComp_query]
+  change (liftM (EncodingSamplingWorld.query (Sum.inl index)) :
+    OracleComp EncodingSamplingWorld _) |>.IsQueryBoundP (· matches .inr _) 0
+  rw [OracleComp.isQueryBoundP_query_iff]
+  simp
+
+theorem encodingSampleQuery_encodingSample_bound
+    (address : EncodingSampleAddress) :
+    (encodingSampleQuery address).IsQueryBoundP (· matches .inr _) 1 := by
+  unfold encodingSampleQuery
+  rw [OracleComp.liftComp_query]
+  change (liftM (EncodingSamplingWorld.query (Sum.inr address)) :
+    OracleComp EncodingSamplingWorld _) |>.IsQueryBoundP (· matches .inr _) 1
+  rw [OracleComp.isQueryBoundP_query_iff]
+  simp
+
 theorem splitUniformOracle_bridge
     (index : unifSpec.Domain) (cache : QueryCache HashSpec) :
     simulateQ encodingSamplingWorldImpl
@@ -96,6 +119,13 @@ theorem splitUniformOracle_bridge
     simulateQ_bind, monadLift_eq_self, simulateQ_encodingUniformQuery]
   simp only [simulateQ_pure]
   simp [unifFwdImpl, QueryImpl.liftTarget_apply, StateT.run_monadLift]
+
+theorem splitUniformOracle_encodingSample_bound
+    (index : unifSpec.Domain) (cache : QueryCache HashSpec) :
+    ((splitUniformOracle index).run cache).IsQueryBoundP
+      (· matches .inr _) 0 := by
+  rw [splitUniformOracle, QueryImpl.liftTarget_apply, StateT.run_monadLift]
+  exact encodingUniformQuery_encodingSample_bound index
 
 theorem simulateQ_encodingSamplingWorld_query
     (address : EncodingSampleAddress) :
@@ -113,6 +143,33 @@ theorem simulateQ_freshEncodingSampleImpl
   unfold freshEncodingSampleImpl
   exact simulateQ_encodingSamplingWorld_query
     (encodingSampleAddress parameter kind input)
+
+theorem splitRandomOracle_encodingSample_bound
+    (parameter : PublicParameter) (kind : EncodingSampleKind)
+    (input : HashInput) (cache : QueryCache HashSpec) :
+    ((splitRandomOracle parameter kind input).run cache).IsQueryBoundP
+      (· matches .inr _) 1 := by
+  apply QueryImpl.isQueryBoundP_run_withCaching
+    (freshEncodingSampleImpl parameter kind) input
+  exact encodingSampleQuery_encodingSample_bound
+    (encodingSampleAddress parameter kind input)
+
+theorem splitXmssRom_encodingSample_bound
+    (parameter : PublicParameter) (kind : EncodingSampleKind)
+    (computation : OracleComp OracleWorld α) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP (· matches .inr _) fuel)
+    (cache : QueryCache HashSpec) :
+    ((simulateQ (splitXmssRomImpl parameter kind) computation).run cache)
+      |>.IsQueryBoundP (· matches .inr _) fuel := by
+  apply OracleComp.IsQueryBoundP.simulateQ_run_add_inr_of_step
+    (p := fun input : OracleWorld.Domain => input matches .inr _)
+    (q := fun input : EncodingSamplingWorld.Domain => input matches .inr _)
+    (fun input => by simp) hbound
+  · exact splitUniformOracle_encodingSample_bound
+  · intro input _ cache
+    exact splitRandomOracle_encodingSample_bound parameter kind input cache
+  · intro input hfalse
+    simp at hfalse
 
 theorem uniformSampleImpl_hash_eq (input : HashInput) :
     (uniformSampleImpl (spec := HashSpec)) input = uniformHashOutput := by
@@ -241,6 +298,19 @@ theorem splitUnloggedMappedAdversary_evalDist_simulation
   exact splitUnloggedMappedAdversaryImpl_query_bridge
     publicKey secretKey input state
 
+noncomputable def encodingSampleControllerStep
+    (address : EncodingSampleAddress)
+    (next : HashOutput → OracleComp EncodingSamplingWorld α) :
+    ProbComp
+      (EncodingMonitor.ControllerAction
+        (OracleComp EncodingSamplingWorld α)) :=
+  match address.kind, address.epoch with
+  | .query, some epoch => pure (.query epoch next)
+  | .sign, some epoch => pure (.sign epoch next)
+  | _, _ => do
+      let output ← uniformHashOutput
+      pure (.skip (next output))
+
 noncomputable def encodingSamplingController
     (computation : OracleComp EncodingSamplingWorld α) :
     ProbComp
@@ -257,13 +327,7 @@ noncomputable def encodingSamplingController
           let output ← (liftM (unifSpec.query index) :
             ProbComp (unifSpec.Range index))
           recursivelyContinue output
-      | .inr address =>
-          match address.kind, address.epoch with
-          | .query, some epoch => pure (.query epoch next)
-          | .sign, some epoch => pure (.sign epoch next)
-          | _, _ => do
-              let output ← uniformHashOutput
-              pure (.skip (next output)))
+      | .inr address => encodingSampleControllerStep address next)
     computation
 
 noncomputable def runEncodingSamplingMonitor
@@ -271,6 +335,122 @@ noncomputable def runEncodingSamplingMonitor
     ProbComp Bool :=
   EncodingMonitor.runProbabilistic encodingSamplingController
     EncodingMonitor.State.empty fuel computation
+
+def EncodingSamplingContinuationBound (fuel : Nat) :
+    EncodingMonitor.ControllerAction
+      (OracleComp EncodingSamplingWorld α) → Prop
+  | .stop => True
+  | .skip next => next.IsQueryBoundP (· matches .inr _) fuel
+  | .query _ next => ∀ output, (next output).IsQueryBoundP (· matches .inr _) fuel
+  | .sign _ next => ∀ output, (next output).IsQueryBoundP (· matches .inr _) fuel
+
+theorem encodingSamplingController_continuationBound
+    (computation : OracleComp EncodingSamplingWorld α) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP (· matches .inr _) fuel.succ)
+    (action : EncodingMonitor.ControllerAction
+      (OracleComp EncodingSamplingWorld α))
+    (hmem : action ∈ support (encodingSamplingController computation)) :
+    EncodingSamplingContinuationBound fuel action := by
+  induction computation using OracleComp.inductionOn with
+  | pure result =>
+      simp [encodingSamplingController] at hmem
+      subst action
+      trivial
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      simp only [encodingSamplingController,
+        OracleComp.construct_query_bind] at hmem
+      cases input with
+      | inl index =>
+          rw [mem_support_bind_iff] at hmem
+          obtain ⟨output, _houtput, hcontinue⟩ := hmem
+          exact ih output (by simpa using hbound.2 output) hcontinue
+      | inr address =>
+          cases address with
+          | mk kind epoch =>
+              cases epoch with
+              | none =>
+                  simp only [encodingSampleControllerStep] at hmem
+                  change action ∈ support (uniformHashOutput >>= fun output =>
+                    pure (.skip (next output))) at hmem
+                  rw [mem_support_bind_iff] at hmem
+                  obtain ⟨output, _houtput, haction⟩ := hmem
+                  simp only [support_pure, Set.mem_singleton_iff] at haction
+                  subst action
+                  simpa [EncodingSamplingContinuationBound] using hbound.2 output
+              | some epoch =>
+                  cases kind with
+                  | side =>
+                      simp only [encodingSampleControllerStep] at hmem
+                      change action ∈ support (uniformHashOutput >>= fun output =>
+                        pure (.skip (next output))) at hmem
+                      rw [mem_support_bind_iff] at hmem
+                      obtain ⟨output, _houtput, haction⟩ := hmem
+                      simp only [support_pure, Set.mem_singleton_iff] at haction
+                      subst action
+                      simpa [EncodingSamplingContinuationBound] using hbound.2 output
+                  | query =>
+                      simp only [encodingSampleControllerStep] at hmem
+                      change action ∈ support (pure (.query epoch next)) at hmem
+                      simp only [support_pure, Set.mem_singleton_iff] at hmem
+                      subst action
+                      intro output
+                      simpa using hbound.2 output
+                  | sign =>
+                      simp only [encodingSampleControllerStep] at hmem
+                      change action ∈ support (pure (.sign epoch next)) at hmem
+                      simp only [support_pure, Set.mem_singleton_iff] at hmem
+                      subst action
+                      intro output
+                      simpa using hbound.2 output
+
+theorem encodingSamplingController_eq_stop_of_zero_bound
+    (computation : OracleComp EncodingSamplingWorld α)
+    (hbound : computation.IsQueryBoundP (· matches .inr _) 0)
+    (action : EncodingMonitor.ControllerAction
+      (OracleComp EncodingSamplingWorld α))
+    (hmem : action ∈ support (encodingSamplingController computation)) :
+    action = .stop := by
+  induction computation using OracleComp.inductionOn with
+  | pure result =>
+      simpa [encodingSamplingController] using hmem
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      simp only [encodingSamplingController,
+        OracleComp.construct_query_bind] at hmem
+      cases input with
+      | inl index =>
+          rw [mem_support_bind_iff] at hmem
+          obtain ⟨output, _houtput, hcontinue⟩ := hmem
+          exact ih output (by simpa using hbound.2 output) hcontinue
+      | inr address =>
+          exfalso
+          simpa using hbound.1
+
+def encodingSamplingTraceFragment
+    (input : EncodingSamplingWorld.Domain)
+    (output : EncodingSamplingWorld.Range input) : EncodingActionTrace :=
+  match input with
+  | .inl _ => []
+  | .inr address =>
+      match address.kind, address.epoch with
+      | .query, some epoch => [.query epoch output]
+      | .sign, some epoch => [.sign epoch output]
+      | _, _ => []
+
+noncomputable def encodingSamplingTraceImpl :
+    QueryImpl EncodingSamplingWorld
+      (WriterT EncodingActionTrace ProbComp) :=
+  QueryImpl.withTraceAppend encodingSamplingWorldImpl
+    encodingSamplingTraceFragment
+
+theorem encodingSamplingTrace_projection
+    (computation : OracleComp EncodingSamplingWorld α) :
+    Prod.fst <$>
+        (simulateQ encodingSamplingTraceImpl computation).run =
+      simulateQ encodingSamplingWorldImpl computation := by
+  exact QueryImpl.fst_map_run_withTraceAppend
+    encodingSamplingWorldImpl encodingSamplingTraceFragment computation
 
 theorem runEncodingSamplingMonitor_true_probability_le
     (fuel : Nat) (computation : OracleComp EncodingSamplingWorld α) :
