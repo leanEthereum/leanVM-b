@@ -1,5 +1,5 @@
 import XmssSecurity.ChainTableUniformity
-import XmssSecurity.RandomOraclePresampling
+import XmssSecurity.MixedOraclePresampling
 
 open OracleComp OracleSpec ENNReal
 
@@ -400,5 +400,120 @@ theorem evalDist_randomOracle_run'_eq_presample_chainTable
   apply OracleComp.evalDist_randomOracle_run'_eq_presampleList
   · exact chainTableEdgeInputs_nodup parameter chain table
   · simp
+
+/-- The candidate fixed-chain edge entries may also be sampled before an arbitrary computation over the full XMSS oracle. -/
+theorem evalDist_xmssRom_run'_eq_presample_chainTable
+    {α : Type} (computation : OracleComp OracleWorld α)
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest) :
+    𝒟[(simulateQ xmssRomImpl computation).run' ∅] =
+      𝒟[do
+        let sampledCache ← OracleComp.presampleCacheEntries ∅
+          (chainTableEdgeInputs parameter chain table)
+        (simulateQ xmssRomImpl computation).run' sampledCache] := by
+  apply evalDist_xmssRom_run'_eq_presampleList
+  · exact chainTableEdgeInputs_nodup parameter chain table
+  · simp
+
+/-- Traced form of fixed-chain presampling for the full XMSS oracle. -/
+theorem evalDist_xmssRom_run'_eq_presample_chainTableTrace
+    {α : Type} (computation : OracleComp OracleWorld α)
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest) :
+    𝒟[(simulateQ xmssRomImpl computation).run' ∅] =
+      𝒟[do
+        let trace ← OracleComp.presampleCacheEntriesTrace ∅
+          (chainTableEdgeInputs parameter chain table)
+        (simulateQ xmssRomImpl computation).run' trace.2] := by
+  apply evalDist_xmssRom_run'_eq_presampleTrace
+  · exact chainTableEdgeInputs_nodup parameter chain table
+  · simp
+
+/-- Candidate chain edges may be presampled conditionally after the public parameter is drawn. -/
+theorem evalDist_samplePublicParameter_then_xmssRom_eq_presample_chainTableTrace
+    {α : Type} (computation : PublicParameter → OracleComp OracleWorld α)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
+    𝒟[Concrete.samplePublicParameter >>= fun parameter =>
+        (simulateQ xmssRomImpl (computation parameter)).run' ∅] =
+      𝒟[Concrete.samplePublicParameter >>= fun parameter => do
+        let trace ← OracleComp.presampleCacheEntriesTrace ∅
+          (chainTableEdgeInputs parameter chain table)
+        (simulateQ xmssRomImpl (computation parameter)).run' trace.2] := by
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  exact evalDist_xmssRom_run'_eq_presample_chainTableTrace
+    (computation parameter) parameter chain table
+
+noncomputable def Concrete.keygenAfterParameter
+    (parameter : PublicParameter) :
+    OracleComp OracleWorld (PublicKey × SecretKey) := do
+  let secret ← liftM Concrete.sampleSecret
+  let root ← liftM
+    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+      OracleComp HashSpec Digest)
+  return (⟨root, parameter⟩, ⟨parameter, secret⟩)
+
+theorem Concrete.keygen_eq_samplePublicParameter_bind :
+    Concrete.keygen =
+      (liftM Concrete.samplePublicParameter >>= Concrete.keygenAfterParameter) := by
+  unfold Concrete.keygen Concrete.keygenAfterParameter
+  rfl
+
+/-- After separating the public-parameter draw, every candidate fixed-chain edge can be front-loaded before the remainder of key generation. -/
+theorem evalDist_keygen_eq_presample_chainTableTrace
+    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
+    𝒟[(simulateQ xmssRomImpl Concrete.keygen).run' ∅] =
+      𝒟[Concrete.samplePublicParameter >>= fun parameter => do
+        let trace ← OracleComp.presampleCacheEntriesTrace ∅
+          (chainTableEdgeInputs parameter chain table)
+        (simulateQ xmssRomImpl (Concrete.keygenAfterParameter parameter)).run' trace.2] := by
+  rw [Concrete.keygen_eq_samplePublicParameter_bind, simulateQ_bind]
+  change 𝒟[(simulateQ
+    (unifFwdImpl HashSpec +
+      (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
+    (liftM Concrete.samplePublicParameter) >>= fun parameter =>
+      simulateQ xmssRomImpl (Concrete.keygenAfterParameter parameter)).run' ∅] = _
+  rw [roSim.run'_liftM_bind]
+  exact evalDist_samplePublicParameter_then_xmssRom_eq_presample_chainTableTrace
+    Concrete.keygenAfterParameter chain table
+
+noncomputable def Concrete.detailedGameAfterParameter
+    (adversary : Adversary Concrete.scheme) (parameter : PublicParameter) :
+    OracleComp OracleWorld GameOutcome := do
+  let keys ← Concrete.keygenAfterParameter parameter
+  detailedGameAfterKeygen Concrete.scheme adversary keys.1 keys.2
+
+theorem Concrete.detailedGameCore_eq_samplePublicParameter_bind
+    (adversary : Adversary Concrete.scheme) :
+    detailedGameCore Concrete.scheme adversary =
+      (liftM Concrete.samplePublicParameter >>=
+        Concrete.detailedGameAfterParameter adversary) := by
+  unfold detailedGameCore Concrete.detailedGameAfterParameter
+  change (Concrete.keygen >>= fun keys =>
+    detailedGameAfterKeygen Concrete.scheme adversary keys.1 keys.2) = _
+  rw [Concrete.keygen_eq_samplePublicParameter_bind]
+  simp only [bind_assoc]
+
+/-- The full detailed game admits candidate fixed-chain presampling after the real public parameter is sampled. -/
+theorem evalDist_detailedGame_eq_presample_chainTableTrace
+    (adversary : Adversary Concrete.scheme)
+    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
+    𝒟[(simulateQ xmssRomImpl
+      (detailedGameCore Concrete.scheme adversary)).run' ∅] =
+      𝒟[Concrete.samplePublicParameter >>= fun parameter => do
+        let trace ← OracleComp.presampleCacheEntriesTrace ∅
+          (chainTableEdgeInputs parameter chain table)
+        (simulateQ xmssRomImpl
+          (Concrete.detailedGameAfterParameter adversary parameter)).run' trace.2] := by
+  rw [Concrete.detailedGameCore_eq_samplePublicParameter_bind, simulateQ_bind]
+  change 𝒟[(simulateQ
+    (unifFwdImpl HashSpec +
+      (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
+    (liftM Concrete.samplePublicParameter) >>= fun parameter =>
+      simulateQ xmssRomImpl
+        (Concrete.detailedGameAfterParameter adversary parameter)).run' ∅] = _
+  rw [roSim.run'_liftM_bind]
+  exact evalDist_samplePublicParameter_then_xmssRom_eq_presample_chainTableTrace
+    (Concrete.detailedGameAfterParameter adversary) chain table
 
 end XmssSecurity

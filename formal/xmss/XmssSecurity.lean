@@ -30,6 +30,7 @@ import XmssSecurity.KeygenCache
 import XmssSecurity.Merkle
 import XmssSecurity.MerkleQueryBound
 import XmssSecurity.MixedOracle
+import XmssSecurity.MixedOraclePresampling
 import XmssSecurity.FreshTarget
 import XmssSecurity.FreshLeafOrientation
 import XmssSecurity.LeafEventProbability
