@@ -243,4 +243,39 @@ theorem Concrete.leafAt_queryBound_leafAddress
   · exact (Concrete.leafAt_queryBound_zero_at_other_leaf parameter secret epoch
       targetEpoch hepoch).mono (by omega)
 
+theorem Concrete.chainWalk_queryBound_zero_merkleAddress
+    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
+    (position steps : Nat) (value : Digest)
+    (targetLevel : MerkleLevel) (targetNode : MerkleNode) :
+    (Concrete.chainWalk parameter epoch chain position steps value :
+      OracleComp HashSpec Digest).IsQueryBoundP
+        (AtHashAddress parameter (.merkle targetLevel targetNode)) 0 := by
+  apply Concrete.chainWalk_queryBound_zero_of_avoids
+  simp
+
+theorem Concrete.oneTimePublicKey_queryBound_zero_merkleAddress
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch : Epoch) (targetLevel : MerkleLevel) (targetNode : MerkleNode) :
+    (Concrete.oneTimePublicKey parameter secret epoch :
+      OracleComp HashSpec (ChainIndex → Digest)).IsQueryBoundP
+        (AtHashAddress parameter (.merkle targetLevel targetNode)) 0 := by
+  rw [Concrete.oneTimePublicKey]
+  exact Concrete.sequenceFin_queryBound_zero _ _ fun chain =>
+    Concrete.chainWalk_queryBound_zero_merkleAddress parameter epoch chain
+      0 (chainLength - 1) (secret epoch chain) targetLevel targetNode
+
+theorem Concrete.leafAt_queryBound_zero_merkleAddress
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch : Epoch) (targetLevel : MerkleLevel) (targetNode : MerkleNode) :
+    (Concrete.leafAt parameter secret epoch : OracleComp HashSpec Digest).IsQueryBoundP
+      (AtHashAddress parameter (.merkle targetLevel targetNode)) 0 := by
+  rw [Concrete.leafAt]
+  refine OracleComp.isQueryBoundP_bind (m := 0)
+    (Concrete.oneTimePublicKey_queryBound_zero_merkleAddress parameter secret epoch
+      targetLevel targetNode) ?_
+  intro endpoints _
+  exact Concrete.tweakableHash_queryBound_atOtherAddress parameter
+    (.merkle targetLevel targetNode) (.leaf epoch)
+    (Concrete.leafPayload endpoints) (by simp)
+
 end XmssSecurity

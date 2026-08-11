@@ -22,13 +22,16 @@ import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.HashAddress
 import XmssSecurity.IndexedHiddenValue
+import XmssSecurity.KeygenCache
 import XmssSecurity.Merkle
+import XmssSecurity.MerkleQueryBound
 import XmssSecurity.MixedOracle
 import XmssSecurity.FreshTarget
 import XmssSecurity.AdaptiveFreshTarget
 import XmssSecurity.PrefixTarget
 import XmssSecurity.RandomOracle
 import XmssSecurity.QueryBoundSupport
+import XmssSecurity.QueryPresence
 import XmssSecurity.SecurityBudget
 import XmssSecurity.Serialization
 import XmssSecurity.Tweak

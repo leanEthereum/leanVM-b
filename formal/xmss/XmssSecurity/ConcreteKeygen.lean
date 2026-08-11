@@ -65,9 +65,17 @@ attribute [irreducible] treeNode
 def rootNode : MerkleNode :=
   ⟨0, by simp [lifetime]⟩
 
+noncomputable def samplePublicParameter : ProbComp PublicParameter :=
+  $ᵗ PublicParameter
+
+noncomputable def sampleSecret : ProbComp (Epoch → ChainIndex → Digest) :=
+  $ᵗ (Epoch → ChainIndex → Digest)
+
+attribute [irreducible] samplePublicParameter sampleSecret
+
 noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
-  let parameter ← liftM ($ᵗ PublicParameter)
-  let secret ← liftM ($ᵗ (Epoch → ChainIndex → Digest))
+  let parameter ← liftM samplePublicParameter
+  let secret ← liftM sampleSecret
   let root ← liftM
     (treeNode parameter secret treeHeight rootNode : OracleComp HashSpec Digest)
   return (⟨root, parameter⟩, ⟨parameter, secret⟩)
