@@ -976,4 +976,248 @@ theorem runProbabilistic_empty_true_probability_le {σ : Type}
   simpa [State.pendingCount_empty, div_eq_mul_inv] using
     runProbabilistic_true_probability_le controller State.empty fuel control
 
+theorem pair_sublist_iff (first second : α) (actions : List α) :
+    List.Sublist [first, second] actions ↔
+      ∃ before middle after,
+        actions = before ++ (first :: (middle ++ (second :: after))) := by
+  constructor
+  · intro hsub
+    induction actions with
+    | nil => simp at hsub
+    | cons action actions ih =>
+        cases hsub with
+        | cons _ htail =>
+            obtain ⟨before, middle, after, hactions⟩ := ih htail
+            exact ⟨action :: before, middle, after, by simp [hactions]⟩
+        | cons_cons _ htail =>
+            have hsecond : second ∈ actions := by
+              exact List.singleton_sublist.mp htail
+            obtain ⟨middle, after, hactions⟩ := List.append_of_mem hsecond
+            exact ⟨[], middle, after, by simp [hactions]⟩
+  · rintro ⟨before, middle, after, rfl⟩
+    have hsecond : List.Sublist [second] (middle ++ second :: after) :=
+      List.singleton_sublist.mpr (List.mem_append_right middle (by simp))
+    have hprefix : List.Sublist (first :: (middle ++ (second :: after)))
+        (before ++ (first :: (middle ++ (second :: after)))) :=
+      List.sublist_append_right before _
+    exact (hsecond.cons_cons first).trans hprefix
+
+theorem observedSignEpochs_sublist {left right : List ObservedAction}
+    (hsub : List.Sublist left right) :
+    List.Sublist (observedSignEpochs left) (observedSignEpochs right) := by
+  induction hsub with
+  | slnil => exact .slnil
+  | cons action hsub ih =>
+      cases action with
+      | query epoch output => exact ih
+      | sign epoch output => exact ih.cons epoch
+  | cons_cons action hsub ih =>
+      cases action with
+      | query epoch output => exact ih
+      | sign epoch output => exact ih.cons_cons epoch
+
+def HasCollisionPair (actions : List ObservedAction) : Prop :=
+  ∃ epoch queriedOutput signedOutput,
+    truncateHash queriedOutput = truncateHash signedOutput ∧
+      (List.Sublist [.query epoch queriedOutput, .sign epoch signedOutput] actions ∨
+        List.Sublist [.sign epoch signedOutput, .query epoch queriedOutput] actions)
+
+theorem HasCollisionPair.mono {left right : List ObservedAction}
+    (hcollision : HasCollisionPair left) (hsub : List.Sublist left right) :
+    HasCollisionPair right := by
+  obtain ⟨epoch, queriedOutput, signedOutput, hdigest, hpair⟩ := hcollision
+  exact ⟨epoch, queriedOutput, signedOutput, hdigest,
+    hpair.imp (·.trans hsub) (·.trans hsub)⟩
+
+def StateRepresentedBy (state : State) (actions : List ObservedAction) : Prop :=
+  (∀ epoch digest, state.signed epoch = some digest →
+      ∃ output, .sign epoch output ∈ actions ∧ truncateHash output = digest) ∧
+    (∀ epoch digest, digest ∈ state.pending epoch →
+      ∃ output, .query epoch output ∈ actions ∧ truncateHash output = digest)
+
+theorem StateRepresentedBy.empty : StateRepresentedBy State.empty [] := by
+  constructor
+  · intro epoch digest hsigned
+    simp [State.empty] at hsigned
+  · intro epoch digest hpending
+    simp [State.empty] at hpending
+
+theorem StateRepresentedBy.applyObservedTotal
+    {state : State} {actions : List ObservedAction}
+    (hrepresented : StateRepresentedBy state actions)
+    (action : ObservedAction) :
+    StateRepresentedBy (state.applyObservedTotal action).state
+      (actions ++ [action]) := by
+  rcases hrepresented with ⟨hsignedRep, hpendingRep⟩
+  cases action with
+  | query epoch output =>
+      cases hsigned : state.signed epoch with
+      | some target =>
+          simp only [State.applyObservedTotal, hsigned]
+          constructor
+          · intro candidate digest hcandid
+            obtain ⟨oldOutput, hold, hdigest⟩ :=
+              hsignedRep candidate digest hcandid
+            exact ⟨oldOutput, List.mem_append_left _ hold, hdigest⟩
+          · intro candidate digest hcandid
+            obtain ⟨oldOutput, hold, hdigest⟩ :=
+              hpendingRep candidate digest hcandid
+            exact ⟨oldOutput, List.mem_append_left _ hold, hdigest⟩
+      | none =>
+          simp only [State.applyObservedTotal, hsigned]
+          constructor
+          · intro candidate digest hcandid
+            obtain ⟨oldOutput, hold, hdigest⟩ :=
+              hsignedRep candidate digest hcandid
+            exact ⟨oldOutput, List.mem_append_left _ hold, hdigest⟩
+          · intro candidate digest hcandid
+            by_cases heq : candidate = epoch
+            · subst candidate
+              simp only [State.addPending, Function.update_self,
+                Finset.mem_insert] at hcandid
+              rcases hcandid with hcandid | hcandid
+              · subst digest
+                exact ⟨output, by simp, rfl⟩
+              · obtain ⟨oldOutput, hold, hdigest⟩ :=
+                  hpendingRep epoch digest hcandid
+                exact ⟨oldOutput, List.mem_append_left _ hold, hdigest⟩
+            · have hold : digest ∈ state.pending candidate := by
+                simpa [State.addPending, heq] using hcandid
+              obtain ⟨oldOutput, hmem, hdigest⟩ :=
+                hpendingRep candidate digest hold
+              exact ⟨oldOutput, List.mem_append_left _ hmem, hdigest⟩
+  | sign epoch output =>
+      cases hsigned : state.signed epoch with
+      | some target =>
+          simp only [State.applyObservedTotal, hsigned]
+          constructor
+          · intro candidate digest hcandid
+            obtain ⟨oldOutput, hold, hdigest⟩ :=
+              hsignedRep candidate digest hcandid
+            exact ⟨oldOutput, List.mem_append_left _ hold, hdigest⟩
+          · intro candidate digest hcandid
+            obtain ⟨oldOutput, hold, hdigest⟩ :=
+              hpendingRep candidate digest hcandid
+            exact ⟨oldOutput, List.mem_append_left _ hold, hdigest⟩
+      | none =>
+          simp only [State.applyObservedTotal, hsigned]
+          constructor
+          · intro candidate digest hcandid
+            by_cases heq : candidate = epoch
+            · subst candidate
+              simp only [State.install, Function.update_self,
+                Option.some.injEq] at hcandid
+              subst digest
+              exact ⟨output, by simp, rfl⟩
+            · have hold : state.signed candidate = some digest := by
+                simpa [State.install, heq] using hcandid
+              obtain ⟨oldOutput, hmem, hdigest⟩ :=
+                hsignedRep candidate digest hold
+              exact ⟨oldOutput, List.mem_append_left _ hmem, hdigest⟩
+          · intro candidate digest hcandid
+            by_cases heq : candidate = epoch
+            · subst candidate
+              simp [State.install] at hcandid
+            · have hold : digest ∈ state.pending candidate := by
+                simpa [State.install, heq] using hcandid
+              obtain ⟨oldOutput, hmem, hdigest⟩ :=
+                hpendingRep candidate digest hold
+              exact ⟨oldOutput, List.mem_append_left _ hmem, hdigest⟩
+
+theorem replayObserved_hit_eq_true_hasCollisionPair
+    (state : State) (actionsBefore tail : List ObservedAction)
+    (hrepresented : StateRepresentedBy state actionsBefore)
+    (hhit : (replayObserved state tail).hit = true) :
+    HasCollisionPair (actionsBefore ++ tail) := by
+  induction tail generalizing state actionsBefore with
+  | nil => simp at hhit
+  | cons action tail ih =>
+      rw [replayObserved_cons] at hhit
+      let head := state.applyObservedTotal action
+      let rest := replayObserved head.state tail
+      change (head.hit || rest.hit) = true at hhit
+      rw [Bool.or_eq_true] at hhit
+      rcases hhit with hhead | htail
+      · cases action with
+        | query epoch output =>
+            cases hsigned : state.signed epoch with
+            | none => simp [head, State.applyObservedTotal, hsigned] at hhead
+            | some target =>
+                have hquery : truncateHash output = target := by
+                  simpa [head, State.applyObservedTotal, hsigned] using hhead
+                obtain ⟨signedOutput, hsignedMem, hsignedDigest⟩ :=
+                  hrepresented.1 epoch target hsigned
+                have hpair : List.Sublist
+                    [.sign epoch signedOutput, .query epoch output]
+                    (actionsBefore ++ .query epoch output :: tail) := by
+                  have hbase := (List.singleton_sublist.mpr hsignedMem).append
+                    (List.Sublist.refl [.query epoch output])
+                  exact hbase.trans (by simp)
+                exact ⟨epoch, output, signedOutput,
+                  hquery.trans hsignedDigest.symm, Or.inr hpair⟩
+        | sign epoch output =>
+            cases hsigned : state.signed epoch with
+            | some target => simp [head, State.applyObservedTotal, hsigned] at hhead
+            | none =>
+                have hpending : truncateHash output ∈ state.pending epoch := by
+                  simpa [head, State.applyObservedTotal, hsigned] using hhead
+                obtain ⟨queriedOutput, hqueryMem, hqueryDigest⟩ :=
+                  hrepresented.2 epoch (truncateHash output) hpending
+                have hpair : List.Sublist
+                    [.query epoch queriedOutput, .sign epoch output]
+                    (actionsBefore ++ .sign epoch output :: tail) := by
+                  have hbase := (List.singleton_sublist.mpr hqueryMem).append
+                    (List.Sublist.refl [.sign epoch output])
+                  exact hbase.trans (by simp)
+                exact ⟨epoch, queriedOutput, output, hqueryDigest,
+                  Or.inl hpair⟩
+      · have htailPair := ih head.state (actionsBefore ++ [action])
+          (hrepresented.applyObservedTotal action) htail
+        simpa [head, List.append_assoc] using htailPair
+
+theorem runObserved_empty_eq_true_of_collisionPair
+    (actions : List ObservedAction)
+    (hnodup : (observedSignEpochs actions).Nodup)
+    (hcollision : HasCollisionPair actions) :
+    runObserved State.empty actions = true := by
+  obtain ⟨epoch, queriedOutput, signedOutput, hdigest, hpair | hpair⟩ := hcollision
+  · obtain ⟨before, middle, after, hactions⟩ :=
+      (pair_sublist_iff _ _ _).mp hpair
+    subst actions
+    simpa [List.append_assoc] using
+      runObserved_empty_eq_true_of_query_before_sign_of_nodup
+        epoch queriedOutput signedOutput before middle after hdigest
+          (by simpa [List.append_assoc] using hnodup)
+  · obtain ⟨before, middle, after, hactions⟩ :=
+      (pair_sublist_iff _ _ _).mp hpair
+    subst actions
+    simpa [List.append_assoc] using
+      runObserved_empty_eq_true_of_sign_before_query_of_nodup
+        epoch signedOutput queriedOutput before middle after hdigest.symm
+          (by simpa [List.append_assoc] using hnodup)
+
+theorem collisionPair_of_runObserved_empty_eq_true
+    (actions : List ObservedAction)
+    (hnodup : (observedSignEpochs actions).Nodup)
+    (hhit : runObserved State.empty actions = true) :
+    HasCollisionPair actions := by
+  have hvalid : (replayObserved State.empty actions).valid = true :=
+    (replayObserved_empty_valid_iff actions).mpr hnodup
+  have hreplay := runObserved_eq_replayObserved_hit_of_valid
+    State.empty actions hvalid
+  rw [hreplay] at hhit
+  simpa using replayObserved_hit_eq_true_hasCollisionPair
+    State.empty [] actions StateRepresentedBy.empty hhit
+
+theorem runObserved_empty_eq_true_mono_sublist
+    {left right : List ObservedAction}
+    (hsub : List.Sublist left right)
+    (hnodup : (observedSignEpochs right).Nodup)
+    (hhit : runObserved State.empty left = true) :
+    runObserved State.empty right = true := by
+  have hsignSub := observedSignEpochs_sublist hsub
+  have hleftNodup := hsignSub.nodup hnodup
+  exact runObserved_empty_eq_true_of_collisionPair right hnodup
+    ((collisionPair_of_runObserved_empty_eq_true left hleftNodup hhit).mono hsub)
+
 end XmssSecurity.EncodingMonitor

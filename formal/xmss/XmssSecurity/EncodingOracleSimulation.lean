@@ -97,12 +97,23 @@ def encodingUniformQuery (index : unifSpec.Domain) :
     (liftM (unifSpec.query index) : ProbComp (unifSpec.Range index))
     EncodingSamplingWorld
 
+def encodingSampleAddressFromEpoch
+    (kind : EncodingSampleKind) : Option Epoch → EncodingSampleAddress
+  | none => ⟨.side, none⟩
+  | some epoch => ⟨kind, some epoch⟩
+
 noncomputable def encodingSampleAddress
     (parameter : PublicParameter) (kind : EncodingSampleKind)
     (input : HashInput) : EncodingSampleAddress :=
-  match encodingInputEpoch? parameter input with
-  | none => ⟨.side, none⟩
-  | some epoch => ⟨kind, some epoch⟩
+  encodingSampleAddressFromEpoch kind (encodingInputEpoch? parameter input)
+
+theorem encodingSampleAddress_eq_of_epoch
+    (parameter : PublicParameter) (kind : EncodingSampleKind)
+    (input : HashInput) (epoch : Epoch)
+    (hepoch : encodingInputEpoch? parameter input = some epoch) :
+    encodingSampleAddress parameter kind input = ⟨kind, some epoch⟩ := by
+  rw [encodingSampleAddress, hepoch]
+  rfl
 
 noncomputable def freshEncodingSampleImpl
     (parameter : PublicParameter) (kind : EncodingSampleKind) :
@@ -612,6 +623,84 @@ noncomputable def encodingSamplingTraceImpl :
       (WriterT EncodingActionTrace ProbComp) :=
   QueryImpl.withTraceAppend encodingSamplingWorldImpl
     encodingSamplingTraceFragment
+
+theorem encodingSamplingTraceImpl_query_run
+    (address : EncodingSampleAddress) :
+    (encodingSamplingTraceImpl (.inr address)).run =
+      (fun output =>
+        (output, encodingSamplingTraceFragment (.inr address) output)) <$>
+          encodingSamplingWorldImpl (.inr address) := by
+  unfold encodingSamplingTraceImpl
+  rw [QueryImpl.withTraceAppend_apply, WriterT.run_bind']
+  rw [WriterT.run_monadLift']
+  simp [WriterT.run_tell]
+
+theorem encodingSamplingTraceImpl_support_trace
+    (address : EncodingSampleAddress)
+    (result : EncodingSamplingWorld.Range (.inr address) × EncodingActionTrace)
+    (hmem : result ∈ support (encodingSamplingTraceImpl (.inr address)).run) :
+    result.2 = encodingSamplingTraceFragment (.inr address) result.1 := by
+  rw [encodingSamplingTraceImpl_query_run, support_map] at hmem
+  obtain ⟨output, _houtput, heq⟩ := hmem
+  subst result
+  rfl
+
+theorem encodingSampleQuery_tagged_support_trace
+    (kind : EncodingSampleKind) (epoch : Epoch)
+    (result : HashOutput × EncodingActionTrace)
+    (hmem : result ∈ support
+      (simulateQ encodingSamplingTraceImpl
+        (encodingSampleQuery ⟨kind, some epoch⟩)).run) :
+    result.2 = match kind with
+      | .query => [.query epoch result.1]
+      | .sign => [.sign epoch result.1]
+      | .side => [] := by
+  let address := EncodingSampleAddress.mk kind (some epoch)
+  change result ∈ support
+    (simulateQ encodingSamplingTraceImpl (encodingSampleQuery address)).run at hmem
+  unfold encodingSampleQuery at hmem
+  rw [OracleComp.liftComp_query, simulateQ_map, WriterT.run_map', support_map]
+    at hmem
+  obtain ⟨outerResult, houter, hresultEq⟩ := hmem
+  simp only [OracleQuery.input_query] at houter
+  rw [simulateQ_liftM_query encodingSamplingTraceImpl
+    (EncodingSampleSpec.query address)] at houter
+  simp only [QueryImpl.mapQuery, WriterT.run_map', support_map] at houter
+  obtain ⟨handledResult, hhandled, houterEq⟩ := houter
+  change handledResult ∈
+    support (encodingSamplingTraceImpl (.inr address)).run at hhandled
+  have htrace :=
+    encodingSamplingTraceImpl_support_trace address handledResult hhandled
+  have hresultTrace : result.2 = handledResult.2 := by
+    calc
+      result.2 = outerResult.2 := by
+        simpa using (congrArg Prod.snd hresultEq).symm
+      _ = handledResult.2 := by
+        simpa using (congrArg Prod.snd houterEq).symm
+  have hresultOutput : result.1 = handledResult.1 := by
+    calc
+      result.1 = outerResult.1 := by
+        simpa using (congrArg Prod.fst hresultEq).symm
+      _ = handledResult.1 := by
+        simpa using (congrArg Prod.fst houterEq).symm
+  rw [hresultTrace, hresultOutput]
+  cases kind <;> simpa [address, encodingSamplingTraceFragment] using htrace
+
+theorem encodingSampleQuery_query_support_trace
+    (epoch : Epoch) (result : HashOutput × EncodingActionTrace)
+    (hmem : result ∈ support
+      (simulateQ encodingSamplingTraceImpl
+        (encodingSampleQuery ⟨.query, some epoch⟩)).run) :
+    result.2 = [.query epoch result.1] := by
+  simpa using encodingSampleQuery_tagged_support_trace .query epoch result hmem
+
+theorem encodingSampleQuery_sign_support_trace
+    (epoch : Epoch) (result : HashOutput × EncodingActionTrace)
+    (hmem : result ∈ support
+      (simulateQ encodingSamplingTraceImpl
+        (encodingSampleQuery ⟨.sign, some epoch⟩)).run) :
+    result.2 = [.sign epoch result.1] := by
+  simpa using encodingSampleQuery_tagged_support_trace .sign epoch result hmem
 
 theorem encodingSamplingTrace_projection
     (computation : OracleComp EncodingSamplingWorld α) :
