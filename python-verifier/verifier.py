@@ -1017,7 +1017,7 @@ def verify_constraints(
 
 # VM statement, layout, and AIR -----------------------------------------------
 
-FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
+FAMILY_DIGEST = bytes.fromhex("bc44ee31d86394b8e1256f37cf3bf8720212dd97a68d1e5f357a992c46acf1a7")
 MAX_LOG_BYTECODE = 32
 
 # The bytecode's nine public columns (opcode + eight operand/immediate slots)
@@ -2082,8 +2082,8 @@ def blake3_bilinear(
     block_length = 1216
     flags = 1248
     gates_base = 1280
-    gate_stride = 250
-    output_high = 15280
+    gate_stride = 248
+    output_high = 15168
     left_total = ZERO
     right_total = ZERO
     constant_rows = ZERO
@@ -2116,6 +2116,36 @@ def blake3_bilinear(
                 carry += column_weights[carry_base + bit]
         return tuple(output)
 
+    def add3(x: Sequence[E], y: Sequence[E], z: Sequence[E], base: int) -> tuple[E, ...]:
+        """Fused three-operand add: 31 majority rows then 30 ripple rows.
+
+        The majority of bit `i` is `maj_aux[i] + z[i]`, since over GF(2)
+        `(x+z)(y+z) = xy + xz + yz + z`; then `x + y + z` is the ripple sum of
+        `p = x^y^z` against `q[i] = maj[i-1]`, whose bit 0 is zero, so the
+        ripple layer's bit 0 needs no row and slot `base + 31 + i - 1` carries
+        bit `i`.
+        """
+        nonlocal left_total, right_total
+        majority = []
+        for bit in range(31):
+            weight = row_weights[base + bit]
+            left_total += weight * (x[bit] + z[bit])
+            right_total += weight * (y[bit] + z[bit])
+            majority.append(column_weights[base + bit] + z[bit])
+        ripple_base = base + 31
+        carry = ZERO
+        output = []
+        for bit in range(32):
+            q = ZERO if bit == 0 else majority[bit - 1]
+            left = x[bit] + y[bit] + z[bit] + carry
+            output.append(left + q)
+            if 1 <= bit <= 30:
+                weight = row_weights[ripple_base + bit - 1]
+                left_total += weight * left
+                right_total += weight * (q + carry)
+                carry += column_weights[ripple_base + bit - 1]
+        return tuple(output)
+
     def linear_rows(values: Sequence[E], base: int) -> None:
         nonlocal left_total, constant_rows
         for bit in range(32):
@@ -2143,17 +2173,15 @@ def blake3_bilinear(
             mx_index, my_index = BLAKE3_MESSAGE_PAIRS[gate_index]
             mx = slots(message_base + 32 * message_order[mx_index])
             my = slots(message_base + 32 * message_order[my_index])
-            temp0 = add(a, b, gate_base)
-            a1 = add(temp0, mx, gate_base + 31)
+            a1 = add3(a, b, mx, gate_base)
             d1 = rotate_right(xor(d, a1), 16)
-            c1 = add(c, d1, gate_base + 62)
+            c1 = add(c, d1, gate_base + 61)
             b1 = rotate_right(xor(b, c1), 12)
-            temp1 = add(a1, b1, gate_base + 93)
-            a2 = add(temp1, my, gate_base + 124)
+            a2 = add3(a1, b1, my, gate_base + 92)
             d2 = rotate_right(xor(d1, a2), 8)
-            c2 = add(c1, d2, gate_base + 155)
+            c2 = add(c1, d2, gate_base + 153)
             b_new = rotate_right(xor(b1, c2), 7)
-            b_base = gate_base + 186
+            b_base = gate_base + 184
             d_base = b_base + 32
             linear_rows(b_new, b_base)
             linear_rows(d2, d_base)

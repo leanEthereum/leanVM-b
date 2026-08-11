@@ -85,6 +85,31 @@ pub(crate) fn add_carry_parts(x: u32, y: u32) -> (u32, u32, u32, u32) {
     (sum, left, right, carry_aux)
 }
 
+/// One fused three-operand ADD's witness parts (see
+/// `blake3::write_add3_fused_rows` for the row algebra): the sum, then each
+/// layer's `(left, right, product)` triple.
+///
+/// The majority triple is masked to bits 0..=30. The ripple triple is masked
+/// to bits 1..=30 **and shifted down by one**, so its slot `j` holds bit
+/// `j + 1`, matching the 30-slot ripple run.
+#[inline(always)]
+pub(crate) fn add3_fused_parts(x: u32, y: u32, z: u32) -> (u32, (u32, u32, u32), (u32, u32, u32)) {
+    const MASK_LO31: u32 = 0x7FFF_FFFF;
+    const MASK_LO30: u32 = 0x3FFF_FFFF;
+    let maj_left = (x ^ z) & MASK_LO31;
+    let maj_right = (y ^ z) & MASK_LO31;
+    let maj_aux = maj_left & maj_right;
+    // p + 2·maj, where maj[i] = maj_aux[i] ⊕ z[i] is the bitwise majority.
+    let p = x ^ y ^ z;
+    let q = (maj_aux ^ (z & MASK_LO31)) << 1;
+    let sum = p.wrapping_add(q);
+    let cin = sum ^ p ^ q;
+    let rip_left = ((p ^ cin) >> 1) & MASK_LO30;
+    let rip_right = ((q ^ cin) >> 1) & MASK_LO30;
+    let rip_aux = rip_left & rip_right;
+    (sum, (maj_left, maj_right, maj_aux), (rip_left, rip_right, rip_aux))
+}
+
 /// K × K identity sparse matrix.
 pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
     SparseBinaryMatrix {

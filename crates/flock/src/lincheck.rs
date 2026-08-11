@@ -190,7 +190,7 @@ pub trait LincheckCircuit: Sync {
 ///
 ///   `comb[c] = α · Σ_{r ∈ colA(c)} eq_inner[r] + Σ_{r ∈ colB(c)} eq_inner[r]`
 ///
-/// On BLAKE3's matrices (k = 2^14, ~21M nonzeros) this measures ~1.7× faster
+/// On BLAKE3's matrices (k = 2^14, ~16.7M nonzeros) this measures ~1.7× faster
 /// than the row-scatter fold. Construction costs one pass over the nonzeros
 /// (~40 ms), so do it once at setup, e.g. via
 /// [`crate::r1cs::BlockR1cs::csc_lincheck_circuit`].

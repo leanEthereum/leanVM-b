@@ -7,12 +7,20 @@
 //! ## Encoding choice: "Option D" (minimum-slot)
 //!
 //! BLAKE3 has no AND-based Ch/Maj; the only nonlinear constraints are the
-//! carry_aux bits of 32-bit ADDs. Per compression: 7 rounds × 8 G × 6 ADDs
-//! × 31 carry_aux = **10,416 ANDs**. We materialize **only the irreducible
-//! slots**:
+//! product bits of 32-bit ADDs. Per compression: 7 rounds × 8 G × (2 fused
+//! three-operand ADDs × 61 + 2 two-operand ADDs × 31) = **10,304 ANDs**,
+//! the multiplicative-complexity floor for this decomposition. We
+//! materialize **only the irreducible slots**:
 //!
 //! - **No sum-bit slots**. Each ADD's 32 sum bits expand into lin_funcs at
 //!   the use site (`s[i] = X[i] ⊕ Y[i] ⊕ ⊕_{j<i} carry_aux[j]`).
+//! - **Fused three-operand ADDs.** `a + b + mx` is one 61-slot gadget, not
+//!   two chained 31-slot ripples: a carry-save layer witnesses the 31
+//!   majorities, then one ripple adds the affine partial sum against the
+//!   shifted majorities, whose bit 0 is zero and so needs no product. Worth
+//!   one slot per three-operand ADD, and (the reason to do it) it halves the
+//!   carry-prefix depth the `a` lane cascade carries forward, cutting matrix
+//!   nonzeros 21.0M → 16.7M.
 //! - **No `a_new` / `c_new` lin-id slots**. Lanes 0 to 3 ("a" positions) and
 //!   8 to 11 ("c" positions) cascade: every read of these lanes inlines the
 //!   full chain of carry_aux references from prior G's that touched the
@@ -45,26 +53,27 @@
 //!   z[1,184  ..  1,216)        = counter_hi (free input)
 //!   z[1,216  ..  1,248)        = block_len  (free input)
 //!   z[1,248  ..  1,280)        = flags      (free input)
-//!   z[1,280  .. 15,280)        = 56 G blocks × 250 bits each
-//!   z[15,280 .. 15,536)        = out_hi[0..8] = state[8..16] ^ cv[0..8]
-//!   z[15,536 .. 16,384)        = padding (forced to 0 by empty rows)
+//!   z[1,280  .. 15,168)        = 56 G blocks × 248 bits each
+//!   z[15,168 .. 15,424)        = out_hi[0..8] = state[8..16] ^ cv[0..8]
+//!   z[15,424 .. 16,384)        = padding (forced to 0 by empty rows)
 //! ```
 //!
-//! Per G block layout (250 bits):
+//! Per G block layout (248 bits):
 //! ```text
-//!   [0   .. 31)    carry_aux for ADD_TMP0  = a + b
-//!   [31  .. 62)    carry_aux for ADD_A1    = ADD_TMP0 + mx        (→ a_1)
-//!   [62  .. 93)    carry_aux for ADD_C1    = c + d_1              (→ c_1)
-//!   [93  .. 124)   carry_aux for ADD_TMP1  = a_1 + b_1
-//!   [124 .. 155)   carry_aux for ADD_A2    = ADD_TMP1 + my        (→ a_new)
-//!   [155 .. 186)   carry_aux for ADD_C2    = c_1 + d_2            (→ c_new)
-//!   [186 .. 218)   b_new = rotr7(b_1 ^ c_2)                (lin-id)
-//!   [218 .. 250)   d_new = rotr8(d_1 ^ a_2)                (lin-id)
+//!   [0   .. 31)    majority products, ADD3_A1 = a + b + mx        (→ a_1)
+//!   [31  .. 61)    ripple products,   ADD3_A1
+//!   [61  .. 92)    carry_aux for ADD_C1      = c + d_1            (→ c_1)
+//!   [92  .. 123)   majority products, ADD3_A2 = a_1 + b_1 + my    (→ a_new)
+//!   [123 .. 153)   ripple products,   ADD3_A2
+//!   [153 .. 184)   carry_aux for ADD_C2      = c_1 + d_2          (→ c_new)
+//!   [184 .. 216)   b_new = rotr7(b_1 ^ c_2)                (lin-id)
+//!   [216 .. 248)   d_new = rotr8(d_1 ^ a_2)                (lin-id)
 //! ```
 //!
-//! `tmp_0`, `a_1`, `c_1`, `tmp_1`, `a_2 (a_new)`, `c_2 (c_new)`, `d_1`,
-//! `b_1`, `d_2` are NEVER materialized as slots: they're lin_funcs
-//! evaluated at row-build time and threaded forward in the state cascade.
+//! `a_1`, `c_1`, `a_2 (a_new)`, `c_2 (c_new)`, `d_1`, `b_1`, `d_2` and both
+//! fused ADDs' partial sums are NEVER materialized as slots: they're
+//! lin_funcs evaluated at row-build time and threaded forward in the state
+//! cascade.
 //!
 //! ## Constraint shape (`C = I`)
 //!
@@ -96,7 +105,7 @@
 //! - **Input binding**: all compression inputs are free witness bits. PCS-level
 //!   openings at fixed indices pin them to claimed memory and bytecode values.
 
-use crate::blake3_witness::{BitRecord, add_carry_parts, or_bit_at, or_u32_at_bit, xor_dedup};
+use crate::blake3_witness::{BitRecord, add_carry_parts, add3_fused_parts, or_bit_at, or_u32_at_bit, xor_dedup};
 use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use crate::verifier;
 use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
@@ -125,15 +134,18 @@ pub const N_G: usize = N_ROUNDS * N_G_PER_ROUND;
 /// Bits per BLAKE3 word.
 pub const WORD_BITS: usize = 32;
 
-/// Carry_aux bits per 32-bit ADD (bit 0..30; bit 31 is the discarded
-/// mod-2³² carry-out and isn't allocated).
+/// Carry_aux bits per 32-bit two-operand ADD (bit 0..30; bit 31 is the
+/// discarded mod-2³² carry-out and isn't allocated).
 pub const CARRY_BITS_PER_ADD: usize = WORD_BITS - 1; // 31
-/// ADDs per G.
-pub const ADDS_PER_G: usize = 6;
+/// Ripple-layer product bits per fused three-operand ADD (bit 1..30): bit 0's
+/// product is `p₀ · 0`, since the shifted majority word's bit 0 is zero.
+pub const RIPPLE_BITS_PER_ADD3: usize = WORD_BITS - 2; // 30
+/// Product slots per fused three-operand ADD: 31 majorities + 30 ripple.
+pub const ADD3_BITS: usize = CARRY_BITS_PER_ADD + RIPPLE_BITS_PER_ADD3; // 61
 /// Lin-id 32-bit words per G (b_new, d_new).
 pub const LIN_WORDS_PER_G: usize = 2;
 /// Bits per G block (no sum-bit slots, see module docs).
-pub const G_STRIDE: usize = ADDS_PER_G * CARRY_BITS_PER_ADD + LIN_WORDS_PER_G * WORD_BITS; // 250
+pub const G_STRIDE: usize = 2 * ADD3_BITS + 2 * CARRY_BITS_PER_ADD + LIN_WORDS_PER_G * WORD_BITS; // 248
 
 /// BLAKE3 initial hash values (identical to SHA-256 IV).
 pub const BLAKE3_IV: [u32; 8] = [
@@ -183,19 +195,17 @@ pub const T_HI_BASE: usize = T_LO_BASE + WORD_BITS; // 1184
 pub const BLEN_BASE: usize = T_HI_BASE + WORD_BITS; // 1216
 pub const FLAGS_BASE: usize = BLEN_BASE + WORD_BITS; // 1248
 pub const GS_BASE: usize = FLAGS_BASE + WORD_BITS; // 1280
-pub const OUT_HI_BASE: usize = GS_BASE + N_G * G_STRIDE; // 15,280
-pub const USEFUL_BITS: usize = OUT_HI_BASE + 8 * WORD_BITS; // 15,536
+pub const OUT_HI_BASE: usize = GS_BASE + N_G * G_STRIDE; // 15,168
+pub const USEFUL_BITS: usize = OUT_HI_BASE + 8 * WORD_BITS; // 15,424
 
-// G sub-block: ADD `add_idx` ∈ 0..6 (carry_aux only), then lin-id
-// `which` ∈ 0..2.
-const ADD_TMP0: usize = 0;
-const ADD_A1: usize = 1;
-const ADD_C1: usize = 2;
-const ADD_TMP1: usize = 3;
-const ADD_A2: usize = 4;
-const ADD_C2: usize = 5;
-const LIN_B_NEW: usize = 0;
-const LIN_D_NEW: usize = 1;
+// Sub-block offsets within one G's `G_STRIDE` slots. A fused ADD owns two
+// consecutive runs (majorities then ripple); a two-operand ADD owns one.
+const G_ADD3_A1: usize = 0; // a + b + mx  → a_1
+const G_ADD_C1: usize = G_ADD3_A1 + ADD3_BITS; // c + d_1 → c_1
+const G_ADD3_A2: usize = G_ADD_C1 + CARRY_BITS_PER_ADD; // a_1 + b_1 + my → a_new
+const G_ADD_C2: usize = G_ADD3_A2 + ADD3_BITS; // c_1 + d_2 → c_new
+const G_LIN_B_NEW: usize = G_ADD_C2 + CARRY_BITS_PER_ADD;
+const G_LIN_D_NEW: usize = G_LIN_B_NEW + WORD_BITS;
 
 #[inline]
 fn cv_bit(w: usize, b: usize) -> usize {
@@ -207,15 +217,12 @@ fn m_bit(i: usize, b: usize) -> usize {
     debug_assert!(i < 16 && b < WORD_BITS);
     M_BASE + WORD_BITS * i + b
 }
+/// Base slot of the sub-block at offset `off` (one of the `G_*` constants)
+/// within G `g`'s block.
 #[inline]
-fn g_add_carry_bit(g: usize, add_idx: usize, b: usize) -> usize {
-    debug_assert!(g < N_G && add_idx < ADDS_PER_G && b < CARRY_BITS_PER_ADD);
-    GS_BASE + G_STRIDE * g + CARRY_BITS_PER_ADD * add_idx + b
-}
-#[inline]
-fn g_lin_bit(g: usize, which: usize, b: usize) -> usize {
-    debug_assert!(g < N_G && which < LIN_WORDS_PER_G && b < WORD_BITS);
-    GS_BASE + G_STRIDE * g + ADDS_PER_G * CARRY_BITS_PER_ADD + WORD_BITS * which + b
+fn g_slot(g: usize, off: usize) -> usize {
+    debug_assert!(g < N_G && off < G_STRIDE);
+    GS_BASE + G_STRIDE * g + off
 }
 #[inline]
 fn out_lo_bit(w: usize, b: usize) -> usize {
@@ -427,6 +434,81 @@ fn write_add_carry_rows(
 }
 
 // ---------------------------------------------------------------------------
+// Per fused three-operand ADD `x + y + z`: write the 31 majority rows and the
+// 30 ripple rows, and return the sum-bit `Word`.
+//
+// Carry-save layer, slots `[base, base + 31)`:
+//
+//   maj_aux[i] = (X[i] ⊕ Z[i]) · (Y[i] ⊕ Z[i])       (R1CS AND row)
+//   maj[i]     = maj_aux[i] ⊕ Z[i]                   (majority, affine)
+//
+// since over GF(2) `(x+z)(y+z) = xy ⊕ xz ⊕ yz ⊕ z`. Then `x + y + z` equals
+// `p + 2·maj` with `p[i] = X[i] ⊕ Y[i] ⊕ Z[i]`, so the ripple layer at slots
+// `[base + 31, base + 61)` adds `p` against `q[i] = maj[i-1]`, `q[0] = 0`:
+//
+//   rip_aux[i] = (p[i] ⊕ cin[i]) · (q[i] ⊕ cin[i]),  i = 1..30
+//   sum[i]     = p[i] ⊕ q[i] ⊕ cin[i]                (no slot, lin_func)
+//
+// with `cin[i] = ⊕_{1 ≤ j < i} rip_aux[j]`. Bit 0 needs no row: `q[0] = 0` and
+// `cin[0] = 0` make its product identically zero, hence `cin[1] = 0` too, and
+// slot `base + 31 + i − 1` carries bit `i`. `maj[31]` would weigh 2³², so the
+// majority layer stops at bit 30 like a two-operand carry chain.
+// ---------------------------------------------------------------------------
+
+fn write_add3_fused_rows(
+    a_rows: &mut [Vec<usize>],
+    b_rows: &mut [Vec<usize>],
+    x: &Word,
+    y: &Word,
+    z: &Word,
+    base: usize,
+) -> Word {
+    let rip_base = base + CARRY_BITS_PER_ADD;
+    for i in 0..CARRY_BITS_PER_ADD {
+        let mut a = x.bits[i].clone();
+        a.extend(&z.bits[i]);
+        let mut b = y.bits[i].clone();
+        b.extend(&z.bits[i]);
+        a_rows[base + i] = xor_dedup(a);
+        b_rows[base + i] = xor_dedup(b);
+    }
+
+    let mut p = Word::zero();
+    let mut q = Word::zero();
+    for i in 0..WORD_BITS {
+        let mut v = x.bits[i].clone();
+        v.extend(&y.bits[i]);
+        v.extend(&z.bits[i]);
+        p.bits[i] = xor_dedup(v);
+        if i > 0 {
+            let mut v = vec![base + i - 1];
+            v.extend(&z.bits[i - 1]);
+            q.bits[i] = xor_dedup(v);
+        }
+    }
+
+    // `cin[i]`, empty for i ∈ {0, 1}.
+    let cin = |i: usize| (1..i).map(|j| rip_base + j - 1);
+    for i in 1..=RIPPLE_BITS_PER_ADD3 {
+        let mut a = p.bits[i].clone();
+        a.extend(cin(i));
+        let mut b = q.bits[i].clone();
+        b.extend(cin(i));
+        a_rows[rip_base + i - 1] = xor_dedup(a);
+        b_rows[rip_base + i - 1] = xor_dedup(b);
+    }
+
+    let mut out = Word::zero();
+    for i in 0..WORD_BITS {
+        let mut v = p.bits[i].clone();
+        v.extend(&q.bits[i]);
+        v.extend(cin(i));
+        out.bits[i] = v;
+    }
+    out.dedup()
+}
+
+// ---------------------------------------------------------------------------
 // Initial lane sources at the start of compression.
 // ---------------------------------------------------------------------------
 
@@ -501,34 +583,31 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
             let mx = Word::from_slot_base(m_bit(mx_idx, 0));
             let my = Word::from_slot_base(m_bit(my_idx, 0));
 
-            // tmp_0 = a + b
-            let tmp_0 = write_add_carry_rows(&mut a_rows, &mut b_rows, &a, &b, g_add_carry_bit(g, ADD_TMP0, 0));
-            // a_1 = tmp_0 + mx
-            let a_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &tmp_0, &mx, g_add_carry_bit(g, ADD_A1, 0));
+            // a_1 = a + b + mx   (fused; mx is the sparse operand, so it takes
+            // the majority layer's doubled `z` position)
+            let a_1 = write_add3_fused_rows(&mut a_rows, &mut b_rows, &a, &b, &mx, g_slot(g, G_ADD3_A1));
             // d_1 = rotr16(d ^ a_1)
             let d_1 = d.xor(&a_1).dedup().rotr(16);
             // c_1 = c + d_1
-            let c_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c, &d_1, g_add_carry_bit(g, ADD_C1, 0));
+            let c_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c, &d_1, g_slot(g, G_ADD_C1));
             // b_1 = rotr12(b ^ c_1)
             let b_1 = b.xor(&c_1).dedup().rotr(12);
-            // tmp_1 = a_1 + b_1
-            let tmp_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
-            // a_2 = tmp_1 + my   (= a_new, cascades)
-            let a_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
+            // a_2 = a_1 + b_1 + my   (fused; = a_new, cascades)
+            let a_2 = write_add3_fused_rows(&mut a_rows, &mut b_rows, &a_1, &b_1, &my, g_slot(g, G_ADD3_A2));
             // d_2 = rotr8(d_1 ^ a_2)
             let d_2 = d_1.xor(&a_2).dedup().rotr(8);
             // c_2 = c_1 + d_2    (= c_new, cascades)
-            let c_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
+            let c_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c_1, &d_2, g_slot(g, G_ADD_C2));
             // b_new = rotr7(b_1 ^ c_2)    (materialized lin-id)
             let b_new_word = b_1.xor(&c_2).dedup().rotr(7);
             for i in 0..WORD_BITS {
-                let s = g_lin_bit(g, LIN_B_NEW, i);
+                let s = g_slot(g, G_LIN_B_NEW + i);
                 a_rows[s] = b_new_word.bits[i].clone();
                 b_rows[s] = vec![Z_CONST_POS];
             }
             // d_new = d_2                  (materialized lin-id)
             for i in 0..WORD_BITS {
-                let s = g_lin_bit(g, LIN_D_NEW, i);
+                let s = g_slot(g, G_LIN_D_NEW + i);
                 a_rows[s] = d_2.bits[i].clone();
                 b_rows[s] = vec![Z_CONST_POS];
             }
@@ -536,9 +615,9 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
             // Advance the symbolic state. `a_2` and `c_2` keep cascading;
             // `b_new` and `d_new` reset to single-slot lookups.
             state[la] = a_2;
-            state[lb] = Word::from_slot_base(g_lin_bit(g, LIN_B_NEW, 0));
+            state[lb] = Word::from_slot_base(g_slot(g, G_LIN_B_NEW));
             state[lc] = c_2;
-            state[ld] = Word::from_slot_base(g_lin_bit(g, LIN_D_NEW, 0));
+            state[ld] = Word::from_slot_base(g_slot(g, G_LIN_D_NEW));
         }
     }
 
@@ -586,7 +665,7 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
 // intermediate wire the running linear combination. Row i's contribution
 // `u[i]·⟨A_i, w⟩` / `u[i]·⟨B_i, w⟩` is accumulated exactly where
 // `build_matrices` would emit that row, with `⟨row, w⟩` read off the threaded
-// wire values. Cost: O(circuit) field ops (~50K muls), never the ~21M
+// wire values. Cost: O(circuit) field ops (~50K muls), never the ~16.7M
 // substituted nonzeros, and the matrices need not be materialized at all.
 // This is what lets a verifier evaluate the matrix MLEs directly instead of
 // paying the sparse-matrix cost (or deferring the claim).
@@ -654,6 +733,43 @@ fn walk_add(acc: &mut WalkAcc, u: &[F192], w: &[F192], x: &WireWord, y: &WireWor
             acc.a += ui * a_side;
             acc.b += ui * b_side;
             cin += w[carry_base + i];
+        }
+    }
+    out
+}
+
+/// Walk one fused three-operand ADD (mirror of [`write_add3_fused_rows`]):
+/// accumulate the 31 majority rows and the 30 ripple rows into `acc` and
+/// return the sum-bit wires.
+fn walk_add3_fused(
+    acc: &mut WalkAcc,
+    u: &[F192],
+    w: &[F192],
+    x: &WireWord,
+    y: &WireWord,
+    z: &WireWord,
+    base: usize,
+) -> WireWord {
+    let rip_base = base + CARRY_BITS_PER_ADD;
+    let mut maj = [F192::ZERO; CARRY_BITS_PER_ADD];
+    for i in 0..CARRY_BITS_PER_ADD {
+        let ui = u[base + i];
+        acc.a += ui * (x[i] + z[i]);
+        acc.b += ui * (y[i] + z[i]);
+        maj[i] = w[base + i] + z[i];
+    }
+
+    let mut out = [F192::ZERO; WORD_BITS];
+    let mut cin = F192::ZERO;
+    for i in 0..WORD_BITS {
+        let q_i = if i == 0 { F192::ZERO } else { maj[i - 1] };
+        let a_side = x[i] + y[i] + z[i] + cin;
+        out[i] = a_side + q_i;
+        if (1..=RIPPLE_BITS_PER_ADD3).contains(&i) {
+            let ui = u[rip_base + i - 1];
+            acc.a += ui * a_side;
+            acc.b += ui * (q_i + cin);
+            cin += w[rip_base + i - 1];
         }
     }
     out
@@ -731,23 +847,21 @@ pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
             let mx = wire_from_slot_base(w, m_bit(mx_idx, 0));
             let my = wire_from_slot_base(w, m_bit(my_idx, 0));
 
-            let tmp_0 = walk_add(&mut acc, u, w, &a, &b, g_add_carry_bit(g, ADD_TMP0, 0));
-            let a_1 = walk_add(&mut acc, u, w, &tmp_0, &mx, g_add_carry_bit(g, ADD_A1, 0));
+            let a_1 = walk_add3_fused(&mut acc, u, w, &a, &b, &mx, g_slot(g, G_ADD3_A1));
             let d_1 = wire_rotr(&wire_xor(&d, &a_1), 16);
-            let c_1 = walk_add(&mut acc, u, w, &c, &d_1, g_add_carry_bit(g, ADD_C1, 0));
+            let c_1 = walk_add(&mut acc, u, w, &c, &d_1, g_slot(g, G_ADD_C1));
             let b_1 = wire_rotr(&wire_xor(&b, &c_1), 12);
-            let tmp_1 = walk_add(&mut acc, u, w, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
-            let a_2 = walk_add(&mut acc, u, w, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
+            let a_2 = walk_add3_fused(&mut acc, u, w, &a_1, &b_1, &my, g_slot(g, G_ADD3_A2));
             let d_2 = wire_rotr(&wire_xor(&d_1, &a_2), 8);
-            let c_2 = walk_add(&mut acc, u, w, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
+            let c_2 = walk_add(&mut acc, u, w, &c_1, &d_2, g_slot(g, G_ADD_C2));
             let b_new = wire_rotr(&wire_xor(&b_1, &c_2), 7);
-            walk_lin_rows(&mut acc, u, &b_new, g_lin_bit(g, LIN_B_NEW, 0));
-            walk_lin_rows(&mut acc, u, &d_2, g_lin_bit(g, LIN_D_NEW, 0));
+            walk_lin_rows(&mut acc, u, &b_new, g_slot(g, G_LIN_B_NEW));
+            walk_lin_rows(&mut acc, u, &d_2, g_slot(g, G_LIN_D_NEW));
 
             state[la] = a_2;
-            state[lb] = wire_from_slot_base(w, g_lin_bit(g, LIN_B_NEW, 0));
+            state[lb] = wire_from_slot_base(w, g_slot(g, G_LIN_B_NEW));
             state[lc] = c_2;
-            state[ld] = wire_from_slot_base(w, g_lin_bit(g, LIN_D_NEW, 0));
+            state[ld] = wire_from_slot_base(w, g_slot(g, G_LIN_D_NEW));
         }
     }
 
@@ -775,7 +889,7 @@ pub fn bilinear_walk(alpha: F192, u: &[F192], w: &[F192]) -> F192 {
 /// Walk-capable [`crate::lincheck::LincheckCircuit`] over the BLAKE3 R1CS:
 /// `bilinear_form` answers lincheck's verifier in O(circuit) field ops via
 /// [`bilinear_walk`], so `lincheck::verify` never materializes the
-/// ~21M-nonzero substituted matrices' column marginal. The prover-side
+/// ~16.7M-nonzero substituted matrices' column marginal. The prover-side
 /// `fold_alpha_batched` delegates to the (lazily built) CSC fold; the
 /// verifier's fast path never calls it.
 pub struct WalkLincheckCircuit<'a> {
@@ -804,13 +918,13 @@ impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit<'_> {
 }
 
 /// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
-/// recomputing it means building and hashing ~21M matrix entries (~300 ms),
+/// recomputing it means building and hashing ~16.7M matrix entries (~300 ms),
 /// which embedding protocols would otherwise pay inside their first prove.
 /// The `family_digest_matches_baked` test recomputes and compares: a circuit
 /// change fails it until this constant is updated alongside.
 pub const FAMILY_DIGEST: [u8; 32] = [
-    0xaf, 0xed, 0x74, 0x72, 0xc6, 0xf7, 0x71, 0xa8, 0x57, 0x59, 0x92, 0x72, 0xff, 0x33, 0xa4, 0xda, 0x86, 0xb2, 0x1f,
-    0x26, 0x00, 0xf0, 0x57, 0xfa, 0x0d, 0xa7, 0x97, 0xd1, 0x58, 0x63, 0xeb, 0x58,
+    0xbc, 0x44, 0xee, 0x31, 0xd8, 0x63, 0x94, 0xb8, 0xe1, 0x25, 0x6f, 0x37, 0xcf, 0x3b, 0xf8, 0x72, 0x02, 0x12, 0xdd,
+    0x97, 0xa6, 0x8d, 0x1e, 0x5f, 0x35, 0x7a, 0x99, 0x2c, 0x46, 0xac, 0xf1, 0xa7,
 ];
 
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE3
@@ -902,18 +1016,22 @@ fn generate_witness(blocks: &[Compression], n_blocks_log: usize) -> Vec<bool> {
 // - Pinned-const slot:   (z, a, b, c) = (val, val, val, val), val ∈ {0, 1}.
 // - Lin-id slot:         (z, a, b, c) = (lin_val, lin_val, 1, lin_val).
 // - Carry_aux row i:     (z, a, b, c) = (carry_aux, X⊕cin, Y⊕cin, carry_aux).
+// - Fused majority row:  (z, a, b, c) = (maj_aux, X⊕Z, Y⊕Z, maj_aux).
+// - Fused ripple row:    (z, a, b, c) = (rip_aux, p⊕cin, q⊕cin, rip_aux),
+//                        all three pre-shifted down one bit (bit 0 has no row).
 // - Padding row:         all zero (already zero on entry).
 // ---------------------------------------------------------------------------
 
-// Record-relative positions: carries at 31·i, lin words after all carries.
-const REC_C0: usize = 0;
-const REC_C1: usize = CARRY_BITS_PER_ADD;
-const REC_C2: usize = 2 * CARRY_BITS_PER_ADD;
-const REC_C3: usize = 3 * CARRY_BITS_PER_ADD;
-const REC_C4: usize = 4 * CARRY_BITS_PER_ADD;
-const REC_C5: usize = 5 * CARRY_BITS_PER_ADD;
-const REC_LIN0: usize = ADDS_PER_G * CARRY_BITS_PER_ADD;
-const REC_LIN1: usize = REC_LIN0 + WORD_BITS;
+// Record-relative positions, mirroring the `G_*` sub-block offsets. A fused
+// ADD needs two: its majority run and its ripple run.
+const REC_MAJ_A1: usize = G_ADD3_A1;
+const REC_RIP_A1: usize = G_ADD3_A1 + CARRY_BITS_PER_ADD;
+const REC_C1: usize = G_ADD_C1;
+const REC_MAJ_A2: usize = G_ADD3_A2;
+const REC_RIP_A2: usize = G_ADD3_A2 + CARRY_BITS_PER_ADD;
+const REC_C2: usize = G_ADD_C2;
+const REC_LIN0: usize = G_LIN_B_NEW;
+const REC_LIN1: usize = G_LIN_D_NEW;
 
 /// Write a 32-bit lin-id (or input) slot: (z, a) = val, b = all-ones.
 /// **c is not written**: since `C = I`, `c == z` byte-for-byte.
@@ -994,16 +1112,26 @@ fn build_block_witness_ab_packed_into(
                     sum
                 }};
             }
+            macro_rules! add3_into {
+                ($maj:ident, $rip:ident, $x:expr, $y:expr, $z:expr) => {{
+                    let (sum, maj, rip) = add3_fused_parts($x, $y, $z);
+                    rz.push::<$maj>(maj.2);
+                    ra.push::<$maj>(maj.0);
+                    rb.push::<$maj>(maj.1);
+                    rz.push::<$rip>(rip.2);
+                    ra.push::<$rip>(rip.0);
+                    rb.push::<$rip>(rip.1);
+                    sum
+                }};
+            }
 
-            let tmp_0 = add_into!(REC_C0, a_val, b_val);
-            let a_1 = add_into!(REC_C1, tmp_0, mx);
+            let a_1 = add3_into!(REC_MAJ_A1, REC_RIP_A1, a_val, b_val, mx);
             let d_1 = (d_val ^ a_1).rotate_right(16);
-            let c_1 = add_into!(REC_C2, c_val, d_1);
+            let c_1 = add_into!(REC_C1, c_val, d_1);
             let b_1 = (b_val ^ c_1).rotate_right(12);
-            let tmp_1 = add_into!(REC_C3, a_1, b_1);
-            let a_2 = add_into!(REC_C4, tmp_1, my);
+            let a_2 = add3_into!(REC_MAJ_A2, REC_RIP_A2, a_1, b_1, my);
             let d_2 = (d_1 ^ a_2).rotate_right(8);
-            let c_2 = add_into!(REC_C5, c_1, d_2);
+            let c_2 = add_into!(REC_C2, c_1, d_2);
             let b_new = (b_1 ^ c_2).rotate_right(7);
             let d_new = d_2;
             rz.push::<REC_LIN0>(b_new);
@@ -1102,7 +1230,7 @@ impl Blake3Setup {
         let n_log = min_n_blocks_log(n_blocks);
         let r1cs = build_block_r1cs(n_log);
         // Warm the CSC fold circuit here so its one-time build (a pass over
-        // ~21M nonzeros) stays out of the first prove/verify. The prove-cycle
+        // ~16.7M nonzeros) stays out of the first prove/verify. The prove-cycle
         // buffers need no pre-faulting: they come from the arena, which keeps its
         // pages resident across proofs (see `zk_alloc`).
         r1cs.csc_lincheck_circuit();
@@ -1175,13 +1303,57 @@ mod tests {
 
     #[test]
     fn layout_constants() {
-        assert_eq!(G_STRIDE, 250);
+        assert_eq!(G_STRIDE, 248);
         assert_eq!(N_G, 56);
-        assert_eq!(OUT_HI_BASE, 15_280);
-        assert_eq!(USEFUL_BITS, 15_536);
+        assert_eq!(OUT_HI_BASE, 15_168);
+        assert_eq!(USEFUL_BITS, 15_424);
         #[allow(clippy::assertions_on_constants)]
         {
             assert!(USEFUL_BITS <= K);
+            // The per-G record is composed in a `BitRecord<4>` (256 bits),
+            // whose last sub-block must start within the record's four words.
+            assert!(G_LIN_D_NEW < 4 * 64 && G_STRIDE <= 4 * 64);
+        }
+    }
+
+    /// The constrained rows tile the layout exactly: every slot a region
+    /// claims is the output of one non-degenerate row, and every slot outside
+    /// is padding.
+    ///
+    /// This is the invariant the per-G sub-block offsets have to preserve.
+    /// They are computed by summing widths, so a wrong width makes two
+    /// sub-blocks overlap; the second `a_rows[s] = ...` would then overwrite
+    /// the first and leave one product slot unconstrained, which a prover
+    /// could set freely. The overwritten row is still non-empty, so only
+    /// checking the whole tiling catches it.
+    #[test]
+    fn constrained_rows_tile_the_layout() {
+        let (a_0, b_0) = matrices();
+        let mut expected = vec![false; K];
+        let mut claim = |base: usize, len: usize| {
+            for s in base..base + len {
+                assert!(!expected[s], "slot {s} is claimed by two layout regions");
+                expected[s] = true;
+            }
+        };
+        claim(CV_BASE, 8 * WORD_BITS);
+        claim(OUT_LO_BASE, 8 * WORD_BITS);
+        claim(Z_CONST_POS, 1);
+        claim(M_BASE, 16 * WORD_BITS);
+        claim(T_LO_BASE, 4 * WORD_BITS);
+        claim(GS_BASE, N_G * G_STRIDE);
+        claim(OUT_HI_BASE, 8 * WORD_BITS);
+        for s in 0..K {
+            let constrained = !a_0.rows[s].is_empty() || !b_0.rows[s].is_empty();
+            assert_eq!(
+                constrained, expected[s],
+                "slot {s} constrained={constrained}, want {}",
+                expected[s]
+            );
+            assert!(
+                !(constrained && s >= USEFUL_BITS),
+                "slot {s} is constrained past USEFUL_BITS"
+            );
         }
     }
 
@@ -1281,9 +1453,14 @@ mod tests {
         let blocks = vec![pinned_compression(m)];
         let mut z = generate_witness(&blocks, 3);
         assert!(r1cs.satisfies(&z));
-        // Flip a carry_aux bit inside G #10 (middle of round 1).
-        z[g_add_carry_bit(10, ADD_A2, 5)] ^= true;
-        assert!(!r1cs.satisfies(&z), "tampered carry bit should violate R1CS");
+        // Flip a product bit in each layer of G #10's second fused ADD
+        // (middle of round 1), one at a time.
+        for off in [G_ADD3_A2 + 5, G_ADD3_A2 + CARRY_BITS_PER_ADD + 5] {
+            z[g_slot(10, off)] ^= true;
+            assert!(!r1cs.satisfies(&z), "tampered product bit at {off} should violate R1CS");
+            z[g_slot(10, off)] ^= true;
+        }
+        assert!(r1cs.satisfies(&z), "restoring both bits should re-satisfy");
     }
 
     /// The fused generator's lincheck stripe is byte-identical to the direct
