@@ -5,6 +5,7 @@ import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
 import XmssSecurity.LeafEventProbability
 import XmssSecurity.Merkle
+import XmssSecurity.MerkleEventProbability
 import XmssSecurity.SecurityBudget
 import XmssSecurity.SecurityGame
 import XmssSecurity.SigningLogReplay
@@ -15,20 +16,21 @@ namespace XmssSecurity
 
 open OracleSpec
 
-/-- The remaining non-leaf, non-suffix cryptographic argument below the digest-space size bounds one concrete event with 128-bit loss. -/
+/-- The remaining encoding and chain-preimage argument below the digest-space size bounds one concrete event with 128-bit loss. -/
 theorem xmss_remaining_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
     (hqlt : q < 2 ^ digestBits)
     (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) (event : BadEvent)
     (hneLeaf : event ≠ .leaf)
-    (hneSuffix : ∀ slot, event ≠ .suffixCollision slot) :
+    (hneSuffix : ∀ slot, event ≠ .suffixCollision slot)
+    (hneMerkle : ∀ level, event ≠ .merkle level) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 event |
       detailedGameWithCache Concrete.scheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
   sorry
 
-/-- Every event below the digest-space size has cost at most `q / 2^128`; leaf and suffix cases are fully proved. -/
+/-- Every event below the digest-space size has cost at most `q / 2^128`; leaf, suffix, and Merkle cases are fully proved. -/
 theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
     (hqlt : q < 2 ^ digestBits)
     (adversary : Adversary Concrete.scheme)
@@ -40,16 +42,14 @@ theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
   cases event with
   | encoding =>
       exact xmss_remaining_badEvent_probability_le_below_digest_space q hq hqlt adversary
-        hbound .encoding (by simp) (by simp)
+        hbound .encoding (by simp) (by simp) (by simp)
   | chain chain =>
       exact xmss_remaining_badEvent_probability_le_below_digest_space q hq hqlt adversary
-        hbound (.chain chain) (by simp) (by simp)
+        hbound (.chain chain) (by simp) (by simp) (by simp)
   | suffixCollision slot =>
       exact suffixCollision_outcomeBadEvent_probability_le q adversary hbound slot
   | leaf => exact leaf_outcomeBadEvent_probability_le q adversary hbound
-  | merkle level =>
-      exact xmss_remaining_badEvent_probability_le_below_digest_space q hq hqlt adversary
-        hbound (.merkle level) (by simp) (by simp)
+  | merkle level => exact merkle_outcomeBadEvent_probability_le q adversary hbound level
 
 /-- Every concrete event has probability at most `q / 2^128`; above `2^128` queries this is the trivial probability bound. -/
 theorem xmss_badEvent_probability_le (q : Nat) (hq : 1 ≤ q)
