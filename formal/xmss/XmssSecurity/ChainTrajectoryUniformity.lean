@@ -372,4 +372,117 @@ theorem Concrete.evalDist_isolatedChainTrajectoryExperiment_eq_uniform
   rw [probOutput_uniformSample, hcard]
   simp only [Nat.cast_pow, Nat.cast_ofNat, ENNReal.inv_pow]
 
+noncomputable def Concrete.sampledChainTrajectoryFromCache
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (epoch : Epoch) (chain : ChainIndex) (position steps : Nat) :
+    ProbComp (Vector Digest (steps + 1) × QueryCache HashSpec) := do
+  let value ← $ᵗ Digest
+  (simulateQ randomOracle
+    (Concrete.chainTrajectory parameter epoch chain position steps value)).run cache
+
+theorem Concrete.sampledChainTrajectoryFromCache_succ_probability
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (epoch : Epoch) (chain : ChainIndex) (position steps : Nat)
+    (targetValues : Vector Digest (steps + 1)) (targetNext : Digest)
+    (hvalid : position + steps < chainLength - 1)
+    (habsent : ∀ input,
+      AtHashAddress parameter (.chain epoch chain ⟨position + steps, hvalid⟩) input →
+        cache input = none) :
+    Pr[fun result : Vector Digest (steps + 2) × QueryCache HashSpec =>
+        result.1 = targetValues.push targetNext |
+      Concrete.sampledChainTrajectoryFromCache cache parameter epoch chain position
+        (steps + 1)] =
+      Pr[fun result : Vector Digest (steps + 1) × QueryCache HashSpec =>
+          result.1 = targetValues |
+        Concrete.sampledChainTrajectoryFromCache cache parameter epoch chain position steps] *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  unfold Concrete.sampledChainTrajectoryFromCache
+  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+  simp_rw [Concrete.chainTrajectory_succ_probability cache parameter epoch chain position steps
+    _ targetValues targetNext hvalid habsent]
+  calc
+    (∑' value : Digest, Pr[= value | $ᵗ Digest] *
+        (Pr[fun result : Vector Digest (steps + 1) × QueryCache HashSpec =>
+            result.1 = targetValues |
+          (simulateQ randomOracle
+            (Concrete.chainTrajectory parameter epoch chain position steps value)).run cache] *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹)) =
+        ∑' value : Digest, (Pr[= value | $ᵗ Digest] *
+          Pr[fun result : Vector Digest (steps + 1) × QueryCache HashSpec =>
+              result.1 = targetValues |
+            (simulateQ randomOracle
+              (Concrete.chainTrajectory parameter epoch chain position steps value)).run cache]) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+            apply tsum_congr
+            intro value
+            ring
+    _ = (∑' value : Digest, Pr[= value | $ᵗ Digest] *
+          Pr[fun result : Vector Digest (steps + 1) × QueryCache HashSpec =>
+              result.1 = targetValues |
+            (simulateQ randomOracle
+              (Concrete.chainTrajectory parameter epoch chain position steps value)).run cache]) *
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := ENNReal.tsum_mul_right
+
+theorem Concrete.sampledChainTrajectoryFromCache_zero_probability
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (epoch : Epoch) (chain : ChainIndex) (position : Nat)
+    (target : Vector Digest 1) :
+    Pr[fun result : Vector Digest 1 × QueryCache HashSpec => result.1 = target |
+      Concrete.sampledChainTrajectoryFromCache cache parameter epoch chain position 0] =
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  unfold Concrete.sampledChainTrajectoryFromCache
+  let singleton : Digest → Vector Digest 1 := fun value => Vector.ofFn fun _ => value
+  change Pr[fun result : Vector Digest 1 × QueryCache HashSpec => result.1 = target |
+    (fun value => (singleton value, cache)) <$> ($ᵗ Digest)] = _
+  rw [probEvent_map]
+  have htarget : target = singleton target[0] := by
+    ext index
+    have : index = 0 := by omega
+    subst index
+    rfl
+  rw [htarget]
+  have hevent : (fun value => singleton value = singleton target[0]) =
+      (fun value => value = target[0]) := by
+    funext value
+    apply propext
+    constructor
+    · intro heq
+      have hvalue := congrArg (fun values : Vector Digest 1 => values[0]) heq
+      exact hvalue
+    · intro heq
+      rw [heq]
+  change Pr[fun value : Digest => singleton value = singleton target[0] |
+    $ᵗ Digest] = _
+  rw [hevent]
+  simpa only [probEvent_eq_eq_probOutput] using
+    HiddenValue.uniform_digest_point_probability target[0]
+
+theorem Concrete.sampledChainTrajectoryFromCache_probability
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (epoch : Epoch) (chain : ChainIndex) (position steps : Nat)
+    (target : Vector Digest (steps + 1))
+    (hvalid : position + steps ≤ chainLength - 1)
+    (habsent : ∀ offset, offset < steps →
+      ∀ hstep : position + offset < chainLength - 1,
+        ∀ input, AtHashAddress parameter (.chain epoch chain
+          ⟨position + offset, hstep⟩) input → cache input = none) :
+    Pr[fun result : Vector Digest (steps + 1) × QueryCache HashSpec =>
+        result.1 = target |
+      Concrete.sampledChainTrajectoryFromCache cache parameter epoch chain position steps] =
+      (((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ^ (steps + 1) := by
+  induction steps with
+  | zero =>
+      rw [Concrete.sampledChainTrajectoryFromCache_zero_probability]
+      simp
+  | succ steps ih =>
+      let targetValues : Vector Digest (steps + 1) := target.pop.cast (by omega)
+      have htarget : targetValues.push target.back = target := by
+        simpa [targetValues] using Vector.push_pop_back target
+      rw [← htarget]
+      rw [Concrete.sampledChainTrajectoryFromCache_succ_probability]
+      · rw [ih targetValues (by omega) (fun offset hoffset => habsent offset (by omega))]
+        exact (pow_succ _ (steps + 1)).symm
+      · omega
+      · exact habsent steps (by omega) _
+
 end XmssSecurity
