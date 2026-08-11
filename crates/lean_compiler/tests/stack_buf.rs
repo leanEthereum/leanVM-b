@@ -10,8 +10,8 @@
 //! — the reference `compress` is fed that lane layout.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake2s_flock::{compression, digest, metadata, warm_setup};
-use lean_vm::cpu::{prove, verify};
+use lean_vm::blake2s_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
+use lean_vm::cpu::{Op, prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
 
@@ -89,6 +89,41 @@ def main():
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 2);
     verify(&program, &want, &proof).expect("standard two-block BLAKE2s verifies");
+}
+
+#[test]
+fn blake2s_counter_accepts_full_u64_range() {
+    let src = "\
+def main():
+    block = [1, 2, 3, 4]
+    out = StackBuf(2)
+    counter = 18446744073709551615 // 1
+    blake2s(block[0:2], block[2:4], out, counter=counter, final=1)
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let metadata = program
+        .prog
+        .iter()
+        .find_map(|op| match op {
+            Op::Blake2s { metadata, .. } => Some(*metadata),
+            _ => None,
+        })
+        .expect("BLAKE2s instruction");
+    assert_eq!(unpack_metadata(metadata), (u64::MAX, u32::MAX, 0));
+}
+
+#[test]
+#[should_panic(expected = "BLAKE2s counter does not fit in u64")]
+fn blake2s_counter_rejects_values_above_u64() {
+    let src = "\
+def main():
+    block = [1, 2, 3, 4]
+    out = StackBuf(2)
+    blake2s(block[0:2], block[2:4], out, counter=18446744073709551616, final=1)
+    return
+";
+    compile(&parse(src).expect("parse"));
 }
 
 /// A default IV first materialized in an untaken runtime branch must not leak

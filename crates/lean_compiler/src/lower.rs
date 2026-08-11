@@ -110,11 +110,12 @@ struct Scope {
     /// separate from `vars` since a stack value is a run of cells, not a
     /// single scalar.
     stacks: HashMap<String, (Off, u32)>,
-    /// Names bound to integer literals (`x = 10`), usable in compile-time
-    /// index positions: stack indexes and slice bounds. Cleared on rebind to
-    /// anything else. (Index arithmetic is integer arithmetic: `x + 2` in a
-    /// slice bound is 12, not the field XOR the same syntax means elsewhere.)
-    consts: HashMap<String, u32>,
+    /// Names bound to compile-time integer expressions (`x = 10`), usable in
+    /// index positions and instruction metadata. Cleared on rebind to anything
+    /// else. Index users narrow to `u32`; metadata may consume a wider value.
+    /// Integer arithmetic is distinct from the field arithmetic the same syntax
+    /// means in a scalar expression.
+    consts: HashMap<String, u128>,
     /// Variables bound to a symbolic g-address ([`GAddr`]): index cursors and
     /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
     gaddrs: HashMap<String, GAddr>,
@@ -1085,46 +1086,40 @@ impl FnLower<'_> {
         }
     }
 
-    /// A compile-time integer index: a literal, a name bound to a literal,
-    /// or `+`/`*`/`//`/`%` of those (evaluated as *integer* arithmetic: this is
-    /// index space, not the field). `None` when the expression is a runtime
-    /// value (which a heap slice start may be; see [`Self::blake2s_operand`]).
-    fn try_const_index(&self, idx: &Expr) -> Option<u32> {
-        match idx {
-            // A literal that fits is an index; a ≥ 2^32 literal is a field value,
-            // not an index (`None`, and callers that require an index error).
-            Expr::Lit(k) => u32::try_from(*k).ok(),
+    /// A compile-time integer expression. `None` means either a runtime value
+    /// or arithmetic outside the source language's `u128` literal domain.
+    fn try_const_int(&self, e: &Expr) -> Option<u128> {
+        match e {
+            Expr::Lit(k) => Some(*k),
             Expr::Var(v) => self.scope.consts.get(v).copied(),
-            // Overflow (or a negative `-`) means the expression is not a valid
-            // index, so decline (`None`) rather than panic: this evaluator also
-            // probes `Let` bindings speculatively, where `A * B` may be a
-            // perfectly fine *field* expression whose integer product overflows.
-            Expr::Add(a, b) => self.try_const_index(a)?.checked_add(self.try_const_index(b)?),
-            Expr::Sub(a, b) => self.try_const_index(a)?.checked_sub(self.try_const_index(b)?),
-            Expr::Mul(a, b) => self.try_const_index(a)?.checked_mul(self.try_const_index(b)?),
+            Expr::Add(a, b) => self.try_const_int(a)?.checked_add(self.try_const_int(b)?),
+            Expr::Sub(a, b) => self.try_const_int(a)?.checked_sub(self.try_const_int(b)?),
+            Expr::Mul(a, b) => self.try_const_int(a)?.checked_mul(self.try_const_int(b)?),
             Expr::Div(a, b) => {
-                let d = self.try_const_index(b)?;
+                let d = self.try_const_int(b)?;
                 assert!(d != 0, "compile-time division by zero");
-                Some(self.try_const_index(a)? / d)
+                Some(self.try_const_int(a)? / d)
             }
             Expr::Mod(a, b) => {
-                let d = self.try_const_index(b)?;
+                let d = self.try_const_int(b)?;
                 assert!(d != 0, "compile-time modulo by zero");
-                Some(self.try_const_index(a)? % d)
+                Some(self.try_const_int(a)? % d)
             }
-            // A constant-array element `NAME[i]` or `len(NAME)` used as an index /
-            // bound / `unroll` count. An element too large for an index declines
-            // (it is a field value; this evaluator also probes speculatively).
             Expr::Index(..) => self
-                .const_array_elem(idx)
-                .and_then(|e| (e.c1 == 0 && e.c2 == 0).then_some(e.c0))
-                .and_then(|e| u32::try_from(e).ok()),
-            Expr::Call(..) => self.const_len(idx).map(|n| n as u32),
-            // Integer power `b ** e` (both compile-time), e.g. `2 ** c` for a bit
-            // test. Overflow declines (see the Add/Sub/Mul comment above).
-            Expr::Pow(b, e) => self.try_const_index(b)?.checked_pow(self.try_const_index(e)?),
+                .const_array_elem(e)
+                .and_then(|value| (value.c2 == 0).then_some(value.c0 as u128 | ((value.c1 as u128) << 64))),
+            Expr::Call(..) => self.const_len(e).map(|n| n as u128),
+            Expr::Pow(b, e) => self
+                .try_const_int(b)?
+                .checked_pow(u32::try_from(self.try_const_int(e)?).ok()?),
             _ => None,
         }
+    }
+
+    /// A compile-time integer index. The general integer evaluator is narrowed
+    /// here so stack offsets, bounds, and immediate exponents remain `u32`.
+    fn try_const_index(&self, idx: &Expr) -> Option<u32> {
+        u32::try_from(self.try_const_int(idx)?).ok()
     }
 
     /// A stack index or compile-time slice bound: [`Self::try_const_index`],
@@ -1233,7 +1228,7 @@ impl FnLower<'_> {
     fn try_lit(&self, e: &Expr) -> Option<u64> {
         match e {
             Expr::Lit(n) => u64::try_from(*n).ok(),
-            Expr::Var(v) => self.scope.consts.get(v).map(|&n| n as u64),
+            Expr::Var(v) => self.scope.consts.get(v).and_then(|&n| u64::try_from(n).ok()),
             Expr::GPow(0) => Some(1),
             _ => None,
         }
@@ -1251,7 +1246,7 @@ impl FnLower<'_> {
         let pow2 = |n: u128| (n.is_power_of_two() && n < (1 << 64)).then(|| n.trailing_zeros());
         match idx {
             Expr::Lit(n) => pow2(*n).and_then(cap),
-            Expr::Var(v) => pow2(*self.scope.consts.get(v)? as u128).and_then(cap),
+            Expr::Var(v) => pow2(*self.scope.consts.get(v)?).and_then(cap),
             Expr::Gen => Some(1),
             Expr::GPow(k) => cap(u32::try_from(*k).ok()?),
             Expr::GenPow(e) => cap(self.try_const_index(e)?),
@@ -1947,8 +1942,8 @@ impl FnLower<'_> {
                     // that folds: `FOLDBASE[lvl] + j`, `n // 2`, `len(A) - 1`) is
                     // usable as a compile-time index / bound / exponent, and that
                     // role survives the value binding chosen below.
-                    let k_idx = self.try_const_index(e);
-                    match k_idx {
+                    let k_int = self.try_const_int(e);
+                    match k_int {
                         Some(k) => {
                             self.scope.consts.insert(name.clone(), k);
                         }
@@ -1963,11 +1958,11 @@ impl FnLower<'_> {
                         self.rebind(name, Binding::Gaddr(ga));
                     } else if let Some(c) = self.try_field_const(e) {
                         self.rebind(name, Binding::FConst(c));
-                    } else if let Some(k) = k_idx {
+                    } else if let Some(k) = k_int {
                         // Integer-only fold (`//`, `-`, `%` of constants): a
                         // compile-time value too, and as a scalar it is the field
                         // element with those 128 bits, materialized on demand.
-                        self.rebind(name, Binding::FConst(lit_field(k as u128)));
+                        self.rebind(name, Binding::FConst(lit_field(k)));
                     } else if let Expr::Call(cf, cargs) = e
                         && self.defs.contains_key(cf)
                     {
@@ -2174,15 +2169,20 @@ impl FnLower<'_> {
             self.default_blake2s_cv()
         };
         let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
-            kwargs.get(name).map(|e| this.const_index(e) as u128).unwrap_or(default)
+            kwargs
+                .get(name)
+                .map(|e| {
+                    this.try_const_int(e)
+                        .unwrap_or_else(|| panic!("BLAKE2s `{name}` must be a compile-time integer, got `{e:?}`"))
+                })
+                .unwrap_or(default)
         };
         // BLAKE2s metadata is just the cumulative byte counter and two flags, so
         // a multi-block hash is `counter = 64 * blocks_before + bytes_in_this_block`
         // and `final = 1` on the last block. The default is the one-block hash of
         // a full 64-byte input, which is what `vmhash::compress` and every Merkle
         // node use.
-        let counter = const_kw(self, "counter", 64);
-        assert!(counter <= u64::MAX as u128, "BLAKE2s counter does not fit in u64");
+        let counter = u64::try_from(const_kw(self, "counter", 64)).expect("BLAKE2s counter does not fit in u64");
         let f0 = if const_kw(self, "final", if customized { 0 } else { 1 }) != 0 {
             lean_vm::blake2s_flock::FINAL_FLAG
         } else {
@@ -2193,7 +2193,7 @@ impl FnLower<'_> {
         } else {
             0
         };
-        let metadata = lean_vm::blake2s_flock::metadata(counter as u64, f0, f1);
+        let metadata = lean_vm::blake2s_flock::metadata(counter, f0, f1);
         // Each operand is two 128-bit chunk cells; the flexible opcode addresses
         // the four input cells independently (`blake2s_input` forwards the real
         // chunk sources where it can). The digest occupies the two consecutive
