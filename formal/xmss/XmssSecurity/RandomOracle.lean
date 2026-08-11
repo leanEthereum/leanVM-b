@@ -37,6 +37,70 @@ private def digestFiberEquiv (target : Digest) :
           (BitVec.extractLsb'_append_extractLsb' (x := splitHashOutput output.val))
       _ = output.val := by simp [splitHashOutput]
 
+/-- A 256-bit random-oracle answer is equivalently an independent high half and the 128-bit digest used by XMSS. -/
+def hashOutputEquivDigestPair : HashOutput ≃ Digest × Digest where
+  toFun output := (highDigest output, truncateHash output)
+  invFun halves := joinDigest halves.1 halves.2
+  left_inv output := by
+    calc
+      joinDigest (highDigest output) (truncateHash output) =
+          (splitHashOutput output).cast hashOutputBits_eq.symm := by
+        exact congrArg (BitVec.cast hashOutputBits_eq.symm)
+          (BitVec.extractLsb'_append_extractLsb' (x := splitHashOutput output))
+      _ = output := by simp [splitHashOutput]
+  right_inv halves := by
+    apply Prod.ext
+    · change BitVec.extractLsb' digestBits digestBits (halves.1 ++ halves.2) = halves.1
+      exact BitVec.extractLsb'_append_eq_left
+    · change BitVec.extractLsb' 0 digestBits (halves.1 ++ halves.2) = halves.2
+      exact BitVec.extractLsb'_append_eq_right
+
+noncomputable def independentDigestHalves : ProbComp (Digest × Digest) := do
+  let high ← $ᵗ Digest
+  let low ← $ᵗ Digest
+  return (high, low)
+
+/-- Splitting a uniform 256-bit answer gives two independent uniform 128-bit halves. -/
+theorem evalDist_split_uniformHashOutput_eq_independent :
+    𝒟[hashOutputEquivDigestPair <$> ($ᵗ HashOutput)] =
+      𝒟[independentDigestHalves] := by
+  apply SPMF.ext
+  intro target
+  change Pr[= target | hashOutputEquivDigestPair <$> ($ᵗ HashOutput)] =
+    Pr[= target | independentDigestHalves]
+  rw [probOutput_map_bijective_uniform_cross
+    (α := HashOutput) (β := Digest × Digest)
+    hashOutputEquivDigestPair hashOutputEquivDigestPair.bijective]
+  calc
+    Pr[= target | $ᵗ (Digest × Digest)] =
+        Pr[= target.1 | $ᵗ Digest] * Pr[= target.2 | $ᵗ Digest] := by
+      simp [probOutput_uniformSample, Fintype.card_prod, ENNReal.mul_inv]
+    _ = Pr[= target | independentDigestHalves] := by
+      unfold independentDigestHalves
+      symm
+      simp
+
+/-- Truncating a uniform 256-bit answer gives a uniform XMSS digest. -/
+theorem evalDist_truncate_uniformHashOutput :
+    𝒟[truncateHash <$> ($ᵗ HashOutput)] = 𝒟[$ᵗ Digest] := by
+  calc
+    𝒟[truncateHash <$> ($ᵗ HashOutput)] =
+        𝒟[Prod.snd <$> (hashOutputEquivDigestPair <$> ($ᵗ HashOutput))] := by
+      simp [Functor.map_map, hashOutputEquivDigestPair]
+    _ = 𝒟[Prod.snd <$> independentDigestHalves] := by
+      rw [evalDist_map, evalDist_split_uniformHashOutput_eq_independent,
+        ← evalDist_map]
+    _ = 𝒟[$ᵗ Digest] := by
+      unfold independentDigestHalves
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply SPMF.ext
+      intro target
+      change Pr[= target | do let _ ← $ᵗ Digest; $ᵗ Digest] =
+        Pr[= target | $ᵗ Digest]
+      rw [probOutput_bind_const, probFailure_uniformSample]
+      simp
+
 def matchingOutputs (target : Digest) : Finset HashOutput :=
   Finset.univ.filter (truncateHash · = target)
 

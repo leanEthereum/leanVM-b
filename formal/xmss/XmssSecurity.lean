@@ -1,5 +1,6 @@
 import XmssSecurity.CacheView
 import XmssSecurity.ChainQueryPresence
+import XmssSecurity.ChainTablePresampling
 import XmssSecurity.CacheVerify
 import XmssSecurity.CacheReplay
 import XmssSecurity.CacheQuerySupport
@@ -35,6 +36,7 @@ import XmssSecurity.LeafEventProbability
 import XmssSecurity.AdaptiveFreshTarget
 import XmssSecurity.PrefixTarget
 import XmssSecurity.RandomOracle
+import XmssSecurity.RandomOraclePresampling
 import XmssSecurity.QueryBoundSupport
 import XmssSecurity.QueryPresence
 import XmssSecurity.SecurityBudget

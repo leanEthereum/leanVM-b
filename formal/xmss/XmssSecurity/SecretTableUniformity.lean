@@ -56,6 +56,23 @@ theorem evalDist_sampleSecret_fixedChain_eq_uniform (chain : ChainIndex) :
     _ = 𝒟[$ᵗ (Epoch → Digest)] :=
       evalDist_uniformSample_map_comp_injective hembed
 
+theorem sampleSecret_fixedChain_probability (chain : ChainIndex)
+    (target : Epoch → Digest) :
+    Pr[= target |
+      (fun secret : Epoch → ChainIndex → Digest => fun epoch => secret epoch chain) <$>
+        Concrete.sampleSecret] =
+      ((((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ^ lifetime) := by
+  calc
+    Pr[= target |
+        (fun secret : Epoch → ChainIndex → Digest => fun epoch => secret epoch chain) <$>
+          Concrete.sampleSecret] =
+        Pr[= target | $ᵗ (Epoch → Digest)] :=
+      probOutput_congr rfl (evalDist_sampleSecret_fixedChain_eq_uniform chain)
+    _ = ((((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ^ lifetime) := by
+      rw [probOutput_uniformSample, Fintype.card_fun, HiddenValue.card_digest]
+      have hcard : Fintype.card Epoch = lifetime := by simp [Epoch]
+      rw [hcard, Nat.cast_pow, ENNReal.inv_pow]
+
 theorem sampleSecret_fixed_coordinate_probability (epoch : Epoch) (chain : ChainIndex)
     (target : Digest) :
     Pr[fun secret : Epoch → ChainIndex → Digest => secret epoch chain = target |
