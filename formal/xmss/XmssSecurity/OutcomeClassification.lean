@@ -136,7 +136,7 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
     exact ⟨event, Or.inr ⟨forgedEncoding, hforgedValid, hevent⟩⟩
 
 /-- Cache-consistent winning executions are bounded by the sum of their 175 concrete bad-event probabilities. -/
-theorem forgeAdvantage_le_outcomeBadEvent_sum
+theorem forgeAdvantage_le_outcomeBadEvent_sum_of_consistent
     (adversary : Adversary Concrete.scheme)
     (hconsistent : ∀ execution : GameOutcome × QueryCache HashSpec,
       execution.1.won = true → ConcreteOutcomeConsistent execution.2 execution.1) :

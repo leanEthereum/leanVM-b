@@ -45,4 +45,13 @@ noncomputable def sign (_publicKey : PublicKey) (secretKey : SecretKey)
   liftM (signAttempt secretKey epoch message randomness :
     OracleComp HashSpec (Option Signature))
 
+theorem sign_eq (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) :
+    sign publicKey secretKey epoch message = (do
+      let randomness ← liftM ($ᵗ Randomness)
+      liftM (signAttempt secretKey epoch message randomness :
+        OracleComp HashSpec (Option Signature))) := rfl
+
+attribute [irreducible] sign
+
 end XmssSecurity.Concrete

@@ -178,7 +178,7 @@ theorem concrete_sign_support_replay (publicKey : PublicKey) (secretKey : Secret
           (request.message, signature.randomness)) = some encoding ∧
       signature = Concrete.CacheReplay.signWithEncoding largerCache secretKey
         request.epoch signature.randomness encoding := by
-  unfold Concrete.sign at hmem
+  rw [Concrete.sign_eq] at hmem
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
   obtain ⟨⟨randomness, randomnessCache⟩, _hrandomness, hattempt⟩ := hmem
   have hroute :
