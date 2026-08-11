@@ -110,6 +110,26 @@ pub(crate) fn add3_fused_parts(x: u32, y: u32, z: u32) -> (u32, (u32, u32, u32),
     (sum, (maj_left, maj_right, maj_aux), (rip_left, rip_right, rip_aux))
 }
 
+/// Write a 32-bit lin-id (or input) slot: (z, a) = val, b = all-ones.
+/// **c is not written**: since `C = I`, `c == z` byte-for-byte.
+#[inline]
+pub(crate) fn write_lin_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [u64], b: &mut [u64]) {
+    or_u32_at_bit(z, bit_off, val);
+    or_u32_at_bit(a, bit_off, val);
+    or_u32_at_bit(b, bit_off, 0xFFFF_FFFF);
+}
+
+/// of the `u64` words on a little-endian target.
+pub(crate) fn packed_bytes(words: &[u64]) -> &[u8] {
+    const _: () = assert!(
+        cfg!(target_endian = "little"),
+        "packed witness bytes assume little-endian"
+    );
+    // SAFETY: `u64` has no padding or invalid bit patterns, and `u8`'s
+    // alignment divides `u64`'s, so the words are a valid `8 · len` byte slice.
+    unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
+}
+
 /// K × K identity sparse matrix.
 pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
     SparseBinaryMatrix {

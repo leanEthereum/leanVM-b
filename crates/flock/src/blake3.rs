@@ -105,7 +105,13 @@
 //! - **Input binding**: all compression inputs are free witness bits. PCS-level
 //!   openings at fixed indices pin them to claimed memory and bytecode values.
 
-use crate::blake3_witness::{BitRecord, add_carry_parts, add3_fused_parts, or_bit_at, or_u32_at_bit, xor_dedup};
+use crate::blake3_witness::{
+    BitRecord, add_carry_parts, add3_fused_parts, or_bit_at, packed_bytes, write_lin_word_ab_packed,
+};
+use crate::gf2::{
+    WalkAcc, WireWord, Word, walk_add, walk_add3_fused, wire_from_const, wire_from_slot_base, wire_rotr, wire_xor,
+    write_add_carry_rows, write_add3_fused_rows, write_lin_word_rows,
+};
 use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use crate::verifier;
 use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
@@ -132,16 +138,16 @@ pub const N_G_PER_ROUND: usize = 8;
 /// Total G calls per compression.
 pub const N_G: usize = N_ROUNDS * N_G_PER_ROUND;
 /// Bits per BLAKE3 word.
-pub const WORD_BITS: usize = 32;
+pub const WORD_BITS: usize = crate::gf2::WORD_BITS;
 
 /// Carry_aux bits per 32-bit two-operand ADD (bit 0..30; bit 31 is the
 /// discarded mod-2³² carry-out and isn't allocated).
-pub const CARRY_BITS_PER_ADD: usize = WORD_BITS - 1; // 31
+pub const CARRY_BITS_PER_ADD: usize = crate::gf2::CARRY_BITS_PER_ADD; // 31
 /// Ripple-layer product bits per fused three-operand ADD (bit 1..30): bit 0's
 /// product is `p₀ · 0`, since the shifted majority word's bit 0 is zero.
-pub const RIPPLE_BITS_PER_ADD3: usize = WORD_BITS - 2; // 30
+pub const RIPPLE_BITS_PER_ADD3: usize = crate::gf2::RIPPLE_BITS_PER_ADD3; // 30
 /// Product slots per fused three-operand ADD: 31 majorities + 30 ripple.
-pub const ADD3_BITS: usize = CARRY_BITS_PER_ADD + RIPPLE_BITS_PER_ADD3; // 61
+pub const ADD3_BITS: usize = crate::gf2::ADD3_BITS; // 61
 /// Lin-id 32-bit words per G (b_new, d_new).
 pub const LIN_WORDS_PER_G: usize = 2;
 /// Bits per G block (no sum-bit slots, see module docs).
@@ -321,194 +327,6 @@ fn per_round_msg_idx() -> [[[usize; 2]; N_G_PER_ROUND]; N_ROUNDS] {
 }
 
 // ---------------------------------------------------------------------------
-// Lin_func cascade: per-bit lists of slot indices XOR'd to evaluate one bit.
-//
-// In Option D, sum bits aren't materialized as slots; instead, the "value" of
-// any intermediate bit is a `LinBits[i] = Vec<usize>` whose XOR equals that
-// bit. The G-builder threads these lin_funcs forward through the state, so
-// each lane's value at any point in the protocol is represented as a `Word`.
-// ---------------------------------------------------------------------------
-
-/// A 32-bit symbolic word. `bits[i]` is a list of slot indices whose XOR
-/// equals bit `i` of the word.
-#[derive(Clone)]
-struct Word {
-    bits: [Vec<usize>; WORD_BITS],
-}
-
-impl Word {
-    fn zero() -> Self {
-        Self {
-            bits: std::array::from_fn(|_| Vec::new()),
-        }
-    }
-    /// Construct from a 32-bit witness or lin-id slot whose 32 bits live at
-    /// `[base + 0, base + 1, …, base + 31]`.
-    fn from_slot_base(base: usize) -> Self {
-        Self {
-            bits: std::array::from_fn(|i| vec![base + i]),
-        }
-    }
-    /// Construct from a 32-bit constant: bit `i` is `[Z_CONST]` if set,
-    /// `[]` otherwise.
-    fn from_const(val: u32) -> Self {
-        Self {
-            bits: std::array::from_fn(|i| {
-                if (val >> i) & 1 == 1 {
-                    vec![Z_CONST_POS]
-                } else {
-                    Vec::new()
-                }
-            }),
-        }
-    }
-    /// Bitwise XOR, no dedup. Caller calls `dedup()` after a chain if it
-    /// wants canonical rows.
-    fn xor(&self, other: &Word) -> Word {
-        let mut out = self.clone();
-        for i in 0..WORD_BITS {
-            out.bits[i].extend(&other.bits[i]);
-        }
-        out
-    }
-    /// `rotr(n)`: pure index permutation, doesn't touch slot lists.
-    fn rotr(&self, n: usize) -> Word {
-        Word {
-            bits: std::array::from_fn(|i| self.bits[(i + n) % WORD_BITS].clone()),
-        }
-    }
-    /// Sort + cancel duplicates per bit.
-    fn dedup(mut self) -> Word {
-        for i in 0..WORD_BITS {
-            self.bits[i] = xor_dedup(std::mem::take(&mut self.bits[i]));
-        }
-        self
-    }
-    /// "Sum bit" lin_func of an ADD `x + y` whose carry_aux slots live at
-    /// `[carry_base, carry_base + 31)`.
-    ///
-    ///   sum[i] = x[i] ⊕ y[i] ⊕ ⊕_{j<i} carry_aux[j]
-    fn add_sum(x: &Word, y: &Word, carry_base: usize) -> Word {
-        let mut out = Word::zero();
-        for i in 0..WORD_BITS {
-            let mut v = x.bits[i].clone();
-            v.extend(&y.bits[i]);
-            for j in 0..i {
-                v.push(carry_base + j);
-            }
-            out.bits[i] = v;
-        }
-        out.dedup()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Per-ADD: write the 31 carry_aux rows and return the sum-bit `Word`.
-//
-//   carry_aux[i] = (X[i] ⊕ cin[i]) · (Y[i] ⊕ cin[i])   (R1CS AND row)
-//   sum[i]       = X[i] ⊕ Y[i] ⊕ cin[i]                (no slot, lin_func)
-//
-// where cin[i] = ⊕_{j<i} carry_aux[j].
-// ---------------------------------------------------------------------------
-
-fn write_add_carry_rows(
-    a_rows: &mut [Vec<usize>],
-    b_rows: &mut [Vec<usize>],
-    x: &Word,
-    y: &Word,
-    carry_base: usize,
-) -> Word {
-    for i in 0..CARRY_BITS_PER_ADD {
-        let mut a = x.bits[i].clone();
-        for j in 0..i {
-            a.push(carry_base + j);
-        }
-        let mut b = y.bits[i].clone();
-        for j in 0..i {
-            b.push(carry_base + j);
-        }
-        a_rows[carry_base + i] = xor_dedup(a);
-        b_rows[carry_base + i] = xor_dedup(b);
-    }
-    Word::add_sum(x, y, carry_base)
-}
-
-// ---------------------------------------------------------------------------
-// Per fused three-operand ADD `x + y + z`: write the 31 majority rows and the
-// 30 ripple rows, and return the sum-bit `Word`.
-//
-// Carry-save layer, slots `[base, base + 31)`:
-//
-//   maj_aux[i] = (X[i] ⊕ Z[i]) · (Y[i] ⊕ Z[i])       (R1CS AND row)
-//   maj[i]     = maj_aux[i] ⊕ Z[i]                   (majority, affine)
-//
-// since over GF(2) `(x+z)(y+z) = xy ⊕ xz ⊕ yz ⊕ z`. Then `x + y + z` equals
-// `p + 2·maj` with `p[i] = X[i] ⊕ Y[i] ⊕ Z[i]`, so the ripple layer at slots
-// `[base + 31, base + 61)` adds `p` against `q[i] = maj[i-1]`, `q[0] = 0`:
-//
-//   rip_aux[i] = (p[i] ⊕ cin[i]) · (q[i] ⊕ cin[i]),  i = 1..30
-//   sum[i]     = p[i] ⊕ q[i] ⊕ cin[i]                (no slot, lin_func)
-//
-// with `cin[i] = ⊕_{1 ≤ j < i} rip_aux[j]`. Bit 0 needs no row: `q[0] = 0` and
-// `cin[0] = 0` make its product identically zero, hence `cin[1] = 0` too, and
-// slot `base + 31 + i − 1` carries bit `i`. `maj[31]` would weigh 2³², so the
-// majority layer stops at bit 30 like a two-operand carry chain.
-// ---------------------------------------------------------------------------
-
-fn write_add3_fused_rows(
-    a_rows: &mut [Vec<usize>],
-    b_rows: &mut [Vec<usize>],
-    x: &Word,
-    y: &Word,
-    z: &Word,
-    base: usize,
-) -> Word {
-    let rip_base = base + CARRY_BITS_PER_ADD;
-    for i in 0..CARRY_BITS_PER_ADD {
-        let mut a = x.bits[i].clone();
-        a.extend(&z.bits[i]);
-        let mut b = y.bits[i].clone();
-        b.extend(&z.bits[i]);
-        a_rows[base + i] = xor_dedup(a);
-        b_rows[base + i] = xor_dedup(b);
-    }
-
-    let mut p = Word::zero();
-    let mut q = Word::zero();
-    for i in 0..WORD_BITS {
-        let mut v = x.bits[i].clone();
-        v.extend(&y.bits[i]);
-        v.extend(&z.bits[i]);
-        p.bits[i] = xor_dedup(v);
-        if i > 0 {
-            let mut v = vec![base + i - 1];
-            v.extend(&z.bits[i - 1]);
-            q.bits[i] = xor_dedup(v);
-        }
-    }
-
-    // `cin[i]`, empty for i ∈ {0, 1}.
-    let cin = |i: usize| (1..i).map(|j| rip_base + j - 1);
-    for i in 1..=RIPPLE_BITS_PER_ADD3 {
-        let mut a = p.bits[i].clone();
-        a.extend(cin(i));
-        let mut b = q.bits[i].clone();
-        b.extend(cin(i));
-        a_rows[rip_base + i - 1] = xor_dedup(a);
-        b_rows[rip_base + i - 1] = xor_dedup(b);
-    }
-
-    let mut out = Word::zero();
-    for i in 0..WORD_BITS {
-        let mut v = p.bits[i].clone();
-        v.extend(&q.bits[i]);
-        v.extend(cin(i));
-        out.bits[i] = v;
-    }
-    out.dedup()
-}
-
-// ---------------------------------------------------------------------------
 // Initial lane sources at the start of compression.
 // ---------------------------------------------------------------------------
 
@@ -518,7 +336,7 @@ fn initial_lane_words() -> [Word; 16] {
         s[w] = Word::from_slot_base(cv_bit(w, 0));
     }
     for i in 0..4 {
-        s[8 + i] = Word::from_const(BLAKE3_IV[i]);
+        s[8 + i] = Word::from_const(BLAKE3_IV[i], Z_CONST_POS);
     }
     s[12] = Word::from_slot_base(T_LO_BASE);
     s[13] = Word::from_slot_base(T_HI_BASE);
@@ -600,17 +418,12 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
             let c_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c_1, &d_2, g_slot(g, G_ADD_C2));
             // b_new = rotr7(b_1 ^ c_2)    (materialized lin-id)
             let b_new_word = b_1.xor(&c_2).dedup().rotr(7);
-            for i in 0..WORD_BITS {
-                let s = g_slot(g, G_LIN_B_NEW + i);
-                a_rows[s] = b_new_word.bits[i].clone();
-                b_rows[s] = vec![Z_CONST_POS];
-            }
+            let lin = |rows: (&mut [Vec<usize>], &mut [Vec<usize>]), v: &Word, off| {
+                write_lin_word_rows(rows.0, rows.1, v, g_slot(g, off), Z_CONST_POS);
+            };
+            lin((&mut a_rows, &mut b_rows), &b_new_word, G_LIN_B_NEW);
             // d_new = d_2                  (materialized lin-id)
-            for i in 0..WORD_BITS {
-                let s = g_slot(g, G_LIN_D_NEW + i);
-                a_rows[s] = d_2.bits[i].clone();
-                b_rows[s] = vec![Z_CONST_POS];
-            }
+            lin((&mut a_rows, &mut b_rows), &d_2, G_LIN_D_NEW);
 
             // Advance the symbolic state. `a_2` and `c_2` keep cascading;
             // `b_new` and `d_new` reset to single-slot lookups.
@@ -651,178 +464,24 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     (to_mat(a_rows), to_mat(b_rows))
 }
 
-// ---------------------------------------------------------------------------
-// Circuit-walk evaluation (flock §Circuit walking)
-//
-// Evaluates the two bilinear forms
-//
-//     uᵀ A_0 w   and   uᵀ B_0 w
-//
-// for arbitrary row weights `u` and column weights `w` (length K each) by
-// walking the UNSUBSTITUTED compression circuit forward: the same cascade
-// `build_matrices` threads symbolically, evaluated over F192 values. A lane
-// is a 32-vector of wire values; a committed slot contributes `w[slot]`, an
-// intermediate wire the running linear combination. Row i's contribution
-// `u[i]·⟨A_i, w⟩` / `u[i]·⟨B_i, w⟩` is accumulated exactly where
-// `build_matrices` would emit that row, with `⟨row, w⟩` read off the threaded
-// wire values. Cost: O(circuit) field ops (~50K muls), never the ~16.7M
-// substituted nonzeros, and the matrices need not be materialized at all.
-// This is what lets a verifier evaluate the matrix MLEs directly instead of
-// paying the sparse-matrix cost (or deferring the claim).
-// ---------------------------------------------------------------------------
-
-/// One lane's wire values: bit `i` of the word, as the F192 combination
-/// `⟨lin_func_i, w⟩`.
-type WireWord = [F192; WORD_BITS];
-
-#[inline]
-fn wire_from_slot_base(w: &[F192], base: usize) -> WireWord {
-    std::array::from_fn(|i| w[base + i])
-}
-
-/// Constant word: a set bit is the `[Z_CONST]` lin_func, a clear bit empty.
-#[inline]
-fn wire_from_const(w: &[F192], val: u32) -> WireWord {
-    std::array::from_fn(|i| {
-        if (val >> i) & 1 == 1 {
-            w[Z_CONST_POS]
-        } else {
-            F192::ZERO
-        }
-    })
-}
-
-#[inline]
-fn wire_xor(x: &WireWord, y: &WireWord) -> WireWord {
-    std::array::from_fn(|i| x[i] + y[i])
-}
-
-#[inline]
-fn wire_rotr(x: &WireWord, n: usize) -> WireWord {
-    std::array::from_fn(|i| x[(i + n) % WORD_BITS])
-}
-
-/// Pair of accumulators for the A-side and B-side bilinear forms, plus the
-/// running sum of `u` over rows whose B-side is the single `[Z_CONST]` entry
-/// (lin-id / free-input rows), factored so those rows cost one B-side
-/// F-addition instead of a multiplication each.
-struct WalkAcc {
-    a: F192,
-    b: F192,
-    /// Σ u[row] over rows with `B_row = [Z_CONST]`; folded in once at the end
-    /// as `b += w[Z_CONST_POS] · u_bconst`.
-    u_bconst: F192,
-}
-
-/// Walk one 32-bit ADD (mirror of `write_add_carry_rows` + `Word::add_sum`):
-/// accumulate the 31 carry rows into `acc` and return the sum-bit wires.
-///
-///   carry row cb+i:  A = X[i] ⊕ cin[i],  B = Y[i] ⊕ cin[i]
-///   sum[i]         = X[i] ⊕ Y[i] ⊕ cin[i]
-///
-/// with `cin[i] = ⊕_{j<i} carry_aux[cb+j]`, a running prefix of `w` reads.
-fn walk_add(acc: &mut WalkAcc, u: &[F192], w: &[F192], x: &WireWord, y: &WireWord, carry_base: usize) -> WireWord {
-    let mut out = [F192::ZERO; WORD_BITS];
-    let mut cin = F192::ZERO;
-    for i in 0..WORD_BITS {
-        let a_side = x[i] + cin;
-        let b_side = y[i] + cin;
-        out[i] = a_side + y[i];
-        if i < CARRY_BITS_PER_ADD {
-            let ui = u[carry_base + i];
-            acc.a += ui * a_side;
-            acc.b += ui * b_side;
-            cin += w[carry_base + i];
-        }
-    }
-    out
-}
-
-/// Walk one fused three-operand ADD (mirror of [`write_add3_fused_rows`]):
-/// accumulate the 31 majority rows and the 30 ripple rows into `acc` and
-/// return the sum-bit wires.
-fn walk_add3_fused(
-    acc: &mut WalkAcc,
-    u: &[F192],
-    w: &[F192],
-    x: &WireWord,
-    y: &WireWord,
-    z: &WireWord,
-    base: usize,
-) -> WireWord {
-    let rip_base = base + CARRY_BITS_PER_ADD;
-    let mut maj = [F192::ZERO; CARRY_BITS_PER_ADD];
-    for i in 0..CARRY_BITS_PER_ADD {
-        let ui = u[base + i];
-        acc.a += ui * (x[i] + z[i]);
-        acc.b += ui * (y[i] + z[i]);
-        maj[i] = w[base + i] + z[i];
-    }
-
-    let mut out = [F192::ZERO; WORD_BITS];
-    let mut cin = F192::ZERO;
-    for i in 0..WORD_BITS {
-        let q_i = if i == 0 { F192::ZERO } else { maj[i - 1] };
-        let a_side = x[i] + y[i] + z[i] + cin;
-        out[i] = a_side + q_i;
-        if (1..=RIPPLE_BITS_PER_ADD3).contains(&i) {
-            let ui = u[rip_base + i - 1];
-            acc.a += ui * a_side;
-            acc.b += ui * (q_i + cin);
-            cin += w[rip_base + i - 1];
-        }
-    }
-    out
-}
-
-/// Walk 32 consecutive `lin_func · 1` rows (lin-id / out_lo / out_hi):
-/// row base+i has `A = <wire bit i>`, `B = [Z_CONST]`.
-fn walk_lin_rows(acc: &mut WalkAcc, u: &[F192], vals: &WireWord, base: usize) {
-    for i in 0..WORD_BITS {
-        acc.a += u[base + i] * vals[i];
-        acc.u_bconst += u[base + i];
-    }
-}
-
 /// `(uᵀ A_0 w, uᵀ B_0 w)` by the forward circuit walk, over the exact matrices
 /// `build_matrices` emits, never materialized.
 pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
     assert_eq!(u.len(), K);
     assert_eq!(w.len(), K);
-    let wc = w[Z_CONST_POS];
-    let mut acc = WalkAcc {
-        a: F192::ZERO,
-        b: F192::ZERO,
-        u_bconst: F192::ZERO,
-    };
+    let mut acc = WalkAcc::zero();
     // Σ u[row] over rows with A = B = [Z_CONST] (just the constant row now
     // that every compression input is a free row): folded in at the end on
     // both sides.
     let u_abconst = u[Z_CONST_POS];
 
-    // Free-input rows for the 512 message bits: A = [slot], B = [Z_CONST].
-    for j in 0..16 * WORD_BITS {
-        let s = M_BASE + j;
-        acc.a += u[s] * w[s];
-        acc.u_bconst += u[s];
-    }
-
-    // Free-input rows for the 256 chaining-value bits and the 128 metadata
-    // bits (counter lo/hi, block_len, flags): A = [slot], B = [Z_CONST], the
-    // same shape as the message bits (the generalized circuit no longer pins
-    // them to constants; the embedding protocol binds them instead).
-    for j in 0..8 * WORD_BITS {
-        let s = CV_BASE + j;
-        acc.a += u[s] * w[s];
-        acc.u_bconst += u[s];
-    }
-    for base in [T_LO_BASE, T_HI_BASE, BLEN_BASE, FLAGS_BASE] {
-        for j in 0..WORD_BITS {
-            let s = base + j;
-            acc.a += u[s] * w[s];
-            acc.u_bconst += u[s];
-        }
-    }
+    // Free-input rows for the message, the chaining value and the metadata
+    // (counter lo/hi, block_len, flags): A = [slot], B = [Z_CONST]. The
+    // generalized circuit no longer pins any of them to constants; the
+    // embedding protocol binds them instead.
+    acc.free_input_rows(u, w, M_BASE, 16 * WORD_BITS);
+    acc.free_input_rows(u, w, CV_BASE, 8 * WORD_BITS);
+    acc.free_input_rows(u, w, T_LO_BASE, 4 * WORD_BITS);
 
     // The G cascade, over wire values (mirrors `initial_lane_words`).
     let msg_idx = per_round_msg_idx();
@@ -831,7 +490,7 @@ pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
         state[wd] = wire_from_slot_base(w, cv_bit(wd, 0));
     }
     for i in 0..4 {
-        state[8 + i] = wire_from_const(w, BLAKE3_IV[i]);
+        state[8 + i] = wire_from_const(w, BLAKE3_IV[i], Z_CONST_POS);
     }
     state[12] = wire_from_slot_base(w, T_LO_BASE);
     state[13] = wire_from_slot_base(w, T_HI_BASE);
@@ -855,8 +514,8 @@ pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
             let d_2 = wire_rotr(&wire_xor(&d_1, &a_2), 8);
             let c_2 = walk_add(&mut acc, u, w, &c_1, &d_2, g_slot(g, G_ADD_C2));
             let b_new = wire_rotr(&wire_xor(&b_1, &c_2), 7);
-            walk_lin_rows(&mut acc, u, &b_new, g_slot(g, G_LIN_B_NEW));
-            walk_lin_rows(&mut acc, u, &d_2, g_slot(g, G_LIN_D_NEW));
+            acc.lin_word_rows(u, &b_new, g_slot(g, G_LIN_B_NEW));
+            acc.lin_word_rows(u, &d_2, g_slot(g, G_LIN_D_NEW));
 
             state[la] = a_2;
             state[lb] = wire_from_slot_base(w, g_slot(g, G_LIN_B_NEW));
@@ -869,14 +528,13 @@ pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
     // out_hi[w] = state[w+8] ⊕ cv[w]. Padding rows are empty: no contribution.
     for wd in 0..8 {
         let lo = wire_xor(&state[wd], &state[wd + 8]);
-        walk_lin_rows(&mut acc, u, &lo, out_lo_bit(wd, 0));
+        acc.lin_word_rows(u, &lo, out_lo_bit(wd, 0));
         let cv_w = wire_from_slot_base(w, cv_bit(wd, 0));
         let hi = wire_xor(&state[wd + 8], &cv_w);
-        walk_lin_rows(&mut acc, u, &hi, out_hi_bit(wd, 0));
+        acc.lin_word_rows(u, &hi, out_hi_bit(wd, 0));
     }
 
-    // Fold in the factored constant-B and constant-A/B row sums.
-    (acc.a + wc * u_abconst, acc.b + wc * (acc.u_bconst + u_abconst))
+    acc.finish(w, Z_CONST_POS, u_abconst)
 }
 
 /// `α·(uᵀ A_0 w) + (uᵀ B_0 w)`, the α-batched form lincheck's verifier
@@ -1033,15 +691,6 @@ const REC_C2: usize = G_ADD_C2;
 const REC_LIN0: usize = G_LIN_B_NEW;
 const REC_LIN1: usize = G_LIN_D_NEW;
 
-/// Write a 32-bit lin-id (or input) slot: (z, a) = val, b = all-ones.
-/// **c is not written**: since `C = I`, `c == z` byte-for-byte.
-#[inline]
-fn write_lin_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [u64], b: &mut [u64]) {
-    or_u32_at_bit(z, bit_off, val);
-    or_u32_at_bit(a, bit_off, val);
-    or_u32_at_bit(b, bit_off, 0xFFFF_FFFF);
-}
-
 /// Build the (z, a, b) blocks for ONE compression instance, into this
 /// instance's `K / 64` words of each packed table. Buffers must be zero on
 /// entry.
@@ -1197,19 +846,6 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
             build_block_witness_ab_packed_into(cv, m, *t, *bl, *fl, z_u64, a_u64, b_u64);
         },
     )
-}
-
-/// The packed witness as the byte string the zerocheck kernels read. Bit `i`
-/// of the witness is bit `i % 8` of byte `i / 8`, which is the in-memory image
-/// of the `u64` words on a little-endian target.
-fn packed_bytes(words: &[u64]) -> &[u8] {
-    const _: () = assert!(
-        cfg!(target_endian = "little"),
-        "packed witness bytes assume little-endian"
-    );
-    // SAFETY: `u64` has no padding or invalid bit patterns, and `u8`'s
-    // alignment divides `u64`'s, so the words are a valid `8 · len` byte slice.
-    unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
 }
 
 // ---------------------------------------------------------------------------

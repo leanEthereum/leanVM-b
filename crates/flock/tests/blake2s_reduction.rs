@@ -1,0 +1,145 @@
+//! The BLAKE2s circuit driven through flock's actual reduction: zerocheck then
+//! lincheck, prover and verifier, on the shared transcript.
+//!
+//! The unit tests in `flock::blake2s` establish that the circuit is the right
+//! circuit (known-answer vectors, honest witness satisfies, walk agrees with
+//! the matrices). This establishes that the ten-round encoding is *provable*
+//! with the machinery as it stands: same zerocheck, same lincheck, same
+//! `k_log = 14` and `k_skip = 6`, no BLAKE3-specific assumption anywhere in
+//! the path. Only the PCS opening is left out, which is generic in the claims
+//! and already covered by `blake3_batch`.
+
+use fiat_shamir::transcript::{ProverState, VerifierState};
+use flock::blake2s::{
+    Compression, K_LOG, WalkLincheckCircuit, build_block_r1cs, generate_witness_with_ab_packed_and_lincheck,
+    min_n_blocks_log, param_iv,
+};
+use flock::lincheck::QuirkyPoint;
+use flock::zerocheck::{PaddingSpec, ZerocheckClaim};
+use primitives::test_rng::Rng;
+
+const LABEL: &[u8] = b"flock-blake2s-reduction-test";
+
+fn packed_bytes(words: &[u64]) -> &[u8] {
+    // SAFETY: u64 has no padding and any bit pattern is a valid u8 sequence.
+    unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), std::mem::size_of_val(words)) }
+}
+
+fn x_ab_of(zc: &ZerocheckClaim, inner_rest_len: usize) -> QuirkyPoint {
+    QuirkyPoint {
+        z_skip: zc.z,
+        x_inner_rest: zc.mlv_challenges[..inner_rest_len].to_vec(),
+        x_outer: zc.mlv_challenges[inner_rest_len..].to_vec(),
+    }
+}
+
+fn blocks_for(n: usize, seed: u64) -> Vec<Compression> {
+    let mut rng = Rng::new(seed);
+    (0..n)
+        .map(|i| {
+            (
+                if i == 0 {
+                    param_iv()
+                } else {
+                    std::array::from_fn(|_| rng.next_u32())
+                },
+                std::array::from_fn(|_| rng.next_u32()),
+                64 * (i as u64 + 1),
+                if i % 3 == 0 { u32::MAX } else { 0 },
+                0,
+            )
+        })
+        .collect()
+}
+
+/// Prove, then verify. `tamper` may corrupt the packed witness first, in which
+/// case verification must reject (or the prover must produce a transcript the
+/// verifier refuses).
+fn run(n: usize, tamper: Option<usize>) -> bool {
+    let n_log = min_n_blocks_log(n);
+    let r1cs = build_block_r1cs(n_log);
+    let m = r1cs.m;
+    let blocks = blocks_for(n, 0xB2_5E_ED ^ n as u64);
+
+    let (mut z, a, b, mut z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
+    if let Some(bit) = tamper {
+        // Flip one committed witness bit, in both views the prover feeds in.
+        z[bit / 64] ^= 1u64 << (bit % 64);
+        let (inner, outer) = (bit % (1 << K_LOG), bit >> K_LOG);
+        z_lincheck[(outer / 8) * (1 << K_LOG) + inner] ^= 1u8 << (outer % 8);
+    }
+
+    let padding = PaddingSpec {
+        k_log: r1cs.k_log,
+        useful_bits_per_block: r1cs.useful_bits,
+    };
+    let inner_rest_len = r1cs.k_log - r1cs.k_skip;
+
+    let mut ps = ProverState::new(LABEL, &[]);
+    let (zc, _s_hat_v_c) = flock::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+        packed_bytes(&a),
+        packed_bytes(&b),
+        packed_bytes(&z), // C = I, so c == z
+        m,
+        &padding,
+        &mut ps,
+    );
+    let x_ab = x_ab_of(&zc, inner_rest_len);
+    let _lc = flock::lincheck::prove_padded_capture_s_hat_v(
+        &z_lincheck,
+        m,
+        r1cs.k_log,
+        r1cs.k_skip,
+        r1cs.useful_bits,
+        r1cs.csc_lincheck_circuit(),
+        &x_ab,
+        &mut ps,
+    );
+    let transcript = ps.into_proof();
+
+    let mut vs = VerifierState::new(LABEL, &transcript, &[]);
+    let Ok(zc_v) = flock::zerocheck::verify(m, &mut vs) else {
+        return false;
+    };
+    let x_ab_v = x_ab_of(&zc_v, inner_rest_len);
+    let circuit = WalkLincheckCircuit::new(&r1cs);
+    if flock::lincheck::verify(
+        m,
+        r1cs.k_log,
+        r1cs.k_skip,
+        &circuit,
+        &x_ab_v,
+        zc_v.a_eval,
+        zc_v.b_eval,
+        &mut vs,
+    )
+    .is_err()
+    {
+        return false;
+    }
+    vs.finish().is_ok()
+}
+
+/// Ten rounds of BLAKE2s inside a 2^14 block, proved and verified through the
+/// unmodified zerocheck and lincheck. The lincheck verifier here answers via
+/// [`flock::blake2s::bilinear_walk`], so this also exercises the circuit walk
+/// against the same transcript the CSC-fold prover produced.
+#[test]
+fn blake2s_reduction_roundtrip() {
+    for n in [8usize, 16] {
+        assert!(run(n, None), "honest BLAKE2s reduction must verify at n = {n}");
+    }
+}
+
+/// A single flipped witness bit must not survive. Picks bits inside the deep
+/// end of the cascade (the last round's products) as well as an input bit.
+#[test]
+fn blake2s_reduction_rejects_tampering() {
+    // GS_BASE + G_STRIDE * 79 = 15,816: the last G's product block.
+    for bit in [0usize, 700, 15_816, 15_900, 15_999] {
+        assert!(
+            !run(8, Some(bit)),
+            "flipping witness bit {bit} must make the reduction reject"
+        );
+    }
+}
