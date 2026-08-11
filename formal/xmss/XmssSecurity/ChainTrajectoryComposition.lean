@@ -206,6 +206,34 @@ theorem Concrete.sampledChainTrajectoriesFromCache_cons
           first.2 epochs
         return (first.1 :: rest.1, rest.2)) := rfl
 
+set_option maxRecDepth 10000 in
+set_option linter.constructorNameAsVariable false in
+theorem Concrete.sampledChainTrajectoriesFromCache_support_length
+    (parameter : PublicParameter) (chain : ChainIndex) (position steps : Nat) :
+    ∀ (epochs : List Epoch) (cache : QueryCache HashSpec)
+      (result : List (Vector Digest (steps + 1)) × QueryCache HashSpec),
+      result ∈ support
+        (Concrete.sampledChainTrajectoriesFromCache parameter chain position steps cache epochs) →
+        result.1.length = epochs.length := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro cache result hresult
+      simp only [Concrete.sampledChainTrajectoriesFromCache_nil, support_pure,
+        Set.mem_singleton_iff] at hresult
+      subst result
+      rfl
+  | cons epoch epochs ih =>
+      intro cache result hresult
+      rw [Concrete.sampledChainTrajectoriesFromCache_cons, mem_support_bind_iff] at hresult
+      obtain ⟨first, _hfirst, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      cases hpure
+      simp only [List.length_cons]
+      rw [ih first.2 rest hrest]
+
 set_option maxHeartbeats 1600000 in
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
