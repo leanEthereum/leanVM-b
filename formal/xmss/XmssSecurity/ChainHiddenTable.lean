@@ -1,6 +1,6 @@
 import XmssSecurity.ChainInputTrace
 import XmssSecurity.ChainOriginProbability
-import XmssSecurity.ChainTrajectoryUniformity
+import XmssSecurity.ChainTrajectoryComposition
 
 open OracleSpec
 
