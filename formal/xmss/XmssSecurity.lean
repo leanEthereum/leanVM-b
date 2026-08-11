@@ -1,4 +1,5 @@
 import XmssSecurity.CacheView
+import XmssSecurity.ChainQueryPresence
 import XmssSecurity.CacheVerify
 import XmssSecurity.CacheReplay
 import XmssSecurity.CacheQuerySupport
@@ -37,6 +38,7 @@ import XmssSecurity.QueryBoundSupport
 import XmssSecurity.QueryPresence
 import XmssSecurity.SecurityBudget
 import XmssSecurity.Serialization
+import XmssSecurity.SuffixEventProbability
 import XmssSecurity.Tweak
 import XmssSecurity.TreeQueryBound
 import XmssSecurity.Wots

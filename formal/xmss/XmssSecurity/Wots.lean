@@ -135,7 +135,8 @@ def IsSuffixCollisionAt {α : Type} (step : ChainIndex → Nat → α → α)
   let offset := position.2.val
   let forgedAtSigned := walk (step i) (forgedEncoding i).val
     ((signedEncoding i).val - (forgedEncoding i).val) (forgedValue i)
-  walk (step i) (signedEncoding i).val offset forgedAtSigned ≠
+  forgedEncoding i ≤ signedEncoding i ∧
+    walk (step i) (signedEncoding i).val offset forgedAtSigned ≠
       walk (step i) (signedEncoding i).val offset (signedValue i) ∧
     step i ((signedEncoding i).val + offset)
         (walk (step i) (signedEncoding i).val offset forgedAtSigned) =
@@ -165,7 +166,7 @@ theorem classify_distinct_valid_encodings {α : Type}
   · exact Or.inl ⟨i, hi, hbackward⟩
   · right
     obtain ⟨offset, hoffset, hne, heq⟩ := hcollision
-    exact ⟨⟨i, ⟨offset, hoffset⟩⟩, hne, heq⟩
+    exact ⟨⟨i, ⟨offset, hoffset⟩⟩, hi.le, hne, heq⟩
 
 /-- With the same encoding, different chain values recovering the same endpoints expose a suffix collision. -/
 theorem suffixCollision_of_sameEncoding_of_values_ne {α : Type}
@@ -188,7 +189,8 @@ theorem suffixCollision_of_sameEncoding_of_values_ne {α : Type}
     (by simpa only [recoverChain] using hendpoints i)
   rcases hcollision with heq | ⟨offset, hoffset, hstepNe, hstepEq⟩
   · exact (hi heq).elim
-  · exact ⟨⟨i, ⟨offset, hoffset⟩⟩, by simpa using hstepNe, by simpa using hstepEq⟩
+  · exact ⟨⟨i, ⟨offset, hoffset⟩⟩, le_rfl, by simpa using hstepNe,
+      by simpa using hstepEq⟩
 
 def IsFreshChainValueAt {α : Type} (step : ChainIndex → Nat → α → α)
     (encoding : Encoding) (forgedValue secret : ChainIndex → α) (i : ChainIndex) : Prop :=
@@ -223,7 +225,8 @@ theorem freshChainValue_or_suffixCollision {α : Type}
         exact hendpoints i)
     rcases hcollision with heq | ⟨offset, hoffset, hstepNe, hstepEq⟩
     · exact (hi heq).elim
-    · exact ⟨⟨i, ⟨offset, hoffset⟩⟩, by simpa using hstepNe, by simpa using hstepEq⟩
+    · exact ⟨⟨i, ⟨offset, hoffset⟩⟩, le_rfl, by simpa using hstepNe,
+        by simpa using hstepEq⟩
 
 def HasLeafCollision {α β : Type} (leafHash : (ChainIndex → α) → β)
     (left right : ChainIndex → α) : Prop :=

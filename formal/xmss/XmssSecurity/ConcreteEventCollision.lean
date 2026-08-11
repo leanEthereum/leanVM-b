@@ -103,7 +103,7 @@ theorem sameEpoch_badEvent_has_cacheDigestCollision
         have hdigit := (signedEncoding chain).isLt
         omega
       exact ⟨_, _, Concrete.chainStep_collision cache parameter epoch chain
-        ((signedEncoding chain).val + offset) hstep left right hevent.1 hevent.2⟩
+        ((signedEncoding chain).val + offset) hstep left right hevent.2.1 hevent.2.2⟩
   | leaf =>
       exact ⟨_, _, Concrete.leafHash_collision cache parameter epoch _ _ hevent.1 hevent.2⟩
   | merkle level =>
@@ -144,7 +144,7 @@ theorem freshEpoch_badEvent_has_cacheDigestCollision
         have hdigit := (forgedEncoding chain).isLt
         omega
       exact ⟨_, _, Concrete.chainStep_collision cache parameter epoch chain
-        ((forgedEncoding chain).val + offset) hstep left right hevent.1 hevent.2⟩
+        ((forgedEncoding chain).val + offset) hstep left right hevent.2.1 hevent.2.2⟩
   | leaf =>
       exact ⟨_, _, Concrete.leafHash_collision cache parameter epoch _ _ hevent.1 hevent.2⟩
   | merkle level =>
