@@ -1,9 +1,11 @@
 import XmssSecurity.CacheView
 import XmssSecurity.CacheVerify
 import XmssSecurity.CacheReplay
+import XmssSecurity.CacheQuerySupport
 import XmssSecurity.ConcreteForgery
 import XmssSecurity.ConcreteHash
 import XmssSecurity.ConcreteKeygen
+import XmssSecurity.ConcreteQueryBound
 import XmssSecurity.ConcreteSign
 import XmssSecurity.ConcreteScheme
 import XmssSecurity.ConcreteCorrectness
@@ -18,6 +20,7 @@ import XmssSecurity.ConcreteEventCollision
 import XmssSecurity.ConcreteEventProbability
 import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
+import XmssSecurity.HashAddress
 import XmssSecurity.IndexedHiddenValue
 import XmssSecurity.Merkle
 import XmssSecurity.MixedOracle
@@ -29,4 +32,5 @@ import XmssSecurity.QueryBoundSupport
 import XmssSecurity.SecurityBudget
 import XmssSecurity.Serialization
 import XmssSecurity.Tweak
+import XmssSecurity.TreeQueryBound
 import XmssSecurity.Wots
