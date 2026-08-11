@@ -344,6 +344,129 @@ theorem splitUnloggedMappedAdversary_evalDist_simulation
   exact splitUnloggedMappedAdversaryImpl_query_bridge
     publicKey secretKey input state
 
+noncomputable def splitCacheTracedMappedAdversaryImpl
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT (QueryCache HashSpec × SigningCacheTrace)
+        (OracleComp EncodingSamplingWorld)) :=
+  QueryImpl.extendState
+    (splitUnloggedMappedAdversaryImpl publicKey secretKey)
+    signingCacheTraceUpdate
+
+noncomputable def splitEncodingTracedMappedAdversaryImpl
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)
+        (OracleComp EncodingSamplingWorld)) :=
+  QueryImpl.extendState
+    (splitCacheTracedMappedAdversaryImpl publicKey secretKey)
+    (encodingActionTraceUpdate secretKey)
+
+theorem splitCacheTracedMappedAdversaryImpl_query_bridge
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (state : QueryCache HashSpec × SigningCacheTrace) :
+    𝒟[simulateQ encodingSamplingWorldImpl
+        ((splitCacheTracedMappedAdversaryImpl publicKey secretKey input).run state)] =
+      𝒟[(cacheTracedMappedAdversaryImpl publicKey secretKey input).run state] := by
+  unfold splitCacheTracedMappedAdversaryImpl cacheTracedMappedAdversaryImpl
+  rw [QueryImpl.extendState_apply, QueryImpl.extendState_apply]
+  simp only [simulateQ_bind, simulateQ_pure, evalDist_bind]
+  rw [splitUnloggedMappedAdversaryImpl_query_bridge]
+
+theorem splitCacheTracedMappedAdversary_evalDist_simulation
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (state : QueryCache HashSpec × SigningCacheTrace) :
+    𝒟[simulateQ encodingSamplingWorldImpl
+        ((simulateQ (splitCacheTracedMappedAdversaryImpl publicKey secretKey)
+          computation).run state)] =
+      𝒟[(simulateQ (cacheTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run state] := by
+  rw [QueryImpl.simulateQ_mapStateTBase_run]
+  apply OracleComp.evalDist_simulateQ_run_congr
+  intro input currentState
+  exact splitCacheTracedMappedAdversaryImpl_query_bridge
+    publicKey secretKey input currentState
+
+theorem splitEncodingTracedMappedAdversaryImpl_query_bridge
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (state : (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) :
+    𝒟[simulateQ encodingSamplingWorldImpl
+        ((splitEncodingTracedMappedAdversaryImpl publicKey secretKey input).run state)] =
+      𝒟[(encodingTracedMappedAdversaryImpl publicKey secretKey input).run state] := by
+  unfold splitEncodingTracedMappedAdversaryImpl
+    encodingTracedMappedAdversaryImpl
+  rw [QueryImpl.extendState_apply, QueryImpl.extendState_apply]
+  simp only [simulateQ_bind, simulateQ_pure, evalDist_bind]
+  rw [splitCacheTracedMappedAdversaryImpl_query_bridge]
+
+theorem splitEncodingTracedMappedAdversary_evalDist_simulation
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (state : (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) :
+    𝒟[simulateQ encodingSamplingWorldImpl
+        ((simulateQ (splitEncodingTracedMappedAdversaryImpl publicKey secretKey)
+          computation).run state)] =
+      𝒟[(simulateQ (encodingTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run state] := by
+  rw [QueryImpl.simulateQ_mapStateTBase_run]
+  apply OracleComp.evalDist_simulateQ_run_congr
+  intro input currentState
+  exact splitEncodingTracedMappedAdversaryImpl_query_bridge
+    publicKey secretKey input currentState
+
+noncomputable def splitDetailedGameAfterKeygenWithEncodingTrace
+    (adversary : Adversary Concrete.scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec) :
+    OracleComp EncodingSamplingWorld (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) := do
+  let (forgery, adversaryState) ←
+    (simulateQ (splitEncodingTracedMappedAdversaryImpl publicKey secretKey)
+      (adversary.main publicKey)).run ((initialCache, []), [])
+  let (verified, finalCache) ←
+    (simulateQ (splitXmssRomImpl secretKey.parameter .query)
+      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
+        forgery.signature)).run adversaryState.1.1
+  let finalEncodingTrace := appendVerificationEncodingObservation secretKey forgery
+    adversaryState.1.1 finalCache adversaryState.2
+  pure (⟨publicKey, secretKey, forgery, adversaryState.1.2.toSigningLog, verified⟩,
+    ((finalCache, adversaryState.1.2), finalEncodingTrace))
+
+theorem splitDetailedGameAfterKeygenWithEncodingTrace_evalDist_simulation
+    (adversary : Adversary Concrete.scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec) :
+    𝒟[simulateQ encodingSamplingWorldImpl
+        (splitDetailedGameAfterKeygenWithEncodingTrace adversary publicKey secretKey
+          initialCache)] =
+      𝒟[detailedGameAfterKeygenWithEncodingTrace adversary publicKey secretKey
+        initialCache] := by
+  unfold splitDetailedGameAfterKeygenWithEncodingTrace
+    detailedGameAfterKeygenWithEncodingTrace
+  simp only [simulateQ_bind, simulateQ_pure, evalDist_bind]
+  rw [splitEncodingTracedMappedAdversary_evalDist_simulation]
+  simp_rw [splitXmssRom_evalDist_simulation]
+
+noncomputable def splitDetailedGameWithEncodingTrace
+    (adversary : Adversary Concrete.scheme) :
+    ProbComp (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) := do
+  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
+  simulateQ encodingSamplingWorldImpl
+    (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
+      keyResult.1.2 keyResult.2)
+
+theorem splitDetailedGameWithEncodingTrace_evalDist_simulation
+    (adversary : Adversary Concrete.scheme) :
+    𝒟[splitDetailedGameWithEncodingTrace adversary] =
+      𝒟[detailedGameWithEncodingTrace adversary] := by
+  unfold splitDetailedGameWithEncodingTrace detailedGameWithEncodingTrace
+  simp only [evalDist_bind]
+  simp_rw [splitDetailedGameAfterKeygenWithEncodingTrace_evalDist_simulation]
+
 noncomputable def encodingSampleControllerStep
     (address : EncodingSampleAddress)
     (next : HashOutput → OracleComp EncodingSamplingWorld α) :
@@ -497,6 +620,52 @@ theorem encodingSamplingTrace_projection
       simulateQ encodingSamplingWorldImpl computation := by
   exact QueryImpl.fst_map_run_withTraceAppend
     encodingSamplingWorldImpl encodingSamplingTraceFragment computation
+
+noncomputable def sampledDetailedGameWithEncodingTrace
+    (adversary : Adversary Concrete.scheme) :
+    ProbComp ((GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace) := do
+  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
+  (simulateQ encodingSamplingTraceImpl
+    (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
+      keyResult.1.2 keyResult.2)).run
+
+theorem sampledDetailedGameWithEncodingTrace_projection
+    (adversary : Adversary Concrete.scheme) :
+    Prod.fst <$> sampledDetailedGameWithEncodingTrace adversary =
+      splitDetailedGameWithEncodingTrace adversary := by
+  unfold sampledDetailedGameWithEncodingTrace splitDetailedGameWithEncodingTrace
+  rw [map_bind]
+  apply bind_congr
+  intro keyResult
+  exact encodingSamplingTrace_projection
+    (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
+      keyResult.1.2 keyResult.2)
+
+theorem detailedGameWithEncodingTrace_monitorHit_probability_eq_sampled
+    (adversary : Adversary Concrete.scheme) :
+    Pr[(fun execution : GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+      EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true) |
+      detailedGameWithEncodingTrace adversary] =
+    Pr[(fun execution : (GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+          EncodingActionTrace =>
+      EncodingMonitor.runObserved EncodingMonitor.State.empty
+        execution.1.2.2 = true) |
+      sampledDetailedGameWithEncodingTrace adversary] := by
+  calc
+    _ = Pr[(fun execution : GameOutcome ×
+          ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+        EncodingMonitor.runObserved EncodingMonitor.State.empty
+          execution.2.2 = true) |
+        splitDetailedGameWithEncodingTrace adversary] := by
+      rw [probEvent_def, probEvent_def,
+        splitDetailedGameWithEncodingTrace_evalDist_simulation]
+    _ = _ := by
+      rw [← sampledDetailedGameWithEncodingTrace_projection, probEvent_map]
+      rfl
 
 noncomputable def applyEncodingQueryMonitor
     (epoch : Epoch)
