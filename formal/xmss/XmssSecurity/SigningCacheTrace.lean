@@ -1,5 +1,6 @@
 import XmssSecurity.SignCacheHitProbability
 import XmssSecurity.SigningLogReplay
+import XmssSecurity.ConcreteQueryBound
 
 open OracleComp OracleSpec ENNReal
 
@@ -16,6 +17,10 @@ abbrev SigningCacheTrace := List SigningCacheEntry
 def SigningCacheTrace.CachesLe
     (trace : SigningCacheTrace) (cache : QueryCache HashSpec) : Prop :=
   ∀ entry ∈ trace, entry.initialCache ≤ cache ∧ entry.finalCache ≤ cache
+
+/-- Signing snapshots occur in cache order: every earlier signing cache is contained in the initial cache of every later signing step. -/
+def SigningCacheTrace.Chronological (trace : SigningCacheTrace) : Prop :=
+  trace.Pairwise fun earlier later => earlier.finalCache ≤ later.initialCache
 
 def SigningCacheTrace.toSigningLog (trace : SigningCacheTrace) : QueryLog SigningSpec :=
   trace.map fun entry => ⟨entry.request, entry.signature⟩
@@ -56,6 +61,22 @@ def SigningCacheEntry.PreexistingEncodingCollision
     oldInput ≠ (entry.request.message, signature.randomness) ∧
     truncateHash signedOutput = truncateHash oldOutput
 
+def SigningCacheEntry.FreshSigningEncodingCollision
+    (secretKey : SecretKey) (entry : SigningCacheEntry) : Prop :=
+  ∃ signature signedOutput oldInput oldOutput,
+    entry.signature = some signature ∧
+    entry.initialCache
+      (Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch
+        (entry.request.message, signature.randomness)) = none ∧
+    entry.finalCache
+      (Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch
+        (entry.request.message, signature.randomness)) = some signedOutput ∧
+    entry.initialCache
+      (Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch oldInput) =
+        some oldOutput ∧
+    oldInput ≠ (entry.request.message, signature.randomness) ∧
+    truncateHash signedOutput = truncateHash oldOutput
+
 def SigningCacheEntry.FreshForgedEncodingCollision
     (secretKey : SecretKey) (forgery : Forgery)
     (finalCache : QueryCache HashSpec) (entry : SigningCacheEntry) : Prop :=
@@ -77,6 +98,14 @@ def SigningCacheEntry.FreshForgedEncodingCollision
         (forgery.message, forgery.signature.randomness) ∧
     truncateHash signedOutput = truncateHash forgedOutput
 
+def SigningCacheEntry.PostSigningFreshForgedEncodingCollision
+    (secretKey : SecretKey) (forgery : Forgery)
+    (finalCache : QueryCache HashSpec) (entry : SigningCacheEntry) : Prop :=
+  entry.FreshForgedEncodingCollision secretKey forgery finalCache ∧
+    entry.finalCache
+      (Concrete.CacheView.encodingInput secretKey.parameter forgery.epoch
+        (forgery.message, forgery.signature.randomness)) = none
+
 def SigningCacheEntry.SuccessfulEncodingCached
     (secretKey : SecretKey) (entry : SigningCacheEntry) : Prop :=
   ∀ signature, entry.signature = some signature →
@@ -87,6 +116,39 @@ def SigningCacheEntry.SuccessfulEncodingCached
 def SigningCacheTrace.SuccessfulEncodingsCached
     (secretKey : SecretKey) (trace : SigningCacheTrace) : Prop :=
   ∀ entry ∈ trace, entry.SuccessfulEncodingCached secretKey
+
+/-- A signing step cannot create a distinct encoding input that was absent before the step. -/
+def SigningCacheEntry.PreservesOtherEncodingInputs
+    (secretKey : SecretKey) (entry : SigningCacheEntry) : Prop :=
+  ∀ signature, entry.signature = some signature →
+    ∀ targetEpoch targetInput,
+      Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch
+          (entry.request.message, signature.randomness) ≠
+        Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput →
+      entry.initialCache
+          (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) = none →
+      entry.finalCache
+          (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) = none
+
+def SigningCacheTrace.PreservesOtherEncodingInputs
+    (secretKey : SecretKey) (trace : SigningCacheTrace) : Prop :=
+  ∀ entry ∈ trace, entry.PreservesOtherEncodingInputs secretKey
+
+theorem SigningCacheEntry.preexistingEncodingCollision_cases
+    (secretKey : SecretKey) (entry : SigningCacheEntry)
+    (hevent : entry.PreexistingEncodingCollision secretKey) :
+    entry.EncodingInputPrehit secretKey ∨
+      entry.FreshSigningEncodingCollision secretKey := by
+  obtain ⟨signature, signedOutput, oldInput, oldOutput, hsignature,
+    hsigned, hold, hne, hdigest⟩ := hevent
+  cases hinitial : entry.initialCache
+      (Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch
+        (entry.request.message, signature.randomness)) with
+  | none =>
+      exact Or.inr ⟨signature, signedOutput, oldInput, oldOutput, hsignature,
+        hinitial, hsigned, hold, hne, hdigest⟩
+  | some output =>
+      exact Or.inl ⟨signature, output, hsignature, hinitial⟩
 
 theorem signingCacheEntry_encodingInputPrehit_probability_le
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -120,6 +182,22 @@ theorem signingCacheEntry_preexistingEncodingCollision_probability_le
   simpa [SigningCacheEntry.PreexistingEncodingCollision] using
     Concrete.sign_preexistingEncoding_collision_le publicKey secretKey
       request.epoch request.message initialCache hfinite
+
+theorem signingCacheEntry_freshSigningEncodingCollision_probability_le
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (request : SignRequest) (initialCache : QueryCache HashSpec)
+    (hfinite : initialCache.toSet.Finite) :
+    Pr[fun result : Option Signature × QueryCache HashSpec =>
+      (SigningCacheEntry.mk request result.1 initialCache result.2)
+        |>.FreshSigningEncodingCollision secretKey |
+      (simulateQ xmssRomImpl
+        (Concrete.sign publicKey secretKey request.epoch request.message)).run
+          initialCache] ≤
+      ((cachedEncodingEntries initialCache secretKey.parameter request.epoch).card :
+        ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  simpa [SigningCacheEntry.FreshSigningEncodingCollision] using
+    Concrete.sign_freshEncoding_collision_le publicKey secretKey request.epoch
+      request.message initialCache hfinite
 
 set_option linter.constructorNameAsVariable false in
 theorem Concrete.sign_success_encodingInput_cached
@@ -171,6 +249,40 @@ theorem Concrete.sign_success_encodingInput_cached
   refine ⟨output, ?_⟩
   rw [hrandomness]
   exact hcacheLe hcached
+
+set_option linter.constructorNameAsVariable false in
+theorem Concrete.sign_success_preserves_other_encodingInput
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (request : SignRequest) (initialCache finalCache : QueryCache HashSpec)
+    (signature : Signature)
+    (hmem : (some signature, finalCache) ∈ support
+      ((simulateQ xmssRomImpl
+        (Concrete.sign publicKey secretKey request.epoch request.message)).run
+          initialCache))
+    (targetEpoch : Epoch) (targetInput : Message × Randomness)
+    (hne : Concrete.CacheView.encodingInput secretKey.parameter request.epoch
+        (request.message, signature.randomness) ≠
+      Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput)
+    (hnone : initialCache
+      (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) = none) :
+    finalCache
+      (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) = none := by
+  rw [Concrete.sign_run_eq, mem_support_bind_iff] at hmem
+  obtain ⟨randomness, _hrandomness, hattempt⟩ := hmem
+  have hrandomness := Concrete.signAttempt_support_randomness secretKey request.epoch
+    request.message randomness initialCache finalCache signature hattempt
+  have hne' : Concrete.CacheView.encodingInput secretKey.parameter request.epoch
+        (request.message, randomness) ≠
+      Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput := by
+    simpa [hrandomness] using hne
+  exact Concrete.CacheReplay.cache_none_of_zero_query_bound
+    (Concrete.signAttempt secretKey request.epoch request.message randomness :
+      OracleComp HashSpec (Option Signature))
+    (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput)
+    initialCache finalCache (some signature)
+    (Concrete.signAttempt_queryBound_zero_at_other_encodingInput secretKey
+      request.epoch targetEpoch request.message randomness targetInput hne')
+    hnone hattempt
 
 /-- Across a valid signing trace, the same-epoch cache targets visible before each signature are disjointly charged to the final cache. -/
 theorem signingCacheTrace_cachedEncodingEntries_sum_le
@@ -228,6 +340,79 @@ noncomputable def SigningCacheEntry.preexistingEncodingRisk
 noncomputable def SigningCacheTrace.preexistingEncodingRisk
     (parameter : PublicParameter) (trace : SigningCacheTrace) : ℝ≥0∞ :=
   (trace.map fun entry => entry.preexistingEncodingRisk parameter).sum
+
+noncomputable def SigningCacheTrace.encodingInputPrehitRisk
+    (trace : SigningCacheTrace) : ℝ≥0∞ :=
+  (trace.map fun entry => QueryCache.enncard entry.initialCache *
+    ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹).sum
+
+noncomputable def SigningCacheTrace.freshSigningEncodingCollisionRisk
+    (parameter : PublicParameter) (trace : SigningCacheTrace) : ℝ≥0∞ :=
+  (trace.map fun entry =>
+    ((cachedEncodingEntries entry.initialCache parameter
+      entry.request.epoch).card : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹).sum
+
+/-- The 192-bit signing-randomness pre-hit charge across a valid trace is below one 128-bit term. -/
+theorem SigningCacheTrace.encodingInputPrehitRisk_le
+    (trace : SigningCacheTrace) (finalCache : QueryCache HashSpec) (q : Nat)
+    (hvalid : SigningTranscript.Valid trace.toSigningLog)
+    (hcaches : trace.CachesLe finalCache)
+    (hcard : QueryCache.enncard finalCache ≤ (q : ℝ≥0∞)) :
+    trace.encodingInputPrehitRisk ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  have hlength : trace.length ≤ lifetime := by
+    unfold SigningTranscript.Valid at hvalid
+    simpa [SigningCacheTrace.toSigningLog, List.map_map,
+      Function.comp_def] using List.Nodup.length_le_card hvalid
+  calc
+    trace.encodingInputPrehitRisk ≤
+        (trace.map fun _entry => (q : ℝ≥0∞) *
+          ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹).sum := by
+      unfold SigningCacheTrace.encodingInputPrehitRisk
+      apply List.sum_le_sum
+      intro entry hentry
+      gcongr
+      exact (QueryCache.enncard_mono (hcaches entry hentry).1).trans hcard
+    _ = (trace.length : ℝ≥0∞) *
+        ((q : ℝ≥0∞) * ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) := by
+      simp
+    _ ≤ (lifetime : ℝ≥0∞) *
+        ((q : ℝ≥0∞) * ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) := by
+      gcongr
+    _ = (lifetime : ℝ≥0∞) *
+        ((q : ℝ≥0∞) / ((2 ^ randomnessBits : Nat) : ℝ≥0∞)) := by
+      rw [div_eq_mul_inv]
+    _ ≤ (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) :=
+      lifetime_mul_randomness_loss_le_digest_loss q
+
+/-- Same-epoch digest targets charged at fresh signing calls are disjoint across a valid trace, so their total risk is one 128-bit term. -/
+theorem SigningCacheTrace.freshSigningEncodingCollisionRisk_le
+    (trace : SigningCacheTrace) (parameter : PublicParameter)
+    (finalCache : QueryCache HashSpec) (q : Nat)
+    (hvalid : SigningTranscript.Valid trace.toSigningLog)
+    (hcaches : trace.CachesLe finalCache)
+    (hfinite : finalCache.toSet.Finite)
+    (hcard : QueryCache.enncard finalCache ≤ (q : ℝ≥0∞)) :
+    trace.freshSigningEncodingCollisionRisk parameter ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  have hrewrite : trace.freshSigningEncodingCollisionRisk parameter =
+      (((trace.map fun entry =>
+        (cachedEncodingEntries entry.initialCache parameter
+          entry.request.epoch).card).sum : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+    unfold SigningCacheTrace.freshSigningEncodingCollisionRisk
+    clear hvalid hcaches hfinite hcard q
+    induction trace with
+    | nil => simp
+    | cons entry tail ih =>
+        simp only [List.map_cons, List.sum_cons, Nat.cast_add]
+        rw [ih, add_mul]
+  rw [hrewrite, div_eq_mul_inv]
+  exact mul_le_mul'
+    ((signingCacheTrace_cachedEncodingEntries_sum_le trace parameter finalCache
+      hvalid (fun entry hentry => (hcaches entry hentry).1) hfinite).trans hcard)
+    le_rfl
 
 /-- Summing the local pre-signing collision charges over a valid trace costs at most two elementary 128-bit terms. -/
 theorem SigningCacheTrace.preexistingEncodingRisk_le
@@ -465,6 +650,26 @@ theorem signingCacheTraceUpdate_cachesLe
         subst entry
         exact ⟨hle, le_rfl⟩
 
+theorem signingCacheTraceUpdate_chronological
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (trace : SigningCacheTrace)
+    (hchronological : trace.Chronological)
+    (hcaches : trace.CachesLe initialCache) :
+    (signingCacheTraceUpdate input initialCache output finalCache trace).Chronological := by
+  cases input with
+  | inl worldInput =>
+      exact hchronological
+  | inr request =>
+      rw [SigningCacheTrace.Chronological, signingCacheTraceUpdate,
+        List.pairwise_append]
+      refine ⟨hchronological, by simp, ?_⟩
+      intro earlier hearlier later hlater
+      simp only [List.mem_singleton] at hlater
+      subst later
+      exact (hcaches earlier hearlier).2
+
 noncomputable def cacheTracedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec)
@@ -535,6 +740,30 @@ theorem cacheTracedMappedAdversaryImpl_query_cachesLe
     (unloggedMappedAdversaryImpl_cache_le publicKey secretKey input initialCache
       (output, finalCache) hbase)
 
+theorem cacheTracedMappedAdversaryImpl_query_cacheOrder
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      (QueryCache HashSpec × SigningCacheTrace))
+    (hchronological : initialTrace.Chronological)
+    (hcaches : initialTrace.CachesLe initialCache)
+    (hmem : result ∈ support
+      ((cacheTracedMappedAdversaryImpl publicKey secretKey input).run
+        (initialCache, initialTrace))) :
+    result.2.2.Chronological ∧ result.2.2.CachesLe result.2.1 := by
+  rw [cacheTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    mem_support_bind_iff] at hmem
+  obtain ⟨⟨output, finalCache⟩, hbase, hpure⟩ := hmem
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  have hle := unloggedMappedAdversaryImpl_cache_le publicKey secretKey input
+    initialCache (output, finalCache) hbase
+  exact ⟨signingCacheTraceUpdate_chronological input initialCache output finalCache
+      initialTrace hchronological hcaches,
+    signingCacheTraceUpdate_cachesLe input initialCache output finalCache initialTrace
+      hcaches hle⟩
+
 theorem cacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
     (publicKey : PublicKey) (secretKey : SecretKey)
     (input : (OracleWorld + SigningSpec).Domain)
@@ -567,6 +796,38 @@ theorem cacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
         exact Concrete.sign_success_encodingInput_cached publicKey secretKey request
           initialCache finalCache signature hbase
 
+theorem cacheTracedMappedAdversaryImpl_query_preservesOtherEncodingInputs
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      (QueryCache HashSpec × SigningCacheTrace))
+    (htrace : initialTrace.PreservesOtherEncodingInputs secretKey)
+    (hmem : result ∈ support
+      ((cacheTracedMappedAdversaryImpl publicKey secretKey input).run
+        (initialCache, initialTrace))) :
+    result.2.2.PreservesOtherEncodingInputs secretKey := by
+  rw [cacheTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    mem_support_bind_iff] at hmem
+  obtain ⟨⟨output, finalCache⟩, hbase, hpure⟩ := hmem
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  cases input with
+  | inl worldInput =>
+      simpa [signingCacheTraceUpdate] using htrace
+  | inr request =>
+      intro entry hentry
+      rw [signingCacheTraceUpdate, List.mem_append] at hentry
+      rcases hentry with hentry | hentry
+      · exact htrace entry hentry
+      · simp only [List.mem_singleton] at hentry
+        subst entry
+        intro signature hsignature targetEpoch targetInput hne hnone
+        change output = some signature at hsignature
+        subst output
+        exact Concrete.sign_success_preserves_other_encodingInput publicKey secretKey
+          request initialCache finalCache signature hbase targetEpoch targetInput hne hnone
+
 theorem cacheTracedMappedAdversaryImpl_cachesLe
     (publicKey : PublicKey) (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -596,6 +857,37 @@ theorem cacheTracedMappedAdversaryImpl_cachesLe
           initialCache initialTrace (output, middleState) htrace hquery')
         hrest
 
+theorem cacheTracedMappedAdversaryImpl_cacheOrder
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace)
+    (result : α × (QueryCache HashSpec × SigningCacheTrace))
+    (hchronological : initialTrace.Chronological)
+    (hcaches : initialTrace.CachesLe initialCache)
+    (hmem : result ∈ support
+      ((simulateQ (cacheTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run (initialCache, initialTrace))) :
+    result.2.2.Chronological ∧ result.2.2.CachesLe result.2.1 := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialCache initialTrace result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, support_pure,
+        Set.mem_singleton_iff] at hmem
+      subst result
+      exact ⟨hchronological, hcaches⟩
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
+      have hquery' : (output, middleState) ∈ support
+          ((cacheTracedMappedAdversaryImpl publicKey secretKey input).run
+            (initialCache, initialTrace)) := by
+        simpa [simulateQ_query] using hquery
+      obtain ⟨hmiddleChronological, hmiddleCaches⟩ :=
+        cacheTracedMappedAdversaryImpl_query_cacheOrder publicKey secretKey input
+          initialCache initialTrace (output, middleState) hchronological hcaches hquery'
+      exact ih output middleState.1 middleState.2 result hmiddleChronological
+        hmiddleCaches hrest
+
 theorem cacheTracedMappedAdversaryImpl_successfulEncodingsCached
     (publicKey : PublicKey) (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -622,6 +914,35 @@ theorem cacheTracedMappedAdversaryImpl_successfulEncodingsCached
         simpa [simulateQ_query] using hquery
       exact ih output middleState.1 middleState.2 result
         (cacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
+          publicKey secretKey input initialCache initialTrace (output, middleState)
+          htrace hquery') hrest
+
+theorem cacheTracedMappedAdversaryImpl_preservesOtherEncodingInputs
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace)
+    (result : α × (QueryCache HashSpec × SigningCacheTrace))
+    (htrace : initialTrace.PreservesOtherEncodingInputs secretKey)
+    (hmem : result ∈ support
+      ((simulateQ (cacheTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run (initialCache, initialTrace))) :
+    result.2.2.PreservesOtherEncodingInputs secretKey := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialCache initialTrace result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, support_pure,
+        Set.mem_singleton_iff] at hmem
+      subst result
+      exact htrace
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
+      have hquery' : (output, middleState) ∈ support
+          ((cacheTracedMappedAdversaryImpl publicKey secretKey input).run
+            (initialCache, initialTrace)) := by
+        simpa [simulateQ_query] using hquery
+      exact ih output middleState.1 middleState.2 result
+        (cacheTracedMappedAdversaryImpl_query_preservesOtherEncodingInputs
           publicKey secretKey input initialCache initialTrace (output, middleState)
           htrace hquery') hrest
 
@@ -859,6 +1180,49 @@ theorem detailedGameAfterKeygenWithSigningTrace_invariants
       (forgery, (adversaryCache, trace))
       (by simp [SigningCacheTrace.SuccessfulEncodingsCached]) hadversary
 
+theorem detailedGameAfterKeygenWithSigningTrace_preservesOtherEncodingInputs
+    (adversary : Adversary Concrete.scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support
+      (detailedGameAfterKeygenWithSigningTrace adversary publicKey secretKey
+        initialCache)) :
+    result.2.2.PreservesOtherEncodingInputs secretKey := by
+  unfold detailedGameAfterKeygenWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨forgery, adversaryCache, trace⟩, hadversary, hrest⟩ := hmem
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨⟨verified, finalCache⟩, _hverify, hfinal⟩ := hrest
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  exact cacheTracedMappedAdversaryImpl_preservesOtherEncodingInputs
+    publicKey secretKey (adversary.main publicKey) initialCache []
+    (forgery, (adversaryCache, trace))
+    (by simp [SigningCacheTrace.PreservesOtherEncodingInputs]) hadversary
+
+theorem detailedGameAfterKeygenWithSigningTrace_chronological
+    (adversary : Adversary Concrete.scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support
+      (detailedGameAfterKeygenWithSigningTrace adversary publicKey secretKey
+        initialCache)) :
+    result.2.2.Chronological := by
+  unfold detailedGameAfterKeygenWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨forgery, adversaryCache, trace⟩, hadversary, hrest⟩ := hmem
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨⟨verified, finalCache⟩, _hverify, hfinal⟩ := hrest
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  exact (cacheTracedMappedAdversaryImpl_cacheOrder publicKey secretKey
+    (adversary.main publicKey) initialCache []
+    (forgery, (adversaryCache, trace))
+    (by simp [SigningCacheTrace.Chronological])
+    (by simp [SigningCacheTrace.CachesLe]) hadversary).1
+
 theorem detailedGameWithSigningTrace_invariants
     (adversary : Adversary Concrete.scheme)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
@@ -873,6 +1237,55 @@ theorem detailedGameWithSigningTrace_invariants
     detailedGameAfterKeygenWithSigningTrace_invariants adversary
       publicKey secretKey keyCache result hrest
   exact ⟨hlog, hcaches, by simpa [hsecretKey] using hcached⟩
+
+theorem detailedGameWithSigningTrace_preservesOtherEncodingInputs
+    (adversary : Adversary Concrete.scheme)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support (detailedGameWithSigningTrace adversary)) :
+    result.2.2.PreservesOtherEncodingInputs result.1.secretKey := by
+  unfold detailedGameWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  have hpreserves :=
+    detailedGameAfterKeygenWithSigningTrace_preservesOtherEncodingInputs adversary
+      publicKey secretKey keyCache result hrest
+  have hsecretKey :=
+    (detailedGameAfterKeygenWithSigningTrace_invariants adversary publicKey secretKey
+      keyCache result hrest).1
+  simpa [hsecretKey] using hpreserves
+
+theorem detailedGameWithSigningTrace_chronological
+    (adversary : Adversary Concrete.scheme)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support (detailedGameWithSigningTrace adversary)) :
+    result.2.2.Chronological := by
+  unfold detailedGameWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  exact detailedGameAfterKeygenWithSigningTrace_chronological adversary publicKey
+    secretKey keyCache result hrest
+
+theorem SigningCacheEntry.freshForgedEncodingCollision_finalCache_none
+    (secretKey : SecretKey) (forgery : Forgery)
+    (gameCache : QueryCache HashSpec) (entry : SigningCacheEntry)
+    (hpreserves : entry.PreservesOtherEncodingInputs secretKey)
+    (hevent : entry.FreshForgedEncodingCollision secretKey forgery gameCache) :
+    entry.finalCache
+      (Concrete.CacheView.encodingInput secretKey.parameter forgery.epoch
+        (forgery.message, forgery.signature.randomness)) = none := by
+  obtain ⟨signature, _signedOutput, _forgedOutput, hsignature, hepoch,
+    hinitial, _hsigned, _hforged, hne, _hdigest⟩ := hevent
+  exact hpreserves signature hsignature forgery.epoch
+    (forgery.message, forgery.signature.randomness) hne hinitial
+
+theorem SigningCacheEntry.postSigningFreshForgedEncodingCollision_of_fresh
+    (secretKey : SecretKey) (forgery : Forgery)
+    (gameCache : QueryCache HashSpec) (entry : SigningCacheEntry)
+    (hpreserves : entry.PreservesOtherEncodingInputs secretKey)
+    (hevent : entry.FreshForgedEncodingCollision secretKey forgery gameCache) :
+    entry.PostSigningFreshForgedEncodingCollision secretKey forgery gameCache :=
+  ⟨hevent, entry.freshForgedEncodingCollision_finalCache_none secretKey forgery
+    gameCache hpreserves hevent⟩
 
 theorem detailedGameWithSigningTrace_cache_enncard_le_of_mem_support
     (adversary : Adversary Concrete.scheme) (q : Nat)

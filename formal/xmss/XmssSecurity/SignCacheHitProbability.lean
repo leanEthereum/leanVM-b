@@ -384,6 +384,70 @@ theorem Concrete.sign_encodingInput_initialCache_hit_bounded_digest_le
   gcongr
 
 set_option linter.constructorNameAsVariable false in
+/-- Excluding a pre-hit on the randomized signing input, one signing query collides with an earlier same-epoch encoding output with only the 128-bit digest loss. -/
+theorem Concrete.sign_freshEncoding_collision_le
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec)
+    (hfinite : cache.toSet.Finite) :
+    Pr[fun result : Option Signature × QueryCache HashSpec =>
+      ∃ signature signedOutput oldInput oldOutput,
+        result.1 = some signature ∧
+        cache (Concrete.CacheView.encodingInput secretKey.parameter epoch
+          (message, signature.randomness)) = none ∧
+        result.2 (Concrete.CacheView.encodingInput secretKey.parameter epoch
+          (message, signature.randomness)) = some signedOutput ∧
+        cache (Concrete.CacheView.encodingInput secretKey.parameter epoch oldInput) =
+          some oldOutput ∧
+        oldInput ≠ (message, signature.randomness) ∧
+        truncateHash signedOutput = truncateHash oldOutput |
+      (simulateQ xmssRomImpl
+        (Concrete.sign publicKey secretKey epoch message)).run cache] ≤
+      ((cachedEncodingEntries cache secretKey.parameter epoch).card : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  rw [Concrete.sign_run_eq]
+  refine probEvent_bind_le_of_forall_le fun randomness _hrandomness => ?_
+  by_cases hfresh : cache (Concrete.CacheView.encodingInput secretKey.parameter epoch
+      (message, randomness)) = none
+  · refine (probEvent_mono ?_).trans
+      (Concrete.signAttempt_freshEncoding_collision_le secretKey epoch message
+        randomness cache hfresh)
+    intro result hresult hevent
+    obtain ⟨signature, signedOutput, oldInput, oldOutput, hsignature,
+      _hsignedFresh, hsigned, hold, _hne, hdigest⟩ := hevent
+    have hresult' : (some signature, result.2) ∈ support
+        ((simulateQ randomOracle
+          (Concrete.signAttempt secretKey epoch message randomness :
+            OracleComp HashSpec (Option Signature))).run cache) := by
+      have heq : result = (some signature, result.2) := Prod.ext hsignature rfl
+      rw [← heq]
+      exact hresult
+    have hrandomness := Concrete.signAttempt_support_randomness secretKey epoch message
+      randomness cache result.2 signature hresult'
+    refine ⟨signedOutput, ?_, ?_⟩
+    · rw [hrandomness] at hsigned
+      exact hsigned
+    · rw [hdigest]
+      exact truncate_mem_cachedEncodingDigests_of_cache_eq_some cache
+        secretKey.parameter epoch oldInput oldOutput hfinite hold
+  · refine le_of_eq_of_le ?_ zero_le
+    apply probEvent_eq_zero
+    intro result hresult hevent
+    obtain ⟨signature, _signedOutput, _oldInput, _oldOutput, hsignature,
+      hsignedFresh, _hsigned, _hold, _hne, _hdigest⟩ := hevent
+    have hresult' : (some signature, result.2) ∈ support
+        ((simulateQ randomOracle
+          (Concrete.signAttempt secretKey epoch message randomness :
+            OracleComp HashSpec (Option Signature))).run cache) := by
+      have heq : result = (some signature, result.2) := Prod.ext hsignature rfl
+      rw [← heq]
+      exact hresult
+    have hrandomness := Concrete.signAttempt_support_randomness secretKey epoch message
+      randomness cache result.2 signature hresult'
+    apply hfresh
+    rw [← hrandomness]
+    exact hsignedFresh
+
+set_option linter.constructorNameAsVariable false in
 /-- One signing query either reuses an encoding input guessed before its 192-bit randomness was sampled, or its fresh 128-bit encoding output collides with an earlier same-epoch encoding output. -/
 theorem Concrete.sign_preexistingEncoding_collision_le
     (publicKey : PublicKey) (secretKey : SecretKey)

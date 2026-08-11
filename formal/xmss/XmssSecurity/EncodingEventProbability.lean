@@ -231,6 +231,52 @@ theorem winning_encoding_event_trace_temporal_decomposition
           (Concrete.CacheView.encodingInput outcome.secretKey.parameter
             entry.request.epoch) heq.symm
 
+/-- The two budget classes are a 192-bit pre-hit on signing randomness and a 128-bit digest collision, with the latter covering both temporal orientations around signing. -/
+theorem winning_encoding_event_trace_monitor_decomposition
+    (cache : QueryCache HashSpec) (outcome : GameOutcome)
+    (trace : SigningCacheTrace)
+    (hlog : trace.toSigningLog = outcome.signingLog)
+    (hcaches : trace.CachesLe cache)
+    (hcached : trace.SuccessfulEncodingsCached outcome.secretKey)
+    (hevent : WinningOutcomeBadEventOccurs cache outcome .encoding) :
+    ∃ entry ∈ trace,
+      entry.EncodingInputPrehit outcome.secretKey ∨
+        entry.FreshSigningEncodingCollision outcome.secretKey ∨
+          entry.FreshForgedEncodingCollision outcome.secretKey outcome.forgery cache := by
+  obtain ⟨entry, hentry, hpreexisting | hfresh⟩ :=
+    winning_encoding_event_trace_temporal_decomposition cache outcome trace
+      hlog hcaches hcached hevent
+  · rcases entry.preexistingEncodingCollision_cases outcome.secretKey hpreexisting with
+      hprehit | hcollision
+    · exact ⟨entry, hentry, Or.inl hprehit⟩
+    · exact ⟨entry, hentry, Or.inr (Or.inl hcollision)⟩
+  · exact ⟨entry, hentry, Or.inr (Or.inr hfresh)⟩
+
+/-- In an actual supported execution, the post-signing orientation is genuinely fresh after the signer finishes. Thus the two digest-collision cases have exactly the temporal semantics of `EncodingMonitor.sign` and a later `EncodingMonitor.query`. -/
+theorem winning_encoding_event_trace_postSigning_decomposition
+    (adversary : Adversary Concrete.scheme)
+    (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
+    ∃ entry ∈ execution.2.2,
+      entry.EncodingInputPrehit execution.1.secretKey ∨
+        entry.FreshSigningEncodingCollision execution.1.secretKey ∨
+          entry.PostSigningFreshForgedEncodingCollision execution.1.secretKey
+            execution.1.forgery execution.2.1 := by
+  obtain ⟨hlog, hcaches, hcached⟩ :=
+    detailedGameWithSigningTrace_invariants adversary execution hmem
+  obtain ⟨entry, hentry, hprehit | hsigning | hforged⟩ :=
+    winning_encoding_event_trace_monitor_decomposition execution.2.1 execution.1
+      execution.2.2 hlog hcaches hcached hevent
+  · exact ⟨entry, hentry, Or.inl hprehit⟩
+  · exact ⟨entry, hentry, Or.inr (Or.inl hsigning)⟩
+  · have hpreserves :=
+      detailedGameWithSigningTrace_preservesOtherEncodingInputs adversary execution hmem
+    exact ⟨entry, hentry, Or.inr (Or.inr
+      (entry.postSigningFreshForgedEncodingCollision_of_fresh
+        execution.1.secretKey execution.1.forgery execution.2.1
+        (hpreserves entry hentry) hforged))⟩
+
 theorem winning_encoding_event_probability_eq_signingTrace
     (adversary : Adversary Concrete.scheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
@@ -249,18 +295,129 @@ theorem winning_encoding_event_probability_le_signingTrace_orientations
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
       detailedGameWithCache Concrete.scheme adversary] ≤
     Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
-      ∃ entry ∈ execution.2.2,
-        entry.PreexistingEncodingCollision execution.1.secretKey ∨
-          entry.FreshForgedEncodingCollision execution.1.secretKey
-            execution.1.forgery execution.2.1 |
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+        ∃ entry ∈ execution.2.2,
+          entry.PreexistingEncodingCollision execution.1.secretKey ∨
+            entry.FreshForgedEncodingCollision execution.1.secretKey
+              execution.1.forgery execution.2.1 |
       detailedGameWithSigningTrace adversary] := by
   rw [winning_encoding_event_probability_eq_signingTrace]
   apply probEvent_mono
   intro execution hmem hevent
   obtain ⟨hlog, hcaches, hcached⟩ :=
     detailedGameWithSigningTrace_invariants adversary execution hmem
-  exact winning_encoding_event_trace_temporal_decomposition execution.2.1
-    execution.1 execution.2.2 hlog hcaches hcached hevent
+  exact ⟨hevent, winning_encoding_event_trace_temporal_decomposition execution.2.1
+    execution.1 execution.2.2 hlog hcaches hcached hevent⟩
+
+theorem winning_encoding_event_probability_le_preexisting_add_fresh
+    (adversary : Adversary Concrete.scheme) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+    Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+        ∃ entry ∈ execution.2.2,
+          entry.PreexistingEncodingCollision execution.1.secretKey |
+      detailedGameWithSigningTrace adversary] +
+    Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+        ∃ entry ∈ execution.2.2,
+          entry.FreshForgedEncodingCollision execution.1.secretKey
+            execution.1.forgery execution.2.1 |
+      detailedGameWithSigningTrace adversary] := by
+  refine winning_encoding_event_probability_le_signingTrace_orientations
+    adversary |>.trans ?_
+  let win := fun execution : GameOutcome ×
+      (QueryCache HashSpec × SigningCacheTrace) =>
+    WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding
+  let preexisting := fun execution : GameOutcome ×
+      (QueryCache HashSpec × SigningCacheTrace) =>
+    ∃ entry ∈ execution.2.2,
+      entry.PreexistingEncodingCollision execution.1.secretKey
+  let fresh := fun execution : GameOutcome ×
+      (QueryCache HashSpec × SigningCacheTrace) =>
+    ∃ entry ∈ execution.2.2,
+      entry.FreshForgedEncodingCollision execution.1.secretKey
+        execution.1.forgery execution.2.1
+  calc
+    Pr[fun execution => win execution ∧
+          ∃ entry ∈ execution.2.2,
+            entry.PreexistingEncodingCollision execution.1.secretKey ∨
+              entry.FreshForgedEncodingCollision execution.1.secretKey
+                execution.1.forgery execution.2.1 |
+        detailedGameWithSigningTrace adversary] ≤
+      Pr[fun execution =>
+          (win execution ∧ preexisting execution) ∨
+            (win execution ∧ fresh execution) |
+        detailedGameWithSigningTrace adversary] := by
+      apply probEvent_mono''
+      intro execution hevent
+      obtain ⟨hwin, entry, hentry, horientation⟩ := hevent
+      rcases horientation with hpreexisting | hfresh
+      · exact Or.inl ⟨hwin, entry, hentry, hpreexisting⟩
+      · exact Or.inr ⟨hwin, entry, hentry, hfresh⟩
+    _ ≤ Pr[fun execution => win execution ∧ preexisting execution |
+          detailedGameWithSigningTrace adversary] +
+        Pr[fun execution => win execution ∧ fresh execution |
+          detailedGameWithSigningTrace adversary] :=
+      probEvent_or_le _ _ _
+
+theorem winning_encoding_event_probability_le_prehit_add_digestCollisions
+    (adversary : Adversary Concrete.scheme) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+    Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+        ∃ entry ∈ execution.2.2,
+          entry.EncodingInputPrehit execution.1.secretKey |
+      detailedGameWithSigningTrace adversary] +
+    Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+        ∃ entry ∈ execution.2.2,
+          entry.FreshSigningEncodingCollision execution.1.secretKey ∨
+            entry.FreshForgedEncodingCollision execution.1.secretKey
+              execution.1.forgery execution.2.1 |
+      detailedGameWithSigningTrace adversary] := by
+  rw [winning_encoding_event_probability_eq_signingTrace]
+  let prehit := fun execution : GameOutcome ×
+      (QueryCache HashSpec × SigningCacheTrace) =>
+    ∃ entry ∈ execution.2.2,
+      entry.EncodingInputPrehit execution.1.secretKey
+  let digestCollision := fun execution : GameOutcome ×
+      (QueryCache HashSpec × SigningCacheTrace) =>
+    ∃ entry ∈ execution.2.2,
+      entry.FreshSigningEncodingCollision execution.1.secretKey ∨
+        entry.FreshForgedEncodingCollision execution.1.secretKey
+          execution.1.forgery execution.2.1
+  calc
+    Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
+          WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding |
+        detailedGameWithSigningTrace adversary] ≤
+      Pr[fun execution =>
+          (WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+            prehit execution) ∨
+          (WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+            digestCollision execution) |
+        detailedGameWithSigningTrace adversary] := by
+      apply probEvent_mono
+      intro execution hmem hevent
+      obtain ⟨hlog, hcaches, hcached⟩ :=
+        detailedGameWithSigningTrace_invariants adversary execution hmem
+      obtain ⟨entry, hentry, hprehit | hdigest⟩ :=
+        winning_encoding_event_trace_monitor_decomposition execution.2.1
+          execution.1 execution.2.2 hlog hcaches hcached hevent
+      · exact Or.inl ⟨hevent, entry, hentry, hprehit⟩
+      · exact Or.inr ⟨hevent, entry, hentry, hdigest⟩
+    _ ≤ Pr[fun execution =>
+          WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+            prehit execution |
+          detailedGameWithSigningTrace adversary] +
+        Pr[fun execution =>
+          WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+            digestCollision execution |
+          detailedGameWithSigningTrace adversary] :=
+      probEvent_or_le _ _ _
 
 theorem winning_encoding_event_trace_preexistingRisk_le
     (q : Nat) (adversary : Adversary Concrete.scheme)
@@ -276,6 +433,45 @@ theorem winning_encoding_event_trace_preexistingRisk_le
     rw [hlog]
     exact hevent.signingTranscript_valid
   exact SigningCacheTrace.preexistingEncodingRisk_le execution.2.2
+    execution.1.secretKey.parameter execution.2.1 q hvalid hcaches
+    (detailedGameWithSigningTrace_cache_finite_of_mem_support
+      adversary q hbound execution hmem)
+    (detailedGameWithSigningTrace_cache_enncard_le_of_mem_support
+      adversary q hbound execution hmem)
+
+theorem winning_encoding_event_trace_encodingInputPrehitRisk_le
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
+    execution.2.2.encodingInputPrehitRisk ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  obtain ⟨hlog, hcaches, _hcached⟩ :=
+    detailedGameWithSigningTrace_invariants adversary execution hmem
+  have hvalid : SigningTranscript.Valid execution.2.2.toSigningLog := by
+    rw [hlog]
+    exact hevent.signingTranscript_valid
+  exact SigningCacheTrace.encodingInputPrehitRisk_le execution.2.2
+    execution.2.1 q hvalid hcaches
+    (detailedGameWithSigningTrace_cache_enncard_le_of_mem_support
+      adversary q hbound execution hmem)
+
+theorem winning_encoding_event_trace_freshSigningEncodingCollisionRisk_le
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
+    execution.2.2.freshSigningEncodingCollisionRisk
+        execution.1.secretKey.parameter ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  obtain ⟨hlog, hcaches, _hcached⟩ :=
+    detailedGameWithSigningTrace_invariants adversary execution hmem
+  have hvalid : SigningTranscript.Valid execution.2.2.toSigningLog := by
+    rw [hlog]
+    exact hevent.signingTranscript_valid
+  exact SigningCacheTrace.freshSigningEncodingCollisionRisk_le execution.2.2
     execution.1.secretKey.parameter execution.2.1 q hvalid hcaches
     (detailedGameWithSigningTrace_cache_finite_of_mem_support
       adversary q hbound execution hmem)
