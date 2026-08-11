@@ -14,12 +14,9 @@ namespace XmssSecurity
 
 namespace Concrete
 
-axiom sign : PublicKey → SecretKey → Epoch → Message →
-  OracleComp OracleWorld (Option Signature)
-
 noncomputable def scheme : Scheme where
   keygen := Concrete.keygen
-  sign := sign
+  sign := Concrete.sign
   verify := Concrete.verify
 
 end Concrete
