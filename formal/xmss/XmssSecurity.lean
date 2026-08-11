@@ -5,6 +5,7 @@ import XmssSecurity.ConcreteForgery
 import XmssSecurity.ConcreteHash
 import XmssSecurity.ConcreteKeygen
 import XmssSecurity.ConcreteSign
+import XmssSecurity.ConcreteCorrectness
 import XmssSecurity.ConcreteVerify
 import XmssSecurity.MainTheorem
 import XmssSecurity.Execution
