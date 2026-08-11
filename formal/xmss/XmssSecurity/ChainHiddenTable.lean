@@ -1,11 +1,38 @@
 import XmssSecurity.ChainInputTrace
 import XmssSecurity.ChainOriginProbability
+import XmssSecurity.ChainTrajectoryUniformity
 
 open OracleSpec
 
 namespace XmssSecurity
 
 abbrev ChainValueIndex := Epoch × Digit
+
+def Concrete.fixedChainValues
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) : OracleComp HashSpec (ChainValueIndex → Digest) := do
+  let values ← Concrete.sequenceFin fun epoch =>
+    Concrete.sequenceFin fun digit =>
+      Concrete.chainWalk parameter epoch chain 0 digit.val (secret epoch chain)
+  return fun index => values index.1 index.2
+
+def Concrete.treeAndFixedChainValues
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) :
+    OracleComp HashSpec (Digest × (ChainValueIndex → Digest)) := do
+  let root ← Concrete.treeNode parameter secret treeHeight Concrete.rootNode
+  let values ← Concrete.fixedChainValues parameter secret chain
+  return (root, values)
+
+def Concrete.fixedChainTrajectoryValues
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) : OracleComp HashSpec (ChainValueIndex → Digest) := do
+  let values ← Concrete.sequenceFin fun epoch =>
+    Concrete.chainTrajectory parameter epoch chain 0 (chainLength - 1)
+      (secret epoch chain)
+  return fun index => (values index.1)[index.2.val]'(by
+    have hdigit := index.2.isLt
+    omega)
 
 def chainStepDigit (step : ChainStep) : Digit :=
   ⟨step.val, step.isLt.trans (by native_decide)⟩
@@ -98,6 +125,39 @@ noncomputable def keygenChainValueTable
   Wots.walk
     (Concrete.CacheView.chainStep keygenCache secretKey.parameter index.1 chain)
     0 index.2.val (secretKey.chainStart index.1 chain)
+
+@[simp]
+theorem Concrete.CacheReplay.eval_fixedChainValues
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex) :
+    evalWithAnswerFn (Concrete.CacheReplay.answerFn cache)
+      (Concrete.fixedChainValues parameter secret chain) =
+      keygenChainValueTable cache ⟨parameter, secret⟩ chain := by
+  funext index
+  simp [Concrete.fixedChainValues, keygenChainValueTable]
+
+@[simp]
+theorem Concrete.CacheReplay.eval_treeAndFixedChainValues
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex) :
+    evalWithAnswerFn (Concrete.CacheReplay.answerFn cache)
+      (Concrete.treeAndFixedChainValues parameter secret chain) =
+      (Concrete.CacheReplay.treeNode cache parameter secret treeHeight
+        Concrete.rootNode, keygenChainValueTable cache ⟨parameter, secret⟩ chain) := by
+  simp [Concrete.treeAndFixedChainValues]
+
+@[simp]
+theorem Concrete.CacheReplay.eval_fixedChainTrajectoryValues
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex) :
+    evalWithAnswerFn (Concrete.CacheReplay.answerFn cache)
+      (Concrete.fixedChainTrajectoryValues parameter secret chain) =
+      keygenChainValueTable cache ⟨parameter, secret⟩ chain := by
+  funext index
+  simp only [Concrete.fixedChainTrajectoryValues, evalWithAnswerFn_bind,
+    Concrete.CacheReplay.eval_sequenceFin, evalWithAnswerFn_pure]
+  rw [Concrete.chainTrajectory_getElem]
+  rfl
 
 theorem outcomeChainValueHasKeygenOrigin_eq_table
     (keygenCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
