@@ -30,7 +30,7 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
       2 * ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) ∧
     ∀ chain : ChainIndex,
       Pr[fun result =>
-        OutcomeGuessesKeygenChainValue result.1.2 result.2.2 result.1.1.2
+        WinningOutcomeGuessesKeygenChainValue result.1.2 result.2.2 result.1.1.2
           result.2.1 chain |
         detailedGameWithKeygenCache adversary] ≤
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
@@ -56,21 +56,25 @@ theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)
             WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
             detailedGameWithCache Concrete.scheme adversary] ≤
           Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-            OutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
-            detailedGameWithCache Concrete.scheme adversary] :=
-          winningOutcomeBadEvent_probability_le_outcomeBadEvent adversary (.chain chain)
-        _ ≤
-          Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-              OutcomeChainValueRevealed execution.2 execution.1 chain |
+              WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) ∧
+                OutcomeChainValueRevealed execution.2 execution.1 chain |
               detailedGameWithCache Concrete.scheme adversary] +
             (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
-          chain_outcomeBadEvent_probability_le_revealed_add q adversary hbound chain
+          winning_chain_outcomeBadEvent_probability_le_revealed_add
+            q adversary hbound chain
+        _ ≤ Pr[fun result =>
+              WinningOutcomeGuessesKeygenChainValue result.1.2 result.2.2
+                result.1.1.2 result.2.1 chain |
+              detailedGameWithKeygenCache adversary] +
+            (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
+          gcongr
+          exact winningChainValueRevealed_probability_le_winningKeygenValueGuess
+            adversary chain
         _ ≤ (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) +
             (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
           gcongr
-          exact (chainValueRevealed_probability_le_keygenValueGuess adversary chain).trans
-            ((xmss_remaining_core_probability_le_below_digest_space
-              q hq hqlt adversary hbound).2 chain)
+          exact (xmss_remaining_core_probability_le_below_digest_space
+            q hq hqlt adversary hbound).2 chain
         _ = (badEventWeight (.chain chain) : ENNReal) *
             ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
           simp [badEventWeight, two_mul]

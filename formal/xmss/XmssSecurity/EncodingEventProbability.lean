@@ -1,6 +1,7 @@
 import XmssSecurity.ChainOriginProbability
 import XmssSecurity.EncodingTargetMap
 import XmssSecurity.SignCacheHitProbability
+import XmssSecurity.SigningCacheTrace
 import XmssSecurity.WinningEventReduction
 
 open OracleComp OracleSpec ENNReal
@@ -164,5 +165,121 @@ theorem winning_encoding_event_has_indexed_target_collision
   refine ⟨forgedInput, signedInput, signedOutput, forgedOutput, hne.symm, ?_,
     hsigned, hforged, hdigest⟩
   exact signedEncodingTargetInput_eq_of_target hvalid htarget
+
+/-- A winning encoding collision is oriented at the matching signing boundary: either the forged encoding input was already cached before signing, or it was still fresh when the signer installed the honest target. -/
+theorem winning_encoding_event_trace_temporal_decomposition
+    (cache : QueryCache HashSpec) (outcome : GameOutcome)
+    (trace : SigningCacheTrace)
+    (hlog : trace.toSigningLog = outcome.signingLog)
+    (hcaches : trace.CachesLe cache)
+    (hcached : trace.SuccessfulEncodingsCached outcome.secretKey)
+    (hevent : WinningOutcomeBadEventOccurs cache outcome .encoding) :
+    ∃ entry ∈ trace,
+      entry.PreexistingEncodingCollision outcome.secretKey ∨
+        entry.FreshForgedEncodingCollision outcome.secretKey outcome.forgery cache := by
+  obtain ⟨_hvalid, _hlength, request, signature, signedOutput, forgedOutput,
+    hreturned, hepoch, hne, hsigned, hforged, hdigest⟩ :=
+    winning_encoding_event_has_signed_collision cache outcome hevent
+  have hreturnedTrace :
+      SigningTranscript.Returned trace.toSigningLog request signature := by
+    rw [hlog]
+    exact hreturned
+  obtain ⟨entry, hentry, hrequest, hsignature⟩ :=
+    (SigningTranscript.returned_toSigningLog_iff trace request signature).mp
+      hreturnedTrace
+  subst request
+  obtain ⟨localSignedOutput, hlocalSigned⟩ :=
+    hcached entry hentry signature hsignature
+  have hlocalFinal := (hcaches entry hentry).2 hlocalSigned
+  have houtput : localSignedOutput = signedOutput :=
+    Option.some.inj (hlocalFinal.symm.trans hsigned)
+  subst localSignedOutput
+  let forgedInput := Concrete.CacheView.encodingInput outcome.secretKey.parameter
+    outcome.forgery.epoch
+      (outcome.forgery.message, outcome.forgery.signature.randomness)
+  have hforgedFinal : cache forgedInput = some forgedOutput := by
+    dsimp [forgedInput]
+    rw [← hepoch]
+    exact hforged
+  have hdistinct :
+      Concrete.CacheView.encodingInput outcome.secretKey.parameter entry.request.epoch
+          (entry.request.message, signature.randomness) ≠ forgedInput := by
+    dsimp [forgedInput]
+    rw [← hepoch]
+    exact hne
+  cases hinitial : entry.initialCache forgedInput with
+  | none =>
+      refine ⟨entry, hentry, Or.inr ?_⟩
+      refine ⟨signature, signedOutput, forgedOutput, hsignature, hepoch,
+        hinitial, hlocalSigned, hforgedFinal, hdistinct, hdigest⟩
+  | some oldOutput =>
+      have holdFinal := (hcaches entry hentry).1 hinitial
+      have holdOutput : oldOutput = forgedOutput :=
+        Option.some.inj (holdFinal.symm.trans hforgedFinal)
+      subst oldOutput
+      refine ⟨entry, hentry, Or.inl ?_⟩
+      refine ⟨signature, signedOutput,
+        (outcome.forgery.message, outcome.forgery.signature.randomness),
+        forgedOutput, hsignature, hlocalSigned, ?_, ?_, hdigest⟩
+      · rw [hepoch]
+        exact hinitial
+      · intro heq
+        apply hdistinct
+        dsimp [forgedInput]
+        rw [← hepoch]
+        exact congrArg
+          (Concrete.CacheView.encodingInput outcome.secretKey.parameter
+            entry.request.epoch) heq.symm
+
+theorem winning_encoding_event_probability_eq_signingTrace
+    (adversary : Adversary Concrete.scheme) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
+      detailedGameWithCache Concrete.scheme adversary] =
+    Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding |
+      detailedGameWithSigningTrace adversary] := by
+  rw [← detailedGameWithSigningTrace_cache_projection, probEvent_map]
+  rfl
+
+/-- The concrete winning encoding event reduces inside the actual game distribution to the two signing-boundary orientations used by the probability argument. -/
+theorem winning_encoding_event_probability_le_signingTrace_orientations
+    (adversary : Adversary Concrete.scheme) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+    Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
+      ∃ entry ∈ execution.2.2,
+        entry.PreexistingEncodingCollision execution.1.secretKey ∨
+          entry.FreshForgedEncodingCollision execution.1.secretKey
+            execution.1.forgery execution.2.1 |
+      detailedGameWithSigningTrace adversary] := by
+  rw [winning_encoding_event_probability_eq_signingTrace]
+  apply probEvent_mono
+  intro execution hmem hevent
+  obtain ⟨hlog, hcaches, hcached⟩ :=
+    detailedGameWithSigningTrace_invariants adversary execution hmem
+  exact winning_encoding_event_trace_temporal_decomposition execution.2.1
+    execution.1 execution.2.2 hlog hcaches hcached hevent
+
+theorem winning_encoding_event_trace_preexistingRisk_le
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
+    execution.2.2.preexistingEncodingRisk execution.1.secretKey.parameter ≤
+      2 * ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
+  obtain ⟨hlog, hcaches, _hcached⟩ :=
+    detailedGameWithSigningTrace_invariants adversary execution hmem
+  have hvalid : SigningTranscript.Valid execution.2.2.toSigningLog := by
+    rw [hlog]
+    exact hevent.signingTranscript_valid
+  exact SigningCacheTrace.preexistingEncodingRisk_le execution.2.2
+    execution.1.secretKey.parameter execution.2.1 q hvalid hcaches
+    (detailedGameWithSigningTrace_cache_finite_of_mem_support
+      adversary q hbound execution hmem)
+    (detailedGameWithSigningTrace_cache_enncard_le_of_mem_support
+      adversary q hbound execution hmem)
 
 end XmssSecurity

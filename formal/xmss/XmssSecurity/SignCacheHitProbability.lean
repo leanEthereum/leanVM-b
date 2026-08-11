@@ -102,6 +102,37 @@ theorem cachedEncodingDigests_card_le_cachedEncodingEntries_card
   · exact Finset.card_image_le
   · simp
 
+theorem cachedEncodingEntries_card_mono
+    (initialCache finalCache : QueryCache HashSpec)
+    (parameter : PublicParameter) (epoch : Epoch)
+    (hle : initialCache ≤ finalCache) (hfinite : finalCache.toSet.Finite) :
+    (cachedEncodingEntries initialCache parameter epoch).card ≤
+      (cachedEncodingEntries finalCache parameter epoch).card := by
+  classical
+  have hsubset : initialCache.toSet ⊆ finalCache.toSet := by
+    intro entry hentry
+    exact hle hentry
+  have hinitialFinite : initialCache.toSet.Finite := hfinite.subset hsubset
+  unfold cachedEncodingEntries
+  rw [dif_pos hinitialFinite, dif_pos hfinite]
+  apply Finset.card_le_card
+  intro entry hentry
+  rw [Finset.mem_filter] at hentry ⊢
+  have hinitialSet : entry ∈ initialCache.toSet := by
+    simpa using hentry.1
+  have hcache : initialCache entry.1 = some entry.2 :=
+    QueryCache.mem_toSet.mp hinitialSet
+  have hfinalSet : entry ∈ finalCache.toSet :=
+    QueryCache.mem_toSet.mpr (hle hcache)
+  exact ⟨by simpa using hfinalSet, hentry.2⟩
+
+theorem QueryCache.enncard_mono
+    {initialCache finalCache : QueryCache HashSpec}
+    (hle : initialCache ≤ finalCache) :
+    QueryCache.enncard initialCache ≤ QueryCache.enncard finalCache := by
+  unfold QueryCache.enncard
+  exact_mod_cast Set.encard_mono (QueryCache.toSet_mono hle)
+
 theorem cachedEncodingDigests_card_le_enncard (cache : QueryCache HashSpec)
     (parameter : PublicParameter) (epoch : Epoch) :
     ((cachedEncodingDigests cache parameter epoch).card : ℝ≥0∞) ≤
