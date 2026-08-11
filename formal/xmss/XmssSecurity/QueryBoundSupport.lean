@@ -4,6 +4,19 @@ open OracleComp OracleSpec
 
 namespace OracleComp
 
+theorem IsQueryBoundP.of_bind_left
+    {ι : Type} {spec : OracleSpec ι} {α β : Type}
+    {p : ι → Prop} [DecidablePred p]
+    {oa : OracleComp spec α} {ob : α → OracleComp spec β} {q : Nat}
+    (hbound : IsQueryBoundP (oa >>= ob) p q) :
+    IsQueryBoundP oa p q := by
+  induction oa using OracleComp.inductionOn generalizing q with
+  | pure value => simp
+  | query_bind input next ih =>
+      rw [bind_assoc, isQueryBoundP_query_bind_iff] at hbound
+      rw [isQueryBoundP_query_bind_iff]
+      exact ⟨hbound.1, fun output => ih output (hbound.2 output)⟩
+
 theorem IsQueryBoundP.continuation_mono_of_mem_support
     {ι : Type} {spec : OracleSpec ι} {α β : Type}
     (p : ι → Prop) [DecidablePred p]

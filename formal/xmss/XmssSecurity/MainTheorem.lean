@@ -6,6 +6,7 @@ import XmssSecurity.ForgeryCases
 import XmssSecurity.HiddenValue
 import XmssSecurity.IndexedHiddenValue
 import XmssSecurity.ChainOriginProbability
+import XmssSecurity.ChainHiddenTable
 import XmssSecurity.LeafEventProbability
 import XmssSecurity.Merkle
 import XmssSecurity.MerkleEventProbability
