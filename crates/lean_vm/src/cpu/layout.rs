@@ -15,11 +15,11 @@ pub const MEM_HI: usize = 1;
 pub const MEM_TOP: usize = 2;
 pub const MFCNT: usize = 3; // per-cell memory access count, g^{A[i]}
 pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
-// flock's packed BLAKE3 witness `q_flock`, committed in the SAME stack as every
+// flock's packed BLAKE2s witness `q_flock`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
-// instance (a no-BLAKE3 program commits one full padding instance). It is the
-// SOLE copy of the input/output words: the VM's BLAKE3 value columns are
-// virtual and their memory-bus claims route to `q_flock` slots (§blake3_flock), so
+// instance (a no-BLAKE2s program commits one full padding instance). It is the
+// SOLE copy of the input/output words: the VM's BLAKE2s value columns are
+// virtual and their memory-bus claims route to `q_flock` slots (§blake2s_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
 pub const QFLOCK: usize = 5;
@@ -95,7 +95,7 @@ pub(crate) struct Witness {
     pub(crate) log_mem: usize,
     /// `Option` lets `prove` take and free the large reduction-only buffers
     /// immediately after reduction, before the mixed PCS opening.
-    pub(crate) flock_reduction: Option<crate::blake3_flock::PreparedReductionWitness>,
+    pub(crate) flock_reduction: Option<crate::blake2s_flock::PreparedReductionWitness>,
 }
 
 impl Witness {
@@ -148,21 +148,21 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k[MFCNT] = Some((1, 0));
     k[BFCNT] = Some((0, log_bytecode));
     // q_flock is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
-    // instance (a no-BLAKE3 program commits one padding instance), and tau_5 IS
+    // instance (a no-BLAKE2s program commits one padding instance), and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor), so this
     // reproduces `qflock_kappa`.
-    k[QFLOCK] = Some((2 + tables::BLAKE3_TABLE, flock::blake3::K_LOG - ::pcs::LOG_PACKING));
+    k[QFLOCK] = Some((2 + tables::BLAKE2S_TABLE, flock::blake2s::K_LOG - ::pcs::LOG_PACKING));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
     }
-    // The BLAKE3 value columns are ALWAYS virtual: `q_flock` already holds those
+    // The BLAKE2s value columns are ALWAYS virtual: `q_flock` already holds those
     // words at fixed packed slots, so committing them again is redundant. Their
     // memory-bus claims route directly to `q_flock` slot evaluations (`slot_claims`),
     // which both binds them to the proven witness AND removes the separate
     // value-binding sub-protocol.
-    let b3 = sch.base[tables::BLAKE3_TABLE];
-    for &c in &tables::BLAKE3_VALUE_COLS {
+    let b3 = sch.base[tables::BLAKE2S_TABLE];
+    for &c in &tables::BLAKE2S_VALUE_COLS {
         k[b3 + c] = None;
     }
     k
@@ -226,7 +226,7 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
             Op::Pack64x2 { a, b, c } => a.max(b).max(c),
-            Op::Blake3 { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
+            Op::Blake2s { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -240,7 +240,7 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
         Op::Pack64x2 { .. } => tables::OP_PACK64X2,
-        Op::Blake3 { .. } => OP_BLAKE3,
+        Op::Blake2s { .. } => OP_BLAKE2S,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
@@ -251,36 +251,36 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
             Op::Pack64x2 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
-            // BLAKE3's first three input-word offsets; the last two ride the
+            // BLAKE2s's first three input-word offsets; the last two ride the
             // fpc/ffp bytecode slots below.
-            Op::Blake3 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
+            Op::Blake2s { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
         }
     };
     // The 4th/5th bytecode operand slots: the two DEREF store-mode flags, or
-    // BLAKE3's remaining input word / chaining-value base (0 elsewhere).
+    // BLAKE2s's remaining input word / chaining-value base (0 elsewhere).
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
-        Op::Blake3 { ins, .. } => g_at(ins[3]),
+        Op::Blake2s { ins, .. } => g_at(ins[3]),
         Op::Set { k, .. } => F64(k.c2),
         _ => F64::ZERO,
     };
     let ffp = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_fp(),
-        Op::Blake3 { cv, .. } => g_at(*cv),
+        Op::Blake2s { cv, .. } => g_at(*cv),
         _ => F64::ZERO,
     };
-    // The 6th/7th/8th bytecode operand slots: BLAKE3's output base and the two
+    // The 6th/7th/8th bytecode operand slots: BLAKE2s's output base and the two
     // K-lanes of its metadata immediate (0 elsewhere).
     let extra0 = |op: &Op| match op {
-        Op::Blake3 { out, .. } => g_at(*out),
+        Op::Blake2s { out, .. } => g_at(*out),
         _ => F64::ZERO,
     };
     let extra1 = |op: &Op| match op {
-        Op::Blake3 { metadata, .. } => F64(metadata.c0),
+        Op::Blake2s { metadata, .. } => F64(metadata.c0),
         _ => F64::ZERO,
     };
     let extra2 = |op: &Op| match op {
-        Op::Blake3 { metadata, .. } => F64(metadata.c1),
+        Op::Blake2s { metadata, .. } => F64(metadata.c1),
         _ => F64::ZERO,
     };
     // The program is PUBLIC (not committed): nine public columns over the
@@ -450,7 +450,7 @@ impl Program {
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
         );
         // Every table's rows are real rows, so its height IS its row count: the fill
-        // blocks ran each count up to a power of two, and BLAKE3 up to flock's instance
+        // blocks ran each count up to a power of two, and BLAKE2s up to flock's instance
         // floor as well (`cpu::filler`).
         let taus = row_counts.map(|r| {
             assert!(
@@ -461,9 +461,9 @@ impl Program {
             crate::log2_strict_usize(r)
         });
         assert_eq!(
-            taus[tables::BLAKE3_TABLE],
-            crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE]),
-            "the BLAKE3 table must be filled to flock's instance floor"
+            taus[tables::BLAKE2S_TABLE],
+            crate::blake2s_flock::n_blocks_log(row_counts[tables::BLAKE2S_TABLE]),
+            "the BLAKE2s table must be filled to flock's instance floor"
         );
         let pi = [exec.mem[0], exec.mem[1]];
         let l = layout(&self.prog, log_mem, taus, pi);
@@ -517,29 +517,29 @@ impl Program {
             parallel::fill(windows[MFCNT], |i| tr.mem_count[i]); // counts ended at g^{A[i]}
             parallel::fill(windows[BFCNT], |i| tr.bytecode_count[i]); // … at g^{A[pc]}
         });
-        // flock's packed BLAKE3 witness q_flock, ALWAYS committed in this same stack:
-        // built from the executed BLAKE3 rows in order (row j = flock instance j),
+        // flock's packed BLAKE2s witness q_flock, ALWAYS committed in this same stack:
+        // built from the executed BLAKE2s rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances, so a
-        // program with no BLAKE3 still carries a single padding instance.
+        // program with no BLAKE2s still carries a single padding instance.
         let flock_reduction = crate::stage!("Build q_flock", || {
             // The rows carry only their access counts; the compression's input
             // words are the eight cells they read, in the finished (write-once)
             // memory image.
-            let blocks: Vec<_> = parallel::map_collect(tr.blake3.len(), |i| {
-                let r = &tr.blake3[i];
-                let a = tables::blake3_addresses(&self.prog, r);
+            let blocks: Vec<_> = parallel::map_collect(tr.blake2s.len(), |i| {
+                let r = &tr.blake2s[i];
+                let a = tables::blake2s_addresses(&self.prog, r);
                 let chunk = |c0: u32, c1: u32| {
                     let (w0, w1) = (exec.mem[c0 as usize], exec.mem[c1 as usize]);
                     [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
                 };
-                crate::blake3_flock::compression(
+                crate::blake2s_flock::compression(
                     chunk(a[0], a[1]),
                     chunk(a[2], a[3]),
                     chunk(a[4], a[4] + 1),
-                    tables::blake3_metadata(&self.prog, r.pc),
+                    tables::blake2s_metadata(&self.prog, r.pc),
                 )
             });
-            crate::blake3_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
+            crate::blake2s_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
         });
 
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =

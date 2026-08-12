@@ -25,7 +25,7 @@ def mix(value, tag):
 def main():
     seed = [5, 7]
     digest = StackBuf(2)
-    blake3(seed, seed, digest)
+    blake2s(seed, seed, digest)
 
     chain = HeapBuf(LOOP_STEPS + 1)
     chain[1] = digest[0]
@@ -41,10 +41,10 @@ def main():
 const LOOP_STEPS: usize = 16_384;
 
 fn public_input() -> [F192; 2] {
-    use lean_vm::blake3_flock::{FLAGS, IV, compression, digest, metadata};
+    use lean_vm::blake2s_flock::{FINAL_FLAG, IV, PINNED_T, compression, digest, metadata};
 
     let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
-    let metadata = metadata(0, 64, FLAGS);
+    let metadata = metadata(PINNED_T, FINAL_FLAG, 0);
     let digest = digest(&compression(seed, seed, IV, metadata));
     let digest = [
         F192::new(digest[0].0, digest[1].0, 0),

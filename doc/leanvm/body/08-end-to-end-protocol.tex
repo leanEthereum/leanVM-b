@@ -31,7 +31,7 @@ The program is public. The bus interraction carrying the bytecode lookup has the
 \[
   \tup{\dsep{BC},\pc,\cnt,\cdot}.
 \]
-Coordinate $3$ holds the opcode and coordinates $4,\ldots,11$ hold eight operands or immediate lanes. Each reference operand is a $\gen$-power. Immediates occupy their $\K$-lanes: $k_0,k_1,k_2$ for \texttt{SET\_CONSTANT}, and $\md_0,\md_1$ for \texttt{BLAKE3}.
+Coordinate $3$ holds the opcode and coordinates $4,\ldots,11$ hold eight operands or immediate lanes. Each reference operand is a $\gen$-power. Immediates occupy their $\K$-lanes: $k_0,k_1,k_2$ for \texttt{SET\_CONSTANT}, and $\md_0,\md_1$ for \texttt{BLAKE2S}.
 \begin{center}
 \begin{tabular}{llllllllll}
 \hline
@@ -43,7 +43,7 @@ Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$ & $11$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$ & $0$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$ & $0$ & $0$ & $0$\\
 \texttt{PACK64X2}      & $\opc{PACK}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_V$ & $o_C$ & $\md_0$ & $\md_1$\\
+\texttt{BLAKE2S}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_V$ & $o_C$ & $\md_0$ & $\md_1$\\
 \hline
 \end{tabular}
 \end{center}
@@ -70,11 +70,11 @@ The prover can thus leverage these "closed walks" to fill every table to its nex
 
 Each reduction below adds evaluation claims on columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE3 circuit family. The prover then announces the memory log-size $h$ and the seven table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s circuit family. The prover then announces the memory log-size $h$ and the seven table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Commits every column: each table's state, operands, read values and counts; the three memory limbs; the two finalize counts; and Flock's packed witness $\qflock$ (\S\ref{sec:tab-blake3}). A program that never executes \texttt{BLAKE3} still runs Flock's least instance count of dummy compressions, so the proof shape stays uniform. The prover stacks the columns into $q$ and sends the commitment (\S\ref{sec:stacking}, Annex~\ref{annex:pcs}).
+\item \textbf{Prover.} Commits every column: each table's state, operands, read values and counts; the three memory limbs; the two finalize counts; and Flock's packed witness $\qflock$ (\S\ref{sec:tab-blake2s}). A program that never executes \texttt{BLAKE2S} still runs Flock's least instance count of dummy compressions, so the proof shape stays uniform. The prover stacks the columns into $q$ and sends the commitment (\S\ref{sec:stacking}, Annex~\ref{annex:pcs}).
 \item \textbf{Verifier.} Checks the announced sizes against the caps and derives the table, stack and leaf shapes (\S\ref{sec:leafstack}).
 \end{enumerate}
 
@@ -89,7 +89,7 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \paragraph{Row sumcheck.} One run for the seven tables' constraints and their bus forms (\S\ref{sec:air}).
 \begin{enumerate}
 \item \textbf{Verifier.} Sends the batch challenge $\eta\in\E$. Each table takes a disjoint range of its powers, one per constraint, and the $T$ bus forms take one power each, shared by every table. No point is drawn: the batch runs at the bus point, table $T_j$ tested at $\zeta_{<\tau_j}$ (\S\ref{sec:air}).
-\item \textbf{Prover \& Verifier.} Run the table sumcheck, $n=\max_j\tau_j$ rounds, a table of $2^{\tau}$ rows joining at round $n-\tau$. The target is the one the verifier derived from the three leaf claims. Each round costs four $\E$-elements. The end yields one claim per column of every table, at that table's own point $\rho_{<\tau_j}$; these enter the pool, and the bus forms are read off them. \texttt{BLAKE3}'s value columns are not committed here: their claims route to $\qflock$ (\S\ref{sec:tab-blake3}).
+\item \textbf{Prover \& Verifier.} Run the table sumcheck, $n=\max_j\tau_j$ rounds, a table of $2^{\tau}$ rows joining at round $n-\tau$. The target is the one the verifier derived from the three leaf claims. Each round costs four $\E$-elements. The end yields one claim per column of every table, at that table's own point $\rho_{<\tau_j}$; these enter the pool, and the bus forms are read off them. \texttt{BLAKE2S}'s value columns are not committed here: their claims route to $\qflock$ (\S\ref{sec:tab-blake2s}).
 \end{enumerate}
 
 \paragraph{Public input.}
@@ -98,9 +98,9 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \item \textbf{Prover \& Verifier.} The prover sends one evaluation per memory limb; the verifier checks the three against the line and pools them as claims on $M_0,M_1,M_2$ at $(r_m,0,\dots,0)$ (\S\ref{sec:e2e-pi}).
 \end{enumerate}
 
-\paragraph{BLAKE3 validity.}
+\paragraph{BLAKE2s validity.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $\qflock$ (\S\ref{sec:tab-blake3}, Annex~\ref{annex:flock}).
+\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE2s constraints to two evaluation claims on $\qflock$ (\S\ref{sec:tab-blake2s}, Annex~\ref{annex:flock}).
 \item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $\qflock$ region of the stack, with an MLE-friendly $\E$-valued weight (Definition~\ref{def:ipcs}); both join the pool.
 \end{enumerate}
 

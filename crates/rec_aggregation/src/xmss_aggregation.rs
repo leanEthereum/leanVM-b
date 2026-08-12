@@ -27,7 +27,7 @@ fn cell(w: F64) -> F192 {
     F192::from(w)
 }
 
-/// A 16-byte native value in the canonical BLAKE3 subspace of F192: `c0`
+/// A 16-byte native value in the canonical BLAKE2s subspace of F192: `c0`
 /// carries bytes 0..8, `c1` bytes 8..16, and `c2` is zero.
 fn val16(b: &[u8]) -> F192 {
     F192::new(word(&b[..8]).0, word(&b[8..16]).0, 0)
@@ -38,7 +38,7 @@ fn pair(b: &[u8]) -> Vec<F192> {
     vec![val16(b)]
 }
 
-/// A 32-byte hash block as two canonical 128-bit BLAKE3 cells.
+/// A 32-byte hash block as two canonical 128-bit BLAKE2s cells.
 fn quad(b: &[u8]) -> Vec<F192> {
     vec![val16(&b[..16]), val16(&b[16..32])]
 }
@@ -46,14 +46,14 @@ fn quad(b: &[u8]) -> Vec<F192> {
 /// Protocol-specific streaming binding used only by the runtime-sized XMSS
 /// aggregation benchmark. Unlike XMSS/PCS slice hashing, this is not exposed
 /// as a general hash construction: a runtime chunk counter cannot be placed in
-/// the VM's deliberately compile-time BLAKE3 metadata immediate.
+/// the VM's deliberately compile-time BLAKE2s metadata immediate.
 fn aggregate_binding(mut state: [u8; STATE_LEN], data: &[u8]) -> [u8; STATE_LEN] {
     assert!(data.len().is_multiple_of(STATE_LEN));
     for block in data.chunks_exact(STATE_LEN) {
         let mut input = [0u8; 2 * STATE_LEN];
         input[..STATE_LEN].copy_from_slice(&state);
         input[STATE_LEN..].copy_from_slice(block);
-        state = *blake3::hash(&input).as_bytes();
+        state = primitives::blake2s::hash(&input);
     }
     state
 }
@@ -174,7 +174,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     program.set_witness("chain_starts", chain_starts_s);
     program.set_witness("siblings", sib_s);
 
-    // Pre-build the BLAKE3 R1CS setup (the circuit-construction cost, ~hundreds of
+    // Pre-build the BLAKE2s R1CS setup (the circuit-construction cost, ~hundreds of
     // ms) OUTSIDE the timed region. It depends only on the compression count (the
     // circuit shape), not the witness, and in a real deployment is built once per
     // shape and reused across every proof — so it is one-time preprocessing (like a
@@ -183,7 +183,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     // is `181 + 145·n`: 181 aggregation-prefix blocks, then per signature
     // one aggregate absorb + 2 encoding + 99 WOTS-chain + 11 WOTS-pubkey +
     // 32 Merkle-parent compressions.
-    lean_vm::blake3_flock::warm_setup(181 + 145 * n);
+    lean_vm::blake2s_flock::warm_setup(181 + 145 * n);
 
     // Only the final measured pass of each stage is traced (see `run_recursion`).
     let ((proof, stats), prove_time) = plan.warm_then_measure(|last| {
@@ -195,7 +195,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     });
 
-    assert_eq!(stats.base_counts[5], 181 + 145 * n, "BLAKE3 instruction count");
+    assert_eq!(stats.base_counts[5], 181 + 145 * n, "BLAKE2s instruction count");
     let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 

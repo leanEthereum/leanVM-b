@@ -6,6 +6,7 @@ A minimal (zero-knowledge Virtual Machine, which is actually not ZK in the real 
 
 - `doc/leanvm/` is the LaTeX project describing the machine ISA and the snark that proves it. Its root is `doc/leanvm/main.tex`; build it with `cd doc/leanvm && latexmk -pdf main.tex`, which writes to the gitignored `doc/leanvm/.build/`. Sections live in `doc/leanvm/body/`, numbered `01`..`10` plus the lettered annexes `a` (ring switching), `b` (the PCS), and `c` (Flock), and every symbol is defined once in `doc/leanvm/preamble/macros.tex`. If latexmk fails oddly (a bibtex error, or a missing `main.log`) right after inputs are renamed or `refs.bib` is edited, remove `doc/leanvm/.build` and rerun; it has not reproduced on unchanged inputs. **Drafting one section:** each section file carries a `% !TeX root` comment pointing at its generated driver in `doc/leanvm/drafts/`, so the LaTeX build key (`F5`, or the extension's `cmd+alt+b`) compiles only that section, numbered as in the full document and with cross-references and citations resolved against `.build/main.aux`; in `main.tex` the same key builds everything. Run `doc/leanvm/make-drafts.sh` after adding, renaming or renumbering a section.
 - `doc/xmss/` is the standalone specification of the concrete XMSS instance implemented by `crates/xmss`.
+- The one hash function is BLAKE2s, in `primitives::blake2s`: scalar, streaming, keyed, and a lane-transposed batched form for the PCS Merkle tree. The VM proves one compression per opcode, and BLAKE2s takes the byte counter and final-block flag as ordinary compression inputs, so a single opcode is a complete hash for any length, with no tree structure to reproduce in-circuit.
 - `crates/lean_compiler/zkDSL.md` documents the (pythonic) zkDSL (that compiles to the ISA that our VM runs, and that our snark proves).
 
 Primary goal:
@@ -23,10 +24,10 @@ Dependency order, leaves first:
 | `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, `bench` |
 | `fiat_shamir`     | VM-native sponge + prover/verifier transcript                          |
 | `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
-| `flock`           | batched R1CS over GF(2) for BLAKE3: zerocheck + lincheck               |
+| `flock`           | batched R1CS over GF(2) for BLAKE2s: zerocheck + lincheck               |
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
-| `xmss`            | XMSS over BLAKE3; an independent leaf, consumed only by `rec_aggregation` |
+| `xmss`            | XMSS over BLAKE2s; an independent leaf, consumed only by `rec_aggregation` |
 | `rec_aggregation` | the three workloads + the N→1 recursion harness                        |
 
 `src/main.rs` is the CLI; guests are zkDSL under `crates/rec_aggregation/guests/`.
@@ -44,7 +45,7 @@ cargo fmt --all                   # max_width = 120
 ruff format --line-length 150 python-verifier/verifier.py   # and `ruff check` it
 ```
 
-Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake3_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_whir_query_counts`, `encoding_grinding_bits`.
+Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake2s_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_whir_query_counts`, `encoding_grinding_bits`.
 
 ## Benchmarking
 
@@ -78,7 +79,7 @@ The same verification algorithm is written out three times, in three languages. 
 2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_compiler/tests/python_verifier.rs`.
 3. **Recursive verifier**, `crates/rec_aggregation/guests/recursion.py` (~2.4k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
-The third is worth understanding before touching the verifier. `guests/recursion.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~500k instructions and why its opcode mix is what the recursion benchmark reports. Two consequences:
+The third is worth understanding before touching the verifier. `guests/recursion.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~500k instructions and why its opcode mix is what the recursion benchmark reports. Two consequences:
 
 - The guest is **generic in the inner proof**: its placeholder map depends only on the inner bytecode size, so one compiled bytecode verifies inner proofs of different sizes and PCS rates (`recursion_2to1_mixed`, `recursion_generic_many`).
 - It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, and flock's A0/B0) are deferred, bound to the guest's public input, and discharged natively by `RecursiveProof::verify`. Sumcheck is used to merge and further deref those 'postponed' claims in recursion, moving `n` such inner claims to a single outer one (explained in `doc/leanvm/`).

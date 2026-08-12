@@ -25,7 +25,7 @@
 
 /// What a table's dummy instruction is: the cheapest instruction of that opcode that can
 /// be executed any number of times in one frame, given write-once memory. All but
-/// `Blake3` name a single scratch cell as every operand, so the value they write there is
+/// `Blake2s` name a single scratch cell as every operand, so the value they write there is
 /// the value already there (`FnLower::lower_filler_blocks` fixes the frame offsets).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FillerOp {
@@ -46,7 +46,7 @@ pub enum FillerOp {
     Jump,
     /// One compression of message and chaining-value cells nothing ever writes, its
     /// digest placed clear of them, so every traversal compresses the same input.
-    Blake3,
+    Blake2s,
 }
 
 /// The tables, in `lean_vm::cpu::Stats::TABLES` order, which is how the solver indexes
@@ -57,6 +57,6 @@ pub const TABLES: [(u8, FillerOp); 7] = [
     (2, FillerOp::Set),
     (3, FillerOp::Deref),
     (4, FillerOp::Jump),
-    (5, FillerOp::Blake3),
+    (5, FillerOp::Blake2s),
     (6, FillerOp::Pack),
 ];

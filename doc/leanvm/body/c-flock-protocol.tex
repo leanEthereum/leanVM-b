@@ -1,11 +1,11 @@
 % !TeX root = ../drafts/c-flock-protocol.tex
 \section{The Flock protocol}\label{annex:flock}
 
-Flock~\cite{Flock26} proves many executions of one Boolean circuit at once, in our case the BLAKE3 compression.
+Flock~\cite{Flock26} proves many executions of one Boolean circuit at once, in our case the BLAKE2s compression.
 
 \subsection{Statement and commitment}\label{flock:statement}
 
-One BLAKE3 compression has a Boolean R1CS witness block of $2^{\kblock}$ bits, where $\kblock=14$. Its fixed matrices are $A_0,B_0,C_0\in\Ftwo^{2^{\kblock}\times 2^{\kblock}}$, with $C_0=I$. The witness includes the circuit inputs, outputs, AND-gate values, addition carries and one constant-one position; linear wires are substituted away. Within-block coordinates are the low-order coordinates and batch coordinates are the high-order coordinates throughout this annex.
+One BLAKE2s compression has a Boolean R1CS witness block of $2^{\kblock}$ bits, where $\kblock=14$. Its fixed matrices are $A_0,B_0,C_0\in\Ftwo^{2^{\kblock}\times 2^{\kblock}}$, with $C_0=I$. The witness includes the circuit inputs, outputs, AND-gate values, addition carries and one constant-one position; linear wires are substituted away. Within-block coordinates are the low-order coordinates and batch coordinates are the high-order coordinates throughout this annex.
 
 For $2^{\kbatch}$ independent compressions, concatenate the blocks into
 \[
@@ -19,7 +19,7 @@ Writing $a=Az$, $b=Bz$ and $c=Cz=z$, the R1CS equations are
 \begin{equation}\label{flock:eq:r1cs}
 a(u)b(u)+c(u)=0\qquad\text{for every }u\in\cube{\kbool}.
 \end{equation}
-Lincheck also forces the distinguished position $512$ to equal one in every block, preventing the all-zero witness. These conditions characterize a valid BLAKE3 compression once its free input and output positions are fixed. The VM's BLAKE3 table binds those positions to memory and bytecode through ordinary point claims (\S\ref{sec:tab-blake3}).
+Lincheck also forces the distinguished position $512$ to equal one in every block, preventing the all-zero witness. These conditions characterize a valid BLAKE2s compression once its free input and output positions are fixed. The VM's BLAKE2s table binds those positions to memory and bytecode through ordinary point claims (\S\ref{sec:tab-blake2s}).
 
 The algebra only requires $\kbool\geq\kskip+7$ for the seven fixed zerocheck coordinates below, and we additionally pad to $\kbatch\geq3$ as a lincheck floor.
 
@@ -71,7 +71,7 @@ where $\rho\in\E^{\nflock}$ is the vector of sumcheck challenges.
 
 \subsection{Lincheck and the circuit walk}\label{flock:lincheck}
 
-Lincheck reduces the two zerocheck claims to claims on $z$. The block structure is what keeps it cheap: the matrices repeat one BLAKE3 circuit, so lincheck runs over a single block, not over the batch. Split $\rho=(\rho_{\mathrm{in}},\rho_{\mathrm{out}})$, where $\rho_{\mathrm{in}}\in\E^{\kblock-\kskip}$ selects the remaining within-block coordinates and $\rho_{\mathrm{out}}\in\E^{\kbatch}$ selects a batch instance. Block diagonality gives
+Lincheck reduces the two zerocheck claims to claims on $z$. The block structure is what keeps it cheap: the matrices repeat one BLAKE2s circuit, so lincheck runs over a single block, not over the batch. Split $\rho=(\rho_{\mathrm{in}},\rho_{\mathrm{out}})$, where $\rho_{\mathrm{in}}\in\E^{\kblock-\kskip}$ selects the remaining within-block coordinates and $\rho_{\mathrm{out}}\in\E^{\kbatch}$ selects a batch instance. Block diagonality gives
 \[
 \qext a(\zskip,\rho_{\mathrm{in}},\rho_{\mathrm{out}})=\sum_{j\in\cube{\kblock}}\qext A_0(\zskip,\rho_{\mathrm{in}},j)\,\qext z(j,\rho_{\mathrm{out}}),
 \]
@@ -94,14 +94,14 @@ If $R_{\mathrm{lc}}\in\E$ is the final running sumcheck claim, the terminal chec
 \begin{equation}\label{flock:eq:lincheck-terminal}
 R_{\mathrm{lc}}\qeq e_{\mathrm{row}}^{\mathsf T}(\lcab A_0+B_0)w_{\mathrm{col}}+\lcpin\,w_{\mathrm{col}}(512).
 \end{equation}
-Both sides evaluate the bilinear form by walking the BLAKE3 circuit backwards. That costs one circuit, against the roughly $21$ million nonzero entries the matrices hold.
+Both sides evaluate the bilinear form by walking the BLAKE2s circuit backwards. That costs one circuit, against the roughly $21$ million nonzero entries the matrices hold.
 
 Only after $\zpartial$ passes \eqref{flock:eq:lincheck-terminal} does the verifier sample $\lskip\in\E$ and derive
 \begin{equation}\label{flock:eq:ab-claim}
 v_z=\sum_{i=0}^{63}\lag_i(\lskip)s_i^{AB},\qquad \qext z(\lskip,\rho'_{\mathrm{in}},\rho_{\mathrm{out}})=v_z.
 \end{equation}
 
-\paragraph{Ring switching.} Flock has now reduced every BLAKE3 constraint to two claims on $z$: the $C$ claim \eqref{flock:eq:c-claim} and the $AB$ claim \eqref{flock:eq:ab-claim}. Ring switching (Annex~\ref{annex:rs}) turns each into an MLE-friendly weighted claim on the packed $\qflock$ (Definition~\ref{def:ipcs}), under one shared $\Ftwo$-linear map from six challenges. It needs the claim's $64$ partial evaluations over the non-skipped coordinates: for $AB$ those are $\zpartial$, already sent and checked, so only the $C$ vector $s_0^C,\ldots,s_{63}^C\in\E$ is sent here, against $v_C\qeq\sum_i\lag_i(\zskip)s_i^C$. The two weighted claims then join every other claim on the stacked witness, and one WHIR opening (Annex~\ref{annex:pcs}) discharges the combination.
+\paragraph{Ring switching.} Flock has now reduced every BLAKE2s constraint to two claims on $z$: the $C$ claim \eqref{flock:eq:c-claim} and the $AB$ claim \eqref{flock:eq:ab-claim}. Ring switching (Annex~\ref{annex:rs}) turns each into an MLE-friendly weighted claim on the packed $\qflock$ (Definition~\ref{def:ipcs}), under one shared $\Ftwo$-linear map from six challenges. It needs the claim's $64$ partial evaluations over the non-skipped coordinates: for $AB$ those are $\zpartial$, already sent and checked, so only the $C$ vector $s_0^C,\ldots,s_{63}^C\in\E$ is sent here, against $v_C\qeq\sum_i\lag_i(\zskip)s_i^C$. The two weighted claims then join every other claim on the stacked witness, and one WHIR opening (Annex~\ref{annex:pcs}) discharges the combination.
 
 \subsection{Protocol and soundness summary}\label{flock:summary}
 
@@ -121,4 +121,4 @@ For soundness, list binding first implies that, except with the PCS error, an ac
 
 Ring switching binds each resulting bit claim to $\qflock$ with error below $2^{-160}$ before the PCS error (Annex~\ref{annex:rs}). Because two claims share the map, a union bound gives total ring-switch error below $2^{-159}$. The verifier samples each challenge only after it has received the messages that challenge batches. The construction is a succinct argument, not a zero-knowledge proof.
 
-The prover's dominant work is linear in the total number of Boolean witness bits. The univariate skip crosses from bits to $\E$ once, its $64$-point row extensions use byte lookup tables, and lincheck's fixed-matrix work depends on one BLAKE3 circuit after the batch coordinates are folded. Proof length and verifier work grow only logarithmically with the batch, apart from the fixed circuit walk and the final PCS queries.
+The prover's dominant work is linear in the total number of Boolean witness bits. The univariate skip crosses from bits to $\E$ once, its $64$-point row extensions use byte lookup tables, and lincheck's fixed-matrix work depends on one BLAKE2s circuit after the batch coordinates are folded. Proof length and verifier work grow only logarithmically with the batch, apart from the fixed circuit walk and the final PCS queries.

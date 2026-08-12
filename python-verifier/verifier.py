@@ -19,7 +19,7 @@ def require(condition: bool, message: str) -> None:
         raise VerificationError(message)
 
 
-# Field arithmetic and BLAKE3 -------------------------------------------------
+# Field arithmetic and BLAKE2s ------------------------------------------------
 
 MASK32 = 2**32 - 1
 MASK64 = 2**64 - 1
@@ -204,9 +204,15 @@ GEN = E(2)
 Y = E(0, 1)  # the tower generator, y^3 = y + 1
 
 
-# BLAKE3 --------------------------------------------------------------------
+# BLAKE2s -------------------------------------------------------------------
+#
+# One compression, ten rounds, and a byte counter plus a final-block flag that
+# are ordinary inputs. There is no chunk tree and no parent-node mode, so a hash
+# of any length is a straight chain of compressions, and a hash of exactly 64
+# bytes is a single one. That is what the VM's `BLAKE2S` opcode computes and what
+# flock proves.
 
-BLAKE3_IV = (
+BLAKE2S_IV = (
     0x6A09E667,
     0xBB67AE85,
     0x3C6EF372,
@@ -216,8 +222,19 @@ BLAKE3_IV = (
     0x1F83D9AB,
     0x5BE0CD19,
 )
-MSG_PERMUTATION = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
-BLAKE3_G_LANES = (
+BLAKE2S_SIGMA = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+    (14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3),
+    (11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4),
+    (7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8),
+    (9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13),
+    (2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9),
+    (12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11),
+    (13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10),
+    (6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5),
+    (10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0),
+)
+BLAKE2S_G_LANES = (
     (0, 4, 8, 12),
     (1, 5, 9, 13),
     (2, 6, 10, 14),
@@ -227,8 +244,8 @@ BLAKE3_G_LANES = (
     (2, 7, 8, 13),
     (3, 4, 9, 14),
 )
-BLAKE3_MESSAGE_PAIRS = ((0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13), (14, 15))
-CHUNK_START, CHUNK_END, PARENT, ROOT = 1, 2, 4, 8
+# The parameter block folded into h[0] for an unkeyed 32-byte digest.
+BLAKE2S_PARAM_IV = (BLAKE2S_IV[0] ^ 0x01010000 ^ 32,) + BLAKE2S_IV[1:]
 
 
 def _rotr32(x: int, n: int) -> int:
@@ -246,87 +263,36 @@ def _g(v: list[int], a: int, b: int, c: int, d: int, mx: int, my: int) -> None:
     v[b] = _rotr32(v[b] ^ v[c], 7)
 
 
-def blake3_compress_words(
-    cv: Sequence[int],
-    block_words: Sequence[int],
-    counter: int,
-    block_len: int,
-    flags: int,
-) -> tuple[int, ...]:
-    """The BLAKE3 compression function, returning all 16 output words."""
-    v = (
-        list(cv)
-        + list(BLAKE3_IV[:4])
-        + [
-            counter & MASK32,
-            (counter >> 32) & MASK32,
-            block_len,
-            flags,
-        ]
-    )
-    schedule = list(block_words)
-    for _ in range(7):
-        for lanes, (mx, my) in zip(BLAKE3_G_LANES, BLAKE3_MESSAGE_PAIRS, strict=True):
-            _g(v, *lanes, schedule[mx], schedule[my])
-        schedule = [schedule[i] for i in MSG_PERMUTATION]
-    return tuple((v[i] ^ v[i + 8]) & MASK32 for i in range(8)) + tuple((v[i + 8] ^ cv[i]) & MASK32 for i in range(8))
+def blake2s_compress(h: Sequence[int], block_words: Sequence[int], counter: int, final: bool) -> tuple[int, ...]:
+    """The BLAKE2s compression, returning the eight output chaining words."""
+    v = list(h) + list(BLAKE2S_IV)
+    v[12] ^= counter & MASK32
+    v[13] ^= (counter >> 32) & MASK32
+    if final:
+        v[14] ^= MASK32
+    for sigma in BLAKE2S_SIGMA:
+        for g, lanes in enumerate(BLAKE2S_G_LANES):
+            _g(v, *lanes, block_words[sigma[2 * g]], block_words[sigma[2 * g + 1]])
+    return tuple((h[i] ^ v[i] ^ v[i + 8]) & MASK32 for i in range(8))
 
 
 def _words(block: bytes) -> tuple[int, ...]:
     return unpack("<16I", block.ljust(64, b"\0"))
 
 
-def _parent_output(left: Sequence[int], right: Sequence[int], flags: int = 0) -> tuple[tuple[int, ...], tuple[int, ...], int, int, int]:
-    return BLAKE3_IV, tuple(left) + tuple(right), 0, 64, flags | PARENT
-
-
-def _output_cv(output: tuple[Sequence[int], Sequence[int], int, int, int]) -> tuple[int, ...]:
-    cv, block, counter, block_len, flags = output
-    return blake3_compress_words(cv, block, counter, block_len, flags)[:8]
-
-
-def _output_root(output: tuple[Sequence[int], Sequence[int], int, int, int]) -> bytes:
-    cv, block, _, block_len, flags = output
-    words = blake3_compress_words(cv, block, 0, block_len, flags | ROOT)
-    return pack("<16I", *words)[:32]
-
-
-def _chunk_output(chunk: bytes, chunk_counter: int) -> tuple[Sequence[int], Sequence[int], int, int, int]:
-    cv: Sequence[int] = BLAKE3_IV
-    blocks = [chunk[i : i + 64] for i in range(0, len(chunk), 64)] or [b""]
-    for i, block in enumerate(blocks[:-1]):
-        flags = CHUNK_START if i == 0 else 0
-        cv = blake3_compress_words(cv, _words(block), chunk_counter, 64, flags)[:8]
-    last = blocks[-1]
-    flags = CHUNK_END | (CHUNK_START if len(blocks) == 1 else 0)
-    return cv, _words(last), chunk_counter, len(last), flags
-
-
-def blake3_hash(data: bytes) -> Digest:
-    """Standard 32-byte unkeyed BLAKE3 hash."""
-    chunks = [data[i : i + 1024] for i in range(0, len(data), 1024)] or [b""]
-    output = _chunk_output(chunks[0], 0)
-    stack = [_output_cv(output)]
-    for chunk_index, chunk in enumerate(chunks[1:], start=1):
-        output = _chunk_output(chunk, chunk_index)
-        cv = _output_cv(output)
-        total = chunk_index + 1
-        while total & 1 == 0:
-            output = _parent_output(stack.pop(), cv)
-            cv = _output_cv(output)
-            total >>= 1
-        stack.append(cv)
-    # For more than one chunk, combine the right edge with saved left subtrees.
-    right = _output_cv(output)
-    for left in reversed(stack[:-1]):
-        output = _parent_output(left, right)
-        right = _output_cv(output)
-    return Digest(_output_root(output))
+def blake2s_hash(data: bytes) -> Digest:
+    """Standard 32-byte unkeyed BLAKE2s-256 hash."""
+    h: Sequence[int] = BLAKE2S_PARAM_IV
+    blocks = [data[i : i + 64] for i in range(0, len(data), 64)] or [b""]
+    for i, block in enumerate(blocks):
+        counter = 64 * i + len(block)
+        h = blake2s_compress(h, _words(block), counter, i + 1 == len(blocks))
+    return Digest(pack("<8I", *h))
 
 
 @dataclass(frozen=True, slots=True)
 class Digest:
-    """256 bits: a BLAKE3 output, a Merkle node, the sponge state, the public input.
+    """256 bits: a BLAKE2s output, a Merkle node, the sponge state, the public input.
 
     One transcript encoding, everywhere: two 128-bit halves, each an E element
     carrying a K pair with a spare top lane (`pcs::merkle::hash_to_scalars`).
@@ -582,7 +548,7 @@ def compress(left: Sequence[SupportsIndex], right: Sequence[SupportsIndex]) -> t
     # The one removed-guard site with nothing downstream to catch a bad length:
     # a short operand would silently hash to a different value.
     require(len(left) == len(right) == 4, "compression operands must contain four words")
-    return unpack("<4Q", blake3_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
+    return unpack("<4Q", blake2s_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
 
 
 class Transcript:
@@ -598,7 +564,7 @@ class Transcript:
         self.state = (0, 0, 0, 0)
         self.stream_offset = 0
         self.opening_offset = 0
-        self.absorb_bytes(b"leanvm-b/transcript/v2")
+        self.absorb_bytes(b"leanvm-b/transcript/v3-blake2s")
         self.absorb_bytes(label)
         for value in statement:
             self.observe(value)
@@ -1017,7 +983,7 @@ def verify_constraints(
 
 # VM statement, layout, and AIR -----------------------------------------------
 
-FAMILY_DIGEST = bytes.fromhex("bc44ee31d86394b8e1256f37cf3bf8720212dd97a68d1e5f357a992c46acf1a7")
+FAMILY_DIGEST = bytes.fromhex("bd4b64dff0e11fab9f765ee7ff8f379e77be06ee5545f9291eb6c68d7c62a1fb")
 MAX_LOG_BYTECODE = 32
 
 # The bytecode's nine public columns (opcode + eight operand/immediate slots)
@@ -1052,8 +1018,8 @@ def transcript_statement(bytecode: Sequence[K], public_input: Sequence[E]) -> tu
     a verifier holding only the polynomial can reproduce it. Rust caches that
     inner hash on `Program`, which is why it is a separate step here.
     """
-    bytecode_hash = blake3_hash(b"".join(word.to_bytes() for word in bytecode))
-    seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST + bytecode_hash.value)
+    bytecode_hash = blake2s_hash(b"".join(word.to_bytes() for word in bytecode))
+    seed = blake2s_hash(b"leanvm-b-fs-seed-v2-blake2s" + FAMILY_DIGEST + bytecode_hash.value)
     return (*seed.halves(), *public_input)
 
 
@@ -1063,14 +1029,14 @@ def transcript_statement(bytecode: Sequence[K], public_input: Sequence[E]) -> tu
 GLOBAL_COLUMNS = ("mem_0", "mem_1", "mem_2", "mem_final_cnt", "bytecode_final_cnt", "qflock")
 MEM_0, MEM_1, MEM_2, MEM_FINAL_CNT, BYTECODE_FINAL_CNT, QFLOCK = range(len(GLOBAL_COLUMNS))
 
-# flock proves one BLAKE3 compression over 2^14 witness bits, packed 64 to a
+# flock proves one BLAKE2s compression over 2^14 witness bits, packed 64 to a
 # K-element, so q_flock has QFLOCK_SLOT_BITS low variables selecting the word
-# within an instance and the table's log height above them (doc sec:tab-blake3).
+# within an instance and the table's log height above them (doc sec:tab-blake2s).
 FLOCK_LOG_BITS = 14
 PACKED_BITS = 64  # bits per committed K-element (doc sec:ringswitch)
 FLOCK_K_SKIP = PACKED_BITS.bit_length() - 1
 QFLOCK_SLOT_BITS = FLOCK_LOG_BITS - FLOCK_K_SKIP
-BLAKE3_CONSTANT_COLUMN = 512
+BLAKE2S_CONSTANT_COLUMN = 512
 
 
 @dataclass(frozen=True)
@@ -1300,7 +1266,7 @@ def _jump_constraints(get: Callable[[str], E]) -> tuple[E, ...]:
     return (flag + condition * inverse, condition * (flag + ONE))
 
 
-def _flushes_blake3(table: Table) -> Flushes:
+def _flushes_blake2s(table: Table) -> Flushes:
     pc, fp, cnt_bc = table.cols("pc", "fp", "cnt_bc")
     operands = table.cols("o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
     flushes = Flushes()
@@ -1361,7 +1327,7 @@ JUMP_COLUMNS = (
     "w", "b",  # witness columns: neither read from memory nor in the bytecode
 )  # fmt: skip
 
-BLAKE3_COLUMNS = (
+BLAKE2S_COLUMNS = (
     "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out",
     # The eighteen value limbs are committed inside q_flock, not here.
     "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi",
@@ -1377,17 +1343,17 @@ TABLES = (
     Table("set", 2, SET_COLUMNS, _flushes_set),
     Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
     Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 2),
-    Table("blake3", 5, BLAKE3_COLUMNS, _flushes_blake3),
+    Table("blake2s", 5, BLAKE2S_COLUMNS, _flushes_blake2s),
     Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )
-BLAKE3 = TABLES[5]
+BLAKE2S = TABLES[5]
 
-# Where in the flock witness each embedded BLAKE3 limb lives (doc
-# sec:tab-blake3): one 64-bit slot per limb, the chaining value first, then the
+# Where in the flock witness each embedded BLAKE2s limb lives (doc
+# sec:tab-blake2s): one 64-bit slot per limb, the chaining value first, then the
 # digest, the message block and the metadata. Slots 8 and 9 hold the
 # compression's high output words, which no memory cell carries.
-BLAKE3_SLOT_BY_COLUMN = {
-    BLAKE3.col(name): slot
+BLAKE2S_SLOT_BY_COLUMN = {
+    BLAKE2S.col(name): slot
     for name, slot in {
         "cv0_lo": 0,
         "cv0_hi": 1,
@@ -1423,9 +1389,9 @@ def build_layout(public_columns: Sequence[Sequence[K | E]], bytecode_log: int, l
         16 <= log_memory <= 32
         and len(table_logs) == len(TABLES)
         and all(0 <= height <= 32 for height in table_logs)
-        # flock sizes its argument to at least 2^3 instances and the BLAKE3 table's value
+        # flock sizes its argument to at least 2^3 instances and the BLAKE2s table's value
         # columns share that instance cube, so a smaller height is not expressible.
-        and table_logs[BLAKE3.opcode] >= 3,
+        and table_logs[BLAKE2S.opcode] >= 3,
         "invalid announced table sizes",
     )
     table_logs = list(table_logs)
@@ -1458,16 +1424,16 @@ def build_layout(public_columns: Sequence[Sequence[K | E]], bytecode_log: int, l
         for local in table.count_columns:
             count.append(BusBlock(height, (_col(local),), table.opcode))
 
-    # Every column's height, in global numbering; None marks the BLAKE3 value
+    # Every column's height, in global numbering; None marks the BLAKE2s value
     # columns, which are committed inside q_flock rather than on their own.
     kappas: list[int | None] = [0] * (len(GLOBAL_COLUMNS) + sum(WIDTHS))
     kappas[MEM_0] = kappas[MEM_1] = kappas[MEM_2] = kappas[MEM_FINAL_CNT] = log_memory
     kappas[BYTECODE_FINAL_CNT] = bytecode_log
-    kappas[QFLOCK] = table_logs[BLAKE3.opcode] + QFLOCK_SLOT_BITS
+    kappas[QFLOCK] = table_logs[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
     for table, (base, width) in enumerate(zip(BASES, WIDTHS, strict=True)):
         kappas[base : base + width] = [table_logs[table]] * width
-    for local in BLAKE3_SLOT_BY_COLUMN:
-        kappas[BASES[BLAKE3.opcode] + local] = None
+    for local in BLAKE2S_SLOT_BY_COLUMN:
+        kappas[BASES[BLAKE2S.opcode] + local] = None
     offsets, total_log = stack_offsets(kappas)
     placements = [Placement(-1, 0) if variables is None else Placement(variables, offset) for variables, offset in zip(kappas, offsets, strict=True)]
     # Floor at the PCS minimum: WHIR's level ladder needs room, so a tiny
@@ -1489,8 +1455,8 @@ def constraint_claims(claims: Sequence[AirClaim]) -> list[ColumnClaim]:
 
 
 def virtual_slot(column: int) -> int | None:
-    """The q_flock slot a BLAKE3 value column rides in, or None if committed."""
-    return BLAKE3_SLOT_BY_COLUMN.get(column - BASES[BLAKE3.opcode])
+    """The q_flock slot a BLAKE2s value column rides in, or None if committed."""
+    return BLAKE2S_SLOT_BY_COLUMN.get(column - BASES[BLAKE2S.opcode])
 
 
 # WHIR opening ----------------------------------------------------------------
@@ -1599,12 +1565,12 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
 
 
 def _hash_pair(left: Digest, right: Digest) -> Digest:
-    return blake3_hash(left.value + right.value)
+    return blake2s_hash(left.value + right.value)
 
 
 def _row_hash(row: Sequence[K]) -> Digest:
     """The committer's leaf preimage: the row's words in their 8-byte transport image."""
-    return blake3_hash(b"".join(word.to_bytes() for word in row))
+    return blake2s_hash(b"".join(word.to_bytes() for word in row))
 
 
 def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
@@ -2034,7 +2000,7 @@ def verify_lincheck(
     b: E,
     transcript: Transcript,
 ) -> tuple[ZClaim, tuple[E, ...]]:
-    """Replay the fixed BLAKE3 matrix reduction."""
+    """Replay the fixed BLAKE2s matrix reduction."""
     alpha = transcript.sample()
     inner_weights = quirky_weights(point.skip, point.inner)
     beta = transcript.sample()
@@ -2049,8 +2015,8 @@ def verify_lincheck(
     rounds = tuple(reversed(challenges))
     rest_weights = eq_kernel(rounds)
     column_weights = [value * weight for weight in rest_weights for value in partial]
-    terminal = blake3_bilinear(alpha, inner_weights, column_weights)
-    terminal += beta * column_weights[BLAKE3_CONSTANT_COLUMN]
+    terminal = blake2s_bilinear(alpha, inner_weights, column_weights)
+    terminal += beta * column_weights[BLAKE2S_CONSTANT_COLUMN]
     require(terminal == running, "Flock lincheck terminal mismatch")
     skip = transcript.sample()
     value = lagrange_interpolate(PHI[:PACKED_BITS], partial, skip)
@@ -2066,24 +2032,23 @@ def verify_reduction(log_n: int, transcript: Transcript) -> FlockReduction:
     return FlockReduction(ab, ZClaim(c_point, zerocheck.c), ab_s_hat_v)
 
 
-def blake3_bilinear(
+def blake2s_bilinear(
     alpha: E,
     row_weights: Sequence[E],
     column_weights: Sequence[E],
 ) -> E:
-    """Evaluate the two BLAKE3 R1CS matrix forms by walking the circuit."""
+    """Evaluate the two BLAKE2s R1CS matrix forms by walking the circuit."""
     size = 2**FLOCK_LOG_BITS
-    require(len(row_weights) == size, "bad BLAKE3 row-weight vector")
-    require(len(column_weights) == size, "bad BLAKE3 column-weight vector")
-    constant = BLAKE3_CONSTANT_COLUMN
+    require(len(row_weights) == size, "bad BLAKE2s row-weight vector")
+    require(len(column_weights) == size, "bad BLAKE2s column-weight vector")
+    constant = BLAKE2S_CONSTANT_COLUMN
     message_base = 640
     counter_low = 1152
     counter_high = 1184
-    block_length = 1216
-    flags = 1248
+    final_flag = 1216
+    last_node_flag = 1248
     gates_base = 1280
-    gate_stride = 248
-    output_high = 15168
+    gate_stride = 184
     left_total = ZERO
     right_total = ZERO
     constant_rows = ZERO
@@ -2152,27 +2117,28 @@ def blake3_bilinear(
             left_total += row_weights[base + bit] * values[bit]
             constant_rows += row_weights[base + bit]
 
-    for base, length in ((0, 256), (message_base, 512), (counter_low, 64), (block_length, 32), (flags, 32)):
+    for base, length in ((0, 256), (message_base, 512), (counter_low, 128)):
         for row in range(base, base + length):
             left_total += row_weights[row] * column_weights[row]
             constant_rows += row_weights[row]
 
+    # v[0..8] = h, v[8..12] = IV[0..4], v[12..16] = IV[4..8] ^ (t_lo, t_hi, f0, f1).
     state = [empty_word for _ in range(16)]
     for word in range(8):
         state[word] = slots(32 * word)
     for word in range(4):
-        state[8 + word] = literal(BLAKE3_IV[word])
-    state[12], state[13], state[14], state[15] = (slots(counter_low), slots(counter_high), slots(block_length), slots(flags))
+        state[8 + word] = literal(BLAKE2S_IV[word])
+    for word, base in enumerate((counter_low, counter_high, final_flag, last_node_flag)):
+        state[12 + word] = xor(literal(BLAKE2S_IV[4 + word]), slots(base))
 
-    message_order = list(range(16))
-    for round_index in range(7):
-        for gate_index, (lane_a, lane_b, lane_c, lane_d) in enumerate(BLAKE3_G_LANES):
+    for round_index in range(10):
+        sigma = BLAKE2S_SIGMA[round_index]
+        for gate_index, (lane_a, lane_b, lane_c, lane_d) in enumerate(BLAKE2S_G_LANES):
             gate = round_index * 8 + gate_index
             gate_base = gates_base + gate_stride * gate
             a, b, c, d = state[lane_a], state[lane_b], state[lane_c], state[lane_d]
-            mx_index, my_index = BLAKE3_MESSAGE_PAIRS[gate_index]
-            mx = slots(message_base + 32 * message_order[mx_index])
-            my = slots(message_base + 32 * message_order[my_index])
+            mx = slots(message_base + 32 * sigma[2 * gate_index])
+            my = slots(message_base + 32 * sigma[2 * gate_index + 1])
             a1 = add3(a, b, mx, gate_base)
             d1 = rotate_right(xor(d, a1), 16)
             c1 = add(c, d1, gate_base + 61)
@@ -2180,22 +2146,17 @@ def blake3_bilinear(
             a2 = add3(a1, b1, my, gate_base + 92)
             d2 = rotate_right(xor(d1, a2), 8)
             c2 = add(c1, d2, gate_base + 153)
-            b_new = rotate_right(xor(b1, c2), 7)
-            b_base = gate_base + 184
-            d_base = b_base + 32
-            linear_rows(b_new, b_base)
-            linear_rows(d2, d_base)
+            b2 = rotate_right(xor(b1, c2), 7)
+            # Every lane cascades: this encoding materializes no intermediate word.
             state[lane_a] = a2
-            state[lane_b] = slots(b_base)
+            state[lane_b] = b2
             state[lane_c] = c2
-            state[lane_d] = slots(d_base)
-        message_order = [message_order[index] for index in MSG_PERMUTATION]
+            state[lane_d] = d2
 
+    # out[w] = h[w] ^ v[w] ^ v[w+8], the only materialized words.
     for word in range(8):
-        low = xor(state[word], state[word + 8])
-        high = xor(state[word + 8], slots(32 * word))
-        linear_rows(low, 256 + 32 * word)
-        linear_rows(high, output_high + 32 * word)
+        out = xor(xor(state[word], state[word + 8]), slots(32 * word))
+        linear_rows(out, 256 + 32 * word)
 
     constant_weight = column_weights[constant]
     left_total += constant_weight * row_weights[constant]
@@ -2275,12 +2236,12 @@ def verify_execution(bytecode: Sequence[K], public_input: bytes, proof: Proof) -
     claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEM_0, MEM_1, MEM_2), public_limbs, strict=True))
 
     # 6] Locate every claim in the stack: a column claim keeps its point and
-    # gains its placement's selector bits; a BLAKE3 value claim is re-routed to
+    # gains its placement's selector bits; a BLAKE2s value claim is re-routed to
     # the equal q_flock slot evaluation.
     point_claims: list[tuple[tuple[E, ...], E]] = []
     qflock = layout.placements[QFLOCK]
     for claim in claims:
-        # A BLAKE3 value column is committed inside q_flock rather than on its
+        # A BLAKE2s value column is committed inside q_flock rather than on its
         # own, so its claim is re-routed to the equal evaluation of q_flock's
         # slot: the same point, under a different placement, behind the slot bits.
         slot = virtual_slot(claim.column)
@@ -2291,8 +2252,8 @@ def verify_execution(bytecode: Sequence[K], public_input: bytes, proof: Proof) -
         selector = placement.offset >> placement.variables
         point_claims.append((prefix + claim.point + _selector_point(selector, layout.stack_log - placement.variables), claim.value))
 
-    # 7] BLAKE3 validity, then the one opening that discharges every claim.
-    reduction = verify_reduction(FLOCK_LOG_BITS + layout.table_logs[BLAKE3.opcode], transcript)
+    # 7] BLAKE2s validity, then the one opening that discharges every claim.
+    reduction = verify_reduction(FLOCK_LOG_BITS + layout.table_logs[BLAKE2S.opcode], transcript)
     verify_stacked_opening(
         transcript,
         root,

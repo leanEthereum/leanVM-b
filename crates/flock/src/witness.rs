@@ -1,6 +1,6 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
-//! (only `blake3` in this vendored subset).
+//! (only `blake2s` in this vendored subset).
 
 use crate::r1cs::SparseBinaryMatrix;
 use primitives::bits::transpose_8_u64s_to_64_bytes;
@@ -86,7 +86,7 @@ pub(crate) fn add_carry_parts(x: u32, y: u32) -> (u32, u32, u32, u32) {
 }
 
 /// One fused three-operand ADD's witness parts (see
-/// `blake3::write_add3_fused_rows` for the row algebra): the sum, then each
+/// `blake2s::write_add3_fused_rows` for the row algebra): the sum, then each
 /// layer's `(left, right, product)` triple.
 ///
 /// The majority triple is masked to bits 0..=30. The ripple triple is masked
@@ -108,6 +108,26 @@ pub(crate) fn add3_fused_parts(x: u32, y: u32, z: u32) -> (u32, (u32, u32, u32),
     let rip_right = ((q ^ cin) >> 1) & MASK_LO30;
     let rip_aux = rip_left & rip_right;
     (sum, (maj_left, maj_right, maj_aux), (rip_left, rip_right, rip_aux))
+}
+
+/// Write a 32-bit lin-id (or input) slot: (z, a) = val, b = all-ones.
+/// **c is not written**: since `C = I`, `c == z` byte-for-byte.
+#[inline]
+pub(crate) fn write_lin_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [u64], b: &mut [u64]) {
+    or_u32_at_bit(z, bit_off, val);
+    or_u32_at_bit(a, bit_off, val);
+    or_u32_at_bit(b, bit_off, 0xFFFF_FFFF);
+}
+
+/// of the `u64` words on a little-endian target.
+pub(crate) fn packed_bytes(words: &[u64]) -> &[u8] {
+    const _: () = assert!(
+        cfg!(target_endian = "little"),
+        "packed witness bytes assume little-endian"
+    );
+    // SAFETY: `u64` has no padding or invalid bit patterns, and `u8`'s
+    // alignment divides `u64`'s, so the words are a valid `8 · len` byte slice.
+    unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
 }
 
 /// K × K identity sparse matrix.

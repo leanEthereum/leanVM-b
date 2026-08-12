@@ -16,7 +16,7 @@
 //! The filename carries a footprint of everything that determines the signers —
 //! not just the declared parameters but a known-answer of the hash construction
 //! itself (see `hash_fingerprint`), so a branch that changes the digests
-//! (e.g. a change to the standard BLAKE3 input encoding) without touching a
+//! (e.g. a change to the standard BLAKE2s input encoding) without touching a
 //! single constant still lands in a fresh file rather than mis-loading the
 //! other branch's signers. The WOTS encoding *predicate* is fingerprinted the
 //! same way (see `encoding_fingerprint`): two branches can agree on every
@@ -74,7 +74,7 @@ fn hash_fingerprint() -> [Digest; 2] {
     [
         // Single-block path (chain steps, Merkle nodes).
         tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
-        // Multi-block standard BLAKE3 path.
+        // Multi-block standard BLAKE2s path.
         tweak_hash(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
     ]
 }

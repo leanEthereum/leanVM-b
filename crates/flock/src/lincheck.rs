@@ -138,9 +138,9 @@ use zk_alloc::ArenaVec;
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
 // `&dyn LincheckCircuit` instead of a pair of matrices. Two live impls:
-// [`CscCircuit`] (the cached column-major transpose of BLAKE3's `(A_0, B_0)`,
+// [`CscCircuit`] (the cached column-major transpose of BLAKE2s's `(A_0, B_0)`,
 // see `BlockR1cs::csc_lincheck_circuit`), the prover's marginal fold, and
-// `blake3::WalkLincheckCircuit`, whose `bilinear_form` lets the verifier skip
+// `blake2s::WalkLincheckCircuit`, whose `bilinear_form` lets the verifier skip
 // the marginal entirely via the circuit walk (flock.tex §Circuit walking).
 
 /// Per-block linear structure consumed by lincheck. Implementations produce
@@ -174,7 +174,7 @@ pub trait LincheckCircuit: Sync {
     /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
     /// [`verify`] only ever consumes the marginal through one inner product
     /// against a column-weight vector, so an implementation that can walk its
-    /// circuit (O(circuit) field ops, see `blake3::bilinear_walk`) answers
+    /// circuit (O(circuit) field ops, see `blake2s::bilinear_walk`) answers
     /// here and never pays the ∝ NNZ marginal. Default `None`: the verifier
     /// falls back to `fold_alpha_batched`.
     fn bilinear_form(&self, _alpha: F192, _u: &[F192], _w: &[F192]) -> Option<F192> {
@@ -190,7 +190,7 @@ pub trait LincheckCircuit: Sync {
 ///
 ///   `comb[c] = α · Σ_{r ∈ colA(c)} eq_inner[r] + Σ_{r ∈ colB(c)} eq_inner[r]`
 ///
-/// On BLAKE3's matrices (k = 2^14, ~16.7M nonzeros) this measures ~1.7× faster
+/// On BLAKE2s's matrices (k = 2^14, ~16.7M nonzeros) this measures ~1.7× faster
 /// than the row-scatter fold. Construction costs one pass over the nonzeros
 /// (~40 ms), so do it once at setup, e.g. via
 /// [`crate::r1cs::BlockR1cs::csc_lincheck_circuit`].
@@ -439,7 +439,7 @@ fn partial_fold_packed_z_fast_padded(
 
     // fold_reduce(): one length-k accumulator per WORKER rather than per chunk.
     // At large k the per-chunk accumulators of a map/reduce dominate MT time
-    // with allocation plus tree-reduce XOR traffic (BLAKE3's k = 2^14 is
+    // with allocation plus tree-reduce XOR traffic (BLAKE2s's k = 2^14 is
     // 384 KB of accumulator per chunk, across ~128 chunks).
     let n_chunks = z_packed.len().div_ceil(bytes_per_chunk);
     parallel::fold_reduce(
@@ -1662,7 +1662,7 @@ mod tests {
     fn partial_fold_padded_matches_dense() {
         // (m, k_log, useful_bits)
         let cases: &[(usize, usize, usize)] = &[
-            // BLAKE3's own shape: k_log = 14, useful = 15409, not byte-aligned.
+            // BLAKE2s's own shape: k_log = 14, useful = 15409, not byte-aligned.
             (17, 14, 15_409),
             // A larger block, also not byte-aligned.
             (18, 15, 31_401),

@@ -31,7 +31,7 @@ cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3
 XMSS aggregation, 900 signatures
   cycles (VM steps)           : 1,528,252 = 2^20.543   (1,698.058 / XMSS)
     proven rows               : 1,966,081 = 2^20.907  (filled to powers of two)
-    details                   : DEREF 2^18.97 (33.6%)  SET 2^18.397 (22.6%)  MUL 2^18.176 (19.4%)  BLAKE3 2^16.996 (8.6%)  XOR 2^16.953 (8.3%)  JUMP 2^16.825 (7.6%)  MEMORY 2^21.718  TOTAL_COMMITTED 2^26.185
+    details                   : DEREF 2^18.954 (33.6%)  SET 2^18.381 (22.6%)  MUL 2^18.16 (19.4%)  BLAKE2S 2^16.98 (8.5%)  XOR 2^16.937 (8.3%)  JUMP 2^16.809 (7.6%)  PACK64X2 2^9.798 (0.1%)  MEMORY 2^21.702  TOTAL_COMMITTED 2^26.185
   proof size                  : 356.0 KiB
   proving                     : 1.055 s ± 2.9%   852.69 XMSS/s      peak memory 18.717 GiB
   verifying                   : 0.00366 s
@@ -48,7 +48,7 @@ cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
 recursion 2→1: 2 inner proofs of 1,472,223 cycles each
   guest cycles (VM steps)     : 727,289 = 2^19.472   (0.247 / inner cycle)
     proven rows               : 933,888 = 2^19.833  (filled to powers of two)
-    details                   : DEREF 2^17.975 (35.4%)  MUL 2^17.753 (30.4%)  XOR 2^17.321 (22.5%)  SET 2^15.252 (5.4%)  PACK64X2 2^14.305 (2.8%)  BLAKE3 2^14.088 (2.4%)  JUMP 2^13.016 (1.1%)  MEMORY 2^19.802  TOTAL_COMMITTED 2^24.664
+    details                   : DEREF 2^17.975 (35.4%)  MUL 2^17.754 (30.4%)  XOR 2^17.324 (22.5%)  SET 2^15.256 (5.4%)  PACK64X2 2^14.321 (2.8%)  BLAKE2S 2^14.097 (2.4%)  JUMP 2^13.016 (1.1%)  MEMORY 2^19.804  TOTAL_COMMITTED 2^24.664
   proof size                  : 223.6 KiB
 recursion proving         : 0.481 s ± 5.4%      peak memory 12.965 GiB
 verification              : 0.0278 s

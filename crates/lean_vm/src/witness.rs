@@ -12,7 +12,7 @@ pub type Column = Vec<F64>;
 
 /// Where a column sits in the stacked witness. A [`Placement::VIRTUAL`] column is
 /// NOT committed: it carries data for the bus, but its evaluation claims settle
-/// against some other committed column (e.g. the BLAKE3 value columns route to `q_flock`).
+/// against some other committed column (e.g. the BLAKE2s value columns route to `q_flock`).
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
     pub n_vars: usize,

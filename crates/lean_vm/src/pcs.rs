@@ -65,7 +65,7 @@ pub struct Committed {
     pub commitment: Commitment,
     /// Codeword + Merkle tree retained for opening. Public so the single stacked
     /// WHIR opening (which also discharges flock's `(ab, c)` claims over
-    /// this same commitment, §blake3_flock) can reuse it.
+    /// this same commitment, §blake2s_flock) can reuse it.
     pub prover_data: ProverData,
     /// `log2` of the witness length in F64 words.
     pub mu: usize,
@@ -113,7 +113,7 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
 
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
 /// public-input claims, as block-sparse slot evaluations) AND flock's
-/// ring-switched BLAKE3 `(ab, c)` validity (`ring`) in ONE stacked WHIR.
+/// ring-switched BLAKE2s `(ab, c)` validity (`ring`) in ONE stacked WHIR.
 /// The points become the opener's `point_claims`; the opening's Merkle data
 /// rides the transcript's phase list, not the scalar stream. The commitment root
 /// was already bound by [`commit`], and the point *values* rode the stream

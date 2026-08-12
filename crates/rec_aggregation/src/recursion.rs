@@ -55,12 +55,12 @@ fn f192_literal(f: F192) -> String {
     format!("f192({},{},{})", f.c0, f.c1, f.c2)
 }
 
-/// Native replay of the VM's `blake3(cur, cur, nxt)` over two 128-bit words:
+/// Native replay of the VM's `blake2s(cur, cur, nxt)` over two 128-bit words:
 /// pack the two `F192` words into the four `F64` lanes the sponge compression
 /// consumes, compress, and unpack.
 ///
-/// Word→lane packing confirmed against the VM's blake3 opcode (`cpu::mod`
-/// `blake3_self_hash_aliased_operands`): a `[F64;4]` operand loaded from two
+/// Word→lane packing confirmed against the VM's blake2s opcode (`cpu::mod`
+/// `blake2s_self_hash_aliased_operands`): a `[F64;4]` operand loaded from two
 /// 128-bit words is `[w0.c0, w0.c1, w1.c0, w1.c1]` (word-major, lo=c0 then
 /// hi=c1), and the two output words pack back the same way
 /// (`mem[out] == cell(d[0], d[1])`, `cell(d[2], d[3])`).
@@ -76,19 +76,19 @@ fn pack_state(s: [F64; 4]) -> [F192; 2] {
 }
 
 /// Pack a 32-byte Merkle node as the same canonical 128+128 cell pair used by
-/// the VM's sole BLAKE3 representation.
+/// the VM's sole BLAKE2s representation.
 fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
     let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
     [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
 }
 
-/// The non-trivial inner program: a runtime-bounded BLAKE3 hash chain seeded
+/// The non-trivial inner program: a runtime-bounded BLAKE2s hash chain seeded
 /// from the public input, a runtime-bounded `mul_range` product loop with heap
 /// traffic, and a final assert tying them together. BOTH loop bounds ride
 /// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
 /// digest) proves runs with wildly different opcode profiles and sizes - the
 /// exact genericity the recursion guest is built for. Exercises every table
-/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3/PACK64X2).
+/// (XOR/MUL/SET/DEREF/JUMP/BLAKE2s/PACK64X2).
 fn inner_program() -> Program {
     let src = "from snark_lib import *\n\
         def main():\n\
@@ -106,7 +106,7 @@ fn inner_program() -> Program {
         \x20       cur[0] = hc0[h]\n\
         \x20       cur[1] = hc1[h]\n\
         \x20       nxt = StackBuf(2)\n\
-        \x20       blake3(cur, cur, nxt)\n\
+        \x20       blake2s(cur, cur, nxt)\n\
         \x20       hc0[h * GEN] = nxt[0]\n\
         \x20       hc1[h * GEN] = nxt[1]\n\
         \x20   st0 = hc0[hbound]\n\
@@ -130,7 +130,7 @@ fn inner_program() -> Program {
     compile(&parse(src).expect("parse inner"))
 }
 
-/// Prove one run of the inner program: `hashes` BLAKE3 compressions then
+/// Prove one run of the inner program: `hashes` BLAKE2s compressions then
 /// `iters` product-loop steps (both runtime, driven by the witness hints).
 /// The witness generator replays both natively to supply the final-inverse
 /// hint. Returns (program, proof, guest-cycle count, committed witness size).
@@ -343,7 +343,7 @@ fn aggregate_deferred_claims(
     let nsub = subs.len();
     let kbc = subs[0].bytecode_log;
     let kbcv = kbc + lean_vm::leaf::N_BYTECODE_SELECTORS;
-    let klog = flock::blake3::K_LOG;
+    let klog = flock::blake2s::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
     let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
@@ -412,7 +412,7 @@ fn aggregate_deferred_claims(
 
     // ---- matrix batching sumcheck (two-phase sparse, per the probe) ----
     let gmt: Vec<F192> = (0..nsub).map(|_| h.sample()).collect();
-    let (ma, mb) = flock::blake3::matrices();
+    let (ma, mb) = flock::blake2s::matrices();
     // per-claim dense weight tables: rows = quirky eq, cols = eq(top rounds) x z_partial.
     let mut us: Vec<Vec<F192>> = subs
         .iter()
@@ -579,13 +579,13 @@ fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(
     if mle_eval(&stacked, &claims.bytecode_point) != claims.bytecode_value {
         return Err(RecursiveVerifyError::BytecodeClaim);
     }
-    let klog = flock::blake3::K_LOG;
+    let klog = flock::blake2s::K_LOG;
     if claims.matrix_point.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
     let eq_r = pcs::whir::build_eq_table_ext(&claims.matrix_point[..klog]);
     let eq_c = pcs::whir::build_eq_table_ext(&claims.matrix_point[klog..]);
-    let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
+    let (v_a, v_b) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
     if v_a != claims.matrix_a_value {
         return Err(RecursiveVerifyError::MatrixAClaim);
     }
@@ -625,10 +625,10 @@ fn whir_shape(mu: usize, log_inv_rate: usize) -> WhirShape {
     }
 }
 
-/// The BLAKE3 table's virtual value columns, in `blake3_flock::SLOTS` order.
-fn blake3_value_columns() -> Vec<usize> {
+/// The BLAKE2s table's virtual value columns, in `blake2s_flock::SLOTS` order.
+fn blake2s_value_columns() -> Vec<usize> {
     let base = lean_vm::cpu::schema().base[5];
-    lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| base + c).collect()
+    lean_vm::tables::BLAKE2S_VALUE_COLS.iter().map(|&c| base + c).collect()
 }
 
 /// One entry of the guest's claim pool.
@@ -706,7 +706,7 @@ fn push_coord_terms(
 /// stay index-aligned by construction rather than by two matching count asserts.
 fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(ClaimSite)) {
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
-    let valcols = blake3_value_columns();
+    let valcols = blake2s_value_columns();
     // Only the framework blocks raise claims: a table's coords are settled inside
     // the table sumcheck.
     let is_framework: Vec<bool> = lean_vm::cpu::block_kappa_sources(kbc)
@@ -799,7 +799,7 @@ fn gen_verify(
 
     let taus = l.taus;
     // Flock replay data, all named struct fields.
-    let lcrounds = flock::blake3::K_LOG - 6;
+    let lcrounds = flock::blake2s::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
     let zrho = summary.zc_claim.mlv_challenges.clone();
@@ -832,10 +832,10 @@ fn gen_verify(
     }
     let mut pinw = lc_beta;
     for (j, &rv) in lrr.iter().enumerate() {
-        let bit = (flock::blake3::Z_CONST_POS >> (flock::blake3::K_LOG - 1 - j)) & 1;
+        let bit = (flock::blake2s::Z_CONST_POS >> (flock::blake2s::K_LOG - 1 - j)) & 1;
         pinw *= if bit == 1 { rv } else { F192::ONE + rv };
     }
-    pinw *= lcz[flock::blake3::Z_CONST_POS % 64];
+    pinw *= lcz[flock::blake2s::Z_CONST_POS % 64];
     let matpart = lrun + pinw;
 
     // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
@@ -924,7 +924,7 @@ fn gen_verify(
             ClaimSite::Framework { kappa, .. } => kappa,
             ClaimSite::TableColumn { table, is_virtual, .. } => {
                 if is_virtual {
-                    lean_vm::blake3_flock::SLOT_STRIDE_LOG + taus[table]
+                    lean_vm::blake2s_flock::SLOT_STRIDE_LOG + taus[table]
                 } else {
                     taus[table]
                 }
@@ -1137,7 +1137,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     );
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
-    let lcrounds = flock::blake3::K_LOG - 6;
+    let lcrounds = flock::blake2s::K_LOG - 6;
 
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
@@ -1211,7 +1211,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let ncl = nclaims + evtot + 3; // bus + constraint + the three PI memory-limb claims
 
     // ---- claim descriptor buffer ids (structural) ----
-    let valcols = blake3_value_columns();
+    let valcols = blake2s_value_columns();
     let col_sources_pm = lean_vm::cpu::col_kappa_sources(kbc);
     let mut compact_col_pm = vec![usize::MAX; col_sources_pm.len()];
     let mut n_committed = 0usize;
@@ -1241,7 +1241,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 compact_col_pm[column]
             });
             cpqslot.push(if is_virtual {
-                lean_vm::blake3_flock::SLOTS[valcols.iter().position(|&v| v == column).unwrap()]
+                lean_vm::blake2s_flock::SLOTS[valcols.iter().position(|&v| v == column).unwrap()]
             } else {
                 0
             });
@@ -1407,11 +1407,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
-    ps("PIN_COLUMN", flock::blake3::Z_CONST_POS.to_string());
-    ps("K_LOG", flock::blake3::K_LOG.to_string());
+    ps("PIN_COLUMN", flock::blake2s::Z_CONST_POS.to_string());
+    ps("K_LOG", flock::blake2s::K_LOG.to_string());
     // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
     // qflock point-claim slot must use THIS, not LOG2_FIELD_BITS.
-    ps("SLOT_STRIDE_LOG", lean_vm::blake3_flock::SLOT_STRIDE_LOG.to_string());
+    ps("SLOT_STRIDE_LOG", lean_vm::blake2s_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
@@ -1439,7 +1439,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 };
                 bytes <= 1024 && whole_blocks
             }),
-            "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE3 chunk"
+            "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE2s chunk"
         );
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
@@ -1629,7 +1629,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 maxlev,
             )),
         );
-        // 64-byte BLAKE3 blocks per leaf row: level 0's committed rows are
+        // 64-byte BLAKE2s blocks per leaf row: level 0's committed rows are
         // base-field F64 (8 bytes/lane); deeper levels are native F192
         // (24 bytes/word, received as three embedded K limbs each). Rows are
         // whole blocks only (asserted at candidate construction).
@@ -1701,7 +1701,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LIG_MIN_SHIFT_INV", u(F192::new(g_pow(minm).inv().0, 0, 0)).to_string());
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
     ps("CLAIM_COMMITTED_COL", ints(&cpcol));
-    let slot_stride_log = lean_vm::blake3_flock::SLOT_STRIDE_LOG;
+    let slot_stride_log = lean_vm::blake2s_flock::SLOT_STRIDE_LOG;
     let cpqbits: Vec<usize> = cpqslot
         .iter()
         .flat_map(|&slot| (0..slot_stride_log).map(move |k| (slot >> k) & 1))
@@ -1989,7 +1989,7 @@ fn recursion_soundness_binds() {
 /// One compiled guest bytecode proves MANY inner runs with wildly different
 /// opcode profiles and sizes, without recompilation. The configs span four
 /// committed sizes (m in {23,24,25,26}, four distinct match_range opening
-/// arms) and four BLAKE3 log-instance-counts (tau_5 in {3,4,5,6}, different
+/// arms) and four BLAKE2s log-instance-counts (tau_5 in {3,4,5,6}, different
 /// r1cs statement digests, flock reduction sizes, and pin prefixes). The
 /// guest is compiled ONCE from the placeholder map, which is a function of the
 /// inner bytecode size alone, so every shape is verified on the same Program

@@ -64,10 +64,10 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
-    /// `BLAKE3`: the four 128-bit input chunks `ins` are addressed independently,
+    /// `BLAKE2s`: the four 128-bit input chunks `ins` are addressed independently,
     /// one frame cell each. The 32-byte output occupies the two consecutive
     /// 128-bit cells `c, c+1`.
-    Blake3 {
+    Blake2s {
         ins: [Off; 4],
         cv: Off,
         c: Off,
@@ -119,8 +119,8 @@ pub(crate) struct Lowered {
 
 /// A resolved run of consecutive cells ([`crate::lower::FnLower::cell_run`]): a
 /// frame (stack) run, used in place, or a heap slice (the buffer pointer's cell
-/// plus the first g-power offset), which a `blake3` operand must bridge through
-/// the stack since `BLAKE3` addresses only frame cells.
+/// plus the first g-power offset), which a `blake2s` operand must bridge through
+/// the stack since `BLAKE2s` addresses only frame cells.
 pub(crate) enum CellRun {
     Stack { base: Off, len: u32 },
     Heap { ptr: Off, lo: u32, len: u32 },

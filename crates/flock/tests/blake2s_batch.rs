@@ -1,13 +1,13 @@
-//! Standalone batch BLAKE3 proving, isolated from the VM.
+//! Standalone batch BLAKE2s proving, isolated from the VM.
 //!
-//! This exercises only Flock's BLAKE3 path over `N` compressions: witness
+//! This exercises only Flock's BLAKE2s path over `N` compressions: witness
 //! generation, F64 commitment, zerocheck + lincheck reduction, the stacked
 //! ring-switch/WHIR opening, and verification. Circuit construction is
 //! outside the timed region, matching the VM's warmed-setup convention.
 //!
 //! Run with the XMSS-sized workload:
 //! ```text
-//! LEANVM_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake3_batch -- --ignored --nocapture
+//! LEANVM_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake2s_batch -- --ignored --nocapture
 //! ```
 //!
 //! `BENCH_REPEAT=n` averages `n` measured passes after the warmup pass, and
@@ -19,8 +19,8 @@
 use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
-use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
+use flock::blake2s::{
+    Blake2sSetup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
     pinned_compression, ring_switch_open, ring_switch_verify,
 };
 use pcs::pack::LOG_PACKING;
@@ -32,8 +32,8 @@ use primitives::{field::F64, pretty_integer, test_rng::Rng};
 
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
-fn blake3_batch_prove_verify() {
-    // The XMSS n=820 workload executes about 2^17 BLAKE3 compressions.
+fn blake2s_batch_prove_verify() {
+    // The XMSS n=820 workload executes about 2^17 BLAKE2s compressions.
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
@@ -54,7 +54,7 @@ fn blake3_batch_prove_verify() {
         .collect();
 
     let t = Instant::now();
-    let setup = Blake3Setup::new(n);
+    let setup = Blake2sSetup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let (prover_config, verifier_config) = configs_for(mu).expect("WHIR configuration");
@@ -76,7 +76,7 @@ fn blake3_batch_prove_verify() {
         let witness_s = t.elapsed().as_secs_f64();
         assert_eq!(q_flock.len(), 1 << mu);
 
-        let mut ps = ProverState::new(b"flock-blake3-batch", &[]);
+        let mut ps = ProverState::new(b"flock-blake2s-batch", &[]);
         let t_prove = Instant::now();
 
         let t = Instant::now();
@@ -116,7 +116,7 @@ fn blake3_batch_prove_verify() {
     });
 
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
-        let mut vs = VerifierState::new(b"flock-blake3-batch", &transcript, &[]);
+        let mut vs = VerifierState::new(b"flock-blake2s-batch", &transcript, &[]);
         let root = vs.next_root().expect("commitment root");
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = ring_switch_verify(n, 0, &replay.ab, &replay.c, &replay.lc_claim.s_hat_v);
@@ -129,7 +129,7 @@ fn blake3_batch_prove_verify() {
 
     let ms = |t: &Timing| format!("{:>8.1} ms{}", t.mean() * 1e3, t.spread());
     println!(
-        "\nFlock BLAKE3 batch proving, {} compressions (2^{n_log} slots)",
+        "\nFlock BLAKE2s batch proving, {} compressions (2^{n_log} slots)",
         pretty_integer(n)
     );
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");

@@ -59,7 +59,7 @@ pub fn num_threads() -> usize {
 ///
 /// One performance worker is held back **when there are efficiency workers to
 /// absorb the slack**, i.e. on Apple silicon. The prover does not run alone on
-/// the fast cluster: `cpu::prove` warms the BLAKE3 setup on a background thread,
+/// the fast cluster: `cpu::prove` warms the BLAKE2s setup on a background thread,
 /// and the OS wants a core. Saturating the cluster means any interference
 /// deschedules a worker mid-dispatch, and every barrier then waits for it.
 ///
