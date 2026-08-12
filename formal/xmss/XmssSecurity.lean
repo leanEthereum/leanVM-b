@@ -27,6 +27,7 @@ import XmssSecurity.CausalKeygenTableIndependence
 import XmssSecurity.CausalSubtreeIndependence
 import XmssSecurity.CausalAuthenticationPathIndependence
 import XmssSecurity.CausalUntilHit
+import XmssSecurity.CausalTreeWarmup
 import XmssSecurity.CausalKeygenGameCoupling
 import XmssSecurity.CausalInstalledTableGame
 import XmssSecurity.CausalInstalledResampling

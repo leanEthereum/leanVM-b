@@ -293,6 +293,114 @@ theorem evalDist_randomOracle_run_eq_query_then_of_cached
   | some output =>
       rw [QueryImpl.withCaching_run_some _ htarget, pure_bind]
 
+/-- A computation may be run as a discarded warmup before a target computation when every query
+made by the warmup is guaranteed to be cached by the target. This preserves the target's full
+result and final-cache distribution. -/
+theorem evalDist_randomOracle_run_eq_warmup_then_of_cached
+    {α β : Type} (target : OracleComp (D →ₒ R) α)
+    (warmup : OracleComp (D →ₒ R) β)
+    (covered : D → Prop) [DecidablePred covered]
+    (hqueries : warmup.IsQueryBoundP (fun input => ¬ covered input) 0)
+    (hcached : ∀ input, covered input →
+      ∀ cache : (D →ₒ R).QueryCache,
+      ∀ result ∈ support ((simulateQ randomOracle target).run cache),
+        ∃ output, result.2 input = some output)
+    (cache : (D →ₒ R).QueryCache) :
+    𝒟[(simulateQ randomOracle target).run cache] =
+      𝒟[(simulateQ randomOracle warmup).run cache >>= fun warmResult =>
+        (simulateQ randomOracle target).run warmResult.2] := by
+  induction warmup using OracleComp.inductionOn generalizing cache with
+  | pure value =>
+      simp
+  | query_bind input next ih =>
+      rw [isQueryBoundP_query_bind_iff] at hqueries
+      have hcovered : covered input := by
+        rcases hqueries.1 with houtside | hpositive
+        · exact Classical.byContradiction houtside
+        · omega
+      have hnext : ∀ answer,
+          (next answer).IsQueryBoundP (fun candidate => ¬ covered candidate) 0 := by
+        intro answer
+        simpa using hqueries.2 answer
+      calc
+        𝒟[(simulateQ randomOracle target).run cache] =
+            𝒟[(randomOracle (spec := D →ₒ R) input).run cache >>=
+              fun queryResult =>
+                (simulateQ randomOracle target).run queryResult.2] :=
+          evalDist_randomOracle_run_eq_query_then_of_cached
+            target cache input (hcached input hcovered cache)
+        _ = 𝒟[(randomOracle (spec := D →ₒ R) input).run cache >>=
+              fun queryResult =>
+                (simulateQ randomOracle (next queryResult.1)).run queryResult.2 >>=
+                  fun warmResult =>
+                    (simulateQ randomOracle target).run warmResult.2] := by
+          apply evalDist_bind_congr
+          intro queryResult _hqueryResult
+          exact ih queryResult.1 (hnext queryResult.1) queryResult.2
+        _ = 𝒟[(simulateQ randomOracle
+              (liftM ((D →ₒ R).query input) >>= next)).run cache >>=
+                fun warmResult =>
+                  (simulateQ randomOracle target).run warmResult.2] := by
+          simp [StateT.run_bind, bind_assoc]
+
+/-- Every next query on every reachable path of `warmup` is cached by `target` when both start
+from the cache at that point. -/
+def RandomOracleWarmupCovered
+    {α β : Type} (target : OracleComp (D →ₒ R) α)
+    (warmup : OracleComp (D →ₒ R) β) :
+    (D →ₒ R).QueryCache → Prop :=
+  OracleComp.recOn warmup
+    (fun _ _cache => True)
+    (fun input _next coveredNext cache =>
+      (∀ result ∈ support ((simulateQ randomOracle target).run cache),
+          ∃ output, result.2 input = some output) ∧
+        ∀ queryResult ∈ support
+            ((randomOracle (spec := D →ₒ R) input).run cache),
+          coveredNext queryResult.1 queryResult.2)
+
+/-- Running an adaptively covered warmup before a target computation preserves the target's full
+result and final-cache distribution. -/
+theorem evalDist_randomOracle_run_eq_coveredWarmup_then
+    {α β : Type} (target : OracleComp (D →ₒ R) α)
+    (warmup : OracleComp (D →ₒ R) β)
+    (cache : (D →ₒ R).QueryCache)
+    (hcovered : RandomOracleWarmupCovered target warmup cache) :
+    𝒟[(simulateQ randomOracle target).run cache] =
+      𝒟[(simulateQ randomOracle warmup).run cache >>= fun warmResult =>
+        (simulateQ randomOracle target).run warmResult.2] := by
+  induction warmup using OracleComp.inductionOn generalizing cache with
+  | pure value =>
+      simp
+  | query_bind input next ih =>
+      change
+        (∀ result ∈ support ((simulateQ randomOracle target).run cache),
+            ∃ output, result.2 input = some output) ∧
+          ∀ queryResult ∈ support
+              ((randomOracle (spec := D →ₒ R) input).run cache),
+            RandomOracleWarmupCovered target (next queryResult.1) queryResult.2
+        at hcovered
+      calc
+        𝒟[(simulateQ randomOracle target).run cache] =
+            𝒟[(randomOracle (spec := D →ₒ R) input).run cache >>=
+              fun queryResult =>
+                (simulateQ randomOracle target).run queryResult.2] :=
+          evalDist_randomOracle_run_eq_query_then_of_cached
+            target cache input hcovered.1
+        _ = 𝒟[(randomOracle (spec := D →ₒ R) input).run cache >>=
+              fun queryResult =>
+                (simulateQ randomOracle (next queryResult.1)).run queryResult.2 >>=
+                  fun warmResult =>
+                    (simulateQ randomOracle target).run warmResult.2] := by
+          apply evalDist_bind_congr
+          intro queryResult hqueryResult
+          exact ih queryResult.1 queryResult.2
+            (hcovered.2 queryResult hqueryResult)
+        _ = 𝒟[(simulateQ randomOracle
+              (liftM ((D →ₒ R).query input) >>= next)).run cache >>=
+                fun warmResult =>
+                  (simulateQ randomOracle target).run warmResult.2] := by
+          simp [StateT.run_bind, bind_assoc]
+
 noncomputable def presampleCacheEntries
     (cache : (D →ₒ R).QueryCache) : List D → ProbComp ((D →ₒ R).QueryCache)
   | [] => pure cache
