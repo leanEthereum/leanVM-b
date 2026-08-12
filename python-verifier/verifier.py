@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cache, partial, reduce
@@ -19,7 +20,6 @@ def require(condition: bool, message: str) -> None:
 
 # Field arithmetic and BLAKE2s ------------------------------------------------
 
-MASK32 = 2**32 - 1
 MASK64 = 2**64 - 1
 
 
@@ -241,50 +241,11 @@ BLAKE2S_G_LANES = (
     (2, 7, 8, 13),
     (3, 4, 9, 14),
 )
-# The parameter block folded into h[0] for an unkeyed 32-byte digest.
-BLAKE2S_PARAM_IV = (BLAKE2S_IV[0] ^ 0x01010000 ^ 32,) + BLAKE2S_IV[1:]
-
-
-def _rotr32(x: int, n: int) -> int:
-    return ((x >> n) | (x << (32 - n))) & MASK32
-
-
-def _g(v: list[int], a: int, b: int, c: int, d: int, mx: int, my: int) -> None:
-    v[a] = (v[a] + v[b] + mx) & MASK32
-    v[d] = _rotr32(v[d] ^ v[a], 16)
-    v[c] = (v[c] + v[d]) & MASK32
-    v[b] = _rotr32(v[b] ^ v[c], 12)
-    v[a] = (v[a] + v[b] + my) & MASK32
-    v[d] = _rotr32(v[d] ^ v[a], 8)
-    v[c] = (v[c] + v[d]) & MASK32
-    v[b] = _rotr32(v[b] ^ v[c], 7)
-
-
-def blake2s_compress(h: Sequence[int], block_words: Sequence[int], counter: int, final: bool) -> tuple[int, ...]:
-    """The BLAKE2s compression, returning the eight output chaining words."""
-    v = list(h) + list(BLAKE2S_IV)
-    v[12] ^= counter & MASK32
-    v[13] ^= (counter >> 32) & MASK32
-    if final:
-        v[14] ^= MASK32
-    for sigma in BLAKE2S_SIGMA:
-        for g, lanes in enumerate(BLAKE2S_G_LANES):
-            _g(v, *lanes, block_words[sigma[2 * g]], block_words[sigma[2 * g + 1]])
-    return tuple((h[i] ^ v[i] ^ v[i + 8]) & MASK32 for i in range(8))
-
-
-def _words(block: bytes) -> tuple[int, ...]:
-    return unpack("<16I", block.ljust(64, b"\0"))
 
 
 def blake2s_hash(data: bytes) -> Digest:
     """Standard 32-byte unkeyed BLAKE2s-256 hash."""
-    h: Sequence[int] = BLAKE2S_PARAM_IV
-    blocks = [data[i : i + 64] for i in range(0, len(data), 64)] or [b""]
-    for i, block in enumerate(blocks):
-        counter = 64 * i + len(block)
-        h = blake2s_compress(h, _words(block), counter, i + 1 == len(blocks))
-    return Digest(pack("<8I", *h))
+    return Digest(hashlib.blake2s(data).digest())
 
 
 @dataclass(frozen=True, slots=True)
@@ -1077,7 +1038,7 @@ class Table:
         return len(self.columns)
 
     def col(self, name: str) -> int:
-        require(name in self.columns, f"table {self.name} has no column {name!r}")
+        assert name in self.columns, f"table {self.name} has no column {name!r}"
         return self.columns.index(name)
 
     def cols(self, *names: str) -> tuple[int, ...]:
@@ -1298,9 +1259,6 @@ BLAKE2S_SLOT_BY_COLUMN = {
     }.items()
 }
 
-# Coordinates 4..11 of a bytecode tuple: eight operand or immediate slots.
-N_BYTECODE_OPERANDS = 8
-
 WIDTHS = tuple(t.width for t in TABLES)
 # Global column numbering: the shared columns, then each table's block in turn.
 BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(TABLES)))
@@ -1381,24 +1339,15 @@ def virtual_slot(column: int) -> int | None:
 
 # WHIR opening ----------------------------------------------------------------
 
-# WHIR ladder geometry. These mirror the Rust source of truth in
-# crates/pcs/src/whir_config.rs and must stay in sync with it: the prover
-# derives its opening shape from those constants, so a mismatch here rejects a
-# valid proof. Change a factor there, change it here.
 INITIAL_FOLDING_FACTOR = 6
 SUBSEQUENT_FOLDING_FACTOR = 3
 RS_DOMAIN_INITIAL_REDUCTION_FACTOR = 3
 RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR = 1
 RESIDUAL_MAX_LOG = 5
 
-# WHIR_QUERIES covers exactly this range; past it the query search no longer
-# reaches SECURITY_BITS.
 MIN_STACKED_LOG = 15
 MAX_STACKED_LOG = 32
 
-# Queries per level, [log_inv_rate - 1][log_n - MIN_STACKED_LOG]. Tabulated, not
-# recomputed: the Rust search is floating point, and reproducing it here would
-# make float identity part of the protocol. `whir_query_table_matches_rust` pins it.
 WHIR_QUERIES = (((223,56,36), (223,56,37), (223,56,37), (224,56,37,28), (224,56,37,28), (224,56,38,28), (224,56,38,28,22), (225,56,38,28,23), (225,56,38,28,23), (225,56,38,28,23,19), (226,56,38,28,23,19), (226,56,38,28,23,19), (227,56,38,28,23,19,16), (228,56,38,28,23,19,16), (228,56,38,28,23,19,16), (229,57,38,28,23,19,17,14), (230,57,38,29,23,19,17,14), (232,57,38,29,23,19,17,15)), ((112,45,31), (112,45,32), (112,45,32), (112,45,32,25), (112,45,32,25), (112,45,32,25), (112,45,32,25,20), (112,45,32,25,21), (112,45,32,25,21), (113,45,32,25,21,17), (113,45,32,25,21,18), (113,45,32,25,21,18), (113,45,32,25,21,18,15), (113,45,32,25,21,18,15), (114,45,32,25,21,18,15), (114,45,33,25,21,18,15,14), (114,45,33,25,21,18,16,14), (115,46,33,25,21,18,16,14)), ((75,37,28), (75,37,28), (75,38,28), (75,38,28,22), (75,38,28,23), (75,38,28,23), (75,38,28,23,19), (75,38,28,23,19), (75,38,28,23,19), (75,38,28,23,19,16), (75,38,28,23,19,16), (75,38,28,23,19,16), (75,38,28,23,19,17,14), (76,38,29,23,19,17,14), (76,38,29,23,19,17,15), (76,38,29,23,19,17,15,13), (76,38,29,23,19,17,15,13), (77,38,29,23,19,17,15,13)), ((56,32,25), (56,32,25), (56,32,25), (56,32,25,20), (56,32,25,21), (56,32,25,21), (56,32,25,21,17), (56,32,25,21,18), (56,32,25,21,18), (57,32,25,21,18,15), (57,32,25,21,18,15), (57,32,25,21,18,15), (57,33,25,21,18,15,14), (57,33,25,21,18,16,14), (57,33,25,21,18,16,14), (57,33,26,21,18,16,14,12), (57,33,26,21,18,16,14,13), (58,33,26,21,18,16,14,13)))  # fmt: skip
 
 
@@ -1680,11 +1629,6 @@ _MEDIUM_POWERS = (
     _MEDIUM_GENERATOR**4,
     _MEDIUM_GENERATOR**8,
 )
-# flock's zerocheck replaces its first FLOCK_K_SKIP Boolean rounds with one
-# univariate skip over PACKED_BITS points, and fixes the next N_INNER
-# coordinates to public constants instead of sampling them. Their F2-linear
-# independence is what that optimization's soundness rests on.
-FLOCK_N_INNER = 7
 
 FIXED_CHALLENGES = (
     PHI[0xF7],
@@ -1692,6 +1636,7 @@ FIXED_CHALLENGES = (
     PHI[0xB5],
     *tuple(value / (ONE + value) for value in _MEDIUM_POWERS),
 )
+FLOCK_N_INNER = len(FIXED_CHALLENGES)
 
 
 def quirky_weights(skip_point: E, rest: Sequence[E]) -> list[E]:
