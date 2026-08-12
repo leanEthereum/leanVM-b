@@ -2674,18 +2674,18 @@ theorem Concrete.evalDist_tapedFixedChainTrajectories_cons
 
 theorem Concrete.evalDist_prependChainTrajectory_congr
     (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (steps : Nat) (cache : QueryCache HashSpec)
+    (steps : Nat) (cache : QueryCache HashSpec) (seedSampler : ProbComp Digest)
     (left right : QueryCache HashSpec →
       ProbComp (List (Vector Digest (steps + 1)) × QueryCache HashSpec))
     (heq : ∀ nextCache, evalDist (left nextCache) =
       evalDist (right nextCache)) :
-    evalDist (($ᵗ Digest) >>= fun seed =>
+    evalDist (seedSampler >>= fun seed =>
       (simulateQ randomOracle
         (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run
           cache >>= fun first =>
       left first.2 >>= fun rest =>
       pure (first.1 :: rest.1, rest.2)) =
-      evalDist (($ᵗ Digest) >>= fun seed =>
+      evalDist (seedSampler >>= fun seed =>
         (simulateQ randomOracle
           (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run
             cache >>= fun first =>
@@ -2698,6 +2698,146 @@ theorem Concrete.evalDist_prependChainTrajectory_congr
   conv_lhs => rw [evalDist_bind]
   conv_rhs => rw [evalDist_bind]
   rw [heq first.2]
+
+noncomputable def Concrete.explicitSampledChainTrajectoriesCons
+    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
+    (cache : QueryCache HashSpec) (epoch : Epoch) (epochs : List Epoch) :
+    ProbComp (List (Vector Digest (steps + 1)) × QueryCache HashSpec) := do
+  let seed ← Concrete.sampleChainSeed
+  let first ← (simulateQ randomOracle
+    (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run cache
+  let rest ← Concrete.sampledChainTrajectoriesFromCache parameter chain 0 steps
+    first.2 epochs
+  pure (first.1 :: rest.1, rest.2)
+
+theorem Concrete.evalDist_sampleChainSeed_eq_uniform :
+    evalDist Concrete.sampleChainSeed = evalDist ($ᵗ Digest) := by
+  unfold Concrete.sampleChainSeed
+  rw [evalDist_uniformSample, evalDist_uniformSample]
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem Concrete.sampledChainTrajectoriesFromCache_cons_eq_explicit
+    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
+    (cache : QueryCache HashSpec) (epoch : Epoch) (epochs : List Epoch) :
+    Concrete.sampledChainTrajectoriesFromCache parameter chain 0 steps cache
+        (epoch :: epochs) =
+      Concrete.explicitSampledChainTrajectoriesCons parameter chain steps cache
+        epoch epochs := by
+  rw [Concrete.sampledChainTrajectoriesFromCache_cons]
+  unfold Concrete.sampledChainTrajectoryFromCache
+    Concrete.explicitSampledChainTrajectoriesCons
+  rw [bind_assoc]
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem Concrete.evalDist_tapedFixedChainTrajectories_eq_sampled
+    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat) :
+    ∀ (epochs : List Epoch) (cache : QueryCache HashSpec),
+      evalDist (Concrete.tapedFixedChainTrajectoriesFromCache parameter
+        chain steps cache epochs) =
+        evalDist (Concrete.sampledChainTrajectoriesFromCache parameter chain
+          0 steps cache epochs) := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro cache
+      unfold Concrete.tapedFixedChainTrajectoriesFromCache
+      rw [List.length_nil, OracleComp.drawList,
+        Concrete.sampledChainTrajectoriesFromCache_nil]
+      rfl
+  | cons epoch epochs ih =>
+      intro cache
+      calc
+        evalDist (Concrete.tapedFixedChainTrajectoriesFromCache parameter chain
+            steps cache (epoch :: epochs)) =
+            evalDist (($ᵗ Digest) >>= fun seed =>
+              (simulateQ randomOracle
+                (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run
+                  cache >>= fun first =>
+              Concrete.tapedFixedChainTrajectoriesFromCache parameter chain steps
+                first.2 epochs >>= fun rest =>
+              pure (first.1 :: rest.1, rest.2)) :=
+          Concrete.evalDist_tapedFixedChainTrajectories_cons parameter chain
+            steps cache epoch epochs
+        _ = evalDist (Concrete.sampleChainSeed >>= fun seed =>
+              (simulateQ randomOracle
+                (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run
+                  cache >>= fun first =>
+              Concrete.tapedFixedChainTrajectoriesFromCache parameter chain steps
+                first.2 epochs >>= fun rest =>
+              pure (first.1 :: rest.1, rest.2)) := by
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [Concrete.evalDist_sampleChainSeed_eq_uniform]
+        _ = evalDist (Concrete.sampleChainSeed >>= fun seed =>
+              (simulateQ randomOracle
+                (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run
+                  cache >>= fun first =>
+              Concrete.sampledChainTrajectoriesFromCache parameter chain 0 steps
+                first.2 epochs >>= fun rest =>
+              pure (first.1 :: rest.1, rest.2)) :=
+          Concrete.evalDist_prependChainTrajectory_congr parameter epoch chain
+            steps cache Concrete.sampleChainSeed
+            (fun nextCache =>
+              Concrete.tapedFixedChainTrajectoriesFromCache parameter chain steps
+                nextCache epochs)
+            (fun nextCache =>
+              Concrete.sampledChainTrajectoriesFromCache parameter chain 0 steps
+                nextCache epochs)
+            ih
+        _ = evalDist (Concrete.explicitSampledChainTrajectoriesCons parameter
+              chain steps cache epoch epochs) := rfl
+        _ = evalDist (Concrete.sampledChainTrajectoriesFromCache parameter chain
+              0 steps cache (epoch :: epochs)) := by
+          rw [Concrete.sampledChainTrajectoriesFromCache_cons_eq_explicit]
+
+theorem Concrete.evalDist_extractedFixedChainTrajectories_eq_sampled
+    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
+    (cache : QueryCache HashSpec) (epochs : List Epoch)
+    (hnodup : epochs.Nodup) :
+    evalDist (Concrete.extractedFixedChainTrajectoriesFromCache parameter
+      chain steps cache epochs) =
+      evalDist (Concrete.sampledChainTrajectoriesFromCache parameter chain
+        0 steps cache epochs) :=
+  (Concrete.evalDist_extractedFixedChainTrajectories_eq_taped parameter chain
+    steps cache epochs hnodup).trans
+      (Concrete.evalDist_tapedFixedChainTrajectories_eq_sampled parameter chain
+        steps epochs cache)
+
+noncomputable def Concrete.extractedAllEpochChainValueTableOnly
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    ProbComp (ChainValueIndex → Digest) :=
+  (fun result : List FullChainTrajectory × QueryCache HashSpec =>
+    chainValueTableOfList result.1) <$>
+      Concrete.extractedFixedChainTrajectoriesFromCache parameter chain
+        (chainLength - 1) ∅ allEpochs
+
+theorem Concrete.evalDist_extractedAllEpochChainValueTableOnly_eq_uniform
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    evalDist (Concrete.extractedAllEpochChainValueTableOnly parameter chain) =
+      evalDist ($ᵗ (ChainValueIndex → Digest)) := by
+  unfold Concrete.extractedAllEpochChainValueTableOnly
+  calc
+    evalDist ((fun result : List FullChainTrajectory × QueryCache HashSpec =>
+          chainValueTableOfList result.1) <$>
+        Concrete.extractedFixedChainTrajectoriesFromCache parameter chain
+          (chainLength - 1) ∅ allEpochs) =
+        evalDist ((fun result : List FullChainTrajectory × QueryCache HashSpec =>
+          chainValueTableOfList result.1) <$>
+            Concrete.sampledChainTrajectoriesFromCache parameter chain 0
+              (chainLength - 1) ∅ allEpochs) := by
+      rw [evalDist_map,
+        Concrete.evalDist_extractedFixedChainTrajectories_eq_sampled parameter
+          chain (chainLength - 1) ∅ allEpochs allEpochs_nodup,
+        ← evalDist_map]
+    _ = evalDist (Concrete.sampledAllEpochChainValueTableOnly parameter chain) := by
+      simp [Concrete.sampledAllEpochChainValueTableOnly,
+        Concrete.sampledAllEpochChainValueTable,
+        Concrete.sampledAllEpochChainTrajectories, Functor.map_map]
+    _ = evalDist ($ᵗ (ChainValueIndex → Digest)) :=
+      Concrete.evalDist_sampledAllEpochChainValueTableOnly_eq_uniform
+        parameter chain
 
 theorem evalDist_rootTree_run_eq_fixedSeedTrajectories_then_rootTree
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
@@ -2804,6 +2944,123 @@ theorem evalDist_actualFixedChainKeygen_eq_chronologicallyWarmed
       evalDist (chronologicallyWarmedExtractedFixedChainKeygen chain) :=
   (evalDist_actualFixedChainKeygen_eq_extracted chain).trans
     (evalDist_extractedFixedChainKeygen_eq_chronologicallyWarmed chain)
+
+noncomputable def chronologicallyWarmedFixedChainKeygenTableOnly
+    (chain : ChainIndex) : ProbComp (ChainValueIndex → Digest) :=
+  ProgrammedFixedChainKeygenView.table <$>
+    chronologicallyWarmedExtractedFixedChainKeygen chain
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_chronologicallyWarmedFixedChainKeygenTableOnly_eq_uniform
+    (chain : ChainIndex) :
+    evalDist (chronologicallyWarmedFixedChainKeygenTableOnly chain) =
+      evalDist ($ᵗ (ChainValueIndex → Digest)) := by
+  unfold chronologicallyWarmedFixedChainKeygenTableOnly
+    chronologicallyWarmedExtractedFixedChainKeygen
+  simp only [map_bind, bind_pure_comp, Functor.map_map]
+  change evalDist (Concrete.samplePublicParameter >>= fun parameter =>
+      extractFixedChainSeeds chain allEpochs >>= fun secretView =>
+      Concrete.fixedSeedChainTrajectoriesFromCache parameter
+        (unflattenSecret secretView.2) chain (chainLength - 1) ∅ allEpochs >>=
+          fun trajectoryResult =>
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret secretView.2) treeHeight
+          Concrete.rootNode : OracleComp HashSpec Digest)).run
+            trajectoryResult.2 >>= fun rootResult =>
+      pure (keygenChainValueTable rootResult.2
+        ⟨parameter, unflattenSecret secretView.2⟩ chain)) = _
+  calc
+    evalDist (Concrete.samplePublicParameter >>= fun parameter =>
+        extractFixedChainSeeds chain allEpochs >>= fun secretView =>
+        Concrete.fixedSeedChainTrajectoriesFromCache parameter
+          (unflattenSecret secretView.2) chain (chainLength - 1) ∅ allEpochs >>=
+            fun trajectoryResult =>
+        (simulateQ randomOracle
+          (Concrete.treeNode parameter (unflattenSecret secretView.2) treeHeight
+            Concrete.rootNode : OracleComp HashSpec Digest)).run
+              trajectoryResult.2 >>= fun rootResult =>
+        pure (keygenChainValueTable rootResult.2
+          ⟨parameter, unflattenSecret secretView.2⟩ chain)) =
+        evalDist (Concrete.samplePublicParameter >>= fun parameter =>
+          extractFixedChainSeeds chain allEpochs >>= fun secretView =>
+          Concrete.fixedSeedChainTrajectoriesFromCache parameter
+            (unflattenSecret secretView.2) chain (chainLength - 1) ∅ allEpochs >>=
+              fun trajectoryResult =>
+          (simulateQ randomOracle
+            (Concrete.treeNode parameter (unflattenSecret secretView.2) treeHeight
+              Concrete.rootNode : OracleComp HashSpec Digest)).run
+                trajectoryResult.2 >>= fun _rootResult =>
+          pure (chainValueTableOfList trajectoryResult.1)) := by
+      apply evalDist_bind_congr
+      intro parameter _hparameter
+      apply evalDist_bind_congr
+      intro secretView _hsecretView
+      apply evalDist_bind_congr
+      intro trajectoryResult htrajectoryResult
+      apply evalDist_bind_congr
+      intro rootResult hrootResult
+      congr 2
+      symm
+      apply Concrete.fixedSeedChainTrajectoriesFromCache_table_eq_in_largerCache
+        parameter (unflattenSecret secretView.2) chain trajectoryResult
+          rootResult.2 htrajectoryResult
+      exact Concrete.CacheReplay.randomOracle_cache_le
+        (Concrete.treeNode parameter (unflattenSecret secretView.2) treeHeight
+          Concrete.rootNode : OracleComp HashSpec Digest)
+        trajectoryResult.2 rootResult hrootResult
+    _ = evalDist (Concrete.samplePublicParameter >>= fun parameter =>
+          extractFixedChainSeeds chain allEpochs >>= fun secretView =>
+          Concrete.fixedSeedChainTrajectoriesFromCache parameter
+            (unflattenSecret secretView.2) chain (chainLength - 1) ∅ allEpochs >>=
+              fun trajectoryResult =>
+          pure (chainValueTableOfList trajectoryResult.1)) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro parameter
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro secretView
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro trajectoryResult
+      exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+        ((simulateQ randomOracle
+          (Concrete.treeNode parameter (unflattenSecret secretView.2) treeHeight
+            Concrete.rootNode : OracleComp HashSpec Digest)).run
+              trajectoryResult.2)
+        (probFailure_eq_zero' (neverFail_simulateQ_randomOracle_run
+          (Concrete.treeNode parameter (unflattenSecret secretView.2) treeHeight
+            Concrete.rootNode : OracleComp HashSpec Digest)
+          trajectoryResult.2))
+        (pure (chainValueTableOfList trajectoryResult.1))
+    _ = evalDist (Concrete.samplePublicParameter >>= fun parameter =>
+          Concrete.extractedAllEpochChainValueTableOnly parameter chain) := by
+      simp [Concrete.extractedAllEpochChainValueTableOnly,
+        Concrete.extractedFixedChainTrajectoriesFromCache,
+        map_eq_bind_pure_comp, bind_assoc]
+    _ = evalDist (Concrete.samplePublicParameter >>= fun _parameter =>
+          ($ᵗ (ChainValueIndex → Digest))) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro parameter
+      exact Concrete.evalDist_extractedAllEpochChainValueTableOnly_eq_uniform
+        parameter chain
+    _ = evalDist ($ᵗ (ChainValueIndex → Digest)) :=
+      OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+        Concrete.samplePublicParameter (probFailure_eq_zero' inferInstance)
+        ($ᵗ (ChainValueIndex → Digest))
+
+theorem evalDist_actualFixedChainKeygenTableOnly_eq_uniform
+    (chain : ChainIndex) :
+    evalDist (ProgrammedFixedChainKeygenView.table <$>
+      actualFixedChainKeygen chain) =
+      evalDist ($ᵗ (ChainValueIndex → Digest)) := by
+  calc
+    evalDist (ProgrammedFixedChainKeygenView.table <$>
+        actualFixedChainKeygen chain) =
+        evalDist (chronologicallyWarmedFixedChainKeygenTableOnly chain) := by
+      unfold chronologicallyWarmedFixedChainKeygenTableOnly
+      rw [evalDist_map, evalDist_actualFixedChainKeygen_eq_chronologicallyWarmed,
+        ← evalDist_map]
+    _ = evalDist ($ᵗ (ChainValueIndex → Digest)) :=
+      evalDist_chronologicallyWarmedFixedChainKeygenTableOnly_eq_uniform chain
 
 theorem chronologicallyWarmedExtractedFixedChainKeygen_support_table
     (chain : ChainIndex) (result : ProgrammedFixedChainKeygenView)

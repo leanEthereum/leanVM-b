@@ -19,7 +19,7 @@ theorem Concrete.sampledChainTrajectoryFromCache_preserves_other_epoch
       AtHashAddress parameter (.chain targetEpoch chain targetStep) input →
         result.2 input = none := by
   intro targetStep input hinput
-  unfold Concrete.sampledChainTrajectoryFromCache at hresult
+  unfold Concrete.sampledChainTrajectoryFromCache Concrete.sampleChainSeed at hresult
   rw [mem_support_bind_iff] at hresult
   obtain ⟨value, _hvalue, htrajectory⟩ := hresult
   apply Concrete.CacheReplay.cache_none_of_zero_query_bound
@@ -95,7 +95,7 @@ theorem Concrete.sampledTwoChainTrajectoriesFromCache_probability
             Concrete.sampledChainTrajectoryFromCache_probability first.2 parameter secondEpoch
               chain position steps targetSecond hvalid (by
                 intro offset hoffset hstep input hinput
-                unfold Concrete.sampledChainTrajectoryFromCache at hmem
+                unfold Concrete.sampledChainTrajectoryFromCache Concrete.sampleChainSeed at hmem
                 rw [mem_support_bind_iff] at hmem
                 obtain ⟨value, _hvalue, htrajectory⟩ := hmem
                 apply Concrete.CacheReplay.cache_none_of_zero_query_bound
@@ -286,7 +286,7 @@ theorem Concrete.sampledChainTrajectoriesFromCache_probability
             by_cases htarget : first.1 = targetFirst
             · by_cases hmem : first ∈ support firstRun
               · dsimp only [firstRun] at hmem
-                unfold Concrete.sampledChainTrajectoryFromCache at hmem
+                unfold Concrete.sampledChainTrajectoryFromCache Concrete.sampleChainSeed at hmem
                 rw [mem_support_bind_iff] at hmem
                 obtain ⟨value, _hvalue, htrajectory⟩ := hmem
                 have hrestAbsent : ∀ restEpoch ∈ epochs, ∀ step : ChainStep, ∀ input,
