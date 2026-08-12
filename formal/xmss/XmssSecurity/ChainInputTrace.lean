@@ -35,6 +35,12 @@ def AttackerActionTrace.toSigningLog
     (trace : AttackerActionTrace) : QueryLog SigningSpec :=
   trace.filterMap AttackerAction.signingEntry?
 
+@[simp]
+theorem AttackerActionTrace.toSigningLog_append
+    (left right : AttackerActionTrace) :
+    (left ++ right).toSigningLog = left.toSigningLog ++ right.toSigningLog := by
+  simp [AttackerActionTrace.toSigningLog]
+
 def attackerActionFragment
     (input : (OracleWorld + SigningSpec).Domain)
     (output : (OracleWorld + SigningSpec).Range input) : AttackerActionTrace :=
@@ -124,6 +130,62 @@ theorem sourceActionTracedMappedAdversary_projection
   exact QueryImpl.fst_map_run_withTraceAppend
     (sourceUnloggedMappedAdversaryImpl publicKey secretKey)
     attackerActionFragment computation
+
+theorem sourceActionTracedMappedAdversary_log_projection
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α) :
+    (fun result => (result.1, result.2.toSigningLog)) <$>
+        (simulateQ (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
+          computation).run =
+      (simulateQ
+        ((sourceUnloggedMappedAdversaryImpl publicKey secretKey).withTraceAppend
+          signingLogFragment) computation).run := by
+  let project : {γ : Type} →
+      WriterT AttackerActionTrace (OracleComp OracleWorld) γ →
+        WriterT (QueryLog SigningSpec) (OracleComp OracleWorld) γ :=
+    fun {_γ} traced => WriterT.mk
+      ((fun result => (result.1, result.2.toSigningLog)) <$> traced.run)
+  have hpure : ∀ {γ : Type} (value : γ),
+      project (pure value) = pure value := by
+    intro γ value
+    apply WriterT.ext
+    simp [project, AttackerActionTrace.toSigningLog]
+  have hbind : ∀ {γ δ : Type}
+      (first : WriterT AttackerActionTrace (OracleComp OracleWorld) γ)
+      (next : γ → WriterT AttackerActionTrace (OracleComp OracleWorld) δ),
+      project (first >>= next) = project first >>= fun value => project (next value) := by
+    intro γ δ first next
+    apply WriterT.ext
+    change (fun result => (result.1, result.2.toSigningLog)) <$> (first >>= next).run =
+      (project first >>= fun value => project (next value)).run
+    rw [WriterT.run_bind', WriterT.run_bind']
+    simp only [project, WriterT.run_mk, map_bind]
+    rw [bind_map_left]
+    apply bind_congr
+    rintro ⟨value, trace⟩
+    simp [map_eq_bind_pure_comp, bind_assoc,
+      AttackerActionTrace.toSigningLog_append]
+  have happly : ∀ input,
+      project (sourceActionTracedMappedAdversaryImpl publicKey secretKey input) =
+        (sourceUnloggedMappedAdversaryImpl publicKey secretKey).withTraceAppend
+          signingLogFragment input := by
+    intro input
+    apply WriterT.ext
+    simp [project, sourceActionTracedMappedAdversaryImpl,
+      attackerActionFragment_toSigningLog]
+  have hsimulation :
+      project (simulateQ (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
+        computation) =
+      simulateQ
+        ((sourceUnloggedMappedAdversaryImpl publicKey secretKey).withTraceAppend
+          signingLogFragment) computation := by
+    induction computation using OracleComp.inductionOn with
+    | pure value => exact hpure value
+    | query_bind input next ih =>
+        rw [simulateQ_bind, simulateQ_bind, simulateQ_spec_query,
+          simulateQ_spec_query, hbind, happly]
+        exact bind_congr ih
+  simpa [project] using congrArg WriterT.run hsimulation
 
 theorem sourceUnloggedMappedAdversaryImpl_continuation_hashQueryBound
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -306,6 +368,36 @@ theorem sourceActionTracedDetailedGameAfterKeygen_projection
   simpa [sourceActionTracedDetailedGameAfterKeygen,
     sourceUnloggedDetailedGameAfterKeygen, tracedAdversary, unloggedAdversary,
     finish, bind_map_left, map_bind, bind_assoc] using hbridge
+
+theorem sourceActionTracedDetailedGameAfterKeygen_log_projection
+    (adversary : Adversary Concrete.scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    (fun result =>
+      ⟨publicKey, secretKey, result.1.1, result.2.toSigningLog, result.1.2⟩) <$>
+        sourceActionTracedDetailedGameAfterKeygen adversary publicKey secretKey =
+      detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey := by
+  let tracedAdversary :=
+    (simulateQ (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
+      (adversary.main publicKey)).run
+  let loggedAdversary :=
+    (simulateQ
+      ((sourceUnloggedMappedAdversaryImpl publicKey secretKey).withTraceAppend
+        signingLogFragment) (adversary.main publicKey)).run
+  let finishLogged : Forgery × QueryLog SigningSpec → OracleComp OracleWorld GameOutcome :=
+    fun result => do
+      let verified ← Concrete.scheme.verify publicKey result.1.epoch result.1.message
+        result.1.signature
+      pure ⟨publicKey, secretKey, result.1, result.2, verified⟩
+  have hprojection :
+      (fun result => (result.1, result.2.toSigningLog)) <$> tracedAdversary =
+        loggedAdversary :=
+    sourceActionTracedMappedAdversary_log_projection publicKey secretKey
+      (adversary.main publicKey)
+  have hbridge := congrArg (fun computation => computation >>= finishLogged) hprojection
+  rw [detailedGameAfterKeygen, ←
+    sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq]
+  simpa [sourceActionTracedDetailedGameAfterKeygen, tracedAdversary,
+    loggedAdversary, finishLogged, bind_map_left, map_bind, bind_assoc] using hbridge
 
 theorem Concrete.verify_hashQueryBound_positive
     (publicKey : PublicKey) (epoch : Epoch) (message : Message)
