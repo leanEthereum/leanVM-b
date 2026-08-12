@@ -10,8 +10,7 @@ use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192, g_pow};
 
-mod common;
-use common::mix;
+use crate::common::mix;
 
 /// Both bound forms (`log GEN ** k` and a plain integer exponent) with the
 /// boundary elements (`g^{k-1}`, `1 = g^0`), end-to-end: prove + verify, and a

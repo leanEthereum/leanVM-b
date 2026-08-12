@@ -8,13 +8,13 @@
 //! `k_log = 14` and `k_skip = 6`. Only the PCS opening is left out, which is
 //! generic in the claims and covered end to end by `blake2s_batch`.
 
-use fiat_shamir::transcript::{ProverState, VerifierState};
-use flock::blake2s::{
+use crate::blake2s::{
     Compression, K_LOG, WalkLincheckCircuit, build_block_r1cs, generate_witness_with_ab_packed_and_lincheck,
     min_n_blocks_log, param_iv,
 };
-use flock::lincheck::QuirkyPoint;
-use flock::zerocheck::{PaddingSpec, ZerocheckClaim};
+use crate::lincheck::QuirkyPoint;
+use crate::zerocheck::{PaddingSpec, ZerocheckClaim};
+use fiat_shamir::transcript::{ProverState, VerifierState};
 use primitives::test_rng::Rng;
 
 const LABEL: &[u8] = b"flock-blake2s-reduction-test";
@@ -75,7 +75,7 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
     let inner_rest_len = r1cs.k_log - r1cs.k_skip;
 
     let mut ps = ProverState::new(LABEL, &[]);
-    let (zc, _s_hat_v_c) = flock::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+    let (zc, _s_hat_v_c) = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
         packed_bytes(&a),
         packed_bytes(&b),
         packed_bytes(&z), // C = I, so c == z
@@ -84,7 +84,7 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
         &mut ps,
     );
     let x_ab = x_ab_of(&zc, inner_rest_len);
-    let _lc = flock::lincheck::prove_padded_capture_s_hat_v(
+    let _lc = crate::lincheck::prove_padded_capture_s_hat_v(
         &z_lincheck,
         m,
         r1cs.k_log,
@@ -97,12 +97,12 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
     let transcript = ps.into_proof();
 
     let mut vs = VerifierState::new(LABEL, &transcript, &[]);
-    let Ok(zc_v) = flock::zerocheck::verify(m, &mut vs) else {
+    let Ok(zc_v) = crate::zerocheck::verify(m, &mut vs) else {
         return false;
     };
     let x_ab_v = x_ab_of(&zc_v, inner_rest_len);
     let circuit = WalkLincheckCircuit::new(&r1cs);
-    if flock::lincheck::verify(
+    if crate::lincheck::verify(
         m,
         r1cs.k_log,
         r1cs.k_skip,

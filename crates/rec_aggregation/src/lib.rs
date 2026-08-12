@@ -4,6 +4,11 @@
 //! report; the `#[cfg(test)]` suites in each module drive the same entry points.
 
 pub mod fibonacci;
+/// The BLAKE2s hash chain, proven end to end. A `src` module rather than its own
+/// test binary so it shares the process, and so the ~1.9 s flock circuit build,
+/// with the other workloads.
+#[cfg(test)]
+mod hash_chain;
 pub mod recursion;
 pub mod signers_cache;
 pub mod xmss_aggregation;

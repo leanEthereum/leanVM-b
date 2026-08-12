@@ -1,5 +1,4 @@
-//! Helpers shared by the integration tests. Each test file is its own crate and
-//! compiles this module separately, so a helper it does not call is dead there.
+//! Helpers shared by the integration tests, reached as `crate::common::…`.
 #![allow(dead_code)]
 
 use lean_compiler::{compile_without_filler, parse};

@@ -10,10 +10,11 @@
 //! write-once memory forces the proven result to equal it.
 //!
 //! `N` and the unroll factor are read from the environment (`LEANVM_HASH_N`,
-//! `LEANVM_HASH_UNROLL`) so this doubles as a benchmark — e.g.
+//! `LEANVM_HASH_UNROLL`) so this doubles as a benchmark:
 //! `LEANVM_HASH_N=10000 LEANVM_HASH_UNROLL=1000 cargo test --release
-//! --test hash_chain -- --nocapture`. It prints cycles, per-table sizes, proof
-//! size, prove/verify time, and hashes/second, like `src/main.rs`.
+//! -p rec_aggregation blake2s_hash_chain -- --nocapture`. It prints cycles,
+//! per-table sizes, proof size, prove/verify time, and hashes/second, like
+//! `src/main.rs`.
 
 use std::time::Instant;
 

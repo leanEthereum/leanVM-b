@@ -15,8 +15,7 @@ use lean_vm::cpu::{Op, prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
 
-mod common;
-use common::mix;
+use crate::common::mix;
 
 /// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
 /// hi = word 1/3) — what a `blake2s(...)` output `StackBuf(2)` holds cell-by-cell.

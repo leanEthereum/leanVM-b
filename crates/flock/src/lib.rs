@@ -29,6 +29,11 @@ mod gf2;
 pub mod lincheck;
 pub mod proof;
 pub mod r1cs;
+/// The circuit driven through the whole reduction. A `src` module rather than
+/// its own test binary so it shares the process, and so the ~1.9 s
+/// [`blake2s::matrices`] build, with the unit tests.
+#[cfg(test)]
+mod reduction_tests;
 pub mod verifier;
 mod witness;
 pub mod zerocheck;

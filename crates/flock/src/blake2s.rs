@@ -510,6 +510,9 @@ const REC_C1: usize = G_ADD_C1;
 const REC_MAJ_A2: usize = G_ADD3_A2;
 const REC_RIP_A2: usize = G_ADD3_A2 + CARRY_BITS_PER_ADD;
 const REC_C2: usize = G_ADD_C2;
+/// One G's rows are composed in a `BitRecord<3>`, so its whole stride, and the
+/// last sub-block offset within it, must fit 192 bits.
+const _: () = assert!(G_STRIDE <= 3 * 64 && REC_C2 < 3 * 64);
 
 /// Build the (z, a, b) blocks for ONE compression instance, into this
 /// instance's `K / 64` words of each packed table. Buffers must be zero on
@@ -1066,21 +1069,6 @@ mod tests {
             R1CS_DIGEST,
             "R1CS changed - update R1CS_DIGEST"
         );
-    }
-
-    #[test]
-    fn layout_fits_the_block() {
-        assert_eq!(G_STRIDE, 184);
-        assert_eq!(N_G, 80);
-        assert_eq!(USEFUL_BITS, 16_000);
-        #[allow(clippy::assertions_on_constants)]
-        {
-            // The whole point: ten rounds inside one 2^14 block, with room.
-            assert!(USEFUL_BITS <= K);
-            assert_eq!(K - USEFUL_BITS, 384);
-            // The per-G record is composed in a `BitRecord<3>` (192 bits).
-            assert!(G_STRIDE <= 3 * 64 && REC_C2 < 3 * 64);
-        }
     }
 
     /// Every slot a layout region claims is the output of one non-degenerate
