@@ -1,3 +1,4 @@
+import XmssSecurity.AdaptiveRevealMonitor
 import XmssSecurity.ChainRevealFiltering
 
 open OracleComp OracleSpec ENNReal
@@ -260,6 +261,18 @@ noncomputable def HasActionTracedRevealReduction
       Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
         IndexedHiddenValue.adaptiveRevealViewExperiment transcriptGenerator]
 
+noncomputable def HasActionTracedMonitorReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
+  ∃ (Control : Type)
+      (controller : Control → ProbComp
+        (AdaptiveRevealMonitor.ControllerAction Control ChainValueIndex))
+      (steps : Nat) (initial : Control),
+    Pr[ActionTracedChainProbeHit q chain |
+        detailedGameWithKeygenCacheAndActionTrace adversary] ≤
+      Pr[(fun hit : Bool => hit = true) |
+        AdaptiveRevealMonitor.run controller AdaptiveRevealMonitor.State.empty
+          steps q initial]
+
 noncomputable def actionTracedRevealTranscriptGenerator
     (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     ProbComp (List (ChainValueIndex × Digest) ×
@@ -339,5 +352,22 @@ theorem winningChainOrigin_probability_le_of_revealReduction
     q adversary hbound chain).trans
       (hreduce.trans
         (IndexedHiddenValue.adaptive_reveal_view_hit_le transcriptGenerator q))
+
+theorem winningChainOrigin_probability_le_of_monitorReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (chain : ChainIndex)
+    (hreduction : HasActionTracedMonitorReduction q adversary chain) :
+    Pr[fun result =>
+      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+        result.1.1.2 result.2.1 chain |
+      detailedGameWithKeygenCache adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  obtain ⟨Control, controller, steps, initial, hreduce⟩ := hreduction
+  exact (winningChainOrigin_probability_le_actionTracedProbeHit
+    q adversary hbound chain).trans
+      (hreduce.trans
+        (AdaptiveRevealMonitor.run_empty_true_probability_le controller
+          steps q initial))
 
 end XmssSecurity
