@@ -26,3 +26,4 @@ mod range_check;
 mod stack_buf;
 mod transcript_helpers;
 mod vm_proofs;
+mod whir_query_table;

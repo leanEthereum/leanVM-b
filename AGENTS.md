@@ -89,7 +89,7 @@ The third is worth understanding before touching the verifier. `guests/recursion
 
 ## Conventions that bite
 
-- Use comments only when necessary: uncommented but readable and simple code is better than commented slop.
+- Use comments only when necessary: uncommented but readable and simple code is better than commented slop. And when you use comments, be concise.
 - Commit tests only that are useful in the future, to prevent regressions / failures. Don't add trivial tests that will always pass.
 - Simpler is better.
 - **Fiat-Shamir:** `add_scalar`/`next_scalar` bind into the sponge as a side effect. `observe_*` is only for the public statement. Never re-observe data that rode the stream, which silently desynchronizes the two sides.

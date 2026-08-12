@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cache, partial, reduce
-from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
 from operator import mul
 from struct import pack, unpack
@@ -22,7 +21,6 @@ def require(condition: bool, message: str) -> None:
 
 MASK32 = 2**32 - 1
 MASK64 = 2**64 - 1
-RING_SWITCH_SOUNDNESS_DEGREE = 2**31 + 2**15 + 2**7 + 2**3 + 2 + 1
 
 
 def _base_mul(left: int, right: int) -> int:
@@ -329,19 +327,13 @@ def log2_ceil(value: int) -> int:
 
 
 def log2_strict(value: int) -> int:
-    """log2 of a power of two, which is the shape every size in this protocol has."""
     require(value > 0 and not value & (value - 1), "expected a power of two")
     return value.bit_length() - 1
 
 
 def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
     """Place a block of 2^size at the next multiple of its own size, largest first.
-
-    Sorting by descending size is what makes every offset a multiple of the
-    block's own length, so a block occupies one subcube and its selector is the
-    high bits of its offset (doc sec:stacking). Ties keep input order, so both
-    sides derive the same layout from the sizes alone.
-
+    Ties keep input order, so both sides derive the same layout from the sizes alone.
     A None size is an entry that is committed elsewhere and takes no room here.
     Returns the offset of each entry and the log2 of the padded total.
     """
@@ -375,12 +367,6 @@ def _selector_point(selector: int, length: int) -> tuple[E, ...]:
 
 
 def selector_eq(selector: int, point: Sequence[E]) -> E:
-    """eq(bits of `selector`, point).
-
-    A bus block, and a column's placement in the stack, each occupy one subcube,
-    so the high bits of the offset are its selector (doc sec:stacking) and this
-    is the weight that subcube carries at `point`.
-    """
     return eq_eval(_selector_point(selector, len(point)), point)
 
 
@@ -502,18 +488,6 @@ class MerkleOpening:
 
 @dataclass(frozen=True)
 class Proof:
-    """The two channels: every transmitted scalar, and one Merkle opening per query.
-
-    This is the RAW proof, the redundant encoding. What travels over the wire
-    prunes each phase to a single octopus over its whole query batch; a Rust
-    verifier run expands that back out, and this file (like the recursion guest)
-    reads the expansion. Same protocol, same checks, no dedup bookkeeping.
-
-    Nothing here names WHIR. Its sumcheck messages, level roots, OOD claims,
-    residual and grinding nonces are ordinary stream words read in protocol
-    order by `verify_whir`; its openings are pulled a query batch at a time.
-    """
-
     stream: tuple[E, ...]
     merkle_openings: tuple[MerkleOpening, ...]
 
@@ -595,11 +569,6 @@ class Transcript:
         return [self.scalar() for _ in range(count)]
 
     def grind_check(self, bits: int) -> None:
-        """Read the transmitted nonce and check its proof of work.
-
-        The nonce rides the stream as raw transport: the check absorbs it
-        itself, so it must not be observed a second time here.
-        """
         require(0 <= bits < 64, "invalid grinding width")
         nonce = self._next()
         block = (nonce.c0, nonce.c1, nonce.c2, DS_POW)
@@ -1422,6 +1391,16 @@ RS_DOMAIN_INITIAL_REDUCTION_FACTOR = 3
 RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR = 1
 RESIDUAL_MAX_LOG = 5
 
+# WHIR_QUERIES covers exactly this range; past it the query search no longer
+# reaches SECURITY_BITS.
+MIN_STACKED_LOG = 15
+MAX_STACKED_LOG = 32
+
+# Queries per level, [log_inv_rate - 1][log_n - MIN_STACKED_LOG]. Tabulated, not
+# recomputed: the Rust search is floating point, and reproducing it here would
+# make float identity part of the protocol. `whir_query_table_matches_rust` pins it.
+WHIR_QUERIES = (((223,56,36), (223,56,37), (223,56,37), (224,56,37,28), (224,56,37,28), (224,56,38,28), (224,56,38,28,22), (225,56,38,28,23), (225,56,38,28,23), (225,56,38,28,23,19), (226,56,38,28,23,19), (226,56,38,28,23,19), (227,56,38,28,23,19,16), (228,56,38,28,23,19,16), (228,56,38,28,23,19,16), (229,57,38,28,23,19,17,14), (230,57,38,29,23,19,17,14), (232,57,38,29,23,19,17,15)), ((112,45,31), (112,45,32), (112,45,32), (112,45,32,25), (112,45,32,25), (112,45,32,25), (112,45,32,25,20), (112,45,32,25,21), (112,45,32,25,21), (113,45,32,25,21,17), (113,45,32,25,21,18), (113,45,32,25,21,18), (113,45,32,25,21,18,15), (113,45,32,25,21,18,15), (114,45,32,25,21,18,15), (114,45,33,25,21,18,15,14), (114,45,33,25,21,18,16,14), (115,46,33,25,21,18,16,14)), ((75,37,28), (75,37,28), (75,38,28), (75,38,28,22), (75,38,28,23), (75,38,28,23), (75,38,28,23,19), (75,38,28,23,19), (75,38,28,23,19), (75,38,28,23,19,16), (75,38,28,23,19,16), (75,38,28,23,19,16), (75,38,28,23,19,17,14), (76,38,29,23,19,17,14), (76,38,29,23,19,17,15), (76,38,29,23,19,17,15,13), (76,38,29,23,19,17,15,13), (77,38,29,23,19,17,15,13)), ((56,32,25), (56,32,25), (56,32,25), (56,32,25,20), (56,32,25,21), (56,32,25,21), (56,32,25,21,17), (56,32,25,21,18), (56,32,25,21,18), (57,32,25,21,18,15), (57,32,25,21,18,15), (57,32,25,21,18,15), (57,33,25,21,18,15,14), (57,33,25,21,18,16,14), (57,33,25,21,18,16,14), (57,33,26,21,18,16,14,12), (57,33,26,21,18,16,14,13), (58,33,26,21,18,16,14,13)))  # fmt: skip
+
 
 @dataclass(frozen=True)
 class WhirConfig:
@@ -1433,59 +1412,9 @@ class WhirConfig:
     ood_samples: tuple[int, ...]
 
 
-def _reduced_rate(log_inv_rate: int, message_log: int) -> float:
-    return ((2.0**message_log) - 1.0) / (2.0 ** (message_log + log_inv_rate))
-
-
-def _johnson_parameters(log_inv_rate: int, message_log: int, interleaved_log: int, level: int) -> tuple[int, int]:
-    rho = _reduced_rate(log_inv_rate, message_log)
-    root_rho = sqrt(rho)
-    block_length = 2 ** (message_log + log_inv_rate)
-    variables = message_log + interleaved_log
-    best = (2**62, 0)
-    for theorem_m in range(3, 4097):
-        eta = root_rho / theorem_m
-        while ceil(root_rho / eta) > theorem_m:
-            eta = nextafter(eta, float("inf"))
-        if eta >= 1.0 - root_rho:
-            continue
-        gamma = 1.0 - root_rho - eta
-        half = theorem_m + 0.5
-        a = (2.0 * half**5 + 3.0 * half * gamma * rho) / (3.0 * rho**1.5) * block_length + half / root_rho
-        proximity_bits = 192.0 - log2(a) - max(0, interleaved_log - 1)
-        if proximity_bits + 1e-12 < 128.0:
-            break
-        per_query = log2(1.0 / (1.0 - gamma))
-        if not isfinite(per_query) or per_query <= 0.0:
-            continue
-        queries = ceil(111.0 / per_query)
-        if queries > block_length:
-            continue
-        list_log = log2(1.0 / (2.0 * eta * root_rho))
-        ood = (
-            0
-            if level == 0
-            else next(
-                (count for count in range(1, 9) if count * (192.0 - log2(variables)) - (2.0 * list_log - 1.0) + 1e-12 >= 128.0),
-                None,
-            )
-        )
-        if ood is None:
-            continue
-        ood_bits = 192.0 - list_log - log2(variables) if ood == 0 else ood * (192.0 - log2(variables)) - (2.0 * list_log - 1.0)
-        # The batch polynomial's degree in the level's single lambda is
-        # J - 1 = queries + ood (residual, OOD, one claim per query).
-        algebraic_bits = 192.0 - log2(max(RING_SWITCH_SOUNDNESS_DEGREE, queries + ood, 2)) - list_log
-        if ood_bits + 1e-12 < 128.0 or algebraic_bits + 1e-12 < 128.0:
-            continue
-        if queries < best[0]:
-            best = (queries, ood)
-    return best
-
-
 def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
     """Derive the production Johnson/OOD ladder used by the Rust PCS."""
-    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= log_inv_rate <= 4, "invalid WHIR shape")
+    require(MIN_STACKED_LOG <= log_n <= MAX_STACKED_LOG and 1 <= log_inv_rate <= 4, "invalid WHIR shape")
     folds = [INITIAL_FOLDING_FACTOR]
     message_logs = [log_n - INITIAL_FOLDING_FACTOR]
     log_inv_rates = [log_inv_rate]
@@ -1501,17 +1430,16 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
         prior_fold = fold
         reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
     require(len(folds) >= 2, "WHIR requires at least two levels")
-    parameters = tuple(
-        _johnson_parameters(level_rate, message_log, fold, level)
-        for level, (level_rate, message_log, fold) in enumerate(zip(log_inv_rates, message_logs, folds, strict=True))
-    )
+    queries = WHIR_QUERIES[log_inv_rate - 1][log_n - MIN_STACKED_LOG]
+    require(len(queries) == len(folds), "tabulated query count does not match the ladder")
     return WhirConfig(
         log_inv_rates=tuple(log_inv_rates),
         folds=tuple(folds),
-        queries=tuple(value[0] for value in parameters),
+        queries=queries,
         query_grinding_bits=(17,) * len(folds),
         fold_grinding_bits=(0,) * len(folds),
-        ood_samples=tuple(value[1] for value in parameters),
+        # Not a searched parameter: one per level, except level 0 which needs none.
+        ood_samples=(0,) + (1,) * (len(folds) - 1),
     )
 
 
@@ -1539,9 +1467,6 @@ def sample_queries(transcript: Transcript, block_length: int, count: int) -> lis
         for chunk in range(min(per_word, count - len(result))):
             result.append((bits >> (chunk * depth)) & (block_length - 1))
     return result
-
-
-ROUND_POLY_LABEL = "sumcheck round"
 
 
 @dataclass(frozen=True)
@@ -2138,7 +2063,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
     layout = build_layout(bytecode, log_memory, table_logs)
 
-    # 2] Commitment: one Merkle root over the stacked witness.
+    # 2] WHIR commitment: one Merkle root (No OOD, our PCS is only List-binding).
     root = Digest.from_halves(*transcript.scalars(2))
 
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf
