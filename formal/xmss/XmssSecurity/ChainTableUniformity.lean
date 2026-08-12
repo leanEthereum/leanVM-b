@@ -13,7 +13,7 @@ noncomputable local instance chainTableSampleableTable :
   SampleableType.ofFintype (ChainValueIndex → Digest)
 
 theorem fullChainTrajectory_length_eq : chainLength - 1 + 1 = chainLength := by
-  native_decide
+  decide
 
 def FullChainTrajectory.toDigitTable
     (values : FullChainTrajectory) : Digit → Digest := fun digit =>

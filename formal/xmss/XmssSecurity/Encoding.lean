@@ -47,18 +47,18 @@ abbrev EncodingView := Encoding × Fin 4
 def digitsPerHalf : Nat := numChains / 2
 
 theorem digitsPerHalf_eq : digitsPerHalf = 21 := by
-  native_decide
+  decide
 
 /-- Offset of a three-bit digit, skipping padding bits 63 and 127. -/
 def digitOffset (i : ChainIndex) : Nat :=
   winternitzBits * i.val + if i.val < digitsPerHalf then 0 else 1
 
 theorem digitOffset_boundaries :
-    digitOffset ⟨0, by native_decide⟩ = 0 ∧
-    digitOffset ⟨20, by native_decide⟩ = 60 ∧
-    digitOffset ⟨21, by native_decide⟩ = 64 ∧
-    digitOffset ⟨41, by native_decide⟩ = 124 := by
-  native_decide
+    digitOffset ⟨0, by decide⟩ = 0 ∧
+    digitOffset ⟨20, by decide⟩ = 60 ∧
+    digitOffset ⟨21, by decide⟩ = 64 ∧
+    digitOffset ⟨41, by decide⟩ = 124 := by
+  decide
 
 def digestEncoding (digest : Digest) : Encoding :=
   fun i => (digest.extractLsb' (digitOffset i) winternitzBits).toFin
@@ -110,7 +110,7 @@ theorem digestView_injective : Function.Injective digestView := by
       omega⟩
     let offsetBit := bit % winternitzBits
     have hoffsetBit : offsetBit < winternitzBits := by
-      exact Nat.mod_lt bit (by native_decide)
+      exact Nat.mod_lt bit (by decide)
     have hoffset : digitOffset chain + offsetBit = bit := by
       unfold digitOffset
       change 3 * (bit / 3) + (if bit / 3 < 21 then 0 else 1) + bit % 3 = bit
@@ -132,7 +132,7 @@ theorem digestView_injective : Function.Injective digestView := by
       omega⟩
     let offsetBit := shifted % winternitzBits
     have hoffsetBit : offsetBit < winternitzBits := by
-      exact Nat.mod_lt shifted (by native_decide)
+      exact Nat.mod_lt shifted (by decide)
     have hoffset : digitOffset chain + offsetBit = bit := by
       unfold digitOffset
       change 3 * (21 + (bit - 64) / 3) +

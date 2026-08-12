@@ -78,7 +78,8 @@ theorem uniform_signingRandomness_encodingInput_hits_bounded_finset_le
   apply mul_le_mul
   · exact_mod_cast hcard
   · exact ENNReal.inv_le_inv.mpr (by
-      exact_mod_cast (by native_decide : 2 ^ digestBits ≤ 2 ^ randomnessBits))
+      exact_mod_cast (by
+        norm_num [digestBits, randomnessBits] : 2 ^ digestBits ≤ 2 ^ randomnessBits))
   · exact zero_le
   · exact zero_le
 
@@ -143,7 +144,8 @@ theorem uniform_signingRandomness_encodingInput_cacheHit_bounded_digest_le
   rw [div_eq_mul_inv, div_eq_mul_inv]
   have hpow : ((2 ^ digestBits : Nat) : ℝ≥0∞) ≤
       ((2 ^ randomnessBits : Nat) : ℝ≥0∞) := by
-    exact_mod_cast (by native_decide : 2 ^ digestBits ≤ 2 ^ randomnessBits)
+    exact_mod_cast (by
+      norm_num [digestBits, randomnessBits] : 2 ^ digestBits ≤ 2 ^ randomnessBits)
   gcongr
 
 /-- Union-bounding one 192-bit signer-randomness loss for every possible epoch still fits below one 128-bit elementary term. -/
@@ -179,6 +181,7 @@ theorem lifetime_mul_randomness_loss_le_digest_loss (q : Nat) :
         ac_rfl
       rw [hrearrange, ENNReal.le_div_iff_mul_le (by simp) (by simp)]
       exact_mod_cast (by
-        native_decide : lifetime * 2 ^ digestBits ≤ 2 ^ randomnessBits)
+        norm_num [lifetime, treeHeight, digestBits, randomnessBits] :
+          lifetime * 2 ^ digestBits ≤ 2 ^ randomnessBits)
 
 end XmssSecurity

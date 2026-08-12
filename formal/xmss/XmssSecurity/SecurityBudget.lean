@@ -23,25 +23,26 @@ def totalBadEventSlots : Nat :=
   1 + numChains + verificationChainHashes + 1 + treeHeight
 
 theorem totalBadEventSlots_eq : totalBadEventSlots = 175 := by
-  native_decide
+  decide
 
 theorem card_badEvent : Fintype.card BadEvent = totalBadEventSlots := by
-  native_decide
+  set_option maxRecDepth 100000 in
+    decide
 
 def badEventSlotCapacity : Nat := 2 ^ (digestBits - targetSecurityBits)
 
 theorem badEventSlotCapacity_eq : badEventSlotCapacity = 256 := by
-  native_decide
+  decide
 
 theorem totalBadEventSlots_le_capacity : totalBadEventSlots ≤ badEventSlotCapacity := by
-  native_decide
+  decide
 
 private theorem capacity_budget_eq (q : Nat) :
     (badEventSlotCapacity : ℝ≥0∞) *
       ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) =
       (q : ℝ≥0∞) / ((2 ^ targetSecurityBits : Nat) : ℝ≥0∞) := by
   have hbits : digestBits = (digestBits - targetSecurityBits) + targetSecurityBits := by
-    native_decide
+    decide
   have hzero : ((2 ^ (digestBits - targetSecurityBits) : Nat) : ℝ≥0∞) ≠ 0 := by
     positivity
   have htop : ((2 ^ (digestBits - targetSecurityBits) : Nat) : ℝ≥0∞) ≠ ∞ := by
@@ -140,11 +141,13 @@ def totalBadEventWeight : Nat :=
   ∑ event : BadEvent, badEventWeight event
 
 theorem totalBadEventWeight_eq : totalBadEventWeight = 218 := by
-  native_decide
+  set_option maxRecDepth 100000 in
+    decide
 
 theorem totalBadEventWeight_le_capacity :
     totalBadEventWeight ≤ badEventSlotCapacity := by
-  native_decide
+  rw [totalBadEventWeight_eq, badEventSlotCapacity_eq]
+  decide
 
 theorem totalBadEventWeight_budget_le_120 (q : Nat) :
     (totalBadEventWeight : ℝ≥0∞) *

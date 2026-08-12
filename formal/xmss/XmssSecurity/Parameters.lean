@@ -16,7 +16,7 @@ def targetSum : Nat := 195
 def verificationChainHashes : Nat := numChains * (chainLength - 1) - targetSum
 
 theorem verificationChainHashes_eq : verificationChainHashes = 99 := by
-  native_decide
+  decide
 
 abbrev Digest := BitVec digestBits
 abbrev HashOutput := BitVec hashOutputBits
@@ -30,7 +30,7 @@ abbrev Encoding := ChainIndex → Digit
 abbrev HashInput := List UInt8
 
 theorem hashOutputBits_eq : hashOutputBits = digestBits + digestBits := by
-  native_decide
+  decide
 
 def splitHashOutput (output : HashOutput) : BitVec (digestBits + digestBits) :=
   output.cast hashOutputBits_eq

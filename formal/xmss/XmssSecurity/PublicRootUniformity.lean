@@ -162,11 +162,11 @@ theorem Concrete.rootTree_probability (parameter : PublicParameter)
           OracleComp HashSpec Digest)).run ∅] =
       ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
   have hheight : treeHeight = (treeHeight - 1) + 1 := by
-    native_decide
+    decide
   rw [hheight]
   exact Concrete.treeNode_positive_probability_from_cache
     (parameter := parameter) (secret := secret) (levels := treeHeight - 1)
-    (node := Concrete.rootNode) (hlevel := by native_decide)
+    (node := Concrete.rootNode) (hlevel := by decide)
     (hvalid := by
       unfold TreeSubtreeValid Concrete.rootNode lifetime
       change (0 + 1) * 2 ^ (treeHeight - 1 + 1) ≤ 2 ^ treeHeight

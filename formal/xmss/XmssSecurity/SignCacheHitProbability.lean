@@ -383,7 +383,8 @@ theorem Concrete.sign_encodingInput_initialCache_hit_bounded_digest_le
   rw [div_eq_mul_inv]
   have hpow : ((2 ^ digestBits : Nat) : ℝ≥0∞) ≤
       ((2 ^ randomnessBits : Nat) : ℝ≥0∞) := by
-    exact_mod_cast (by native_decide : 2 ^ digestBits ≤ 2 ^ randomnessBits)
+    exact_mod_cast (by
+      norm_num [digestBits, randomnessBits] : 2 ^ digestBits ≤ 2 ^ randomnessBits)
   gcongr
 
 set_option linter.constructorNameAsVariable false in

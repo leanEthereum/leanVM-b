@@ -35,7 +35,7 @@ def Concrete.fixedChainTrajectoryValues
     omega)
 
 def chainStepDigit (step : ChainStep) : Digit :=
-  ⟨step.val, step.isLt.trans (by native_decide)⟩
+  ⟨step.val, step.isLt.trans (by decide)⟩
 
 theorem Concrete.CacheView.chainInput_eq_iff
     (parameter : PublicParameter)

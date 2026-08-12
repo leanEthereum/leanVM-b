@@ -241,7 +241,7 @@ theorem freshChainValue_or_suffixCollision {α : Type}
   classical
   by_cases hall : ∀ i, forgedValue i = signChain (step i) (encoding i) (secret i)
   · left
-    exact ⟨⟨0, by native_decide⟩, hall _⟩
+    exact ⟨⟨0, by decide⟩, hall _⟩
   · right
     push Not at hall
     obtain ⟨i, hi⟩ := hall
