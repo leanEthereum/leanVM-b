@@ -1490,6 +1490,37 @@ theorem runObserved_strategyProbes_eq_true_of_readMany
   · exact List.mem_map.mpr ⟨round, List.mem_range.mpr hround, rfl⟩
   · exact hhit
 
+def compileStrategyProbes
+    (queries : Nat)
+    (transcriptProgram : OracleComp (World Index)
+      (List Bool → Index × Digest)) :
+    OracleComp (World Index) (List Bool → Index × Digest) := do
+  let strategy ← transcriptProgram
+  emitProbes (strategyProbes queries strategy)
+  pure strategy
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem compileStrategyProbes_isProbeQueryBoundP
+    (queries : Nat)
+    (transcriptProgram : OracleComp (World Index)
+      (List Bool → Index × Digest))
+    (htranscript : transcriptProgram.IsQueryBoundP IsProbeQuery 0) :
+    (compileStrategyProbes queries transcriptProgram).IsQueryBoundP
+      IsProbeQuery queries := by
+  unfold compileStrategyProbes
+  have hcontinuation (strategy : List Bool → Index × Digest) :
+      (do
+        emitProbes (strategyProbes queries strategy)
+        pure strategy).IsQueryBoundP IsProbeQuery queries := by
+    have hemit := emitProbes_isProbeQueryBoundP
+      (strategyProbes queries strategy)
+    rw [strategyProbes_length] at hemit
+    simpa using OracleComp.isQueryBoundP_bind (m := 0) hemit
+      (fun _unit _hunit => OracleComp.isQueryBoundP_pure
+        (p := IsProbeQuery) strategy 0)
+  simpa using OracleComp.isQueryBoundP_bind (n := 0) (m := queries)
+    htranscript (fun strategy _hstrategy => hcontinuation strategy)
+
 omit [Fintype Index] [DecidableEq Index] in
 theorem probeQuery_isQueryBoundP
     (index : Index) (target : Digest) :

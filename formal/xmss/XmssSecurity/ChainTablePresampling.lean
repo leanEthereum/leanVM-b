@@ -709,6 +709,38 @@ theorem uniformHashTape_support_info :
       obtain ⟨htargetLength, houtputLength, htargets⟩ := ih rest hrest
       exact ⟨by simp [htargetLength], by simp [houtputLength], by simp [htargets]⟩
 
+theorem evalDist_uniformHashTape_fst_eq_drawList (count : Nat) :
+    𝒟[Prod.fst <$> Rom.uniformHashTape count] =
+      𝒟[OracleComp.drawList ($ᵗ Digest) count] := by
+  induction count with
+  | zero => simp [Rom.uniformHashTape, OracleComp.drawList]
+  | succ count ih =>
+      rw [Rom.uniformHashTape, OracleComp.drawList]
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      calc
+        𝒟[$ᵗ HashOutput >>= fun output =>
+            Rom.uniformHashTape count >>= fun rest =>
+              pure (truncateHash output :: rest.1)] =
+            𝒟[(truncateHash <$> ($ᵗ HashOutput)) >>= fun target =>
+              (Prod.fst <$> Rom.uniformHashTape count) >>= fun rest =>
+                pure (target :: rest)] := by
+          simp [map_eq_bind_pure_comp, bind_assoc]
+        _ = 𝒟[$ᵗ Digest >>= fun target =>
+              (Prod.fst <$> Rom.uniformHashTape count) >>= fun rest =>
+                pure (target :: rest)] := by
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [Rom.evalDist_truncate_uniformHashOutput]
+        _ = 𝒟[$ᵗ Digest >>= fun target =>
+              OracleComp.drawList ($ᵗ Digest) count >>= fun rest =>
+                pure (target :: rest)] := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro target
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [ih]
+
 noncomputable def chainTableEdgeInputs
     (parameter : PublicParameter) (chain : ChainIndex)
     (table : ChainValueIndex → Digest) : List HashInput :=
@@ -1007,6 +1039,144 @@ noncomputable def fixedChainMaterialRepresentation
   let seeds := fun epoch => secretView.2 (epoch, chain)
   let edgeView ← uniformInstalledChainEdgeCache parameter chain seeds
   return (secretView, edgeView)
+
+theorem evalDist_uniformInstalledChainEdgeTable_eq_uniform
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest) :
+    𝒟[(fun result : List Digest × (List HashOutput × QueryCache HashSpec) =>
+        chainEdgeTableOfTape result.1) <$>
+      uniformInstalledChainEdgeCache parameter chain seeds] =
+      𝒟[$ᵗ (ChainEdgeIndex → Digest)] := by
+  unfold uniformInstalledChainEdgeCache installedChainEdgeTapeResult
+  simp only [Functor.map_map]
+  calc
+    𝒟[(fun tape : List Digest × List HashOutput =>
+          chainEdgeTableOfTape tape.1) <$>
+        Rom.uniformHashTape allChainEdges.length] =
+        𝒟[chainEdgeTableOfTape <$>
+          (Prod.fst <$> Rom.uniformHashTape allChainEdges.length)] := by
+      simp [Functor.map_map]
+    _ = 𝒟[chainEdgeTableOfTape <$>
+          OracleComp.drawList ($ᵗ Digest) allChainEdges.length] := by
+      rw [evalDist_map, evalDist_uniformHashTape_fst_eq_drawList, ← evalDist_map]
+    _ = 𝒟[chainEdgeTableOfTape <$>
+          ((fun edges : ChainEdgeIndex → Digest => allChainEdges.map edges) <$>
+            ($ᵗ (ChainEdgeIndex → Digest)))] := by
+      simp only [evalDist_map]
+      have hdist := evalDist_uniformChainEdgeTableTape_eq_drawList.symm
+      rw [evalDist_map] at hdist
+      exact congrArg (Functor.map chainEdgeTableOfTape) hdist
+    _ = 𝒟[$ᵗ (ChainEdgeIndex → Digest)] := by
+      simp [Functor.map_map]
+
+noncomputable def extractedFixedChainSeedTable
+    (chain : ChainIndex) : ProbComp (Epoch → Digest) :=
+  (fun result : List Digest × FlatSecret =>
+    fun epoch => result.2 (epoch, chain)) <$>
+      extractFixedChainSeeds chain allEpochs
+
+theorem evalDist_uniformFlatSecret_fixedChain_eq_uniform
+    (chain : ChainIndex) :
+    𝒟[(fun table : FlatSecret => fun epoch => table (epoch, chain)) <$>
+      ($ᵗ FlatSecret)] =
+      𝒟[$ᵗ (Epoch → Digest)] := by
+  let embed : Epoch → Epoch × ChainIndex := fun epoch => (epoch, chain)
+  have hembed : Function.Injective embed := by
+    intro left right heq
+    exact congrArg Prod.fst heq
+  rw [map_eq_bind_pure_comp]
+  change 𝒟[do
+    let table ← $ᵗ FlatSecret
+    pure (table ∘ embed)] = 𝒟[$ᵗ (Epoch → Digest)]
+  exact evalDist_uniformSample_map_comp_injective
+    (R := Digest) hembed
+
+theorem evalDist_extractedFixedChainSeedTable_eq_uniform
+    (chain : ChainIndex) :
+    𝒟[extractedFixedChainSeedTable chain] =
+      𝒟[$ᵗ (Epoch → Digest)] := by
+  unfold extractedFixedChainSeedTable
+  calc
+    𝒟[(fun result : List Digest × FlatSecret =>
+          fun epoch => result.2 (epoch, chain)) <$>
+        extractFixedChainSeeds chain allEpochs] =
+        𝒟[(fun result : List Digest × FlatSecret =>
+          fun epoch => result.2 (epoch, chain)) <$>
+            (fixedChainSeedView chain allEpochs <$>
+              ($ᵗ FlatSecret))] := by
+      rw [evalDist_map,
+        evalDist_extractFixedChainSeeds_eq_uniform chain allEpochs allEpochs_nodup,
+        ← evalDist_map]
+    _ = 𝒟[(fun table : FlatSecret => fun epoch => table (epoch, chain)) <$>
+          ($ᵗ FlatSecret)] := by
+      simp [Functor.map_map, fixedChainSeedView]
+    _ = 𝒟[$ᵗ (Epoch → Digest)] :=
+      evalDist_uniformFlatSecret_fixedChain_eq_uniform chain
+
+noncomputable def fixedChainMaterialTable
+    (chain : ChainIndex)
+    (result : (List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec))) :
+    ChainValueIndex → Digest :=
+  chainTableMaterialEquiv.symm
+    ((fun epoch => result.1.2 (epoch, chain)),
+      chainEdgeTableOfTape result.2.1)
+
+noncomputable def fixedChainMaterialTableOnly
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    ProbComp (ChainValueIndex → Digest) :=
+  fixedChainMaterialTable chain <$>
+    fixedChainMaterialRepresentation parameter chain
+
+theorem evalDist_fixedChainMaterialTableOnly_eq_uniform
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    𝒟[fixedChainMaterialTableOnly parameter chain] =
+      𝒟[$ᵗ (ChainValueIndex → Digest)] := by
+  have hnormalize :
+      𝒟[fixedChainMaterialTableOnly parameter chain] =
+      𝒟[extractedFixedChainSeedTable chain >>= fun seeds =>
+        ((fun result : List Digest × (List HashOutput × QueryCache HashSpec) =>
+          chainEdgeTableOfTape result.1) <$>
+            uniformInstalledChainEdgeCache parameter chain seeds) >>= fun edges =>
+          pure (chainTableMaterialEquiv.symm (seeds, edges))] := by
+    simp [fixedChainMaterialTableOnly, fixedChainMaterialRepresentation,
+      fixedChainMaterialTable, extractedFixedChainSeedTable,
+      map_eq_bind_pure_comp, bind_assoc]
+  rw [hnormalize]
+  calc
+    𝒟[extractedFixedChainSeedTable chain >>= fun seeds =>
+        ((fun result : List Digest × (List HashOutput × QueryCache HashSpec) =>
+          chainEdgeTableOfTape result.1) <$>
+            uniformInstalledChainEdgeCache parameter chain seeds) >>= fun edges =>
+          pure (chainTableMaterialEquiv.symm (seeds, edges))] =
+        𝒟[($ᵗ (Epoch → Digest)) >>= fun seeds =>
+          ((fun result : List Digest × (List HashOutput × QueryCache HashSpec) =>
+            chainEdgeTableOfTape result.1) <$>
+              uniformInstalledChainEdgeCache parameter chain seeds) >>= fun edges =>
+            pure (chainTableMaterialEquiv.symm (seeds, edges))] := by
+      rw [evalDist_bind,
+        evalDist_extractedFixedChainSeedTable_eq_uniform chain,
+        ← evalDist_bind]
+    _ = 𝒟[($ᵗ (Epoch → Digest)) >>= fun seeds =>
+          ($ᵗ (ChainEdgeIndex → Digest)) >>= fun edges =>
+            pure (chainTableMaterialEquiv.symm (seeds, edges))] := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro seeds
+      rw [evalDist_bind,
+        evalDist_uniformInstalledChainEdgeTable_eq_uniform parameter chain seeds,
+        ← evalDist_bind]
+    _ = 𝒟[chainTableMaterialEquiv.symm <$>
+          independentChainTableMaterial] := by
+      simp [independentChainTableMaterial, monad_norm]
+    _ = 𝒟[chainTableMaterialEquiv.symm <$>
+          (chainTableMaterialEquiv <$>
+            ($ᵗ (ChainValueIndex → Digest)))] := by
+      simp only [evalDist_map]
+      have hdist := evalDist_split_uniformChainTable_eq_independent
+      rw [evalDist_map] at hdist
+      exact congrArg (Functor.map chainTableMaterialEquiv.symm) hdist.symm
+    _ = 𝒟[$ᵗ (ChainValueIndex → Digest)] := by
+      simp [Functor.map_map]
 
 theorem evalDist_programmedUniformChainEdgeTape_eq_sampled
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -1403,6 +1573,18 @@ theorem fixedChainMaterialRepresentation_support_info
       (unflattenSecret secretView.2) edgeView hedgeView
     rw [secretWithOwnFixedChainSeeds] at htable
     exact htable
+
+theorem fixedChainMaterialRepresentation_keygenTable_eq_materialTable
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (result : (List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec)))
+    (hresult : result ∈ support
+      (fixedChainMaterialRepresentation parameter chain)) :
+    keygenChainValueTable result.2.2.2
+        ⟨parameter, unflattenSecret result.1.2⟩ chain =
+      fixedChainMaterialTable chain result := by
+  exact (fixedChainMaterialRepresentation_support_info
+    parameter chain result hresult).2
 
 theorem keygenChainValueTable_seedsMatch
     (cache : QueryCache HashSpec) (secretKey : SecretKey) (chain : ChainIndex) :

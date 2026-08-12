@@ -406,6 +406,31 @@ noncomputable def HasActionTracedEagerViewReduction
       Pr[RevealProbeOracleSimulation.ObservedHit |
           RevealProbeOracleSimulation.eagerExperiment computation]
 
+noncomputable def HasActionTracedCausalStrategyReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
+  ∃ transcriptProgram : OracleComp
+      (RevealProbeOracleSimulation.World ChainValueIndex)
+      (List Bool → ChainValueIndex × Digest),
+    transcriptProgram.IsQueryBoundP
+        RevealProbeOracleSimulation.IsProbeQuery 0 ∧
+      Pr[ActionTracedChainProbeHit q chain |
+          detailedGameWithKeygenCacheAndActionTrace adversary] ≤
+        Pr[RevealProbeOracleSimulation.ObservedHit |
+          RevealProbeOracleSimulation.eagerExperiment
+            (RevealProbeOracleSimulation.compileStrategyProbes
+              q transcriptProgram)]
+
+theorem hasActionTracedEagerViewReduction_of_causalStrategy
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (hreduction : HasActionTracedCausalStrategyReduction q adversary chain) :
+    HasActionTracedEagerViewReduction q adversary chain := by
+  obtain ⟨transcriptProgram, hzero, hprobability⟩ := hreduction
+  exact ⟨List Bool → ChainValueIndex × Digest,
+    RevealProbeOracleSimulation.compileStrategyProbes q transcriptProgram,
+    RevealProbeOracleSimulation.compileStrategyProbes_isProbeQueryBoundP
+      q transcriptProgram hzero,
+    hprobability⟩
+
 theorem hasActionTracedEagerViewReduction_of_observedProbeCoupling
     (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (computation : OracleComp
@@ -572,5 +597,20 @@ theorem winningChainOrigin_probability_le_of_eagerViewReduction
       (hreduce.trans
         (RevealProbeOracleSimulation.eagerExperiment_observedHit_probability_le
           q computation hprobes))
+
+theorem winningChainOrigin_probability_le_of_causalStrategy
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (chain : ChainIndex)
+    (hreduction : HasActionTracedCausalStrategyReduction q adversary chain) :
+    Pr[fun result =>
+      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+        result.1.1.2 result.2.1 chain |
+      detailedGameWithKeygenCache adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  apply winningChainOrigin_probability_le_of_eagerViewReduction
+    q adversary hbound chain
+  exact hasActionTracedEagerViewReduction_of_causalStrategy
+    q adversary chain hreduction
 
 end XmssSecurity
