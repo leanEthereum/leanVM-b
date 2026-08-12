@@ -38,6 +38,16 @@ def ChainTableEdgesMatch
     cache (chainTableEdgeInput parameter chain table edge) = some output ∧
       truncateHash output = chainTableEdgeTarget table edge
 
+theorem ChainTableEdgesMatch.mono
+    {cache larger : QueryCache HashSpec} {parameter : PublicParameter}
+    {chain : ChainIndex} {table : ChainValueIndex → Digest}
+    (hmatch : ChainTableEdgesMatch cache parameter chain table)
+    (hle : cache ≤ larger) :
+    ChainTableEdgesMatch larger parameter chain table := by
+  intro edge
+  obtain ⟨output, hcached, htarget⟩ := hmatch edge
+  exact ⟨output, hle hcached, htarget⟩
+
 noncomputable local instance presamplingSampleableChainTable :
     SampleableType (ChainValueIndex → Digest) :=
   SampleableType.ofFintype (ChainValueIndex → Digest)
@@ -1585,6 +1595,136 @@ theorem fixedChainMaterialRepresentation_keygenTable_eq_materialTable
       fixedChainMaterialTable chain result := by
   exact (fixedChainMaterialRepresentation_support_info
     parameter chain result hresult).2
+
+theorem fixedChainMaterialRepresentation_matches
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (result : (List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec)))
+    (hresult : result ∈ support
+      (fixedChainMaterialRepresentation parameter chain)) :
+    let secretKey : SecretKey := ⟨parameter, unflattenSecret result.1.2⟩
+    let table := fixedChainMaterialTable chain result
+    ChainTableSeedsMatch secretKey chain table ∧
+      ChainTableEdgesMatch result.2.2.2 parameter chain table := by
+  unfold fixedChainMaterialRepresentation at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨secretView, hsecretView, hedgeView⟩ := hresult
+  rw [mem_support_bind_iff] at hedgeView
+  obtain ⟨edgeView, hedgeView, hpure⟩ := hedgeView
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  dsimp only
+  constructor
+  · intro epoch
+    have hseed := congrFun
+      (chainTableSeedTargets_materialEquiv_symm
+        (fun target => secretView.2 (target, chain))
+        (chainEdgeTableOfTape edgeView.1)) epoch
+    simpa [fixedChainMaterialTable, ChainTableSeedsMatch,
+      chainTableSeedTargets, unflattenSecret] using hseed.symm
+  · exact uniformInstalledChainEdgeCache_edgesMatch parameter chain
+      (fun epoch => secretView.2 (epoch, chain)) edgeView hedgeView
+
+structure ProgrammedFixedChainKeygenView where
+  publicKey : PublicKey
+  secretKey : SecretKey
+  cache : QueryCache HashSpec
+  table : ChainValueIndex → Digest
+
+noncomputable def programmedFixedChainKeygen
+    (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let material ← fixedChainMaterialRepresentation parameter chain
+  let secret := unflattenSecret material.1.2
+  let rootResult ← (simulateQ randomOracle
+    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+      OracleComp HashSpec Digest)).run material.2.2.2
+  return {
+    publicKey := ⟨rootResult.1, parameter⟩
+    secretKey := ⟨parameter, secret⟩
+    cache := rootResult.2
+    table := fixedChainMaterialTable chain material
+  }
+
+theorem programmedFixedChainKeygen_support_table
+    (chain : ChainIndex) (result : ProgrammedFixedChainKeygenView)
+    (hresult : result ∈ support (programmedFixedChainKeygen chain)) :
+    keygenChainValueTable result.cache result.secretKey chain = result.table := by
+  unfold programmedFixedChainKeygen at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨parameter, _hparameter, hmaterial⟩ := hresult
+  rw [mem_support_bind_iff] at hmaterial
+  obtain ⟨material, hmaterial, hroot⟩ := hmaterial
+  rw [mem_support_bind_iff] at hroot
+  obtain ⟨rootResult, hroot, hpure⟩ := hroot
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  obtain ⟨hseeds, hedges⟩ :=
+    fixedChainMaterialRepresentation_matches parameter chain material hmaterial
+  apply keygenChainValueTable_eq_of_matches
+  · exact hseeds
+  · exact hedges.mono
+      (Concrete.CacheReplay.randomOracle_cache_le
+        (Concrete.treeNode parameter (unflattenSecret material.1.2)
+          treeHeight Concrete.rootNode : OracleComp HashSpec Digest)
+        material.2.2.2 rootResult hroot)
+
+noncomputable def programmedFixedChainKeygenTableOnly
+    (chain : ChainIndex) : ProbComp (ChainValueIndex → Digest) :=
+  ProgrammedFixedChainKeygenView.table <$> programmedFixedChainKeygen chain
+
+theorem evalDist_programmedFixedChainKeygenTableOnly_eq_uniform
+    (chain : ChainIndex) :
+    𝒟[programmedFixedChainKeygenTableOnly chain] =
+      𝒟[$ᵗ (ChainValueIndex → Digest)] := by
+  unfold programmedFixedChainKeygenTableOnly programmedFixedChainKeygen
+  simp only [map_bind, bind_pure_comp, Functor.map_map]
+  change 𝒟[do
+    let parameter ← Concrete.samplePublicParameter
+    let material ← fixedChainMaterialRepresentation parameter chain
+    let _rootResult ← (simulateQ randomOracle
+      (Concrete.treeNode parameter (unflattenSecret material.1.2)
+        treeHeight Concrete.rootNode : OracleComp HashSpec Digest)).run
+          material.2.2.2
+    pure (fixedChainMaterialTable chain material)] = _
+  calc
+    𝒟[Concrete.samplePublicParameter >>= fun parameter =>
+        fixedChainMaterialRepresentation parameter chain >>= fun material =>
+          (simulateQ randomOracle
+            (Concrete.treeNode parameter (unflattenSecret material.1.2)
+              treeHeight Concrete.rootNode : OracleComp HashSpec Digest)).run
+                material.2.2.2 >>= fun _rootResult =>
+            pure (fixedChainMaterialTable chain material)] =
+        𝒟[Concrete.samplePublicParameter >>= fun parameter =>
+          fixedChainMaterialRepresentation parameter chain >>= fun material =>
+            pure (fixedChainMaterialTable chain material)] := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro parameter
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro material
+      exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+        ((simulateQ randomOracle
+          (Concrete.treeNode parameter (unflattenSecret material.1.2)
+            treeHeight Concrete.rootNode : OracleComp HashSpec Digest)).run
+              material.2.2.2)
+        (probFailure_eq_zero' (neverFail_simulateQ_randomOracle_run
+          (Concrete.treeNode parameter (unflattenSecret material.1.2)
+            treeHeight Concrete.rootNode : OracleComp HashSpec Digest)
+          material.2.2.2))
+        (pure (fixedChainMaterialTable chain material))
+    _ = 𝒟[Concrete.samplePublicParameter >>= fun parameter =>
+          fixedChainMaterialTableOnly parameter chain] := by
+      simp [fixedChainMaterialTableOnly, map_eq_bind_pure_comp]
+    _ = 𝒟[Concrete.samplePublicParameter >>= fun _parameter =>
+          ($ᵗ (ChainValueIndex → Digest))] := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro parameter
+      exact evalDist_fixedChainMaterialTableOnly_eq_uniform parameter chain
+    _ = 𝒟[$ᵗ (ChainValueIndex → Digest)] :=
+      OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+        Concrete.samplePublicParameter
+        (probFailure_eq_zero' inferInstance)
+        ($ᵗ (ChainValueIndex → Digest))
 
 theorem keygenChainValueTable_seedsMatch
     (cache : QueryCache HashSpec) (secretKey : SecretKey) (chain : ChainIndex) :
