@@ -103,6 +103,65 @@ theorem detailedGameWithKeygenCacheAndActionTrace_support_info
       keyResult.1.2 keyResult.2 execution hexecution
   exact ⟨hkeyResult, hpublic, hsecret, hlog, hsource⟩
 
+theorem detailedGameWithKeygenCacheAndActionTrace_afterKeygen_mem
+    (adversary : Adversary Concrete.scheme)
+    (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+      (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
+    (hresult : result ∈ support
+      (detailedGameWithKeygenCacheAndActionTrace adversary)) :
+    result.1.2 ∈ support
+      ((simulateQ xmssRomImpl
+        (detailedGameAfterKeygen Concrete.scheme adversary
+          result.1.1.1.1 result.1.1.1.2)).run result.1.1.2) := by
+  unfold detailedGameWithKeygenCacheAndActionTrace at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨keyResult, _hkeyResult, hcontinuation⟩ := hresult
+  rw [mem_support_bind_iff] at hcontinuation
+  obtain ⟨execution, hexecution, hpure⟩ := hcontinuation
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  rw [← detailedGameAfterKeygenWithActionTrace_projection adversary
+    keyResult.1.1 keyResult.1.2 keyResult.2, support_map]
+  exact ⟨execution, hexecution, rfl⟩
+
+theorem detailedGameWithKeygenCacheAndActionTrace_chainValueReveals_eq_table
+    (adversary : Adversary Concrete.scheme)
+    (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+      (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
+    (hresult : result ∈ support
+      (detailedGameWithKeygenCacheAndActionTrace adversary))
+    (chain : ChainIndex) (reveal : ChainValueIndex × Digest)
+    (hreveal : reveal ∈ result.2.chainValueReveals result.1.2.2
+      result.1.1.1.2 chain) :
+    keygenChainValueTable result.1.1.2 result.1.1.1.2 chain reveal.1 =
+      reveal.2 := by
+  obtain ⟨hkeygen, _hpublic, hsecret, hlog, _hsource⟩ :=
+    detailedGameWithKeygenCacheAndActionTrace_support_info adversary result hresult
+  obtain ⟨request, signature, encoding, haction, hdecode, hrevealEq⟩ :=
+    (mem_chainValueReveals_iff result.1.2.2 result.1.1.1.2 chain result.2
+      reveal).mp hreveal
+  have hreturned : SigningTranscript.Returned result.1.2.1.signingLog
+      request signature := by
+    rw [hlog]
+    exact result.2.sign_mem_toSigningLog request signature haction
+  have hafter := detailedGameWithKeygenCacheAndActionTrace_afterKeygen_mem
+    adversary result hresult
+  have hvalue := returned_chainValue_eq_keygenChainValueTable adversary
+    result.1.1 hkeygen result.1.2 hafter request signature encoding
+    (by simpa [hsecret] using hdecode) hreturned chain
+  rw [hrevealEq]
+  exact hvalue.symm
+
+noncomputable def actionTracedForgeryEncoding
+    (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+      (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace)) : Encoding :=
+  (TargetSum.decodeDigest
+    (Concrete.CacheView.encodingHash result.1.2.2 result.1.1.1.2.parameter
+      result.1.2.1.forgery.epoch
+      (result.1.2.1.forgery.message,
+        result.1.2.1.forgery.signature.randomness))).getD
+          (fun _ => ⟨0, by simp [chainLength]⟩)
+
 theorem detailedGameWithKeygenCacheAndActionTrace_unrevealedProbes_length_le
     (q : Nat) (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
@@ -179,16 +238,6 @@ noncomputable def ActionTracedChainProbeHit
             result.1.2.1.signingLog chain)
           (IndexedHiddenValue.listStrategy probe probes))
 
-noncomputable def actionTracedForgeryEncoding
-    (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
-      (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace)) : Encoding :=
-  (TargetSum.decodeDigest
-    (Concrete.CacheView.encodingHash result.1.2.2 result.1.1.1.2.parameter
-      result.1.2.1.forgery.epoch
-      (result.1.2.1.forgery.message,
-        result.1.2.1.forgery.signature.randomness))).getD
-          (fun _ => ⟨0, by simp [chainLength]⟩)
-
 noncomputable def actionTracedRevealProbeView
     (chain : ChainIndex)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
@@ -241,6 +290,49 @@ theorem actionTracedChainProbeHit_probability_le_revealProbeView
   apply probEvent_mono
   intro result _hresult hhit
   exact actionTracedChainProbeHit_implies_revealProbeView_hit q chain result hhit
+
+noncomputable def ActionTracedObservedProbeHit
+    (q : Nat) (chain : ChainIndex)
+    (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+      (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace)) : Prop :=
+  let view := actionTracedRevealProbeView chain result
+  RevealProbeOracleSimulation.runObserved view.table
+    AdaptiveRevealMonitor.State.empty
+    ((RevealProbeOracleSimulation.strategyProbes q view.strategy).map fun probe =>
+      RevealProbeOracleSimulation.ObservedAction.probe probe.1 probe.2) = true
+
+theorem actionTracedChainProbeHit_implies_observedProbeHit
+    (q : Nat) (chain : ChainIndex)
+    (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+      (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
+    (hhit : ActionTracedChainProbeHit q chain result) :
+    ActionTracedObservedProbeHit q chain result := by
+  have hview := actionTracedChainProbeHit_implies_revealProbeView_hit
+    q chain result hhit
+  exact RevealProbeOracleSimulation.runObserved_strategyProbes_eq_true_of_readMany
+    (actionTracedRevealProbeView chain result).table q
+    (actionTracedRevealProbeView chain result).strategy hview.1
+
+theorem actionTracedChainProbeHit_probability_le_observedProbeHit
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    Pr[ActionTracedChainProbeHit q chain |
+      detailedGameWithKeygenCacheAndActionTrace adversary] ≤
+    Pr[ActionTracedObservedProbeHit q chain |
+      detailedGameWithKeygenCacheAndActionTrace adversary] := by
+  apply probEvent_mono
+  intro result _hresult hhit
+  exact actionTracedChainProbeHit_implies_observedProbeHit q chain result hhit
+
+noncomputable def actionTracedObservedProbeViewExperiment
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    ProbComp ((ChainValueIndex → Digest) ×
+      (Unit × RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) :=
+  (fun result =>
+    let view := actionTracedRevealProbeView chain result
+    (view.table, ((),
+      (RevealProbeOracleSimulation.strategyProbes q view.strategy).map fun probe =>
+        RevealProbeOracleSimulation.ObservedAction.probe probe.1 probe.2))) <$>
+      detailedGameWithKeygenCacheAndActionTrace adversary
 
 noncomputable def HasActionTracedRevealCoupling
     (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
@@ -311,8 +403,34 @@ noncomputable def HasActionTracedEagerViewReduction
     computation.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery q ∧
       Pr[ActionTracedChainProbeHit q chain |
           detailedGameWithKeygenCacheAndActionTrace adversary] ≤
-        Pr[RevealProbeOracleSimulation.ObservedHit |
+      Pr[RevealProbeOracleSimulation.ObservedHit |
           RevealProbeOracleSimulation.eagerExperiment computation]
+
+theorem hasActionTracedEagerViewReduction_of_observedProbeCoupling
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (computation : OracleComp
+      (RevealProbeOracleSimulation.World ChainValueIndex) Unit)
+    (hbound : computation.IsQueryBoundP
+      RevealProbeOracleSimulation.IsProbeQuery q)
+    (hdist :
+      𝒟[actionTracedObservedProbeViewExperiment q adversary chain] =
+        𝒟[RevealProbeOracleSimulation.eagerExperiment computation]) :
+    HasActionTracedEagerViewReduction q adversary chain := by
+  refine ⟨Unit, computation, hbound, ?_⟩
+  calc
+    Pr[ActionTracedChainProbeHit q chain |
+        detailedGameWithKeygenCacheAndActionTrace adversary] ≤
+        Pr[ActionTracedObservedProbeHit q chain |
+          detailedGameWithKeygenCacheAndActionTrace adversary] :=
+      actionTracedChainProbeHit_probability_le_observedProbeHit
+        q adversary chain
+    _ = Pr[RevealProbeOracleSimulation.ObservedHit |
+          actionTracedObservedProbeViewExperiment q adversary chain] := by
+      rw [actionTracedObservedProbeViewExperiment, probEvent_map]
+      rfl
+    _ = Pr[RevealProbeOracleSimulation.ObservedHit |
+          RevealProbeOracleSimulation.eagerExperiment computation] :=
+      probEvent_congr' (fun _ _ => Iff.rfl) hdist
 
 theorem hasActionTracedMonitorReduction_of_revealProbeProgram
     (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)

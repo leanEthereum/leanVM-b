@@ -13,6 +13,63 @@ noncomputable def returnedChainValueReveals
   (returnedChainValueIndices finalCache secretKey log chain).toList.map fun index =>
     (index, keygenChainValueTable keygenCache secretKey chain index)
 
+noncomputable def AttackerAction.chainValueReveal?
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (chain : ChainIndex) : AttackerAction → Option (ChainValueIndex × Digest)
+  | .hash _input => none
+  | .sign _request none => none
+  | .sign request (some signature) =>
+      match TargetSum.decodeDigest
+          (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
+            (request.message, signature.randomness)) with
+      | none => none
+      | some encoding =>
+          some ((request.epoch, encoding chain), signature.chainValue chain)
+
+noncomputable def AttackerActionTrace.chainValueReveals
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (chain : ChainIndex) (trace : AttackerActionTrace) :
+    List (ChainValueIndex × Digest) :=
+  trace.filterMap (AttackerAction.chainValueReveal? cache secretKey chain)
+
+theorem AttackerActionTrace.sign_mem_toSigningLog
+    (trace : AttackerActionTrace) (request : SignRequest) (signature : Signature)
+    (hmem : AttackerAction.sign request (some signature) ∈ trace) :
+    SigningTranscript.Returned trace.toSigningLog request signature := by
+  refine ⟨⟨request, some signature⟩, ?_, rfl, rfl⟩
+  exact List.mem_filterMap.mpr ⟨.sign request (some signature), hmem, rfl⟩
+
+theorem mem_chainValueReveals_iff
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (chain : ChainIndex) (trace : AttackerActionTrace)
+    (reveal : ChainValueIndex × Digest) :
+    reveal ∈ trace.chainValueReveals cache secretKey chain ↔
+      ∃ request signature encoding,
+        AttackerAction.sign request (some signature) ∈ trace ∧
+          TargetSum.decodeDigest
+            (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
+              (request.message, signature.randomness)) = some encoding ∧
+          reveal = ((request.epoch, encoding chain), signature.chainValue chain) := by
+  unfold AttackerActionTrace.chainValueReveals
+  rw [List.mem_filterMap]
+  constructor
+  · rintro ⟨action, haction, hreveal⟩
+    cases action with
+    | hash input => simp [AttackerAction.chainValueReveal?] at hreveal
+    | sign request signatureOption =>
+        cases signatureOption with
+        | none => simp [AttackerAction.chainValueReveal?] at hreveal
+        | some signature =>
+            simp only [AttackerAction.chainValueReveal?] at hreveal
+            split at hreveal
+            · simp at hreveal
+            · rename_i encoding hdecode
+              simp only [Option.some.injEq] at hreveal
+              exact ⟨request, signature, encoding, haction, hdecode, hreveal.symm⟩
+  · rintro ⟨request, signature, encoding, haction, hdecode, rfl⟩
+    refine ⟨.sign request (some signature), haction, ?_⟩
+    simp [AttackerAction.chainValueReveal?, hdecode]
+
 @[simp]
 theorem mem_returnedChainValueReveals_fst_iff
     (keygenCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
