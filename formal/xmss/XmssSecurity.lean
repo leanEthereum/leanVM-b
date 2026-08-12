@@ -1,6 +1,7 @@
 import XmssSecurity.CacheView
 import XmssSecurity.ChainQueryPresence
 import XmssSecurity.ChainTablePresampling
+import XmssSecurity.AdaptiveRevealedHiddenValue
 import XmssSecurity.CacheVerify
 import XmssSecurity.CacheReplay
 import XmssSecurity.CacheQuerySupport
