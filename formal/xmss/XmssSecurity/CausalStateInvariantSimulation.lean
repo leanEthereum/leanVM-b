@@ -5,6 +5,24 @@ open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
+theorem simulate_eagerTrace_projection_mem_support
+    (table : ChainValueIndex → Digest)
+    (computation : OracleComp
+      (RevealProbeOracleSimulation.World ChainValueIndex) α)
+    (result : α × RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+        computation).run)) :
+    result.1 ∈ support
+      (simulateQ (RevealProbeOracleSimulation.eagerImpl table) computation) := by
+  have hmapped : result.1 ∈ support
+      (Prod.fst <$> (simulateQ
+        (RevealProbeOracleSimulation.eagerTraceImpl table) computation).run) := by
+    rw [support_map]
+    exact ⟨result, hresult, rfl⟩
+  rw [RevealProbeOracleSimulation.eagerTrace_projection] at hmapped
+  exact hmapped
+
 noncomputable def eagerCausalXmssRomImpl
     (table : ChainValueIndex → Digest) :
     QueryImpl OracleWorld (StateT CausalHashState ProbComp) :=

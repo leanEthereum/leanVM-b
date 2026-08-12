@@ -192,6 +192,23 @@ theorem simulate_eagerImpl_causalDetailedGameAfterKeygen_support_revealsAgree
   subst result
   exact hvertifiedAgrees
 
+theorem simulate_eagerTrace_causalDetailedGameAfterKeygen_support_revealsAgree
+    (table : ChainValueIndex → Digest)
+    (adversary : Adversary Concrete.scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
+    (state : CausalHashState)
+    (result : ((((Forgery × Bool) × AttackerActionTrace) × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex))
+    (hagrees : CausalRevealsAgree table state)
+    (hresult : result ∈ support
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+        ((causalDetailedGameAfterKeygen adversary publicKey secretKey chain).run
+          state)).run)) :
+    CausalRevealsAgree table result.1.2 := by
+  apply simulate_eagerImpl_causalDetailedGameAfterKeygen_support_revealsAgree
+    table adversary publicKey secretKey chain state result.1 hagrees
+  exact simulate_eagerTrace_projection_mem_support table _ result hresult
+
 theorem simulate_eagerImpl_simulate_causalMappedAdversaryImpl_support_revealsAgree
     (table : ChainValueIndex → Digest) (publicKey : PublicKey)
     (secretKey : SecretKey) (chain : ChainIndex)

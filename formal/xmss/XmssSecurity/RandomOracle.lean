@@ -194,6 +194,23 @@ theorem evalDist_sampledHashOutputWithDigest_eq_uniform :
           hashOutputEquivDigestPair) <$> ($ᵗ HashOutput)] = _
       rw [hfunction]
 
+/-- A programmed low digest and its independent high half may be replaced by one ordinary random-oracle output inside any continuation. -/
+theorem evalDist_sampledHashOutputWithDigest_bind_eq_uniform_bind
+    (continuation : Digest × HashOutput → ProbComp α) :
+    evalDist (sampledHashOutputWithDigest >>= continuation) =
+      evalDist ($ᵗ HashOutput >>= fun output =>
+        continuation (truncateHash output, output)) := by
+  calc
+    evalDist (sampledHashOutputWithDigest >>= continuation) =
+        evalDist (((fun output : HashOutput => (truncateHash output, output)) <$>
+          ($ᵗ HashOutput)) >>= continuation) := by
+      conv_lhs => rw [evalDist_bind]
+      conv_rhs => rw [evalDist_bind]
+      rw [evalDist_sampledHashOutputWithDigest_eq_uniform]
+    _ = evalDist ($ᵗ HashOutput >>= fun output =>
+          continuation (truncateHash output, output)) := by
+      simp [map_eq_bind_pure_comp, bind_assoc]
+
 noncomputable def uniformHashTape :
     Nat → ProbComp (List Digest × List HashOutput)
   | 0 => pure ([], [])

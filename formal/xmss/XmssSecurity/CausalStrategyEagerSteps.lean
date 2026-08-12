@@ -4,6 +4,25 @@ open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
+theorem evalDist_programmedCausalReveal_eq_uniformHashOutput
+    (state : CausalHashState) (index : ChainValueIndex) (input : HashInput) :
+    evalDist (do
+      let target ← $ᵗ Digest
+      let output ← Rom.sampleHashOutputWithDigest target
+      pure (output,
+        { (state.recordReveal index target) with
+          cache := state.cache.cacheQuery input output })) =
+    evalDist (do
+      let output ← $ᵗ HashOutput
+      pure (output,
+        { (state.recordReveal index (truncateHash output)) with
+          cache := state.cache.cacheQuery input output })) := by
+  simpa [Rom.sampledHashOutputWithDigest, bind_assoc] using
+    (Rom.evalDist_sampledHashOutputWithDigest_bind_eq_uniform_bind
+      (fun programmed => pure (programmed.2,
+        { (state.recordReveal index programmed.1) with
+          cache := state.cache.cacheQuery input programmed.2 })))
+
 theorem causalAttackerHashPlan_eq_cached
     (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
     (state : CausalHashState) (output : HashOutput)
