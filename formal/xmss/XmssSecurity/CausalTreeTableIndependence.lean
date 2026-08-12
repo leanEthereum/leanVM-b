@@ -33,6 +33,21 @@ def TreeValueIndex.Precedes (left right : TreeValueIndex) : Prop :=
   left.1.val < right.1.val ∨
     (left.1.val = right.1.val ∧ left.2.val < right.2.val)
 
+instance : DecidableRel TreeValueIndex.Precedes := fun left right => by
+  unfold TreeValueIndex.Precedes
+  infer_instance
+
+instance : IsTrans TreeValueIndex TreeValueIndex.Precedes where
+  trans left middle right hleft hright := by
+    unfold TreeValueIndex.Precedes at hleft hright ⊢
+    rcases hleft with hheight | ⟨hheight, hnode⟩
+    · rcases hright with hheight' | ⟨hheight', hnode'⟩
+      · exact Or.inl (hheight.trans hheight')
+      · exact Or.inl (hheight.trans_le (by omega))
+    · rcases hright with hheight' | ⟨hheight', hnode'⟩
+      · exact Or.inl (by omega)
+      · exact Or.inr ⟨by omega, by omega⟩
+
 def TreeValuesFresh (parameter : PublicParameter)
     (indices : List TreeValueIndex) (cache : QueryCache HashSpec) : Prop :=
   ∀ index ∈ indices, ∀ input,
@@ -302,5 +317,86 @@ theorem evalDist_treeValues_values_eq_drawList
         _ = 𝒟[OracleComp.drawList ($ᵗ Digest)
             (current :: indices).length] := by
             rfl
+
+def treeValueIndicesAtHeight (height : Fin (treeHeight + 1)) :
+    List TreeValueIndex :=
+  List.ofFn fun node : Fin (2 ^ (treeHeight - height.val)) => ⟨height, node⟩
+
+def allTreeValueIndices : List TreeValueIndex :=
+  (List.ofFn fun height : Fin (treeHeight + 1) => height).flatMap
+    treeValueIndicesAtHeight
+
+theorem allTreeValueIndices_pairwise :
+    allTreeValueIndices.Pairwise TreeValueIndex.Precedes := by
+  simp only [allTreeValueIndices, List.pairwise_flatMap,
+    List.pairwise_ofFn]
+  constructor
+  · intro height _hheight
+    simp only [treeValueIndicesAtHeight, List.pairwise_ofFn]
+    intro left right hlt
+    unfold TreeValueIndex.Precedes
+    right
+    constructor
+    · rfl
+    · exact hlt
+  · intro left right hlt current hcurrent target htarget
+    rw [treeValueIndicesAtHeight, List.mem_ofFn] at hcurrent htarget
+    obtain ⟨currentNode, rfl⟩ := hcurrent
+    obtain ⟨targetNode, rfl⟩ := htarget
+    unfold TreeValueIndex.Precedes
+    exact Or.inl hlt
+
+theorem allTreeValueIndices_nodup : allTreeValueIndices.Nodup := by
+  apply allTreeValueIndices_pairwise.imp
+  intro left right hbefore heq
+  subst right
+  unfold TreeValueIndex.Precedes at hbefore
+  omega
+
+theorem mem_allTreeValueIndices (index : TreeValueIndex) :
+    index ∈ allTreeValueIndices := by
+  rw [allTreeValueIndices, List.mem_flatMap]
+  refine ⟨index.1, ?_, ?_⟩
+  · exact List.mem_ofFn.mpr ⟨index.1, rfl⟩
+  · unfold treeValueIndicesAtHeight
+    exact List.mem_ofFn.mpr ⟨index.2, rfl⟩
+
+attribute [irreducible] allTreeValueIndices
+
+theorem programmedWarmedTrajectory_treeValues_fresh
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex)
+    (trajectoryResult : List FullChainTrajectory × QueryCache HashSpec)
+    (htrajectory : trajectoryResult ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs)) :
+    TreeValuesFresh parameter allTreeValueIndices trajectoryResult.2 := by
+  intro index _hindex input hinput
+  by_cases hzero : index.1.val = 0
+  · unfold TreeValueIndex.domain at hinput
+    rw [dif_pos hzero] at hinput
+    exact programmedFixedSeedChainTrajectories_avoids_leaf
+      parameter secret chain trajectoryResult htrajectory index.node input hinput
+  · unfold TreeValueIndex.domain at hinput
+    rw [dif_neg hzero] at hinput
+    exact programmedFixedSeedChainTrajectories_avoids_merkle
+      parameter secret chain trajectoryResult htrajectory
+        ⟨index.1.val - 1, by omega⟩ index.node input hinput
+
+set_option maxRecDepth 1000000 in
+theorem evalDist_programmedWarmedTreeValues_eq_drawList
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex)
+    (trajectoryResult : List FullChainTrajectory × QueryCache HashSpec)
+    (htrajectory : trajectoryResult ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs)) :
+    𝒟[Prod.fst <$> treeValues parameter secret allTreeValueIndices
+      trajectoryResult.2] =
+      𝒟[OracleComp.drawList ($ᵗ Digest) allTreeValueIndices.length] := by
+  exact evalDist_treeValues_values_eq_drawList parameter secret
+    allTreeValueIndices trajectoryResult.2 allTreeValueIndices_pairwise
+      (programmedWarmedTrajectory_treeValues_fresh parameter secret chain
+        trajectoryResult htrajectory)
 
 end XmssSecurity
