@@ -1,4 +1,5 @@
 import XmssSecurity.IndexedHiddenValue
+import Mathlib.Data.List.GetD
 
 open OracleComp ENNReal
 
@@ -71,6 +72,46 @@ def AvoidsReveals
     (reveals : List (Index × Digest))
     (strategy : List Bool → Index × Digest) : Prop :=
   ∀ history, (strategy history).1 ∉ reveals.map Prod.fst
+
+def listStrategy (default : Index × Digest)
+    (probes : List (Index × Digest)) : List Bool → Index × Digest :=
+  fun history => probes.getD history.length default
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem listStrategy_mem
+    (default : Index × Digest) (probes : List (Index × Digest))
+    (hdefault : default ∈ probes) (history : List Bool) :
+    listStrategy default probes history ∈ probes := by
+  unfold listStrategy
+  by_cases hlength : history.length < probes.length
+  · rw [List.getD_eq_getElem probes default hlength]
+    exact List.getElem_mem _
+  · rw [List.getD_eq_default _ _ (Nat.le_of_not_gt hlength)]
+    exact hdefault
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem listStrategy_avoids
+    (reveals probes : List (Index × Digest))
+    (default : Index × Digest) (hdefault : default ∈ probes)
+    (hprobes : ∀ probe ∈ probes, probe.1 ∉ reveals.map Prod.fst) :
+    AvoidsReveals reveals (listStrategy default probes) := by
+  intro history
+  exact hprobes _ (listStrategy_mem default probes hdefault history)
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem readMany_listStrategy_eq_true_of_mem
+    (table : Index → Digest) (queries : Nat)
+    (probes : List (Index × Digest)) (default probe : Index × Digest)
+    (hqueries : probes.length ≤ queries) (hprobe : probe ∈ probes)
+    (hhit : table probe.1 = probe.2) :
+    readMany table queries (listStrategy default probes) = true := by
+  rw [readMany_true_iff]
+  obtain ⟨round, hround, hget⟩ := List.mem_iff_getElem.mp hprobe
+  refine ⟨round, hround.trans_le hqueries, ?_⟩
+  unfold listStrategy
+  simp only [List.length_replicate]
+  rw [List.getD_eq_getElem probes default hround, hget]
+  exact hhit
 
 omit [Fintype Index] in
 theorem readMany_installReveals_eq
