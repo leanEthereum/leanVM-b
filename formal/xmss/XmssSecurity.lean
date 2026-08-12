@@ -5,6 +5,7 @@ import XmssSecurity.ChainTablePresampling
 import XmssSecurity.ChainTracedGame
 import XmssSecurity.AdaptiveRevealedHiddenValue
 import XmssSecurity.AdaptiveRevealMonitor
+import XmssSecurity.RevealProbeOracleSimulation
 import XmssSecurity.CacheVerify
 import XmssSecurity.CacheReplay
 import XmssSecurity.CacheQuerySupport

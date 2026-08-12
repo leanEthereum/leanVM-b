@@ -1,4 +1,4 @@
-import XmssSecurity.AdaptiveRevealMonitor
+import XmssSecurity.RevealProbeOracleSimulation
 import XmssSecurity.ChainRevealFiltering
 
 open OracleComp OracleSpec ENNReal
@@ -272,6 +272,29 @@ noncomputable def HasActionTracedMonitorReduction
       Pr[(fun hit : Bool => hit = true) |
         AdaptiveRevealMonitor.run controller AdaptiveRevealMonitor.State.empty
           steps q initial]
+
+noncomputable def HasActionTracedRevealProbeProgramReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
+  ∃ (Result : Type)
+      (computation : OracleComp
+        (RevealProbeOracleSimulation.World ChainValueIndex) Result)
+      (steps : Nat),
+    computation.IsQueryBoundP
+        RevealProbeOracleSimulation.IsSpecialQuery steps ∧
+      Pr[ActionTracedChainProbeHit q chain |
+          detailedGameWithKeygenCacheAndActionTrace adversary] ≤
+        Pr[(fun hit : Bool => hit = true) |
+          RevealProbeOracleSimulation.run steps q computation]
+
+theorem hasActionTracedMonitorReduction_of_revealProbeProgram
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (hreduction :
+      HasActionTracedRevealProbeProgramReduction q adversary chain) :
+    HasActionTracedMonitorReduction q adversary chain := by
+  obtain ⟨Result, computation, steps, _hbound, hprobability⟩ := hreduction
+  refine ⟨OracleComp (RevealProbeOracleSimulation.World ChainValueIndex) Result,
+    RevealProbeOracleSimulation.controller, steps, computation, ?_⟩
+  simpa [RevealProbeOracleSimulation.run] using hprobability
 
 noncomputable def actionTracedRevealTranscriptGenerator
     (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
