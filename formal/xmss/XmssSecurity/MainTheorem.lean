@@ -43,7 +43,7 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
   · exact winning_encoding_event_probability_le_two_terms q adversary hbound
   · intro chain
     refine (winningKeygenValueGuess_probability_le_origin adversary chain).trans ?_
-    apply winningChainOrigin_probability_le_of_monitorReduction q adversary hbound chain
+    apply winningChainOrigin_probability_le_of_eagerViewReduction q adversary hbound chain
     sorry
 
 /-- Below the digest-space size, encoding and chain events cost two elementary terms and every other event costs one. -/

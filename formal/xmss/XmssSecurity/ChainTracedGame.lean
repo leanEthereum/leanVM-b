@@ -281,17 +281,45 @@ noncomputable def HasActionTracedRevealProbeProgramReduction
       (steps : Nat),
     computation.IsQueryBoundP
         RevealProbeOracleSimulation.IsSpecialQuery steps ∧
+      computation.IsQueryBoundP
+        RevealProbeOracleSimulation.IsProbeQuery q ∧
       Pr[ActionTracedChainProbeHit q chain |
           detailedGameWithKeygenCacheAndActionTrace adversary] ≤
         Pr[(fun hit : Bool => hit = true) |
           RevealProbeOracleSimulation.run steps q computation]
+
+noncomputable def HasActionTracedEagerProgramReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
+  ∃ (Result : Type)
+      (computation : OracleComp
+        (RevealProbeOracleSimulation.World ChainValueIndex) Result)
+      (steps : Nat),
+    computation.IsQueryBoundP
+        RevealProbeOracleSimulation.IsSpecialQuery steps ∧
+      computation.IsQueryBoundP
+        RevealProbeOracleSimulation.IsProbeQuery q ∧
+      Pr[ActionTracedChainProbeHit q chain |
+          detailedGameWithKeygenCacheAndActionTrace adversary] ≤
+        Pr[(fun hit : Bool => hit = true) |
+          RevealProbeOracleSimulation.eagerProgramExperiment steps q computation]
+
+noncomputable def HasActionTracedEagerViewReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
+  ∃ (Result : Type)
+      (computation : OracleComp
+        (RevealProbeOracleSimulation.World ChainValueIndex) Result),
+    computation.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery q ∧
+      Pr[ActionTracedChainProbeHit q chain |
+          detailedGameWithKeygenCacheAndActionTrace adversary] ≤
+        Pr[RevealProbeOracleSimulation.ObservedHit |
+          RevealProbeOracleSimulation.eagerExperiment computation]
 
 theorem hasActionTracedMonitorReduction_of_revealProbeProgram
     (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (hreduction :
       HasActionTracedRevealProbeProgramReduction q adversary chain) :
     HasActionTracedMonitorReduction q adversary chain := by
-  obtain ⟨Result, computation, steps, _hbound, hprobability⟩ := hreduction
+  obtain ⟨Result, computation, steps, _hsteps, _hprobes, hprobability⟩ := hreduction
   refine ⟨OracleComp (RevealProbeOracleSimulation.World ChainValueIndex) Result,
     RevealProbeOracleSimulation.controller, steps, computation, ?_⟩
   simpa [RevealProbeOracleSimulation.run] using hprobability
@@ -392,5 +420,39 @@ theorem winningChainOrigin_probability_le_of_monitorReduction
       (hreduce.trans
         (AdaptiveRevealMonitor.run_empty_true_probability_le controller
           steps q initial))
+
+theorem winningChainOrigin_probability_le_of_eagerProgramReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (chain : ChainIndex)
+    (hreduction : HasActionTracedEagerProgramReduction q adversary chain) :
+    Pr[fun result =>
+      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+        result.1.1.2 result.2.1 chain |
+      detailedGameWithKeygenCache adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  obtain ⟨Result, computation, steps, _hsteps, _hprobes, hreduce⟩ := hreduction
+  exact (winningChainOrigin_probability_le_actionTracedProbeHit
+    q adversary hbound chain).trans
+      (hreduce.trans
+        (RevealProbeOracleSimulation.eagerProgram_true_probability_le
+          steps q computation))
+
+theorem winningChainOrigin_probability_le_of_eagerViewReduction
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (chain : ChainIndex)
+    (hreduction : HasActionTracedEagerViewReduction q adversary chain) :
+    Pr[fun result =>
+      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+        result.1.1.2 result.2.1 chain |
+      detailedGameWithKeygenCache adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  obtain ⟨Result, computation, hprobes, hreduce⟩ := hreduction
+  exact (winningChainOrigin_probability_le_actionTracedProbeHit
+    q adversary hbound chain).trans
+      (hreduce.trans
+        (RevealProbeOracleSimulation.eagerExperiment_observedHit_probability_le
+          q computation hprobes))
 
 end XmssSecurity
