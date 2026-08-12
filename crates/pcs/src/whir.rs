@@ -34,7 +34,7 @@
 
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
-use fiat_shamir::merkle::MerklePaths;
+use fiat_shamir::merkle::PrunedMerklePaths;
 use fiat_shamir::transcript::{Challenger, Receiver, Transmitter};
 use primitives::log2_strict_usize;
 use primitives::{
@@ -1122,7 +1122,7 @@ pub fn recursive_prover_with_basis(
     let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
     // ... but the stored proof carries the sorted-unique rows + one octopus over
     // the sorted-unique positions (the verifier re-fans them to ordered).
-    ps.hint_merkle(MerklePaths::prune(l0_tree, block_len_0, &queries_0, |q| {
+    ps.hint_merkle(PrunedMerklePaths::prune(l0_tree, block_len_0, &queries_0, |q| {
         l0_row(q).to_vec()
     }));
     if trace {
@@ -1194,7 +1194,7 @@ pub fn recursive_prover_with_basis(
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only, no local induce; the
             // verifier fans these to ordered for its last-level induce.
-            ps.hint_merkle(MerklePaths::prune(
+            ps.hint_merkle(PrunedMerklePaths::prune(
                 &wtns_prev.tree,
                 wtns_prev.block_len,
                 &queries_last,
@@ -1289,7 +1289,7 @@ pub fn recursive_prover_with_basis(
         let _t = std::time::Instant::now();
         // Ordered rows for the local induce; sorted-unique rows + octopus stored.
         let opened_rows_i: Vec<Vec<F192>> = queries_i.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
-        ps.hint_merkle(MerklePaths::prune(
+        ps.hint_merkle(PrunedMerklePaths::prune(
             &wtns_prev.tree,
             wtns_prev.block_len,
             &queries_i,
@@ -2301,17 +2301,17 @@ mod tests {
             type Tamper = fn(&mut fiat_shamir::transcript::Proof, u64);
             let tampers: &[(&str, Tamper)] = &[
                 ("L0 opened row", |p, r| {
-                    let rows = &mut p.merkle_paths[0].leaf_data;
+                    let rows = &mut p.merkle[0].leaf_data;
                     let row = (r as usize) % rows.len();
                     rows[row][0].0 ^= 1;
                 }),
                 ("final-level opened row", |p, r| {
-                    let rows = &mut p.merkle_paths.last_mut().unwrap().leaf_data;
+                    let rows = &mut p.merkle.last_mut().unwrap().leaf_data;
                     let row = (r as usize) % rows.len();
                     rows[row][0].0 ^= 1;
                 }),
                 ("merkle proof node", |p, r| {
-                    let sibs = &mut p.merkle_paths[0].sibling_hashes;
+                    let sibs = &mut p.merkle[0].sibling_hashes;
                     let idx = (r as usize) % sibs.len();
                     sibs[idx][0] ^= 1;
                 }),

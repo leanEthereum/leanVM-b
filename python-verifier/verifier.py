@@ -448,7 +448,7 @@ class BinaryReader:
 
 
 @dataclass(frozen=True)
-class MerkleOpening:
+class RawMerklePath:
     """One query's opening: its leaf words and the full sibling path to the root.
 
     A leaf is its raw K words, which is what the committer hashed, so an E-valued
@@ -461,7 +461,7 @@ class MerkleOpening:
     path: tuple[Digest, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> MerkleOpening:
+    def read(cls, reader: BinaryReader) -> RawMerklePath:
         return cls(reader.base_fields(), reader.hashes())
 
     def root(self, leaf_index: int) -> Digest:
@@ -476,15 +476,15 @@ class MerkleOpening:
 @dataclass(frozen=True)
 class Proof:
     stream: tuple[E, ...]
-    merkle_openings: tuple[MerkleOpening, ...]
+    merkle: tuple[RawMerklePath, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> Proof:
         reader = BinaryReader(data)
         stream = reader.fields()
-        merkle_openings = tuple(MerkleOpening.read(reader) for _ in reader.count(16, "opening"))
+        merkle = tuple(RawMerklePath.read(reader) for _ in reader.count(16, "opening"))
         reader.finish()
-        return cls(stream, merkle_openings)
+        return cls(stream, merkle)
 
     @classmethod
     def load(cls, path: str | Path) -> Proof:
@@ -572,8 +572,8 @@ class Transcript:
         height = log2_strict(block_length)
         rows = []
         for query in queries:
-            require(self.opening_offset < len(self.proof.merkle_openings), "Merkle opening missing")
-            opening = self.proof.merkle_openings[self.opening_offset]
+            require(self.opening_offset < len(self.proof.merkle), "Merkle opening missing")
+            opening = self.proof.merkle[self.opening_offset]
             self.opening_offset += 1
             require(0 <= query < block_length, "Merkle query is out of range")
             require(len(opening.leaf_data) == leaf_words, "opened row has the wrong width")
@@ -601,7 +601,7 @@ class Transcript:
 
     def finish(self) -> None:
         require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
-        require(self.opening_offset == len(self.proof.merkle_openings), "Merkle openings not fully consumed")
+        require(self.opening_offset == len(self.proof.merkle), "Merkle openings not fully consumed")
 
 
 # GKR product triple ---------------------------------------------------------

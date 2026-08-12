@@ -893,7 +893,7 @@ fn gen_verify(
     // re-hashes exactly that: a leaf is its `F64` words (one per interleaved K
     // value at level 0, three per `E` value deeper), then a walk up the path.
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
-    for opening in &summary.raw.merkle_openings {
+    for opening in &summary.raw.merkle {
         lrows_flat.extend(opening.leaf_data.iter().map(|x| F192::new(x.0, 0, 0)));
         for h in &opening.path {
             lpaths_flat.extend_from_slice(&pack_hash_state(h));

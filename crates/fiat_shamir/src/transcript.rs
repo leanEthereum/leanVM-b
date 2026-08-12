@@ -22,49 +22,45 @@
 //! The [`Sponge`] itself (the VM-native Merkle–Damgård chaining value, its
 //! domain tags, grinding, and the diagnostic trace) lives in [`crate::sponge`].
 
-use crate::merkle::{Hash, MerkleOpening, MerklePaths, hash_to_scalars, scalars_to_hash};
+use crate::merkle::{Hash, PrunedMerklePaths, RawMerklePath, hash_to_scalars, scalars_to_hash};
 use crate::sponge::Sponge;
 use primitives::field::{F64, F192};
 
 /// A complete proof: the scalar transcript stream plus the Merkle phases:
 /// **two** channels, no bolted-on side field. The commitment root and every
-/// transmitted scalar ride `stream`; the hash-bearing openings ride
-/// `merkle_paths`. flock's BLAKE2s sub-proof is carried the same way: its
-/// zerocheck / lincheck / ring-switch scalars are ordinary `add_scalar` words on
-/// `stream` (transmitted AND bound at their protocol points, like every other
-/// scalar) and its opening phases append to `merkle_paths`.
+/// transmitted scalar ride `stream`; the hash-bearing openings ride `merkle`.
+/// flock's BLAKE2s sub-proof is carried the same way: its zerocheck / lincheck /
+/// ring-switch scalars are ordinary `add_scalar` words on `stream` (transmitted
+/// AND bound at their protocol points, like every other scalar) and its opening
+/// phases append to `merkle`.
+///
+/// The scalars are the same either way, so the ONLY thing a representation
+/// chooses is how the Merkle data is carried, and that is the type parameter:
+/// [`Proof`] prunes it, [`RawProof`] does not. A round polynomial travels as the
+/// coefficients the claim does not fix, so there is nothing else for a consumer
+/// to re-expand and it can be one read-and-absorb loop.
 ///
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
 /// an independent verifier process reconstructs it: everything lives in these two
 /// fields, and [`VerifierState`] re-derives every challenge from them via the
 /// shared sponge, so nothing travels out of band.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Proof {
+pub struct Proof<M = PrunedMerklePaths> {
     /// Every transmitted field scalar, in protocol order (plus flock's scalar
     /// sub-proof as trailing raw transport words).
     pub stream: Vec<F192>,
-    /// One entry per opening phase, in the order the phases run. Nothing here
-    /// names WHIR: a phase pushes its rows and siblings, the next pulls them.
-    pub merkle_paths: Vec<MerklePaths>,
+    /// Pruned: one entry per opening phase, in the order the phases run. Raw: one
+    /// path per query, phases concatenated in that same order. Nothing here names
+    /// WHIR: a phase pushes its rows and siblings, the next pulls them.
+    pub merkle: Vec<M>,
 }
 
-/// The proof the recursion guest and the Python verifier consume: the same
-/// scalars as [`Proof`], with the Merkle openings unpruned.
-///
-/// Its stream IS [`Proof::stream`]: a round polynomial travels as the
-/// coefficients the claim does not fix, so there is nothing for a consumer to
-/// re-expand and it can be one read-and-absorb loop. What a consumer would
-/// otherwise have to reconstruct is the pruned Merkle structure, and a verifier
-/// run yields the unpruned form as a by-product
+/// The proof the recursion guest and the Python verifier consume: [`Proof`] with
+/// every query's Merkle path written out, which is the one thing they would
+/// otherwise have to reconstruct. A verifier run yields it as a by-product
 /// ([`VerifierState::into_raw_proof`]), so that expansion is written once, in
 /// Rust, instead of three times in three languages.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RawProof {
-    /// Every scalar a verifier read, in order: [`Proof::stream`] itself.
-    pub stream: Vec<F192>,
-    /// One opening per query, phases concatenated in the order they ran.
-    pub merkle_openings: Vec<MerkleOpening>,
-}
+pub type RawProof = Proof<RawMerklePath>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -108,7 +104,7 @@ pub trait Challenger {
 /// The prover half of a transmitting sub-protocol (WHIR and its sumchecks):
 /// push an opening phase, send a scalar, or grind.
 pub trait Transmitter: Challenger {
-    fn hint_merkle(&mut self, paths: MerklePaths);
+    fn hint_merkle(&mut self, paths: PrunedMerklePaths);
     fn add_scalar(&mut self, x: F192);
     fn add_scalars(&mut self, xs: &[F192]);
     fn grind(&mut self, bits: u32);
@@ -174,7 +170,7 @@ pub trait Receiver: Challenger {
 pub struct ProverState {
     sponge: Sponge,
     stream: Vec<F192>,
-    merkle_paths: Vec<MerklePaths>,
+    merkle: Vec<PrunedMerklePaths>,
 }
 
 impl ProverState {
@@ -183,14 +179,14 @@ impl ProverState {
         Self {
             sponge: Sponge::new(label, statement),
             stream: Vec::new(),
-            merkle_paths: Vec::new(),
+            merkle: Vec::new(),
         }
     }
 
     pub fn into_proof(self) -> Proof {
         Proof {
             stream: self.stream,
-            merkle_paths: self.merkle_paths,
+            merkle: self.merkle,
         }
     }
 }
@@ -201,9 +197,9 @@ pub struct VerifierState<'a> {
     sponge: Sponge,
     stream: &'a [F192],
     offset: usize,
-    merkle_paths: &'a [MerklePaths],
+    merkle: &'a [PrunedMerklePaths],
     phase: usize,
-    raw_openings: Vec<MerkleOpening>,
+    raw_openings: Vec<RawMerklePath>,
 }
 
 impl<'a> VerifierState<'a> {
@@ -214,7 +210,7 @@ impl<'a> VerifierState<'a> {
             sponge: Sponge::new(label, statement),
             stream: &proof.stream,
             offset: 0,
-            merkle_paths: &proof.merkle_paths,
+            merkle: &proof.merkle,
             phase: 0,
             raw_openings: Vec::new(),
         }
@@ -241,7 +237,7 @@ impl<'a> VerifierState<'a> {
     pub fn into_raw_proof(self) -> RawProof {
         RawProof {
             stream: self.stream[..self.offset].to_vec(),
-            merkle_openings: self.raw_openings,
+            merkle: self.raw_openings,
         }
     }
 
@@ -254,7 +250,7 @@ impl<'a> VerifierState<'a> {
 
     /// Assert the whole proof was consumed (no trailing/extra data).
     pub fn finish(&self) -> Result<(), Error> {
-        if self.offset == self.stream.len() && self.phase == self.merkle_paths.len() {
+        if self.offset == self.stream.len() && self.phase == self.merkle.len() {
             Ok(())
         } else {
             Err(Error::NotFullyConsumed)
@@ -265,8 +261,8 @@ impl<'a> VerifierState<'a> {
 impl Transmitter for ProverState {
     /// Hand the next opening phase's Merkle data to the verifier. Not absorbed:
     /// its binding is the Merkle structure itself.
-    fn hint_merkle(&mut self, paths: MerklePaths) {
-        self.merkle_paths.push(paths);
+    fn hint_merkle(&mut self, paths: PrunedMerklePaths) {
+        self.merkle.push(paths);
     }
 
     /// Transmit a scalar into the proof AND bind it into the sponge (the two are
@@ -310,7 +306,7 @@ impl<'a> Receiver for VerifierState<'a> {
         queries: &[usize],
         leaf_words: usize,
     ) -> Result<Vec<Vec<F64>>, Error> {
-        let paths: &'a MerklePaths = self.merkle_paths.get(self.phase).ok_or(Error::MissingHint)?;
+        let paths: &'a PrunedMerklePaths = self.merkle.get(self.phase).ok_or(Error::MissingHint)?;
         self.phase += 1;
         let openings = paths
             .open(root, num_leaves, queries, leaf_words)
