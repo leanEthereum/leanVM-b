@@ -1,29 +1,38 @@
-//! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
-//! replays `cpu::verify` for a hinted number of proofs of a fixed inner program, batches
-//! their deferred claims with the two aggregation sumchecks, and binds the sub
-//! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
-//! public input (`doc/leanvm/main.tex` §Recursive aggregation, §Deferred evaluation claims).
+//! Recursive XMSS aggregation: one bytecode (`guests/aggregate.py`) for every
+//! node of an aggregation tree.
+//!
+//! A node verifies `n_raw` XMSS signatures and `n_children` sub-proofs **of this
+//! same bytecode**, all against one shared `(message, epoch)`, and publishes the
+//! sorted deduplicated union of their signer sets. Coverage is what carries the
+//! security claim: a write-once slot per declared signer, written once by each
+//! raw signature and each child key, plus a final count, so every declared
+//! signer is backed by a real signature or a verified child.
+//!
+//! The bytecode is compiled to a fixed point on its own size
+//! ([`unified_guest`]): the recursion placeholders depend on the inner bytecode
+//! size, and here the inner bytecode is this one. Its digest does not need a
+//! fixed point, riding the statement instead of the code.
+//!
+//! Three fixed polynomials (the stacked bytecode and flock's `A0`/`B0`) are too
+//! big to evaluate in-circuit, so each node exports one deferred claim on each
+//! and batches its children's carried claims with the fresh ones its
+//! verifications raise (`doc/leanvm/main.tex` §Deferred evaluation claims). Only
+//! the root's are discharged natively, by [`AggregateSignature::verify`].
 //!
 //! The transcript trace of a real `cpu::verify` run
 //! (`transcript::trace_start`/`trace_take`) keeps the native and guest verifiers
 //! synchronized: `gen_verify` walks it structurally, while `cpu::layout`
-//! supplies every compile-time shape. `aggregate_deferred_claims` builds the guest's aggregation
-//! transcript and the two batching-sumcheck proofs.
-//! [`RecursiveProof::verify`] is the only public acceptance path: it verifies
-//! the outer VM proof and evaluates every deferred fixed polynomial.
+//! supplies every compile-time shape.
 
 use std::collections::BTreeMap;
 
-use lean_compiler::{compile, parse, parse_with_replacements};
+use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
-use primitives::bench::Plan;
+use primitives::field::{F64, F192, G, g_pow};
 use primitives::multilinear::mle_eval;
-use primitives::{
-    field::{F64, F192, G, g_pow},
-    pretty_f64, pretty_integer,
-};
+use xmss::{XmssPublicKey, XmssSignature};
 
 /// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
@@ -31,18 +40,36 @@ use primitives::{
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
 const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
 const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
+const EPOCH_LABEL: &[u8] = b"leanvm-b/aggregation-epoch/v1";
+const PUBKEYS_LABEL: &[u8] = b"leanvm-b/aggregation-pubkeys/v1";
 
-/// Aggregation arity bound: the guest hints the count and range-checks its
-/// exponent against this (`NSUB_BOUND`), which is what makes its per-sub walks
-/// terminate. The bytecode does not otherwise depend on the arity.
-const NSUB_BOUND: usize = 1024;
+/// The recursion arity, and the cap on `n_keys + n_dup` (exclusive: the guest
+/// proves `log(n_total) < MAX_KEYS`).
+///
+/// `MAX_KEYS` is what the coverage indices' runtime range check needs to stay
+/// below `2^MIN_LOG_MEM`, so that the bound means the same thing at every
+/// announced memory size. The guest discharges that by range-checking
+/// `n_total` against this constant with a COMPILE-TIME bound, so raising
+/// `MAX_KEYS` past `2^MIN_LOG_MEM` fails the build rather than quietly
+/// weakening the index bound. leanVM caps its signer sets at the same place.
+pub const MAX_CHILDREN: usize = 16;
+pub const MAX_KEYS: usize = 1 << 16;
 
-/// The aggregation arity, as the guest carries it: in the exponent, `g^nsub`.
-/// Both aggregation transcripts absorb it in this form, ahead of every
-/// variable-length sequence.
-fn nsub_word(nsub: usize) -> F192 {
-    assert!(nsub < NSUB_BOUND, "recursion arity {nsub} exceeds the guest bound");
-    F192::new(g_pow(nsub).0, 0, 0)
+// The guest bakes a bytecode claim's width from `N_TUPLE_BITS` while `bytecode_vars`
+// reads it off the stacked table, which is `N_BYTECODE_SELECTORS` wide. Two constants
+// that happen to agree: were they to drift, a leaf's claim point would be one length in
+// the guest and another in the statement, and nothing else would notice.
+const _: () = assert!(lean_vm::leaf::N_TUPLE_BITS == lean_vm::leaf::N_BYTECODE_SELECTORS);
+// The epoch digest absorbs the tweak table and the Merkle bits two cells per
+// compression, the guest as `N_TWEAKS / 2` then `LOG_LIFETIME / 2` blocks and this file
+// as one `chunks_exact(2)` over their concatenation. Odd counts would silently drop a
+// cell here and misalign the blocks there.
+const _: () = assert!((2 + xmss::V * (xmss::CHAIN_LENGTH - 1) + xmss::LOG_LIFETIME).is_multiple_of(2));
+const _: () = assert!(xmss::LOG_LIFETIME.is_multiple_of(2));
+
+/// A count as the guest carries it: in the exponent, `g^n`.
+fn count(n: usize) -> F192 {
+    F192::new(g_pow(n).0, 0, 0)
 }
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
@@ -53,21 +80,6 @@ fn u(f: F192) -> u128 {
 
 fn f192_literal(f: F192) -> String {
     format!("f192({},{},{})", f.c0, f.c1, f.c2)
-}
-
-/// Native replay of the VM's `blake2s(cur, cur, nxt)` over two 128-bit words:
-/// pack the two `F192` words into the four `F64` lanes the sponge compression
-/// consumes, compress, and unpack.
-///
-/// Word→lane packing confirmed against the VM's blake2s opcode (`cpu::mod`
-/// `blake2s_self_hash_aliased_operands`): a `[F64;4]` operand loaded from two
-/// 128-bit words is `[w0.c0, w0.c1, w1.c0, w1.c1]` (word-major, lo=c0 then
-/// hi=c1), and the two output words pack back the same way
-/// (`mem[out] == cell(d[0], d[1])`, `cell(d[2], d[3])`).
-fn vmhash_compress2(st: [F192; 2]) -> [F192; 2] {
-    let inb = [F64(st[0].c0), F64(st[0].c1), F64(st[1].c0), F64(st[1].c1)];
-    let out = lean_vm::vmhash::compress(inb, inb);
-    [F192::new(out[0].0, out[1].0, 0), F192::new(out[2].0, out[3].0, 0)]
 }
 
 /// Pack the sponge's four K lanes as two canonical 128-bit VM cells.
@@ -82,90 +94,185 @@ fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
     [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
 }
 
-/// The non-trivial inner program: a runtime-bounded BLAKE2s hash chain seeded
-/// from the public input, a runtime-bounded `mul_range` product loop with heap
-/// traffic, and a final assert tying them together. BOTH loop bounds ride
-/// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
-/// digest) proves runs with wildly different opcode profiles and sizes - the
-/// exact genericity the recursion guest is built for. Exercises every table
-/// (XOR/MUL/SET/DEREF/JUMP/BLAKE2s/PACK64X2).
-fn inner_program() -> Program {
-    let src = "from snark_lib import *\n\
-        def main():\n\
-        \x20   p = GEN ** 0\n\
-        \x20   nh = HeapBuf(1)\n\
-        \x20   hint_witness(nh[0:1], \"n_hash\")\n\
-        \x20   hbound = nh[GEN ** 0]\n\
-        \x20   assert log(hbound) < 65536\n\
-        \x20   hc0 = HeapBuf(hbound * GEN)\n\
-        \x20   hc1 = HeapBuf(hbound * GEN)\n\
-        \x20   hc0[GEN ** 0] = p[1]\n\
-        \x20   hc1[GEN ** 0] = p[GEN]\n\
-        \x20   for h in mul_range(1, hbound):\n\
-        \x20       cur = StackBuf(2)\n\
-        \x20       cur[0] = hc0[h]\n\
-        \x20       cur[1] = hc1[h]\n\
-        \x20       nxt = StackBuf(2)\n\
-        \x20       blake2s(cur, cur, nxt)\n\
-        \x20       hc0[h * GEN] = nxt[0]\n\
-        \x20       hc1[h * GEN] = nxt[1]\n\
-        \x20   st0 = hc0[hbound]\n\
-        \x20   s1 = hc1[hbound]\n\
-        \x20   nb = HeapBuf(1)\n\
-        \x20   hint_witness(nb[0:1], \"iters\")\n\
-        \x20   bound = nb[GEN ** 0]\n\
-        \x20   assert log(bound) < 65536\n\
-        \x20   buf = HeapBuf(bound)\n\
-        \x20   acc = HeapBuf(bound * GEN)\n\
-        \x20   acc[GEN ** 0] = st0\n\
-        \x20   for x in mul_range(1, bound):\n\
-        \x20       buf[x] = acc[x] * acc[x] + s1\n\
-        \x20       acc[x * GEN] = buf[x] + x\n\
-        \x20   out = acc[bound]\n\
-        \x20   nz = HeapBuf(1)\n\
-        \x20   hint_witness(nz[0:1], \"outinv\")\n\
-        \x20   prod = out * nz[GEN ** 0]\n\
-        \x20   assert prod == 1\n\
-        \x20   return\n";
-    compile(&parse(src).expect("parse inner"))
+/// Native mirror of the guest's default `blake2s(state, block, out)` over two
+/// 128-bit cells each: the four `F64` lanes of a two-cell buffer are
+/// `[w0.c0, w0.c1, w1.c0, w1.c1]`, and the output packs back the same way.
+fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
+    let lanes = |c: [F192; 2]| [F64(c[0].c0), F64(c[0].c1), F64(c[1].c0), F64(c[1].c1)];
+    let out = lean_vm::vmhash::compress(lanes(state), lanes(block));
+    [F192::new(out[0].0, out[1].0, 0), F192::new(out[2].0, out[3].0, 0)]
 }
 
-/// Prove one run of the inner program: `hashes` BLAKE2s compressions then
-/// `iters` product-loop steps (both runtime, driven by the witness hints).
-/// The witness generator replays both natively to supply the final-inverse
-/// hint. Returns (program, proof, guest-cycle count, committed witness size).
-fn prove_inner(
-    pi: [F192; 2],
-    hashes: usize,
-    iters: usize,
-    log_inv_rate: usize,
-) -> (Program, lean_vm::cpu::Proof, usize, usize) {
-    assert!(hashes >= 1 && iters >= 1, "both loops run at least once");
-    let mut program = inner_program();
-    // Replay natively: the hash chain, then the product loop, to fetch the
-    // final accumulator (nonzero, for the hinted-inverse assert).
-    let mut st = [pi[0], pi[1]];
-    for _ in 0..hashes {
-        st = vmhash_compress2(st);
+/// A domain-separated two-cell IV, so the guest's two plain BLAKE2s chains
+/// cannot be confused with each other or with a sponge state.
+fn chain_iv(label: &[u8]) -> [F192; 2] {
+    pack_state(Sponge::new(label, &[]).state())
+}
+
+/// A 16-byte native value as one canonical 128-bit cell.
+fn val16(b: &[u8]) -> F192 {
+    let w = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+    F192::new(w(0), w(8), 0)
+}
+
+/// A public key as the two cells the guest hashes and `verify_sig` reads:
+/// the Merkle root then the public parameter.
+fn key_cells(pk: &XmssPublicKey) -> [F192; 2] {
+    [val16(&pk.merkle_root), val16(&pk.public_param)]
+}
+
+/// The 328-entry tweak table at `epoch`, in the order `verify_sig` indexes it:
+/// encoding, then `V` chains of `CHAIN_LENGTH - 1` steps, then the WOTS-PK
+/// tweak, then one per Merkle level. The Merkle parent index is `epoch >>
+/// (level+1)` in `u64` (a `u32` shift by 32 at the top level would mask, not
+/// zero).
+fn tweak_table(epoch: u32) -> Vec<xmss::Tweak> {
+    use xmss::*;
+    let mut tweaks = vec![make_tweak(TWEAK_TYPE_ENCODING, 0, epoch)];
+    for i in 0..V {
+        for s in 0..CHAIN_LENGTH - 1 {
+            tweaks.push(make_tweak(TWEAK_TYPE_CHAIN, (i * CHAIN_LENGTH + s) as u32, epoch));
+        }
     }
-    let mut acc = st[0];
-    let mut x = F192::ONE;
-    let g = F192::new(primitives::field::g_pow(1).0, 0, 0); // embedded base generator
-    for _ in 0..iters {
-        let b = acc * acc + st[1];
-        acc = b + x;
-        x *= g;
+    tweaks.push(make_tweak(TWEAK_TYPE_WOTS_PK, 0, epoch));
+    for l in 0..LOG_LIFETIME {
+        let parent_index = ((epoch as u64) >> (l + 1)) as u32;
+        tweaks.push(make_tweak(TWEAK_TYPE_MERKLE, (l + 1) as u32, parent_index));
     }
-    let out = acc;
-    assert!(out != F192::ZERO, "inner accumulator must be nonzero");
-    program.set_witness("outinv", vec![vec![out.inv()]]);
-    program.set_witness("n_hash", vec![vec![F192::new(g_pow(hashes).0, 0, 0)]]);
-    program.set_witness("iters", vec![vec![F192::new(g_pow(iters).0, 0, 0)]]);
-    let (proof, stats) = prove(&program, pi, log_inv_rate);
-    // Reported once, by `run_recursion_with_rates` from `Batch::inner_stats`. The
-    // inner guest's own work, not its filled row count, so the figure means the same
-    // thing as the outer one.
-    (program, proof, stats.base_counts.iter().sum(), stats.committed)
+    tweaks
+}
+
+/// The Merkle direction bits at `epoch`, one 1-cell word per level.
+fn merkle_bit_cells(epoch: u32) -> Vec<F192> {
+    (0..xmss::LOG_LIFETIME)
+        .map(|l| F192::new(((epoch >> l) & 1) as u64, 0, 0))
+        .collect()
+}
+
+/// The epoch's whole contribution to the statement: the tweak table and the
+/// Merkle bits, chained through BLAKE2s exactly as the guest absorbs them, two
+/// cells per compression. Nothing derives a tweak in-circuit; the guest hints
+/// both tables and checks this digest.
+fn epoch_hash(epoch: u32) -> [F192; 2] {
+    let mut cells: Vec<F192> = tweak_table(epoch).iter().map(|t| val16(t)).collect();
+    cells.extend(merkle_bit_cells(epoch));
+    let mut state = chain_iv(EPOCH_LABEL);
+    for block in cells.chunks_exact(2) {
+        state = compress2(state, [block[0], block[1]]);
+    }
+    state
+}
+
+/// The signer-set digest: one compression per key, in list order.
+fn pubkeys_hash(keys: &[XmssPublicKey]) -> [F192; 2] {
+    let mut state = chain_iv(PUBKEYS_LABEL);
+    for pk in keys {
+        state = compress2(state, key_cells(pk));
+    }
+    state
+}
+
+/// The claims on the three fixed polynomials that a node defers rather than
+/// evaluating in-circuit: one point and value on the stacked bytecode, one point
+/// and two values on flock's `A0`/`B0` (`doc/leanvm/main.tex` §Deferred
+/// evaluation claims).
+///
+/// Only the points are transmitted; the values are derived from them on receipt,
+/// so a prover that lies about a value changes the statement its proof has to
+/// satisfy rather than the claim anyone checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeferredClaim {
+    bytecode_point: Vec<F192>,
+    bytecode_value: F192,
+    matrix_point: Vec<F192>,
+    matrix_a_value: F192,
+    matrix_b_value: F192,
+}
+
+impl DeferredClaim {
+    /// What a leaf defers: the all-zeros point on each polynomial, where the
+    /// value is just the table's first entry.
+    fn leaf() -> Self {
+        Self::recompute(
+            vec![F192::ZERO; bytecode_vars()],
+            vec![F192::ZERO; 2 * flock::blake2s::K_LOG],
+        )
+        .expect("the all-zeros point has the right shape")
+    }
+
+    /// Evaluate the three fixed polynomials at `bytecode_point` / `matrix_point`.
+    fn recompute(bytecode_point: Vec<F192>, matrix_point: Vec<F192>) -> Result<Self, VerifyError> {
+        let klog = flock::blake2s::K_LOG;
+        if bytecode_point.len() != bytecode_vars() || matrix_point.len() != 2 * klog {
+            return Err(VerifyError::MalformedClaim);
+        }
+        // Every leaf defers the all-zeros point, where each polynomial is just
+        // its table's first entry. Worth special-casing: the general path is two
+        // full passes, one over 2^23 bytecode entries and one over 89M matrix
+        // nonzeros, and a leaf is the aggregate people verify most.
+        if bytecode_point.iter().chain(&matrix_point).all(|x| *x == F192::ZERO) {
+            let (ma, mb) = flock::blake2s::matrices();
+            let first = |m: &flock::r1cs::SparseBinaryMatrix| {
+                if m.rows[0].contains(&0) { F192::ONE } else { F192::ZERO }
+            };
+            return Ok(Self {
+                bytecode_point,
+                bytecode_value: F192::from(stacked_bytecode()[0]),
+                matrix_point,
+                matrix_a_value: first(ma),
+                matrix_b_value: first(mb),
+            });
+        }
+        let bytecode_value = mle_eval(stacked_bytecode(), &bytecode_point);
+        let eq_r = pcs::whir::build_eq_table_ext(&matrix_point[..klog]);
+        let eq_c = pcs::whir::build_eq_table_ext(&matrix_point[klog..]);
+        let (matrix_a_value, matrix_b_value) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
+        Ok(Self {
+            bytecode_point,
+            bytecode_value,
+            matrix_point,
+            matrix_a_value,
+            matrix_b_value,
+        })
+    }
+
+    /// The cells the statement digest absorbs, in the guest's `defer_stmt` order.
+    fn cells(&self) -> Vec<F192> {
+        let mut cells = self.bytecode_point.clone();
+        cells.push(self.bytecode_value);
+        cells.extend_from_slice(&self.matrix_point);
+        cells.push(self.matrix_a_value);
+        cells.push(self.matrix_b_value);
+        cells
+    }
+}
+
+/// A node's public statement, hashed to the two words the VM publishes. The
+/// guest's `statement_digest` computes exactly this, both for itself and when it
+/// rebuilds a child's, which is what forces a whole tree onto one bytecode,
+/// one message and one epoch.
+fn statement_digest(
+    n_keys: usize,
+    pubkeys_hash: [F192; 2],
+    message: &xmss::Message,
+    epoch_hash: [F192; 2],
+    defer: &DeferredClaim,
+) -> [F192; 2] {
+    let fs_seed = lean_vm::cpu::fs_seed(unified_guest());
+    let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
+    sponge.observe(fs_seed[0]);
+    sponge.observe(fs_seed[1]);
+    sponge.observe(count(n_keys));
+    sponge.observe(pubkeys_hash[0]);
+    sponge.observe(pubkeys_hash[1]);
+    sponge.observe(val16(&message[..16]));
+    sponge.observe(val16(&message[16..]));
+    sponge.observe(epoch_hash[0]);
+    sponge.observe(epoch_hash[1]);
+    for c in defer.cells() {
+        sponge.observe(c);
+    }
+    pack_state(sponge.state())
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -173,7 +280,6 @@ fn prove_inner(
 /// n_rec = 1 forwards fresh claims without batching).
 struct DeferredSubproof {
     public_input: [F192; 2],
-    bytecode_log: usize,
     bytecode_row_point: Vec<F192>,
     bytecode_selector_point: Vec<F192>,
     bytecode_value: F192,
@@ -185,91 +291,169 @@ struct DeferredSubproof {
     matrix_claim: F192,
 }
 
-/// The deferred claims the aggregation exports: one point and value on
-/// the stacked bytecode polynomial, one point + two values on the flock
-/// matrices (`doc/leanvm/main.tex` §Deferred evaluation claims).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct DeferredClaims {
-    bytecode_point: Vec<F192>,
-    bytecode_value: F192,
-    matrix_point: Vec<F192>,
-    matrix_a_value: F192,
-    matrix_b_value: F192,
-}
-
-/// Everything committed by the outer public input. Keeping this private makes
-/// the deferred claims an implementation detail of recursive verification.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct RecursiveStatement {
-    sub_statements: Vec<[F192; 2]>,
-    reduced: DeferredClaims,
-}
-
-impl RecursiveStatement {
-    fn public_input(&self, inner_environment: [F192; 2]) -> [F192; 2] {
-        let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
-        sponge.observe(nsub_word(self.sub_statements.len()));
-        for &v in &inner_environment {
-            sponge.observe(v);
-        }
-        for statement in &self.sub_statements {
-            for &v in statement {
-                sponge.observe(v);
-            }
-        }
-        for &v in &self.reduced.bytecode_point {
-            sponge.observe(v);
-        }
-        sponge.observe(self.reduced.bytecode_value);
-        for &v in &self.reduced.matrix_point {
-            sponge.observe(v);
-        }
-        sponge.observe(self.reduced.matrix_a_value);
-        sponge.observe(self.reduced.matrix_b_value);
-        pack_state(sponge.state())
-    }
-}
-
-/// A complete N→1 recursive proof.
+/// An aggregate signature: a proof that every key in `public_keys` signed
+/// `message` at `epoch`.
 ///
-/// Its contents are deliberately opaque. [`RecursiveProof::verify`] is the
-/// only acceptance path and checks both the outer VM proof and the fixed
-/// polynomial evaluations deferred by the recursion guest.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct RecursiveProof {
-    statement: RecursiveStatement,
-    outer_proof: lean_vm::cpu::Proof,
-}
-
-impl RecursiveProof {
-    /// Statements aggregated by this proof, in transcript order.
-    pub fn sub_statements(&self) -> &[[F192; 2]] {
-        &self.statement.sub_statements
-    }
-
-    /// Verify the complete recursive proof against the expected inner program.
-    pub fn verify(&self, inner_program: &Program) -> Result<(), RecursiveVerifyError> {
-        let statement = &self.statement;
-        if statement.sub_statements.is_empty() {
-            return Err(RecursiveVerifyError::EmptyBatch);
-        }
-        // Verification only reads the compiled guest; prover witness streams
-        // live on owned clones.
-        let guest = recursion_guest_arc(inner_program);
-        let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
-        verify(&guest, &public_input, &self.outer_proof).map_err(RecursiveVerifyError::OuterProof)?;
-        check_deferred_claims(inner_program, &statement.reduced)
-    }
-}
-
+/// The signer set is strictly sorted and deduplicated, and it is the union of
+/// everything the aggregate covers, whether by a raw signature or through a
+/// child aggregate. [`Self::verify`] is the only acceptance path.
 #[derive(Clone, Debug)]
-pub enum RecursiveVerifyError {
-    EmptyBatch,
-    InvalidDeferredShape,
-    OuterProof(lean_vm::cpu::Error),
-    BytecodeClaim,
-    MatrixAClaim,
-    MatrixBClaim,
+pub struct AggregateSignature {
+    pub message: xmss::Message,
+    pub epoch: u32,
+    /// Strictly sorted, deduplicated, non-empty, at most [`MAX_KEYS`] long.
+    pub public_keys: Vec<XmssPublicKey>,
+    /// What this aggregate defers to whoever discharges it: its parent, in
+    /// circuit, or [`Self::verify`], natively.
+    defer: DeferredClaim,
+    proof: lean_vm::cpu::Proof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VerifyError {
+    /// The signer set is empty, unsorted, holds a duplicate, or is too long.
+    MalformedSignerSet,
+    /// A deferred claim's point has the wrong number of coordinates.
+    MalformedClaim,
+    /// The aggregate is for a different message or epoch than the caller expected.
+    UnexpectedStatement,
+    Proof(lean_vm::cpu::Error),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AggregateError {
+    /// A child disagrees with the node on the message or the epoch.
+    InconsistentChildren,
+    /// A child aggregate does not verify.
+    InvalidChild(VerifyError),
+    /// Nothing to aggregate: no raw signatures and no children.
+    Empty,
+    /// More than [`MAX_CHILDREN`] children, or more than [`MAX_KEYS`] signers
+    /// once the duplicate slots are counted.
+    TooLarge,
+    /// A child's committed witness falls outside the opening arms the guest was
+    /// compiled with. Small aggregates are padded up to the floor, so this means
+    /// a child too big: more signatures than one node can hold.
+    ChildOutOfRange { log_committed: usize },
+}
+
+/// Everything but the signer set, which a receiver may already hold.
+type WireCore = (xmss::Message, u32, Vec<F192>, Vec<F192>, lean_vm::cpu::Proof);
+
+/// Reject a signer set that the coverage argument does not cover: strict sorting
+/// is what makes "every declared key signed" mean `public_keys.len()` distinct
+/// signers rather than one signer counted many times.
+fn check_signer_set(keys: &[XmssPublicKey]) -> Result<(), VerifyError> {
+    if keys.is_empty() || keys.len() >= MAX_KEYS || !keys.windows(2).all(|w| w[0] < w[1]) {
+        return Err(VerifyError::MalformedSignerSet);
+    }
+    Ok(())
+}
+
+impl AggregateSignature {
+    /// This aggregate's own public statement, as the VM publishes it.
+    fn public_input(&self) -> [F192; 2] {
+        statement_digest(
+            self.public_keys.len(),
+            pubkeys_hash(&self.public_keys),
+            &self.message,
+            epoch_hash(self.epoch),
+            &self.defer,
+        )
+    }
+
+    /// The wire format: the shared statement, the signer set, the two deferred
+    /// points, and the VM proof. The claim *values* are not transmitted;
+    /// [`Self::from_bytes`] recomputes them, so there is nothing to lie about.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(&(&self.public_keys, self.core())).expect("an aggregate serializes")
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let (public_keys, core): (Vec<XmssPublicKey>, WireCore) = bincode::deserialize(bytes).ok()?;
+        Self::from_parts(public_keys, core)
+    }
+
+    /// Without the signer set, for a receiver that already knows it. A set other
+    /// than the one aggregated fails verification.
+    pub fn to_bytes_without_pubkeys(&self) -> Vec<u8> {
+        bincode::serialize(&self.core()).expect("an aggregate serializes")
+    }
+
+    pub fn from_bytes_without_pubkeys(bytes: &[u8], public_keys: Vec<XmssPublicKey>) -> Option<Self> {
+        Self::from_parts(public_keys, bincode::deserialize(bytes).ok()?)
+    }
+
+    fn core(&self) -> WireCore {
+        (
+            self.message,
+            self.epoch,
+            self.defer.bytecode_point.clone(),
+            self.defer.matrix_point.clone(),
+            self.proof.clone(),
+        )
+    }
+
+    fn from_parts(public_keys: Vec<XmssPublicKey>, core: WireCore) -> Option<Self> {
+        let (message, epoch, bytecode_point, matrix_point, proof) = core;
+        Some(Self {
+            message,
+            epoch,
+            public_keys,
+            defer: DeferredClaim::recompute(bytecode_point, matrix_point).ok()?,
+            proof,
+        })
+    }
+
+    /// Verify the aggregate against the message and epoch the caller expects.
+    ///
+    /// Prefer this to [`Self::verify`]. The prover supplies `message` and
+    /// `epoch` along with everything else, so a bare `verify` establishes only
+    /// that these signers signed *this object's* statement: an aggregate over
+    /// the same keys from a different epoch, or over a different message,
+    /// verifies just as well. Anything that reads `public_keys` as attestation
+    /// of a particular statement has to pin that statement here.
+    pub fn verify_against(&self, message: &xmss::Message, epoch: u32) -> Result<(), VerifyError> {
+        if &self.message != message || self.epoch != epoch {
+            return Err(VerifyError::UnexpectedStatement);
+        }
+        self.verify()
+    }
+
+    /// Verify the aggregate's internal consistency: the signer set is well
+    /// formed, the three deferred fixed-polynomial claims hold at their
+    /// transmitted points, and the VM proof satisfies the statement built from
+    /// all of it.
+    ///
+    /// This says "every key in `public_keys` signed `self.message` at
+    /// `self.epoch`", with `self.message` and `self.epoch` chosen by whoever
+    /// produced the aggregate. Use [`Self::verify_against`] unless the caller
+    /// has already pinned those two some other way.
+    pub fn verify(&self) -> Result<(), VerifyError> {
+        check_signer_set(&self.public_keys)?;
+        // Recomputing the values is what binds them: a claim carrying anything
+        // else yields a different statement, which the proof cannot satisfy.
+        let defer = DeferredClaim::recompute(self.defer.bytecode_point.clone(), self.defer.matrix_point.clone())?;
+        if defer != self.defer {
+            return Err(VerifyError::MalformedClaim);
+        }
+        verify(unified_guest(), &self.public_input(), &self.proof).map_err(VerifyError::Proof)?;
+        Ok(())
+    }
+}
+
+/// The stacked bytecode polynomial of the aggregation guest: the one fixed
+/// table every node's bytecode claims are about. Cached, because verification
+/// evaluates it and building it walks the whole program.
+fn stacked_bytecode() -> &'static [F64] {
+    static TABLE: std::sync::OnceLock<Vec<F64>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| lean_vm::cpu::layout::bytecode_table(&unified_guest().prog))
+}
+
+/// Variables of a bytecode claim's point: the log row count plus the stacking
+/// selectors.
+fn bytecode_vars() -> usize {
+    stacked_bytecode().len().trailing_zeros() as usize
 }
 
 fn fold_lsb(t: &mut Vec<F192>, r: F192) {
@@ -318,22 +502,25 @@ fn absorb_round(
     r
 }
 
-/// Mirror the guest's aggregation transcript and prove the two batching
-/// sumchecks: dense for bytecode and two-phase sparse for the matrices. Returns
-/// the guest hints and the deferred claims they reduce to.
-fn aggregate_deferred_claims(
-    program: &Program,
-    subs: &[DeferredSubproof],
-) -> (Vec<(String, Vec<F192>)>, DeferredClaims) {
+/// Mirror the guest's `aggregate_claims` transcript and prove the two batching
+/// sumchecks: dense for the bytecode, two-phase sparse for the matrices.
+///
+/// Each child brings two claims per fixed polynomial: the one it deferred
+/// (`carried`) and the fresh one its verification raised (`subs`). They differ
+/// only in the weight they enter with. A fresh matrix claim carries flock's
+/// zerocheck/lincheck structure; a carried one is a plain point, so its weight
+/// is an eq table on each side. Returns the guest hints and the single claim
+/// per polynomial they reduce to.
+fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim]) -> (SubHints, DeferredClaim) {
     let nsub = subs.len();
-    let kbc = subs[0].bytecode_log;
-    let kbcv = kbc + lean_vm::leaf::N_BYTECODE_SELECTORS;
+    assert_eq!(nsub, carried.len(), "one carried claim per child");
+    let kbcv = bytecode_vars();
     let klog = flock::blake2s::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
     let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
-    h.observe(nsub_word(nsub));
-    for d in subs {
+    h.observe(count(nsub));
+    for (d, c) in subs.iter().zip(carried) {
         h.observe(d.public_input[0]);
         h.observe(d.public_input[1]);
         for &v in &d.bytecode_row_point {
@@ -355,35 +542,41 @@ fn aggregate_deferred_claims(
             h.observe(v);
         }
         h.observe(d.matrix_claim);
+        for v in c.cells() {
+            h.observe(v);
+        }
     }
 
-    // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
-    // the shared push/pull point) ----
-    let gbc: Vec<F192> = (0..nsub).map(|_| h.sample()).collect();
-    let mut bt: Vec<F192> = lean_vm::cpu::layout::bytecode_table(&program.prog)
-        .into_iter()
-        .map(|x| F192::new(x.0, 0, 0))
-        .collect();
-    let mut wt = vec![F192::ZERO; 1 << kbcv];
+    // ---- bytecode batching sumcheck (dense, 2^kbcv; fresh then carried per child) ----
+    let gbc: Vec<F192> = (0..2 * nsub).map(|_| h.sample()).collect();
     let points: Vec<Vec<F192>> = subs
         .iter()
-        .map(|d| {
-            d.bytecode_row_point
-                .iter()
-                .chain(&d.bytecode_selector_point)
-                .copied()
-                .collect::<Vec<_>>()
+        .zip(carried)
+        .flat_map(|(d, c)| {
+            [
+                d.bytecode_row_point
+                    .iter()
+                    .chain(&d.bytecode_selector_point)
+                    .copied()
+                    .collect::<Vec<_>>(),
+                c.bytecode_point.clone(),
+            ]
         })
         .collect();
+    let values: Vec<F192> = subs
+        .iter()
+        .zip(carried)
+        .flat_map(|(d, c)| [d.bytecode_value, c.bytecode_value])
+        .collect();
+    let mut bt: Vec<F192> = stacked_bytecode().iter().map(|x| F192::new(x.0, 0, 0)).collect();
+    let mut wt = vec![F192::ZERO; 1 << kbcv];
     for (t, p) in points.iter().enumerate() {
         let eqt = pcs::whir::build_eq_table_ext(p);
         for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
             *w += gbc[t] * e;
         }
     }
-    let mut brun: F192 = (0..nsub)
-        .map(|t| gbc[t] * subs[t].bytecode_value)
-        .fold(F192::ZERO, |a, x| a + x);
+    let mut brun: F192 = (0..2 * nsub).map(|t| gbc[t] * values[t]).fold(F192::ZERO, |a, x| a + x);
     let mut bscr = Vec::new();
     let mut r_bc = Vec::new();
     for _ in 0..kbcv {
@@ -395,29 +588,42 @@ fn aggregate_deferred_claims(
     let v_bc = bt[0];
     assert_eq!(brun, v_bc * wt[0], "bytecode sumcheck terminal");
 
-    // ---- matrix batching sumcheck (two-phase sparse, per the probe) ----
-    let gmt: Vec<F192> = (0..nsub).map(|_| h.sample()).collect();
-    let (ma, mb) = flock::blake2s::matrices();
-    // per-claim dense weight tables: rows = quirky eq, cols = eq(top rounds) x z_partial.
-    let mut us: Vec<Vec<F192>> = subs
-        .iter()
-        .map(|d| flock::lincheck::build_quirky_eq_table(d.skip_point, &d.zerocheck_row_point, 6))
-        .collect();
-    let ws: Vec<Vec<F192>> = subs
-        .iter()
-        .map(|d| {
+    // ---- matrix batching sumcheck (two-phase sparse) ----
+    // One group per claim: the row weights, the column weights, and the
+    // coefficient each matrix enters with. Downstream is shape-blind.
+    let mut us: Vec<Vec<F192>> = Vec::with_capacity(2 * nsub);
+    let mut ws: Vec<Vec<F192>> = Vec::with_capacity(2 * nsub);
+    let mut ga: Vec<F192> = Vec::with_capacity(2 * nsub);
+    let mut gb: Vec<F192> = Vec::with_capacity(2 * nsub);
+    let mut mrun = F192::ZERO;
+    for (d, c) in subs.iter().zip(carried) {
+        let (gf, cga, cgb) = (h.sample(), h.sample(), h.sample());
+        us.push(flock::lincheck::build_quirky_eq_table(
+            d.skip_point,
+            &d.zerocheck_row_point,
+            6,
+        ));
+        ws.push(
             (0..1usize << klog)
-                .map(|c| {
-                    let mut w = d.lincheck_terminal_values[c & 63];
+                .map(|col| {
+                    let mut w = d.lincheck_terminal_values[col & 63];
                     for (j, &rj) in d.lincheck_round_point.iter().enumerate() {
-                        let bit = (c >> (klog - 1 - j)) & 1;
+                        let bit = (col >> (klog - 1 - j)) & 1;
                         w *= if bit == 1 { rj } else { F192::ONE + rj };
                     }
                     w
                 })
-                .collect()
-        })
-        .collect();
+                .collect(),
+        );
+        ga.push(gf * d.matrix_a_coefficient);
+        gb.push(gf);
+        us.push(pcs::whir::build_eq_table_ext(&c.matrix_point[..klog]));
+        ws.push(pcs::whir::build_eq_table_ext(&c.matrix_point[klog..]));
+        ga.push(cga);
+        gb.push(cgb);
+        mrun += gf * d.matrix_claim + cga * c.matrix_a_value + cgb * c.matrix_b_value;
+    }
+    let (ma, mb) = flock::blake2s::matrices();
     let contract_cols = |m: &flock::r1cs::SparseBinaryMatrix, w: &[F192]| -> Vec<F192> {
         m.rows
             .iter()
@@ -429,31 +635,33 @@ fn aggregate_deferred_claims(
         ms.push(contract_cols(ma, w));
         ms.push(contract_cols(mb, w));
     }
-    let ga: Vec<F192> = (0..nsub).map(|t| gmt[t] * subs[t].matrix_a_coefficient).collect();
-    let gb: Vec<F192> = gmt.clone();
-    let mut mrun: F192 = (0..nsub)
-        .map(|t| gmt[t] * subs[t].matrix_claim)
-        .fold(F192::ZERO, |a, x| a + x);
-    // sanity: the deferred matpart equals the bilinear form over the matrices.
+    // sanity: every claim really is the bilinear form over the matrices.
     #[cfg(debug_assertions)]
-    for (t, d) in subs.iter().enumerate() {
-        let direct = d.matrix_a_coefficient
-            * ms[2 * t]
-                .iter()
+    for t in 0..2 * nsub {
+        let form = |m: &[F192]| {
+            m.iter()
                 .zip(&us[t])
                 .map(|(&m, &u)| m * u)
                 .fold(F192::ZERO, |a, x| a + x)
-            + ms[2 * t + 1]
-                .iter()
-                .zip(&us[t])
-                .map(|(&m, &u)| m * u)
-                .fold(F192::ZERO, |a, x| a + x);
-        assert_eq!(direct, d.matrix_claim, "matrix bilinear identity, sub {t}");
+        };
+        let (fa, fb) = (form(&ms[2 * t]), form(&ms[2 * t + 1]));
+        if t % 2 == 0 {
+            let d = &subs[t / 2];
+            assert_eq!(
+                d.matrix_a_coefficient * fa + fb,
+                d.matrix_claim,
+                "fresh matrix claim, child {}",
+                t / 2
+            );
+        } else {
+            let c = &carried[t / 2];
+            assert_eq!((fa, fb), (c.matrix_a_value, c.matrix_b_value), "carried matrix claim");
+        }
     }
     let mut mscr = Vec::new();
     let mut r_row = Vec::new();
     for _ in 0..klog {
-        let pairs: Vec<(&[F192], &[F192], F192)> = (0..nsub)
+        let pairs: Vec<(&[F192], &[F192], F192)> = (0..2 * nsub)
             .flat_map(|t| {
                 [
                     (&us[t][..], &ms[2 * t][..], ga[t]),
@@ -485,11 +693,11 @@ fn aggregate_deferred_claims(
     let mut bcol = contract_rows(mb);
     let mut wa = vec![F192::ZERO; 1 << klog];
     let mut wb = vec![F192::ZERO; 1 << klog];
-    for t in 0..nsub {
-        let (sa, sb2) = (ga[t] * us[t][0], gb[t] * us[t][0]);
+    for t in 0..2 * nsub {
+        let (sa, sb) = (ga[t] * us[t][0], gb[t] * us[t][0]);
         for j in 0..1 << klog {
             wa[j] += sa * ws[t][j];
-            wb[j] += sb2 * ws[t][j];
+            wb[j] += sb * ws[t][j];
         }
     }
     let mut r_col = Vec::new();
@@ -503,13 +711,17 @@ fn aggregate_deferred_claims(
     }
     let (v_a, v_b) = (acol[0], bcol[0]);
     assert_eq!(mrun, v_a * wa[0] + v_b * wb[0], "matrix sumcheck terminal");
-    // sanity for the GUEST's succinct terminal-weight formulas.
-    #[cfg(debug_assertions)]
+    // The guest reaches the same two weights by a succinct formula rather than by
+    // folding these tables, and nothing else compares the two: the aggregation
+    // layer has no third implementation the way `cpu::verify` does. So this runs
+    // unconditionally (it is O(n) against a 2^28 sumcheck), and it compares the
+    // weights COMPONENT-WISE. Checking only the combination `v_a·wa + v_b·wb`
+    // would let two correlated errors through.
     {
         let eqr = pcs::whir::build_eq_table_ext(&r_row[..6]);
         let eqc = pcs::whir::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F192::ZERO, F192::ZERO);
-        for (t, d) in subs.iter().enumerate() {
+        for (t, (d, c)) in subs.iter().zip(carried).enumerate() {
             let lam = primitives::multilinear::lagrange_weights_naive(6, d.skip_point);
             let mut urow: F192 = (0..64).map(|i| lam[i] * eqr[i]).fold(F192::ZERO, |a, x| a + x);
             for (k, &z) in d.zerocheck_row_point.iter().enumerate() {
@@ -521,22 +733,20 @@ fn aggregate_deferred_claims(
             for (j, &rj) in d.lincheck_round_point.iter().enumerate() {
                 wcol *= F192::ONE + rj + r_col[klog - 1 - j];
             }
-            let u = urow * wcol;
-            wam += ga[t] * u;
-            wbm += gb[t] * u;
+            let fresh = urow * wcol;
+            let mut plain = F192::ONE;
+            for (k, &p) in c.matrix_point.iter().enumerate() {
+                let r = if k < klog { r_row[k] } else { r_col[k - klog] };
+                plain *= F192::ONE + p + r;
+            }
+            wam += ga[2 * t] * fresh + ga[2 * t + 1] * plain;
+            wbm += gb[2 * t] * fresh + gb[2 * t + 1] * plain;
         }
-        assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
+        assert_eq!(wa[0], wam, "guest row-weight formula for A0");
+        assert_eq!(wb[0], wbm, "guest row-weight formula for B0");
     }
 
-    // The inner proving environment (flock BLAKE2s R1CS + program bytecode)
-    // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
-    // baked into the guest), so one compiled guest serves any inner program.
-    let seed = lean_vm::cpu::fs_seed(program);
-    let r_m: Vec<F192> = r_row.iter().chain(&r_col).copied().collect();
-
     let hints = vec![
-        ("nsub".to_string(), vec![nsub_word(nsub)]),
-        ("fs_seed".to_string(), vec![seed[0], seed[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
         ("bc_star_hint".to_string(), vec![v_bc]),
@@ -544,40 +754,14 @@ fn aggregate_deferred_claims(
     ];
     (
         hints,
-        DeferredClaims {
+        DeferredClaim {
             bytecode_point: r_bc,
             bytecode_value: v_bc,
-            matrix_point: r_m,
+            matrix_point: r_row.iter().chain(&r_col).copied().collect(),
             matrix_a_value: v_a,
             matrix_b_value: v_b,
         },
     )
-}
-
-/// Discharge the three fixed-polynomial claims deferred by the guest.
-fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(), RecursiveVerifyError> {
-    let stacked = lean_vm::cpu::layout::bytecode_table(&program.prog);
-    let expected_bc = stacked.len().trailing_zeros() as usize;
-    if claims.bytecode_point.len() != expected_bc {
-        return Err(RecursiveVerifyError::InvalidDeferredShape);
-    }
-    if mle_eval(&stacked, &claims.bytecode_point) != claims.bytecode_value {
-        return Err(RecursiveVerifyError::BytecodeClaim);
-    }
-    let klog = flock::blake2s::K_LOG;
-    if claims.matrix_point.len() != 2 * klog {
-        return Err(RecursiveVerifyError::InvalidDeferredShape);
-    }
-    let eq_r = pcs::whir::build_eq_table_ext(&claims.matrix_point[..klog]);
-    let eq_c = pcs::whir::build_eq_table_ext(&claims.matrix_point[klog..]);
-    let (v_a, v_b) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
-    if v_a != claims.matrix_a_value {
-        return Err(RecursiveVerifyError::MatrixAClaim);
-    }
-    if v_b != claims.matrix_b_value {
-        return Err(RecursiveVerifyError::MatrixBClaim);
-    }
-    Ok(())
 }
 
 /// The verifier-side WHIR config for one committed size and rate, plus the
@@ -631,7 +815,7 @@ enum ClaimSite {
     MemoryLimb { column: usize },
 }
 
-/// The guest's `COORD_KIND_*` code for a coordinate (`guests/recursion.py`),
+/// The guest's `COORD_KIND_*` code for a coordinate (`guests/aggregate.py`),
 /// shared by its `COORD_TYPE` and `TERM_TYPE` arrays.
 fn coord_kind(c: &Coord) -> usize {
     match c {
@@ -737,7 +921,7 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
     }
 }
 
-/// Config + hints for the recursion guest (`guests/recursion.py`), built
+/// Config + hints for the recursion guest (`guests/aggregate.py`), built
 /// from the REAL `cpu::layout` of the inner program and the transcript trace of
 /// a real `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
@@ -745,7 +929,7 @@ fn gen_verify(
     pi: [F192; 2],
     summary: &lean_vm::cpu::VerifySummary,
     ops: &[TraceOp],
-) -> (Vec<(String, Vec<F192>)>, DeferredSubproof) {
+) -> Result<(SubHints, DeferredSubproof), AggregateError> {
     let raw = &summary.raw.stream;
     let l = lean_vm::cpu::layout(
         &program.prog,
@@ -759,6 +943,12 @@ fn gen_verify(
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
     assert!(*smu.iter().max().unwrap() <= MU_CAP && raw.len() <= STREAM_CAP);
+    // The guest holds one opening arm per candidate committed size, so a child
+    // outside that window has no arm to dispatch to. `min_log_committed` keeps
+    // every aggregate above the low end, leaving only the ceiling reachable.
+    if !(MU_MIN..=MU_MAX).contains(&l.m) {
+        return Err(AggregateError::ChildOutOfRange { log_committed: l.m });
+    }
 
     // ---- typed extraction: proof structs + the verifier's summary ----
     // Drift check: replaying the recorded trace from the seed must reproduce
@@ -922,9 +1112,15 @@ fn gen_verify(
         nover_v.push(nvt.saturating_sub(lenris));
     });
 
+    // The ring-switch weight's own residual overlap: the q_flock claim spans
+    // `qflockv` coordinates, and a BLAKE2s-dominated inner proof pushes that past
+    // the fold rounds. Same quantity as the q_flock point claim's `nover`, but
+    // the guest pins it independently, in the rs block.
+    let qflockv = lean_vm::blake2s_flock::SLOT_STRIDE_LOG + taus[5];
+    let rs_nover = qflockv.saturating_sub(lenris);
+
     let deferred = DeferredSubproof {
         public_input: pi,
-        bytecode_log: kbc,
         bytecode_row_point: zeta,
         bytecode_selector_point: sb.clone(),
         bytecode_value,
@@ -954,7 +1150,6 @@ fn gen_verify(
         ("matpart".to_string(), vec![matpart]),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
-        ("sub_pis".to_string(), vec![pi[0], pi[1]]),
         // per-claim overlap count, for the exact length pin: nover = the
         // amount by which the claim's total vars exceed the fold rounds.
         (
@@ -973,10 +1168,11 @@ fn gen_verify(
             "zc_tau_max".to_string(),
             vec![F192::new(g_pow(*taus.iter().max().unwrap()).0, 0, 0)],
         ),
+        ("rs_nover".to_string(), vec![F192::new(g_pow(rs_nover).0, 0, 0)]),
         ("col_sort_order".to_string(), col_sort_order),
-        ("sort_order".to_string(), sort_order.clone()),
+        ("sort_order".to_string(), sort_order),
     ];
-    (hints, deferred)
+    Ok((hints, deferred))
 }
 
 /// The guest's stacked-size dispatch range: one `match_range` opening arm per
@@ -991,95 +1187,297 @@ const MU_MAX: usize = 28;
 const MU_CAP: usize = 40;
 const STREAM_CAP: usize = 8192;
 
-/// Everything needed to run one N→1 recursion batch EXCEPT compiling the
-/// guest: the merged per-sub witness entries, the outer statement, and the
-/// data to discharge the reduced claims. Splitting the build from the compile
-/// lets one compiled guest serve many batches (see `recursion_generic_many`).
-struct Batch {
-    merged: Vec<(String, Vec<Vec<F192>>)>,
-    program0: Program,
-    statement: RecursiveStatement,
-    /// Per inner proof, in transcript order: (guest cycles, committed witness size).
-    inner_stats: Vec<(usize, usize)>,
-    outer_log_inv_rate: usize,
+/// Verify an inner proof with the transcript tracer on, which is what keeps the
+/// native and guest verifiers synchronized (`gen_verify` walks the recorded ops).
+fn traced_verify(
+    program: &Program,
+    pi: &[F192; 2],
+    proof: &lean_vm::cpu::Proof,
+) -> Result<(lean_vm::cpu::VerifySummary, Vec<TraceOp>), VerifyError> {
+    trace_start();
+    let summary = verify(program, pi, proof);
+    // Take the trace before propagating: a failed child verification would
+    // otherwise leave the thread-local recorder on, and every later sponge
+    // operation in the process would append to it.
+    let ops = trace_take();
+    Ok((summary.map_err(VerifyError::Proof)?, ops))
 }
 
-impl Batch {
-    fn public_input(&self) -> [F192; 2] {
-        self.statement.public_input(lean_vm::cpu::fs_seed(&self.program0))
-    }
+/// One entry per named hint stream, for a single sub-proof.
+type SubHints = Vec<(String, Vec<F192>)>;
 
-    /// Install this batch's generated hints and produce the complete proof
-    /// bundle. Keeping assembly here makes it impossible for tests and callers
-    /// to accidentally omit or mismatch one of the deferred components.
-    fn prove(&self, guest: &mut Program) -> (RecursiveProof, lean_vm::cpu::Stats) {
-        for (name, entries) in &self.merged {
-            guest.set_witness(name, entries.clone());
+/// One `hint_witness` stream: a name and its entries, in the order the guest
+/// pops them.
+#[derive(Default)]
+pub(crate) struct Hints(Vec<(String, Vec<Vec<F192>>)>);
+
+impl Hints {
+    fn push(&mut self, name: &str, entry: Vec<F192>) {
+        match self.0.iter_mut().find(|(n, _)| n == name) {
+            Some((_, entries)) => entries.push(entry),
+            None => self.0.push((name.to_string(), vec![entry])),
         }
-        let (outer_proof, stats) = prove(guest, self.public_input(), self.outer_log_inv_rate);
-        (
-            RecursiveProof {
-                statement: self.statement.clone(),
-                outer_proof,
-            },
-            stats,
-        )
+    }
+
+    /// The entries of one stream, for the adversarial test to corrupt.
+    #[cfg(test)]
+    fn entries(&mut self, name: &str) -> &mut Vec<Vec<F192>> {
+        &mut self
+            .0
+            .iter_mut()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no hint stream `{name}`"))
+            .1
+    }
+
+    fn install(self, guest: &mut Program) {
+        for (name, entries) in self.0 {
+            guest.set_witness(name, entries);
+        }
     }
 }
 
-/// Prove `inner.len()` inner runs (same program, distinct statements + shapes),
-/// verify each inside the recursion guest, and assemble the aggregation inputs.
-/// `inner[k] = (hashes, iters)` sets sub k's opcode profile.
-fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_rate: usize) -> Batch {
-    assert!(!inner.is_empty(), "a recursion batch cannot be empty");
-    assert_eq!(inner.len(), log_inv_rates.len(), "one PCS rate per inner proof");
-    let mut inner_stats = Vec::with_capacity(inner.len());
-    let mut protos = Vec::new();
-    for (k, (&(hashes, iters), &log_inv_rate)) in inner.iter().zip(log_inv_rates).enumerate() {
-        let pi = [
-            F192::new(0x1111_2222 + k as u64, 0x3333_4444, 0),
-            F192::new(0x5555_6666, 0x7777_8888 + k as u64, 0),
-        ];
-        let (program, proof, inner_cycles, inner_committed) = prove_inner(pi, hashes, iters, log_inv_rate);
-        inner_stats.push((inner_cycles, inner_committed));
-        trace_start();
-        let summary = verify(&program, &pi, &proof).expect("inner verifies");
-        let ops = trace_take();
-        protos.push((program, pi, summary, ops));
+/// The signer index each write in the guest's coverage walk targets, in walk
+/// order: the raw signatures first, then each child's key list.
+///
+/// A key first seen takes its slot in the declared set; one seen again takes a
+/// fresh duplicate slot past it, so the walk hits every one of the
+/// `n_keys + n_dup` slots exactly once. That bijection, enforced in-circuit by
+/// write-once memory plus the final count, is what makes every declared key
+/// covered by a real signature or a verified child.
+struct Coverage {
+    keys: Vec<XmssPublicKey>,
+    duplicates: Vec<XmssPublicKey>,
+    raw_indices: Vec<usize>,
+    child_indices: Vec<Vec<usize>>,
+}
+
+fn take_slot(
+    keys: &[XmssPublicKey],
+    claimed: &mut [bool],
+    duplicates: &mut Vec<XmssPublicKey>,
+    pk: &XmssPublicKey,
+) -> usize {
+    let pos = keys.binary_search(pk).expect("every covered key is in the union");
+    if claimed[pos] {
+        duplicates.push(pk.clone());
+        keys.len() + duplicates.len() - 1
+    } else {
+        claimed[pos] = true;
+        pos
     }
-    let mut merged: Vec<(String, Vec<Vec<F192>>)> = Vec::new();
-    let mut subs = Vec::new();
-    for (program, pi, summary, ops) in &protos {
-        let (hints, defer) = gen_verify(program, *pi, summary, ops);
-        // one witness ENTRY per sub-proof and stream: verify_sub pops the
-        // next entry of every stream on each call.
-        if merged.is_empty() {
-            merged = hints.into_iter().map(|(n, v)| (n, vec![v])).collect();
-        } else {
-            for ((name, acc), (n2, more)) in merged.iter_mut().zip(hints) {
-                assert_eq!(*name, n2);
-                acc.push(more);
-            }
+}
+
+fn plan_coverage(raw: &[XmssPublicKey], children: &[&[XmssPublicKey]]) -> Result<Coverage, AggregateError> {
+    let mut keys: Vec<XmssPublicKey> = raw.to_vec();
+    for c in children {
+        keys.extend_from_slice(c);
+    }
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() {
+        return Err(AggregateError::Empty);
+    }
+    let mut claimed = vec![false; keys.len()];
+    let mut duplicates = Vec::new();
+    let raw_indices: Vec<usize> = raw
+        .iter()
+        .map(|pk| take_slot(&keys, &mut claimed, &mut duplicates, pk))
+        .collect();
+    let child_indices: Vec<Vec<usize>> = children
+        .iter()
+        .map(|c| {
+            c.iter()
+                .map(|pk| take_slot(&keys, &mut claimed, &mut duplicates, pk))
+                .collect()
+        })
+        .collect();
+    if keys.len() + duplicates.len() >= MAX_KEYS {
+        return Err(AggregateError::TooLarge);
+    }
+    Ok(Coverage {
+        keys,
+        duplicates,
+        raw_indices,
+        child_indices,
+    })
+}
+
+/// One signature's witness: the WOTS randomness, the encoding digits (in the
+/// exponent), the chain tips they start from, and the Merkle siblings.
+fn push_signature_hints(
+    hints: &mut Hints,
+    pk: &XmssPublicKey,
+    sig: &XmssSignature,
+    message: &xmss::Message,
+    epoch: u32,
+) {
+    let wots = &sig.wots_signature;
+    let mut randomness = [0u8; xmss::STATE_LEN];
+    randomness[..xmss::RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
+    hints.push("rand", vec![val16(&randomness[..16]), val16(&randomness[16..])]);
+    let encoding =
+        xmss::wots_encode(message, epoch, &pk.public_param, &wots.randomness).expect("a verified signature encodes");
+    for &e in &encoding {
+        hints.push("digits", vec![count(e as usize)]);
+    }
+    for tip in &wots.chain_tips {
+        hints.push("chain_starts", vec![val16(tip)]);
+    }
+    for sibling in &sig.merkle_proof {
+        hints.push("siblings", vec![val16(sibling)]);
+    }
+}
+
+/// Aggregate raw XMSS signatures and previously aggregated signatures into one
+/// proof, over the union of their signer sets, all against the same
+/// `(message, epoch)`.
+///
+/// Children and raw signatures mix freely: no children is a leaf, no raw
+/// signatures is a pure recursion step, and one child plus a few signatures
+/// tops up an existing aggregate. One proving job at a time per process.
+pub fn aggregate(
+    children: &[AggregateSignature],
+    raw: Vec<(XmssPublicKey, XmssSignature)>,
+    message: xmss::Message,
+    epoch: u32,
+    log_inv_rate: usize,
+) -> Result<AggregateSignature, AggregateError> {
+    aggregate_with_stats(children, raw, message, epoch, log_inv_rate).map(|(sig, _)| sig)
+}
+
+/// [`aggregate`], keeping the prover statistics the benchmark reports.
+pub(crate) fn aggregate_with_stats(
+    children: &[AggregateSignature],
+    raw: Vec<(XmssPublicKey, XmssSignature)>,
+    message: xmss::Message,
+    epoch: u32,
+    log_inv_rate: usize,
+) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregateError> {
+    aggregate_tampered(children, raw, message, epoch, log_inv_rate, |_| {})
+}
+
+/// [`aggregate`], with a hook to corrupt the witness before proving.
+///
+/// The coverage argument and the claim batching are enforced entirely by guest
+/// asserts over prover advice, so the only way to test them is to lie in a hint
+/// and require the guest to notice. That is what `tamper` is for
+/// (`aggregate_hints_bind`); with an empty hook this is the production path.
+pub(crate) fn aggregate_tampered(
+    children: &[AggregateSignature],
+    raw: Vec<(XmssPublicKey, XmssSignature)>,
+    message: xmss::Message,
+    epoch: u32,
+    log_inv_rate: usize,
+    tamper: impl FnOnce(&mut Hints),
+) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregateError> {
+    if children.len() > MAX_CHILDREN {
+        return Err(AggregateError::TooLarge);
+    }
+    if children.iter().any(|c| c.message != message || c.epoch != epoch) {
+        return Err(AggregateError::InconsistentChildren);
+    }
+    let guest = unified_guest();
+    let mut raw = raw;
+    raw.sort_by(|(a, _), (b, _)| a.cmp(b));
+    raw.dedup_by(|(a, _), (b, _)| a == b);
+
+    // Verifying a child here is not a courtesy: `gen_verify` derives the guest's
+    // whole witness for it from the trace of a real verification. Its deferred
+    // claim is deliberately NOT recomputed, which would cost a full pass over
+    // each fixed polynomial per child: the batching sumcheck below already
+    // forces every batched value to be the true evaluation, and the root
+    // discharges the one claim they reduce to.
+    let mut verified = Vec::with_capacity(children.len());
+    for child in children {
+        check_signer_set(&child.public_keys).map_err(AggregateError::InvalidChild)?;
+        let pi = child.public_input();
+        let (summary, ops) = traced_verify(guest, &pi, &child.proof).map_err(AggregateError::InvalidChild)?;
+        verified.push((pi, summary, ops));
+    }
+
+    let raw_keys: Vec<XmssPublicKey> = raw.iter().map(|(pk, _)| pk.clone()).collect();
+    let child_keys: Vec<&[XmssPublicKey]> = children.iter().map(|c| c.public_keys.as_slice()).collect();
+    let cover = plan_coverage(&raw_keys, &child_keys)?;
+    let (n_keys, n_dup) = (cover.keys.len(), cover.duplicates.len());
+
+    let mut hints = Hints::default();
+    hints.push(
+        "meta",
+        vec![count(n_keys), count(n_dup), count(raw.len()), count(children.len())],
+    );
+    let fs_seed = lean_vm::cpu::fs_seed(guest);
+    hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
+    hints.push("message", vec![val16(&message[..16]), val16(&message[16..])]);
+    let tweaks = tweak_table(epoch);
+    for pair in tweaks.chunks_exact(2) {
+        hints.push("tweaks", vec![val16(&pair[0]), val16(&pair[1])]);
+    }
+    for pair in merkle_bit_cells(epoch).chunks_exact(2) {
+        hints.push("merkle_bits", vec![pair[0], pair[1]]);
+    }
+    for pk in &cover.keys {
+        hints.push("pubkeys", key_cells(pk).to_vec());
+    }
+    for pk in &cover.duplicates {
+        hints.push("dup_pubkeys", key_cells(pk).to_vec());
+    }
+    for (&idx, (pk, sig)) in cover.raw_indices.iter().zip(&raw) {
+        hints.push("raw_index", vec![count(idx)]);
+        push_signature_hints(&mut hints, pk, sig, &message, epoch);
+    }
+
+    let mut subs = Vec::with_capacity(children.len());
+    let mut carried = Vec::with_capacity(children.len());
+    for (i, child) in children.iter().enumerate() {
+        hints.push("child_n_keys", vec![count(child.public_keys.len())]);
+        for &idx in &cover.child_indices[i] {
+            hints.push("child_index", vec![count(idx)]);
+        }
+        hints.push("child_defer", child.defer.cells());
+        let (pi, summary, ops) = &verified[i];
+        let (sub_hints, defer) = gen_verify(guest, *pi, summary, ops)?;
+        for (name, entry) in sub_hints {
+            hints.push(&name, entry);
         }
         subs.push(defer);
+        carried.push(child.defer.clone());
     }
-    let (program0, _, _, _) = &protos[0];
-    let (agg_hints, reduced) = aggregate_deferred_claims(program0, &subs);
-    merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
-    let statement = RecursiveStatement {
-        sub_statements: subs.iter().map(|d| d.public_input).collect(),
-        reduced,
+
+    let defer = if children.is_empty() {
+        let leaf = DeferredClaim::leaf();
+        hints.push(
+            "leaf_defer",
+            vec![leaf.bytecode_value, leaf.matrix_a_value, leaf.matrix_b_value],
+        );
+        leaf
+    } else {
+        let (agg_hints, reduced) = aggregate_deferred_claims(&subs, &carried);
+        for (name, entry) in agg_hints {
+            hints.push(&name, entry);
+        }
+        reduced
     };
-    // Move the representative Program out (Program is not Clone) now that all
-    // aggregation borrows have ended. No representative proof is retained.
-    let (program0, _, _, _) = protos.swap_remove(0);
-    Batch {
-        merged,
-        program0,
-        statement,
-        inner_stats,
-        outer_log_inv_rate,
-    }
+
+    let public_input = statement_digest(n_keys, pubkeys_hash(&cover.keys), &message, epoch_hash(epoch), &defer);
+    let mut program = guest.clone();
+    // Every aggregate is a potential child, and the guest has no opening arm below
+    // `2^MU_MIN`. A run smaller than that (a leaf of a few dozen signatures) grows
+    // its SET table until it clears the floor.
+    program.min_log_committed = MU_MIN;
+    tamper(&mut hints);
+    hints.install(&mut program);
+    let (proof, stats) = prove(&program, public_input, log_inv_rate);
+    Ok((
+        AggregateSignature {
+            message,
+            epoch,
+            public_keys: cover.keys,
+            defer,
+            proof,
+        },
+        stats,
+    ))
 }
 
 struct OpeningShape {
@@ -1112,15 +1510,18 @@ struct OpeningShape {
 /// size-independent block/coord structure and `kbc = log2(bytecode)`, so the guest
 /// can be compiled BEFORE any inner proof exists. Because the map is a function of
 /// the inner bytecode size alone, one compiled guest serves every shape.
-fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
-    // Any valid sizes drive the layout — rep depends only on structure + kbc.
+fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
+    // Any valid sizes drive the layout — rep depends only on structure + kbc,
+    // and the layout reads a program's length, never its instructions, so a
+    // stand-in of the right size is what lets the map exist before the bytecode
+    // it describes does.
+    let stand_in = vec![lean_vm::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << kbc];
     let l = lean_vm::cpu::layout(
-        &program.prog,
+        &stand_in,
         20,
         [1usize << 10; lean_vm::tables::N_TABLES],
         [F192::ZERO, F192::ZERO],
     );
-    let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let lcrounds = flock::blake2s::K_LOG - 6;
 
@@ -1705,7 +2106,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
-    ps("NSUB_BOUND", NSUB_BOUND.to_string());
     let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
@@ -1715,324 +2115,355 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let statement_state = pack_state(Sponge::new(RECURSION_STATEMENT_LABEL, &[]).state());
     ps("STATEMENT_SEED_0", u(statement_state[0]).to_string());
     ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
+    let epoch_iv = chain_iv(EPOCH_LABEL);
+    ps("EPOCH_IV_0", u(epoch_iv[0]).to_string());
+    ps("EPOCH_IV_1", u(epoch_iv[1]).to_string());
+    let pk_iv = chain_iv(PUBKEYS_LABEL);
+    ps("PK_IV_0", u(pk_iv[0]).to_string());
+    ps("PK_IV_1", u(pk_iv[1]).to_string());
+
+    // The XMSS instance, from which the guest derives every table width by
+    // compile-time integer arithmetic.
+    ps("V", xmss::V.to_string());
+    ps("W", xmss::W.to_string());
+    ps("TARGET_SUM", xmss::TARGET_SUM.to_string());
+    ps("LOG_LIFETIME", xmss::LOG_LIFETIME.to_string());
+    ps("MAX_KEYS", MAX_KEYS.to_string());
+    ps("MAX_CHILDREN", MAX_CHILDREN.to_string());
     rep
 }
 
-/// Return the process-cached recursion guest for this program. The batch arity
-/// is a runtime hint, so it is not part of the key.
-fn recursion_guest_arc(inner_program: &Program) -> std::sync::Arc<Program> {
-    use std::sync::{Arc, Mutex, OnceLock};
+/// The aggregation bytecode, compiled to a fixed point on its own size.
+///
+/// The recursion placeholders are a function of the inner bytecode's log size,
+/// and here the inner bytecode is this one, so the size has to agree with
+/// itself. Its *digest* needs no such loop: it rides the statement rather than
+/// the code. The guess converges in one or two rounds because the map's only
+/// size-dependent part is a handful of unrolled sumcheck rounds.
+pub fn unified_guest() -> &'static Program {
+    static GUEST: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    GUEST.get_or_init(|| {
+        let mut guess = 20;
+        for _ in 0..8 {
+            let guest = compile_guest(guess);
+            let actual = guest.prog.len().trailing_zeros() as usize;
+            if actual == guess {
+                return guest;
+            }
+            guess = actual;
+        }
+        panic!("the aggregation bytecode's self-referential compile did not converge");
+    })
+}
 
-    type Key = [u64; 6];
-    static CACHE: OnceLock<Mutex<std::collections::HashMap<Key, Arc<Program>>>> = OnceLock::new();
-    const GUEST_CACHE_CAP: usize = 8;
-
-    let seed = lean_vm::cpu::fs_seed(inner_program);
-    let key = [seed[0].c0, seed[0].c1, seed[0].c2, seed[1].c0, seed[1].c1, seed[1].c2];
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(guest) = cache.lock().expect("recursion guest cache poisoned").get(&key) {
-        return Arc::clone(guest);
-    }
-
-    let replacements = placeholder_map(inner_program);
+fn compile_guest(kbc: usize) -> Program {
+    let replacements = placeholder_map(kbc);
     // `DBG_PLACEHOLDERS=path`: dump the baked guest constants, to read alongside
     // a `DBG_PROF_DUMP` profile (the guest's shape is entirely in these).
     if let Ok(path) = std::env::var("DBG_PLACEHOLDERS") {
         let dump: String = replacements.iter().map(|(k, v)| format!("{k} = {v}\n")).collect();
         std::fs::write(&path, dump).expect("write DBG_PLACEHOLDERS");
     }
-    let guest = Arc::new(compile(
-        &parse_with_replacements(include_str!("../guests/recursion.py"), &replacements)
-            .expect("the repository recursion guest must parse"),
-    ));
-
+    let guest = compile(
+        &parse_with_replacements(include_str!("../guests/aggregate.py"), &replacements)
+            .expect("the repository aggregation guest must parse"),
+    );
     // `DBG_DISASM=path`: dump the guest's disassembly, to read alongside a
-    // `DBG_PROF_DUMP` per-pc profile.
+    // `DBG_PROF_DUMP` per-pc profile. Function boundaries lead the dump, so the
+    // pc a failed guest check reports can be resolved to a source function
+    // without re-deriving the layout by hand.
     if let Ok(path) = std::env::var("DBG_DISASM") {
-        std::fs::write(&path, lean_compiler::disassemble(&guest.prog)).expect("write DBG_DISASM");
-    }
-
-    let mut map = cache.lock().expect("recursion guest cache poisoned");
-    if let Some(cached) = map.get(&key) {
-        return Arc::clone(cached);
-    }
-    if map.len() < GUEST_CACHE_CAP {
-        map.insert(key, Arc::clone(&guest));
+        let mut ranges: Vec<_> = guest.fn_ranges.iter().collect();
+        ranges.sort_by_key(|(_, entry, _)| *entry);
+        let mut dump = String::new();
+        for (name, entry, len) in ranges {
+            dump += &format!("# fn {entry:>7}..{:<7} {name}\n", entry + len);
+        }
+        dump += &lean_compiler::disassemble(&guest.prog);
+        std::fs::write(&path, dump).expect("write DBG_DISASM");
     }
     guest
 }
 
-/// Return an owned guest whose witness streams may be mutated by the prover.
-fn recursion_guest(inner_program: &Program) -> Program {
-    (*recursion_guest_arc(inner_program)).clone()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signers_cache::{EPOCH, get_signers, message};
 
-/// Run an `inner.len()`→1 recursive aggregation and verify the outer proof;
-/// each entry `(hashes, iters)` shapes one inner proof of the fixed inner
-/// program. Prints the benchmark report. The flow:
-/// 1. compile the inner program (→ its bytecode size);
-/// 2. compile the recursion guest (`guests/recursion.py` — the generic
-///    map needs only that size);
-/// 3. prove the inner proofs (and extract their hints);
-/// 4. prove the recursion, verify, discharge the three reduced claims.
-///
-/// Outer proving runs one discarded warmup pass followed by `plan.repeat`
-/// measured passes (see [`primitives::bench`]); the inner proofs are built once.
-pub fn run_recursion(
-    inner: &[(usize, usize)],
-    log_inv_rate: usize,
-    enable_tracing: bool,
-    plan: Plan,
-) -> RecursiveProof {
-    let rates = vec![log_inv_rate; inner.len()];
-    run_recursion_with_rates(inner, &rates, log_inv_rate, enable_tracing, plan)
-}
+    /// Small enough that the leaf's committed witness needs padding up to the
+    /// floor, which is the case the fill has to handle.
+    const LEAF: usize = 6;
 
-/// Run recursion with one transcript-bound PCS rate per inner proof. The guest
-/// bytecode is independent of these values and supports mixed-rate batches.
-fn run_recursion_with_rates(
-    inner: &[(usize, usize)],
-    log_inv_rates: &[usize],
-    outer_log_inv_rate: usize,
-    enable_tracing: bool,
-    plan: Plan,
-) -> RecursiveProof {
-    // 1 + 2: the recursion program is generic — its map needs only the inner
-    // bytecode size — so it is compiled FIRST, before any inner proof.
-    let program = inner_program();
-    let t = std::time::Instant::now();
-    let mut guest = recursion_guest(&program);
-    let t_compile = t.elapsed();
-    // The recursion program size + compile time, BEFORE any inner proving.
-    let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
-    // 3: prove the inner proofs and extract the recursion witness (hints).
-    let batch = build_batch(inner, log_inv_rates, outer_log_inv_rate);
-    let nsub = batch.inner_stats.len();
-    let total_inner_cycles: usize = batch.inner_stats.iter().map(|&(cycles, _)| cycles).sum();
-    if enable_tracing {
-        primitives::init_tracing();
-    }
-    let trace_span =
-        tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
-    // Only the final measured pass of each stage is traced: the tree describes the
-    // proof the reported timings are about, instead of repeating itself per pass.
-    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|last| {
-        let _quiet = (!last).then(primitives::suppress_tracing);
-        batch.prove(&mut guest)
-    });
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
-        let _quiet = (!last).then(primitives::suppress_tracing);
-        recursive_proof
-            .verify(&batch.program0)
-            .expect("complete recursive proof verifies");
-    });
-    drop(trace_span);
-
-    println!(
-        "recursion program: {} instructions (2^{} padded), compiled in {} s",
-        pretty_integer(real_instrs),
-        guest.prog.len().trailing_zeros(),
-        pretty_f64(t_compile.as_secs_f64())
-    );
-    for &(cycles, committed) in &batch.inner_stats {
-        println!(
-            "[inner] cycles={} committed=2^{}",
-            pretty_integer(cycles),
-            pretty_f64((committed as f64).log2())
+    /// The smallest possible aggregate. A single signature is far below the
+    /// committed floor, so this is the case where the fill has to do the most
+    /// work, and where a growth schedule that only approaches the floor
+    /// geometrically runs out of rounds.
+    #[test]
+    fn aggregate_one_signer() {
+        lean_vm::init_prover_pool();
+        let agg = aggregate(&[], get_signers(1), message(), EPOCH, lean_vm::pcs::LOG_INV_RATE).expect("aggregates");
+        agg.verify().expect("verifies");
+        agg.verify_against(&message(), EPOCH)
+            .expect("verifies against its statement");
+        assert_eq!(
+            agg.verify_against(&message(), EPOCH + 1),
+            Err(VerifyError::UnexpectedStatement)
         );
     }
-    let nsub_pretty = pretty_integer(nsub);
-    println!(
-        "\nrecursion {nsub_pretty}\u{2192}1: {nsub_pretty} inner proofs of {} cycles each",
-        pretty_integer(total_inner_cycles / nsub)
-    );
-    // The guest's own work, then what gets proven: each table is filled to a power of
-    // two so that none needs padding rows (`lean_vm::cpu::filler`).
-    let base_cycles: usize = stats.base_counts.iter().sum();
-    println!(
-        "  guest cycles (VM steps)     : {} = {}   ({} / inner cycle)",
-        pretty_integer(base_cycles),
-        crate::report::pow(base_cycles),
-        pretty_f64(base_cycles as f64 / total_inner_cycles as f64)
-    );
-    println!(
-        "    proven rows               : {} = {}  (filled to powers of two)",
-        pretty_integer(stats.cycles),
-        crate::report::pow(stats.cycles)
-    );
-    println!("    details                   : {}", stats.details());
-    crate::report::print_proof_size(&recursive_proof);
-    println!(
-        "recursion proving         : {} s{}      peak memory {} GiB",
-        pretty_f64(prove_time.mean()),
-        prove_time.spread(),
-        crate::report::peak_gib()
-    );
-    println!("verification              : {} s", pretty_f64(verify_time.mean()));
-    recursive_proof
-}
 
-/// End-to-end recursion test: two ordinary proofs are verified and aggregated
-/// by one guest, then its three reduced claims are discharged natively.
-#[test]
-fn recursion_2to1() {
-    run_recursion(
-        &[(8, 1 << 15), (8, 1 << 15)],
-        lean_vm::pcs::LOG_INV_RATE,
-        false,
-        Plan::default(),
-    );
-}
+    /// A leaf: raw signatures only, no children. Exercises the whole node
+    /// machinery except recursion, so it is the fast check that the statement,
+    /// the epoch binding, the signer-set digest and the coverage argument agree
+    /// between the guest and this file.
+    #[test]
+    fn aggregate_leaf() {
+        lean_vm::init_prover_pool();
+        let raw = get_signers(3);
+        let agg = aggregate(&[], raw, message(), EPOCH, lean_vm::pcs::LOG_INV_RATE).expect("leaf aggregates");
+        agg.verify().expect("leaf verifies");
+        assert_eq!(agg.public_keys.len(), 3);
+    }
 
-/// THE genericity milestone: ONE compiled guest bytecode verifies two inner
-/// proofs of DIFFERENT sizes and rates in the same aggregation (the placeholder
-/// map depends only on the inner bytecode size, so one map covers both shapes).
-#[test]
-fn recursion_2to1_mixed() {
-    run_recursion_with_rates(&[(4, 1 << 13), (64, 1 << 15)], &[1, 4], 3, false, Plan::default());
-}
+    /// Two leaves into one node: the real recursion step. The node rebuilds each
+    /// child's statement from indices into its own signer table, verifies both
+    /// proofs in-circuit, and batches four bytecode claims and six matrix claims
+    /// into the one pair it defers.
+    ///
+    /// The two leaves are deliberately different sizes, so one is padded up to the
+    /// committed floor and the other reaches it on its own: the node then
+    /// dispatches a different opening arm per child.
+    #[test]
+    fn aggregate_two_to_one() {
+        lean_vm::init_prover_pool();
+        let rate = lean_vm::pcs::LOG_INV_RATE;
+        let signers = get_signers(LEAF + 60);
+        let left = aggregate(&[], signers[..LEAF].to_vec(), message(), EPOCH, rate).expect("left leaf");
+        let right = aggregate(&[], signers[LEAF..].to_vec(), message(), EPOCH, rate).expect("right leaf");
+        let node = aggregate(&[left, right], vec![], message(), EPOCH, rate).expect("node aggregates");
+        node.verify().expect("node verifies");
+        assert_eq!(node.public_keys.len(), LEAF + 60);
+    }
 
-/// Adversarial check that the remaining hints and native-format bounds bind:
-/// the honest proof verifies; malformed sizes/nonces and corrupted certified
-/// hints reject; and all commitment-placement descriptors are absent from the
-/// witness. Ignored because it runs several full inner+outer proofs.
-#[test]
-#[ignore]
-fn recursion_soundness_binds() {
-    let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
-    let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-    let mut guest = recursion_guest(&batch.program0);
-    let public_input = batch.public_input();
+    /// Overlapping committees, which is the case recursion exists for: the two
+    /// leaves share signers, so the union is smaller than the sum and the
+    /// repeats land in duplicate coverage slots.
+    #[test]
+    fn aggregate_overlapping_signers() {
+        lean_vm::init_prover_pool();
+        let rate = lean_vm::pcs::LOG_INV_RATE;
+        // 25 + 25 signers sharing 10, so ten repeats take duplicate slots.
+        let signers = get_signers(40);
+        let left = aggregate(&[], signers[..25].to_vec(), message(), EPOCH, rate).expect("left leaf");
+        let right = aggregate(&[], signers[15..].to_vec(), message(), EPOCH, rate).expect("right leaf");
+        let node = aggregate(&[left, right], vec![], message(), EPOCH, rate).expect("node aggregates");
+        node.verify().expect("node verifies");
+        assert_eq!(node.public_keys.len(), 40, "the union, not the sum");
+        assert!(node.public_keys.windows(2).all(|w| w[0] < w[1]));
+    }
 
-    let run = |g: &mut Program, merged: &[(String, Vec<Vec<F192>>)]| -> bool {
-        for (name, entries) in merged {
-            g.set_witness(name, entries.clone());
+    /// A node of nodes, plus raw signatures joining at the top: proofs whose
+    /// children are themselves recursive, so the root batches claims that were
+    /// already batched once. Slow enough to keep out of the default run.
+    #[test]
+    #[ignore]
+    fn aggregate_three_levels() {
+        lean_vm::init_prover_pool();
+        let rate = lean_vm::pcs::LOG_INV_RATE;
+        let signers = get_signers(4 * LEAF + 2);
+        let leaf = |k: usize| {
+            aggregate(&[], signers[k * LEAF..(k + 1) * LEAF].to_vec(), message(), EPOCH, rate).expect("leaf")
+        };
+        let left = aggregate(&[leaf(0), leaf(1)], vec![], message(), EPOCH, rate).expect("left node");
+        let right = aggregate(&[leaf(2), leaf(3)], vec![], message(), EPOCH, rate).expect("right node");
+        let extra = signers[4 * LEAF..].to_vec();
+        let root = aggregate(&[left, right], extra, message(), EPOCH, rate).expect("root aggregates");
+        root.verify().expect("root verifies");
+        assert_eq!(root.public_keys.len(), 4 * LEAF + 2);
+    }
+
+    /// The statement binds everything an aggregate claims. Each tamper below
+    /// changes one field of an honest node and must stop it verifying; the
+    /// signer set and the deferred points are the interesting ones, being the
+    /// only parts a receiver reads rather than derives.
+    #[test]
+    #[ignore]
+    fn aggregate_statement_binds() {
+        lean_vm::init_prover_pool();
+        let rate = lean_vm::pcs::LOG_INV_RATE;
+        let signers = get_signers(2 * LEAF);
+        let left = aggregate(&[], signers[..LEAF].to_vec(), message(), EPOCH, rate).expect("left leaf");
+        let right = aggregate(&[], signers[LEAF..].to_vec(), message(), EPOCH, rate).expect("right leaf");
+        let node = aggregate(&[left, right], vec![], message(), EPOCH, rate).expect("node");
+        node.verify().expect("the honest node verifies");
+
+        assert_eq!(
+            AggregateSignature::from_bytes(&node.to_bytes())
+                .expect("round trip")
+                .to_bytes(),
+            node.to_bytes(),
+            "the wire format round-trips, recomputed claim values included"
+        );
+        let without =
+            AggregateSignature::from_bytes_without_pubkeys(&node.to_bytes_without_pubkeys(), node.public_keys.clone())
+                .expect("round trip");
+        without.verify().expect("a caller-supplied signer set verifies");
+
+        let tampered = |f: &dyn Fn(&mut AggregateSignature)| {
+            let mut bad = node.clone();
+            f(&mut bad);
+            assert!(bad.verify().is_err(), "a tampered aggregate must not verify");
+        };
+        tampered(&|s| s.public_keys[0] = s.public_keys[1].clone()); // duplicate: unsorted
+        tampered(&|s| {
+            s.public_keys.swap(0, 1);
+        });
+        tampered(&|s| {
+            s.public_keys.pop();
+        });
+        tampered(&|s| s.epoch += 1);
+        tampered(&|s| s.message[0] ^= 1);
+        tampered(&|s| s.defer.bytecode_point[0] += F192::ONE);
+        tampered(&|s| s.defer.matrix_point[0] += F192::ONE);
+        // A signer set the aggregate never covered, of the right length.
+        tampered(&|s| s.public_keys[0] = get_signers(2 * LEAF + 1)[2 * LEAF].0.clone());
+    }
+
+    /// The all-zeros fast path in `DeferredClaim::recompute` must agree with the
+    /// two full passes it replaces, or every leaf would verify against the wrong
+    /// statement.
+    #[test]
+    fn leaf_claim_matches_the_general_path() {
+        let klog = flock::blake2s::K_LOG;
+        let leaf = DeferredClaim::leaf();
+        let general = {
+            let bytecode_value = mle_eval(stacked_bytecode(), &leaf.bytecode_point);
+            let eq_r = pcs::whir::build_eq_table_ext(&leaf.matrix_point[..klog]);
+            let eq_c = pcs::whir::build_eq_table_ext(&leaf.matrix_point[klog..]);
+            let (a, b) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
+            (bytecode_value, a, b)
+        };
+        assert_eq!((leaf.bytecode_value, leaf.matrix_a_value, leaf.matrix_b_value), general);
+    }
+
+    /// A named corruption of one hint stream.
+    type Tamper<'a> = (&'a str, &'a dyn Fn(&mut Hints));
+
+    /// The witness binds. Everything the coverage argument and the claim
+    /// batching rest on is a guest assert over prover advice, so the only way to
+    /// test them is to lie in a hint and require the guest to notice. Each
+    /// tamper below must stop the aggregate existing or stop it verifying.
+    ///
+    /// This is the descendant of the deleted `recursion_soundness_binds`, and it
+    /// is the test that covers the coverage bijection, the runtime-bounded index
+    /// range check, and the new `rs_nover` and carried-claim hints.
+    #[test]
+    #[ignore]
+    fn aggregate_hints_bind() {
+        lean_vm::init_prover_pool();
+        let rate = lean_vm::pcs::LOG_INV_RATE;
+        let signers = get_signers(2 * LEAF);
+        let (msg, ep) = (message(), EPOCH);
+
+        let rejects = |children: &[AggregateSignature],
+                       raw: Vec<(XmssPublicKey, XmssSignature)>,
+                       what: &str,
+                       tamper: &dyn Fn(&mut Hints)| {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                aggregate_tampered(children, raw, msg, ep, rate, |h| tamper(h)).map(|(sig, _)| sig.verify().is_ok())
+            }));
+            assert!(!matches!(outcome, Ok(Ok(true))), "tampering {what} must be rejected");
+        };
+
+        // ---- a leaf: coverage, the signer table, and the leaf's own claim ----
+        let raw = signers[..LEAF].to_vec();
+        aggregate(&[], raw.clone(), msg, ep, rate).expect("the honest leaf aggregates");
+        let leaf_cases: &[Tamper] = &[
+            // Two signatures covering one slot: write-once sees two different
+            // counter values at one address.
+            ("raw_index (duplicate slot)", &|h: &mut Hints| {
+                let e = h.entries("raw_index");
+                e[1] = e[0].clone();
+            }),
+            // An index past the declared set, which only the runtime-bounded
+            // range check stops.
+            ("raw_index (out of range)", &|h: &mut Hints| {
+                h.entries("raw_index")[0] = vec![count(LEAF)];
+            }),
+            ("meta (n_keys inflated)", &|h: &mut Hints| {
+                h.entries("meta")[0][0] = count(LEAF + 1);
+            }),
+            ("meta (n_raw understated)", &|h: &mut Hints| {
+                h.entries("meta")[0][2] = count(LEAF - 1);
+            }),
+            ("meta (a spurious duplicate slot)", &|h: &mut Hints| {
+                h.entries("meta")[0][1] = count(1);
+            }),
+            ("pubkeys (a key nobody signed for)", &|h: &mut Hints| {
+                h.entries("pubkeys")[0][0] += F192::ONE;
+            }),
+            ("fs_seed", &|h: &mut Hints| {
+                h.entries("fs_seed")[0][0] += F192::ONE;
+            }),
+            ("leaf_defer", &|h: &mut Hints| {
+                h.entries("leaf_defer")[0][0] += F192::ONE;
+            }),
+            ("tweaks (an epoch the verifier did not ask for)", &|h: &mut Hints| {
+                h.entries("tweaks")[0][0] += F192::ONE;
+            }),
+        ];
+        for (what, tamper) in leaf_cases {
+            rejects(&[], raw.clone(), what, *tamper);
         }
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(g, public_input, lean_vm::pcs::LOG_INV_RATE);
-            verify(g, &public_input, &proof).is_ok()
-        }))
-        .unwrap_or(false)
-    };
 
-    assert!(run(&mut guest, &batch.merged), "honest proof must verify");
-    assert!(
-        batch.merged.iter().all(|(name, _)| !matches!(
-            name.as_str(),
-            "claim_sel_bits" | "claim_yslot_bits" | "claim_qflock_slot_bits" | "rs_sel_bits" | "rs_yslot_bits"
-        )),
-        "claim and ring placement descriptors must be derived, not hinted"
-    );
+        // ---- a node: the child statements, the batching, and rs_nover ----
+        let left = aggregate(&[], signers[..LEAF].to_vec(), msg, ep, rate).expect("left leaf");
+        let right = aggregate(&[], signers[LEAF..].to_vec(), msg, ep, rate).expect("right leaf");
+        let children = vec![left, right];
+        aggregate(&children, vec![], msg, ep, rate).expect("the honest node aggregates");
+        let node_cases: &[Tamper] = &[
+            ("child_index (duplicate slot)", &|h: &mut Hints| {
+                let e = h.entries("child_index");
+                e[1] = e[0].clone();
+            }),
+            ("child_index (out of range)", &|h: &mut Hints| {
+                h.entries("child_index")[0] = vec![count(2 * LEAF)];
+            }),
+            ("child_n_keys", &|h: &mut Hints| {
+                h.entries("child_n_keys")[0][0] = count(LEAF - 1);
+            }),
+            ("child_defer (a forged carried claim)", &|h: &mut Hints| {
+                h.entries("child_defer")[0][0] += F192::ONE;
+            }),
+            ("bc_star_hint", &|h: &mut Hints| {
+                h.entries("bc_star_hint")[0][0] += F192::ONE;
+            }),
+            ("mat_stars_hint", &|h: &mut Hints| {
+                h.entries("mat_stars_hint")[0][0] += F192::ONE;
+            }),
+            ("rs_nover", &|h: &mut Hints| {
+                h.entries("rs_nover")[0][0] *= F192::from(primitives::field::G);
+            }),
+        ];
+        for (what, tamper) in node_cases {
+            rejects(&children, vec![], what, *tamper);
+        }
+    }
 
-    // each tamper flips one hint to a definitely-invalid value.
-    let tampers: Vec<(&str, usize, F192)> = vec![
-        ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi must reject
-        ("nsub", 0, F192::ONE),    // g^0: dropping a sub-proof must not keep the statement
-        ("stream", 0, F192::new((lean_vm::cpu::MIN_LOG_MEM - 1) as u64, 0, 0)), // native memory floor
-        ("stream", 1, F192::new(1u64 << 32, 0, 0)), // native row counts are strictly below 2^32
-        ("claim_nover", 0, F192::new(g_pow(5).0, 0, 0)),
-        ("pi_cplen", 0, F192::new(g_pow(2).0, 0, 0)),
-        ("zc_tau_max", 0, F192::new(g_pow(2).0, 0, 0)),
-    ];
-    for &(stream, idx, val) in &tampers {
-        let mut merged = batch.merged.clone();
-        let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
-        let orig = merged[pos].1[0][idx];
-        assert_ne!(orig, val, "{stream}[{idx}] tamper must change it");
-        merged[pos].1[0][idx] = val;
+    /// A signature that does not match its public key cannot be aggregated: the
+    /// guest's Merkle-root equality fails during witness generation, which is
+    /// how a failed guest assert surfaces.
+    #[test]
+    #[ignore]
+    fn aggregate_rejects_a_bad_signature() {
+        lean_vm::init_prover_pool();
+        let mut raw = get_signers(3);
+        raw[1].1.wots_signature.chain_tips[0][0] ^= 1;
+        let built = std::panic::catch_unwind(|| {
+            aggregate(&[], raw, message(), EPOCH, lean_vm::pcs::LOG_INV_RATE).map(|s| s.verify().is_ok())
+        });
         assert!(
-            !run(&mut guest, &merged),
-            "tampering {stream}[{idx}] must be rejected by the guest"
+            !matches!(built, Ok(Ok(true))),
+            "a forged signature must not produce a verifying aggregate"
         );
     }
-    // sort_order: duplicate a rank (break the packing bijection).
-    {
-        let mut merged = batch.merged.clone();
-        let pos = merged.iter().position(|(n, _)| n == "sort_order").expect("sort_order");
-        merged[pos].1[0][0] = merged[pos].1[0][1];
-        assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
-    }
-    // col_sort_order: swapping two distinct entries preserves a valid
-    // permutation but violates either descending kappa or the native-index
-    // tie-break, so the reconstructed commitment offsets must reject it.
-    {
-        let mut merged = batch.merged.clone();
-        let pos = merged
-            .iter()
-            .position(|(n, _)| n == "col_sort_order")
-            .expect("col_sort_order");
-        assert!(merged[pos].1[0].len() >= 2);
-        merged[pos].1[0].swap(0, 1);
-        assert!(
-            !run(&mut guest, &merged),
-            "non-canonical col_sort_order must be rejected"
-        );
-    }
-    eprintln!("all recursion soundness tamperings correctly rejected");
-}
-
-/// One compiled guest bytecode proves MANY inner runs with wildly different
-/// opcode profiles and sizes, without recompilation. The configs span four
-/// committed sizes (m in {23,24,25,26}, four distinct match_range opening
-/// arms) and four BLAKE2s log-instance-counts (tau_5 in {3,4,5,6}, different
-/// r1cs statement digests, flock reduction sizes, and pin prefixes). The
-/// guest is compiled ONCE from the placeholder map, which is a function of the
-/// inner bytecode size alone, so every shape is verified on the same Program
-/// object. Ignored: ~6 full inner+outer proofs, minutes.
-#[test]
-#[ignore]
-fn recursion_generic_many() {
-    // (hashes, iters) per inner run - deliberately diverse profiles.
-    let configs: &[(usize, usize)] = &[
-        (4, 1 << 12),  // m=23, tau_5=3
-        (8, 1 << 13),  // m=24, tau_5=3
-        (16, 1 << 14), // m=25, tau_5=4
-        (8, 1 << 15),  // m=26, tau_5=3
-        (32, 1 << 13), // m=24, tau_5=5
-        (64, 1 << 13), // m=24, tau_5=6
-    ];
-    // The recursion program is generic: compile it ONCE, from the inner program's
-    // size alone, BEFORE any inner proof exists. Genericity is then shown directly
-    // — every shape below verifies against this one bytecode.
-    let mut guest = recursion_guest(&inner_program());
-    eprintln!("guest compiled ONCE ({} instrs)", pretty_integer(guest.prog.len()));
-    for &cfg in configs {
-        let batch = build_batch(&[cfg], &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-        let (recursive_proof, _) = batch.prove(&mut guest);
-        recursive_proof
-            .verify(&batch.program0)
-            .expect("complete recursive proof verifies");
-        eprintln!(
-            "  verified: hashes={:>2}, iters=2^{}",
-            pretty_integer(cfg.0),
-            (cfg.1 as f64).log2() as u32
-        );
-    }
-    eprintln!(
-        "all {} shapes verified by the SAME guest bytecode",
-        pretty_integer(configs.len())
-    );
-}
-
-/// Guest cycle profile WITHOUT proving the recursion: build one sub-proof's hints,
-/// then just execute the guest. Runs in about a second, which makes it the loop for
-/// attributing (and reducing) the guest's ~470k cycles:
-///
-/// ```text
-/// DBG_PROF=1 DBG_PROF_DUMP=/tmp/prof DBG_DISASM=/tmp/disasm \
-///   cargo test --release -p rec_aggregation recursion_guest_profile -- --ignored --nocapture
-/// ```
-///
-/// `DBG_PROF=1` prints cycles by function (each lowered `for` body is its own
-/// entry); the dumps tie a hot function's pc range back to its instructions.
-#[test]
-#[ignore]
-fn recursion_guest_profile() {
-    let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
-    let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
-    let mut guest = recursion_guest(&batch.program0);
-    for (name, entries) in &batch.merged {
-        guest.set_witness(name, entries.clone());
-    }
-    let _ = guest.execute(batch.public_input());
 }

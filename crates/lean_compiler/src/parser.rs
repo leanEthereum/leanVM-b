@@ -510,20 +510,35 @@ impl Parser {
             if let Some((a, b)) = split_once_top(rest, "!=") {
                 return Ok(Stmt::AssertNe(parse_expr(&a)?, parse_expr(&b)?));
             }
-            // `assert log X < log Y` (`Y` a compile-time g-power) or
-            // `assert log X < k` (`k` an integer exponent) is a range check in
-            // the exponent: proves `log_g(X) < k`.
+            // `assert log X < log Y` (`Y` a compile-time g-power, or any runtime
+            // g-power) or `assert log X < k` (`k` an integer exponent) is a
+            // range check in the exponent: proves `log_g(X) < k`.
             if let Some((a, b)) = split_once_top(rest, "<") {
                 let x =
                     strip_log(&a).ok_or("a `<` assert compares logs: `assert log X < log Y` or `assert log X < k`")?;
                 let bound = match strip_log(&b) {
-                    Some(y) => gpow_bound(&parse_expr(y)?)?, // log GEN ** k = k
+                    // `log GEN ** k = k` when the bound folds to a power of GEN;
+                    // otherwise it is a runtime g-power and the gadget derives
+                    // `g^{k-1}` from it. A bound that folds to something else is a
+                    // mistake rather than a runtime bound: `log 8` names the field
+                    // element 8, whose g-log is nothing in particular, and taking it
+                    // for a bound would fail only at witness generation.
+                    Some(y) => {
+                        let y = parse_expr(y)?;
+                        match gpow_bound(&y) {
+                            Ok(k) => LtBound::Const(k),
+                            Err(e) if const_int_expr(&y).is_some() => return Err(e),
+                            Err(_) => LtBound::Runtime(y),
+                        }
+                    }
                     // An integer bound folds like any parse-time size (`CAP + 1`).
                     None => match const_int_expr(&parse_expr(&b)?) {
-                        Some(k) => u64::try_from(k).map_err(|_| format!("log bound {k} does not fit in u64"))?,
+                        Some(k) => {
+                            LtBound::Const(u64::try_from(k).map_err(|_| format!("log bound {k} does not fit in u64"))?)
+                        }
                         None => {
                             return Err(format!(
-                                "a log bound must be `log GEN ** k` or a parse-time integer, got `{b}`"
+                                "a log bound must be `log _` or a parse-time integer, got `{b}`"
                             ));
                         }
                     },
@@ -875,7 +890,16 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
         ),
         Stmt::AssertEq(a, b) => (Stmt::AssertEq(e(a), e(b)), false),
         Stmt::AssertNe(a, b) => (Stmt::AssertNe(e(a), e(b)), false),
-        Stmt::AssertLt(a, k) => (Stmt::AssertLt(e(a), *k), false),
+        Stmt::AssertLt(a, bound) => (
+            Stmt::AssertLt(
+                e(a),
+                match bound {
+                    LtBound::Const(k) => LtBound::Const(*k),
+                    LtBound::Runtime(b) => LtBound::Runtime(e(b)),
+                },
+            ),
+            false,
+        ),
         Stmt::Call(f, args) => (Stmt::Call(f.clone(), args.iter().map(e).collect()), false),
         Stmt::Print { label, value } => (
             Stmt::Print {

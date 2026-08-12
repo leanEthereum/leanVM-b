@@ -1,21 +1,20 @@
-//! Benchmark harnesses for the three workloads: Fibonacci in the exponent,
-//! in-VM XMSS aggregation, and N→1 recursive proof aggregation. Each compiles a
-//! zkDSL guest (`guests/*.py`), proves it, verifies the proof, and prints a
-//! report; the `#[cfg(test)]` suites in each module drive the same entry points.
+//! Recursive XMSS aggregation ([`aggregation`]) and the harnesses that measure
+//! it ([`benchmark`]), plus the Fibonacci demo. One zkDSL guest
+//! (`guests/aggregate.py`) serves every node of an aggregation tree.
 
+pub mod aggregation;
+pub mod benchmark;
 pub mod fibonacci;
 /// The BLAKE2s hash chain, proven end to end. A `src` module rather than its own
 /// test binary so it shares the process, and so the ~1.9 s flock circuit build,
 /// with the other workloads.
 #[cfg(test)]
 mod hash_chain;
-pub mod recursion;
 pub mod signers_cache;
-pub mod xmss_aggregation;
 
+pub use aggregation::{AggregateError, AggregateSignature, VerifyError, aggregate};
+pub use benchmark::{run_recursion, run_xmss_aggregation};
 pub use fibonacci::run_fibonacci;
-pub use recursion::{RecursiveProof, RecursiveVerifyError, run_recursion};
-pub use xmss_aggregation::run_xmss_aggregation;
 
 /// The pieces every workload's benchmark report ends with.
 ///
@@ -41,6 +40,10 @@ mod report {
 
     pub fn print_proof_size<T: serde::Serialize>(proof: &T) {
         let bytes = bincode::serialized_size(proof).expect("proof is serializable");
+        print_proof_bytes(bytes as usize);
+    }
+
+    pub fn print_proof_bytes(bytes: usize) {
         println!("  proof size                  : {:.1} KiB", bytes as f64 / 1024.0);
     }
 }

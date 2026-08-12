@@ -155,3 +155,60 @@ fn range_check_without_log_rejected() {
     let src = "def main():\n    x = 1\n    assert x < 8\n    return\n";
     let _ = parse(src).map_err(|e| panic!("{e}"));
 }
+
+/// A *runtime* bound, `assert log x < log n`: the same gadget with `g^{k-1}`
+/// derived as `n·g^{-1}` instead of pooled from a constant. The bound rides a
+/// hint here, as it does in the aggregation guest, where the signer count is
+/// prover-announced.
+#[test]
+fn range_check_runtime_bound() {
+    let src = "\
+def main():
+    nb = StackBuf(1)
+    hint_witness(nb[0:1], \"n\")
+    n = nb[0]
+    assert log n < 64
+    x = GEN ** 5
+    assert log x < log n
+    assert log 1 < log n
+    p = 1
+    p[1] = x
+    p[GEN] = n
+    return
+";
+    let mut program = compile(&parse(src).expect("parse"));
+    program.set_witness("n", vec![vec![F192::from(g_pow(6))]]);
+    let want = [F192::from(g_pow(5)), F192::from(g_pow(6))];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("runtime-bound range check verifies");
+}
+
+/// The runtime bound binds: `log(g^5) < log(g^5)` is false, and the complement
+/// back-solves to a huge-exponent element whose DEREF fails, exactly as for a
+/// compile-time bound at its boundary.
+#[test]
+#[should_panic(expected = "failed range check")]
+fn range_check_runtime_bound_at_bound_rejected() {
+    let src = "\
+def main():
+    nb = StackBuf(1)
+    hint_witness(nb[0:1], \"n\")
+    x = GEN ** 5
+    assert log x < log nb[0]
+    return
+";
+    let mut program = compile(&parse(src).expect("parse"));
+    program.set_witness("n", vec![vec![F192::from(g_pow(5))]]);
+    program.execute([F192::ZERO, F192::ZERO]);
+}
+
+/// A bound that folds at parse time but is not a power of `GEN` stays a parse
+/// error rather than quietly becoming a runtime bound. `log 8` names the field
+/// element 8, whose g-log is nothing in particular, so a program meaning `< 8`
+/// must not compile into a check that can only fail at witness generation.
+#[test]
+#[should_panic(expected = "must be a power of GEN")]
+fn range_check_folded_non_gpower_bound_rejected() {
+    let src = "def main():\n    x = GEN ** 3\n    assert log x < log 5\n    return\n";
+    let _ = parse(src).map_err(|e| panic!("{e}"));
+}

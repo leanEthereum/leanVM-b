@@ -1,10 +1,11 @@
-//! Benchmark CLI for the two flagship workloads (plus the Fibonacci demo).
+//! Benchmark CLI for the two flagship workloads (plus the Fibonacci demo): one
+//! leaf of an aggregation tree, and an n→1 recursion step over such leaves.
 //!
 //! ```text
 //! cargo run --release -- xmss --n-signatures 820
 //! cargo run --release -- xmss --n-signatures 820 --log-inv-rate 2
 //! cargo run --release -- xmss --n-signatures 820 --repeat 5
-//! cargo run --release -- recursion --n 2
+//! cargo run --release -- recursion --n 2 --xmss-per-leaf 900
 //! cargo run --release -- fibonacci --n 2000000
 //! cargo run --release -- --tracing fibonacci --n 2000000
 //! ```
@@ -62,20 +63,15 @@ enum Command {
         #[arg(long, default_value = "820")]
         n_signatures: usize,
     },
-    /// Run an n→1 recursive proof aggregation.
+    /// Aggregate n previously aggregated signatures into one proof.
     Recursion {
-        /// Number of inner proofs to aggregate.
+        /// Number of child aggregates.
         #[arg(long, default_value = "2")]
         n: usize,
-        /// BLAKE2s compressions per inner proof (inner program shape).
-        #[arg(long, default_value = "8")]
-        hashes: usize,
-        /// MUL iterations per inner proof (inner program shape). Chosen so the
-        /// inner committed witness fills most of a 2^26 PCS, which is the size
-        /// the recursion cost should be quoted at. The inner program's DEREF
-        /// range check gives out just above 66000, so this is near the ceiling.
-        #[arg(long, default_value = "64000")]
-        iters: usize,
+        /// Signatures in each child. Sets the child proof's committed size,
+        /// which is what the recursion cost should be quoted against.
+        #[arg(long, default_value = "900")]
+        xmss_per_leaf: usize,
     },
     /// Prove and verify Fibonacci in the exponent (demo).
     Fibonacci {
@@ -101,9 +97,8 @@ fn main() {
         }
         // `run_recursion` initializes tracing itself, after the guest compile it
         // does not want traced.
-        Command::Recursion { n, hashes, iters } => {
-            let inner: Vec<(usize, usize)> = (0..*n).map(|_| (*hashes, *iters)).collect();
-            rec_aggregation::run_recursion(&inner, cli.log_inv_rate, cli.tracing, plan);
+        Command::Recursion { n, xmss_per_leaf } => {
+            rec_aggregation::run_recursion(*n, *xmss_per_leaf, cli.log_inv_rate, cli.tracing, plan);
         }
         Command::Fibonacci { n } => {
             if cli.tracing {

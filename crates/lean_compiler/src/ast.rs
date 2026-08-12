@@ -101,11 +101,10 @@ pub enum Stmt {
     AssertNe(Expr, Expr),
     /// `assert log X < log Y` (also `assert log X < k` with an integer
     /// exponent), a *range check in the exponent*: with `X = g^x`, proves
-    /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. The bound `Y = g^k` is a
-    /// compile-time power of `GEN` with `1 ≤ k ≤ 2^MIN_LOG_MEM`; see
+    /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. See
     /// `FnLower::lower_assert_lt` for the 3-cycle gadget (leanVM's DEREF
     /// range-check trick, transported to g-powers).
-    AssertLt(Expr, u64),
+    AssertLt(Expr, LtBound),
     /// `f(args)` as a statement (returns discarded).
     Call(String, Vec<Expr>),
     /// `hint_witness(dest, "name")`: fill `dest` (a `StackBuf`, or a
@@ -193,6 +192,21 @@ pub enum Stmt {
 /// loop helper as a parameter).
 #[derive(Clone, Debug)]
 pub enum ForBound {
+    Const(u64),
+    Runtime(Expr),
+}
+
+/// A range-check bound (`assert log X < …`): a compile-time exponent, or a
+/// runtime `g^n`.
+///
+/// The gadget is the same either way, and so is what it proves: only the cell
+/// holding `g^{k-1}` differs (a pooled `SET` against one `MUL` off the runtime
+/// bound). What the compiler can no longer check is the `k ≤ 2^MIN_LOG_MEM` cap,
+/// so the program owes it: range-check the bound itself first. Without that,
+/// `log X < log n` bounds `X` only by the prover-*announced* memory size, and
+/// the honest complement `g^{k-1-log X}` may not even be an address.
+#[derive(Clone, Debug)]
+pub enum LtBound {
     Const(u64),
     Runtime(Expr),
 }
