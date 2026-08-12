@@ -151,6 +151,10 @@ noncomputable local instance presamplingSampleableFlatSecret :
     SampleableType FlatSecret :=
   SampleableType.ofFintype FlatSecret
 
+noncomputable local instance presamplingSampleableSecret :
+    SampleableType (Epoch → ChainIndex → Digest) :=
+  SampleableType.ofFintype (Epoch → ChainIndex → Digest)
+
 def unflattenSecret (table : FlatSecret) :
     Epoch → ChainIndex → Digest := fun epoch chain => table (epoch, chain)
 
@@ -420,7 +424,7 @@ theorem evalDist_presampleCacheEntriesTrace_truncate
       evalDist_map_truncate_drawList inputs.length
 
 set_option maxHeartbeats 1600000 in
-set_option maxRecDepth 100000 in
+set_option maxRecDepth 1000000 in
 theorem drawList_truncate_probability (targets : List Digest) :
     Pr[fun outputs : List HashOutput => outputs.map truncateHash = targets |
       OracleComp.drawList ($ᵗ HashOutput) targets.length] =
@@ -1631,6 +1635,192 @@ structure ProgrammedFixedChainKeygenView where
   cache : QueryCache HashSpec
   table : ChainValueIndex → Digest
 
+noncomputable def actualFixedChainKeygen
+    (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
+  let keyResult ← (simulateQ xmssRomImpl Concrete.keygen).run ∅
+  return {
+    publicKey := keyResult.1.1
+    secretKey := keyResult.1.2
+    cache := keyResult.2
+    table := keygenChainValueTable keyResult.2 keyResult.1.2 chain
+  }
+
+theorem actualFixedChainKeygen_support_table
+    (chain : ChainIndex) (result : ProgrammedFixedChainKeygenView)
+    (hresult : result ∈ support (actualFixedChainKeygen chain)) :
+    keygenChainValueTable result.cache result.secretKey chain = result.table := by
+  unfold actualFixedChainKeygen at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨keyResult, _hkeyResult, hpure⟩ := hresult
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  rfl
+
+noncomputable def explicitFixedChainKeygenFromSecret
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (secret : Epoch → ChainIndex → Digest) :
+    ProbComp ProgrammedFixedChainKeygenView := do
+  let rootResult ← (simulateQ randomOracle
+    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+      OracleComp HashSpec Digest)).run ∅
+  return {
+    publicKey := ⟨rootResult.1, parameter⟩
+    secretKey := ⟨parameter, secret⟩
+    cache := rootResult.2
+    table := keygenChainValueTable rootResult.2 ⟨parameter, secret⟩ chain
+  }
+
+noncomputable def explicitFixedChainKeygen
+    (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let secret ← Concrete.sampleSecret
+  explicitFixedChainKeygenFromSecret parameter chain secret
+
+theorem evalDist_actualFixedChainKeygen_eq_explicit
+    (chain : ChainIndex) :
+    evalDist (actualFixedChainKeygen chain) =
+      evalDist (explicitFixedChainKeygen chain) := by
+  unfold actualFixedChainKeygen explicitFixedChainKeygen
+    explicitFixedChainKeygenFromSecret Concrete.keygen
+  simp only [simulateQ_bind, StateT.run_bind, simulateQ_pure,
+    StateT.run_pure, bind_assoc, pure_bind]
+  have hparameter :
+      (simulateQ xmssRomImpl
+        (liftM Concrete.samplePublicParameter)).run ∅ =
+        (fun parameter => (parameter, ∅)) <$>
+          Concrete.samplePublicParameter := by
+    simpa only [xmssRomImpl] using
+      (roSim.run_liftM
+        (randomOracle : QueryImpl HashSpec
+          (StateT (QueryCache HashSpec) ProbComp))
+        Concrete.samplePublicParameter ∅)
+  rw [hparameter]
+  simp only [map_eq_bind_pure_comp, Function.comp_apply, bind_assoc, pure_bind]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  have hsecret :
+      (simulateQ xmssRomImpl (liftM Concrete.sampleSecret)).run ∅ =
+        (fun secret => (secret, ∅)) <$> Concrete.sampleSecret := by
+    simpa only [xmssRomImpl] using
+      (roSim.run_liftM
+        (randomOracle : QueryImpl HashSpec
+          (StateT (QueryCache HashSpec) ProbComp))
+        Concrete.sampleSecret ∅)
+  rw [hsecret]
+  simp only [map_eq_bind_pure_comp, Function.comp_apply, bind_assoc, pure_bind]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro secret
+  have htree :
+      simulateQ xmssRomImpl
+          (liftM (Concrete.treeNode parameter secret treeHeight
+            Concrete.rootNode : OracleComp HashSpec Digest)) =
+        simulateQ
+          (randomOracle : QueryImpl HashSpec
+            (StateT (QueryCache HashSpec) ProbComp))
+          (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+            OracleComp HashSpec Digest) := by
+    simp only [xmssRomImpl]
+    exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
+      (randomOracle : QueryImpl HashSpec
+        (StateT (QueryCache HashSpec) ProbComp))
+      (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+        OracleComp HashSpec Digest)
+  rw [htree]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_unflatten_uniformFlatSecret_eq_sampleSecret :
+    evalDist (unflattenSecret <$> ($ᵗ FlatSecret)) =
+      evalDist Concrete.sampleSecret := by
+  unfold Concrete.sampleSecret
+  exact evalDist_map_bijective_uniform_cross
+    (α := FlatSecret) (β := Epoch → ChainIndex → Digest)
+    (fun table : FlatSecret => unflattenSecret table)
+    flatSecretEquiv.symm.bijective
+
+noncomputable def flatExplicitFixedChainKeygen
+    (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let flatSecret ← $ᵗ FlatSecret
+  explicitFixedChainKeygenFromSecret parameter chain
+    (unflattenSecret flatSecret)
+
+theorem evalDist_explicitFixedChainKeygen_eq_flat
+    (chain : ChainIndex) :
+    evalDist (explicitFixedChainKeygen chain) =
+      evalDist (flatExplicitFixedChainKeygen chain) := by
+  unfold explicitFixedChainKeygen flatExplicitFixedChainKeygen
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  calc
+    evalDist (Concrete.sampleSecret >>= fun secret =>
+        explicitFixedChainKeygenFromSecret parameter chain secret) =
+        evalDist ((unflattenSecret <$> ($ᵗ FlatSecret)) >>= fun secret =>
+          explicitFixedChainKeygenFromSecret parameter chain secret) := by
+      conv_lhs => rw [evalDist_bind]
+      conv_rhs => rw [evalDist_bind]
+      rw [evalDist_unflatten_uniformFlatSecret_eq_sampleSecret]
+    _ = evalDist (($ᵗ FlatSecret) >>= fun flatSecret =>
+          explicitFixedChainKeygenFromSecret parameter chain
+            (unflattenSecret flatSecret)) := by
+      simp [map_eq_bind_pure_comp, bind_assoc]
+
+noncomputable def extractedExplicitFixedChainKeygen
+    (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let secretView ← extractFixedChainSeeds chain allEpochs
+  explicitFixedChainKeygenFromSecret parameter chain
+    (unflattenSecret secretView.2)
+
+theorem evalDist_flatExplicitFixedChainKeygen_eq_extracted
+    (chain : ChainIndex) :
+    evalDist (flatExplicitFixedChainKeygen chain) =
+      evalDist (extractedExplicitFixedChainKeygen chain) := by
+  unfold flatExplicitFixedChainKeygen extractedExplicitFixedChainKeygen
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  symm
+  calc
+    evalDist (extractFixedChainSeeds chain allEpochs >>= fun secretView =>
+        explicitFixedChainKeygenFromSecret parameter chain
+          (unflattenSecret secretView.2)) =
+        evalDist ((fixedChainSeedView chain allEpochs <$>
+          ($ᵗ FlatSecret)) >>= fun secretView =>
+            explicitFixedChainKeygenFromSecret parameter chain
+              (unflattenSecret secretView.2)) := by
+      conv_lhs => rw [evalDist_bind]
+      conv_rhs => rw [evalDist_bind]
+      rw [evalDist_extractFixedChainSeeds_eq_uniform chain allEpochs allEpochs_nodup]
+    _ = evalDist (($ᵗ FlatSecret) >>= fun flatSecret =>
+          explicitFixedChainKeygenFromSecret parameter chain
+            (unflattenSecret flatSecret)) := by
+      simp [map_eq_bind_pure_comp, bind_assoc, fixedChainSeedView]
+
+theorem evalDist_actualFixedChainKeygen_eq_extracted
+    (chain : ChainIndex) :
+    evalDist (actualFixedChainKeygen chain) =
+      evalDist (extractedExplicitFixedChainKeygen chain) :=
+  (evalDist_actualFixedChainKeygen_eq_explicit chain).trans
+    ((evalDist_explicitFixedChainKeygen_eq_flat chain).trans
+      (evalDist_flatExplicitFixedChainKeygen_eq_extracted chain))
+
+noncomputable def directlyProgrammedFixedChainKeygen
+    (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let secretView ← extractFixedChainSeeds chain allEpochs
+  let seeds := fun epoch => secretView.2 (epoch, chain)
+  let edgeView ← programmedUniformChainEdgeCache parameter chain seeds
+  let secret := unflattenSecret secretView.2
+  let rootResult ← (simulateQ randomOracle
+    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+      OracleComp HashSpec Digest)).run edgeView.2.2
+  return {
+    publicKey := ⟨rootResult.1, parameter⟩
+    secretKey := ⟨parameter, secret⟩
+    cache := rootResult.2
+    table := chainTableMaterialEquiv.symm
+      (seeds, chainEdgeTableOfTape edgeView.1)
+  }
+
 noncomputable def programmedFixedChainKeygen
     (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
   let parameter ← Concrete.samplePublicParameter
@@ -1645,6 +1835,21 @@ noncomputable def programmedFixedChainKeygen
     cache := rootResult.2
     table := fixedChainMaterialTable chain material
   }
+
+theorem evalDist_directlyProgrammedFixedChainKeygen_eq_programmed
+    (chain : ChainIndex) :
+    evalDist (directlyProgrammedFixedChainKeygen chain) =
+      evalDist (programmedFixedChainKeygen chain) := by
+  unfold directlyProgrammedFixedChainKeygen programmedFixedChainKeygen
+    fixedChainMaterialRepresentation fixedChainMaterialTable
+  simp only [bind_assoc, pure_bind]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro secretView
+  conv_lhs => rw [evalDist_bind]
+  conv_rhs => rw [evalDist_bind]
+  rw [evalDist_programmedUniformChainEdgeCache_eq_uniformInstalled]
 
 theorem programmedFixedChainKeygen_support_table
     (chain : ChainIndex) (result : ProgrammedFixedChainKeygenView)
