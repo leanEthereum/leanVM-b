@@ -122,6 +122,210 @@ theorem evalDist_split_uniformChainTable_eq_independent :
       rw [independentChainTableMaterial]
       rw [probOutput_seq_map_prod_mk_eq_mul]
 
+def secretWithFixedChainSeeds
+    (other : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) (seeds : Epoch → Digest) :
+    Epoch → ChainIndex → Digest := fun epoch candidate =>
+  if candidate = chain then seeds epoch else other epoch candidate
+
+@[simp]
+theorem secretWithFixedChainSeeds_fixedChain
+    (other : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) (seeds : Epoch → Digest) (epoch : Epoch) :
+    secretWithFixedChainSeeds other chain seeds epoch chain = seeds epoch := by
+  simp [secretWithFixedChainSeeds]
+
+abbrev FlatSecret := Epoch × ChainIndex → Digest
+
+noncomputable local instance presamplingSampleableFlatSecret :
+    SampleableType FlatSecret :=
+  SampleableType.ofFintype FlatSecret
+
+def unflattenSecret (table : FlatSecret) :
+    Epoch → ChainIndex → Digest := fun epoch chain => table (epoch, chain)
+
+theorem secretWithOwnFixedChainSeeds
+    (table : FlatSecret) (chain : ChainIndex) :
+    secretWithFixedChainSeeds (unflattenSecret table) chain
+      (fun epoch => table (epoch, chain)) = unflattenSecret table := by
+  funext epoch candidate
+  by_cases heq : candidate = chain
+  · subst candidate
+    simp [secretWithFixedChainSeeds, unflattenSecret]
+  · simp [secretWithFixedChainSeeds, heq, unflattenSecret]
+
+def flatSecretEquiv :
+    (Epoch → ChainIndex → Digest) ≃ FlatSecret where
+  toFun secret index := secret index.1 index.2
+  invFun := unflattenSecret
+  left_inv secret := by
+    funext epoch chain
+    rfl
+  right_inv table := by
+    funext index
+    rfl
+
+noncomputable def extractFixedChainSeeds
+    (chain : ChainIndex) : List Epoch →
+      ProbComp (List Digest × FlatSecret)
+  | [] => do
+      let table ← $ᵗ FlatSecret
+      return ([], table)
+  | epoch :: epochs => do
+      let value ← $ᵗ Digest
+      let rest ← extractFixedChainSeeds chain epochs
+      return (value :: rest.1,
+        Function.update rest.2 (epoch, chain) value)
+
+@[simp]
+theorem extractFixedChainSeeds_nil (chain : ChainIndex) :
+    extractFixedChainSeeds chain [] = do
+      let table ← $ᵗ FlatSecret
+      return ([], table) := rfl
+
+theorem extractFixedChainSeeds_cons
+    (chain : ChainIndex) (epoch : Epoch) (epochs : List Epoch) :
+    extractFixedChainSeeds chain (epoch :: epochs) = do
+      let value ← $ᵗ Digest
+      let rest ← extractFixedChainSeeds chain epochs
+      return (value :: rest.1,
+        Function.update rest.2 (epoch, chain) value) := rfl
+
+def fixedChainSeedView (chain : ChainIndex) (epochs : List Epoch)
+    (table : FlatSecret) : List Digest × FlatSecret :=
+  (epochs.map (fun target => table (target, chain)), table)
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+/-- Exposing the selected chain's seed tape and patching it back into a uniform flat secret preserves the joint distribution of the tape read from that secret. -/
+theorem evalDist_extractFixedChainSeeds_eq_uniform
+    (chain : ChainIndex) :
+    ∀ (epochs : List Epoch), epochs.Nodup →
+      𝒟[extractFixedChainSeeds chain epochs] =
+      𝒟[fixedChainSeedView chain epochs <$> ($ᵗ FlatSecret)] := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro _hnodup
+      simp only [extractFixedChainSeeds_nil, map_eq_bind_pure_comp,
+        bind_pure_comp]
+      congr 2
+  | cons epoch epochs ih =>
+      intro hnodup
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      have htailUpdate (table : FlatSecret) (value : Digest) :
+          epochs.map (fun target =>
+              Function.update table (epoch, chain) value (target, chain)) =
+            epochs.map (fun target => table (target, chain)) := by
+        apply List.map_congr_left
+        intro target htarget
+        rw [Function.update_of_ne]
+        intro heq
+        have htargetEpoch : target = epoch := congrArg Prod.fst heq
+        subst target
+        exact hnotMem htarget
+      rw [extractFixedChainSeeds_cons]
+      calc
+        𝒟[$ᵗ Digest >>= fun value =>
+            extractFixedChainSeeds chain epochs >>= fun rest =>
+              pure (value :: rest.1,
+                Function.update rest.2 (epoch, chain) value)] =
+            𝒟[$ᵗ Digest >>= fun value =>
+              (fixedChainSeedView chain epochs <$> ($ᵗ FlatSecret)) >>=
+                  fun rest => pure (value :: rest.1,
+                    Function.update rest.2 (epoch, chain) value)] := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro value
+          conv_lhs => rw [evalDist_bind]
+          conv_rhs => rw [evalDist_bind]
+          rw [ih htailNodup]
+        _ = 𝒟[$ᵗ Digest >>= fun value =>
+              $ᵗ FlatSecret >>= fun table =>
+                pure (value :: epochs.map (fun target => table (target, chain)),
+                  Function.update table (epoch, chain) value)] := by
+          simp [fixedChainSeedView]
+        _ = 𝒟[$ᵗ Digest >>= fun value =>
+              $ᵗ FlatSecret >>= fun table =>
+                pure ((fun updated : FlatSecret =>
+                  ((epoch :: epochs).map
+                    (fun target => updated (target, chain)), updated))
+                  (Function.update table (epoch, chain) value))] := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro value
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro table
+          simp [htailUpdate table value]
+        _ = 𝒟[fixedChainSeedView chain (epoch :: epochs) <$>
+              ($ᵗ FlatSecret)] :=
+          OracleComp.evalDist_uniformSample_bind_update_map
+            (R := Digest) (epoch, chain)
+            (fixedChainSeedView chain (epoch :: epochs))
+
+theorem forall₂_imp_of_forall_mem_left
+    {Left Right : Type} {relation nextRelation : Left → Right → Prop} :
+    ∀ {lefts : List Left} {rights : List Right},
+      List.Forall₂ relation lefts rights →
+      (∀ left ∈ lefts, ∀ right, relation left right →
+        nextRelation left right) →
+      List.Forall₂ nextRelation lefts rights := by
+  intro lefts rights hpairs
+  induction hpairs with
+  | nil => simp
+  | cons hfirst hrest ih =>
+      intro himp
+      apply List.Forall₂.cons
+      · exact himp _ (by simp) _ hfirst
+      · apply ih
+        intro left hleft
+        exact himp left (by simp [hleft])
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem extractFixedChainSeeds_support_info
+    (chain : ChainIndex) :
+    ∀ (epochs : List Epoch), epochs.Nodup →
+      ∀ result ∈ support (extractFixedChainSeeds chain epochs),
+        result.1.length = epochs.length ∧
+          List.Forall₂
+            (fun epoch value => result.2 (epoch, chain) = value)
+            epochs result.1 := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro _hnodup result hresult
+      simp only [extractFixedChainSeeds_nil, mem_support_bind_iff] at hresult
+      obtain ⟨table, _htable, hpure⟩ := hresult
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      rw [hpure]
+      exact ⟨rfl, List.Forall₂.nil⟩
+  | cons epoch epochs ih =>
+      intro hnodup result hresult
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      rw [extractFixedChainSeeds_cons, mem_support_bind_iff] at hresult
+      obtain ⟨value, _hvalue, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      obtain ⟨hlength, hpairs⟩ := ih htailNodup rest hrest
+      constructor
+      · simp [hlength]
+      · apply List.Forall₂.cons
+        · simp
+        · apply forall₂_imp_of_forall_mem_left hpairs
+          intro target htarget targetValue hvalue
+          change Function.update rest.2 (epoch, chain) value
+            (target, chain) = targetValue
+          rw [Function.update_of_ne]
+          · exact hvalue
+          · intro heq
+            have htargetEpoch := congrArg Prod.fst heq
+            change target = epoch at htargetEpoch
+            apply hnotMem
+            rw [htargetEpoch] at htarget
+            exact htarget
+
 theorem chainTableEdgeInput_injective
     (parameter : PublicParameter) (chain : ChainIndex)
     (table : ChainValueIndex → Digest) :
@@ -379,6 +583,27 @@ theorem chainEdgeTableOfTape_map
   · rename_i hlength
     exact (hlength (by simp)).elim
 
+theorem map_chainEdgeTableOfTape
+    (targets : List Digest)
+    (hlength : targets.length = allChainEdges.length) :
+    allChainEdges.map (chainEdgeTableOfTape targets) = targets := by
+  unfold chainEdgeTableOfTape
+  rw [dif_pos hlength]
+  calc
+    allChainEdges.map
+        (chainEdgeTableTapeEquiv.symm fun index =>
+          targets.get (Fin.cast hlength.symm index)) =
+        List.ofFn (chainEdgeTableTapeEquiv
+          (chainEdgeTableTapeEquiv.symm fun index =>
+            targets.get (Fin.cast hlength.symm index))) :=
+      (listOfFn_chainEdgeTableTapeEquiv _).symm
+    _ = List.ofFn (fun index =>
+          targets.get (Fin.cast hlength.symm index)) := by
+      rw [chainEdgeTableTapeEquiv.apply_symm_apply]
+    _ = List.ofFn targets.get := by
+      exact (List.ofFn_congr hlength targets.get).symm
+    _ = targets := List.ofFn_get targets
+
 /-- Reading a uniform edge table in the complete edge order gives an i.i.d. uniform digest tape. -/
 theorem evalDist_uniformChainEdgeTableTape_eq_drawList :
     𝒟[(fun table : ChainEdgeIndex → Digest => allChainEdges.map table) <$>
@@ -460,6 +685,30 @@ theorem evalDist_batchProgrammedHashTape_eq_programmedHashTape
       conv_rhs => rw [evalDist_bind]
       rw [ih]
 
+theorem uniformHashTape_support_info :
+    ∀ (count : Nat) (result : List Digest × List HashOutput),
+      result ∈ support (Rom.uniformHashTape count) →
+      result.1.length = count ∧ result.2.length = count ∧
+        result.2.map truncateHash = result.1 := by
+  intro count
+  induction count with
+  | zero =>
+      intro result hresult
+      simp only [Rom.uniformHashTape, support_pure,
+        Set.mem_singleton_iff] at hresult
+      subst result
+      simp
+  | succ count ih =>
+      intro result hresult
+      rw [Rom.uniformHashTape, mem_support_bind_iff] at hresult
+      obtain ⟨output, _houtput, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      obtain ⟨htargetLength, houtputLength, htargets⟩ := ih rest hrest
+      exact ⟨by simp [htargetLength], by simp [houtputLength], by simp [htargets]⟩
+
 noncomputable def chainTableEdgeInputs
     (parameter : PublicParameter) (chain : ChainIndex)
     (table : ChainValueIndex → Digest) : List HashInput :=
@@ -534,6 +783,66 @@ theorem installChainTableEdgeOutputs_cons
         (cache.cacheQuery
           (chainTableEdgeInput parameter chain table edge) output)
         parameter chain table edges outputs := rfl
+
+set_option linter.constructorNameAsVariable false in
+theorem installChainTableEdgeOutputs_info
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest) :
+    ∀ (edges : List ChainEdgeIndex) (outputs : List HashOutput)
+      (cache : QueryCache HashSpec),
+      edges.Nodup →
+      (∀ edge ∈ edges,
+        cache (chainTableEdgeInput parameter chain table edge) = none) →
+      outputs.length = edges.length →
+      outputs.map truncateHash =
+        edges.map (chainTableEdgeTarget table) →
+      cache ≤ installChainTableEdgeOutputs cache parameter chain table
+        edges outputs ∧
+        List.Forall₂
+          (fun edge output =>
+            (installChainTableEdgeOutputs cache parameter chain table
+                edges outputs)
+                (chainTableEdgeInput parameter chain table edge) = some output ∧
+              truncateHash output = chainTableEdgeTarget table edge)
+          edges outputs := by
+  intro edges
+  induction edges with
+  | nil =>
+      intro outputs cache _hnodup _habsent hlength _htargets
+      cases outputs with
+      | nil => simp
+      | cons output outputs => simp at hlength
+  | cons edge edges ih =>
+      intro outputList cache hnodup habsent hlength htargets
+      cases outputList with
+      | nil => simp at hlength
+      | cons output outputs =>
+          obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+          simp only [List.length_cons, Nat.succ.injEq] at hlength
+          simp only [List.map_cons, List.cons.injEq] at htargets
+          have htailAbsent : ∀ target ∈ edges,
+              (cache.cacheQuery
+                (chainTableEdgeInput parameter chain table edge) output)
+                (chainTableEdgeInput parameter chain table target) = none := by
+            intro target htarget
+            rw [QueryCache.cacheQuery_of_ne]
+            · exact habsent target (by simp [htarget])
+            · intro heq
+              exact hnotMem
+                ((chainTableEdgeInput_injective parameter chain table)
+                  heq.symm ▸ htarget)
+          obtain ⟨hcacheLe, hpairs⟩ := ih outputs
+            (cache.cacheQuery
+              (chainTableEdgeInput parameter chain table edge) output)
+            htailNodup htailAbsent hlength htargets.2
+          constructor
+          · exact (QueryCache.le_cacheQuery cache
+              (habsent edge (by simp))).trans hcacheLe
+          · apply List.Forall₂.cons
+            · exact ⟨hcacheLe (QueryCache.cacheQuery_self cache
+                (chainTableEdgeInput parameter chain table edge) output),
+                htargets.1⟩
+            · exact hpairs
 
 /-- The programmed trace is independent output sampling followed by deterministic cache installation. -/
 theorem evalDist_programChainTableEdgesTrace_eq_install
@@ -637,6 +946,13 @@ theorem chainTableEdgeTarget_materialEquiv_symm
   have hmaterial := chainTableMaterialEquiv.apply_symm_apply (seeds, edges)
   exact congrArg Prod.snd hmaterial
 
+theorem chainTableSeedTargets_materialEquiv_symm
+    (seeds : Epoch → Digest) (edges : ChainEdgeIndex → Digest) :
+    chainTableSeedTargets
+      (chainTableMaterialEquiv.symm (seeds, edges)) = seeds := by
+  have hmaterial := chainTableMaterialEquiv.apply_symm_apply (seeds, edges)
+  exact congrArg Prod.fst hmaterial
+
 noncomputable def programmedUniformChainEdgeTape
     (parameter : PublicParameter) (chain : ChainIndex)
     (seeds : Epoch → Digest) :
@@ -682,6 +998,15 @@ noncomputable def uniformInstalledChainEdgeCache
     ProbComp (List Digest × (List HashOutput × QueryCache HashSpec)) :=
   installedChainEdgeTapeResult parameter chain seeds <$>
     Rom.uniformHashTape allChainEdges.length
+
+noncomputable def fixedChainMaterialRepresentation
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    ProbComp ((List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec))) := do
+  let secretView ← extractFixedChainSeeds chain allEpochs
+  let seeds := fun epoch => secretView.2 (epoch, chain)
+  let edgeView ← uniformInstalledChainEdgeCache parameter chain seeds
+  return (secretView, edgeView)
 
 theorem evalDist_programmedUniformChainEdgeTape_eq_sampled
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -850,6 +1175,53 @@ theorem exists_right_of_forall₂
         exact ⟨_, hfirst⟩
       · exact ih left hmem
 
+/-- Installing a complete matching output tape realizes every edge of the candidate table. -/
+theorem installAllChainTableEdgeOutputs_edgesMatch
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (table : ChainValueIndex → Digest) (outputs : List HashOutput)
+    (hlength : outputs.length = allChainEdges.length)
+    (htargets : outputs.map truncateHash =
+      allChainEdges.map (chainTableEdgeTarget table)) :
+    ChainTableEdgesMatch
+      (installChainTableEdgeOutputs ∅ parameter chain table
+        allChainEdges outputs)
+      parameter chain table := by
+  have hinfo := installChainTableEdgeOutputs_info parameter chain table
+    allChainEdges outputs ∅ allChainEdges_nodup (by simp) hlength htargets
+  intro edge
+  obtain ⟨output, hcache, htruncate⟩ :=
+    exists_right_of_forall₂ hinfo.2 edge (mem_allChainEdges edge)
+  exact ⟨output, hcache, htruncate⟩
+
+/-- Every installed uniform tape realizes the table reconstructed from its low digests. -/
+theorem uniformInstalledChainEdgeCache_edgesMatch
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest)
+    (result : List Digest × (List HashOutput × QueryCache HashSpec))
+    (hresult : result ∈ support
+      (uniformInstalledChainEdgeCache parameter chain seeds)) :
+    ChainTableEdgesMatch result.2.2 parameter chain
+      (chainTableMaterialEquiv.symm
+        (seeds, chainEdgeTableOfTape result.1)) := by
+  unfold uniformInstalledChainEdgeCache at hresult
+  rw [support_map] at hresult
+  obtain ⟨tape, htape, heq⟩ := hresult
+  subst result
+  have hinfo := uniformHashTape_support_info allChainEdges.length tape htape
+  let edges := chainEdgeTableOfTape tape.1
+  let table := chainTableMaterialEquiv.symm (seeds, edges)
+  change ChainTableEdgesMatch
+    (installChainTableEdgeOutputs ∅ parameter chain table
+      allChainEdges tape.2) parameter chain table
+  apply installAllChainTableEdgeOutputs_edgesMatch
+  · exact hinfo.2.1
+  · calc
+      tape.2.map truncateHash = tape.1 := hinfo.2.2
+      _ = allChainEdges.map edges :=
+        (map_chainEdgeTableOfTape tape.1 hinfo.1).symm
+      _ = allChainEdges.map (chainTableEdgeTarget table) := by
+        rw [chainTableEdgeTarget_materialEquiv_symm]
+
 set_option maxRecDepth 10000 in
 theorem presampleCacheEntriesTrace_edgesMatch
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -976,6 +1348,61 @@ theorem keygenChainValueTable_eq_of_matches
   funext index
   exact chainWalk_eq_of_chainTable_matches cache secretKey chain table hseeds hedges
     index.1 index.2.val index.2.isLt
+
+/-- With the fixed-chain seeds inserted into an otherwise arbitrary secret, replaying the installed cache gives exactly the reconstructed uniform table. -/
+theorem uniformInstalledChainEdgeCache_keygenChainValueTable_eq
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (seeds : Epoch → Digest)
+    (other : Epoch → ChainIndex → Digest)
+    (result : List Digest × (List HashOutput × QueryCache HashSpec))
+    (hresult : result ∈ support
+      (uniformInstalledChainEdgeCache parameter chain seeds)) :
+    let secret := secretWithFixedChainSeeds other chain seeds
+    let table := chainTableMaterialEquiv.symm
+      (seeds, chainEdgeTableOfTape result.1)
+    keygenChainValueTable result.2.2 ⟨parameter, secret⟩ chain = table := by
+  dsimp only
+  apply keygenChainValueTable_eq_of_matches
+  · intro epoch
+    change secretWithFixedChainSeeds other chain seeds epoch chain = _
+    rw [secretWithFixedChainSeeds_fixedChain]
+    have hseeds := congrFun
+      (chainTableSeedTargets_materialEquiv_symm seeds
+        (chainEdgeTableOfTape result.1)) epoch
+    simpa [chainTableSeedTargets] using hseeds.symm
+  · exact uniformInstalledChainEdgeCache_edgesMatch
+      parameter chain seeds result hresult
+
+/-- The combined ideal material experiment exposes the seed tape and realizes one uniform hidden WOTS table in the replay cache. -/
+theorem fixedChainMaterialRepresentation_support_info
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (result : (List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec)))
+    (hresult : result ∈ support
+      (fixedChainMaterialRepresentation parameter chain)) :
+    List.Forall₂
+        (fun epoch value => result.1.2 (epoch, chain) = value)
+        allEpochs result.1.1 ∧
+      keygenChainValueTable result.2.2.2
+        ⟨parameter, unflattenSecret result.1.2⟩ chain =
+        chainTableMaterialEquiv.symm
+          ((fun epoch => result.1.2 (epoch, chain)),
+            chainEdgeTableOfTape result.2.1) := by
+  unfold fixedChainMaterialRepresentation at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨secretView, hsecretView, hedgeView⟩ := hresult
+  rw [mem_support_bind_iff] at hedgeView
+  obtain ⟨edgeView, hedgeView, hpure⟩ := hedgeView
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  constructor
+  · exact (extractFixedChainSeeds_support_info chain allEpochs
+      allEpochs_nodup secretView hsecretView).2
+  · have htable := uniformInstalledChainEdgeCache_keygenChainValueTable_eq
+      parameter chain (fun epoch => secretView.2 (epoch, chain))
+      (unflattenSecret secretView.2) edgeView hedgeView
+    rw [secretWithOwnFixedChainSeeds] at htable
+    exact htable
 
 theorem keygenChainValueTable_seedsMatch
     (cache : QueryCache HashSpec) (secretKey : SecretKey) (chain : ChainIndex) :
