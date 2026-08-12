@@ -57,4 +57,16 @@ theorem CausalRevealsAgree.recordReveal
   · simp [CausalHashState.recordReveal, Function.update_of_ne heq] at hcand
     exact hagrees candidate candidateValue hcand
 
+theorem CausalRevealsAgree.causalRevealResultState
+    {table : ChainValueIndex → Digest} {state : CausalHashState}
+    (hagrees : CausalRevealsAgree table state)
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (index : ChainValueIndex) (value : Digest) (output : HashOutput)
+    (hvalue : table index = value) :
+    CausalRevealsAgree table
+      (causalRevealResultState secretKey chain input state index value output) := by
+  unfold XmssSecurity.causalRevealResultState
+  exact ((hagrees.causalRecordedState secretKey chain input).recordReveal
+    index value hvalue).setCache _
+
 end XmssSecurity

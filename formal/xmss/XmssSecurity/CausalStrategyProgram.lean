@@ -19,9 +19,31 @@ def CausalHashState.finishKeygen (state : CausalHashState) : CausalHashState :=
 def CausalHashState.recordProbe
     (state : CausalHashState) (probe : Option (ChainValueIndex × Digest)) :
     CausalHashState :=
-  match probe with
-  | none => state
-  | some value => { state with probes := state.probes ++ [value] }
+  { state with probes :=
+      match probe with
+      | none => state.probes
+      | some value => state.probes ++ [value] }
+
+@[simp]
+theorem CausalHashState.recordProbe_cache
+    (state : CausalHashState)
+    (probe : Option (ChainValueIndex × Digest)) :
+    (state.recordProbe probe).cache = state.cache := by
+  rfl
+
+@[simp]
+theorem CausalHashState.recordProbe_keygenCache
+    (state : CausalHashState)
+    (probe : Option (ChainValueIndex × Digest)) :
+    (state.recordProbe probe).keygenCache = state.keygenCache := by
+  rfl
+
+@[simp]
+theorem CausalHashState.recordProbe_revealed
+    (state : CausalHashState)
+    (probe : Option (ChainValueIndex × Digest)) :
+    (state.recordProbe probe).revealed = state.revealed := by
+  rfl
 
 def CausalHashState.recordReveal
     (state : CausalHashState) (index : ChainValueIndex) (value : Digest) :
@@ -59,29 +81,78 @@ noncomputable def causalLeafHashPlan
   | some output => .redirect output
   | none => .fresh
 
+noncomputable def causalUncachedAttackerHashPlan
+    (secretKey : SecretKey) (input : HashInput) (state : CausalHashState) :
+    Option (ChainValueIndex × Digest) → CausalHashPlan
+  | some (index, target) =>
+      match state.revealed index with
+      | some value =>
+          if value = target then
+            if hnext : index.2.val + 1 < chainLength then
+              .reveal (index.1, ⟨index.2.val + 1, hnext⟩)
+            else causalLeafHashPlan secretKey input state
+          else causalLeafHashPlan secretKey input state
+      | none => causalLeafHashPlan secretKey input state
+  | none => causalLeafHashPlan secretKey input state
+
 noncomputable def causalAttackerHashPlan
     (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
     (state : CausalHashState) : CausalHashPlan :=
   match state.cache input with
   | some output => .cached output
-  | none =>
-      match chainInputProbe? secretKey.parameter chain input with
-      | some (index, target) =>
-          match state.revealed index with
-          | some value =>
-              if value = target then
-                if hnext : index.2.val + 1 < chainLength then
-                  .reveal (index.1, ⟨index.2.val + 1, hnext⟩)
-                else causalLeafHashPlan secretKey input state
-              else causalLeafHashPlan secretKey input state
-          | none => causalLeafHashPlan secretKey input state
-      | none => causalLeafHashPlan secretKey input state
+  | none => causalUncachedAttackerHashPlan secretKey input state
+      (chainInputProbe? secretKey.parameter chain input)
 
 @[irreducible]
 noncomputable def causalRecordedState
     (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
     (state : CausalHashState) : CausalHashState :=
   state.recordProbe (chainInputProbe? secretKey.parameter chain input)
+
+@[simp]
+theorem causalRecordedState_cache
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) :
+    (causalRecordedState secretKey chain input state).cache = state.cache := by
+  rw [causalRecordedState]
+  exact CausalHashState.recordProbe_cache state _
+
+@[simp]
+theorem causalRecordedState_keygenCache
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) :
+    (causalRecordedState secretKey chain input state).keygenCache =
+      state.keygenCache := by
+  rw [causalRecordedState]
+  exact CausalHashState.recordProbe_keygenCache state _
+
+@[simp]
+theorem causalRecordedState_revealed
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) :
+    (causalRecordedState secretKey chain input state).revealed =
+      state.revealed := by
+  rw [causalRecordedState]
+  exact CausalHashState.recordProbe_revealed state _
+
+noncomputable def causalRevealResultState
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) (index : ChainValueIndex) (value : Digest)
+    (output : HashOutput) : CausalHashState :=
+  { ((causalRecordedState secretKey chain input state).recordReveal
+      index value) with
+    cache := (causalRecordedState secretKey chain input state).cache.cacheQuery
+      input output }
+
+noncomputable def causalRevealHashQuery
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) (index : ChainValueIndex) :
+    OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+      (HashOutput × CausalHashState) := do
+  let value ← RevealProbeOracleSimulation.revealQuery index
+  let output ← RevealProbeOracleSimulation.liftProbComp
+    (Rom.sampleHashOutputWithDigest value)
+  pure (output, causalRevealResultState secretKey chain input state index value output)
 
 noncomputable def causalAttackerHashQuery
     (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput) :
@@ -94,13 +165,7 @@ noncomputable def causalAttackerHashQuery
     | .redirect output =>
         pure (output, { recorded with cache := recorded.cache.cacheQuery input output })
     | .fresh => (causalHashQuery input).run recorded
-    | .reveal index => do
-        let value ← RevealProbeOracleSimulation.revealQuery index
-        let output ← RevealProbeOracleSimulation.liftProbComp
-          (Rom.sampleHashOutputWithDigest value)
-        pure (output,
-          { (recorded.recordReveal index value) with
-            cache := recorded.cache.cacheQuery input output })
+    | .reveal index => causalRevealHashQuery secretKey chain input state index
 
 theorem causalAttackerHashQuery_run
     (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
@@ -113,13 +178,8 @@ theorem causalAttackerHashQuery_run
             pure (output,
               { recorded with cache := recorded.cache.cacheQuery input output })
         | .fresh => (causalHashQuery input).run recorded
-        | .reveal index => do
-            let value ← RevealProbeOracleSimulation.revealQuery index
-            let output ← RevealProbeOracleSimulation.liftProbComp
-              (Rom.sampleHashOutputWithDigest value)
-            pure (output,
-              { (recorded.recordReveal index value) with
-                cache := recorded.cache.cacheQuery input output })) := rfl
+        | .reveal index =>
+            causalRevealHashQuery secretKey chain input state index) := rfl
 
 noncomputable def causalHashImpl :
     QueryImpl HashSpec

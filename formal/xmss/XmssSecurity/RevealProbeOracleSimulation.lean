@@ -199,6 +199,15 @@ theorem eagerTrace_projection
   exact QueryImpl.fst_map_run_withTraceAppend
     (eagerImpl table) traceFragment computation
 
+omit [Fintype Index] [DecidableEq Index] in
+@[simp]
+theorem simulate_eagerTrace_revealQuery
+    (table : Index → Digest) (index : Index) :
+    (simulateQ (eagerTraceImpl table) (revealQuery index)).run =
+      pure (table index, [.reveal index (table index)]) := by
+  simp [revealQuery, eagerTraceImpl, eagerImpl, traceFragment,
+    QueryImpl.withTraceAppend_apply, WriterT.run_tell]
+
 def traceHitsAux (table : Index → Digest) (revealed : Finset Index) :
     ActionTrace Index → Bool
   | [] => false
@@ -660,6 +669,105 @@ theorem evalDist_uniformTable_eq_bind_update
           pure (Function.update base index value)) >>= continuation] := by
       rw [evalDist_bind, evalDist_bind, evalDist_uniformSample_bind_update index]
     _ = _ := by simp [bind_assoc]
+
+/-- A revealed coordinate of a uniform table can be sampled first and installed into an otherwise
+uniform base table. This continuation form supports adaptive computations after the reveal. -/
+theorem evalDist_uniformTable_bind_coordinate_continuation
+    (index : Index)
+    (continuation : (Index → Digest) → Digest → ProbComp α) :
+    𝒟[do
+      let table ← $ᵗ (Index → Digest)
+      continuation table (table index)] =
+    𝒟[do
+      let value ← $ᵗ Digest
+      let base ← $ᵗ (Index → Digest)
+      continuation (Function.update base index value) value] := by
+  calc
+    𝒟[do
+      let table ← $ᵗ (Index → Digest)
+      continuation table (table index)] =
+        𝒟[do
+          let value ← $ᵗ Digest
+          let base ← $ᵗ (Index → Digest)
+          let table := Function.update base index value
+          continuation table (table index)] :=
+      evalDist_uniformTable_eq_bind_update index fun table =>
+        continuation table (table index)
+    _ = _ := by simp only [Function.update_self]
+
+/-- Revealing one coordinate of a uniform table and programming a hash output with that digest is
+equivalent to drawing an ordinary uniform hash output and installing its truncation at that
+coordinate. The continuation sees the updated table, its revealed coordinate, and the hash output. -/
+theorem evalDist_uniformTable_bind_programmedCoordinate_continuation
+    (index : Index)
+    (continuation : (Index → Digest) → Digest → HashOutput → ProbComp α) :
+    𝒟[do
+      let table ← $ᵗ (Index → Digest)
+      let output ← Rom.sampleHashOutputWithDigest (table index)
+      continuation table (table index) output] =
+    𝒟[do
+      let output ← $ᵗ HashOutput
+      let base ← $ᵗ (Index → Digest)
+      let table := Function.update base index (truncateHash output)
+      continuation table (truncateHash output) output] := by
+  calc
+    𝒟[do
+      let table ← $ᵗ (Index → Digest)
+      let output ← Rom.sampleHashOutputWithDigest (table index)
+      continuation table (table index) output] =
+        𝒟[do
+          let value ← $ᵗ Digest
+          let base ← $ᵗ (Index → Digest)
+          let table := Function.update base index value
+          let output ← Rom.sampleHashOutputWithDigest (table index)
+          continuation table (table index) output] :=
+      evalDist_uniformTable_eq_bind_update index fun table => do
+        let output ← Rom.sampleHashOutputWithDigest (table index)
+        continuation table (table index) output
+    _ = 𝒟[do
+          let value ← $ᵗ Digest
+          let output ← Rom.sampleHashOutputWithDigest value
+          let base ← $ᵗ (Index → Digest)
+          continuation (Function.update base index value) value output] := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro value
+      calc
+        𝒟[do
+          let base ← $ᵗ (Index → Digest)
+          let table := Function.update base index value
+          let output ← Rom.sampleHashOutputWithDigest (table index)
+          continuation table (table index) output] =
+            𝒟[do
+              let base ← $ᵗ (Index → Digest)
+              let output ← Rom.sampleHashOutputWithDigest value
+              continuation (Function.update base index value) value output] := by
+                simp only [Function.update_self]
+        _ = _ := OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
+    _ = 𝒟[Rom.sampledHashOutputWithDigest >>= fun programmed =>
+          $ᵗ (Index → Digest) >>= fun base =>
+            continuation (Function.update base index programmed.1)
+              programmed.1 programmed.2] := by
+      simp [Rom.sampledHashOutputWithDigest, bind_assoc]
+    _ = _ := Rom.evalDist_sampledHashOutputWithDigest_bind_eq_uniform_bind
+      (fun programmed =>
+        $ᵗ (Index → Digest) >>= fun base =>
+          continuation (Function.update base index programmed.1)
+            programmed.1 programmed.2)
+
+theorem evalDist_uniformTable_bind_programmedCoordinate
+    (index : Index)
+    (finish : (Index → Digest) → Digest → HashOutput → α) :
+    𝒟[do
+      let table ← $ᵗ (Index → Digest)
+      let output ← Rom.sampleHashOutputWithDigest (table index)
+      pure (finish table (table index) output)] =
+    𝒟[do
+      let output ← $ᵗ HashOutput
+      let base ← $ᵗ (Index → Digest)
+      let table := Function.update base index (truncateHash output)
+      pure (finish table (truncateHash output) output)] := by
+  exact evalDist_uniformTable_bind_programmedCoordinate_continuation index
+    (fun table value output => pure (finish table value output))
 
 set_option maxRecDepth 100000 in
 theorem eagerController_true_probability_le {Control : Type}
@@ -1316,6 +1424,51 @@ theorem simulate_eagerTrace_liftProbComp
       change (simulateQ (eagerTraceImpl table)
         (liftProbComp (next output))).run = _
       exact ih output
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem simulate_eagerTrace_reveal_then_liftProbComp
+    (table : Index → Digest) (index : Index)
+    (computation : Digest → ProbComp α) (finish : Digest → α → β) :
+    (simulateQ (eagerTraceImpl table) (do
+      let value ← revealQuery index
+      let output ← liftProbComp (computation value)
+      pure (finish value output))).run =
+      (fun output =>
+        (finish (table index) output, [.reveal index (table index)])) <$>
+          computation (table index) := by
+  rw [simulateQ_bind, WriterT.run_bind', simulate_eagerTrace_revealQuery]
+  simp only [pure_bind]
+  rw [simulateQ_bind, WriterT.run_bind',
+    simulate_eagerTrace_liftProbComp]
+  simp [map_eq_bind_pure_comp, bind_assoc]
+
+theorem evalDist_uniformTable_simulate_eagerTrace_reveal_continuation
+    (index : Index)
+    (continuation : (Index → Digest) →
+      (Digest × ActionTrace Index) → ProbComp α) :
+    𝒟[do
+      let table ← $ᵗ (Index → Digest)
+      let result ← (simulateQ (eagerTraceImpl table) (revealQuery index)).run
+      continuation table result] =
+    𝒟[do
+      let value ← $ᵗ Digest
+      let base ← $ᵗ (Index → Digest)
+      let table := Function.update base index value
+      continuation table (value, [.reveal index value])] := by
+  calc
+    𝒟[do
+      let table ← $ᵗ (Index → Digest)
+      let result ← (simulateQ (eagerTraceImpl table) (revealQuery index)).run
+      continuation table result] =
+        𝒟[do
+          let table ← $ᵗ (Index → Digest)
+          continuation table (table index, [.reveal index (table index)])] := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro table
+      rw [simulate_eagerTrace_revealQuery]
+      simp
+    _ = _ := evalDist_uniformTable_bind_coordinate_continuation index
+      (fun table value => continuation table (value, [.reveal index value]))
 
 theorem evalDist_bind_congr_of_support
     (head : ProbComp α) (left right : α → ProbComp β)

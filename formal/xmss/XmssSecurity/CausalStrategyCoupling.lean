@@ -155,6 +155,37 @@ theorem replaceSignatureChainValue_other
       signature.chainValue candidate := by
   simp [replaceSignatureChainValue, Function.update_of_ne hne]
 
+@[simp]
+theorem replaceSignatureChainValue_self
+    (signature : Signature) (chain : ChainIndex) :
+    replaceSignatureChainValue signature chain (signature.chainValue chain) =
+      signature := by
+  unfold replaceSignatureChainValue
+  congr 1
+  funext candidate
+  by_cases heq : candidate = chain
+  · subst candidate
+    simp
+  · simp [Function.update_of_ne heq]
+
+theorem Concrete.CacheReplay.signWithEncoding_chainValue_eq_keygenChainValueTable
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeygen : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
+    (epoch : Epoch) (randomness : Randomness) (encoding : Encoding)
+    (chain : ChainIndex) :
+    (Concrete.CacheReplay.signWithEncoding largerCache keyResult.1.2
+      epoch randomness encoding).chainValue chain =
+      keygenChainValueTable keyResult.2 keyResult.1.2 chain
+        (epoch, encoding chain) := by
+  have hwalk := Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeygen
+    largerCache hle epoch chain (encoding chain).val
+    (Nat.le_pred_of_lt (encoding chain).isLt)
+  simp only [Concrete.CacheReplay.signWithEncoding,
+    Concrete.CacheReplay.signedChainValues, keygenChainValueTable]
+  exact hwalk.symm
+
 def revealSignatureChainValue
     (chain : ChainIndex) (epoch : Epoch) (encoding : Encoding)
     (signature : Signature) :
@@ -300,17 +331,7 @@ theorem simulate_eagerImpl_revealFixedChainAction_of_agrees
               apply (mem_chainValueReveals_iff cache secretKey chain [
                 AttackerAction.sign request (some signature)] _).mpr
               exact ⟨request, signature, encoding, by simp, hdecode, rfl⟩
-            have hreplace : replaceSignatureChainValue signature chain
-                (table (request.epoch, encoding chain)) = signature := by
-              unfold replaceSignatureChainValue
-              rw [hvalue]
-              congr 1
-              funext candidate
-              by_cases heq : candidate = chain
-              · subst candidate
-                simp
-              · simp [Function.update_of_ne heq]
-            rw [hreplace]
+            rw [hvalue, replaceSignatureChainValue_self]
             simp
 
 theorem simulate_eagerImpl_revealFixedChainActionTrace_of_agrees

@@ -334,67 +334,6 @@ noncomputable def actionTracedObservedProbeViewExperiment
         RevealProbeOracleSimulation.ObservedAction.probe probe.1 probe.2))) <$>
       detailedGameWithKeygenCacheAndActionTrace adversary
 
-noncomputable def HasActionTracedRevealCoupling
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
-  ∃ transcriptGenerator : ProbComp
-      (List (ChainValueIndex × Digest) ×
-        (List Bool → ChainValueIndex × Digest)),
-    𝒟[actionTracedRevealProbeView chain <$>
-        detailedGameWithKeygenCacheAndActionTrace adversary] =
-      𝒟[IndexedHiddenValue.adaptiveRevealViewExperiment transcriptGenerator]
-
-noncomputable def HasActionTracedRevealReduction
-    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
-  ∃ transcriptGenerator : ProbComp
-      (List (ChainValueIndex × Digest) ×
-        (List Bool → ChainValueIndex × Digest)),
-    Pr[ActionTracedChainProbeHit q chain |
-        detailedGameWithKeygenCacheAndActionTrace adversary] ≤
-      Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
-        IndexedHiddenValue.adaptiveRevealViewExperiment transcriptGenerator]
-
-noncomputable def HasActionTracedMonitorReduction
-    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
-  ∃ (Control : Type)
-      (controller : Control → ProbComp
-        (AdaptiveRevealMonitor.ControllerAction Control ChainValueIndex))
-      (steps : Nat) (initial : Control),
-    Pr[ActionTracedChainProbeHit q chain |
-        detailedGameWithKeygenCacheAndActionTrace adversary] ≤
-      Pr[(fun hit : Bool => hit = true) |
-        AdaptiveRevealMonitor.run controller AdaptiveRevealMonitor.State.empty
-          steps q initial]
-
-noncomputable def HasActionTracedRevealProbeProgramReduction
-    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
-  ∃ (Result : Type)
-      (computation : OracleComp
-        (RevealProbeOracleSimulation.World ChainValueIndex) Result)
-      (steps : Nat),
-    computation.IsQueryBoundP
-        RevealProbeOracleSimulation.IsSpecialQuery steps ∧
-      computation.IsQueryBoundP
-        RevealProbeOracleSimulation.IsProbeQuery q ∧
-      Pr[ActionTracedChainProbeHit q chain |
-          detailedGameWithKeygenCacheAndActionTrace adversary] ≤
-        Pr[(fun hit : Bool => hit = true) |
-          RevealProbeOracleSimulation.run steps q computation]
-
-noncomputable def HasActionTracedEagerProgramReduction
-    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
-  ∃ (Result : Type)
-      (computation : OracleComp
-        (RevealProbeOracleSimulation.World ChainValueIndex) Result)
-      (steps : Nat),
-    computation.IsQueryBoundP
-        RevealProbeOracleSimulation.IsSpecialQuery steps ∧
-      computation.IsQueryBoundP
-        RevealProbeOracleSimulation.IsProbeQuery q ∧
-      Pr[ActionTracedChainProbeHit q chain |
-          detailedGameWithKeygenCacheAndActionTrace adversary] ≤
-        Pr[(fun hit : Bool => hit = true) |
-          RevealProbeOracleSimulation.eagerProgramExperiment steps q computation]
-
 noncomputable def HasActionTracedEagerViewReduction
     (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
   ∃ (Result : Type)
@@ -457,45 +396,6 @@ theorem hasActionTracedEagerViewReduction_of_observedProbeCoupling
           RevealProbeOracleSimulation.eagerExperiment computation] :=
       probEvent_congr' (fun _ _ => Iff.rfl) hdist
 
-theorem hasActionTracedMonitorReduction_of_revealProbeProgram
-    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
-    (hreduction :
-      HasActionTracedRevealProbeProgramReduction q adversary chain) :
-    HasActionTracedMonitorReduction q adversary chain := by
-  obtain ⟨Result, computation, steps, _hsteps, _hprobes, hprobability⟩ := hreduction
-  refine ⟨OracleComp (RevealProbeOracleSimulation.World ChainValueIndex) Result,
-    RevealProbeOracleSimulation.controller, steps, computation, ?_⟩
-  simpa [RevealProbeOracleSimulation.run] using hprobability
-
-noncomputable def actionTracedRevealTranscriptGenerator
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
-    ProbComp (List (ChainValueIndex × Digest) ×
-      (List Bool → ChainValueIndex × Digest)) :=
-  (fun view : IndexedHiddenValue.RevealProbeView ChainValueIndex =>
-    (view.reveals, view.strategy)) <$>
-      (actionTracedRevealProbeView chain <$>
-        detailedGameWithKeygenCacheAndActionTrace adversary)
-
-theorem hasActionTracedRevealCoupling_of_canonical
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
-    (hdist :
-      𝒟[actionTracedRevealProbeView chain <$>
-          detailedGameWithKeygenCacheAndActionTrace adversary] =
-        𝒟[IndexedHiddenValue.adaptiveRevealViewExperiment
-          (actionTracedRevealTranscriptGenerator adversary chain)]) :
-    HasActionTracedRevealCoupling adversary chain :=
-  ⟨actionTracedRevealTranscriptGenerator adversary chain, hdist⟩
-
-theorem hasActionTracedRevealReduction_of_coupling
-    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
-    (hcoupling : HasActionTracedRevealCoupling adversary chain) :
-    HasActionTracedRevealReduction q adversary chain := by
-  obtain ⟨transcriptGenerator, hdist⟩ := hcoupling
-  refine ⟨transcriptGenerator,
-    (actionTracedChainProbeHit_probability_le_revealProbeView
-      q adversary chain).trans ?_⟩
-  exact (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le
-
 theorem winningChainOrigin_probability_le_actionTracedProbeHit
     (q : Nat) (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
@@ -510,76 +410,6 @@ theorem winningChainOrigin_probability_le_actionTracedProbeHit
   apply probEvent_mono
   intro result hresult horigin
   exact horigin.readMany_of_mem_actionTracedGame q adversary hbound result hresult chain
-
-theorem winningChainOrigin_probability_le_of_revealCoupling
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (chain : ChainIndex)
-    (hcoupling : HasActionTracedRevealCoupling adversary chain) :
-    Pr[fun result =>
-      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
-        result.1.1.2 result.2.1 chain |
-      detailedGameWithKeygenCache adversary] ≤
-      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  obtain ⟨transcriptGenerator, hdist⟩ := hcoupling
-  exact (winningChainOrigin_probability_le_actionTracedProbeHit
-    q adversary hbound chain).trans
-      ((actionTracedChainProbeHit_probability_le_revealProbeView
-        q adversary chain).trans
-          (IndexedHiddenValue.reveal_view_coupling_hit_le
-            (actionTracedRevealProbeView chain <$>
-              detailedGameWithKeygenCacheAndActionTrace adversary)
-            transcriptGenerator q hdist))
-
-theorem winningChainOrigin_probability_le_of_revealReduction
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (chain : ChainIndex)
-    (hreduction : HasActionTracedRevealReduction q adversary chain) :
-    Pr[fun result =>
-      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
-        result.1.1.2 result.2.1 chain |
-      detailedGameWithKeygenCache adversary] ≤
-      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  obtain ⟨transcriptGenerator, hreduce⟩ := hreduction
-  exact (winningChainOrigin_probability_le_actionTracedProbeHit
-    q adversary hbound chain).trans
-      (hreduce.trans
-        (IndexedHiddenValue.adaptive_reveal_view_hit_le transcriptGenerator q))
-
-theorem winningChainOrigin_probability_le_of_monitorReduction
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (chain : ChainIndex)
-    (hreduction : HasActionTracedMonitorReduction q adversary chain) :
-    Pr[fun result =>
-      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
-        result.1.1.2 result.2.1 chain |
-      detailedGameWithKeygenCache adversary] ≤
-      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  obtain ⟨Control, controller, steps, initial, hreduce⟩ := hreduction
-  exact (winningChainOrigin_probability_le_actionTracedProbeHit
-    q adversary hbound chain).trans
-      (hreduce.trans
-        (AdaptiveRevealMonitor.run_empty_true_probability_le controller
-          steps q initial))
-
-theorem winningChainOrigin_probability_le_of_eagerProgramReduction
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (chain : ChainIndex)
-    (hreduction : HasActionTracedEagerProgramReduction q adversary chain) :
-    Pr[fun result =>
-      WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
-        result.1.1.2 result.2.1 chain |
-      detailedGameWithKeygenCache adversary] ≤
-      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  obtain ⟨Result, computation, steps, _hsteps, _hprobes, hreduce⟩ := hreduction
-  exact (winningChainOrigin_probability_le_actionTracedProbeHit
-    q adversary hbound chain).trans
-      (hreduce.trans
-        (RevealProbeOracleSimulation.eagerProgram_true_probability_le
-          steps q computation))
 
 theorem winningChainOrigin_probability_le_of_eagerViewReduction
     (q : Nat) (adversary : Adversary Concrete.scheme)

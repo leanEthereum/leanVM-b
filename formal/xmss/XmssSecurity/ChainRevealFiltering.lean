@@ -6,11 +6,76 @@ namespace XmssSecurity
 open OracleSpec
 open XmssSecurity.IndexedHiddenValue
 
+noncomputable def chainSuffixValueIndices (epoch : Epoch) (start : Digit) :
+    List ChainValueIndex :=
+  ((Finset.univ.filter fun later : Digit => start ≤ later).toList.map fun later =>
+    (epoch, later))
+
+@[simp]
+theorem mem_chainSuffixValueIndices_iff
+    (epoch candidateEpoch : Epoch) (start candidate : Digit) :
+    (candidateEpoch, candidate) ∈ chainSuffixValueIndices epoch start ↔
+      candidateEpoch = epoch ∧ start ≤ candidate := by
+  simp [chainSuffixValueIndices, and_comm, eq_comm]
+
+noncomputable def returnedChainValueIndexList
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex) :
+    List ChainValueIndex :=
+  (log.flatMap fun entry =>
+    match entry.2 with
+    | none => []
+    | some signature =>
+        match TargetSum.decodeDigest
+            (Concrete.CacheView.encodingHash cache secretKey.parameter
+              entry.1.epoch (entry.1.message, signature.randomness)) with
+        | none => []
+        | some encoding =>
+            chainSuffixValueIndices entry.1.epoch (encoding chain)).dedup
+
+set_option maxRecDepth 100000 in
+@[simp]
+theorem mem_returnedChainValueIndexList_iff
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex)
+    (index : ChainValueIndex) :
+    index ∈ returnedChainValueIndexList cache secretKey log chain ↔
+      ∃ request signature encoding,
+        SigningTranscript.Returned log request signature ∧
+          TargetSum.decodeDigest
+            (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
+              (request.message, signature.randomness)) = some encoding ∧
+          index.1 = request.epoch ∧ encoding chain ≤ index.2 := by
+  simp only [returnedChainValueIndexList, List.mem_dedup, List.mem_flatMap]
+  constructor
+  · rintro ⟨entry, hentry, hindex⟩
+    cases hsignature : entry.2 with
+    | none => simp [hsignature] at hindex
+    | some signature =>
+        cases hdecode : TargetSum.decodeDigest
+            (Concrete.CacheView.encodingHash cache secretKey.parameter
+              entry.1.epoch (entry.1.message, signature.randomness)) with
+        | none => simp [hsignature, hdecode] at hindex
+        | some encoding =>
+            simp only [hsignature, hdecode] at hindex
+            have hsuffix := (mem_chainSuffixValueIndices_iff
+              entry.1.epoch index.1 (encoding chain) index.2).1 hindex
+            exact ⟨entry.1, signature, encoding,
+              ⟨entry, hentry, rfl, hsignature⟩, hdecode,
+              hsuffix.1, hsuffix.2⟩
+  · rintro ⟨request, signature, encoding,
+      ⟨entry, hentry, hrequest, hsignature⟩, hdecode, hepoch, hdigit⟩
+    subst request
+    refine ⟨entry, hentry, ?_⟩
+    simp only [hsignature, hdecode]
+    exact (mem_chainSuffixValueIndices_iff
+      entry.1.epoch index.1 (encoding chain) index.2).2 ⟨hepoch, hdigit⟩
+
 noncomputable def returnedChainValueReveals
     (keygenCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
     (log : QueryLog SigningSpec) (chain : ChainIndex) :
     List (ChainValueIndex × Digest) :=
-  (returnedChainValueIndices finalCache secretKey log chain).toList.map fun index =>
+  (returnedChainValueIndexList finalCache secretKey log chain).map fun index =>
     (index, keygenChainValueTable keygenCache secretKey chain index)
 
 noncomputable def AttackerAction.chainValueReveal?
@@ -76,6 +141,8 @@ theorem mem_returnedChainValueReveals_fst_iff
     (log : QueryLog SigningSpec) (chain : ChainIndex) (index : ChainValueIndex) :
     index ∈ (returnedChainValueReveals keygenCache finalCache secretKey log chain).map Prod.fst ↔
       index ∈ returnedChainValueIndices finalCache secretKey log chain := by
+  rw [mem_returnedChainValueIndices_iff,
+    ← mem_returnedChainValueIndexList_iff]
   simp [returnedChainValueReveals]
 
 theorem returnedChainValueReveals_fst_nodup
@@ -83,8 +150,10 @@ theorem returnedChainValueReveals_fst_nodup
     (log : QueryLog SigningSpec) (chain : ChainIndex) :
     ((returnedChainValueReveals keygenCache finalCache secretKey log chain).map
       Prod.fst).Nodup := by
-  convert (returnedChainValueIndices finalCache secretKey log chain).nodup_toList using 1
-  simp [returnedChainValueReveals, List.map_map, Function.comp_def]
+  have hnodup : (returnedChainValueIndexList finalCache secretKey log chain).Nodup := by
+    unfold returnedChainValueIndexList
+    exact List.nodup_dedup _
+  simpa [returnedChainValueReveals, List.map_map, Function.comp_def] using hnodup
 
 theorem install_returnedChainValueReveals_eq_keygenTable
     (keygenCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
@@ -107,6 +176,30 @@ noncomputable def unrevealedChainValueProbes
     (encoding : Encoding) : List (ChainValueIndex × Digest) :=
   (chainValueProbes secretKey.parameter chain trace forgery encoding).filter fun probe =>
     probe.1 ∉ returnedChainValueIndices finalCache secretKey log chain
+
+set_option maxRecDepth 10000 in
+theorem forwardDerivedProbe_not_mem_unrevealed
+    (finalCache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex)
+    (trace : AttackerActionTrace) (forgery : Forgery)
+    (forgedEncoding : Encoding) (request : SignRequest)
+    (signature : Signature) (signedEncoding : Encoding)
+    (later : Digit) (target : Digest)
+    (hreturned : SigningTranscript.Returned log request signature)
+    (hdecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash finalCache secretKey.parameter request.epoch
+        (request.message, signature.randomness)) = some signedEncoding)
+    (hle : signedEncoding chain ≤ later) :
+    ((request.epoch, later), target) ∉
+      unrevealedChainValueProbes finalCache secretKey log chain trace forgery
+        forgedEncoding := by
+  intro hprobe
+  have hnotReturned : (request.epoch, later) ∉
+      returnedChainValueIndices finalCache secretKey log chain := by
+    simpa only [decide_eq_true_eq] using (List.mem_filter.mp hprobe).2
+  apply hnotReturned
+  rw [mem_returnedChainValueIndices_iff]
+  exact ⟨request, signature, signedEncoding, hreturned, hdecode, rfl, hle⟩
 
 theorem unrevealedChainValueProbes_length_le
     (finalCache : QueryCache HashSpec) (secretKey : SecretKey)

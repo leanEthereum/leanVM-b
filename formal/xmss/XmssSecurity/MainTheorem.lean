@@ -8,6 +8,7 @@ import XmssSecurity.IndexedHiddenValue
 import XmssSecurity.ChainOriginProbability
 import XmssSecurity.ChainHiddenTable
 import XmssSecurity.ChainTracedGame
+import XmssSecurity.CausalViewCoupling
 import XmssSecurity.LeafEventProbability
 import XmssSecurity.Merkle
 import XmssSecurity.MerkleEventProbability
@@ -44,6 +45,11 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
   · intro chain
     refine (winningKeygenValueGuess_probability_le_origin adversary chain).trans ?_
     apply winningChainOrigin_probability_le_of_causalStrategy q adversary hbound chain
+    apply hasActionTracedCausalStrategyReduction_of_programmed_causal_trace_probability
+    apply programmed_causal_trace_probability_le_of_eager_relTriple
+    refine OracleComp.ProgramLogic.Relational.relTriple_of_evalDist_eq_right ?_
+      (relTriple_programmedWarmedRevealProbeView_skeleton adversary chain)
+    rw [evalDist_programmedWarmedSkeletonStrategyViewExperiment_eq_map]
     sorry
 
 /-- Below the digest-space size, encoding and chain events cost two elementary terms and every other event costs one. -/

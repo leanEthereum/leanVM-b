@@ -241,8 +241,8 @@ theorem traced_chainValueProbes_length_le
   exact (chainValueProbes_length_le keyResult.1.2.parameter chain result.2
     result.1.1 encoding).trans (by omega)
 
-/-- The chain coordinate used by a winning chain event differs from the coordinate returned by every successful signature at the forged epoch. -/
-theorem WinningOutcomeBadEventOccurs.chain_coordinate_ne_returned
+/-- The chain coordinate used by a winning chain event precedes the coordinate returned by every successful signature at the forged epoch. -/
+theorem WinningOutcomeBadEventOccurs.chain_coordinate_lt_returned
     {cache : QueryCache HashSpec} {outcome : GameOutcome} {chain : ChainIndex}
     (hevent : WinningOutcomeBadEventOccurs cache outcome (.chain chain))
     (forgedEncoding : Encoding)
@@ -257,7 +257,7 @@ theorem WinningOutcomeBadEventOccurs.chain_coordinate_ne_returned
       (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter request.epoch
         (request.message, signature.randomness)) = some signedEncoding)
     (hepoch : request.epoch = outcome.forgery.epoch) :
-    signedEncoding chain ≠ forgedEncoding chain := by
+    forgedEncoding chain < signedEncoding chain := by
   rcases hevent.2.2 with hsame | hfresh
   · obtain ⟨eventRequest, eventSignature, eventSignedEncoding, eventForgedEncoding,
       heventSignedDecode, heventForgedDecode, heventReturned, heventEpoch,
@@ -281,10 +281,30 @@ theorem WinningOutcomeBadEventOccurs.chain_coordinate_ne_returned
       eventSignedEncoding eventForgedEncoding eventSignature.chainValue
       outcome.forgery.signature.chainValue chain at hchain
     rw [← hsignedEncoding, ← hforgedEncoding]
-    exact ne_of_gt hchain.1
+    exact hchain.1
   · obtain ⟨_eventForgedEncoding, _hvalid, hunsigned, _hdecode, _hchain⟩ := hfresh
     exact (hunsigned ⟨request, signature, hreturned, hepoch⟩).elim
 
+theorem WinningOutcomeBadEventOccurs.chain_coordinate_ne_returned
+    {cache : QueryCache HashSpec} {outcome : GameOutcome} {chain : ChainIndex}
+    (hevent : WinningOutcomeBadEventOccurs cache outcome (.chain chain))
+    (forgedEncoding : Encoding)
+    (hforgedDecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter
+        outcome.forgery.epoch
+        (outcome.forgery.message, outcome.forgery.signature.randomness)) =
+      some forgedEncoding)
+    (request : SignRequest) (signature : Signature) (signedEncoding : Encoding)
+    (hreturned : SigningTranscript.Returned outcome.signingLog request signature)
+    (hsignedDecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter request.epoch
+        (request.message, signature.randomness)) = some signedEncoding)
+    (hepoch : request.epoch = outcome.forgery.epoch) :
+    signedEncoding chain ≠ forgedEncoding chain := by
+  exact ne_of_gt (hevent.chain_coordinate_lt_returned forgedEncoding
+    hforgedDecode request signature signedEncoding hreturned hsignedDecode hepoch)
+
+/-- Coordinates sent by the signer, together with every later coordinate that can be derived by walking the chain forward. -/
 noncomputable def returnedChainValueIndices
     (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (log : QueryLog SigningSpec) (chain : ChainIndex) : Finset ChainValueIndex := by
@@ -294,7 +314,7 @@ noncomputable def returnedChainValueIndices
       TargetSum.decodeDigest
         (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
           (request.message, signature.randomness)) = some encoding ∧
-      index = (request.epoch, encoding chain)
+      index.1 = request.epoch ∧ encoding chain ≤ index.2
 
 @[simp]
 theorem mem_returnedChainValueIndices_iff
@@ -306,9 +326,37 @@ theorem mem_returnedChainValueIndices_iff
           TargetSum.decodeDigest
             (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
               (request.message, signature.randomness)) = some encoding ∧
-          index = (request.epoch, encoding chain) := by
+          index.1 = request.epoch ∧ encoding chain ≤ index.2 := by
   classical
   simp only [returnedChainValueIndices, Finset.mem_filter, Finset.mem_univ, true_and]
+
+theorem returnedChainValueIndices_contains_returned
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex)
+    (request : SignRequest) (signature : Signature) (encoding : Encoding)
+    (hreturned : SigningTranscript.Returned log request signature)
+    (hdecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache secretKey.parameter request.epoch
+        (request.message, signature.randomness)) = some encoding) :
+    (request.epoch, encoding chain) ∈
+      returnedChainValueIndices cache secretKey log chain := by
+  rw [mem_returnedChainValueIndices_iff]
+  exact ⟨request, signature, encoding, hreturned, hdecode, rfl, le_rfl⟩
+
+set_option linter.constructorNameAsVariable false in
+theorem returnedChainValueIndices_forward_closed
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex)
+    (epoch : Epoch) (digit later : Digit)
+    (hmem : (epoch, digit) ∈
+      returnedChainValueIndices cache secretKey log chain)
+    (hle : digit ≤ later) :
+    (epoch, later) ∈ returnedChainValueIndices cache secretKey log chain := by
+  rw [mem_returnedChainValueIndices_iff] at hmem ⊢
+  obtain ⟨request, signature, encoding, hreturned, hdecode,
+    hepoch, hdigit⟩ := hmem
+  exact ⟨request, signature, encoding, hreturned, hdecode,
+    hepoch, hdigit.trans hle⟩
 
 set_option maxRecDepth 10000 in
 set_option linter.constructorNameAsVariable false in
@@ -325,13 +373,13 @@ theorem WinningOutcomeBadEventOccurs.forged_chain_coordinate_not_mem_returned
       returnedChainValueIndices cache outcome.secretKey outcome.signingLog chain := by
   intro hmem
   rw [mem_returnedChainValueIndices_iff] at hmem
-  obtain ⟨request, signature, signedEncoding, hreturned, hsignedDecode, hindex⟩ := hmem
+  obtain ⟨request, signature, signedEncoding, hreturned, hsignedDecode,
+    hepoch, hdigit⟩ := hmem
   have hepoch : request.epoch = outcome.forgery.epoch := by
-    exact congrArg Prod.fst hindex.symm
-  have hdigit : signedEncoding chain = forgedEncoding chain := by
-    exact congrArg Prod.snd hindex.symm
-  exact (hevent.chain_coordinate_ne_returned forgedEncoding hforgedDecode request signature
-    signedEncoding hreturned hsignedDecode hepoch) hdigit
+    exact hepoch.symm
+  have hbackward := hevent.chain_coordinate_lt_returned forgedEncoding
+    hforgedDecode request signature signedEncoding hreturned hsignedDecode hepoch
+  exact (not_lt_of_ge hdigit) hbackward
 
 /-- Every chain value returned by the signer is the corresponding entry of the table fixed during key generation. -/
 theorem returned_chainValue_eq_keygenChainValueTable
