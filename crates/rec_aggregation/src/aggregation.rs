@@ -25,6 +25,7 @@
 //! supplies every compile-time shape.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
@@ -450,14 +451,104 @@ fn stacked_bytecode() -> &'static [F64] {
     TABLE.get_or_init(|| lean_vm::cpu::layout::bytecode_table(&unified_guest().prog))
 }
 
+/// The slots of the stacked bytecode that are not structurally zero.
+///
+/// Nine encoding columns sit inside sixteen stacking slots, so nearly half the
+/// table is zero and contributes nothing to any round of the batching sumcheck.
+/// Read off the table rather than from the column count, so an all-zero column
+/// at the edge only ever shrinks the window.
+fn bytecode_window() -> Range<usize> {
+    static WINDOW: std::sync::OnceLock<Range<usize>> = std::sync::OnceLock::new();
+    WINDOW
+        .get_or_init(|| {
+            let table = stacked_bytecode();
+            let kbc = bytecode_vars() - lean_vm::leaf::N_BYTECODE_SELECTORS;
+            let live = |s: usize| table[s << kbc..(s + 1) << kbc].iter().any(|v| *v != F64::ZERO);
+            let slots = 1 << lean_vm::leaf::N_BYTECODE_SELECTORS;
+            let start = (0..slots).find(|&s| live(s)).expect("the bytecode is not all zero");
+            let end = (0..slots).rfind(|&s| live(s)).expect("the bytecode is not all zero") + 1;
+            start..end
+        })
+        .clone()
+}
+
+/// One round message against a K-valued table: `bt` is the bytecode itself, so
+/// the products are base-by-extension.
+fn round_msg_base(bt: &[F64], wt: &[F192]) -> (F192, F192) {
+    let half = bt.len() / 2;
+    let term = |i: usize| {
+        let (u0, u1) = (bt[2 * i], bt[2 * i + 1]);
+        let (m0, m1) = (wt[2 * i], wt[2 * i + 1]);
+        (m1.mul_base(u1), (m0 + m1).mul_base(u0 + u1))
+    };
+    if half >= PAR_MIN {
+        parallel::fold_reduce(
+            half,
+            || (F192::ZERO, F192::ZERO),
+            |acc: &mut (F192, F192), i| {
+                let (x, y) = term(i);
+                acc.0 += x;
+                acc.1 += y;
+            },
+            |a: (F192, F192), b: (F192, F192)| (a.0 + b.0, a.1 + b.1),
+        )
+    } else {
+        (0..half).fold((F192::ZERO, F192::ZERO), |acc, i| {
+            let (x, y) = term(i);
+            (acc.0 + x, acc.1 + y)
+        })
+    }
+}
+
+/// The first fold of a K-valued table, which is where it becomes extension-valued.
+fn fold_lsb_base(bt: &[F64], r: F192) -> Vec<F192> {
+    parallel::map_collect(bt.len() / 2, |i| {
+        let (a, b) = (bt[2 * i], bt[2 * i + 1]);
+        F192::from(a) + r.mul_base(a + b)
+    })
+}
+
+/// `Σ_t γ_t · eq(points[t], (r_row, ·))` over the stacking slots, once the row
+/// variables are bound. A closed form, so the row rounds never have to carry the
+/// slot half of a `2^kbcv` weight table.
+fn slot_weights(points: &[Vec<F192>], gammas: &[F192], r_row: &[F192], kbc: usize) -> Vec<F192> {
+    let slots = lean_vm::leaf::N_BYTECODE_SELECTORS;
+    let mut out = vec![F192::ZERO; 1 << slots];
+    for (p, &g) in points.iter().zip(gammas) {
+        let row: F192 = (0..kbc).fold(g, |acc, k| acc * (F192::ONE + p[k] + r_row[k]));
+        for (s, w) in out.iter_mut().enumerate() {
+            let e = (0..slots).fold(row, |acc, b| {
+                let c = p[kbc + b];
+                acc * if (s >> b) & 1 == 1 { c } else { F192::ONE + c }
+            });
+            *w += e;
+        }
+    }
+    out
+}
+
 /// Variables of a bytecode claim's point: the log row count plus the stacking
 /// selectors.
 fn bytecode_vars() -> usize {
     stacked_bytecode().len().trailing_zeros() as usize
 }
 
+/// Below this a parallel dispatch costs more than the loop it replaces.
+const PAR_MIN: usize = 1 << 16;
+
 fn fold_lsb(t: &mut Vec<F192>, r: F192) {
     let half = t.len() / 2;
+    if half >= PAR_MIN {
+        // Out of place: folding in place reads `t[2i]` while another task writes
+        // `t[i]`, and the ranges overlap.
+        let src: &[F192] = t;
+        let folded = parallel::map_collect(half, |i| {
+            let (a, b) = (src[2 * i], src[2 * i + 1]);
+            a + r * (a + b)
+        });
+        *t = folded;
+        return;
+    }
     for i in 0..half {
         t[i] = t[2 * i] + r * (t[2 * i] + t[2 * i + 1]);
     }
@@ -469,11 +560,29 @@ fn fold_lsb(t: &mut Vec<F192>, r: F192) {
 fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
     let (mut g1, mut gi) = (F192::ZERO, F192::ZERO);
     for &(u, m, gamma) in pairs {
-        let (mut a1, mut ai) = (F192::ZERO, F192::ZERO);
-        for i in 0..u.len() / 2 {
-            a1 += u[2 * i + 1] * m[2 * i + 1];
-            ai += (u[2 * i] + u[2 * i + 1]) * (m[2 * i] + m[2 * i + 1]);
-        }
+        let half = u.len() / 2;
+        let term = |i: usize| {
+            let (u0, u1) = (u[2 * i], u[2 * i + 1]);
+            let (m0, m1) = (m[2 * i], m[2 * i + 1]);
+            (u1 * m1, (u0 + u1) * (m0 + m1))
+        };
+        let (a1, ai) = if half >= PAR_MIN {
+            parallel::fold_reduce(
+                half,
+                || (F192::ZERO, F192::ZERO),
+                |acc: &mut (F192, F192), i| {
+                    let (x, y) = term(i);
+                    acc.0 += x;
+                    acc.1 += y;
+                },
+                |a: (F192, F192), b: (F192, F192)| (a.0 + b.0, a.1 + b.1),
+            )
+        } else {
+            (0..half).fold((F192::ZERO, F192::ZERO), |acc, i| {
+                let (x, y) = term(i);
+                (acc.0 + x, acc.1 + y)
+            })
+        };
         g1 += gamma * a1;
         gi += gamma * ai;
     }
@@ -500,6 +609,124 @@ fn absorb_round(
     let c1 = g0 + g1 + gi;
     *run = (gi * r + c1) * r + g0;
     r
+}
+
+/// `Σ_t γ_t · eq(points[t], ·)`, over the `active` window of `2^vars` entries.
+///
+/// Each point splits in half; the halves' eq tables are small and serial, and
+/// the full table is their outer product, one fused multiply-add per entry,
+/// parallel over the high index. Materializing a `2^vars` eq table per claim and
+/// summing them is the same arithmetic done twice, serially.
+fn weighted_eq_table(points: &[Vec<F192>], gammas: &[F192], vars: usize, active: Range<usize>) -> Vec<F192> {
+    let lo_vars = vars / 2;
+    let lo_len = 1usize << lo_vars;
+    debug_assert!(active.start.is_multiple_of(lo_len) && active.end.is_multiple_of(lo_len));
+    // `build_eq_table_ext` is LSB-first, so the low variables index the low bits
+    // and entry `hi * lo_len + lo` is `eq_lo[lo] * eq_hi[hi]`.
+    let halves: Vec<(Vec<F192>, Vec<F192>)> = points
+        .iter()
+        .zip(gammas)
+        .map(|(p, &g)| {
+            let lo = pcs::whir::build_eq_table_ext(&p[..lo_vars]);
+            let mut hi = pcs::whir::build_eq_table_ext(&p[lo_vars..]);
+            hi.iter_mut().for_each(|h| *h *= g);
+            (lo, hi)
+        })
+        .collect();
+    let mut out = vec![F192::ZERO; active.len()];
+    let first = active.start / lo_len;
+    parallel::chunks_mut(&mut out, lo_len, |h, chunk| {
+        for (lo, hi) in &halves {
+            let scale = hi[first + h];
+            for (o, &l) in chunk.iter_mut().zip(lo) {
+                *o += scale * l;
+            }
+        }
+    });
+    out
+}
+
+/// The BLAKE2s R1CS matrices in CSR form with 16-bit column indices.
+///
+/// The matrices are fixed, so this is preprocessing paid once per process, and
+/// the contractions below are bound by the index array rather than by their
+/// arithmetic: `Vec<Vec<usize>>` is 8 bytes per nonzero across `K` separate
+/// allocations, this is 2 (columns are below `2^K_LOG`) in one run.
+struct Csr {
+    starts: Vec<u32>,
+    cols: Vec<u16>,
+}
+
+impl Csr {
+    fn of(m: &flock::r1cs::SparseBinaryMatrix) -> Self {
+        assert!(m.num_cols <= 1 << 16, "a column index must fit in u16");
+        let mut starts = Vec::with_capacity(m.rows.len() + 1);
+        let mut cols = Vec::with_capacity(m.rows.iter().map(Vec::len).sum());
+        for row in &m.rows {
+            starts.push(cols.len() as u32);
+            cols.extend(row.iter().map(|&j| j as u16));
+        }
+        starts.push(cols.len() as u32);
+        Self { starts, cols }
+    }
+
+    fn row(&self, i: usize) -> &[u16] {
+        &self.cols[self.starts[i] as usize..self.starts[i + 1] as usize]
+    }
+
+    fn n_rows(&self) -> usize {
+        self.starts.len() - 1
+    }
+}
+
+fn matrices_csr() -> &'static (Csr, Csr) {
+    static CSR: std::sync::OnceLock<(Csr, Csr)> = std::sync::OnceLock::new();
+    CSR.get_or_init(|| {
+        let (a, b) = flock::blake2s::matrices();
+        (Csr::of(a), Csr::of(b))
+    })
+}
+
+/// Contract every claim's column weights against one matrix: `out[i * n + t]`
+/// sums claim `t`'s weight over row `i`'s nonzeros.
+///
+/// One pass over the nonzeros for ALL claims rather than one pass each, since
+/// the index array is tens of millions of entries and dwarfs the arithmetic.
+/// `wflat` is interleaved by claim for the same reason: a nonzero then costs one
+/// random fetch of `n` adjacent weights instead of `n` fetches into `n` separate
+/// tables, each its own cache miss.
+fn contract_cols(m: &Csr, wflat: &[F192], n: usize) -> Vec<F192> {
+    let mut out = vec![F192::ZERO; m.n_rows() * n];
+    parallel::chunks_mut(&mut out, n, |i, acc| {
+        for &j in m.row(i) {
+            for (a, w) in acc.iter_mut().zip(&wflat[j as usize * n..][..n]) {
+                *a += *w;
+            }
+        }
+    });
+    out
+}
+
+/// Contract one matrix along its rows at the point phase one fixed: a scatter,
+/// so each worker accumulates into its own column vector and the dispatcher
+/// adds them.
+fn contract_rows(m: &Csr, n_cols: usize, eq_rstar: &[F192]) -> Vec<F192> {
+    parallel::fold_reduce(
+        m.n_rows(),
+        || vec![F192::ZERO; n_cols],
+        |acc, i| {
+            let e = eq_rstar[i];
+            for &j in m.row(i) {
+                acc[j as usize] += e;
+            }
+        },
+        |mut a, b| {
+            for (x, y) in a.iter_mut().zip(b) {
+                *x += y;
+            }
+            a
+        },
+    )
 }
 
 /// Mirror the guest's `aggregate_claims` transcript and prove the two batching
@@ -548,6 +775,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     }
 
     // ---- bytecode batching sumcheck (dense, 2^kbcv; fresh then carried per child) ----
+    let _span = tracing::info_span!("Bytecode batch", vars = kbcv).entered();
     let gbc: Vec<F192> = (0..2 * nsub).map(|_| h.sample()).collect();
     let points: Vec<Vec<F192>> = subs
         .iter()
@@ -568,18 +796,48 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         .zip(carried)
         .flat_map(|(d, c)| [d.bytecode_value, c.bytecode_value])
         .collect();
-    let mut bt: Vec<F192> = stacked_bytecode().iter().map(|x| F192::new(x.0, 0, 0)).collect();
-    let mut wt = vec![F192::ZERO; 1 << kbcv];
-    for (t, p) in points.iter().enumerate() {
-        let eqt = pcs::whir::build_eq_table_ext(p);
-        for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
-            *w += gbc[t] * e;
-        }
-    }
     let mut brun: F192 = (0..2 * nsub).map(|t| gbc[t] * values[t]).fold(F192::ZERO, |a, x| a + x);
     let mut bscr = Vec::new();
     let mut r_bc = Vec::new();
-    for _ in 0..kbcv {
+    // The row variables, over the populated slot window only: the rest of the
+    // stacked table is structurally zero and contributes nothing to any round
+    // message, and folding LSB-first pairs entries within a slot, so the window's
+    // blocks stay aligned all the way down.
+    let n_slots = 1 << lean_vm::leaf::N_BYTECODE_SELECTORS;
+    let slot_window = bytecode_window();
+    let kbc = kbcv - lean_vm::leaf::N_BYTECODE_SELECTORS;
+    let mut wt = weighted_eq_table(
+        &points,
+        &gbc,
+        kbcv,
+        (slot_window.start << kbc)..(slot_window.end << kbc),
+    );
+    // Round zero runs against the K-valued table itself: the bytecode never needs
+    // to exist as `2^kbcv` extension elements (three times the memory traffic),
+    // and base-by-extension is cheaper than extension-by-extension. Every later
+    // round is extension-valued anyway.
+    let bc = &stacked_bytecode()[(slot_window.start << kbc)..(slot_window.end << kbc)];
+    let mut bt = {
+        let msg = round_msg_base(bc, &wt);
+        let r = absorb_round(&mut h, &mut bscr, &mut r_bc, &mut brun, msg);
+        let folded = fold_lsb_base(bc, r);
+        fold_lsb(&mut wt, r);
+        folded
+    };
+    for _ in 1..kbc {
+        let msg = round_msg(&[(&bt, &wt, F192::ONE)]);
+        let r = absorb_round(&mut h, &mut bscr, &mut r_bc, &mut brun, msg);
+        fold_lsb(&mut bt, r);
+        fold_lsb(&mut wt, r);
+    }
+    // The slot variables. The window has folded to one entry per populated slot;
+    // put those back among the zeros. The weights come from a closed form rather
+    // than from having carried a `2^kbcv` table through the rows.
+    let mut bt_slots = vec![F192::ZERO; n_slots];
+    bt_slots[slot_window.clone()].copy_from_slice(&bt);
+    let wt_slots = slot_weights(&points, &gbc, &r_bc, kbc);
+    let (mut bt, mut wt) = (bt_slots, wt_slots);
+    for _ in 0..lean_vm::leaf::N_BYTECODE_SELECTORS {
         let msg = round_msg(&[(&bt, &wt, F192::ONE)]);
         let r = absorb_round(&mut h, &mut bscr, &mut r_bc, &mut brun, msg);
         fold_lsb(&mut bt, r);
@@ -588,6 +846,8 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     let v_bc = bt[0];
     assert_eq!(brun, v_bc * wt[0], "bytecode sumcheck terminal");
 
+    drop(_span);
+    let _span = tracing::info_span!("Matrix batch").entered();
     // ---- matrix batching sumcheck (two-phase sparse) ----
     // One group per claim: the row weights, the column weights, and the
     // coefficient each matrix enters with. Downstream is shape-blind.
@@ -623,17 +883,23 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         gb.push(cgb);
         mrun += gf * d.matrix_claim + cga * c.matrix_a_value + cgb * c.matrix_b_value;
     }
-    let (ma, mb) = flock::blake2s::matrices();
-    let contract_cols = |m: &flock::r1cs::SparseBinaryMatrix, w: &[F192]| -> Vec<F192> {
-        m.rows
-            .iter()
-            .map(|row| row.iter().map(|&j| w[j]).fold(F192::ZERO, |a, x| a + x))
-            .collect()
-    };
-    let mut ms: Vec<Vec<F192>> = Vec::new();
-    for w in &ws {
-        ms.push(contract_cols(ma, w));
-        ms.push(contract_cols(mb, w));
+    let (ma, mb) = matrices_csr();
+    let (n_claims, n_rows) = (ws.len(), ma.n_rows());
+    assert_eq!(n_rows, mb.n_rows(), "the two matrices share their row space");
+    let mut wflat = vec![F192::ZERO; (1 << klog) * n_claims];
+    for (t, w) in ws.iter().enumerate() {
+        for (j, &v) in w.iter().enumerate() {
+            wflat[j * n_claims + t] = v;
+        }
+    }
+    let _cols = tracing::info_span!("Contract columns").entered();
+    let (ca, cb) = (contract_cols(ma, &wflat, n_claims), contract_cols(mb, &wflat, n_claims));
+    drop(_cols);
+    // Back to one table per claim, A before B, which is the order `ga`/`gb` index.
+    let mut ms: Vec<Vec<F192>> = Vec::with_capacity(2 * n_claims);
+    for t in 0..n_claims {
+        ms.push((0..n_rows).map(|i| ca[i * n_claims + t]).collect());
+        ms.push((0..n_rows).map(|i| cb[i * n_claims + t]).collect());
     }
     // sanity: every claim really is the bilinear form over the matrices.
     #[cfg(debug_assertions)]
@@ -660,6 +926,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     }
     let mut mscr = Vec::new();
     let mut r_row = Vec::new();
+    let _rounds = tracing::info_span!("Row rounds").entered();
     for _ in 0..klog {
         let pairs: Vec<(&[F192], &[F192], F192)> = (0..2 * nsub)
             .flat_map(|t| {
@@ -678,19 +945,12 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
             fold_lsb(m, r);
         }
     }
+    drop(_rounds);
     let eq_rstar = pcs::whir::build_eq_table_ext(&r_row);
-    let contract_rows = |m: &flock::r1cs::SparseBinaryMatrix| -> Vec<F192> {
-        let mut out = vec![F192::ZERO; 1 << klog];
-        for (i, row) in m.rows.iter().enumerate() {
-            let e = eq_rstar[i];
-            for &j in row {
-                out[j] += e;
-            }
-        }
-        out
-    };
-    let mut acol = contract_rows(ma);
-    let mut bcol = contract_rows(mb);
+    let _rows = tracing::info_span!("Contract rows").entered();
+    let mut acol = contract_rows(ma, 1 << klog, &eq_rstar);
+    let mut bcol = contract_rows(mb, 1 << klog, &eq_rstar);
+    drop(_rows);
     let mut wa = vec![F192::ZERO; 1 << klog];
     let mut wb = vec![F192::ZERO; 1 << klog];
     for t in 0..2 * nsub {
@@ -746,6 +1006,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         assert_eq!(wb[0], wbm, "guest row-weight formula for B0");
     }
 
+    drop(_span);
     let hints = vec![
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
@@ -1389,6 +1650,7 @@ pub(crate) fn aggregate_tampered(
     // forces every batched value to be the true evaluation, and the root
     // discharges the one claim they reduce to.
     let mut verified = Vec::with_capacity(children.len());
+    let _span = tracing::info_span!("Verify children").entered();
     for child in children {
         check_signer_set(&child.public_keys).map_err(AggregateError::InvalidChild)?;
         let pi = child.public_input();
@@ -1396,6 +1658,9 @@ pub(crate) fn aggregate_tampered(
         verified.push((pi, summary, ops));
     }
 
+    drop(_span);
+
+    let _span = tracing::info_span!("Build witness").entered();
     let raw_keys: Vec<XmssPublicKey> = raw.iter().map(|(pk, _)| pk.clone()).collect();
     let child_keys: Vec<&[XmssPublicKey]> = children.iter().map(|c| c.public_keys.as_slice()).collect();
     let cover = plan_coverage(&raw_keys, &child_keys)?;
@@ -1444,6 +1709,8 @@ pub(crate) fn aggregate_tampered(
         carried.push(child.defer.clone());
     }
 
+    drop(_span);
+
     let defer = if children.is_empty() {
         let leaf = DeferredClaim::leaf();
         hints.push(
@@ -1452,6 +1719,7 @@ pub(crate) fn aggregate_tampered(
         );
         leaf
     } else {
+        let _span = tracing::info_span!("Batch deferred claims").entered();
         let (agg_hints, reduced) = aggregate_deferred_claims(&subs, &carried);
         for (name, entry) in agg_hints {
             hints.push(&name, entry);

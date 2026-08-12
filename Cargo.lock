@@ -376,6 +376,7 @@ dependencies = [
  "flock",
  "lean_compiler",
  "lean_vm",
+ "parallel",
  "pcs",
  "primitives",
  "rand",
