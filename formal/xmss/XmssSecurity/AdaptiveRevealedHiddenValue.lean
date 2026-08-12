@@ -50,6 +50,22 @@ theorem installReveals_eq_of_not_mem
       rw [installReveals_cons, Function.update_of_ne hne]
       exact ih htail
 
+omit [Fintype Index] in
+theorem installReveals_eq_self_of_values
+    (table : Index → Digest) (reveals : List (Index × Digest))
+    (hvalues : ∀ reveal ∈ reveals, table reveal.1 = reveal.2) :
+    installReveals table reveals = table := by
+  induction reveals with
+  | nil => rfl
+  | cons reveal reveals ih =>
+      rw [installReveals_cons, ih (fun candidate hcandidate =>
+        hvalues candidate (by simp [hcandidate]))]
+      funext index
+      by_cases heq : index = reveal.1
+      · subst index
+        simp [hvalues reveal (by simp)]
+      · simp [Function.update_of_ne heq]
+
 omit [Fintype Index] [DecidableEq Index] in
 theorem readMany_eq_of_probe_values_eq
     (left right : Index → Digest) (queries : Nat)
@@ -164,5 +180,91 @@ theorem adaptive_guess_after_adaptive_reveals_le
       (strategy reveals) (havoid reveals)
   exact (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans
     (adaptive_guess_after_public_sampling_le strategyGenerator queries)
+
+structure RevealProbeView (Index : Type) where
+  reveals : List (Index × Digest)
+  table : Index → Digest
+  strategy : List Bool → Index × Digest
+
+noncomputable def adaptiveRevealViewExperiment
+    (transcriptGenerator : ProbComp
+      (List (Index × Digest) × (List Bool → Index × Digest))) :
+    ProbComp (RevealProbeView Index) := do
+  let transcript ← transcriptGenerator
+  let table ← $ᵗ (Index → Digest)
+  return ⟨transcript.1, installReveals table transcript.1, transcript.2⟩
+
+def RevealProbeView.HitsAvoidingReveals
+    (queries : Nat) (view : RevealProbeView Index) : Prop :=
+  readMany view.table queries view.strategy = true ∧
+    AvoidsReveals view.reveals view.strategy
+
+/-- Even without requiring every generated strategy to be safe, the event that it both avoids its disclosure transcript and hits the installed table costs at most one uniform-digest guess per probe. -/
+theorem adaptive_reveal_view_hit_le
+    (transcriptGenerator : ProbComp
+      (List (Index × Digest) × (List Bool → Index × Digest)))
+    (queries : Nat) :
+    Pr[RevealProbeView.HitsAvoidingReveals queries |
+      adaptiveRevealViewExperiment transcriptGenerator] ≤
+      (queries : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  unfold adaptiveRevealViewExperiment
+  refine probEvent_bind_le_of_forall_le fun transcript _htranscript => ?_
+  change Pr[RevealProbeView.HitsAvoidingReveals queries |
+    (fun table : Index → Digest =>
+      (⟨transcript.1, installReveals table transcript.1, transcript.2⟩ :
+        RevealProbeView Index)) <$> ($ᵗ (Index → Digest))] ≤ _
+  rw [probEvent_map]
+  by_cases havoid : AvoidsReveals transcript.1 transcript.2
+  · have hread : ∀ table : Index → Digest,
+        readMany (installReveals table transcript.1) queries transcript.2 =
+          readMany table queries transcript.2 := fun table =>
+      readMany_installReveals_eq table transcript.1 queries transcript.2 havoid
+    calc
+      Pr[fun table : Index → Digest =>
+          RevealProbeView.HitsAvoidingReveals queries
+            ⟨transcript.1, installReveals table transcript.1, transcript.2⟩ |
+        $ᵗ (Index → Digest)] =
+          Pr[fun table : Index → Digest =>
+            readMany table queries transcript.2 = true |
+          $ᵗ (Index → Digest)] := by
+        apply probEvent_congr' (fun table _ => ?_) rfl
+        simp only [RevealProbeView.HitsAvoidingReveals, havoid, and_true]
+        rw [hread table]
+      _ = Pr[(fun hit : Bool => hit = true) |
+          experiment queries transcript.2] := by
+        unfold experiment
+        change Pr[fun table : Index → Digest =>
+            readMany table queries transcript.2 = true |
+          $ᵗ (Index → Digest)] =
+          Pr[(fun hit : Bool => hit = true) |
+            (fun table : Index → Digest => readMany table queries transcript.2) <$>
+              ($ᵗ (Index → Digest))]
+        rw [probEvent_map]
+        rfl
+      _ ≤ (queries : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) :=
+        adaptive_guess_le queries transcript.2
+  · have hzero :
+        Pr[(RevealProbeView.HitsAvoidingReveals queries) ∘
+            (fun table : Index → Digest =>
+              (⟨transcript.1, installReveals table transcript.1, transcript.2⟩ :
+                RevealProbeView Index)) |
+          $ᵗ (Index → Digest)] = 0 := by
+      apply probEvent_eq_zero
+      intro table _htable hevent
+      exact havoid hevent.2
+    rw [hzero]
+    exact bot_le
+
+/-- A real experiment with the same view distribution as the ideal reveal experiment inherits the hidden-table bound. -/
+theorem reveal_view_coupling_hit_le
+    (real : ProbComp (RevealProbeView Index))
+    (transcriptGenerator : ProbComp
+      (List (Index × Digest) × (List Bool → Index × Digest)))
+    (queries : Nat)
+    (hdist : 𝒟[real] = 𝒟[adaptiveRevealViewExperiment transcriptGenerator]) :
+    Pr[RevealProbeView.HitsAvoidingReveals queries | real] ≤
+      (queries : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) :=
+  (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans
+    (adaptive_reveal_view_hit_le transcriptGenerator queries)
 
 end XmssSecurity.IndexedHiddenValue

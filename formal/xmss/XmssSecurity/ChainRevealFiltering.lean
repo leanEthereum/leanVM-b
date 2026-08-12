@@ -21,6 +21,28 @@ theorem mem_returnedChainValueReveals_fst_iff
       index ∈ returnedChainValueIndices finalCache secretKey log chain := by
   simp [returnedChainValueReveals]
 
+theorem returnedChainValueReveals_fst_nodup
+    (keygenCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex) :
+    ((returnedChainValueReveals keygenCache finalCache secretKey log chain).map
+      Prod.fst).Nodup := by
+  convert (returnedChainValueIndices finalCache secretKey log chain).nodup_toList using 1
+  simp [returnedChainValueReveals, List.map_map, Function.comp_def]
+
+theorem install_returnedChainValueReveals_eq_keygenTable
+    (keygenCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
+    (log : QueryLog SigningSpec) (chain : ChainIndex) :
+    IndexedHiddenValue.installReveals
+        (keygenChainValueTable keygenCache secretKey chain)
+        (returnedChainValueReveals keygenCache finalCache secretKey log chain) =
+      keygenChainValueTable keygenCache secretKey chain := by
+  apply IndexedHiddenValue.installReveals_eq_self_of_values
+  intro reveal hrevealed
+  unfold returnedChainValueReveals at hrevealed
+  rw [List.mem_map] at hrevealed
+  obtain ⟨index, _hindex, rfl⟩ := hrevealed
+  rfl
+
 noncomputable def unrevealedChainValueProbes
     (finalCache : QueryCache HashSpec) (secretKey : SecretKey)
     (log : QueryLog SigningSpec) (chain : ChainIndex)
@@ -82,15 +104,20 @@ theorem WinningOutcomeChainValueHasKeygenOrigin.readMany_unrevealed_eq_true
       (unrevealedChainValueProbes finalCache secretKey outcome.signingLog chain trace
         outcome.forgery encoding).length ≤ q) :
     ∃ encoding,
-      let probe : ChainValueIndex × Digest :=
-        ((outcome.forgery.epoch, encoding chain), outcome.forgery.signature.chainValue chain)
-      let probes := unrevealedChainValueProbes finalCache secretKey outcome.signingLog chain
-        trace outcome.forgery encoding
-      IndexedHiddenValue.readMany (keygenChainValueTable keygenCache secretKey chain) q
-          (listStrategy probe probes) = true ∧
-        AvoidsReveals
-          (returnedChainValueReveals keygenCache finalCache secretKey outcome.signingLog chain)
-          (listStrategy probe probes) := by
+      TargetSum.decodeDigest
+          (Concrete.CacheView.encodingHash finalCache secretKey.parameter
+            outcome.forgery.epoch
+            (outcome.forgery.message, outcome.forgery.signature.randomness)) =
+        some encoding ∧
+      (let probe : ChainValueIndex × Digest :=
+          ((outcome.forgery.epoch, encoding chain), outcome.forgery.signature.chainValue chain)
+        let probes := unrevealedChainValueProbes finalCache secretKey outcome.signingLog chain
+          trace outcome.forgery encoding
+        IndexedHiddenValue.readMany (keygenChainValueTable keygenCache secretKey chain) q
+            (listStrategy probe probes) = true ∧
+          AvoidsReveals
+            (returnedChainValueReveals keygenCache finalCache secretKey outcome.signingLog chain)
+            (listStrategy probe probes)) := by
   obtain ⟨encoding, hdecode, hvalue⟩ :=
     winningOutcomeChainValueHasKeygenOrigin_eq_table keygenCache finalCache secretKey
       outcome chain horigin
@@ -104,7 +131,7 @@ theorem WinningOutcomeChainValueHasKeygenOrigin.readMany_unrevealed_eq_true
       chain trace outcome.forgery encoding := by
     apply List.mem_filter.mpr
     exact ⟨by simp [chainValueProbes, probe], by simpa [probe] using hunrevealed⟩
-  refine ⟨encoding, ?_⟩
+  refine ⟨encoding, hdecode, ?_⟩
   constructor
   · exact readMany_listStrategy_eq_true_of_mem
       (keygenChainValueTable keygenCache secretKey chain) q
