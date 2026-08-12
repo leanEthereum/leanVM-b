@@ -8,7 +8,7 @@
 //! We further specialize to **block-diagonal `A` and `B`**:
 //!   `A = I_{2^n_log} ⊗ A_0`, etc. The base matrices are `k × k` sparse
 //! boolean (`k = 2^k_log`). `C_0 = I_k` is implicit, but the materialized
-//! `c_0` matrix is still carried because [`BlockR1cs::family_digest`] absorbs
+//! `c_0` matrix is still carried because [`BlockR1cs::r1cs_digest`] absorbs
 //! it.
 
 /// Sparse boolean matrix. `rows[i]` lists the column indices where the entry is 1.
@@ -22,7 +22,7 @@ pub struct SparseBinaryMatrix {
 /// Memory/variable layout of the committed witness (address bit `i` of the
 /// packed buffer = MLE variable `i`): `addr = [k_log inner bits | n_log batch
 /// bits]`, each instance one contiguous `2^k_log`-bit block. A one-variant
-/// enum so the layout byte stays an explicit part of [`BlockR1cs::family_digest`].
+/// enum so the layout byte stays an explicit part of [`BlockR1cs::r1cs_digest`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WitnessLayout {
     #[default]
@@ -53,7 +53,7 @@ pub struct BlockR1cs {
     pub b_0: SparseBinaryMatrix,
     pub c_0: SparseBinaryMatrix,
     /// Memory/variable layout of the committed witness (see [`WitnessLayout`]).
-    /// Bound into [`Self::family_digest`].
+    /// Bound into [`Self::r1cs_digest`].
     pub layout: WitnessLayout,
     /// Column of a constant-one wire to pin to 1 across all blocks, or `None`.
     /// Drives the lincheck constant-wire pin (see
@@ -136,15 +136,18 @@ impl BlockR1cs {
             .all(|((ai, bi), ci)| (*ai & *bi) == *ci)
     }
 
-    /// BLAKE2s hash of the circuit FAMILY: the per-block matrices and the
-    /// shape parameters, explicitly WITHOUT the instance count `m`. The full
-    /// instance is block-diagonal (`m` copies of these matrices), so a
+    /// BLAKE2s hash of the R1CS itself: the per-block matrices and the shape
+    /// parameters, explicitly WITHOUT the instance count `m`. It therefore
+    /// identifies every block-diagonal instance built from these matrices at
+    /// once, whatever the count. The full instance is `m` copies of them, so a
     /// protocol that binds this digest and `m` separately has bound the whole
     /// statement; embedding protocols (leanVM-b) seed their transcript with it
     /// and announce the count.
-    pub fn family_digest(&self) -> [u8; 32] {
+    pub fn r1cs_digest(&self) -> [u8; 32] {
         let mut h = primitives::blake2s::Hasher::new();
-        h.update(b"flock-r1cs-family-v1");
+        // v2: v1 absorbed the matrices in sparse form, this one absorbs their
+        // dense bit image (see `absorb_matrix`).
+        h.update(b"flock-r1cs-digest-v2");
         h.update(&(self.k_log as u64).to_le_bytes());
         h.update(&(self.k_skip as u64).to_le_bytes());
         // The layout determines which polynomial a given witness commits
@@ -159,24 +162,30 @@ impl BlockR1cs {
     }
 }
 
-/// Length-prefixed absorption of a sparse matrix into a BLAKE2s hasher.
-/// `(num_rows, num_cols, [(row_len, col_indices...) for each row])`, all
-/// little-endian u64, so two matrices with different shapes/contents always
-/// produce different states.
+/// Absorb a matrix into a BLAKE2s hasher as its DENSE bit image: the shape as
+/// two little-endian u64, then each row's `num_cols` bits packed LSB-first and
+/// padded to a byte boundary.
+///
+/// Dense rather than sparse for two reasons. It is canonical: over GF(2) a
+/// repeated column index cancels and a reordered row is the same matrix, so the
+/// sparse form commits to an encoding rather than to the matrix. And at these
+/// densities (13% to 20%) it is seven times shorter, one bit per entry against
+/// eight bytes per nonzero, which is the whole cost of [`BlockR1cs::r1cs_digest`].
 fn absorb_matrix(h: &mut primitives::blake2s::Hasher, m: &SparseBinaryMatrix) {
-    // Flatten first: one bulk `update` hashes at full BLAKE2s throughput,
-    // where per-entry 8-byte updates cost ~80 ms per matrix in call overhead.
-    let nnz: usize = m.rows.iter().map(Vec::len).sum();
-    let mut buf = Vec::with_capacity(8 * (2 + m.rows.len() + nnz));
-    buf.extend_from_slice(&(m.num_rows as u64).to_le_bytes());
-    buf.extend_from_slice(&(m.num_cols as u64).to_le_bytes());
+    assert_eq!(m.rows.len(), m.num_rows);
+    h.update(&(m.num_rows as u64).to_le_bytes());
+    h.update(&(m.num_cols as u64).to_le_bytes());
+    // A row at a time: the scatter stays inside an L1-resident buffer, and the
+    // full bit image is never materialized.
+    let mut bits = vec![0u8; m.num_cols.div_ceil(8)];
     for row in &m.rows {
-        buf.extend_from_slice(&(row.len() as u64).to_le_bytes());
         for &col in row {
-            buf.extend_from_slice(&(col as u64).to_le_bytes());
+            assert!(col < m.num_cols, "column index out of range");
+            bits[col / 8] ^= 1 << (col % 8);
         }
+        h.update(&bits);
+        bits.fill(0);
     }
-    h.update(&buf);
 }
 
 /// Block-diagonal `(I_{2^n_log} ⊗ M_0) · z` over GF(2).

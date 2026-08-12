@@ -292,13 +292,7 @@ def blake2s_hash(data: bytes) -> Digest:
 
 @dataclass(frozen=True, slots=True)
 class Digest:
-    """256 bits: a BLAKE2s output, a Merkle node, the sponge state, the public input.
-
-    One transcript encoding, everywhere: two 128-bit halves, each an E element
-    carrying a K pair with a spare top lane (`pcs::merkle::hash_to_scalars`).
-    128 bits is the VM's digest unit, which is what `PACK64X2` builds, so the
-    recursion guest reads every digest with the same two-cell shape.
-    """
+    """256 bits"""
 
     value: bytes
 
@@ -552,13 +546,6 @@ def compress(left: Sequence[SupportsIndex], right: Sequence[SupportsIndex]) -> t
 
 
 class Transcript:
-    """The verifier's half of the channel: a sponge over a received proof.
-
-    `scalar` reads and binds in one act, so no stream word can enter the
-    computation unbound. `observe` binds a value both sides derive themselves,
-    and never advances the stream.
-    """
-
     def __init__(self, proof: Proof, label: bytes, statement: Sequence[E]) -> None:
         self.proof = proof
         self.state = (0, 0, 0, 0)
@@ -983,7 +970,7 @@ def verify_constraints(
 
 # VM statement, layout, and AIR -----------------------------------------------
 
-FAMILY_DIGEST = bytes.fromhex("bd4b64dff0e11fab9f765ee7ff8f379e77be06ee5545f9291eb6c68d7c62a1fb")
+R1CS_DIGEST = bytes.fromhex("ec91e9d8d9ca4e306205907a0d236e53a6cdbda0382ef6c433ef9363edfe042e")
 MAX_LOG_BYTECODE = 32
 
 # The bytecode's nine public columns (opcode + eight operand/immediate slots)
@@ -1009,18 +996,6 @@ def bytecode_columns(bytecode: Sequence[K]) -> tuple[tuple[tuple[K, ...], ...], 
     require(not any(bytecode[used * rows :]), "bytecode padding slots must be zero")
     columns = tuple(tuple(bytecode[slot * rows : (slot + 1) * rows]) for slot in range(used))
     return columns, kbc
-
-
-def transcript_statement(bytecode: Sequence[K], public_input: Sequence[E]) -> tuple[E, ...]:
-    """The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
-
-    The seed hashes the bytecode multilinear itself, not a structured program, so
-    a verifier holding only the polynomial can reproduce it. Rust caches that
-    inner hash on `Program`, which is why it is a separate step here.
-    """
-    bytecode_hash = blake2s_hash(b"".join(word.to_bytes() for word in bytecode))
-    seed = blake2s_hash(b"leanvm-b-fs-seed-v2-blake2s" + FAMILY_DIGEST + bytecode_hash.value)
-    return (*seed.halves(), *public_input)
 
 
 # The columns no instruction table owns (doc sec:e2e-unrolled, Commitment): the
@@ -2167,21 +2142,15 @@ def blake2s_bilinear(
 # Complete VM verification and CLI -------------------------------------------
 
 
-def verify_execution(bytecode: Sequence[K], public_input: bytes, proof: Proof) -> None:
-    """Verify a complete leanVM-b execution proof against its public statement.
-
-    The statement is exactly two things. `bytecode` is the stacked bytecode
-    multilinear, 2^(N_BYTECODE_SELECTORS + kbc) K words (see
-    [`bytecode_columns`]); nothing about the instructions' structure is needed,
-    only the polynomial the bus claim lands on. `public_input` is 256 bits, the
-    two 128-bit halves that are memory cells 0 and 1, each a field element whose
-    top lane is zero.
-
-    The phases of doc sec:e2e-unrolled follow, in order.
-    """
-    pi = Digest(public_input).halves()
+def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
+    pi = public_input.halves()
     public_columns, bytecode_log = bytecode_columns(bytecode)
-    transcript = Transcript(proof, b"leanvm-b", transcript_statement(bytecode, pi))
+    # The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
+    # The seed hashes the bytecode multilinear itself, not a structured program,
+    # so a verifier holding only the polynomial can reproduce it.
+    bytecode_hash = blake2s_hash(b"".join(word.to_bytes() for word in bytecode))
+    seed = blake2s_hash(b"leanvm-b-fs-seed-v2-blake2s" + R1CS_DIGEST + bytecode_hash.value)
+    transcript = Transcript(proof, b"leanvm-b", (*seed.halves(), *pi))
 
     # 1] Statement binding: the announced instance shape, checked against the
     # public caps before any reduction runs on it.
@@ -2276,10 +2245,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("proof", type=Path, help="bincode proof")
     arguments = parser.parse_args(argv)
     try:
-        encoded = arguments.bytecode.read_bytes()
-        require(len(encoded) % 8 == 0, "bytecode is not a whole number of 64-bit words")
-        words = [K(int.from_bytes(encoded[i : i + 8], "little")) for i in range(0, len(encoded), 8)]
-        verify_execution(words, arguments.public_input.read_bytes(), Proof.load(arguments.proof))
+        encoded_bytecode = arguments.bytecode.read_bytes()
+        require(len(encoded_bytecode) % 8 == 0, "bytecode is not a whole number of 64-bit words")
+        bytecode = [K(int.from_bytes(encoded_bytecode[i : i + 8], "little")) for i in range(0, len(encoded_bytecode), 8)]
+        verify_execution(bytecode, Digest(arguments.public_input.read_bytes()), Proof.load(arguments.proof))
     except (OSError, ValueError, KeyError, VerificationError) as exc:
         parser.exit(1, f"verification failed: {exc}\n")
     print("verification succeeded")

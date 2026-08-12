@@ -357,14 +357,16 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     (to_mat(a_rows), to_mat(b_rows))
 }
 
-/// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
-/// recomputing it means building and hashing ~89M matrix entries, which
-/// embedding protocols would otherwise pay inside their first prove. The
-/// `family_digest_matches_baked` test recomputes and compares: a circuit change
-/// fails it until this constant is updated alongside.
-pub const FAMILY_DIGEST: [u8; 32] = [
-    0xbd, 0x4b, 0x64, 0xdf, 0xf0, 0xe1, 0x1f, 0xab, 0x9f, 0x76, 0x5e, 0xe7, 0xff, 0x8f, 0x37, 0x9e, 0x77, 0xbe, 0x06,
-    0xee, 0x55, 0x45, 0xf9, 0x29, 0x1e, 0xb6, 0xc6, 0x8d, 0x7c, 0x62, 0xa1, 0xfb,
+/// [`BlockR1cs::r1cs_digest`] of this module's circuit, baked as a constant:
+/// recomputing it means building ~89M matrix entries and hashing their 96 MiB
+/// bit image, which embedding protocols would otherwise pay inside their first
+/// prove. The `r1cs_digest_matches_baked` test recomputes and compares: a
+/// circuit change fails it until this constant is updated alongside. The same
+/// digest is mirrored in `python-verifier/verifier.py`, which cannot rebuild
+/// the matrices at all.
+pub const R1CS_DIGEST: [u8; 32] = [
+    0xec, 0x91, 0xe9, 0xd8, 0xd9, 0xca, 0x4e, 0x30, 0x62, 0x05, 0x90, 0x7a, 0x0d, 0x23, 0x6e, 0x53, 0xa6, 0xcd, 0xbd,
+    0xa0, 0x38, 0x2e, 0xf6, 0xc4, 0x33, 0xef, 0x93, 0x63, 0xed, 0xfe, 0x04, 0x2e,
 ];
 
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE2s
@@ -836,7 +838,7 @@ impl Blake2sSetup {
     /// the shared transcript, reducing R1CS validity of `blocks` to two
     /// evaluation claims on the committed packed witness `q_flock`. (The
     /// statement is already transcript-bound: the embedding protocol seeds
-    /// with the circuit family digest and announces the count.) Returns:
+    /// with the R1CS digest and announces the count.) Returns:
     /// - `z_packed`: the regenerated packed witness the PCS later opens against;
     /// - the [`PackedWitnessClaims`] `(ab, c)` on `q_flock`, with ring-switch weights.
     ///
@@ -891,7 +893,7 @@ impl Blake2sSetup {
         assert_eq!(z_packed_lincheck.len(), packed_len * 8, "wrong lincheck stripe length");
 
         // No bind_statement here: the embedding protocol (leanVM-b) seeds its
-        // transcript with the circuit-FAMILY digest and binds the instance
+        // transcript with the R1CS digest and binds the instance
         // count and commitment root before any challenge, so the statement is
         // already fully transcript-bound.
 
@@ -961,7 +963,7 @@ impl Blake2sSetup {
         vs: &mut fiat_shamir::transcript::VerifierState<'_>,
     ) -> Result<ReductionReplay, verifier::VerifyError> {
         // Mirror of prove_reduction: the statement is bound by the embedding
-        // protocol's seed (family digest) + announced count + commitment root.
+        // protocol's seed (R1CS digest) + announced count + commitment root.
 
         let zc_claim = crate::zerocheck::verify(self.r1cs.m, vs).map_err(verifier::VerifyError::Zerocheck)?;
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
@@ -1058,11 +1060,11 @@ mod tests {
     }
 
     #[test]
-    fn family_digest_matches_baked() {
+    fn r1cs_digest_matches_baked() {
         assert_eq!(
-            build_block_r1cs(3).family_digest(),
-            FAMILY_DIGEST,
-            "circuit family changed - update FAMILY_DIGEST"
+            build_block_r1cs(3).r1cs_digest(),
+            R1CS_DIGEST,
+            "R1CS changed - update R1CS_DIGEST"
         );
     }
 

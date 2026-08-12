@@ -543,7 +543,7 @@ fn aggregate_deferred_claims(
         assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
     }
 
-    // The inner proving environment (flock circuit family + program bytecode)
+    // The inner proving environment (flock BLAKE2s R1CS + program bytecode)
     // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);

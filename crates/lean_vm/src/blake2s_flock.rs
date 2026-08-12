@@ -276,15 +276,16 @@ pub fn warm_setup(n_blocks: usize) {
     let _ = setup_for(n_blocks.max(1));
 }
 
-/// The flock BLAKE2s circuit-FAMILY digest: a hash of the per-block R1CS
-/// matrices and shape parameters ([`family_digest`] on the R1CS), independent
+/// The flock BLAKE2s R1CS digest: a hash of the per-block R1CS matrices and
+/// shape parameters ([`flock::r1cs::BlockR1cs::r1cs_digest`]), independent
 /// of the instance count. The full instance is block-diagonal (the count is
 /// announced and absorbed with the other sizes), so a transcript seeded with
 /// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement up
-/// front. Baked in flock (test-guarded): recomputing it costs ~300 ms of
-/// matrix building + hashing, which used to land inside the first `prove`.
-pub fn family_digest() -> [u8; 32] {
-    flock::blake2s::FAMILY_DIGEST
+/// front. Baked in flock (test-guarded): recomputing it costs ~200 ms of
+/// hashing on top of building the matrices, which used to land inside the
+/// first `prove`.
+pub fn r1cs_digest() -> [u8; 32] {
+    flock::blake2s::R1CS_DIGEST
 }
 
 /// **Flock reduction only** (prover): run flock's BLAKE2s zerocheck + lincheck

@@ -239,7 +239,7 @@ DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # The seed is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
 # (the fs_seed hint folded into own_pi in main), so ONE compiled guest verifies
 # proofs of any inner program of this VM — the outer statement fixes the whole
-# proving environment (circuit family + program), via own_pi.
+# proving environment (flock R1CS + program), via own_pi.
 # The arity is hinted too, as g^nsub, and absorbed by both aggregation transcripts
 # ahead of every variable-length sequence, so the outer statement fixes it as well.
 # NSUB_BOUND (nsub < NSUB_BOUND) is the compile-time range-check bound that makes
@@ -1080,7 +1080,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]
-    fs = obs(fs, seed_0)  # the FS seed: H(flock circuit family, inner program
+    fs = obs(fs, seed_0)  # the FS seed: H(flock BLAKE2s R1CS, inner program
     fs = obs(fs, seed_1)  # bytecode, ...) — from the recursion's public input
     fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
     fs = obs(fs, pi_1)
@@ -2240,7 +2240,7 @@ def main():
     assert log(nsub_g) < NSUB_BOUND
     sub_pis = HeapBuf(nsub_g * nsub_g)  # 2 statement words per sub
     # The FS seed — ONE digest of everything fixed about the inner environment
-    # (the flock circuit family, the inner program bytecode) — rides the
+    # (the flock BLAKE2s R1CS, the inner program bytecode) — rides the
     # recursion's public input: hinted here, it leads every sub's transcript
     # and is folded into own_pi below, so the outer statement fixes the whole
     # proving environment with one word pair.

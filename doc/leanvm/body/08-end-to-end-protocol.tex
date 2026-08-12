@@ -70,7 +70,7 @@ The prover can thus leverage these "closed walks" to fill every table to its nex
 
 Each reduction below adds evaluation claims on columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s circuit family. The prover then announces the memory log-size $h$ and the seven table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s R1CS. The prover then announces the memory log-size $h$ and the seven table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
 
 \paragraph{Commitment.}
 \begin{enumerate}
