@@ -6,6 +6,9 @@ import XmssSecurity.CausalStrategyCoupling
 import XmssSecurity.CausalStrategyProgram
 import XmssSecurity.CausalStrategyEagerSteps
 import XmssSecurity.CausalStateInvariant
+import XmssSecurity.CausalStateInvariantSteps
+import XmssSecurity.CausalStateInvariantSimulation
+import XmssSecurity.CausalStateInvariantGame
 import XmssSecurity.ChainTracedGame
 import XmssSecurity.AdaptiveRevealedHiddenValue
 import XmssSecurity.AdaptiveRevealMonitor

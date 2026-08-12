@@ -26,6 +26,22 @@ theorem CausalRevealsAgree.recordProbe
     CausalRevealsAgree table (state.recordProbe probe) := by
   cases probe <;> exact hagrees
 
+theorem CausalRevealsAgree.causalRecordedState
+    {table : ChainValueIndex → Digest} {state : CausalHashState}
+    (hagrees : CausalRevealsAgree table state)
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput) :
+    CausalRevealsAgree table
+      (causalRecordedState secretKey chain input state) := by
+  unfold XmssSecurity.causalRecordedState
+  exact hagrees.recordProbe _
+
+theorem CausalRevealsAgree.setCache
+    {table : ChainValueIndex → Digest} {state : CausalHashState}
+    (hagrees : CausalRevealsAgree table state)
+    (cache : QueryCache HashSpec) :
+    CausalRevealsAgree table { state with cache := cache } := by
+  exact hagrees
+
 theorem CausalRevealsAgree.recordReveal
     {table : ChainValueIndex → Digest} {state : CausalHashState}
     (hagrees : CausalRevealsAgree table state)
