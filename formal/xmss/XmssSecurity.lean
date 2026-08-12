@@ -3,6 +3,7 @@ import XmssSecurity.ChainQueryPresence
 import XmssSecurity.ChainRevealFiltering
 import XmssSecurity.ChainTablePresampling
 import XmssSecurity.CausalStrategyCoupling
+import XmssSecurity.CausalStrategyProgram
 import XmssSecurity.ChainTracedGame
 import XmssSecurity.AdaptiveRevealedHiddenValue
 import XmssSecurity.AdaptiveRevealMonitor
