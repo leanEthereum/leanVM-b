@@ -23,6 +23,7 @@ import XmssSecurity.CausalRevealCoverageRun
 import XmssSecurity.CausalRevealCoverageGame
 import XmssSecurity.CausalRevealTraceReplay
 import XmssSecurity.CausalKeygenCoupling
+import XmssSecurity.CausalKeygenTableIndependence
 import XmssSecurity.CausalKeygenGameCoupling
 import XmssSecurity.CausalInstalledTableGame
 import XmssSecurity.CausalInstalledResampling
