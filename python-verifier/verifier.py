@@ -328,6 +328,12 @@ def log2_ceil(value: int) -> int:
     return max(0, (value - 1).bit_length())
 
 
+def log2_strict(value: int) -> int:
+    """log2 of a power of two, which is the shape every size in this protocol has."""
+    require(value > 0 and not value & (value - 1), "expected a power of two")
+    return value.bit_length() - 1
+
+
 def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
     """Place a block of 2^size at the next multiple of its own size, largest first.
 
@@ -609,8 +615,7 @@ class Transcript:
         is checked here rather than by the sponge. Returns the rows in query
         order, so a repeated position simply re-opens the same authenticated row.
         """
-        height = block_length.bit_length() - 1
-        require(block_length == 2**height, "invalid Merkle leaf count")
+        height = log2_strict(block_length)
         rows = []
         for query in queries:
             require(self.opening_offset < len(self.proof.merkle_openings), "Merkle opening missing")
@@ -697,9 +702,6 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
 # Bus balance and decomposition ---------------------------------------------
 
 
-INDEX = "index"  # the g-power column g^i, evaluated from the point rather than committed
-
-
 @dataclass
 class Form:
     """A degree-2 polynomial over columns: a bus coordinate and a bus form both.
@@ -709,8 +711,8 @@ class Form:
     ``quadratic`` are keyed by column (local to a table for the blocks it owns,
     global for the framework blocks); ``quadratic`` is what carries an address
     ``fp*g^o`` or an arithmetic result without committing a column for it.
-    ``public`` holds the terms a row derives from its position instead of its
-    columns: a dense public table, or [`INDEX`].
+    ``index`` is the coefficient of the g-power column g^i, the one coordinate a
+    row derives from its position rather than from a committed column.
 
     Degree stays at 2, which the AIR identities already are, so the table
     sumcheck's round polynomial does not grow.
@@ -719,7 +721,7 @@ class Form:
     constant: E = ZERO
     linear: dict[int, E] = field(default_factory=dict)
     quadratic: dict[tuple[int, int], E] = field(default_factory=dict)
-    public: tuple[tuple[Sequence[K | E] | str, E], ...] = ()
+    index: E = ZERO
 
     def add_scaled(self, other: Form, weight: E) -> None:
         self.constant += weight * other.constant
@@ -727,17 +729,17 @@ class Form:
             self.linear[column] = self.linear.get(column, ZERO) + weight * coefficient
         for pair, coefficient in other.quadratic.items():
             self.quadratic[pair] = self.quadratic.get(pair, ZERO) + weight * coefficient
-        self.public += tuple((table, weight * coefficient) for table, coefficient in other.public)
+        self.index += weight * other.index
 
     def evaluate(self, column: Callable[[int], E], point: Sequence[E] = ()) -> E:
-        """Substitute a value for every column, and the point for the public terms."""
+        """Substitute a value for every column, and the point for the index term."""
         total = self.constant
         for index, coefficient in self.linear.items():
             total += coefficient * column(index)
         for (a, b), coefficient in self.quadratic.items():
             total += coefficient * column(a) * column(b)
-        for table, coefficient in self.public:
-            total += coefficient * (index_mle(point) if isinstance(table, str) else multilinear_eval(table, point))
+        if self.index != ZERO:
+            total += self.index * index_mle(point)
         return total
 
 
@@ -753,6 +755,9 @@ class BusBlock:
     log_rows: int
     coordinates: tuple[Form, ...]
     owner: int | None = None
+    # The stacked bytecode multilinear, on the one block whose remaining tuple
+    # coordinates are public: its slots ARE those coordinates.
+    public: Sequence[K] | None = None
 
 
 @dataclass(frozen=True)
@@ -784,13 +789,14 @@ def _decompose_bus_side(
     blocks: Sequence[BusBlock],
     layout: BusLayout,
     point: Sequence[E],
-    weights: Sequence[E],
+    alphas: Sequence[E],
     gamma: E,
     forms: Sequence[Form],
     claims: list[ColumnClaim],
     transcript: Transcript,
 ) -> E:
     require(len(point) == layout.depth, "bus point dimension mismatch")
+    weights = eq_kernel(alphas)
 
     def committed_value(column: int, low_point: tuple[E, ...]) -> E:
         for prior in claims:
@@ -822,6 +828,10 @@ def _decompose_bus_side(
             (weights[slot] * c.evaluate(partial(committed_value, low_point=low), low) for slot, c in enumerate(block.coordinates)),
             ZERO,
         )
+        # The public coordinates' weighted sum IS the stacked polynomial at
+        # (zeta, alpha), the weights being eq(alpha, .): one evaluation, not nine.
+        if block.public is not None:
+            fingerprint += multilinear_eval(block.public, (*low, *alphas))
         result += selector_weight * (gamma + fingerprint)
 
     # Unoccupied rows of the packed leaf cube contain the product identity.
@@ -848,8 +858,8 @@ def verify_bus_balance(
     require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
     require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
-    weights = eq_kernel(transcript.samples(N_TUPLE_BITS))
-    count_weights = eq_kernel((ZERO,) * N_TUPLE_BITS)
+    alphas = transcript.samples(N_TUPLE_BITS)
+    count_alphas = (ZERO,) * N_TUPLE_BITS
     gamma = transcript.sample()
     padded_count_layout = BusLayout(push_layout.depth, count_layout.offsets)
     product = verify_product_triple(push_layout.depth, transcript)
@@ -864,17 +874,17 @@ def verify_bus_balance(
     claims: list[ColumnClaim] = []
     forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
     sides = (
-        (push, push_layout, weights, gamma),
-        (pull, pull_layout, weights, gamma),
-        (count, padded_count_layout, count_weights, ZERO),
+        (push, push_layout, alphas, gamma),
+        (pull, pull_layout, alphas, gamma),
+        (count, padded_count_layout, count_alphas, ZERO),
     )
     totals = []
-    for side, (blocks, side_layout, side_weights, side_gamma) in enumerate(sides):
+    for side, (blocks, side_layout, side_alphas, side_gamma) in enumerate(sides):
         known_contribution = _decompose_bus_side(
             blocks,
             side_layout,
             product.point,
-            side_weights,
+            side_alphas,
             side_gamma,
             forms[side],
             claims,
@@ -961,31 +971,13 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 R1CS_DIGEST = bytes.fromhex("ec91e9d8d9ca4e306205907a0d236e53a6cdbda0382ef6c433ef9363edfe042e")
-MAX_LOG_BYTECODE = 32
 
 # The bytecode's nine public columns (opcode + eight operand/immediate slots)
 # stack along 2^N_BYTECODE_SELECTORS slots of the polynomial the verifier is
-# handed (`lean_vm::cpu::layout::bytecode_table`).
+# handed (`lean_vm::cpu::layout::bytecode_table`), each at its bus tuple
+# coordinate, which is what makes the program's whole share of a bus leaf ONE
+# evaluation of that polynomial at (zeta, alpha) (doc sec:e2e-bc).
 N_BYTECODE_SELECTORS = 4
-
-
-def bytecode_columns(bytecode: Sequence[K]) -> tuple[tuple[tuple[K, ...], ...], int]:
-    """Split the stacked bytecode multilinear into its nine public columns.
-
-    `bytecode` is 2^(N_BYTECODE_SELECTORS + kbc) K words, slot-major: slot `i`
-    is tuple coordinate `i` of a bytecode bus tuple, which is what lets the bus
-    claim land on this polynomial directly (doc sec:e2e-bc). Slots past the nine
-    the encoding uses are zero, and are checked to be.
-    """
-    length = len(bytecode)
-    require(length > 0 and not length & (length - 1), "bytecode length must be a power of two")
-    kbc = length.bit_length() - 1 - N_BYTECODE_SELECTORS
-    require(0 <= kbc <= MAX_LOG_BYTECODE, "bytecode does not have 2^N_BYTECODE_SELECTORS slots")
-    rows = 2**kbc
-    used = 1 + N_BYTECODE_OPERANDS
-    require(not any(bytecode[used * rows :]), "bytecode padding slots must be zero")
-    columns = tuple(tuple(bytecode[slot * rows : (slot + 1) * rows]) for slot in range(used))
-    return columns, kbc
 
 
 # The columns no instruction table owns (doc sec:e2e-unrolled, Commitment): the
@@ -1051,11 +1043,7 @@ def _prod(a: int, b: int, exponent: int = 0) -> Form:
     return Form(quadratic={(a, b): _gpow(exponent)})
 
 
-def _public(values: Sequence[K | E]) -> Form:
-    return Form(public=((tuple(values), ONE),))
-
-
-_INDEX_COORDINATE = Form(public=((INDEX, ONE),))
+_INDEX_COORDINATE = Form(index=ONE)
 
 
 class Flushes:
@@ -1349,7 +1337,8 @@ WIDTHS = tuple(t.width for t in TABLES)
 BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(TABLES)))
 
 
-def build_layout(public_columns: Sequence[Sequence[K | E]], bytecode_log: int, log_memory: int, table_logs: Sequence[int]) -> Layout:
+def build_layout(bytecode: Sequence[K], log_memory: int, table_logs: Sequence[int]) -> Layout:
+    log_bytecode = log2_strict(len(bytecode)) - N_BYTECODE_SELECTORS
     require(
         16 <= log_memory <= 32
         and len(table_logs) == len(TABLES)
@@ -1371,14 +1360,11 @@ def build_layout(public_columns: Sequence[Sequence[K | E]], bytecode_log: int, l
         return [
             BusBlock(0, (_const(ONE), state, _const(ONE))),
             BusBlock(log_memory, (_const(GEN), _INDEX_COORDINATE, memory_count, _col(MEM_0), _col(MEM_1), _col(MEM_2))),
-            BusBlock(
-                bytecode_log,
-                (_const(GEN * GEN), _INDEX_COORDINATE, bytecode_count, *(_public(column) for column in public_columns)),
-            ),
+            BusBlock(log_bytecode, (_const(GEN * GEN), _INDEX_COORDINATE, bytecode_count), public=bytecode),
         ]
 
     push = frame(_const(ONE), _const(ONE), _const(ONE))
-    pull = frame(_const(_gpow(2**bytecode_log - 1)), _col(MEM_FINAL_CNT), _col(BYTECODE_FINAL_CNT))
+    pull = frame(_const(_gpow(2**log_bytecode - 1)), _col(MEM_FINAL_CNT), _col(BYTECODE_FINAL_CNT))
     count: list[BusBlock] = []
     for table, height in zip(TABLES, table_logs, strict=True):
         flushes = table.flushes(table)
@@ -1393,7 +1379,7 @@ def build_layout(public_columns: Sequence[Sequence[K | E]], bytecode_log: int, l
     # columns, which are committed inside q_flock rather than on their own.
     kappas: list[int | None] = [0] * (len(GLOBAL_COLUMNS) + sum(WIDTHS))
     kappas[MEM_0] = kappas[MEM_1] = kappas[MEM_2] = kappas[MEM_FINAL_CNT] = log_memory
-    kappas[BYTECODE_FINAL_CNT] = bytecode_log
+    kappas[BYTECODE_FINAL_CNT] = log_bytecode
     kappas[QFLOCK] = table_logs[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
     for table, (base, width) in enumerate(zip(BASES, WIDTHS, strict=True)):
         kappas[base : base + width] = [table_logs[table]] * width
@@ -1544,8 +1530,8 @@ def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
 
 
 def sample_queries(transcript: Transcript, block_length: int, count: int) -> list[int]:
-    depth = block_length.bit_length() - 1
-    require(block_length == 2**depth and 0 < depth <= 192, "invalid query domain")
+    depth = log2_strict(block_length)
+    require(0 < depth <= 192, "invalid query domain")
     per_word = 192 // depth
     result: list[int] = []
     while len(result) < count:
@@ -2150,7 +2136,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     table_logs = tuple(int(value.c0) for value in announced[1 : 1 + len(TABLES)])
     log_inverse_rate = int(announced[-1].c0)
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
-    layout = build_layout(*bytecode_columns(bytecode), log_memory, table_logs)
+    layout = build_layout(bytecode, log_memory, table_logs)
 
     # 2] Commitment: one Merkle root over the stacked witness.
     root = Digest.from_halves(*transcript.scalars(2))

@@ -308,18 +308,21 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
     ]
 }
 
-/// The stacked bytecode polynomial: those nine columns padded to
-/// `2^N_BYTECODE_SELECTORS` slots, slot-major, one K value per entry.
+/// The stacked bytecode polynomial: the nine columns at their bus tuple
+/// coordinates, which is what makes the program's whole share of a bus leaf one
+/// evaluation at `(ζ, α⃗)` (see [`crate::leaf::stacked_bytecode_table`]).
 ///
 /// This is the multilinear an outermost verifier is handed in place of a
 /// structured program, and what the transcript seed binds ([`super::fs_seed`]).
 pub fn bytecode_table(prog: &[Op]) -> Vec<F64> {
-    let kbc = crate::log2_strict_usize(prog.len());
-    let mut table = vec![F64::ZERO; 1 << (crate::leaf::N_BYTECODE_SELECTORS + kbc)];
-    for (slot, column) in bytecode_columns(prog).into_iter().enumerate() {
-        table[(slot << kbc)..((slot + 1) << kbc)].copy_from_slice(&column);
-    }
-    table
+    let coords = bytecode_columns(prog)
+        .map(|c| Coord::Public(std::sync::Arc::new(c)))
+        .to_vec();
+    let block = Block {
+        kappa: crate::log2_strict_usize(prog.len()),
+        coords,
+    };
+    crate::leaf::stacked_bytecode_table(std::slice::from_ref(&block))
 }
 
 pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {

@@ -531,33 +531,40 @@ pub struct BytecodeClaim {
     pub value: F192,
 }
 
+/// Selector bits of the stacked bytecode polynomial: the public encoding
+/// columns (opcode + eight operand/immediate slots = nine) stack along
+/// `2^N_BYTECODE_SELECTORS` slots.
+pub const N_BYTECODE_SELECTORS: usize = 4;
+
+/// Slot of the first public column: the bytecode block leads with three
+/// non-public coordinates (tag, index, read count), and a column's slot IS its
+/// bus tuple coordinate.
+pub const BYTECODE_PUBLIC_SLOT: usize = 3;
+
 /// The stacked bytecode polynomial as a dense table: nine public encoding
-/// columns padded to sixteen selector slots. This is the polynomial
-/// [`BytecodeClaim`]s are claims about; the outermost verifier evaluates it.
+/// columns at their tuple coordinates, padded to sixteen selector slots. This is
+/// the polynomial [`BytecodeClaim`]s are claims about; the outermost verifier
+/// evaluates it.
 pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     let mut kbc = 0;
-    let mut cols: Vec<(usize, &[F64])> = Vec::new();
+    let mut cols: Vec<&[F64]> = Vec::new();
     for blk in blocks {
-        for (slot, c) in blk.coords.iter().enumerate() {
+        for c in &blk.coords {
             if let Coord::Public(vals) = c {
                 kbc = blk.kappa;
-                cols.push((slot, vals.as_slice()));
+                cols.push(vals.as_slice());
             }
         }
     }
     let mut table = vec![F64::ZERO; 1 << (N_BYTECODE_SELECTORS + kbc)];
-    for (slot, vals) in cols {
+    for (i, vals) in cols.into_iter().enumerate() {
+        let slot = BYTECODE_PUBLIC_SLOT + i;
         assert!(slot < 1 << N_BYTECODE_SELECTORS, "a public slot is a tuple coordinate");
         assert_eq!(vals.len(), 1 << kbc);
         table[(slot << kbc)..((slot + 1) << kbc)].copy_from_slice(vals);
     }
     table
 }
-
-/// Selector bits of the stacked bytecode polynomial: the public encoding
-/// columns (opcode + eight operand/immediate slots = nine) stack along
-/// `2^N_BYTECODE_SELECTORS` slots.
-pub const N_BYTECODE_SELECTORS: usize = 4;
 
 /// The three bus sides in `[push, pull, count]` order with their fingerprint
 /// weights. The count channel's leaf is the count itself (a single `Col`), so it
@@ -577,31 +584,16 @@ fn sides<'a>(
     ]
 }
 
-/// `Σ_i w_i·P̃_i(ζ)` over a side's public coordinates, `i` being each one's slot,
-/// with the bytecode block's `κ`. Because the slots are aligned with the tuple and
-/// the weights are `eq(α⃗, ·)`, this IS the stacked polynomial at `(ζ, α⃗)`
-/// (§sec:e2e-bc): one evaluation, nothing transmitted, no extra challenge.
-pub fn public_share(blocks: &[Block], zeta: &[F192], w: &[F192]) -> (usize, F192) {
-    let mut kappa = 0;
-    let mut acc = F192::ZERO;
-    for blk in blocks {
-        for (i, c) in blk.coords.iter().enumerate() {
-            if let Coord::Public(vals) = c {
-                kappa = blk.kappa;
-                acc += w[i] * mle_eval(vals.as_slice(), &zeta[..blk.kappa]);
-            }
-        }
-    }
-    (kappa, acc)
-}
-
-/// Bytecode = ONE polynomial, and push/pull share the point ζ, so the whole program
-/// share of the leaf is one evaluation of it, at `(ζ, α⃗)`.
-fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], w: &[F192]) -> BytecodeClaim {
-    let (kbc, share) = public_share(blocks, point, w);
+/// The program's whole share of a bus leaf, in ONE evaluation: a public column's
+/// slot is its tuple coordinate and the weights are `eq(α⃗, ·)`, so the weighted
+/// sum over the columns IS the stacked polynomial at `(ζ, α⃗)` (§sec:e2e-bc).
+fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192]) -> BytecodeClaim {
+    let table = stacked_bytecode_table(blocks);
+    let kbc = crate::log2_strict_usize(table.len()) - N_BYTECODE_SELECTORS;
+    let claim_point = [&point[..kbc], alphas].concat();
     BytecodeClaim {
-        point: [&point[..kbc], alphas].concat(),
-        value: share,
+        value: mle_eval(&table, &claim_point),
+        point: claim_point,
     }
 }
 
@@ -726,7 +718,7 @@ pub fn prove_balance(
         sigmas
     });
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas)];
     BusProof {
         claims,
         bytecode_claims,
@@ -861,7 +853,7 @@ pub fn verify_balance(
         totals[s] = framework + bus_gkr.values[s];
     }
 
-    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas, &w)];
+    let bytecode_claims = vec![bytecode_claim(push, &bus_gkr.point, &alphas)];
     Ok(BusVerify {
         claims,
         bytecode_claims,

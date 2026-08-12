@@ -318,21 +318,6 @@ fn absorb_round(
     r
 }
 
-/// The stacked bytecode polynomial of the inner program (leaf's canonical
-/// table, built from the real layout).
-fn stacked_bytecode(program: &Program) -> Vec<F64> {
-    // Public bytecode coordinates depend only on the program. The remaining
-    // layout inputs affect private witness/table shapes, so fixed valid dummy
-    // sizes are sufficient and avoid retaining a representative inner proof.
-    let l = lean_vm::cpu::layout(
-        &program.prog,
-        20,
-        [1usize << 10; lean_vm::tables::N_TABLES],
-        [F192::ZERO; 2],
-    );
-    lean_vm::leaf::stacked_bytecode_table(&l.push)
-}
-
 /// Mirror the guest's aggregation transcript and prove the two batching
 /// sumchecks: dense for bytecode and two-phase sparse for the matrices. Returns
 /// the guest hints and the deferred claims they reduce to.
@@ -375,7 +360,7 @@ fn aggregate_deferred_claims(
     // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
     // the shared push/pull point) ----
     let gbc: Vec<F192> = (0..nsub).map(|_| h.sample()).collect();
-    let mut bt: Vec<F192> = stacked_bytecode(program)
+    let mut bt: Vec<F192> = lean_vm::cpu::layout::bytecode_table(&program.prog)
         .into_iter()
         .map(|x| F192::new(x.0, 0, 0))
         .collect();
@@ -571,7 +556,7 @@ fn aggregate_deferred_claims(
 
 /// Discharge the three fixed-polynomial claims deferred by the guest.
 fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(), RecursiveVerifyError> {
-    let stacked = stacked_bytecode(program);
+    let stacked = lean_vm::cpu::layout::bytecode_table(&program.prog);
     let expected_bc = stacked.len().trailing_zeros() as usize;
     if claims.bytecode_point.len() != expected_bc {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
