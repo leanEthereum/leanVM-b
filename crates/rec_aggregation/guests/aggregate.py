@@ -2551,13 +2551,36 @@ def main():
     pk_chain = HeapBuf(n_keys_2 * GEN ** WORDS_PER_BLOCK)
     pk_chain[1] = PK_IV_0
     pk_chain[GEN] = PK_IV_1
-    for xj in mul_range(1, n_keys_g):
-        slot = xj * xj
-        key = all_pubkeys * slot
-        hint_witness(key[0:2], "pubkeys")
-        state = pk_chain * slot
-        blake2s(state[0:2], key[0:2], state[2:4])
-    pk_hash = pk_chain * n_keys_2
+    # Two keys per iteration. The chain is unchanged, one compression per key;
+    # what halves is the number of loop frames, and a frame costs far more memory
+    # cells than the body it holds. `half` and `odd` are hinted and pinned by
+    # half*half*odd == n_keys with odd in {0, 1}, which leaves half = n_keys // 2
+    # and odd = n_keys % 2 as the only solution.
+    halves = StackBuf(2)
+    hint_witness(halves, "pk_halves")
+    half_g = halves[0]
+    odd_g = halves[1]
+    assert log(odd_g) < 2
+    assert log(half_g) < MAX_KEYS
+    assert half_g * half_g * odd_g == n_keys_g
+    for xp in mul_range(1, half_g):
+        pair = xp ** 4
+        keys = all_pubkeys * pair
+        hint_witness(keys[0:4], "pubkeys")
+        state = pk_chain * pair
+        blake2s(state[0:2], keys[0:2], state[2:4])
+        blake2s(state[2:4], keys[2:4], state[4:6])
+    # The odd key out, absorbed the same way. Only one branch runs, so both write
+    # the digest cells and the join reads them.
+    pk_hash = HeapBuf(WORDS_PER_BLOCK)
+    paired_end = pk_chain * (half_g ** 4)
+    if odd_g == 1:
+        pk_hash[1] = paired_end[1]
+        pk_hash[GEN] = paired_end[GEN]
+    else:
+        last = all_pubkeys * (half_g ** 4)
+        hint_witness(last[0:2], "pubkeys")
+        blake2s(paired_end[0:2], last[0:2], pk_hash[0:2])
     # The duplicate slots ride the same table but outside the hashed prefix.
     for xd in mul_range(1, n_dup_g):
         dup = all_pubkeys * (n_keys_2 * xd * xd)
@@ -2601,20 +2624,46 @@ def main():
         # Rebuild the child's signer-set digest from indices into the shared
         # table, absorbing each key exactly as the child did. The indices are
         # what tie the child's set into this node's coverage.
+        # Two keys per iteration, as for this node's own set above: same chain,
+        # half the loop frames.
+        sub_halves = StackBuf(2)
+        hint_witness(sub_halves, "child_halves")
+        sub_half_g = sub_halves[0]
+        sub_odd_g = sub_halves[1]
+        assert log(sub_odd_g) < 2
+        assert log(sub_half_g) < MAX_KEYS
+        assert sub_half_g * sub_half_g * sub_odd_g == nsub_g
         sub_chain = HeapBuf(nsub_g * nsub_g * GEN ** WORDS_PER_BLOCK)
         sub_chain[1] = PK_IV_0
         sub_chain[GEN] = PK_IV_1
-        for xj in mul_range(1, nsub_g):
-            idx_hint = StackBuf(1)
-            hint_witness(idx_hint, "child_index")
-            idx = idx_hint[0]
-            assert log(idx) < log(n_total_g)  # precondition as in the raw loop above
-            cover[idx] = base * xj
-            slot = xj * xj
-            state = sub_chain * slot
-            signer = all_pubkeys * (idx * idx)
-            blake2s(state[0:2], signer[0:2], state[2:4])
-        sub_hash = sub_chain * (nsub_g * nsub_g)
+        for xp in mul_range(1, sub_half_g):
+            two = StackBuf(2)
+            hint_witness(two, "child_index")
+            first = two[0]
+            second = two[1]
+            assert log(first) < log(n_total_g)  # precondition as in the raw loop above
+            assert log(second) < log(n_total_g)
+            even = xp * xp
+            cover[first] = base * even
+            cover[second] = base * even * GEN
+            state = sub_chain * (even * even)
+            key_a = all_pubkeys * (first * first)
+            key_b = all_pubkeys * (second * second)
+            blake2s(state[0:2], key_a[0:2], state[2:4])
+            blake2s(state[2:4], key_b[0:2], state[4:6])
+        paired_end = sub_chain * (sub_half_g ** 4)
+        sub_hash = HeapBuf(WORDS_PER_BLOCK)
+        if sub_odd_g == 1:
+            sub_hash[1] = paired_end[1]
+            sub_hash[GEN] = paired_end[GEN]
+        else:
+            tail_hint = StackBuf(1)
+            hint_witness(tail_hint, "child_index")
+            tail_idx = tail_hint[0]
+            assert log(tail_idx) < log(n_total_g)
+            cover[tail_idx] = base * (sub_half_g * sub_half_g)
+            key_last = all_pubkeys * (tail_idx * tail_idx)
+            blake2s(paired_end[0:2], key_last[0:2], sub_hash[0:2])
         xd = xc ** DEFER_STMT_CELLS
         hint_witness(child_carried[xd:xd + DEFER_STMT_CELLS], "child_defer")
         pi_0, pi_1 = statement_digest(seed_0, seed_1, nsub_g, sub_hash, message, epoch, child_carried * xd)

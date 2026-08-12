@@ -1681,8 +1681,18 @@ pub(crate) fn aggregate_tampered(
     for pair in merkle_bit_cells(epoch).chunks_exact(2) {
         hints.push("merkle_bits", vec![pair[0], pair[1]]);
     }
-    for pk in &cover.keys {
-        hints.push("pubkeys", key_cells(pk).to_vec());
+    // Two keys per entry, so the guest can halve its loop frames; the odd key out
+    // rides a final one-key entry. The digest itself is unchanged.
+    hints.push(
+        "pk_halves",
+        vec![count(cover.keys.len() / 2), count(cover.keys.len() % 2)],
+    );
+    for pair in cover.keys.chunks(2) {
+        let mut entry = key_cells(&pair[0]).to_vec();
+        if let Some(second) = pair.get(1) {
+            entry.extend_from_slice(&key_cells(second));
+        }
+        hints.push("pubkeys", entry);
     }
     for pk in &cover.duplicates {
         hints.push("dup_pubkeys", key_cells(pk).to_vec());
@@ -1696,8 +1706,10 @@ pub(crate) fn aggregate_tampered(
     let mut carried = Vec::with_capacity(children.len());
     for (i, child) in children.iter().enumerate() {
         hints.push("child_n_keys", vec![count(child.public_keys.len())]);
-        for &idx in &cover.child_indices[i] {
-            hints.push("child_index", vec![count(idx)]);
+        let n_sub = child.public_keys.len();
+        hints.push("child_halves", vec![count(n_sub / 2), count(n_sub % 2)]);
+        for pair in cover.child_indices[i].chunks(2) {
+            hints.push("child_index", pair.iter().map(|&idx| count(idx)).collect());
         }
         hints.push("child_defer", child.defer.cells());
         let (pi, summary, ops) = &verified[i];
