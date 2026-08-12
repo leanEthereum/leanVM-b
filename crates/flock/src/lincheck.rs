@@ -1233,7 +1233,7 @@ pub fn prove_padded_capture_s_hat_v(
         let mut running = inner_product_ext(&comb_vec, &z_vec);
         for t in 0..inner_rest_len {
             let e0 = running + e1;
-            ps.add_round_poly(&[e0, e1, einf]);
+            ps.add_round_poly(&[e0, e0 + e1 + einf, einf], false);
             let r = ps.sample();
             running = (einf * r + (e0 + e1 + einf)) * r + e0;
             r_rounds.push(r);
@@ -1357,13 +1357,10 @@ pub fn verify(
     let mut running = target;
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
     for _ in 0..inner_rest_len {
-        // `q(0) + q(1) = claim` in char 2, so `q(0)` never rides the wire.
+        // `c1 + c2 = claim` in char 2, so `c1` never rides the wire.
         let q = vs.next_round_poly(3, running, None).map_err(VerifyError::Transcript)?;
-        let (e0, e1, einf) = (q[0], q[1], q[2]);
         let r = vs.sample();
-        // q(X) = einf·X² + c1·X + e0.
-        let c1 = e0 + e1 + einf;
-        running = (einf * r + c1) * r + e0;
+        running = primitives::multilinear::poly_eval(&q, r);
         r_rounds.push(r);
     }
 

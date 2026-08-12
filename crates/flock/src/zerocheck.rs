@@ -124,7 +124,7 @@ pub enum VerifyError {
 /// `(1 + r_eq)·G(0) + r_eq·G(1) = claim` fixes it. All three evaluations bind.
 fn send_round(ps: &mut impl Transmitter, claim: F192, r_eq: F192, g1: F192, g_inf: F192, rhos: &mut Vec<F192>) -> F192 {
     let g0 = (claim + r_eq * g1) * (F192::ONE + r_eq).inv();
-    ps.add_round_poly(&[g0, g1, g_inf]);
+    ps.add_round_poly(&[g0, g0 + g1 + g_inf, g_inf], true);
     let rho = ps.sample();
     rhos.push(rho);
     // G(X) = G(0)·(1+X) + G(1)·X + G(inf)·X·(1+X).
@@ -418,13 +418,9 @@ pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim
         let g = vs
             .next_round_poly(3, c_running, Some(r_eq))
             .map_err(VerifyError::Transcript)?;
-        let (g0, g1, g_inf) = (g[0], g[1], g[2]);
-
         let rho = vs.sample();
         mlv_rhos.push(rho);
-
-        // G(ρ) = G(0)·(1+ρ) + G(1)·ρ + G(∞)·ρ·(1+ρ).
-        c_running = g0 + rho * (g0 + g1 + (F192::ONE + rho) * g_inf);
+        c_running = primitives::multilinear::poly_eval(&g, rho);
     }
 
     // ---- AB sumcheck final consistency ----

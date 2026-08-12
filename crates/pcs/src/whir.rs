@@ -502,17 +502,16 @@ struct SumcheckMessage {
 /// sends. `h(0)` does not ride the wire (`claim` fixes it), so this still costs
 /// the two scalars the coefficient form did.
 fn send_msg(ps: &mut impl Transmitter, m: SumcheckMessage, claim: F192) {
-    ps.add_round_poly(&[m.u_0, claim + m.u_0, m.u_2]);
+    ps.add_round_poly(&[m.u_0, claim + m.u_2, m.u_2], false);
 }
 
-/// Verifier mirror of [`send_msg`], straight to the coefficient form the folds
-/// use: `h(0) = c`, `h(inf) = a` (the leading coefficient), and `b` is what the
-/// three evaluations interpolate to.
+/// Verifier mirror of [`send_msg`]. The round polynomial already travels in the
+/// coefficient form the folds use.
 fn recv_quad(vs: &mut impl Receiver, claim: F192) -> Option<RoundQuad> {
     let h = vs.next_round_poly(3, claim, None).ok()?;
     Some(RoundQuad {
         c: h[0],
-        b: h[0] + h[1] + h[2],
+        b: h[1],
         a: h[2],
     })
 }

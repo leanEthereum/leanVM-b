@@ -191,21 +191,27 @@ pub fn lagrange_eval(nodes: &[F192], values: &[F192], p: F192) -> F192 {
         .fold(F192::ZERO, |acc, (&w, &v)| acc + v * w)
 }
 
-/// The 3 nodes {0, 1, g} at which a degree-2 sumcheck round univariate is sent
-/// (the eq weight is factored out); `g` embedded into `E`. Shared by
-/// `lean_vm::constraints` and `lean_vm::gkr`.
+/// A degree-2 polynomial's coefficients from its values at {0, 1, g}.
+///
+/// `p(0) = c0`, `p(1) = c0+c1+c2` and `p(g) = c0+c1·g+c2·g²` invert to a single
+/// multiply by the constant `(g+g²)⁻¹`. Sumcheck rounds travel as coefficients
+/// (`fiat_shamir::Transmitter::add_round_poly`), so this is where the prover's
+/// per-row accumulator, which is evaluations, becomes one.
 #[inline]
-pub fn tri_nodes() -> [F192; 3] {
-    [F192::ZERO, F192::ONE, F192::from(crate::field::G)]
+pub fn tri_coeffs(evals: [F192; 3]) -> [F192; 3] {
+    static INV: std::sync::OnceLock<(F192, F192)> = std::sync::OnceLock::new();
+    let &(g, inv) = INV.get_or_init(|| {
+        let g = F192::from(crate::field::G);
+        (g, (g + g * g).inv())
+    });
+    let c2 = (evals[0] + evals[2] + g * (evals[0] + evals[1])) * inv;
+    [evals[0], evals[0] + evals[1] + c2, c2]
 }
 
-/// The 4 nodes {0, 1, g, g²} at which a degree-3 sumcheck round univariate is sent
-/// WHOLE, eq weight included. Costs one field element more than [`tri_nodes`] and
-/// buys a verifier that reapplies nothing: `h(0) + h(1) = claim`, then interpolate.
+/// A polynomial at `point`, by Horner over its coefficients, constant first.
 #[inline]
-pub fn quad_nodes() -> [F192; 4] {
-    let g = F192::from(crate::field::G);
-    [F192::ZERO, F192::ONE, g, g * g]
+pub fn poly_eval(coeffs: &[F192], point: F192) -> F192 {
+    coeffs.iter().rev().fold(F192::ZERO, |acc, &c| acc * point + c)
 }
 
 /// Add two 3-coefficient sumcheck accumulators componentwise.

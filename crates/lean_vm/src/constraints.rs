@@ -39,7 +39,7 @@ use crate::colval::ColVal;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F64, F192, F192Unreduced, powers};
 use primitives::multilinear::{
-    add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
+    add3, eq_table_arena, fold_high_inplace, fold_high_k, poly_eval, shrink_eq_high, tri_coeffs, xor3,
 };
 use zk_alloc::ArenaVec;
 
@@ -153,7 +153,6 @@ pub fn prove(
     let mut weights = vec![F192::ONE; airs.len()];
     // ONE eq table over the low (still free) variables serves every active table.
     let mut eqr = eq_table_arena(&zeta[..n.saturating_sub(1)]);
-    let nd = tri_nodes();
     let mut rho = vec![F192::ZERO; n];
     // The folded tables are the batch's largest transients: one E-lifted copy of
     // every column of every still-active table. Arena-backed, so they are bumped
@@ -185,17 +184,14 @@ pub fn prove(
             }
         }
         shrink_eq_high(&mut eqr);
-        // Assemble `h` and send it whole. The cofactor `p` is degree 2, so its value
-        // at the fourth node is an interpolation of three scalars, NOT another pass
-        // over the rows: the cheap message stays cheap and the verifier gets a
-        // polynomial it can use as it stands. `eq(a, b) = 1 + a + b` in char 2.
-        let q = quad_nodes();
-        debug_assert_eq!(q[..3], nd[..], "the cubic's first three nodes are the cofactor's");
-        let p4 = [msg[0], msg[1], msg[2], lagrange_eval(&nd, &msg, q[3])];
-        let h: [F192; 4] = std::array::from_fn(|i| (F192::ONE + zeta[m] + q[i]) * p4[i] + q[i] * u);
-        // A separate pass: the challenge only exists once the message is bound.
-        // `h(0)` does not ride the wire; `h(0) + h(1) = claim` fixes it.
-        ps.add_round_poly(&h);
+        // `h(x) = (1 + zeta_m + x)·p(x) + x·u` with `p` the degree-2 cofactor
+        // (`eq(a, b) = 1 + a + b` in char 2), so once `p` is in coefficients so is
+        // `h`: no interpolation, on either side. A separate pass from the fold
+        // below: the challenge only exists once the message is bound.
+        let p = tri_coeffs(msg);
+        let eq_z = F192::ONE + zeta[m];
+        let h = [eq_z * p[0], eq_z * p[1] + p[0] + u, eq_z * p[2] + p[1], p[2]];
+        ps.add_round_poly(&h, false);
         let rk = ps.sample();
         rho[m] = rk;
         k *= rk;
@@ -254,7 +250,6 @@ pub fn verify(
     }
     let offsets = eta_offsets(airs.iter().map(|a| a.n_constraints));
     let pows = powers(eta, airs.iter().map(|a| a.n_constraints).sum());
-    let nd = quad_nodes();
     let mut weights = vec![F192::ONE; airs.len()];
     // An ordinary sumcheck for `target`, which the caller supplies. Each round
     // arrives as the round polynomial itself at `nd`, so the two steps are the
@@ -269,7 +264,7 @@ pub fn verify(
         let h = vs.next_round_poly(4, claim, None).map_err(|_| Error::Truncated)?;
         let rk = vs.sample();
         rho[m] = rk;
-        claim = lagrange_eval(&nd, &h, rk);
+        claim = poly_eval(&h, rk);
         let eq_k = F192::ONE + zeta[m] + rk;
         for (t, air) in airs.iter().enumerate() {
             weights[t] *= if air.tau > m { eq_k } else { rk };
