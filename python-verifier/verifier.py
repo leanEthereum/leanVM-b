@@ -975,6 +975,10 @@ def _prod(a: int, b: int, exponent: int = 0) -> Form:
 
 _INDEX_COORDINATE = Form(index=ONE)
 
+SEP_STATE = ONE
+SEP_MEM = GEN
+SEP_BYTECODE = GEN * GEN
+
 
 class Flushes:
     def __init__(self) -> None:
@@ -986,20 +990,20 @@ class Flushes:
         self.pull.append(tuple(pull))
 
     def state_step(self, pc: int, fp: int) -> None:
-        self.pair((_const(ONE), _gcol(pc), _col(fp)), (_const(ONE), _col(pc), _col(fp)))
+        self.pair((_const(SEP_STATE), _gcol(pc), _col(fp)), (_const(SEP_STATE), _col(pc), _col(fp)))
 
     def state_derived(self, pc: int, fp: int, npc: Form, nfp: Form) -> None:
-        self.pair((_const(ONE), npc, nfp), (_const(ONE), _col(pc), _col(fp)))
+        self.pair((_const(SEP_STATE), npc, nfp), (_const(SEP_STATE), _col(pc), _col(fp)))
 
     def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Form]) -> None:
-        prefix_push = (_const(GEN * GEN), _col(pc), _gcol(count), _const(_gpow(opcode)))
-        prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), _const(_gpow(opcode)))
+        prefix_push = (_const(SEP_BYTECODE), _col(pc), _gcol(count), _const(_gpow(opcode)))
+        prefix_pull = (_const(SEP_BYTECODE), _col(pc), _col(count), _const(_gpow(opcode)))
         self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
 
     def memory(self, address: Form, count: int, values: Sequence[Form]) -> None:
         self.pair(
-            (_const(GEN), address, _gcol(count), *values),
-            (_const(GEN), address, _col(count), *values),
+            (_const(SEP_MEM), address, _gcol(count), *values),
+            (_const(SEP_MEM), address, _col(count), *values),
         )
 
     def memory_cols(self, address: Form, count: int, *columns: int) -> None:
@@ -1264,18 +1268,13 @@ WIDTHS = tuple(t.width for t in TABLES)
 BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(TABLES)))
 
 
-def build_layout(bytecode: Sequence[K], log_memory: int, table_logs: Sequence[int]) -> Layout:
+def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequence[int]) -> Layout:
     log_bytecode = log2_strict(len(bytecode)) - N_BYTECODE_SELECTORS
     require(
-        16 <= log_memory <= 32
-        and len(table_logs) == len(TABLES)
-        and all(0 <= height <= 32 for height in table_logs)
-        # flock sizes its argument to at least 2^3 instances and the BLAKE2s table's value
-        # columns share that instance cube, so a smaller height is not expressible.
-        and table_logs[BLAKE2S.opcode] >= 3,
+        16 <= log_memory <= 32 and all(0 <= log_height <= 32 for log_height in table_log_heights) and table_log_heights[BLAKE2S.opcode] >= 3,
         "invalid announced table sizes",
     )
-    table_logs = list(table_logs)
+    table_log_heights = list(table_log_heights)
 
     def frame(state: Form, memory_count: Form, bytecode_count: Form) -> list[BusBlock]:
         """The blocks no table owns: the boundary state, then the two arrays.
@@ -1285,15 +1284,15 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_logs: Sequence[in
         count, and its boundary state is the last pc rather than the first.
         """
         return [
-            BusBlock(0, (_const(ONE), state, _const(ONE))),
-            BusBlock(log_memory, (_const(GEN), _INDEX_COORDINATE, memory_count, _col(MEM_0), _col(MEM_1), _col(MEM_2))),
-            BusBlock(log_bytecode, (_const(GEN * GEN), _INDEX_COORDINATE, bytecode_count), public=bytecode),
+            BusBlock(0, (_const(SEP_STATE), state, _const(ONE))),
+            BusBlock(log_memory, (_const(SEP_MEM), _INDEX_COORDINATE, memory_count, _col(MEM_0), _col(MEM_1), _col(MEM_2))),
+            BusBlock(log_bytecode, (_const(SEP_BYTECODE), _INDEX_COORDINATE, bytecode_count), public=bytecode),
         ]
 
     push = frame(_const(ONE), _const(ONE), _const(ONE))
     pull = frame(_const(_gpow(2**log_bytecode - 1)), _col(MEM_FINAL_CNT), _col(BYTECODE_FINAL_CNT))
     count: list[BusBlock] = []
-    for table, height in zip(TABLES, table_logs, strict=True):
+    for table, height in zip(TABLES, table_log_heights, strict=True):
         flushes = table.flushes(table)
         for coordinates in flushes.push:
             push.append(BusBlock(height, coordinates, table.opcode))
@@ -1307,9 +1306,9 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_logs: Sequence[in
     kappas: list[int | None] = [0] * (len(GLOBAL_COLUMNS) + sum(WIDTHS))
     kappas[MEM_0] = kappas[MEM_1] = kappas[MEM_2] = kappas[MEM_FINAL_CNT] = log_memory
     kappas[BYTECODE_FINAL_CNT] = log_bytecode
-    kappas[QFLOCK] = table_logs[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
+    kappas[QFLOCK] = table_log_heights[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
     for table, (base, width) in enumerate(zip(BASES, WIDTHS, strict=True)):
-        kappas[base : base + width] = [table_logs[table]] * width
+        kappas[base : base + width] = [table_log_heights[table]] * width
     for local in BLAKE2S_SLOT_BY_COLUMN:
         kappas[BASES[BLAKE2S.opcode] + local] = None
     offsets, total_log = stack_offsets(kappas)
@@ -1317,7 +1316,7 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_logs: Sequence[in
     # Floor at the PCS minimum: WHIR's level ladder needs room, so a tiny
     # witness zero-pads up to it. Both sides derive this from the kappas.
     stack_log = max(15, total_log)
-    return Layout(tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_logs))
+    return Layout(tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_log_heights))
 
 
 def build_airs(layout: Layout, bus_forms: Sequence[Sequence[Form]]) -> list[Air]:
@@ -1997,11 +1996,9 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     seed = blake2s_hash(b"leanvm-b-fs-seed-v2-blake2s" + R1CS_DIGEST + bytecode_hash.value)
     transcript = Transcript(proof, b"leanvm-b", (*seed.halves(), *pi))
 
-    # 1] Statement binding: the announced instance shape, checked against the
-    # public caps before any reduction runs on it.
+    # 1] memory log-size, table log-size, and log-inv-rate in WHIR
     announced = transcript.scalars(2 + len(TABLES))
     require(all(value.c1 == value.c2 == 0 for value in announced), "announced size has a nonzero high limb")
-    # These limbs are announced sizes, not field elements: read them as integers.
     log_memory = int(announced[0].c0)
     table_logs = tuple(int(value.c0) for value in announced[1 : 1 + len(TABLES)])
     log_inverse_rate = int(announced[-1].c0)
