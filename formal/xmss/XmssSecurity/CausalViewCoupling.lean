@@ -283,6 +283,17 @@ def ProgrammedCausalViewRelation
     CausalTraceRevealsCovered
       (fun index => index ∈ programmed.reveals.map Prod.fst) causal.2.2
 
+/-- The security proof only needs the coupling to preserve a successful hidden-value hit. The two
+views may diverge after the first hit. -/
+def ProgrammedCausalHitRelation
+    (q : Nat)
+    (programmed : IndexedHiddenValue.RevealProbeView ChainValueIndex)
+    (causal : (ChainValueIndex → Digest) ×
+      ((List Bool → ChainValueIndex × Digest) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) : Prop :=
+  IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q programmed →
+    CausalTraceHitsAvoidingReveals q causal
+
 set_option maxRecDepth 100000 in
 theorem relTriple_programmedWarmedRevealProbeView_skeleton
     (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
@@ -400,6 +411,56 @@ theorem programmedCausalViewRelation_transfers_hit
         causal.2.2 causal.2.1 htrace
     intro history hmem
     exact hhit.2 history (hstrategy ▸ hmem)
+
+theorem programmedCausalHitRelation_of_viewRelation
+    (q : Nat)
+    (programmed : IndexedHiddenValue.RevealProbeView ChainValueIndex)
+    (causal : (ChainValueIndex → Digest) ×
+      ((List Bool → ChainValueIndex × Digest) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex))
+    (hrel : ProgrammedCausalViewRelation programmed causal) :
+    ProgrammedCausalHitRelation q programmed causal := by
+  intro hhit
+  exact programmedCausalViewRelation_transfers_hit q programmed causal hrel hhit
+
+theorem programmed_causal_trace_probability_le_of_hit_relTriple
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (chain : ChainIndex)
+    (hcoupling : RelTriple
+      (programmedWarmedRevealProbeViewExperiment adversary chain)
+      (causalLazyStrategyViewExperiment adversary chain)
+      (ProgrammedCausalHitRelation q)) :
+    Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
+        programmedWarmedRevealProbeViewExperiment adversary chain] ≤
+      Pr[CausalTraceHitsAvoidingReveals q |
+        causalLazyStrategyViewExperiment adversary chain] := by
+  apply probEvent_le_of_relTriple hcoupling
+  intro programmed causal hrel hhit
+  exact hrel hhit
+
+theorem programmed_causal_trace_probability_le_of_eager_hit_relTriple
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (chain : ChainIndex)
+    (hcoupling : RelTriple
+      (programmedWarmedRevealProbeViewExperiment adversary chain)
+      (causalEagerStrategyViewExperiment adversary chain)
+      (ProgrammedCausalHitRelation q)) :
+    Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
+        programmedWarmedRevealProbeViewExperiment adversary chain] ≤
+      Pr[CausalTraceHitsAvoidingReveals q |
+        causalLazyStrategyViewExperiment adversary chain] := by
+  calc
+    Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
+        programmedWarmedRevealProbeViewExperiment adversary chain] ≤
+        Pr[CausalTraceHitsAvoidingReveals q |
+          causalEagerStrategyViewExperiment adversary chain] := by
+      apply probEvent_le_of_relTriple hcoupling
+      intro programmed causal hrel hhit
+      exact hrel hhit
+    _ = Pr[CausalTraceHitsAvoidingReveals q |
+          causalLazyStrategyViewExperiment adversary chain] :=
+      probEvent_congr' (fun _ _ => Iff.rfl)
+        (evalDist_causalEagerStrategyViewExperiment_eq_lazy adversary chain)
 
 theorem programmed_causal_trace_probability_le_of_relTriple
     (q : Nat) (adversary : Adversary Concrete.scheme)

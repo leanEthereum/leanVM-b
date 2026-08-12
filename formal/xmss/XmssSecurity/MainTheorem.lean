@@ -46,10 +46,7 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
     refine (winningKeygenValueGuess_probability_le_origin adversary chain).trans ?_
     apply winningChainOrigin_probability_le_of_causalStrategy q adversary hbound chain
     apply hasActionTracedCausalStrategyReduction_of_programmed_causal_trace_probability
-    apply programmed_causal_trace_probability_le_of_eager_relTriple
-    refine OracleComp.ProgramLogic.Relational.relTriple_of_evalDist_eq_right ?_
-      (relTriple_programmedWarmedRevealProbeView_skeleton adversary chain)
-    rw [evalDist_programmedWarmedSkeletonStrategyViewExperiment_eq_map]
+    apply programmed_causal_trace_probability_le_of_eager_hit_relTriple
     sorry
 
 /-- Below the digest-space size, encoding and chain events cost two elementary terms and every other event costs one. -/
