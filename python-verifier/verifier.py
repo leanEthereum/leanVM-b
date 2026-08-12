@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from functools import cache, partial, reduce
+from functools import cache, reduce
 from pathlib import Path
 from operator import mul
 from struct import pack, unpack
@@ -41,8 +41,8 @@ class K:
     """GF(2^64) = F2[x]/(x^64 + x^4 + x^3 + x + 1): the field the witness is committed over.
 
     A `K` behaves as its 64-bit representation under `__index__`, so transport
-    code (struct packing, byte splitting, bit masking) uses one directly without
-    unwrapping it, while arithmetic stays in the field.
+    code (struct packing, byte splitting) uses one directly without unwrapping
+    it, while arithmetic stays in the field.
     """
 
     value: int = 0
@@ -149,7 +149,7 @@ class E:
     def __eq__(self, other: object) -> bool:
         if isinstance(other, E):
             return self.c0 == other.c0 and self.c1 == other.c1 and self.c2 == other.c2
-        return isinstance(other, int) and not isinstance(other, bool) and 0 <= other <= MASK64 and self.c0 == other and not (self.c1 or self.c2)
+        return not (self.c1 or self.c2) and self.c0 == other
 
     def __hash__(self) -> int:
         return hash(int(self))
@@ -292,11 +292,34 @@ def log2_strict(value: int) -> int:
     return value.bit_length() - 1
 
 
-def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
+@dataclass(frozen=True)
+class Placement:
+    """Where something of 2^variables entries sits in a stacked cube, as returned
+    by `stack_offsets`: one committed column in the witness, or one block of a bus
+    side in its leaf cube."""
+
+    variables: int
+    offset: int
+
+    @property
+    def virtual(self) -> bool:
+        return self is VIRTUAL
+
+    @property
+    def selector(self) -> int:
+        """Which slice of the stacked cube it occupies."""
+        return self.offset >> self.variables
+
+
+VIRTUAL = Placement(-1, 0)
+"""An entry stacked elsewhere, taking no room here (`Placement::VIRTUAL` in Rust)."""
+
+
+def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[Placement], int]:
     """Place a block of 2^size at the next multiple of its own size, largest first.
     Ties keep input order, so both sides derive the same layout from the sizes alone.
     A None size is an entry that is committed elsewhere and takes no room here.
-    Returns the offset of each entry and the log2 of the padded total.
+    Returns each entry's placement and the log2 of the padded total.
     """
     offsets = [0] * len(sizes)
     total = 0
@@ -304,7 +327,8 @@ def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
     for index, size in sorted(present, key=lambda item: (-item[1], item[0])):
         offsets[index] = total
         total += 2**size
-    return offsets, log2_ceil(max(total, 1))
+    placed = [VIRTUAL if size is None else Placement(size, offset) for size, offset in zip(sizes, offsets, strict=True)]
+    return placed, log2_ceil(max(total, 1))
 
 
 def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
@@ -398,20 +422,20 @@ class BinaryReader:
     def field(self) -> E:
         return E.from_bytes(self.take(24))
 
-    def fields(self) -> list[E]:
+    def count(self, item_size: int, what: str) -> range:
+        """The length prefix of a vector of `item_size`-byte items."""
         length = self.u64()
-        require(length <= self.remaining // 24, "invalid field-vector length")
-        return [self.field() for _ in range(length)]
+        require(length <= self.remaining // item_size, f"invalid {what} length")
+        return range(length)
 
-    def base_fields(self) -> list[K]:
-        length = self.u64()
-        require(length <= self.remaining // 8, "invalid base-field-vector length")
-        return [K(self.u64()) for _ in range(length)]
+    def fields(self) -> tuple[E, ...]:
+        return tuple(self.field() for _ in self.count(24, "field vector"))
+
+    def base_fields(self) -> tuple[K, ...]:
+        return tuple(K(self.u64()) for _ in self.count(8, "base-field vector"))
 
     def hashes(self) -> tuple[Digest, ...]:
-        length = self.u64()
-        require(length <= self.remaining // 32, "invalid hash-vector length")
-        return tuple(Digest(self.take(32)) for _ in range(length))
+        return tuple(Digest(self.take(32)) for _ in self.count(32, "hash vector"))
 
     @property
     def remaining(self) -> int:
@@ -436,7 +460,7 @@ class MerkleOpening:
 
     @classmethod
     def read(cls, reader: BinaryReader) -> MerkleOpening:
-        return cls(tuple(reader.base_fields()), reader.hashes())
+        return cls(reader.base_fields(), reader.hashes())
 
     def root(self, leaf_index: int) -> Digest:
         """The root this opening claims, recomputed from its leaf and path."""
@@ -455,10 +479,8 @@ class Proof:
     @classmethod
     def from_bincode(cls, data: bytes) -> Proof:
         reader = BinaryReader(data)
-        stream = tuple(reader.fields())
-        count = reader.u64()
-        require(count <= reader.remaining // 16, "invalid opening count")
-        merkle_openings = tuple(MerkleOpening.read(reader) for _ in range(count))
+        stream = reader.fields()
+        merkle_openings = tuple(MerkleOpening.read(reader) for _ in reader.count(16, "opening"))
         reader.finish()
         return cls(stream, merkle_openings)
 
@@ -479,8 +501,8 @@ DS_POW = 5
 
 def compress(left: Sequence[K | int], right: Sequence[K | int]) -> tuple[int, int, int, int]:
     """Hash two four-word operands, a word being a plain integer or the K element standing for it."""
-    # The one removed-guard site with nothing downstream to catch a bad length:
-    # a short operand would silently hash to a different value.
+    # Nothing downstream would catch a short operand: it would simply hash to a
+    # different value.
     require(len(left) == len(right) == 4, "compression operands must contain four words")
     return unpack("<4Q", blake2s_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
 
@@ -561,11 +583,10 @@ class Transcript:
     def round_poly(self, count: int, claim: E, equality: E | None = None) -> list[E]:
         """Read one sumcheck round polynomial and check it answers `claim`.
 
-        Vanilla sumcheck: every evaluation is on the stream, `h(0)` included, so
-        nothing is reconstructed here. What the wire saved by omitting `h(0)` is
-        exactly the identity checked here, `h(0) + h(1) = claim`, or its
-        eq-weighted form `(1 + r)·h(0) + r·h(1) = claim` for a round whose eq
-        factor the protocol pulled out.
+        The whole polynomial rides the stream, so nothing is reconstructed: the
+        first two evaluations are `h(0)` and `h(1)`, and the check is the split
+        identity itself, `h(0) + h(1) = claim`, or `(1 + r)·h(0) + r·h(1) = claim`
+        for a round whose eq factor the protocol pulled out.
         """
         evaluations = self.scalars(count)
         split = evaluations[0] + evaluations[1] if equality is None else (ONE + equality) * evaluations[0] + equality * evaluations[1]
@@ -634,71 +655,87 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
 
 @dataclass
 class Form:
-    """A degree-2 polynomial over columns: a bus coordinate and a bus form both.
+    """A polynomial of degree at most 2 in a row's columns, one table's own.
 
-    A coordinate of a bus tuple and a table's accumulated bus contribution are
-    the same object, which is why one type serves as both. ``linear`` and
-    ``quadratic`` are keyed by column (local to a table for the blocks it owns,
-    global for the framework blocks); ``quadratic`` is what carries an address
-    ``fp*g^o`` or an arithmetic result without committing a column for it.
-    ``index`` is the coefficient of the g-power column g^i, the one coordinate a
-    row derives from its position rather than from a committed column.
+    Two things have that shape, so one type serves both. Every coordinate of a bus
+    tuple is one, which is why an address or an arithmetic result needs no column
+    of its own. So is the table's bus form: its blocks' tuples weighted by their
+    selectors, whose coefficients the verifier builds from alpha, gamma and those
+    selectors, and which the table sumcheck proves over the table's rows.
 
-    Degree stays at 2, which the AIR identities already are, so the table
-    sumcheck's round polynomial does not grow.
+    One coefficient per monomial, a monomial being the columns it multiplies: the
+    empty one is the constant term, a one-column one is linear, a two-column one
+    is an address `fp*g^o` or an arithmetic result.
     """
 
-    constant: E = ZERO
-    linear: dict[int, E] = field(default_factory=dict)
-    quadratic: dict[tuple[int, int], E] = field(default_factory=dict)
-    index: E = ZERO
+    terms: dict[tuple[int, ...], E] = field(default_factory=dict)
 
     def add_scaled(self, other: Form, weight: E) -> None:
-        self.constant += weight * other.constant
-        for column, coefficient in other.linear.items():
-            self.linear[column] = self.linear.get(column, ZERO) + weight * coefficient
-        for pair, coefficient in other.quadratic.items():
-            self.quadratic[pair] = self.quadratic.get(pair, ZERO) + weight * coefficient
-        self.index += weight * other.index
+        for monomial, coefficient in other.terms.items():
+            self.terms[monomial] = self.terms.get(monomial, ZERO) + weight * coefficient
 
-    def evaluate(self, column: Callable[[int], E], point: Sequence[E] = ()) -> E:
-        """Substitute a value for every column, and the point for the index term."""
-        total = self.constant
-        for index, coefficient in self.linear.items():
-            total += coefficient * column(index)
-        for (a, b), coefficient in self.quadratic.items():
-            total += coefficient * column(a) * column(b)
-        if self.index != ZERO:
-            total += self.index * index_mle(point)
-        return total
+    def evaluate(self, column: Callable[[int], E]) -> E:
+        """Substitute a value for every column."""
+        return sum((reduce(mul, map(column, monomial), c) for monomial, c in self.terms.items()), ZERO)
 
 
 @dataclass(frozen=True)
 class BusBlock:
     """One block of a bus side: 2^log_rows rows of one tuple shape.
 
-    A block a table owns names that table's columns in ITS OWN local indices,
-    which is what its bus form is written over; the framework blocks (memory,
-    bytecode, boundary) name global columns.
+    Always a block some table owns: it names that table's columns in ITS OWN
+    local indices, which is what its bus form is written over, and stays symbolic
+    until the table sumcheck. The three blocks no table owns are a `Framework`.
     """
 
     log_rows: int
     coordinates: tuple[Form, ...]
-    owner: int | None = None
-    # The stacked bytecode multilinear, on the one block whose remaining tuple
-    # coordinates are public: its slots ARE those coordinates.
-    public: Sequence[K] | None = None
+    owner: int
+
+
+@dataclass(frozen=True)
+class Framework:
+    """The three bus blocks no table owns: the boundary state, then the memory and
+    bytecode arrays. Their coordinates are a constant, the index column, one
+    committed column, or the bytecode polynomial, so the verifier evaluates their
+    fingerprints outright instead of carrying them symbolically."""
+
+    log_memory: int
+    bytecode: Sequence[K]
+
+    @property
+    def log_bytecode(self) -> int:
+        return log2_strict(len(self.bytecode)) - N_BYTECODE_SELECTORS
+
+    @property
+    def log_rows(self) -> tuple[int, int, int]:
+        return (0, self.log_memory, self.log_bytecode)
+
+    @property
+    def final_pc(self) -> E:
+        """Pull's boundary state: the run ends at the bytecode's last cell."""
+        return _gpow(2**self.log_bytecode - 1)
 
 
 @dataclass(frozen=True)
 class BusLayout:
+    """Where a side's blocks sit in the stacked leaf cube, split by kind so no
+    caller has to know that the framework blocks are stacked first."""
+
     depth: int
-    offsets: tuple[int, ...]
+    framework: tuple[Placement, ...]
+    tables: tuple[Placement, ...]
 
 
-def bus_layout(blocks: Sequence[BusBlock]) -> BusLayout:
-    offsets, depth = stack_offsets([block.log_rows for block in blocks])
-    return BusLayout(depth, tuple(offsets))
+def bus_layout(framework_log_rows: Sequence[int], blocks: Sequence[BusBlock]) -> BusLayout:
+    placements, depth = stack_offsets([*framework_log_rows, *(block.log_rows for block in blocks)])
+    split = len(framework_log_rows)
+    return BusLayout(depth, tuple(placements[:split]), tuple(placements[split:]))
+
+
+def selector_weights(placements: Sequence[Placement], point: Sequence[E]) -> list[E]:
+    """Each block's eq weight: which slice of the stacked leaf cube it occupies."""
+    return [selector_eq(p.selector, point[p.variables :]) for p in placements]
 
 
 @dataclass(frozen=True)
@@ -715,59 +752,6 @@ class ColumnClaim:
 N_TUPLE_BITS = 4
 
 
-def _decompose_bus_side(
-    blocks: Sequence[BusBlock],
-    layout: BusLayout,
-    point: Sequence[E],
-    alphas: Sequence[E],
-    gamma: E,
-    forms: Sequence[Form],
-    claims: list[ColumnClaim],
-    transcript: Transcript,
-) -> E:
-    require(len(point) == layout.depth, "bus point dimension mismatch")
-    weights = eq_kernel(alphas)
-
-    def committed_value(column: int, low_point: tuple[E, ...]) -> E:
-        for prior in claims:
-            if prior.column == column and prior.point == low_point:
-                return prior.value
-        value = transcript.scalar()
-        claims.append(ColumnClaim(column, low_point, value))
-        return value
-
-    result = ZERO
-    selector_sum = ZERO
-    for block_index, block in enumerate(blocks):
-        low = tuple(point[: block.log_rows])
-        high = point[block.log_rows :]
-        selector_weight = selector_eq(layout.offsets[block_index] >> block.log_rows, high)
-        selector_sum += selector_weight
-
-        if block.owner is not None:
-            # A table's block stays symbolic: it is accumulated into the form the
-            # table sumcheck will evaluate over that table's own columns.
-            form = forms[block.owner]
-            form.constant += selector_weight * gamma
-            for slot, coordinate in enumerate(block.coordinates):
-                form.add_scaled(coordinate, selector_weight * weights[slot])
-            continue
-
-        # A framework block is evaluated here instead, its columns read as claims.
-        fingerprint = sum(
-            (weights[slot] * c.evaluate(partial(committed_value, low_point=low), low) for slot, c in enumerate(block.coordinates)),
-            ZERO,
-        )
-        # The public coordinates' weighted sum IS the stacked polynomial at
-        # (zeta, alpha), the weights being eq(alpha, .): one evaluation, not nine.
-        if block.public is not None:
-            fingerprint += multilinear_eval(block.public, (*low, *alphas))
-        result += selector_weight * (gamma + fingerprint)
-
-    # Unoccupied rows of the packed leaf cube contain the product identity.
-    return result + ONE + selector_sum
-
-
 @dataclass(frozen=True)
 class BusResult:
     claims: tuple[ColumnClaim, ...]
@@ -776,22 +760,17 @@ class BusResult:
     totals: tuple[E, E, E]  # what the tables owe each side, derived
 
 
-def verify_bus_balance(
-    push: Sequence[BusBlock],
-    pull: Sequence[BusBlock],
-    count: Sequence[BusBlock],
-    transcript: Transcript,
-) -> BusResult:
-    push_layout = bus_layout(push)
-    pull_layout = bus_layout(pull)
-    count_layout = bus_layout(count)
+def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
+    framework = layout.framework
+    push_layout = bus_layout(framework.log_rows, layout.push)
+    pull_layout = bus_layout(framework.log_rows, layout.pull)
+    count_layout = bus_layout((), layout.count)
     require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
     require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
     alphas = transcript.samples(N_TUPLE_BITS)
-    count_alphas = (ZERO,) * N_TUPLE_BITS
+    weights = eq_kernel(alphas)
     gamma = transcript.sample()
-    padded_count_layout = BusLayout(push_layout.depth, count_layout.offsets)
     product = verify_product_triple(push_layout.depth, transcript)
     push_root, pull_root, count_root = product.roots
     require(count_root != ZERO, "a bus read count is zero")
@@ -801,31 +780,69 @@ def verify_bus_balance(
     # padding surplus to divide back out.
     require(push_root == pull_root, "bus is unbalanced")
 
-    claims: list[ColumnClaim] = []
+    # The framework blocks' committed columns, in the order the two sides first
+    # name them: the memory image on push, then each array's final count on pull.
+    point = product.point
+    memory_low = tuple(point[: framework.log_memory])
+    bytecode_low = tuple(point[: framework.log_bytecode])
+    memory = transcript.scalars(3)
+    memory_final = transcript.scalar()
+    bytecode_final = transcript.scalar()
+    claims = [ColumnClaim(column, memory_low, memory[column]) for column in (MEM_0, MEM_1, MEM_2)]
+    claims.append(ColumnClaim(MEM_FINAL_CNT, memory_low, memory_final))
+    claims.append(ColumnClaim(BYTECODE_FINAL_CNT, bytecode_low, bytecode_final))
+
+    def fingerprints(state: E, memory_count: E, bytecode_count: E) -> tuple[E, E, E]:
+        """The three framework tuples, read off directly. A side differs only in
+        these: push seeds each array at count one, pull finalizes it with the
+        committed final count and ends at the last pc."""
+        return (
+            weights[0] * SEP_STATE + weights[1] * state + weights[2] * ONE,
+            weights[0] * SEP_MEM
+            + weights[1] * index_mle(memory_low)
+            + weights[2] * memory_count
+            + sum((weights[3 + limb] * memory[limb] for limb in range(3)), ZERO),
+            # The public coordinates' weighted sum IS the stacked polynomial at
+            # (zeta, alpha), the weights being eq(alpha, .): one evaluation, not nine.
+            weights[0] * SEP_BYTECODE
+            + weights[1] * index_mle(bytecode_low)
+            + weights[2] * bytecode_count
+            + multilinear_eval(framework.bytecode, (*bytecode_low, *alphas)),
+        )
+
     forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
     sides = (
-        (push, push_layout, alphas, gamma),
-        (pull, pull_layout, alphas, gamma),
-        (count, padded_count_layout, count_alphas, ZERO),
+        (layout.push, push_layout, fingerprints(ONE, ONE, ONE), weights, gamma),
+        (layout.pull, pull_layout, fingerprints(framework.final_pc, memory_final, bytecode_final), weights, gamma),
+        # The count channel owns no framework block and runs at alpha = gamma = 0:
+        # its leaf IS the read count.
+        (layout.count, count_layout, (), eq_kernel((ZERO,) * N_TUPLE_BITS), ZERO),
     )
     totals = []
-    for side, (blocks, side_layout, side_alphas, side_gamma) in enumerate(sides):
-        known_contribution = _decompose_bus_side(
-            blocks,
-            side_layout,
-            product.point,
-            side_alphas,
-            side_gamma,
-            forms[side],
-            claims,
-            transcript,
+    for side, (blocks, side_layout, framework_fingerprints, side_weights, side_gamma) in enumerate(sides):
+        framework_selectors = selector_weights(side_layout.framework, point)
+        table_selectors = selector_weights(side_layout.tables, point)
+        known = sum(
+            (selector * (side_gamma + fingerprint) for selector, fingerprint in zip(framework_selectors, framework_fingerprints, strict=True)),
+            ZERO,
         )
-        totals.append(known_contribution + product.values[side])
+        # A table's blocks stay symbolic: they accumulate into the form its
+        # sumcheck settles over its own columns.
+        gamma_form = _const(side_gamma)
+        for selector, block in zip(table_selectors, blocks, strict=True):
+            form = forms[side][block.owner]
+            form.add_scaled(gamma_form, selector)
+            for slot, coordinate in enumerate(block.coordinates):
+                form.add_scaled(coordinate, selector * side_weights[slot])
+        # Every occupied row holds gamma + its fingerprint; the rest of the packed
+        # leaf cube holds the product identity.
+        occupied = sum(framework_selectors + table_selectors, ZERO)
+        totals.append(product.values[side] + known + ONE + occupied)
 
     # The recursive verifier defers a claim on the public bytecode polynomial. Its
     # point comes from alpha alone (doc sec:e2e-bc), so nothing is observed here and
     # no selector challenge is drawn.
-    return BusResult(tuple(claims), product.point, forms, (totals[0], totals[1], totals[2]))
+    return BusResult(tuple(claims), point, forms, (totals[0], totals[1], totals[2]))
 
 
 # Table sumcheck -------------------------------------------------------------
@@ -840,17 +857,11 @@ class Air:
     forms: tuple[Form, ...]
 
     def evaluate(self, constraint_powers: Sequence[E], form_powers: Sequence[E], columns: Sequence[E]) -> E:
-        """This table's share of the batch's summand: its identities, then its bus forms."""
+        """This table's share of the batch's summand: its constraints, then its bus forms."""
         terms = self.table.constraints(lambda name: columns[self.table.col(name)])
-        identities = dot(constraint_powers, terms)
+        constraints = dot(constraint_powers, terms)
         buses = dot(form_powers, [form.evaluate(lambda index: columns[index]) for form in self.forms])
-        return identities + buses
-
-
-@dataclass(frozen=True)
-class AirClaim:
-    point: tuple[E, ...]
-    evaluations: tuple[E, ...]
+        return constraints + buses
 
 
 def powers(base: E, count: int) -> list[E]:
@@ -868,7 +879,7 @@ def verify_constraints(
     equality_point: Sequence[E],
     target: E,
     transcript: Transcript,
-) -> list[AirClaim]:
+) -> list[ColumnClaim]:
     depth = max((air.log_height for air in airs), default=0)
     require(len(equality_point) >= depth, "AIR equality point is too short")
 
@@ -887,13 +898,14 @@ def verify_constraints(
 
     final = ZERO
     cursor = 0
-    claims: list[AirClaim] = []
+    claims: list[ColumnClaim] = []
     for table_index, air in enumerate(airs):
         evaluations = tuple(transcript.scalars(air.table.width))
         table_constraint_powers = constraint_powers[cursor : cursor + air.table.n_constraints]
         cursor += air.table.n_constraints
         final += weights[table_index] * air.evaluate(table_constraint_powers, form_powers, evaluations)
-        claims.append(AirClaim(tuple(point[: air.log_height]), evaluations))
+        base, air_point = BASES[air.table.opcode], tuple(point[: air.log_height])
+        claims.extend(ColumnClaim(base + local, air_point, value) for local, value in enumerate(evaluations))
     require(final == claim, "AIR terminal mismatch")
     return claims
 
@@ -927,17 +939,8 @@ BLAKE2S_CONSTANT_COLUMN = 512
 
 
 @dataclass(frozen=True)
-class Placement:
-    variables: int
-    offset: int
-
-    @property
-    def virtual(self) -> bool:
-        return self.variables < 0
-
-
-@dataclass(frozen=True)
 class Layout:
+    framework: Framework
     push: tuple[BusBlock, ...]
     pull: tuple[BusBlock, ...]
     count: tuple[BusBlock, ...]
@@ -951,29 +954,27 @@ def _gpow(index: int) -> E:
 
 
 def _const(value: E | int) -> Form:
-    return Form(constant=value if isinstance(value, E) else E(value))
+    return Form({(): value if isinstance(value, E) else E(value)})
 
 
 def _col(index: int) -> Form:
-    return Form(linear={index: ONE})
+    return Form({(index,): ONE})
 
 
 def _gcol(index: int) -> Form:
-    return Form(linear={index: GEN})
+    return Form({(index,): GEN})
 
 
-def _sum(terms: Iterable[Form]) -> Form:
+def _sum(forms: Iterable[Form]) -> Form:
     total = Form()
-    for term in terms:
-        total.add_scaled(term, ONE)
+    for form in forms:
+        total.add_scaled(form, ONE)
     return total
 
 
 def _prod(a: int, b: int, exponent: int = 0) -> Form:
-    return Form(quadratic={(a, b): _gpow(exponent)})
+    return Form({tuple(sorted((a, b))): _gpow(exponent)})
 
-
-_INDEX_COORDINATE = Form(index=ONE)
 
 SEP_STATE = ONE
 SEP_MEM = GEN
@@ -1035,7 +1036,10 @@ class Table:
     columns: tuple[str, ...]
     flushes: Callable[[Table], Flushes]
     constraints: Callable[[Callable[[str], E]], tuple[E, ...]] = lambda _: ()
-    n_constraints: int = 0
+
+    @property
+    def n_constraints(self) -> int:
+        return len(self.constraints(lambda _: ZERO))
 
     @property
     def width(self) -> int:
@@ -1229,7 +1233,7 @@ TABLES = (
     Table("mul", 1, ARITH_COLUMNS, _flushes_arith),
     Table("set", 2, SET_COLUMNS, _flushes_set),
     Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
-    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints, 2),
+    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints),
     Table("blake2s", 5, BLAKE2S_COLUMNS, _flushes_blake2s),
     Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )
@@ -1269,28 +1273,15 @@ BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(T
 
 
 def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequence[int]) -> Layout:
-    log_bytecode = log2_strict(len(bytecode)) - N_BYTECODE_SELECTORS
     require(
         16 <= log_memory <= 32 and all(0 <= log_height <= 32 for log_height in table_log_heights) and table_log_heights[BLAKE2S.opcode] >= 3,
         "invalid announced table sizes",
     )
     table_log_heights = list(table_log_heights)
 
-    def frame(state: Form, memory_count: Form, bytecode_count: Form) -> list[BusBlock]:
-        """The blocks no table owns: the boundary state, then the two arrays.
-
-        The two sides run the same three blocks and differ only here. Push seeds
-        each array with count one; pull finalizes it with the committed final
-        count, and its boundary state is the last pc rather than the first.
-        """
-        return [
-            BusBlock(0, (_const(SEP_STATE), state, _const(ONE))),
-            BusBlock(log_memory, (_const(SEP_MEM), _INDEX_COORDINATE, memory_count, _col(MEM_0), _col(MEM_1), _col(MEM_2))),
-            BusBlock(log_bytecode, (_const(SEP_BYTECODE), _INDEX_COORDINATE, bytecode_count), public=bytecode),
-        ]
-
-    push = frame(_const(ONE), _const(ONE), _const(ONE))
-    pull = frame(_const(_gpow(2**log_bytecode - 1)), _col(MEM_FINAL_CNT), _col(BYTECODE_FINAL_CNT))
+    framework = Framework(log_memory, bytecode)
+    push: list[BusBlock] = []
+    pull: list[BusBlock] = []
     count: list[BusBlock] = []
     for table, height in zip(TABLES, table_log_heights, strict=True):
         flushes = table.flushes(table)
@@ -1305,30 +1296,21 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     # columns, which are committed inside q_flock rather than on their own.
     kappas: list[int | None] = [0] * (len(GLOBAL_COLUMNS) + sum(WIDTHS))
     kappas[MEM_0] = kappas[MEM_1] = kappas[MEM_2] = kappas[MEM_FINAL_CNT] = log_memory
-    kappas[BYTECODE_FINAL_CNT] = log_bytecode
+    kappas[BYTECODE_FINAL_CNT] = framework.log_bytecode
     kappas[QFLOCK] = table_log_heights[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
     for table, (base, width) in enumerate(zip(BASES, WIDTHS, strict=True)):
         kappas[base : base + width] = [table_log_heights[table]] * width
     for local in BLAKE2S_SLOT_BY_COLUMN:
         kappas[BASES[BLAKE2S.opcode] + local] = None
-    offsets, total_log = stack_offsets(kappas)
-    placements = [Placement(-1, 0) if variables is None else Placement(variables, offset) for variables, offset in zip(kappas, offsets, strict=True)]
+    placements, total_log = stack_offsets(kappas)
     # Floor at the PCS minimum: WHIR's level ladder needs room, so a tiny
     # witness zero-pads up to it. Both sides derive this from the kappas.
-    stack_log = max(15, total_log)
-    return Layout(tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_log_heights))
+    stack_log = max(MIN_STACKED_LOG, total_log)
+    return Layout(framework, tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_log_heights))
 
 
 def build_airs(layout: Layout, bus_forms: Sequence[Sequence[Form]]) -> list[Air]:
     return [Air(table, height, tuple(side[table.opcode] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs, strict=True)]
-
-
-def constraint_claims(claims: Sequence[AirClaim]) -> list[ColumnClaim]:
-    result: list[ColumnClaim] = []
-    for base, claim in zip(BASES, claims, strict=True):
-        for local, value in enumerate(claim.evaluations):
-            result.append(ColumnClaim(base + local, claim.point, value))
-    return result
 
 
 def virtual_slot(column: int) -> int | None:
@@ -1343,6 +1325,8 @@ SUBSEQUENT_FOLDING_FACTOR = 3
 RS_DOMAIN_INITIAL_REDUCTION_FACTOR = 3
 RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR = 1
 RESIDUAL_MAX_LOG = 5
+# Grinding: one width for every level's queries, none per fold.
+QUERY_GRINDING_BITS = 17
 
 MIN_STACKED_LOG = 15
 MAX_STACKED_LOG = 32
@@ -1355,28 +1339,21 @@ class WhirConfig:
     log_inv_rates: tuple[int, ...]
     folds: tuple[int, ...]
     queries: tuple[int, ...]
-    query_grinding_bits: tuple[int, ...]
-    fold_grinding_bits: tuple[int, ...]
-    ood_samples: tuple[int, ...]
 
 
 def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
-    """Derive the production Johnson/OOD ladder used by the Rust PCS."""
+    """The opening shape at this size and rate: the ladder geometry, then the
+    tabulated query counts."""
     require(MIN_STACKED_LOG <= log_n <= MAX_STACKED_LOG and 1 <= log_inv_rate <= 4, "invalid WHIR shape")
     folds = [INITIAL_FOLDING_FACTOR]
-    message_logs = [log_n - INITIAL_FOLDING_FACTOR]
     log_inv_rates = [log_inv_rate]
-    remaining = message_logs[0]
-    prior_fold = INITIAL_FOLDING_FACTOR
-    reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR
+    remaining = log_n - INITIAL_FOLDING_FACTOR
     while remaining > RESIDUAL_MAX_LOG:
+        first = len(folds) == 1
+        log_inv_rates.append(log_inv_rates[-1] + folds[-1] - (RS_DOMAIN_INITIAL_REDUCTION_FACTOR if first else RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR))
         fold = min(SUBSEQUENT_FOLDING_FACTOR, remaining)
-        log_inv_rates.append(log_inv_rates[-1] + prior_fold - reduction)
         remaining -= fold
         folds.append(fold)
-        message_logs.append(remaining)
-        prior_fold = fold
-        reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
     require(len(folds) >= 2, "WHIR requires at least two levels")
     queries = WHIR_QUERIES[log_inv_rate - 1][log_n - MIN_STACKED_LOG]
     require(len(queries) == len(folds), "tabulated query count does not match the ladder")
@@ -1384,10 +1361,6 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
         log_inv_rates=tuple(log_inv_rates),
         folds=tuple(folds),
         queries=queries,
-        query_grinding_bits=(17,) * len(folds),
-        fold_grinding_bits=(0,) * len(folds),
-        # Not a searched parameter: one per level, except level 0 which needs none.
-        ood_samples=(0,) + (1,) * (len(folds) - 1),
     )
 
 
@@ -1491,7 +1464,6 @@ class GluedClaim:
     """
 
     scalar: E  # the power of lambda it was glued with
-    message_log: int  # the level's message width, which rebuilds its share of the point
     fold_start: int  # how many fold challenges preceded the level
     weight_at: Callable[[Sequence[E]], E]
 
@@ -1523,10 +1495,7 @@ def verify_whir(
 
     for level, (fold_count, level_rate) in enumerate(zip(config.folds, config.log_inv_rates, strict=True)):
         level_folds: list[E] = []
-        for fold_index in range(fold_count):
-            bits = max(0, config.fold_grinding_bits[level] - fold_index)
-            if bits:
-                transcript.grind_check(bits)
+        for _ in range(fold_count):
             challenge = transcript.sample()
             folds.append(challenge)
             level_folds.append(challenge)
@@ -1537,17 +1506,16 @@ def verify_whir(
         final_level = level == levels - 1
         # The level's claims, held until its batching challenge is drawn: the
         # OOD claims first, then the query batch (Annex B, Protocol 1 step 1).
-        pending_ood: list[tuple[tuple[E, ...], E, QuadraticMessage]] = []
+        pending: list[tuple[E, QuadraticMessage, Callable[[Sequence[E]], E]]] = []
         if final_level:
             residual = tuple(transcript.scalars(2**message_log))
         else:
             next_root = Digest.from_halves(*transcript.scalars(2))
-            for _ in range(config.ood_samples[level + 1]):
-                point = tuple(transcript.samples(message_log))
-                value = transcript.scalar()
-                pending_ood.append((point, value, next_quad(value)))
+            ood_point = tuple(transcript.samples(message_log))
+            ood_value = transcript.scalar()
+            pending.append((ood_value, next_quad(ood_value), lambda x, z=ood_point: eq_eval(z, x)))
 
-        transcript.grind_check(config.query_grinding_bits[level])
+        transcript.grind_check(QUERY_GRINDING_BITS)
         block_length = 2 ** (message_log + level_rate)
         queries = sample_queries(transcript, block_length, config.queries[level])
         # One batching challenge per level, drawn once every claim it batches is
@@ -1567,18 +1535,14 @@ def verify_whir(
         # Every commitment, including the last one, enters through an intro
         # message; the level's claims are then batched with powers of `lam`,
         # the running claim keeping lam^0 = 1.
-        intro = next_quad(enforced)
-        scalar = ONE
-        for point, value, ood_intro in pending_ood:
-            scalar *= lam
-            running_quad = running_quad.add_scaled(ood_intro, scalar)
-            running_target += scalar * value
-            glued.append(GluedClaim(scalar, message_log, len(folds), lambda x, z=point: eq_eval(z, x)))
-        scalar *= lam
-        running_quad = running_quad.add_scaled(intro, scalar)
-        running_target += scalar * enforced
         batch = (message_log, tuple(queries), tuple(query_weights))
-        glued.append(GluedClaim(scalar, message_log, len(folds), lambda x, b=batch: _induced_weight(*b, x)))
+        pending.append((enforced, next_quad(enforced), lambda x, b=batch: _induced_weight(*b, x)))
+        scalar = ONE
+        for value, intro, weight_at in pending:
+            scalar *= lam
+            running_quad = running_quad.add_scaled(intro, scalar)
+            running_target += scalar * value
+            glued.append(GluedClaim(scalar, len(folds), weight_at))
 
         if final_level:
             # Finish the remaining sumcheck rounds and close on one evaluation
@@ -1594,8 +1558,7 @@ def verify_whir(
             # challenges its level fixed after it was made, then the tail.
             weight = evaluate_basis(list(folds) + tail_folds)
             for claim in glued:
-                fixed = claim.message_log - message_log
-                weight += claim.scalar * claim.weight_at(list(folds[claim.fold_start : claim.fold_start + fixed]) + tail_folds)
+                weight += claim.scalar * claim.weight_at(list(folds[claim.fold_start :]) + tail_folds)
             terminal = weight * multilinear_eval(residual, tail_folds)
             require(terminal == running_target, "WHIR terminal check failed")
             return
@@ -1646,13 +1609,11 @@ def quirky_weights(skip_point: E, rest: Sequence[E]) -> list[E]:
 
 @dataclass(frozen=True)
 class QuirkyPoint:
-    skip: E
-    inner: tuple[E, ...]
-    outer: tuple[E, ...]
+    """A skip coordinate over `PHI[:PACKED_BITS]`, then the tail: the slot
+    variables, then the ones indexing instances."""
 
-    @property
-    def ring_tail(self) -> tuple[E, ...]:
-        return self.inner + self.outer
+    skip: E
+    tail: tuple[E, ...]
 
 
 @dataclass(frozen=True)
@@ -1725,18 +1686,6 @@ def _coordinate_weights(challenges: Sequence[E]) -> list[E]:
     return weights
 
 
-def _transpose(values: Sequence[E]) -> list[E]:
-    require(len(values) == PACKED_BITS, "ring-switch slice has the wrong length")
-    output = [0] * 192
-    for row, value in enumerate(values):
-        bits = int(value)
-        while bits:
-            bit = (bits & -bits).bit_length() - 1
-            output[bit] ^= 2**row
-            bits &= bits - 1
-    return [E(value) for value in output]
-
-
 def _linear_map(value: E, weights: Sequence[E]) -> E:
     result = ZERO
     bits = int(value)
@@ -1763,8 +1712,7 @@ def verify_stacked_opening(
     root: Digest,
     stack_log: int,
     log_inv_rate: int,
-    qflock_offset: int,
-    qflock_variables: int,
+    qflock: Placement,
     reduction: FlockReduction,
     point_claims: Sequence[tuple[Sequence[E], E]],
 ) -> None:
@@ -1777,7 +1725,8 @@ def verify_stacked_opening(
 
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
     coordinate_weights = _coordinate_weights(map_challenges)
-    ring_values = [dot(_transpose(values), coordinate_weights) for values in slices]
+    # Weighting the transposed K-columns is the same map applied row by row.
+    ring_values = [dot(powers(GEN, PACKED_BITS), [_linear_map(value, coordinate_weights) for value in values]) for values in slices]
 
     # One challenge for both families over disjoint power ranges: the ring-switch
     # pair takes its low powers, the claim pool the rest.
@@ -1787,7 +1736,7 @@ def verify_stacked_opening(
     ring_scales, point_scales = scales[: len(ring_claims)], scales[len(ring_claims) :]
     target = dot(ring_scales, ring_values) + dot(point_scales, [value for _, value in point_claims])
 
-    selector = qflock_offset >> qflock_variables
+    selector = qflock.selector
 
     def evaluate_basis(point: Sequence[E]) -> E:
         """Every pooled claim's weight at the opening's terminal point.
@@ -1796,9 +1745,9 @@ def verify_stacked_opening(
         they carry that placement's selector; an ordinary point claim is an eq
         against the full stacked point.
         """
-        low, high = point[:qflock_variables], point[qflock_variables:]
+        low, high = point[: qflock.variables], point[qflock.variables :]
         selector_weight = selector_eq(selector, high)
-        ring_value = dot(ring_scales, [_ring_weight(claim.point.ring_tail, low, coordinate_weights) for claim in ring_claims])
+        ring_value = dot(ring_scales, [_ring_weight(claim.point.tail, low, coordinate_weights) for claim in ring_claims])
         value = selector_weight * ring_value
         for scale, (claim_point, _) in zip(point_scales, point_claims, strict=True):
             value += scale * eq_eval(claim_point, point)
@@ -1822,7 +1771,7 @@ def verify_flock_lincheck(
 ) -> tuple[ZClaim, tuple[E, ...]]:
     """Replay the fixed BLAKE2s matrix reduction."""
     alpha = transcript.sample()
-    inner_weights = quirky_weights(point.skip, point.inner)
+    inner_weights = quirky_weights(point.skip, point.tail[:QFLOCK_SLOT_BITS])
     beta = transcript.sample()
     running = alpha * a + b + beta
     challenges = []
@@ -1840,15 +1789,14 @@ def verify_flock_lincheck(
     require(terminal == running, "Flock lincheck terminal mismatch")
     skip = transcript.sample()
     value = lagrange_interpolate(PHI[:PACKED_BITS], partial, skip)
-    return ZClaim(QuirkyPoint(skip, rounds, point.outer), value), partial
+    return ZClaim(QuirkyPoint(skip, rounds + point.tail[QFLOCK_SLOT_BITS:]), value), partial
 
 
 def verify_flock(log_n: int, transcript: Transcript) -> FlockReduction:
     zerocheck = verify_flock_zerocheck(log_n, transcript)
-    inner_length = QFLOCK_SLOT_BITS  # the slot bits, the outer ones indexing instances
-    ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds[:inner_length], zerocheck.rounds[inner_length:])
+    ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds)
     ab, ab_s_hat_v = verify_flock_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
-    c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail[:inner_length], zerocheck.equality_tail[inner_length:])
+    c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail)
     return FlockReduction(ab, ZClaim(c_point, zerocheck.c), ab_s_hat_v)
 
 
@@ -2010,16 +1958,16 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
 
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf
     # decomposition, which leaves each table a degree-2 form and a total.
-    bus = verify_bus_balance(layout.push, layout.pull, layout.count, transcript)
+    bus = verify_bus_balance(layout, transcript)
 
     # 4] Rows: one back-loaded table sumcheck over all seven tables, at
     # the bus point, starting from the target the three leaf claims derive.
     # Every table takes a disjoint range of eta powers for its constraints; the
     # three bus sides share the three above them (doc sec:air).
     eta = transcript.sample()
-    n_identities = sum(table.n_constraints for table in TABLES)
-    eta_powers = powers(eta, n_identities + 3)
-    constraint_powers, form_powers = eta_powers[:n_identities], eta_powers[n_identities:]
+    n_constraints = sum(table.n_constraints for table in TABLES)
+    eta_powers = powers(eta, n_constraints + 3)
+    constraint_powers, form_powers = eta_powers[:n_constraints], eta_powers[n_constraints:]
     target = dot(form_powers, bus.totals)
     air_claims = verify_constraints(
         build_airs(layout, bus.forms),
@@ -2029,8 +1977,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         target,
         transcript,
     )
-    claims = list(bus.claims)
-    claims.extend(constraint_claims(air_claims))
+    claims = [*bus.claims, *air_claims]
 
     # 5] Public input: the first two memory cells, as one claim per limb on the
     # line through them. The prover sends one evaluation per limb; the three must
@@ -2060,8 +2007,8 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         prefix = _selector_point(slot, QFLOCK_SLOT_BITS) if slot is not None else ()
         require(not placement.virtual, "claim targets an uncommitted column")
         require(len(prefix) + len(claim.point) == placement.variables, "column claim dimension mismatch")
-        selector = placement.offset >> placement.variables
-        point_claims.append((prefix + claim.point + _selector_point(selector, layout.stack_log - placement.variables), claim.value))
+        tail = _selector_point(placement.selector, layout.stack_log - placement.variables)
+        point_claims.append((prefix + claim.point + tail, claim.value))
 
     # 7] BLAKE2s validity, then the one opening that discharges every claim.
     reduction = verify_flock(FLOCK_LOG_BITS + layout.table_logs[BLAKE2S.opcode], transcript)
@@ -2070,8 +2017,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         root,
         layout.stack_log,
         log_inverse_rate,
-        qflock.offset,
-        qflock.variables,
+        qflock,
         reduction,
         point_claims,
     )
