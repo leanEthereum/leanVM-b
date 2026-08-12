@@ -85,6 +85,18 @@ theorem simulate_eagerImpl_causalAttackerHashQuery_cached
     causalAttackerHashPlan_eq_cached secretKey chain input state output hcache]
   rfl
 
+theorem simulate_eagerTrace_causalAttackerHashQuery_cached
+    (table : ChainValueIndex → Digest) (secretKey : SecretKey)
+    (chain : ChainIndex) (input : HashInput) (state : CausalHashState)
+    (output : HashOutput) (hcache : state.cache input = some output) :
+    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+      ((causalAttackerHashQuery secretKey chain input).run state)).run =
+        pure ((output, causalRecordedState secretKey chain input state),
+          ([] : RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) := by
+  rw [causalAttackerHashQuery_run,
+    causalAttackerHashPlan_eq_cached secretKey chain input state output hcache]
+  rfl
+
 theorem simulate_eagerImpl_causalAttackerHashQuery_revealedChain
     (table : ChainValueIndex → Digest) (secretKey : SecretKey)
     (chain : ChainIndex) (epoch : Epoch) (step : ChainStep) (value : Digest)
