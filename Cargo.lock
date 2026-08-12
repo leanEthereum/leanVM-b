@@ -187,7 +187,6 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "lean_vm",
- "pcs",
  "primitives",
  "rand",
 ]
@@ -199,6 +198,7 @@ dependencies = [
  "bincode",
  "fiat_shamir",
  "flock",
+ "lean_compiler",
  "parallel",
  "pcs",
  "primitives",

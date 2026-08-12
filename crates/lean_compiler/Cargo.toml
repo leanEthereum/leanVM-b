@@ -11,6 +11,5 @@ primitives.workspace = true
 lean_vm.workspace = true
 
 [dev-dependencies]
-pcs.workspace = true
 rand.workspace = true
 bincode.workspace = true

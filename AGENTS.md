@@ -77,7 +77,7 @@ No rayon. Every parallel site is "N independent items, each writing its own disj
 The same verification algorithm is written out three times, in three languages. Any change to snark protocol has to land in all three.
 
 1. **Rust**, `lean_vm::cpu::verify`. The performant verifier implem.
-2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_compiler/tests/suite/python_verifier.rs`.
+2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_vm/tests/verifiers/python_verifier.rs`.
 3. **Recursive verifier**, `crates/rec_aggregation/guests/recursion.py` (~2.4k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
 The third is worth understanding before touching the verifier. `guests/recursion.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~500k instructions and why its opcode mix is what the recursion benchmark reports. Two consequences:
