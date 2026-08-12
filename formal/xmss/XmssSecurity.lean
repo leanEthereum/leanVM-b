@@ -9,6 +9,8 @@ import XmssSecurity.CausalStateInvariant
 import XmssSecurity.CausalStateInvariantSteps
 import XmssSecurity.CausalStateInvariantSimulation
 import XmssSecurity.CausalStateInvariantGame
+import XmssSecurity.CausalKeygenProjection
+import XmssSecurity.CausalStrategyKeygenHybrid
 import XmssSecurity.ChainTracedGame
 import XmssSecurity.AdaptiveRevealedHiddenValue
 import XmssSecurity.AdaptiveRevealMonitor
