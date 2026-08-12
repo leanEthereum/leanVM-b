@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from functools import cache, reduce
+from functools import cache, partial, reduce
 from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
 from operator import mul
 from struct import pack, unpack
-from typing import SupportsIndex
 
 
 class VerificationError(Exception):
@@ -325,7 +324,7 @@ def multilinear_eval(mle: Sequence[K | E], point: Sequence[E]) -> E:
     return cur[0]
 
 
-def log_ceil(value: int) -> int:
+def log2_ceil(value: int) -> int:
     return max(0, (value - 1).bit_length())
 
 
@@ -346,7 +345,7 @@ def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[int], int]:
     for index, size in sorted(present, key=lambda item: (-item[1], item[0])):
         offsets[index] = total
         total += 2**size
-    return offsets, log_ceil(max(total, 1))
+    return offsets, log2_ceil(max(total, 1))
 
 
 def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
@@ -537,7 +536,7 @@ DS_SQUEEZE = 4
 DS_POW = 5
 
 
-def compress(left: Sequence[SupportsIndex], right: Sequence[SupportsIndex]) -> tuple[int, int, int, int]:
+def compress(left: Sequence[K | int], right: Sequence[K | int]) -> tuple[int, int, int, int]:
     """Hash two four-word operands, a word being a plain integer or the K element standing for it."""
     # The one removed-guard site with nothing downstream to catch a bad length:
     # a short operand would silently hash to a different value.
@@ -653,20 +652,6 @@ class ProductTriple:
     values: tuple[E, E, E]
 
 
-def quartic_eval_from_eq(
-    claim: E,
-    equality_point: E,
-    difference: E,
-    c2: E,
-    c3: E,
-    c4: E,
-    challenge: E,
-) -> E:
-    c0 = claim + equality_point * difference
-    c1 = difference + c2 + c3 + c4
-    return c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
-
-
 def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
     root_values = transcript.scalars(3)
     roots = (root_values[0], root_values[1], root_values[2])
@@ -686,10 +671,15 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
 
         round_point: list[E] = []
         for prior in point[:round_count]:
+            # Four independent coefficients determine the degree-four round
+            # polynomial: with `difference = q(0) + q(1)`, the incoming claim fixes
+            # the constant one and characteristic two fixes the linear one.
             difference, c2, c3, c4 = transcript.scalars(4)
             challenge = transcript.sample()
             round_point.append(challenge)
-            claim = quartic_eval_from_eq(claim, prior, difference, c2, c3, c4, challenge)
+            c0 = claim + prior * difference
+            c1 = difference + c2 + c3 + c4
+            claim = c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
 
         tails = [transcript.scalars(2**width) for _ in range(3)]
         products = [reduce(mul, tail) for tail in tails]
@@ -829,7 +819,7 @@ def _decompose_bus_side(
 
         # A framework block is evaluated here instead, its columns read as claims.
         fingerprint = sum(
-            (weights[slot] * c.evaluate(lambda column: committed_value(column, low), low) for slot, c in enumerate(block.coordinates)),
+            (weights[slot] * c.evaluate(partial(committed_value, low_point=low), low) for slot, c in enumerate(block.coordinates)),
             ZERO,
         )
         result += selector_weight * (gamma + fingerprint)
@@ -1009,7 +999,7 @@ MEM_0, MEM_1, MEM_2, MEM_FINAL_CNT, BYTECODE_FINAL_CNT, QFLOCK = range(len(GLOBA
 # within an instance and the table's log height above them (doc sec:tab-blake2s).
 FLOCK_LOG_BITS = 14
 PACKED_BITS = 64  # bits per committed K-element (doc sec:ringswitch)
-FLOCK_K_SKIP = PACKED_BITS.bit_length() - 1
+FLOCK_K_SKIP = log2_ceil(PACKED_BITS)
 QFLOCK_SLOT_BITS = FLOCK_LOG_BITS - FLOCK_K_SKIP
 BLAKE2S_CONSTANT_COLUMN = 512
 
@@ -1826,7 +1816,7 @@ class ZerocheckResult:
     c: E
 
 
-def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
+def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     require(log_n >= FLOCK_K_SKIP + FLOCK_N_INNER, "Flock zerocheck input is too small")
     require(len(FIXED_CHALLENGES) == FLOCK_N_INNER, "wrong fixed-challenge count")
     sampled_outer = transcript.samples(log_n - FLOCK_K_SKIP - FLOCK_N_INNER)
@@ -1969,7 +1959,7 @@ def verify_stacked_opening(
     )
 
 
-def verify_lincheck(
+def verify_flock_lincheck(
     point: QuirkyPoint,
     a: E,
     b: E,
@@ -1998,11 +1988,11 @@ def verify_lincheck(
     return ZClaim(QuirkyPoint(skip, rounds, point.outer), value), partial
 
 
-def verify_reduction(log_n: int, transcript: Transcript) -> FlockReduction:
-    zerocheck = verify_zerocheck(log_n, transcript)
+def verify_flock(log_n: int, transcript: Transcript) -> FlockReduction:
+    zerocheck = verify_flock_zerocheck(log_n, transcript)
     inner_length = QFLOCK_SLOT_BITS  # the slot bits, the outer ones indexing instances
     ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds[:inner_length], zerocheck.rounds[inner_length:])
-    ab, ab_s_hat_v = verify_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
+    ab, ab_s_hat_v = verify_flock_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
     c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail[:inner_length], zerocheck.equality_tail[inner_length:])
     return FlockReduction(ab, ZClaim(c_point, zerocheck.c), ab_s_hat_v)
 
@@ -2144,7 +2134,6 @@ def blake2s_bilinear(
 
 def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
     pi = public_input.halves()
-    public_columns, bytecode_log = bytecode_columns(bytecode)
     # The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
     # The seed hashes the bytecode multilinear itself, not a structured program,
     # so a verifier holding only the polynomial can reproduce it.
@@ -2161,7 +2150,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     table_logs = tuple(int(value.c0) for value in announced[1 : 1 + len(TABLES)])
     log_inverse_rate = int(announced[-1].c0)
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
-    layout = build_layout(public_columns, bytecode_log, log_memory, table_logs)
+    layout = build_layout(*bytecode_columns(bytecode), log_memory, table_logs)
 
     # 2] Commitment: one Merkle root over the stacked witness.
     root = Digest.from_halves(*transcript.scalars(2))
@@ -2222,7 +2211,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         point_claims.append((prefix + claim.point + _selector_point(selector, layout.stack_log - placement.variables), claim.value))
 
     # 7] BLAKE2s validity, then the one opening that discharges every claim.
-    reduction = verify_reduction(FLOCK_LOG_BITS + layout.table_logs[BLAKE2S.opcode], transcript)
+    reduction = verify_flock(FLOCK_LOG_BITS + layout.table_logs[BLAKE2S.opcode], transcript)
     verify_stacked_opening(
         transcript,
         root,

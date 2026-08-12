@@ -511,22 +511,19 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
     return node_0, node_1
 
 
-@inline
-def quartic_eval_from_eq(claim, eq_point, difference, c2, c3, c4, challenge):
-    c0 = claim + eq_point * difference
-    c1 = difference + c2 + c3 + c4
-    return c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
-
-
 def sumcheck_round5(state_0, state_1, msg_cursor, claim, prev_challenge):
+    # One GKR round. Four independent coefficients determine the degree-four round
+    # polynomial: with `difference = q(0) + q(1)`, the incoming claim fixes the
+    # constant one and characteristic two fixes the linear one.
     fs = [state_0, state_1]
     fs, difference, msg_cursor = fs_next(fs, msg_cursor)
     fs, c2, msg_cursor = fs_next(fs, msg_cursor)
     fs, c3, msg_cursor = fs_next(fs, msg_cursor)
     fs, c4, msg_cursor = fs_next(fs, msg_cursor)
-    fs, round_challenge = squeeze(fs)
-    new_claim = quartic_eval_from_eq(claim, prev_challenge, difference, c2, c3, c4, round_challenge)
-    return fs[0], fs[1], msg_cursor, new_claim, round_challenge
+    fs, y = squeeze(fs)
+    c0 = claim + prev_challenge * difference
+    c1 = difference + c2 + c3 + c4
+    return fs[0], fs[1], msg_cursor, c0 + y * (c1 + y * (c2 + y * (c3 + y * c4))), y
 
 
 def sumcheck_round4(state_0, state_1, msg_cursor, claim):

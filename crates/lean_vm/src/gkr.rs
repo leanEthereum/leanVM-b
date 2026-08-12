@@ -9,7 +9,7 @@
 use crate::PAR_THRESHOLD;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F192, F192Unreduced};
-use primitives::multilinear::{eq_table, interp, quartic_eval_from_eq, shrink_eq_low};
+use primitives::multilinear::{eq_table, interp, shrink_eq_low};
 use zk_alloc::ArenaVec;
 
 #[inline]
@@ -421,18 +421,17 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
 
         let mut round_point = Vec::with_capacity(round_count);
         for &equality_point in point.iter().take(round_count) {
-            let message = vs.next_scalars(4).map_err(|_| GkrError::Truncated)?;
+            // Four independent coefficients determine the degree-four round
+            // polynomial: with `difference = q(0) + q(1)`, the incoming claim fixes
+            // the constant one and characteristic two fixes the linear one.
+            let [difference, c2, c3, c4] = vs.next_scalars(4).map_err(|_| GkrError::Truncated)?[..] else {
+                unreachable!("next_scalars(4) returns four scalars")
+            };
             let challenge = vs.sample();
             round_point.push(challenge);
-            claim = quartic_eval_from_eq(
-                claim,
-                equality_point,
-                message[0],
-                message[1],
-                message[2],
-                message[3],
-                challenge,
-            );
+            let c0 = claim + equality_point * difference;
+            let c1 = difference + c2 + c3 + c4;
+            claim = c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)));
         }
         let mut tails = [[F192::ZERO; 4]; 3];
         for value in tails.iter_mut().flatten() {
