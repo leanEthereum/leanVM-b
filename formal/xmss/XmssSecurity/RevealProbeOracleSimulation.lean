@@ -158,6 +158,26 @@ noncomputable def eagerImpl (table : Index → Digest) :
   | .probe _ _ => pure ()
   | .reveal index => pure (table index)
 
+omit [Fintype Index] [DecidableEq Index] in
+theorem simulate_eagerImpl_liftProbComp
+    (table : Index → Digest) (computation : ProbComp α) :
+    simulateQ (eagerImpl table)
+      (liftProbComp (Index := Index) computation) = computation := by
+  induction computation using OracleComp.inductionOn with
+  | pure result => rfl
+  | query_bind n next ih =>
+      rw [liftProbComp, simulateQ_query_bind, simulateQ_bind]
+      simp only [uniformForwardImpl, uniformQuery]
+      apply bind_congr
+      exact ih
+
+omit [Fintype Index] [DecidableEq Index] in
+@[simp]
+theorem simulate_eagerImpl_revealQuery
+    (table : Index → Digest) (index : Index) :
+    simulateQ (eagerImpl table) (revealQuery index) = pure (table index) := by
+  simp [revealQuery, eagerImpl]
+
 def traceFragment
     (input : (World Index).Domain) (output : (World Index).Range input) :
     ActionTrace Index :=

@@ -6,10 +6,15 @@ namespace XmssSecurity
 
 structure CausalHashState where
   cache : QueryCache HashSpec
+  keygenCache : QueryCache HashSpec
+  revealed : ChainValueIndex → Option Digest
   probes : List (ChainValueIndex × Digest)
 
 def CausalHashState.empty : CausalHashState :=
-  ⟨∅, []⟩
+  ⟨∅, ∅, fun _ => none, []⟩
+
+def CausalHashState.finishKeygen (state : CausalHashState) : CausalHashState :=
+  { state with keygenCache := state.cache }
 
 def CausalHashState.recordProbe
     (state : CausalHashState) (probe : Option (ChainValueIndex × Digest)) :
@@ -17,6 +22,11 @@ def CausalHashState.recordProbe
   match probe with
   | none => state
   | some value => { state with probes := state.probes ++ [value] }
+
+def CausalHashState.recordReveal
+    (state : CausalHashState) (index : ChainValueIndex) (value : Digest) :
+    CausalHashState :=
+  { state with revealed := Function.update state.revealed index (some value) }
 
 noncomputable def causalHashQuery
     (input : HashInput) :
@@ -28,17 +38,88 @@ noncomputable def causalHashQuery
         RevealProbeOracleSimulation.liftProbComp
           ((randomOracle input).run state.cache)
 
+theorem causalHashQuery_run (input : HashInput) (state : CausalHashState) :
+    (causalHashQuery input).run state =
+      (fun result : HashOutput × QueryCache HashSpec =>
+        (result.1, { state with cache := result.2 })) <$>
+          RevealProbeOracleSimulation.liftProbComp
+            ((randomOracle input).run state.cache) := rfl
+
+inductive CausalHashPlan where
+  | cached (output : HashOutput)
+  | reveal (index : ChainValueIndex)
+  | redirect (output : HashOutput)
+  | fresh
+
+noncomputable def causalLeafHashPlan
+    (secretKey : SecretKey) (input : HashInput) (state : CausalHashState) :
+    CausalHashPlan :=
+  match state.keygenCache
+      (keygenLeafTargetInput secretKey state.keygenCache input) with
+  | some output => .redirect output
+  | none => .fresh
+
+noncomputable def causalAttackerHashPlan
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) : CausalHashPlan :=
+  match state.cache input with
+  | some output => .cached output
+  | none =>
+      match chainInputProbe? secretKey.parameter chain input with
+      | some (index, target) =>
+          match state.revealed index with
+          | some value =>
+              if value = target then
+                if hnext : index.2.val + 1 < chainLength then
+                  .reveal (index.1, ⟨index.2.val + 1, hnext⟩)
+                else causalLeafHashPlan secretKey input state
+              else causalLeafHashPlan secretKey input state
+          | none => causalLeafHashPlan secretKey input state
+      | none => causalLeafHashPlan secretKey input state
+
+@[irreducible]
+noncomputable def causalRecordedState
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) : CausalHashState :=
+  state.recordProbe (chainInputProbe? secretKey.parameter chain input)
+
 noncomputable def causalAttackerHashQuery
-    (parameter : PublicParameter) (chain : ChainIndex) (input : HashInput) :
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput) :
     StateT CausalHashState
       (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)) HashOutput :=
   fun state =>
-    (fun result : HashOutput × QueryCache HashSpec =>
-      (result.1,
-        { (state.recordProbe (chainInputProbe? parameter chain input)) with
-          cache := result.2 })) <$>
-      RevealProbeOracleSimulation.liftProbComp
-        ((randomOracle input).run state.cache)
+    let recorded := causalRecordedState secretKey chain input state
+    match causalAttackerHashPlan secretKey chain input state with
+    | .cached output => pure (output, recorded)
+    | .redirect output =>
+        pure (output, { recorded with cache := recorded.cache.cacheQuery input output })
+    | .fresh => (causalHashQuery input).run recorded
+    | .reveal index => do
+        let value ← RevealProbeOracleSimulation.revealQuery index
+        let output ← RevealProbeOracleSimulation.liftProbComp
+          (Rom.sampleHashOutputWithDigest value)
+        pure (output,
+          { (recorded.recordReveal index value) with
+            cache := recorded.cache.cacheQuery input output })
+
+theorem causalAttackerHashQuery_run
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
+    (state : CausalHashState) :
+    (causalAttackerHashQuery secretKey chain input).run state =
+      (let recorded := causalRecordedState secretKey chain input state
+        match causalAttackerHashPlan secretKey chain input state with
+        | .cached output => pure (output, recorded)
+        | .redirect output =>
+            pure (output,
+              { recorded with cache := recorded.cache.cacheQuery input output })
+        | .fresh => (causalHashQuery input).run recorded
+        | .reveal index => do
+            let value ← RevealProbeOracleSimulation.revealQuery index
+            let output ← RevealProbeOracleSimulation.liftProbComp
+              (Rom.sampleHashOutputWithDigest value)
+            pure (output,
+              { (recorded.recordReveal index value) with
+                cache := recorded.cache.cacheQuery input output })) := rfl
 
 noncomputable def causalHashImpl :
     QueryImpl HashSpec
@@ -59,6 +140,13 @@ noncomputable def causalXmssRomImpl :
         (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))) :=
   causalUniformImpl + causalHashImpl
 
+noncomputable def causalVerifierXmssRomImpl
+    (secretKey : SecretKey) (chain : ChainIndex) :
+    QueryImpl OracleWorld
+      (StateT CausalHashState
+        (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))) :=
+  causalUniformImpl + causalAttackerHashQuery secretKey chain
+
 noncomputable def revealFixedChainSignatureOption
     (secretKey : SecretKey) (chain : ChainIndex) (request : SignRequest) :
     Option Signature →
@@ -72,8 +160,11 @@ noncomputable def revealFixedChainSignatureOption
             request.epoch (request.message, signature.randomness)) with
       | none => pure (some signature, state)
       | some encoding =>
-          (fun updated => (some updated, state)) <$>
-            revealSignatureChainValue chain request.epoch encoding signature
+          let index := (request.epoch, encoding chain)
+          do
+            let value ← RevealProbeOracleSimulation.revealQuery index
+            pure (some (replaceSignatureChainValue signature chain value),
+              state.recordReveal index value)
 
 noncomputable def causalMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex) :
@@ -84,7 +175,7 @@ noncomputable def causalMappedAdversaryImpl
     match input with
     | .inl (.inl n) => causalUniformImpl n
     | .inl (.inr hashInput) =>
-        causalAttackerHashQuery publicKey.parameter chain hashInput
+        causalAttackerHashQuery secretKey chain hashInput
     | .inr request => do
         let signature ← simulateQ causalXmssRomImpl
           (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
@@ -108,7 +199,7 @@ noncomputable def causalDetailedGameAfterKeygen
   let result ← (simulateQ
     (causalActionTracedMappedAdversaryImpl publicKey secretKey chain)
       (adversary.main publicKey)).run
-  let verified ← simulateQ causalXmssRomImpl
+  let verified ← simulateQ (causalVerifierXmssRomImpl secretKey chain)
     (Concrete.scheme.verify publicKey result.1.epoch result.1.message
       result.1.signature)
   pure ((result.1, verified), result.2)
@@ -128,7 +219,7 @@ noncomputable def causalStrategyProgram
   let keyResult ← (simulateQ causalXmssRomImpl Concrete.keygen).run
     CausalHashState.empty
   let execution ← (causalDetailedGameAfterKeygen adversary keyResult.1.1
-    keyResult.1.2 chain).run keyResult.2
+    keyResult.1.2 chain).run keyResult.2.finishKeygen
   pure (actionTracedRevealProbeView chain
     (causalDetailedResult keyResult execution)).strategy
 
@@ -180,14 +271,54 @@ theorem simulate_causalXmssRomImpl_isProbeQueryBoundP
   simpa using causalXmssRomImpl_step_isProbeQueryBoundP input currentState
 
 theorem causalAttackerHashQuery_run_isProbeQueryBoundP
-    (parameter : PublicParameter) (chain : ChainIndex) (input : HashInput)
+    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
     (state : CausalHashState) :
-    (causalAttackerHashQuery parameter chain input).run state |>.IsQueryBoundP
+    (causalAttackerHashQuery secretKey chain input).run state |>.IsQueryBoundP
       RevealProbeOracleSimulation.IsProbeQuery 0 := by
-  unfold causalAttackerHashQuery
-  apply (OracleComp.isQueryBoundP_map_iff _ _ 0).2
-  exact RevealProbeOracleSimulation.liftProbComp_isProbeQueryBoundP
-    ((randomOracle input).run state.cache) 0
+  rw [causalAttackerHashQuery_run]
+  generalize hplan : causalAttackerHashPlan secretKey chain input state = plan
+  cases plan with
+  | cached output => simp
+  | redirect output => simp
+  | fresh =>
+      exact causalHashQuery_run_isProbeQueryBoundP input
+        (causalRecordedState secretKey chain input state)
+  | reveal index =>
+      apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+        (RevealProbeOracleSimulation.revealQuery_isProbeQueryBoundP index 0)
+      intro value _hvalue
+      apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+        (RevealProbeOracleSimulation.liftProbComp_isProbeQueryBoundP
+          (Rom.sampleHashOutputWithDigest value) 0)
+      intro output _houtput
+      exact OracleComp.isQueryBoundP_pure
+        (p := RevealProbeOracleSimulation.IsProbeQuery) (output,
+          { ((causalRecordedState secretKey chain input state).recordReveal
+              index value) with
+            cache := (causalRecordedState secretKey chain input state).cache.cacheQuery
+              input output }) 0
+
+theorem causalVerifierXmssRomImpl_step_isProbeQueryBoundP
+    (secretKey : SecretKey) (chain : ChainIndex)
+    (input : OracleWorld.Domain) (state : CausalHashState) :
+    (causalVerifierXmssRomImpl secretKey chain input).run state
+        |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 0 := by
+  cases input with
+  | inl n => exact causalUniformImpl_run_isProbeQueryBoundP n state
+  | inr hashInput =>
+      exact causalAttackerHashQuery_run_isProbeQueryBoundP secretKey chain
+        hashInput state
+
+theorem simulate_causalVerifierXmssRomImpl_isProbeQueryBoundP
+    (secretKey : SecretKey) (chain : ChainIndex)
+    (computation : OracleComp OracleWorld α) (state : CausalHashState) :
+    (simulateQ (causalVerifierXmssRomImpl secretKey chain) computation).run
+        state |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 0 := by
+  refine OracleComp.IsQueryBoundP.simulateQ_run_StateT_of_step
+    (OracleComp.isQueryBoundP_false computation 0) ?_ state
+  intro input currentState
+  simpa using causalVerifierXmssRomImpl_step_isProbeQueryBoundP secretKey chain
+    input currentState
 
 theorem revealFixedChainSignatureOption_run_isProbeQueryBoundP
     (secretKey : SecretKey) (chain : ChainIndex) (request : SignRequest)
@@ -208,8 +339,11 @@ theorem revealFixedChainSignatureOption_run_isProbeQueryBoundP
             request.epoch (request.message, signature.randomness)) with
         | none => pure (some signature, state)
         | some encoding =>
-            (fun updated => (some updated, state)) <$>
-              revealSignatureChainValue chain request.epoch encoding signature
+            let index := (request.epoch, encoding chain)
+            do
+              let value ← RevealProbeOracleSimulation.revealQuery index
+              pure (some (replaceSignatureChainValue signature chain value),
+                state.recordReveal index value)
         ).IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 0
       split
       · exact OracleComp.isQueryBoundP_pure
@@ -217,9 +351,14 @@ theorem revealFixedChainSignatureOption_run_isProbeQueryBoundP
           (p := RevealProbeOracleSimulation.IsProbeQuery)
           (some signature, state) 0
       · rename_i encoding hdecode
-        apply (OracleComp.isQueryBoundP_map_iff _ _ 0).2
-        exact revealSignatureChainValue_isProbeQueryBoundP chain request.epoch
-          encoding signature
+        apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+          (RevealProbeOracleSimulation.revealQuery_isProbeQueryBoundP
+            (request.epoch, encoding chain) 0)
+        intro value _hvalue
+        exact OracleComp.isQueryBoundP_pure
+          (p := RevealProbeOracleSimulation.IsProbeQuery)
+          (some (replaceSignatureChainValue signature chain value),
+            state.recordReveal (request.epoch, encoding chain) value) 0
 
 theorem causalMappedAdversaryImpl_step_isProbeQueryBoundP
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
@@ -230,7 +369,7 @@ theorem causalMappedAdversaryImpl_step_isProbeQueryBoundP
   · rcases worldInput with n | hashInput
     · exact causalUniformImpl_run_isProbeQueryBoundP n state
     · exact causalAttackerHashQuery_run_isProbeQueryBoundP
-        publicKey.parameter chain hashInput state
+        secretKey chain hashInput state
   · unfold causalMappedAdversaryImpl
     rw [StateT.run_bind]
     have hsign := simulate_causalXmssRomImpl_isProbeQueryBoundP
@@ -308,7 +447,8 @@ theorem causalDetailedGameAfterKeygen_run_isProbeQueryBoundP
   apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0) hadversary
   intro handled _hhandled
   rw [StateT.run_bind]
-  have hverify := simulate_causalXmssRomImpl_isProbeQueryBoundP
+  have hverify := simulate_causalVerifierXmssRomImpl_isProbeQueryBoundP
+    secretKey chain
     (Concrete.scheme.verify publicKey handled.1.1.epoch handled.1.1.message
       handled.1.1.signature) handled.2
   have hbind := OracleComp.isQueryBoundP_bind
@@ -328,7 +468,7 @@ theorem causalStrategyProgram_isProbeQueryBoundP
   apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0) hkeygen
   intro keyResult _hkeyResult
   have hexecution := causalDetailedGameAfterKeygen_run_isProbeQueryBoundP
-    adversary keyResult.1.1 keyResult.1.2 chain keyResult.2
+    adversary keyResult.1.1 keyResult.1.2 chain keyResult.2.finishKeygen
   have hbind := OracleComp.isQueryBoundP_bind
     (n := 0) (m := 0) hexecution fun execution _hexecution =>
       OracleComp.isQueryBoundP_pure
