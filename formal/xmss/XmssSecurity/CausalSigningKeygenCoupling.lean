@@ -790,4 +790,213 @@ theorem keygenViews_signWithEncoding_larger_eq_replaced
         selected candidate heq left.secretKey right.1.secretKey hparameter
         hrel.1.1.2.2.1 leftCache rightCache hcacheAgreement epoch encoding
 
+def SigningComparableHashInput
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (input : HashInput) : Prop :=
+  OutsideChainHashInput parameter selected input ∨
+    ∃ epoch message randomness,
+      input = Concrete.CacheView.encodingInput parameter epoch
+        (message, randomness)
+
+theorem encodingHash_run_cache_eq
+    (parameter : PublicParameter) (initialCache finalCache : QueryCache HashSpec)
+    (epoch : Epoch) (message : Message) (randomness : Randomness)
+    (digest : Digest)
+    (hresult : (digest, finalCache) ∈ support
+      ((simulateQ randomOracle
+        (Concrete.encodingHash parameter epoch message randomness)).run
+          initialCache)) :
+    Concrete.CacheView.encodingHash finalCache parameter epoch
+      (message, randomness) = digest := by
+  have hmapped : (digest, finalCache) ∈ support
+      ((fun result : HashOutput × QueryCache HashSpec =>
+        (truncateHash result.1, result.2)) <$> (randomOracle
+          (Concrete.CacheView.encodingInput parameter epoch
+            (message, randomness))).run initialCache) := by
+    simpa [Concrete.encodingHash, Concrete.tweakableHash,
+      Concrete.oracleHash, Concrete.CacheView.encodingInput,
+      map_eq_bind_pure_comp] using hresult
+  rw [support_map] at hmapped
+  obtain ⟨result, hquery, heq⟩ := hmapped
+  have hcached := Concrete.CacheReplay.randomOracle_query_caches
+    (Concrete.CacheView.encodingInput parameter epoch (message, randomness))
+    initialCache result.1 result.2 hquery
+  rw [show result.2 = finalCache from congrArg Prod.snd heq] at hcached
+  rw [Concrete.CacheView.encodingHash,
+    Concrete.CacheView.digestAt_eq_of_cache_eq_some hcached]
+  exact congrArg Prod.fst heq
+
+theorem relTriple_encodingHash_run_of_signingComparableCaches
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left right : QueryCache HashSpec)
+    (hagrees : HashCachesAgreeOn
+      (SigningComparableHashInput parameter selected) left right)
+    (epoch : Epoch) (message : Message) (randomness : Randomness) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.encodingHash parameter epoch message randomness)).run left)
+      ((simulateQ randomOracle
+        (Concrete.encodingHash parameter epoch message randomness)).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn
+            (SigningComparableHashInput parameter selected)
+            leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2 ∧
+          Concrete.CacheView.encodingHash leftResult.2 parameter epoch
+            (message, randomness) = leftResult.1 ∧
+          Concrete.CacheView.encodingHash rightResult.2 parameter epoch
+            (message, randomness) = rightResult.1) := by
+  have hquery := relTriple_randomOracle_run_of_cachesAgreeOn
+    (SigningComparableHashInput parameter selected) left right
+    (Concrete.CacheView.encodingInput parameter epoch (message, randomness))
+    (Or.inr ⟨epoch, message, randomness, rfl⟩) hagrees
+  have hmapped : RelTriple
+      ((fun result : HashOutput × QueryCache HashSpec =>
+        (truncateHash result.1, result.2)) <$> (randomOracle
+          (Concrete.CacheView.encodingInput parameter epoch
+            (message, randomness))).run left)
+      ((fun result : HashOutput × QueryCache HashSpec =>
+        (truncateHash result.1, result.2)) <$> (randomOracle
+          (Concrete.CacheView.encodingInput parameter epoch
+            (message, randomness))).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn
+            (SigningComparableHashInput parameter selected)
+            leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
+    apply relTriple_map
+    apply relTriple_post_mono hquery
+    intro leftResult rightResult hresult
+    exact ⟨congrArg truncateHash hresult.1, hresult.2⟩
+  have hstrengthened := relTriple_strengthen_support hmapped
+    (fun result hresult => encodingHash_run_cache_eq parameter left result.2
+      epoch message randomness result.1 (by
+        simpa [Concrete.encodingHash, Concrete.tweakableHash,
+          Concrete.oracleHash, Concrete.CacheView.encodingInput,
+          map_eq_bind_pure_comp] using hresult))
+    (fun result hresult => encodingHash_run_cache_eq parameter right result.2
+      epoch message randomness result.1 (by
+        simpa [Concrete.encodingHash, Concrete.tweakableHash,
+          Concrete.oracleHash, Concrete.CacheView.encodingInput,
+          map_eq_bind_pure_comp] using hresult))
+  apply relTriple_post_mono hstrengthened
+  intro leftResult rightResult hresult
+  exact ⟨hresult.1.1, hresult.1.2.1, hresult.1.2.2.1,
+    hresult.1.2.2.2, hresult.2.1, hresult.2.2⟩
+
+def replaceFixedChainSignatureOption
+    (table : ChainValueIndex → Digest) (selected : ChainIndex)
+    (epoch : Epoch) (encoding : Encoding) :
+    Option Signature → Option Signature
+  | none => none
+  | some signature => some (replaceSignatureChainValue signature selected
+      (table (epoch, encoding selected)))
+
+theorem relTriple_keygenViews_signAttempt_run
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenStableRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1 ∈ support (actualFixedChainKeygen selected))
+    (leftCache rightCache : QueryCache HashSpec)
+    (hcacheAgreement : HashCachesAgreeOn
+      (SigningComparableHashInput left.secretKey.parameter selected)
+      leftCache rightCache)
+    (hleftLe : left.cache ≤ leftCache)
+    (hrightLe : right.1.cache ≤ rightCache)
+    (epoch : Epoch) (message : Message) (randomness : Randomness) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.signAttempt left.secretKey epoch message randomness)).run
+          leftCache)
+      ((simulateQ randomOracle
+        (Concrete.signAttempt right.1.secretKey epoch message randomness)).run
+          rightCache)
+      (fun leftResult rightResult =>
+        ∃ decoded : Option Encoding,
+          TargetSum.decodeDigest
+            (Concrete.CacheView.encodingHash leftResult.2
+              left.secretKey.parameter epoch (message, randomness)) = decoded ∧
+          leftResult.1 = (match decoded with
+            | none => rightResult.1
+            | some encoding => replaceFixedChainSignatureOption right.2
+                selected epoch encoding rightResult.1) ∧
+          HashCachesAgreeOn
+            (SigningComparableHashInput left.secretKey.parameter selected)
+            leftResult.2 rightResult.2 ∧
+          left.cache ≤ leftResult.2 ∧ right.1.cache ≤ rightResult.2) := by
+  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+    selected left hleftSupport
+  have hrightKey := actualFixedChainKeygen_support_keyResult
+    selected right.1 hrightSupport
+  have hparameter : left.secretKey.parameter =
+      right.1.secretKey.parameter := by
+    calc
+      left.secretKey.parameter = left.publicKey.parameter :=
+        (left.parameter_eq hleftKey).symm
+      _ = right.1.publicKey.parameter :=
+        congrArg PublicKey.parameter hrel.1.1.2.1
+      _ = right.1.secretKey.parameter := right.1.parameter_eq hrightKey
+  unfold Concrete.signAttempt
+  simp only [simulateQ_bind, StateT.run_bind]
+  rw [← hparameter]
+  apply relTriple_bind
+    (relTriple_encodingHash_run_of_signingComparableCaches
+      left.secretKey.parameter selected leftCache rightCache hcacheAgreement
+      epoch message randomness)
+  intro leftDigestResult rightDigestResult hdigest
+  have hdigestEq : leftDigestResult.1 = rightDigestResult.1 := hdigest.1
+  rw [← hdigestEq]
+  cases hdecode : TargetSum.decodeDigest leftDigestResult.1 with
+  | none =>
+      simp only [simulateQ_pure, StateT.run_pure]
+      apply relTriple_pure_pure
+      refine ⟨none, ?_, rfl, hdigest.2.1,
+        hleftLe.trans hdigest.2.2.1,
+        hrightLe.trans hdigest.2.2.2.1⟩
+      simpa [hdigest.2.2.2.2.1] using hdecode
+  | some encoding =>
+      have hleftRun :
+          (simulateQ randomOracle
+            (Concrete.signWithEncoding left.secretKey epoch randomness encoding)).run
+              leftDigestResult.2 =
+            pure (Concrete.CacheReplay.signWithEncoding leftDigestResult.2
+              left.secretKey epoch randomness encoding, leftDigestResult.2) := by
+        simpa [ProgrammedFixedChainKeygenView.keyResult] using
+          (Concrete.keygen_signWithEncoding_run_eq_pure left.keyResult hleftKey
+            hrel.2.1 leftDigestResult.2
+            (hleftLe.trans hdigest.2.2.1) epoch randomness encoding)
+      have hrightRun :
+          (simulateQ randomOracle
+            (Concrete.signWithEncoding right.1.secretKey epoch randomness encoding)).run
+              rightDigestResult.2 =
+            pure (Concrete.CacheReplay.signWithEncoding rightDigestResult.2
+              right.1.secretKey epoch randomness encoding,
+                rightDigestResult.2) := by
+        simpa [ProgrammedFixedChainKeygenView.keyResult] using
+          (Concrete.keygen_signWithEncoding_run_eq_pure right.1.keyResult hrightKey
+            hrel.2.2 rightDigestResult.2
+            (hrightLe.trans hdigest.2.2.2.1) epoch randomness encoding)
+      rw [simulateQ_map, StateT.run_map, simulateQ_map, StateT.run_map]
+      rw [hleftRun, hrightRun]
+      simp only [Functor.map]
+      apply relTriple_pure_pure
+      refine ⟨some encoding, ?_, ?_, hdigest.2.1,
+        hleftLe.trans hdigest.2.2.1,
+        hrightLe.trans hdigest.2.2.2.1⟩
+      · simpa [hdigest.2.2.2.2.1] using hdecode
+      · simp only [replaceFixedChainSignatureOption]
+        congr 1
+        exact keygenViews_signWithEncoding_larger_eq_replaced selected left
+          right hrel hleftSupport hrightSupport leftDigestResult.2
+          rightDigestResult.2
+          (fun input hinput => hdigest.2.1 input (Or.inl hinput))
+          (hleftLe.trans hdigest.2.2.1)
+          (hrightLe.trans hdigest.2.2.2.1) epoch randomness encoding
+
 end XmssSecurity
