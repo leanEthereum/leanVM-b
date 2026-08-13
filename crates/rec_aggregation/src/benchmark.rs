@@ -36,7 +36,7 @@ fn report(label: &str, stats: &lean_vm::cpu::Stats, sig: &AggregateSignature, pr
         "  signers                     : {}",
         pretty_integer(sig.public_keys.len())
     );
-    crate::report::print_proof_bytes(sig.to_bytes().len());
+    crate::report::print_proof_size(sig.proof());
     // The whole `aggregate` call, not just `cpu::prove`: for a node that also
     // covers verifying each child and batching the deferred claims, which are
     // real per-node costs. `--tracing` breaks it down.

@@ -408,6 +408,10 @@ impl AggregateSignature {
         bincode::serialize(&self.core()).expect("an aggregate serializes")
     }
 
+    pub(crate) fn proof(&self) -> &lean_vm::cpu::Proof {
+        &self.proof
+    }
+
     pub fn from_bytes_without_pubkeys(bytes: &[u8], public_keys: Vec<XmssPublicKey>) -> Option<Self> {
         Self::from_parts(public_keys, bincode::deserialize(bytes).ok()?)
     }

@@ -40,10 +40,6 @@ mod report {
 
     pub fn print_proof_size<T: serde::Serialize>(proof: &T) {
         let bytes = bincode::serialized_size(proof).expect("proof is serializable");
-        print_proof_bytes(bytes as usize);
-    }
-
-    pub fn print_proof_bytes(bytes: usize) {
         println!("  proof size                  : {:.1} KiB", bytes as f64 / 1024.0);
     }
 }
