@@ -161,9 +161,11 @@ fn epoch_hash(epoch: u32) -> [F192; 2] {
     tagged_hash(EPOCH_LABEL, pad.chain(cells.iter().flat_map(|c| [c.c0, c.c1])))
 }
 
-/// The signer-set digest: one compression per key, in list order.
+/// The signer-set digest: the count, then one compression per key, in list
+/// order. Leading with the count makes the encoding prefix-free, so no digest is
+/// an extension of another and this binds its own length.
 fn pubkeys_hash(keys: &[XmssPublicKey]) -> [F192; 2] {
-    let mut state = chain_iv(PUBKEYS_LABEL);
+    let mut state = compress2(chain_iv(PUBKEYS_LABEL), [count(keys.len()), F192::ZERO]);
     for pk in keys {
         state = compress2(state, key_cells(pk));
     }

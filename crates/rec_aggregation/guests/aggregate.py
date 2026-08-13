@@ -2563,9 +2563,16 @@ def main():
     n_total_2 = n_total_g * n_total_g
     all_pubkeys = HeapBuf(n_total_2)
     n_keys_2 = n_keys_g * n_keys_g
+    # The count leads the chain, which makes the encoding prefix-free: a longer
+    # key list starts from a different block 0, so no digest extends another and
+    # the digest binds its own length rather than leaning on the statement's.
+    pk_seed = StackBuf(4)
+    pk_seed[0] = PK_IV_0
+    pk_seed[1] = PK_IV_1
+    pk_seed[2] = n_keys_g
+    pk_seed[3] = 0
     pk_chain = HeapBuf(n_keys_2 * GEN ** WORDS_PER_BLOCK)
-    pk_chain[1] = PK_IV_0
-    pk_chain[GEN] = PK_IV_1
+    blake2s(pk_seed[0:2], pk_seed[2:4], pk_chain[0:2])
     # Two keys per iteration. The chain is unchanged, one compression per key;
     # what halves is the number of loop frames, and a frame costs far more memory
     # cells than the body it holds. `half` and `odd` are hinted and pinned by
@@ -2648,9 +2655,13 @@ def main():
         assert log(sub_odd_g) < 2
         assert log(sub_half_g) < MAX_KEYS
         assert sub_half_g * sub_half_g * sub_odd_g == nsub_g
+        sub_seed = StackBuf(4)
+        sub_seed[0] = PK_IV_0
+        sub_seed[1] = PK_IV_1
+        sub_seed[2] = nsub_g
+        sub_seed[3] = 0
         sub_chain = HeapBuf(nsub_g * nsub_g * GEN ** WORDS_PER_BLOCK)
-        sub_chain[1] = PK_IV_0
-        sub_chain[GEN] = PK_IV_1
+        blake2s(sub_seed[0:2], sub_seed[2:4], sub_chain[0:2])
         for xp in mul_range(1, sub_half_g):
             two = StackBuf(2)
             hint_witness(two, "child_index")
