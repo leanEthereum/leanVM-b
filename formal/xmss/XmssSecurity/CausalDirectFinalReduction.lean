@@ -702,6 +702,27 @@ def chainEdgeOutputFromHigh
   Rom.hashOutputEquivDigestPair.symm
     (high edge, chainTableEdgeTarget table edge)
 
+@[simp]
+theorem hashOutputEquivDigestPair_symm_high_truncate
+    (output : HashOutput) :
+    Rom.hashOutputEquivDigestPair.symm
+        ((Rom.hashOutputEquivDigestPair output).1, truncateHash output) =
+      output := by
+  exact Rom.hashOutputEquivDigestPair.symm_apply_apply output
+
+theorem chainEdgeOutputFromHigh_eq_cached
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (selected : ChainIndex) (table : ChainValueIndex → Digest)
+    (edge : ChainEdgeIndex) (output : HashOutput)
+    (hcache : cache (chainTableEdgeInput parameter selected table edge) =
+      some output)
+    (htarget : truncateHash output = chainTableEdgeTarget table edge) :
+    chainEdgeOutputFromHigh
+        (chainEdgeHighTableOfCache cache parameter selected table) table edge =
+      output := by
+  simp [chainEdgeOutputFromHigh, chainEdgeHighTableOfCache, hcache,
+    ← htarget]
+
 theorem sampleHashOutputsWithDigests_support_info :
     ∀ (targets : List Digest) (outputs : List HashOutput),
       outputs ∈ support (sampleHashOutputsWithDigests targets) →
