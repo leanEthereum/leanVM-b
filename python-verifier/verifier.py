@@ -20,8 +20,6 @@ def require(condition: bool, message: str) -> None:
 
 # Field arithmetic and BLAKE2s ------------------------------------------------
 
-MASK64 = 2**64 - 1
-
 
 def _base_mul(left: int, right: int) -> int:
     product = 0
@@ -30,25 +28,20 @@ def _base_mul(left: int, right: int) -> int:
             product ^= left
         right >>= 1
         left <<= 1
-    low, high = product & MASK64, product >> 64
+    low, high = product & (2**64 - 1), product >> 64
     folded = low ^ high ^ (high << 1) ^ (high << 3) ^ (high << 4)
     overflow = folded >> 64
-    return ((folded & MASK64) ^ overflow ^ (overflow << 1) ^ (overflow << 3) ^ (overflow << 4)) & MASK64
+    return ((folded & (2**64 - 1)) ^ overflow ^ (overflow << 1) ^ (overflow << 3) ^ (overflow << 4)) & (2**64 - 1)
 
 
 @dataclass(frozen=True, slots=True)
 class K:
-    """GF(2^64) = F2[x]/(x^64 + x^4 + x^3 + x + 1): the field the witness is committed over.
-
-    A `K` behaves as its 64-bit representation under `__index__`, so transport
-    code (struct packing, byte splitting) uses one directly without unwrapping
-    it, while arithmetic stays in the field.
-    """
+    """GF(2^64) = F2[x]/(x^64 + x^4 + x^3 + x + 1)"""
 
     value: int = 0
 
     def __post_init__(self) -> None:
-        if not isinstance(self.value, int) or isinstance(self.value, bool) or not 0 <= self.value <= MASK64:
+        if not isinstance(self.value, int) or isinstance(self.value, bool) or not 0 <= self.value <= (2**64 - 1):
             raise ValueError("a K element is a 64-bit unsigned integer")
 
     def __index__(self) -> int:
@@ -57,14 +50,6 @@ class K:
     def to_bytes(self) -> bytes:
         """Its transport image: one 64-bit little-endian word."""
         return self.value.to_bytes(8, "little")
-
-    @staticmethod
-    def lift(value: object) -> K:
-        """`value` as a K element; anything that is not one is an error."""
-        lifted = _as_k(value)
-        if lifted is None:
-            raise TypeError(f"cannot use {type(value).__name__} as a base-field element")
-        return lifted
 
     def __bool__(self) -> bool:
         return bool(self.value)
@@ -99,7 +84,7 @@ def _as_k(value: object) -> K | None:
     """`value` as a K element, or None if it is not one (see `K.__add__`)."""
     if isinstance(value, K):
         return value
-    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MASK64:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**64 - 1:
         return K(value)
     return None
 
@@ -118,9 +103,9 @@ class E:
     c2: K
 
     def __init__(self, c0: K | int = 0, c1: K | int = 0, c2: K | int = 0) -> None:
-        object.__setattr__(self, "c0", K.lift(c0))
-        object.__setattr__(self, "c1", K.lift(c1))
-        object.__setattr__(self, "c2", K.lift(c2))
+        object.__setattr__(self, "c0", c0 if isinstance(c0, K) else K(c0))
+        object.__setattr__(self, "c1", c1 if isinstance(c1, K) else K(c1))
+        object.__setattr__(self, "c2", c2 if isinstance(c2, K) else K(c2))
 
     @classmethod
     def from_bytes(cls, data: bytes) -> E:
@@ -202,45 +187,10 @@ Y = E(0, 1)  # the tower generator, y^3 = y + 1
 
 
 # BLAKE2s -------------------------------------------------------------------
-#
-# One compression, ten rounds, and a byte counter plus a final-block flag that
-# are ordinary inputs. There is no chunk tree and no parent-node mode, so a hash
-# of any length is a straight chain of compressions, and a hash of exactly 64
-# bytes is a single one. That is what the VM's `BLAKE2S` opcode computes and what
-# flock proves.
 
-BLAKE2S_IV = (
-    0x6A09E667,
-    0xBB67AE85,
-    0x3C6EF372,
-    0xA54FF53A,
-    0x510E527F,
-    0x9B05688C,
-    0x1F83D9AB,
-    0x5BE0CD19,
-)
-BLAKE2S_SIGMA = (
-    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
-    (14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3),
-    (11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4),
-    (7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8),
-    (9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13),
-    (2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9),
-    (12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11),
-    (13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10),
-    (6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5),
-    (10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0),
-)
-BLAKE2S_G_LANES = (
-    (0, 4, 8, 12),
-    (1, 5, 9, 13),
-    (2, 6, 10, 14),
-    (3, 7, 11, 15),
-    (0, 5, 10, 15),
-    (1, 6, 11, 12),
-    (2, 7, 8, 13),
-    (3, 4, 9, 14),
-)
+BLAKE2S_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)  # fmt: skip
+BLAKE2S_SIGMA = ((0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), (14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3), (11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4), (7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8), (9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13), (2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9), (12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11), (13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10), (6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5), (10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0))  # fmt: skip
+BLAKE2S_G_LANES = ((0, 4, 8, 12), (1, 5, 9, 13), (2, 6, 10, 14), (3, 7, 11, 15), (0, 5, 10, 15), (1, 6, 11, 12), (2, 7, 8, 13), (3, 4, 9, 14))  # fmt: skip
 
 
 def blake2s_hash(data: bytes) -> Digest:
@@ -700,7 +650,7 @@ class Framework:
 
     @property
     def log_bytecode(self) -> int:
-        return log2_strict(len(self.bytecode)) - N_TUPLE_BITS
+        return log2_strict(len(self.bytecode)) - BUS_BITS
 
     @property
     def log_rows(self) -> tuple[int, int, int]:
@@ -740,11 +690,7 @@ class ColumnClaim:
     value: E
 
 
-# A tuple is fingerprinted MULTILINEARLY: slot x weighs eq(alphas, x), not
-# alpha^x (doc sec:gp). Each leaf factor is then of total degree N_TUPLE_BITS in
-# the challenges, and the aligned bytecode polynomial is read off at the
-# challenge vector itself (doc sec:e2e-bc).
-N_TUPLE_BITS = 4
+BUS_BITS = 4
 
 
 @dataclass(frozen=True)
@@ -763,7 +709,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
     require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
-    alphas = transcript.samples(N_TUPLE_BITS)
+    alphas = transcript.samples(BUS_BITS)
     weights = eq_kernel(alphas)
     gamma = transcript.sample()
     product = verify_product_triple(push_layout.depth, transcript)
@@ -811,7 +757,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
         (layout.pull, pull_layout, fingerprints(framework.final_pc, memory_final, bytecode_final), weights, gamma),
         # The count channel owns no framework block and runs at alpha = gamma = 0:
         # its leaf IS the read count.
-        (layout.count, count_layout, (), eq_kernel((ZERO,) * N_TUPLE_BITS), ZERO),
+        (layout.count, count_layout, (), eq_kernel((ZERO,) * BUS_BITS), ZERO),
     )
     totals = []
     for side, (blocks, side_layout, framework_fingerprints, side_weights, side_gamma) in enumerate(sides):
@@ -915,10 +861,10 @@ R1CS_DIGEST = bytes.fromhex("ec91e9d8d9ca4e306205907a0d236e53a6cdbda0382ef6c433e
 GLOBAL_COLUMNS = ("mem_0", "mem_1", "mem_2", "mem_final_cnt", "bytecode_final_cnt", "qflock")
 MEM_0, MEM_1, MEM_2, MEM_FINAL_CNT, BYTECODE_FINAL_CNT, QFLOCK = range(len(GLOBAL_COLUMNS))
 
-BLAKE2S_RICS_LOG_SIZE = 14
+BLAKE2S_R1CS_LOG_SIZE = 14
 K_BITS = 64
 FLOCK_K_SKIP = log2_ceil(K_BITS)
-QFLOCK_SLOT_BITS = BLAKE2S_RICS_LOG_SIZE - FLOCK_K_SKIP
+QFLOCK_SLOT_BITS = BLAKE2S_R1CS_LOG_SIZE - FLOCK_K_SKIP
 BLAKE2S_CONSTANT_COLUMN = 512
 
 
@@ -1552,7 +1498,7 @@ def quirky_weights(skip_point: E, rest: Sequence[E]) -> list[E]:
 
 @dataclass(frozen=True)
 class QuirkyPoint:
-    """A skip coordinate over `PHI[:PACKED_BITS]`, then the tail: the slot
+    """A skip coordinate over `PHI[:K_BITS]`, then the tail: the slot
     variables, then the ones indexing instances."""
 
     skip: E
@@ -1567,7 +1513,7 @@ class ZClaim:
 
 @dataclass(frozen=True)
 class ZerocheckResult:
-    skip: E
+    skip_zc: E
     rounds: tuple[E, ...]
     equality_tail: tuple[E, ...]
     a: E
@@ -1579,13 +1525,13 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
     require(log_n >= FLOCK_K_SKIP + FLOCK_N_INNER, "Flock zerocheck input is too small")
     sampled_outer = transcript.samples(log_n - FLOCK_K_SKIP - FLOCK_N_INNER)
     equality_tail = (*FIXED_CHALLENGES, *sampled_outer)
-    ab_values = transcript.scalars(K_BITS)
-    c_values = transcript.scalars(K_BITS)
-    skip = transcript.sample()
+    p_ab_coset = transcript.scalars(K_BITS)
+    p_c_coset = transcript.scalars(K_BITS)
+    skip_zc = transcript.sample()
 
-    c_evaluation = lagrange_interpolate(PHI[K_BITS : 2 * K_BITS], c_values, skip)
-    combined = [a + c for a, c in zip(ab_values, c_values, strict=True)]
-    combined_evaluation = lagrange_interpolate(PHI[: 2 * K_BITS], [ZERO] * K_BITS + combined, skip)
+    c_evaluation = lagrange_interpolate(PHI[K_BITS : 2 * K_BITS], p_c_coset, skip_zc)
+    combined = [a + c for a, c in zip(p_ab_coset, p_c_coset, strict=True)]
+    combined_evaluation = lagrange_interpolate(PHI[: 2 * K_BITS], [ZERO] * K_BITS + combined, skip_zc)
     running = combined_evaluation + c_evaluation
     rounds = []
     for equality in equality_tail:
@@ -1595,14 +1541,14 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
         running = poly_eval(message, challenge)
     final_a, final_b = transcript.scalars(2)
     require(running == final_a * final_b, "Flock zerocheck terminal mismatch")
-    return ZerocheckResult(skip, tuple(rounds), equality_tail, final_a, final_b, c_evaluation)
+    return ZerocheckResult(skip_zc, tuple(rounds), equality_tail, final_a, final_b, c_evaluation)
 
 
 @dataclass(frozen=True)
 class FlockReduction:
     ab: ZClaim
     c: ZClaim
-    ab_s_hat_v: tuple[E, ...]
+    z_partial: tuple[E, ...]
 
 
 RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
@@ -1661,9 +1607,9 @@ def verify_stacked_opening(
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
     # A/B's values were already derived from the bound z_partial; only C is sent.
-    c_values = tuple(transcript.scalars(K_BITS))
-    require(lagrange_interpolate(PHI[:K_BITS], c_values, reduction.c.point.skip) == reduction.c.value, "ring-switch claim mismatch")
-    slices = (reduction.ab_s_hat_v, c_values)
+    c_partial = tuple(transcript.scalars(K_BITS))
+    require(lagrange_interpolate(PHI[:K_BITS], c_partial, reduction.c.point.skip) == reduction.c.value, "ring-switch claim mismatch")
+    slices = (reduction.z_partial, c_partial)
 
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
     coordinate_weights = _coordinate_weights(map_challenges)
@@ -1717,29 +1663,29 @@ def verify_flock_lincheck(
     beta = transcript.sample()
     running = alpha * a + b + beta
     challenges = []
-    for _ in range(8):
+    for _ in range(QFLOCK_SLOT_BITS):
         message = transcript.round_poly(3, running)
         challenge = transcript.sample()
         running = poly_eval(message, challenge)
         challenges.append(challenge)
-    partial = tuple(transcript.scalars(K_BITS))
+    z_partial = tuple(transcript.scalars(K_BITS))
     rounds = tuple(reversed(challenges))
     rest_weights = eq_kernel(rounds)
-    column_weights = [value * weight for weight in rest_weights for value in partial]
+    column_weights = [value * weight for weight in rest_weights for value in z_partial]
     terminal = blake2s_bilinear(alpha, inner_weights, column_weights)
     terminal += beta * column_weights[BLAKE2S_CONSTANT_COLUMN]
     require(terminal == running, "Flock lincheck terminal mismatch")
-    skip = transcript.sample()
-    value = lagrange_interpolate(PHI[:K_BITS], partial, skip)
-    return ZClaim(QuirkyPoint(skip, rounds + point.tail[QFLOCK_SLOT_BITS:]), value), partial
+    skip_lc = transcript.sample()
+    value = lagrange_interpolate(PHI[:K_BITS], z_partial, skip_lc)
+    return ZClaim(QuirkyPoint(skip_lc, rounds + point.tail[QFLOCK_SLOT_BITS:]), value), z_partial
 
 
 def verify_flock(log_n: int, transcript: Transcript) -> FlockReduction:
     zerocheck = verify_flock_zerocheck(log_n, transcript)
-    ab_point = QuirkyPoint(zerocheck.skip, zerocheck.rounds)
-    ab, ab_s_hat_v = verify_flock_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
-    c_point = QuirkyPoint(zerocheck.skip, zerocheck.equality_tail)
-    return FlockReduction(ab, ZClaim(c_point, zerocheck.c), ab_s_hat_v)
+    ab_point = QuirkyPoint(zerocheck.skip_zc, zerocheck.rounds)
+    ab, z_partial = verify_flock_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
+    c_point = QuirkyPoint(zerocheck.skip_zc, zerocheck.equality_tail)
+    return FlockReduction(ab, ZClaim(c_point, zerocheck.c), z_partial)
 
 
 def blake2s_bilinear(
@@ -1748,7 +1694,7 @@ def blake2s_bilinear(
     column_weights: Sequence[E],
 ) -> E:
     """Evaluate the two BLAKE2s R1CS matrix forms by walking the circuit."""
-    size = 2**BLAKE2S_RICS_LOG_SIZE
+    size = 2**BLAKE2S_R1CS_LOG_SIZE
     require(len(row_weights) == size, "bad BLAKE2s row-weight vector")
     require(len(column_weights) == size, "bad BLAKE2s column-weight vector")
     constant = BLAKE2S_CONSTANT_COLUMN
@@ -1953,7 +1899,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         point_claims.append((prefix + claim.point + tail, claim.value))
 
     # 7] BLAKE2s validity, then the one opening that discharges every claim.
-    reduction = verify_flock(BLAKE2S_RICS_LOG_SIZE + layout.table_logs[BLAKE2S.opcode], transcript)
+    reduction = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_logs[BLAKE2S.opcode], transcript)
     verify_stacked_opening(
         transcript,
         root,
