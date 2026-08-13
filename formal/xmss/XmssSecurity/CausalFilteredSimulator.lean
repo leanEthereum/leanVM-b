@@ -5,71 +5,179 @@ open OracleComp.ProgramLogic.Relational
 
 namespace XmssSecurity
 
+def ProgrammedActualKeygenReplayRelation
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) : Prop :=
+  ProgrammedActualKeygenCacheRelation chain left right ∧
+    ∃ values,
+      TreeValuesReplay left.secretKey.parameter left.secretKey.chainStart
+        left.cache allTreeValueIndices values ∧
+      TreeValuesReplay right.1.secretKey.parameter
+        right.1.secretKey.chainStart right.1.cache allTreeValueIndices values
+
+theorem relTriple_coupledWarmedFixedChainKeygen_withBase_replay
+    (chain : ChainIndex) :
+    RelTriple
+      (coupledWarmedFixedChainKeygen chain)
+      (coupledWarmedFixedChainKeygenWithBase chain)
+      (ProgrammedActualKeygenReplayRelation chain) := by
+  unfold coupledWarmedFixedChainKeygen
+    coupledWarmedFixedChainKeygenWithBase
+  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
+  intro leftParameter rightParameter hparameter
+  subst rightParameter
+  apply relTriple_bind
+    (relTriple_coupledWarmedKeygenExperiment_withBase_cache
+      leftParameter chain)
+  intro leftView rightView hview
+  apply relTriple_pure_pure
+  refine ⟨?_, leftView.values, ?_, ?_⟩
+  · refine ⟨⟨hview.1.1, ?_, hview.1.2.1,
+      hview.1.2.2.2.2.2.2⟩, hview.2⟩
+    exact congrArg (fun root => PublicKey.mk root leftParameter)
+      hview.1.2.2.2.2.2.1
+  · exact hview.1.2.2.2.1
+  · rw [hview.1.2.2.1]
+    exact hview.1.2.2.2.2.1
+
+theorem relTriple_programmedWarmedFixedChainKeygen_withBase_replay
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedWarmedFixedChainKeygen chain)
+      (actualFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base))
+      (ProgrammedActualKeygenReplayRelation chain) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_coupledWarmedFixedChainKeygen_eq_programmed chain).symm
+  exact relTriple_of_evalDist_eq_right
+    (evalDist_coupledWarmedFixedChainKeygenWithBase_eq_actual chain)
+      (relTriple_coupledWarmedFixedChainKeygen_withBase_replay chain)
+
+def ProgrammedActualKeygenFullRelation
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) : Prop :=
+  ProgrammedActualKeygenReplayRelation chain left right ∧
+    TreeCacheStable left.secretKey.parameter left.secretKey.chainStart
+      left.cache ∧
+    TreeCacheStable right.1.secretKey.parameter right.1.secretKey.chainStart
+      right.1.cache
+
+theorem relTriple_programmedWarmedFixedChainKeygen_withBase_full
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedWarmedFixedChainKeygen chain)
+      (actualFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base))
+      (ProgrammedActualKeygenFullRelation chain) := by
+  apply relTriple_post_mono
+    (relTriple_with_support
+      (relTriple_programmedWarmedFixedChainKeygen_withBase_replay chain))
+  intro left right hrel
+  refine ⟨hrel.1, ?_, ?_⟩
+  · exact programmedWarmedFixedChainKeygen_support_treeCacheStable
+      chain left hrel.2.1
+  · exact actualFixedChainKeygen_support_treeCacheStable chain right.1
+      (actualWithBase_support_keyView chain right hrel.2.2)
+
 def SelectedChainHashInput
     (parameter : PublicParameter) (selected : ChainIndex)
     (input : HashInput) : Prop :=
   ∃ epoch step,
     AtHashAddress parameter (.chain epoch selected step) input
 
-noncomputable def withoutSelectedChain
+def SelectedKeygenSensitiveHashInput
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (input : HashInput) : Prop :=
+  SelectedChainHashInput parameter selected input ∨
+    ∃ epoch, AtHashAddress parameter (.leaf epoch) input
+
+noncomputable def withoutSelectedKeygenInputs
     (parameter : PublicParameter) (selected : ChainIndex)
     (cache : QueryCache HashSpec) : QueryCache HashSpec := by
   classical
-  exact fun input => if SelectedChainHashInput parameter selected input then
+  exact fun input => if SelectedKeygenSensitiveHashInput
+      parameter selected input then
       none
     else
       cache input
 
-theorem withoutSelectedChain_selected
+theorem withoutSelectedKeygenInputs_selected
     (parameter : PublicParameter) (selected : ChainIndex)
     (cache : QueryCache HashSpec) (input : HashInput)
     (hinput : SelectedChainHashInput parameter selected input) :
-    withoutSelectedChain parameter selected cache input = none := by
-  simp [withoutSelectedChain, hinput]
+    withoutSelectedKeygenInputs parameter selected cache input = none := by
+  simp [withoutSelectedKeygenInputs, SelectedKeygenSensitiveHashInput, hinput]
 
-theorem withoutSelectedChain_outside
+theorem withoutSelectedKeygenInputs_leaf
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (cache : QueryCache HashSpec) (epoch : Epoch) (input : HashInput)
+    (hinput : AtHashAddress parameter (.leaf epoch) input) :
+    withoutSelectedKeygenInputs parameter selected cache input = none := by
+  unfold withoutSelectedKeygenInputs
+  rw [if_pos]
+  exact Or.inr ⟨epoch, hinput⟩
+
+theorem withoutSelectedKeygenInputs_outside
     (parameter : PublicParameter) (selected : ChainIndex)
     (cache : QueryCache HashSpec) (input : HashInput)
     (hinput : OutsideChainHashInput parameter selected input) :
-    withoutSelectedChain parameter selected cache input = cache input := by
-  have hnot : ¬ SelectedChainHashInput parameter selected input := by
-    rintro ⟨selectedEpoch, selectedStep, hselected⟩
-    obtain ⟨outsideEpoch, candidate, outsideStep, hne, houtside⟩ := hinput
-    have haddress := atHashAddress_unique parameter
-      (.chain selectedEpoch selected selectedStep)
-      (.chain outsideEpoch candidate outsideStep) input hselected houtside
-    simp only [HashDomain.chain.injEq] at haddress
-    exact hne haddress.2.1.symm
-  simp [withoutSelectedChain, hnot]
+    withoutSelectedKeygenInputs parameter selected cache input = cache input := by
+  have hnot : ¬ SelectedKeygenSensitiveHashInput
+      parameter selected input := by
+    rintro (hselected | hleaf)
+    · obtain ⟨selectedEpoch, selectedStep, hselected⟩ := hselected
+      obtain ⟨outsideEpoch, candidate, outsideStep, hne, houtside⟩ := hinput
+      have haddress := atHashAddress_unique parameter
+        (.chain selectedEpoch selected selectedStep)
+        (.chain outsideEpoch candidate outsideStep) input hselected houtside
+      simp only [HashDomain.chain.injEq] at haddress
+      exact hne haddress.2.1.symm
+    · obtain ⟨leafEpoch, hleaf⟩ := hleaf
+      obtain ⟨outsideEpoch, candidate, outsideStep, _hne, houtside⟩ := hinput
+      have haddress := atHashAddress_unique parameter
+        (.leaf leafEpoch) (.chain outsideEpoch candidate outsideStep)
+        input hleaf houtside
+      simp at haddress
+  simp [withoutSelectedKeygenInputs, hnot]
 
-theorem withoutSelectedChain_encoding
+theorem withoutSelectedKeygenInputs_encoding
     (parameter : PublicParameter) (selected : ChainIndex)
     (cache : QueryCache HashSpec) (epoch : Epoch)
     (message : Message) (randomness : Randomness) :
-    withoutSelectedChain parameter selected cache
+    withoutSelectedKeygenInputs parameter selected cache
         (Concrete.CacheView.encodingInput parameter epoch
           (message, randomness)) =
       cache (Concrete.CacheView.encodingInput parameter epoch
         (message, randomness)) := by
-  have hnot : ¬ SelectedChainHashInput parameter selected
+  have hnot : ¬ SelectedKeygenSensitiveHashInput parameter selected
       (Concrete.CacheView.encodingInput parameter epoch
         (message, randomness)) := by
-    rintro ⟨chainEpoch, step, hchain⟩
     have hencoding : AtHashAddress parameter (.encoding epoch)
         (Concrete.CacheView.encodingInput parameter epoch
           (message, randomness)) := by
       simp [Concrete.CacheView.encodingInput]
-    have haddress := atHashAddress_unique parameter
-      (.chain chainEpoch selected step) (.encoding epoch)
-      (Concrete.CacheView.encodingInput parameter epoch
-        (message, randomness)) hchain hencoding
-    simp at haddress
-  simp [withoutSelectedChain, hnot]
+    rintro (⟨chainEpoch, step, hchain⟩ | ⟨leafEpoch, hleaf⟩)
+    · have haddress := atHashAddress_unique parameter
+        (.chain chainEpoch selected step) (.encoding epoch)
+        (Concrete.CacheView.encodingInput parameter epoch
+          (message, randomness)) hchain hencoding
+      simp at haddress
+    · have haddress := atHashAddress_unique parameter
+        (.leaf leafEpoch) (.encoding epoch)
+        (Concrete.CacheView.encodingInput parameter epoch
+          (message, randomness)) hleaf hencoding
+      simp at haddress
+  simp [withoutSelectedKeygenInputs, hnot]
 
 noncomputable def filteredCausalKeygenState
     (selected : ChainIndex) (view : ProgrammedFixedChainKeygenView) :
     CausalHashState := {
-  cache := withoutSelectedChain view.secretKey.parameter selected view.cache
+  cache := withoutSelectedKeygenInputs
+    view.secretKey.parameter selected view.cache
   keygenCache := view.cache
   revealed := fun _ => none
   probes := []
@@ -79,7 +187,8 @@ noncomputable def filteredCausalKeygenState
 theorem filteredCausalKeygenState_cache
     (selected : ChainIndex) (view : ProgrammedFixedChainKeygenView) :
     (filteredCausalKeygenState selected view).cache =
-      withoutSelectedChain view.secretKey.parameter selected view.cache := rfl
+      withoutSelectedKeygenInputs
+        view.secretKey.parameter selected view.cache := rfl
 
 @[simp]
 theorem filteredCausalKeygenState_keygenCache
@@ -123,12 +232,12 @@ theorem programmedActual_filteredKeygen_cachesAgree
         right.1.secretKey.parameter selected input := by
       rw [← hparameter]
       exact houtside
-    rw [withoutSelectedChain_outside _ _ _ _ houtsideRight]
+    rw [withoutSelectedKeygenInputs_outside _ _ _ _ houtsideRight]
     apply hrel.1.2 input
     rw [hleftParameter]
     exact houtside
   · rw [filteredCausalKeygenState_cache, ← hparameter,
-      withoutSelectedChain_encoding]
+      withoutSelectedKeygenInputs_encoding]
     have hleftNone := Concrete.keygen_cache_none_encodingInput
       left.keyResult hleftKey epoch (message, randomness)
     have hrightNone := Concrete.keygen_cache_none_encodingInput
