@@ -1,6 +1,8 @@
 import XmssSecurity.CausalTreeWarmup
+import XmssSecurity.MarginalCoupling
 
 open OracleComp OracleSpec ENNReal
+open OracleComp.ProgramLogic.Relational
 
 namespace XmssSecurity
 
@@ -433,6 +435,47 @@ theorem evalDist_treeValues_values_eq_drawList
         _ = 𝒟[OracleComp.drawList ($ᵗ Digest)
             (current :: indices).length] := by
             rfl
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_treeValues_same_values
+    (leftParameter rightParameter : PublicParameter)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (indices : List TreeValueIndex)
+    (leftCache rightCache : QueryCache HashSpec)
+    (hordered : indices.Pairwise TreeValueIndex.Precedes)
+    (hleftFresh : TreeValuesFresh leftParameter indices leftCache)
+    (hrightFresh : TreeValuesFresh rightParameter indices rightCache) :
+    RelTriple
+      (treeValues leftParameter leftSecret indices leftCache)
+      (treeValues rightParameter rightSecret indices rightCache)
+      (fun left right =>
+        left.1 = right.1 ∧
+          TreeValuesReplay leftParameter leftSecret left.2 indices left.1 ∧
+          TreeValuesReplay rightParameter rightSecret right.2 indices right.1) := by
+  have hvalues :
+      𝒟[Prod.fst <$> treeValues leftParameter leftSecret indices leftCache] =
+        𝒟[Prod.fst <$> treeValues rightParameter rightSecret indices rightCache] := by
+    calc
+      𝒟[Prod.fst <$> treeValues leftParameter leftSecret indices leftCache] =
+          𝒟[OracleComp.drawList ($ᵗ Digest) indices.length] :=
+        evalDist_treeValues_values_eq_drawList leftParameter leftSecret
+          indices leftCache hordered hleftFresh
+      _ = 𝒟[Prod.fst <$> treeValues rightParameter rightSecret indices
+          rightCache] :=
+        (evalDist_treeValues_values_eq_drawList rightParameter rightSecret
+          indices rightCache hordered hrightFresh).symm
+  apply relTriple_post_mono
+    (relTriple_of_evalDist_map_eq_with_support_general
+      (treeValues leftParameter leftSecret indices leftCache)
+      (treeValues rightParameter rightSecret indices rightCache)
+      Prod.fst Prod.fst hvalues)
+  intro left right hrelation
+  exact ⟨hrelation.1,
+    treeValues_support_replay leftParameter leftSecret indices leftCache left
+      hrelation.2.1,
+    treeValues_support_replay rightParameter rightSecret indices rightCache right
+      hrelation.2.2⟩
 
 def treeValueIndicesAtHeight (height : Fin (treeHeight + 1)) :
     List TreeValueIndex :=
