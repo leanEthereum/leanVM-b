@@ -1262,18 +1262,18 @@ fn gen_verify(
     // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
     // scalars start: its last 64 scalars are lincheck's `z_partial` (which the
     // summary already carries as `s_hat_v`), immediately preceded by the
-    // `(e0, e1, e_inf)` triples of the `lcrounds` lincheck rounds.
+    // coefficient PAIRS of the `lcrounds` lincheck rounds: the linear one is not
+    // sent, the running claim fixing it.
     let ns = summary.flock_stream_end;
-    let lcr: Vec<F192> = raw[ns - 64 - 3 * lcrounds..ns - 64].to_vec();
+    let lcr: Vec<F192> = raw[ns - 64 - 2 * lcrounds..ns - 64].to_vec();
     let lcz: Vec<F192> = summary.lc_claim.s_hat_v.clone();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
     let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
     for i in 0..lcrounds {
-        let (e0, e1, ei, rv) = (lcr[3 * i], lcr[3 * i + 1], lcr[3 * i + 2], lrr[i]);
-        let c1q = e0 + e1 + ei;
-        lrun = (ei * rv + c1q) * rv + e0;
+        let (c0, c2) = (lcr[2 * i], lcr[2 * i + 1]);
+        lrun = primitives::multilinear::poly_eval(&[c0, lrun + c2, c2], lrr[i]);
     }
     let mut pinw = lc_beta;
     for (j, &rv) in lrr.iter().enumerate() {
@@ -1353,7 +1353,7 @@ fn gen_verify(
     // re-hashes exactly that: a leaf is its `F64` words (one per interleaved K
     // value at level 0, three per `E` value deeper), then a walk up the path.
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
-    for opening in &summary.raw.merkle_openings {
+    for opening in &summary.raw.merkle {
         lrows_flat.extend(opening.leaf_data.iter().map(|x| F192::new(x.0, 0, 0)));
         for h in &opening.path {
             lpaths_flat.extend_from_slice(&pack_hash_state(h));
@@ -1947,15 +1947,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("STREAM_CAP", STREAM_CAP.to_string());
     ps("MIN_LOG_MEM", lean_vm::cpu::MIN_LOG_MEM.to_string());
     ps("INV_GEN", u(F192::new(G.inv().0, 0, 0)).to_string());
-    // The table sumcheck sends its round polynomial WHOLE, at {0, 1, g, g^2}, so
-    // it interpolates a cubic: one baked inverse denominator per node.
-    {
-        let q = primitives::multilinear::quad_nodes();
-        for i in 0..4 {
-            let den = (0..4).filter(|&j| j != i).fold(F192::ONE, |acc, j| acc * (q[i] + q[j]));
-            ps(&format!("LAG4_INV_{i}"), f192_literal(den.inv()));
-        }
-    }
     ps("MU_CAP", MU_CAP.to_string());
     ps("NO_TABLE", l.taus.len().to_string());
     ps("GKR_ROUNDS_CAP", (MU_CAP * (MU_CAP + 1) / 2 + MU_CAP + 2).to_string());

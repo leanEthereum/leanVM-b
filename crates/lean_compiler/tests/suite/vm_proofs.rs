@@ -49,7 +49,7 @@ fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
 #[test]
 fn a_tampered_opening_is_rejected() {
     let (program, pi, mut proof) = hashing_proof();
-    let phase = proof.merkle_paths.first_mut().expect("stacked WHIR opening");
+    let phase = proof.merkle.first_mut().expect("stacked WHIR opening");
     phase.leaf_data[0][0].0 ^= 1;
     assert!(
         verify(&program, &pi, &proof).is_err(),
