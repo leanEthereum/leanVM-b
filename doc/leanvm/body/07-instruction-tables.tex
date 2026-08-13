@@ -3,6 +3,8 @@
 
 Each instruction has its own table.
 
+Every table below lists its own columns and constraints. On top of those, each read count $r$ a table declares carries a committed inverse column $r^{-1}$ and the identity $r\cdot r^{-1}=1$, which is what keeps the count nonzero and the read from self-cancelling on the bus (\S\ref{sec:memchan}); they are the same for every table, so they are not repeated per table.
+
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
 Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $192$-bit field sum (in $\E$).

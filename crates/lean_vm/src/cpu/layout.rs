@@ -70,8 +70,6 @@ fn offset_coord(base: usize, c: Coord) -> Coord {
 pub struct Layout {
     pub push: Vec<Block>,
     pub pull: Vec<Block>,
-    /// Count channel: read-count columns whose product must be nonzero (§sec:memchan).
-    pub count: Vec<Block>,
     /// Per-column placement (offset + n_vars) in the stacked witness; from the
     /// columns' log-sizes alone, so reconstructable by the verifier.
     pub placements: Vec<witness::Placement>,
@@ -168,8 +166,8 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k
 }
 
-/// The bus flush blocks' kappa SOURCES, flattened in side order (push, pull,
-/// count) exactly as the blocks are constructed below: per block
+/// The bus flush blocks' kappa SOURCES, flattened in side order (push, pull)
+/// exactly as the blocks are constructed below: per block
 /// `(source, adj)` with kappa = value(source) + adj, source 0 = the constant
 /// 0, 1 = log_mem, 2 + t = tau_t. For the recursion guest's in-circuit pin
 /// of every hinted block kappa. Keep in lockstep with the block
@@ -177,16 +175,13 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
 pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
     let mut push = vec![(0, 0), (1, 0), (0, log_bytecode)];
     let mut pull = vec![(0, 0), (1, 0), (0, log_bytecode)];
-    let mut count = Vec::new();
     for (t, table) in tables::tables().iter().enumerate() {
         let mut fb = tables::FlushBuilder::new();
         table.flushes(&mut fb);
         push.extend(std::iter::repeat_n((2 + t, 0), fb.push.len()));
         pull.extend(std::iter::repeat_n((2 + t, 0), fb.pull.len()));
-        count.extend(std::iter::repeat_n((2 + t, 0), table.count_columns().len()));
     }
     push.extend(pull);
-    push.extend(count);
     push
 }
 
@@ -400,10 +395,9 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     push.push(bytecode_block(Const(one)));
     pull.push(bytecode_block(Col(BFCNT)));
 
-    // Per-table blocks: each table declares its flushes and read-count columns in
-    // local indices; offset them to the table's global columns.
+    // Per-table blocks: each table declares its flushes in local indices; offset
+    // them to the table's global columns.
     let sch = schema();
-    let mut count_blocks: Vec<Block> = Vec::new();
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         let kappa = taus[t];
@@ -415,16 +409,12 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
         for coords in fb.pull {
             pull.push(blk(kappa, offset_coords(base, coords)));
         }
-        for &c in table.count_columns() {
-            count_blocks.push(blk(kappa, vec![Col(base + c)]));
-        }
     }
 
     let (placements, m) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
     Layout {
         push,
         pull,
-        count: count_blocks,
         placements,
         m,
         pi,

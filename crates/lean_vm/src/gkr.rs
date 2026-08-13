@@ -291,23 +291,23 @@ impl QuaternaryLayerState {
     }
 }
 
-/// The result of a batched grand-product proof: the three roots and leaf
-/// evaluations, all reduced to one shared point.
-pub struct ProductTriple {
-    pub roots: [F192; 3],
+/// The result of a batched grand-product proof: the two roots and leaf
+/// evaluations, both reduced to one shared point.
+pub struct ProductPair {
+    pub roots: [F192; 2],
     pub point: Vec<F192>,
-    pub values: [F192; 3],
+    pub values: [F192; 2],
 }
 
-/// Prove three identity-padded grand products as one RLC-batched radix-four GKR.
-pub fn prove_product_triple(leaves: [ArenaVec<F192>; 3], ps: &mut ProverState) -> ProductTriple {
+/// Prove two identity-padded grand products as one RLC-batched radix-four GKR.
+pub fn prove_product_pair(leaves: [ArenaVec<F192>; 2], ps: &mut ProverState) -> ProductPair {
     let mu = crate::log2_ceil_usize(leaves[0].len());
     assert!(
         leaves.iter().all(|lane| !lane.is_empty() && lane.len() <= 1 << mu),
         "batched trees must be nonempty prefixes of the first tree's logical tree"
     );
     let mut layers = leaves.map(|lane| build_layers(lane, mu));
-    let roots = [layers[0][mu][0], layers[1][mu][0], layers[2][mu][0]];
+    let roots = [layers[0][mu][0], layers[1][mu][0]];
     for root in roots {
         ps.add_scalar(root);
     }
@@ -320,7 +320,7 @@ pub fn prove_product_triple(leaves: [ArenaVec<F192>; 3], ps: &mut ProverState) -
         let round_count = mu - layer;
         if layer % 2 == 1 {
             debug_assert_eq!(round_count, 0, "only the root-most layer may be binary");
-            let tails = [0, 1, 2].map(|tree| {
+            let tails = [0, 1].map(|tree| {
                 let below = &layers[tree][layer - 1];
                 match below.as_slice() {
                     [left, right] => [*left, *right],
@@ -343,7 +343,7 @@ pub fn prove_product_triple(leaves: [ArenaVec<F192>; 3], ps: &mut ProverState) -
 
         let width = 1usize << round_count;
         let mut trees =
-            [0, 1, 2].map(|tree| QuaternaryLayerState::new(std::mem::take(&mut layers[tree][layer - 2]), width));
+            [0, 1].map(|tree| QuaternaryLayerState::new(std::mem::take(&mut layers[tree][layer - 2]), width));
         let mut equality = if round_count > 0 {
             eq_table(&point[1..])
         } else {
@@ -351,10 +351,10 @@ pub fn prove_product_triple(leaves: [ArenaVec<F192>; 3], ps: &mut ProverState) -
         };
         let mut round_point = Vec::with_capacity(round_count);
         for _ in 0..round_count {
-            let messages = [0, 1, 2].map(|tree| trees[tree].round_message(&equality));
-            ps.add_scalars(&[0, 1, 2, 3].map(|coefficient| {
-                messages[0][coefficient] + lambda * (messages[1][coefficient] + lambda * messages[2][coefficient])
-            }));
+            let messages = [0, 1].map(|tree| trees[tree].round_message(&equality));
+            ps.add_scalars(
+                &[0, 1, 2, 3].map(|coefficient| messages[0][coefficient] + lambda * messages[1][coefficient]),
+            );
             let challenge = ps.sample();
             round_point.push(challenge);
             for tree in &mut trees {
@@ -382,12 +382,12 @@ pub fn prove_product_triple(leaves: [ArenaVec<F192>; 3], ps: &mut ProverState) -
         layer -= 2;
     }
 
-    ProductTriple { roots, point, values }
+    ProductPair { roots, point, values }
 }
 
 /// Verify the RLC-batched radix-four proof.
-pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<ProductTriple, GkrError> {
-    let mut roots = [F192::ZERO; 3];
+pub fn verify_product_pair(mu: usize, vs: &mut VerifierState) -> Result<ProductPair, GkrError> {
+    let mut roots = [F192::ZERO; 2];
     for root in &mut roots {
         *root = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
     }
@@ -398,15 +398,15 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
     let mut layer = mu;
     while layer > 0 {
         let round_count = mu - layer;
-        let mut claim = values[0] + lambda * (values[1] + lambda * values[2]);
+        let mut claim = values[0] + lambda * values[1];
         if layer % 2 == 1 {
             debug_assert_eq!(round_count, 0, "only the root-most layer may be binary");
-            let mut tails = [[F192::ZERO; 2]; 3];
+            let mut tails = [[F192::ZERO; 2]; 2];
             for value in tails.iter_mut().flatten() {
                 *value = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
             }
             let products = tails.map(|[left, right]| left * right);
-            if claim != products[0] + lambda * (products[1] + lambda * products[2]) {
+            if claim != products[0] + lambda * products[1] {
                 return Err(GkrError::LayerMismatch { layer });
             }
             let challenge = vs.sample();
@@ -433,12 +433,12 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
             let c1 = difference + c2 + c3 + c4;
             claim = c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)));
         }
-        let mut tails = [[F192::ZERO; 4]; 3];
+        let mut tails = [[F192::ZERO; 4]; 2];
         for value in tails.iter_mut().flatten() {
             *value = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         }
         let products = tails.map(|tail| tail[0] * tail[1] * tail[2] * tail[3]);
-        if claim != products[0] + lambda * (products[1] + lambda * products[2]) {
+        if claim != products[0] + lambda * products[1] {
             return Err(GkrError::LayerMismatch { layer });
         }
         let low_challenge = vs.sample();
@@ -456,7 +456,7 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
         layer -= 2;
     }
 
-    Ok(ProductTriple { roots, point, values })
+    Ok(ProductPair { roots, point, values })
 }
 
 #[cfg(test)]
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn radix_four_roundtrip_at_even_and_odd_depths() {
         for mu in 0..=10 {
-            let leaves: [Vec<F192>; 3] = [0, 1, 2].map(|lane| {
+            let leaves: [Vec<F192>; 2] = [0, 1].map(|lane| {
                 (0..1usize << mu)
                     .map(|row| F192::new((1 + row + lane * 100_003) as u64, row as u64, lane as u64))
                     .collect()
@@ -517,15 +517,15 @@ mod tests {
                 .each_ref()
                 .map(|lane| lane.iter().copied().fold(F192::ONE, |product, value| product * value));
             let mut ps = ProverState::new(b"radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(leaves.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())), &mut ps);
+            let proved = prove_product_pair(leaves.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())), &mut ps);
             assert_eq!(proved.roots, expected_roots);
-            for lane in 0..3 {
+            for lane in 0..2 {
                 assert_eq!(proved.values[lane], mle_eval_e(&leaves[lane], &proved.point));
             }
 
             let proof = ps.into_proof();
             let mut vs = VerifierState::new(b"radix-four-gkr-test", &proof, &[]);
-            let verified = verify_product_triple(mu, &mut vs).expect("GKR verifies");
+            let verified = verify_product_pair(mu, &mut vs).expect("GKR verifies");
             assert_eq!(verified.roots, proved.roots);
             assert_eq!(verified.point, proved.point);
             assert_eq!(verified.values, proved.values);
@@ -536,8 +536,8 @@ mod tests {
     #[test]
     fn implicit_identity_suffix_matches_dense_padding() {
         for mu in 3..=10 {
-            let lengths = [(1usize << mu) - 3, (1usize << (mu - 1)) + 1, (1usize << (mu - 2)) + 3];
-            let leaves: [Vec<F192>; 3] = std::array::from_fn(|lane| {
+            let lengths = [(1usize << mu) - 3, (1usize << (mu - 1)) + 1];
+            let leaves: [Vec<F192>; 2] = std::array::from_fn(|lane| {
                 (0..lengths[lane])
                     .map(|row| F192::new((3 + row + lane * 10_007) as u64, row as u64, lane as u64))
                     .collect()
@@ -548,11 +548,11 @@ mod tests {
                 padded
             });
             let mut sparse_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(
+            let proved = prove_product_pair(
                 leaves.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())),
                 &mut sparse_ps,
             );
-            for lane in 0..3 {
+            for lane in 0..2 {
                 assert_eq!(proved.values[lane], mle_eval_e(&dense[lane], &proved.point));
                 assert_eq!(
                     proved.roots[lane],
@@ -564,7 +564,7 @@ mod tests {
             }
             let proof = sparse_ps.into_proof();
             let mut dense_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
-            let dense_proved = prove_product_triple(
+            let dense_proved = prove_product_pair(
                 dense.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())),
                 &mut dense_ps,
             );
@@ -573,7 +573,7 @@ mod tests {
             assert_eq!(dense_proved.values, proved.values);
             assert_eq!(dense_ps.into_proof().stream, proof.stream);
             let mut vs = VerifierState::new(b"sparse-radix-four-gkr-test", &proof, &[]);
-            let verified = verify_product_triple(mu, &mut vs).expect("GKR verifies");
+            let verified = verify_product_pair(mu, &mut vs).expect("GKR verifies");
             assert_eq!(verified.roots, proved.roots);
             assert_eq!(verified.point, proved.point);
             assert_eq!(verified.values, proved.values);

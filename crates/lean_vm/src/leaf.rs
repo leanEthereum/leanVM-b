@@ -76,8 +76,6 @@ pub struct ColumnClaim {
 pub enum Error {
     Truncated,
     Unbalanced,
-    /// A read count is zero, so a read self-cancels on the bus (§sec:memchan).
-    ZeroCount,
     Gkr(gkr::GkrError),
 }
 
@@ -119,20 +117,12 @@ fn soundness_bits(mu: usize) -> u32 {
 }
 
 /// Check that the 192-bit challenge field supplies the target bus soundness.
-/// Push and pull have the same logical height, and the count product is checked
-/// by the same GKR rather than by a separate root-at-random test.
-fn assert_grinding_unnecessary(
-    push_blocks: &[Block],
-    pull_blocks: &[Block],
-    push: &Layout,
-    pull: &Layout,
-    count: &Layout,
-) {
+/// Push and pull have the same logical height, being paired block for block.
+fn assert_grinding_unnecessary(push_blocks: &[Block], pull_blocks: &[Block], push: &Layout, pull: &Layout) {
     assert_eq!(
         push.mu, pull.mu,
         "push/pull bus blocks are paired, so their layouts match"
     );
-    assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
     let widest = push_blocks
         .iter()
         .chain(pull_blocks)
@@ -569,24 +559,6 @@ pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     table
 }
 
-/// The three bus sides in `[push, pull, count]` order with their fingerprint
-/// weights. The count channel's leaf is the count itself (a single `Col`), so it
-/// runs at `α⃗ = 0` (weight `1` on slot `0`, zero elsewhere), `γ = 0`, and its GKR
-/// root is the product of all counts.
-fn sides<'a>(
-    blocks: [&'a [Block]; 3],
-    lays: [&'a Layout; 3],
-    w: &'a [F192],
-    count_w: &'a [F192],
-    gamma: F192,
-) -> [(&'a [Block], &'a Layout, &'a [F192], F192); 3] {
-    [
-        (blocks[0], lays[0], w, gamma),
-        (blocks[1], lays[1], w, gamma),
-        (blocks[2], lays[2], count_w, F192::ZERO),
-    ]
-}
-
 /// The program's whole share of a bus leaf, in ONE evaluation: a public column's
 /// slot is its tuple coordinate and the weights are `eq(α⃗, ·)`, so the weighted
 /// sum over the columns IS the stacked polynomial at `(ζ, α⃗)` (§sec:e2e-bc).
@@ -613,74 +585,58 @@ pub struct BusProof {
     pub bytecode_claims: Vec<BytecodeClaim>,
     /// The GKR point ζ: the zerocheck reuses it, so no fresh point is sampled.
     pub point: Vec<F192>,
-    /// `forms[side][table]`, in `[push, pull, count]` order.
-    pub forms: [Vec<BusForm>; 3],
+    /// `forms[side][table]`, in `[push, pull]` order.
+    pub forms: [Vec<BusForm>; 2],
     /// `sigmas[side][table]`: each form's eq-weighted sum over its table's rows.
     /// Prover-side only. NOTHING here travels: the batch's target is the caller's
     /// derived `Σ_s η^·totals[s]`, and the shares serve only to build each round's
     /// waiting line, which rides inside the round polynomial.
-    pub sigmas: [Vec<F192>; 3],
+    pub sigmas: [Vec<F192>; 2],
 }
 
 pub fn prove_balance(
     push: &[Block],
     pull: &[Block],
-    count: &[Block],
     cols: &[&[F64]],
-    owners: &[Vec<Option<(usize, usize)>>; 3],
+    owners: &[Vec<Option<(usize, usize)>>; 2],
     tables: &[(usize, usize)],
     ps: &mut ProverState,
 ) -> BusProof {
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let mut count_lay = layout(count);
-    assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay, &count_lay);
+    assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay);
     let alphas: Vec<F192> = (0..N_TUPLE_BITS).map(|_| ps.sample()).collect();
     let w = fingerprint_weights(&alphas);
-    let count_w = fingerprint_weights(&[F192::ZERO; N_TUPLE_BITS]);
-    // The GKR treats the count tree as identity-padded to the pair's depth, but
-    // its prover keeps that all-one suffix implicit. Retain the smaller layout
-    // for leaf construction and the full logical layout for decomposition.
-    let count_build_lay = count_lay.clone();
-    count_lay.mu = push_lay.mu;
     let gamma = ps.sample();
-    // The `g^z` table backing `Coord::Index`, built once for the three sides: push
-    // and pull would otherwise build the same table twice and count, which carries
-    // no `Index` coordinate, would build one it never reads.
-    let index_k = [push, pull, count]
+    // The `g^z` table backing `Coord::Index`, built once for both sides: push and
+    // pull would otherwise build the same table twice.
+    let index_k = [push, pull]
         .into_iter()
         .flatten()
         .filter(|b| b.coords.iter().any(|c| matches!(c, Coord::Index)))
         .map(|b| b.kappa)
         .max();
     let gpow = index_k.map_or_else(Vec::new, |k| primitives::field::g_powers(1usize << k));
-    // Three independent leaf vectors, built one after another: each `build_leaves`
+    // Two independent leaf vectors, built one after another: each `build_leaves`
     // already fans its own blocks out across the whole pool, so nesting a
-    // three-way outer split on top would only add a barrier.
-    let [push_leaves, pull_leaves, count_leaves] = crate::stage!("Bus leaves", || {
+    // two-way outer split on top would only add a barrier.
+    let [push_leaves, pull_leaves] = crate::stage!("Bus leaves", || {
         [
             build_leaves(push, &push_lay, cols, &w, gamma, &gpow),
             build_leaves(pull, &pull_lay, cols, &w, gamma, &gpow),
-            build_leaves(count, &count_build_lay, cols, &count_w, F192::ZERO, &gpow),
         ]
     });
-    // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match
-    // block-for-block, count is padded), so every claim lands on ONE point ζ.
+    // Both trees run as ONE RLC-batched GKR (equal μ: push/pull match
+    // block-for-block), so every claim lands on ONE point ζ.
     let bus_gkr = crate::stage!("Bus GKR", || {
-        gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps)
+        gkr::prove_product_pair([push_leaves, pull_leaves], ps)
     });
 
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
     // every table block becomes a form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let sides = sides(
-        [push, pull, count],
-        [&push_lay, &pull_lay, &count_lay],
-        &w,
-        &count_w,
-        gamma,
-    );
-    // Each table's columns at ζ[..τ], computed once and shared by the three sides
+    let sides = [(push, &push_lay), (pull, &pull_lay)];
+    // Each table's columns at ζ[..τ], computed once and shared by both sides
     // (a form's linear part factors through them). Nothing here travels, neither the
     // evaluations nor any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
     // framework decomposition ([`verify_balance`]) and the batch settles it. A
@@ -688,16 +644,16 @@ pub fn prove_balance(
     // solved to satisfy, and would settle nothing.
     let table_evals = tables_at(cols, tables, &bus_gkr.point);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
-    let mut frameworks = [F192::ZERO; 3];
+    let mut frameworks = [F192::ZERO; 2];
     crate::stage!("Bus decompose", || {
-        for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
+        for (s, &(blocks, lay)) in sides.iter().enumerate() {
             frameworks[s] = decompose_prove(
                 blocks,
                 lay,
                 cols,
                 &bus_gkr.point,
-                a,
-                g,
+                &w,
+                gamma,
                 &owners[s],
                 &mut forms[s],
                 &mut claims,
@@ -706,7 +662,7 @@ pub fn prove_balance(
         }
     });
     let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point);
-    let sigmas: [Vec<F192>; 3] = std::array::from_fn(|s| {
+    let sigmas: [Vec<F192>; 2] = std::array::from_fn(|s| {
         let sigmas: Vec<F192> = forms[s]
             .iter()
             .zip(&table_evals)
@@ -746,14 +702,14 @@ fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<V
 }
 
 /// Per table, `Σ_z eq(ζ[..τ], z)·col_a(z)·col_b(z)` for every column pair its forms
-/// multiply. Deduped across the three sides and the several blocks that carry the
+/// multiply. Deduped across both sides and the several blocks that carry the
 /// same address, so an address costs one pass over the table however often it is
 /// flushed; there are a handful of pairs against a table's dozen-odd columns, all of
 /// which [`tables_at`] folds anyway.
 fn prod_sums_at(
     cols: &[&[F64]],
     tables: &[(usize, usize)],
-    forms: &[Vec<BusForm>; 3],
+    forms: &[Vec<BusForm>; 2],
     zeta: &[F192],
 ) -> Vec<Vec<(usize, usize, F192)>> {
     tables
@@ -775,21 +731,18 @@ fn prod_sums_at(
         .collect()
 }
 
-/// What [`verify_balance`] establishes: the per-column claims to open, the
-/// reduced bytecode claim (a one-element vec in practice: push and pull share
-/// ζ), and the count-channel root (nonzero; recursion
-/// guests prove that via a hinted inverse).
+/// What [`verify_balance`] establishes: the per-column claims to open and the
+/// reduced bytecode claim (a one-element vec in practice: push and pull share ζ).
 pub struct BusVerify {
     pub claims: Vec<ColumnClaim>,
     pub bytecode_claims: Vec<BytecodeClaim>,
-    pub count_root: F192,
     /// The GKR point ζ, reused as the table sumcheck's eq point.
     pub point: Vec<F192>,
     /// `forms[side][table]`, for the zerocheck to settle.
-    pub forms: [Vec<BusForm>; 3],
+    pub forms: [Vec<BusForm>; 2],
     /// Per side, what the tables' blocks owe its leaf claim: `Ṽ₀(ζ)` less the
     /// framework blocks' decomposition. Derived here, pinned by the batch's target.
-    pub totals: [F192; 3],
+    pub totals: [F192; 2],
 }
 
 /// Verify the bus balances, oracle-free (the prover's committed values arrive on
@@ -797,32 +750,23 @@ pub struct BusVerify {
 pub fn verify_balance(
     push: &[Block],
     pull: &[Block],
-    count: &[Block],
-    owners: &[Vec<Option<(usize, usize)>>; 3],
+    owners: &[Vec<Option<(usize, usize)>>; 2],
     tables: &[(usize, usize)],
     vs: &mut VerifierState,
 ) -> Result<BusVerify, Error> {
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let mut count_lay = layout(count);
-    assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay, &count_lay);
+    assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay);
     let alphas: Vec<F192> = (0..N_TUPLE_BITS).map(|_| vs.sample()).collect();
     let w = fingerprint_weights(&alphas);
-    let count_w = fingerprint_weights(&[F192::ZERO; N_TUPLE_BITS]);
-    // The count tree is padded to the pair's depth (identity leaves), so all
-    // three verify as ONE RLC-batched GKR at ONE shared point.
-    count_lay.mu = push_lay.mu;
     let gamma = vs.sample();
-    let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
-    let [push_root, pull_root, count_root] = bus_gkr.roots;
-    // Every read count is nonzero iff this product is (§sec:memchan); a zero would
-    // let a read self-cancel and free its value from memory.
-    if count_root == F192::ZERO {
-        return Err(Error::ZeroCount);
-    }
+    let bus_gkr = gkr::verify_product_pair(push_lay.mu, vs).map_err(Error::Gkr)?;
+    let [push_root, pull_root] = bus_gkr.roots;
     // Every row of every table is a real row (`cpu::filler`), so the two sides
     // balance outright: no padding tuples to divide back out, and no announced row
-    // counts whose truthfulness the soundness argument would have to establish.
+    // counts whose truthfulness the soundness argument would have to establish. A
+    // read cannot self-cancel either: a zero count would break its table's
+    // `count · inverse = 1` identity (§sec:memchan).
     if push_root != pull_root {
         return Err(Error::Unbalanced);
     }
@@ -832,21 +776,15 @@ pub fn verify_balance(
     // here, the batch's target being what pins it, so no table column is opened at ζ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
-    let sides = sides(
-        [push, pull, count],
-        [&push_lay, &pull_lay, &count_lay],
-        &w,
-        &count_w,
-        gamma,
-    );
-    let mut totals = [F192::ZERO; 3];
-    for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
+    let sides = [(push, &push_lay), (pull, &pull_lay)];
+    let mut totals = [F192::ZERO; 2];
+    for (s, &(blocks, lay)) in sides.iter().enumerate() {
         let framework = decompose_verify(
             blocks,
             lay,
             &bus_gkr.point,
-            a,
-            g,
+            &w,
+            gamma,
             &owners[s],
             &mut forms[s],
             &mut claims,
@@ -862,7 +800,6 @@ pub fn verify_balance(
     Ok(BusVerify {
         claims,
         bytecode_claims,
-        count_root,
         point: bus_gkr.point,
         forms,
         totals,

@@ -274,13 +274,13 @@ pub enum Error {
 }
 
 /// Per side, which table (if any) owns each bus block, as `(table, column base)`.
-type BlockOwners = [Vec<Option<(usize, usize)>>; 3];
+type BlockOwners = [Vec<Option<(usize, usize)>>; 2];
 /// Each table's `(column base, committed column count)` in the global schema.
 type TableSpans = Vec<(usize, usize)>;
 
 /// Blocks sourced from a table's height belong to it; the boundary, memory and
 /// bytecode blocks belong to none and keep their own column claims at ζ.
-fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> BlockOwners {
+fn block_owners(log_bytecode: usize, sides: [usize; 2]) -> BlockOwners {
     let sch = schema();
     let src = block_kappa_sources(log_bytecode);
     let mut it = src
@@ -295,7 +295,7 @@ fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> BlockOwners {
 fn bus_wiring(program: &Program, l: &Layout) -> (BlockOwners, TableSpans) {
     let owners = block_owners(
         crate::log2_strict_usize(program.prog.len()),
-        [l.push.len(), l.pull.len(), l.count.len()],
+        [l.push.len(), l.pull.len()],
     );
     (owners, table_spans())
 }
@@ -315,34 +315,38 @@ fn table_spans() -> TableSpans {
 /// Prover and verifier both call this, so their column order and constraint
 /// closures agree by construction.
 /// The airs carry every committed column of their table, so a constraint indexes the
-/// value array directly and each table's three bus forms can be
-/// evaluated on the same values. The identities take the air's own `η`-range; the
-/// three forms take the shared powers at [`eta_form_base`], folded into the forms'
-/// coefficients once rather than multiplied onto every row's form value.
+/// value array directly and each table's two bus forms can be
+/// evaluated on the same values. The identities take the air's own `η`-range, its
+/// own first and its count inverses after; the two forms take the shared powers at
+/// [`eta_form_base`], folded into the forms' coefficients once rather than
+/// multiplied onto every row's form value.
 fn airs(
     taus: &[usize; tables::N_TABLES],
-    forms: &[Vec<leaf::BusForm>; 3],
-    form_pows: [F192; 3],
+    forms: &[Vec<leaf::BusForm>; 2],
+    form_pows: [F192; 2],
 ) -> Vec<constraints::Air<'static>> {
     tables::tables()
         .iter()
         .zip(taus)
         .enumerate()
         .map(|(t, (&table, &tau))| {
-            let bus: Vec<leaf::BusForm> = (0..3).map(|s| forms[s][t].scaled(form_pows[s])).collect();
+            let bus: Vec<leaf::BusForm> = (0..2).map(|s| forms[s][t].scaled(form_pows[s])).collect();
             let bus_k = bus.clone();
+            let own = table.n_own_constraints();
             constraints::Air {
                 tau,
                 n_cols: table.n_committed_columns(),
                 n_constraints: table.n_constraints(),
                 eval: Box::new(move |p, vals| {
-                    let air = table.eval_constraint(p, vals);
+                    let air =
+                        table.eval_constraint(&p[..own], vals) + tables::eval_count_inverses(table, &p[own..], vals);
                     bus.iter().fold(air, |acc, form| acc + form.eval(vals))
                 }),
                 // The same expression over K columns: the identity's K-only products
                 // stay 64-bit and each bus form becomes a mixed dot product.
                 eval_k: Box::new(move |p, vals| {
-                    let air = table.eval_constraint_k(p, vals);
+                    let air =
+                        table.eval_constraint_k(&p[..own], vals) + tables::eval_count_inverses(table, &p[own..], vals);
                     bus_k.iter().fold(air, |acc, form| acc + form.eval(vals))
                 }),
             }
@@ -351,16 +355,16 @@ fn airs(
 }
 
 /// Each table's claimed sum: its identities vanish, so what its summand comes to
-/// is its three bus forms, `η`-weighted. Prover-side only, to build the waiting
+/// is its two bus forms, `η`-weighted. Prover-side only, to build the waiting
 /// line each round; the verifier needs just their total, which it derives.
-fn sigmas(bus: &[Vec<F192>; 3], form_pows: [F192; 3]) -> Vec<F192> {
+fn sigmas(bus: &[Vec<F192>; 2], form_pows: [F192; 2]) -> Vec<F192> {
     (0..tables::tables().len())
-        .map(|t| (0..3).fold(F192::ZERO, |acc, s| acc + form_pows[s] * bus[s][t]))
+        .map(|t| (0..2).fold(F192::ZERO, |acc, s| acc + form_pows[s] * bus[s][t]))
         .collect()
 }
 
-/// Where the three bus forms sit in the batch's `η`-powers: the last three, AFTER
-/// every table's identity range, and shared by all tables rather than one triple
+/// Where the two bus forms sit in the batch's `η`-powers: the last two, AFTER
+/// every table's identity range, and shared by all tables rather than one pair
 /// per table. That sharing is what keeps the batch tied to the bus: with a common
 /// `η^{base+s}` per side, the batch's target is `Σ_s η^{FORM_POWS+s}·R_s` for
 /// the sides' table shares `R_s`, which the verifier DERIVES from the leaf claims
@@ -372,11 +376,11 @@ pub fn eta_form_base() -> usize {
     tables::tables().iter().map(|t| t.n_constraints()).sum()
 }
 
-/// The three shared form powers `η^{base}, η^{base+1}, η^{base+2}`.
-fn eta_form_pows(eta: F192) -> [F192; 3] {
+/// The two shared form powers `η^{base}, η^{base+1}`.
+fn eta_form_pows(eta: F192) -> [F192; 2] {
     let base = eta_form_base();
-    let pows = primitives::field::powers(eta, base + 3);
-    [pows[base], pows[base + 1], pows[base + 2]]
+    let pows = primitives::field::powers(eta, base + 2);
+    [pows[base], pows[base + 1]]
 }
 
 /// Lift each table's zerocheck evals (at its point `rho`) to global column claims.
@@ -526,7 +530,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         let l = &w.layout;
         let cols = w.columns();
         let bus = crate::stage!("Prove bus", || {
-            leaf::prove_balance(&l.push, &l.pull, &l.count, &cols, &owners, &spans, &mut ps)
+            leaf::prove_balance(&l.push, &l.pull, &cols, &owners, &spans, &mut ps)
         });
         let table_claims = crate::stage!("Prove constraints", || {
             // One sumcheck for all seven tables (§constraints).
@@ -629,7 +633,7 @@ fn bind_pi_claim(r: F192, placements: &[witness::Placement], limbs: [F192; 3]) -
 }
 
 /// Everything a recursion harness needs from an accepting verify run, named
-/// and typed: the deferred bytecode claims, the count-channel root, flock's
+/// and typed: the deferred bytecode claims, flock's
 /// reduction claims, and the stacked-opening summary (ring-switch challenges +
 /// WHIR fold/query data). The sub-proof scalars themselves live on
 /// `proof.stream`, ending at `flock_stream_end`. Ordinary callers just
@@ -638,7 +642,6 @@ pub struct VerifySummary {
     /// Transcript-bound inverse-rate logarithm used by this proof's PCS.
     pub log_inv_rate: usize,
     pub bytecode_claims: Vec<leaf::BytecodeClaim>,
-    pub count_root: F192,
     pub zc_claim: flock::zerocheck::ZerocheckClaim,
     pub lc_claim: flock::lincheck::LincheckClaim,
     /// Stream cursor just after flock's reduction, i.e. where the PCS opening's
@@ -668,7 +671,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let n_blake2s = 1usize << l.taus[tables::BLAKE2S_TABLE];
 
     let (owners, spans) = bus_wiring(program, &l);
-    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &owners, &spans, &mut vs).map_err(Error::Bus)?;
+    let bus = leaf::verify_balance(&l.push, &l.pull, &owners, &spans, &mut vs).map_err(Error::Bus)?;
 
     let zc_eta = vs.sample();
     let form_pows = eta_form_pows(zc_eta);
@@ -679,7 +682,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // are fixed, hitting that one number forces `Σ_t σ_{s,t} = R_s` on all three
     // sides. A transmitted target would be a free value in its own check, and the
     // tables' bus blocks would be settled by nothing at all.
-    let target = (0..3).fold(F192::ZERO, |a, s| a + form_pows[s] * bus.totals[s]);
+    let target = (0..2).fold(F192::ZERO, |a, s| a + form_pows[s] * bus.totals[s]);
     let table_claims = constraints::verify(
         &airs(&l.taus, &bus.forms, form_pows),
         zc_eta,
@@ -716,7 +719,6 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
-        count_root: bus.count_root,
         zc_claim: replay.zc_claim,
         lc_claim: replay.lc_claim,
         log_inv_rate,

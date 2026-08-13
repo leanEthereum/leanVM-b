@@ -1181,7 +1181,7 @@ fn push_coord_terms(
 /// and the placeholder map descriptors are built from this one walk, so the two
 /// stay index-aligned by construction rather than by two matching count asserts.
 fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(ClaimSite)) {
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
+    let sides: [&[Block]; 2] = [&l.push, &l.pull];
     let valcols = blake2s_value_columns();
     // Only the framework blocks raise claims: a table's coords are settled inside
     // the table sumcheck.
@@ -1244,7 +1244,7 @@ fn gen_verify(
         std::array::from_fn(|i| raw[1 + i].c0 as usize),
         pi,
     );
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
+    let sides: [&[Block]; 2] = [&l.push, &l.pull];
     let lays: Vec<lean_vm::leaf::Layout> = sides.iter().map(|b| lean_vm::leaf::layout(b)).collect();
     let smu: Vec<usize> = lays.iter().map(|x| x.mu).collect();
     // Fixed capacities: every buffer/stride placeholder is a global cap so
@@ -1848,7 +1848,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         [1usize << 10; lean_vm::tables::N_TABLES],
         [F192::ZERO, F192::ZERO],
     );
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
+    let sides: [&[Block]; 2] = [&l.push, &l.pull];
     let lcrounds = flock::blake2s::K_LOG - 6;
 
     // ---- flattened block/coord descriptors (structural) ----
@@ -2046,17 +2046,34 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("N_CLAIMS", ncl.to_string());
     ps("N_TABLES", l.taus.len().to_string());
     // The table sumcheck's eta layout, from the native verifier's own numbers:
-    // a disjoint range of identities per table, then THREE powers shared by every
+    // a disjoint range of identities per table, then TWO powers shared by every
     // table, one per bus side. Sharing is what lets the target be derived from the
-    // three leaf claims instead of trusted (lean_vm::cpu::eta_form_base).
+    // two leaf claims instead of trusted (lean_vm::cpu::eta_form_base).
     let n_id: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
     let form_base = lean_vm::cpu::eta_form_base();
-    ps(
-        "ETA_OFFSET",
-        ints(&lean_vm::constraints::eta_offsets(n_id.iter().copied())),
-    );
+    let eta_offsets = lean_vm::constraints::eta_offsets(n_id.iter().copied());
+    ps("ETA_OFFSET", ints(&eta_offsets));
     ps("ETA_FORM_BASE", form_base.to_string());
-    ps("N_ETA_POWS", (form_base + 3).to_string());
+    ps("N_ETA_POWS", (form_base + 2).to_string());
+    // The count-inverse identities, flattened in table order: each names the read
+    // count's local column, its inverse's, and the eta power it folds with (the
+    // table's own identities come first inside its range).
+    let (mut cnt_off, mut cnt_n) = (vec![], vec![]);
+    let (mut cnt_col, mut cnt_inv, mut cnt_eta) = (vec![], vec![], vec![]);
+    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
+        cnt_off.push(cnt_col.len());
+        cnt_n.push(table.count_columns().len());
+        for (i, &c) in table.count_columns().iter().enumerate() {
+            cnt_col.push(c);
+            cnt_inv.push(lean_vm::tables::inverse_column(*table, i));
+            cnt_eta.push(eta_offsets[t] + table.n_own_constraints() + i);
+        }
+    }
+    ps("CNT_TABLE_OFF", ints(&cnt_off));
+    ps("CNT_TABLE_COUNT", ints(&cnt_n));
+    ps("CNT_COL", ints(&cnt_col));
+    ps("CNT_INV_COL", ints(&cnt_inv));
+    ps("CNT_ETA", ints(&cnt_eta));
     let committed: Vec<usize> = lean_vm::tables::tables()
         .iter()
         .map(|t| t.n_committed_columns())

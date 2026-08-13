@@ -1,7 +1,7 @@
 //! Per-instruction tables (`doc/leanvm/body/07-instruction-tables.tex`). Each opcode is one [`Table`] impl that declares,
 //! in one place, its committed columns, how to fill them from the trace, its bus
-//! interactions (flushes), the read-count columns that feed the count channel,
-//! and its degree-2 constraint. Column indices here are *local* (`0..n_committed_columns`);
+//! interactions (flushes), its read-count columns, and its degree-2 constraint.
+//! Column indices here are *local* (`0..n_committed_columns`);
 //! `cpu`'s schema offsets them to global witness columns.
 //!
 //! Columns are `K`-valued (`F64`). The pc/fp, operands, counts, opcodes and
@@ -291,14 +291,50 @@ impl<'a> FillCtx<'a> {
 
 /// Fill one table's columns and check that every window was written. The stack is
 /// allocated uninitialized, so a column the table forgot would be read as
-/// indeterminate bytes rather than caught by a length mismatch.
+/// indeterminate bytes rather than caught by a length mismatch. The count
+/// inverses are then filled from the counts the table just wrote: they are the
+/// framework's columns, not the table's, so no `fill` mentions them.
 pub(crate) fn fill_table(table: &dyn Table, ctx: &FillCtx, out: &mut [ColumnOut]) {
     table.fill(ctx, out);
-    let n = table.n_committed_columns();
-    assert!(n <= 64, "the write mask covers at most 64 columns per table");
-    let all = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
+    let n = table.n_own_columns();
+    assert!(n < 64, "the write mask covers at most 63 own columns per table");
+    let all = (1u64 << n) - 1;
     let written = ctx.written.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(written, all, "a table left one of its columns unwritten");
+    let (own, inverses) = out.split_at_mut(n);
+    for (i, &c) in table.count_columns().iter().enumerate() {
+        invert_column(own[c], inverses[i]);
+    }
+}
+
+/// `dst = src⁻¹` pointwise, by Montgomery's trick: one field inversion per
+/// window and three multiplies an element, against the ~70 that
+/// [`F64::inv`](primitives::field::F64::inv)'s addition chain costs each. Every
+/// source is a `g`-power, hence invertible.
+fn invert_column(src: &[F64], dst: &mut [F64]) {
+    let window = |src: &[F64], dst: &mut [F64]| {
+        let n = src.len();
+        dst[0] = src[0];
+        for i in 1..n {
+            dst[i] = dst[i - 1] * src[i];
+        }
+        let mut acc = dst[n - 1].inv();
+        for i in (1..n).rev() {
+            dst[i] = acc * dst[i - 1];
+            acc *= src[i];
+        }
+        dst[0] = acc;
+    };
+    assert_eq!(src.len(), dst.len());
+    if dst.len() < crate::PAR_THRESHOLD {
+        window(src, dst);
+        return;
+    }
+    let chunk = dst.len().div_ceil(parallel::num_threads()).max(1);
+    parallel::chunks_mut(dst, chunk, |index, slice| {
+        let base = index * chunk;
+        window(&src[base..base + slice.len()], slice);
+    });
 }
 
 // ---- the trait ---------------------------------------------------------------
@@ -306,19 +342,32 @@ pub(crate) fn fill_table(table: &dyn Table, ctx: &FillCtx, out: &mut [ColumnOut]
 /// One instruction table. Indices in [`flushes`](Table::flushes) and
 /// [`count_columns`](Table::count_columns) are local to this table.
 pub trait Table: Sync {
-    /// Number of committed columns (local indices `0..n_committed_columns`).
-    fn n_committed_columns(&self) -> usize;
+    /// Number of columns the table lays out itself (local indices
+    /// `0..n_own_columns`). The framework appends one more per read count, so
+    /// [`n_committed_columns`](Table::n_committed_columns) is what the schema uses.
+    fn n_own_columns(&self) -> usize;
     /// Local indices of this table's read-count columns: the `g^{count}` values
-    /// recording how many times each accessed cell (and the pc) was read. The
-    /// framework treats them specially: each gets its own single-column "count"
-    /// bus block, and padding rows fill them with `1` (= g^0) instead of `0`.
+    /// recording how many times each accessed cell (and the pc) was read. Each
+    /// must be nonzero, or its row's push and pull tuples coincide and the read
+    /// self-cancels (§sec:memchan), so the framework appends an INVERSE column
+    /// per count and an identity `count · inverse = 1` tying the two.
     fn count_columns(&self) -> &'static [usize];
+    /// Committed columns in all: the table's own, then one inverse per read count
+    /// at [`inverse_column`].
+    fn n_committed_columns(&self) -> usize {
+        self.n_own_columns() + self.count_columns().len()
+    }
     /// How many identities [`eval_constraint`](Table::eval_constraint) folds.
-    /// Sizes this table's slice of the batch's disjoint `eta`-range (§constraints).
     /// Defaults to none, which is every table but `JUMP`: a relation whose value
     /// rides the bus as a coordinate needs no identity to tie it (§sec:m3).
-    fn n_constraints(&self) -> usize {
+    fn n_own_constraints(&self) -> usize {
         0
+    }
+    /// Identities in all: the table's own, then one `count · inverse = 1` per read
+    /// count ([`eval_count_inverses`]). This is what sizes the table's slice of the
+    /// batch's disjoint `eta`-range (§constraints).
+    fn n_constraints(&self) -> usize {
+        self.n_own_constraints() + self.count_columns().len()
     }
     /// Evaluate the table's degree-2 constraint at one row, reading column values
     /// by local index from `cols` (e.g. `cols[jump::C_LO]`) and weighting identity
@@ -347,6 +396,26 @@ pub trait Table: Sync {
     /// use `FillCtx::col` / `FillCtx::cols`, which append the column's pad value
     /// past the last trace row and record the coverage `fill_table` checks.
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
+}
+
+/// Local index of the inverse of the table's `i`-th read count: the framework's
+/// columns sit after the table's own, in [`Table::count_columns`] order.
+pub fn inverse_column(table: &dyn Table, i: usize) -> usize {
+    table.n_own_columns() + i
+}
+
+/// The count-inverse identities of one table: `count · inverse = 1` per read
+/// count, which is what forces every count nonzero (§sec:memchan). `pows` is the
+/// tail of the table's `eta`-range, after its own identities. Written once
+/// against [`ColVal`], so the `K` and `E` entry points cannot drift.
+pub fn eval_count_inverses<T: crate::colval::ColVal>(table: &dyn Table, pows: &[F192], cols: &[T]) -> F192 {
+    table
+        .count_columns()
+        .iter()
+        .enumerate()
+        .fold(F192::ZERO, |acc, (i, &c)| {
+            acc + (cols[c] * cols[inverse_column(table, i)] + T::ONE).mul_e(pows[i])
+        })
 }
 
 /// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE2S, PACK64X2]`, the
@@ -481,7 +550,7 @@ fn arith_result(is_xor: bool) -> [Coord; 3] {
 }
 
 impl Table for Arith {
-    fn n_committed_columns(&self) -> usize {
+    fn n_own_columns(&self) -> usize {
         arith::N
     }
     fn count_columns(&self) -> &'static [usize] {
@@ -546,7 +615,7 @@ mod set {
 }
 
 impl Table for SetTable {
-    fn n_committed_columns(&self) -> usize {
+    fn n_own_columns(&self) -> usize {
         set::N
     }
     fn count_columns(&self) -> &'static [usize] {
@@ -631,7 +700,7 @@ fn deref_store() -> [Coord; 3] {
 }
 
 impl Table for DerefTable {
-    fn n_committed_columns(&self) -> usize {
+    fn n_own_columns(&self) -> usize {
         deref::N
     }
     fn count_columns(&self) -> &'static [usize] {
@@ -725,14 +794,14 @@ mod jump {
 }
 
 impl Table for JumpTable {
-    fn n_committed_columns(&self) -> usize {
+    fn n_own_columns(&self) -> usize {
         jump::N
     }
     fn count_columns(&self) -> &'static [usize] {
         use jump::*;
         &[RC, RD, RF, RBC]
     }
-    fn n_constraints(&self) -> usize {
+    fn n_own_constraints(&self) -> usize {
         2 // the two indicator identities; the selections ride the state push
     }
     fn eval_constraint(&self, pows: &[F192], cols: &[F192]) -> F192 {
@@ -848,7 +917,7 @@ mod pack64 {
 }
 
 impl Table for Pack64x2Table {
-    fn n_committed_columns(&self) -> usize {
+    fn n_own_columns(&self) -> usize {
         pack64::N
     }
 
@@ -944,7 +1013,7 @@ pub(crate) mod blake2st {
 }
 
 impl Table for Blake2sTable {
-    fn n_committed_columns(&self) -> usize {
+    fn n_own_columns(&self) -> usize {
         blake2st::N
     }
     fn count_columns(&self) -> &'static [usize] {

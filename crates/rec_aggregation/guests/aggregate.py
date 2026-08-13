@@ -12,15 +12,14 @@ INV_GEN = INV_GEN_PLACEHOLDER
 # kappas.
 PUSH_SIDE = 0
 PULL_SIDE = 1
-COUNT_SIDE = 2
-N_GKR_SIDES = 3
+N_GKR_SIDES = 2
 # GKR runtime-loop chain capacities: per-tree round positions (triangle
 # rounds plus one slot per layer) and the point triangle (rows x MU_CAP).
 GKR_ROUNDS_CAP = GKR_ROUNDS_CAP_PLACEHOLDER
 MU_CAP = MU_CAP_PLACEHOLDER
 GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 
-# Bus blocks, flattened across the 3 sides (side s covers blocks
+# Bus blocks, flattened across the 2 sides (side s covers blocks
 # [SIDE_BLOCK_START[s], SIDE_BLOCK_START[s+1])). The block STRUCTURE is
 # protocol-fixed and baked: each block's coord range [BLOCK_COORD_OFF,
 # +BLOCK_COORD_COUNT), per coord COORD_TYPE (0=const, 1=col, 2=gcol, 3=index,
@@ -54,8 +53,7 @@ COORD_CONST = COORD_CONST_PLACEHOLDER
 # Claim dedup: push/pull share their GKR point, so a column read by two blocks
 # with the same kappa (across OR within the sides) is streamed and opened ONCE.
 # Per coord: COORD_FRESH = 1 on the first occurrence (read the stream, fill
-# pool slot COORD_CLAIM_SLOT), 0 on a duplicate (reuse that slot). The count
-# side has its own point, so its claims never dedup against the pair's.
+# pool slot COORD_CLAIM_SLOT), 0 on a duplicate (reuse that slot).
 COORD_FRESH = COORD_FRESH_PLACEHOLDER
 COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
 # A TABLE block's coordinates, flattened into TERMS: coord c is
@@ -89,12 +87,22 @@ LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # evaluation frame. ETA_OFFSET[t] starts table t's disjoint range of eta-powers.
 N_TABLE_COLS = N_TABLE_COLS_PLACEHOLDER
 TABLE_COLS_CAP = TABLE_COLS_CAP_PLACEHOLDER
-# ETA_OFFSET[t] starts table t's disjoint range of identity powers; the three bus
-# forms take ETA_FORM_BASE + side, the SAME three powers for every table. That
-# sharing is what makes the batch's target derivable from the three leaf claims.
+# ETA_OFFSET[t] starts table t's disjoint range of identity powers; the two bus
+# forms take ETA_FORM_BASE + side, the SAME two powers for every table. That
+# sharing is what makes the batch's target derivable from the two leaf claims.
 ETA_OFFSET = ETA_OFFSET_PLACEHOLDER
 ETA_FORM_BASE = ETA_FORM_BASE_PLACEHOLDER
 N_ETA_POWS = N_ETA_POWS_PLACEHOLDER
+# Read counts must be nonzero, or a row's push and pull tuples coincide and the
+# read self-cancels (doc sec:memchan). Each is paired with a committed inverse
+# column and the identity `count · inverse = 1`: table t owns entries
+# [CNT_TABLE_OFF[t], +CNT_TABLE_COUNT[t]) of the flat lists, each naming the
+# count's local column, its inverse's, and the eta power the identity folds with.
+CNT_TABLE_OFF = CNT_TABLE_OFF_PLACEHOLDER
+CNT_TABLE_COUNT = CNT_TABLE_COUNT_PLACEHOLDER
+CNT_COL = CNT_COL_PLACEHOLDER
+CNT_INV_COL = CNT_INV_COL_PLACEHOLDER
+CNT_ETA = CNT_ETA_PLACEHOLDER
 # The instruction tables, in schema order:
 TABLE_XOR = 0
 TABLE_MUL = 1
@@ -1101,7 +1109,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for b in unroll(0, N_BLOCKS):
         block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
     # The ONE bus depth, COMPUTED (not hinted): mu = log2_ceil(Σ_b 2^κ_b) over
-    # PUSH's blocks; pull matches by pairing, the count tree is padded to it.
+    # PUSH's blocks; pull matches it by pairing.
     push_total = GEN ** 0
     for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
         push_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
@@ -1130,12 +1138,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         fp_w[GEN ** x] = eq_weight(bus_alpha, N_TUPLE_BITS, x, 0)
     fs, gamma = squeeze(fs)
 
-    # ---- ONE GKR grand product: push, pull, and count RLC-batched ----
-    # Push and pull have equal depth (matched blocks) and the count tree is
-    # padded with identity leaves up to it (product unchanged), so a single
-    # sumcheck serves all three trees. Radix four contracts two binary levels
+    # ---- ONE GKR grand product: push and pull RLC-batched ----
+    # Push and pull have equal depth (matched blocks), so a single sumcheck
+    # serves both trees. Radix four contracts two binary levels
     # per layer; after checking the combined product identity, a fresh λ pins
-    # the individual values. All three trees reduce to one shared point zeta.
+    # the individual values. Both trees reduce to one shared point zeta.
     # State threads through write-once heap chains: layer state indexed by the
     # layer cursor, round state by a position pointer advancing per round.
     gkr_roots = StackBuf(N_GKR_SIDES)
@@ -1146,7 +1153,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     gkr_layer_cursor = HeapBuf(gkr_layer_size)
     gkr_layer_claim = HeapBuf(gkr_layer_size)    # push's running value
     gkr_layer_claim_b = HeapBuf(gkr_layer_size)  # pull's
-    gkr_layer_claim_c = HeapBuf(gkr_layer_size)  # count's
     gkr_layer_lambda = HeapBuf(gkr_layer_size)   # the layer's combiner
     gkr_layer_row = HeapBuf(gkr_layer_size)
     gkr_layer_round_pos = HeapBuf(gkr_layer_size)
@@ -1158,15 +1164,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     assert log(g_bus_mu) < COUNT_BITS
     fs, root_push, cursor = fs_next(fs, cursor)
     fs, root_pull, cursor = fs_next(fs, cursor)
-    fs, root_count, cursor = fs_next(fs, cursor)
     fs, initial_layer_lambda = squeeze(fs)
-    gkr_layer_lambda[GEN ** 0] = initial_layer_lambda  # λ over the three roots
+    gkr_layer_lambda[GEN ** 0] = initial_layer_lambda  # λ over the two roots
     gkr_layer_fs0[GEN ** 0] = fs[0]
     gkr_layer_fs1[GEN ** 0] = fs[1]
     gkr_layer_cursor[GEN ** 0] = cursor
     gkr_layer_claim[GEN ** 0] = root_push
     gkr_layer_claim_b[GEN ** 0] = root_pull
-    gkr_layer_claim_c[GEN ** 0] = root_count
     gkr_layer_row[GEN ** 0] = gkr_pts
     gkr_layer_round_pos[GEN ** 0] = GEN ** 0
 
@@ -1188,7 +1192,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         x_layer = GEN ** 0
         layer_fs = [gkr_layer_fs0[x_layer], gkr_layer_fs1[x_layer]]
         lam = gkr_layer_lambda[x_layer]
-        claim_l = gkr_layer_claim[x_layer] + lam * (gkr_layer_claim_b[x_layer] + lam * gkr_layer_claim_c[x_layer])
+        claim_l = gkr_layer_claim[x_layer] + lam * gkr_layer_claim_b[x_layer]
         point_row = gkr_layer_row[x_layer]
         round_pos = gkr_layer_round_pos[x_layer]
         nextrow = point_row * GEN ** MU_CAP
@@ -1204,15 +1208,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         tail_fs, e1_push, tcur = fs_next(tail_fs, tcur)
         tail_fs, e0_pull, tcur = fs_next(tail_fs, tcur)
         tail_fs, e1_pull, tcur = fs_next(tail_fs, tcur)
-        tail_fs, e0_count, tcur = fs_next(tail_fs, tcur)
-        tail_fs, e1_count, tcur = fs_next(tail_fs, tcur)
-        assert tclaim == e0_push * e1_push + lam * (e0_pull * e1_pull + lam * (e0_count * e1_count))
+        assert tclaim == e0_push * e1_push + lam * (e0_pull * e1_pull)
         tail_fs, layer_challenge = squeeze(tail_fs)
         nextrow[GEN ** 0] = layer_challenge
         xln = x_layer * GEN
         gkr_layer_claim[xln] = e0_push + layer_challenge * (e0_push + e1_push)
         gkr_layer_claim_b[xln] = e0_pull + layer_challenge * (e0_pull + e1_pull)
-        gkr_layer_claim_c[xln] = e0_count + layer_challenge * (e0_count + e1_count)
         tail_fs, tail_lambda = squeeze(tail_fs)  # fresh λ pins the tail individuals
         gkr_layer_lambda[xln] = tail_lambda
         gkr_layer_fs0[xln] = tail_fs[0]
@@ -1226,7 +1227,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         x_layer = x_pair * x_pair * gkr_depth_shift[g_bus_mu]
         layer_fs = [gkr_layer_fs0[x_layer], gkr_layer_fs1[x_layer]]
         lam = gkr_layer_lambda[x_layer]
-        claim_l = gkr_layer_claim[x_layer] + lam * (gkr_layer_claim_b[x_layer] + lam * gkr_layer_claim_c[x_layer])
+        claim_l = gkr_layer_claim[x_layer] + lam * gkr_layer_claim_b[x_layer]
         point_row = gkr_layer_row[x_layer]
         round_pos = gkr_layer_round_pos[x_layer]
         nextrow = point_row * GEN ** MU_CAP
@@ -1255,14 +1256,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         tail_fs, e1_pull, tcur = fs_next(tail_fs, tcur)
         tail_fs, e2_pull, tcur = fs_next(tail_fs, tcur)
         tail_fs, e3_pull, tcur = fs_next(tail_fs, tcur)
-        tail_fs, e0_count, tcur = fs_next(tail_fs, tcur)
-        tail_fs, e1_count, tcur = fs_next(tail_fs, tcur)
-        tail_fs, e2_count, tcur = fs_next(tail_fs, tcur)
-        tail_fs, e3_count, tcur = fs_next(tail_fs, tcur)
         push_product = e0_push * e1_push * e2_push * e3_push
         pull_product = e0_pull * e1_pull * e2_pull * e3_pull
-        count_product = e0_count * e1_count * e2_count * e3_count
-        assert tclaim == push_product + lam * (pull_product + lam * count_product)
+        assert tclaim == push_product + lam * pull_product
         tail_fs, c0 = squeeze(tail_fs)
         tail_fs, c1 = squeeze(tail_fs)
         nextrow[GEN ** 0] = c0
@@ -1271,12 +1267,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         push_hi = e2_push + c0 * (e2_push + e3_push)
         pull_lo = e0_pull + c0 * (e0_pull + e1_pull)
         pull_hi = e2_pull + c0 * (e2_pull + e3_pull)
-        count_lo = e0_count + c0 * (e0_count + e1_count)
-        count_hi = e2_count + c0 * (e2_count + e3_count)
         xln = x_layer * GEN ** 2
         gkr_layer_claim[xln] = push_lo + c1 * (push_lo + push_hi)
         gkr_layer_claim_b[xln] = pull_lo + c1 * (pull_lo + pull_hi)
-        gkr_layer_claim_c[xln] = count_lo + c1 * (count_lo + count_hi)
         tail_fs, tail_lambda = squeeze(tail_fs)
         gkr_layer_lambda[xln] = tail_lambda
         gkr_layer_fs0[xln] = tail_fs[0]
@@ -1291,13 +1284,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         zeta[xt] = final_point_row[xt]  # the ONE shared point
     gkr_roots[PUSH_SIDE] = root_push
     gkr_roots[PULL_SIDE] = root_pull
-    gkr_roots[COUNT_SIDE] = root_count
     gkr_claims[PUSH_SIDE] = gkr_layer_claim[g_bus_mu]
     gkr_claims[PULL_SIDE] = gkr_layer_claim_b[g_bus_mu]
-    gkr_claims[COUNT_SIDE] = gkr_layer_claim_c[g_bus_mu]
-
-    # ---- count root nonzero ----
-    assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
 
     # ---- per-block shape data ----
     # kappa and the bus depth were derived above; the selector bits are
@@ -1323,18 +1311,16 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         block_side_tab[GEN ** b] = BLOCK_SIDE[b]
     block_off_g = HeapBuf(N_BLOCKS)  # g^offset per block, keyed by global index
     # Pull's blocks mirror push's and share zeta, so the decompose reuses push's
-    # per-block eq_hi outright: only push and count need offsets here (pull's
-    # sort_order slots go unread).
-    for cert in unroll(0, 2):
-        s = COUNT_SIDE * cert  # PUSH_SIDE (0), then COUNT_SIDE (2)
-        g_off = GEN ** 0
-        for r in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            global_g = sort_order[GEN ** r]      # g^{global block index at this rank}
-            assert log(global_g) < N_BLOCKS      # a valid block index
-            assert block_side_tab[global_g] == s  # ...belonging to THIS side
-            block_off_g[global_g] = g_off        # write-once: a repeat collides;
-            g_off *= g_squares[block_kappa[global_g]]  # an omission fails the
-    #                                              # decompose's offset read.
+    # per-block eq_hi outright: only push needs offsets here (pull's sort_order
+    # slots go unread).
+    g_off = GEN ** 0
+    for r in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
+        global_g = sort_order[GEN ** r]                 # g^{global block index at this rank}
+        assert log(global_g) < N_BLOCKS                 # a valid block index
+        assert block_side_tab[global_g] == PUSH_SIDE    # ...belonging to THIS side
+        block_off_g[global_g] = g_off                   # write-once: a repeat collides;
+        g_off *= g_squares[block_kappa[global_g]]       # an omission fails the
+    #                                                   # decompose's offset read.
 
     # ---- balance: push_root == pull_root ----
     # Every row of every table is a real row, so the two sides balance outright:
@@ -1343,7 +1329,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # exponent.
     assert gkr_roots[PUSH_SIDE] == gkr_roots[PULL_SIDE]
 
-    # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
+    # ---- 2× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
     # The program's whole share of a bytecode leaf is ONE evaluation of the stacked
     # polynomial: its slots are aligned with the tuple and the weights are eq(α⃗, ·),
     # so the share IS that polynomial at (ζ_lo, α⃗) (doc sec:e2e-bc). One hinted
@@ -1407,8 +1393,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             # fingerprint from that table's column evaluations. Only the framework blocks
             # (boundary, memory, bytecode) still decompose.
             if BLOCK_TABLE[b] == NO_TABLE:
-                # inner fingerprint Σ_i w_i · coord_i(ζ_lo); the count side weighs
-                # slot 0 alone (α⃗ = 0), γ = 0.
+                # inner fingerprint Σ_i w_i · coord_i(ζ_lo).
                 inner_sum = 0
                 for i in unroll(0, BLOCK_COORD_COUNT[b]):
                     ci = BLOCK_COORD_OFF[b] + i  # a compile-time index, so `ci` costs nothing
@@ -1446,16 +1431,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                         # (push and pull share zeta, so both get the same one).
                         coord_val = 0
                         block_has_public = 1
-                    if s == COUNT_SIDE:
-                        inner_sum += coord_val
-                    else:
-                        inner_sum += fp_w[GEN ** i] * coord_val
+                    inner_sum += fp_w[GEN ** i] * coord_val
                 # The bytecode blocks' public slots, all of them at once.
                 inner_sum += block_has_public * bc_share
-                if s == COUNT_SIDE:
-                    acc += eq_hi * inner_sum
-                else:
-                    acc += eq_hi * (gamma + inner_sum)
+                acc += eq_hi * (gamma + inner_sum)
         acc += 1 + selector_sum
         # What the tables' blocks owe this side: its GKR leaf value less the
         # framework decomposition. DERIVED, not read: a transmitted total would be a
@@ -1498,10 +1477,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # The eq point is the bus GKR's zeta, NOT a fresh one: that is what lets the
     # batch settle the bus forms alongside the constraints.
     #
-    # THE tie to the bus, and the reason no target is read: what the three sides'
+    # THE tie to the bus, and the reason no target is read: what the two sides'
     # tables owe, each in its own shared power of eta, IS the sum the batch must
     # reach. Since eta is squeezed after those totals are fixed, hitting one number
-    # forces all three side equations.
+    # forces both side equations.
     bus_target = 0
     for sd in unroll(0, N_GKR_SIDES):
         bus_target += eta_pows[ETA_FORM_BASE + sd] * bus_table_total[GEN ** sd]
@@ -1578,7 +1557,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             constraint_eval = 0
         if t == TABLE_PACK64X2:
             constraint_eval = 0
-        # The table's three bus forms, evaluated at the SAME column evaluations:
+        # Every read count is pinned nonzero by its committed inverse: the
+        # framework appends one inverse column per count and the identity
+        # `count · inverse = 1` (doc sec:memchan).
+        for j in unroll(0, CNT_TABLE_COUNT[t]):
+            jj = CNT_TABLE_OFF[t] + j
+            constraint_eval += eta_pows[CNT_ETA[jj]] * (col_evals[CNT_COL[jj]] * col_evals[CNT_INV_COL[jj]] + 1)
+        # The table's two bus forms, evaluated at the SAME column evaluations:
         # Σ_b eq_hi(b) · (γ + Σ_i α^i · coord_i), the coords read off col_evals at
         # their local index. This is what replaces opening those columns at ζ.
         for sd in unroll(0, N_GKR_SIDES):
@@ -1604,14 +1589,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                                     cv += TERM_CONST[tj] * col_evals[TERM_COL_A[tj]]
                                 if TERM_TYPE[tj] == COORD_KIND_PROD:
                                     cv += TERM_CONST[tj] * (col_evals[TERM_COL_A[tj]] * col_evals[TERM_COL_B[tj]])
-                            if sd == COUNT_SIDE:
-                                inner += cv
-                            else:
-                                inner += fp_w[GEN ** i] * cv
-                        if sd == COUNT_SIDE:
-                            form += block_eq_all[GEN ** b] * inner
-                        else:
-                            form += block_eq_all[GEN ** b] * (gamma + inner)
+                            inner += fp_w[GEN ** i] * cv
+                        form += block_eq_all[GEN ** b] * (gamma + inner)
             constraint_eval += eta_pows[ETA_FORM_BASE + sd] * form
         air_acc += zc_round_cprod[g_zc_n / tau_g] * zc_peq[tau_g] * constraint_eval  # cprod[n - tau] * peq[tau]
     assert air_acc == claim

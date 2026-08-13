@@ -558,15 +558,15 @@ class Transcript:
 
 
 @dataclass(frozen=True)
-class ProductTriple:
-    roots: tuple[E, E, E]
+class ProductPair:
+    roots: tuple[E, E]
     point: tuple[E, ...]
-    values: tuple[E, E, E]
+    values: tuple[E, E]
 
 
-def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
-    root_values = transcript.scalars(3)
-    roots = (root_values[0], root_values[1], root_values[2])
+def verify_product_pair(depth: int, transcript: Transcript) -> ProductPair:
+    root_values = transcript.scalars(2)
+    roots = (root_values[0], root_values[1])
     combine = transcript.sample()
     point: list[E] = []
     values = list(roots)
@@ -579,7 +579,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
         width = 1 if layer % 2 else 2
         round_count = depth - layer
         require(width == 2 or round_count == 0, "binary GKR layer is not root-most")
-        claim = values[0] + combine * (values[1] + combine * values[2])
+        claim = values[0] + combine * values[1]
 
         round_point: list[E] = []
         for prior in point[:round_count]:
@@ -593,9 +593,9 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
             c1 = difference + c2 + c3 + c4
             claim = c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
 
-        tails = [transcript.scalars(2**width) for _ in range(3)]
+        tails = [transcript.scalars(2**width) for _ in range(2)]
         products = [reduce(mul, tail) for tail in tails]
-        expected = products[0] + combine * (products[1] + combine * products[2])
+        expected = products[0] + combine * products[1]
         require(claim == expected, f"GKR layer {layer}: tail mismatch")
         challenges = transcript.samples(width)
         values = [multilinear_eval(tail, challenges) for tail in tails]
@@ -603,7 +603,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
         point = [*challenges, *round_point]
         layer -= width
 
-    return ProductTriple(roots, tuple(point), (values[0], values[1], values[2]))
+    return ProductPair(roots, tuple(point), (values[0], values[1]))
 
 
 # Bus balance and decomposition ---------------------------------------------
@@ -698,27 +698,25 @@ class BusResult:
     claims: tuple[ColumnClaim, ...]
     point: tuple[E, ...]  # the GKR point zeta, which the table sumcheck reuses
     forms: tuple[tuple[Form, ...], ...]  # forms[side][table]
-    totals: tuple[E, E, E]  # what the tables owe each side, derived
+    totals: tuple[E, E]  # what the tables owe each side, derived
 
 
 def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     framework = layout.framework
     push_layout = bus_layout(framework.log_rows, layout.push)
     pull_layout = bus_layout(framework.log_rows, layout.pull)
-    count_layout = bus_layout((), layout.count)
     require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
-    require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
     alphas = transcript.samples(BUS_BITS)
     weights = eq_kernel(alphas)
     gamma = transcript.sample()
-    product = verify_product_triple(push_layout.depth, transcript)
-    push_root, pull_root, count_root = product.roots
-    require(count_root != ZERO, "a bus read count is zero")
+    product = verify_product_pair(push_layout.depth, transcript)
+    push_root, pull_root = product.roots
 
     # Every row of every table is a real row: the prover's fill blocks bring each
     # table's count up to a power of two, so the two sides balance outright with no
-    # padding surplus to divide back out.
+    # padding surplus to divide back out. Nor can a read self-cancel: a zero count
+    # would break its table's `count * inverse = 1` identity (doc sec:memchan).
     require(push_root == pull_root, "bus is unbalanced")
 
     # The framework blocks' committed columns, in the order the two sides first
@@ -751,13 +749,10 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
             + multilinear_eval(framework.bytecode, (*bytecode_low, *alphas)),
         )
 
-    forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
+    forms = tuple(tuple(Form() for _ in TABLES) for _ in range(2))
     sides = (
         (layout.push, push_layout, fingerprints(ONE, ONE, ONE), weights, gamma),
         (layout.pull, pull_layout, fingerprints(framework.final_pc, memory_final, bytecode_final), weights, gamma),
-        # The count channel owns no framework block and runs at alpha = gamma = 0:
-        # its leaf IS the read count.
-        (layout.count, count_layout, (), eq_kernel((ZERO,) * BUS_BITS), ZERO),
     )
     totals = []
     for side, (blocks, side_layout, framework_fingerprints, side_weights, side_gamma) in enumerate(sides):
@@ -783,7 +778,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     # The recursive verifier defers a claim on the public bytecode polynomial. Its
     # point comes from alpha alone (doc sec:e2e-bc), so nothing is observed here and
     # no selector challenge is drawn.
-    return BusResult(tuple(claims), point, forms, (totals[0], totals[1], totals[2]))
+    return BusResult(tuple(claims), point, forms, (totals[0], totals[1]))
 
 
 # Table sumcheck -------------------------------------------------------------
@@ -798,8 +793,8 @@ class Air:
     forms: tuple[Form, ...]
 
     def evaluate(self, constraint_powers: Sequence[E], form_powers: Sequence[E], columns: Sequence[E]) -> E:
-        """This table's share of the batch's summand: its constraints, then its bus forms."""
-        terms = self.table.constraints(lambda name: columns[self.table.col(name)])
+        """This table's share of the batch's summand: its identities, then its bus forms."""
+        terms = self.table.identities(lambda name: columns[self.table.col(name)])
         constraints = dot(constraint_powers, terms)
         buses = dot(form_powers, [form.evaluate(lambda index: columns[index]) for form in self.forms])
         return constraints + buses
@@ -873,7 +868,6 @@ class Layout:
     framework: Framework
     push: tuple[BusBlock, ...]
     pull: tuple[BusBlock, ...]
-    count: tuple[BusBlock, ...]
     placements: tuple[Placement, ...]
     stack_log: int
     table_logs: tuple[int, ...]
@@ -963,13 +957,29 @@ class Table:
 
     name: str
     opcode: int  # also its index in TABLES, so g^opcode is its bytecode tag
-    columns: tuple[str, ...]
+    own_columns: tuple[str, ...]
     flushes: Callable[[Table], Flushes]
     constraints: Callable[[Callable[[str], E]], tuple[E, ...]] = lambda _: ()
 
     @property
+    def columns(self) -> tuple[str, ...]:
+        """The table's own columns, then the inverse of each read count.
+
+        A zero count makes a row's push and pull tuples coincide, so the read
+        self-cancels and its value is freed from memory (doc sec:memchan). The
+        inverse column and the identity ``count * inverse = 1`` below are what
+        rule that out.
+        """
+        return (*self.own_columns, *(f"inv_{self.own_columns[i]}" for i in self.count_columns))
+
+    def identities(self, get: Callable[[str], E]) -> tuple[E, ...]:
+        """The table's own constraints, then one count-inverse identity per read count."""
+        inverses = tuple(get(self.own_columns[i]) * get(f"inv_{self.own_columns[i]}") + ONE for i in self.count_columns)
+        return (*self.constraints(get), *inverses)
+
+    @property
     def n_constraints(self) -> int:
-        return len(self.constraints(lambda _: ZERO))
+        return len(self.identities(lambda _: ZERO))
 
     @property
     def width(self) -> int:
@@ -984,7 +994,7 @@ class Table:
 
     @property
     def count_columns(self) -> tuple[int, ...]:
-        return tuple(i for i, name in enumerate(self.columns) if name.startswith("cnt"))
+        return tuple(i for i, name in enumerate(self.own_columns) if name.startswith("cnt"))
 
 
 # Operand pairs contributing to each lane after reducing y^3 = y + 1 in E = K[y]/(y^3 + y + 1).
@@ -1212,15 +1222,12 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     framework = Framework(log_memory, bytecode)
     push: list[BusBlock] = []
     pull: list[BusBlock] = []
-    count: list[BusBlock] = []
     for table, height in zip(TABLES, table_log_heights, strict=True):
         flushes = table.flushes(table)
         for coordinates in flushes.push:
             push.append(BusBlock(height, coordinates, table.opcode))
         for coordinates in flushes.pull:
             pull.append(BusBlock(height, coordinates, table.opcode))
-        for local in table.count_columns:
-            count.append(BusBlock(height, (_col(local),), table.opcode))
 
     # Every column's height, in global numbering; None marks the BLAKE2s value
     # columns, which are committed inside q_flock rather than on their own.
@@ -1236,7 +1243,7 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     # Floor at the PCS minimum: WHIR's level ladder needs room, so a tiny
     # witness zero-pads up to it. Both sides derive this from the kappas.
     stack_log = max(MIN_STACKED_LOG, total_log)
-    return Layout(framework, tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_log_heights))
+    return Layout(framework, tuple(push), tuple(pull), tuple(placements), stack_log, tuple(table_log_heights))
 
 
 def build_airs(layout: Layout, bus_forms: Sequence[Sequence[Form]]) -> list[Air]:
@@ -1844,17 +1851,17 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # 2] WHIR commitment: one Merkle root (No OOD, our PCS is only List-binding).
     root = Digest.from_halves(*transcript.scalars(2))
 
-    # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf
+    # 3] Bus: one batched GKR over the push and pull trees, then the leaf
     # decomposition, which leaves each table a degree-2 form and a total.
     bus = verify_bus_balance(layout, transcript)
 
     # 4] Rows: one back-loaded table sumcheck over all seven tables, at
-    # the bus point, starting from the target the three leaf claims derive.
-    # Every table takes a disjoint range of eta powers for its constraints; the
-    # three bus sides share the three above them (doc sec:air).
+    # the bus point, starting from the target the two leaf claims derive.
+    # Every table takes a disjoint range of eta powers for its identities; the
+    # two bus sides share the two above them (doc sec:air).
     eta = transcript.sample()
     n_constraints = sum(table.n_constraints for table in TABLES)
-    eta_powers = powers(eta, n_constraints + 3)
+    eta_powers = powers(eta, n_constraints + 2)
     constraint_powers, form_powers = eta_powers[:n_constraints], eta_powers[n_constraints:]
     target = dot(form_powers, bus.totals)
     air_claims = verify_constraints(
