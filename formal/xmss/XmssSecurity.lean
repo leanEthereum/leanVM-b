@@ -32,6 +32,7 @@ import XmssSecurity.CausalTreeTableIndependence
 import XmssSecurity.CausalKeygenOutsideIndependence
 import XmssSecurity.CausalPairedKeygen
 import XmssSecurity.CausalKeygenCacheCoupling
+import XmssSecurity.CausalSigningKeygenCoupling
 import XmssSecurity.CausalKeygenGameCoupling
 import XmssSecurity.CausalInstalledTableGame
 import XmssSecurity.CausalInstalledResampling
