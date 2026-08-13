@@ -253,8 +253,17 @@ TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
 AGG_SEED_0 = AGG_SEED_0_PLACEHOLDER
 AGG_SEED_1 = AGG_SEED_1_PLACEHOLDER
-STATEMENT_SEED_0 = STATEMENT_SEED_0_PLACEHOLDER
-STATEMENT_SEED_1 = STATEMENT_SEED_1_PLACEHOLDER
+# The statement digest's preimage: a 32-byte domain tag, the nine header values
+# as the 16-byte cells they already are, then the deferred cells' tower limbs,
+# two to a cell and four cells to a 64-byte block.
+STMT_TAG_0 = STMT_TAG_0_PLACEHOLDER
+STMT_TAG_1 = STMT_TAG_1_PLACEHOLDER
+STMT_HEADER = 9
+STMT_DEFER_OFF = 2 + STMT_HEADER
+STMT_ODD = STMT_ODD_PLACEHOLDER
+STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
+STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
+STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
 # Domain-separated IVs for the two plain BLAKE2s chains (the epoch tables and
 # the signer set), so neither can be confused with the other or with a sponge.
 EPOCH_IV_0 = EPOCH_IV_0_PLACEHOLDER
@@ -2433,18 +2442,42 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     # (message, epoch), and the deferred claims. A parent rebuilds a child's with
     # the very same call, which is what forces the child to be a proof of THIS
     # bytecode against THIS message and epoch.
-    st = [STATEMENT_SEED_0, STATEMENT_SEED_1]
-    st = obs(st, seed_0)
-    st = obs(st, seed_1)
-    st = obs(st, n_keys_g)
-    st = obs(st, pk_hash[1])
-    st = obs(st, pk_hash[GEN])
-    st = obs(st, msg[1])
-    st = obs(st, msg[GEN])
-    st = obs(st, epoch[1])
-    st = obs(st, epoch[GEN])
+    #
+    # Fixed-length preimage, so a plain BLAKE2s beats the sponge, which spent a
+    # compression per scalar re-injecting its state. A header value is already a
+    # canonical cell and needs no check, the BLAKE2s table reading only cells
+    # whose top limb is zero. A deferred cell is a full field element, so two
+    # fill three cells as (s0,s1) (s2,t0) (t1,t2), each top limb derived from the
+    # two hinted below it and each PACK64X2 proving its lanes are in K.
+    cells = StackBuf(4 * STMT_BLOCKS)
+    cells[0] = STMT_TAG_0
+    cells[1] = STMT_TAG_1
+    hdr = [seed_0, seed_1, n_keys_g, pk_hash[1], pk_hash[GEN], msg[1], msg[GEN], epoch[1], epoch[GEN]]
+    for i in unroll(0, STMT_HEADER):
+        cells[2 + i] = hdr[i]
+    dfr = StackBuf(DEFER_STMT_CELLS + STMT_ODD)
     for k in unroll(0, DEFER_STMT_CELLS):
-        st = obs(st, defer[GEN ** k])
+        dfr[k] = defer[GEN ** k]
+    for k in unroll(0, STMT_ODD):
+        dfr[DEFER_STMT_CELLS] = 0  # a zero partner, so the pairing below has no tail case
+    for p in unroll(0, STMT_PAIRS):
+        s = dfr[2 * p]
+        t = dfr[2 * p + 1]
+        slo = StackBuf(2)
+        tlo = StackBuf(2)
+        hint_f192_limbs(slo, s)
+        hint_f192_limbs(tlo, t)
+        pack64x2_into(slo[0], slo[1], cells[STMT_DEFER_OFF + 3 * p])
+        pack64x2_into(((s + slo[0]) * Y_INV + slo[1]) * Y_INV, tlo[0], cells[STMT_DEFER_OFF + 3 * p + 1])
+        pack64x2_into(tlo[1], ((t + tlo[0]) * Y_INV + tlo[1]) * Y_INV, cells[STMT_DEFER_OFF + 3 * p + 2])
+    for k in unroll(0, STMT_PAD_CELLS):
+        cells[STMT_DEFER_OFF + 3 * STMT_PAIRS + k] = 0
+    st = StackBuf(2)
+    blake2s(cells[0:2], cells[2:4], st, counter=64, final=1 // STMT_BLOCKS)
+    for b in unroll(1, STMT_BLOCKS):
+        nxt = StackBuf(2)
+        blake2s(cells[4 * b:4 * b + 2], cells[4 * b + 2:4 * b + 4], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // STMT_BLOCKS)
+        st = nxt
     return st[0], st[1]
 
 

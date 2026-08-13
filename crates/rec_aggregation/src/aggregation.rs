@@ -252,10 +252,26 @@ impl DeferredClaim {
     }
 }
 
+/// The statement's fixed header, ahead of the deferred cells. The guest's
+/// `STMT_HEADER` is the same count.
+const STATEMENT_HEADER: usize = 9;
+
+/// The digest's 32-byte domain tag: the label, zero-padded. A plain BLAKE2s
+/// separates in the message, not in a custom IV, so any BLAKE2s reproduces it.
+fn statement_tag() -> [u8; 32] {
+    let mut tag = [0u8; 32];
+    tag[..RECURSION_STATEMENT_LABEL.len()].copy_from_slice(RECURSION_STATEMENT_LABEL);
+    tag
+}
+
 /// A node's public statement, hashed to the two words the VM publishes. The
 /// guest's `statement_digest` computes exactly this, both for itself and when it
 /// rebuilds a child's, which is what forces a whole tree onto one bytecode,
 /// one message and one epoch.
+///
+/// Fixed-length preimage, so a plain BLAKE2s: the tag, the header as the
+/// canonical cells it already is (two lanes each, whence the assert, the guest
+/// being unable to hash a third), then all three lanes of each deferred cell.
 fn statement_digest(
     n_keys: usize,
     pubkeys_hash: [F192; 2],
@@ -263,21 +279,28 @@ fn statement_digest(
     epoch_hash: [F192; 2],
     defer: &DeferredClaim,
 ) -> [F192; 2] {
-    let fs_seed = lean_vm::cpu::fs_seed(unified_guest());
-    let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
-    sponge.observe(fs_seed[0]);
-    sponge.observe(fs_seed[1]);
-    sponge.observe(count(n_keys));
-    sponge.observe(pubkeys_hash[0]);
-    sponge.observe(pubkeys_hash[1]);
-    sponge.observe(val16(&message[..16]));
-    sponge.observe(val16(&message[16..]));
-    sponge.observe(epoch_hash[0]);
-    sponge.observe(epoch_hash[1]);
-    for c in defer.cells() {
-        sponge.observe(c);
+    let seed = lean_vm::cpu::fs_seed(unified_guest());
+    let header: [F192; STATEMENT_HEADER] = [
+        seed[0],
+        seed[1],
+        count(n_keys),
+        pubkeys_hash[0],
+        pubkeys_hash[1],
+        val16(&message[..16]),
+        val16(&message[16..]),
+        epoch_hash[0],
+        epoch_hash[1],
+    ];
+    let mut bytes = statement_tag().to_vec();
+    for x in header {
+        assert_eq!(x.c2, 0, "a header value is a canonical cell");
+        bytes.extend([x.c0, x.c1].into_iter().flat_map(u64::to_le_bytes));
     }
-    pack_state(sponge.state())
+    for x in defer.cells() {
+        bytes.extend([x.c0, x.c1, x.c2].into_iter().flat_map(u64::to_le_bytes));
+    }
+    bytes.resize(bytes.len().next_multiple_of(64), 0);
+    pack_hash_state(&primitives::blake2s::hash(&bytes))
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -2392,9 +2415,16 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let agg_state = pack_state(Sponge::new(RECURSION_AGG_LABEL, &[]).state());
     ps("AGG_SEED_0", u(agg_state[0]).to_string());
     ps("AGG_SEED_1", u(agg_state[1]).to_string());
-    let statement_state = pack_state(Sponge::new(RECURSION_STATEMENT_LABEL, &[]).state());
-    ps("STATEMENT_SEED_0", u(statement_state[0]).to_string());
-    ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
+    let tag = statement_tag();
+    ps("STMT_TAG_0", u(val16(&tag[..16])).to_string());
+    ps("STMT_TAG_1", u(val16(&tag[16..])).to_string());
+    let defer_cells = kbc + log2_bc_cols + 1 + 2 * flock::blake2s::K_LOG + 2;
+    let (off, pairs) = (2 + STATEMENT_HEADER, defer_cells.div_ceil(2));
+    let blocks = (off + 3 * pairs).div_ceil(4);
+    ps("STMT_ODD", (defer_cells % 2).to_string());
+    ps("STMT_PAIRS", pairs.to_string());
+    ps("STMT_PAD_CELLS", (4 * blocks - off - 3 * pairs).to_string());
+    ps("STMT_BLOCKS", blocks.to_string());
     let epoch_iv = chain_iv(EPOCH_LABEL);
     ps("EPOCH_IV_0", u(epoch_iv[0]).to_string());
     ps("EPOCH_IV_1", u(epoch_iv[1]).to_string());
