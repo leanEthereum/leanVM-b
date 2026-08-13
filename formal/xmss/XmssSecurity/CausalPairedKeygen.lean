@@ -488,4 +488,75 @@ theorem CoupledWarmedKeygenRelation.secret_eq_of_ne
   exact secret_eq_of_outsideChain_eq chain left.secret right.secret hrel.1
     epoch candidate hne
 
+def ProgrammedActualKeygenBaseRelation
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) : Prop :=
+  left.table = right.2 ∧
+    left.publicKey = right.1.publicKey ∧
+    secretOutsideChain chain left.secretKey.chainStart =
+      secretOutsideChain chain right.1.secretKey.chainStart ∧
+    ∀ epoch,
+      Concrete.CacheReplay.authenticationPath left.cache left.secretKey epoch =
+        Concrete.CacheReplay.authenticationPath
+          right.1.cache right.1.secretKey epoch
+
+theorem coupledWarmedRichKeygenBaseRelation_to_programmedActual
+    (chain : ChainIndex)
+    (left : PublicParameter × CoupledWarmedKeygenView)
+    (right : PublicParameter ×
+      (CoupledWarmedKeygenView × (ChainValueIndex → Digest)))
+    (hrel : CoupledWarmedRichKeygenBaseRelation chain left right) :
+    ProgrammedActualKeygenBaseRelation chain
+      (left.2.toProgrammedView left.1)
+      (right.2.1.toProgrammedView right.1, right.2.2) := by
+  obtain ⟨hparameter, hbase⟩ := hrel
+  rw [← hparameter]
+  refine ⟨hbase.1, ?_, hbase.2.1, ?_⟩
+  · exact congrArg (fun root => PublicKey.mk root left.1) hbase.2.2.2.2.2.1
+  · exact hbase.2.2.2.2.2.2
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_programmedWarmedFixedChainKeygen_actualWithBase
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedWarmedFixedChainKeygen chain)
+      (actualFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base))
+      (ProgrammedActualKeygenBaseRelation chain) := by
+  have hrich := relTriple_post_mono
+    (relTriple_coupledWarmedRichKeygen_withBase chain)
+    (coupledWarmedRichKeygenBaseRelation_to_programmedActual chain)
+  have hmapped : RelTriple
+      ((fun result : PublicParameter × CoupledWarmedKeygenView =>
+          result.2.toProgrammedView result.1) <$>
+            coupledWarmedRichKeygen chain)
+      ((fun result =>
+          (result.2.1.toProgrammedView result.1, result.2.2)) <$>
+        coupledWarmedRichKeygenWithBase chain)
+      (ProgrammedActualKeygenBaseRelation chain) :=
+    relTriple_map hrich
+  have hleft :
+      ((fun result : PublicParameter × CoupledWarmedKeygenView =>
+          result.2.toProgrammedView result.1) <$>
+            coupledWarmedRichKeygen chain) =
+        coupledWarmedFixedChainKeygen chain := by
+    simp [coupledWarmedRichKeygen, coupledWarmedFixedChainKeygen,
+      map_eq_bind_pure_comp, bind_assoc]
+  have hright :
+      ((fun result =>
+          (result.2.1.toProgrammedView result.1, result.2.2)) <$>
+          coupledWarmedRichKeygenWithBase chain) =
+        coupledWarmedFixedChainKeygenWithBase chain := by
+    simp [coupledWarmedRichKeygenWithBase,
+      coupledWarmedFixedChainKeygenWithBase,
+      map_eq_bind_pure_comp, bind_assoc]
+  rw [hleft, hright] at hmapped
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_coupledWarmedFixedChainKeygen_eq_programmed chain).symm
+  exact relTriple_of_evalDist_eq_right
+    (evalDist_coupledWarmedFixedChainKeygenWithBase_eq_actual chain) hmapped
+
 end XmssSecurity
