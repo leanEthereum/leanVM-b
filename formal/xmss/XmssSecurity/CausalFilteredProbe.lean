@@ -98,17 +98,28 @@ theorem programmedActual_current_caches_eq_of_probe_miss
     exact programmedActual_left_cache_chainInput_eq_none_of_probe_miss
       selected left right hrel hleftSupport input index target hprobe hmiss
 
+noncomputable def filteredProbingAttackerHashQueryAt
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) : Option (ChainValueIndex × Digest) →
+    OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+      (HashOutput × CausalHashState)
+  | none => (filteredCausalAttackerHashQuery
+      secretKey selected input).run state
+  | some probe =>
+      match state.revealed probe.1 with
+      | some _ => (filteredCausalAttackerHashQuery
+          secretKey selected input).run state
+      | none => do
+          let _ ← RevealProbeOracleSimulation.probeQuery probe.1 probe.2
+          (filteredCausalAttackerHashQuery secretKey selected input).run state
+
 noncomputable def filteredProbingAttackerHashQuery
     (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput) :
     StateT CausalHashState
       (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))
       HashOutput := fun state =>
-  match chainInputProbe? secretKey.parameter selected input with
-  | none => (filteredCausalAttackerHashQuery
-      secretKey selected input).run state
-  | some probe => do
-      let _ ← RevealProbeOracleSimulation.probeQuery probe.1 probe.2
-      (filteredCausalAttackerHashQuery secretKey selected input).run state
+  filteredProbingAttackerHashQueryAt secretKey selected input state
+    (chainInputProbe? secretKey.parameter selected input)
 
 theorem filteredCausalAttackerHashQuery_run_isProbeQueryBoundP
     (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
@@ -146,22 +157,30 @@ theorem filteredCausalAttackerHashQuery_run_isProbeQueryBoundP
           causalRevealResultState secretKey selected input state
             index value output) 0
 
-theorem filteredProbingAttackerHashQuery_run_isProbeQueryBoundP
+theorem filteredProbingAttackerHashQueryAt_isProbeQueryBoundP
     (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
-    (state : CausalHashState) :
-    (filteredProbingAttackerHashQuery secretKey selected input).run state
-        |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 1 := by
-  unfold filteredProbingAttackerHashQuery
-  cases hprobe : chainInputProbe? secretKey.parameter selected input with
+    (state : CausalHashState)
+    (probe : Option (ChainValueIndex × Digest)) :
+    (filteredProbingAttackerHashQueryAt secretKey selected input state probe)
+      |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 1 := by
+  cases probe with
   | none =>
-      exact (filteredCausalAttackerHashQuery_run_isProbeQueryBoundP
-        secretKey selected input state).mono (by omega)
+      simpa only [filteredProbingAttackerHashQueryAt] using
+        (filteredCausalAttackerHashQuery_run_isProbeQueryBoundP
+          secretKey selected input state).mono (by omega)
   | some probe =>
-      apply OracleComp.isQueryBoundP_bind (n := 1) (m := 0)
-        (RevealProbeOracleSimulation.probeQuery_isProbeQueryBoundP
-          probe.1 probe.2)
-      intro _ _hunit
-      exact filteredCausalAttackerHashQuery_run_isProbeQueryBoundP
-        secretKey selected input state
+      cases hrevealed : state.revealed probe.1 with
+      | some value =>
+          simpa only [filteredProbingAttackerHashQueryAt, hrevealed] using
+            (filteredCausalAttackerHashQuery_run_isProbeQueryBoundP
+              secretKey selected input state).mono (by omega)
+      | none =>
+          rw [filteredProbingAttackerHashQueryAt, hrevealed]
+          apply OracleComp.isQueryBoundP_bind (n := 1) (m := 0)
+            (RevealProbeOracleSimulation.probeQuery_isProbeQueryBoundP
+              probe.1 probe.2)
+          intro _ _hunit
+          exact filteredCausalAttackerHashQuery_run_isProbeQueryBoundP
+            secretKey selected input state
 
 end XmssSecurity

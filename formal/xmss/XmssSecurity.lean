@@ -36,6 +36,7 @@ import XmssSecurity.CausalSigningKeygenCoupling
 import XmssSecurity.CausalFilteredSimulator
 import XmssSecurity.CausalFilteredResampling
 import XmssSecurity.CausalFilteredProbe
+import XmssSecurity.CausalFilteredSuffix
 import XmssSecurity.CausalKeygenGameCoupling
 import XmssSecurity.CausalInstalledTableGame
 import XmssSecurity.CausalInstalledResampling
