@@ -43,6 +43,29 @@ noncomputable def filteredDirectVerifierImpl
         filteredProbingAttackerHashQueryAt keyView.secretKey selected hashInput
           state (chainInputProbe? keyView.secretKey.parameter selected hashInput)
 
+noncomputable def filteredDirectActionTracedMappedAdversaryImpl
+    (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (WriterT AttackerActionTrace
+        (StateT CausalHashState
+          (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)))) :=
+  (filteredDirectMappedAdversaryImpl keyView selected).withTraceAppend
+    attackerActionFragment
+
+noncomputable def filteredDirectDetailedGameAfterKeygen
+    (adversary : Adversary Concrete.scheme)
+    (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex) :
+    StateT CausalHashState
+      (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))
+      ((Forgery × Bool) × AttackerActionTrace) := do
+  let handled ← (simulateQ
+    (filteredDirectActionTracedMappedAdversaryImpl keyView selected)
+      (adversary.main keyView.publicKey)).run
+  let verified ← simulateQ (filteredDirectVerifierImpl keyView selected)
+    (Concrete.scheme.verify keyView.publicKey handled.1.epoch
+      handled.1.message handled.1.signature)
+  pure ((handled.1, verified), handled.2)
+
 theorem filteredDirectMappedAdversaryImpl_step_isProbeQueryBoundP
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
     (input : (OracleWorld + SigningSpec).Domain) (state : CausalHashState) :

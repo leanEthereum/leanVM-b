@@ -39,6 +39,7 @@ import XmssSecurity.CausalFilteredProbe
 import XmssSecurity.CausalFilteredSuffix
 import XmssSecurity.CausalFilteredGame
 import XmssSecurity.CausalProbeEnforcement
+import XmssSecurity.CausalDirectReduction
 import XmssSecurity.CausalKeygenGameCoupling
 import XmssSecurity.CausalInstalledTableGame
 import XmssSecurity.CausalInstalledResampling
