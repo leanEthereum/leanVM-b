@@ -34,7 +34,8 @@ theorem relTriple_randomOracle_run_of_cachesAgreeOn
       ((randomOracle input).run right)
       (fun leftResult rightResult =>
         leftResult.1 = rightResult.1 ∧
-          HashCachesAgreeOn inputs leftResult.2 rightResult.2) := by
+          HashCachesAgreeOn inputs leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
   cases hleft : left input with
   | none =>
       have hright : right input = none := by
@@ -48,14 +49,16 @@ theorem relTriple_randomOracle_run_of_cachesAgreeOn
       subst rightOutput
       exact relTriple_pure_pure ⟨rfl,
         HashCachesAgreeOn.cacheQuery inputs left right hagrees
-          input leftOutput⟩
+          input leftOutput,
+        QueryCache.le_cacheQuery left hleft,
+        QueryCache.le_cacheQuery right hright⟩
   | some output =>
       have hright : right input = some output := by
         rw [← hagrees input hinput]
         exact hleft
       rw [randomOracle, QueryImpl.withCaching_run_some _ hleft,
         QueryImpl.withCaching_run_some _ hright]
-      exact relTriple_pure_pure ⟨rfl, hagrees⟩
+      exact relTriple_pure_pure ⟨rfl, hagrees, le_rfl, le_rfl⟩
 
 def OutsideChainHashInput
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -107,7 +110,8 @@ theorem relTriple_chainHash_run_outside
       (fun leftResult rightResult =>
         leftResult.1 = rightResult.1 ∧
           HashCachesAgreeOn (OutsideChainHashInput parameter chain)
-            leftResult.2 rightResult.2) := by
+            leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
   let input := Concrete.CacheView.chainInput
     parameter epoch candidate step value
   change RelTriple
@@ -124,7 +128,8 @@ theorem relTriple_chainHash_run_outside
         (outsideChainHashInput_chainInput
           parameter chain candidate hne epoch step value) hagrees)
   intro leftResult rightResult hresult
-  exact ⟨congrArg truncateHash hresult.1, hresult.2⟩
+  exact ⟨congrArg truncateHash hresult.1,
+    hresult.2.1, hresult.2.2.1, hresult.2.2.2⟩
 
 theorem relTriple_chainTrajectory_run_outside
     (parameter : PublicParameter) (chain candidate : ChainIndex)
@@ -142,21 +147,22 @@ theorem relTriple_chainTrajectory_run_outside
         (fun leftResult rightResult =>
           leftResult.1 = rightResult.1 ∧
             HashCachesAgreeOn (OutsideChainHashInput parameter chain)
-              leftResult.2 rightResult.2) := by
+              leftResult.2 rightResult.2 ∧
+            left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
   intro steps
   induction steps with
   | zero =>
       intro value left right hagrees
       simp only [Concrete.chainTrajectory_zero, simulateQ_pure,
         StateT.run_pure]
-      exact relTriple_pure_pure ⟨rfl, hagrees⟩
+      exact relTriple_pure_pure ⟨rfl, hagrees, le_rfl, le_rfl⟩
   | succ steps ih =>
       intro value left right hagrees
       rw [Concrete.chainTrajectory_succ,
         simulateQ_bind, StateT.run_bind]
       apply relTriple_bind (ih value left right hagrees)
       intro leftPrior rightPrior hprior
-      obtain ⟨hvalues, hcaches⟩ := hprior
+      obtain ⟨hvalues, hcaches, hleftPrior, hrightPrior⟩ := hprior
       obtain ⟨leftValues, leftCache⟩ := leftPrior
       obtain ⟨rightValues, rightCache⟩ := rightPrior
       dsimp only at hvalues hcaches ⊢
@@ -169,15 +175,17 @@ theorem relTriple_chainTrajectory_run_outside
             epoch ⟨position + steps, hvalid⟩ leftValues.back
               leftCache rightCache hcaches)
         intro leftNext rightNext hnext
-        obtain ⟨hnextValue, hnextCaches⟩ := hnext
+        obtain ⟨hnextValue, hnextCaches, hleftNext, hrightNext⟩ := hnext
         obtain ⟨leftValue, leftNextCache⟩ := leftNext
         obtain ⟨rightValue, rightNextCache⟩ := rightNext
         dsimp only at hnextValue hnextCaches ⊢
         subst rightValue
         simp only [simulateQ_pure, StateT.run_pure]
-        exact relTriple_pure_pure ⟨rfl, hnextCaches⟩
+        exact relTriple_pure_pure ⟨rfl, hnextCaches,
+          hleftPrior.trans hleftNext, hrightPrior.trans hrightNext⟩
       · simp only [simulateQ_pure, StateT.run_pure]
-        exact relTriple_pure_pure ⟨rfl, hcaches⟩
+        exact relTriple_pure_pure
+          ⟨rfl, hcaches, hleftPrior, hrightPrior⟩
 
 theorem simulate_chainWalk_run_eq_pure_of_table_matches
     (cache : QueryCache HashSpec) (secretKey : SecretKey)
