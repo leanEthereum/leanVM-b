@@ -42,6 +42,10 @@ abbrev WarmedTrajectoryMaterial :=
   (List Digest × FlatSecret) ×
     (List FullChainTrajectory × QueryCache HashSpec)
 
+abbrev FixedChainMaterial :=
+  (List Digest × FlatSecret) ×
+    (List Digest × (List HashOutput × QueryCache HashSpec))
+
 noncomputable def warmedMaterialOutsideTable (chain : ChainIndex)
     (material : WarmedTrajectoryMaterial) :
     OutsideChainSecret chain × (ChainValueIndex → Digest) :=
@@ -264,6 +268,74 @@ theorem warmedTrajectoryMaterialWithBase_support_material
   simp only [support_pure, Set.mem_singleton_iff] at hpure
   subst result
   exact hmaterial
+
+theorem fixedChainMaterialWithBase_support_material
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (result : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hresult : result ∈ support
+      (fixedChainMaterialWithBase parameter chain)) :
+    result.1 ∈ support
+      (fixedChainMaterialRepresentation parameter chain) := by
+  unfold fixedChainMaterialWithBase at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨material, hmaterial, hrest⟩ := hresult
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨base, _hbase, hpure⟩ := hrest
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  exact hmaterial
+
+def CoupledFixedChainMaterialBaseRelation
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest)) : Prop :=
+  fixedChainMaterialTable chain left = right.2 ∧
+    outsideChainSecret chain left.1.2 =
+      outsideChainSecret chain right.1.1.2 ∧
+    left ∈ support (fixedChainMaterialRepresentation parameter chain) ∧
+    right.1 ∈ support (fixedChainMaterialRepresentation parameter chain)
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_fixedChainMaterialRepresentation_withBase
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    RelTriple
+      (fixedChainMaterialRepresentation parameter chain)
+      (fixedChainMaterialWithBase parameter chain)
+      (CoupledFixedChainMaterialBaseRelation parameter chain) := by
+  apply relTriple_post_mono
+    (relTriple_of_evalDist_map_eq_with_support_general
+      (fixedChainMaterialRepresentation parameter chain)
+      (fixedChainMaterialWithBase parameter chain)
+      (fun material =>
+        (outsideChainSecret chain material.1.2,
+          fixedChainMaterialTable chain material))
+      (fixedChainMaterialBaseView chain)
+      (evalDist_fixedChainMaterialOutsideTable_eq_baseView parameter chain))
+  intro left right hrelation
+  have houtside : outsideChainSecret chain left.1.2 =
+      outsideChainSecret chain right.1.1.2 :=
+    congrArg Prod.fst hrelation.1
+  have htable : fixedChainMaterialTable chain left = right.2 :=
+    congrArg Prod.snd hrelation.1
+  exact ⟨htable, houtside, hrelation.2.1,
+    fixedChainMaterialWithBase_support_material
+      parameter chain right hrelation.2.2⟩
+
+theorem CoupledFixedChainMaterialBaseRelation.cache_eq_at_otherAddress
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialBaseRelation
+      parameter chain left right)
+    (domain : HashDomain)
+    (hother : ∀ epoch step, domain ≠ .chain epoch chain step)
+    (input : HashInput) (hinput : AtHashAddress parameter domain input) :
+    left.2.2.2 input = right.1.2.2.2 input := by
+  rw [fixedChainMaterialRepresentation_cache_avoids_otherAddress
+      parameter chain left hrel.2.2.1 domain hother input hinput,
+    fixedChainMaterialRepresentation_cache_avoids_otherAddress
+      parameter chain right.1 hrel.2.2.2 domain hother input hinput]
 
 set_option maxHeartbeats 1600000 in
 set_option maxRecDepth 1000000 in

@@ -14,6 +14,18 @@ noncomputable instance (parameter : PublicParameter) (domain : HashDomain) :
     DecidablePred (AtHashAddress parameter domain) :=
   Classical.decPred _
 
+theorem atHashAddress_unique
+    (parameter : PublicParameter) (left right : HashDomain)
+    (input : HashInput)
+    (hleft : AtHashAddress parameter left input)
+    (hright : AtHashAddress parameter right input) :
+    left = right := by
+  unfold AtHashAddress at hleft hright
+  have htweaks : tweakBytes left = tweakBytes right := by
+    exact List.append_left_injective (bytesLE 16 parameter)
+      (hleft.symm.trans hright)
+  exact tweakBytes_injective htweaks
+
 @[simp]
 theorem atHashAddress_tweakableHashInput_iff (parameter : PublicParameter)
     (targetDomain calledDomain : HashDomain) (payload : HashInput) :

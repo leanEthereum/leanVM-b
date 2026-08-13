@@ -32,13 +32,14 @@ theorem installChainTableEdgeOutputs_apply_of_avoids
           · intro target htarget
             exact havoids target (by simp [htarget])
 
-theorem fixedChainMaterialRepresentation_cache_avoids_merkle
+theorem fixedChainMaterialRepresentation_cache_avoids_otherAddress
     (parameter : PublicParameter) (chain : ChainIndex)
     (material : (List Digest × FlatSecret) ×
       (List Digest × (List HashOutput × QueryCache HashSpec)))
     (hmaterial : material ∈ support
       (fixedChainMaterialRepresentation parameter chain))
-    (domain : HashDomain) (hmerkle : ∃ level node, domain = .merkle level node)
+    (domain : HashDomain)
+    (hother : ∀ epoch step, domain ≠ .chain epoch chain step)
     (input : HashInput) (hinput : AtHashAddress parameter domain input) :
     material.2.2.2 input = none := by
   unfold fixedChainMaterialRepresentation at hmaterial
@@ -57,22 +58,64 @@ theorem fixedChainMaterialRepresentation_cache_avoids_merkle
   rw [installChainTableEdgeOutputs_apply_of_avoids]
   · rfl
   · intro edge _hedge heq
-    have hchain : AtHashAddress parameter
-        (.chain edge.1 chain edge.2)
+    have hchain : AtHashAddress parameter (.chain edge.1 chain edge.2)
         (chainTableEdgeInput parameter chain
           (chainTableMaterialEquiv.symm
             ((fun epoch => secretView.2 (epoch, chain)),
               chainEdgeTableOfTape tape.1)) edge) := by
       simp [chainTableEdgeInput, Concrete.CacheView.chainInput]
-    have hboth : AtHashAddress parameter domain
-        (chainTableEdgeInput parameter chain
-          (chainTableMaterialEquiv.symm
-            ((fun epoch => secretView.2 (epoch, chain)),
-              chainEdgeTableOfTape tape.1)) edge) := by
-      rw [← heq]
-      exact hinput
-    obtain ⟨level, node, rfl⟩ := hmerkle
-    simp [chainTableEdgeInput, Concrete.CacheView.chainInput] at hboth
+    have hdomain : domain = .chain edge.1 chain edge.2 :=
+      atHashAddress_unique parameter domain (.chain edge.1 chain edge.2)
+        input hinput (heq ▸ hchain)
+    exact hother edge.1 edge.2 hdomain
+
+theorem fixedChainMaterialRepresentation_cache_avoids_merkle
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (material : (List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec)))
+    (hmaterial : material ∈ support
+      (fixedChainMaterialRepresentation parameter chain))
+    (domain : HashDomain) (hmerkle : ∃ level node, domain = .merkle level node)
+    (input : HashInput) (hinput : AtHashAddress parameter domain input) :
+    material.2.2.2 input = none := by
+  apply fixedChainMaterialRepresentation_cache_avoids_otherAddress
+    parameter chain material hmaterial domain
+  · intro epoch step heq
+    obtain ⟨level, node, hdomain⟩ := hmerkle
+    rw [hdomain] at heq
+    simp at heq
+  · exact hinput
+
+theorem fixedChainMaterialRepresentation_cache_avoids_leaf
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (material : (List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec)))
+    (hmaterial : material ∈ support
+      (fixedChainMaterialRepresentation parameter chain))
+    (epoch : Epoch) (input : HashInput)
+    (hinput : AtHashAddress parameter (.leaf epoch) input) :
+    material.2.2.2 input = none := by
+  apply fixedChainMaterialRepresentation_cache_avoids_otherAddress
+    parameter chain material hmaterial (.leaf epoch)
+  · simp
+  · exact hinput
+
+theorem fixedChainMaterialRepresentation_cache_avoids_otherChain
+    (parameter : PublicParameter) (chain candidate : ChainIndex)
+    (hne : candidate ≠ chain)
+    (material : (List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec)))
+    (hmaterial : material ∈ support
+      (fixedChainMaterialRepresentation parameter chain))
+    (epoch : Epoch) (step : ChainStep) (input : HashInput)
+    (hinput : AtHashAddress parameter (.chain epoch candidate step) input) :
+    material.2.2.2 input = none := by
+  apply fixedChainMaterialRepresentation_cache_avoids_otherAddress
+    parameter chain material hmaterial (.chain epoch candidate step)
+  · intro targetEpoch targetStep heq
+    injection heq with _ hchain _
+    exact hne hchain
+  · exact hinput
 
 theorem fixedChainMaterial_rootTree_probability
     (parameter : PublicParameter) (chain : ChainIndex)

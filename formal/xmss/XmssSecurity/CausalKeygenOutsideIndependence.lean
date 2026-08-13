@@ -540,4 +540,82 @@ theorem evalDist_fixedChainOutsideTableView_eq_independent
           0 chain,
         ← evalDist_bind]
 
+noncomputable def fixedChainOutsideOnly
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    ProbComp (OutsideChainSecret chain) :=
+  (fun material => outsideChainSecret chain material.1.2) <$>
+    fixedChainMaterialRepresentation parameter chain
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_fixedChainOutsideOnly_eq_uniform
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    𝒟[fixedChainOutsideOnly parameter chain] =
+      𝒟[$ᵗ (OutsideChainSecret chain)] := by
+  calc
+    𝒟[fixedChainOutsideOnly parameter chain] =
+        𝒟[Prod.fst <$> fixedChainOutsideTableView parameter chain] := by
+      unfold fixedChainOutsideOnly fixedChainOutsideTableView
+      simp [Functor.map_map]
+    _ = 𝒟[Prod.fst <$> independentOutsideTableView chain] := by
+      rw [evalDist_map,
+        evalDist_fixedChainOutsideTableView_eq_independent parameter chain,
+        ← evalDist_map]
+    _ = 𝒟[$ᵗ (OutsideChainSecret chain)] := by
+      unfold independentOutsideTableView
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      calc
+        𝒟[($ᵗ (OutsideChainSecret chain)) >>= fun outside =>
+            uniformChainValueTable chain >>= fun _table => pure outside] =
+          𝒟[($ᵗ (OutsideChainSecret chain)) >>= fun outside =>
+            pure outside] := by
+              apply evalDist_bind_congr
+              intro outside _houtside
+              exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+                (uniformChainValueTable chain)
+                (probFailure_eq_zero' inferInstance) (pure outside)
+        _ = 𝒟[$ᵗ (OutsideChainSecret chain)] := by simp
+
+noncomputable def fixedChainMaterialWithBase
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    ProbComp (((List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec))) ×
+        (ChainValueIndex → Digest)) := do
+  let material ← fixedChainMaterialRepresentation parameter chain
+  let base ← uniformChainValueTable chain
+  pure (material, base)
+
+def fixedChainMaterialBaseView (chain : ChainIndex)
+    (result : ((List Digest × FlatSecret) ×
+      (List Digest × (List HashOutput × QueryCache HashSpec))) ×
+        (ChainValueIndex → Digest)) :
+    OutsideChainSecret chain × (ChainValueIndex → Digest) :=
+  (outsideChainSecret chain result.1.1.2, result.2)
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_fixedChainMaterialOutsideTable_eq_baseView
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    𝒟[fixedChainOutsideTableView parameter chain] =
+      𝒟[fixedChainMaterialBaseView chain <$>
+        fixedChainMaterialWithBase parameter chain] := by
+  calc
+    𝒟[fixedChainOutsideTableView parameter chain] =
+        𝒟[independentOutsideTableView chain] :=
+      evalDist_fixedChainOutsideTableView_eq_independent parameter chain
+    _ = 𝒟[fixedChainOutsideOnly parameter chain >>= fun outside =>
+          uniformChainValueTable chain >>= fun base =>
+            pure (outside, base)] := by
+      unfold independentOutsideTableView
+      rw [evalDist_bind,
+        ← evalDist_fixedChainOutsideOnly_eq_uniform parameter chain,
+        ← evalDist_bind]
+    _ = 𝒟[fixedChainMaterialBaseView chain <$>
+          fixedChainMaterialWithBase parameter chain] := by
+      simp [fixedChainOutsideOnly, fixedChainMaterialWithBase,
+        fixedChainMaterialBaseView, map_eq_bind_pure_comp, bind_assoc]
+
 end XmssSecurity
