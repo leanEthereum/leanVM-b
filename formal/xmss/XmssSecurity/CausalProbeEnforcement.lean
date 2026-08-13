@@ -48,7 +48,10 @@ theorem simulate_probeEnforcementImpl_run_isProbeQueryBoundP
             simpa [IsProbeQuery] using ih output fuel
       | probe index target =>
           cases fuel with
-          | zero => simpa [probeEnforcementImpl] using ih () 0
+          | zero =>
+              change (simulateQ probeEnforcementImpl (next ())).run 0
+                |>.IsQueryBoundP IsProbeQuery 0
+              exact ih () 0
           | succ remaining =>
               change (probeQuery index target >>= fun _ =>
                 (simulateQ probeEnforcementImpl (next ())).run remaining)

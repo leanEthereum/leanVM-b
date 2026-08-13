@@ -1,399 +1,18 @@
 import XmssSecurity.CausalDirectReduction
 
 open OracleComp OracleSpec
-open OracleComp.ProgramLogic.Relational
 
 namespace XmssSecurity
 
-def FilteredDirectMissHashResultRelation
-    (parameter : PublicParameter) (selected : ChainIndex)
-    (leftBase rightBase : QueryCache HashSpec)
-    (table : ChainValueIndex → Digest)
-    (index : ChainValueIndex) (target : Digest)
-    (leftResult : HashOutput × QueryCache HashSpec)
-    (rightResult : (HashOutput × CausalHashState) ×
-      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) : Prop :=
-  leftResult.1 = rightResult.1.1 ∧
-    rightResult.2 =
-      [.probe index target] ∧
-    FilteredCausalStateRelation parameter selected leftBase rightBase table
-      leftResult.2 rightResult.1.2
+noncomputable local instance directStepSampleableChainTable :
+    SampleableType (ChainValueIndex → Digest) :=
+  SampleableType.ofFintype (ChainValueIndex → Digest)
 
-set_option maxRecDepth 100000 in
-theorem relTriple_filteredProbingAttackerHashQueryAt_of_hidden_miss
-    (selected : ChainIndex)
-    (left : ProgrammedFixedChainKeygenView)
-    (right : ProgrammedFixedChainKeygenView ×
-      (ChainValueIndex → Digest))
-    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
-    (hleftSupport : left ∈ support
-      (programmedWarmedFixedChainKeygen selected))
-    (leftCache : QueryCache HashSpec) (rightState : CausalHashState)
-    (hstate : FilteredCausalStateRelation left.secretKey.parameter selected
-      left.cache right.1.cache right.2 leftCache rightState)
-    (hparameter : left.secretKey.parameter = right.1.secretKey.parameter)
-    (input : HashInput) (index : ChainValueIndex) (target : Digest)
-    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
-      some (index, target))
-    (hhidden : rightState.revealed index = none)
-    (hmiss : right.2 index ≠ target) :
-    RelTriple
-      ((randomOracle input).run leftCache)
-      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
-        (filteredProbingAttackerHashQueryAt right.1.secretKey selected input
-          rightState (some (index, target)))).run)
-      (FilteredDirectMissHashResultRelation left.secretKey.parameter selected
-        left.cache right.1.cache right.2 index target) := by
-  have hcache : leftCache input = rightState.cache input :=
-    programmedActual_current_caches_eq_of_probe_miss selected left right hrel
-      hleftSupport leftCache rightState hstate input index target hprobe hmiss
-  have hrightProbe :
-      chainInputProbe? right.1.secretKey.parameter selected input =
-        some (index, target) := by
-    rw [← hparameter]
-    exact hprobe
-  cases hleft : leftCache input with
-  | some output =>
-      have hright : rightState.cache input = some output := by
-        rw [← hcache]
-        exact hleft
-      rw [randomOracle, QueryImpl.withCaching_run_some _ hleft]
-      rw [filteredProbingAttackerHashQueryAt, hhidden]
-      rw [simulateQ_bind, WriterT.run_bind']
-      simp only [RevealProbeOracleSimulation.probeQuery,
-        RevealProbeOracleSimulation.eagerTraceImpl,
-        RevealProbeOracleSimulation.eagerImpl,
-        RevealProbeOracleSimulation.traceFragment,
-        QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-      rw [filteredCausalAttackerHashQuery_run]
-      simp only [filteredCausalAttackerHashPlan, hright]
-      simp only [simulateQ_pure, WriterT.run_pure, pure_bind]
-      apply relTriple_pure_pure
-      refine ⟨rfl, rfl, ?_⟩
-      unfold FilteredCausalStateRelation
-      exact ⟨hstate.1, hstate.2.1, hstate.2.2.1,
-        hstate.2.2.2.1, hstate.2.2.2.2.recordProbe _⟩
-  | none =>
-      have hright : rightState.cache input = none := by
-        rw [← hcache]
-        exact hleft
-      rw [randomOracle, QueryImpl.withCaching_run_none _ hleft]
-      rw [filteredProbingAttackerHashQueryAt, hhidden]
-      rw [simulateQ_bind, WriterT.run_bind']
-      simp only [RevealProbeOracleSimulation.probeQuery,
-        RevealProbeOracleSimulation.eagerTraceImpl,
-        RevealProbeOracleSimulation.eagerImpl,
-        RevealProbeOracleSimulation.traceFragment,
-        QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-      rw [filteredCausalAttackerHashQuery_run]
-      simp only [filteredCausalAttackerHashPlan, hright,
-        filteredCausalUncachedHashPlan, hrightProbe, hhidden]
-      rw [simulate_eagerTrace_causalHashQuery]
-      apply relTriple_map
-      apply relTriple_refl
-      intro result
-      refine ⟨rfl, rfl, ?_⟩
-      unfold FilteredCausalStateRelation
-      refine ⟨hstate.1.cacheQuery input result,
-        hstate.2.1.cacheQuery input result, ?_, ?_, ?_⟩
-      · exact hstate.2.2.1.trans (QueryCache.le_cacheQuery leftCache hleft)
-      · exact hstate.2.2.2.1
-      · exact hstate.2.2.2.2.recordProbe _ |>.setCache _
-
-set_option maxRecDepth 100000 in
-theorem filteredProbingAttackerHashQueryAt_hidden_trace
-    (table : ChainValueIndex → Digest)
-    (secretKey : SecretKey) (selected : ChainIndex)
-    (input : HashInput) (state : CausalHashState)
-    (index : ChainValueIndex) (target : Digest)
-    (hprobe : chainInputProbe? secretKey.parameter selected input =
-      some (index, target))
-    (hhidden : state.revealed index = none)
-    (result : (HashOutput × CausalHashState) ×
-      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-        (filteredProbingAttackerHashQueryAt secretKey selected input state
-          (some (index, target)))).run)) :
-    result.2 = [.probe index target] := by
-  rw [filteredProbingAttackerHashQueryAt, hhidden,
-    simulateQ_bind, WriterT.run_bind'] at hresult
-  simp only [RevealProbeOracleSimulation.probeQuery,
-    RevealProbeOracleSimulation.eagerTraceImpl,
-    RevealProbeOracleSimulation.eagerImpl,
-    RevealProbeOracleSimulation.traceFragment,
-    QueryImpl.withTraceAppend_apply, WriterT.run_tell,
-    pure_bind] at hresult
-  rw [filteredCausalAttackerHashQuery_run] at hresult
-  cases hcache : state.cache input with
-  | some output =>
-      simp only [filteredCausalAttackerHashPlan, hcache, simulateQ_pure,
-        WriterT.run_pure, support_pure, Set.mem_singleton_iff] at hresult
-      exact congrArg Prod.snd hresult
-  | none =>
-      simp only [filteredCausalAttackerHashPlan, hcache,
-        filteredCausalUncachedHashPlan, hprobe, hhidden] at hresult
-      rw [simulate_eagerTrace_causalHashQuery, support_map] at hresult
-      obtain ⟨hashResult, _hhashResult, heq⟩ := hresult
-      exact congrArg Prod.snd heq.symm
-
-theorem filteredProbingAttackerHashQueryAt_hidden_hit
-    (table : ChainValueIndex → Digest)
-    (secretKey : SecretKey) (selected : ChainIndex)
-    (input : HashInput) (state : CausalHashState)
-    (index : ChainValueIndex) (target : Digest)
-    (hprobe : chainInputProbe? secretKey.parameter selected input =
-      some (index, target))
-    (hhidden : state.revealed index = none)
-    (hhit : table index = target)
-    (result : (HashOutput × CausalHashState) ×
-      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-        (filteredProbingAttackerHashQueryAt secretKey selected input state
-          (some (index, target)))).run)) :
-    RevealProbeOracleSimulation.runObserved table
-      AdaptiveRevealMonitor.State.empty result.2 = true := by
-  rw [filteredProbingAttackerHashQueryAt_hidden_trace table secretKey selected
-    input state index target hprobe hhidden result hresult]
-  simp [RevealProbeOracleSimulation.runObserved,
-    RevealProbeOracleSimulation.tableHits,
-    AdaptiveRevealMonitor.State.empty,
-    AdaptiveRevealMonitor.State.addPending, hhit]
-
-def FilteredDirectHashStepRelation
-    (parameter : PublicParameter) (selected : ChainIndex)
-    (leftBase rightBase : QueryCache HashSpec)
-    (table : ChainValueIndex → Digest)
-    (index : ChainValueIndex) (target : Digest)
-    (leftResult : HashOutput × QueryCache HashSpec)
-    (rightResult : (HashOutput × CausalHashState) ×
-      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) : Prop :=
-  RevealProbeOracleSimulation.runObserved table
-      AdaptiveRevealMonitor.State.empty rightResult.2 = true ∨
-    FilteredDirectMissHashResultRelation parameter selected leftBase rightBase
-      table index target leftResult rightResult
-
-def FilteredDirectNoProbeMissHashResultRelation
-    (parameter : PublicParameter) (selected : ChainIndex)
-    (leftBase rightBase : QueryCache HashSpec)
-    (table : ChainValueIndex → Digest)
-    (leftResult : HashOutput × QueryCache HashSpec)
-    (rightResult : (HashOutput × CausalHashState) ×
-      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) : Prop :=
-  leftResult.1 = rightResult.1.1 ∧
-    rightResult.2 = [] ∧
-    FilteredCausalStateRelation parameter selected leftBase rightBase table
-      leftResult.2 rightResult.1.2
-
-set_option maxRecDepth 100000 in
-theorem relTriple_filteredProbingAttackerHashQueryAt_of_revealed_ne
-    (selected : ChainIndex)
-    (left : ProgrammedFixedChainKeygenView)
-    (right : ProgrammedFixedChainKeygenView ×
-      (ChainValueIndex → Digest))
-    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
-    (hleftSupport : left ∈ support
-      (programmedWarmedFixedChainKeygen selected))
-    (leftCache : QueryCache HashSpec) (rightState : CausalHashState)
-    (hstate : FilteredCausalStateRelation left.secretKey.parameter selected
-      left.cache right.1.cache right.2 leftCache rightState)
-    (hparameter : left.secretKey.parameter = right.1.secretKey.parameter)
-    (input : HashInput) (index : ChainValueIndex) (target value : Digest)
-    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
-      some (index, target))
-    (hrevealed : rightState.revealed index = some value)
-    (hne : value ≠ target) :
-    RelTriple
-      ((randomOracle input).run leftCache)
-      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
-        (filteredProbingAttackerHashQueryAt right.1.secretKey selected input
-          rightState (some (index, target)))).run)
-      (FilteredDirectNoProbeMissHashResultRelation
-        left.secretKey.parameter selected left.cache right.1.cache right.2) := by
-  have htable : right.2 index = value :=
-    hstate.2.2.2.2 index value hrevealed
-  have hmiss : right.2 index ≠ target := by
-    rw [htable]
-    exact hne
-  have hcache : leftCache input = rightState.cache input :=
-    programmedActual_current_caches_eq_of_probe_miss selected left right hrel
-      hleftSupport leftCache rightState hstate input index target hprobe hmiss
-  have hrightProbe :
-      chainInputProbe? right.1.secretKey.parameter selected input =
-        some (index, target) := by
-    rw [← hparameter]
-    exact hprobe
-  cases hleft : leftCache input with
-  | some output =>
-      have hright : rightState.cache input = some output := by
-        rw [← hcache]
-        exact hleft
-      rw [randomOracle, QueryImpl.withCaching_run_some _ hleft]
-      rw [filteredProbingAttackerHashQueryAt, hrevealed]
-      rw [filteredCausalAttackerHashQuery_run]
-      simp only [filteredCausalAttackerHashPlan, hright, simulateQ_pure,
-        WriterT.run_pure]
-      apply relTriple_pure_pure
-      refine ⟨rfl, rfl, ?_⟩
-      unfold FilteredCausalStateRelation
-      exact ⟨hstate.1, hstate.2.1, hstate.2.2.1,
-        hstate.2.2.2.1, hstate.2.2.2.2.recordProbe _⟩
-  | none =>
-      have hright : rightState.cache input = none := by
-        rw [← hcache]
-        exact hleft
-      rw [randomOracle, QueryImpl.withCaching_run_none _ hleft]
-      rw [filteredProbingAttackerHashQueryAt, hrevealed]
-      rw [filteredCausalAttackerHashQuery_run]
-      simp only [filteredCausalAttackerHashPlan, hright,
-        filteredCausalUncachedHashPlan, hrightProbe, hrevealed, hne]
-      rw [simulate_eagerTrace_causalHashQuery]
-      apply relTriple_map
-      apply relTriple_refl
-      intro result
-      refine ⟨rfl, rfl, ?_⟩
-      unfold FilteredCausalStateRelation
-      refine ⟨hstate.1.cacheQuery input result,
-        hstate.2.1.cacheQuery input result, ?_, ?_, ?_⟩
-      · exact hstate.2.2.1.trans (QueryCache.le_cacheQuery leftCache hleft)
-      · exact hstate.2.2.2.1
-      · exact hstate.2.2.2.2.recordProbe _ |>.setCache _
-
-theorem relTriple_filteredProbingAttackerHashQueryAt_of_hidden
-    (selected : ChainIndex)
-    (left : ProgrammedFixedChainKeygenView)
-    (right : ProgrammedFixedChainKeygenView ×
-      (ChainValueIndex → Digest))
-    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
-    (hleftSupport : left ∈ support
-      (programmedWarmedFixedChainKeygen selected))
-    (leftCache : QueryCache HashSpec) (rightState : CausalHashState)
-    (hstate : FilteredCausalStateRelation left.secretKey.parameter selected
-      left.cache right.1.cache right.2 leftCache rightState)
-    (hparameter : left.secretKey.parameter = right.1.secretKey.parameter)
-    (input : HashInput) (index : ChainValueIndex) (target : Digest)
-    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
-      some (index, target))
-    (hhidden : rightState.revealed index = none) :
-    RelTriple
-      ((randomOracle input).run leftCache)
-      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
-        (filteredProbingAttackerHashQueryAt right.1.secretKey selected input
-          rightState (some (index, target)))).run)
-      (FilteredDirectHashStepRelation left.secretKey.parameter selected
-        left.cache right.1.cache right.2 index target) := by
-  by_cases hhit : right.2 index = target
-  · apply relTriple_post_mono (relTriple_with_support (relTriple_true _ _))
-    intro leftResult rightResult hsupport
-    left
-    apply filteredProbingAttackerHashQueryAt_hidden_hit right.2
-      right.1.secretKey selected input rightState index target
-    · rw [← hparameter]
-      exact hprobe
-    · exact hhidden
-    · exact hhit
-    · exact hsupport.2.2
-  · apply relTriple_post_mono
-      (relTriple_filteredProbingAttackerHashQueryAt_of_hidden_miss selected
-        left right hrel hleftSupport leftCache rightState hstate hparameter
-          input index target hprobe hhidden hhit)
-    intro leftResult rightResult hresult
-    exact Or.inr hresult
-
-theorem relTriple_filteredKeygen_first_hidden_hash_step
-    (selected : ChainIndex)
-    (left : ProgrammedFixedChainKeygenView)
-    (right : ProgrammedFixedChainKeygenView ×
-      (ChainValueIndex → Digest))
-    (hrel : ProgrammedActualKeygenStableRelation selected left right)
-    (hleftSupport : left ∈ support
-      (programmedWarmedFixedChainKeygen selected))
-    (hrightSupport : right.1 ∈ support (actualFixedChainKeygen selected))
-    (input : HashInput) (index : ChainValueIndex) (target : Digest)
-    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
-      some (index, target)) :
-    RelTriple
-      ((randomOracle input).run left.cache)
-      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
-        (filteredProbingAttackerHashQueryAt right.1.secretKey selected input
-          (filteredCausalKeygenState selected right.1)
-            (some (index, target)))).run)
-      (FilteredDirectHashStepRelation left.secretKey.parameter selected
-        left.cache right.1.cache right.2 index target) := by
-  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
-    selected left hleftSupport
-  have hrightKey := actualFixedChainKeygen_support_keyResult
-    selected right.1 hrightSupport
-  have hparameter : left.secretKey.parameter =
-      right.1.secretKey.parameter := by
-    calc
-      left.secretKey.parameter = left.publicKey.parameter :=
-        (left.parameter_eq hleftKey).symm
-      _ = right.1.publicKey.parameter :=
-        congrArg PublicKey.parameter hrel.1.1.2.1
-      _ = right.1.secretKey.parameter := right.1.parameter_eq hrightKey
-  apply relTriple_filteredProbingAttackerHashQueryAt_of_hidden selected
-    left right hrel.1 hleftSupport left.cache
-      (filteredCausalKeygenState selected right.1)
-  · exact programmedActual_filteredKeygen_stateRelation selected left right
-      hrel hleftSupport hrightSupport
-  · exact hparameter
-  · exact hprobe
-  · exact filteredCausalKeygenState_revealed selected right.1 index
-
-noncomputable def revealedChainNextIndex
-    (index : ChainValueIndex) (hnext : index.2.val + 1 < chainLength) :
-    ChainValueIndex :=
-  (index.1, ⟨index.2.val + 1, hnext⟩)
-
-set_option maxRecDepth 100000 in
-theorem evalDist_installed_filtered_trueEdge_continuation_eq_uniform
+noncomputable def filteredDirectLazyHashStepAt
     (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
-    (state : CausalHashState) (index : ChainValueIndex) (target : Digest)
-    (hprobe : chainInputProbe? secretKey.parameter selected input =
-      some (index, target))
-    (hcache : state.cache input = none)
-    (hrevealed : state.revealed index = some target)
-    (hnext : index.2.val + 1 < chainLength)
-    (hnextHidden : state.revealed (revealedChainNextIndex index hnext) = none)
-    (continuation : (ChainValueIndex → Digest) →
-      ((HashOutput × CausalHashState) ×
-        RevealProbeOracleSimulation.ActionTrace ChainValueIndex) → ProbComp α) :
-    𝓓[do
-      let base ← $ᵗ (ChainValueIndex → Digest)
-      let table := causalInstalledTable state base
-      let result ← (simulateQ
-        (RevealProbeOracleSimulation.eagerTraceImpl table)
-        ((filteredCausalAttackerHashQuery
-          secretKey selected input).run state)).run
-      continuation (causalInstalledTable result.1.2 base) result] =
-    𝓓[do
-      let output ← $ᵗ HashOutput
-      let value := truncateHash output
-      let nextIndex := revealedChainNextIndex index hnext
-      let result := ((output,
-        causalRevealResultState secretKey selected input state
-          nextIndex value output),
-        [RevealProbeOracleSimulation.ObservedAction.reveal nextIndex value])
-      let base ← $ᵗ (ChainValueIndex → Digest)
-      continuation (causalInstalledTable result.1.2 base) result] := by
-  have hplan : filteredCausalAttackerHashPlan secretKey selected input state =
-      .reveal (revealedChainNextIndex index hnext) := by
-    simp [filteredCausalAttackerHashPlan, hcache,
-      filteredCausalUncachedHashPlan, hprobe, hrevealed, hnext,
-      revealedChainNextIndex]
-  simpa [filteredCausalLazyAttackerHashStep, hplan, hnextHidden,
-    revealedChainNextIndex] using
-    (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
-      secretKey selected input state continuation)
-
-noncomputable def filteredDirectLazyHashStep
-    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
-    (state : CausalHashState) :
+    (state : CausalHashState) : Option (ChainValueIndex × Digest) →
     ProbComp ((HashOutput × CausalHashState) ×
-      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) :=
-  match probe? : chainInputProbe? secretKey.parameter selected input with
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
   | none => filteredCausalLazyAttackerHashStep secretKey selected input state
   | some probe =>
       match state.revealed probe.1 with
@@ -405,55 +24,280 @@ noncomputable def filteredDirectLazyHashStep
           pure (result.1,
             .probe probe.1 probe.2 :: result.2)
 
-set_option maxRecDepth 100000 in
-theorem evalDist_installed_filteredProbingAttackerHashQuery_continuation_eq_lazy
+noncomputable def filteredDirectLazyHashStep
     (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
-    (state : CausalHashState)
+    (state : CausalHashState) :
+    ProbComp ((HashOutput × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) :=
+  filteredDirectLazyHashStepAt secretKey selected input state
+    (chainInputProbe? secretKey.parameter selected input)
+
+def prependDirectProbeContinuation
+    (probe : ChainValueIndex × Digest)
+    (continuation : (ChainValueIndex → Digest) →
+      ((HashOutput × CausalHashState) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex) → ProbComp α)
+    (table : ChainValueIndex → Digest)
+    (result : (HashOutput × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) : ProbComp α :=
+  continuation table (result.1,
+    RevealProbeOracleSimulation.ObservedAction.probe
+      probe.1 probe.2 :: result.2)
+
+theorem simulate_eagerTrace_probeQuery
+    (table : ChainValueIndex → Digest) (index : ChainValueIndex)
+    (target : Digest) :
+    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+      (RevealProbeOracleSimulation.probeQuery index target)).run =
+        pure ((), [RevealProbeOracleSimulation.ObservedAction.probe
+          index target]) := by
+  simp [RevealProbeOracleSimulation.probeQuery,
+    RevealProbeOracleSimulation.eagerTraceImpl,
+    RevealProbeOracleSimulation.eagerImpl,
+    RevealProbeOracleSimulation.traceFragment,
+    QueryImpl.withTraceAppend_apply, WriterT.run_tell]
+
+set_option linter.unusedSimpArgs false in
+set_option maxRecDepth 100000 in
+theorem evalDist_installed_filteredProbingAttackerHashQueryAt_continuation_eq_lazy
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) (probe? : Option (ChainValueIndex × Digest))
     (continuation : (ChainValueIndex → Digest) →
       ((HashOutput × CausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace ChainValueIndex) → ProbComp α) :
-    𝓓[do
+    𝒟[do
       let base ← $ᵗ (ChainValueIndex → Digest)
       let table := causalInstalledTable state base
       let result ← (simulateQ
         (RevealProbeOracleSimulation.eagerTraceImpl table)
-        ((filteredProbingAttackerHashQuery
-          secretKey selected input).run state)).run
+        (filteredProbingAttackerHashQueryAt
+          secretKey selected input state probe?)).run
       continuation (causalInstalledTable result.1.2 base) result] =
-    𝓓[do
-      let result ← filteredDirectLazyHashStep
-        secretKey selected input state
+    𝒟[do
+      let result ← filteredDirectLazyHashStepAt
+        secretKey selected input state probe?
       let base ← $ᵗ (ChainValueIndex → Digest)
       continuation (causalInstalledTable result.1.2 base) result] := by
-  generalize hprobe :
-    chainInputProbe? secretKey.parameter selected input = probe
-  cases probe with
+  cases probe? with
   | none =>
-      simpa [filteredProbingAttackerHashQuery,
-        filteredDirectLazyHashStep, hprobe] using
-        (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
-          secretKey selected input state continuation)
+      simp only [filteredProbingAttackerHashQueryAt,
+        filteredDirectLazyHashStepAt]
+      exact
+        evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
+          secretKey selected input state continuation
   | some probe =>
       cases hrevealed : state.revealed probe.1 with
       | some value =>
-          simpa [filteredProbingAttackerHashQuery,
-            filteredProbingAttackerHashQueryAt, filteredDirectLazyHashStep,
-            hprobe, hrevealed] using
-            (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
-              secretKey selected input state continuation)
+          simp only [filteredProbingAttackerHashQueryAt,
+            filteredDirectLazyHashStepAt, hrevealed]
+          exact
+            evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
+              secretKey selected input state continuation
       | none =>
-          let prependProbe := fun
-              (result : (HashOutput × CausalHashState) ×
-                RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
-            (result.1,
-              RevealProbeOracleSimulation.ObservedAction.probe
-                probe.1 probe.2 :: result.2)
-          simpa [filteredProbingAttackerHashQuery,
-            filteredProbingAttackerHashQueryAt, filteredDirectLazyHashStep,
-            hprobe, hrevealed, prependProbe, simulateQ_bind,
-            WriterT.run_bind', map_eq_bind_pure_comp, bind_assoc] using
-            (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
-              secretKey selected input state
-                (fun table result => continuation table (prependProbe result)))
+          simp only [filteredProbingAttackerHashQueryAt,
+            filteredDirectLazyHashStepAt, hrevealed]
+          simp only [simulateQ_bind, WriterT.run_bind',
+            map_eq_bind_pure_comp, bind_assoc]
+          simp_rw [simulate_eagerTrace_probeQuery]
+          simp only [pure_bind, List.singleton_append, Function.comp_apply]
+          exact
+            evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
+              (α := α) (secretKey := secretKey) (selected := selected)
+              (input := input) (state := state)
+              (continuation := prependDirectProbeContinuation probe continuation)
+
+theorem simulate_eagerImpl_filteredCausalAttackerHashQuery_support_revealsAgree
+    (table : ChainValueIndex → Digest) (secretKey : SecretKey)
+    (selected : ChainIndex) (input : HashInput) (state : CausalHashState)
+    (result : HashOutput × CausalHashState)
+    (hagrees : CausalRevealsAgree table state)
+    (hresult : result ∈ support
+      (simulateQ (RevealProbeOracleSimulation.eagerImpl table)
+        ((filteredCausalAttackerHashQuery
+          secretKey selected input).run state))) :
+    CausalRevealsAgree table result.2 := by
+  generalize hplan :
+    filteredCausalAttackerHashPlan secretKey selected input state = plan
+  cases plan with
+  | cached output =>
+      rw [filteredCausalAttackerHashQuery_run, hplan] at hresult
+      simp only [simulateQ_pure, support_pure, Set.mem_singleton_iff] at hresult
+      subst result
+      exact hagrees.causalRecordedState secretKey selected input
+  | conditioned digest =>
+      rw [filteredCausalAttackerHashQuery_run, hplan,
+        simulateQ_bind,
+        RevealProbeOracleSimulation.simulate_eagerImpl_liftProbComp,
+        mem_support_bind_iff] at hresult
+      obtain ⟨output, _houtput, hpure⟩ := hresult
+      subst result
+      exact (hagrees.causalRecordedState secretKey selected input).setCache _
+  | fresh =>
+      rw [filteredCausalAttackerHashQuery_run, hplan] at hresult
+      exact simulate_eagerImpl_causalHashQuery_support_revealsAgree table input
+        (causalRecordedState secretKey selected input state) result
+          (hagrees.causalRecordedState secretKey selected input) hresult
+  | reveal index =>
+      rw [filteredCausalAttackerHashQuery_run, hplan] at hresult
+      unfold causalRevealHashQuery at hresult
+      rw [simulateQ_bind,
+        RevealProbeOracleSimulation.simulate_eagerImpl_revealQuery,
+        pure_bind, simulateQ_bind,
+        RevealProbeOracleSimulation.simulate_eagerImpl_liftProbComp,
+        mem_support_bind_iff] at hresult
+      obtain ⟨output, _houtput, hpure⟩ := hresult
+      subst result
+      exact hagrees.causalRevealResultState secretKey selected input index
+        (table index) output rfl
+
+theorem simulate_eagerImpl_filteredCausalAttackerHashQuery_support_revealsLe
+    (table : ChainValueIndex → Digest) (secretKey : SecretKey)
+    (selected : ChainIndex) (input : HashInput) (state : CausalHashState)
+    (result : HashOutput × CausalHashState)
+    (hagrees : CausalRevealsAgree table state)
+    (hresult : result ∈ support
+      (simulateQ (RevealProbeOracleSimulation.eagerImpl table)
+        ((filteredCausalAttackerHashQuery
+          secretKey selected input).run state))) :
+    CausalRevealsLe state result.2 := by
+  generalize hplan :
+    filteredCausalAttackerHashPlan secretKey selected input state = plan
+  cases plan with
+  | cached output =>
+      rw [filteredCausalAttackerHashQuery_run, hplan] at hresult
+      simp only [simulateQ_pure, support_pure, Set.mem_singleton_iff] at hresult
+      subst result
+      exact CausalRevealsLe.causalRecordedState secretKey selected input state
+  | conditioned digest =>
+      rw [filteredCausalAttackerHashQuery_run, hplan,
+        simulateQ_bind,
+        RevealProbeOracleSimulation.simulate_eagerImpl_liftProbComp,
+        mem_support_bind_iff] at hresult
+      obtain ⟨output, _houtput, hpure⟩ := hresult
+      subst result
+      exact (CausalRevealsLe.causalRecordedState
+        secretKey selected input state).trans (CausalRevealsLe.setCache _ _)
+  | fresh =>
+      rw [filteredCausalAttackerHashQuery_run, hplan] at hresult
+      exact (CausalRevealsLe.causalRecordedState
+        secretKey selected input state).trans
+          (simulate_eagerImpl_causalHashQuery_support_revealsLe
+            table input (causalRecordedState secretKey selected input state)
+              result hresult)
+  | reveal index =>
+      rw [filteredCausalAttackerHashQuery_run, hplan] at hresult
+      unfold causalRevealHashQuery at hresult
+      rw [simulateQ_bind,
+        RevealProbeOracleSimulation.simulate_eagerImpl_revealQuery,
+        pure_bind, simulateQ_bind,
+        RevealProbeOracleSimulation.simulate_eagerImpl_liftProbComp,
+        mem_support_bind_iff] at hresult
+      obtain ⟨output, _houtput, hpure⟩ := hresult
+      subst result
+      apply CausalRevealsLe.causalRevealResultState
+      intro previous hprevious
+      exact (hagrees index previous hprevious).symm
+
+theorem simulate_eagerTrace_filteredCausalAttackerHashQuery_support_installedTable
+    (base : ChainValueIndex → Digest) (secretKey : SecretKey)
+    (selected : ChainIndex) (input : HashInput) (state : CausalHashState)
+    (result : (HashOutput × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl
+        (causalInstalledTable state base))
+        ((filteredCausalAttackerHashQuery
+          secretKey selected input).run state)).run)) :
+    causalInstalledTable result.1.2 base =
+      causalInstalledTable state base := by
+  have hprojection := simulate_eagerTrace_projection_mem_support
+    (causalInstalledTable state base)
+    ((filteredCausalAttackerHashQuery secretKey selected input).run state)
+      result hresult
+  apply causalInstalledTable_eq_of_agrees_of_revealsLe
+    (causalInstalledTable state base) base state result.1.2 rfl
+  · exact simulate_eagerImpl_filteredCausalAttackerHashQuery_support_revealsAgree
+      (causalInstalledTable state base) secretKey selected input state result.1
+        (causalRevealsAgree_causalInstalledTable state base) hprojection
+  · exact simulate_eagerImpl_filteredCausalAttackerHashQuery_support_revealsLe
+      (causalInstalledTable state base) secretKey selected input state result.1
+        (causalRevealsAgree_causalInstalledTable state base) hprojection
+
+theorem simulate_eagerTrace_filteredProbingAttackerHashQueryAt_support_installedTable
+    (base : ChainValueIndex → Digest) (secretKey : SecretKey)
+    (selected : ChainIndex) (input : HashInput) (state : CausalHashState)
+    (probe? : Option (ChainValueIndex × Digest))
+    (result : (HashOutput × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl
+        (causalInstalledTable state base))
+        (filteredProbingAttackerHashQueryAt
+          secretKey selected input state probe?)).run)) :
+    causalInstalledTable result.1.2 base =
+      causalInstalledTable state base := by
+  cases probe? with
+  | none =>
+      simp only [filteredProbingAttackerHashQueryAt] at hresult
+      exact simulate_eagerTrace_filteredCausalAttackerHashQuery_support_installedTable
+        base secretKey selected input state result hresult
+  | some probe =>
+      cases hrevealed : state.revealed probe.1 with
+      | some value =>
+          simp only [filteredProbingAttackerHashQueryAt, hrevealed] at hresult
+          exact simulate_eagerTrace_filteredCausalAttackerHashQuery_support_installedTable
+            base secretKey selected input state result hresult
+      | none =>
+          simp only [filteredProbingAttackerHashQueryAt, hrevealed,
+            simulateQ_bind, WriterT.run_bind'] at hresult
+          simp_rw [simulate_eagerTrace_probeQuery] at hresult
+          simp only [pure_bind, List.singleton_append,
+            support_map] at hresult
+          obtain ⟨rest, hrest, heq⟩ := hresult
+          have hstate := congrArg (fun x => x.1) heq
+          simp only [Prod.map, id_eq] at hstate
+          rw [← hstate]
+          exact simulate_eagerTrace_filteredCausalAttackerHashQuery_support_installedTable
+            base secretKey selected input state rest hrest
+
+set_option maxRecDepth 100000 in
+theorem evalDist_installed_filteredProbingAttackerHashQueryAt_fixedContinuation_eq_lazy
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) (probe? : Option (ChainValueIndex × Digest))
+    (continuation : (ChainValueIndex → Digest) →
+      ((HashOutput × CausalHashState) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex) → ProbComp α) :
+    𝒟[do
+      let base ← $ᵗ (ChainValueIndex → Digest)
+      let table := causalInstalledTable state base
+      let result ← (simulateQ
+        (RevealProbeOracleSimulation.eagerTraceImpl table)
+        (filteredProbingAttackerHashQueryAt
+          secretKey selected input state probe?)).run
+      continuation table result] =
+    𝒟[do
+      let result ← filteredDirectLazyHashStepAt
+        secretKey selected input state probe?
+      let base ← $ᵗ (ChainValueIndex → Digest)
+      continuation (causalInstalledTable result.1.2 base) result] := by
+  calc
+    _ = 𝒟[do
+        let base ← $ᵗ (ChainValueIndex → Digest)
+        let table := causalInstalledTable state base
+        let result ← (simulateQ
+          (RevealProbeOracleSimulation.eagerTraceImpl table)
+          (filteredProbingAttackerHashQueryAt
+            secretKey selected input state probe?)).run
+        continuation (causalInstalledTable result.1.2 base) result] := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro base
+      simp only
+      apply RevealProbeOracleSimulation.evalDist_bind_congr_of_support
+      intro result hresult
+      rw [simulate_eagerTrace_filteredProbingAttackerHashQueryAt_support_installedTable
+        base secretKey selected input state probe? result hresult]
+    _ = _ :=
+      evalDist_installed_filteredProbingAttackerHashQueryAt_continuation_eq_lazy
+        secretKey selected input state probe? continuation
 
 end XmssSecurity

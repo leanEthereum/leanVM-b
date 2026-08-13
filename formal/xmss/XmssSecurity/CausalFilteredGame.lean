@@ -61,11 +61,11 @@ noncomputable def filteredDirectMappedAdversaryImpl
   fun input =>
     match input with
     | .inl (.inl n) => causalUniformImpl n
-    | .inl (.inr hashInput) => fun state =>
+    | .inl (.inr hashInput) => StateT.mk (fun state =>
         filteredProbingAttackerHashQueryAt keyView.secretKey selected hashInput
-          state (chainInputProbe? keyView.secretKey.parameter selected hashInput)
-    | .inr request => fun state =>
-        filteredCausalSigningQuery keyView selected request state
+          state (chainInputProbe? keyView.secretKey.parameter selected hashInput))
+    | .inr request => StateT.mk (fun state =>
+        filteredCausalSigningQuery keyView selected request state)
 
 noncomputable def filteredDirectVerifierImpl
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex) :
@@ -75,9 +75,9 @@ noncomputable def filteredDirectVerifierImpl
   fun input =>
     match input with
     | .inl n => causalUniformImpl n
-    | .inr hashInput => fun state =>
+    | .inr hashInput => StateT.mk (fun state =>
         filteredProbingAttackerHashQueryAt keyView.secretKey selected hashInput
-          state (chainInputProbe? keyView.secretKey.parameter selected hashInput)
+          state (chainInputProbe? keyView.secretKey.parameter selected hashInput))
 
 noncomputable def filteredDirectActionTracedMappedAdversaryImpl
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex) :
@@ -101,65 +101,5 @@ noncomputable def filteredDirectDetailedGameAfterKeygen
     (Concrete.scheme.verify keyView.publicKey handled.1.epoch
       handled.1.message handled.1.signature)
   pure ((handled.1, verified), handled.2)
-
-theorem filteredDirectMappedAdversaryImpl_step_isProbeQueryBoundP
-    (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
-    (input : (OracleWorld + SigningSpec).Domain) (state : CausalHashState) :
-    (filteredDirectMappedAdversaryImpl keyView selected input).run state
-      |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery
-        (if IsDirectHashAction input then 1 else 0) := by
-  rcases input with worldInput | request
-  · rcases worldInput with n | hashInput
-    · change ((causalUniformImpl n).run state).IsQueryBoundP
-        RevealProbeOracleSimulation.IsProbeQuery 0
-      exact causalUniformImpl_run_isProbeQueryBoundP n state
-    · simp only [filteredDirectMappedAdversaryImpl, IsDirectHashAction]
-      generalize hprobe :
-        chainInputProbe? keyView.secretKey.parameter selected hashInput = probe
-      exact filteredProbingAttackerHashQueryAt_isProbeQueryBoundP
-        keyView.secretKey selected hashInput state probe
-  · change (filteredCausalSigningQuery keyView selected request state)
-        |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 0
-    exact filteredCausalSigningQuery_isProbeQueryBoundP
-      keyView selected request state
-
-theorem simulate_filteredDirectMappedAdversaryImpl_isProbeQueryBoundP
-    (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (queries : Nat) (hqueries : computation.IsQueryBoundP
-      IsDirectHashAction queries) (state : CausalHashState) :
-    (simulateQ (filteredDirectMappedAdversaryImpl keyView selected)
-      computation).run state |>.IsQueryBoundP
-        RevealProbeOracleSimulation.IsProbeQuery queries := by
-  exact OracleComp.IsQueryBoundP.simulateQ_run_StateT_of_step hqueries
-    (filteredDirectMappedAdversaryImpl_step_isProbeQueryBoundP keyView selected)
-      state
-
-theorem filteredDirectVerifierImpl_step_isProbeQueryBoundP
-    (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
-    (input : OracleWorld.Domain) (state : CausalHashState) :
-    (filteredDirectVerifierImpl keyView selected input).run state
-      |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery
-        (if input matches .inr _ then 1 else 0) := by
-  rcases input with n | hashInput
-  · change ((causalUniformImpl n).run state).IsQueryBoundP
-        RevealProbeOracleSimulation.IsProbeQuery 0
-    exact causalUniformImpl_run_isProbeQueryBoundP n state
-  · simp only [filteredDirectVerifierImpl]
-    generalize hprobe :
-      chainInputProbe? keyView.secretKey.parameter selected hashInput = probe
-    exact filteredProbingAttackerHashQueryAt_isProbeQueryBoundP
-      keyView.secretKey selected hashInput state probe
-
-theorem simulate_filteredDirectVerifierImpl_isProbeQueryBoundP
-    (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
-    (computation : OracleComp OracleWorld α)
-    (queries : Nat) (hqueries : computation.IsQueryBoundP
-      (· matches .inr _) queries) (state : CausalHashState) :
-    (simulateQ (filteredDirectVerifierImpl keyView selected)
-      computation).run state |>.IsQueryBoundP
-        RevealProbeOracleSimulation.IsProbeQuery queries := by
-  exact OracleComp.IsQueryBoundP.simulateQ_run_StateT_of_step hqueries
-    (filteredDirectVerifierImpl_step_isProbeQueryBoundP keyView selected) state
 
 end XmssSecurity
