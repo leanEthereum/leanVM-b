@@ -41,6 +41,7 @@ import XmssSecurity.CausalFilteredGame
 import XmssSecurity.CausalProbeEnforcement
 import XmssSecurity.CausalDirectReduction
 import XmssSecurity.CausalDirectStepCoupling
+import XmssSecurity.CausalDirectLazyVerifier
 import XmssSecurity.CausalKeygenGameCoupling
 import XmssSecurity.CausalInstalledTableGame
 import XmssSecurity.CausalInstalledResampling

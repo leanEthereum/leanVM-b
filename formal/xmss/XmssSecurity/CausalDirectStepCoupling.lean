@@ -342,4 +342,118 @@ theorem relTriple_filteredKeygen_first_hidden_hash_step
   · exact hprobe
   · exact filteredCausalKeygenState_revealed selected right.1 index
 
+noncomputable def revealedChainNextIndex
+    (index : ChainValueIndex) (hnext : index.2.val + 1 < chainLength) :
+    ChainValueIndex :=
+  (index.1, ⟨index.2.val + 1, hnext⟩)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_installed_filtered_trueEdge_continuation_eq_uniform
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) (index : ChainValueIndex) (target : Digest)
+    (hprobe : chainInputProbe? secretKey.parameter selected input =
+      some (index, target))
+    (hcache : state.cache input = none)
+    (hrevealed : state.revealed index = some target)
+    (hnext : index.2.val + 1 < chainLength)
+    (hnextHidden : state.revealed (revealedChainNextIndex index hnext) = none)
+    (continuation : (ChainValueIndex → Digest) →
+      ((HashOutput × CausalHashState) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex) → ProbComp α) :
+    𝓓[do
+      let base ← $ᵗ (ChainValueIndex → Digest)
+      let table := causalInstalledTable state base
+      let result ← (simulateQ
+        (RevealProbeOracleSimulation.eagerTraceImpl table)
+        ((filteredCausalAttackerHashQuery
+          secretKey selected input).run state)).run
+      continuation (causalInstalledTable result.1.2 base) result] =
+    𝓓[do
+      let output ← $ᵗ HashOutput
+      let value := truncateHash output
+      let nextIndex := revealedChainNextIndex index hnext
+      let result := ((output,
+        causalRevealResultState secretKey selected input state
+          nextIndex value output),
+        [RevealProbeOracleSimulation.ObservedAction.reveal nextIndex value])
+      let base ← $ᵗ (ChainValueIndex → Digest)
+      continuation (causalInstalledTable result.1.2 base) result] := by
+  have hplan : filteredCausalAttackerHashPlan secretKey selected input state =
+      .reveal (revealedChainNextIndex index hnext) := by
+    simp [filteredCausalAttackerHashPlan, hcache,
+      filteredCausalUncachedHashPlan, hprobe, hrevealed, hnext,
+      revealedChainNextIndex]
+  simpa [filteredCausalLazyAttackerHashStep, hplan, hnextHidden,
+    revealedChainNextIndex] using
+    (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
+      secretKey selected input state continuation)
+
+noncomputable def filteredDirectLazyHashStep
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) :
+    ProbComp ((HashOutput × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) :=
+  match probe? : chainInputProbe? secretKey.parameter selected input with
+  | none => filteredCausalLazyAttackerHashStep secretKey selected input state
+  | some probe =>
+      match state.revealed probe.1 with
+      | some _ => filteredCausalLazyAttackerHashStep
+          secretKey selected input state
+      | none => do
+          let result ← filteredCausalLazyAttackerHashStep
+            secretKey selected input state
+          pure (result.1,
+            .probe probe.1 probe.2 :: result.2)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_installed_filteredProbingAttackerHashQuery_continuation_eq_lazy
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState)
+    (continuation : (ChainValueIndex → Digest) →
+      ((HashOutput × CausalHashState) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex) → ProbComp α) :
+    𝓓[do
+      let base ← $ᵗ (ChainValueIndex → Digest)
+      let table := causalInstalledTable state base
+      let result ← (simulateQ
+        (RevealProbeOracleSimulation.eagerTraceImpl table)
+        ((filteredProbingAttackerHashQuery
+          secretKey selected input).run state)).run
+      continuation (causalInstalledTable result.1.2 base) result] =
+    𝓓[do
+      let result ← filteredDirectLazyHashStep
+        secretKey selected input state
+      let base ← $ᵗ (ChainValueIndex → Digest)
+      continuation (causalInstalledTable result.1.2 base) result] := by
+  generalize hprobe :
+    chainInputProbe? secretKey.parameter selected input = probe
+  cases probe with
+  | none =>
+      simpa [filteredProbingAttackerHashQuery,
+        filteredDirectLazyHashStep, hprobe] using
+        (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
+          secretKey selected input state continuation)
+  | some probe =>
+      cases hrevealed : state.revealed probe.1 with
+      | some value =>
+          simpa [filteredProbingAttackerHashQuery,
+            filteredProbingAttackerHashQueryAt, filteredDirectLazyHashStep,
+            hprobe, hrevealed] using
+            (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
+              secretKey selected input state continuation)
+      | none =>
+          let prependProbe := fun
+              (result : (HashOutput × CausalHashState) ×
+                RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
+            (result.1,
+              RevealProbeOracleSimulation.ObservedAction.probe
+                probe.1 probe.2 :: result.2)
+          simpa [filteredProbingAttackerHashQuery,
+            filteredProbingAttackerHashQueryAt, filteredDirectLazyHashStep,
+            hprobe, hrevealed, prependProbe, simulateQ_bind,
+            WriterT.run_bind', map_eq_bind_pure_comp, bind_assoc] using
+            (evalDist_installed_filteredCausalAttackerHashQuery_continuation_eq_lazy
+              secretKey selected input state
+                (fun table result => continuation table (prependProbe result)))
+
 end XmssSecurity
