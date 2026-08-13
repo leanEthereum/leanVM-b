@@ -86,7 +86,6 @@ pub fn eq_table_arena(r: &[F192]) -> ArenaVec<F192> {
 fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
     debug_assert_eq!(eq.len(), 1usize << r.len());
     eq[0] = F192::ONE;
-    const PAR_THRESHOLD: usize = 1 << 12;
     for (i, &rk) in r.iter().enumerate() {
         let half = 1usize << i;
         let (lo, hi_rest) = eq.split_at_mut(half);
@@ -108,6 +107,9 @@ fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
     }
 }
 
+/// Below this a parallel dispatch costs more than the fold it replaces.
+const PAR_THRESHOLD: usize = 1 << 12;
+
 /// The mixed fold: bind the lowest variable of a `K`-table to an
 /// `E`-challenge, producing the `E`-table the remaining rounds fold. One
 /// `mul_base` per output entry.
@@ -116,6 +118,11 @@ fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
     (0..table.len() / 2)
         .map(|i| interp_k(table[2 * i], table[2 * i + 1], rho))
         .collect()
+}
+
+/// [`fold_low_k`], fanned out over the pool.
+fn fold_low_k_par(table: &[F64], rho: F192) -> Vec<F192> {
+    parallel::map_collect(table.len() / 2, |i| interp_k(table[2 * i], table[2 * i + 1], rho))
 }
 
 /// Bind the highest variable of a `K`-table and lift the result into `E`.
@@ -235,7 +242,19 @@ pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     if point.is_empty() {
         return F192::from(table[0]);
     }
-    fold_ladder(fold_low_k(table, point[0]), &point[1..])
+    fold_ladder(fold_low_k(table, point[0]), &point[1..], false)
+}
+
+/// [`mle_eval`], fanned out over the pool. For an OUTERMOST caller only: a kernel
+/// already inside a dispatch must use the scalar [`mle_eval`], since nesting
+/// deadlocks. Worth it only for the big fixed tables (the stacked bytecode),
+/// where one evaluation is millions of sequential folds.
+pub fn mle_eval_par(table: &[F64], point: &[F192]) -> F192 {
+    debug_assert_eq!(table.len(), 1 << point.len());
+    if point.is_empty() {
+        return F192::from(table[0]);
+    }
+    fold_ladder(fold_low_k_par(table, point[0]), &point[1..], true)
 }
 
 /// The MLE of the pointwise product `a·b` at an `E`-point, i.e. `Σ_z eq(point,
@@ -252,14 +271,21 @@ pub fn mle_eval_prod(a: &[F64], b: &[F64], point: &[F192]) -> F192 {
     let cur = (0..a.len() / 2)
         .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], rho))
         .collect();
-    fold_ladder(cur, &point[1..])
+    fold_ladder(cur, &point[1..], false)
 }
 
 /// Bind the remaining variables of a half-folded `E`-table, LSB-first.
-fn fold_ladder(mut cur: Vec<F192>, point: &[F192]) -> F192 {
+fn fold_ladder(mut cur: Vec<F192>, point: &[F192], par: bool) -> F192 {
     let mut len = cur.len();
     for &p in point {
         len /= 2;
+        // Out of place while the round is worth a dispatch: an in-place fold
+        // reads `cur[2i]` where another task writes `cur[i]`.
+        if par && len >= PAR_THRESHOLD {
+            let src: &[F192] = &cur;
+            cur = parallel::map_collect(len, |i| interp(src[2 * i], src[2 * i + 1], p));
+            continue;
+        }
         // Deliberately scalar: the fold's mul has the loop-invariant `p` on one
         // side, and pairing outputs through a two-lane multiply measured slower,
         // 1.75 vs 2.14 ns/output.

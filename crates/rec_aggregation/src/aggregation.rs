@@ -32,7 +32,7 @@ use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use primitives::field::{F64, F192, G, g_pow};
-use primitives::multilinear::mle_eval;
+use primitives::multilinear::mle_eval_par;
 use xmss::{XmssPublicKey, XmssSignature};
 
 /// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
@@ -224,10 +224,14 @@ impl DeferredClaim {
                 matrix_b_value: first(mb),
             });
         }
-        let bytecode_value = mle_eval(stacked_bytecode(), &bytecode_point);
+        let sp = tracing::info_span!("bytecode mle").entered();
+        let bytecode_value = mle_eval_par(stacked_bytecode(), &bytecode_point);
+        drop(sp);
+        let sp = tracing::info_span!("matrix walk").entered();
         let eq_r = pcs::whir::build_eq_table_ext(&matrix_point[..klog]);
         let eq_c = pcs::whir::build_eq_table_ext(&matrix_point[klog..]);
         let (matrix_a_value, matrix_b_value) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
+        drop(sp);
         Ok(Self {
             bytecode_point,
             bytecode_value,
@@ -434,11 +438,16 @@ impl AggregateSignature {
         check_signer_set(&self.public_keys)?;
         // Recomputing the values is what binds them: a claim carrying anything
         // else yields a different statement, which the proof cannot satisfy.
+        let _s = tracing::info_span!("Recompute deferred claims").entered();
         let defer = DeferredClaim::recompute(self.defer.bytecode_point.clone(), self.defer.matrix_point.clone())?;
+        drop(_s);
         if defer != self.defer {
             return Err(VerifyError::MalformedClaim);
         }
-        verify(unified_guest(), &self.public_input(), &self.proof).map_err(VerifyError::Proof)?;
+        let _s = tracing::info_span!("Statement digest").entered();
+        let pi = self.public_input();
+        drop(_s);
+        verify(unified_guest(), &pi, &self.proof).map_err(VerifyError::Proof)?;
         Ok(())
     }
 }
@@ -2616,7 +2625,7 @@ mod tests {
         let klog = flock::blake2s::K_LOG;
         let leaf = DeferredClaim::leaf();
         let general = {
-            let bytecode_value = mle_eval(stacked_bytecode(), &leaf.bytecode_point);
+            let bytecode_value = mle_eval_par(stacked_bytecode(), &leaf.bytecode_point);
             let eq_r = pcs::whir::build_eq_table_ext(&leaf.matrix_point[..klog]);
             let eq_c = pcs::whir::build_eq_table_ext(&leaf.matrix_point[klog..]);
             let (a, b) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);

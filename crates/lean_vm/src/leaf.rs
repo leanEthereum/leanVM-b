@@ -414,7 +414,10 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 Coord::Prod(..) | Coord::Sum(..) => {
                     unreachable!("only a table's bus block carries a degree-2 coordinate")
                 }
-                Coord::Public(vals) => mle_eval(vals.as_slice(), zeta_lo),
+                // The nine bytecode encoding columns, the largest evaluation on
+                // this path. Outermost in both `decompose_prove` and
+                // `decompose_verify`, whose own dispatches have returned by here.
+                Coord::Public(vals) => primitives::multilinear::mle_eval_par(vals.as_slice(), zeta_lo),
             };
             inner += w[i] * coord_val;
         }
@@ -592,7 +595,9 @@ fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192]) -> Bytecode
     let kbc = crate::log2_strict_usize(table.len()) - N_BYTECODE_SELECTORS;
     let claim_point = [&point[..kbc], alphas].concat();
     BytecodeClaim {
-        value: mle_eval(&table, &claim_point),
+        // Outermost on both the prove and verify paths (`prove_balance` /
+        // `verify_balance`), and the largest evaluation either makes.
+        value: primitives::multilinear::mle_eval_par(&table, &claim_point),
         point: claim_point,
     }
 }
