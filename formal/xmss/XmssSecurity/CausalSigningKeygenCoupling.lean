@@ -1,4 +1,6 @@
 import XmssSecurity.CausalKeygenCacheCoupling
+import XmssSecurity.CausalCacheInvariant
+import XmssSecurity.CausalSigningProjection
 import XmssSecurity.CausalStrategyCoupling
 import XmssSecurity.KeygenCache
 
@@ -886,13 +888,25 @@ theorem relTriple_encodingHash_run_of_signingComparableCaches
   exact ⟨hresult.1.1, hresult.1.2.1, hresult.1.2.2.1,
     hresult.1.2.2.2, hresult.2.1, hresult.2.2⟩
 
-def replaceFixedChainSignatureOption
+def SignAttemptResultRelation
     (table : ChainValueIndex → Digest) (selected : ChainIndex)
-    (epoch : Epoch) (encoding : Encoding) :
-    Option Signature → Option Signature
-  | none => none
-  | some signature => some (replaceSignatureChainValue signature selected
-      (table (epoch, encoding selected)))
+    (parameter : PublicParameter) (epoch : Epoch) (message : Message)
+    (randomness : Randomness) (initialLeft initialRight : QueryCache HashSpec)
+    (leftResult rightResult : Option Signature × QueryCache HashSpec) : Prop :=
+  ∃ decoded : Option Encoding,
+    TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash leftResult.2 parameter epoch
+        (message, randomness)) = decoded ∧
+    (match decoded with
+      | none => leftResult.1 = none ∧ rightResult.1 = none
+      | some encoding => ∃ signature,
+          signature.randomness = randomness ∧
+          rightResult.1 = some signature ∧
+          leftResult.1 = some (replaceSignatureChainValue signature selected
+            (table (epoch, encoding selected)))) ∧
+    HashCachesAgreeOn (SigningComparableHashInput parameter selected)
+      leftResult.2 rightResult.2 ∧
+    initialLeft ≤ leftResult.2 ∧ initialRight ≤ rightResult.2
 
 theorem relTriple_keygenViews_signAttempt_run
     (selected : ChainIndex)
@@ -917,19 +931,8 @@ theorem relTriple_keygenViews_signAttempt_run
       ((simulateQ randomOracle
         (Concrete.signAttempt right.1.secretKey epoch message randomness)).run
           rightCache)
-      (fun leftResult rightResult =>
-        ∃ decoded : Option Encoding,
-          TargetSum.decodeDigest
-            (Concrete.CacheView.encodingHash leftResult.2
-              left.secretKey.parameter epoch (message, randomness)) = decoded ∧
-          leftResult.1 = (match decoded with
-            | none => rightResult.1
-            | some encoding => replaceFixedChainSignatureOption right.2
-                selected epoch encoding rightResult.1) ∧
-          HashCachesAgreeOn
-            (SigningComparableHashInput left.secretKey.parameter selected)
-            leftResult.2 rightResult.2 ∧
-          left.cache ≤ leftResult.2 ∧ right.1.cache ≤ rightResult.2) := by
+      (SignAttemptResultRelation right.2 selected left.secretKey.parameter
+        epoch message randomness left.cache right.1.cache) := by
   have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
     selected left hleftSupport
   have hrightKey := actualFixedChainKeygen_support_keyResult
@@ -956,7 +959,8 @@ theorem relTriple_keygenViews_signAttempt_run
   | none =>
       simp only [simulateQ_pure, StateT.run_pure]
       apply relTriple_pure_pure
-      refine ⟨none, ?_, rfl, hdigest.2.1,
+      unfold SignAttemptResultRelation
+      refine ⟨none, ?_, ⟨rfl, rfl⟩, hdigest.2.1,
         hleftLe.trans hdigest.2.2.1,
         hrightLe.trans hdigest.2.2.2.1⟩
       simpa [hdigest.2.2.2.2.1] using hdecode
@@ -986,17 +990,212 @@ theorem relTriple_keygenViews_signAttempt_run
       rw [hleftRun, hrightRun]
       simp only [Functor.map]
       apply relTriple_pure_pure
+      unfold SignAttemptResultRelation
       refine ⟨some encoding, ?_, ?_, hdigest.2.1,
         hleftLe.trans hdigest.2.2.1,
         hrightLe.trans hdigest.2.2.2.1⟩
       · simpa [hdigest.2.2.2.2.1] using hdecode
-      · simp only [replaceFixedChainSignatureOption]
-        congr 1
-        exact keygenViews_signWithEncoding_larger_eq_replaced selected left
+      · refine ⟨Concrete.CacheReplay.signWithEncoding rightDigestResult.2
+          right.1.secretKey epoch randomness encoding, rfl, rfl, ?_⟩
+        exact congrArg some
+          (keygenViews_signWithEncoding_larger_eq_replaced selected left
           right hrel hleftSupport hrightSupport leftDigestResult.2
           rightDigestResult.2
           (fun input hinput => hdigest.2.1 input (Or.inl hinput))
           (hleftLe.trans hdigest.2.2.1)
-          (hrightLe.trans hdigest.2.2.2.1) epoch randomness encoding
+          (hrightLe.trans hdigest.2.2.2.1) epoch randomness encoding)
+
+def SignResultRelation
+    (table : ChainValueIndex → Digest) (selected : ChainIndex)
+    (parameter : PublicParameter) (epoch : Epoch) (message : Message)
+    (initialLeft initialRight : QueryCache HashSpec)
+    (leftResult rightResult : Option Signature × QueryCache HashSpec) : Prop :=
+  ∃ randomness,
+    SignAttemptResultRelation table selected parameter epoch message randomness
+      initialLeft initialRight leftResult rightResult
+
+set_option maxRecDepth 100000 in
+theorem relTriple_keygenViews_sign_run
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenStableRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1 ∈ support (actualFixedChainKeygen selected))
+    (leftCache rightCache : QueryCache HashSpec)
+    (hcacheAgreement : HashCachesAgreeOn
+      (SigningComparableHashInput left.secretKey.parameter selected)
+      leftCache rightCache)
+    (hleftLe : left.cache ≤ leftCache)
+    (hrightLe : right.1.cache ≤ rightCache)
+    (request : SignRequest) :
+    RelTriple
+      ((simulateQ xmssRomImpl
+        (Concrete.scheme.sign left.publicKey left.secretKey
+          request.epoch request.message)).run leftCache)
+      ((simulateQ xmssRomImpl
+        (Concrete.scheme.sign right.1.publicKey right.1.secretKey
+          request.epoch request.message)).run rightCache)
+      (SignResultRelation right.2 selected left.secretKey.parameter
+        request.epoch request.message left.cache right.1.cache) := by
+  simp only [Concrete.scheme]
+  rw [Concrete.sign_run_eq, Concrete.sign_run_eq]
+  rw [← Concrete.signingRandomness_eq]
+  have hcontinuation : ∀ randomness,
+      RelTriple
+        ((simulateQ randomOracle
+          (Concrete.signAttempt left.secretKey request.epoch request.message
+            randomness)).run leftCache)
+        ((simulateQ randomOracle
+          (Concrete.signAttempt right.1.secretKey request.epoch request.message
+            randomness)).run rightCache)
+        (SignResultRelation right.2 selected left.secretKey.parameter
+          request.epoch request.message left.cache right.1.cache) := by
+    intro randomness
+    apply relTriple_post_mono
+      (relTriple_keygenViews_signAttempt_run selected left right hrel
+        hleftSupport hrightSupport leftCache rightCache hcacheAgreement
+        hleftLe hrightLe request.epoch request.message randomness)
+    intro leftResult rightResult hresult
+    exact ⟨randomness, hresult⟩
+  refine relTriple_bind
+    (R := fun leftRandomness rightRandomness : Randomness =>
+      leftRandomness = rightRandomness)
+    (S := SignResultRelation right.2 selected left.secretKey.parameter
+      request.epoch request.message left.cache right.1.cache)
+    (fa := fun randomness =>
+      (simulateQ randomOracle
+        (Concrete.signAttempt left.secretKey request.epoch request.message
+          randomness)).run leftCache)
+    (fb := fun randomness =>
+      (simulateQ randomOracle
+        (Concrete.signAttempt right.1.secretKey request.epoch request.message
+          randomness)).run rightCache)
+    (relTriple_refl Concrete.signingRandomness) ?_
+  intro leftRandomness rightRandomness heq
+  subst rightRandomness
+  exact hcontinuation leftRandomness
+
+def SigningQueryResultRelation
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (leftBase rightBase : QueryCache HashSpec)
+    (table : ChainValueIndex → Digest)
+    (leftResult : Option Signature × QueryCache HashSpec)
+    (rightResult : (Option Signature × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) : Prop :=
+  leftResult.1 = rightResult.1.1 ∧
+    HashCachesAgreeOn (SigningComparableHashInput parameter selected)
+      leftResult.2 rightResult.1.2.cache ∧
+    leftBase ≤ leftResult.2 ∧ rightBase ≤ rightResult.1.2.cache ∧
+    CausalRevealsAgree table rightResult.1.2 ∧
+    CausalCacheExtendsKeygen rightResult.1.2
+
+set_option maxRecDepth 100000 in
+theorem relTriple_keygenViews_causalSigningQuery_run
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenStableRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1 ∈ support (actualFixedChainKeygen selected))
+    (leftCache : QueryCache HashSpec) (rightState : CausalHashState)
+    (hcacheAgreement : HashCachesAgreeOn
+      (SigningComparableHashInput left.secretKey.parameter selected)
+      leftCache rightState.cache)
+    (hleftLe : left.cache ≤ leftCache)
+    (hrightLe : right.1.cache ≤ rightState.cache)
+    (hkeygenCache : rightState.keygenCache = right.1.cache)
+    (hreveals : CausalRevealsAgree right.2 rightState)
+    (request : SignRequest) :
+    RelTriple
+      ((simulateQ xmssRomImpl
+        (Concrete.scheme.sign left.publicKey left.secretKey
+          request.epoch request.message)).run leftCache)
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
+        (causalSigningQueryAfterRealRom right.1.publicKey right.1.secretKey
+          selected request rightState)).run)
+      (SigningQueryResultRelation left.secretKey.parameter selected
+        left.cache right.1.cache right.2) := by
+  have hsign := relTriple_keygenViews_sign_run selected left right hrel
+    hleftSupport hrightSupport leftCache rightState.cache hcacheAgreement
+    hleftLe hrightLe request
+  unfold causalSigningQueryAfterRealRom
+  rw [simulateQ_bind, WriterT.run_bind',
+    RevealProbeOracleSimulation.simulate_eagerTrace_liftProbComp]
+  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+    Function.comp_apply, List.nil_append]
+  rw [show
+    (simulateQ xmssRomImpl
+      (Concrete.scheme.sign left.publicKey left.secretKey
+        request.epoch request.message)).run leftCache =
+      ((simulateQ xmssRomImpl
+        (Concrete.scheme.sign left.publicKey left.secretKey
+          request.epoch request.message)).run leftCache >>= pure) by simp]
+  apply relTriple_bind hsign
+  intro leftSigned rightSigned hsigned
+  rcases hsigned with ⟨randomness, decoded, hdecode, hoptions,
+    hcaches, hleftFinal, hrightFinal⟩
+  cases decoded with
+  | none =>
+      rcases hoptions with ⟨hleftNone, hrightNone⟩
+      rw [hrightNone]
+      simp only [revealFixedChainSignatureOption_run, simulateQ_pure,
+        WriterT.run_pure]
+      apply relTriple_pure_pure
+      unfold SigningQueryResultRelation
+      refine ⟨hleftNone, hcaches, hleftFinal, hrightFinal,
+        hreveals.setCache rightSigned.2, ?_⟩
+      rw [CausalCacheExtendsKeygen, hkeygenCache]
+      exact hrightFinal
+  | some encoding =>
+      rcases hoptions with ⟨signature, hrandomness, hrightSome, hleftSome⟩
+      rw [hrightSome]
+      have hparameter : left.secretKey.parameter =
+          right.1.secretKey.parameter := by
+        have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+          selected left hleftSupport
+        have hrightKey := actualFixedChainKeygen_support_keyResult
+          selected right.1 hrightSupport
+        calc
+          left.secretKey.parameter = left.publicKey.parameter :=
+            (left.parameter_eq hleftKey).symm
+          _ = right.1.publicKey.parameter :=
+            congrArg PublicKey.parameter hrel.1.1.2.1
+          _ = right.1.secretKey.parameter :=
+            right.1.parameter_eq hrightKey
+      have hencodingHash :
+          Concrete.CacheView.encodingHash leftSigned.2
+              left.secretKey.parameter request.epoch
+                (request.message, randomness) =
+            Concrete.CacheView.encodingHash rightSigned.2
+              right.1.secretKey.parameter request.epoch
+                (request.message, randomness) := by
+        rw [← hparameter]
+        unfold Concrete.CacheView.encodingHash Concrete.CacheView.digestAt
+        rw [hcaches _ (Or.inr
+          ⟨request.epoch, request.message, randomness, rfl⟩)]
+      have hdecodeRight : TargetSum.decodeDigest
+          (Concrete.CacheView.encodingHash rightSigned.2
+            right.1.secretKey.parameter request.epoch
+              (request.message, signature.randomness)) = some encoding := by
+        rw [hrandomness, ← hencodingHash]
+        exact hdecode
+      rw [simulate_eagerTrace_revealFixedChainSignatureOption_some_of_decode
+        right.2 right.1.secretKey selected request signature
+          { rightState with cache := rightSigned.2 } encoding hdecodeRight]
+      apply relTriple_pure_pure
+      unfold SigningQueryResultRelation
+      have hsignature :
+          leftSigned.1 = some (replaceSignatureChainValue signature selected
+            (right.2 (request.epoch, encoding selected))) := hleftSome
+      refine ⟨hsignature, hcaches, hleftFinal, hrightFinal, ?_, ?_⟩
+      · apply (hreveals.setCache rightSigned.2).recordReveal
+        rfl
+      · rw [CausalCacheExtendsKeygen, hkeygenCache]
+        exact hrightFinal
 
 end XmssSecurity
