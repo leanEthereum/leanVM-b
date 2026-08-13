@@ -615,4 +615,54 @@ theorem evalDist_programmedWarmedTreeValues_eq_drawList
       (programmedWarmedTrajectory_treeValues_fresh parameter secret chain
         trajectoryResult htrajectory)
 
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_programmedWarmedTreeValues_same_root_and_paths
+    (parameter : PublicParameter)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex)
+    (leftTrajectory rightTrajectory :
+      List FullChainTrajectory × QueryCache HashSpec)
+    (hleft : leftTrajectory ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter leftSecret chain
+        (chainLength - 1) ∅ allEpochs))
+    (hright : rightTrajectory ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter rightSecret chain
+        (chainLength - 1) ∅ allEpochs)) :
+    RelTriple
+      (treeValues parameter leftSecret allTreeValueIndices leftTrajectory.2)
+      (treeValues parameter rightSecret allTreeValueIndices rightTrajectory.2)
+      (fun left right =>
+        left.1 = right.1 ∧
+          TreeValuesReplay parameter leftSecret left.2
+            allTreeValueIndices left.1 ∧
+          TreeValuesReplay parameter rightSecret right.2
+            allTreeValueIndices right.1 ∧
+          Concrete.CacheReplay.treeNode left.2 parameter leftSecret
+              treeHeight Concrete.rootNode =
+            Concrete.CacheReplay.treeNode right.2 parameter rightSecret
+              treeHeight Concrete.rootNode ∧
+          ∀ epoch,
+            Concrete.CacheReplay.authenticationPath left.2
+                ⟨parameter, leftSecret⟩ epoch =
+              Concrete.CacheReplay.authenticationPath right.2
+                ⟨parameter, rightSecret⟩ epoch) := by
+  apply relTriple_post_mono
+    (relTriple_treeValues_same_values parameter parameter leftSecret rightSecret
+      allTreeValueIndices leftTrajectory.2 rightTrajectory.2
+      allTreeValueIndices_pairwise
+      (programmedWarmedTrajectory_treeValues_fresh parameter leftSecret chain
+        leftTrajectory hleft)
+      (programmedWarmedTrajectory_treeValues_fresh parameter rightSecret chain
+        rightTrajectory hright))
+  intro left right hrelation
+  obtain ⟨hvalues, hleftReplay, hrightReplay⟩ := hrelation
+  refine ⟨hvalues, hleftReplay, hrightReplay, ?_, ?_⟩
+  · exact globalTreeValuesReplay_eq_root parameter leftSecret rightSecret
+      left.2 right.2 left.1 hleftReplay (hvalues ▸ hrightReplay)
+  · intro epoch
+    exact globalTreeValuesReplay_eq_authenticationPath parameter
+      leftSecret rightSecret left.2 right.2 left.1 hleftReplay
+        (hvalues ▸ hrightReplay) epoch
+
 end XmssSecurity
