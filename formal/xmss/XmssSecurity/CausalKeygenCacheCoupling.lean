@@ -1912,4 +1912,158 @@ theorem relTriple_fixedChainMaterial_allTreeValues_root_and_paths
       leftResult.2 rightResult.2 leftResult.1 hleftReplay
       (hresult.1 ▸ hrightReplay) epoch
 
+noncomputable def fixedChainTreeKeygenView
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (material : FixedChainMaterial)
+    (tree : List Digest × QueryCache HashSpec) :
+    ProgrammedFixedChainKeygenView := {
+  publicKey := ⟨Concrete.CacheReplay.treeNode tree.2 parameter
+    (unflattenSecret material.1.2) treeHeight Concrete.rootNode, parameter⟩
+  secretKey := ⟨parameter, unflattenSecret material.1.2⟩
+  cache := tree.2
+  table := fixedChainMaterialTable chain material
+}
+
+noncomputable def fixedChainTreeKeygen
+    (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let material ← fixedChainMaterialRepresentation parameter chain
+  let tree ← treeValues parameter (unflattenSecret material.1.2)
+    allTreeValueIndices material.2.2.2
+  pure (fixedChainTreeKeygenView parameter chain material tree)
+
+noncomputable def fixedChainTreeKeygenWithBase
+    (chain : ChainIndex) :
+    ProbComp (ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) := do
+  let parameter ← Concrete.samplePublicParameter
+  let materialBase ← fixedChainMaterialWithBase parameter chain
+  let tree ← treeValues parameter (unflattenSecret materialBase.1.1.2)
+    allTreeValueIndices materialBase.1.2.2.2
+  pure (fixedChainTreeKeygenView parameter chain materialBase.1 tree,
+    materialBase.2)
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_fixedChainTreeKeygen_eq_programmedFixed
+    (chain : ChainIndex) :
+    evalDist (fixedChainTreeKeygen chain) =
+      evalDist (programmedFixedChainKeygen chain) := by
+  unfold fixedChainTreeKeygen programmedFixedChainKeygen
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro material
+  let secret := unflattenSecret material.1.2
+  let finish : Digest × QueryCache HashSpec →
+      ProbComp ProgrammedFixedChainKeygenView := fun rootResult => pure {
+    publicKey := ⟨rootResult.1, parameter⟩
+    secretKey := ⟨parameter, secret⟩
+    cache := rootResult.2
+    table := fixedChainMaterialTable chain material
+  }
+  symm
+  calc
+    evalDist ((simulateQ randomOracle
+        (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+          OracleComp HashSpec Digest)).run material.2.2.2 >>= finish) =
+      evalDist (((fun tree : List Digest × QueryCache HashSpec =>
+        (Concrete.CacheReplay.treeNode tree.2 parameter secret
+          treeHeight Concrete.rootNode, tree.2)) <$>
+            treeValues parameter secret allTreeValueIndices material.2.2.2) >>=
+              finish) := by
+        rw [evalDist_bind,
+          evalDist_rootTree_run_eq_treeValues_root_cache,
+          ← evalDist_bind]
+    _ = evalDist (treeValues parameter secret allTreeValueIndices
+          material.2.2.2 >>= fun tree =>
+        pure (fixedChainTreeKeygenView parameter chain material tree)) := by
+      simp [finish, fixedChainTreeKeygenView, secret,
+        map_eq_bind_pure_comp, bind_assoc]
+
+theorem evalDist_fixedChainTreeKeygenWithBase_eq_independentBase
+    (chain : ChainIndex) :
+    evalDist (fixedChainTreeKeygenWithBase chain) =
+      evalDist (fixedChainTreeKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base)) := by
+  unfold fixedChainTreeKeygenWithBase fixedChainTreeKeygen
+    fixedChainMaterialWithBase
+  simp only [bind_assoc, pure_bind]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro material
+  let finish : (ChainValueIndex → Digest) →
+      (List Digest × QueryCache HashSpec) →
+      ProbComp (ProgrammedFixedChainKeygenView ×
+        (ChainValueIndex → Digest)) := fun base tree =>
+    pure (fixedChainTreeKeygenView parameter chain material tree, base)
+  simpa [finish, bind_assoc] using
+    (OracleComp.DeferredSampling.evalDist_bind_comm
+      (uniformChainValueTable chain)
+      (treeValues parameter (unflattenSecret material.1.2)
+        allTreeValueIndices material.2.2.2) finish)
+
+def ProgrammedActualKeygenCacheRelation
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) : Prop :=
+  ProgrammedActualKeygenBaseRelation chain left right ∧
+    HashCachesAgreeOn
+      (OutsideChainHashInput left.publicKey.parameter chain)
+      left.cache right.1.cache
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_fixedChainTreeKeygen_withBase
+    (chain : ChainIndex) :
+    RelTriple
+      (fixedChainTreeKeygen chain)
+      (fixedChainTreeKeygenWithBase chain)
+      (ProgrammedActualKeygenCacheRelation chain) := by
+  unfold fixedChainTreeKeygen fixedChainTreeKeygenWithBase
+  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
+  intro leftParameter rightParameter hparameter
+  subst rightParameter
+  apply relTriple_bind
+    (relTriple_fixedChainMaterialRepresentation_withBase leftParameter chain)
+  intro leftMaterial rightMaterial hmaterial
+  apply relTriple_bind
+    (relTriple_fixedChainMaterial_allTreeValues_root_and_paths
+      leftParameter chain leftMaterial rightMaterial hmaterial)
+  intro leftTree rightTree htree
+  apply relTriple_pure_pure
+  refine ⟨⟨hmaterial.1, ?_, ?_, htree.2.2.2.2.1⟩, ?_⟩
+  · exact congrArg (fun root => PublicKey.mk root leftParameter)
+      htree.2.2.2.1
+  · exact secretOutsideChain_eq_of_outsideChainSecret_eq chain
+      leftMaterial.1.2 rightMaterial.1.1.2 hmaterial.2.1
+  · exact htree.2.2.2.2.2.1
+
+theorem relTriple_programmedFixedChainKeygen_withBase_cache
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedFixedChainKeygen chain)
+      (programmedFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base))
+      (ProgrammedActualKeygenCacheRelation chain) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_fixedChainTreeKeygen_eq_programmedFixed chain).symm
+  have hright : evalDist (fixedChainTreeKeygenWithBase chain) =
+      evalDist (programmedFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base)) := by
+    calc
+      evalDist (fixedChainTreeKeygenWithBase chain) =
+          evalDist (fixedChainTreeKeygen chain >>= fun keyView =>
+            uniformChainValueTable chain >>= fun base => pure (keyView, base)) :=
+        evalDist_fixedChainTreeKeygenWithBase_eq_independentBase chain
+      _ = evalDist (programmedFixedChainKeygen chain >>= fun keyView =>
+            uniformChainValueTable chain >>= fun base => pure (keyView, base)) := by
+        rw [evalDist_bind,
+          evalDist_fixedChainTreeKeygen_eq_programmedFixed,
+          ← evalDist_bind]
+  exact relTriple_of_evalDist_eq_right hright
+    (relTriple_fixedChainTreeKeygen_withBase chain)
+
 end XmssSecurity
