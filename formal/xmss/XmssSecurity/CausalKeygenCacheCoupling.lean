@@ -167,22 +167,473 @@ def OutsideChainHashInput
     candidate ≠ chain ∧
       AtHashAddress parameter (.chain epoch candidate step) input
 
-theorem CoupledFixedChainMaterialBaseRelation.outsideChainCachesAgree
-    (parameter : PublicParameter) (chain : ChainIndex)
+structure CoupledFixedChainMaterialInvariant
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest)) : Prop where
+  tableEq : fixedChainMaterialTable selected left = right.2
+  outsideEq : outsideChainSecret selected left.1.2 =
+    outsideChainSecret selected right.1.1.2
+  leftMatches : ChainTableSeedsMatch
+      ⟨parameter, unflattenSecret left.1.2⟩ selected
+        (fixedChainMaterialTable selected left) ∧
+    ChainTableEdgesMatch left.2.2.2 parameter selected
+      (fixedChainMaterialTable selected left)
+  rightMatches : ChainTableSeedsMatch
+      ⟨parameter, unflattenSecret right.1.1.2⟩ selected
+        (fixedChainMaterialTable selected right.1) ∧
+    ChainTableEdgesMatch right.1.2.2.2 parameter selected
+      (fixedChainMaterialTable selected right.1)
+  cachesAgree : HashCachesAgreeOn
+    (OutsideChainHashInput parameter selected) left.2.2.2 right.1.2.2.2
+  leftLeafFresh : ∀ epoch input,
+    AtHashAddress parameter (.leaf epoch) input → left.2.2.2 input = none
+  rightLeafFresh : ∀ epoch input,
+    AtHashAddress parameter (.leaf epoch) input → right.1.2.2.2 input = none
+  leftMerkleFresh : ∀ level node input,
+    AtHashAddress parameter (.merkle level node) input →
+      left.2.2.2 input = none
+  rightMerkleFresh : ∀ level node input,
+    AtHashAddress parameter (.merkle level node) input →
+      right.1.2.2.2 input = none
+
+theorem coupledFixedChainMaterialBaseRelation_to_invariant
+    (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
     (hrel : CoupledFixedChainMaterialBaseRelation
+      parameter selected left right) :
+    CoupledFixedChainMaterialInvariant parameter selected left right := by
+  refine ⟨hrel.1, hrel.2.1, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · exact fixedChainMaterialRepresentation_matches
+      parameter selected left hrel.2.2.1
+  · exact fixedChainMaterialRepresentation_matches
+      parameter selected right.1 hrel.2.2.2
+  · intro input hinput
+    obtain ⟨epoch, candidate, step, hne, haddress⟩ := hinput
+    rw [fixedChainMaterialRepresentation_cache_avoids_otherChain
+        parameter selected candidate hne left hrel.2.2.1
+          epoch step input haddress,
+      fixedChainMaterialRepresentation_cache_avoids_otherChain
+        parameter selected candidate hne right.1 hrel.2.2.2
+          epoch step input haddress]
+  · exact fixedChainMaterialRepresentation_cache_avoids_leaf
+      parameter selected left hrel.2.2.1
+  · exact fixedChainMaterialRepresentation_cache_avoids_leaf
+      parameter selected right.1 hrel.2.2.2
+  · intro level node input hinput
+    exact fixedChainMaterialRepresentation_cache_avoids_merkle
+      parameter selected left hrel.2.2.1 (.merkle level node)
+        ⟨level, node, rfl⟩ input hinput
+  · intro level node input hinput
+    exact fixedChainMaterialRepresentation_cache_avoids_merkle
+      parameter selected right.1 hrel.2.2.2 (.merkle level node)
+        ⟨level, node, rfl⟩ input hinput
+
+theorem relTriple_fixedChainMaterialRepresentation_withBase_invariant
+    (parameter : PublicParameter) (selected : ChainIndex) :
+    RelTriple
+      (fixedChainMaterialRepresentation parameter selected)
+      (fixedChainMaterialWithBase parameter selected)
+      (CoupledFixedChainMaterialInvariant parameter selected) := by
+  apply relTriple_post_mono
+    (relTriple_fixedChainMaterialRepresentation_withBase parameter selected)
+  exact coupledFixedChainMaterialBaseRelation_to_invariant parameter selected
+
+theorem programmedFixedSeedChainTrajectories_support_as_actual
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex)
+    (result : List FullChainTrajectory × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs)) :
+    result ∈ support
+      (Concrete.fixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs) := by
+  apply (mem_support_iff_of_evalDist_eq
+    (evalDist_fixedSeedChainTrajectories_eq_programmed
+      parameter secret chain (chainLength - 1) le_rfl allEpochs ∅
+        allEpochs_nodup (by simp)) result).mpr
+  exact hresult
+
+theorem programmedFixedSeedChainTrajectories_table_eq
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex)
+    (result : List FullChainTrajectory × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs)) :
+    chainValueTableOfList result.1 =
+      keygenChainValueTable result.2 ⟨parameter, secret⟩ chain := by
+  exact Concrete.fixedSeedChainTrajectoriesFromCache_table_eq
+    parameter secret chain result
+      (programmedFixedSeedChainTrajectories_support_as_actual
+        parameter secret chain result hresult)
+
+theorem Concrete.fixedSeedChainTrajectoriesFromCache_avoids_otherChain
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain candidate : ChainIndex) (hne : candidate ≠ chain)
+    (targetEpoch : Epoch) (targetStep : ChainStep) (input : HashInput)
+    (hinput : AtHashAddress parameter
+      (.chain targetEpoch candidate targetStep) input) :
+    ∀ (epochs : List Epoch) (cache : QueryCache HashSpec)
+      (result : List (Vector Digest (steps + 1)) × QueryCache HashSpec),
+      cache input = none →
+      result ∈ support
+        (Concrete.fixedSeedChainTrajectoriesFromCache parameter secret chain
+          steps cache epochs) →
+      result.2 input = none := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro cache result hcache hresult
+      simp only [Concrete.fixedSeedChainTrajectoriesFromCache_nil,
+        support_pure, Set.mem_singleton_iff] at hresult
+      subst result
+      exact hcache
+  | cons epoch epochs ih =>
+      intro cache result hcache hresult
+      rw [Concrete.fixedSeedChainTrajectoriesFromCache_cons,
+        mem_support_bind_iff] at hresult
+      obtain ⟨first, hfirst, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      apply ih first.2 rest
+      · apply Concrete.CacheReplay.cache_none_of_zero_query_bound
+          (Concrete.chainTrajectory parameter epoch chain 0 steps
+            (secret epoch chain)) input cache first.2 first.1
+        · apply OracleComp.IsQueryBoundP.of_imp
+            (p' := AtHashAddress parameter
+              (.chain targetEpoch candidate targetStep))
+          · intro queried heq
+            subst queried
+            exact hinput
+          · apply Concrete.chainTrajectory_queryBound_zero_of_avoids
+            intro offset hoffset hvalid heq
+            simp only [HashDomain.chain.injEq] at heq
+            exact hne heq.2.1.symm
+        · exact hcache
+        · exact hfirst
+      · exact hrest
+
+theorem programmedFixedSeedChainTrajectories_avoids_otherChain
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain candidate : ChainIndex) (hne : candidate ≠ chain)
+    (result : List FullChainTrajectory × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs))
+    (targetEpoch : Epoch) (targetStep : ChainStep) (input : HashInput)
+    (hinput : AtHashAddress parameter
+      (.chain targetEpoch candidate targetStep) input) :
+    result.2 input = none := by
+  exact Concrete.fixedSeedChainTrajectoriesFromCache_avoids_otherChain
+    parameter secret chain candidate hne targetEpoch targetStep input hinput
+      allEpochs ∅ result (by simp)
+      (programmedFixedSeedChainTrajectories_support_as_actual
+        parameter secret chain result hresult)
+
+theorem Concrete.fixedSeedChainTrajectoriesFromCache_component_support
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) (steps : Nat) :
+    ∀ (epochs : List Epoch) (cache : QueryCache HashSpec)
+      (result : List (Vector Digest (steps + 1)) × QueryCache HashSpec)
+      (target : Epoch),
+      target ∈ epochs →
+      result ∈ support
+        (Concrete.fixedSeedChainTrajectoriesFromCache parameter secret chain
+          steps cache epochs) →
+      ∃ before after trajectory,
+        (trajectory, after) ∈ support
+          ((simulateQ randomOracle
+            (Concrete.chainTrajectory parameter target chain 0 steps
+              (secret target chain))).run before) ∧
+        after ≤ result.2 := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro _cache _result target hmem _hresult
+      simp at hmem
+  | cons epoch epochs ih =>
+      intro cache result target hmem hresult
+      rw [Concrete.fixedSeedChainTrajectoriesFromCache_cons,
+        mem_support_bind_iff] at hresult
+      obtain ⟨first, hfirst, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      rw [List.mem_cons] at hmem
+      rcases hmem with rfl | htail
+      · have hrestInfo :=
+          Concrete.fixedSeedChainTrajectoriesFromCache_support_info
+            parameter secret chain steps epochs first.2 rest hrest
+        exact ⟨cache, first.2, first.1, hfirst, hrestInfo.1⟩
+      · exact ih first.2 rest target htail hrest
+
+theorem Concrete.fixedSeedChainTrajectoriesFromCache_edgesMatch
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex)
+    (result : List FullChainTrajectory × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (Concrete.fixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs)) :
+    ChainTableEdgesMatch result.2 parameter chain
+      (chainValueTableOfList result.1) := by
+  rw [Concrete.fixedSeedChainTrajectoriesFromCache_table_eq
+    parameter secret chain result hresult]
+  rintro ⟨epoch, step⟩
+  obtain ⟨before, after, trajectory, htrajectory, hafter⟩ :=
+    Concrete.fixedSeedChainTrajectoriesFromCache_component_support
+      parameter secret chain (chainLength - 1) allEpochs ∅ result epoch
+        (mem_allEpochs epoch) hresult
+  have hmapped : (trajectory.back, after) ∈ support
+      ((fun value : FullChainTrajectory × QueryCache HashSpec =>
+        (value.1.back, value.2)) <$>
+          (simulateQ randomOracle
+            (Concrete.chainTrajectory parameter epoch chain 0
+              (chainLength - 1) (secret epoch chain))).run before) := by
+    rw [support_map]
+    exact ⟨(trajectory, after), htrajectory, rfl⟩
+  have hwalk : (trajectory.back, after) ∈ support
+      ((simulateQ randomOracle
+        (Concrete.chainWalk parameter epoch chain 0 (chainLength - 1)
+          (secret epoch chain) : OracleComp HashSpec Digest)).run before) :=
+    (mem_support_iff_of_evalDist_eq
+      (evalDist_chainTrajectory_run_cache_eq_chainWalk_run_cache
+        parameter epoch chain 0 (chainLength - 1)
+          (secret epoch chain) before) (trajectory.back, after)).mp hmapped
+  obtain ⟨output, hcached⟩ :=
+    Concrete.CacheReplay.chainWalk_query_cached_in_largerCache
+      parameter epoch chain 0 (chainLength - 1) (secret epoch chain)
+        step.val step.isLt (by simp)
+        before after result.2 trajectory.back
+        hwalk hafter
+  have hstepIndex :
+      (⟨0 + step.val, by omega⟩ : ChainStep) = step := by
+    apply Fin.ext
+    simp
+  rw [hstepIndex] at hcached
+  refine ⟨output, ?_, ?_⟩
+  · simpa [chainTableEdgeInput, keygenChainValueTable,
+      chainStepDigit] using hcached
+  · let stepFunction :=
+      Concrete.CacheView.chainStep result.2 parameter epoch chain
+    calc
+      truncateHash output = Concrete.CacheView.digestAt result.2
+          (Concrete.CacheView.chainInput parameter epoch chain step
+            (Wots.walk stepFunction 0 step.val (secret epoch chain))) :=
+        (Concrete.CacheView.digestAt_eq_of_cache_eq_some hcached).symm
+      _ = stepFunction step.val
+          (Wots.walk stepFunction 0 step.val (secret epoch chain)) := by
+        symm
+        exact Concrete.CacheView.chainStep_eq result.2 parameter epoch chain
+          step.val _ step.isLt
+      _ = chainTableEdgeTarget
+          (keygenChainValueTable result.2 ⟨parameter, secret⟩ chain)
+          (epoch, step) := by
+        change stepFunction step.val
+            (Wots.walk stepFunction 0 step.val (secret epoch chain)) =
+          Wots.signChain stepFunction (chainStepNextDigit step)
+            (secret epoch chain)
+        unfold Wots.signChain
+        rw [show (chainStepNextDigit step).val = step.val + 1 by
+          simp [chainStepNextDigit]]
+        simp only [Wots.walk, zero_add]
+
+theorem programmedFixedSeedChainTrajectories_edgesMatch
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex)
+    (result : List FullChainTrajectory × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
+        (chainLength - 1) ∅ allEpochs)) :
+    ChainTableEdgesMatch result.2 parameter chain
+      (chainValueTableOfList result.1) := by
+  exact Concrete.fixedSeedChainTrajectoriesFromCache_edgesMatch
+    parameter secret chain result
+      (programmedFixedSeedChainTrajectories_support_as_actual
+        parameter secret chain result hresult)
+
+noncomputable def warmedMaterialAsFixed
+    (_chain : ChainIndex) (material : WarmedTrajectoryMaterial) :
+    FixedChainMaterial :=
+  let table := chainValueTableOfList material.2.1
+  (material.1,
+    (allChainEdges.map (chainTableEdgeTarget table), ([], material.2.2)))
+
+theorem fixedChainMaterialTable_warmedMaterialAsFixed
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (material : WarmedTrajectoryMaterial)
+    (hmaterial : material ∈ support
+      (programmedWarmedTrajectoryMaterial parameter chain)) :
+    fixedChainMaterialTable chain (warmedMaterialAsFixed chain material) =
+      chainValueTableOfList material.2.1 := by
+  let table := chainValueTableOfList material.2.1
+  have htrajectory := programmedWarmedTrajectoryMaterial_support_trajectory
+    parameter chain material hmaterial
+  have htable := programmedFixedSeedChainTrajectories_table_eq
+    parameter (unflattenSecret material.1.2) chain material.2 htrajectory
+  have hseeds : (fun epoch => material.1.2 (epoch, chain)) =
+      chainTableSeedTargets table := by
+    funext epoch
+    have hmatch := keygenChainValueTable_seedsMatch material.2.2
+      ⟨parameter, unflattenSecret material.1.2⟩ chain epoch
+    rw [← htable] at hmatch
+    simpa [table, ChainTableSeedsMatch, unflattenSecret,
+      chainTableSeedTargets] using hmatch
+  unfold warmedMaterialAsFixed fixedChainMaterialTable
+  dsimp only
+  rw [chainEdgeTableOfTape_map, hseeds]
+  exact chainTableMaterialEquiv.symm_apply_apply table
+
+theorem warmedMaterialAsFixed_invariant
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (leftMaterial : WarmedTrajectoryMaterial)
+    (rightMaterial : FixedChainMaterial)
+    (base : ChainValueIndex → Digest)
+    (hleft : leftMaterial ∈ support
+      (programmedWarmedTrajectoryMaterial parameter selected))
+    (hright : rightMaterial ∈ support
+      (fixedChainMaterialRepresentation parameter selected))
+    (htable : chainValueTableOfList leftMaterial.2.1 = base)
+    (houtside : outsideChainSecret selected leftMaterial.1.2 =
+      outsideChainSecret selected rightMaterial.1.2) :
+    CoupledFixedChainMaterialInvariant parameter selected
+      (warmedMaterialAsFixed selected leftMaterial) (rightMaterial, base) := by
+  have htrajectory := programmedWarmedTrajectoryMaterial_support_trajectory
+    parameter selected leftMaterial hleft
+  have hactual := programmedFixedSeedChainTrajectories_support_as_actual
+    parameter (unflattenSecret leftMaterial.1.2) selected leftMaterial.2
+      htrajectory
+  have htableFixed := fixedChainMaterialTable_warmedMaterialAsFixed
+    parameter selected leftMaterial hleft
+  have hrightMatches := fixedChainMaterialRepresentation_matches
+    parameter selected rightMaterial hright
+  refine ⟨htableFixed.trans htable, houtside,
+    ?_, hrightMatches, ?_, ?_, ?_, ?_, ?_⟩
+  · rw [htableFixed]
+    constructor
+    · rw [programmedFixedSeedChainTrajectories_table_eq
+          parameter (unflattenSecret leftMaterial.1.2) selected
+            leftMaterial.2 htrajectory]
+      exact keygenChainValueTable_seedsMatch leftMaterial.2.2
+        ⟨parameter, unflattenSecret leftMaterial.1.2⟩ selected
+    · exact programmedFixedSeedChainTrajectories_edgesMatch
+        parameter (unflattenSecret leftMaterial.1.2) selected
+          leftMaterial.2 htrajectory
+  · intro input hinput
+    obtain ⟨epoch, candidate, step, hne, haddress⟩ := hinput
+    change leftMaterial.2.2 input = rightMaterial.2.2.2 input
+    rw [programmedFixedSeedChainTrajectories_avoids_otherChain
+      parameter (unflattenSecret leftMaterial.1.2) selected candidate hne
+        leftMaterial.2 htrajectory epoch step input haddress,
+      fixedChainMaterialRepresentation_cache_avoids_otherChain
+        parameter selected candidate hne rightMaterial hright
+          epoch step input haddress]
+  · intro epoch input hinput
+    change leftMaterial.2.2 input = none
+    exact programmedFixedSeedChainTrajectories_avoids_leaf
+      parameter (unflattenSecret leftMaterial.1.2) selected
+        leftMaterial.2 htrajectory epoch input hinput
+  · exact fixedChainMaterialRepresentation_cache_avoids_leaf
+      parameter selected rightMaterial hright
+  · intro level node input hinput
+    change leftMaterial.2.2 input = none
+    exact programmedFixedSeedChainTrajectories_avoids_merkle
+      parameter (unflattenSecret leftMaterial.1.2) selected
+        leftMaterial.2 htrajectory level node input hinput
+  · intro level node input hinput
+    exact fixedChainMaterialRepresentation_cache_avoids_merkle
+      parameter selected rightMaterial hright (.merkle level node)
+        ⟨level, node, rfl⟩ input hinput
+
+theorem warmedMaterialsAsFixed_invariant
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (leftMaterial rightMaterial : WarmedTrajectoryMaterial)
+    (base : ChainValueIndex → Digest)
+    (hleft : leftMaterial ∈ support
+      (programmedWarmedTrajectoryMaterial parameter selected))
+    (hright : rightMaterial ∈ support
+      (programmedWarmedTrajectoryMaterial parameter selected))
+    (htable : chainValueTableOfList leftMaterial.2.1 = base)
+    (houtside : outsideChainSecret selected leftMaterial.1.2 =
+      outsideChainSecret selected rightMaterial.1.2) :
+    CoupledFixedChainMaterialInvariant parameter selected
+      (warmedMaterialAsFixed selected leftMaterial)
+      (warmedMaterialAsFixed selected rightMaterial, base) := by
+  have hleftTrajectory :=
+    programmedWarmedTrajectoryMaterial_support_trajectory
+      parameter selected leftMaterial hleft
+  have hrightTrajectory :=
+    programmedWarmedTrajectoryMaterial_support_trajectory
+      parameter selected rightMaterial hright
+  have hleftTable := fixedChainMaterialTable_warmedMaterialAsFixed
+    parameter selected leftMaterial hleft
+  have hrightTable := fixedChainMaterialTable_warmedMaterialAsFixed
+    parameter selected rightMaterial hright
+  refine ⟨hleftTable.trans htable, houtside, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · rw [hleftTable]
+    constructor
+    · rw [programmedFixedSeedChainTrajectories_table_eq
+          parameter (unflattenSecret leftMaterial.1.2) selected
+            leftMaterial.2 hleftTrajectory]
+      exact keygenChainValueTable_seedsMatch leftMaterial.2.2
+        ⟨parameter, unflattenSecret leftMaterial.1.2⟩ selected
+    · exact programmedFixedSeedChainTrajectories_edgesMatch
+        parameter (unflattenSecret leftMaterial.1.2) selected
+          leftMaterial.2 hleftTrajectory
+  · rw [hrightTable]
+    constructor
+    · rw [programmedFixedSeedChainTrajectories_table_eq
+          parameter (unflattenSecret rightMaterial.1.2) selected
+            rightMaterial.2 hrightTrajectory]
+      exact keygenChainValueTable_seedsMatch rightMaterial.2.2
+        ⟨parameter, unflattenSecret rightMaterial.1.2⟩ selected
+    · exact programmedFixedSeedChainTrajectories_edgesMatch
+        parameter (unflattenSecret rightMaterial.1.2) selected
+          rightMaterial.2 hrightTrajectory
+  · intro input hinput
+    obtain ⟨epoch, candidate, step, hne, haddress⟩ := hinput
+    change leftMaterial.2.2 input = rightMaterial.2.2 input
+    rw [programmedFixedSeedChainTrajectories_avoids_otherChain
+      parameter (unflattenSecret leftMaterial.1.2) selected candidate hne
+        leftMaterial.2 hleftTrajectory epoch step input haddress,
+      programmedFixedSeedChainTrajectories_avoids_otherChain
+        parameter (unflattenSecret rightMaterial.1.2) selected candidate hne
+          rightMaterial.2 hrightTrajectory epoch step input haddress]
+  · intro epoch input hinput
+    change leftMaterial.2.2 input = none
+    exact programmedFixedSeedChainTrajectories_avoids_leaf
+      parameter (unflattenSecret leftMaterial.1.2) selected
+        leftMaterial.2 hleftTrajectory epoch input hinput
+  · intro epoch input hinput
+    change rightMaterial.2.2 input = none
+    exact programmedFixedSeedChainTrajectories_avoids_leaf
+      parameter (unflattenSecret rightMaterial.1.2) selected
+        rightMaterial.2 hrightTrajectory epoch input hinput
+  · intro level node input hinput
+    change leftMaterial.2.2 input = none
+    exact programmedFixedSeedChainTrajectories_avoids_merkle
+      parameter (unflattenSecret leftMaterial.1.2) selected
+        leftMaterial.2 hleftTrajectory level node input hinput
+  · intro level node input hinput
+    change rightMaterial.2.2 input = none
+    exact programmedFixedSeedChainTrajectories_avoids_merkle
+      parameter (unflattenSecret rightMaterial.1.2) selected
+        rightMaterial.2 hrightTrajectory level node input hinput
+
+theorem CoupledFixedChainMaterialInvariant.outsideChainCachesAgree
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialInvariant
       parameter chain left right) :
     HashCachesAgreeOn (OutsideChainHashInput parameter chain)
       left.2.2.2 right.1.2.2.2 := by
-  intro input hinput
-  obtain ⟨epoch, candidate, step, hne, haddress⟩ := hinput
-  rw [fixedChainMaterialRepresentation_cache_avoids_otherChain
-      parameter chain candidate hne left hrel.2.2.1
-        epoch step input haddress,
-    fixedChainMaterialRepresentation_cache_avoids_otherChain
-      parameter chain candidate hne right.1 hrel.2.2.2
-        epoch step input haddress]
+  exact hrel.cachesAgree
 
 theorem outsideChainHashInput_chainInput
     (parameter : PublicParameter) (chain candidate : ChainIndex)
@@ -748,7 +1199,7 @@ theorem relTriple_fixedChainMaterial_oneTimePublicKey_run_from_cache
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation
+    (hrel : CoupledFixedChainMaterialInvariant
       parameter selected left right) (epoch : Epoch)
     (leftCache rightCache : QueryCache HashSpec)
     (hagrees : HashCachesAgreeOn
@@ -769,14 +1220,12 @@ theorem relTriple_fixedChainMaterial_oneTimePublicKey_run_from_cache
           leftResult.2 rightResult.2 ∧
         left.2.2.2 ≤ leftResult.2 ∧
         right.1.2.2.2 ≤ rightResult.2) := by
-  have hleftMatches := fixedChainMaterialRepresentation_matches
-    parameter selected left hrel.2.2.1
-  have hrightMatches := fixedChainMaterialRepresentation_matches
-    parameter selected right.1 hrel.2.2.2
+  have hleftMatches := hrel.leftMatches
+  have hrightMatches := hrel.rightMatches
   have houtside : secretOutsideChain selected (unflattenSecret left.1.2) =
       secretOutsideChain selected (unflattenSecret right.1.1.2) :=
     secretOutsideChain_eq_of_outsideChainSecret_eq selected
-      left.1.2 right.1.1.2 hrel.2.1
+      left.1.2 right.1.1.2 hrel.outsideEq
   simpa [Concrete.oneTimePublicKey] using
     (relTriple_sequenceFin_keygenChainWalk_run parameter selected epoch
       (unflattenSecret left.1.2) (unflattenSecret right.1.1.2)
@@ -791,7 +1240,7 @@ theorem relTriple_fixedChainMaterial_oneTimePublicKey_run
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation
+    (hrel : CoupledFixedChainMaterialInvariant
       parameter selected left right) (epoch : Epoch) :
     RelTriple
       ((simulateQ randomOracle
@@ -815,7 +1264,7 @@ theorem relTriple_fixedChainMaterial_leafAt_run_from_cache
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation
+    (hrel : CoupledFixedChainMaterialInvariant
       parameter selected left right) (epoch : Epoch)
     (leftCache rightCache : QueryCache HashSpec)
     (hagrees : HashCachesAgreeOn
@@ -876,7 +1325,7 @@ theorem relTriple_fixedChainMaterial_leafAt_run
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation
+    (hrel : CoupledFixedChainMaterialInvariant
       parameter selected left right) (epoch : Epoch) :
     RelTriple
       ((simulateQ randomOracle
@@ -895,18 +1344,16 @@ theorem relTriple_fixedChainMaterial_leafAt_run
     parameter selected left right hrel epoch left.2.2.2 right.1.2.2.2
     (hrel.outsideChainCachesAgree parameter selected left right) le_rfl le_rfl
   · intro input hinput
-    exact fixedChainMaterialRepresentation_cache_avoids_leaf
-      parameter selected left hrel.2.2.1 epoch input hinput
+    exact hrel.leftLeafFresh epoch input hinput
   · intro input hinput
-    exact fixedChainMaterialRepresentation_cache_avoids_leaf
-      parameter selected right.1 hrel.2.2.2 epoch input hinput
+    exact hrel.rightLeafFresh epoch input hinput
 
 set_option maxRecDepth 100000 in
 theorem relTriple_fixedChainMaterial_leafTreeValues_run
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    (hrel : CoupledFixedChainMaterialInvariant parameter selected left right) :
     ∀ (indices : List TreeValueIndex),
       (∀ index ∈ indices, index.1.val = 0) →
       indices.Pairwise TreeValueIndex.Precedes →
@@ -1009,7 +1456,7 @@ theorem relTriple_fixedChainMaterial_allLeafValues_run
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    (hrel : CoupledFixedChainMaterialInvariant parameter selected left right) :
     RelTriple
       (treeValues parameter (unflattenSecret left.1.2)
         (treeValueIndicesAtHeight 0) left.2.2.2)
@@ -1038,16 +1485,14 @@ theorem relTriple_fixedChainMaterial_allLeafValues_run
     have hheight := hzero index hindex
     unfold TreeValueIndex.domain at hinput
     rw [dif_pos hheight] at hinput
-    exact fixedChainMaterialRepresentation_cache_avoids_leaf
-      parameter selected left hrel.2.2.1 index.node input hinput
+    exact hrel.leftLeafFresh index.node input hinput
   have hrightFresh : TreeValuesFresh parameter
       (treeValueIndicesAtHeight 0) right.1.2.2.2 := by
     intro index hindex input hinput
     have hheight := hzero index hindex
     unfold TreeValueIndex.domain at hinput
     rw [dif_pos hheight] at hinput
-    exact fixedChainMaterialRepresentation_cache_avoids_leaf
-      parameter selected right.1 hrel.2.2.2 index.node input hinput
+    exact hrel.rightLeafFresh index.node input hinput
   exact relTriple_fixedChainMaterial_leafTreeValues_run
     parameter selected left right hrel (treeValueIndicesAtHeight 0)
     hzero hordered left.2.2.2 right.1.2.2.2 hleftFresh hrightFresh
@@ -1651,30 +2096,31 @@ theorem treeValueIndicesBelow_height_lt :
         simp [congrArg Fin.val heq]
 
 theorem fixedChainMaterial_treeValues_fresh
-    (parameter : PublicParameter) (selected : ChainIndex)
+    (parameter : PublicParameter) (_selected : ChainIndex)
     (material : FixedChainMaterial)
-    (hmaterial : material ∈ support
-      (fixedChainMaterialRepresentation parameter selected)) :
+    (hleaf : ∀ epoch input,
+      AtHashAddress parameter (.leaf epoch) input → material.2.2.2 input = none)
+    (hmerkle : ∀ level node input,
+      AtHashAddress parameter (.merkle level node) input →
+        material.2.2.2 input = none) :
     TreeValuesFresh parameter allTreeValueIndices material.2.2.2 := by
   intro index _hindex input hinput
   by_cases hzero : index.1.val = 0
   · unfold TreeValueIndex.domain at hinput
     rw [dif_pos hzero] at hinput
-    exact fixedChainMaterialRepresentation_cache_avoids_leaf
-      parameter selected material hmaterial index.node input hinput
+    exact hleaf index.node input hinput
   · unfold TreeValueIndex.domain at hinput
     rw [dif_neg hzero] at hinput
-    exact fixedChainMaterialRepresentation_cache_avoids_merkle
-      parameter selected material hmaterial
-      (.merkle ⟨index.1.val - 1, by omega⟩ index.node)
-      ⟨⟨index.1.val - 1, by omega⟩, index.node, rfl⟩
-      input hinput
+    exact hmerkle ⟨index.1.val - 1, by omega⟩ index.node input hinput
 
 theorem fixedChainMaterial_treeValuesBelow_fresh_at_height
     (parameter : PublicParameter) (selected : ChainIndex)
     (material : FixedChainMaterial)
-    (hmaterial : material ∈ support
-      (fixedChainMaterialRepresentation parameter selected))
+    (hleaf : ∀ epoch input,
+      AtHashAddress parameter (.leaf epoch) input → material.2.2.2 input = none)
+    (hmerkle : ∀ level node input,
+      AtHashAddress parameter (.merkle level node) input →
+        material.2.2.2 input = none)
     (height : Fin (treeHeight + 1))
     (result : List Digest × QueryCache HashSpec)
     (hresult : result ∈ support
@@ -1695,7 +2141,7 @@ theorem fixedChainMaterial_treeValuesBelow_fresh_at_height
       (treeValueIndicesAtHeight height) material.2.2.2 := by
     intro index hindex input hinput
     exact fixedChainMaterial_treeValues_fresh parameter selected material
-      hmaterial index (mem_allTreeValueIndices index) input hinput
+      hleaf hmerkle index (mem_allTreeValueIndices index) input hinput
   exact treeValues_preserves_fresh_after parameter
     (unflattenSecret material.1.2)
     (treeValueIndicesBelow height.val) (treeValueIndicesAtHeight height)
@@ -1705,7 +2151,7 @@ theorem relTriple_fixedChainMaterial_treeValuesBelow_one
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    (hrel : CoupledFixedChainMaterialInvariant parameter selected left right) :
     RelTriple
       (treeValues parameter (unflattenSecret left.1.2)
         (treeValueIndicesBelow 1) left.2.2.2)
@@ -1740,7 +2186,7 @@ theorem relTriple_fixedChainMaterial_treeValuesBelow_run
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    (hrel : CoupledFixedChainMaterialInvariant parameter selected left right) :
     ∀ (height : Nat), 1 ≤ height → height ≤ treeHeight + 1 →
       RelTriple
         (treeValues parameter (unflattenSecret left.1.2)
@@ -1782,11 +2228,13 @@ theorem relTriple_fixedChainMaterial_treeValuesBelow_run
         intro leftBase rightBase hbase
         have hleftFresh :=
           fixedChainMaterial_treeValuesBelow_fresh_at_height
-            parameter selected left hrel.2.2.1 currentHeight
+            parameter selected left hrel.leftLeafFresh hrel.leftMerkleFresh
+            currentHeight
             leftBase hbase.2.2.2.2.1
         have hrightFresh :=
           fixedChainMaterial_treeValuesBelow_fresh_at_height
-            parameter selected right.1 hrel.2.2.2 currentHeight
+            parameter selected right.1 hrel.rightLeafFresh hrel.rightMerkleFresh
+            currentHeight
             rightBase hbase.2.2.2.2.2
         have hheightCoupling := relTriple_fixedChainMaterial_merkleHeight_run
           parameter selected left right currentHeight (by
@@ -1838,7 +2286,7 @@ theorem relTriple_fixedChainMaterial_allTreeValues_run
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    (hrel : CoupledFixedChainMaterialInvariant parameter selected left right) :
     RelTriple
       (treeValues parameter (unflattenSecret left.1.2)
         allTreeValueIndices left.2.2.2)
@@ -1865,7 +2313,7 @@ theorem relTriple_fixedChainMaterial_allTreeValues_root_and_paths
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
-    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    (hrel : CoupledFixedChainMaterialInvariant parameter selected left right) :
     RelTriple
       (treeValues parameter (unflattenSecret left.1.2)
         allTreeValueIndices left.2.2.2)
@@ -1911,6 +2359,133 @@ theorem relTriple_fixedChainMaterial_allTreeValues_root_and_paths
       (unflattenSecret left.1.2) (unflattenSecret right.1.1.2)
       leftResult.2 rightResult.2 leftResult.1 hleftReplay
       (hresult.1 ▸ hrightReplay) epoch
+
+def ProgrammedActualKeygenCacheRelation
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) : Prop :=
+  ProgrammedActualKeygenBaseRelation chain left right ∧
+    HashCachesAgreeOn
+      (OutsideChainHashInput left.publicKey.parameter chain)
+      left.cache right.1.cache
+
+def CoupledWarmedKeygenCacheRelation
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : CoupledWarmedKeygenView)
+    (right : CoupledWarmedKeygenView × (ChainValueIndex → Digest)) : Prop :=
+  CoupledWarmedKeygenBaseRelation parameter selected left right ∧
+    HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+      left.cache right.1.cache
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_coupledWarmedKeygenExperiment_withBase_cache
+    (parameter : PublicParameter) (selected : ChainIndex) :
+    RelTriple
+      (coupledWarmedKeygenExperiment parameter selected)
+      (coupledWarmedKeygenWithBase parameter selected)
+      (CoupledWarmedKeygenCacheRelation parameter selected) := by
+  classical
+  let leftMaterialExperiment :=
+    programmedWarmedTrajectoryMaterial parameter selected
+  let rightMaterialExperiment := warmedTrajectoryMaterialWithBase
+    parameter selected
+  have hmaterials : RelTriple leftMaterialExperiment rightMaterialExperiment
+      (fun left right =>
+        warmedMaterialOutsideTable selected left =
+            warmedMaterialBaseView selected right ∧
+          left ∈ support leftMaterialExperiment ∧
+          right ∈ support rightMaterialExperiment) := by
+    apply relTriple_of_evalDist_map_eq_with_support_general
+    exact evalDist_warmedMaterialOutsideTable_eq_baseView parameter selected
+  unfold coupledWarmedKeygenExperiment coupledWarmedKeygenWithBase
+  change RelTriple
+    (leftMaterialExperiment >>= fun material =>
+      treeValues parameter (unflattenSecret material.1.2)
+        allTreeValueIndices material.2.2 >>= fun tree =>
+      pure ({
+        secret := unflattenSecret material.1.2
+        table := chainValueTableOfList material.2.1
+        values := tree.1
+        cache := tree.2
+      } : CoupledWarmedKeygenView))
+    (rightMaterialExperiment >>= fun materialBase =>
+      treeValues parameter (unflattenSecret materialBase.1.1.2)
+        allTreeValueIndices materialBase.1.2.2 >>= fun tree =>
+      pure (({
+        secret := unflattenSecret materialBase.1.1.2
+        table := chainValueTableOfList materialBase.1.2.1
+        values := tree.1
+        cache := tree.2
+      } : CoupledWarmedKeygenView), materialBase.2))
+    (CoupledWarmedKeygenCacheRelation parameter selected)
+  apply relTriple_bind hmaterials
+  intro leftMaterial rightMaterialBase hmaterial
+  let rightMaterial := rightMaterialBase.1
+  have hleft : leftMaterial ∈ support
+      (programmedWarmedTrajectoryMaterial parameter selected) := by
+    simpa [leftMaterialExperiment] using hmaterial.2.1
+  have hrightBase : rightMaterialBase ∈ support
+      (warmedTrajectoryMaterialWithBase parameter selected) := by
+    simpa [rightMaterialExperiment] using hmaterial.2.2
+  have hright : rightMaterial ∈ support
+      (programmedWarmedTrajectoryMaterial parameter selected) :=
+    warmedTrajectoryMaterialWithBase_support_material
+      parameter selected rightMaterialBase hrightBase
+  have hinvariant := warmedMaterialsAsFixed_invariant parameter selected
+    leftMaterial rightMaterial rightMaterialBase.2 hleft hright
+      (congrArg Prod.snd hmaterial.1)
+      (congrArg Prod.fst hmaterial.1)
+  have htrees := relTriple_fixedChainMaterial_allTreeValues_root_and_paths
+    parameter selected (warmedMaterialAsFixed selected leftMaterial)
+      (warmedMaterialAsFixed selected rightMaterial, rightMaterialBase.2)
+      hinvariant
+  have htable := hinvariant.tableEq
+  rw [fixedChainMaterialTable_warmedMaterialAsFixed
+    parameter selected leftMaterial hleft] at htable
+  apply relTriple_bind htrees
+  intro leftTree rightTree htree
+  apply relTriple_pure_pure
+  refine ⟨⟨htable, ?_, htree.1, htree.2.1,
+    htree.2.2.1, htree.2.2.2.1, htree.2.2.2.2.1⟩, ?_⟩
+  · exact secretOutsideChain_eq_of_outsideChainSecret_eq selected
+      leftMaterial.1.2 rightMaterial.1.2 hinvariant.outsideEq
+  · exact htree.2.2.2.2.2.1
+
+theorem relTriple_coupledWarmedFixedChainKeygen_withBase_cache
+    (chain : ChainIndex) :
+    RelTriple
+      (coupledWarmedFixedChainKeygen chain)
+      (coupledWarmedFixedChainKeygenWithBase chain)
+      (ProgrammedActualKeygenCacheRelation chain) := by
+  unfold coupledWarmedFixedChainKeygen
+    coupledWarmedFixedChainKeygenWithBase
+  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
+  intro leftParameter rightParameter hparameter
+  subst rightParameter
+  apply relTriple_bind
+    (relTriple_coupledWarmedKeygenExperiment_withBase_cache
+      leftParameter chain)
+  intro leftView rightView hview
+  apply relTriple_pure_pure
+  refine ⟨⟨hview.1.1, ?_, hview.1.2.1, hview.1.2.2.2.2.2.2⟩, ?_⟩
+  · exact congrArg (fun root => PublicKey.mk root leftParameter)
+      hview.1.2.2.2.2.2.1
+  · exact hview.2
+
+theorem relTriple_programmedWarmedFixedChainKeygen_withBase_cache
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedWarmedFixedChainKeygen chain)
+      (actualFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base))
+      (ProgrammedActualKeygenCacheRelation chain) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_coupledWarmedFixedChainKeygen_eq_programmed chain).symm
+  exact relTriple_of_evalDist_eq_right
+    (evalDist_coupledWarmedFixedChainKeygenWithBase_eq_actual chain)
+      (relTriple_coupledWarmedFixedChainKeygen_withBase_cache chain)
 
 noncomputable def fixedChainTreeKeygenView
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -2004,16 +2579,6 @@ theorem evalDist_fixedChainTreeKeygenWithBase_eq_independentBase
       (treeValues parameter (unflattenSecret material.1.2)
         allTreeValueIndices material.2.2.2) finish)
 
-def ProgrammedActualKeygenCacheRelation
-    (chain : ChainIndex)
-    (left : ProgrammedFixedChainKeygenView)
-    (right : ProgrammedFixedChainKeygenView ×
-      (ChainValueIndex → Digest)) : Prop :=
-  ProgrammedActualKeygenBaseRelation chain left right ∧
-    HashCachesAgreeOn
-      (OutsideChainHashInput left.publicKey.parameter chain)
-      left.cache right.1.cache
-
 set_option maxHeartbeats 1600000 in
 set_option maxRecDepth 1000000 in
 theorem relTriple_fixedChainTreeKeygen_withBase
@@ -2027,18 +2592,19 @@ theorem relTriple_fixedChainTreeKeygen_withBase
   intro leftParameter rightParameter hparameter
   subst rightParameter
   apply relTriple_bind
-    (relTriple_fixedChainMaterialRepresentation_withBase leftParameter chain)
+    (relTriple_fixedChainMaterialRepresentation_withBase_invariant
+      leftParameter chain)
   intro leftMaterial rightMaterial hmaterial
   apply relTriple_bind
     (relTriple_fixedChainMaterial_allTreeValues_root_and_paths
       leftParameter chain leftMaterial rightMaterial hmaterial)
   intro leftTree rightTree htree
   apply relTriple_pure_pure
-  refine ⟨⟨hmaterial.1, ?_, ?_, htree.2.2.2.2.1⟩, ?_⟩
+  refine ⟨⟨hmaterial.tableEq, ?_, ?_, htree.2.2.2.2.1⟩, ?_⟩
   · exact congrArg (fun root => PublicKey.mk root leftParameter)
       htree.2.2.2.1
   · exact secretOutsideChain_eq_of_outsideChainSecret_eq chain
-      leftMaterial.1.2 rightMaterial.1.1.2 hmaterial.2.1
+      leftMaterial.1.2 rightMaterial.1.1.2 hmaterial.outsideEq
   · exact htree.2.2.2.2.2.1
 
 theorem relTriple_programmedFixedChainKeygen_withBase_cache
