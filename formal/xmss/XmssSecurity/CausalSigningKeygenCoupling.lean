@@ -33,6 +33,180 @@ theorem programmedWarmedFixedChainKeygen_support_keyResult
   exact (mem_support_iff_of_evalDist_eq
     (evalDist_actualFixedChainKeygen_eq_programmedWarmed chain) view).mpr hview
 
+def TreeCacheStable
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (cache : QueryCache HashSpec) : Prop :=
+  ∀ (levels : Nat) (node : MerkleNode),
+    levels ≤ treeHeight → TreeSubtreeValid levels node →
+    ∀ (largerCache : QueryCache HashSpec), cache ≤ largerCache →
+    (simulateQ randomOracle
+      (Concrete.treeNode parameter secret levels node :
+        OracleComp HashSpec Digest)).run largerCache =
+      pure (Concrete.CacheReplay.treeNode cache parameter secret levels node,
+        largerCache)
+
+theorem treeCacheStable_of_treeValues_support
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (initialCache : QueryCache HashSpec)
+    (tree : List Digest × QueryCache HashSpec)
+    (htree : tree ∈ support
+      (treeValues parameter secret allTreeValueIndices initialCache)) :
+    TreeCacheStable parameter secret tree.2 := by
+  intro levels node hlevels hvalid largerCache hle
+  let index := TreeValueIndex.ofSubtree levels node hlevels hvalid
+  have hrun := treeValues_rerun_index_eq_pure parameter secret
+    allTreeValueIndices initialCache tree htree index
+      (mem_allTreeValueIndices index)
+  have hmem :
+      (Concrete.CacheReplay.treeNode tree.2 parameter secret levels node,
+        tree.2) ∈ support
+          ((simulateQ randomOracle
+            (Concrete.treeNode parameter secret levels node :
+              OracleComp HashSpec Digest)).run tree.2) := by
+    change (Concrete.CacheReplay.treeNode tree.2 parameter secret
+        index.1.val index.node, tree.2) ∈ support
+      ((simulateQ randomOracle (index.computation parameter secret)).run tree.2)
+    rw [hrun]
+    simp
+  exact Concrete.CacheReplay.randomOracle_rerun_largerCache_eq_pure_of_mem_support
+    (Concrete.treeNode parameter secret levels node :
+      OracleComp HashSpec Digest)
+    tree.2 tree.2 largerCache
+      (Concrete.CacheReplay.treeNode tree.2 parameter secret levels node)
+      hmem hle
+
+theorem TreeCacheStable.treeNode_eq
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (cache : QueryCache HashSpec)
+    (hstable : TreeCacheStable parameter secret cache)
+    (levels : Nat) (node : MerkleNode)
+    (hlevels : levels ≤ treeHeight) (hvalid : TreeSubtreeValid levels node)
+    (largerCache : QueryCache HashSpec) (hle : cache ≤ largerCache) :
+    Concrete.CacheReplay.treeNode cache parameter secret levels node =
+      Concrete.CacheReplay.treeNode largerCache parameter secret levels node := by
+  have hrun := hstable levels node hlevels hvalid largerCache hle
+  have hmem :
+      (Concrete.CacheReplay.treeNode cache parameter secret levels node,
+        largerCache) ∈ support
+          ((simulateQ randomOracle
+            (Concrete.treeNode parameter secret levels node :
+              OracleComp HashSpec Digest)).run largerCache) := by
+    rw [hrun]
+    simp
+  have hreplay := Concrete.CacheReplay.eval_answerFn_finalCache_eq_of_mem_support
+    (Concrete.treeNode parameter secret levels node :
+      OracleComp HashSpec Digest)
+    largerCache largerCache
+      (Concrete.CacheReplay.treeNode cache parameter secret levels node) hmem
+  rw [Concrete.CacheReplay.eval_treeNode] at hreplay
+  exact hreplay.symm
+
+theorem TreeCacheStable.authenticationPath_eq
+    (secretKey : SecretKey) (cache : QueryCache HashSpec)
+    (hstable : TreeCacheStable secretKey.parameter secretKey.chainStart cache)
+    (largerCache : QueryCache HashSpec) (hle : cache ≤ largerCache)
+    (epoch : Epoch) :
+    Concrete.CacheReplay.authenticationPath cache secretKey epoch =
+      Concrete.CacheReplay.authenticationPath largerCache secretKey epoch := by
+  funext level
+  exact TreeCacheStable.treeNode_eq secretKey.parameter secretKey.chainStart
+    cache hstable level.val (Concrete.authenticationPathNode epoch level)
+      (by omega) (authenticationPathNode_subtreeValid epoch level)
+        largerCache hle
+
+theorem coupledWarmedKeygenExperiment_support_treeCacheStable
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (view : CoupledWarmedKeygenView)
+    (hview : view ∈ support
+      (coupledWarmedKeygenExperiment parameter chain)) :
+    TreeCacheStable parameter view.secret view.cache := by
+  unfold coupledWarmedKeygenExperiment at hview
+  rw [mem_support_bind_iff] at hview
+  obtain ⟨material, _hmaterial, htreeBind⟩ := hview
+  rw [mem_support_bind_iff] at htreeBind
+  obtain ⟨tree, htree, hpure⟩ := htreeBind
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst view
+  exact treeCacheStable_of_treeValues_support parameter
+    (unflattenSecret material.1.2) material.2.2 tree htree
+
+theorem coupledWarmedFixedChainKeygen_support_treeCacheStable
+    (chain : ChainIndex) (view : ProgrammedFixedChainKeygenView)
+    (hview : view ∈ support (coupledWarmedFixedChainKeygen chain)) :
+    TreeCacheStable view.secretKey.parameter view.secretKey.chainStart
+      view.cache := by
+  unfold coupledWarmedFixedChainKeygen at hview
+  rw [mem_support_bind_iff] at hview
+  obtain ⟨parameter, _hparameter, hviewBind⟩ := hview
+  rw [mem_support_bind_iff] at hviewBind
+  obtain ⟨coupledView, hcoupledView, hpure⟩ := hviewBind
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst view
+  exact coupledWarmedKeygenExperiment_support_treeCacheStable
+    parameter chain coupledView hcoupledView
+
+theorem programmedWarmedFixedChainKeygen_support_treeCacheStable
+    (chain : ChainIndex) (view : ProgrammedFixedChainKeygenView)
+    (hview : view ∈ support (programmedWarmedFixedChainKeygen chain)) :
+    TreeCacheStable view.secretKey.parameter view.secretKey.chainStart
+      view.cache := by
+  apply coupledWarmedFixedChainKeygen_support_treeCacheStable chain view
+  exact (mem_support_iff_of_evalDist_eq
+    (evalDist_coupledWarmedFixedChainKeygen_eq_programmed chain) view).mpr hview
+
+theorem actualFixedChainKeygen_support_treeCacheStable
+    (chain : ChainIndex) (view : ProgrammedFixedChainKeygenView)
+    (hview : view ∈ support (actualFixedChainKeygen chain)) :
+    TreeCacheStable view.secretKey.parameter view.secretKey.chainStart
+      view.cache := by
+  apply programmedWarmedFixedChainKeygen_support_treeCacheStable chain view
+  exact (mem_support_iff_of_evalDist_eq
+    (evalDist_actualFixedChainKeygen_eq_programmedWarmed chain) view).mp hview
+
+def ProgrammedActualKeygenStableRelation
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) : Prop :=
+  ProgrammedActualKeygenCacheRelation chain left right ∧
+    TreeCacheStable left.secretKey.parameter left.secretKey.chainStart
+      left.cache ∧
+    TreeCacheStable right.1.secretKey.parameter right.1.secretKey.chainStart
+      right.1.cache
+
+theorem actualWithBase_support_keyView
+    (chain : ChainIndex)
+    (result : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hresult : result ∈ support
+      (actualFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base))) :
+    result.1 ∈ support (actualFixedChainKeygen chain) := by
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨keyView, hkeyView, hbaseBind⟩ := hresult
+  rw [mem_support_bind_iff] at hbaseBind
+  obtain ⟨base, _hbase, hpure⟩ := hbaseBind
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  exact hkeyView
+
+theorem relTriple_programmedWarmedFixedChainKeygen_withBase_stable
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedWarmedFixedChainKeygen chain)
+      (actualFixedChainKeygen chain >>= fun keyView =>
+        uniformChainValueTable chain >>= fun base => pure (keyView, base))
+      (ProgrammedActualKeygenStableRelation chain) := by
+  apply relTriple_post_mono
+    (relTriple_with_support
+      (relTriple_programmedWarmedFixedChainKeygen_withBase_cache chain))
+  intro left right hrel
+  refine ⟨hrel.1, ?_, ?_⟩
+  · exact programmedWarmedFixedChainKeygen_support_treeCacheStable
+      chain left hrel.2.1
+  · exact actualFixedChainKeygen_support_treeCacheStable chain right.1
+      (actualWithBase_support_keyView chain right hrel.2.2)
+
 theorem ProgrammedFixedChainKeygenView.parameter_eq
     (view : ProgrammedFixedChainKeygenView)
     (hkeyResult : view.keyResult ∈ support
@@ -419,5 +593,84 @@ theorem keygenViews_signWithEncoding_eq_replaced
         selected candidate heq left.secretKey right.1.secretKey hparameter
         hrel.1.2.2.1 left.cache right.1.cache hcacheAgreement epoch encoding
   · exact hrel.1.2.2.2 epoch
+
+theorem keygenViews_signWithEncoding_larger_eq_replaced
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenStableRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1 ∈ support (actualFixedChainKeygen selected))
+    (leftCache rightCache : QueryCache HashSpec)
+    (hcacheAgreement : HashCachesAgreeOn
+      (OutsideChainHashInput left.secretKey.parameter selected)
+      leftCache rightCache)
+    (hleftLe : left.cache ≤ leftCache)
+    (hrightLe : right.1.cache ≤ rightCache)
+    (epoch : Epoch) (randomness : Randomness) (encoding : Encoding) :
+    Concrete.CacheReplay.signWithEncoding leftCache left.secretKey
+        epoch randomness encoding =
+      replaceSignatureChainValue
+        (Concrete.CacheReplay.signWithEncoding rightCache
+          right.1.secretKey epoch randomness encoding)
+        selected (right.2 (epoch, encoding selected)) := by
+  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+    selected left hleftSupport
+  have hrightKey := actualFixedChainKeygen_support_keyResult
+    selected right.1 hrightSupport
+  have hparameter : left.secretKey.parameter =
+      right.1.secretKey.parameter := by
+    calc
+      left.secretKey.parameter = left.publicKey.parameter :=
+        (left.parameter_eq hleftKey).symm
+      _ = right.1.publicKey.parameter :=
+        congrArg PublicKey.parameter hrel.1.1.2.1
+      _ = right.1.secretKey.parameter := right.1.parameter_eq hrightKey
+  have hselected :
+      (Concrete.CacheReplay.signWithEncoding leftCache left.secretKey
+        epoch randomness encoding).chainValue selected =
+        right.2 (epoch, encoding selected) := by
+    have hvalue :=
+      Concrete.CacheReplay.signWithEncoding_chainValue_eq_keygenChainValueTable
+        left.keyResult hleftKey leftCache hleftLe
+          epoch randomness encoding selected
+    change (Concrete.CacheReplay.signWithEncoding leftCache left.secretKey
+        epoch randomness encoding).chainValue selected =
+      keygenChainValueTable left.cache left.secretKey selected
+        (epoch, encoding selected) at hvalue
+    calc
+      _ = keygenChainValueTable left.cache left.secretKey selected
+          (epoch, encoding selected) := hvalue
+      _ = left.table (epoch, encoding selected) :=
+        congrFun (programmedWarmedFixedChainKeygen_support_table
+          selected left hleftSupport) (epoch, encoding selected)
+      _ = right.2 (epoch, encoding selected) :=
+        congrFun hrel.1.1.1 (epoch, encoding selected)
+  have hauthenticationPath :
+      Concrete.CacheReplay.authenticationPath leftCache left.secretKey epoch =
+        Concrete.CacheReplay.authenticationPath
+          rightCache right.1.secretKey epoch := by
+    calc
+      _ = Concrete.CacheReplay.authenticationPath
+          left.cache left.secretKey epoch :=
+        (TreeCacheStable.authenticationPath_eq left.secretKey left.cache
+          hrel.2.1 leftCache hleftLe epoch).symm
+      _ = Concrete.CacheReplay.authenticationPath
+          right.1.cache right.1.secretKey epoch := hrel.1.1.2.2.2 epoch
+      _ = _ := TreeCacheStable.authenticationPath_eq right.1.secretKey
+        right.1.cache hrel.2.2 rightCache hrightLe epoch
+  unfold Concrete.CacheReplay.signWithEncoding replaceSignatureChainValue
+  congr 1
+  · funext candidate
+    by_cases heq : candidate = selected
+    · subst candidate
+      rw [Function.update_self]
+      exact hselected
+    · rw [Function.update_of_ne heq]
+      exact Concrete.CacheReplay.signedChainValues_other_eq_keys
+        selected candidate heq left.secretKey right.1.secretKey hparameter
+        hrel.1.1.2.2.1 leftCache rightCache hcacheAgreement epoch encoding
 
 end XmssSecurity
