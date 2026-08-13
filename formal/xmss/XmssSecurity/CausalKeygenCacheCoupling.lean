@@ -608,19 +608,24 @@ theorem oneTimePublicKey_run_leafInput_none
   · exact habsent _ (by simp [Concrete.CacheView.leafInput])
   · exact hresult
 
-theorem relTriple_fixedChainMaterial_oneTimePublicKey_run
+theorem relTriple_fixedChainMaterial_oneTimePublicKey_run_from_cache
     (parameter : PublicParameter) (selected : ChainIndex)
     (left : FixedChainMaterial)
     (right : FixedChainMaterial × (ChainValueIndex → Digest))
     (hrel : CoupledFixedChainMaterialBaseRelation
-      parameter selected left right) (epoch : Epoch) :
+      parameter selected left right) (epoch : Epoch)
+    (leftCache rightCache : QueryCache HashSpec)
+    (hagrees : HashCachesAgreeOn
+      (OutsideChainHashInput parameter selected) leftCache rightCache)
+    (hleftLe : left.2.2.2 ≤ leftCache)
+    (hrightLe : right.1.2.2.2 ≤ rightCache) :
     RelTriple
       ((simulateQ randomOracle
         (Concrete.oneTimePublicKey parameter
-          (unflattenSecret left.1.2) epoch)).run left.2.2.2)
+          (unflattenSecret left.1.2) epoch)).run leftCache)
       ((simulateQ randomOracle
         (Concrete.oneTimePublicKey parameter
-          (unflattenSecret right.1.1.2) epoch)).run right.1.2.2.2)
+          (unflattenSecret right.1.1.2) epoch)).run rightCache)
       (fun leftResult rightResult =>
         (∀ candidate, candidate ≠ selected →
           leftResult.1 candidate = rightResult.1 candidate) ∧
@@ -643,9 +648,93 @@ theorem relTriple_fixedChainMaterial_oneTimePublicKey_run
       (fixedChainMaterialTable selected right.1)
       left.2.2.2 right.1.2.2.2 houtside
       hleftMatches.1 hleftMatches.2 hrightMatches.1 hrightMatches.2
-      numChains (fun chain => chain) left.2.2.2 right.1.2.2.2
-      (hrel.outsideChainCachesAgree parameter selected left right)
-      le_rfl le_rfl)
+      numChains (fun chain => chain) leftCache rightCache hagrees
+      hleftLe hrightLe)
+
+theorem relTriple_fixedChainMaterial_oneTimePublicKey_run
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialBaseRelation
+      parameter selected left right) (epoch : Epoch) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.oneTimePublicKey parameter
+          (unflattenSecret left.1.2) epoch)).run left.2.2.2)
+      ((simulateQ randomOracle
+        (Concrete.oneTimePublicKey parameter
+          (unflattenSecret right.1.1.2) epoch)).run right.1.2.2.2)
+      (fun leftResult rightResult =>
+        (∀ candidate, candidate ≠ selected →
+          leftResult.1 candidate = rightResult.1 candidate) ∧
+        HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+          leftResult.2 rightResult.2 ∧
+        left.2.2.2 ≤ leftResult.2 ∧
+        right.1.2.2.2 ≤ rightResult.2) := by
+  exact relTriple_fixedChainMaterial_oneTimePublicKey_run_from_cache
+    parameter selected left right hrel epoch left.2.2.2 right.1.2.2.2
+    (hrel.outsideChainCachesAgree parameter selected left right) le_rfl le_rfl
+
+theorem relTriple_fixedChainMaterial_leafAt_run_from_cache
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialBaseRelation
+      parameter selected left right) (epoch : Epoch)
+    (leftCache rightCache : QueryCache HashSpec)
+    (hagrees : HashCachesAgreeOn
+      (OutsideChainHashInput parameter selected) leftCache rightCache)
+    (hleftLe : left.2.2.2 ≤ leftCache)
+    (hrightLe : right.1.2.2.2 ≤ rightCache)
+    (hleftAbsent : ∀ input, AtHashAddress parameter (.leaf epoch) input →
+      leftCache input = none)
+    (hrightAbsent : ∀ input, AtHashAddress parameter (.leaf epoch) input →
+      rightCache input = none) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.leafAt parameter (unflattenSecret left.1.2) epoch :
+          OracleComp HashSpec Digest)).run leftCache)
+      ((simulateQ randomOracle
+        (Concrete.leafAt parameter (unflattenSecret right.1.1.2) epoch :
+          OracleComp HashSpec Digest)).run rightCache)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+            leftResult.2 rightResult.2 ∧
+          left.2.2.2 ≤ leftResult.2 ∧
+          right.1.2.2.2 ≤ rightResult.2) := by
+  let leftComputation :=
+    (simulateQ randomOracle
+      (Concrete.oneTimePublicKey parameter
+        (unflattenSecret left.1.2) epoch)).run leftCache
+  let rightComputation :=
+    (simulateQ randomOracle
+      (Concrete.oneTimePublicKey parameter
+        (unflattenSecret right.1.1.2) epoch)).run rightCache
+  have hots := relTriple_fixedChainMaterial_oneTimePublicKey_run_from_cache
+    parameter selected left right hrel epoch leftCache rightCache
+      hagrees hleftLe hrightLe
+  have hotsFresh := relTriple_strengthen_support hots
+    (oneTimePublicKey_run_leafInput_none parameter
+      (unflattenSecret left.1.2) epoch leftCache hleftAbsent)
+    (oneTimePublicKey_run_leafInput_none parameter
+      (unflattenSecret right.1.1.2) epoch rightCache hrightAbsent)
+  unfold Concrete.leafAt
+  simp only [simulateQ_bind, StateT.run_bind]
+  apply relTriple_bind hotsFresh
+  intro leftEndpointsResult rightEndpointsResult hresult
+  obtain ⟨hotsResult, hleftFresh, hrightFresh⟩ := hresult
+  obtain ⟨leftEndpoints, leftCache⟩ := leftEndpointsResult
+  obtain ⟨rightEndpoints, rightCache⟩ := rightEndpointsResult
+  dsimp only at hotsResult hleftFresh hrightFresh ⊢
+  apply relTriple_post_mono
+    (relTriple_leafHash_run_of_both_none parameter selected epoch
+      leftEndpoints rightEndpoints leftCache rightCache
+      hleftFresh hrightFresh hotsResult.2.1)
+  intro leftResult rightResult hleaf
+  exact ⟨hleaf.1, hleaf.2.1,
+    hotsResult.2.2.1.trans hleaf.2.2.1,
+    hotsResult.2.2.2.trans hleaf.2.2.2⟩
 
 theorem relTriple_fixedChainMaterial_leafAt_run
     (parameter : PublicParameter) (selected : ChainIndex)
@@ -666,42 +755,14 @@ theorem relTriple_fixedChainMaterial_leafAt_run
             leftResult.2 rightResult.2 ∧
           left.2.2.2 ≤ leftResult.2 ∧
           right.1.2.2.2 ≤ rightResult.2) := by
-  let leftComputation :=
-    (simulateQ randomOracle
-      (Concrete.oneTimePublicKey parameter
-        (unflattenSecret left.1.2) epoch)).run left.2.2.2
-  let rightComputation :=
-    (simulateQ randomOracle
-      (Concrete.oneTimePublicKey parameter
-        (unflattenSecret right.1.1.2) epoch)).run right.1.2.2.2
-  have hots := relTriple_fixedChainMaterial_oneTimePublicKey_run
-    parameter selected left right hrel epoch
-  have hotsFresh := relTriple_strengthen_support hots
-    (oneTimePublicKey_run_leafInput_none parameter
-      (unflattenSecret left.1.2) epoch left.2.2.2
-      (fun input hinput =>
-        fixedChainMaterialRepresentation_cache_avoids_leaf
-          parameter selected left hrel.2.2.1 epoch input hinput))
-    (oneTimePublicKey_run_leafInput_none parameter
-      (unflattenSecret right.1.1.2) epoch right.1.2.2.2
-      (fun input hinput =>
-        fixedChainMaterialRepresentation_cache_avoids_leaf
-          parameter selected right.1 hrel.2.2.2 epoch input hinput))
-  unfold Concrete.leafAt
-  simp only [simulateQ_bind, StateT.run_bind]
-  apply relTriple_bind hotsFresh
-  intro leftEndpointsResult rightEndpointsResult hresult
-  obtain ⟨hotsResult, hleftFresh, hrightFresh⟩ := hresult
-  obtain ⟨leftEndpoints, leftCache⟩ := leftEndpointsResult
-  obtain ⟨rightEndpoints, rightCache⟩ := rightEndpointsResult
-  dsimp only at hotsResult hleftFresh hrightFresh ⊢
-  apply relTriple_post_mono
-    (relTriple_leafHash_run_of_both_none parameter selected epoch
-      leftEndpoints rightEndpoints leftCache rightCache
-      hleftFresh hrightFresh hotsResult.2.1)
-  intro leftResult rightResult hleaf
-  exact ⟨hleaf.1, hleaf.2.1,
-    hotsResult.2.2.1.trans hleaf.2.2.1,
-    hotsResult.2.2.2.trans hleaf.2.2.2⟩
+  apply relTriple_fixedChainMaterial_leafAt_run_from_cache
+    parameter selected left right hrel epoch left.2.2.2 right.1.2.2.2
+    (hrel.outsideChainCachesAgree parameter selected left right) le_rfl le_rfl
+  · intro input hinput
+    exact fixedChainMaterialRepresentation_cache_avoids_leaf
+      parameter selected left hrel.2.2.1 epoch input hinput
+  · intro input hinput
+    exact fixedChainMaterialRepresentation_cache_avoids_leaf
+      parameter selected right.1 hrel.2.2.2 epoch input hinput
 
 end XmssSecurity
