@@ -513,6 +513,36 @@ def FilteredCausalStateRelation
     rightState.keygenCache = rightBase ∧
     CausalRevealsAgree table rightState
 
+theorem FilteredCausalStateRelation.causalRecordedStateSetCache
+    (hstate : FilteredCausalStateRelation parameter selected leftBase rightBase
+      table leftCache rightState)
+    (secretKey : SecretKey) (input : HashInput)
+    (newLeft newRight : QueryCache HashSpec)
+    (hagrees : HashCachesAgreeOn
+      (SigningComparableHashInput parameter selected) newLeft newRight)
+    (hfiltered : FilteredCacheExtensionRelation leftBase newLeft newRight)
+    (hle : leftCache ≤ newLeft) :
+    FilteredCausalStateRelation parameter selected leftBase rightBase table
+      newLeft
+      { (causalRecordedState secretKey selected input rightState) with
+        cache := newRight } := by
+  refine ⟨hagrees, hfiltered, hstate.2.2.1.trans hle, ?_, ?_⟩
+  · simpa using hstate.2.2.2.1
+  · exact (hstate.2.2.2.2.causalRecordedState
+      secretKey selected input).setCache _
+
+theorem FilteredCausalStateRelation.causalRecordedState
+    (hstate : FilteredCausalStateRelation parameter selected leftBase rightBase
+      table leftCache rightState)
+    (secretKey : SecretKey) (input : HashInput) :
+    FilteredCausalStateRelation parameter selected leftBase rightBase table
+      leftCache (causalRecordedState secretKey selected input rightState) := by
+  refine ⟨?_, ?_, hstate.2.2.1, ?_,
+    hstate.2.2.2.2.causalRecordedState secretKey selected input⟩
+  · simpa using hstate.1
+  · simpa using hstate.2.1
+  · simpa using hstate.2.2.2.1
+
 theorem programmedActual_filteredKeygen_stateRelation
     (selected : ChainIndex)
     (left : ProgrammedFixedChainKeygenView)
@@ -539,10 +569,9 @@ inductive FilteredCausalHashPlan where
   | conditioned (digest : Digest)
   | fresh
 
-noncomputable def filteredCausalUncachedHashPlan
-    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
-    (state : CausalHashState) : FilteredCausalHashPlan :=
-  match chainInputProbe? secretKey.parameter selected input with
+noncomputable def filteredCausalUncachedHashPlanAt
+    (secretKey : SecretKey) (input : HashInput) (state : CausalHashState) :
+    Option (ChainValueIndex × Digest) → FilteredCausalHashPlan
   | some (index, target) =>
       match state.revealed index with
       | some value =>
@@ -559,6 +588,12 @@ noncomputable def filteredCausalUncachedHashPlan
           (keygenLeafTargetInput secretKey state.keygenCache input) with
       | some output => .conditioned (truncateHash output)
       | none => .fresh
+
+noncomputable def filteredCausalUncachedHashPlan
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) : FilteredCausalHashPlan :=
+  filteredCausalUncachedHashPlanAt secretKey input state
+    (chainInputProbe? secretKey.parameter selected input)
 
 noncomputable def filteredCausalAttackerHashPlan
     (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)

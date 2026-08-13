@@ -675,6 +675,21 @@ theorem evalDist_uniformChainEdgeTableTape_eq_drawList :
     _ = 𝒟[OracleComp.drawList ($ᵗ Digest) allChainEdges.length] :=
       evalDist_listOfFn_uniform_eq_drawList allChainEdges.length
 
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_chainEdgeTableOfTape_drawList_eq_uniform :
+    𝒟[chainEdgeTableOfTape <$>
+      OracleComp.drawList ($ᵗ Digest) allChainEdges.length] =
+    𝒟[$ᵗ (ChainEdgeIndex → Digest)] := by
+  calc
+    _ = 𝒟[chainEdgeTableOfTape <$>
+        ((fun table : ChainEdgeIndex → Digest => allChainEdges.map table) <$>
+          ($ᵗ (ChainEdgeIndex → Digest)))] := by
+      rw [evalDist_map, evalDist_map,
+        evalDist_uniformChainEdgeTableTape_eq_drawList]
+    _ = 𝒟[$ᵗ (ChainEdgeIndex → Digest)] := by
+      simp [Functor.map_map]
+
 noncomputable def sampleHashOutputsWithDigests :
     List Digest → ProbComp (List HashOutput)
   | [] => pure []
