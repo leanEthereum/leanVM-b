@@ -61,12 +61,11 @@ pub const MAX_KEYS: usize = 1 << 16;
 // that happen to agree: were they to drift, a leaf's claim point would be one length in
 // the guest and another in the statement, and nothing else would notice.
 const _: () = assert!(lean_vm::leaf::N_TUPLE_BITS == lean_vm::leaf::N_BYTECODE_SELECTORS);
-// The epoch digest absorbs the tweak table and the Merkle bits two cells per
-// compression, the guest as `N_TWEAKS / 2` then `LOG_LIFETIME / 2` blocks and this file
-// as one `chunks_exact(2)` over their concatenation. Odd counts would silently drop a
-// cell here and misalign the blocks there.
-const _: () = assert!((2 + xmss::V * (xmss::CHAIN_LENGTH - 1) + xmss::LOG_LIFETIME).is_multiple_of(2));
-const _: () = assert!(xmss::LOG_LIFETIME.is_multiple_of(2));
+// `epoch_hash` streams the tweak table and the Merkle bits four cells to a
+// 64-byte block, so each has to fill whole blocks or the two sides would
+// disagree on where the padding falls.
+const _: () = assert!((2 + xmss::V * (xmss::CHAIN_LENGTH - 1) + xmss::LOG_LIFETIME).is_multiple_of(4));
+const _: () = assert!(xmss::LOG_LIFETIME.is_multiple_of(4));
 
 /// A count as the guest carries it: in the exponent, `g^n`.
 fn count(n: usize) -> F192 {
@@ -157,11 +156,9 @@ fn merkle_bit_cells(epoch: u32) -> Vec<F192> {
 fn epoch_hash(epoch: u32) -> [F192; 2] {
     let mut cells: Vec<F192> = tweak_table(epoch).iter().map(|t| val16(t)).collect();
     cells.extend(merkle_bit_cells(epoch));
-    let mut state = chain_iv(EPOCH_LABEL);
-    for block in cells.chunks_exact(2) {
-        state = compress2(state, [block[0], block[1]]);
-    }
-    state
+    // The tag gets a block to itself, keeping both tables block-aligned.
+    let pad = std::iter::repeat_n(0u64, 4);
+    tagged_hash(EPOCH_LABEL, pad.chain(cells.iter().flat_map(|c| [c.c0, c.c1])))
 }
 
 /// The signer-set digest: one compression per key, in list order.
@@ -256,12 +253,21 @@ impl DeferredClaim {
 /// `STMT_HEADER` is the same count.
 const STATEMENT_HEADER: usize = 9;
 
-/// The digest's 32-byte domain tag: the label, zero-padded. A plain BLAKE2s
-/// separates in the message, not in a custom IV, so any BLAKE2s reproduces it.
-fn statement_tag() -> [u8; 32] {
+/// A 32-byte domain tag: the label, zero-padded. A plain BLAKE2s separates in
+/// the message, not in a custom IV, so any BLAKE2s reproduces the digest.
+fn label_tag(label: &[u8]) -> [u8; 32] {
     let mut tag = [0u8; 32];
-    tag[..RECURSION_STATEMENT_LABEL.len()].copy_from_slice(RECURSION_STATEMENT_LABEL);
+    tag[..label.len()].copy_from_slice(label);
     tag
+}
+
+/// A plain BLAKE2s over that tag then a lane stream, zero-filled to a whole
+/// 64-byte block: what the guest gets by streaming four 128-bit cells a block.
+fn tagged_hash(label: &[u8], lanes: impl Iterator<Item = u64>) -> [F192; 2] {
+    let mut bytes = label_tag(label).to_vec();
+    bytes.extend(lanes.flat_map(u64::to_le_bytes));
+    bytes.resize(bytes.len().next_multiple_of(64), 0);
+    pack_hash_state(&primitives::blake2s::hash(&bytes))
 }
 
 /// A node's public statement, hashed to the two words the VM publishes. The
@@ -291,16 +297,15 @@ fn statement_digest(
         epoch_hash[0],
         epoch_hash[1],
     ];
-    let mut bytes = statement_tag().to_vec();
-    for x in header {
+    let cells = defer.cells();
+    let head = header.iter().flat_map(|x| {
         assert_eq!(x.c2, 0, "a header value is a canonical cell");
-        bytes.extend([x.c0, x.c1].into_iter().flat_map(u64::to_le_bytes));
-    }
-    for x in defer.cells() {
-        bytes.extend([x.c0, x.c1, x.c2].into_iter().flat_map(u64::to_le_bytes));
-    }
-    bytes.resize(bytes.len().next_multiple_of(64), 0);
-    pack_hash_state(&primitives::blake2s::hash(&bytes))
+        [x.c0, x.c1]
+    });
+    tagged_hash(
+        RECURSION_STATEMENT_LABEL,
+        head.chain(cells.iter().flat_map(|x| [x.c0, x.c1, x.c2])),
+    )
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -1710,12 +1715,12 @@ pub(crate) fn aggregate_tampered(
     let fs_seed = lean_vm::cpu::fs_seed(guest);
     hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
     hints.push("message", vec![val16(&message[..16]), val16(&message[16..])]);
-    let tweaks = tweak_table(epoch);
-    for pair in tweaks.chunks_exact(2) {
-        hints.push("tweaks", vec![val16(&pair[0]), val16(&pair[1])]);
+    // Four cells an entry: one hashed block of the epoch digest.
+    for quad in tweak_table(epoch).chunks_exact(4) {
+        hints.push("tweaks", quad.iter().map(|t| val16(t)).collect());
     }
-    for pair in merkle_bit_cells(epoch).chunks_exact(2) {
-        hints.push("merkle_bits", vec![pair[0], pair[1]]);
+    for quad in merkle_bit_cells(epoch).chunks_exact(4) {
+        hints.push("merkle_bits", quad.to_vec());
     }
     // Two keys per entry, so the guest can halve its loop frames; the odd key out
     // rides a final one-key entry. The digest itself is unchanged.
@@ -2419,7 +2424,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let agg_state = pack_state(Sponge::new(RECURSION_AGG_LABEL, &[]).state());
     ps("AGG_SEED_0", u(agg_state[0]).to_string());
     ps("AGG_SEED_1", u(agg_state[1]).to_string());
-    let tag = statement_tag();
+    let tag = label_tag(RECURSION_STATEMENT_LABEL);
     ps("STMT_TAG_0", u(val16(&tag[..16])).to_string());
     ps("STMT_TAG_1", u(val16(&tag[16..])).to_string());
     let defer_cells = kbc + log2_bc_cols + 1 + 2 * flock::blake2s::K_LOG + 2;
@@ -2429,9 +2434,9 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("STMT_PAIRS", pairs.to_string());
     ps("STMT_PAD_CELLS", (4 * blocks - off - 3 * pairs).to_string());
     ps("STMT_BLOCKS", blocks.to_string());
-    let epoch_iv = chain_iv(EPOCH_LABEL);
-    ps("EPOCH_IV_0", u(epoch_iv[0]).to_string());
-    ps("EPOCH_IV_1", u(epoch_iv[1]).to_string());
+    let etag = label_tag(EPOCH_LABEL);
+    ps("EPOCH_TAG_0", u(val16(&etag[..16])).to_string());
+    ps("EPOCH_TAG_1", u(val16(&etag[16..])).to_string());
     let pk_iv = chain_iv(PUBKEYS_LABEL);
     ps("PK_IV_0", u(pk_iv[0]).to_string());
     ps("PK_IV_1", u(pk_iv[1]).to_string());

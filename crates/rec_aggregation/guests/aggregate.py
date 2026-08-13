@@ -264,10 +264,12 @@ STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
 STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
 STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
-# Domain-separated IVs for the two plain BLAKE2s chains (the epoch tables and
-# the signer set), so neither can be confused with the other or with a sponge.
-EPOCH_IV_0 = EPOCH_IV_0_PLACEHOLDER
-EPOCH_IV_1 = EPOCH_IV_1_PLACEHOLDER
+# The epoch digest: a plain BLAKE2s of its tag, the tweak table and the Merkle
+# bits, streamed four cells to a 64-byte block.
+EPOCH_TAG_0 = EPOCH_TAG_0_PLACEHOLDER
+EPOCH_TAG_1 = EPOCH_TAG_1_PLACEHOLDER
+# The signer set cannot stream: its length is runtime and the counter is a
+# bytecode immediate, so it stays a chain of complete hashes under its own IV.
 PK_IV_0 = PK_IV_0_PLACEHOLDER
 PK_IV_1 = PK_IV_1_PLACEHOLDER
 
@@ -310,13 +312,12 @@ WORDS_PER_BLOCK = 2                 # … and a 32-byte block = two
 # from the epoch.
 N_TWEAKS = 1 + V * CHAIN_STEPS + 1 + LOG_LIFETIME
 N_TWEAK_CELLS = WORDS_PER_VALUE * N_TWEAKS
-N_TWEAK_BLOCKS = N_TWEAKS / 2                # two tweaks per absorbed block
+N_TWEAK_BLOCKS = N_TWEAKS / 4                # four tweaks per hashed 64-byte block
 WOTS_PK_TWEAK_IDX = 1 + V * CHAIN_STEPS      # tweak index of the wots-pk tweak
 MERKLE_TWEAK_IDX = WOTS_PK_TWEAK_IDX + 1     # tweak index of merkle level 0
 
 MERKLE_BIT_CELLS = WORDS_PER_VALUE * LOG_LIFETIME  # one 1-cell bit word per level
-MERKLE_BIT_BLOCKS = LOG_LIFETIME / 2
-EPOCH_BLOCKS = N_TWEAK_BLOCKS + MERKLE_BIT_BLOCKS
+MERKLE_BIT_BLOCKS = LOG_LIFETIME / 4
 
 # Digits packed per digest lane: W bits each in GF(2^64)'s monomial budget
 # (the lane's leftover top bits are ground to zero by the signer).
@@ -2522,26 +2523,34 @@ def main():
     # Both are hinted and bound by one digest in the statement; the outer
     # verifier rebuilds them from the epoch and rehashes. Nothing derives a
     # tweak in-circuit.
-    tweak_table = HeapBuf(N_TWEAK_CELLS)
-    merkle_bits = HeapBuf(MERKLE_BIT_CELLS)
+    # A plain BLAKE2s, four cells a block, where a re-injected state left room
+    # for two. Each block is hashed out of the frame it was hinted into: a
+    # blake2s operand is addressed off `fp`, so a heap one would cost a DEREF
+    # per cell to read back.
+    tag = StackBuf(4)
+    tag[0] = EPOCH_TAG_0
+    tag[1] = EPOCH_TAG_1
+    tag[2] = 0
+    tag[3] = 0
     epoch_state = StackBuf(WORDS_PER_BLOCK)
-    epoch_state[0] = EPOCH_IV_0
-    epoch_state[1] = EPOCH_IV_1
+    blake2s(tag[0:2], tag[2:4], epoch_state, counter=64, final=0)
+    tweak_table = HeapBuf(N_TWEAK_CELLS)
     for t in unroll(0, N_TWEAK_BLOCKS):
-        block = StackBuf(WORDS_PER_BLOCK)
-        hint_witness(block, "tweaks")
-        tweak_table[GEN ** (WORDS_PER_BLOCK * t)] = block[0]
-        tweak_table[GEN ** (WORDS_PER_BLOCK * t + 1)] = block[1]
+        blk = StackBuf(4)
+        hint_witness(blk, "tweaks")
+        for i in unroll(0, 4):
+            tweak_table[GEN ** (4 * t + i)] = blk[i]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake2s(epoch_state, block, next_state)
+        blake2s(blk[0:2], blk[2:4], next_state, cv=epoch_state, counter=64 * (t + 2), final=0)
         epoch_state = next_state
+    merkle_bits = HeapBuf(MERKLE_BIT_CELLS)
     for u in unroll(0, MERKLE_BIT_BLOCKS):
-        block = StackBuf(WORDS_PER_BLOCK)
-        hint_witness(block, "merkle_bits")
-        merkle_bits[GEN ** (WORDS_PER_BLOCK * u)] = block[0]
-        merkle_bits[GEN ** (WORDS_PER_BLOCK * u + 1)] = block[1]
+        blk = StackBuf(4)
+        hint_witness(blk, "merkle_bits")
+        for i in unroll(0, 4):
+            merkle_bits[GEN ** (4 * u + i)] = blk[i]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake2s(epoch_state, block, next_state)
+        blake2s(blk[0:2], blk[2:4], next_state, cv=epoch_state, counter=64 * (N_TWEAK_BLOCKS + u + 2), final=(u + 1) // MERKLE_BIT_BLOCKS)
         epoch_state = next_state
     epoch = HeapBuf(WORDS_PER_BLOCK)
     epoch[1] = epoch_state[0]
