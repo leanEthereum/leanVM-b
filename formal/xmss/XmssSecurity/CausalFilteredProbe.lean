@@ -4,6 +4,100 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity
 
+theorem chainInputProbe?_eq_some_iff
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (input : HashInput) (index : ChainValueIndex) (target : Digest) :
+    chainInputProbe? parameter selected input = some (index, target) ↔
+      ∃ step : ChainStep,
+        input = Concrete.CacheView.chainInput parameter index.1 selected
+          step target ∧ index.2 = chainStepDigit step := by
+  constructor
+  · intro hprobe
+    unfold chainInputProbe? at hprobe
+    split at hprobe
+    · rename_i hexists
+      let data := hexists.choose
+      have hdata := hexists.choose_spec
+      simp only [Option.some.injEq, Prod.mk.injEq] at hprobe
+      obtain ⟨hindex, htarget⟩ := hprobe
+      refine ⟨data.2.1, ?_, ?_⟩
+      · rw [hdata]
+        rw [← congrArg Prod.fst hindex, ← htarget]
+      · exact (congrArg Prod.snd hindex).symm
+    · simp at hprobe
+  · rintro ⟨step, rfl, hindex⟩
+    rw [chainInputProbe?_chainInput]
+    rw [← hindex]
+
+theorem programmedActual_left_chainValue_eq_table
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (index : ChainValueIndex) :
+    Wots.walk
+        (Concrete.CacheView.chainStep left.cache left.secretKey.parameter
+          index.1 selected)
+        0 index.2.val (left.secretKey.chainStart index.1 selected) =
+      right.2 index := by
+  change keygenChainValueTable left.cache left.secretKey selected index =
+    right.2 index
+  rw [programmedWarmedFixedChainKeygen_support_table
+    selected left hleftSupport]
+  exact congrFun hrel.1.1 index
+
+theorem programmedActual_left_cache_chainInput_eq_none_of_probe_miss
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (input : HashInput) (index : ChainValueIndex) (target : Digest)
+    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
+      some (index, target))
+    (hmiss : right.2 index ≠ target) :
+    left.cache input = none := by
+  obtain ⟨step, hinput, hindex⟩ :=
+    (chainInputProbe?_eq_some_iff left.secretKey.parameter selected input
+      index target).mp hprobe
+  rw [hinput]
+  apply Concrete.keygen_cache_chainInput_eq_none_of_ne left.keyResult
+    (programmedWarmedFixedChainKeygen_support_keyResult
+      selected left hleftSupport)
+  intro heq
+  apply hmiss
+  rw [← programmedActual_left_chainValue_eq_table selected left right hrel
+    hleftSupport index]
+  rw [hindex]
+  simpa [ProgrammedFixedChainKeygenView.keyResult, chainStepDigit] using heq.symm
+
+theorem programmedActual_current_caches_eq_of_probe_miss
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (leftCache : QueryCache HashSpec) (rightState : CausalHashState)
+    (hstate : FilteredCausalStateRelation left.secretKey.parameter selected
+      left.cache right.1.cache right.2 leftCache rightState)
+    (input : HashInput) (index : ChainValueIndex) (target : Digest)
+    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
+      some (index, target))
+    (hmiss : right.2 index ≠ target) :
+    leftCache input = rightState.cache input := by
+  rcases hstate.2.1 input with hagrees | ⟨hbase, hright⟩
+  · exact hagrees
+  · rw [hbase, hright]
+    exact programmedActual_left_cache_chainInput_eq_none_of_probe_miss
+      selected left right hrel hleftSupport input index target hprobe hmiss
+
 noncomputable def filteredProbingAttackerHashQuery
     (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput) :
     StateT CausalHashState
