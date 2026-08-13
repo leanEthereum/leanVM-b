@@ -765,4 +765,156 @@ theorem relTriple_fixedChainMaterial_leafAt_run
     exact fixedChainMaterialRepresentation_cache_avoids_leaf
       parameter selected right.1 hrel.2.2.2 epoch input hinput
 
+set_option maxRecDepth 100000 in
+theorem relTriple_fixedChainMaterial_leafTreeValues_run
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    ∀ (indices : List TreeValueIndex),
+      (∀ index ∈ indices, index.1.val = 0) →
+      indices.Pairwise TreeValueIndex.Precedes →
+      ∀ (leftCache rightCache : QueryCache HashSpec),
+        TreeValuesFresh parameter indices leftCache →
+        TreeValuesFresh parameter indices rightCache →
+        HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+          leftCache rightCache →
+        left.2.2.2 ≤ leftCache → right.1.2.2.2 ≤ rightCache →
+        RelTriple
+          (treeValues parameter (unflattenSecret left.1.2) indices leftCache)
+          (treeValues parameter (unflattenSecret right.1.1.2) indices rightCache)
+          (fun leftResult rightResult =>
+            leftResult.1 = rightResult.1 ∧
+              HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+                leftResult.2 rightResult.2 ∧
+              left.2.2.2 ≤ leftResult.2 ∧
+              right.1.2.2.2 ≤ rightResult.2) := by
+  intro indices
+  induction indices with
+  | nil =>
+      intro _hzero _hordered leftCache rightCache _hleftFresh _hrightFresh
+        hagrees hleftLe hrightLe
+      simp only [treeValues_nil]
+      exact relTriple_pure_pure ⟨rfl, hagrees, hleftLe, hrightLe⟩
+  | cons current indices ih =>
+      intro hzero hordered leftCache rightCache hleftFresh hrightFresh
+        hagrees hleftLe hrightLe
+      have hcurrentZero : current.1.val = 0 := hzero current (by simp)
+      have htailZero : ∀ index ∈ indices, index.1.val = 0 := by
+        intro index hindex
+        exact hzero index (by simp [hindex])
+      have hcurrentBefore : ∀ target ∈ indices,
+          current.Precedes target := (List.pairwise_cons.mp hordered).1
+      have htailOrdered : indices.Pairwise TreeValueIndex.Precedes :=
+        (List.pairwise_cons.mp hordered).2
+      have hleftAbsent : ∀ input,
+          AtHashAddress parameter (.leaf current.node) input →
+            leftCache input = none := by
+        intro input hinput
+        apply hleftFresh current (by simp) input
+        unfold TreeValueIndex.domain
+        rw [dif_pos hcurrentZero]
+        exact hinput
+      have hrightAbsent : ∀ input,
+          AtHashAddress parameter (.leaf current.node) input →
+            rightCache input = none := by
+        intro input hinput
+        apply hrightFresh current (by simp) input
+        unfold TreeValueIndex.domain
+        rw [dif_pos hcurrentZero]
+        exact hinput
+      have hhead : RelTriple
+          ((simulateQ randomOracle
+            (current.computation parameter (unflattenSecret left.1.2))).run
+              leftCache)
+          ((simulateQ randomOracle
+            (current.computation parameter (unflattenSecret right.1.1.2))).run
+              rightCache)
+          (fun leftResult rightResult =>
+            leftResult.1 = rightResult.1 ∧
+              HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+                leftResult.2 rightResult.2 ∧
+              left.2.2.2 ≤ leftResult.2 ∧
+              right.1.2.2.2 ≤ rightResult.2) := by
+        simpa [TreeValueIndex.computation, hcurrentZero] using
+          (relTriple_fixedChainMaterial_leafAt_run_from_cache
+            parameter selected left right hrel current.node
+            leftCache rightCache hagrees hleftLe hrightLe
+            hleftAbsent hrightAbsent)
+      have hheadFresh := relTriple_strengthen_support hhead
+        (fun result hresult =>
+          treeValue_preserves_tail_fresh parameter
+            (unflattenSecret left.1.2) current indices hcurrentBefore
+            leftCache hleftFresh result hresult)
+        (fun result hresult =>
+          treeValue_preserves_tail_fresh parameter
+            (unflattenSecret right.1.1.2) current indices hcurrentBefore
+            rightCache hrightFresh result hresult)
+      simp only [treeValues_cons]
+      apply relTriple_bind hheadFresh
+      intro leftHeadResult rightHeadResult hheadResult
+      obtain ⟨hheadRelation, hleftTailFresh, hrightTailFresh⟩ := hheadResult
+      obtain ⟨leftHead, leftHeadCache⟩ := leftHeadResult
+      obtain ⟨rightHead, rightHeadCache⟩ := rightHeadResult
+      dsimp only at hheadRelation hleftTailFresh hrightTailFresh ⊢
+      apply relTriple_bind
+        (ih htailZero htailOrdered leftHeadCache rightHeadCache
+          hleftTailFresh hrightTailFresh hheadRelation.2.1
+          hheadRelation.2.2.1 hheadRelation.2.2.2)
+      intro leftTailResult rightTailResult htailResult
+      obtain ⟨leftTail, leftTailCache⟩ := leftTailResult
+      obtain ⟨rightTail, rightTailCache⟩ := rightTailResult
+      dsimp only at htailResult ⊢
+      apply relTriple_pure_pure
+      exact ⟨congrArg₂ List.cons hheadRelation.1 htailResult.1,
+        htailResult.2.1, htailResult.2.2.1, htailResult.2.2.2⟩
+
+theorem relTriple_fixedChainMaterial_allLeafValues_run
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialBaseRelation parameter selected left right) :
+    RelTriple
+      (treeValues parameter (unflattenSecret left.1.2)
+        (treeValueIndicesAtHeight 0) left.2.2.2)
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        (treeValueIndicesAtHeight 0) right.1.2.2.2)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+            leftResult.2 rightResult.2 ∧
+          left.2.2.2 ≤ leftResult.2 ∧
+          right.1.2.2.2 ≤ rightResult.2) := by
+  have hzero : ∀ index ∈ treeValueIndicesAtHeight 0,
+      index.1.val = 0 := by
+    intro index hindex
+    rw [treeValueIndicesAtHeight, List.mem_ofFn] at hindex
+    obtain ⟨node, rfl⟩ := hindex
+    rfl
+  have hordered : (treeValueIndicesAtHeight 0).Pairwise
+      TreeValueIndex.Precedes := by
+    simp only [treeValueIndicesAtHeight, List.pairwise_ofFn]
+    intro leftNode rightNode hlt
+    exact Or.inr ⟨rfl, hlt⟩
+  have hleftFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight 0) left.2.2.2 := by
+    intro index hindex input hinput
+    have hheight := hzero index hindex
+    unfold TreeValueIndex.domain at hinput
+    rw [dif_pos hheight] at hinput
+    exact fixedChainMaterialRepresentation_cache_avoids_leaf
+      parameter selected left hrel.2.2.1 index.node input hinput
+  have hrightFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight 0) right.1.2.2.2 := by
+    intro index hindex input hinput
+    have hheight := hzero index hindex
+    unfold TreeValueIndex.domain at hinput
+    rw [dif_pos hheight] at hinput
+    exact fixedChainMaterialRepresentation_cache_avoids_leaf
+      parameter selected right.1 hrel.2.2.2 index.node input hinput
+  exact relTriple_fixedChainMaterial_leafTreeValues_run
+    parameter selected left right hrel (treeValueIndicesAtHeight 0)
+    hzero hordered left.2.2.2 right.1.2.2.2 hleftFresh hrightFresh
+    (hrel.outsideChainCachesAgree parameter selected left right) le_rfl le_rfl
+
 end XmssSecurity
