@@ -226,6 +226,115 @@ theorem relTriple_leafHash_run_of_both_none
   exact ⟨congrArg truncateHash hresult.1,
     hresult.2.1, hresult.2.2.1, hresult.2.2.2⟩
 
+theorem outsideChainHashInput_ne_merkleInput
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (level : MerkleLevel) (node : MerkleNode) (left right : Digest)
+    (input : HashInput)
+    (hinput : OutsideChainHashInput parameter chain input) :
+    input ≠ Concrete.CacheView.merkleInput parameter level node left right := by
+  intro heq
+  obtain ⟨epoch, candidate, step, _hne, hchain⟩ := hinput
+  have hmerkle : AtHashAddress parameter (.merkle level node) input := by
+    rw [heq]
+    simp [Concrete.CacheView.merkleInput]
+  have hdomain := atHashAddress_unique parameter
+    (.chain epoch candidate step) (.merkle level node) input hchain hmerkle
+  simp at hdomain
+
+theorem relTriple_nodeHash_run_of_both_none
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (level : MerkleLevel) (node : MerkleNode)
+    (leftChild rightChild : Digest)
+    (left right : QueryCache HashSpec)
+    (hleftNone : left (Concrete.CacheView.merkleInput
+      parameter level node leftChild rightChild) = none)
+    (hrightNone : right (Concrete.CacheView.merkleInput
+      parameter level node leftChild rightChild) = none)
+    (hagrees : HashCachesAgreeOn
+      (OutsideChainHashInput parameter chain) left right) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.nodeHash parameter level node leftChild rightChild :
+          OracleComp HashSpec Digest)).run left)
+      ((simulateQ randomOracle
+        (Concrete.nodeHash parameter level node leftChild rightChild :
+          OracleComp HashSpec Digest)).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn (OutsideChainHashInput parameter chain)
+            leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
+  let input := Concrete.CacheView.merkleInput
+    parameter level node leftChild rightChild
+  change RelTriple
+    ((fun result : HashOutput × QueryCache HashSpec =>
+      (truncateHash result.1, result.2)) <$> (randomOracle input).run left)
+    ((fun result : HashOutput × QueryCache HashSpec =>
+      (truncateHash result.1, result.2)) <$> (randomOracle input).run right) _
+  apply relTriple_map
+  apply relTriple_post_mono
+    (relTriple_randomOracle_run_of_both_none
+      (OutsideChainHashInput parameter chain) left right input input
+      hleftNone hrightNone hagrees
+      (outsideChainHashInput_ne_merkleInput
+        parameter chain level node leftChild rightChild)
+      (outsideChainHashInput_ne_merkleInput
+        parameter chain level node leftChild rightChild))
+  intro leftResult rightResult hresult
+  exact ⟨congrArg truncateHash hresult.1,
+    hresult.2.1, hresult.2.2.1, hresult.2.2.2⟩
+
+theorem relTriple_treeNode_succ_run_of_cached_children
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (levels : Nat) (node : MerkleNode) (hlevel : levels < treeHeight)
+    (leftChild rightChild : Digest)
+    (left right : QueryCache HashSpec)
+    (hleftLeft :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter leftSecret levels
+          (Concrete.childNode node false) : OracleComp HashSpec Digest)).run left =
+        pure (leftChild, left))
+    (hleftRight :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter rightSecret levels
+          (Concrete.childNode node false) : OracleComp HashSpec Digest)).run right =
+        pure (leftChild, right))
+    (hrightLeft :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter leftSecret levels
+          (Concrete.childNode node true) : OracleComp HashSpec Digest)).run left =
+        pure (rightChild, left))
+    (hrightRight :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter rightSecret levels
+          (Concrete.childNode node true) : OracleComp HashSpec Digest)).run right =
+        pure (rightChild, right))
+    (hleftNone : left (Concrete.CacheView.merkleInput parameter
+      ⟨levels, hlevel⟩ node leftChild rightChild) = none)
+    (hrightNone : right (Concrete.CacheView.merkleInput parameter
+      ⟨levels, hlevel⟩ node leftChild rightChild) = none)
+    (hagrees : HashCachesAgreeOn
+      (OutsideChainHashInput parameter chain) left right) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.treeNode parameter leftSecret (levels + 1) node :
+          OracleComp HashSpec Digest)).run left)
+      ((simulateQ randomOracle
+        (Concrete.treeNode parameter rightSecret (levels + 1) node :
+          OracleComp HashSpec Digest)).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn (OutsideChainHashInput parameter chain)
+            leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
+  simp only [Concrete.treeNode_succ_eq, simulateQ_bind, StateT.run_bind,
+    hleftLeft, hleftRight, hrightLeft, hrightRight, pure_bind,
+    hlevel, ↓reduceDIte]
+  exact relTriple_nodeHash_run_of_both_none parameter chain
+    ⟨levels, hlevel⟩ node leftChild rightChild left right
+    hleftNone hrightNone hagrees
+
 theorem relTriple_chainHash_run_outside
     (parameter : PublicParameter) (chain candidate : ChainIndex)
     (hne : candidate ≠ chain) (epoch : Epoch) (step : ChainStep)
