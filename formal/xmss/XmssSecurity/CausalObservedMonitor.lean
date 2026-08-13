@@ -592,6 +592,56 @@ theorem relTriple_programmed_monitoredHashQueryFromHigh_until_hit
           right.1.secretKey selected input rightState.causal
             (some (index, target)) result hresult⟩
 
+theorem relTriple_programmed_monitoredUniformQuery
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (leftBase rightBase : QueryCache HashSpec)
+    (table : ChainValueIndex → Digest)
+    (leftCache : QueryCache HashSpec) (rightState : MonitoredCausalState)
+    (hstate : MonitoredFilteredStateRelation parameter selected leftBase
+      rightBase table leftCache rightState)
+    (n : Nat) :
+    RelTriple
+      ((fun output : Fin (n + 1) => (output, leftCache)) <$>
+        (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
+      ((monitorCausalTrace table (fun causalState =>
+        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+          ((causalUniformImpl n).run causalState)).run)).run rightState)
+      (fun leftResult rightResult =>
+        (leftResult.1 = rightResult.1 ∧
+          MonitoredFilteredStateRelation parameter selected leftBase rightBase
+            table leftResult.2 rightResult.2) ∨
+          rightResult.2.bad) := by
+  obtain ⟨monitor, hmonitor, hmonitorAgrees, hrevealed, hcausal⟩ := hstate
+  apply relTriple_monitorCausalTrace_of_filtered_until_hit
+    parameter selected leftBase rightBase table _ _ rightState monitor hmonitor
+      hmonitorAgrees hrevealed
+  · rw [simulate_eagerTrace_causalUniformImpl]
+    have hmapped : RelTriple
+        ((fun output : Fin (n + 1) => (output, leftCache)) <$>
+          (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
+        ((fun output : Fin (n + 1) =>
+          ((output, rightState.causal),
+            ([] : RevealProbeOracleSimulation.ActionTrace ChainValueIndex))) <$>
+          (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
+        (fun leftResult rightResult =>
+          leftResult.1 = rightResult.1.1 ∧
+            FilteredCausalStateRelation parameter selected leftBase rightBase
+              table leftResult.2 rightResult.1.2) := by
+      apply relTriple_map
+      apply relTriple_post_mono
+        (relTriple_refl
+          (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      exact ⟨rfl, hcausal⟩
+    apply relTriple_post_mono hmapped
+    intro leftResult rightResult hresult
+    exact Or.inl hresult
+  · intro result hresult
+    rw [simulate_eagerTrace_causalUniformImpl, support_map] at hresult
+    obtain ⟨output, _houtput, rfl⟩ := hresult
+    exact ⟨by trivial, ReplaysCausalReveals.nil rightState.causal.revealed⟩
+
 set_option maxRecDepth 100000 in
 theorem relTriple_programmed_monitoredSigningQuery
     (selected : ChainIndex)
