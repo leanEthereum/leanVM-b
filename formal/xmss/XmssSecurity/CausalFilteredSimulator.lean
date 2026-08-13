@@ -230,6 +230,75 @@ theorem programmedActual_filteredKeygen_cache_le
   · rw [outsideChainOnly_of_not_outside _ _ _ _ houtside] at houtput
     simp at houtput
 
+def FilteredCacheExtensionRelation
+    (leftBase left right : QueryCache HashSpec) : Prop :=
+  ∀ input,
+    left input = right input ∨
+      (left input = leftBase input ∧ right input = none)
+
+theorem FilteredCacheExtensionRelation.right_le_left
+    {leftBase left right : QueryCache HashSpec}
+    (hrel : FilteredCacheExtensionRelation leftBase left right) :
+    right ≤ left := by
+  intro input output hright
+  rcases hrel input with hagrees | ⟨_hbase, hnone⟩
+  · rw [hagrees]
+    exact hright
+  · rw [hnone] at hright
+    simp at hright
+
+theorem FilteredCacheExtensionRelation.cacheQuery
+    {leftBase left right : QueryCache HashSpec}
+    (hrel : FilteredCacheExtensionRelation leftBase left right)
+    (input : HashInput) (output : HashOutput) :
+    FilteredCacheExtensionRelation leftBase
+      (left.cacheQuery input output) (right.cacheQuery input output) := by
+  intro candidate
+  by_cases heq : candidate = input
+  · subst candidate
+    simp
+  · rw [QueryCache.cacheQuery_of_ne left output heq,
+      QueryCache.cacheQuery_of_ne right output heq]
+    exact hrel candidate
+
+theorem programmedActual_filteredKeygen_extensionRelation
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1 ∈ support (actualFixedChainKeygen selected)) :
+    FilteredCacheExtensionRelation left.cache left.cache
+      (filteredCausalKeygenState selected right.1).cache := by
+  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+    selected left hleftSupport
+  have hrightKey := actualFixedChainKeygen_support_keyResult
+    selected right.1 hrightSupport
+  have hparameter : left.secretKey.parameter =
+      right.1.secretKey.parameter := by
+    calc
+      left.secretKey.parameter = left.publicKey.parameter :=
+        (left.parameter_eq hleftKey).symm
+      _ = right.1.publicKey.parameter :=
+        congrArg PublicKey.parameter hrel.1.2.1
+      _ = right.1.secretKey.parameter := right.1.parameter_eq hrightKey
+  intro input
+  rw [filteredCausalKeygenState_cache]
+  by_cases houtside : OutsideChainHashInput
+      right.1.secretKey.parameter selected input
+  · left
+    rw [outsideChainOnly_of_outside _ _ _ _ houtside]
+    have houtsideLeft : OutsideChainHashInput
+        left.publicKey.parameter selected input := by
+      rw [left.parameter_eq hleftKey, hparameter]
+      exact houtside
+    exact hrel.2 input houtsideLeft
+  · right
+    exact ⟨rfl, outsideChainOnly_of_not_outside
+      right.1.secretKey.parameter selected right.1.cache input houtside⟩
+
 theorem relTriple_randomOracle_run_of_cachesAgreeOn_subset
     (inputs : HashInput → Prop)
     (left right : QueryCache HashSpec)
@@ -269,39 +338,79 @@ theorem relTriple_randomOracle_run_of_cachesAgreeOn_subset
         QueryImpl.withCaching_run_some _ hright]
       exact relTriple_pure_pure ⟨rfl, hagrees, le_rfl, le_rfl, hsubset⟩
 
-def EncodingSubsetResultRelation
+theorem relTriple_randomOracle_run_of_cachesAgreeOn_filtered
+    (inputs : HashInput → Prop)
+    (leftBase left right : QueryCache HashSpec)
+    (input : HashInput) (hinput : inputs input)
+    (hagrees : HashCachesAgreeOn inputs left right)
+    (hfiltered : FilteredCacheExtensionRelation leftBase left right) :
+    RelTriple
+      ((randomOracle input).run left)
+      ((randomOracle input).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn inputs leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2 ∧
+          FilteredCacheExtensionRelation leftBase
+            leftResult.2 rightResult.2) := by
+  cases hleft : left input with
+  | none =>
+      have hright : right input = none := by
+        rw [← hagrees input hinput]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_none _ hleft,
+        QueryImpl.withCaching_run_none _ hright,
+        map_eq_bind_pure_comp, map_eq_bind_pure_comp]
+      apply relTriple_bind (relTriple_refl ($ᵗ HashOutput))
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      exact relTriple_pure_pure ⟨rfl,
+        HashCachesAgreeOn.cacheQuery inputs left right hagrees
+          input leftOutput,
+        QueryCache.le_cacheQuery left hleft,
+        QueryCache.le_cacheQuery right hright,
+        hfiltered.cacheQuery input leftOutput⟩
+  | some output =>
+      have hright : right input = some output := by
+        rw [← hagrees input hinput]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_some _ hleft,
+        QueryImpl.withCaching_run_some _ hright]
+      exact relTriple_pure_pure ⟨rfl, hagrees, le_rfl, le_rfl, hfiltered⟩
+
+def EncodingFilteredResultRelation
     (parameter : PublicParameter) (selected : ChainIndex)
-    (initialLeft initialRight : QueryCache HashSpec)
+    (leftBase initialLeft initialRight : QueryCache HashSpec)
     (epoch : Epoch) (message : Message) (randomness : Randomness)
     (leftResult rightResult : Digest × QueryCache HashSpec) : Prop :=
   leftResult.1 = rightResult.1 ∧
     HashCachesAgreeOn (SigningComparableHashInput parameter selected)
       leftResult.2 rightResult.2 ∧
     initialLeft ≤ leftResult.2 ∧ initialRight ≤ rightResult.2 ∧
-    rightResult.2 ≤ leftResult.2 ∧
+    FilteredCacheExtensionRelation leftBase leftResult.2 rightResult.2 ∧
     Concrete.CacheView.encodingHash leftResult.2 parameter epoch
       (message, randomness) = leftResult.1 ∧
     Concrete.CacheView.encodingHash rightResult.2 parameter epoch
       (message, randomness) = rightResult.1
 
-theorem relTriple_encodingHash_run_of_signingComparableCaches_subset
+theorem relTriple_encodingHash_run_of_signingComparableCaches_filtered
     (parameter : PublicParameter) (selected : ChainIndex)
-    (left right : QueryCache HashSpec)
+    (leftBase left right : QueryCache HashSpec)
     (hagrees : HashCachesAgreeOn
       (SigningComparableHashInput parameter selected) left right)
-    (hsubset : right ≤ left)
+    (hfiltered : FilteredCacheExtensionRelation leftBase left right)
     (epoch : Epoch) (message : Message) (randomness : Randomness) :
     RelTriple
       ((simulateQ randomOracle
         (Concrete.encodingHash parameter epoch message randomness)).run left)
       ((simulateQ randomOracle
         (Concrete.encodingHash parameter epoch message randomness)).run right)
-      (EncodingSubsetResultRelation parameter selected left right
+      (EncodingFilteredResultRelation parameter selected leftBase left right
         epoch message randomness) := by
-  have hquery := relTriple_randomOracle_run_of_cachesAgreeOn_subset
-    (SigningComparableHashInput parameter selected) left right
-    (Concrete.CacheView.encodingInput parameter epoch (message, randomness))
-    (Or.inr ⟨epoch, message, randomness, rfl⟩) hagrees hsubset
+  have hquery := relTriple_randomOracle_run_of_cachesAgreeOn_filtered
+    (SigningComparableHashInput parameter selected) leftBase left right
+      (Concrete.CacheView.encodingInput parameter epoch (message, randomness))
+      (Or.inr ⟨epoch, message, randomness, rfl⟩) hagrees hfiltered
   have hmapped : RelTriple
       ((fun result : HashOutput × QueryCache HashSpec =>
         (truncateHash result.1, result.2)) <$> (randomOracle
@@ -317,7 +426,8 @@ theorem relTriple_encodingHash_run_of_signingComparableCaches_subset
             (SigningComparableHashInput parameter selected)
             leftResult.2 rightResult.2 ∧
           left ≤ leftResult.2 ∧ right ≤ rightResult.2 ∧
-          rightResult.2 ≤ leftResult.2) := by
+          FilteredCacheExtensionRelation leftBase
+            leftResult.2 rightResult.2) := by
     apply relTriple_map
     apply relTriple_post_mono hquery
     intro leftResult rightResult hresult
@@ -398,7 +508,7 @@ def FilteredCausalStateRelation
     (leftCache : QueryCache HashSpec) (rightState : CausalHashState) : Prop :=
   HashCachesAgreeOn (SigningComparableHashInput parameter selected)
       leftCache rightState.cache ∧
-    rightState.cache ≤ leftCache ∧
+    FilteredCacheExtensionRelation leftBase leftCache rightState.cache ∧
     leftBase ≤ leftCache ∧
     rightState.keygenCache = rightBase ∧
     CausalRevealsAgree table rightState
@@ -417,7 +527,7 @@ theorem programmedActual_filteredKeygen_stateRelation
         (filteredCausalKeygenState selected right.1) := by
   refine ⟨programmedActual_filteredKeygen_cachesAgree selected left right
       hrel hleftSupport hrightSupport,
-    programmedActual_filteredKeygen_cache_le selected left right hrel.1
+    programmedActual_filteredKeygen_extensionRelation selected left right hrel.1
       hleftSupport hrightSupport,
     le_rfl, rfl, ?_⟩
   intro index value hvalue
@@ -554,9 +664,9 @@ theorem relTriple_programmed_filteredCausalSigningQuery
     Function.comp_apply, List.nil_append]
   rw [← hparameter]
   apply relTriple_bind
-    (relTriple_encodingHash_run_of_signingComparableCaches_subset
-      left.secretKey.parameter selected leftCache rightState.cache hstate.1
-      hstate.2.1 request.epoch request.message leftRandomness)
+    (relTriple_encodingHash_run_of_signingComparableCaches_filtered
+      left.secretKey.parameter selected left.cache leftCache rightState.cache
+      hstate.1 hstate.2.1 request.epoch request.message leftRandomness)
   intro leftEncoded rightEncoded hencoded
   have hdigestEq : leftEncoded.1 = rightEncoded.1 := hencoded.1
   rw [← hdigestEq]
