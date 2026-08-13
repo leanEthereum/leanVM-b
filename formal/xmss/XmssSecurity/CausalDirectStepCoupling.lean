@@ -215,4 +215,45 @@ theorem relTriple_filteredProbingAttackerHashQueryAt_of_hidden
     intro leftResult rightResult hresult
     exact Or.inr hresult
 
+theorem relTriple_filteredKeygen_first_hidden_hash_step
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenStableRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1 ∈ support (actualFixedChainKeygen selected))
+    (input : HashInput) (index : ChainValueIndex) (target : Digest)
+    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
+      some (index, target)) :
+    RelTriple
+      ((randomOracle input).run left.cache)
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
+        (filteredProbingAttackerHashQueryAt right.1.secretKey selected input
+          (filteredCausalKeygenState selected right.1)
+            (some (index, target)))).run)
+      (FilteredDirectHashStepRelation left.secretKey.parameter selected
+        left.cache right.1.cache right.2 index target) := by
+  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+    selected left hleftSupport
+  have hrightKey := actualFixedChainKeygen_support_keyResult
+    selected right.1 hrightSupport
+  have hparameter : left.secretKey.parameter =
+      right.1.secretKey.parameter := by
+    calc
+      left.secretKey.parameter = left.publicKey.parameter :=
+        (left.parameter_eq hleftKey).symm
+      _ = right.1.publicKey.parameter :=
+        congrArg PublicKey.parameter hrel.1.1.2.1
+      _ = right.1.secretKey.parameter := right.1.parameter_eq hrightKey
+  apply relTriple_filteredProbingAttackerHashQueryAt_of_hidden selected
+    left right hrel.1 hleftSupport left.cache
+      (filteredCausalKeygenState selected right.1)
+  · exact programmedActual_filteredKeygen_stateRelation selected left right
+      hrel hleftSupport hrightSupport
+  · exact hparameter
+  · exact hprobe
+  · exact filteredCausalKeygenState_revealed selected right.1 index
+
 end XmssSecurity
