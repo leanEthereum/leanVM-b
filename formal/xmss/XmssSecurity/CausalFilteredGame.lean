@@ -17,6 +17,42 @@ instance : DecidablePred IsDirectHashAction := fun input => by
       | inr _ => exact isTrue trivial
   | inr _ => exact isFalse (by simp [IsDirectHashAction])
 
+theorem filteredCausalSigningQuery_isProbeQueryBoundP
+    (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
+    (request : SignRequest) (state : CausalHashState) :
+    (filteredCausalSigningQuery keyView selected request state)
+      |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 0 := by
+  unfold filteredCausalSigningQuery
+  apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+    (RevealProbeOracleSimulation.liftProbComp_isProbeQueryBoundP
+      Concrete.signingRandomness 0)
+  intro randomness _hrandomness
+  apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+    (RevealProbeOracleSimulation.liftProbComp_isProbeQueryBoundP
+      ((simulateQ randomOracle
+        (Concrete.encodingHash keyView.secretKey.parameter request.epoch
+          request.message randomness)).run state.cache) 0)
+  intro encoded _hencoded
+  cases hdecode : TargetSum.decodeDigest encoded.1 with
+  | none =>
+      exact OracleComp.isQueryBoundP_pure
+        (p := RevealProbeOracleSimulation.IsProbeQuery)
+          (none, { state with cache := encoded.2 }) 0
+  | some encoding =>
+      apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+        (RevealProbeOracleSimulation.revealQuery_isProbeQueryBoundP
+          (request.epoch, encoding selected) 0)
+      intro value _hvalue
+      exact OracleComp.isQueryBoundP_pure
+        (p := RevealProbeOracleSimulation.IsProbeQuery)
+        (some (replaceSignatureChainValue
+          (Concrete.CacheReplay.signWithEncoding keyView.cache
+            keyView.secretKey request.epoch randomness encoding)
+          selected value),
+        { { state with cache := encoded.2 } with
+          revealed := Function.update state.revealed
+            (request.epoch, encoding selected) (some value) }) 0
+
 noncomputable def filteredDirectMappedAdversaryImpl
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex) :
     QueryImpl (OracleWorld + SigningSpec)
@@ -29,7 +65,7 @@ noncomputable def filteredDirectMappedAdversaryImpl
         filteredProbingAttackerHashQueryAt keyView.secretKey selected hashInput
           state (chainInputProbe? keyView.secretKey.parameter selected hashInput)
     | .inr request => fun state =>
-        filteredDirectSigningQuery keyView selected request state
+        filteredCausalSigningQuery keyView selected request state
 
 noncomputable def filteredDirectVerifierImpl
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex) :
@@ -82,9 +118,9 @@ theorem filteredDirectMappedAdversaryImpl_step_isProbeQueryBoundP
         chainInputProbe? keyView.secretKey.parameter selected hashInput = probe
       exact filteredProbingAttackerHashQueryAt_isProbeQueryBoundP
         keyView.secretKey selected hashInput state probe
-  · change (filteredDirectSigningQuery keyView selected request state)
+  · change (filteredCausalSigningQuery keyView selected request state)
         |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 0
-    exact filteredDirectSigningQuery_isProbeQueryBoundP
+    exact filteredCausalSigningQuery_isProbeQueryBoundP
       keyView selected request state
 
 theorem simulate_filteredDirectMappedAdversaryImpl_isProbeQueryBoundP

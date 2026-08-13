@@ -174,6 +174,92 @@ def FilteredDirectHashStepRelation
     FilteredDirectMissHashResultRelation parameter selected leftBase rightBase
       table index target leftResult rightResult
 
+def FilteredDirectNoProbeMissHashResultRelation
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (leftBase rightBase : QueryCache HashSpec)
+    (table : ChainValueIndex → Digest)
+    (leftResult : HashOutput × QueryCache HashSpec)
+    (rightResult : (HashOutput × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex) : Prop :=
+  leftResult.1 = rightResult.1.1 ∧
+    rightResult.2 = [] ∧
+    FilteredCausalStateRelation parameter selected leftBase rightBase table
+      leftResult.2 rightResult.1.2
+
+set_option maxRecDepth 100000 in
+theorem relTriple_filteredProbingAttackerHashQueryAt_of_revealed_ne
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest))
+    (hrel : ProgrammedActualKeygenCacheRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (leftCache : QueryCache HashSpec) (rightState : CausalHashState)
+    (hstate : FilteredCausalStateRelation left.secretKey.parameter selected
+      left.cache right.1.cache right.2 leftCache rightState)
+    (hparameter : left.secretKey.parameter = right.1.secretKey.parameter)
+    (input : HashInput) (index : ChainValueIndex) (target value : Digest)
+    (hprobe : chainInputProbe? left.secretKey.parameter selected input =
+      some (index, target))
+    (hrevealed : rightState.revealed index = some value)
+    (hne : value ≠ target) :
+    RelTriple
+      ((randomOracle input).run leftCache)
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
+        (filteredProbingAttackerHashQueryAt right.1.secretKey selected input
+          rightState (some (index, target)))).run)
+      (FilteredDirectNoProbeMissHashResultRelation
+        left.secretKey.parameter selected left.cache right.1.cache right.2) := by
+  have htable : right.2 index = value :=
+    hstate.2.2.2.2 index value hrevealed
+  have hmiss : right.2 index ≠ target := by
+    rw [htable]
+    exact hne
+  have hcache : leftCache input = rightState.cache input :=
+    programmedActual_current_caches_eq_of_probe_miss selected left right hrel
+      hleftSupport leftCache rightState hstate input index target hprobe hmiss
+  have hrightProbe :
+      chainInputProbe? right.1.secretKey.parameter selected input =
+        some (index, target) := by
+    rw [← hparameter]
+    exact hprobe
+  cases hleft : leftCache input with
+  | some output =>
+      have hright : rightState.cache input = some output := by
+        rw [← hcache]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_some _ hleft]
+      rw [filteredProbingAttackerHashQueryAt, hrevealed]
+      rw [filteredCausalAttackerHashQuery_run]
+      simp only [filteredCausalAttackerHashPlan, hright, simulateQ_pure,
+        WriterT.run_pure]
+      apply relTriple_pure_pure
+      refine ⟨rfl, rfl, ?_⟩
+      unfold FilteredCausalStateRelation
+      exact ⟨hstate.1, hstate.2.1, hstate.2.2.1,
+        hstate.2.2.2.1, hstate.2.2.2.2.recordProbe _⟩
+  | none =>
+      have hright : rightState.cache input = none := by
+        rw [← hcache]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_none _ hleft]
+      rw [filteredProbingAttackerHashQueryAt, hrevealed]
+      rw [filteredCausalAttackerHashQuery_run]
+      simp only [filteredCausalAttackerHashPlan, hright,
+        filteredCausalUncachedHashPlan, hrightProbe, hrevealed, hne]
+      rw [simulate_eagerTrace_causalHashQuery]
+      apply relTriple_map
+      apply relTriple_refl
+      intro result
+      refine ⟨rfl, rfl, ?_⟩
+      unfold FilteredCausalStateRelation
+      refine ⟨hstate.1.cacheQuery input result,
+        hstate.2.1.cacheQuery input result, ?_, ?_, ?_⟩
+      · exact hstate.2.2.1.trans (QueryCache.le_cacheQuery leftCache hleft)
+      · exact hstate.2.2.2.1
+      · exact hstate.2.2.2.2.recordProbe _ |>.setCache _
+
 theorem relTriple_filteredProbingAttackerHashQueryAt_of_hidden
     (selected : ChainIndex)
     (left : ProgrammedFixedChainKeygenView)
