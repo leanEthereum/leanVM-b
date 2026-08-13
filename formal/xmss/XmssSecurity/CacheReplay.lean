@@ -318,6 +318,50 @@ theorem randomOracle_cache_le {α : Type} (computation : OracleComp HashSpec α)
         (output, middleCache) hquery).trans
           (ih output middleCache result hrest)
 
+/-- Rerunning a lazy random-oracle computation against any extension of a cache produced by a
+successful first run is deterministic and leaves the larger cache unchanged. -/
+theorem randomOracle_rerun_largerCache_eq_pure_of_mem_support {α : Type}
+    (computation : OracleComp HashSpec α)
+    (initialCache resultCache largerCache : QueryCache HashSpec) (result : α)
+    (hmem : (result, resultCache) ∈
+      support ((simulateQ randomOracle computation).run initialCache))
+    (hle : resultCache ≤ largerCache) :
+    (simulateQ randomOracle computation).run largerCache =
+      pure (result, largerCache) := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialCache resultCache largerCache result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, support_pure,
+        Set.mem_singleton_iff, Prod.mk.injEq] at hmem
+      obtain ⟨rfl, _hcache⟩ := hmem
+      rfl
+  | query_bind input next ih =>
+      rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind,
+        mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, middleCache⟩, hquery, hrest⟩ := hmem
+      have hmiddle : middleCache input = some output :=
+        randomOracle_query_caches input initialCache output middleCache hquery
+      have hmiddleLe : middleCache ≤ resultCache :=
+        randomOracle_cache_le (next output) middleCache
+          (result, resultCache) hrest
+      have hlarger : largerCache input = some output := hle (hmiddleLe hmiddle)
+      rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind,
+        QueryImpl.withCaching_run_some _ hlarger]
+      simp only [pure_bind]
+      exact ih output middleCache resultCache largerCache result hrest hle
+
+/-- Rerunning a lazy random-oracle computation against a cache produced by a successful first
+run is deterministic and leaves that cache unchanged. -/
+theorem randomOracle_rerun_eq_pure_of_mem_support {α : Type}
+    (computation : OracleComp HashSpec α)
+    (initialCache finalCache : QueryCache HashSpec) (result : α)
+    (hmem : (result, finalCache) ∈
+      support ((simulateQ randomOracle computation).run initialCache)) :
+    (simulateQ randomOracle computation).run finalCache =
+      pure (result, finalCache) :=
+  randomOracle_rerun_largerCache_eq_pure_of_mem_support computation
+    initialCache finalCache finalCache result hmem le_rfl
+
 /-- Replaying a lazy-oracle execution against its final cache reproduces its result. -/
 theorem eval_answerFn_finalCache_eq_of_mem_support {α : Type}
     (computation : OracleComp HashSpec α) (initialCache finalCache : QueryCache HashSpec)

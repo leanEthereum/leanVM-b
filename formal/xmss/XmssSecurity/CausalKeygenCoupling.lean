@@ -192,6 +192,33 @@ theorem programmedFixedSeedChainTrajectoriesFromCache_cons
           chain steps first.2 epochs
         pure (first.1 :: rest.1, rest.2)) := rfl
 
+theorem programmedFixedSeedChainTrajectoriesFromCache_congr_secret
+    (parameter : PublicParameter) (leftSecret rightSecret :
+      Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) (steps : Nat) :
+    ∀ (epochs : List Epoch) (cache : QueryCache HashSpec),
+      (∀ epoch ∈ epochs,
+        leftSecret epoch chain = rightSecret epoch chain) →
+      programmedFixedSeedChainTrajectoriesFromCache parameter leftSecret
+          chain steps cache epochs =
+        programmedFixedSeedChainTrajectoriesFromCache parameter rightSecret
+          chain steps cache epochs := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro cache _hagrees
+      rfl
+  | cons epoch epochs ih =>
+      intro cache hagrees
+      rw [programmedFixedSeedChainTrajectoriesFromCache_cons,
+        programmedFixedSeedChainTrajectoriesFromCache_cons,
+        hagrees epoch (by simp)]
+      apply bind_congr
+      intro first
+      rw [ih first.2]
+      intro later hlater
+      exact hagrees later (by simp [hlater])
+
 set_option maxHeartbeats 2400000 in
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
