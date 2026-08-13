@@ -8,6 +8,7 @@ workspace = true
 
 [dependencies]
 primitives.workspace = true
+parallel.workspace = true
 pcs.workspace = true
 flock.workspace = true
 lean_vm.workspace = true

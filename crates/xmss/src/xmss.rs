@@ -39,7 +39,9 @@ pub struct XmssSignature {
     pub merkle_proof: [Digest; LOG_LIFETIME],
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// Ordered lexicographically on `flatten()`, which is what an aggregate's signer
+/// set is sorted and deduplicated by.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct XmssPublicKey {
     pub merkle_root: Digest,
     pub public_param: PublicParam,

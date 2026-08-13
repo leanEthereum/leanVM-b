@@ -143,7 +143,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         // flock sizes its argument to at least `n_blocks_log(1)` instances, and the
         // BLAKE2s table's value columns share that instance cube, so a height below the
         // floor describes a layout the arithmetization cannot express. The other two
-        // verifiers reject it here too (`python-verifier`, `guests/recursion.py`).
+        // verifiers reject it here too (`python-verifier`, `guests/aggregate.py`).
         || taus[tables::BLAKE2S_TABLE] < crate::blake2s_flock::n_blocks_log(1)
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
@@ -183,6 +183,17 @@ pub struct Program {
     /// `DBG_PROF=1` per-function cycle profile ([`Program::execute`]). Purely
     /// diagnostic; empty for hand-assembled programs.
     pub fn_ranges: Vec<(String, u32, u32)>,
+    /// The smallest stacked witness this program's proofs may commit to, as a
+    /// log2. Zero (the default) asks for nothing.
+    ///
+    /// A consumer can need a proof to be no smaller than some size even when the
+    /// run is: the recursion guest holds one WHIR opening arm per committed size
+    /// it was compiled for, and has none below the first. A run that falls short
+    /// buys the difference in fill rows ([`crate::cpu::filler`]) rather than in a
+    /// padded commitment, which keeps the committed size a function of the
+    /// announced table heights, so neither the verifier nor the guest needs a new
+    /// parameter to certify. Prover-side only.
+    pub min_log_committed: usize,
 }
 
 /// The bytecode digest reinterprets the stacked table as bytes, which is its
@@ -210,7 +221,19 @@ impl Program {
             witness: HashMap::new(),
             filler: Vec::new(),
             fn_ranges: Vec::new(),
+            min_log_committed: 0,
         }
+    }
+
+    /// The compiled function containing `pc`, for panic messages. A guest check
+    /// that fails surfaces as a raw pc (§the failed-assert note in `AGENTS.md`),
+    /// and naming the function is the difference between reading a disassembly of
+    /// half a million instructions and reading one.
+    pub fn fn_at(&self, pc: u32) -> &str {
+        self.fn_ranges
+            .iter()
+            .find(|(_, entry, len)| pc >= *entry && pc < *entry + *len)
+            .map_or("<unknown fn>", |(name, _, _)| name.as_str())
     }
 
     /// Supply the entries of witness stream `name`: one slice of values per
@@ -463,7 +486,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // The returned `Proof` is system-allocated (`ps.into_proof()` builds `Vec`s),
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
-    let exec = crate::stage!("Execute program", || program.execute(public_input));
+    let exec = crate::stage!("Execute program", || program.execute_to_floor(public_input));
     // The BLAKE2s R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
     // depends only on the compression count (the circuit *shape*), not the witness,
     // but it is otherwise built synchronously inside the final reduction, adding

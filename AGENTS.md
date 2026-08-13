@@ -28,7 +28,7 @@ Dependency order, leaves first:
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
 | `xmss`            | XMSS over BLAKE2s; an independent leaf, consumed only by `rec_aggregation` |
-| `rec_aggregation` | the three workloads + the N→1 recursion harness                        |
+| `rec_aggregation` | recursive XMSS aggregation: the one guest, the public API, the benchmarks |
 
 `src/main.rs` is the CLI; guests are zkDSL under `crates/rec_aggregation/guests/`.
 
@@ -46,13 +46,13 @@ cargo fmt --all                   # max_width = 120
 ruff format --line-length 150 python-verifier/verifier.py   # and `ruff check` it
 ```
 
-Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake2s_batch_prove_verify`, `pcs_throughput`, `recursion_soundness_binds`, `recursion_generic_many`, `recursion_guest_profile`, `print_whir_query_counts`, `encoding_grinding_bits`.
+Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake2s_batch_prove_verify`, `pcs_throughput`, `aggregate_three_levels`, `aggregate_statement_binds`, `aggregate_hints_bind`, `aggregate_rejects_a_bad_signature`, `print_whir_query_counts`, `encoding_grinding_bits`.
 
 ## Benchmarking
 
 The benchmarks we care about:
 - `cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3`
-- `cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3`
+- `cargo run --release -- recursion --n 2 --xmss-per-leaf 890 --log-inv-rate 2 --repeat 3`
 
 ## The proving arena (`zk_alloc`)
 
@@ -78,14 +78,14 @@ The same verification algorithm is written out three times, in three languages. 
 
 1. **Rust**, `lean_vm::cpu::verify`. The performant verifier implem.
 2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_vm/tests/verifiers/python_verifier.rs`.
-3. **Recursive verifier**, `crates/rec_aggregation/guests/recursion.py` (~2.4k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
+3. **Recursive verifier**, `crates/rec_aggregation/guests/aggregate.py` (~2.7k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
-The third is worth understanding before touching the verifier. `guests/recursion.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~500k instructions and why its opcode mix is what the recursion benchmark reports. Two consequences:
+The third is worth understanding before touching the verifier. `guests/aggregate.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~330k instructions (2^19 padded) and why its opcode mix is what the recursion benchmark reports. Two consequences:
 
-- The guest is **generic in the inner proof**: its placeholder map depends only on the inner bytecode size, so one compiled bytecode verifies inner proofs of different sizes and PCS rates (`recursion_2to1_mixed`, `recursion_generic_many`).
-- It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, and flock's A0/B0) are deferred, bound to the guest's public input, and discharged natively by `RecursiveProof::verify`. Sumcheck is used to merge and further deref those 'postponed' claims in recursion, moving `n` such inner claims to a single outer one (explained in `doc/leanvm/`).
+- The guest is **self-referential**: it verifies proofs of itself, so `unified_guest` compiles it to a fixed point on its own log size. The digest needs no fixed point, riding the statement instead of the code, which is also what lets one bytecode serve any inner size and PCS rate.
+- It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, flock's A0/B0) are deferred. Each node batches its children's carried claims with the fresh ones its verifications raise, `2n` per polynomial down to one; only the root's are discharged natively, by `AggregateSignature::verify` (explained in `doc/leanvm/`).
 
-`recursion_2to1` is the fast end-to-end check; `recursion_soundness_binds` is the adversarial one, tampering each hint stream in turn and requiring rejection.
+`aggregate_two_to_one` is the fast end-to-end check; `aggregate_statement_binds` and `aggregate_hints_bind` are the adversarial ones, tampering the wire object and the witness respectively. A child must commit at least `2^MU_MIN` or the guest has no opening arm for it, so `aggregate` sets `Program::min_log_committed` and a smaller run grows its `SET` table through the fill blocks until it clears the floor.
 
 ## Conventions that bite
 

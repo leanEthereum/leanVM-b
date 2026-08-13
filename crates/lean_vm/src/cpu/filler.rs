@@ -25,6 +25,14 @@
 
 use crate::tables::N_TABLES;
 
+/// No table asked to grow past its natural power of two.
+pub const NO_FLOORS: [usize; N_TABLES] = [0; N_TABLES];
+
+/// The table a committed-size floor grows ([`crate::cpu::Program::min_log_committed`]).
+/// `SET` writes one cell from an immediate: no operand reads, no second memory
+/// touch, and no precompile behind it, so its rows are the cheapest to prove.
+pub const PAD_TABLE: usize = 2;
+
 /// Block sizes, largest first: a fill of `f` rows takes `f / 128` traversals of the
 /// largest block and then one per set bit of the remainder.
 pub const SIZES: [usize; 8] = [128, 64, 32, 16, 8, 4, 2, 1];
@@ -138,23 +146,26 @@ fn decompose_jump(gap: usize) -> Option<[usize; SIZES.len()]> {
     (left == 0).then_some(out)
 }
 
-/// A plan taking every table from `base` to an exact power of two, or `None` if some
-/// table cannot be filled at all.
+/// A plan taking every table from `base` to an exact power of two, at or above
+/// `floors[t]`, or `None` if some table cannot be filled at all.
 ///
 /// Every table but `JUMP` is independent: its fill is the distance to its next power of
 /// two, decomposed into traversals. `JUMP` is not, because every traversal of the whole
 /// fill lands a row there, its own traversals included. Counting those first makes it a
 /// single decomposition rather than a fixpoint.
-pub fn solve(base: [usize; N_TABLES]) -> Option<Plan> {
+///
+/// A floor above a table's natural target is how a run too small to be provable at the
+/// size its consumer needs buys the difference: see [`crate::cpu::Program::min_log_committed`].
+pub fn solve(base: [usize; N_TABLES], floors: [usize; N_TABLES]) -> Option<Plan> {
     let mut plan: Plan = [[0; SIZES.len()]; N_TABLES];
     for t in 0..N_TABLES {
         if t != JUMP {
-            plan[t] = decompose(ceil_pow2(base[t].max(MIN_ROWS[t])) - base[t]);
+            plan[t] = decompose(ceil_pow2(base[t].max(MIN_ROWS[t]).max(floors[t])) - base[t]);
         }
     }
     // What `JUMP` already owes: its own rows, plus one per traversal so far.
     let owed = base[JUMP] + traversals(&plan);
-    let mut target = ceil_pow2(owed.max(MIN_ROWS[JUMP]));
+    let mut target = ceil_pow2(owed.max(MIN_ROWS[JUMP]).max(floors[JUMP]));
     loop {
         if let Some(jump_steps) = decompose_jump(target - owed) {
             plan[JUMP] = jump_steps;
@@ -168,8 +179,8 @@ pub fn solve(base: [usize; N_TABLES]) -> Option<Plan> {
 /// The cycles a run needs, in the order the interpreter should walk them: for each, the
 /// block's first pc, its size, and how many times to traverse it. Panics if `blocks` is
 /// missing one the plan calls for, which can only mean bytecode the compiler did not emit.
-pub fn cycles(blocks: &[Block], base: [usize; N_TABLES]) -> Vec<(u32, u32, usize)> {
-    let plan = solve(base).unwrap_or_else(|| panic!("no fill plan from {base:?}"));
+pub fn cycles(blocks: &[Block], base: [usize; N_TABLES], floors: [usize; N_TABLES]) -> Vec<(u32, u32, usize)> {
+    let plan = solve(base, floors).unwrap_or_else(|| panic!("no fill plan from {base:?}"));
     let mut out = Vec::new();
     for (t, row) in plan.iter().enumerate() {
         for (k, &n) in row.iter().enumerate() {
@@ -226,11 +237,29 @@ mod tests {
             [0, 0, 0, 0, 1 << 20, 0, 0],
         ];
         for base in cases {
-            let plan = solve(base).unwrap_or_else(|| panic!("no plan for {base:?}"));
+            let plan = solve(base, NO_FLOORS).unwrap_or_else(|| panic!("no plan for {base:?}"));
             let got = filled(base, &plan);
             assert!(is_filled(got), "{base:?} filled to {got:?}");
             for t in 0..N_TABLES {
                 assert!(got[t] >= base[t], "rows cannot be removed");
+            }
+        }
+    }
+
+    /// A floor takes a table past its natural power of two, and every other table
+    /// still lands on one: what a run too small for its consumer buys with.
+    #[test]
+    fn floors_grow_one_table() {
+        let base = [1_000, 2_000, 3_000, 4_000, 500, 8, 0];
+        let mut floors = NO_FLOORS;
+        floors[PAD_TABLE] = 1 << 16;
+        let plan = solve(base, floors).expect("solvable");
+        let got = filled(base, &plan);
+        assert!(is_filled(got), "{got:?}");
+        assert_eq!(got[PAD_TABLE], 1 << 16);
+        for t in 0..N_TABLES {
+            if t != PAD_TABLE {
+                assert_eq!(got[t], ceil_pow2(base[t].max(MIN_ROWS[t])).max(got[t]));
             }
         }
     }
@@ -241,7 +270,7 @@ mod tests {
     #[test]
     fn the_fill_is_short() {
         let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 0];
-        let plan = solve(base).expect("solvable");
+        let plan = solve(base, NO_FLOORS).expect("solvable");
         let fill: usize = delivered(&plan).iter().sum();
         assert!(
             traversals(&plan) <= fill / SIZES[0] + SIZES.len() * N_TABLES,

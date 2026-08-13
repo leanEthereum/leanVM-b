@@ -919,15 +919,41 @@ impl FnLower<'_> {
     /// target cells are unconstrained touches (only the address matters),
     /// back-filled at the end of execution; the constant cell is one amortized
     /// `SET` per distinct bound.
-    fn lower_assert_lt(&mut self, e: &Expr, k: u64) {
-        assert!(k >= 1, "range-check bound GEN ** 0 names the empty set");
-        assert!(
-            k <= 1 << lean_vm::cpu::MIN_LOG_MEM,
-            "range-check bound GEN ** {k} exceeds 2^{} (the minimum memory size)",
-            lean_vm::cpu::MIN_LOG_MEM,
-        );
+    ///
+    /// A [`LtBound::Runtime`] bound `Y = g^k` reaches the same gadget through one
+    /// extra `MUL` for `g^{k-1} = Y·g^{-1}`, which the runner has written before
+    /// the range-check `MUL` runs, so the complement is still back-solved rather
+    /// than hinted. The `k ≤ 2^MIN_LOG_MEM` obligation moves to the program.
+    fn lower_assert_lt(&mut self, e: &Expr, bound: &LtBound) {
+        let kcell = match bound {
+            LtBound::Const(k) => {
+                assert!(*k >= 1, "range-check bound GEN ** 0 names the empty set");
+                assert!(
+                    *k <= 1 << lean_vm::cpu::MIN_LOG_MEM,
+                    "range-check bound GEN ** {k} exceeds 2^{} (the minimum memory size)",
+                    lean_vm::cpu::MIN_LOG_MEM,
+                );
+                self.bound_cell(*k)
+            }
+            LtBound::Runtime(b) => {
+                // A bound that folds only after substitution (`GEN ** i` inside an
+                // `unroll`) reaches here rather than the arm above, and would then
+                // skip the `k <= 2^MIN_LOG_MEM` cap entirely. Reject it: the author
+                // wrote a compile-time bound and should get the compile-time check.
+                assert!(
+                    self.try_field_const(b).is_none(),
+                    "a compile-time range-check bound must be written as `log GEN ** k` or an \
+                     integer, so that the 2^{} cap applies",
+                    lean_vm::cpu::MIN_LOG_MEM,
+                );
+                let bcell = self.expr(b);
+                let inv = self.const_cell(F192::new(primitives::field::G.inv().0, 0, 0));
+                let c = self.fresh();
+                self.emit(LOp::Mul { a: bcell, b: inv, c });
+                c
+            }
+        };
         let x = self.expr(e);
-        let kcell = self.bound_cell(k);
         let y = self.fresh(); // the complement g^{k-1-e}, back-solved by the MUL
         let t1 = self.fresh(); // DEREF targets: unconstrained touch cells
         let t2 = self.fresh();
@@ -2002,7 +2028,7 @@ impl FnLower<'_> {
                 self.set_const(t, F192::ZERO);
             }
             Stmt::AssertNe(a, b) => self.lower_assert_ne(a, b),
-            Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
+            Stmt::AssertLt(e, bound) => self.lower_assert_lt(e, bound),
             Stmt::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
             Stmt::Print { label, value } => {
                 // Prover-side debug print: evaluate the value into a cell, hang
@@ -2494,7 +2520,12 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }
-        Stmt::AssertLt(e, _) => free_vars_expr(e, refs),
+        Stmt::AssertLt(e, bound) => {
+            free_vars_expr(e, refs);
+            if let LtBound::Runtime(b) = bound {
+                free_vars_expr(b, refs);
+            }
+        }
         Stmt::HintWitness { dest, .. } => free_vars_expr(dest, refs),
         Stmt::Print { value, .. } => free_vars_expr(value, refs),
         Stmt::If {

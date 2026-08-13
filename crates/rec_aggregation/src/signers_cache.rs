@@ -44,7 +44,7 @@ use xmss::*;
 type CachedSignature = (XmssPublicKey, XmssSignature);
 
 /// Bump to invalidate every existing cache file by hand.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// The epoch every benchmark signature is produced and verified at.
 pub const EPOCH: u32 = 7;
@@ -61,7 +61,11 @@ pub fn message() -> Message {
 /// benchmark used before caching, so cached and freshly-generated runs are
 /// indistinguishable.
 fn compute_signer(index: usize) -> CachedSignature {
-    let seed = [10 + index as u8; 32];
+    // The index over its full width: a one-byte seed repeats every 256 signers,
+    // and a repeated signer is invisible until something deduplicates the set,
+    // at which point a batch of 890 quietly becomes one of 256.
+    let mut seed = [10u8; 32];
+    seed[..8].copy_from_slice(&(index as u64).to_le_bytes());
     let (sk, pk) = xmss_key_gen(seed, KEY_START, KEY_END).expect("keygen");
     let sig = xmss_sign(&mut StdRng::seed_from_u64(index as u64), &sk, &message(), EPOCH).expect("sign");
     (pk, sig)
@@ -210,6 +214,17 @@ pub fn get_signers(n: usize) -> Vec<CachedSignature> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Signers must be distinct past the first 256, which a one-byte seed was
+    /// not. An aggregate deduplicates its signer set, so a repeat shrinks the
+    /// batch instead of failing.
+    #[test]
+    fn cached_signers_are_distinct() {
+        let mut keys: Vec<_> = get_signers(300).into_iter().map(|(pk, _)| pk).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), 300);
+    }
 
     #[test]
     fn cached_signers_verify_and_are_deterministic() {

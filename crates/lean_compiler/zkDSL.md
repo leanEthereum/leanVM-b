@@ -336,12 +336,15 @@ A proof-enforced inequality. The compiler computes `a + b` with one `XOR` and co
 
 ### Range checks: `assert log x < log Y` and `assert log x < k`
 
-The *range check in the exponent*: proves `x ∈ {g^0, g^1, …, g^{k-1}}`, i.e. `log_g(x) < k`. The bound is compile-time, either `log GEN ** k` or a plain integer exponent `k`, with `1 ≤ k ≤ 2^16` (the minimum memory size, which keeps the gadget sound for every memory size the prover may announce). `log x` and `log(x)` both parse; the parenthesized form is the valid-Python spelling. A bare `assert x < y` is rejected: field elements have no order, only their logs do.
+The *range check in the exponent*: proves `x ∈ {g^0, g^1, …, g^{k-1}}`, i.e. `log_g(x) < k`. A compile-time bound is either `log GEN ** k` or a plain integer exponent `k`, with `1 ≤ k ≤ 2^16` (the minimum memory size, which keeps the gadget provable at every memory size the prover may announce). `log x` and `log(x)` both parse; the parenthesized form is the valid-Python spelling. A bare `assert x < y` is rejected: field elements have no order, only their logs do.
 
 ```python
 assert log(x) < log(GEN ** 8)
 assert log(x) < 8               # the same check
+assert log(x) < log(n)          # n = g^k runtime: same gadget, +1 cycle
 ```
+
+A **runtime** bound costs one extra `MUL` for `g^{k-1} = n·g⁻¹` and is otherwise identical, except that the `k ≤ 2^16` cap becomes the program's to enforce: range-check the bound itself first, `assert log n < 2^16`. WIthout this check => unsound.
 
 Cost: **3 cycles** (leanVM's DEREF range-check trick, in the exponent) plus one amortized `SET` per distinct bound per frame:
 
@@ -465,7 +468,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
 | `assert a != b` | 3 on the accepting path (+ amortized branch setup) |
-| `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
+| `assert log x < k` | 3 (+1 `SET` amortized per bound per frame; a runtime bound costs 1 `MUL` instead) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
 | `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |

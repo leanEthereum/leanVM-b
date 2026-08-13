@@ -204,6 +204,12 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLE
         .collect()
 }
 
+/// `log2` of the stacked witness the announced sizes imply. The one part of
+/// [`layout`] a size floor needs, and far cheaper than the rest of it.
+pub(crate) fn committed_log(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLES]) -> usize {
+    crate::witness::placements_of(&col_kappas(log_mem, log_bytecode, taus)).1
+}
+
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
 /// instruction tables' log heights `taus`, and the public input `pi`. The flush blocks
 /// reference columns only by INDEX and the program only through its public columns, so
