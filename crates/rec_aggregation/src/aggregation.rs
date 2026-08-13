@@ -299,7 +299,10 @@ fn statement_digest(
         epoch_hash[0],
         epoch_hash[1],
     ];
-    let cells = defer.cells();
+    let mut cells = defer.cells();
+    if !cells.len().is_multiple_of(2) {
+        cells.push(F192::ZERO); // the guest pairs the odd cell with a zero scalar
+    }
     let head = header.iter().flat_map(|x| {
         assert_eq!(x.c2, 0, "a header value is a canonical cell");
         [x.c0, x.c1]

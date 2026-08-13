@@ -7,8 +7,6 @@ STREAM_CAP = STREAM_CAP_PLACEHOLDER
 FLOORS = [0, 0, 0, 0, 0, 3, 0]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
-# The table sumcheck's round polynomial arrives WHOLE, as a cubic at {0,1,g,g^2}:
-# one baked inverse denominator per node.
 
 # GKR sides. The layer counts mu_s are hinted and certified from the block
 # kappas.
@@ -134,21 +132,14 @@ LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
 SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_flock slot stride
-# Phase E: the stacked mixed opening. The two ring-switch fronts
-# (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
-# gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
-# Phase E2: the WHIR opening over the stacked commitment, dispatched by
-# the certified committed log-size m through match_range: the LIG_* tables
-# below carry one row per (rate, m), with rate in 1..=4 and m in the
-# supported committed-size interval,
-# emitted from the SAME derive_profile/level_shapes the prover uses.
+# Phase E: the stacked mixed opening, then the WHIR opening over the stacked
+# commitment, dispatched by the certified committed log-size m through
+# match_range. The LIG_* tables carry one row per (rate, m), emitted from the
+# same derive_profile/level_shapes the prover uses.
 # Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl],
-# where m_idx is the flattened (rate, size) configuration index;
-# per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
-# vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
-# claim descriptors keep the fixed point-buffer and committed-column identities
-# baked. Shape-dependent lengths are certified below; selectors are derived from
-# the native largest-first committed-column placement reconstructed in-circuit.
+# where m_idx is the flattened (rate, size) configuration index; per-fold grind
+# schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace vanishing constants
+# with the LIG_MAX_VANISH_LEN stride.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
 LIG_N_LOG_SIZES = LIG_N_LOG_SIZES_PLACEHOLDER
@@ -167,11 +158,6 @@ LIG_MAX_OOD_SAMPLES = LIG_MAX_OOD_SAMPLES_PLACEHOLDER
 # Global maxima (StackBuf frame sizes are parse-time).
 LIG_LOG_MSG_COLS_CAP = LIG_LOG_MSG_COLS_CAP_PLACEHOLDER
 YR_LOG_CAP = YR_LOG_CAP_PLACEHOLDER
-# The committed size is dispatch-bounded: m <= LIG_MIN_LOG_SIZE + LIG_N_LOG_SIZES - 1,
-# certified by the range check that picks the opening arm. So a placement offset
-# (< 2^m) fits MAX_STACK_LOG bits, which is what the offset rows below decompose
-# and certify; their YR_LOG_CAP extra cells cover the residual coordinates at and
-# above m, which every reader zero-pins.
 MAX_STACK_LOG = LIG_MIN_LOG_SIZE + LIG_N_LOG_SIZES - 1
 COL_BITS_STRIDE = MAX_STACK_LOG + YR_LOG_CAP
 LIG_N_LEVELS = LIG_N_LEVELS_PLACEHOLDER
@@ -229,21 +215,10 @@ BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: one bytecode point and the Flock
 # lincheck data (see verify_sub's defer_out layout).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
-# Aggregation: a RUNTIME number of sub-proofs of the same program; per-sub proof
-# data arrives as hints. The seed sponge state after the two byte-string absorbs is baked
-# (TRANSCRIPT_SEED), then the hinted sub statement + the inner PROGRAM DIGEST are bound.
-# The seed is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
-# (the fs_seed hint folded into own_pi in main), so ONE compiled guest verifies
-# proofs of any inner program of this VM — the outer statement fixes the whole
-# proving environment (flock R1CS + program), via own_pi.
-# The arity is hinted too, as g^n_children, and absorbed by both aggregation
-# transcripts ahead of every variable-length sequence, so the outer statement
-# fixes it as well.
+# Aggregation: a RUNTIME number of sub-proofs of the same program, their proof
+# data hinted. The FS seed rides the public input rather than being baked, so one
+# compiled guest verifies proofs of any inner program of this VM.
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
-# The deferred claims a node exports in its own statement, and each child
-# carries into it: a bytecode point and value, then a matrix point shared by the
-# two matrix values. The outer verifier recomputes all three values at the
-# transmitted points, so a lie about them changes the statement, not the claim.
 DEFER_STMT_CELLS = BYTECODE_VARS + 1 + 2 * K_LOG + 2
 DEFER_STMT_BC_VALUE = BYTECODE_VARS
 DEFER_STMT_MAT_POINT = BYTECODE_VARS + 1
@@ -325,9 +300,6 @@ DIGITS_PER_WORD = V / 2
 TIP_CELLS = WORDS_PER_VALUE * V    # the V chain tips, one cell each
 WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE2s block
 
-# A public key is (merkle_root, public_param): two cells, so signer i sits at
-# cells g^{2i}..g^{2i+1} of the shared key table.
-PUB_KEY_CELLS = 2
 # Aggregation bounds. MAX_KEYS caps n_keys + n_dup, which is what the coverage
 # range check needs below 2^MIN_LOG_MEM; MAX_CHILDREN is the recursion arity.
 MAX_KEYS = MAX_KEYS_PLACEHOLDER
@@ -716,35 +688,15 @@ def eqtree(point_ptr, out, n_coords: Const):
 
 
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
-    # The stacked WHIR opening. m_idx is the flattened (rate, committed
-    # log-size) configuration index, and every LIG_* table below reads row
-    # m_idx (the match_range dispatch bakes one
-    # specialization of this function per candidate). All opening proof data is hinted HERE, so
-    # hint lengths specialize per arm; only the executed arm pops its streams.
+    # The stacked WHIR opening, one specialization per (rate, committed log-size)
+    # candidate: every LIG_* table below reads row m_idx, and all opening proof
+    # data is hinted here, so only the executed arm pops its streams.
     #
-    # Flow, per level:
-    #   1. fold rounds: optional grinding (grind_check), squeeze the fold
-    #      challenge, advance the sumcheck round polynomial;
-    #   2. bind the next level's Merkle root (or, at the last level, the
-    #      final message final_msg);
-    #   3. query-phase grinding, then squeeze the packed query positions;
-    #   4. squeeze the level's one batching challenge, then per query: hash
-    #      the leaf row (blake2s chain), accumulate the lam-weighted row dot
-    #      against the fold eq weights, and verify the Merkle authentication
-    #      path against the bound root (verify_merkle_path);
-    #   5. read the level's intro message and fold every claim of the level
-    #      (its OOD claims, then the query sum) into the running target with
-    #      powers of lam.
-    # Then finish the tail sumcheck and evaluate every transparent basis once
-    # at its terminal point; the final-message MLE enters as one multiplier.
-    #
-    # Returns (sumcheck_target, fold_challenges, final_msg, residual_total,
-    # yr_log_n_g = g^yr_log_n, yr_pad_g = g^(YR_LOG_CAP - yr_log_n),
-    # fold_cap_g = g^lenris), tail_challenges, and yr_at_tail.
-    # yr_log_n_g/yr_pad_g let the terminal zero-pin
-    # residual-slot coordinates beyond final_msg's 2^yr_log_n cells (positions
-    # yr_log_n .. YR_LOG_CAP-1); fold_cap_g is the certified total fold count
-    # the terminal pins its hinted claim lengths against.
+    # Returns, as the caller names them: sumcheck_target, fold_challenges,
+    # inner_total, g^yr_log_n, g^(YR_LOG_CAP - yr_log_n), g^lenris,
+    # tail_challenges, yr_at_tail. The two g-powers let the terminal zero-pin
+    # residual coordinates past final_msg's 2^yr_log_n cells; g^lenris is the
+    # certified fold count it pins its hinted claim lengths against.
     fs = [fs0, fs1]
 
     # The K opener binds the initial Merkle root as its two F192 scalars, not as
@@ -909,8 +861,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 # words back off the PACKED cells: a pack holds
                 # `lane(2k) + Y*lane(2k+1)` exactly, so word w (limbs 3w..3w+2)
                 # is one multiply-add away from the pack that covers its even
-                # limb pair. The old form re-read all three limbs per word and
-                # rebuilt it with two multiplies.
+                # limb pair.
                 lanes = StackBuf(LIG_PACKED_ROW_CAP)  # >= 3 limbs per word for every candidate
                 for jl in unroll(0, 3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
                     lanes[jl] = row_ptr[GEN ** jl]
@@ -1071,42 +1022,20 @@ def exponent_tables():
 
 
 def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
-    # In-circuit verification of ONE inner proof for the statement
-    # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
-    # sub-proof's entry of every witness stream, so the body lowers once and
-    # main just calls it per statement. The exponent lookup tables are shared
-    # read-only across calls; the deferred-claim data is written to
-    # `defer_out`.
+    # In-circuit verification of ONE inner proof for the statement (pi_0, pi_1),
+    # mirroring cpu::verify step for step; the `# ---- ... ----` headers below run
+    # in that order. All proof data is hinted HERE, so each call pops the next
+    # sub-proof's entry of every witness stream and the body lowers once. The
+    # exponent tables are shared read-only; the deferred claims go to `defer_out`.
     #
-    # Flow (mirrors cpu::verify):
-    #   1. seed the Fiat-Shamir sponge from the statement + program digest;
-    #   2. announced sizes, then certify every structural log against them
-    #      (announced as logs: tau per table, log_mem);
-    #   3. bind the commitment root; ONE RLC-batched GKR for all three trees (count padded
-    #      to the pair's depth) at runtime depth, ONE shared point zeta;
-    #   4. derive the block kappas, certify the GKR side depths; balance check (the two
-    #      roots outright); 3x leaf decomposition, DERIVING
-    #      each side's table share from its GKR claim (pooling the
-    #      committed-coordinate claims); the stacked-bytecode reduction (deferred);
-    #   5. ONE table sumcheck for all seven tables, n = max_t tau_t rounds at the
-    #      shared point zeta, target derived from the leaf claims (sumcheck_round4);
-    #   6. public-input claim + BLAKE2s pin claims (telescoped prefix MLE);
-    #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
-    #      evaluation deferred);
-    #   8. ring-switch fronts (shared linear map, transpose in-circuit);
-    #   9. gamma-combine everything, certify the committed size m, dispatch
-    #      the stacked WHIR opening (open_stacked), and assert its
-    #      eval_b terminal;
-    #  10. export the deferred-claim region for the aggregation.
-    # Claim pool: values of every committed-coordinate claim, in decompose order
-    # (their points are the GKR ζ's, resolvable from the baked block structure).
-    # `1 + g^(2^k)` per bit position, in FRAME cells: the bit-ladder rebuilds
-    # below (placement offsets, the bus depth) each need this factor once per
-    # bit, and a StackBuf entry is an instruction operand, where the g_squares
-    # HeapBuf costs a load and an add every time.
+    # `1 + g^(2^k)` per bit position, in FRAME cells: the bit-ladder rebuilds below
+    # (placement offsets, the bus depth) each need this factor once per bit, and a
+    # StackBuf entry is an instruction operand where a HeapBuf read is a DEREF.
     gsq_plus = StackBuf(SIZE_BITS)
     for k in unroll(0, SIZE_BITS):
         gsq_plus[k] = 1 + g_squares[GEN ** k]
+    # Values of every committed-coordinate claim, in decompose order; the points
+    # are the GKR zetas, resolvable from the baked block structure.
     claim_pool = HeapBuf(N_CLAIMS)
     # certified low dimension (cplen) per pooled claim, filled as the pool is
     # built (from the in-scope certified kappa/tau); the terminal pins each
@@ -1117,7 +1046,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]
     fs = obs(fs, seed_0)  # the FS seed: H(flock BLAKE2s R1CS, inner program
-    fs = obs(fs, seed_1)  # bytecode, ...) — from the recursion's public input
+    fs = obs(fs, seed_1)  # bytecode, ...), from the recursion's public input
     fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
     fs = obs(fs, pi_1)
     stream = HeapBuf(STREAM_CAP)
@@ -1141,7 +1070,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # is computed by the count gadget.
     dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]
     # log_mem is announced AS a log (an integer word L): g^L is assembled from
-    # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
+    # L's advice-decomposed bits, with no hint and no g^j -> j lookup table.
     g_log_mem = g_power_of_word(sizes[0], g_squares, LOG_WORD_BITS)
     assert log(g_log_mem) < COUNT_BITS
     mem_floor_slack = g_log_mem / GEN ** MIN_LOG_MEM
@@ -1167,12 +1096,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         kappa_base[GEN ** (2 + t)] = dims_g[GEN ** (t + 1)]
     # Each block's kappa DERIVES from its structural source (baked per block:
     # the boundary consts, log_mem, the bytecode log, or tau_t) as a
-    # compile-time offset off a certified log — no hint, nothing left free.
+    # compile-time offset off a certified log, no hint and nothing left free.
     block_kappa = HeapBuf(N_BLOCKS)
     for b in unroll(0, N_BLOCKS):
         block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
     # The ONE bus depth, COMPUTED (not hinted): mu = log2_ceil(Σ_b 2^κ_b) over
-    # PUSH's blocks — pull matches by pairing, the count tree is padded to it.
+    # PUSH's blocks; pull matches by pairing, the count tree is padded to it.
     push_total = GEN ** 0
     for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
         push_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
@@ -1182,6 +1111,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- commitment root (2 words), kept for the opening phase ----
     fs, commit_root_0, cursor = fs_next(fs, cursor)
     fs, commit_root_1, cursor = fs_next(fs, cursor)
+    # `next_root` rejects a non-canonical half (merkle.rs `scalars_to_hash`); the
+    # level roots get the same treatment at their own read.
+    root_cells = StackBuf(2)
+    canonical_cell(commit_root_0, root_cells[0])
+    canonical_cell(commit_root_1, root_cells[1])
 
     # ---- bus challenges (F192 provides the soundness margin without grinding) ----
     # A tuple is fingerprinted multilinearly: slot x weighs eq(alphas, x), so a leaf
@@ -1367,7 +1301,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- per-block shape data ----
     # kappa and the bus depth were derived above; the selector bits are
-    # advice-decomposed at their use site (the decompose section) and pinned there —
+    # advice-decomposed at their use site (the decompose section) and pinned there,
     # never left to a single aggregate identity, which does not bind a high-entropy
     # hint in this smooth field.
     idxc_tab = HeapBuf(SIZE_BITS)
@@ -1378,7 +1312,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # Each side's blocks tile its leaf cube; block b sits at offset_b. The
     # hinted order (sort_order) is only PERMUTATION-checked; offsets then
     # accumulate as g^offset = Π_{earlier} g^(2^κ). The decompose section pins
-    # each block's selector bits against this offset, forcing κ-alignment — no
+    # each block's selector bits against this offset, forcing κ-alignment, with no
     # sort/tie-break check needed: alignment + consecutive offsets force a
     # valid tiling, and the grand product is position-independent, so any
     # tiling is sound.
@@ -1421,7 +1355,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # committed-coordinate values ride the stream (observed, pooled); the Public
     # (bytecode) coordinate values are hinted (bytecode_vals) and exported as deferred
     # claims; Index coordinates use the factored index MLE.
-    # Pull's blocks mirror push's (same kappas, same offsets — generator-
+    # Pull's blocks mirror push's (same kappas, same offsets, generator-
     # asserted pairing) and share zeta, so each pull block REUSES its push
     # twin's eq_hi and Index-MLE value instead of recomputing them; its column
     # values are mostly deduped pool reads (COORD_FRESH). The identity check
@@ -1552,6 +1486,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for t in unroll(0, N_TABLES):
         zc_dominates = g_zc_n / dims_g[GEN ** (t + 1)]
         assert log(zc_dominates) < COUNT_BITS
+    # n <= mu, the `Error::Truncated` of constraints.rs. Every table pushes at
+    # kappa = tau, so it holds structurally, but zc_peq below reads zeta[..n] and
+    # zeta only holds mu coords: unwritten heap there is prover-chosen.
+    assert log(g_bus_mu / g_zc_n) < COUNT_BITS
     fs, eta = squeeze(fs)
     eta_pows = StackBuf(N_ETA_POWS)
     eta_pows[0] = 1
@@ -1649,7 +1587,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 if BLOCK_SIDE[b] == sd:
                     if BLOCK_TABLE[b] == t:
                         inner = 0
-                        apow = GEN ** 0
                         for i in unroll(0, BLOCK_COORD_COUNT[b]):
                             # Each coord is the sum of its terms, over this table's
                             # column evaluations. A product term (an address, an
@@ -1704,9 +1641,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # buffers are sized for that), and q_flock's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
     # dispatch bound caps tau well below any baked structure.
-    # flock's sub-proof scalars are ordinary stream words (add_scalar on the
-    # native side); the cursor walks them, fetching and observing each in one
-    # step (fs_next) at the point the transcript binds it.
+    # flock's sub-proof scalars are ordinary stream words (add_scalar natively).
     # The first K_SKIP Boolean rounds are replaced by the univariate skip and
     # consume no equality challenges. The remaining r coordinates are
     # N_FIXED_CHALLENGE_ROUNDS fixed inner values followed by sampled outer values.
@@ -1984,7 +1919,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     col_offset_bits = HeapBuf(N_COMMITTED_COLS * COL_BITS_STRIDE)
     for c in unroll(0, N_COMMITTED_COLS):
         offset_row = col_offset_bits * GEN ** (COL_BITS_STRIDE * c)
-        hint_decompose_bits_exponent(offset_row, col_off_g[GEN ** c], MAX_STACK_LOG)
+        col_off = col_off_g[GEN ** c]
+        hint_decompose_bits_exponent(offset_row, col_off, MAX_STACK_LOG)
         rebuilt_offset = GEN ** 0
         for k in unroll(0, MAX_STACK_LOG):
             offset_bit = offset_row[GEN ** k]
@@ -1993,7 +1929,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             # separate equality, as in decode_query_bits).
             offset_row[GEN ** k] = offset_bit * offset_bit
             rebuilt_offset *= (1 + offset_bit * gsq_plus[k])
-        assert rebuilt_offset == col_off_g[GEN ** c]
+        assert rebuilt_offset == col_off
         for k in unroll(MAX_STACK_LOG, COL_BITS_STRIDE):
             offset_row[GEN ** k] = 0
 
@@ -2234,8 +2170,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # mask row IS the baked prefix of exactly nover ones (selected by the
         # pinned nover), so no overlap coord can read past cplen by construction;
         # a mask with a stray 1 at k >= nover would read a free cell and hand
-        # the sumcheck a linear knob (a full opening forgery) - the point-reuse
-        # analog of the hole b7b470c closed on the direct y-slot path.
+        # the sumcheck a linear knob, i.e. a full opening forgery.
         mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
         claim_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * CLAIM_COMMITTED_COL[j])
         residual_offset_bits = claim_offset_bits * fold_cap_g
@@ -2336,7 +2271,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     blake2s(rand_block, zero_block, digest, cv=after_msg, counter=96, final=1)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
-    # range checked, and dispatched once — arm k walks the remaining
+    # range checked, and dispatched once; arm k walks the remaining
     # CHAIN_STEPS-k steps and returns the tip cell plus the digit literal. The
     # product of the digits is the target sum (g^{Σe_i}); the digits, weighted
     # by CHAIN_LENGTH^i inside each 64-bit lane (DIGITS_PER_WORD digits per
