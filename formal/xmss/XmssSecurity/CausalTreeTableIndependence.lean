@@ -243,6 +243,122 @@ theorem treeValue_preserves_tail_fresh
     (hordered target htarget) cache result hresult input hinput
   exact hfresh target (by simp [htarget]) input hinput
 
+theorem treeValues_cache_le
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest) :
+    ∀ (indices : List TreeValueIndex) (cache : QueryCache HashSpec)
+      (result : List Digest × QueryCache HashSpec),
+      result ∈ support (treeValues parameter secret indices cache) →
+      cache ≤ result.2 := by
+  intro indices
+  induction indices with
+  | nil =>
+      intro cache result hresult
+      simp only [treeValues_nil, support_pure,
+        Set.mem_singleton_iff] at hresult
+      subst result
+      exact le_rfl
+  | cons index indices ih =>
+      intro cache result hresult
+      rw [treeValues_cons, mem_support_bind_iff] at hresult
+      obtain ⟨head, hhead, htail⟩ := hresult
+      rw [mem_support_bind_iff] at htail
+      obtain ⟨tail, htail, hpure⟩ := htail
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      exact (Concrete.CacheReplay.randomOracle_cache_le
+        (index.computation parameter secret) cache head hhead).trans
+          (ih head.2 tail htail)
+
+def TreeValuesReplay
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (cache : QueryCache HashSpec) (indices : List TreeValueIndex)
+    (values : List Digest) : Prop :=
+  values.Forall₂ (fun value index =>
+    Concrete.CacheReplay.treeNode cache parameter secret index.1.val
+      index.node = value) indices
+
+theorem treeValues_support_replay
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest) :
+    ∀ (indices : List TreeValueIndex) (cache : QueryCache HashSpec)
+      (result : List Digest × QueryCache HashSpec),
+      result ∈ support (treeValues parameter secret indices cache) →
+      TreeValuesReplay parameter secret result.2 indices result.1 := by
+  intro indices
+  induction indices with
+  | nil =>
+      intro cache result hresult
+      simp only [treeValues_nil, support_pure,
+        Set.mem_singleton_iff] at hresult
+      subst result
+      exact List.Forall₂.nil
+  | cons index indices ih =>
+      intro cache result hresult
+      rw [treeValues_cons, mem_support_bind_iff] at hresult
+      obtain ⟨head, hhead, htail⟩ := hresult
+      rw [mem_support_bind_iff] at htail
+      obtain ⟨tail, htail, hpure⟩ := htail
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      apply List.Forall₂.cons
+      · have hreplay :=
+          Concrete.CacheReplay.eval_answerFn_largerCache_eq_of_mem_support
+            (index.computation parameter secret) cache head.2 tail.2 head.1
+              hhead (treeValues_cache_le parameter secret indices head.2 tail htail)
+        simpa [TreeValueIndex.computation] using hreplay
+      · exact ih head.2 tail htail
+
+theorem treeValuesReplay_eq_at_mem
+    (leftParameter rightParameter : PublicParameter)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (leftCache rightCache : QueryCache HashSpec)
+    (indices : List TreeValueIndex) (values : List Digest)
+    (hleft : TreeValuesReplay leftParameter leftSecret leftCache indices values)
+    (hright : TreeValuesReplay rightParameter rightSecret rightCache indices values) :
+    ∀ index ∈ indices,
+      Concrete.CacheReplay.treeNode leftCache leftParameter leftSecret
+          index.1.val index.node =
+        Concrete.CacheReplay.treeNode rightCache rightParameter rightSecret
+          index.1.val index.node := by
+  intro index hindex
+  induction hleft with
+  | nil => simp at hindex
+  | cons hleftHead hleftTail ih =>
+      cases hright with
+      | cons hrightHead hrightTail =>
+          simp only [List.mem_cons] at hindex
+          rcases hindex with rfl | htail
+          · exact hleftHead.trans hrightHead.symm
+          · exact ih hrightTail htail
+
+def TreeValueIndex.ofSubtree
+    (levels : Nat) (node : MerkleNode)
+    (hlevels : levels ≤ treeHeight)
+    (hvalid : TreeSubtreeValid levels node) : TreeValueIndex :=
+  ⟨⟨levels, by omega⟩, ⟨node.val, by
+    have hfactor : 2 ^ (treeHeight - levels) * 2 ^ levels =
+        2 ^ treeHeight := by
+      rw [← pow_add, Nat.sub_add_cancel hlevels]
+    have hpow : 0 < 2 ^ levels := pow_pos (by omega) _
+    unfold TreeSubtreeValid lifetime at hvalid
+    change node.val < 2 ^ (treeHeight - levels)
+    nlinarith⟩⟩
+
+@[simp]
+theorem TreeValueIndex.ofSubtree_height
+    (levels : Nat) (node : MerkleNode)
+    (hlevels : levels ≤ treeHeight)
+    (hvalid : TreeSubtreeValid levels node) :
+    (TreeValueIndex.ofSubtree levels node hlevels hvalid).1.val = levels := rfl
+
+@[simp]
+theorem TreeValueIndex.ofSubtree_node
+    (levels : Nat) (node : MerkleNode)
+    (hlevels : levels ≤ treeHeight)
+    (hvalid : TreeSubtreeValid levels node) :
+    (TreeValueIndex.ofSubtree levels node hlevels hvalid).node = node := by
+  apply Fin.ext
+  rfl
+
 set_option maxHeartbeats 1600000 in
 set_option maxRecDepth 1000000 in
 theorem evalDist_treeValues_values_eq_drawList
@@ -362,6 +478,63 @@ theorem mem_allTreeValueIndices (index : TreeValueIndex) :
     exact List.mem_ofFn.mpr ⟨index.2, rfl⟩
 
 attribute [irreducible] allTreeValueIndices
+
+theorem globalTreeValuesReplay_eq_treeNode
+    (leftParameter rightParameter : PublicParameter)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (leftCache rightCache : QueryCache HashSpec) (values : List Digest)
+    (hleft : TreeValuesReplay leftParameter leftSecret leftCache
+      allTreeValueIndices values)
+    (hright : TreeValuesReplay rightParameter rightSecret rightCache
+      allTreeValueIndices values)
+    (levels : Nat) (node : MerkleNode)
+    (hlevels : levels ≤ treeHeight)
+    (hvalid : TreeSubtreeValid levels node) :
+    Concrete.CacheReplay.treeNode leftCache leftParameter leftSecret levels node =
+      Concrete.CacheReplay.treeNode rightCache rightParameter rightSecret
+        levels node := by
+  let index := TreeValueIndex.ofSubtree levels node hlevels hvalid
+  simpa [index] using treeValuesReplay_eq_at_mem
+    leftParameter rightParameter leftSecret rightSecret leftCache rightCache
+      allTreeValueIndices values hleft hright index
+        (mem_allTreeValueIndices index)
+
+theorem globalTreeValuesReplay_eq_authenticationPath
+    (parameter : PublicParameter)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (leftCache rightCache : QueryCache HashSpec) (values : List Digest)
+    (hleft : TreeValuesReplay parameter leftSecret leftCache
+      allTreeValueIndices values)
+    (hright : TreeValuesReplay parameter rightSecret rightCache
+      allTreeValueIndices values)
+    (epoch : Epoch) :
+    Concrete.CacheReplay.authenticationPath leftCache
+        ⟨parameter, leftSecret⟩ epoch =
+      Concrete.CacheReplay.authenticationPath rightCache
+        ⟨parameter, rightSecret⟩ epoch := by
+  funext level
+  apply globalTreeValuesReplay_eq_treeNode parameter parameter
+    leftSecret rightSecret leftCache rightCache values hleft hright
+      level.val (Concrete.authenticationPathNode epoch level) (by omega)
+        (authenticationPathNode_subtreeValid epoch level)
+
+theorem globalTreeValuesReplay_eq_root
+    (parameter : PublicParameter)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (leftCache rightCache : QueryCache HashSpec) (values : List Digest)
+    (hleft : TreeValuesReplay parameter leftSecret leftCache
+      allTreeValueIndices values)
+    (hright : TreeValuesReplay parameter rightSecret rightCache
+      allTreeValueIndices values) :
+    Concrete.CacheReplay.treeNode leftCache parameter leftSecret
+        treeHeight Concrete.rootNode =
+      Concrete.CacheReplay.treeNode rightCache parameter rightSecret
+        treeHeight Concrete.rootNode := by
+  exact globalTreeValuesReplay_eq_treeNode parameter parameter
+    leftSecret rightSecret leftCache rightCache values hleft hright
+      treeHeight Concrete.rootNode le_rfl (by
+        unfold TreeSubtreeValid Concrete.rootNode lifetime
+        simp)
 
 theorem programmedWarmedTrajectory_treeValues_fresh
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
