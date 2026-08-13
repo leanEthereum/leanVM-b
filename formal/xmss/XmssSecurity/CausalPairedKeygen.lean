@@ -1,4 +1,5 @@
 import XmssSecurity.CausalTreeTableIndependence
+import XmssSecurity.CausalKeygenOutsideIndependence
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
