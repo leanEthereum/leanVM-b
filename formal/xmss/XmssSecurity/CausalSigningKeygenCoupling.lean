@@ -114,6 +114,123 @@ theorem TreeCacheStable.authenticationPath_eq
       (by omega) (authenticationPathNode_subtreeValid epoch level)
         largerCache hle
 
+theorem simulate_sequenceFin_run_eq_pure
+    {n : Nat} (computation : Fin n → OracleComp HashSpec α)
+    (cache : QueryCache HashSpec) (values : Fin n → α)
+    (hrun : ∀ index,
+      (simulateQ randomOracle (computation index)).run cache =
+        pure (values index, cache)) :
+    (simulateQ randomOracle (Concrete.sequenceFin computation)).run cache =
+      pure (values, cache) := by
+  induction n with
+  | zero =>
+      have hvalues : (Fin.elim0 : Fin 0 → α) = values := by
+        funext index
+        exact Fin.elim0 index
+      simp [Concrete.sequenceFin, hvalues]
+  | succ n ih =>
+      rw [Concrete.sequenceFin, simulateQ_bind, StateT.run_bind, hrun 0]
+      simp only [pure_bind]
+      rw [simulateQ_bind, StateT.run_bind,
+        ih (fun index => computation index.succ)
+          (fun index => values index.succ) (fun index => hrun index.succ)]
+      simp only [pure_bind, simulateQ_pure, StateT.run_pure]
+      congr
+      funext index
+      exact Fin.cases rfl (fun _ => rfl) index
+
+theorem Concrete.keygen_signedChainValues_run_eq_pure
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeyResult : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
+    (epoch : Epoch) (encoding : Encoding) :
+    (simulateQ randomOracle
+      (Concrete.signedChainValues keyResult.1.2 epoch encoding)).run
+        largerCache =
+      pure (Concrete.CacheReplay.signedChainValues largerCache
+        keyResult.1.2 epoch encoding, largerCache) := by
+  let values : ChainIndex → Digest := fun chain =>
+    keygenChainValueTable keyResult.2 keyResult.1.2 chain
+      (epoch, encoding chain)
+  have hrun : ∀ chain,
+      (simulateQ randomOracle
+        (Concrete.chainWalk keyResult.1.2.parameter epoch chain 0
+          (encoding chain).val
+          (keyResult.1.2.chainStart epoch chain))).run largerCache =
+        pure (values chain, largerCache) := by
+    intro chain
+    exact simulate_chainWalk_run_eq_pure_of_table_matches largerCache
+      keyResult.1.2 chain
+      (keygenChainValueTable keyResult.2 keyResult.1.2 chain)
+      (keygenChainValueTable_seedsMatch keyResult.2 keyResult.1.2 chain)
+      ((Concrete.keygenChainValueTable_edgesMatch
+        keyResult hkeyResult chain).mono hle)
+      epoch (encoding chain).val (encoding chain).isLt
+  have hsequence := simulate_sequenceFin_run_eq_pure
+    (fun chain => Concrete.chainWalk keyResult.1.2.parameter epoch chain 0
+      (encoding chain).val (keyResult.1.2.chainStart epoch chain))
+    largerCache values hrun
+  have hvalues : values = Concrete.CacheReplay.signedChainValues
+      largerCache keyResult.1.2 epoch encoding := by
+    funext chain
+    exact Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeyResult
+      largerCache hle epoch chain (encoding chain).val
+        (Nat.le_pred_of_lt (encoding chain).isLt)
+  simpa [Concrete.signedChainValues, hvalues] using hsequence
+
+theorem TreeCacheStable.authenticationPath_run_eq_pure
+    (secretKey : SecretKey) (cache : QueryCache HashSpec)
+    (hstable : TreeCacheStable secretKey.parameter secretKey.chainStart cache)
+    (largerCache : QueryCache HashSpec) (hle : cache ≤ largerCache)
+    (epoch : Epoch) :
+    (simulateQ randomOracle
+      (Concrete.authenticationPath secretKey epoch)).run largerCache =
+      pure (Concrete.CacheReplay.authenticationPath largerCache secretKey epoch,
+        largerCache) := by
+  have hrun : ∀ level,
+      (simulateQ randomOracle
+        (Concrete.treeNode secretKey.parameter secretKey.chainStart level.val
+          (Concrete.authenticationPathNode epoch level) :
+          OracleComp HashSpec Digest)).run largerCache =
+        pure (Concrete.CacheReplay.treeNode cache secretKey.parameter
+          secretKey.chainStart level.val
+            (Concrete.authenticationPathNode epoch level), largerCache) := by
+    intro level
+    exact hstable level.val (Concrete.authenticationPathNode epoch level)
+      (by omega) (authenticationPathNode_subtreeValid epoch level)
+        largerCache hle
+  have hsequence := simulate_sequenceFin_run_eq_pure
+    (fun level => Concrete.treeNode secretKey.parameter secretKey.chainStart
+      level.val (Concrete.authenticationPathNode epoch level)) largerCache
+    (Concrete.CacheReplay.authenticationPath cache secretKey epoch) hrun
+  rw [hstable.authenticationPath_eq secretKey cache largerCache hle epoch]
+    at hsequence
+  simpa [Concrete.authenticationPath] using hsequence
+
+theorem Concrete.keygen_signWithEncoding_run_eq_pure
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeyResult : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (hstable : TreeCacheStable keyResult.1.2.parameter
+      keyResult.1.2.chainStart keyResult.2)
+    (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
+    (epoch : Epoch) (randomness : Randomness) (encoding : Encoding) :
+    (simulateQ randomOracle
+      (Concrete.signWithEncoding keyResult.1.2 epoch randomness encoding)).run
+        largerCache =
+      pure (Concrete.CacheReplay.signWithEncoding largerCache keyResult.1.2
+        epoch randomness encoding, largerCache) := by
+  unfold Concrete.signWithEncoding
+  rw [simulateQ_bind, StateT.run_bind,
+    Concrete.keygen_signedChainValues_run_eq_pure keyResult hkeyResult
+      largerCache hle epoch encoding]
+  simp only [pure_bind]
+  rw [simulateQ_bind, StateT.run_bind,
+    hstable.authenticationPath_run_eq_pure keyResult.1.2 keyResult.2
+      largerCache hle epoch]
+  simp [Concrete.CacheReplay.signWithEncoding]
+
 theorem coupledWarmedKeygenExperiment_support_treeCacheStable
     (parameter : PublicParameter) (chain : ChainIndex)
     (view : CoupledWarmedKeygenView)
