@@ -24,6 +24,21 @@ theorem HashCachesAgreeOn.cacheQuery
       QueryCache.cacheQuery_of_ne right output heq]
     exact hagrees candidate hcandidate
 
+theorem HashCachesAgreeOn.cacheQuery_distinct
+    (inputs : HashInput → Prop)
+    (left right : QueryCache HashSpec)
+    (hagrees : HashCachesAgreeOn inputs left right)
+    (leftInput rightInput : HashInput) (output : HashOutput)
+    (hleft : ∀ candidate, inputs candidate → candidate ≠ leftInput)
+    (hright : ∀ candidate, inputs candidate → candidate ≠ rightInput) :
+    HashCachesAgreeOn inputs
+      (left.cacheQuery leftInput output)
+      (right.cacheQuery rightInput output) := by
+  intro candidate hcandidate
+  rw [QueryCache.cacheQuery_of_ne left output (hleft candidate hcandidate),
+    QueryCache.cacheQuery_of_ne right output (hright candidate hcandidate)]
+  exact hagrees candidate hcandidate
+
 theorem relTriple_randomOracle_run_of_cachesAgreeOn
     (inputs : HashInput → Prop)
     (left right : QueryCache HashSpec)
@@ -60,6 +75,64 @@ theorem relTriple_randomOracle_run_of_cachesAgreeOn
         QueryImpl.withCaching_run_some _ hright]
       exact relTriple_pure_pure ⟨rfl, hagrees, le_rfl, le_rfl⟩
 
+theorem relTriple_randomOracle_run_of_both_none
+    (inputs : HashInput → Prop)
+    (left right : QueryCache HashSpec)
+    (leftInput rightInput : HashInput)
+    (hleftNone : left leftInput = none)
+    (hrightNone : right rightInput = none)
+    (hagrees : HashCachesAgreeOn inputs left right)
+    (hleft : ∀ candidate, inputs candidate → candidate ≠ leftInput)
+    (hright : ∀ candidate, inputs candidate → candidate ≠ rightInput) :
+    RelTriple
+      ((randomOracle leftInput).run left)
+      ((randomOracle rightInput).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn inputs leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
+  rw [randomOracle, QueryImpl.withCaching_run_none _ hleftNone,
+    QueryImpl.withCaching_run_none _ hrightNone,
+    map_eq_bind_pure_comp, map_eq_bind_pure_comp]
+  apply relTriple_bind (relTriple_refl ($ᵗ HashOutput))
+  intro leftOutput rightOutput houtput
+  subst rightOutput
+  exact relTriple_pure_pure ⟨rfl,
+    HashCachesAgreeOn.cacheQuery_distinct inputs left right hagrees
+      leftInput rightInput leftOutput hleft hright,
+    QueryCache.le_cacheQuery left hleftNone,
+    QueryCache.le_cacheQuery right hrightNone⟩
+
+theorem relTriple_strengthen_support
+    {alpha beta : Type}
+    {left : ProbComp alpha} {right : ProbComp beta}
+    {relation : alpha → beta → Prop}
+    {leftProperty : alpha → Prop} {rightProperty : beta → Prop}
+    (hrel : RelTriple left right relation)
+    (hleft : ∀ result ∈ support left, leftProperty result)
+    (hright : ∀ result ∈ support right, rightProperty result) :
+    RelTriple left right (fun leftResult rightResult =>
+      relation leftResult rightResult ∧
+        leftProperty leftResult ∧ rightProperty rightResult) := by
+  rw [relTriple_iff_relWP, relWP_iff_couplingPost] at hrel ⊢
+  obtain ⟨coupling, hcoupling⟩ := hrel
+  refine ⟨coupling, ?_⟩
+  intro pair hpair
+  have hleftSupportDist : pair.1 ∈ support 𝒟[left] := by
+    rw [← coupling.2.map_fst, support_map]
+    exact ⟨pair, hpair, rfl⟩
+  have hrightSupportDist : pair.2 ∈ support 𝒟[right] := by
+    rw [← coupling.2.map_snd, support_map]
+    exact ⟨pair, hpair, rfl⟩
+  have hleftSupport : pair.1 ∈ support left := by
+    rw [mem_support_iff_evalDist_apply_ne_zero] at hleftSupportDist ⊢
+    simpa using hleftSupportDist
+  have hrightSupport : pair.2 ∈ support right := by
+    rw [mem_support_iff_evalDist_apply_ne_zero] at hrightSupportDist ⊢
+    simpa using hrightSupportDist
+  exact ⟨hcoupling pair hpair,
+    hleft pair.1 hleftSupport, hright pair.2 hrightSupport⟩
+
 def OutsideChainHashInput
     (parameter : PublicParameter) (chain : ChainIndex)
     (input : HashInput) : Prop :=
@@ -93,6 +166,65 @@ theorem outsideChainHashInput_chainInput
         parameter epoch candidate step value) := by
   refine ⟨epoch, candidate, step, hne, ?_⟩
   simp [Concrete.CacheView.chainInput]
+
+theorem outsideChainHashInput_ne_leafInput
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (epoch : Epoch) (endpoints : ChainIndex → Digest)
+    (input : HashInput)
+    (hinput : OutsideChainHashInput parameter chain input) :
+    input ≠ Concrete.CacheView.leafInput parameter epoch endpoints := by
+  intro heq
+  obtain ⟨targetEpoch, candidate, step, _hne, hchain⟩ := hinput
+  have hleaf : AtHashAddress parameter (.leaf epoch) input := by
+    rw [heq]
+    simp [Concrete.CacheView.leafInput]
+  have hdomain := atHashAddress_unique parameter
+    (.chain targetEpoch candidate step) (.leaf epoch) input hchain hleaf
+  simp at hdomain
+
+theorem relTriple_leafHash_run_of_both_none
+    (parameter : PublicParameter) (chain : ChainIndex) (epoch : Epoch)
+    (leftEndpoints rightEndpoints : ChainIndex → Digest)
+    (left right : QueryCache HashSpec)
+    (hleftNone : left (Concrete.CacheView.leafInput
+      parameter epoch leftEndpoints) = none)
+    (hrightNone : right (Concrete.CacheView.leafInput
+      parameter epoch rightEndpoints) = none)
+    (hagrees : HashCachesAgreeOn
+      (OutsideChainHashInput parameter chain) left right) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.leafHash parameter epoch leftEndpoints :
+          OracleComp HashSpec Digest)).run left)
+      ((simulateQ randomOracle
+        (Concrete.leafHash parameter epoch rightEndpoints :
+          OracleComp HashSpec Digest)).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn (OutsideChainHashInput parameter chain)
+            leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2) := by
+  let leftInput := Concrete.CacheView.leafInput
+    parameter epoch leftEndpoints
+  let rightInput := Concrete.CacheView.leafInput
+    parameter epoch rightEndpoints
+  change RelTriple
+    ((fun result : HashOutput × QueryCache HashSpec =>
+      (truncateHash result.1, result.2)) <$> (randomOracle leftInput).run left)
+    ((fun result : HashOutput × QueryCache HashSpec =>
+      (truncateHash result.1, result.2)) <$> (randomOracle rightInput).run right) _
+  apply relTriple_map
+  apply relTriple_post_mono
+    (relTriple_randomOracle_run_of_both_none
+      (OutsideChainHashInput parameter chain) left right
+      leftInput rightInput hleftNone hrightNone hagrees
+      (outsideChainHashInput_ne_leafInput
+        parameter chain epoch leftEndpoints)
+      (outsideChainHashInput_ne_leafInput
+        parameter chain epoch rightEndpoints))
+  intro leftResult rightResult hresult
+  exact ⟨congrArg truncateHash hresult.1,
+    hresult.2.1, hresult.2.2.1, hresult.2.2.2⟩
 
 theorem relTriple_chainHash_run_outside
     (parameter : PublicParameter) (chain candidate : ChainIndex)
@@ -451,5 +583,125 @@ theorem relTriple_sequenceFin_keygenChainWalk_run
         (chainLength - 1) (rightSecret epoch (chainAt index)))
       StateRelation ValueRelation hstep left right
         ⟨hagrees, hleftLe, hrightLe⟩)
+
+theorem oneTimePublicKey_run_leafInput_none
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch : Epoch) (initialCache : QueryCache HashSpec)
+    (habsent : ∀ input, AtHashAddress parameter (.leaf epoch) input →
+      initialCache input = none)
+    (result : (ChainIndex → Digest) × QueryCache HashSpec)
+    (hresult : result ∈ support
+      ((simulateQ randomOracle
+        (Concrete.oneTimePublicKey parameter secret epoch)).run initialCache)) :
+    result.2 (Concrete.CacheView.leafInput parameter epoch result.1) = none := by
+  apply Concrete.CacheReplay.cache_none_of_zero_query_bound
+    (Concrete.oneTimePublicKey parameter secret epoch)
+    (Concrete.CacheView.leafInput parameter epoch result.1)
+    initialCache result.2 result.1
+  · apply OracleComp.IsQueryBoundP.of_imp
+      (p' := AtHashAddress parameter (.leaf epoch))
+    · intro input heq
+      subst input
+      simp [Concrete.CacheView.leafInput]
+    · exact Concrete.oneTimePublicKey_queryBound_zero_leafAddress
+        parameter secret epoch epoch
+  · exact habsent _ (by simp [Concrete.CacheView.leafInput])
+  · exact hresult
+
+theorem relTriple_fixedChainMaterial_oneTimePublicKey_run
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialBaseRelation
+      parameter selected left right) (epoch : Epoch) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.oneTimePublicKey parameter
+          (unflattenSecret left.1.2) epoch)).run left.2.2.2)
+      ((simulateQ randomOracle
+        (Concrete.oneTimePublicKey parameter
+          (unflattenSecret right.1.1.2) epoch)).run right.1.2.2.2)
+      (fun leftResult rightResult =>
+        (∀ candidate, candidate ≠ selected →
+          leftResult.1 candidate = rightResult.1 candidate) ∧
+        HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+          leftResult.2 rightResult.2 ∧
+        left.2.2.2 ≤ leftResult.2 ∧
+        right.1.2.2.2 ≤ rightResult.2) := by
+  have hleftMatches := fixedChainMaterialRepresentation_matches
+    parameter selected left hrel.2.2.1
+  have hrightMatches := fixedChainMaterialRepresentation_matches
+    parameter selected right.1 hrel.2.2.2
+  have houtside : secretOutsideChain selected (unflattenSecret left.1.2) =
+      secretOutsideChain selected (unflattenSecret right.1.1.2) :=
+    secretOutsideChain_eq_of_outsideChainSecret_eq selected
+      left.1.2 right.1.1.2 hrel.2.1
+  simpa [Concrete.oneTimePublicKey] using
+    (relTriple_sequenceFin_keygenChainWalk_run parameter selected epoch
+      (unflattenSecret left.1.2) (unflattenSecret right.1.1.2)
+      (fixedChainMaterialTable selected left)
+      (fixedChainMaterialTable selected right.1)
+      left.2.2.2 right.1.2.2.2 houtside
+      hleftMatches.1 hleftMatches.2 hrightMatches.1 hrightMatches.2
+      numChains (fun chain => chain) left.2.2.2 right.1.2.2.2
+      (hrel.outsideChainCachesAgree parameter selected left right)
+      le_rfl le_rfl)
+
+theorem relTriple_fixedChainMaterial_leafAt_run
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hrel : CoupledFixedChainMaterialBaseRelation
+      parameter selected left right) (epoch : Epoch) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.leafAt parameter (unflattenSecret left.1.2) epoch :
+          OracleComp HashSpec Digest)).run left.2.2.2)
+      ((simulateQ randomOracle
+        (Concrete.leafAt parameter (unflattenSecret right.1.1.2) epoch :
+          OracleComp HashSpec Digest)).run right.1.2.2.2)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn (OutsideChainHashInput parameter selected)
+            leftResult.2 rightResult.2 ∧
+          left.2.2.2 ≤ leftResult.2 ∧
+          right.1.2.2.2 ≤ rightResult.2) := by
+  let leftComputation :=
+    (simulateQ randomOracle
+      (Concrete.oneTimePublicKey parameter
+        (unflattenSecret left.1.2) epoch)).run left.2.2.2
+  let rightComputation :=
+    (simulateQ randomOracle
+      (Concrete.oneTimePublicKey parameter
+        (unflattenSecret right.1.1.2) epoch)).run right.1.2.2.2
+  have hots := relTriple_fixedChainMaterial_oneTimePublicKey_run
+    parameter selected left right hrel epoch
+  have hotsFresh := relTriple_strengthen_support hots
+    (oneTimePublicKey_run_leafInput_none parameter
+      (unflattenSecret left.1.2) epoch left.2.2.2
+      (fun input hinput =>
+        fixedChainMaterialRepresentation_cache_avoids_leaf
+          parameter selected left hrel.2.2.1 epoch input hinput))
+    (oneTimePublicKey_run_leafInput_none parameter
+      (unflattenSecret right.1.1.2) epoch right.1.2.2.2
+      (fun input hinput =>
+        fixedChainMaterialRepresentation_cache_avoids_leaf
+          parameter selected right.1 hrel.2.2.2 epoch input hinput))
+  unfold Concrete.leafAt
+  simp only [simulateQ_bind, StateT.run_bind]
+  apply relTriple_bind hotsFresh
+  intro leftEndpointsResult rightEndpointsResult hresult
+  obtain ⟨hotsResult, hleftFresh, hrightFresh⟩ := hresult
+  obtain ⟨leftEndpoints, leftCache⟩ := leftEndpointsResult
+  obtain ⟨rightEndpoints, rightCache⟩ := rightEndpointsResult
+  dsimp only at hotsResult hleftFresh hrightFresh ⊢
+  apply relTriple_post_mono
+    (relTriple_leafHash_run_of_both_none parameter selected epoch
+      leftEndpoints rightEndpoints leftCache rightCache
+      hleftFresh hrightFresh hotsResult.2.1)
+  intro leftResult rightResult hleaf
+  exact ⟨hleaf.1, hleaf.2.1,
+    hotsResult.2.2.1.trans hleaf.2.2.1,
+    hotsResult.2.2.2.trans hleaf.2.2.2⟩
 
 end XmssSecurity
