@@ -423,6 +423,73 @@ theorem programmedActual_filteredKeygen_stateRelation
   intro index value hvalue
   simp at hvalue
 
+inductive FilteredCausalHashPlan where
+  | cached (output : HashOutput)
+  | reveal (index : ChainValueIndex)
+  | conditioned (digest : Digest)
+  | fresh
+
+noncomputable def filteredCausalUncachedHashPlan
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) : FilteredCausalHashPlan :=
+  match chainInputProbe? secretKey.parameter selected input with
+  | some (index, target) =>
+      match state.revealed index with
+      | some value =>
+          if value = target then
+            if hnext : index.2.val + 1 < chainLength then
+              .reveal (index.1, ⟨index.2.val + 1, hnext⟩)
+            else
+              .fresh
+          else
+            .fresh
+      | none => .fresh
+  | none =>
+      match state.keygenCache
+          (keygenLeafTargetInput secretKey state.keygenCache input) with
+      | some output => .conditioned (truncateHash output)
+      | none => .fresh
+
+noncomputable def filteredCausalAttackerHashPlan
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) : FilteredCausalHashPlan :=
+  match state.cache input with
+  | some output => .cached output
+  | none => filteredCausalUncachedHashPlan secretKey selected input state
+
+noncomputable def filteredCausalAttackerHashQuery
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput) :
+    StateT CausalHashState
+      (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))
+      HashOutput := fun state =>
+  let recorded := causalRecordedState secretKey selected input state
+  match filteredCausalAttackerHashPlan secretKey selected input state with
+  | .cached output => pure (output, recorded)
+  | .reveal index => causalRevealHashQuery secretKey selected input state index
+  | .conditioned digest => do
+      let output ← RevealProbeOracleSimulation.liftProbComp
+        (Rom.sampleHashOutputWithDigest digest)
+      pure (output,
+        { recorded with cache := recorded.cache.cacheQuery input output })
+  | .fresh => (causalHashQuery input).run recorded
+
+theorem filteredCausalAttackerHashQuery_run
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) :
+    (filteredCausalAttackerHashQuery secretKey selected input).run state =
+      (let recorded := causalRecordedState secretKey selected input state
+        match filteredCausalAttackerHashPlan secretKey selected input state with
+        | .cached output => pure (output, recorded)
+        | .reveal index =>
+            causalRevealHashQuery secretKey selected input state index
+        | .conditioned digest => do
+            let output ← RevealProbeOracleSimulation.liftProbComp
+              (Rom.sampleHashOutputWithDigest digest)
+            pure (output,
+              { recorded with
+                cache := recorded.cache.cacheQuery input output })
+        | .fresh => (causalHashQuery input).run recorded) := rfl
+
 def FilteredSigningResultRelation
     (parameter : PublicParameter) (selected : ChainIndex)
     (leftBase rightBase : QueryCache HashSpec)
