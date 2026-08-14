@@ -1671,6 +1671,27 @@ theorem leafInputProbe?_leafInput
   · rename_i h
     exact (h ⟨(epoch, endpoints), rfl⟩).elim
 
+theorem leafInputProbe?_eq_some
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (input : HashInput) (index : ChainValueIndex) (target : Digest)
+    (hprobe : leafInputProbe? parameter selected input =
+      some (index, target)) :
+    ∃ epoch endpoints,
+      input = Concrete.CacheView.leafInput parameter epoch endpoints ∧
+        index = (epoch, chainEndpointDigit) ∧
+        target = endpoints selected := by
+  unfold leafInputProbe? at hprobe
+  split at hprobe
+  · rename_i hexists
+    let data := hexists.choose
+    have hdata : input = Concrete.CacheView.leafInput parameter
+        data.1 data.2 := hexists.choose_spec
+    have hpair : ((data.1, chainEndpointDigit), data.2 selected) =
+        (index, target) := Option.some.inj hprobe
+    exact ⟨data.1, data.2, hdata, (congrArg Prod.fst hpair).symm,
+      (congrArg Prod.snd hpair).symm⟩
+  · contradiction
+
 @[simp]
 theorem leafInputProbe?_chainInput
     (parameter : PublicParameter) (selected chain : ChainIndex)

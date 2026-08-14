@@ -177,6 +177,54 @@ structure ProgrammedActualKeygenTreeCacheHighRelation
     left.secretKey.chainStart right.1.1.secretKey.chainStart
     left.cache right.1.1.cache
 
+theorem ProgrammedActualKeygenTreeCacheHighRelation.parameter_eq
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : (ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) × (ChainEdgeIndex → Digest))
+    (hrel : ProgrammedActualKeygenTreeCacheHighRelation chain left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen chain))
+    (hrightSupport : right.1.1 ∈ support
+      (actualFixedChainKeygen chain)) :
+    right.1.1.secretKey.parameter = left.secretKey.parameter := by
+  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+    chain left hleftSupport
+  have hrightKey := actualFixedChainKeygen_support_keyResult chain right.1.1
+    hrightSupport
+  calc
+    right.1.1.secretKey.parameter = right.1.1.publicKey.parameter :=
+      (right.1.1.parameter_eq hrightKey).symm
+    _ = left.publicKey.parameter :=
+      congrArg PublicKey.parameter hrel.base.base.1.2.1.symm
+    _ = left.secretKey.parameter := left.parameter_eq hleftKey
+
+theorem ProgrammedActualKeygenTreeCacheHighRelation.replay_other_eq
+    (selected candidate : ChainIndex) (hne : candidate ≠ selected)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : (ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) × (ChainEdgeIndex → Digest))
+    (hrel : ProgrammedActualKeygenTreeCacheHighRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1.1 ∈ support
+      (actualFixedChainKeygen selected))
+    (epoch : Epoch) :
+    Concrete.CacheReplay.oneTimePublicKey left.cache
+        left.secretKey.parameter left.secretKey.chainStart epoch candidate =
+      Concrete.CacheReplay.oneTimePublicKey right.1.1.cache
+        right.1.1.secretKey.parameter right.1.1.secretKey.chainStart
+          epoch candidate := by
+  have hparameter := hrel.parameter_eq selected left right hleftSupport
+    hrightSupport
+  rw [hparameter]
+  unfold Concrete.CacheReplay.oneTimePublicKey
+  rw [secret_eq_of_outsideChain_eq selected left.secretKey.chainStart
+      right.1.1.secretKey.chainStart hrel.base.base.1.2.2.1 epoch candidate hne,
+    Concrete.CacheReplay.chainStep_eq_of_outsideChainCachesAgree
+      left.secretKey.parameter selected candidate hne left.cache
+        right.1.1.cache hrel.base.base.2 epoch]
+
 set_option maxRecDepth 100000 in
 theorem relTriple_coupledWarmedFixedChainKeygen_withBaseHigh_tree
     (chain : ChainIndex) :
@@ -228,6 +276,62 @@ theorem relTriple_programmedWarmedFixedChainKeygen_uniformHigh_tree
       chain).symm
   exact relTriple_programmedWarmedFixedChainKeygen_withBaseHigh_tree chain
 
+noncomputable def eagerTreeInputProbe?
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (input : HashInput) : Option (ChainValueIndex × Digest) :=
+  match chainInputProbe? parameter selected input with
+  | some probe => some probe
+  | none => leafInputProbe? parameter selected input
+
+def LeafInputMatchesOutside
+    (secretKey : SecretKey) (cache : QueryCache HashSpec)
+    (selected : ChainIndex) (input : HashInput) : Prop :=
+  ∃ epoch endpoints,
+    input = Concrete.CacheView.leafInput secretKey.parameter epoch endpoints ∧
+      ∀ chain, chain ≠ selected →
+        endpoints chain = Concrete.CacheReplay.oneTimePublicKey cache
+          secretKey.parameter secretKey.chainStart epoch chain
+
+noncomputable def filteredTreeProbingAttackerHashQueryAtFromHigh
+    (high : ChainValueIndex → Digest)
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) :
+    OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+      (HashOutput × CausalHashState) :=
+  match chainInputProbe? secretKey.parameter selected input with
+  | some probe => filteredProbingAttackerHashQueryAtFromHigh high secretKey
+      selected input state (some probe)
+  | none =>
+      match leafInputProbe? secretKey.parameter selected input with
+      | none => filteredProbingAttackerHashQueryAtFromHigh high secretKey
+          selected input state none
+      | some probe =>
+          let answer := if LeafInputMatchesOutside secretKey state.keygenCache
+              selected input then
+            match state.keygenCache
+                (keygenLeafTargetInput secretKey state.keygenCache input) with
+              | some output => pure (output, state)
+              | none => (causalHashQuery input).run state
+          else
+            (causalHashQuery input).run state
+          match state.revealed probe.1 with
+          | some _ => answer
+          | none => do
+              let _ ← RevealProbeOracleSimulation.probeQuery probe.1 probe.2
+              answer
+
+theorem filteredTreeProbingAttackerHashQueryAtFromHigh_eq_of_chainProbe
+    (high : ChainValueIndex → Digest)
+    (secretKey : SecretKey) (selected : ChainIndex) (input : HashInput)
+    (state : CausalHashState) (probe : ChainValueIndex × Digest)
+    (hprobe : chainInputProbe? secretKey.parameter selected input =
+      some probe) :
+    filteredTreeProbingAttackerHashQueryAtFromHigh high secretKey selected
+        input state =
+      filteredProbingAttackerHashQueryAtFromHigh high secretKey selected
+        input state (some probe) := by
+  simp [filteredTreeProbingAttackerHashQueryAtFromHigh, hprobe]
+
 noncomputable def filteredHighMappedAdversaryImpl
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
@@ -239,10 +343,9 @@ noncomputable def filteredHighMappedAdversaryImpl
     match input with
     | .inl (.inl n) => causalUniformImpl n
     | .inl (.inr hashInput) => StateT.mk fun state =>
-        filteredProbingAttackerHashQueryAtFromHigh
+        filteredTreeProbingAttackerHashQueryAtFromHigh
           (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
           hashInput state
-          (chainInputProbe? keyHigh.1.secretKey.parameter selected hashInput)
     | .inr request => StateT.mk fun state =>
         filteredCausalSigningQuery keyHigh.1 selected request state
 
@@ -269,10 +372,9 @@ noncomputable def filteredHighVerifierImpl
     match input with
     | .inl n => causalUniformImpl n
     | .inr hashInput => StateT.mk fun state =>
-        filteredProbingAttackerHashQueryAtFromHigh
+        filteredTreeProbingAttackerHashQueryAtFromHigh
           (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
           hashInput state
-          (chainInputProbe? keyHigh.1.secretKey.parameter selected hashInput)
 
 noncomputable def filteredHighDetailedGameAfterKeygen
     (adversary : Adversary Concrete.scheme)
@@ -361,11 +463,9 @@ noncomputable def filteredHighMonitoredBaseMappedAdversaryImpl
           ((causalUniformImpl n).run causalState)).run)
     | .inl (.inr hashInput) => monitorCausalTrace table (fun causalState =>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-          (filteredProbingAttackerHashQueryAtFromHigh
+          (filteredTreeProbingAttackerHashQueryAtFromHigh
             (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
-              hashInput causalState
-              (chainInputProbe? keyHigh.1.secretKey.parameter selected
-                hashInput))).run)
+              hashInput causalState)).run)
     | .inr request => monitorCausalTrace table (fun causalState =>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           (filteredCausalSigningQuery keyHigh.1 selected request
@@ -628,6 +728,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_hash_of_probe
         rightResult.2.bad) := by
     simpa [sourceDirectMappedAdversaryImpl,
       filteredHighMonitoredBaseMappedAdversaryImpl,
+      filteredTreeProbingAttackerHashQueryAtFromHigh,
       unloggedMappedAdversaryImpl_apply_inl, xmssRomImpl,
       hprobeRight] using hcouple
   have hlift := relTriple_actionTracedState_until_bad
