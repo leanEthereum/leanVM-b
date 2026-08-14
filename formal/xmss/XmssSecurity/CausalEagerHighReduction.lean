@@ -1,5 +1,6 @@
 import XmssSecurity.CausalWarmedHighIndependence
 import XmssSecurity.CausalDirectReduction
+import XmssSecurity.CausalTreeCacheCorrespondence
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -541,8 +542,5 @@ theorem relTriple_sourceDirect_filteredHighMonitored_signing
       leftState rightState hstate.2 hbase
   simpa [sourceDirectTracedMappedAdversaryImpl,
     filteredHighMonitoredMappedAdversaryImpl] using hlift
-
-
-
 
 end XmssSecurity
