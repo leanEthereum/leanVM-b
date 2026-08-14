@@ -77,6 +77,157 @@ theorem relTriple_programmedWarmedFixedChainKeygen_uniformHigh
       chain).symm
   exact relTriple_programmedWarmedFixedChainKeygen_withBaseHigh chain
 
+structure CoupledWarmedKeygenTreeCacheHighRelation
+    (parameter : PublicParameter) (chain : ChainIndex)
+    (left : CoupledWarmedKeygenView)
+    (right : (CoupledWarmedKeygenView × (ChainValueIndex → Digest)) ×
+      (ChainEdgeIndex → Digest)) : Prop where
+  base : CoupledWarmedKeygenCacheHighRelation parameter chain left right
+  retained : HashCachesAgreeOn (TreeRetainedHashInput parameter chain)
+    left.cache right.1.1.cache
+  replayLeaves : LeafReplayOutputsCorrespond parameter left.secret
+    right.1.1.secret left.cache right.1.1.cache
+
+set_option maxHeartbeats 2400000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_coupledWarmedKeygenExperiment_withBaseHigh_tree
+    (parameter : PublicParameter) (chain : ChainIndex) :
+    RelTriple
+      (coupledWarmedKeygenExperiment parameter chain)
+      (coupledWarmedKeygenWithBaseHigh parameter chain)
+      (CoupledWarmedKeygenTreeCacheHighRelation parameter chain) := by
+  unfold coupledWarmedKeygenExperiment coupledWarmedKeygenWithBaseHigh
+  apply relTriple_bind
+    (relTriple_programmedWarmedTrajectoryMaterial_withBaseHigh parameter chain)
+  intro leftMaterial rightMaterialBaseHigh hmaterial
+  let rightMaterial := rightMaterialBaseHigh.1.1
+  have hinvariant := warmedMaterialsAsFixed_invariant parameter chain
+    leftMaterial rightMaterial rightMaterialBaseHigh.1.2
+      hmaterial.leftSupport hmaterial.rightSupport hmaterial.tableEq
+        hmaterial.outsideEq
+  have htrees := relTriple_with_support
+    (relTriple_fixedChainMaterial_allTreeValues_run_with_correspondence
+      parameter chain (warmedMaterialAsFixed chain leftMaterial)
+        (warmedMaterialAsFixed chain rightMaterial,
+          rightMaterialBaseHigh.1.2) hinvariant)
+  have htable := hinvariant.tableEq
+  rw [fixedChainMaterialTable_warmedMaterialAsFixed parameter chain
+    leftMaterial hmaterial.leftSupport] at htable
+  apply relTriple_bind htrees
+  intro leftTree rightTree htree
+  obtain ⟨htreeRelation, hleftTreeSupport, hrightTreeSupport⟩ := htree
+  obtain ⟨hvalues, leftEndpoints, rightEndpoints, hcache, hreplay⟩ :=
+    htreeRelation
+  have hleftReplay := treeValues_support_replay parameter
+    (unflattenSecret leftMaterial.1.2) allTreeValueIndices
+      leftMaterial.2.2 leftTree hleftTreeSupport
+  have hrightReplay := treeValues_support_replay parameter
+    (unflattenSecret rightMaterial.1.2) allTreeValueIndices
+      rightMaterial.2.2 rightTree hrightTreeSupport
+  have hroot := globalTreeValuesReplay_eq_root parameter
+    (unflattenSecret leftMaterial.1.2) (unflattenSecret rightMaterial.1.2)
+      leftTree.2 rightTree.2 leftTree.1 hleftReplay
+        (hvalues ▸ hrightReplay)
+  have hauth : ∀ epoch,
+      Concrete.CacheReplay.authenticationPath leftTree.2
+          ⟨parameter, unflattenSecret leftMaterial.1.2⟩ epoch =
+        Concrete.CacheReplay.authenticationPath rightTree.2
+          ⟨parameter, unflattenSecret rightMaterial.1.2⟩ epoch := by
+    intro epoch
+    exact globalTreeValuesReplay_eq_authenticationPath parameter
+      (unflattenSecret leftMaterial.1.2) (unflattenSecret rightMaterial.1.2)
+        leftTree.2 rightTree.2 leftTree.1 hleftReplay
+          (hvalues ▸ hrightReplay) epoch
+  have hleftCacheLe := treeValues_cache_le parameter
+    (unflattenSecret leftMaterial.1.2) allTreeValueIndices
+      leftMaterial.2.2 leftTree hleftTreeSupport
+  apply relTriple_pure_pure
+  refine ⟨?_, hcache.retained, hreplay⟩
+  · refine ⟨?_, ?_⟩
+    · refine ⟨⟨htable, ?_, hvalues, hleftReplay, hrightReplay,
+          hroot, hauth⟩, ?_⟩
+      · exact secretOutsideChain_eq_of_outsideChainSecret_eq chain
+          leftMaterial.1.2 rightMaterial.1.2 hinvariant.outsideEq
+      · intro input hinput
+        exact hcache.retained input (Or.inl hinput)
+    · have htrajectory := programmedWarmedTrajectoryMaterial_support_trajectory
+          parameter chain leftMaterial hmaterial.leftSupport
+      have hmatches := programmedFixedSeedChainTrajectories_edgesMatch parameter
+        (unflattenSecret leftMaterial.1.2) chain leftMaterial.2 htrajectory
+      calc
+        chainEdgeHighTableOfCache leftTree.2 parameter chain
+            (chainValueTableOfList leftMaterial.2.1) =
+          chainEdgeHighTableOfCache leftMaterial.2.2 parameter chain
+            (chainValueTableOfList leftMaterial.2.1) :=
+              (chainEdgeHighTableOfCache_mono leftMaterial.2.2 leftTree.2
+                parameter chain (chainValueTableOfList leftMaterial.2.1)
+                  hmatches hleftCacheLe).symm
+        _ = rightMaterialBaseHigh.2 := hmaterial.highEq
+
+structure ProgrammedActualKeygenTreeCacheHighRelation
+    (chain : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : (ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) × (ChainEdgeIndex → Digest)) : Prop where
+  base : ProgrammedActualKeygenCacheHighRelation chain left right
+  retained : HashCachesAgreeOn
+    (TreeRetainedHashInput left.secretKey.parameter chain)
+    left.cache right.1.1.cache
+  replayLeaves : LeafReplayOutputsCorrespond left.secretKey.parameter
+    left.secretKey.chainStart right.1.1.secretKey.chainStart
+    left.cache right.1.1.cache
+
+set_option maxRecDepth 100000 in
+theorem relTriple_coupledWarmedFixedChainKeygen_withBaseHigh_tree
+    (chain : ChainIndex) :
+    RelTriple
+      (coupledWarmedFixedChainKeygen chain)
+      (coupledWarmedFixedChainKeygenWithBaseHigh chain)
+      (ProgrammedActualKeygenTreeCacheHighRelation chain) := by
+  unfold coupledWarmedFixedChainKeygen
+    coupledWarmedFixedChainKeygenWithBaseHigh
+  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
+  intro leftParameter rightParameter hparameter
+  subst rightParameter
+  apply relTriple_bind
+    (relTriple_coupledWarmedKeygenExperiment_withBaseHigh_tree
+      leftParameter chain)
+  intro leftView rightView hview
+  apply relTriple_pure_pure
+  refine ⟨?_, ?_, ?_⟩
+  · refine ⟨?_, ?_⟩
+    · refine ⟨⟨hview.base.base.1.1, ?_, hview.base.base.1.2.1,
+          hview.base.base.1.2.2.2.2.2.2⟩, hview.base.base.2⟩
+      exact congrArg (fun root => PublicKey.mk root leftParameter)
+        hview.base.base.1.2.2.2.2.2.1
+    · simpa [CoupledWarmedKeygenView.toProgrammedView] using hview.base.highEq
+  · simpa [CoupledWarmedKeygenView.toProgrammedView] using hview.retained
+  · simpa [CoupledWarmedKeygenView.toProgrammedView] using hview.replayLeaves
+
+theorem relTriple_programmedWarmedFixedChainKeygen_withBaseHigh_tree
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedWarmedFixedChainKeygen chain)
+      (coupledWarmedFixedChainKeygenWithBaseHigh chain)
+      (ProgrammedActualKeygenTreeCacheHighRelation chain) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_coupledWarmedFixedChainKeygen_eq_programmed chain).symm
+  exact relTriple_coupledWarmedFixedChainKeygen_withBaseHigh_tree chain
+
+theorem relTriple_programmedWarmedFixedChainKeygen_uniformHigh_tree
+    (chain : ChainIndex) :
+    RelTriple
+      (programmedWarmedFixedChainKeygen chain)
+      (do
+        let base ← $ᵗ (ChainValueIndex → Digest)
+        let keyHigh ← coupledWarmedFixedChainKeygenWithHigh chain
+        pure ((keyHigh.1, base), keyHigh.2))
+      (ProgrammedActualKeygenTreeCacheHighRelation chain) := by
+  apply relTriple_of_evalDist_eq_right
+    (evalDist_uniform_coupledWarmedFixedChainKeygenWithHigh_eq_baseHigh
+      chain).symm
+  exact relTriple_programmedWarmedFixedChainKeygen_withBaseHigh_tree chain
+
 noncomputable def filteredHighMappedAdversaryImpl
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
