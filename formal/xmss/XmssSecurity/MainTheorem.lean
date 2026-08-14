@@ -8,6 +8,7 @@ import XmssSecurity.IndexedHiddenValue
 import XmssSecurity.ChainOriginProbability
 import XmssSecurity.ChainHiddenTable
 import XmssSecurity.ChainTracedGame
+import XmssSecurity.CausalHighTableKeygen
 import XmssSecurity.CausalViewCoupling
 import XmssSecurity.LeafEventProbability
 import XmssSecurity.Merkle
