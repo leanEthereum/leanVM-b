@@ -781,6 +781,529 @@ theorem relTriple_fixedChainMaterial_allLeafValues_run_with_correspondence
             parameter selected left right hmaterial initialEndpoints
               initialEndpoints) le_rfl le_rfl
 
+theorem relTriple_fixedChainMaterial_merkleTreeValue_run_with_correspondence
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (processed : List TreeValueIndex)
+    (leftPrefix rightPrefix : List Digest × QueryCache HashSpec)
+    (hleftPrefix : leftPrefix ∈ support
+      (treeValues parameter (unflattenSecret left.1.2)
+        processed left.2.2.2))
+    (hrightPrefix : rightPrefix ∈ support
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        processed right.1.2.2.2))
+    (hprefixValues : leftPrefix.1 = rightPrefix.1)
+    (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+    (hcache : CoupledTreeCacheCorrespondence parameter selected
+      leftEndpoints rightEndpoints leftPrefix.2 rightPrefix.2)
+    (current : TreeValueIndex) (hpositive : 0 < current.1.val)
+    (hleftChild : TreeValueIndex.ofSubtree (current.1.val - 1)
+      (Concrete.childNode current.node false) (by omega)
+      (childNode_subtreeValid (current.1.val - 1) current.node false
+        (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+        processed)
+    (hrightChild : TreeValueIndex.ofSubtree (current.1.val - 1)
+      (Concrete.childNode current.node true) (by omega)
+      (childNode_subtreeValid (current.1.val - 1) current.node true
+        (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+        processed) :
+    RelTriple
+      ((simulateQ randomOracle
+        (current.computation parameter (unflattenSecret left.1.2))).run
+          leftPrefix.2)
+      ((simulateQ randomOracle
+        (current.computation parameter (unflattenSecret right.1.1.2))).run
+          rightPrefix.2)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          CoupledTreeCacheCorrespondence parameter selected
+            leftEndpoints rightEndpoints leftResult.2 rightResult.2) := by
+  let levels := current.1.val - 1
+  have hsucc : current.1.val = levels + 1 := by
+    dsimp [levels]
+    omega
+  have hlevel : levels < treeHeight := by
+    dsimp [levels]
+    omega
+  have hparentValid : TreeSubtreeValid (levels + 1) current.node := by
+    simpa [← hsucc] using current.subtreeValid
+  let leftIndex := TreeValueIndex.ofSubtree levels
+    (Concrete.childNode current.node false) (by omega)
+      (childNode_subtreeValid levels current.node false hparentValid)
+  let rightIndex := TreeValueIndex.ofSubtree levels
+    (Concrete.childNode current.node true) (by omega)
+      (childNode_subtreeValid levels current.node true hparentValid)
+  have hleftIndex : leftIndex ∈ processed := by
+    simpa [leftIndex, levels] using hleftChild
+  have hrightIndex : rightIndex ∈ processed := by
+    simpa [rightIndex, levels] using hrightChild
+  have hleftReplay := treeValues_support_replay parameter
+    (unflattenSecret left.1.2) processed left.2.2.2 leftPrefix hleftPrefix
+  have hrightReplay := treeValues_support_replay parameter
+    (unflattenSecret right.1.1.2) processed right.1.2.2.2 rightPrefix
+      hrightPrefix
+  have hleftChildEq := treeValuesReplay_eq_at_mem parameter parameter
+    (unflattenSecret left.1.2) (unflattenSecret right.1.1.2)
+    leftPrefix.2 rightPrefix.2 processed leftPrefix.1 hleftReplay
+      (hprefixValues ▸ hrightReplay) leftIndex hleftIndex
+  have hrightChildEq := treeValuesReplay_eq_at_mem parameter parameter
+    (unflattenSecret left.1.2) (unflattenSecret right.1.1.2)
+    leftPrefix.2 rightPrefix.2 processed leftPrefix.1 hleftReplay
+      (hprefixValues ▸ hrightReplay) rightIndex hrightIndex
+  let leftChild := Concrete.CacheReplay.treeNode leftPrefix.2 parameter
+    (unflattenSecret left.1.2) levels (Concrete.childNode current.node false)
+  let rightChild := Concrete.CacheReplay.treeNode leftPrefix.2 parameter
+    (unflattenSecret left.1.2) levels (Concrete.childNode current.node true)
+  have hleftLeft := treeValues_rerun_index_eq_pure parameter
+    (unflattenSecret left.1.2) processed left.2.2.2 leftPrefix
+      hleftPrefix leftIndex hleftIndex
+  have hleftRight := treeValues_rerun_index_eq_pure parameter
+    (unflattenSecret right.1.1.2) processed right.1.2.2.2 rightPrefix
+      hrightPrefix leftIndex hleftIndex
+  have hrightLeft := treeValues_rerun_index_eq_pure parameter
+    (unflattenSecret left.1.2) processed left.2.2.2 leftPrefix
+      hleftPrefix rightIndex hrightIndex
+  have hrightRight := treeValues_rerun_index_eq_pure parameter
+    (unflattenSecret right.1.1.2) processed right.1.2.2.2 rightPrefix
+      hrightPrefix rightIndex hrightIndex
+  have hleftChildEq' : leftChild =
+      Concrete.CacheReplay.treeNode rightPrefix.2 parameter
+        (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node false) := by
+    simpa [leftIndex, leftChild] using hleftChildEq
+  have hrightChildEq' : rightChild =
+      Concrete.CacheReplay.treeNode rightPrefix.2 parameter
+        (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node true) := by
+    simpa [rightIndex, rightChild] using hrightChildEq
+  have hleftLeft' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret left.1.2) levels
+          (Concrete.childNode current.node false) :
+          OracleComp HashSpec Digest)).run leftPrefix.2 =
+        pure (leftChild, leftPrefix.2) := by
+    change (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret left.1.2) levels
+          (Concrete.childNode current.node false))).run leftPrefix.2 = _
+      at hleftLeft
+    exact hleftLeft
+  have hleftRight' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node false) :
+          OracleComp HashSpec Digest)).run rightPrefix.2 =
+        pure (leftChild, rightPrefix.2) := by
+    change (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node false))).run rightPrefix.2 =
+      pure (Concrete.CacheReplay.treeNode rightPrefix.2 parameter
+        (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node false), rightPrefix.2) at hleftRight
+    rw [hleftChildEq']
+    exact hleftRight
+  have hrightLeft' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret left.1.2) levels
+          (Concrete.childNode current.node true) :
+          OracleComp HashSpec Digest)).run leftPrefix.2 =
+        pure (rightChild, leftPrefix.2) := by
+    change (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret left.1.2) levels
+          (Concrete.childNode current.node true))).run leftPrefix.2 = _
+      at hrightLeft
+    exact hrightLeft
+  have hrightRight' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node true) :
+          OracleComp HashSpec Digest)).run rightPrefix.2 =
+        pure (rightChild, rightPrefix.2) := by
+    change (simulateQ randomOracle
+        (Concrete.treeNode parameter (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node true))).run rightPrefix.2 =
+      pure (Concrete.CacheReplay.treeNode rightPrefix.2 parameter
+        (unflattenSecret right.1.1.2) levels
+          (Concrete.childNode current.node true), rightPrefix.2) at hrightRight
+    rw [hrightChildEq']
+    exact hrightRight
+  change RelTriple
+    ((simulateQ randomOracle
+      (Concrete.treeNode parameter (unflattenSecret left.1.2)
+        current.1.val current.node)).run leftPrefix.2)
+    ((simulateQ randomOracle
+      (Concrete.treeNode parameter (unflattenSecret right.1.1.2)
+        current.1.val current.node)).run rightPrefix.2) _
+  rw [hsucc]
+  exact relTriple_treeNode_succ_run_with_treeCacheCorrespondence
+    parameter selected leftEndpoints rightEndpoints
+      (unflattenSecret left.1.2) (unflattenSecret right.1.1.2)
+        levels current.node hlevel leftChild rightChild leftPrefix.2
+          rightPrefix.2 hleftLeft' hleftRight' hrightLeft' hrightRight' hcache
+
+set_option maxRecDepth 100000 in
+theorem relTriple_fixedChainMaterial_merkleTreeValues_run_with_correspondence
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest)) :
+    ∀ (indices base : List TreeValueIndex)
+      (leftBase rightBase : List Digest × QueryCache HashSpec),
+      (∀ current ∈ indices, ∃ hpositive : 0 < current.1.val,
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node false) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node false
+            (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+            base ∧
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node true) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node true
+            (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+            base) →
+      indices.Pairwise TreeValueIndex.Precedes →
+      leftBase ∈ support
+        (treeValues parameter (unflattenSecret left.1.2) base left.2.2.2) →
+      rightBase ∈ support
+        (treeValues parameter (unflattenSecret right.1.1.2)
+          base right.1.2.2.2) →
+      leftBase.1 = rightBase.1 →
+      TreeValuesFresh parameter indices leftBase.2 →
+      TreeValuesFresh parameter indices rightBase.2 →
+      ∀ (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest),
+      CoupledTreeCacheCorrespondence parameter selected
+        leftEndpoints rightEndpoints leftBase.2 rightBase.2 →
+      RelTriple
+        (treeValues parameter (unflattenSecret left.1.2) indices leftBase.2)
+        (treeValues parameter (unflattenSecret right.1.1.2) indices rightBase.2)
+        (fun leftResult rightResult =>
+          leftResult.1 = rightResult.1 ∧
+            CoupledTreeCacheCorrespondence parameter selected
+              leftEndpoints rightEndpoints leftResult.2 rightResult.2 ∧
+            (leftBase.1 ++ leftResult.1, leftResult.2) ∈ support
+              (treeValues parameter (unflattenSecret left.1.2)
+                (base ++ indices) left.2.2.2) ∧
+            (rightBase.1 ++ rightResult.1, rightResult.2) ∈ support
+              (treeValues parameter (unflattenSecret right.1.1.2)
+                (base ++ indices) right.1.2.2.2)) := by
+  intro indices
+  induction indices with
+  | nil =>
+      intro base leftBase rightBase _hchildren _hordered hleftBase hrightBase
+        _hbaseValues _hleftFresh _hrightFresh leftEndpoints rightEndpoints
+          hcache
+      simp only [treeValues_nil]
+      apply relTriple_pure_pure
+      refine ⟨rfl, hcache, ?_, ?_⟩
+      · simpa using hleftBase
+      · simpa using hrightBase
+  | cons current indices ih =>
+      intro base leftBase rightBase hchildren hordered hleftBase hrightBase
+        hbaseValues hleftFresh hrightFresh leftEndpoints rightEndpoints hcache
+      obtain ⟨hpositive, hleftChild, hrightChild⟩ :=
+        hchildren current (by simp)
+      have htailChildren : ∀ target ∈ indices,
+          ∃ hpositive : 0 < target.1.val,
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node false) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node false
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base ∧
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node true) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node true
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base := by
+        intro target htarget
+        exact hchildren target (by simp [htarget])
+      have hcurrentBefore : ∀ target ∈ indices,
+          current.Precedes target := (List.pairwise_cons.mp hordered).1
+      have htailOrdered : indices.Pairwise TreeValueIndex.Precedes :=
+        (List.pairwise_cons.mp hordered).2
+      have hhead :=
+        relTriple_fixedChainMaterial_merkleTreeValue_run_with_correspondence
+          parameter selected left right base leftBase rightBase hleftBase
+            hrightBase hbaseValues leftEndpoints rightEndpoints hcache current
+              hpositive hleftChild hrightChild
+      let LeftProperty := fun result : Digest × QueryCache HashSpec =>
+        TreeValuesFresh parameter indices result.2 ∧
+          (leftBase.1 ++ [result.1], result.2) ∈ support
+            (treeValues parameter (unflattenSecret left.1.2)
+              (base ++ [current]) left.2.2.2)
+      let RightProperty := fun result : Digest × QueryCache HashSpec =>
+        TreeValuesFresh parameter indices result.2 ∧
+          (rightBase.1 ++ [result.1], result.2) ∈ support
+            (treeValues parameter (unflattenSecret right.1.1.2)
+              (base ++ [current]) right.1.2.2.2)
+      have hleftProperty : ∀ result ∈ support
+          ((simulateQ randomOracle
+            (current.computation parameter (unflattenSecret left.1.2))).run
+              leftBase.2), LeftProperty result := by
+        intro result hresult
+        exact ⟨treeValue_preserves_tail_fresh parameter
+            (unflattenSecret left.1.2) current indices hcurrentBefore
+            leftBase.2 hleftFresh result hresult,
+          treeValues_append_support parameter (unflattenSecret left.1.2)
+            base [current] left.2.2.2 leftBase ([result.1], result.2)
+            hleftBase (treeValues_singleton_support parameter
+              (unflattenSecret left.1.2) current leftBase.2 result hresult)⟩
+      have hrightProperty : ∀ result ∈ support
+          ((simulateQ randomOracle
+            (current.computation parameter (unflattenSecret right.1.1.2))).run
+              rightBase.2), RightProperty result := by
+        intro result hresult
+        exact ⟨treeValue_preserves_tail_fresh parameter
+            (unflattenSecret right.1.1.2) current indices hcurrentBefore
+            rightBase.2 hrightFresh result hresult,
+          treeValues_append_support parameter (unflattenSecret right.1.1.2)
+            base [current] right.1.2.2.2 rightBase ([result.1], result.2)
+            hrightBase (treeValues_singleton_support parameter
+              (unflattenSecret right.1.1.2) current rightBase.2 result hresult)⟩
+      have hheadExtended := relTriple_strengthen_support
+        (leftProperty := LeftProperty) (rightProperty := RightProperty)
+        hhead hleftProperty hrightProperty
+      simp only [treeValues_cons]
+      apply relTriple_bind hheadExtended
+      intro leftHeadResult rightHeadResult hheadResult
+      obtain ⟨hheadRelation, hleftProperties, hrightProperties⟩ := hheadResult
+      obtain ⟨leftHead, leftHeadCache⟩ := leftHeadResult
+      obtain ⟨rightHead, rightHeadCache⟩ := rightHeadResult
+      dsimp only at hheadRelation hleftProperties hrightProperties ⊢
+      let nextLeftBase : List Digest × QueryCache HashSpec :=
+        (leftBase.1 ++ [leftHead], leftHeadCache)
+      let nextRightBase : List Digest × QueryCache HashSpec :=
+        (rightBase.1 ++ [rightHead], rightHeadCache)
+      have hnextValues : nextLeftBase.1 = nextRightBase.1 := by
+        simp [nextLeftBase, nextRightBase, hbaseValues, hheadRelation.1]
+      have hnextChildren : ∀ target ∈ indices,
+          ∃ hpositive : 0 < target.1.val,
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node false) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node false
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base ++ [current] ∧
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node true) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node true
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base ++ [current] := by
+        intro target htarget
+        obtain ⟨hpos, hleft, hright⟩ := htailChildren target htarget
+        exact ⟨hpos, List.mem_append_left [current] hleft,
+          List.mem_append_left [current] hright⟩
+      apply relTriple_bind
+        (ih (base ++ [current]) nextLeftBase nextRightBase hnextChildren
+          htailOrdered hleftProperties.2 hrightProperties.2 hnextValues
+            hleftProperties.1 hrightProperties.1 leftEndpoints rightEndpoints
+              hheadRelation.2)
+      intro leftTailResult rightTailResult htailResult
+      apply relTriple_pure_pure
+      refine ⟨congrArg₂ List.cons hheadRelation.1 htailResult.1,
+        htailResult.2.1, ?_, ?_⟩
+      · simpa [nextLeftBase, List.append_assoc] using htailResult.2.2.1
+      · simpa [nextRightBase, List.append_assoc] using htailResult.2.2.2
+
+theorem relTriple_fixedChainMaterial_merkleHeight_run_with_correspondence
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (height : Fin (treeHeight + 1)) (hpositive : 0 < height.val)
+    (leftBase rightBase : List Digest × QueryCache HashSpec)
+    (hleftBase : leftBase ∈ support
+      (treeValues parameter (unflattenSecret left.1.2)
+        (treeValueIndicesBelow height.val) left.2.2.2))
+    (hrightBase : rightBase ∈ support
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        (treeValueIndicesBelow height.val) right.1.2.2.2))
+    (hbaseValues : leftBase.1 = rightBase.1)
+    (hleftFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight height) leftBase.2)
+    (hrightFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight height) rightBase.2)
+    (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+    (hcache : CoupledTreeCacheCorrespondence parameter selected
+      leftEndpoints rightEndpoints leftBase.2 rightBase.2) :
+    RelTriple
+      (treeValues parameter (unflattenSecret left.1.2)
+        (treeValueIndicesAtHeight height) leftBase.2)
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        (treeValueIndicesAtHeight height) rightBase.2)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          CoupledTreeCacheCorrespondence parameter selected
+            leftEndpoints rightEndpoints leftResult.2 rightResult.2 ∧
+          (leftBase.1 ++ leftResult.1, leftResult.2) ∈ support
+            (treeValues parameter (unflattenSecret left.1.2)
+              (treeValueIndicesBelow (height.val + 1)) left.2.2.2) ∧
+          (rightBase.1 ++ rightResult.1, rightResult.2) ∈ support
+            (treeValues parameter (unflattenSecret right.1.1.2)
+              (treeValueIndicesBelow (height.val + 1)) right.1.2.2.2)) := by
+  have hchildren : ∀ current ∈ treeValueIndicesAtHeight height,
+      ∃ hcurrentPositive : 0 < current.1.val,
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node false) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node false
+            (by simpa [Nat.sub_add_cancel hcurrentPositive] using
+              current.subtreeValid)) ∈ treeValueIndicesBelow height.val ∧
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node true) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node true
+            (by simpa [Nat.sub_add_cancel hcurrentPositive] using
+              current.subtreeValid)) ∈ treeValueIndicesBelow height.val := by
+    intro current hcurrent
+    have hheight := (mem_treeValueIndicesAtHeight_iff height current).1 hcurrent
+    have hvalue : current.1.val = height.val := congrArg Fin.val hheight
+    have hcurrentPositive : 0 < current.1.val := by omega
+    refine ⟨hcurrentPositive, ?_, ?_⟩
+    · simpa only [hvalue] using
+        (childTreeValueIndex_mem_below current hcurrentPositive false)
+    · simpa only [hvalue] using
+        (childTreeValueIndex_mem_below current hcurrentPositive true)
+  have hordered : (treeValueIndicesAtHeight height).Pairwise
+      TreeValueIndex.Precedes := by
+    simp only [treeValueIndicesAtHeight, List.pairwise_ofFn]
+    intro leftNode rightNode hlt
+    exact Or.inr ⟨rfl, hlt⟩
+  have hcoupling :=
+    relTriple_fixedChainMaterial_merkleTreeValues_run_with_correspondence
+      parameter selected left right (treeValueIndicesAtHeight height)
+        (treeValueIndicesBelow height.val) leftBase rightBase hchildren hordered
+          hleftBase hrightBase hbaseValues hleftFresh hrightFresh
+            leftEndpoints rightEndpoints hcache
+  apply relTriple_post_mono hcoupling
+  intro leftResult rightResult hresult
+  have hbelow := treeValueIndicesBelow_succ height.val height.isLt
+  exact ⟨hresult.1, hresult.2.1,
+    hbelow ▸ hresult.2.2.1, hbelow ▸ hresult.2.2.2⟩
+
+def CoupledTreeValuesResult
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (leftResult rightResult : List Digest × QueryCache HashSpec) : Prop :=
+  leftResult.1 = rightResult.1 ∧
+    ∃ leftEndpoints rightEndpoints,
+      CoupledTreeCacheCorrespondence parameter selected
+        leftEndpoints rightEndpoints leftResult.2 rightResult.2
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_fixedChainMaterial_treeValuesBelow_one_with_correspondence
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hmaterial : CoupledFixedChainMaterialInvariant
+      parameter selected left right) :
+    RelTriple
+      (treeValues parameter (unflattenSecret left.1.2)
+        (treeValueIndicesBelow 1) left.2.2.2)
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        (treeValueIndicesBelow 1) right.1.2.2.2)
+      (CoupledTreeValuesResult parameter selected) := by
+  have hheight : treeValueIndicesBelow 1 = treeValueIndicesAtHeight 0 := by
+    rw [treeValueIndicesBelow_succ 0 (by omega)]
+    rw [treeValueIndicesBelow]
+    exact List.nil_append _
+  rw [hheight]
+  apply relTriple_post_mono
+    (relTriple_fixedChainMaterial_allLeafValues_run_with_correspondence
+      parameter selected left right hmaterial)
+  intro leftResult rightResult hresult
+  exact hresult
+
+set_option maxRecDepth 1000000 in
+theorem relTriple_fixedChainMaterial_treeValuesBelow_succ_with_correspondence
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hmaterial : CoupledFixedChainMaterialInvariant
+      parameter selected left right)
+    (height : Nat) (hpositive : 1 ≤ height)
+    (hcurrentBound : height < treeHeight + 1)
+    (hprefix : RelTriple
+      (treeValues parameter (unflattenSecret left.1.2)
+        (treeValueIndicesBelow height) left.2.2.2)
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        (treeValueIndicesBelow height) right.1.2.2.2)
+      (CoupledTreeValuesResult parameter selected)) :
+    RelTriple
+      (treeValues parameter (unflattenSecret left.1.2)
+        (treeValueIndicesBelow (height + 1)) left.2.2.2)
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        (treeValueIndicesBelow (height + 1)) right.1.2.2.2)
+      (CoupledTreeValuesResult parameter selected) := by
+  let currentHeight : Fin (treeHeight + 1) := ⟨height, hcurrentBound⟩
+  have hdecompose := treeValueIndicesBelow_succ height hcurrentBound
+  rw [hdecompose, treeValues_append, treeValues_append]
+  apply relTriple_bind (relTriple_with_support hprefix)
+  intro leftBase rightBase hbase
+  obtain ⟨hbaseRelation, hleftBase, hrightBase⟩ := hbase
+  unfold CoupledTreeValuesResult at hbaseRelation
+  obtain ⟨hbaseValues, leftEndpoints, rightEndpoints, hbaseCache⟩ :=
+    hbaseRelation
+  have hleftFresh := fixedChainMaterial_treeValuesBelow_fresh_at_height
+    parameter selected left hmaterial.leftLeafFresh hmaterial.leftMerkleFresh
+      currentHeight leftBase hleftBase
+  have hrightFresh := fixedChainMaterial_treeValuesBelow_fresh_at_height
+    parameter selected right.1 hmaterial.rightLeafFresh
+      hmaterial.rightMerkleFresh currentHeight rightBase hrightBase
+  have hheightCoupling :=
+    relTriple_fixedChainMaterial_merkleHeight_run_with_correspondence
+      parameter selected left right currentHeight (by
+        dsimp [currentHeight]
+        exact hpositive)
+      leftBase rightBase hleftBase hrightBase hbaseValues hleftFresh
+        hrightFresh leftEndpoints rightEndpoints hbaseCache
+  apply relTriple_bind hheightCoupling
+  intro leftCurrent rightCurrent hcurrent
+  obtain ⟨leftValues, leftCache⟩ := leftBase
+  obtain ⟨rightValues, rightCache⟩ := rightBase
+  obtain ⟨leftNewValues, leftNewCache⟩ := leftCurrent
+  obtain ⟨rightNewValues, rightNewCache⟩ := rightCurrent
+  dsimp only at hbaseValues hcurrent ⊢
+  apply relTriple_pure_pure
+  unfold CoupledTreeValuesResult
+  exact ⟨congrArg₂ List.append hbaseValues hcurrent.1,
+    leftEndpoints, rightEndpoints, hcurrent.2.1⟩
+
+theorem relTriple_fixedChainMaterial_treeValuesBelow_run_with_correspondence
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hmaterial : CoupledFixedChainMaterialInvariant
+      parameter selected left right) :
+    ∀ (height : Nat), 1 ≤ height → height ≤ treeHeight + 1 →
+      RelTriple
+        (treeValues parameter (unflattenSecret left.1.2)
+          (treeValueIndicesBelow height) left.2.2.2)
+        (treeValues parameter (unflattenSecret right.1.1.2)
+          (treeValueIndicesBelow height) right.1.2.2.2)
+        (CoupledTreeValuesResult parameter selected) := by
+  intro height
+  induction height with
+  | zero => intro hpositive _hbound; omega
+  | succ height ih =>
+      intro _hpositive hbound
+      by_cases hzero : height = 0
+      · subst height
+        exact relTriple_fixedChainMaterial_treeValuesBelow_one_with_correspondence
+          parameter selected left right hmaterial
+      · apply relTriple_fixedChainMaterial_treeValuesBelow_succ_with_correspondence
+          parameter selected left right hmaterial height (by omega) (by omega)
+        exact ih (by omega) (by omega)
+
+theorem relTriple_fixedChainMaterial_allTreeValues_run_with_correspondence
+    (parameter : PublicParameter) (selected : ChainIndex)
+    (left : FixedChainMaterial)
+    (right : FixedChainMaterial × (ChainValueIndex → Digest))
+    (hmaterial : CoupledFixedChainMaterialInvariant
+      parameter selected left right) :
+    RelTriple
+      (treeValues parameter (unflattenSecret left.1.2)
+        allTreeValueIndices left.2.2.2)
+      (treeValues parameter (unflattenSecret right.1.1.2)
+        allTreeValueIndices right.1.2.2.2)
+      (CoupledTreeValuesResult parameter selected) := by
+  rw [← treeValueIndicesBelow_all]
+  exact relTriple_fixedChainMaterial_treeValuesBelow_run_with_correspondence
+    parameter selected left right hmaterial (treeHeight + 1) (by omega) le_rfl
+
 def chainEndpointDigit : Digit :=
   ⟨chainLength - 1, by decide⟩
 
