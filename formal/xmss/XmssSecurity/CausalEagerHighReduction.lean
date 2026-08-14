@@ -315,7 +315,8 @@ noncomputable def filteredTreeProbingAttackerHashQueryAtFromHigh
           else
             (causalHashQuery input).run state
           match state.revealed probe.1 with
-          | some _ => answer
+          | some value => if value = probe.2 then answer
+              else (causalHashQuery input).run state
           | none => do
               let _ ← RevealProbeOracleSimulation.probeQuery probe.1 probe.2
               answer
