@@ -29,14 +29,15 @@
 //!   is exactly the 6-bit skip domain, so every coordinate outside it is an
 //!   ordinary suffix coordinate of the packed witness (which has `2^(m-6)`
 //!   words).
-//! - **Generalized prefix weights**: the consumed claim is
+//! - **Generalized prefix weights**: a claim tied to one value consumes
 //!   `claim == sum_{i in 0..64} prefix_weights[i] * s_hat_v[i]`. For a plain
 //!   multilinear point claim the weights are the eq tensor of the 6 prefix
-//!   coords; for flock's univariate-skip claim (whose first coordinate ranges
+//!   coords; for a univariate-skip claim (whose first coordinate ranges
 //!   over the phi_8 Lagrange domain, not the boolean cube) the caller passes
 //!   the 64 phi_8 Lagrange weights `lagrange_weights_naive(6, z_skip)`.
-//!   This module never looks inside the weights, so flock's `z_skip` flows
-//!   through unchanged.
+//!   This module never looks inside the weights, so the `z_skip` flows
+//!   through unchanged. A claim whose 64 slices were bound upstream (flock's
+//!   AB claim) passes no tie: the reduction below binds every slice.
 //!
 //! ## Protocol (prover)
 //!
@@ -517,20 +518,22 @@ pub struct RingSwitchProveState {
     eq_hi: Vec<F192>,
 }
 
-/// Phase 1 of the ring-switch prover: compute and check `s_hat_v`, then send it
-/// unless an earlier protocol phase already put the same values on the stream
-/// (`prebound`, e.g. lincheck's `z_partial`). Returns the scratch for
-/// finalization. The caller samples the possibly shared map afterwards.
+/// Phase 1 of the ring-switch prover: compute `s_hat_v`, then send it unless an
+/// earlier protocol phase already put the same values on the stream (`prebound`,
+/// e.g. lincheck's `z_partial`). Returns the scratch for finalization. The caller
+/// samples the possibly shared map afterwards.
+///
+/// `tie` is the `(prefix_weights, claim)` the 64 slices must combine to, checked
+/// here; it is `None` for a claim that IS its 64 slices (flock's AB claim, whose
+/// slices are lincheck's bound residual vector).
 pub fn prove_prepare(
     packed_witness: &[F64],
-    prefix_weights: &[F192],
+    tie: Option<(&[F192], F192)>,
     suffix_point: &[F192],
-    claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
     prebound: bool,
     ps: &mut impl Transmitter,
 ) -> RingSwitchProveState {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
         packed_witness.len(),
         1usize << suffix_point.len(),
@@ -549,11 +552,14 @@ pub fn prove_prepare(
             fold_1b_rows(packed_witness, &full)
         }
     };
-    assert_eq!(
-        claim_check(prefix_weights, &s_hat_v),
-        claim,
-        "ring_switch::prove: supplied claim does not match the witness"
-    );
+    if let Some((prefix_weights, claim)) = tie {
+        assert_eq!(prefix_weights.len(), PACKING_WIDTH);
+        assert_eq!(
+            claim_check(prefix_weights, &s_hat_v),
+            claim,
+            "ring_switch::prove: supplied claim does not match the witness"
+        );
+    }
     if !prebound {
         ps.add_scalars(&s_hat_v);
     }
@@ -888,7 +894,7 @@ mod tests {
 
         const DOMAIN: &[u8] = b"rs-claim-test";
         let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
-        prove_prepare(&packed, &prefix_weights, suffix_point, claim, None, false, &mut ps);
+        prove_prepare(&packed, Some((&prefix_weights, claim)), suffix_point, None, false, &mut ps);
         let fs = ps.into_proof();
         let read = |fs: &fiat_shamir::transcript::Proof, claim| {
             let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
@@ -978,7 +984,7 @@ mod tests {
         // Drive the production two-phase API with a single claim: send s_hat_v,
         // sample the shared map, then finish with a batching scalar of one.
         let mut ps = fiat_shamir::transcript::ProverState::new(E2E_DOMAIN, &[]);
-        let state = prove_prepare(&packed, &prefix_weights, &suffix_point, claim, None, false, &mut ps);
+        let state = prove_prepare(&packed, Some((&prefix_weights, claim)), &suffix_point, None, false, &mut ps);
         let rs_s_hat_v = state.s_hat_v.clone();
         let coordinate_weights = build_coordinate_weights(&sample_map_challenges(&mut ps));
         let out = prove_finish_deferred(state, &coordinate_weights, F192::ONE);

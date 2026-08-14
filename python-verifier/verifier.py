@@ -1546,7 +1546,9 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
 
 @dataclass(frozen=True)
 class FlockReduction:
-    ab: ZClaim
+    # The ab claim is `z_partial`, the 64 slices at `ab_point`: lincheck's
+    # terminal identity pins them, and ring switching binds each one.
+    ab_point: tuple[E, ...]
     c: ZClaim
     z_partial: tuple[E, ...]
 
@@ -1605,8 +1607,8 @@ def verify_stacked_opening(
     point_claims: Sequence[tuple[Sequence[E], E]],
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
-    ring_claims = (reduction.ab, reduction.c)
-    # A/B's values were already derived from the bound z_partial; only C is sent.
+    ring_tails = (reduction.ab_point, reduction.c.point.tail)
+    # A/B's slices were already bound by lincheck's terminal identity; only C is sent.
     c_partial = tuple(transcript.scalars(K_BITS))
     require(lagrange_interpolate(PHI[:K_BITS], c_partial, reduction.c.point.skip) == reduction.c.value, "ring-switch claim mismatch")
     slices = (reduction.z_partial, c_partial)
@@ -1620,8 +1622,8 @@ def verify_stacked_opening(
     # pair takes its low powers, the claim pool the rest.
     for _, value in point_claims:
         transcript.observe(value)
-    scales = powers(transcript.sample(), len(ring_claims) + len(point_claims))
-    ring_scales, point_scales = scales[: len(ring_claims)], scales[len(ring_claims) :]
+    scales = powers(transcript.sample(), len(ring_tails) + len(point_claims))
+    ring_scales, point_scales = scales[: len(ring_tails)], scales[len(ring_tails) :]
     target = dot(ring_scales, ring_values) + dot(point_scales, [value for _, value in point_claims])
 
     selector = qflock.selector
@@ -1635,7 +1637,7 @@ def verify_stacked_opening(
         """
         low, high = point[: qflock.variables], point[qflock.variables :]
         selector_weight = selector_eq(selector, high)
-        ring_value = dot(ring_scales, [_ring_weight(claim.point.tail, low, coordinate_weights) for claim in ring_claims])
+        ring_value = dot(ring_scales, [_ring_weight(tail, low, coordinate_weights) for tail in ring_tails])
         value = selector_weight * ring_value
         for scale, (claim_point, _) in zip(point_scales, point_claims, strict=True):
             value += scale * eq_eval(claim_point, point)
@@ -1656,11 +1658,12 @@ def verify_flock_lincheck(
     a: E,
     b: E,
     transcript: Transcript,
-) -> tuple[ZClaim, tuple[E, ...]]:
-    """Replay the fixed BLAKE2s matrix reduction."""
+) -> tuple[tuple[E, ...], tuple[E, ...]]:
+    """Replay the fixed BLAKE2s matrix reduction: the ab claim's point, then its
+    64 slices."""
     alpha = transcript.sample()
     inner_weights = quirky_weights(point.skip, point.tail[:QFLOCK_SLOT_BITS])
-    beta = transcript.sample()
+    beta = alpha * alpha
     running = alpha * a + b + beta
     challenges = []
     for _ in range(QFLOCK_SLOT_BITS):
@@ -1675,17 +1678,15 @@ def verify_flock_lincheck(
     terminal = blake2s_bilinear(alpha, inner_weights, column_weights)
     terminal += beta * column_weights[BLAKE2S_CONSTANT_COLUMN]
     require(terminal == running, "Flock lincheck terminal mismatch")
-    skip_lc = transcript.sample()
-    value = lagrange_interpolate(PHI[:K_BITS], z_partial, skip_lc)
-    return ZClaim(QuirkyPoint(skip_lc, rounds + point.tail[QFLOCK_SLOT_BITS:]), value), z_partial
+    return rounds + point.tail[QFLOCK_SLOT_BITS:], z_partial
 
 
 def verify_flock(log_n: int, transcript: Transcript) -> FlockReduction:
     zerocheck = verify_flock_zerocheck(log_n, transcript)
     ab_point = QuirkyPoint(zerocheck.skip_zc, zerocheck.rounds)
-    ab, z_partial = verify_flock_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
+    ab_tail, z_partial = verify_flock_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
     c_point = QuirkyPoint(zerocheck.skip_zc, zerocheck.equality_tail)
-    return FlockReduction(ab, ZClaim(c_point, zerocheck.c), z_partial)
+    return FlockReduction(ab_tail, ZClaim(c_point, zerocheck.c), z_partial)
 
 
 def blake2s_bilinear(

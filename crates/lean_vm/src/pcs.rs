@@ -17,7 +17,7 @@
 use crate::transcript::{ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::F64;
 
-pub use ::pcs::stack_open::{RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim};
+pub use ::pcs::stack_open::{RingSwitchClaim, RingSwitchOpen, RingSwitchTie, RingSwitchVerify, StackClaim as SlotClaim};
 use ::pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
 use ::pcs::whir::{Commitment, ProverData, commit as whir_commit, configs_for_rate};
 use ::pcs::whir::{ProverConfig, VerifierConfig};

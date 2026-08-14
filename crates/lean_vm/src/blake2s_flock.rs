@@ -363,10 +363,28 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> crat
         _ => None,
     });
     crate::pcs::RingSwitchClaim {
-        prefix_weights,
+        tie: Some(crate::pcs::RingSwitchTie {
+            prefix_weights,
+            value: z.value,
+        }),
         suffix_point,
-        value: z.value,
         s_hat_v,
+    }
+}
+
+/// The `ab` claim as a tower [`crate::pcs::RingSwitchClaim`]: its 64 slices are
+/// the claim (lincheck's residual vector, pinned by lincheck's terminal
+/// identity), so `tie` is `None` and the claim is their suffix point.
+fn slice_ring_claim(suffix_point: &[F192], captured: Option<&[F192]>, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
+    assert_eq!(
+        suffix_point.len(),
+        qflock_vars,
+        "ring-switch suffix must span the q_flock cube"
+    );
+    crate::pcs::RingSwitchClaim {
+        tie: None,
+        suffix_point: suffix_point.to_vec(),
+        s_hat_v: captured.map(<[F192]>::to_vec),
     }
 }
 
@@ -381,7 +399,7 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
         qflock_vars,
         prebound: 1,
         claims: vec![
-            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
+            slice_ring_claim(&reduced.ab.suffix_point, reduced.ab.s_hat_v.as_deref(), qflock_vars),
             ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
         ],
     }
@@ -394,7 +412,7 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
 pub fn ring_switch_verify(
     n_blocks: usize,
     offset: usize,
-    ab: ZClaim,
+    ab_point: &[F192],
     c: ZClaim,
     ab_s_hat_v: &[F192],
 ) -> crate::pcs::RingSwitchVerify {
@@ -403,7 +421,10 @@ pub fn ring_switch_verify(
         offset,
         qflock_vars,
         reconstructed: vec![ab_s_hat_v.to_vec()],
-        claims: vec![ring_claim(&ab, None, qflock_vars), ring_claim(&c, None, qflock_vars)],
+        claims: vec![
+            slice_ring_claim(ab_point, None, qflock_vars),
+            ring_claim(&c, None, qflock_vars),
+        ],
     }
 }
 
@@ -523,7 +544,7 @@ mod tests {
         let replay = verify_reduction(blocks.len(), &mut vs).expect("reduction verifies");
 
         // Prover and verifier agree on the claims left for the PCS.
-        assert_eq!(reduced.ab.claim, replay.ab, "ab claim mismatch");
+        assert_eq!(reduced.ab.suffix_point, replay.ab, "ab claim mismatch");
         assert_eq!(reduced.c.claim, replay.c, "c claim mismatch");
 
         // A mismatched transcript domain diverges the sponge, so the recovered
@@ -576,7 +597,7 @@ mod tests {
             let mut vs = VerifierState::new(label, &bundle, &[]);
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
-            let ring = ring_switch_verify(blocks.len(), offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
+            let ring = ring_switch_verify(blocks.len(), offset, &replay.ab, replay.c, &replay.lc_claim.s_hat_v);
             crate::pcs::verify(&mut vs, points, &ring, stacked.m, crate::pcs::LOG_INV_RATE, &root)
                 .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")

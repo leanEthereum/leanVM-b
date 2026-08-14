@@ -103,18 +103,29 @@ impl StackClaim {
     }
 }
 
-/// One ring-switched evaluation claim on the q_flock sub-block: the consumed
-/// claim is `value == sum_i prefix_weights[i] * s_hat_v[i]` where `s_hat_v`
-/// are the 64 bit-slice MLEs of q_flock at `suffix_point` (see
-/// [`super::ring_switch`]). `prefix_weights` has [`PACKING_WIDTH`] = 64
-/// entries (the eq tensor of the 6 prefix coords for a plain point claim;
-/// phi_8 Lagrange weights for flock's
-/// univariate-skip claim); `suffix_point` has `qflock_vars` coords.
+/// The tie of a ring-switched claim to one combined value:
+/// `value == sum_i prefix_weights[i] * s_hat_v[i]`, with [`PACKING_WIDTH`] = 64
+/// weights (the eq tensor of the 6 prefix coords for a plain point claim, phi_8
+/// Lagrange weights for a univariate-skip claim).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RingSwitchTie {
+    pub prefix_weights: Vec<F192>,
+    pub value: F192,
+}
+
+/// One ring-switched claim on the q_flock sub-block, about the 64 bit-slice MLEs
+/// of q_flock at `suffix_point` (see [`super::ring_switch`]), which has
+/// `qflock_vars` coords.
+///
+/// Ring switching binds every slice; `tie` additionally pins them to a single
+/// value the caller holds. It is `None` for flock's AB claim, whose slices are
+/// lincheck's residual vector, bound by the terminal identity upstream. A
+/// tie-less claim must be `prebound`: fresh slices with no tie would be
+/// unconstrained.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RingSwitchClaim {
-    pub prefix_weights: Vec<F192>,
+    pub tie: Option<RingSwitchTie>,
     pub suffix_point: Vec<F192>,
-    pub value: F192,
     /// Prover-side optional precomputed `s_hat_v` (the 64 bit-slice MLE
     /// values at `suffix_point`, e.g. captured inside flock's reduction).
     /// When present, [`super::ring_switch::prove_prepare`] skips its
@@ -150,9 +161,9 @@ pub struct RingSwitchVerify {
     pub offset: usize,
     /// log2 of q_flock's length in F64 words.
     pub qflock_vars: usize,
-    /// Leading ring-switch messages reconstructed from earlier stream data.
-    /// Their claim values were derived from the same bound vectors, so they are
-    /// used without being re-sent or re-checked.
+    /// Leading ring-switch messages reconstructed from earlier stream data,
+    /// where an upstream identity already bound them, so they are used without
+    /// being re-sent and their claims carry no `tie`.
     pub reconstructed: Vec<Vec<F192>>,
     pub claims: Vec<RingSwitchClaim>,
 }
@@ -391,11 +402,14 @@ pub fn open_batch_mixed_whir_stacked(
             ring.qflock_vars,
             "ring-switch suffix point must have qflock_vars coords"
         );
+        assert!(
+            claim.tie.is_some() || i < ring.prebound,
+            "a tie-less ring-switch claim must have its slices already bound"
+        );
         let state = ring_switch::prove_prepare(
             qflock,
-            &claim.prefix_weights,
+            claim.tie.as_ref().map(|t| (t.prefix_weights.as_slice(), t.value)),
             &claim.suffix_point,
-            claim.value,
             claim.s_hat_v.as_deref(),
             i < ring.prebound,
             ps,
@@ -500,7 +514,9 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     );
     assert!(n_rs > 0, "stacked PCS opening carries at least one ring-switched claim");
     for claim in &ring.claims {
-        assert_eq!(claim.prefix_weights.len(), PACKING_WIDTH);
+        if let Some(tie) = &claim.tie {
+            assert_eq!(tie.prefix_weights.len(), PACKING_WIDTH);
+        }
         assert_eq!(claim.suffix_point.len(), qflock_vars);
     }
     if ring.reconstructed.len() > n_rs || ring.reconstructed.iter().any(|s| s.len() != PACKING_WIDTH) {
@@ -508,11 +524,12 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     }
 
     // 1. Ring-switch verify: each reconstructed leading vector was already bound
-    //    and its claim value was derived from that same vector, so only the
-    //    remaining ones are read off the stream. Then sample one shared map.
+    //    upstream, so only the remaining ones are read off the stream, against
+    //    the tie that pins them. Then sample one shared map.
     let mut rs_proofs = ring.reconstructed.clone();
     for claim in ring.claims.iter().skip(ring.reconstructed.len()) {
-        let Ok(s_hat_v) = ring_switch::verify_prepare(claim.value, &claim.prefix_weights, vs) else {
+        let Some(tie) = &claim.tie else { return false };
+        let Ok(s_hat_v) = ring_switch::verify_prepare(tie.value, &tie.prefix_weights, vs) else {
             return false;
         };
         rs_proofs.push(s_hat_v);
@@ -657,9 +674,8 @@ mod tests {
             qflock_vars,
             prebound: 0,
             claims: vec![RingSwitchClaim {
-                prefix_weights,
+                tie: Some(RingSwitchTie { prefix_weights, value }),
                 suffix_point,
-                value,
                 // Exercise the fold path (no precompute).
                 s_hat_v: None,
             }],
@@ -738,7 +754,7 @@ mod tests {
 
         // Wrong ring-switched claim value: rejected by the claim check.
         let mut bad_ring = inst.ring.claims.clone();
-        bad_ring[0].value += F192::ONE;
+        bad_ring[0].tie.as_mut().unwrap().value += F192::ONE;
         assert!(
             !verify_instance(&inst, &inst.point_claims, &bad_ring, &inst.fs),
             "tampered ring-switch value accepted"
@@ -810,9 +826,11 @@ mod tests {
         let s_hat_v = fold_1b_rows(qflock, &build_eq_table_ext(&suffix_point));
         let rs_value = claim_check(&prefix_weights, &s_hat_v);
         let claims = vec![RingSwitchClaim {
-            prefix_weights,
+            tie: Some(RingSwitchTie {
+                prefix_weights,
+                value: rs_value,
+            }),
             suffix_point,
-            value: rs_value,
             // Exercise the precomputed path (transcript must be identical).
             s_hat_v: Some(s_hat_v.clone()),
         }];
@@ -852,7 +870,7 @@ mod tests {
 
         // And the crossing-regime ring claim is still bound: flip its value.
         let mut bad_ring = ring_v;
-        bad_ring.claims[0].value += F192::ONE;
+        bad_ring.claims[0].tie.as_mut().unwrap().value += F192::ONE;
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
             !verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring),

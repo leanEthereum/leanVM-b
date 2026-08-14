@@ -1740,8 +1740,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
     fs, lincheck_alpha = squeeze(fs)
-    fs, lincheck_beta = squeeze(fs)
-    lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta  # lincheck seed: alpha*a + b + beta (batches the two matrix claims)
+    lincheck_beta = lincheck_alpha * lincheck_alpha
+    lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta  # lincheck seed: alpha*a + b + alpha^2 (batches the two matrix claims and the pin)
     lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
     for i in unroll(0, LINCHECK_ROUNDS):
         fs, c0, cursor = fs_next(fs, cursor)  # q's coefficients, bar the linear one
@@ -1763,19 +1763,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     matrix_part = matrix_eval[0]
     lincheck_final = matrix_part + pin_term  # running == deferred matrix eval + the const-pin column contribution
     assert lc_running == lincheck_final
-    # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
-    fs, lincheck_z_skip = squeeze(fs)
-    skip_nums = StackBuf(2 ** K_SKIP)
-    lag64(lincheck_z_skip, skip_nums, 0)
-    lincheck_w = 0
-    for i in unroll(0, 2 ** K_SKIP):
-        lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
+    # z_partial IS the ab claim: the terminal identity above pins its 64 slices,
+    # and ring switching binds every one of them.
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
     # The two ring-switch slices (ab, c) each have PACKING = 2^LOG_PACKING = 64
     # entries. AB is lincheck's z_partial, already read; only C is sent, as the
     # next 64 stream words.
-    # Claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip. Claim 1 (c):
+    # Claim 0 (ab) is z_partial itself. Claim 1 (c):
     # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
     # in blake2s_flock::ring_claim is already baked into the transmitted 64 values,
     # so the verifier just checks the plain prefix-weighted inner product.)

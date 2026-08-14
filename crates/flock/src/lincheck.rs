@@ -42,25 +42,21 @@
 //!    Σ_{i_inner}  Â_0_quirky(z_skip, x_inner_rest, i_inner) · z_vec[i_inner]  ==  v_a
 //!    Σ_{i_inner}  B̂_0_quirky(z_skip, x_inner_rest, i_inner) · z_vec[i_inner]  ==  v_b
 //!    ```
-//! 3. **Verifier samples** quirky `(r_inner_skip, r_inner_rest)` after
-//!    observing `z_vec`.
-//! 4. **Verifier derives** one z-claim at the shared output point:
-//!    ```text
-//!    w = ẑ((r_inner_skip, r_inner_rest), x_ab.x_outer)
-//!      = Σ_{i_inner} quirky_eq(r_inner_skip, r_inner_rest, i_inner) · z_vec[i_inner]
-//!    ```
+//! 3. **The output claim IS `z_partial`**: the `2^k_skip` bit-slice values of
+//!    `z` at `(r_inner_rest, x_ab.x_outer)`, pinned by the checks above. Ring
+//!    switching binds every one of them against the commitment.
 //!
-//! The lincheck output is one `(point, value)` z-claim; combined with the
-//! c-claim handed in directly by the caller, the PCS sees **two** z-openings.
+//! Combined with the c-claim handed in directly by the caller, the PCS sees
+//! **two** ring-switched claims.
 //!
 //! ## Soundness
 //!
 //! - The two scalar checks tie `z_vec` to `v_a` and `v_b` from the upstream
 //!   layer; without them a malicious prover could send any vector.
-//! - The post-vector random `(r_inner_skip, r_inner_rest)` plus Schwartz-Zippel
-//!   ensures that if `z_vec_claimed` differs from the true partial fold of `z`,
-//!   the derived `w` differs from the true `ẑ((r_inner_skip, r_inner_rest), x_outer)`
-//!   with probability `≈ 1 − 2⁻¹²⁸`. The PCS opening catches that downstream.
+//! - `z_partial` itself travels to the PCS, and ring switching binds every one
+//!   of its entries to the commitment (error below `2⁻¹⁶⁰`), so a vector that
+//!   passes the two checks yet differs from the true partial fold of `z` is
+//!   caught by the opening downstream.
 //!
 //! ## Quirky (univariate-skip) claim points
 //!
@@ -155,12 +151,12 @@ pub trait LincheckCircuit: Sync {
     fn fold_alpha_batched(&self, alpha: F192, eq_inner: &[F192]) -> Vec<F192>;
 
     /// Column index of a constant-one wire to pin, or `None` if the circuit has
-    /// no such wire. When `Some(col)`, lincheck folds one extra `β`-term into the
-    /// comb so the sumcheck also proves that the committed constant column is the
-    /// all-ones vector (whose MLE is the constant `1`), closing the all-zero
+    /// no such wire. When `Some(col)`, lincheck folds one extra `β = α²`-term into
+    /// the comb so the sumcheck also proves that the committed constant column is
+    /// the all-ones vector (whose MLE is the constant `1`), closing the all-zero
     /// witness soundness gap. This REQUIRES the witness to set that wire to `1`
-    /// in *every* batched instance, padding included. Default `None` keeps the transcript unchanged
-    /// for circuits without a constant wire.
+    /// in *every* batched instance, padding included. The term rides a power of
+    /// `α`, so it costs no transcript message; `None` omits it.
     fn const_pin_col(&self) -> Option<usize> {
         None
     }
@@ -317,30 +313,25 @@ pub struct QuirkyPoint {
 // outer half `x_ab.x_outer`, without sending the full length-`2^k_log` vector.
 // (No LincheckProof struct: every scalar rides the shared transcript stream:
 // the high multilinear rounds' messages, then `z_partial`, the post-sumcheck
-// length-2^k_skip collapse handled by a fresh-z_skip φ8 Lagrange combination.)
+// length-2^k_skip residual, which is the output claim itself.)
 
-/// Lincheck output: one MLE evaluation claim on `z`, at the quirky inner
-/// point `(r_inner_skip, r_inner_rest)` combined with `x_ab.x_outer`
-/// (publicly known to the caller).
+/// Lincheck output: the `2^k_skip` bit-slice claims on `z` at the inner point
+/// `r_inner_rest` combined with `x_ab.x_outer` (publicly known to the caller).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LincheckClaim {
     /// The A/B batching challenge (sampled first).
     pub alpha: F192,
-    /// The constant-pin challenge (sampled after `alpha`; zero when the
-    /// circuit has no pin column).
+    /// The constant-pin challenge `alpha²`; zero when the circuit has no pin
+    /// column.
     pub beta: F192,
     /// The sumcheck round challenges, in round order (MSB-first binding).
     pub r_rounds: Vec<F192>,
-    /// Univariate-skip post-vector random sample.
-    pub r_inner_skip: F192,
     /// Multilinear post-vector random sample, length `k_log − k_skip`.
     pub r_inner_rest: Vec<F192>,
-    /// `ẑ((r_inner_skip, r_inner_rest), x_ab.x_outer)`, the single
-    /// `z`-claim derived from the A and B consistency checks.
-    pub w: F192,
-    /// The transmitted post-sumcheck vector. This is exactly the AB claim's
-    /// 64-entry ring-switch `s_hat_v`, so the opening verifier reuses it rather
-    /// than receiving the same values a second time.
+    /// The transmitted post-sumcheck vector: the 64 bit-slice values of `z` at
+    /// `(r_inner_rest, x_ab.x_outer)`, pinned by the terminal identity. This IS
+    /// the AB claim, and it IS its ring-switch `s_hat_v`, so the opening
+    /// verifier reuses it rather than receiving the same values a second time.
     pub s_hat_v: Vec<F192>,
 }
 
@@ -1200,11 +1191,11 @@ pub fn prove_padded_capture_s_hat_v(
     // 3. Constant-wire pin. Fold β·eq(j*, ·) into the comb so the same sumcheck
     //    also proves z_vec[j*] = 1 (the all-ones constant column). Since j* is a
     //    boolean index, eq(j*, ·) is the one-hot vector and this is a single
-    //    entry update. β is sampled after α; the verifier mirrors both. See
-    //    lincheck's `LincheckCircuit::const_pin_col`.
+    //    entry update. β = α², so the three residuals ride powers of one
+    //    challenge. See lincheck's `LincheckCircuit::const_pin_col`.
     let mut beta = F192::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        beta = ps.sample();
+        beta = alpha.square();
         comb_vec[col] += beta;
     }
 
@@ -1257,17 +1248,7 @@ pub fn prove_padded_capture_s_hat_v(
         ps.add_scalar(x);
     }
 
-    // 8. Sample fresh z_skip AFTER observing z_partial, which gives Schwartz-Zippel
-    //    soundness on the φ8 (univariate-skip) dim.
-    let r_inner_skip = ps.sample();
-
-    // 9. Output claim's value: φ8 Lagrange combination of z_partial at z_skip.
-    //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest; the
-    //    PCS catches mismatches downstream.
-    let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
-    let w = inner_product_ext(&lambda, &z_partial);
-
-    // 10. Convert sumcheck challenges to LSB-first `x_inner_rest` order. The
+    // 8. Convert sumcheck challenges to LSB-first `x_inner_rest` order. The
     //     loop binds the TOP bit each round, so r_rounds[0] bound bit
     //     (inner_rest_len − 1) of the i_rest part (= bit (k_log − 1) of i).
     //     LSB-first: x_inner_rest[j] binds bit (k_skip + j) of i, i.e.,
@@ -1279,9 +1260,7 @@ pub fn prove_padded_capture_s_hat_v(
         alpha,
         beta,
         r_rounds,
-        r_inner_skip,
         r_inner_rest,
-        w,
         s_hat_v: z_partial,
     }
 }
@@ -1344,14 +1323,14 @@ pub fn verify(
     //    Only the transcript messages drive the running claim; the prover's
     //    lockstep comb_vec fold is linear, so its end state is reconstructed
     //    in step 5 as column weights instead of being folded here.
-    // Constant-wire pin (mirror of prove): β sampled after α, the comb's +β
-    // at the constant column surfaces in step 5 as `+β·w_col[col]`, and the
-    // initial target gains +β·1, since the honest all-ones constant column folds
-    // to 1. See lincheck's `LincheckCircuit::const_pin_col`.
+    // Constant-wire pin (mirror of prove): β = α², the comb's +β at the
+    // constant column surfaces in step 5 as `+β·w_col[col]`, and the initial
+    // target gains +β·1, since the honest all-ones constant column folds to 1.
+    // See lincheck's `LincheckCircuit::const_pin_col`.
     let mut target = alpha * v_a + v_b;
     let mut beta = F192::ZERO;
     if circuit.const_pin_col().is_some() {
-        beta = vs.sample();
+        beta = alpha.square();
         target += beta;
     }
     let mut running = target;
@@ -1400,22 +1379,14 @@ pub fn verify(
         });
     }
 
-    // 6. Sample fresh z_skip AFTER z_partial, which gives SZ on the φ8 dim.
-    let r_inner_skip = vs.sample();
-
-    // 7. Derive output claim value via φ8 Lagrange on z_partial at z_skip.
-    //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest;
-    //    PCS catches mismatches downstream.
-    let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
-    let w = inner_product_ext(&lambda, &z_partial);
-
+    // 6. `z_partial` IS the output claim: the 64 bit-slice values of z at
+    //    (r_inner_rest, x_outer), pinned by the identity just checked, and ring
+    //    switching binds all 64 of them against the commitment.
     Ok(LincheckClaim {
         alpha,
         beta,
         r_rounds,
-        r_inner_skip,
         r_inner_rest,
-        w,
         s_hat_v: z_partial,
     })
 }
@@ -1762,18 +1733,25 @@ mod tests {
                 "claim mismatch at m={m}, k_log={k_log}, k_skip={k_skip}"
             );
 
-            // The single `w` value must match the true z quirky evaluation
-            // at ((r_inner_skip, r_inner_rest), x_ab.x_outer).
-            let pt = QuirkyPoint {
-                z_skip: claim_v.r_inner_skip,
-                x_inner_rest: claim_v.r_inner_rest.clone(),
-                x_outer: x_ab.x_outer.clone(),
-            };
-            assert_eq!(
-                claim_v.w,
-                mle_eval_bool_quirky(&z, m, k_log, k_skip, &pt),
-                "w wrong at m={m}, k_log={k_log}, k_skip={k_skip}"
-            );
+            // Every entry of the output vector must be the true bit-slice MLE
+            // of z at (r_inner_rest, x_ab.x_outer): the whole claim, not just
+            // one combination of it.
+            let eq_rest = build_eq(&claim_v.r_inner_rest);
+            let eq_outer = build_eq(&x_ab.x_outer);
+            for i_skip in 0..(1usize << k_skip) {
+                let mut acc = F192::ZERO;
+                for (i_rest, &er) in eq_rest.iter().enumerate() {
+                    for (i_outer, &eo) in eq_outer.iter().enumerate() {
+                        if z[i_skip + (i_rest << k_skip) + (i_outer << k_log)] {
+                            acc += er * eo;
+                        }
+                    }
+                }
+                assert_eq!(
+                    claim_v.s_hat_v[i_skip], acc,
+                    "slice {i_skip} wrong at m={m}, k_log={k_log}, k_skip={k_skip}"
+                );
+            }
         }
     }
 

@@ -711,7 +711,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let replay = crate::blake2s_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
     let flock_stream_end = vs.stream_offset();
     let ring =
-        crate::blake2s_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
+        crate::blake2s_flock::ring_switch_verify(n_blocks, offset, &replay.ab, replay.c, &replay.lc_claim.s_hat_v);
     pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
