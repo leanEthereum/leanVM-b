@@ -7,9 +7,10 @@
 //!      one stacked [`pcs`] commitment).
 //!   2. [`zerocheck`] reduces `a·b ⊕ c = 0` over the cube to evaluation claims
 //!      on `(â, b̂, ĉ)`.
-//!   3. [`lincheck`] reduces those to a single claim `ẑ(ρ') = v` against the
-//!      per-block matrices.
-//!   4. The PCS discharges the resulting [`proof::ZClaim`]s.
+//!   3. [`lincheck`] reduces those to the `2^k_skip` bit-slice values of `z` at
+//!      one point, against the per-block matrices.
+//!   4. The PCS binds both families of slices ([`blake2s::SliceClaim`]) to the
+//!      commitment.
 //!
 //! [`blake2s`] is the one circuit: the BLAKE2s compression encoded as a
 //! per-block R1CS (`build_block_r1cs`), plus its witness generation and the
@@ -27,7 +28,6 @@
 pub mod blake2s;
 mod gf2;
 pub mod lincheck;
-pub mod proof;
 pub mod r1cs;
 /// The circuit driven through the whole reduction. A `src` module rather than
 /// its own test binary so it shares the process, and so the ~1.9 s

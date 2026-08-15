@@ -95,6 +95,7 @@ use crate::witness::{
     BitRecord, add_carry_parts, add3_fused_parts, drive_witness_packed_and_lincheck, or_bit_at,
     write_lin_word_ab_packed,
 };
+use fiat_shamir::transcript::{Receiver, Transmitter};
 use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use pcs::stack_open::{RingSwitchClaim, RingSwitchOpen, RingSwitchVerify};
 use primitives::field::F192;
@@ -673,36 +674,29 @@ impl Blake2sSetup {
 // the caller carries the WHIR opening.
 
 /// One claim on the committed packed BLAKE2s witness `q_flock`, as left by the
-/// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
-/// evaluation the PCS must discharge; `s_hat_v` is the prover-only ring-switch
-/// tensor weight the packed open consumes (`None` when `k_log < LOG_PACKING`,
-/// and unused on the verifier side, which recovers it from `proof.open`).
-#[derive(Clone, Debug)]
-pub struct WitnessClaim {
-    pub claim: crate::proof::ZClaim,
-    pub s_hat_v: Option<Vec<F192>>,
-}
-
 /// The two claims on the committed witness `q_flock` left by the Flock BLAKE2s
 /// zerocheck + lincheck reduction, for the PCS to discharge:
 /// - `ab`: the `A∘B` side, from lincheck.
 /// - `c` : the `C` side, from zerocheck (`C = I`, so a direct z-claim).
 ///
-/// This is the clean seam between Flock's reduction and the PCS: the reduction
-/// produces these; the PCS opens them (see [`Blake2sSetup::prove_reduction`]).
+/// This is the clean seam between Flock's reduction and the PCS: both families
+/// are $2^{k_skip}$ bit-slice values at a point, transmitted and checked inside
+/// the reduction (see [`Blake2sSetup::prove_reduction`]), so the PCS only has to
+/// bind them to the commitment.
 #[derive(Clone, Debug)]
 pub struct PackedWitnessClaims {
     pub ab: SliceClaim,
-    pub c: WitnessClaim,
+    pub c: SliceClaim,
 }
 
-/// The `ab` side of a reduction: its 64 bit-slice values are the claim (they are
-/// lincheck's residual vector, pinned by lincheck's terminal identity), so it
-/// carries the suffix point they live at.
-#[derive(Clone, Debug)]
+/// One side of a reduction: the `2^k_skip` bit-slice values of `z` at
+/// `suffix_point`, already transmitted and checked (lincheck's terminal identity
+/// pins the `ab` family, the φ8-Lagrange combination against `c_eval` pins the
+/// `c` one).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SliceClaim {
     pub suffix_point: Vec<F192>,
-    pub s_hat_v: Option<Vec<F192>>,
+    pub s_hat_v: Vec<F192>,
 }
 
 /// The variable count (`log2` length) of the committed `q_flock` column for
@@ -713,66 +707,20 @@ pub fn qflock_kappa(n_blocks: usize) -> usize {
     K_LOG + min_n_blocks_log(n_blocks.max(1)) - LOG_PACKING
 }
 
-/// One reduction claim as a tower [`RingSwitchClaim`]: the quirky point splits
-/// at the packing boundary. Its univariate-skip coordinate
-/// `z_skip` covers exactly the `k_skip = LOG_PACKING = 6` packed variables, so
-/// the packing prefix is the 64 φ8-Lagrange weights at `z_skip`, and the WHOLE
-/// multilinear tail `x_inner_rest ++ x_outer` is the suffix point (`q_flock`
-/// has `2^qflock_vars` words, and no coordinate is split off into the prefix).
-///
-/// `captured` is the prover-side precomputed `s_hat_v`. The reduction captures
-/// the bit-slice MLEs w.r.t. its OWN 128-bit packing, whose prefix absorbs
-/// `z_skip` AND the first inner-rest coordinate `c`; the 64-bit packing here
-/// keeps `c` in the suffix. The 64-wide values recombine linearly: 64-word
-/// `y = 2y' + b` is the b-half of 128-word `y'`, and bit `i` of that half is
-/// bit `i + 64b` of the 128-word, so `s64[i] = (1+c)·s128[i] + c·s128[i+64]`.
-/// Lincheck already captures the 64 slices the ring switch expects; zerocheck's
-/// fused kernel captures two 64-slice banks around the first suffix coordinate,
-/// and that coordinate is folded here without rescanning `q_flock`.
-fn ring_claim(z: &crate::proof::ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> RingSwitchClaim {
-    let mut suffix_point = z.point.x_inner_rest.clone();
-    suffix_point.extend_from_slice(&z.point.x_outer);
+/// One reduction claim as a tower [`RingSwitchClaim`]: the `2^k_skip` slices and
+/// the suffix point they live at, which is the WHOLE multilinear tail of the
+/// quirky point (`q_flock` has `2^qflock_vars` words, and the packing prefix is
+/// exactly the skipped coordinates, so nothing is split off into it).
+fn ring_claim(claim: &SliceClaim, qflock_vars: usize) -> RingSwitchClaim {
     assert_eq!(
-        suffix_point.len(),
+        claim.suffix_point.len(),
         qflock_vars,
         "ring-switch suffix must span the q_flock cube"
     );
-
-    let s_hat_v = captured.and_then(|s| match s.len() {
-        PACKING_WIDTH => Some(s.to_vec()),
-        n if n == 2 * PACKING_WIDTH && !z.point.x_inner_rest.is_empty() => {
-            let c = z.point.x_inner_rest[0];
-            Some(
-                (0..PACKING_WIDTH)
-                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH])
-                    .collect(),
-            )
-        }
-        _ => None,
-    });
-
+    assert_eq!(claim.s_hat_v.len(), PACKING_WIDTH);
     RingSwitchClaim {
-        tie: Some(pcs::stack_open::RingSwitchTie {
-            prefix_weights: lagrange_weights_naive(LOG_PACKING, z.point.z_skip),
-            value: z.value,
-        }),
-        suffix_point,
-        s_hat_v,
-    }
-}
-
-/// The `ab` claim as a tower [`RingSwitchClaim`]: its slices were bound upstream
-/// (see [`SliceClaim`]), so `tie` is `None`.
-fn slice_ring_claim(suffix_point: &[F192], captured: Option<&[F192]>, qflock_vars: usize) -> RingSwitchClaim {
-    assert_eq!(
-        suffix_point.len(),
-        qflock_vars,
-        "ring-switch suffix must span the q_flock cube"
-    );
-    RingSwitchClaim {
-        tie: None,
-        suffix_point: suffix_point.to_vec(),
-        s_hat_v: captured.map(<[F192]>::to_vec),
+        suffix_point: claim.suffix_point.clone(),
+        s_hat_v: Some(claim.s_hat_v.clone()),
     }
 }
 
@@ -785,10 +733,9 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
     RingSwitchOpen {
         offset,
         qflock_vars,
-        prebound: 1,
         claims: vec![
-            slice_ring_claim(&reduced.ab.suffix_point, reduced.ab.s_hat_v.as_deref(), qflock_vars),
-            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
+            ring_claim(&reduced.ab, qflock_vars),
+            ring_claim(&reduced.c, qflock_vars),
         ],
     }
 }
@@ -796,22 +743,12 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
 /// Verifier counterpart of [`ring_switch_open`]: package the recovered
 /// `(ab, c)` claims as a [`RingSwitchVerify`], the same statement data. The
 /// transmitted opening travels separately.
-pub fn ring_switch_verify(
-    n_blocks: usize,
-    offset: usize,
-    ab_point: &[F192],
-    c: &crate::proof::ZClaim,
-    ab_s_hat_v: &[F192],
-) -> RingSwitchVerify {
+pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: &SliceClaim, c: &SliceClaim) -> RingSwitchVerify {
     let qflock_vars = qflock_kappa(n_blocks);
     RingSwitchVerify {
         offset,
         qflock_vars,
-        reconstructed: vec![ab_s_hat_v.to_vec()],
-        claims: vec![
-            slice_ring_claim(ab_point, None, qflock_vars),
-            ring_claim(c, None, qflock_vars),
-        ],
+        claims: vec![ring_claim(ab, qflock_vars), ring_claim(c, qflock_vars)],
     }
 }
 
@@ -819,9 +756,8 @@ pub fn ring_switch_verify(
 /// z-claims for the PCS and the zerocheck / lincheck claims.
 #[derive(Clone, Debug)]
 pub struct ReductionReplay {
-    /// The `ab` claim's suffix point; its values are `lc_claim.s_hat_v`.
-    pub ab: Vec<F192>,
-    pub c: crate::proof::ZClaim,
+    pub ab: SliceClaim,
+    pub c: SliceClaim,
     pub zc_claim: crate::zerocheck::ZerocheckClaim,
     pub lc_claim: crate::lincheck::LincheckClaim,
 }
@@ -845,19 +781,50 @@ fn reduction_claims(
     zc: &crate::zerocheck::ZerocheckClaim,
     lc: &crate::lincheck::LincheckClaim,
     x_outer: &[F192],
-    inner_rest_len: usize,
-) -> (Vec<F192>, crate::proof::ZClaim) {
-    let mut ab = lc.r_inner_rest.clone();
-    ab.extend_from_slice(x_outer);
-    let c = crate::proof::ZClaim {
-        point: crate::lincheck::QuirkyPoint {
-            z_skip: zc.z,
-            x_inner_rest: zc.r_rest[..inner_rest_len].to_vec(),
-            x_outer: zc.r_rest[inner_rest_len..].to_vec(),
+    c_slices: Vec<F192>,
+) -> (SliceClaim, SliceClaim) {
+    let mut ab_point = lc.r_inner_rest.clone();
+    ab_point.extend_from_slice(x_outer);
+    (
+        SliceClaim {
+            suffix_point: ab_point,
+            s_hat_v: lc.s_hat_v.clone(),
         },
-        value: zc.c_eval,
-    };
-    (ab, c)
+        SliceClaim {
+            suffix_point: zc.r_rest.clone(),
+            s_hat_v: c_slices,
+        },
+    )
+}
+
+/// The `c` family's `PACKING_WIDTH` slices, from the two banks the zerocheck's
+/// fused kernel captured. That kernel works in its OWN 128-bit packing, whose
+/// prefix absorbs `z` AND the first suffix coordinate `c`, while the 64-bit
+/// packing keeps `c` in the suffix: 64-word `y = 2y' + b` is the b-half of the
+/// 128-word `y'`, and bit `i` of that half is bit `i + 64b` of it, so
+/// `s64[i] = (1+c)·s128[i] + c·s128[i+64]`.
+fn fold_c_slices(captured: &[F192], r_rest: &[F192]) -> Vec<F192> {
+    match captured.len() {
+        PACKING_WIDTH => captured.to_vec(),
+        n if n == 2 * PACKING_WIDTH && !r_rest.is_empty() => {
+            let c = r_rest[0];
+            (0..PACKING_WIDTH)
+                .map(|i| (F192::ONE + c) * captured[i] + c * captured[i + PACKING_WIDTH])
+                .collect()
+        }
+        n => panic!("captured c slices have width {n}"),
+    }
+}
+
+/// What ties the `c` slices to the zerocheck: `c_eval` is the quirky evaluation
+/// of `z` at `(z_skip, r_rest)`, which the quirky extension expands as this φ8
+/// Lagrange combination of the slices.
+fn c_slices_value(slices: &[F192], z_skip: F192) -> F192 {
+    lagrange_weights_naive(LOG_PACKING, z_skip)
+        .iter()
+        .zip(slices)
+        .map(|(&w, &s)| w * s)
+        .fold(F192::ZERO, |a, x| a + x)
 }
 
 impl Blake2sSetup {
@@ -939,6 +906,13 @@ impl Blake2sSetup {
         );
         let zerocheck_time = t_zerocheck.elapsed();
 
+        // The `c` family, sent and tied here rather than by the PCS: both
+        // families then leave the reduction in the same shape.
+        let c_slices = fold_c_slices(&s_hat_v_c, &zc_claim.r_rest);
+        for &x in c_slices.iter() {
+            ps.add_scalar(x);
+        }
+
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = x_ab_of(&zc_claim, inner_rest_len);
         let t_lincheck = std::time::Instant::now();
@@ -954,19 +928,8 @@ impl Blake2sSetup {
         );
         let lincheck_time = t_lincheck.elapsed();
 
-        let (ab, c) = reduction_claims(&zc_claim, &lc_claim, &x_ab.x_outer, inner_rest_len);
-        let s_hat_v_ab = (self.r1cs.k_log >= LOG_PACKING).then_some(lc_claim.s_hat_v);
-
-        let reduced = PackedWitnessClaims {
-            ab: SliceClaim {
-                suffix_point: ab,
-                s_hat_v: s_hat_v_ab,
-            },
-            c: WitnessClaim {
-                claim: c,
-                s_hat_v: Some(s_hat_v_c),
-            },
-        };
+        let (ab, c) = reduction_claims(&zc_claim, &lc_claim, &x_ab.x_outer, c_slices);
+        let reduced = PackedWitnessClaims { ab, c };
         if trace {
             let reduction_time = t_reduction.elapsed();
             let glue_time = reduction_time.saturating_sub(zerocheck_time + lincheck_time);
@@ -993,6 +956,15 @@ impl Blake2sSetup {
         // protocol's seed (R1CS digest) + announced count + commitment root.
 
         let zc_claim = crate::zerocheck::verify(self.r1cs.m, vs).map_err(verifier::VerifyError::Zerocheck)?;
+
+        // The `c` family: read its slices and tie them to `c_eval`.
+        let c_slices = vs
+            .next_scalars(PACKING_WIDTH)
+            .map_err(|_| verifier::VerifyError::CSlicesTruncated)?;
+        if c_slices_value(&c_slices, zc_claim.z) != zc_claim.c_eval {
+            return Err(verifier::VerifyError::CSlicesMismatch);
+        }
+
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = x_ab_of(&zc_claim, inner_rest_len);
         // Walk-capable circuit: the verifier's lincheck consistency check is
@@ -1010,7 +982,7 @@ impl Blake2sSetup {
         )
         .map_err(verifier::VerifyError::Lincheck)?;
 
-        let (ab, c) = reduction_claims(&zc_claim, &lc_claim, &x_ab.x_outer, inner_rest_len);
+        let (ab, c) = reduction_claims(&zc_claim, &lc_claim, &x_ab.x_outer, c_slices);
         Ok(ReductionReplay {
             ab,
             c,

@@ -1736,6 +1736,20 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     ab_product = a_eval * b_eval  # zerocheck closes: running claim == a(r) * b(r)
     assert zc_running == ab_product
 
+    # ---- the C family: 2^K_SKIP slices of z at (zerocheck_z, equality tail) ----
+    # Sent here, tied to c_eval by the quirky extension's own phi8 Lagrange
+    # combination, so both families leave flock in one shape. (The prover's
+    # 128->64 half-fold is already baked into the transmitted values.)
+    claim_nums = StackBuf(2 ** K_SKIP)
+    lag64(zerocheck_z, claim_nums, 0)
+    claim_check = 0
+    s_hat_v_c = HeapBuf(2 ** K_SKIP)
+    for i in unroll(0, 2 ** K_SKIP):
+        fs, w, cursor = fs_next(fs, cursor)
+        s_hat_v_c[GEN ** i] = w
+        claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * w
+    assert claim_check == c_eval
+
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
@@ -1767,27 +1781,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # and ring switching binds every one of them.
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    # The two ring-switch slices (ab, c) each have PACKING = 2^LOG_PACKING = 64
-    # entries. AB is lincheck's z_partial, already read; only C is sent, as the
-    # next 64 stream words.
-    # Claim 0 (ab) is z_partial itself. Claim 1 (c):
-    # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
-    # in blake2s_flock::ring_claim is already baked into the transmitted 64 values,
-    # so the verifier just checks the plain prefix-weighted inner product.)
+    # The two ring-switch slices are z_partial (ab) and s_hat_v_c (c), both read
+    # and bound above; this block only binds them to the commitment.
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
     map_challenges = HeapBuf(6)
     c_table = HeapBuf(BASE_FIELD_BITS)
     z_vals = HeapBuf(2 * QFLOCK_VARS_CAP)
-    claim_nums = StackBuf(2 ** K_SKIP)
-    lag64(zerocheck_z, claim_nums, 0)
-    claim_check = 0
-    s_hat_v_c = HeapBuf(2 ** K_SKIP)  # C's row: fetch + observe each word
-    for i in unroll(0, 2 ** K_SKIP):
-        fs, w, cursor = fs_next(fs, cursor)
-        s_hat_v_c[GEN ** i] = w
-        claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * w
-    assert claim_check == c_eval
     # Compose six two-term F2-linear maps with shifts 32,16,8,4,2,1. Their
     # expansion has all 64 Frobenius terms required for soundness, while direct
     # application costs 63 squarings and only six general multiplications.

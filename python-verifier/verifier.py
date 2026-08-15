@@ -1546,11 +1546,13 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
 
 @dataclass(frozen=True)
 class FlockReduction:
-    # The ab claim is `z_partial`, the 64 slices at `ab_point`: lincheck's
-    # terminal identity pins them, and ring switching binds each one.
+    # Both families are 64 slices at a point, transmitted and checked inside the
+    # reduction: lincheck's terminal identity pins `z_partial`, the phi8 Lagrange
+    # combination against the zerocheck's c-claim pins `c_partial`.
     ab_point: tuple[E, ...]
-    c: ZClaim
+    c_point: tuple[E, ...]
     z_partial: tuple[E, ...]
+    c_partial: tuple[E, ...]
 
 
 RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
@@ -1607,11 +1609,9 @@ def verify_stacked_opening(
     point_claims: Sequence[tuple[Sequence[E], E]],
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
-    ring_tails = (reduction.ab_point, reduction.c.point.tail)
-    # A/B's slices were already bound by lincheck's terminal identity; only C is sent.
-    c_partial = tuple(transcript.scalars(K_BITS))
-    require(lagrange_interpolate(PHI[:K_BITS], c_partial, reduction.c.point.skip) == reduction.c.value, "ring-switch claim mismatch")
-    slices = (reduction.z_partial, c_partial)
+    # Both families arrive bound by the reduction, so nothing is read here.
+    ring_tails = (reduction.ab_point, reduction.c_point)
+    slices = (reduction.z_partial, reduction.c_partial)
 
     map_challenges = transcript.samples(len(RING_MAP_SHIFTS))
     coordinate_weights = _coordinate_weights(map_challenges)
@@ -1683,10 +1683,12 @@ def verify_flock_lincheck(
 
 def verify_flock(log_n: int, transcript: Transcript) -> FlockReduction:
     zerocheck = verify_flock_zerocheck(log_n, transcript)
+    # The C family, sent and tied here, so both families leave flock in one shape.
+    c_partial = tuple(transcript.scalars(K_BITS))
+    require(lagrange_interpolate(PHI[:K_BITS], c_partial, zerocheck.skip_zc) == zerocheck.c, "Flock c-slice mismatch")
     ab_point = QuirkyPoint(zerocheck.skip_zc, zerocheck.rounds)
     ab_tail, z_partial = verify_flock_lincheck(ab_point, zerocheck.a, zerocheck.b, transcript)
-    c_point = QuirkyPoint(zerocheck.skip_zc, zerocheck.equality_tail)
-    return FlockReduction(ab_tail, ZClaim(c_point, zerocheck.c), z_partial)
+    return FlockReduction(ab_tail, zerocheck.equality_tail, z_partial, c_partial)
 
 
 def blake2s_bilinear(

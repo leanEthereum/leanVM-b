@@ -38,13 +38,13 @@ use flock::blake2s::{
 };
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
-use primitives::multilinear::lagrange_weights_naive;
 use zk_alloc::ArenaVec;
 
-/// A `ẑ(point) = value` claim on the committed witness `q_flock`, recovered by the
-/// Flock zerocheck + lincheck reduction (`prove_reduction` / [`verify_reduction`])
-/// and later discharged by the PCS. Re-exported from [`flock::proof`].
-pub use flock::proof::ZClaim;
+/// One side of the Flock reduction's output on the committed witness `q_flock`:
+/// the `2^K_SKIP` bit slices at a point, already transmitted and checked by the
+/// reduction (`prove_reduction` / [`verify_reduction`]), for the PCS to bind.
+/// Re-exported from [`flock::blake2s`].
+pub use flock::blake2s::SliceClaim;
 
 /// BLAKE2s's final-block flag `f0`, which RFC 7693 sets to all ones on the last
 /// block. A hash-shaped compression is one 64-byte final block, so it is always
@@ -322,69 +322,22 @@ pub fn verify_reduction(n_blocks: usize, vs: &mut VerifierState) -> Result<Reduc
     setup_for(n_blocks).verify_reduction(vs)
 }
 
-/// One flock claim as a tower [`crate::pcs::RingSwitchClaim`]: the quirky point
-/// splits at the packing boundary. Its univariate-skip coordinate `z_skip`
-/// covers exactly the `k_skip = LOG_PACKING = 6` packed variables, so the
-/// packing prefix is the 64 φ8-Lagrange weights at `z_skip`, and the WHOLE
-/// multilinear tail `x_inner_rest ++ x_outer` is the suffix point (`q_flock` has
-/// `2^(K_LOG + n_log − 6)` words, and no coordinate is split off into the
-/// prefix).
-fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
-    let prefix_weights: Vec<F192> = lagrange_weights_naive(LOG_PACKING, z.point.z_skip);
-    let mut suffix_point: Vec<F192> = z.point.x_inner_rest.clone();
-    suffix_point.extend_from_slice(&z.point.x_outer);
-    // Length invariant: prefix (6) + suffix == K_LOG + n_blocks_log, i.e. the
-    // suffix spans exactly the committed q_flock cube.
+/// One reduction claim as a tower [`crate::pcs::RingSwitchClaim`]: the
+/// `2^K_SKIP` bit slices and the suffix point they live at, which is the WHOLE
+/// multilinear tail of the quirky point (`q_flock` has `2^(K_LOG + n_log − 6)`
+/// words, and the packing prefix is exactly the skipped coordinates, so nothing
+/// is split off into it). Both families arrive transmitted and checked, by
+/// flock's reduction, so there is nothing to tie here.
+fn ring_claim(claim: &SliceClaim, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
     assert_eq!(
-        suffix_point.len(),
+        claim.suffix_point.len(),
         qflock_vars,
         "ring-switch suffix must span the q_flock cube"
     );
-    // Precomputed s_hat_v (prover side): flock's reduction captures the 128
-    // bit-slice MLEs w.r.t. its OWN 128-bit packing, whose prefix absorbs
-    // z_skip AND the first inner-rest coordinate `c`; the 64-bit packing here
-    // keeps `c` in the suffix. The 64-wide values recombine linearly: 64-word
-    // `y = 2y' + b` is the b-half of 128-word `y'`, and bit `i` of that half
-    // is bit `i + 64b` of the 128-word, so
-    //     s64[i] = (1+c)·s128[i] + c·s128[i+64].
-    // Lincheck already captures the 64 slices expected by the K ring switch.
-    // Zerocheck's fused kernel captures two 64-slice banks around the first
-    // suffix coordinate; fold that coordinate here without rescanning q_flock.
-    let s_hat_v = captured.and_then(|s| match s.len() {
-        PACKING_WIDTH => Some(s.to_vec()),
-        n if n == 2 * PACKING_WIDTH && !z.point.x_inner_rest.is_empty() => {
-            let c = z.point.x_inner_rest[0];
-            Some(
-                (0..PACKING_WIDTH)
-                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH])
-                    .collect(),
-            )
-        }
-        _ => None,
-    });
+    assert_eq!(claim.s_hat_v.len(), PACKING_WIDTH);
     crate::pcs::RingSwitchClaim {
-        tie: Some(crate::pcs::RingSwitchTie {
-            prefix_weights,
-            value: z.value,
-        }),
-        suffix_point,
-        s_hat_v,
-    }
-}
-
-/// The `ab` claim as a tower [`crate::pcs::RingSwitchClaim`]: its 64 slices are
-/// the claim (lincheck's residual vector, pinned by lincheck's terminal
-/// identity), so `tie` is `None` and the claim is their suffix point.
-fn slice_ring_claim(suffix_point: &[F192], captured: Option<&[F192]>, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
-    assert_eq!(
-        suffix_point.len(),
-        qflock_vars,
-        "ring-switch suffix must span the q_flock cube"
-    );
-    crate::pcs::RingSwitchClaim {
-        tie: None,
-        suffix_point: suffix_point.to_vec(),
-        s_hat_v: captured.map(<[F192]>::to_vec),
+        suffix_point: claim.suffix_point.clone(),
+        s_hat_v: Some(claim.s_hat_v.clone()),
     }
 }
 
@@ -397,10 +350,9 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
     crate::pcs::RingSwitchOpen {
         offset,
         qflock_vars,
-        prebound: 1,
         claims: vec![
-            slice_ring_claim(&reduced.ab.suffix_point, reduced.ab.s_hat_v.as_deref(), qflock_vars),
-            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
+            ring_claim(&reduced.ab, qflock_vars),
+            ring_claim(&reduced.c, qflock_vars),
         ],
     }
 }
@@ -412,19 +364,14 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessC
 pub fn ring_switch_verify(
     n_blocks: usize,
     offset: usize,
-    ab_point: &[F192],
-    c: ZClaim,
-    ab_s_hat_v: &[F192],
+    ab: &SliceClaim,
+    c: &SliceClaim,
 ) -> crate::pcs::RingSwitchVerify {
     let qflock_vars = qflock_kappa(n_blocks);
     crate::pcs::RingSwitchVerify {
         offset,
         qflock_vars,
-        reconstructed: vec![ab_s_hat_v.to_vec()],
-        claims: vec![
-            slice_ring_claim(ab_point, None, qflock_vars),
-            ring_claim(&c, None, qflock_vars),
-        ],
+        claims: vec![ring_claim(ab, qflock_vars), ring_claim(c, qflock_vars)],
     }
 }
 
@@ -544,8 +491,8 @@ mod tests {
         let replay = verify_reduction(blocks.len(), &mut vs).expect("reduction verifies");
 
         // Prover and verifier agree on the claims left for the PCS.
-        assert_eq!(reduced.ab.suffix_point, replay.ab, "ab claim mismatch");
-        assert_eq!(reduced.c.claim, replay.c, "c claim mismatch");
+        assert_eq!(reduced.ab, replay.ab, "ab claim mismatch");
+        assert_eq!(reduced.c, replay.c, "c claim mismatch");
 
         // A mismatched transcript domain diverges the sponge, so the recovered
         // claims must NOT match the prover's (the reduction is transcript-bound).
@@ -597,7 +544,7 @@ mod tests {
             let mut vs = VerifierState::new(label, &bundle, &[]);
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
-            let ring = ring_switch_verify(blocks.len(), offset, &replay.ab, replay.c, &replay.lc_claim.s_hat_v);
+            let ring = ring_switch_verify(blocks.len(), offset, &replay.ab, &replay.c);
             crate::pcs::verify(&mut vs, points, &ring, stacked.m, crate::pcs::LOG_INV_RATE, &root)
                 .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")
