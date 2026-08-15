@@ -58,6 +58,7 @@ import XmssSecurity.CausalInstalledDetailedGame
 import XmssSecurity.CausalInstalledStrategyExperiment
 import XmssSecurity.CausalStrategyReduction
 import XmssSecurity.CausalViewCoupling
+import XmssSecurity.CausalEagerHighEventTransfer
 import XmssSecurity.ChainTracedGame
 import XmssSecurity.AdaptiveRevealedHiddenValue
 import XmssSecurity.AdaptiveRevealMonitor
