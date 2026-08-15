@@ -2428,6 +2428,23 @@ theorem relTriple_programmed_monitoredTreeHashQuery
             right hrel hleftSupport hrightSupport leftCache rightState hstate
               input hchain hleaf
 
+noncomputable def filteredHighMappedAdversaryRun
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (state : CausalHashState) :
+    OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+      ((OracleWorld + SigningSpec).Range input × CausalHashState) :=
+    match input with
+    | .inl (.inl n) => (causalUniformImpl n).run state
+    | .inl (.inr hashInput) =>
+        filteredTreeHashComputationAtFromHigh
+          (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
+            hashInput state
+    | .inr request =>
+        filteredCausalSigningQuery keyHigh.1 selected request state
+
 noncomputable def filteredHighMappedAdversaryImpl
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
@@ -2435,15 +2452,7 @@ noncomputable def filteredHighMappedAdversaryImpl
     QueryImpl (OracleWorld + SigningSpec)
       (StateT CausalHashState
         (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))) :=
-  fun input =>
-    match input with
-    | .inl (.inl n) => causalUniformImpl n
-    | .inl (.inr hashInput) => StateT.mk fun state =>
-        (filteredTreeHashComputationAtFromHigh
-          (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
-          hashInput state)
-    | .inr request => StateT.mk fun state =>
-        filteredCausalSigningQuery keyHigh.1 selected request state
+  fun input => StateT.mk (filteredHighMappedAdversaryRun keyHigh selected input)
 
 noncomputable def filteredHighActionTracedMappedAdversaryImpl
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -2457,6 +2466,20 @@ noncomputable def filteredHighActionTracedMappedAdversaryImpl
   (filteredHighMappedAdversaryImpl keyHigh selected).withTraceAppend
     attackerActionFragment
 
+noncomputable def filteredHighVerifierRun
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (input : OracleWorld.Domain)
+    (state : CausalHashState) :
+    OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+      (OracleWorld.Range input × CausalHashState) :=
+    match input with
+    | .inl n => (causalUniformImpl n).run state
+    | .inr hashInput =>
+        filteredTreeHashComputationAtFromHigh
+          (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
+            hashInput state
+
 noncomputable def filteredHighVerifierImpl
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
@@ -2464,13 +2487,7 @@ noncomputable def filteredHighVerifierImpl
     QueryImpl OracleWorld
       (StateT CausalHashState
         (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))) :=
-  fun input =>
-    match input with
-    | .inl n => causalUniformImpl n
-    | .inr hashInput => StateT.mk fun state =>
-        (filteredTreeHashComputationAtFromHigh
-          (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
-          hashInput state)
+  fun input => StateT.mk (filteredHighVerifierRun keyHigh selected input)
 
 noncomputable def filteredHighDetailedGameAfterKeygen
     (adversary : Adversary Concrete.scheme)
@@ -2525,6 +2542,18 @@ noncomputable def sourceDirectMappedAdversaryImpl
       (StateT (QueryCache HashSpec) ProbComp) :=
   unloggedMappedAdversaryImpl publicKey secretKey
 
+theorem sourceDirectMappedAdversaryImpl_eq_compose
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    sourceDirectMappedAdversaryImpl publicKey secretKey =
+      xmssRomImpl ∘ₛ sourceUnloggedMappedAdversaryImpl publicKey secretKey := by
+  funext input
+  rcases input with worldInput | request
+  · rcases worldInput with n | hashInput
+    · rfl
+    · simp [sourceDirectMappedAdversaryImpl, unloggedMappedAdversaryImpl,
+        sourceUnloggedMappedAdversaryImpl, QueryImpl.apply_compose, xmssRomImpl]
+  · rfl
+
 abbrev SourceTracedState := QueryCache HashSpec × AttackerActionTrace
 
 noncomputable def actionTracedStateImpl
@@ -2545,6 +2574,47 @@ noncomputable def sourceDirectTracedMappedAdversaryImpl
     (sourceDirectMappedAdversaryImpl publicKey secretKey)
     attackerActionFragment
 
+theorem sourceDirectTracedMappedAdversaryImpl_query_run_eq
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (cache : QueryCache HashSpec) (trace : AttackerActionTrace) :
+    (sourceDirectTracedMappedAdversaryImpl publicKey secretKey input).run
+        (cache, trace) =
+      (fun result =>
+        (result.1.1, (result.2, trace ++ result.1.2))) <$>
+        (simulateQ xmssRomImpl
+          (sourceActionTracedMappedAdversaryImpl publicKey secretKey input).run
+            ).run cache := by
+  unfold sourceDirectTracedMappedAdversaryImpl actionTracedStateImpl
+    sourceActionTracedMappedAdversaryImpl
+  rw [sourceDirectMappedAdversaryImpl_eq_compose]
+  simp [QueryImpl.apply_compose, QueryImpl.withTraceAppend_apply,
+    map_eq_bind_pure_comp]
+
+set_option maxRecDepth 1000000 in
+theorem sourceDirectTracedMappedAdversaryImpl_run_eq
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (cache : QueryCache HashSpec) (trace : AttackerActionTrace) :
+    (simulateQ (sourceDirectTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run (cache, trace) =
+      (fun result =>
+        (result.1.1, (result.2, trace ++ result.1.2))) <$>
+        (simulateQ xmssRomImpl
+          (simulateQ (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
+            computation).run).run cache := by
+  induction computation using OracleComp.inductionOn generalizing cache trace with
+  | pure value => simp
+  | query_bind input next ih =>
+      simp only [StateT.run_bind, WriterT.run_bind', simulateQ_bind, map_bind,
+        simulateQ_spec_query]
+      rw [sourceDirectTracedMappedAdversaryImpl_query_run_eq]
+      simp only [bind_map_left]
+      apply bind_congr
+      intro head
+      simpa [List.append_assoc] using
+        (ih head.1.1 head.2 (trace ++ head.1.2))
+
 abbrev MonitoredTracedState := MonitoredCausalState × AttackerActionTrace
 
 noncomputable def filteredHighMonitoredBaseMappedAdversaryImpl
@@ -2553,20 +2623,9 @@ noncomputable def filteredHighMonitoredBaseMappedAdversaryImpl
     (selected : ChainIndex) (table : ChainValueIndex → Digest) :
     QueryImpl (OracleWorld + SigningSpec)
       (StateT MonitoredCausalState ProbComp) :=
-  fun input =>
-    match input with
-    | .inl (.inl n) => monitorCausalTrace table (fun causalState =>
-        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-          ((causalUniformImpl n).run causalState)).run)
-    | .inl (.inr hashInput) => monitorCausalTrace table (fun causalState =>
-        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-          (filteredTreeHashComputationAtFromHigh
-            (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
-              hashInput causalState)).run)
-    | .inr request => monitorCausalTrace table (fun causalState =>
-        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-          (filteredCausalSigningQuery keyHigh.1 selected request
-            causalState)).run)
+  fun input => monitorCausalTrace table fun causalState =>
+    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+      (filteredHighMappedAdversaryRun keyHigh selected input causalState)).run
 
 noncomputable def filteredHighMonitoredMappedAdversaryImpl
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -2670,6 +2729,31 @@ noncomputable def sourceDirectTracedVerifierImpl :
         (fun result => (result.1, (result.2, state.2))) <$>
           (xmssRomImpl (.inl n)).run state.1
     | .inr hashInput => sourceDirectTracedHashVerifierImpl hashInput
+
+theorem sourceDirectTracedVerifierImpl_query_run_eq
+    (input : OracleWorld.Domain)
+    (cache : QueryCache HashSpec) (trace : AttackerActionTrace) :
+    (sourceDirectTracedVerifierImpl input).run (cache, trace) =
+      (fun result => (result.1, (result.2, trace))) <$>
+        (xmssRomImpl input).run cache := by
+  rcases input with n | hashInput <;> rfl
+
+theorem sourceDirectTracedVerifierImpl_run_eq
+    (computation : OracleComp OracleWorld α)
+    (cache : QueryCache HashSpec) (trace : AttackerActionTrace) :
+    (simulateQ sourceDirectTracedVerifierImpl computation).run (cache, trace) =
+      (fun result => (result.1, (result.2, trace))) <$>
+        (simulateQ xmssRomImpl computation).run cache := by
+  induction computation using OracleComp.inductionOn generalizing cache with
+  | pure value => simp
+  | query_bind input next ih =>
+      simp only [StateT.run_bind, simulateQ_bind, simulateQ_spec_query,
+        map_bind]
+      rw [sourceDirectTracedVerifierImpl_query_run_eq]
+      simp only [bind_map_left]
+      apply bind_congr
+      intro head
+      exact ih head.1 head.2
 
 noncomputable def filteredHighMonitoredVerifierImpl
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -2949,6 +3033,52 @@ theorem filteredHighMonitoredHashVerifier_preserves_bad
   exact monitorCausalTrace_preserves_bad table _ state.1 hbad baseResult
     hbaseResult
 
+theorem filteredHighMonitoredUniformVerifier_preserves_traceConsistent
+    (table : ChainValueIndex → Digest) (n : Nat)
+    (state : MonitoredTracedState) (hconsistent : state.1.TraceConsistent table)
+    (result : unifSpec.Range n × MonitoredTracedState)
+    (hresult : result ∈ support
+      ((filteredHighMonitoredUniformVerifierImpl table n).run state)) :
+    result.2.1.TraceConsistent table := by
+  unfold filteredHighMonitoredUniformVerifierImpl at hresult
+  simp only [StateT.run_mk] at hresult
+  rw [support_map] at hresult
+  obtain ⟨baseResult, hbaseResult, rfl⟩ := hresult
+  exact monitorCausalTrace_preserves_traceConsistent table _ state.1 hconsistent
+    baseResult hbaseResult
+
+theorem filteredHighMonitoredHashVerifier_preserves_traceConsistent
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest)
+    (hashInput : HashInput) (state : MonitoredTracedState)
+    (hconsistent : state.1.TraceConsistent table)
+    (result : HashOutput × MonitoredTracedState)
+    (hresult : result ∈ support
+      ((filteredHighMonitoredHashVerifierImpl keyHigh selected table
+        hashInput).run state)) :
+    result.2.1.TraceConsistent table := by
+  rw [filteredHighMonitoredHashVerifierImpl_run] at hresult
+  rw [filteredHighMonitoredHashVerifierRun_eq, support_map] at hresult
+  obtain ⟨baseResult, hbaseResult, rfl⟩ := hresult
+  exact monitorCausalTrace_preserves_traceConsistent table _ state.1 hconsistent
+    baseResult hbaseResult
+
+theorem filteredHighMonitoredVerifier_preserves_traceConsistent
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest) :
+    QueryImpl.PreservesInv
+      (filteredHighMonitoredVerifierImpl keyHigh selected table)
+      (fun candidate : MonitoredTracedState =>
+        candidate.1.TraceConsistent table) := by
+  intro input state hconsistent result hresult
+  rcases input with n | hashInput
+  · exact filteredHighMonitoredUniformVerifier_preserves_traceConsistent table n
+      state hconsistent result hresult
+  · exact filteredHighMonitoredHashVerifier_preserves_traceConsistent keyHigh
+      selected table hashInput state hconsistent result hresult
+
 
 set_option maxHeartbeats 200000 in
 theorem filteredHighMonitoredVerifier_preserves_bad
@@ -2982,6 +3112,24 @@ theorem filteredHighMonitoredVerifier_simulation_preserves_bad
     (fun candidate : MonitoredTracedState => candidate.1.bad)
     (filteredHighMonitoredVerifier_preserves_bad keyHigh selected table)
       computation state hbad result hresult
+
+theorem filteredHighMonitoredVerifier_simulation_preserves_traceConsistent
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest)
+    (computation : OracleComp OracleWorld α)
+    (state : MonitoredTracedState) (hconsistent : state.1.TraceConsistent table)
+    (result : α × MonitoredTracedState)
+    (hresult : result ∈ support
+      ((simulateQ (filteredHighMonitoredVerifierImpl keyHigh selected table)
+        computation).run state)) :
+    result.2.1.TraceConsistent table := by
+  exact OracleComp.simulateQ_run_preservesInv
+    (filteredHighMonitoredVerifierImpl keyHigh selected table)
+    (fun candidate : MonitoredTracedState =>
+      candidate.1.TraceConsistent table)
+    (filteredHighMonitoredVerifier_preserves_traceConsistent keyHigh selected
+      table) computation state hconsistent result hresult
 
 
 set_option maxRecDepth 1000000 in
@@ -3221,6 +3369,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_uniform
         rightResult.2.bad) := by
     simpa [sourceDirectMappedAdversaryImpl,
       filteredHighMonitoredBaseMappedAdversaryImpl,
+      filteredHighMappedAdversaryRun,
       unloggedMappedAdversaryImpl_apply_inl, xmssRomImpl, unifFwdImpl,
       OracleComp.liftM_run_StateT] using hcouple
   have hlift := relTriple_actionTracedState_until_bad
@@ -3307,6 +3456,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_hash_of_probe
         rightResult.2.bad) := by
     simpa [sourceDirectMappedAdversaryImpl,
       filteredHighMonitoredBaseMappedAdversaryImpl,
+      filteredHighMappedAdversaryRun,
       filteredTreeProbingAttackerHashQueryAtFromHigh,
       unloggedMappedAdversaryImpl_apply_inl, xmssRomImpl,
       hprobeRight, hcomputation] using hcouple
@@ -3364,6 +3514,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_hash_of_leafProbe
         rightResult.2.bad) := by
     simpa [sourceDirectMappedAdversaryImpl,
       filteredHighMonitoredBaseMappedAdversaryImpl,
+      filteredHighMappedAdversaryRun,
       unloggedMappedAdversaryImpl_apply_inl, xmssRomImpl] using hcouple
   have hlift := relTriple_actionTracedState_until_bad
     (Sum.inl (Sum.inr input)) left.secretKey.parameter selected left.cache
@@ -3419,6 +3570,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_hash_of_no_probes
         rightResult.2.bad) := by
     simpa [sourceDirectMappedAdversaryImpl,
       filteredHighMonitoredBaseMappedAdversaryImpl,
+      filteredHighMappedAdversaryRun,
       unloggedMappedAdversaryImpl_apply_inl, xmssRomImpl] using hcouple
   have hlift := relTriple_actionTracedState_until_bad
     (Sum.inl (Sum.inr input)) left.secretKey.parameter selected left.cache
@@ -3520,6 +3672,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_signing
         rightResult.2.bad) := by
     simpa [sourceDirectMappedAdversaryImpl,
       filteredHighMonitoredBaseMappedAdversaryImpl,
+      filteredHighMappedAdversaryRun,
       unloggedMappedAdversaryImpl_apply_inr] using hcouple
   have hlift := relTriple_actionTracedState_until_bad (Sum.inr request)
     left.secretKey.parameter selected left.cache right.1.1.cache right.1.2
@@ -3624,6 +3777,69 @@ theorem filteredHighMonitoredMappedAdversaryImpl_preserves_bad
   exact filteredHighMonitoredBaseMappedAdversaryImpl_preserves_bad keyHigh
     selected table input state.1 hbad baseResult hbaseResult
 
+theorem filteredHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (state : MonitoredCausalState) (hconsistent : state.TraceConsistent table)
+    (result : (OracleWorld + SigningSpec).Range input × MonitoredCausalState)
+    (hresult : result ∈ support
+      ((filteredHighMonitoredBaseMappedAdversaryImpl keyHigh selected table
+        input).run state)) :
+    result.2.TraceConsistent table := by
+  rcases input with (uniformOrHash | request)
+  · rcases uniformOrHash with n | hashInput
+    · apply monitorCausalTrace_preserves_traceConsistent table _ state hconsistent
+      simpa [filteredHighMonitoredBaseMappedAdversaryImpl] using hresult
+    · apply monitorCausalTrace_preserves_traceConsistent table _ state hconsistent
+      simpa [filteredHighMonitoredBaseMappedAdversaryImpl] using hresult
+  · apply monitorCausalTrace_preserves_traceConsistent table _ state hconsistent
+    simpa [filteredHighMonitoredBaseMappedAdversaryImpl] using hresult
+
+theorem filteredHighMonitoredMappedAdversaryImpl_preserves_traceConsistent
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest) :
+    QueryImpl.PreservesInv
+      (filteredHighMonitoredMappedAdversaryImpl keyHigh selected table)
+      (fun candidate : MonitoredTracedState =>
+        candidate.1.TraceConsistent table) := by
+  intro input state hconsistent result hresult
+  unfold filteredHighMonitoredMappedAdversaryImpl actionTracedStateImpl at hresult
+  change result ∈ support (do
+    let baseResult ←
+      (filteredHighMonitoredBaseMappedAdversaryImpl keyHigh selected table
+        input).run state.1
+    pure (baseResult.1,
+      (baseResult.2, state.2 ++ attackerActionFragment input baseResult.1)))
+      at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨baseResult, hbaseResult, hfinal⟩ := hresult
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  exact filteredHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
+    keyHigh selected table input state.1 hconsistent baseResult hbaseResult
+
+theorem filteredHighMonitoredAdversary_simulation_preserves_traceConsistent
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (state : MonitoredTracedState) (hconsistent : state.1.TraceConsistent table)
+    (result : α × MonitoredTracedState)
+    (hresult : result ∈ support
+      ((simulateQ
+        (filteredHighMonitoredMappedAdversaryImpl keyHigh selected table)
+          computation).run state)) :
+    result.2.1.TraceConsistent table := by
+  exact OracleComp.simulateQ_run_preservesInv
+    (filteredHighMonitoredMappedAdversaryImpl keyHigh selected table)
+    (fun candidate : MonitoredTracedState =>
+      candidate.1.TraceConsistent table)
+    (filteredHighMonitoredMappedAdversaryImpl_preserves_traceConsistent keyHigh
+      selected table) computation state hconsistent result hresult
+
 set_option maxRecDepth 1000000 in
 theorem relTriple_sourceDirect_filteredHighMonitored_adversary
     (adversary : Adversary Concrete.scheme)
@@ -3666,5 +3882,284 @@ theorem relTriple_sourceDirect_filteredHighMonitored_adversary
       filteredHighMonitoredMappedAdversaryImpl_preserves_bad
         (right.1.1, right.2) selected right.1.2 input state hbad result hresult)
     (adversary.main left.publicKey) leftState rightState hstate
+
+
+noncomputable def sourceDirectTracedDetailedExecution
+    (adversary : Adversary Concrete.scheme)
+    (keyView : ProgrammedFixedChainKeygenView) :
+    ProbComp ((Forgery × Bool) × SourceTracedState) := do
+  let handled ← (simulateQ
+    (sourceDirectTracedMappedAdversaryImpl keyView.publicKey keyView.secretKey)
+      (adversary.main keyView.publicKey)).run (keyView.cache, [])
+  let verified ← (simulateQ sourceDirectTracedVerifierImpl
+    (Concrete.scheme.verify keyView.publicKey handled.1.epoch
+      handled.1.message handled.1.signature)).run handled.2
+  pure ((handled.1, verified.1), verified.2)
+
+noncomputable def filteredHighMonitoredDetailedExecution
+    (adversary : Adversary Concrete.scheme)
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest) :
+    ProbComp ((Forgery × Bool) × MonitoredTracedState) := do
+  let initial : MonitoredTracedState :=
+    (⟨filteredCausalKeygenState selected keyHigh.1,
+      some AdaptiveRevealMonitor.State.empty, []⟩, [])
+  let handled ← (simulateQ
+    (filteredHighMonitoredMappedAdversaryImpl keyHigh selected table)
+      (adversary.main keyHigh.1.publicKey)).run initial
+  let verified ← (simulateQ
+    (filteredHighMonitoredVerifierImpl keyHigh selected table)
+    (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+      handled.1.message handled.1.signature)).run handled.2
+  pure ((handled.1, verified.1), verified.2)
+
+theorem filteredHighMonitoredDetailedExecution_traceConsistent
+    (adversary : Adversary Concrete.scheme)
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest)
+    (result : (Forgery × Bool) × MonitoredTracedState)
+    (hresult : result ∈ support
+      (filteredHighMonitoredDetailedExecution adversary keyHigh selected
+        table)) :
+    result.2.1.TraceConsistent table := by
+  unfold filteredHighMonitoredDetailedExecution at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨handled, hhandled, hresult⟩ := hresult
+  have hhandledConsistent :=
+    filteredHighMonitoredAdversary_simulation_preserves_traceConsistent
+      keyHigh selected table (adversary.main keyHigh.1.publicKey)
+      (⟨filteredCausalKeygenState selected keyHigh.1,
+        some AdaptiveRevealMonitor.State.empty, []⟩, [])
+      (monitoredCausalState_initial_traceConsistent table
+        (filteredCausalKeygenState selected keyHigh.1)) handled hhandled
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨verified, hvertified, hresult⟩ := hresult
+  simp only [support_pure, Set.mem_singleton_iff] at hresult
+  subst result
+  exact filteredHighMonitoredVerifier_simulation_preserves_traceConsistent
+    keyHigh selected table
+    (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+      handled.1.message handled.1.signature)
+    handled.2 hhandledConsistent verified hvertified
+
+def sourceDirectExecutionResult
+    (keyView : ProgrammedFixedChainKeygenView)
+    (execution : (Forgery × Bool) × SourceTracedState) :
+    (GameOutcome × QueryCache HashSpec) × AttackerActionTrace :=
+  ((actionTraceOutcome keyView.publicKey keyView.secretKey
+      (execution.1, execution.2.2), execution.2.1), execution.2.2)
+
+set_option maxRecDepth 1000000 in
+theorem sourceDirectTracedDetailedExecution_eq_actionTraced
+    (adversary : Adversary Concrete.scheme)
+    (keyView : ProgrammedFixedChainKeygenView) :
+    sourceDirectExecutionResult keyView <$>
+        sourceDirectTracedDetailedExecution adversary keyView =
+      detailedGameAfterKeygenWithActionTrace adversary keyView.publicKey
+        keyView.secretKey keyView.cache := by
+  unfold sourceDirectTracedDetailedExecution
+    detailedGameAfterKeygenWithActionTrace
+    sourceActionTracedDetailedGameAfterKeygen
+  rw [sourceDirectTracedMappedAdversaryImpl_run_eq]
+  simp only [List.nil_append, map_eq_bind_pure_comp, bind_assoc, pure_bind,
+    simulateQ_bind, StateT.run_bind]
+  apply bind_congr
+  intro handled
+  simp only [Function.comp_apply, pure_bind]
+  rw [sourceDirectTracedVerifierImpl_run_eq]
+  simp [sourceDirectExecutionResult, map_eq_bind_pure_comp]
+
+set_option maxRecDepth 1000000 in
+theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution
+    (adversary : Adversary Concrete.scheme)
+    (selected : ChainIndex)
+    (left : ProgrammedFixedChainKeygenView)
+    (right : (ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) × (ChainEdgeIndex → Digest))
+    (hrel : ProgrammedActualKeygenTreeCacheHighRelation selected left right)
+    (hleftSupport : left ∈ support
+      (programmedWarmedFixedChainKeygen selected))
+    (hrightSupport : right.1.1 ∈ support
+      (actualFixedChainKeygen selected)) :
+    RelTriple
+      (sourceDirectTracedDetailedExecution adversary left)
+      (filteredHighMonitoredDetailedExecution adversary
+        (right.1.1, right.2) selected right.1.2)
+      (fun leftResult rightResult =>
+        (leftResult.1 = rightResult.1 ∧
+          MonitoredTracedStateRelation left.secretKey.parameter selected
+            left.cache right.1.1.cache right.1.2
+              leftResult.2 rightResult.2) ∨
+        rightResult.2.1.bad) := by
+  have hinitial := monitoredTracedStateRelation_initial selected left right.1
+    (programmedActualKeygenCacheHighRelation_to_stable selected left right
+      hrel.base hleftSupport hrightSupport)
+    hleftSupport hrightSupport
+  unfold sourceDirectTracedDetailedExecution
+    filteredHighMonitoredDetailedExecution
+  rw [← hrel.base.base.1.2.1]
+  apply relTriple_bind
+    (relTriple_sourceDirect_filteredHighMonitored_adversary adversary selected
+      left right hrel hleftSupport hrightSupport (left.cache, [])
+        (⟨filteredCausalKeygenState selected right.1.1,
+          some AdaptiveRevealMonitor.State.empty, []⟩, []) hinitial)
+  intro leftHandled rightHandled hhandled
+  rcases hhandled with hgood | hbad
+  · obtain ⟨hforgery, hstates⟩ := hgood
+    rw [← hforgery]
+    apply relTriple_bind
+      (relTriple_sourceDirect_filteredHighMonitored_verifier selected left right
+        hrel hleftSupport hrightSupport
+        (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
+          leftHandled.1.message leftHandled.1.signature)
+        leftHandled.2 rightHandled.2 hstates)
+    intro leftVerified rightVerified hverified
+    apply relTriple_pure_pure
+    rcases hverified with hverifiedGood | hverifiedBad
+    · exact Or.inl ⟨congrArg (Prod.mk leftHandled.1) hverifiedGood.1,
+        hverifiedGood.2⟩
+    · exact Or.inr hverifiedBad
+  · apply relTriple_bind
+      (relTriple_prod
+        (fun _result _hresult => True.intro)
+        (filteredHighMonitoredVerifier_simulation_preserves_bad
+          (right.1.1, right.2) selected right.1.2
+          (Concrete.scheme.verify left.publicKey rightHandled.1.epoch
+            rightHandled.1.message rightHandled.1.signature)
+          rightHandled.2 hbad))
+    intro leftVerified rightVerified hverified
+    apply relTriple_pure_pure
+    exact Or.inr hverified.2
+
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem uniformCoupledWarmedFixedChainKeygenWithHigh_support_actual
+    (selected : ChainIndex)
+    (right : (ProgrammedFixedChainKeygenView ×
+      (ChainValueIndex → Digest)) × (ChainEdgeIndex → Digest))
+    (hright : right ∈ support
+      (uniformCoupledWarmedFixedChainKeygenWithHigh selected)) :
+    right.1.1 ∈ support (actualFixedChainKeygen selected) := by
+  unfold uniformCoupledWarmedFixedChainKeygenWithHigh at hright
+  rw [mem_support_bind_iff] at hright
+  obtain ⟨base, _hbase, hright⟩ := hright
+  rw [mem_support_bind_iff] at hright
+  obtain ⟨keyHigh, hkeyHigh, hpure⟩ := hright
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  have hrightFirst : right.1.1 = keyHigh.1 := by
+    simpa using congrArg (fun candidate => candidate.1.1) hpure
+  rw [hrightFirst]
+  have hprojected : keyHigh.1 ∈ support
+      (Prod.fst <$> coupledWarmedFixedChainKeygenWithHigh selected) := by
+    rw [support_map]
+    exact ⟨keyHigh, hkeyHigh, rfl⟩
+  rw [mem_support_iff_evalDist_apply_ne_zero] at hprojected ⊢
+  rw [evalDist_coupledWarmedFixedChainKeygenWithHigh_fst_eq_actual selected]
+    at hprojected
+  exact hprojected
+
+abbrev SourceDirectTracedProgramResult :=
+  ProgrammedFixedChainKeygenView ×
+    ((Forgery × Bool) × SourceTracedState)
+
+abbrev FilteredHighMonitoredProgramResult :=
+  ((ProgrammedFixedChainKeygenView × (ChainValueIndex → Digest)) ×
+    (ChainEdgeIndex → Digest)) ×
+      ((Forgery × Bool) × MonitoredTracedState)
+
+def filteredHighMonitoredProgramProjection
+    (result : FilteredHighMonitoredProgramResult) :
+    (ChainValueIndex → Digest) ×
+      (FilteredHighDirectResult ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex) :=
+  (result.1.1.2,
+    (((result.1.1.1, result.1.2),
+      ((result.2.1, result.2.2.2), result.2.2.1.causal)),
+      result.2.2.1.trace))
+
+noncomputable def sourceDirectTracedProgram
+    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    ProbComp SourceDirectTracedProgramResult := do
+  let keyView ← programmedWarmedFixedChainKeygen selected
+  let execution ← sourceDirectTracedDetailedExecution adversary keyView
+  pure (keyView, execution)
+
+def sourceDirectProgramResult
+    (result : SourceDirectTracedProgramResult) :
+    FixedChainActionTracedResult :=
+  let execution := sourceDirectExecutionResult result.1 result.2
+  ((result.1, execution.1), execution.2)
+
+set_option maxRecDepth 1000000 in
+theorem sourceDirectTracedProgram_eq_programmedWarmedDetailedGame
+    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    sourceDirectProgramResult <$> sourceDirectTracedProgram adversary selected =
+      programmedWarmedDetailedGame adversary selected := by
+  unfold sourceDirectTracedProgram programmedWarmedDetailedGame
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  apply bind_congr
+  intro keyView
+  rw [← sourceDirectTracedDetailedExecution_eq_actionTraced]
+  simp [sourceDirectProgramResult, map_eq_bind_pure_comp]
+
+noncomputable def filteredHighMonitoredProgram
+    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    ProbComp FilteredHighMonitoredProgramResult := do
+  let keyHigh ← uniformCoupledWarmedFixedChainKeygenWithHigh selected
+  let execution ← filteredHighMonitoredDetailedExecution adversary
+    (keyHigh.1.1, keyHigh.2) selected keyHigh.1.2
+  pure (keyHigh, execution)
+
+def SourceFilteredHighMonitoredProgramRelation
+    (selected : ChainIndex)
+    (left : SourceDirectTracedProgramResult)
+    (right : FilteredHighMonitoredProgramResult) : Prop :=
+  ProgrammedActualKeygenTreeCacheHighRelation selected left.1 right.1 ∧
+    ((left.2.1 = right.2.1 ∧
+      MonitoredTracedStateRelation left.1.secretKey.parameter selected
+        left.1.cache right.1.1.1.cache right.1.1.2
+          left.2.2 right.2.2) ∨
+    right.2.2.1.bad) ∧
+    right.2.2.1.TraceConsistent right.1.1.2
+
+theorem sourceFilteredHighMonitoredProgramRelation_bad_implies_observedHit
+    (selected : ChainIndex) (left : SourceDirectTracedProgramResult)
+    (right : FilteredHighMonitoredProgramResult)
+    (hrel : SourceFilteredHighMonitoredProgramRelation selected left right)
+    (hbad : right.2.2.1.bad) :
+    RevealProbeOracleSimulation.ObservedHit
+      (filteredHighMonitoredProgramProjection right) := by
+  exact MonitoredCausalState.bad_implies_runObserved right.1.1.2 right.2.2.1
+    hrel.2.2 hbad
+
+set_option maxRecDepth 1000000 in
+theorem relTriple_sourceDirect_filteredHighMonitored_program
+    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    RelTriple
+      (sourceDirectTracedProgram adversary selected)
+      (filteredHighMonitoredProgram adversary selected)
+      (SourceFilteredHighMonitoredProgramRelation selected) := by
+  unfold sourceDirectTracedProgram filteredHighMonitoredProgram
+  apply relTriple_bind
+    (relTriple_with_support
+      (relTriple_programmedWarmedFixedChainKeygen_uniformHigh_tree selected))
+  intro left right hkeygen
+  obtain ⟨hrel, hleftSupport, hrightSupport⟩ := hkeygen
+  have hrightActual :=
+    uniformCoupledWarmedFixedChainKeygenWithHigh_support_actual selected right
+      hrightSupport
+  apply relTriple_bind (relTriple_with_support
+    (relTriple_sourceDirect_filteredHighMonitored_detailedExecution adversary
+      selected left right hrel hleftSupport hrightActual))
+  intro leftExecution rightExecution hexecution
+  apply relTriple_pure_pure
+  exact ⟨hrel, hexecution.1,
+    filteredHighMonitoredDetailedExecution_traceConsistent adversary
+      (right.1.1, right.2) selected right.1.2 rightExecution
+        hexecution.2.2⟩
 
 end XmssSecurity

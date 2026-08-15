@@ -116,6 +116,61 @@ theorem advanceObserved_eq_none_append
   exact (advanceObserved_eq_none_iff_runObserved_eq_true
     table state left).1 hleft
 
+theorem advanceObserved_append_of_some
+    (table : Index → Digest) (state final : AdaptiveRevealMonitor.State Index)
+    (left right : ActionTrace Index)
+    (hleft : advanceObserved table state left = some final) :
+    advanceObserved table state (left ++ right) =
+      advanceObserved table final right := by
+  induction left generalizing state final with
+  | nil =>
+      by_cases hhit : tableHits state table
+      · simp [advanceObserved, hhit] at hleft
+      · simp [advanceObserved, hhit] at hleft
+        subst final
+        rfl
+  | cons action left ih =>
+      cases action with
+      | probe index target =>
+          simp only [List.cons_append, advanceObserved] at hleft ⊢
+          cases hrevealed : state.revealed index with
+          | none =>
+              rw [hrevealed] at hleft
+              simp only at hleft ⊢
+              exact ih (state.addPending index target) final hleft
+          | some value =>
+              rw [hrevealed] at hleft
+              simp only at hleft ⊢
+              exact ih state final hleft
+      | reveal index value =>
+          simp only [List.cons_append, advanceObserved] at hleft ⊢
+          cases hrevealed : state.revealed index with
+          | some previous =>
+              rw [hrevealed] at hleft
+              simp only at hleft ⊢
+              exact ih state final hleft
+          | none =>
+              rw [hrevealed] at hleft
+              simp only at hleft ⊢
+              by_cases hhit : table index ∈ state.pending index
+              · simp [hhit] at hleft ⊢
+              · rw [if_neg hhit] at hleft ⊢
+                exact ih (state.install index (table index)) final hleft
+
+theorem advanceObserved_append
+    (table : Index → Digest) (state : AdaptiveRevealMonitor.State Index)
+    (left right : ActionTrace Index) :
+    advanceObserved table state (left ++ right) =
+      (advanceObserved table state left).bind fun middle =>
+        advanceObserved table middle right := by
+  cases hleft : advanceObserved table state left with
+  | none =>
+      rw [advanceObserved_eq_none_append table state left right hleft]
+      simp
+  | some final =>
+      rw [advanceObserved_append_of_some table state final left right hleft]
+      simp
+
 theorem advanceObserved_preserves_stateAgrees
     (table : Index → Digest)
     (monitor finalMonitor : AdaptiveRevealMonitor.State Index)
@@ -361,6 +416,11 @@ structure MonitoredCausalState where
 def MonitoredCausalState.bad (state : MonitoredCausalState) : Prop :=
   state.monitor = none
 
+def MonitoredCausalState.TraceConsistent
+    (table : ChainValueIndex → Digest) (state : MonitoredCausalState) : Prop :=
+  state.monitor = RevealProbeOracleSimulation.advanceObserved table
+    AdaptiveRevealMonitor.State.empty state.trace
+
 def monitoredCausalResult
     (table : ChainValueIndex → Digest) (initial : MonitoredCausalState)
     (result : (α × CausalHashState) ×
@@ -371,6 +431,38 @@ def monitoredCausalResult
     monitor := initial.monitor.bind fun monitor =>
       RevealProbeOracleSimulation.advanceObserved table monitor result.2
     trace := initial.trace ++ result.2 })
+
+theorem monitoredCausalResult_traceConsistent
+    (table : ChainValueIndex → Digest) (initial : MonitoredCausalState)
+    (result : (α × CausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
+    (hinitial : initial.TraceConsistent table) :
+    (monitoredCausalResult table initial result).2.TraceConsistent table := by
+  unfold MonitoredCausalState.TraceConsistent at hinitial ⊢
+  change (initial.monitor.bind fun monitor =>
+      RevealProbeOracleSimulation.advanceObserved table monitor result.2) =
+    RevealProbeOracleSimulation.advanceObserved table
+      AdaptiveRevealMonitor.State.empty (initial.trace ++ result.2)
+  rw [hinitial, RevealProbeOracleSimulation.advanceObserved_append]
+
+theorem monitoredCausalState_initial_traceConsistent
+    (table : ChainValueIndex → Digest) (causal : CausalHashState) :
+    MonitoredCausalState.TraceConsistent table
+      ⟨causal, some AdaptiveRevealMonitor.State.empty, []⟩ := by
+  simp [MonitoredCausalState.TraceConsistent,
+    RevealProbeOracleSimulation.advanceObserved,
+    RevealProbeOracleSimulation.tableHits,
+    AdaptiveRevealMonitor.State.empty]
+
+theorem MonitoredCausalState.bad_implies_runObserved
+    (table : ChainValueIndex → Digest) (state : MonitoredCausalState)
+    (hconsistent : state.TraceConsistent table) (hbad : state.bad) :
+    RevealProbeOracleSimulation.runObserved table
+      AdaptiveRevealMonitor.State.empty state.trace = true := by
+  apply (RevealProbeOracleSimulation.advanceObserved_eq_none_iff_runObserved_eq_true
+    table AdaptiveRevealMonitor.State.empty state.trace).1
+  rw [← hconsistent]
+  exact hbad
 
 noncomputable def monitorCausalTrace
     (table : ChainValueIndex → Digest)
@@ -389,6 +481,125 @@ theorem monitorCausalTrace_run
     (monitorCausalTrace table computation).run state =
       monitoredCausalResult table state <$> computation state.causal := rfl
 
+theorem map_monitorCausalTrace_projection
+    (table : ChainValueIndex → Digest)
+    (computation : CausalHashState → ProbComp
+      ((α × CausalHashState) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex))
+    (state : MonitoredCausalState) :
+    (fun result : α × MonitoredCausalState =>
+      ((result.1, result.2.causal), result.2.trace)) <$>
+        (monitorCausalTrace table computation).run state =
+      (fun result : (α × CausalHashState) ×
+          RevealProbeOracleSimulation.ActionTrace ChainValueIndex =>
+        (result.1, state.trace ++ result.2)) <$>
+          computation state.causal := by
+  rw [monitorCausalTrace_run, Functor.map_map]
+  apply map_congr
+  intro result
+  simp [monitoredCausalResult]
+
+noncomputable def monitoredEagerStateImpl
+    {ι : Type} {spec : OracleSpec ι}
+    (table : ChainValueIndex → Digest)
+    (impl : QueryImpl spec
+      (StateT CausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World ChainValueIndex)))) :
+    QueryImpl spec (StateT MonitoredCausalState ProbComp) :=
+  fun input => monitorCausalTrace table fun causalState =>
+    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+      ((impl input).run causalState)).run
+
+@[simp]
+theorem monitoredEagerStateImpl_apply
+    {ι : Type} {spec : OracleSpec ι}
+    (table : ChainValueIndex → Digest)
+    (impl : QueryImpl spec
+      (StateT CausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World ChainValueIndex))))
+    (input : spec.Domain) :
+    monitoredEagerStateImpl table impl input =
+      monitorCausalTrace table (fun causalState =>
+        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+          ((impl input).run causalState)).run) := rfl
+
+set_option maxRecDepth 1000000 in
+theorem map_simulate_monitoredEagerStateImpl_projection
+    {ι : Type} {spec : OracleSpec ι}
+    (table : ChainValueIndex → Digest)
+    (impl : QueryImpl spec
+      (StateT CausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World ChainValueIndex))))
+    (computation : OracleComp spec α) (state : MonitoredCausalState) :
+    (fun result : α × MonitoredCausalState =>
+      ((result.1, result.2.causal), result.2.trace)) <$>
+        (simulateQ (monitoredEagerStateImpl table impl) computation).run state =
+      (fun result : ((α × CausalHashState) ×
+          RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
+        (result.1, state.trace ++ result.2)) <$>
+        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+          ((simulateQ impl computation).run state.causal)).run := by
+  induction computation using OracleComp.inductionOn generalizing state with
+  | pure value => simp
+  | query_bind input next ih =>
+      simp only [simulateQ_bind, StateT.run_bind, WriterT.run_bind', map_bind,
+        simulateQ_spec_query]
+      unfold monitoredEagerStateImpl
+      rw [monitorCausalTrace_run]
+      simp only [bind_map_left]
+      apply bind_congr
+      intro head
+      change (fun result : α × MonitoredCausalState =>
+          ((result.1, result.2.causal), result.2.trace)) <$>
+            (simulateQ (monitoredEagerStateImpl table impl)
+              (next head.1.1)).run (monitoredCausalResult table state head).2 = _
+      rw [ih head.1.1 (monitoredCausalResult table state head).2]
+      simp [monitoredCausalResult, List.append_assoc]
+
+noncomputable def causalStateImplOfRun
+    {ι : Type} {spec : OracleSpec ι}
+    (runStep : (input : spec.Domain) → CausalHashState →
+      OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+        (spec.Range input × CausalHashState)) :
+    QueryImpl spec
+      (StateT CausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World ChainValueIndex))) :=
+  fun input => StateT.mk (runStep input)
+
+noncomputable def monitoredEagerRunImpl
+    {ι : Type} {spec : OracleSpec ι}
+    (table : ChainValueIndex → Digest)
+    (runStep : (input : spec.Domain) → CausalHashState →
+      OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+        (spec.Range input × CausalHashState)) :
+    QueryImpl spec (StateT MonitoredCausalState ProbComp) :=
+  fun input => monitorCausalTrace table fun causalState =>
+    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+      (runStep input causalState)).run
+
+theorem map_simulate_monitoredEagerRunImpl_projection
+    {ι : Type} {spec : OracleSpec ι}
+    (table : ChainValueIndex → Digest)
+    (runStep : (input : spec.Domain) → CausalHashState →
+      OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
+        (spec.Range input × CausalHashState))
+    (computation : OracleComp spec α) (state : MonitoredCausalState) :
+    (fun result : α × MonitoredCausalState =>
+      ((result.1, result.2.causal), result.2.trace)) <$>
+        (simulateQ (monitoredEagerRunImpl table runStep) computation).run state =
+      (fun result : ((α × CausalHashState) ×
+          RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
+        (result.1, state.trace ++ result.2)) <$>
+        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+          ((simulateQ (causalStateImplOfRun runStep) computation).run
+            state.causal)).run := by
+  exact map_simulate_monitoredEagerStateImpl_projection table
+    (causalStateImplOfRun runStep) computation state
+
 theorem monitorCausalTrace_preserves_bad
     (table : ChainValueIndex → Digest)
     (computation : CausalHashState → ProbComp
@@ -406,6 +617,19 @@ theorem monitorCausalTrace_preserves_bad
   change state.monitor = none at hbad
   rw [hbad]
   rfl
+
+theorem monitorCausalTrace_preserves_traceConsistent
+    (table : ChainValueIndex → Digest)
+    (computation : CausalHashState → ProbComp
+      ((α × CausalHashState) ×
+        RevealProbeOracleSimulation.ActionTrace ChainValueIndex))
+    (state : MonitoredCausalState) (hconsistent : state.TraceConsistent table)
+    (result : α × MonitoredCausalState)
+    (hresult : result ∈ support ((monitorCausalTrace table computation).run state)) :
+    result.2.TraceConsistent table := by
+  rw [monitorCausalTrace_run, support_map] at hresult
+  obtain ⟨raw, _hraw, rfl⟩ := hresult
+  exact monitoredCausalResult_traceConsistent table state raw hconsistent
 
 def MonitoredFilteredStateRelation
     (parameter : PublicParameter) (selected : ChainIndex)

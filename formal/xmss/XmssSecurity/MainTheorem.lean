@@ -9,7 +9,7 @@ import XmssSecurity.ChainOriginProbability
 import XmssSecurity.ChainHiddenTable
 import XmssSecurity.ChainTracedGame
 import XmssSecurity.CausalHighTableKeygen
-import XmssSecurity.CausalEagerHighReduction
+import XmssSecurity.CausalEagerHighProjection
 import XmssSecurity.CausalWarmedHighIndependence
 import XmssSecurity.CausalViewCoupling
 import XmssSecurity.LeafEventProbability
