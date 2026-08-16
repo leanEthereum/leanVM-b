@@ -727,6 +727,182 @@ noncomputable def runObserved : EncodingMonitor.State →
       | none => false
       | some (nextState, hit) => hit || runObserved nextState actions
 
+def ActionValid : EncodingMonitor.ObservedAction → Prop
+  | .query _ output => TargetSum.ValidDigest (truncateHash output)
+  | .sign _ output => TargetSum.ValidDigest (truncateHash output)
+
+noncomputable instance : DecidablePred ActionValid :=
+  Classical.decPred _
+
+noncomputable def validActions
+    (actions : List EncodingMonitor.ObservedAction) :
+    List EncodingMonitor.ObservedAction :=
+  match actions with
+  | [] => []
+  | action :: tail =>
+      if ActionValid action then action :: validActions tail
+      else validActions tail
+
+noncomputable def validObservedSignEpochs
+    (actions : List EncodingMonitor.ObservedAction) : List Epoch :=
+  EncodingMonitor.observedSignEpochs (validActions actions)
+
+theorem validActions_sublist_of_sublist
+    {left right : List EncodingMonitor.ObservedAction}
+    (hsub : left.Sublist right) :
+    (validActions left).Sublist (validActions right) := by
+  induction hsub with
+  | slnil => simp [validActions]
+  | cons action hsub ih =>
+      by_cases hvalid : ActionValid action
+      · simpa [validActions, hvalid] using ih.cons action
+      · simpa [validActions, hvalid] using ih
+  | cons_cons action hsub ih =>
+      by_cases hvalid : ActionValid action
+      · simpa [validActions, hvalid] using ih.cons_cons action
+      · simpa [validActions, hvalid] using ih
+
+def State.Valid (state : EncodingMonitor.State) : Prop :=
+  (∀ epoch digest, state.signed epoch = some digest →
+    TargetSum.ValidDigest digest) ∧
+  ∀ epoch digest, digest ∈ state.pending epoch → TargetSum.ValidDigest digest
+
+theorem State.valid_empty : State.Valid EncodingMonitor.State.empty := by
+  constructor <;> simp [EncodingMonitor.State.empty]
+
+theorem State.Valid.addPending
+    (hstate : State.Valid state) (epoch : Epoch) (digest : Digest)
+    (hvalid : TargetSum.ValidDigest digest) :
+    State.Valid (state.addPending epoch digest) := by
+  constructor
+  · exact hstate.1
+  · intro candidate value hmem
+    by_cases heq : candidate = epoch
+    · subst candidate
+      simp [EncodingMonitor.State.addPending] at hmem
+      exact hmem.elim (fun hvalue => hvalue ▸ hvalid) (hstate.2 epoch value)
+    · apply hstate.2 candidate value
+      simpa [EncodingMonitor.State.addPending, heq] using hmem
+
+theorem State.Valid.install
+    (hstate : State.Valid state) (epoch : Epoch) (digest : Digest)
+    (hvalid : TargetSum.ValidDigest digest) :
+    State.Valid (state.install epoch digest) := by
+  constructor
+  · intro candidate value hsigned
+    by_cases heq : candidate = epoch
+    · subst candidate
+      simp [EncodingMonitor.State.install] at hsigned
+      subst value
+      exact hvalid
+    · exact hstate.1 candidate value (by
+        simpa [EncodingMonitor.State.install, heq] using hsigned)
+  · intro candidate value hmem
+    by_cases heq : candidate = epoch
+    · subst candidate
+      simp [EncodingMonitor.State.install] at hmem
+    · exact hstate.2 candidate value (by
+        simpa [EncodingMonitor.State.install, heq] using hmem)
+
+theorem State.applyObserved_eq_standard_of_valid
+    (state : EncodingMonitor.State) (action : EncodingMonitor.ObservedAction)
+    (hvalid : ActionValid action) :
+    State.applyObserved state action =
+      EncodingMonitor.State.applyObserved state action := by
+  cases action with
+  | query epoch output =>
+      simp only [ActionValid] at hvalid
+      simp [State.applyObserved, EncodingMonitor.State.applyObserved, hvalid]
+      rfl
+  | sign epoch output =>
+      simp only [ActionValid] at hvalid
+      simp [State.applyObserved, EncodingMonitor.State.applyObserved, hvalid]
+      rfl
+
+theorem State.applyObserved_eq_unchanged_of_invalid
+    (state : EncodingMonitor.State) (action : EncodingMonitor.ObservedAction)
+    (hstate : State.Valid state) (hinvalid : ¬ActionValid action) :
+    State.applyObserved state action = some (state, false) := by
+  cases action with
+  | query epoch output =>
+      simp only [ActionValid] at hinvalid
+      cases hsigned : state.signed epoch with
+      | none => simp [State.applyObserved, hsigned, hinvalid]
+      | some target =>
+          have htarget := hstate.1 epoch target hsigned
+          have hne : truncateHash output ≠ target := by
+            intro heq
+            exact hinvalid (heq ▸ htarget)
+          simp [State.applyObserved, hsigned, hne]
+  | sign epoch output =>
+      simp only [ActionValid] at hinvalid
+      simp [State.applyObserved, hinvalid]
+
+theorem State.Valid.applyObserved
+    (hstate : State.Valid state) (action : EncodingMonitor.ObservedAction)
+    (hvalid : ActionValid action)
+    (nextState : EncodingMonitor.State) (hit : Bool)
+    (happly : State.applyObserved state action = some (nextState, hit)) :
+    State.Valid nextState := by
+  cases action with
+  | query epoch output =>
+      simp only [ActionValid] at hvalid
+      cases hsigned : state.signed epoch with
+      | some target =>
+          simp [State.applyObserved, hsigned] at happly
+          rcases happly with ⟨rfl, rfl⟩
+          exact hstate
+      | none =>
+          simp [State.applyObserved, hsigned, hvalid] at happly
+          rcases happly with ⟨rfl, rfl⟩
+          exact hstate.addPending epoch (truncateHash output) hvalid
+  | sign epoch output =>
+      simp only [ActionValid] at hvalid
+      cases hsigned : state.signed epoch with
+      | some target => simp [State.applyObserved, hsigned, hvalid] at happly
+      | none =>
+          simp [State.applyObserved, hsigned, hvalid] at happly
+          rcases happly with ⟨rfl, rfl⟩
+          exact hstate.install epoch (truncateHash output) hvalid
+
+theorem runObserved_eq_standard_validActions
+    (state : EncodingMonitor.State)
+    (actions : List EncodingMonitor.ObservedAction)
+    (hstate : State.Valid state) :
+    runObserved state actions =
+      EncodingMonitor.runObserved state (validActions actions) := by
+  induction actions generalizing state with
+  | nil => rfl
+  | cons action actions ih =>
+      by_cases hvalid : ActionValid action
+      · rw [runObserved, validActions, if_pos hvalid,
+          EncodingMonitor.runObserved_cons]
+        have heq := State.applyObserved_eq_standard_of_valid state action hvalid
+        cases happly : State.applyObserved state action with
+        | none =>
+            have hstandard : EncodingMonitor.State.applyObserved state action = none :=
+              heq.symm.trans happly
+            simp [hstandard]
+        | some result =>
+            rcases result with ⟨nextState, hit⟩
+            have hnext := hstate.applyObserved action hvalid nextState hit happly
+            have hstandard : EncodingMonitor.State.applyObserved state action =
+                some (nextState, hit) := heq.symm.trans happly
+            simp [hstandard, ih nextState hnext]
+      · rw [runObserved, validActions, if_neg hvalid]
+        rw [State.applyObserved_eq_unchanged_of_invalid state action hstate hvalid]
+        simp [ih state hstate]
+
+theorem runObserved_empty_eq_true_mono_sublist
+    {left right : List EncodingMonitor.ObservedAction}
+    (hsub : left.Sublist right)
+    (hnodup : (validObservedSignEpochs right).Nodup)
+    (hhit : runObserved EncodingMonitor.State.empty left = true) :
+    runObserved EncodingMonitor.State.empty right = true := by
+  rw [runObserved_eq_standard_validActions _ _ State.valid_empty] at hhit ⊢
+  exact EncodingMonitor.runObserved_empty_eq_true_mono_sublist
+    (validActions_sublist_of_sublist hsub) hnodup hhit
+
 noncomputable def runTraced
     (state : EncodingMonitor.State)
     (computation : OracleComp EncodingSamplingWorld α) : ProbComp Bool :=

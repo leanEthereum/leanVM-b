@@ -83,6 +83,9 @@ import XmssSecurity.CappedConcreteExecution
 import XmssSecurity.CappedSigningLogReplay
 import XmssSecurity.CappedSigningCacheTrace
 import XmssSecurity.CappedEncodingGameTrace
+import XmssSecurity.CappedEncodingOracleSimulation
+import XmssSecurity.CappedEncodingQueryBound
+import XmssSecurity.CappedEncodingCollisionProbability
 import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.CappedEncodingMonitor
 import XmssSecurity.ConcreteCorrectness
