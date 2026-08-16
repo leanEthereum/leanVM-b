@@ -512,4 +512,145 @@ theorem cappedDetailedGameWithSigningTrace_cache_projection
   exact cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection adversary
     keyResult.1.1 keyResult.1.2 keyResult.2
 
+theorem cappedDetailedGameAfterKeygenWithSigningTrace_invariants
+    (adversary : Adversary Concrete.cappedScheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support
+      (cappedDetailedGameAfterKeygenWithSigningTrace adversary publicKey secretKey
+        initialCache)) :
+    result.1.secretKey = secretKey ∧
+      result.2.2.toSigningLog = result.1.signingLog ∧
+      result.2.2.CachesLe result.2.1 ∧
+      result.2.2.SuccessfulEncodingsCached secretKey := by
+  unfold cappedDetailedGameAfterKeygenWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨forgery, adversaryCache, trace⟩, hadversary, hrest⟩ := hmem
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨⟨verified, finalCache⟩, hverify, hfinal⟩ := hrest
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  refine ⟨rfl, rfl, ?_, ?_⟩
+  · have htrace := cappedCacheTracedMappedAdversaryImpl_cachesLe publicKey secretKey
+      (adversary.main publicKey) initialCache []
+      (forgery, (adversaryCache, trace)) (by simp [SigningCacheTrace.CachesLe])
+      hadversary
+    exact htrace.mono (xmssRom_cache_le
+      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+        forgery.signature) adversaryCache (verified, finalCache) hverify)
+  · exact cappedCacheTracedMappedAdversaryImpl_successfulEncodingsCached
+      publicKey secretKey (adversary.main publicKey) initialCache []
+      (forgery, (adversaryCache, trace))
+      (by simp [SigningCacheTrace.SuccessfulEncodingsCached]) hadversary
+
+theorem cappedDetailedGameAfterKeygenWithSigningTrace_preservesOtherValidEncodingInputs
+    (adversary : Adversary Concrete.cappedScheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support
+      (cappedDetailedGameAfterKeygenWithSigningTrace adversary publicKey secretKey
+        initialCache)) :
+    result.2.2.PreservesOtherValidEncodingInputs secretKey := by
+  unfold cappedDetailedGameAfterKeygenWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨forgery, adversaryCache, trace⟩, hadversary, hrest⟩ := hmem
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨⟨verified, finalCache⟩, _hverify, hfinal⟩ := hrest
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  exact cappedCacheTracedMappedAdversaryImpl_preservesOtherValidEncodingInputs
+    publicKey secretKey (adversary.main publicKey) initialCache []
+    (forgery, (adversaryCache, trace))
+    (by simp [SigningCacheTrace.PreservesOtherValidEncodingInputs]) hadversary
+
+theorem cappedDetailedGameWithSigningTrace_invariants
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
+    result.2.2.toSigningLog = result.1.signingLog ∧
+      result.2.2.CachesLe result.2.1 ∧
+      result.2.2.SuccessfulEncodingsCached result.1.secretKey := by
+  unfold cappedDetailedGameWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  obtain ⟨hsecretKey, hlog, hcaches, hcached⟩ :=
+    cappedDetailedGameAfterKeygenWithSigningTrace_invariants adversary
+      publicKey secretKey keyCache result hrest
+  exact ⟨hlog, hcaches, by simpa [hsecretKey] using hcached⟩
+
+theorem cappedDetailedGameWithSigningTrace_preservesOtherValidEncodingInputs
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
+    result.2.2.PreservesOtherValidEncodingInputs result.1.secretKey := by
+  unfold cappedDetailedGameWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  have hpreserves :=
+    cappedDetailedGameAfterKeygenWithSigningTrace_preservesOtherValidEncodingInputs
+      adversary publicKey secretKey keyCache result hrest
+  have hsecretKey :=
+    (cappedDetailedGameAfterKeygenWithSigningTrace_invariants adversary publicKey
+      secretKey keyCache result hrest).1
+  simpa [hsecretKey] using hpreserves
+
+theorem SigningCacheEntry.freshForgedEncodingCollision_finalCache_none_of_valid
+    (secretKey : SecretKey) (forgery : Forgery)
+    (gameCache : QueryCache HashSpec) (entry : SigningCacheEntry)
+    (hpreserves : entry.PreservesOtherValidEncodingInputs secretKey)
+    (hcache : entry.finalCache ≤ gameCache)
+    (hevent : entry.FreshForgedEncodingCollision secretKey forgery gameCache)
+    (encoding : Encoding)
+    (hdecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash gameCache secretKey.parameter forgery.epoch
+        (forgery.message, forgery.signature.randomness)) = some encoding) :
+    entry.finalCache
+      (Concrete.CacheView.encodingInput secretKey.parameter forgery.epoch
+        (forgery.message, forgery.signature.randomness)) = none := by
+  obtain ⟨signature, _signedOutput, forgedOutput, hsignature, _hepoch,
+    hinitial, _hsigned, hforged, hne, _hdigest⟩ := hevent
+  let forgedInput := Concrete.CacheView.encodingInput secretKey.parameter
+    forgery.epoch (forgery.message, forgery.signature.randomness)
+  cases hlocal : entry.finalCache forgedInput with
+  | none => rfl
+  | some localOutput =>
+      have hgame := hcache hlocal
+      have houtput : localOutput = forgedOutput :=
+        Option.some.inj (hgame.symm.trans hforged)
+      have hdecodeLocal : TargetSum.decodeDigest
+          (Concrete.CacheView.encodingHash entry.finalCache secretKey.parameter
+            forgery.epoch (forgery.message, forgery.signature.randomness)) =
+          some encoding := by
+        rw [Concrete.CacheView.encodingHash,
+          Concrete.CacheView.digestAt_eq_of_cache_eq_some hlocal, houtput,
+          ← Concrete.CacheView.digestAt_eq_of_cache_eq_some hforged,
+          ← Concrete.CacheView.encodingHash]
+        exact hdecode
+      have hnone := hpreserves signature hsignature forgery.epoch
+        (forgery.message, forgery.signature.randomness) encoding hdecodeLocal hne
+        hinitial
+      rw [hlocal] at hnone
+      exact hnone
+
+theorem SigningCacheEntry.postSigningFreshForgedEncodingCollision_of_valid_fresh
+    (secretKey : SecretKey) (forgery : Forgery)
+    (gameCache : QueryCache HashSpec) (entry : SigningCacheEntry)
+    (hpreserves : entry.PreservesOtherValidEncodingInputs secretKey)
+    (hcache : entry.finalCache ≤ gameCache)
+    (hevent : entry.FreshForgedEncodingCollision secretKey forgery gameCache)
+    (encoding : Encoding)
+    (hdecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash gameCache secretKey.parameter forgery.epoch
+        (forgery.message, forgery.signature.randomness)) = some encoding)
+    (signature : Signature) (hsignature : entry.signature = some signature)
+    (hsignedFresh : entry.initialCache
+      (Concrete.CacheView.encodingInput secretKey.parameter entry.request.epoch
+        (entry.request.message, signature.randomness)) = none) :
+    entry.PostSigningFreshForgedEncodingCollision secretKey forgery gameCache :=
+  ⟨hevent, entry.freshForgedEncodingCollision_finalCache_none_of_valid secretKey
+    forgery gameCache hpreserves hcache hevent encoding hdecode,
+    signature, hsignature, hsignedFresh⟩
+
 end XmssSecurity

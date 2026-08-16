@@ -1,7 +1,7 @@
 import XmssSecurity.BoundedSignTrace
 import XmssSecurity.CappedEncodingCollisionProbability
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
@@ -248,5 +248,511 @@ theorem Concrete.cappedSign_traced_validSignEpochs_sublist_singleton
   rw [Concrete.cappedSign_eq] at hmem
   exact Concrete.signBoundedAttempts_traced_validSignEpochs_sublist_singleton
     signingAttemptLimit secretKey epoch message cache result hmem
+
+theorem cappedSplitEncodingTracedMappedAdversaryImpl_query_trace_sublist
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialState :
+      (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)
+    (result : ((OracleWorld + SigningSpec).Range input ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((cappedSplitEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
+          initialState)).run)) :
+    List.Sublist result.1.2.2 (initialState.2 ++ result.2) := by
+  rw [cappedSplitEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨output, finalState⟩, externalTrace⟩, hbase, hfinal⟩ := hmem
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinal
+  subst result
+  rw [cappedSplitCacheTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hbase
+  obtain ⟨⟨⟨baseOutput, finalCache⟩, baseTrace⟩, hunlogged,
+    hbaseFinal⟩ := hbase
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hbaseFinal
+  cases hbaseFinal
+  cases input with
+  | inl worldInput =>
+      cases worldInput with
+      | inl uniformInput =>
+          simp [encodingActionTraceUpdate, encodingObservation?]
+      | inr hashInput =>
+          by_cases hfresh : initialState.1.1 hashInput = none
+          · cases hepoch : encodingInputEpoch? secretKey.parameter hashInput with
+            | none =>
+                simp [encodingActionTraceUpdate, encodingObservation?, hfresh,
+                  hepoch]
+            | some epoch =>
+                change ((output, finalCache), baseTrace) ∈ support
+                  ((simulateQ encodingSamplingTraceImpl
+                    ((splitRandomOracle secretKey.parameter .query hashInput).run
+                      initialState.1.1)).run) at hunlogged
+                have htrace := splitRandomOracle_query_trace_fresh_of_epoch
+                  secretKey.parameter hashInput epoch hepoch initialState.1.1
+                    hfresh ((output, finalCache), baseTrace) hunlogged
+                change baseTrace = [.query epoch output] at htrace
+                have hsub := (List.Sublist.refl initialState.2).append
+                  (List.singleton_sublist.mpr
+                    (show EncodingMonitor.ObservedAction.query epoch output ∈
+                      baseTrace by simp [htrace]))
+                simpa [encodingActionTraceUpdate, encodingObservation?, hfresh,
+                  hepoch] using hsub
+          · simp [encodingActionTraceUpdate, encodingObservation?, hfresh]
+  | inr request =>
+      cases output with
+      | none =>
+          simp [encodingActionTraceUpdate, encodingObservation?]
+      | some signature =>
+          let signedInput := Concrete.CacheView.encodingInput secretKey.parameter
+            request.epoch (request.message, signature.randomness)
+          by_cases hfresh : initialState.1.1 signedInput = none
+          · cases houtput : finalCache signedInput with
+            | none =>
+                simp [encodingActionTraceUpdate, encodingObservation?, signedInput,
+                  hfresh, houtput]
+            | some hashOutput =>
+                change ((some signature, finalCache), baseTrace) ∈ support
+                  ((simulateQ encodingSamplingTraceImpl
+                    ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
+                      (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+                        request.message)).run initialState.1.1)).run) at hunlogged
+                have haction := splitXmssRom_simulateQ_sign_fresh_trace
+                  secretKey.parameter (request.message, signature.randomness)
+                    request.epoch
+                    (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+                      request.message) initialState.1.1
+                    ((some signature, finalCache), baseTrace) hashOutput hfresh
+                    houtput hunlogged
+                have hsub := (List.Sublist.refl initialState.2).append
+                  (List.singleton_sublist.mpr haction)
+                simpa [encodingActionTraceUpdate, encodingObservation?, signedInput,
+                  hfresh, houtput] using hsub
+          · simp [encodingActionTraceUpdate, encodingObservation?, signedInput,
+              hfresh]
+
+theorem cappedSplitEncodingTracedMappedAdversaryImpl_query_validSignEpochs_sublist
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialState :
+      (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)
+    (result : ((OracleWorld + SigningSpec).Range input ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((cappedSplitEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
+          initialState)).run)) :
+    List.Sublist
+      (initialState.1.2.epochs ++
+        CappedEncodingMonitor.validObservedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  rw [cappedSplitEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨output, finalState⟩, externalTrace⟩, hbase, hfinal⟩ := hmem
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinal
+  subst result
+  rw [cappedSplitCacheTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hbase
+  obtain ⟨⟨⟨baseOutput, finalCache⟩, baseTrace⟩, hunlogged,
+    hbaseFinal⟩ := hbase
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hbaseFinal
+  cases hbaseFinal
+  cases input with
+  | inl worldInput =>
+      cases worldInput with
+      | inl uniformInput =>
+          have htrace := splitUniformOracle_traced_trace_eq_nil uniformInput
+            initialState.1.1 ((output, finalCache), baseTrace) hunlogged
+          change baseTrace = [] at htrace
+          simp [htrace, signingCacheTraceUpdate,
+            CappedEncodingMonitor.validObservedSignEpochs,
+            CappedEncodingMonitor.validActions,
+            EncodingMonitor.observedSignEpochs]
+      | inr hashInput =>
+          have htrace := splitRandomOracle_query_observedSignEpochs_eq_nil
+            secretKey.parameter hashInput initialState.1.1
+              ((output, finalCache), baseTrace) hunlogged
+          have hvalidSub := EncodingMonitor.observedSignEpochs_sublist
+            (CappedEncodingMonitor.validActions_sublist baseTrace)
+          have hvalidNil :
+              CappedEncodingMonitor.validObservedSignEpochs baseTrace = [] := by
+            apply List.eq_nil_of_sublist_nil
+            exact hvalidSub.trans (by simpa using htrace)
+          simp [hvalidNil, signingCacheTraceUpdate]
+  | inr request =>
+      change ((output, finalCache), baseTrace) ∈ support
+        ((simulateQ encodingSamplingTraceImpl
+          ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
+            (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+              request.message)).run initialState.1.1)).run) at hunlogged
+      have htrace := Concrete.cappedSign_traced_validSignEpochs_sublist_singleton
+        publicKey secretKey request.epoch request.message initialState.1.1
+          ((output, finalCache), baseTrace) hunlogged
+      have happend := (List.Sublist.refl initialState.1.2.epochs).append htrace
+      simpa [signingCacheTraceUpdate, SigningCacheTrace.epochs] using happend
+
+theorem cappedSplitEncodingTracedMappedAdversary_simulateQ_trace_sublist
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState :
+      (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)
+    (result : (α ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ
+          (cappedSplitEncodingTracedMappedAdversaryImpl publicKey secretKey)
+            computation).run initialState)).run)) :
+    List.Sublist result.1.2.2 (initialState.2 ++ result.2) := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialState result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
+        support_pure, Set.mem_singleton_iff] at hmem
+      subst result
+      change List.Sublist initialState.2 (initialState.2 ++ [])
+      rw [List.append_nil]
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
+        WriterT.run_bind', mem_support_bind_iff] at hmem
+      obtain ⟨⟨⟨output, middleState⟩, firstTrace⟩, hfirst,
+        hrestMapped⟩ := hmem
+      rw [support_map] at hrestMapped
+      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+      rw [simulateQ_spec_query] at hfirst
+      have hfirstSub :=
+        cappedSplitEncodingTracedMappedAdversaryImpl_query_trace_sublist
+          publicKey secretKey input initialState
+            ((output, middleState), firstTrace) hfirst
+      have hrestSub := ih output middleState restResult hrest
+      have hcombined := hrestSub.trans
+        (hfirstSub.append (List.Sublist.refl restResult.2))
+      have hstateEq : restResult.1.2.2 = result.1.2.2 := by
+        simpa using congrArg (fun value => value.1.2.2) heq
+      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
+        simpa using congrArg Prod.snd heq
+      rw [← hstateEq, ← htraceEq]
+      simpa [List.append_assoc] using hcombined
+
+theorem cappedSplitEncodingTracedMappedAdversary_simulateQ_validSignEpochs_sublist
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState :
+      (QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)
+    (result : (α ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        ((simulateQ
+          (cappedSplitEncodingTracedMappedAdversaryImpl publicKey secretKey)
+            computation).run initialState)).run)) :
+    List.Sublist
+      (initialState.1.2.epochs ++
+        CappedEncodingMonitor.validObservedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialState result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
+        support_pure, Set.mem_singleton_iff] at hmem
+      subst result
+      simp [CappedEncodingMonitor.validObservedSignEpochs,
+        CappedEncodingMonitor.validActions,
+        EncodingMonitor.observedSignEpochs]
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
+        WriterT.run_bind', mem_support_bind_iff] at hmem
+      obtain ⟨⟨⟨output, middleState⟩, firstTrace⟩, hfirst,
+        hrestMapped⟩ := hmem
+      rw [support_map] at hrestMapped
+      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
+      rw [simulateQ_spec_query] at hfirst
+      have hfirstSub :=
+        cappedSplitEncodingTracedMappedAdversaryImpl_query_validSignEpochs_sublist
+          publicKey secretKey input initialState
+            ((output, middleState), firstTrace) hfirst
+      have hrestSub := ih output middleState restResult hrest
+      have hcombined :=
+        (hfirstSub.append (List.Sublist.refl
+          (CappedEncodingMonitor.validObservedSignEpochs restResult.2))).trans
+            hrestSub
+      have hstateEq : restResult.1.2.1.2 = result.1.2.1.2 := by
+        simpa using congrArg (fun value => value.1.2.1.2) heq
+      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
+        simpa using congrArg Prod.snd heq
+      rw [← hstateEq, ← htraceEq,
+        CappedEncodingMonitor.validObservedSignEpochs_append]
+      simpa [List.append_assoc] using hcombined
+
+theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist
+    (adversary : Adversary Concrete.cappedScheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        (cappedSplitDetailedGameAfterKeygenWithEncodingTrace adversary publicKey
+          secretKey initialCache)).run)) :
+    List.Sublist result.1.2.2 result.2 := by
+  unfold cappedSplitDetailedGameAfterKeygenWithEncodingTrace at hmem
+  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨forgery, adversaryState⟩, adversaryTrace⟩, hadversary,
+    hrestMapped⟩ := hmem
+  rw [support_map] at hrestMapped
+  obtain ⟨verificationResult, hverificationBlock, hresultEq⟩ := hrestMapped
+  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff]
+    at hverificationBlock
+  obtain ⟨⟨⟨verified, finalCache⟩, verificationTrace⟩, hverify,
+    hfinalMapped⟩ := hverificationBlock
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinalMapped
+  cases hfinalMapped
+  cases hresultEq
+  have hadversarySub :=
+    cappedSplitEncodingTracedMappedAdversary_simulateQ_trace_sublist
+      publicKey secretKey (adversary.main publicKey) ((initialCache, []), [])
+        ((forgery, adversaryState), adversaryTrace) hadversary
+  have hadversarySub' : List.Sublist adversaryState.2 adversaryTrace := by
+    simpa using hadversarySub
+  let forgedInput := Concrete.CacheView.encodingInput secretKey.parameter
+    forgery.epoch (forgery.message, forgery.signature.randomness)
+  by_cases hfresh : adversaryState.1.1 forgedInput = none
+  · cases houtput : finalCache forgedInput with
+    | none =>
+        have hsub := hadversarySub'.trans
+          (List.sublist_append_left adversaryTrace verificationTrace)
+        simpa [appendVerificationEncodingObservation, forgedInput, hfresh,
+          houtput] using hsub
+    | some output =>
+        have haction := splitXmssRom_simulateQ_query_fresh_trace
+          secretKey.parameter
+            (forgery.message, forgery.signature.randomness) forgery.epoch
+            (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+              forgery.signature) adversaryState.1.1
+            ((verified, finalCache), verificationTrace) output hfresh houtput
+            hverify
+        have hsub := hadversarySub'.append
+          (List.singleton_sublist.mpr haction)
+        simpa [appendVerificationEncodingObservation, forgedInput, hfresh,
+          houtput] using hsub
+  · have hsub := hadversarySub'.trans
+        (List.sublist_append_left adversaryTrace verificationTrace)
+    simpa [appendVerificationEncodingObservation, forgedInput, hfresh] using hsub
+
+theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_validSignEpochs_sublist
+    (adversary : Adversary Concrete.cappedScheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      ((simulateQ encodingSamplingTraceImpl
+        (cappedSplitDetailedGameAfterKeygenWithEncodingTrace adversary publicKey
+          secretKey initialCache)).run)) :
+    List.Sublist (CappedEncodingMonitor.validObservedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  unfold cappedSplitDetailedGameAfterKeygenWithEncodingTrace at hmem
+  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨forgery, adversaryState⟩, adversaryTrace⟩, hadversary,
+    hrestMapped⟩ := hmem
+  rw [support_map] at hrestMapped
+  obtain ⟨verificationResult, hverificationBlock, hresultEq⟩ := hrestMapped
+  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff]
+    at hverificationBlock
+  obtain ⟨⟨⟨verified, finalCache⟩, verificationTrace⟩, hverify,
+    hfinalMapped⟩ := hverificationBlock
+  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
+    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinalMapped
+  cases hfinalMapped
+  cases hresultEq
+  have hadversarySub :=
+    cappedSplitEncodingTracedMappedAdversary_simulateQ_validSignEpochs_sublist
+      publicKey secretKey (adversary.main publicKey) ((initialCache, []), [])
+        ((forgery, adversaryState), adversaryTrace) hadversary
+  have hadversarySub' : List.Sublist
+      (CappedEncodingMonitor.validObservedSignEpochs adversaryTrace)
+      adversaryState.1.2.epochs := by
+    simpa [SigningCacheTrace.epochs,
+      CappedEncodingMonitor.validObservedSignEpochs,
+      CappedEncodingMonitor.validActions,
+      EncodingMonitor.observedSignEpochs] using hadversarySub
+  have hverificationEpochs :=
+    splitXmssRom_simulateQ_query_observedSignEpochs_eq_nil secretKey.parameter
+      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+        forgery.signature) adversaryState.1.1
+          ((verified, finalCache), verificationTrace) hverify
+  have hvalidVerification :
+      CappedEncodingMonitor.validObservedSignEpochs verificationTrace = [] := by
+    apply List.eq_nil_of_sublist_nil
+    exact (EncodingMonitor.observedSignEpochs_sublist
+      (CappedEncodingMonitor.validActions_sublist verificationTrace)).trans
+        (by simpa using hverificationEpochs)
+  simp only [Prod.map_apply, id_eq]
+  change List.Sublist
+    (CappedEncodingMonitor.validObservedSignEpochs
+      (adversaryTrace ++ (verificationTrace ++ [])))
+      adversaryState.1.2.epochs
+  rw [List.append_nil,
+    CappedEncodingMonitor.validObservedSignEpochs_append,
+    hvalidVerification]
+  simpa using hadversarySub'
+
+theorem cappedSampledDetailedGameWithEncodingTrace_trace_sublist
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      (cappedSampledDetailedGameWithEncodingTrace adversary)) :
+    List.Sublist result.1.2.2 result.2 := by
+  unfold cappedSampledDetailedGameWithEncodingTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  exact cappedSplitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist adversary
+    publicKey secretKey keyCache result hrest
+
+theorem cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_sublist
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      (cappedSampledDetailedGameWithEncodingTrace adversary)) :
+    List.Sublist (CappedEncodingMonitor.validObservedSignEpochs result.2)
+      result.1.2.1.2.epochs := by
+  unfold cappedSampledDetailedGameWithEncodingTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  exact
+    cappedSplitDetailedGameAfterKeygenWithEncodingTrace_validSignEpochs_sublist
+      adversary publicKey secretKey keyCache result hrest
+
+theorem cappedDetailedGameWithEncodingTrace_signingLog_eq_trace
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
+    (hmem : result ∈ support
+      (cappedDetailedGameWithEncodingTrace adversary)) :
+    result.1.signingLog = result.2.1.2.toSigningLog := by
+  unfold cappedDetailedGameWithEncodingTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨keyResult, _hkeygen, hrest⟩ := hmem
+  unfold cappedDetailedGameAfterKeygenWithEncodingTrace at hrest
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨adversaryResult, _hadversary, hverification⟩ := hrest
+  rw [mem_support_bind_iff] at hverification
+  obtain ⟨verificationResult, _hverify, hfinal⟩ := hverification
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  rfl
+
+theorem cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_nodup_of_winning
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      (cappedSampledDetailedGameWithEncodingTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs result.1.2.1.1 result.1.1 .encoding) :
+    (CappedEncodingMonitor.validObservedSignEpochs result.2).Nodup := by
+  have hsplit : result.1 ∈
+      support (cappedSplitDetailedGameWithEncodingTrace adversary) := by
+    rw [← cappedSampledDetailedGameWithEncodingTrace_projection, support_map]
+    exact ⟨result, hmem, rfl⟩
+  have hmanual : result.1 ∈
+      support (cappedDetailedGameWithEncodingTrace adversary) := by
+    rw [mem_support_iff, probOutput_def] at hsplit ⊢
+    rw [cappedSplitDetailedGameWithEncodingTrace_evalDist_simulation] at hsplit
+    exact hsplit
+  have hlog := cappedDetailedGameWithEncodingTrace_signingLog_eq_trace
+    adversary result.1 hmanual
+  have htraceNodup : result.1.2.1.2.epochs.Nodup := by
+    have hvalid := hevent.signingTranscript_valid
+    rw [hlog] at hvalid
+    unfold SigningTranscript.Valid at hvalid
+    simpa [SigningCacheTrace.epochs, SigningCacheTrace.toSigningLog,
+      List.map_map, Function.comp_def] using hvalid
+  exact htraceNodup.sublist
+    (cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_sublist
+      adversary result hmem)
+
+theorem cappedSampledDetailedGameWithEncodingTrace_external_monitorHit_of_winning
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : (GameOutcome ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+        EncodingActionTrace)
+    (hmem : result ∈ support
+      (cappedSampledDetailedGameWithEncodingTrace adversary))
+    (hevent : WinningOutcomeBadEventOccurs result.1.2.1.1 result.1.1 .encoding)
+    (hhit : CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
+      result.1.2.2 = true) :
+    CappedEncodingMonitor.runObserved EncodingMonitor.State.empty result.2 = true := by
+  exact CappedEncodingMonitor.runObserved_empty_eq_true_mono_sublist
+    (cappedSampledDetailedGameWithEncodingTrace_trace_sublist
+      adversary result hmem)
+    (cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_nodup_of_winning
+      adversary result hmem hevent) hhit
+
+theorem cappedWinning_encoding_monitorHit_probability_le_sampled_external
+    (adversary : Adversary Concrete.cappedScheme) :
+    Pr[fun execution : GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+        CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
+          execution.2.2 = true |
+      cappedDetailedGameWithEncodingTrace adversary] ≤
+    Pr[fun execution : (GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+          EncodingActionTrace =>
+      CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
+        execution.2 = true |
+      cappedSampledDetailedGameWithEncodingTrace adversary] := by
+  calc
+    _ = Pr[fun execution : GameOutcome ×
+          ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+        WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+          CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
+            execution.2.2 = true |
+        cappedSplitDetailedGameWithEncodingTrace adversary] := by
+      rw [probEvent_def, probEvent_def,
+        cappedSplitDetailedGameWithEncodingTrace_evalDist_simulation]
+    _ = Pr[fun execution : (GameOutcome ×
+          ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
+            EncodingActionTrace =>
+        WinningOutcomeBadEventOccurs execution.1.2.1.1 execution.1.1 .encoding ∧
+          CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
+            execution.1.2.2 = true |
+        cappedSampledDetailedGameWithEncodingTrace adversary] := by
+      rw [← cappedSampledDetailedGameWithEncodingTrace_projection, probEvent_map]
+      rfl
+    _ ≤ _ := by
+      apply probEvent_mono
+      intro execution hmem hevent
+      exact cappedSampledDetailedGameWithEncodingTrace_external_monitorHit_of_winning
+        adversary execution hmem hevent.1 hevent.2
+
+theorem cappedWinning_encoding_monitorHit_probability_le
+    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    Pr[fun execution : GameOutcome ×
+        ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
+        CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
+          execution.2.2 = true |
+      cappedDetailedGameWithEncodingTrace adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) :=
+  (cappedWinning_encoding_monitorHit_probability_le_sampled_external adversary).trans
+    (cappedSampledDetailedGame_externalCollision_probability_le q adversary hbound)
 
 end XmssSecurity
