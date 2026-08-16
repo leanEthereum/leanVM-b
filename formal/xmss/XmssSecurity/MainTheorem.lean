@@ -10,8 +10,8 @@ import XmssSecurity.ChainHiddenTable
 import XmssSecurity.ChainTracedGame
 import XmssSecurity.CausalHighTableKeygen
 import XmssSecurity.CausalEagerHighProjection
+import XmssSecurity.CausalEagerHighDirectReduction
 import XmssSecurity.CausalWarmedHighIndependence
-import XmssSecurity.CausalViewCoupling
 import XmssSecurity.LeafEventProbability
 import XmssSecurity.Merkle
 import XmssSecurity.MerkleEventProbability
@@ -47,10 +47,10 @@ theorem xmss_remaining_core_probability_le_below_digest_space (q : Nat) (hq : 1 
   · exact winning_encoding_event_probability_le_two_terms q adversary hbound
   · intro chain
     refine (winningKeygenValueGuess_probability_le_origin adversary chain).trans ?_
-    apply winningChainOrigin_probability_le_of_causalStrategy q adversary hbound chain
-    apply hasActionTracedCausalStrategyReduction_of_programmed_causal_trace_probability
-    apply programmed_causal_trace_probability_le_of_eager_hit_relTriple
-    sorry
+    apply winningChainOrigin_probability_le_of_eagerViewReduction q adversary hbound chain
+    apply hasActionTracedEagerViewReduction_of_boundedFilteredHighDirectReduction
+    exact hasBoundedFilteredHighDirectReduction_of_hashQueryBound q adversary
+      chain hbound
 
 /-- Below the digest-space size, encoding and chain events cost two elementary terms and every other event costs one. -/
 theorem xmss_badEvent_probability_le_below_digest_space (q : Nat) (hq : 1 ≤ q)

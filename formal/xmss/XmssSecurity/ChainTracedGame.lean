@@ -219,6 +219,7 @@ noncomputable def ActionTracedChainProbeHit
     (q : Nat) (chain : ChainIndex)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace)) : Prop :=
+  result.1.2.1.verified = true ∧
   ∃ encoding,
     TargetSum.decodeDigest
         (Concrete.CacheView.encodingHash result.1.2.2 result.1.1.1.2.parameter
@@ -273,7 +274,7 @@ theorem actionTracedChainProbeHit_implies_revealProbeView_hit
     (hhit : ActionTracedChainProbeHit q chain result) :
     IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q
       (actionTracedRevealProbeView chain result) := by
-  obtain ⟨encoding, hdecode, hhit⟩ := hhit
+  obtain ⟨_hverified, encoding, hdecode, hhit⟩ := hhit
   have hencoding : actionTracedForgeryEncoding result = encoding := by
     simp [actionTracedForgeryEncoding, hdecode]
   simpa [IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals,
@@ -409,7 +410,9 @@ theorem winningChainOrigin_probability_le_actionTracedProbeHit
   rw [← detailedGameWithKeygenCacheAndActionTrace_projection, probEvent_map]
   apply probEvent_mono
   intro result hresult horigin
-  exact horigin.readMany_of_mem_actionTracedGame q adversary hbound result hresult chain
+  refine ⟨horigin.1.2.1, ?_⟩
+  exact horigin.readMany_of_mem_actionTracedGame q adversary hbound result hresult
+    chain
 
 theorem winningChainOrigin_probability_le_of_eagerViewReduction
     (q : Nat) (adversary : Adversary Concrete.scheme)

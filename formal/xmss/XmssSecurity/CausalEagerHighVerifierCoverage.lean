@@ -4,8 +4,35 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity
 
-set_option maxRecDepth 1000000
+set_option maxRecDepth 2000000
 set_option linter.constructorNameAsVariable false
+
+attribute [local irreducible]
+  FilteredTreeHashProgram.computation
+  filteredTreeChainHashComputation
+  filteredTreePureHashComputation
+  filteredTreeFreshHashComputation
+  filteredTreeProbeThenFreshHashComputation
+
+theorem eagerTraceSupport_bind
+    (table : ChainValueIndex → Digest)
+    (first : OracleComp
+      (RevealProbeOracleSimulation.World ChainValueIndex) α)
+    (next : α → OracleComp
+      (RevealProbeOracleSimulation.World ChainValueIndex) β)
+    (head : α ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
+    (tail : β ×
+      RevealProbeOracleSimulation.ActionTrace ChainValueIndex)
+    (hhead : EagerTraceSupport table first head)
+    (htail : EagerTraceSupport table (next head.1) tail) :
+    EagerTraceSupport table (first >>= next)
+      (tail.1, head.2 ++ tail.2) := by
+  unfold EagerTraceSupport at hhead htail ⊢
+  rw [simulateQ_bind, WriterT.run_bind', support_bind_apply_iff]
+  refine ⟨head, hhead, ?_⟩
+  rw [support_map_apply_iff]
+  exact ⟨tail, htail, rfl⟩
 
 abbrev VerifierHashInputTrace := List HashInput
 
@@ -289,7 +316,8 @@ theorem filteredHighHashOnlyVerifierImpl_run_eq
       filteredTreeHashComputationAtFromHigh
         (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected input
           state := by
-  rfl
+  unfold filteredHighHashOnlyVerifierImpl filteredHighVerifierRun
+  rw [StateT.run_mk]
 
 def FilteredHighVerifierStepInvariant
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -871,55 +899,16 @@ theorem filteredHighVerifier_step_support_invariant
         input state program result hresult
   · intro candidate hcandidate index target hprobe hhidden
     simp only [List.mem_singleton] at hcandidate
-    subst candidate
-    rcases hprobe with hchain | ⟨hchain, hleaf⟩
-    · have hcomputation :
-          filteredTreeHashComputationAtFromHigh
-              (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey
-              selected input state =
-            filteredProbingAttackerHashQueryAtFromHigh
-              (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey
-              selected input state (some (index, target)) := by
-        rw [filteredTreeHashComputationAtFromHigh_eq_chain _ _ _ _ _ _
-          (filteredTreeProbingAttackerHashQueryAtFromHigh_eq_of_chainProbe
-            (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
-              input state (index, target) hchain)]
-        unfold filteredTreeChainHashComputation
-        rfl
-      rw [hcomputation] at hresult
-      have hreplay :=
-        simulate_eagerTrace_filteredProbingAttackerHashQueryAtFromHigh_support_replays
-          table (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey
-            selected input state (some (index, target)) result hresult
-      have hinitial : state.revealed index = none :=
-        hreplay.initial_none_of_final_none index hhidden
-      obtain ⟨suffix, hsuffix⟩ :=
-        simulate_eagerTrace_filteredProbingAttackerHashQueryAtFromHigh_hidden_support_trace
-          table (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey
-            selected input state index target hinitial result hresult
-      rw [hsuffix]
-      exact List.mem_cons_self
-    · generalize hprogram : filteredTreeProbingAttackerHashQueryAtFromHigh
-        (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected input
-          state = program
-      unfold filteredTreeHashComputationAtFromHigh at hresult
-      rw [hprogram] at hresult
-      have hinitial : state.revealed index = none :=
-        filteredTreeHashProgram_support_initial_none_of_final_none table
-          (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
-            input state program result hresult index hhidden
-      rw [← hprogram] at hresult
-      change result ∈ support
-        ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-          (filteredTreeHashComputationAtFromHigh
-            (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected
-              input state)).run) at hresult
-      rw [simulate_eagerTrace_filteredTreeLeafQuery_hidden table
-        (chainValueHighTableOfEdges keyHigh.2) keyHigh.1.secretKey selected input
-          state index target hchain hleaf hinitial, support_map] at hresult
-      obtain ⟨raw, _hraw, rfl⟩ := hresult
-      exact List.mem_singleton_self _
+    have hprobeInput : EagerTreeInputProbe
+        keyHigh.1.secretKey.parameter selected input index target := by
+      simpa [hcandidate] using hprobe
+    generalize hhigh : chainValueHighTableOfEdges keyHigh.2 = high at hresult
+    generalize hsecretKey : keyHigh.1.secretKey = secretKey at hresult hprobeInput
+    exact filteredTreeHashComputation_support_covers_eager_probe table high
+      secretKey selected input state index target hprobeInput result hresult
+        hhidden
 
+set_option maxHeartbeats 1000000 in
 theorem simulate_filteredHighHashTracedVerifier_query_bind_support_invariant
     (table : ChainValueIndex → Digest)
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -937,39 +926,31 @@ theorem simulate_filteredHighHashTracedVerifier_query_bind_support_invariant
     (result : (((α × VerifierHashInputTrace) × CausalHashState) ×
       RevealProbeOracleSimulation.ActionTrace ChainValueIndex))
     (hresult : FilteredHighVerifierRunSupport table keyHigh selected
-      (OracleComp.queryBind input next) state result) :
+      (HasQuery.query (spec := HashSpec) (m := OracleComp HashSpec) input >>=
+        next) state result) :
     FilteredHighVerifierRunInvariant keyHigh selected state result := by
-  change FilteredHighVerifierRunSupport table keyHigh selected
-    (HasQuery.query (spec := HashSpec) (m := OracleComp HashSpec) input >>= next)
-      state result at hresult
-  unfold FilteredHighVerifierRunSupport EagerTraceSupport at hresult
-  simp only [simulateQ_query_bind, WriterT.run_bind', StateT.run_bind,
-    simulateQ_bind] at hresult
-  rw [support_bind_apply_iff] at hresult
-  obtain ⟨head, hhead, htail⟩ := hresult
-  rw [support_map_apply_iff] at htail
-  obtain ⟨tail, htail, rfl⟩ := htail
+  obtain ⟨head, tail, hhead, htail, rfl⟩ :=
+    filteredHighVerifierRunSupport_bind
+      (table := table) (keyHigh := keyHigh) (selected := selected)
+      (first := HasQuery.query (spec := HashSpec) (m := OracleComp HashSpec)
+        input) (next := next) (state := state) (result := result) hresult
+  unfold FilteredHighVerifierRunSupport EagerTraceSupport at hhead
   rw [HasQuery.instOfMonadLift_query, simulateQ_query] at hhead
   simp only [OracleQuery.input_query, OracleQuery.cont_query, id_map] at hhead
   rw [simulate_eagerTrace_filteredHighHashTracedVerifier_step_eq_map,
     support_map_apply_iff] at hhead
   obtain ⟨rawHead, hrawHead, rfl⟩ := hhead
-  rw [StateT.run_map, simulateQ_map, WriterT.run_map',
-    support_map_apply_iff] at htail
-  obtain ⟨rawTail, hrawTail, rfl⟩ := htail
-  simp only [Function.comp_apply, Prod.map, Prod.map_apply, id_eq] at hrawTail ⊢
   have hhead := hheadInvariant rawHead (by
     unfold FilteredHighVerifierStepSupport EagerTraceSupport
     exact hrawHead)
-  have htail := htailInvariant rawHead.1.1 rawHead.1.2 rawTail (by
-    unfold FilteredHighVerifierRunSupport EagerTraceSupport
-    exact hrawTail)
+  have htail := htailInvariant rawHead.1.1 rawHead.1.2 tail htail
   unfold FilteredHighVerifierStepInvariant at hhead
   unfold FilteredHighVerifierRunInvariant at htail ⊢
   exact ⟨hhead.1.trans htail.1,
     (hhead.2.mono_state htail.1).append htail.2⟩
 
-set_option maxHeartbeats 500000 in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 2000000 in
 theorem simulate_filteredHighHashTracedVerifier_support_invariant
     (table : ChainValueIndex → Digest)
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -1022,8 +1003,11 @@ theorem filteredHighVerifierRunSupport_verify_true_primaryProbe_observed
           (epoch, encoding selected) (signature.chainValue selected) ∈
             result.2) := by
   obtain ⟨digest, encoding, hdecode, input, hinput, hprobe⟩ :=
-    filteredHighVerifierRunSupport_verify_true_primaryProbe table keyHigh
-      selected publicKey epoch message signature state result hresult hverified
+    filteredHighVerifierRunSupport_verify_true_primaryProbe
+      (table := table) (keyHigh := keyHigh) (selected := selected)
+      (publicKey := publicKey) (epoch := epoch) (message := message)
+      (signature := signature) (state := state) (result := result)
+      hresult hverified
   have hinvariant :=
     simulate_filteredHighHashTracedVerifier_support_invariant table keyHigh
       selected (Concrete.verify publicKey epoch message signature) state result
@@ -1064,8 +1048,12 @@ theorem map_filteredHighHashTracedVerifier_eager_projection
     (fun candidate =>
       (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         candidate).run) hrun
+  change (fun result => ((result.1.1.1, result.1.2), result.2)) <$>
+      (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+        (((simulateQ (filteredHighHashTracedVerifierImpl keyHigh selected)
+          computation).run).run state)).run = _
   simpa [StateT.run_map, simulateQ_map, WriterT.run_map', Functor.map_map,
-    Function.comp_def, eraseVerifierHashTrace] using heager
+    Function.comp_def] using heager
 
 theorem filteredHighVerifierRunSupport_lift
     (table : ChainValueIndex → Digest)
@@ -1084,7 +1072,8 @@ theorem filteredHighVerifierRunSupport_lift
         tracedResult ∧
       eraseVerifierHashTrace tracedResult = result := by
   rw [← map_filteredHighHashTracedVerifier_eager_projection table keyHigh
-    selected computation state, support_map_apply_iff] at hresult
+    selected computation state] at hresult
+  rw [support_map] at hresult
   obtain ⟨tracedResult, htracedResult, heq⟩ := hresult
   refine ⟨tracedResult, ?_, heq⟩
   unfold FilteredHighVerifierRunSupport EagerTraceSupport
@@ -1116,8 +1105,10 @@ theorem filteredHighVerifier_support_verify_true_primaryProbe_observed
   unfold Concrete.scheme at hresult
   rw [simulate_filteredHighVerifier_liftM_eq_hashOnly] at hresult
   obtain ⟨tracedResult, htracedResult, heq⟩ :=
-    filteredHighVerifierRunSupport_lift table keyHigh selected
-      (Concrete.verify publicKey epoch message signature) state result hresult
+    filteredHighVerifierRunSupport_lift
+      (table := table) (keyHigh := keyHigh) (selected := selected)
+      (computation := Concrete.verify publicKey epoch message signature)
+      (state := state) (result := result) hresult
   subst result
   exact filteredHighVerifierRunSupport_verify_true_primaryProbe_observed table
     keyHigh selected publicKey hparameter epoch message signature state
@@ -1158,24 +1149,23 @@ theorem filteredHighDetailedRunSupport_decompose
         verifier.1.2), handled.2 ++ verifier.2) := by
   unfold FilteredHighDetailedRunSupport EagerTraceSupport at hresult
   unfold filteredHighDetailedGameAfterKeygen at hresult
-  simp only [StateT.run_bind, simulateQ_bind] at hresult
+  rw [StateT.run_bind, simulateQ_bind, WriterT.run_bind'] at hresult
   rw [support_bind_apply_iff] at hresult
   obtain ⟨handled, hhandled, hrest⟩ := hresult
   rw [support_map_apply_iff] at hrest
-  obtain ⟨rest, hrest, rfl⟩ := hrest
-  rw [StateT.run_bind, simulateQ_bind, support_bind_apply_iff] at hrest
-  obtain ⟨verifier, hverifier, hfinal⟩ := hrest
-  rw [support_map_apply_iff] at hfinal
-  obtain ⟨final, hfinal, rfl⟩ := hfinal
-  simp only [simulateQ_pure, StateT.run_pure, support_pure,
-    Set.mem_singleton_iff] at hfinal
-  subst final
-  simp only [Function.comp_apply, Prod.map, Prod.map_apply, id_eq]
-  refine ⟨handled, verifier, ?_, ?_, rfl⟩
+  obtain ⟨tail, htail, heq⟩ := hrest
+  rw [StateT.run_bind, simulateQ_bind, WriterT.run_bind'] at htail
+  rw [support_bind_apply_iff] at htail
+  obtain ⟨verifier, hverifier, hfinal⟩ := htail
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst tail
+  subst result
+  refine ⟨handled, verifier, ?_, ?_, ?_⟩
   · unfold FilteredHighRunSupport EagerTraceSupport
     exact hhandled
   · unfold EagerTraceSupport
     exact hverifier
+  · simp [List.append_assoc]
 
 theorem filteredHighVerifier_support_revealsMonotone
     (table : ChainValueIndex → Digest)
@@ -1197,6 +1187,7 @@ theorem filteredHighVerifier_support_revealsMonotone
   exact (simulate_filteredHighHashTracedVerifier_support_invariant table
     keyHigh selected computation state tracedResult htracedResult).1
 
+set_option maxHeartbeats 1000000 in
 theorem filteredHighVerifier_support_scheme_revealsMonotone
     (table : ChainValueIndex → Digest)
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -1279,7 +1270,8 @@ theorem map_filteredHighMonitoredMapped_action_projection_step
       (fun result : ((((OracleWorld + SigningSpec).Range input ×
           AttackerActionTrace) × CausalHashState) ×
           RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
-        (result.1, state.trace ++ result.2)) <$>
+        (((result.1.1.1, attackerTrace ++ result.1.1.2), result.1.2),
+          state.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           (((filteredHighActionTracedMappedAdversaryImpl keyHigh selected input
             ).run).run state.causal)).run := by
@@ -1304,14 +1296,18 @@ theorem map_filteredHighMonitoredMapped_action_projection_step
     unfold filteredHighMonitoredMappedAdversaryImpl actionTracedStateImpl
     simp [augment, StateT.run_mk, Functor.map_map,
       map_eq_bind_pure_comp, bind_assoc]
-  rw [hleft,
-    map_simulate_filteredHighMonitoredMapped_projection keyHigh selected table
-      (query input) state attackerTrace]
-  rw [simulateQ_query]
+  have hbase := map_simulate_filteredHighMonitoredMapped_projection keyHigh
+    selected table
+      (liftM (OracleSpec.query input) :
+        OracleComp (OracleWorld + SigningSpec)
+          ((OracleWorld + SigningSpec).Range input))
+      state attackerTrace
+  rw [simulateQ_spec_query] at hbase
+  rw [hleft, hbase]
+  rw [simulateQ_spec_query]
   simp only [Functor.map_map, Function.comp_apply, augment]
   rw [simulate_eagerTrace_filteredHighActionTraced_step_eq_map]
   simp only [Functor.map_map, Function.comp_apply]
-  rfl
 
 theorem map_simulate_filteredHighMonitoredMapped_action_projection
     (table : ChainValueIndex → Digest)
@@ -1327,17 +1323,74 @@ theorem map_simulate_filteredHighMonitoredMapped_action_projection
             computation).run (state, attackerTrace) =
       (fun result : (((α × AttackerActionTrace) × CausalHashState) ×
           RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
-        (result.1, state.trace ++ result.2)) <$>
+        (((result.1.1.1, attackerTrace ++ result.1.1.2), result.1.2),
+          state.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           (((simulateQ
             (filteredHighActionTracedMappedAdversaryImpl keyHigh selected)
               computation).run).run state.causal)).run := by
-  apply map_simulate_monitoredTraced_projection_of_query table
-    (filteredHighMonitoredMappedAdversaryImpl keyHigh selected table)
-    (filteredHighActionTracedMappedAdversaryImpl keyHigh selected)
-  intro input queryState queryAttackerTrace
-  exact map_filteredHighMonitoredMapped_action_projection_step table keyHigh
-    selected input queryState queryAttackerTrace
+  induction computation using OracleComp.inductionOn generalizing state
+      attackerTrace with
+  | pure value => simp
+  | query_bind input next ih =>
+      simp only [simulateQ_bind, StateT.run_bind, WriterT.run_bind', map_bind,
+        simulateQ_spec_query]
+      simp_rw [ih]
+      let project := fun result : (OracleWorld + SigningSpec).Range input ×
+          MonitoredTracedState =>
+        (((result.1, result.2.2), result.2.1.causal), result.2.1.trace)
+      let tail := fun head : ((((OracleWorld + SigningSpec).Range input ×
+          AttackerActionTrace) × CausalHashState) ×
+          RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
+        (fun result : (((α × AttackerActionTrace) × CausalHashState) ×
+            RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
+          (((result.1.1.1, head.1.1.2 ++ result.1.1.2), result.1.2),
+            head.2 ++ result.2)) <$>
+          (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+            (((simulateQ
+              (filteredHighActionTracedMappedAdversaryImpl keyHigh selected)
+                (next head.1.1.1)).run).run head.1.2)).run
+      change (do
+        let head ←
+          (filteredHighMonitoredMappedAdversaryImpl keyHigh selected table input
+            ).run (state, attackerTrace)
+        tail (project head)) = _
+      rw [← bind_map_left project]
+      rw [map_filteredHighMonitoredMapped_action_projection_step table keyHigh
+        selected input state attackerTrace, bind_map_left]
+      apply bind_congr
+      intro head
+      simp [tail, Functor.map_map, List.append_assoc]
+
+theorem filteredHighMonitoredUniformVerifier_preserves_attackerTrace
+    (table : ChainValueIndex → Digest) (n : Nat)
+    (attackerTrace : AttackerActionTrace)
+    (state : MonitoredTracedState) (htrace : state.2 = attackerTrace)
+    (result : unifSpec.Range n × MonitoredTracedState)
+    (hresult : result ∈ support
+      ((filteredHighMonitoredUniformVerifierImpl table n).run state)) :
+    result.2.2 = attackerTrace := by
+  unfold filteredHighMonitoredUniformVerifierImpl at hresult
+  simp only [StateT.run_mk] at hresult
+  rw [support_map] at hresult
+  obtain ⟨baseResult, _hbaseResult, rfl⟩ := hresult
+  exact htrace
+
+theorem filteredHighMonitoredHashVerifier_preserves_attackerTrace
+    (keyHigh : ProgrammedFixedChainKeygenView ×
+      (ChainEdgeIndex → Digest))
+    (selected : ChainIndex) (table : ChainValueIndex → Digest)
+    (hashInput : HashInput) (attackerTrace : AttackerActionTrace)
+    (state : MonitoredTracedState) (htrace : state.2 = attackerTrace)
+    (result : HashOutput × MonitoredTracedState)
+    (hresult : result ∈ support
+      ((filteredHighMonitoredHashVerifierImpl keyHigh selected table hashInput
+        ).run state)) :
+    result.2.2 = attackerTrace := by
+  rw [filteredHighMonitoredHashVerifierImpl_run,
+    filteredHighMonitoredHashVerifierRun_eq, support_map] at hresult
+  obtain ⟨baseResult, _hbaseResult, rfl⟩ := hresult
+  exact htrace
 
 theorem filteredHighMonitoredVerifier_preserves_attackerTrace
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -1349,16 +1402,10 @@ theorem filteredHighMonitoredVerifier_preserves_attackerTrace
       (fun state : MonitoredTracedState => state.2 = attackerTrace) := by
   intro input state htrace result hresult
   rcases input with n | hashInput
-  · unfold filteredHighMonitoredVerifierImpl
-      filteredHighMonitoredUniformVerifierImpl at hresult
-    rw [StateT.run_mk, support_map] at hresult
-    obtain ⟨raw, _hraw, rfl⟩ := hresult
-    exact htrace
-  · unfold filteredHighMonitoredVerifierImpl at hresult
-    rw [filteredHighMonitoredHashVerifierImpl_run,
-      filteredHighMonitoredHashVerifierRun_eq, support_map] at hresult
-    obtain ⟨raw, _hraw, rfl⟩ := hresult
-    exact htrace
+  · exact filteredHighMonitoredUniformVerifier_preserves_attackerTrace table n
+      attackerTrace state htrace result hresult
+  · exact filteredHighMonitoredHashVerifier_preserves_attackerTrace keyHigh
+      selected table hashInput attackerTrace state htrace result hresult
 
 theorem filteredHighMonitoredVerifier_simulation_preserves_attackerTrace
     (keyHigh : ProgrammedFixedChainKeygenView ×
@@ -1422,9 +1469,9 @@ theorem filteredHighMonitoredDetailedExecution_support_action_projection
     keyHigh selected (adversary.main keyHigh.1.publicKey)
       ⟨filteredCausalKeygenState selected keyHigh.1,
         some AdaptiveRevealMonitor.State.empty, []⟩ []] at hhandledMapped
-  rw [support_map_apply_iff] at hhandledMapped
-  obtain ⟨rawHandled, hrawHandled, hhandledEq⟩ := hhandledMapped
-  simp only [List.nil_append] at hhandledEq
+  simp only [List.nil_append] at hhandledMapped
+  obtain ⟨rawHandled, hrawHandled, hhandledEq⟩ :=
+    (support_map_apply_iff _ _ _).mp hhandledMapped
   have hverifierMapped :
       ((verifier.1, verifier.2.1.causal), verifier.2.1.trace) ∈ support
         ((fun mapped : Bool × MonitoredTracedState =>
@@ -1438,18 +1485,71 @@ theorem filteredHighMonitoredDetailedExecution_support_action_projection
   rw [map_simulate_filteredHighMonitoredVerifier_verify_projection keyHigh
     selected table keyHigh.1.publicKey handled.1 handled.2.1 handled.2.2]
       at hverifierMapped
-  rw [support_map_apply_iff] at hverifierMapped
-  obtain ⟨rawVerifier, hrawVerifier, hverifierEq⟩ := hverifierMapped
-  unfold FilteredHighDetailedRunSupport EagerTraceSupport
-  unfold filteredHighDetailedGameAfterKeygen
-  simp only [StateT.run_bind, simulateQ_bind, support_bind_apply_iff]
-  refine ⟨rawHandled, hrawHandled, ?_⟩
-  rw [support_map_apply_iff]
-  refine ⟨rawVerifier, hrawVerifier, ?_⟩
-  cases hhandledEq
-  cases hverifierEq
-  simp only [Function.comp_apply, Prod.map, Prod.map_apply, id_eq]
-  rw [htrace]
+  obtain ⟨rawVerifier, hrawVerifier, hverifierEq⟩ :=
+    (support_map_apply_iff _ _ _).mp hverifierMapped
+  have hhandledEq' : rawHandled =
+      (((handled.1, handled.2.2), handled.2.1.causal),
+        handled.2.1.trace) := by
+    simpa only [Prod.eta] using hhandledEq
+  have hforgery : rawHandled.1.1.1 = handled.1 :=
+    congrArg (fun candidate => candidate.1.1.1) hhandledEq'
+  have hattackerTrace : rawHandled.1.1.2 = handled.2.2 :=
+    congrArg (fun candidate => candidate.1.1.2) hhandledEq'
+  have hhandledState : rawHandled.1.2 = handled.2.1.causal :=
+    congrArg (fun candidate => candidate.1.2) hhandledEq'
+  have hhandledObserved : rawHandled.2 = handled.2.1.trace :=
+    congrArg Prod.snd hhandledEq'
+  have hverified : rawVerifier.1.1 = verifier.1 :=
+    congrArg (fun candidate => candidate.1.1) hverifierEq
+  have hverifierState : rawVerifier.1.2 = verifier.2.1.causal :=
+    congrArg (fun candidate => candidate.1.2) hverifierEq
+  have hverifierObserved :
+      handled.2.1.trace ++ rawVerifier.2 = verifier.2.1.trace :=
+    congrArg Prod.snd hverifierEq
+  have hrawVerifier' : EagerTraceSupport table
+      ((simulateQ (filteredHighVerifierImpl keyHigh selected)
+        (Concrete.scheme.verify keyHigh.1.publicKey rawHandled.1.1.1.epoch
+          rawHandled.1.1.1.message rawHandled.1.1.1.signature)).run
+            rawHandled.1.2) rawVerifier := by
+    unfold EagerTraceSupport
+    simpa only [hforgery, hhandledState] using hrawVerifier
+  have hcomposed : FilteredHighDetailedRunSupport table adversary keyHigh
+      selected (filteredCausalKeygenState selected keyHigh.1)
+      ((((rawHandled.1.1.1, rawVerifier.1.1), rawHandled.1.1.2),
+        rawVerifier.1.2), rawHandled.2 ++ rawVerifier.2) := by
+    unfold FilteredHighDetailedRunSupport
+    unfold filteredHighDetailedGameAfterKeygen
+    rw [StateT.run_bind]
+    apply eagerTraceSupport_bind (head := rawHandled)
+      (tail := (((((rawHandled.1.1.1, rawVerifier.1.1),
+        rawHandled.1.1.2), rawVerifier.1.2), rawVerifier.2)))
+    · exact hrawHandled
+    · rw [StateT.run_bind]
+      let verifierRun :=
+        (simulateQ (filteredHighVerifierImpl keyHigh selected)
+          (Concrete.scheme.verify keyHigh.1.publicKey
+            rawHandled.1.1.1.epoch rawHandled.1.1.1.message
+              rawHandled.1.1.1.signature)).run rawHandled.1.2
+      let afterVerifier : Bool × CausalHashState → OracleComp
+          (RevealProbeOracleSimulation.World ChainValueIndex)
+          (((Forgery × Bool) × AttackerActionTrace) × CausalHashState) :=
+        fun verified => pure (((rawHandled.1.1.1, verified.1),
+          rawHandled.1.1.2), verified.2)
+      let finalValue := (((rawHandled.1.1.1, rawVerifier.1.1),
+        rawHandled.1.1.2), rawVerifier.1.2)
+      have hfirst : EagerTraceSupport table verifierRun rawVerifier := by
+        simpa only [verifierRun] using hrawVerifier'
+      have hfinal : EagerTraceSupport table (afterVerifier rawVerifier.1)
+          (finalValue, []) := by
+        simp only [afterVerifier, finalValue, EagerTraceSupport,
+          simulateQ_pure, WriterT.run_pure, support_pure]
+        exact Set.mem_singleton _
+      have htail := eagerTraceSupport_bind table verifierRun afterVerifier
+        rawVerifier (finalValue, []) hfirst hfinal
+      simpa only [verifierRun, afterVerifier, finalValue,
+        StateT.run_pure, List.append_nil] using htail
+  simpa only [hforgery, hattackerTrace, hhandledState, hhandledObserved,
+    hverified, hverifierState, hverifierObserved, htrace] using hcomposed
 
 set_option maxHeartbeats 1000000 in
 theorem filteredHighMonitoredDetailedExecution_support_verified_coverage
