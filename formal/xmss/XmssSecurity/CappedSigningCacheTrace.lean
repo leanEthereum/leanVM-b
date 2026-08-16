@@ -314,4 +314,202 @@ theorem cappedCacheTracedMappedAdversaryImpl_preservesOtherValidEncodingInputs
           publicKey secretKey input initialCache initialTrace (output, middleState)
           htrace hquery') hrest
 
+noncomputable def cappedSelectivelyLoggedMappedAdversaryImpl
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (WriterT (QueryLog SigningSpec) (StateT (QueryCache HashSpec) ProbComp)) :=
+  QueryImpl.withTraceAppend (cappedUnloggedMappedAdversaryImpl publicKey secretKey)
+    signingLogFragment
+
+noncomputable def cappedLogTracedMappedAdversaryImpl
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT (QueryCache HashSpec × QueryLog SigningSpec) ProbComp) :=
+  QueryImpl.extendState (cappedUnloggedMappedAdversaryImpl publicKey secretKey)
+    signingLogUpdate
+
+theorem cappedSelectivelyLoggedMappedAdversaryImpl_apply_inr
+    (publicKey : PublicKey) (secretKey : SecretKey) (request : SignRequest) :
+    cappedSelectivelyLoggedMappedAdversaryImpl publicKey secretKey (.inr request) =
+      QueryImpl.withLogging
+        (fun request => simulateQ xmssRomImpl
+          (Concrete.cappedScheme.sign publicKey secretKey
+            request.epoch request.message)) request := by
+  rfl
+
+theorem cappedMappedAdversaryImpl_apply_inr
+    (publicKey : PublicKey) (secretKey : SecretKey) (request : SignRequest) :
+    cappedMappedAdversaryImpl publicKey secretKey (.inr request) =
+      QueryImpl.withLogging
+        (fun request => simulateQ xmssRomImpl
+          (Concrete.cappedScheme.sign publicKey secretKey
+            request.epoch request.message)) request := by
+  change WriterT.mk (simulateQ xmssRomImpl
+      ((QueryImpl.withLogging (spec := SigningSpec)
+        (fun request => Concrete.cappedScheme.sign publicKey secretKey
+          request.epoch request.message) request).run)) = _
+  apply WriterT.ext
+  rw [WriterT.run_mk, QueryImpl.run_withLogging_apply,
+    QueryImpl.run_withLogging_apply, simulateQ_bind]
+  simp
+
+theorem cappedSelectivelyLoggedMappedAdversaryImpl_eq_mapped
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    cappedSelectivelyLoggedMappedAdversaryImpl publicKey secretKey =
+      cappedMappedAdversaryImpl publicKey secretKey := by
+  funext input
+  cases input with
+  | inl worldInput =>
+      change (do
+          let output ← liftM (xmssRomImpl worldInput)
+          tell ([] : QueryLog SigningSpec)
+          pure output) =
+        WriterT.mk ((fun output => (output, ([] : QueryLog SigningSpec))) <$>
+          xmssRomImpl worldInput)
+      apply WriterT.ext
+      simp
+  | inr request =>
+      rw [cappedSelectivelyLoggedMappedAdversaryImpl_apply_inr,
+        cappedMappedAdversaryImpl_apply_inr]
+
+theorem cappedCacheTracedMappedAdversaryImpl_log_projection
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace) :
+    Prod.map id (fun state => (state.1, state.2.toSigningLog)) <$>
+        (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+          computation).run (initialCache, initialTrace) =
+      (simulateQ (cappedLogTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run (initialCache, initialTrace.toSigningLog) := by
+  apply OracleComp.map_run_simulateQ_eq_of_query_map_eq
+    (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+    (cappedLogTracedMappedAdversaryImpl publicKey secretKey)
+    (fun state => (state.1, state.2.toSigningLog))
+  intro input state
+  rw [cappedCacheTracedMappedAdversaryImpl, cappedLogTracedMappedAdversaryImpl,
+    QueryImpl.extendState_apply, QueryImpl.extendState_apply, map_bind]
+  apply bind_congr
+  intro result
+  simp only [map_pure]
+  simpa [Prod.map] using congrArg (fun log => (result.1, (result.2, log)))
+    (signingCacheTraceUpdate_toSigningLog input state.1 result.1 result.2 state.2)
+
+theorem cappedSelectivelyLoggedMappedAdversaryImpl_query_run_eq_logTraced
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec) (initialLog : QueryLog SigningSpec) :
+    (fun result =>
+      (result.1.1, (result.2, initialLog ++ result.1.2))) <$>
+        (((cappedSelectivelyLoggedMappedAdversaryImpl publicKey secretKey input).run).run
+          initialCache) =
+      (cappedLogTracedMappedAdversaryImpl publicKey secretKey input).run
+        (initialCache, initialLog) := by
+  rw [cappedSelectivelyLoggedMappedAdversaryImpl, QueryImpl.withTraceAppend_apply,
+    cappedLogTracedMappedAdversaryImpl, QueryImpl.extendState_apply]
+  simp only [WriterT.run_bind', WriterT.run_monadLift', WriterT.run_tell,
+    WriterT.run_pure', StateT.run_bind, StateT.run_pure, map_bind,
+    bind_map_left, pure_bind, map_pure, Prod.map, id_eq]
+  apply bind_congr
+  intro result
+  simp [signingLogUpdate]
+
+theorem cappedSelectivelyLoggedMappedAdversaryImpl_run_eq_logTraced
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (initialLog : QueryLog SigningSpec) :
+    (fun result =>
+      (result.1.1, (result.2, initialLog ++ result.1.2))) <$>
+        (((simulateQ (cappedSelectivelyLoggedMappedAdversaryImpl publicKey secretKey)
+          computation).run).run initialCache) =
+      (simulateQ (cappedLogTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run (initialCache, initialLog) := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialCache initialLog with
+  | pure value => simp
+  | query_bind input next ih =>
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, WriterT.run_bind', StateT.run_bind, map_bind, id_map]
+      rw [← cappedSelectivelyLoggedMappedAdversaryImpl_query_run_eq_logTraced
+        publicKey secretKey input initialCache initialLog]
+      simp only [bind_map_left]
+      apply bind_congr
+      intro prefixResult
+      simpa [List.append_assoc] using
+        ih prefixResult.1.1 prefixResult.2 (initialLog ++ prefixResult.1.2)
+
+theorem cappedCacheTracedMappedAdversaryImpl_log_projection_eq_mapped
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) :
+    Prod.map id (fun state => (state.1, state.2.toSigningLog)) <$>
+        (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+          computation).run (initialCache, []) =
+      (fun result => (result.1.1, (result.2, result.1.2))) <$>
+        (((simulateQ (cappedMappedAdversaryImpl publicKey secretKey)
+          computation).run).run initialCache) := by
+  rw [cappedCacheTracedMappedAdversaryImpl_log_projection]
+  simp only [SigningCacheTrace.toSigningLog, List.map_nil]
+  rw [← cappedSelectivelyLoggedMappedAdversaryImpl_run_eq_logTraced
+    publicKey secretKey computation initialCache []]
+  rw [cappedSelectivelyLoggedMappedAdversaryImpl_eq_mapped]
+  rfl
+
+noncomputable def cappedDetailedGameAfterKeygenWithSigningTrace
+    (adversary : Adversary Concrete.cappedScheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec) :
+    ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) := do
+  let (forgery, adversaryCache, trace) ←
+    (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+      (adversary.main publicKey)).run (initialCache, [])
+  let (verified, finalCache) ←
+    (simulateQ xmssRomImpl
+      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+        forgery.signature)).run adversaryCache
+  pure (⟨publicKey, secretKey, forgery, trace.toSigningLog, verified⟩,
+    (finalCache, trace))
+
+theorem cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection
+    (adversary : Adversary Concrete.cappedScheme)
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec) :
+    Prod.map id Prod.fst <$>
+        cappedDetailedGameAfterKeygenWithSigningTrace adversary publicKey secretKey
+          initialCache =
+      (simulateQ xmssRomImpl
+        (detailedGameAfterKeygen Concrete.cappedScheme adversary publicKey secretKey)).run
+          initialCache := by
+  let finish : Forgery × (QueryCache HashSpec × QueryLog SigningSpec) →
+      ProbComp (GameOutcome × QueryCache HashSpec) := fun result => do
+    let (verified, finalCache) ←
+      (simulateQ xmssRomImpl
+        (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+          result.1.signature)).run result.2.1
+    pure (⟨publicKey, secretKey, result.1, result.2.2, verified⟩, finalCache)
+  have hbridge := congrArg (fun computation => computation >>= finish)
+    (cappedCacheTracedMappedAdversaryImpl_log_projection_eq_mapped publicKey secretKey
+      (adversary.main publicKey) initialCache)
+  simpa [cappedDetailedGameAfterKeygenWithSigningTrace, detailedGameAfterKeygen,
+    cappedMappedAdversaryImpl, finish, bind_map_left, map_bind, bind_assoc,
+    Prod.map, QueryImpl.simulateQ_writerTMapBase_run] using hbridge
+
+noncomputable def cappedDetailedGameWithSigningTrace
+    (adversary : Adversary Concrete.cappedScheme) :
+    ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) := do
+  let keyResult ← (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅
+  cappedDetailedGameAfterKeygenWithSigningTrace adversary keyResult.1.1 keyResult.1.2
+    keyResult.2
+
+theorem cappedDetailedGameWithSigningTrace_cache_projection
+    (adversary : Adversary Concrete.cappedScheme) :
+    Prod.map id Prod.fst <$> cappedDetailedGameWithSigningTrace adversary =
+      detailedGameWithCache Concrete.cappedScheme adversary := by
+  unfold cappedDetailedGameWithSigningTrace detailedGameWithCache detailedGameCore
+  rw [simulateQ_bind, StateT.run_bind]
+  simp only [map_bind]
+  apply bind_congr
+  intro keyResult
+  exact cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection adversary
+    keyResult.1.1 keyResult.1.2 keyResult.2
+
 end XmssSecurity
