@@ -82,6 +82,225 @@ theorem uniformDigest_valid_bonus_sum_eq :
       · exact ENNReal.natCast_ne_top _
     _ = _ := mul_one _
 
+theorem uniformDigest_mem_bonus_sum_eq (targets : Finset Digest) :
+    ∑ digest : Digest,
+        Pr[= digest | $ᵗ Digest] *
+          (if digest ∈ targets then 1 else 0) =
+      (targets.card : ℝ≥0∞) *
+        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  simp_rw [probOutput_uniformSample]
+  simp_rw [mul_ite, mul_one, mul_zero]
+  have hfilter : Finset.univ.filter (fun digest : Digest => digest ∈ targets) =
+      targets := by
+    ext digest
+    simp
+  rw [Finset.sum_ite, Finset.sum_const_zero, add_zero,
+    Finset.sum_const, nsmul_eq_mul, hfilter]
+
+theorem uniformDigest_valid_scaled_bonus_sum_eq (scale : Nat) :
+    ∑ digest : Digest,
+        Pr[= digest | $ᵗ Digest] *
+          (if TargetSum.ValidDigest digest then
+            (scale : ℝ≥0∞) *
+              (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ else 0) =
+      (scale : ℝ≥0∞) *
+        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = (scale : ℝ≥0∞) *
+        (∑ digest : Digest,
+          Pr[= digest | $ᵗ Digest] *
+            (if TargetSum.ValidDigest digest then
+              (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ else 0)) := by
+          rw [Finset.mul_sum]
+          apply Finset.sum_congr rfl
+          intro digest _hdigest
+          by_cases hvalid : TargetSum.ValidDigest digest
+          · simp only [hvalid, ↓reduceIte]
+            ac_rfl
+          · simp only [hvalid, ↓reduceIte, mul_zero]
+    _ = _ := by rw [uniformDigest_valid_bonus_sum_eq]
+
+theorem uniformDigest_sign_bonus_sum_le (targets : Finset Digest) :
+    ∑ digest : Digest,
+        Pr[= digest | $ᵗ Digest] *
+          (if TargetSum.ValidDigest digest then
+            if digest ∈ targets then 1 else 0
+          else
+            (targets.card : ℝ≥0∞) *
+              (TargetSum.validDigests.card : ℝ≥0∞)⁻¹) ≤
+      (targets.card : ℝ≥0∞) *
+        (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ := by
+  let removed := (targets.card : ℝ≥0∞) *
+    (TargetSum.validDigests.card : ℝ≥0∞)⁻¹
+  calc
+    _ ≤ ∑ digest : Digest,
+        Pr[= digest | $ᵗ Digest] *
+          ((if digest ∈ targets then 1 else 0) +
+            if TargetSum.ValidDigest digest then 0 else removed) := by
+          apply Finset.sum_le_sum
+          intro digest _hdigest
+          apply mul_le_mul_right
+          by_cases hvalid : TargetSum.ValidDigest digest
+          · by_cases hmem : digest ∈ targets <;>
+              simp only [hvalid, hmem, ↓reduceIte, add_zero, le_refl]
+          · by_cases hmem : digest ∈ targets
+            · simp only [hvalid, hmem, ↓reduceIte]
+              exact le_add_left le_rfl
+            · simp only [hvalid, hmem, ↓reduceIte, zero_add]
+              exact le_rfl
+    _ = (∑ digest : Digest,
+          Pr[= digest | $ᵗ Digest] *
+            (if digest ∈ targets then 1 else 0)) +
+        ∑ digest : Digest,
+          Pr[= digest | $ᵗ Digest] *
+            (if TargetSum.ValidDigest digest then 0 else removed) := by
+              simp_rw [mul_add]
+              rw [Finset.sum_add_distrib]
+    _ = (∑ digest : Digest,
+          Pr[= digest | $ᵗ Digest] *
+            (if TargetSum.ValidDigest digest then removed else 0)) +
+        ∑ digest : Digest,
+          Pr[= digest | $ᵗ Digest] *
+            (if TargetSum.ValidDigest digest then 0 else removed) := by
+              have hfirst :
+                ∑ digest : Digest,
+                    Pr[= digest | $ᵗ Digest] *
+                      (if digest ∈ targets then 1 else 0) =
+                  ∑ digest : Digest,
+                    Pr[= digest | $ᵗ Digest] *
+                      (if TargetSum.ValidDigest digest then removed else 0) := by
+                calc
+                  _ = (targets.card : ℝ≥0∞) *
+                        (Fintype.card Digest : ℝ≥0∞)⁻¹ :=
+                    uniformDigest_mem_bonus_sum_eq targets
+                  _ = _ := by
+                    dsimp only [removed]
+                    exact (uniformDigest_valid_scaled_bonus_sum_eq targets.card).symm
+              rw [hfirst]
+    _ = ∑ digest : Digest,
+        Pr[= digest | $ᵗ Digest] * removed := by
+          rw [← Finset.sum_add_distrib]
+          apply Finset.sum_congr rfl
+          intro digest _hdigest
+          by_cases hvalid : TargetSum.ValidDigest digest <;> simp [hvalid]
+    _ = removed := by
+          rw [← Finset.sum_mul]
+          have hmass : ∑ digest : Digest, Pr[= digest | $ᵗ Digest] = 1 :=
+            sum_probOutput_eq_one (mx := ($ᵗ Digest)) (by simp)
+          rw [hmass, one_mul]
+
+noncomputable def applyUniformSignAttemptMonitor
+    (epoch : Epoch)
+    (resume : Digest → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool := do
+  let digest ← $ᵗ Digest
+  if TargetSum.ValidDigest digest then
+    match state.signed epoch with
+    | some _ => pure false
+    | none =>
+        if digest ∈ state.pending epoch then pure true
+        else resume digest (state.install epoch digest)
+  else resume digest state
+
+theorem applyUniformSignAttemptMonitor_true_probability_le
+    (epoch : Epoch)
+    (resume : Digest → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) (fuel : Nat)
+    (hresume : ∀ digest nextState,
+      Pr[(· = true) | resume digest nextState] ≤
+        (fuel : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+          State.pendingRisk nextState) :
+    Pr[(· = true) | applyUniformSignAttemptMonitor epoch resume state] ≤
+      (fuel : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+        State.pendingRisk state := by
+  cases hsigned : state.signed epoch with
+  | some target =>
+      unfold applyUniformSignAttemptMonitor
+      rw [probEvent_bind_eq_tsum, tsum_fintype]
+      calc
+        _ ≤ ∑ digest : Digest,
+            Pr[= digest | $ᵗ Digest] *
+              ((fuel : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+                State.pendingRisk state) := by
+                  apply Finset.sum_le_sum
+                  intro digest _hdigest
+                  apply mul_le_mul_right
+                  by_cases hvalid : TargetSum.ValidDigest digest
+                  · simp [hvalid, hsigned]
+                  · simpa [hvalid] using hresume digest state
+        _ = _ := by
+              rw [← Finset.sum_mul]
+              have hmass : ∑ digest : Digest, Pr[= digest | $ᵗ Digest] = 1 :=
+                sum_probOutput_eq_one (mx := ($ᵗ Digest)) (by simp)
+              rw [hmass, one_mul]
+  | none =>
+      let base := (fuel : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹
+      let remaining := State.pendingRisk (state.install epoch 0)
+      let removed := ((state.pending epoch).card : ℝ≥0∞) *
+        (TargetSum.validDigests.card : ℝ≥0∞)⁻¹
+      have hrisk : remaining + removed = State.pendingRisk state := by
+        exact State.pendingRisk_install_add state epoch 0
+      unfold applyUniformSignAttemptMonitor
+      rw [probEvent_bind_eq_tsum, tsum_fintype]
+      calc
+        _ ≤ ∑ digest : Digest,
+            Pr[= digest | $ᵗ Digest] *
+              (base + remaining +
+                if TargetSum.ValidDigest digest then
+                  if digest ∈ state.pending epoch then 1 else 0
+                else removed) := by
+                  apply Finset.sum_le_sum
+                  intro digest _hdigest
+                  apply mul_le_mul_right
+                  by_cases hvalid : TargetSum.ValidDigest digest
+                  · simp only [hvalid, ↓reduceIte, hsigned]
+                    by_cases hmem : digest ∈ state.pending epoch
+                    · simp [hmem]
+                    · simp only [hmem, ↓reduceIte, add_zero]
+                      have hriskEq :
+                          State.pendingRisk (state.install epoch digest) = remaining := by
+                        unfold remaining State.pendingRisk
+                        rw [EncodingMonitor.State.pendingCount_install_eq state epoch digest 0]
+                      simpa [base, hriskEq] using
+                        hresume digest (state.install epoch digest)
+                  · simp only [hvalid, ↓reduceIte]
+                    calc
+                      Pr[(· = true) | resume digest state] ≤
+                          base + State.pendingRisk state := by
+                            simpa [base] using hresume digest state
+                      _ = base + remaining + removed := by rw [← hrisk]; ac_rfl
+        _ = (base + remaining) +
+            ∑ digest : Digest,
+              Pr[= digest | $ᵗ Digest] *
+                (if TargetSum.ValidDigest digest then
+                  if digest ∈ state.pending epoch then 1 else 0
+                else removed) := by
+                  rw [show (∑ digest : Digest,
+                      Pr[= digest | $ᵗ Digest] *
+                        (base + remaining +
+                          (if TargetSum.ValidDigest digest then
+                            if digest ∈ state.pending epoch then 1 else 0
+                          else removed))) =
+                      (∑ digest : Digest,
+                        Pr[= digest | $ᵗ Digest] * (base + remaining)) +
+                      ∑ digest : Digest,
+                        Pr[= digest | $ᵗ Digest] *
+                          (if TargetSum.ValidDigest digest then
+                            if digest ∈ state.pending epoch then 1 else 0
+                          else removed) by
+                            rw [← Finset.sum_add_distrib]
+                            apply Finset.sum_congr rfl
+                            intro digest _hdigest
+                            rw [mul_add]]
+                  rw [← Finset.sum_mul]
+                  have hmass : ∑ digest : Digest, Pr[= digest | $ᵗ Digest] = 1 :=
+                    sum_probOutput_eq_one (mx := ($ᵗ Digest)) (by simp)
+                  rw [hmass, one_mul]
+        _ ≤ (base + remaining) + removed := by
+              gcongr
+              exact uniformDigest_sign_bonus_sum_le (state.pending epoch)
+        _ = base + State.pendingRisk state := by rw [← hrisk]; ac_rfl
+
 noncomputable def applyUniformQueryMonitor
     (epoch : Epoch)
     (resume : Digest → EncodingMonitor.State → ProbComp Bool)
@@ -169,6 +388,511 @@ theorem applyUniformQueryMonitor_true_probability_le
             State.pendingRisk state := by
               rw [Nat.cast_succ, add_mul, one_mul]
               ac_rfl
+
+noncomputable def applyProgrammedQueryMonitor
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool :=
+  applyUniformQueryMonitor epoch
+    (fun digest nextState =>
+      Rom.sampleHashOutputWithDigest digest >>= fun output =>
+        resume output nextState)
+    state
+
+theorem applyProgrammedQueryMonitor_true_probability_le
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) (fuel : Nat)
+    (hresume : ∀ output nextState,
+      Pr[(· = true) | resume output nextState] ≤
+        (fuel : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+          State.pendingRisk nextState) :
+    Pr[(· = true) | applyProgrammedQueryMonitor epoch resume state] ≤
+      (fuel.succ : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+        State.pendingRisk state := by
+  apply applyUniformQueryMonitor_true_probability_le
+  intro digest nextState
+  exact probEvent_bind_le_of_forall_le fun output _houtput => hresume output nextState
+
+noncomputable def applyProgrammedSignAttemptMonitor
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool :=
+  applyUniformSignAttemptMonitor epoch
+    (fun digest nextState =>
+      Rom.sampleHashOutputWithDigest digest >>= fun output =>
+        resume output nextState)
+    state
+
+theorem applyProgrammedSignAttemptMonitor_true_probability_le
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) (fuel : Nat)
+    (hresume : ∀ output nextState,
+      Pr[(· = true) | resume output nextState] ≤
+        (fuel : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+          State.pendingRisk nextState) :
+    Pr[(· = true) | applyProgrammedSignAttemptMonitor epoch resume state] ≤
+      (fuel : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+        State.pendingRisk state := by
+  apply applyUniformSignAttemptMonitor_true_probability_le
+  intro digest nextState
+  exact probEvent_bind_le_of_forall_le fun output _houtput => hresume output nextState
+
+noncomputable def applyHashOutputQueryMonitor
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool := do
+  let output ← uniformHashOutput
+  let digest := truncateHash output
+  match state.signed epoch with
+  | some target =>
+      if digest = target then pure true else resume output state
+  | none =>
+      if TargetSum.ValidDigest digest then
+        resume output (state.addPending epoch digest)
+      else resume output state
+
+noncomputable def applyHashOutputSignAttemptMonitor
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool := do
+  let output ← uniformHashOutput
+  let digest := truncateHash output
+  if TargetSum.ValidDigest digest then
+    match state.signed epoch with
+    | some _ => pure false
+    | none =>
+        if digest ∈ state.pending epoch then pure true
+        else resume output (state.install epoch digest)
+  else resume output state
+
+theorem applyProgrammedQueryMonitor_evalDist_eq
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) :
+    evalDist (applyProgrammedQueryMonitor epoch resume state) =
+      evalDist (applyHashOutputQueryMonitor epoch resume state) := by
+  let continuation := fun result : Digest × HashOutput =>
+    match state.signed epoch with
+    | some target =>
+        if result.1 = target then pure true else resume result.2 state
+    | none =>
+        if TargetSum.ValidDigest result.1 then
+          resume result.2 (state.addPending epoch result.1)
+        else resume result.2 state
+  calc
+    _ = evalDist ($ᵗ Digest >>= fun digest =>
+          Rom.sampleHashOutputWithDigest digest >>= fun output =>
+            continuation (digest, output)) := by
+      unfold applyProgrammedQueryMonitor applyUniformQueryMonitor continuation
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro digest
+      cases hsigned : state.signed epoch with
+      | none =>
+          by_cases hvalid : TargetSum.ValidDigest digest <;>
+            simp only [hvalid, ↓reduceIte]
+      | some target =>
+          by_cases heq : digest = target
+          · simp only [heq, ↓reduceIte]
+            symm
+            exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+              (Rom.sampleHashOutputWithDigest target)
+              (by simp [Rom.sampleHashOutputWithDigest]) (pure true)
+          · simp only [heq, ↓reduceIte]
+    _ = evalDist (Rom.sampledHashOutputWithDigest >>= continuation) := by
+      congr 1
+    _ = evalDist ($ᵗ HashOutput >>= fun output =>
+          continuation (truncateHash output, output)) :=
+      Rom.evalDist_sampledHashOutputWithDigest_bind_eq_uniform_bind continuation
+    _ = _ := by
+      congr 1
+
+theorem applyProgrammedSignAttemptMonitor_evalDist_eq
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) :
+    evalDist (applyProgrammedSignAttemptMonitor epoch resume state) =
+      evalDist (applyHashOutputSignAttemptMonitor epoch resume state) := by
+  let continuation := fun result : Digest × HashOutput =>
+    if TargetSum.ValidDigest result.1 then
+      match state.signed epoch with
+      | some _ => pure false
+      | none =>
+          if result.1 ∈ state.pending epoch then pure true
+          else resume result.2 (state.install epoch result.1)
+    else resume result.2 state
+  calc
+    _ = evalDist ($ᵗ Digest >>= fun digest =>
+          Rom.sampleHashOutputWithDigest digest >>= fun output =>
+            continuation (digest, output)) := by
+      unfold applyProgrammedSignAttemptMonitor applyUniformSignAttemptMonitor continuation
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro digest
+      by_cases hvalid : TargetSum.ValidDigest digest
+      · simp only [hvalid, ↓reduceIte]
+        cases hsigned : state.signed epoch with
+        | some target =>
+            symm
+            exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+              (Rom.sampleHashOutputWithDigest digest)
+              (by simp [Rom.sampleHashOutputWithDigest]) (pure false)
+        | none =>
+            by_cases hmem : digest ∈ state.pending epoch
+            · simp only [hmem, ↓reduceIte]
+              symm
+              exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+                (Rom.sampleHashOutputWithDigest digest)
+                (by simp [Rom.sampleHashOutputWithDigest]) (pure true)
+            · simp only [hmem, ↓reduceIte]
+      · simp only [hvalid, ↓reduceIte]
+    _ = evalDist (Rom.sampledHashOutputWithDigest >>= continuation) := by
+      congr 1
+    _ = evalDist ($ᵗ HashOutput >>= fun output =>
+          continuation (truncateHash output, output)) :=
+      Rom.evalDist_sampledHashOutputWithDigest_bind_eq_uniform_bind continuation
+    _ = _ := by
+      congr 1
+
+def IsAttackerEncodingQuery : EncodingSamplingWorld.Domain → Prop
+  | .inr ⟨.query, some _⟩ => True
+  | _ => False
+
+noncomputable instance : DecidablePred IsAttackerEncodingQuery :=
+  Classical.decPred _
+
+noncomputable def applyRawSampleMonitor
+    (address : EncodingSampleAddress)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) : ProbComp Bool :=
+  match address.kind, address.epoch with
+  | .query, some epoch => applyProgrammedQueryMonitor epoch resume state
+  | .sign, some epoch => applyProgrammedSignAttemptMonitor epoch resume state
+  | _, _ => uniformHashOutput >>= fun output => resume output state
+
+noncomputable def runRawStructural
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) : ProbComp Bool :=
+  OracleComp.construct
+    (C := fun _ => EncodingMonitor.State → ProbComp Bool)
+    (fun _result _state => pure false)
+    (fun input _next recursivelyMonitor state =>
+      match input with
+      | .inl index => do
+          let output ← (liftM (unifSpec.query index) : ProbComp _)
+          recursivelyMonitor output state
+      | .inr address => applyRawSampleMonitor address recursivelyMonitor state)
+    computation state
+
+theorem runRawStructural_true_probability_le
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) (queryBound : Nat)
+    (hbound : computation.IsQueryBoundP IsAttackerEncodingQuery queryBound) :
+    Pr[(· = true) | runRawStructural state computation] ≤
+      (queryBound : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+        State.pendingRisk state := by
+  induction computation using OracleComp.inductionOn generalizing state queryBound with
+  | pure result =>
+      rw [runRawStructural, OracleComp.construct_pure, probEvent_pure]
+      simp
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | inl index =>
+          rw [runRawStructural, OracleComp.construct_query_bind]
+          exact probEvent_bind_le_of_forall_le fun output _houtput =>
+            ih output state queryBound
+              (by simpa [IsAttackerEncodingQuery] using hbound.2 output)
+      | inr address =>
+          rcases address with ⟨kind, taggedEpoch⟩
+          cases kind with
+          | side =>
+              rw [runRawStructural, OracleComp.construct_query_bind]
+              unfold applyRawSampleMonitor
+              exact probEvent_bind_le_of_forall_le fun output _houtput =>
+                ih output state queryBound
+                  (by simpa [IsAttackerEncodingQuery] using hbound.2 output)
+          | query =>
+              cases taggedEpoch with
+              | none =>
+                  rw [runRawStructural, OracleComp.construct_query_bind]
+                  unfold applyRawSampleMonitor
+                  exact probEvent_bind_le_of_forall_le fun output _houtput =>
+                    ih output state queryBound
+                      (by simpa [IsAttackerEncodingQuery] using hbound.2 output)
+              | some epoch =>
+                  cases queryBound with
+                  | zero => simp [IsAttackerEncodingQuery] at hbound
+                  | succ queryBound =>
+                      rw [runRawStructural, OracleComp.construct_query_bind]
+                      unfold applyRawSampleMonitor
+                      exact applyProgrammedQueryMonitor_true_probability_le epoch
+                        (fun output nextState => runRawStructural nextState (next output))
+                        state queryBound
+                        (fun output nextState => ih output nextState queryBound
+                          (by simpa [IsAttackerEncodingQuery] using hbound.2 output))
+          | sign =>
+              cases taggedEpoch with
+              | none =>
+                  rw [runRawStructural, OracleComp.construct_query_bind]
+                  unfold applyRawSampleMonitor
+                  exact probEvent_bind_le_of_forall_le fun output _houtput =>
+                    ih output state queryBound
+                      (by simpa [IsAttackerEncodingQuery] using hbound.2 output)
+              | some epoch =>
+                  rw [runRawStructural, OracleComp.construct_query_bind]
+                  unfold applyRawSampleMonitor
+                  exact applyProgrammedSignAttemptMonitor_true_probability_le epoch
+                    (fun output nextState => runRawStructural nextState (next output))
+                    state queryBound
+                    (fun output nextState => ih output nextState queryBound
+                      (by simpa [IsAttackerEncodingQuery] using hbound.2 output))
+
+theorem runRawStructural_empty_true_probability_le
+    (computation : OracleComp EncodingSamplingWorld α) (queryBound : Nat)
+    (hbound : computation.IsQueryBoundP IsAttackerEncodingQuery queryBound) :
+    Pr[(· = true) |
+      runRawStructural EncodingMonitor.State.empty computation] ≤
+      (queryBound : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  simpa only [State.pendingRisk_empty, add_zero] using
+    runRawStructural_true_probability_le EncodingMonitor.State.empty
+      computation queryBound hbound
+
+noncomputable def State.applyObserved
+    (state : EncodingMonitor.State) : EncodingMonitor.ObservedAction →
+      Option (EncodingMonitor.State × Bool)
+  | .query epoch output =>
+      let digest := truncateHash output
+      match state.signed epoch with
+      | some target => some (state, digest = target)
+      | none =>
+          if TargetSum.ValidDigest digest then
+            some (state.addPending epoch digest, false)
+          else some (state, false)
+  | .sign epoch output =>
+      let digest := truncateHash output
+      if TargetSum.ValidDigest digest then
+        match state.signed epoch with
+        | some _ => none
+        | none => some (state.install epoch digest, digest ∈ state.pending epoch)
+      else some (state, false)
+
+theorem applyHashOutputQueryMonitor_eq_observed
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) :
+    applyHashOutputQueryMonitor epoch resume state =
+      uniformHashOutput >>= fun output =>
+        match State.applyObserved state (.query epoch output) with
+        | none => pure false
+        | some (nextState, hit) =>
+            if hit then pure true else resume output nextState := by
+  unfold applyHashOutputQueryMonitor State.applyObserved
+  apply bind_congr
+  intro output
+  cases hsigned : state.signed epoch with
+  | some target =>
+      by_cases heq : truncateHash output = target <;>
+        simp [hsigned, heq]
+  | none =>
+      by_cases hvalid : TargetSum.ValidDigest (truncateHash output) <;>
+        simp [hsigned, hvalid]
+
+theorem applyHashOutputSignAttemptMonitor_eq_observed
+    (epoch : Epoch)
+    (resume : HashOutput → EncodingMonitor.State → ProbComp Bool)
+    (state : EncodingMonitor.State) :
+    applyHashOutputSignAttemptMonitor epoch resume state =
+      uniformHashOutput >>= fun output =>
+        match State.applyObserved state (.sign epoch output) with
+        | none => pure false
+        | some (nextState, hit) =>
+            if hit then pure true else resume output nextState := by
+  unfold applyHashOutputSignAttemptMonitor State.applyObserved
+  apply bind_congr
+  intro output
+  by_cases hvalid : TargetSum.ValidDigest (truncateHash output)
+  · cases hsigned : state.signed epoch with
+    | some target => simp [hvalid, hsigned]
+    | none =>
+        by_cases hmem : truncateHash output ∈ state.pending epoch <;>
+          simp [hvalid, hsigned, hmem]
+  · simp [hvalid]
+
+noncomputable def runObserved : EncodingMonitor.State →
+    List EncodingMonitor.ObservedAction → Bool
+  | _state, [] => false
+  | state, action :: actions =>
+      match State.applyObserved state action with
+      | none => false
+      | some (nextState, hit) => hit || runObserved nextState actions
+
+noncomputable def runTraced
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) : ProbComp Bool :=
+  (fun result => runObserved state result.2) <$>
+    (simulateQ encodingSamplingTraceImpl computation).run
+
+theorem runTraced_cons_probability_le
+    (state : EncodingMonitor.State) (action : EncodingMonitor.ObservedAction)
+    (computation : OracleComp EncodingSamplingWorld α)
+    (resume : EncodingMonitor.State → ProbComp Bool)
+    (hresume : ∀ nextState,
+      Pr[(· = true) | runTraced nextState computation] ≤
+        Pr[(· = true) | resume nextState]) :
+    Pr[(· = true) |
+      (fun result => runObserved state (action :: result.2)) <$>
+        (simulateQ encodingSamplingTraceImpl computation).run] ≤
+    Pr[(· = true) |
+      match State.applyObserved state action with
+      | none => pure false
+      | some (nextState, hit) =>
+          if hit then pure true else resume nextState] := by
+  cases happly : State.applyObserved state action with
+  | none => simp [runObserved, happly]
+  | some result =>
+      rcases result with ⟨nextState, hit⟩
+      cases hit with
+      | false =>
+          simpa only [runTraced, runObserved, happly, Bool.false_or,
+            Bool.false_eq_true, ↓reduceIte] using hresume nextState
+      | true => simp [runObserved, happly]
+
+theorem runTraced_probability_le_rawStructural
+    (state : EncodingMonitor.State)
+    (computation : OracleComp EncodingSamplingWorld α) :
+    Pr[(· = true) | runTraced state computation] ≤
+      Pr[(· = true) | runRawStructural state computation] := by
+  induction computation using OracleComp.inductionOn generalizing state with
+  | pure result =>
+      simp [runTraced, runObserved, runRawStructural, encodingSamplingTraceImpl]
+  | query_bind input next ih =>
+      simp only [runTraced, simulateQ_query_bind, WriterT.run_bind',
+        runRawStructural, OracleComp.construct_query_bind]
+      cases input with
+      | inl index =>
+          simp only [OracleQuery.input_query, monadLift_self,
+            encodingSamplingTraceImpl, QueryImpl.withTraceAppend_apply,
+            encodingSamplingWorldImpl, QueryImpl.add_apply_inl, uniformWorldImpl,
+            encodingSamplingTraceFragment, WriterT.run_bind', WriterT.run_monadLift',
+            WriterT.run_tell, WriterT.run_pure', map_eq_bind_pure_comp, bind_assoc,
+            pure_bind, List.nil_append, Prod.map_apply, id_eq, Function.comp_apply]
+          apply probEvent_bind_mono
+          intro output _houtput
+          exact ih output state
+      | inr address =>
+          simp only [OracleQuery.input_query, monadLift_self,
+            encodingSamplingTraceImpl, QueryImpl.withTraceAppend_apply,
+            encodingSamplingWorldImpl, QueryImpl.add_apply_inr, encodingOutputImpl,
+            encodingSamplingTraceFragment, WriterT.run_bind', WriterT.run_monadLift',
+            WriterT.run_tell, WriterT.run_pure', map_eq_bind_pure_comp, bind_assoc,
+            pure_bind, Prod.map_apply, id_eq, Function.comp_apply]
+          rcases address with ⟨kind, taggedEpoch⟩
+          cases kind with
+          | side =>
+              unfold applyRawSampleMonitor
+              apply probEvent_bind_mono
+              intro output _houtput
+              exact ih output state
+          | query =>
+              cases taggedEpoch with
+              | none =>
+                  unfold applyRawSampleMonitor
+                  apply probEvent_bind_mono
+                  intro output _houtput
+                  exact ih output state
+              | some epoch =>
+                  unfold applyRawSampleMonitor
+                  change _ ≤ Pr[(· = true) |
+                    applyProgrammedQueryMonitor epoch
+                      (fun output nextState =>
+                        runRawStructural nextState (next output)) state]
+                  have hprob :
+                      Pr[(· = true) |
+                        applyProgrammedQueryMonitor epoch
+                          (fun output nextState =>
+                            runRawStructural nextState (next output)) state] =
+                      Pr[(· = true) |
+                        applyHashOutputQueryMonitor epoch
+                          (fun output nextState =>
+                            runRawStructural nextState (next output)) state] := by
+                    rw [probEvent_def, probEvent_def,
+                      applyProgrammedQueryMonitor_evalDist_eq]
+                  rw [hprob]
+                  rw [applyHashOutputQueryMonitor_eq_observed]
+                  apply probEvent_bind_mono
+                  intro output _houtput
+                  simpa [runTraced, encodingSamplingTraceImpl, encodingSamplingWorldImpl,
+                    map_eq_bind_pure_comp, Prod.map] using
+                    (runTraced_cons_probability_le state (.query epoch output)
+                      (next output)
+                      (fun nextState => runRawStructural nextState (next output))
+                      (fun nextState => ih output nextState))
+          | sign =>
+              cases taggedEpoch with
+              | none =>
+                  unfold applyRawSampleMonitor
+                  apply probEvent_bind_mono
+                  intro output _houtput
+                  exact ih output state
+              | some epoch =>
+                  unfold applyRawSampleMonitor
+                  change _ ≤ Pr[(· = true) |
+                    applyProgrammedSignAttemptMonitor epoch
+                      (fun output nextState =>
+                        runRawStructural nextState (next output)) state]
+                  have hprob :
+                      Pr[(· = true) |
+                        applyProgrammedSignAttemptMonitor epoch
+                          (fun output nextState =>
+                            runRawStructural nextState (next output)) state] =
+                      Pr[(· = true) |
+                        applyHashOutputSignAttemptMonitor epoch
+                          (fun output nextState =>
+                            runRawStructural nextState (next output)) state] := by
+                    rw [probEvent_def, probEvent_def,
+                      applyProgrammedSignAttemptMonitor_evalDist_eq]
+                  rw [hprob]
+                  rw [applyHashOutputSignAttemptMonitor_eq_observed]
+                  apply probEvent_bind_mono
+                  intro output _houtput
+                  simpa [runTraced, encodingSamplingTraceImpl, encodingSamplingWorldImpl,
+                    map_eq_bind_pure_comp, Prod.map] using
+                    (runTraced_cons_probability_le state (.sign epoch output)
+                      (next output)
+                      (fun nextState => runRawStructural nextState (next output))
+                      (fun nextState => ih output nextState))
+
+theorem encodingSamplingTrace_collision_probability_le
+    (computation : OracleComp EncodingSamplingWorld α) (queryBound : Nat)
+    (hbound : computation.IsQueryBoundP IsAttackerEncodingQuery queryBound) :
+    Pr[fun result : α × EncodingActionTrace =>
+        runObserved EncodingMonitor.State.empty result.2 = true |
+      (simulateQ encodingSamplingTraceImpl computation).run] ≤
+      (queryBound : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  change Pr[((fun hit : Bool => hit = true) ∘ fun result =>
+      runObserved EncodingMonitor.State.empty result.2) |
+    (simulateQ encodingSamplingTraceImpl computation).run] ≤ _
+  rw [← probEvent_map]
+  exact (runTraced_probability_le_rawStructural EncodingMonitor.State.empty
+    computation).trans
+      (runRawStructural_empty_true_probability_le computation queryBound hbound)
+
+theorem encodingSamplingTrace_collision_probability_le_of_sample_bound
+    (computation : OracleComp EncodingSamplingWorld α) (queryBound : Nat)
+    (hbound : computation.IsQueryBoundP (· matches .inr _) queryBound) :
+    Pr[fun result : α × EncodingActionTrace =>
+        runObserved EncodingMonitor.State.empty result.2 = true |
+      (simulateQ encodingSamplingTraceImpl computation).run] ≤
+      (queryBound : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  have hattacker : computation.IsQueryBoundP IsAttackerEncodingQuery queryBound :=
+    hbound.of_imp (by
+      intro input hinput
+      cases input with
+      | inl index => simp [IsAttackerEncodingQuery] at hinput
+      | inr address => simp)
+  simpa [div_eq_mul_inv, digestBits] using
+    encodingSamplingTrace_collision_probability_le computation queryBound hattacker
 
 noncomputable def applyBoundedSignMonitor
     (attempts : Nat) (epoch : Epoch)
