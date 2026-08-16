@@ -90,6 +90,10 @@ import XmssSecurity.CappedEncodingTraceBridge
 import XmssSecurity.CappedEncodingPrehitProbability
 import XmssSecurity.CappedEncodingActionTrace
 import XmssSecurity.CappedEncodingEventProbability
+import XmssSecurity.CappedDetailedQueryPresence
+import XmssSecurity.CappedLeafEventProbability
+import XmssSecurity.CappedMerkleEventProbability
+import XmssSecurity.CappedSuffixEventProbability
 import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.CappedEncodingMonitor
 import XmssSecurity.ConcreteCorrectness
