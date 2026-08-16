@@ -827,6 +827,25 @@ fn c_slices_value(slices: &[F192], z_skip: F192) -> F192 {
         .fold(F192::ZERO, |a, x| a + x)
 }
 
+/// What the zerocheck stage hands the lincheck stage: the zerocheck claim, the
+/// `c` family it already transmitted, and the quirky point lincheck runs at.
+/// Opaque; the two stages of [`Blake2sSetup::prove_reduction_precomputed`] are
+/// split only so a caller can time or profile them apart.
+#[derive(Clone, Debug)]
+pub struct ZerocheckStage {
+    zc_claim: crate::zerocheck::ZerocheckClaim,
+    c_slices: Vec<F192>,
+    x_ab: crate::lincheck::QuirkyPoint,
+}
+
+/// One `FLOCK_PROVE_TRACE` line. `label` carries its own colon so the stages
+/// line up.
+fn trace_stage(label: &str, t: std::time::Instant) {
+    if std::env::var_os("FLOCK_PROVE_TRACE").is_some() {
+        eprintln!("[flock prove] {label:<11}{:8.2} ms", t.elapsed().as_secs_f64() * 1e3);
+    }
+}
+
 impl Blake2sSetup {
     /// **Flock reduction (prover).** Run the BLAKE2s zerocheck and lincheck on
     /// the shared transcript, reducing R1CS validity of `blocks` to two
@@ -853,12 +872,7 @@ impl Blake2sSetup {
         let t_witness = std::time::Instant::now();
         let (z_packed, a_packed_words, b_packed_words, z_packed_lincheck) =
             generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
-        if std::env::var_os("FLOCK_PROVE_TRACE").is_some() {
-            eprintln!(
-                "[flock prove] witness:   {:.2} ms",
-                t_witness.elapsed().as_secs_f64() * 1e3,
-            );
-        }
+        trace_stage("witness:", t_witness);
         let reduced =
             self.prove_reduction_precomputed(&z_packed, &a_packed_words, &b_packed_words, &z_packed_lincheck, ps);
         (z_packed, reduced)
@@ -867,7 +881,8 @@ impl Blake2sSetup {
     /// **Flock reduction from a prepared witness (prover).** This is the
     /// witness-generation-free counterpart of [`Self::prove_reduction`] for
     /// embedders that already generated the packed `z`, `A·z`, `B·z`, and
-    /// lincheck-stripe buffers before committing the flattened witness.
+    /// lincheck-stripe buffers before committing the flattened witness. It is
+    /// [`Self::prove_zerocheck`] then [`Self::prove_lincheck`].
     pub fn prove_reduction_precomputed(
         &self,
         z_packed: &[u64],
@@ -876,15 +891,27 @@ impl Blake2sSetup {
         z_packed_lincheck: &[u8],
         ps: &mut fiat_shamir::transcript::ProverState,
     ) -> PackedWitnessClaims {
-        let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
-        let t_reduction = std::time::Instant::now();
+        let stage = self.prove_zerocheck(z_packed, a_packed_words, b_packed_words, ps);
+        self.prove_lincheck(stage, z_packed_lincheck, ps)
+    }
+
+    /// **Flock reduction, first stage (prover): the zerocheck.** Reduces
+    /// `a·b ⊕ c = 0` over the cube to evaluation claims on `(â, b̂, ĉ)`, and
+    /// transmits the `c` family of bit slices that ties `ĉ` to `z`.
+    pub fn prove_zerocheck(
+        &self,
+        z_packed: &[u64],
+        a_packed_words: &[u64],
+        b_packed_words: &[u64],
+        ps: &mut fiat_shamir::transcript::ProverState,
+    ) -> ZerocheckStage {
+        let t_zerocheck = std::time::Instant::now();
 
         // The fused generator packs 64 Boolean coordinates per word.
         let packed_len = 1usize << (self.r1cs.m - 6);
         assert_eq!(z_packed.len(), packed_len, "wrong packed witness length");
         assert_eq!(a_packed_words.len(), packed_len, "wrong packed A·z length");
         assert_eq!(b_packed_words.len(), packed_len, "wrong packed B·z length");
-        assert_eq!(z_packed_lincheck.len(), packed_len * 8, "wrong lincheck stripe length");
 
         // No bind_statement here: the embedding protocol (leanVM-b) seeds its
         // transcript with the R1CS digest and binds the instance
@@ -895,7 +922,6 @@ impl Blake2sSetup {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
-        let t_zerocheck = std::time::Instant::now();
         let (zc_claim, s_hat_v_c) = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
             packed_bytes(a_packed_words),
             packed_bytes(b_packed_words),
@@ -904,7 +930,6 @@ impl Blake2sSetup {
             &padding,
             ps,
         );
-        let zerocheck_time = t_zerocheck.elapsed();
 
         // The `c` family, sent and tied here rather than by the PCS: both
         // families then leave the reduction in the same shape.
@@ -913,9 +938,33 @@ impl Blake2sSetup {
             ps.add_scalar(x);
         }
 
-        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
-        let x_ab = x_ab_of(&zc_claim, inner_rest_len);
+        let x_ab = x_ab_of(&zc_claim, self.r1cs.k_log - self.r1cs.k_skip);
+        trace_stage("zerocheck:", t_zerocheck);
+        ZerocheckStage {
+            zc_claim,
+            c_slices,
+            x_ab,
+        }
+    }
+
+    /// **Flock reduction, second stage (prover): the lincheck.** Reduces the
+    /// zerocheck's `(â, b̂)` claims to the `2^k_skip` bit slices of `z` at one
+    /// point, against the per-block matrices, and returns both families.
+    pub fn prove_lincheck(
+        &self,
+        stage: ZerocheckStage,
+        z_packed_lincheck: &[u8],
+        ps: &mut fiat_shamir::transcript::ProverState,
+    ) -> PackedWitnessClaims {
         let t_lincheck = std::time::Instant::now();
+        let packed_len = 1usize << (self.r1cs.m - 6);
+        assert_eq!(z_packed_lincheck.len(), packed_len * 8, "wrong lincheck stripe length");
+
+        let ZerocheckStage {
+            zc_claim,
+            c_slices,
+            x_ab,
+        } = stage;
         let lc_claim = crate::lincheck::prove_padded_capture_s_hat_v(
             z_packed_lincheck,
             self.r1cs.m,
@@ -926,22 +975,10 @@ impl Blake2sSetup {
             &x_ab,
             ps,
         );
-        let lincheck_time = t_lincheck.elapsed();
 
         let (ab, c) = reduction_claims(&zc_claim, &lc_claim, &x_ab.x_outer, c_slices);
-        let reduced = PackedWitnessClaims { ab, c };
-        if trace {
-            let reduction_time = t_reduction.elapsed();
-            let glue_time = reduction_time.saturating_sub(zerocheck_time + lincheck_time);
-            eprintln!(
-                "[flock prove] reduction: {:.2} ms (zerocheck: {:.2} ms, lincheck: {:.2} ms, glue: {:.2} ms)",
-                reduction_time.as_secs_f64() * 1e3,
-                zerocheck_time.as_secs_f64() * 1e3,
-                lincheck_time.as_secs_f64() * 1e3,
-                glue_time.as_secs_f64() * 1e3,
-            );
-        }
-        reduced
+        trace_stage("lincheck:", t_lincheck);
+        PackedWitnessClaims { ab, c }
     }
 
     /// **Flock reduction (verifier).** Replay the BLAKE2s zerocheck and

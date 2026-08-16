@@ -1,20 +1,8 @@
 //! Standalone batch BLAKE2s proving, isolated from the VM.
 //!
-//! This exercises only Flock's BLAKE2s path over `N` compressions: witness
-//! generation, F64 commitment, zerocheck + lincheck reduction, the stacked
-//! ring-switch/WHIR opening, and verification. Circuit construction is
-//! outside the timed region, matching the VM's warmed-setup convention.
-//!
-//! Run with the XMSS-sized workload:
 //! ```text
-//! LEANVM_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake2s_batch -- --ignored --nocapture
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 LEANVM_NUM_THREADS=11 FLOCK_N_LOG=18 cargo test --release -p flock --test blake2s_batch -- --ignored --nocapture
 //! ```
-//!
-//! `BENCH_REPEAT=n` averages `n` measured passes after the warmup pass, and
-//! `BENCH_COOLDOWN` (seconds, default 2) spaces them so a thermally limited laptop
-//! does not report its power budget as proving cost. One warmup always runs: a cold
-//! pass pays thread-pool spawn, first-touch page faults, and setup-table
-//! construction that steady-state proving does not (see [`primitives::bench`]).
 
 use std::time::Instant;
 
@@ -59,9 +47,9 @@ fn blake2s_batch_prove_verify() {
 
     let (prover_config, verifier_config) = configs_for(mu).expect("WHIR configuration");
 
-    // One full prove pass: witness generation, commitment, and the reduction +
-    // stacked opening. Deterministic in `blocks`, so every pass is the same work
-    // on the same shape and their timings are directly comparable.
+    // One full prove pass: witness generation, commitment, zerocheck, lincheck,
+    // and the stacked opening. Deterministic in `blocks`, so every pass is the
+    // same work on the same shape and their timings are directly comparable.
     //
     // Each pass is one arena phase, matching how the VM prover runs. Only the
     // transcript and the opening escape, and both are plain `Vec` proof data, so
@@ -70,6 +58,7 @@ fn blake2s_batch_prove_verify() {
     zk_alloc::enable_arena();
     let prove_pass = || {
         let _phase = zk_alloc::enter_phase();
+        let t_pass = Instant::now();
         let t = Instant::now();
         let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
         let q_flock: Vec<F64> = z_packed.iter().map(|&w| F64(w)).collect();
@@ -85,20 +74,34 @@ fn blake2s_batch_prove_verify() {
         let commit_s = t.elapsed().as_secs_f64();
 
         let t = Instant::now();
-        let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
+        let stage = setup.prove_zerocheck(&z_packed, &a_packed, &b_packed, &mut ps);
+        let zerocheck_s = t.elapsed().as_secs_f64();
+
+        let t = Instant::now();
+        let reduced = setup.prove_lincheck(stage, &z_lincheck, &mut ps);
+        let lincheck_s = t.elapsed().as_secs_f64();
         drop((z_packed, a_packed, b_packed, z_lincheck));
+
+        let t = Instant::now();
         let ring = ring_switch_open(n, 0, &reduced);
         open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 
-        (ps.into_proof(), [witness_s, commit_s, open_s, prove_s])
+        // `pass_s` closes over everything the closure does, so whatever the five
+        // stages do not name shows up as "other" rather than vanishing.
+        let proof = ps.into_proof();
+        let pass_s = t_pass.elapsed().as_secs_f64();
+        (
+            proof,
+            [witness_s, commit_s, zerocheck_s, lincheck_s, open_s, prove_s, pass_s],
+        )
     };
 
     // The per-stage timings ride alongside the pass result, so one `Plan` drives
-    // the warmup, the cooldown, and the repetition for all four of them.
+    // the warmup, the cooldown, and the repetition for all of them.
     let plan = Plan::from_env();
-    let mut stages: [Timing; 4] = std::array::from_fn(|_| Timing::default());
+    let mut stages: [Timing; 7] = std::array::from_fn(|_| Timing::default());
     let (transcript, _) = plan.warm_then_measure(|_final_pass| {
         let (out, secs) = prove_pass();
         for (timing, s) in stages.iter_mut().zip(secs) {
@@ -107,7 +110,7 @@ fn blake2s_batch_prove_verify() {
         out
     });
     // The warmup pass also pushed a sample; drop the leading one per stage.
-    let [witness, commit_stage, open, prove] = stages.map(|t| {
+    let [witness, commit_stage, zerocheck, lincheck, open, prove, pass] = stages.map(|t| {
         let mut kept = Timing::default();
         for &s in &t.samples()[1..] {
             kept.push(s);
@@ -127,7 +130,12 @@ fn blake2s_batch_prove_verify() {
         vs.finish().expect("transcript fully consumed");
     });
 
-    let ms = |t: &Timing| format!("{:>8.1} ms{}", t.mean() * 1e3, t.spread());
+    // Every share is against the whole pass, never against the sum of the named
+    // stages, so the "other" line carries the real remainder.
+    let pass_s = pass.mean();
+    let share = |s: f64| format!("{:>5.1}%", 100.0 * s / pass_s);
+    let ms = |t: &Timing| format!("{:>8.1} ms{:<9}{}", t.mean() * 1e3, t.spread(), share(t.mean()));
+    let named = witness.mean() + commit_stage.mean() + zerocheck.mean() + lincheck.mean() + open.mean();
     println!(
         "\nFlock BLAKE2s batch proving, {} compressions (2^{n_log} slots)",
         pretty_integer(n)
@@ -135,7 +143,15 @@ fn blake2s_batch_prove_verify() {
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");
     println!("  witness-gen                     : {}", ms(&witness));
     println!("  commit                          : {}", ms(&commit_stage));
-    println!("  reduction + open                : {}", ms(&open));
+    println!("  zerocheck                       : {}", ms(&zerocheck));
+    println!("  lincheck                        : {}", ms(&lincheck));
+    println!("  pcs opening                     : {}", ms(&open));
+    println!(
+        "  other                           : {:>8.1} ms{:<9}{}",
+        (pass_s - named) * 1e3,
+        "",
+        share(pass_s - named)
+    );
     println!("  ------------------------------------------");
     println!("  prove TOTAL (witness excluded)  : {}", ms(&prove));
     println!(
@@ -153,5 +169,4 @@ fn blake2s_batch_prove_verify() {
         "  (~{:.1} XMSS/s equivalent at 146 compressions/signature)",
         n as f64 / prove_s / 146.0
     );
-    println!("  {} measured pass(es) after 1 warmup", plan.repeat);
 }
