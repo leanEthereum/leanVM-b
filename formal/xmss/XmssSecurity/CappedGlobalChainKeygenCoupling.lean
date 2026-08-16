@@ -7,6 +7,11 @@ namespace XmssSecurity.CappedChain
 
 abbrev AllChainTrajectories := ChainIndex → List FullChainTrajectory
 
+noncomputable def globalChainValueTableOfTrajectories
+    (trajectories : AllChainTrajectories) :
+    GlobalChainValueIndex → Digest := fun index =>
+  chainValueTableOfList (trajectories index.1) index.2
+
 noncomputable def Concrete.allChainTrajectoriesFromCache
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest) :
     QueryCache HashSpec → List ChainIndex →
@@ -37,6 +42,118 @@ theorem Concrete.allChainTrajectoriesFromCache_cons
         let rest ← Concrete.allChainTrajectoriesFromCache parameter secret
           first.2 chains
         pure (Function.update rest.1 chain first.1, rest.2)) := rfl
+
+set_option maxRecDepth 100000 in
+set_option linter.constructorNameAsVariable false in
+theorem Concrete.allChainTrajectoriesFromCache_support_info
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest) :
+    ∀ (chains : List ChainIndex) (cache : QueryCache HashSpec)
+      (result : AllChainTrajectories × QueryCache HashSpec),
+      chains.Nodup →
+      result ∈ support
+        (Concrete.allChainTrajectoriesFromCache parameter secret cache chains) →
+      cache ≤ result.2 ∧
+        ∀ chain ∈ chains,
+          (result.1 chain).length = lifetime ∧
+            ∀ largerCache : QueryCache HashSpec, result.2 ≤ largerCache →
+            List.Forall₂
+              (fun epoch trajectory =>
+                evalWithAnswerFn (Concrete.CacheReplay.answerFn largerCache)
+                  (Concrete.chainTrajectory parameter epoch chain 0
+                    (chainLength - 1) (secret epoch chain)) = trajectory)
+              allEpochs (result.1 chain) := by
+  intro chains
+  induction chains with
+  | nil =>
+      intro cache result _hnodup hresult
+      simp only [Concrete.allChainTrajectoriesFromCache_nil, support_pure,
+        Set.mem_singleton_iff] at hresult
+      subst result
+      exact ⟨le_rfl, by simp⟩
+  | cons chain chains ih =>
+      intro cache result hnodup hresult
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      rw [Concrete.allChainTrajectoriesFromCache_cons,
+        mem_support_bind_iff] at hresult
+      obtain ⟨first, hfirst, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      have hfirstInfo :=
+        Concrete.fixedSeedChainTrajectoriesFromCache_support_info parameter
+          secret chain (chainLength - 1) allEpochs cache first hfirst
+      have hrestInfo := ih first.2 rest htailNodup hrest
+      constructor
+      · exact hfirstInfo.1.trans hrestInfo.1
+      · intro selected hselected
+        by_cases heq : selected = chain
+        · subst selected
+          simp only [Function.update_self]
+          constructor
+          · simpa [allEpochs_length] using hfirstInfo.2.1
+          · intro largerCache hlarger
+            exact
+              Concrete.fixedSeedChainTrajectoriesFromCache_replay_in_largerCache
+                parameter secret chain (chainLength - 1) allEpochs cache first
+                  largerCache hfirst (hrestInfo.1.trans hlarger)
+        · have htail : selected ∈ chains := by
+            simpa [heq] using hselected
+          simp only [Function.update_of_ne heq]
+          exact hrestInfo.2 selected htail
+
+theorem chainValueTableOfList_eq_keygenChainValueTable_of_replay
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (chain : ChainIndex) (cache : QueryCache HashSpec)
+    (trajectories : List FullChainTrajectory)
+    (hlength : trajectories.length = lifetime)
+    (hreplay : List.Forall₂
+      (fun epoch trajectory =>
+        evalWithAnswerFn (Concrete.CacheReplay.answerFn cache)
+          (Concrete.chainTrajectory parameter epoch chain 0
+            (chainLength - 1) (secret epoch chain)) = trajectory)
+      allEpochs trajectories) :
+    chainValueTableOfList trajectories =
+      keygenChainValueTable cache ⟨parameter, secret⟩ chain := by
+  funext index
+  unfold chainValueTableOfList
+  split
+  · rename_i htableLength
+    let position := epochPosition index.1
+    have htrajectoryPosition : position.val < trajectories.length := by
+      rw [← htableLength]
+      exact position.isLt
+    have hpair := hreplay.get position.isLt htrajectoryPosition
+    have hepoch : allEpochs.get position = index.1 :=
+      allEpochs_get_epochPosition index.1
+    rw [hepoch] at hpair
+    have hvalue := congrArg
+      (fun trajectory : FullChainTrajectory =>
+        trajectory[index.2.val]'(by
+          have hdigit := index.2.isLt
+          omega)) hpair
+    rw [Concrete.chainTrajectory_getElem] at hvalue
+    exact hvalue.symm
+  · rename_i htableLength
+    exact (htableLength (allEpochs_length.trans hlength.symm)).elim
+
+theorem Concrete.allChainTrajectoriesFromCache_globalTable_eq
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (result : AllChainTrajectories × QueryCache HashSpec)
+    (largerCache : QueryCache HashSpec)
+    (hresult : result ∈ support
+      (Concrete.allChainTrajectoriesFromCache parameter secret ∅ allChains))
+    (hle : result.2 ≤ largerCache) :
+    globalChainValueTableOfTrajectories result.1 =
+      globalKeygenChainValueTable largerCache ⟨parameter, secret⟩ := by
+  have hinfo := Concrete.allChainTrajectoriesFromCache_support_info parameter
+    secret allChains ∅ result allChains_nodup hresult
+  funext index
+  have hchainInfo := hinfo.2 index.1 (mem_allChains index.1)
+  have hlocal := chainValueTableOfList_eq_keygenChainValueTable_of_replay
+    parameter secret index.1 largerCache (result.1 index.1) hchainInfo.1
+      (hchainInfo.2 largerCache hle)
+  exact congrFun hlocal index.2
 
 def AllChainAddressesAbsent
     (parameter : PublicParameter) (chains : List ChainIndex)
@@ -194,6 +311,189 @@ theorem uniformTrajectoryFromSeed_succ (steps : Nat) (seed : Digest) :
       let next ← $ᵗ Digest
       pure (prior.push next)) := rfl
 
+def trajectoryTailTape {steps : Nat}
+    (trajectory : Vector Digest (steps + 1)) : List Digest :=
+  trajectory.toList.drop 1
+
+@[simp]
+theorem trajectoryTailTape_ofFn_seed (seed : Digest) :
+    trajectoryTailTape (Vector.ofFn fun _ : Fin 1 => seed) = [] := by
+  apply List.eq_nil_of_length_eq_zero
+  simp [trajectoryTailTape]
+
+theorem trajectoryTailTape_push {steps : Nat}
+    (trajectory : Vector Digest (steps + 1)) (next : Digest) :
+    trajectoryTailTape (trajectory.push next) =
+      trajectoryTailTape trajectory ++ [next] := by
+  unfold trajectoryTailTape
+  rw [Vector.toList_push, List.drop_append_of_le_length]
+  simp
+
+noncomputable def uniformSnocDigestList : Nat → ProbComp (List Digest)
+  | 0 => pure []
+  | steps + 1 => do
+      let prior ← uniformSnocDigestList steps
+      let next ← $ᵗ Digest
+      pure (prior ++ [next])
+
+@[simp]
+theorem uniformSnocDigestList_zero :
+    uniformSnocDigestList 0 = pure [] := rfl
+
+theorem uniformSnocDigestList_succ (steps : Nat) :
+    uniformSnocDigestList (steps + 1) = (do
+      let prior ← uniformSnocDigestList steps
+      let next ← $ᵗ Digest
+      pure (prior ++ [next])) := rfl
+
+theorem evalDist_uniformSnocDigestList_eq_reverse_drawList (steps : Nat) :
+    evalDist (uniformSnocDigestList steps) =
+      evalDist (List.reverse <$>
+        OracleComp.drawList ($ᵗ Digest) steps) := by
+  induction steps with
+  | zero => simp [OracleComp.drawList]
+  | succ steps ih =>
+      rw [uniformSnocDigestList_succ]
+      calc
+        _ = evalDist ((List.reverse <$>
+              OracleComp.drawList ($ᵗ Digest) steps) >>= fun prior =>
+            ($ᵗ Digest) >>= fun next =>
+            pure (prior ++ [next])) := by
+          rw [evalDist_bind, ih, ← evalDist_bind]
+        _ = evalDist (OracleComp.drawList ($ᵗ Digest) steps >>= fun prior =>
+            ($ᵗ Digest) >>= fun next =>
+            pure (prior.reverse ++ [next])) := by
+          simp [map_eq_bind_pure_comp, bind_assoc]
+        _ = evalDist (($ᵗ Digest) >>= fun next =>
+            OracleComp.drawList ($ᵗ Digest) steps >>= fun prior =>
+            pure (prior.reverse ++ [next])) :=
+          OracleComp.DeferredSampling.evalDist_bind_comm
+            (OracleComp.drawList ($ᵗ Digest) steps) ($ᵗ Digest)
+              (fun prior next => pure (prior.reverse ++ [next]))
+        _ = evalDist (List.reverse <$>
+            OracleComp.drawList ($ᵗ Digest) (steps + 1)) := by
+          simp [OracleComp.drawList, map_eq_bind_pure_comp, bind_assoc]
+
+theorem evalDist_uniformTrajectoryFromSeed_tailTape
+    (steps : Nat) (seed : Digest) :
+    evalDist (trajectoryTailTape <$>
+      uniformTrajectoryFromSeed steps seed) =
+      evalDist (uniformSnocDigestList steps) := by
+  induction steps with
+  | zero => simp
+  | succ steps ih =>
+      rw [uniformTrajectoryFromSeed_succ, uniformSnocDigestList_succ]
+      simp only [map_bind, bind_pure_comp]
+      calc
+        _ = evalDist (uniformTrajectoryFromSeed steps seed >>= fun prior =>
+              ($ᵗ Digest) >>= fun next =>
+              pure (trajectoryTailTape prior ++ [next])) := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro prior
+          simp [trajectoryTailTape_push]
+        _ = evalDist (uniformSnocDigestList steps >>= fun prior =>
+              ($ᵗ Digest) >>= fun next =>
+              pure (prior ++ [next])) := by
+          calc
+            _ = evalDist ((trajectoryTailTape <$>
+                  uniformTrajectoryFromSeed steps seed) >>= fun prior =>
+                ($ᵗ Digest) >>= fun next =>
+                pure (prior ++ [next])) := by
+              simp [map_eq_bind_pure_comp, bind_assoc]
+            _ = _ := by
+              rw [evalDist_bind, ih, ← evalDist_bind]
+
+def trajectoryDrawTape {steps : Nat}
+    (trajectory : Vector Digest (steps + 1)) : List Digest :=
+  (trajectoryTailTape trajectory).reverse
+
+def trajectoryChainSteps : List ChainStep :=
+  (List.ofFn (id : ChainStep → ChainStep)).reverse
+
+theorem trajectoryChainSteps_nodup : trajectoryChainSteps.Nodup := by
+  unfold trajectoryChainSteps
+  rw [List.nodup_reverse]
+  exact List.nodup_ofFn.mpr Function.injective_id
+
+theorem mem_trajectoryChainSteps (step : ChainStep) :
+    step ∈ trajectoryChainSteps := by
+  simp [trajectoryChainSteps]
+
+theorem trajectoryChainSteps_length :
+    trajectoryChainSteps.length = chainLength - 1 := by
+  simp [trajectoryChainSteps, ChainStep]
+
+theorem trajectoryDrawTape_ofDigitTable (values : Digit → Digest) :
+    trajectoryDrawTape (FullChainTrajectory.ofDigitTable values) =
+      trajectoryChainSteps.map
+        (fun step => values (chainStepNextDigit step)) := by
+  unfold trajectoryDrawTape trajectoryTailTape trajectoryChainSteps
+    FullChainTrajectory.ofDigitTable
+  rw [Vector.toList_ofFn, List.ofFn_succ]
+  simp only [List.drop]
+  rw [List.map_reverse]
+  congr 1
+
+theorem evalDist_uniformTrajectoryFromSeed_drawTape
+    (steps : Nat) (seed : Digest) :
+    evalDist (trajectoryDrawTape <$>
+      uniformTrajectoryFromSeed steps seed) =
+      evalDist (OracleComp.drawList ($ᵗ Digest) steps) := by
+  calc
+    _ = evalDist (List.reverse <$>
+          (trajectoryTailTape <$>
+            uniformTrajectoryFromSeed steps seed)) := by
+      rw [Functor.map_map]
+      rfl
+    _ = evalDist (List.reverse <$>
+          uniformSnocDigestList steps) := by
+      rw [evalDist_map,
+        evalDist_uniformTrajectoryFromSeed_tailTape steps seed,
+        ← evalDist_map]
+    _ = evalDist (List.reverse <$>
+          (List.reverse <$>
+            OracleComp.drawList ($ᵗ Digest) steps)) := by
+      rw [evalDist_map,
+        evalDist_uniformSnocDigestList_eq_reverse_drawList steps,
+        ← evalDist_map]
+    _ = evalDist (OracleComp.drawList ($ᵗ Digest) steps) := by
+      simp [Functor.map_map]
+
+theorem drawList_append (firstLength secondLength : Nat) :
+    (do
+      let first ← OracleComp.drawList ($ᵗ Digest) firstLength
+      let second ← OracleComp.drawList ($ᵗ Digest) secondLength
+      pure (first ++ second)) =
+      OracleComp.drawList ($ᵗ Digest) (firstLength + secondLength) := by
+  induction firstLength with
+  | zero => simp [OracleComp.drawList]
+  | succ firstLength ih =>
+      calc
+        (do
+            let first ← OracleComp.drawList ($ᵗ Digest) (firstLength + 1)
+            let second ← OracleComp.drawList ($ᵗ Digest) secondLength
+            pure (first ++ second)) =
+            (do
+              let head ← $ᵗ Digest
+              let tail ← (do
+                let first ← OracleComp.drawList ($ᵗ Digest) firstLength
+                let second ← OracleComp.drawList ($ᵗ Digest) secondLength
+                pure (first ++ second))
+              pure (head :: tail)) := by
+          simp [OracleComp.drawList, bind_assoc]
+        _ = (do
+              let head ← $ᵗ Digest
+              let tail ← OracleComp.drawList ($ᵗ Digest)
+                (firstLength + secondLength)
+              pure (head :: tail)) := by
+          rw [ih]
+        _ = OracleComp.drawList ($ᵗ Digest)
+              ((firstLength + secondLength) + 1) := rfl
+        _ = OracleComp.drawList ($ᵗ Digest)
+              ((firstLength + 1) + secondLength) := by
+          congr 1
+          omega
+
 theorem evalDist_sampledHashOutputWithDigest_fst_eq_uniform :
     evalDist (Prod.fst <$> Rom.sampledHashOutputWithDigest) =
       evalDist ($ᵗ Digest) := by
@@ -287,6 +587,56 @@ theorem uniformFixedChainTrajectories_cons
       let rest ← uniformFixedChainTrajectories secret chain steps epochs
       pure (first :: rest)) := rfl
 
+def fixedChainTrajectoryDrawTape {steps : Nat}
+    (trajectories : List (Vector Digest (steps + 1))) : List Digest :=
+  trajectories.flatMap trajectoryDrawTape
+
+theorem evalDist_uniformFixedChainTrajectories_drawTape
+    (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex)
+    (steps : Nat) : ∀ epochs : List Epoch,
+    evalDist (fixedChainTrajectoryDrawTape <$>
+      uniformFixedChainTrajectories secret chain steps epochs) =
+      evalDist (OracleComp.drawList ($ᵗ Digest)
+        (epochs.length * steps)) := by
+  intro epochs
+  induction epochs with
+  | nil => simp [fixedChainTrajectoryDrawTape, OracleComp.drawList]
+  | cons epoch epochs ih =>
+      rw [uniformFixedChainTrajectories_cons]
+      simp only [map_bind, bind_pure_comp]
+      calc
+        _ = evalDist (uniformTrajectoryFromSeed steps
+              (secret epoch chain) >>= fun first =>
+            uniformFixedChainTrajectories secret chain steps epochs >>=
+              fun rest =>
+            pure (trajectoryDrawTape first ++
+              fixedChainTrajectoryDrawTape rest)) := by
+          simp [fixedChainTrajectoryDrawTape]
+        _ = evalDist ((trajectoryDrawTape <$>
+              uniformTrajectoryFromSeed steps (secret epoch chain)) >>=
+            fun first =>
+            (fixedChainTrajectoryDrawTape <$>
+              uniformFixedChainTrajectories secret chain steps epochs) >>=
+            fun rest => pure (first ++ rest)) := by
+          simp [map_eq_bind_pure_comp, bind_assoc]
+        _ = evalDist (OracleComp.drawList ($ᵗ Digest) steps >>= fun first =>
+            OracleComp.drawList ($ᵗ Digest) (epochs.length * steps) >>=
+              fun rest => pure (first ++ rest)) := by
+          rw [evalDist_bind,
+            evalDist_uniformTrajectoryFromSeed_drawTape steps
+              (secret epoch chain), ← evalDist_bind]
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro first
+          rw [evalDist_bind, ih, ← evalDist_bind]
+        _ = evalDist (OracleComp.drawList ($ᵗ Digest)
+              (steps + epochs.length * steps)) := by
+          rw [drawList_append]
+        _ = evalDist (OracleComp.drawList ($ᵗ Digest)
+              ((epoch :: epochs).length * steps)) := by
+          congr 3
+          simp only [List.length_cons]
+          simp [Nat.add_mul, Nat.add_comm]
+
 set_option maxRecDepth 100000 in
 theorem evalDist_programmedFixedChainTrajectories_fst_eq_uniform
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
@@ -364,6 +714,551 @@ theorem uniformAllChainTrajectories_cons
         (chainLength - 1) allEpochs
       let rest ← uniformAllChainTrajectories secret chains
       pure (Function.update rest chain first)) := rfl
+
+theorem uniformTrajectoryFromSeed_support_first :
+    ∀ (steps : Nat) (seed : Digest)
+      (trajectory : Vector Digest (steps + 1)),
+      trajectory ∈ support (uniformTrajectoryFromSeed steps seed) →
+      trajectory[0]'(by omega) = seed := by
+  intro steps
+  induction steps with
+  | zero =>
+      intro seed trajectory htrajectory
+      simp only [uniformTrajectoryFromSeed_zero, support_pure,
+        Set.mem_singleton_iff] at htrajectory
+      subst trajectory
+      rw [Vector.getElem_ofFn]
+  | succ steps ih =>
+      intro seed trajectory htrajectory
+      rw [uniformTrajectoryFromSeed_succ, mem_support_bind_iff] at htrajectory
+      obtain ⟨prior, hprior, hnext⟩ := htrajectory
+      rw [mem_support_bind_iff] at hnext
+      obtain ⟨next, _hnext, hpure⟩ := hnext
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst trajectory
+      rw [Vector.getElem_push_lt (by omega)]
+      exact ih seed prior hprior
+
+theorem uniformFixedChainTrajectories_support_info
+    (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex)
+    (steps : Nat) : ∀ (epochs : List Epoch)
+      (trajectories : List (Vector Digest (steps + 1))),
+      trajectories ∈ support
+        (uniformFixedChainTrajectories secret chain steps epochs) →
+      trajectories.length = epochs.length ∧
+        List.Forall₂
+          (fun epoch trajectory =>
+            trajectory[0]'(by omega) = secret epoch chain)
+          epochs trajectories := by
+  intro epochs
+  induction epochs with
+  | nil =>
+      intro trajectories htrajectories
+      simp only [uniformFixedChainTrajectories_nil, support_pure,
+        Set.mem_singleton_iff] at htrajectories
+      subst trajectories
+      exact ⟨rfl, List.Forall₂.nil⟩
+  | cons epoch epochs ih =>
+      intro trajectories htrajectories
+      rw [uniformFixedChainTrajectories_cons,
+        mem_support_bind_iff] at htrajectories
+      obtain ⟨first, hfirst, hrest⟩ := htrajectories
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst trajectories
+      have hrestInfo := ih rest hrest
+      constructor
+      · simp [hrestInfo.1]
+      · exact List.Forall₂.cons
+          (uniformTrajectoryFromSeed_support_first steps
+            (secret epoch chain) first hfirst)
+          hrestInfo.2
+
+theorem uniformAllChainTrajectories_support_info
+    (secret : Epoch → ChainIndex → Digest) :
+    ∀ (chains : List ChainIndex) (trajectories : AllChainTrajectories),
+      chains.Nodup →
+      trajectories ∈ support (uniformAllChainTrajectories secret chains) →
+      ∀ chain ∈ chains,
+        (trajectories chain).length = lifetime ∧
+          List.Forall₂
+            (fun epoch trajectory =>
+              trajectory[0]'(by omega) = secret epoch chain)
+            allEpochs (trajectories chain) := by
+  intro chains
+  induction chains with
+  | nil => simp
+  | cons chain chains ih =>
+      intro trajectories hnodup htrajectories
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      rw [uniformAllChainTrajectories_cons,
+        mem_support_bind_iff] at htrajectories
+      obtain ⟨first, hfirst, hrest⟩ := htrajectories
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst trajectories
+      have hfirstInfo := uniformFixedChainTrajectories_support_info secret
+        chain (chainLength - 1) allEpochs first hfirst
+      have hrestInfo := ih rest htailNodup hrest
+      intro selected hselected
+      by_cases heq : selected = chain
+      · subst selected
+        simp only [Function.update_self]
+        exact ⟨by simpa [allEpochs_length] using hfirstInfo.1,
+          hfirstInfo.2⟩
+      · have htail : selected ∈ chains := by
+          simpa [heq] using hselected
+        simp only [Function.update_of_ne heq]
+        exact hrestInfo selected htail
+
+theorem chainValueTableOfList_zero_eq_of_forall₂
+    (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex)
+    (trajectories : List FullChainTrajectory)
+    (hlength : trajectories.length = lifetime)
+    (hseeds : List.Forall₂
+      (fun epoch trajectory =>
+        trajectory[0]'(by simp [chainLength]) = secret epoch chain)
+      allEpochs trajectories) (epoch : Epoch) :
+    chainValueTableOfList trajectories
+        (epoch, ⟨0, by simp [chainLength]⟩) =
+      secret epoch chain := by
+  unfold chainValueTableOfList
+  split
+  · rename_i htableLength
+    let position := epochPosition epoch
+    have htrajectoryPosition : position.val < trajectories.length := by
+      rw [← htableLength]
+      exact position.isLt
+    have hpair := hseeds.get position.isLt htrajectoryPosition
+    have hepoch : allEpochs.get position = epoch :=
+      allEpochs_get_epochPosition epoch
+    rw [hepoch] at hpair
+    simpa [FullChainTrajectory.toDigitTable] using hpair
+  · rename_i htableLength
+    exact (htableLength (allEpochs_length.trans hlength.symm)).elim
+
+theorem uniformAllChainTrajectories_support_seeds
+    (secret : Epoch → ChainIndex → Digest)
+    (trajectories : AllChainTrajectories)
+    (htrajectories : trajectories ∈ support
+      (uniformAllChainTrajectories secret allChains)) :
+    globalChainTableSeedTargets
+        (globalChainValueTableOfTrajectories trajectories) = secret := by
+  have hinfo := uniformAllChainTrajectories_support_info secret allChains
+    trajectories allChains_nodup htrajectories
+  funext epoch chain
+  have hchain := hinfo chain (mem_allChains chain)
+  exact chainValueTableOfList_zero_eq_of_forall₂ secret chain
+    (trajectories chain) hchain.1 hchain.2 epoch
+
+def allChainTrajectoryDrawTape
+    (trajectories : AllChainTrajectories) :
+    List ChainIndex → List Digest
+  | [] => []
+  | chain :: chains =>
+      fixedChainTrajectoryDrawTape (trajectories chain) ++
+        allChainTrajectoryDrawTape trajectories chains
+
+@[simp]
+theorem allChainTrajectoryDrawTape_nil
+    (trajectories : AllChainTrajectories) :
+    allChainTrajectoryDrawTape trajectories [] = [] := rfl
+
+theorem allChainTrajectoryDrawTape_update_of_not_mem
+    (trajectories : AllChainTrajectories) (chain : ChainIndex)
+    (values : List FullChainTrajectory) : ∀ chains : List ChainIndex,
+    chain ∉ chains →
+    allChainTrajectoryDrawTape (Function.update trajectories chain values)
+        chains =
+      allChainTrajectoryDrawTape trajectories chains := by
+  intro chains
+  induction chains with
+  | nil => simp
+  | cons current chains ih =>
+      intro hnotMem
+      have hne : current ≠ chain := by
+        intro heq
+        subst current
+        exact hnotMem (by simp)
+      have htail : chain ∉ chains := by
+        intro hmem
+        exact hnotMem (by simp [hmem])
+      simp [allChainTrajectoryDrawTape, Function.update_of_ne hne, ih htail]
+
+theorem allChainTrajectoryDrawTape_update_cons
+    (trajectories : AllChainTrajectories) (chain : ChainIndex)
+    (values : List FullChainTrajectory) (chains : List ChainIndex)
+    (hnotMem : chain ∉ chains) :
+    allChainTrajectoryDrawTape
+        (Function.update trajectories chain values) (chain :: chains) =
+      fixedChainTrajectoryDrawTape values ++
+        allChainTrajectoryDrawTape trajectories chains := by
+  simp [allChainTrajectoryDrawTape,
+    allChainTrajectoryDrawTape_update_of_not_mem trajectories chain values
+      chains hnotMem]
+
+theorem evalDist_uniformAllChainTrajectories_drawTape
+    (secret : Epoch → ChainIndex → Digest) :
+    ∀ chains : List ChainIndex, chains.Nodup →
+    evalDist ((fun trajectories =>
+      allChainTrajectoryDrawTape trajectories chains) <$>
+        uniformAllChainTrajectories secret chains) =
+      evalDist (OracleComp.drawList ($ᵗ Digest)
+        (chains.length * (allEpochs.length * (chainLength - 1)))) := by
+  intro chains
+  induction chains with
+  | nil =>
+      intro _hnodup
+      simp [OracleComp.drawList]
+  | cons chain chains ih =>
+      intro hnodup
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      rw [uniformAllChainTrajectories_cons]
+      simp only [map_bind, bind_pure_comp]
+      let blockSize := allEpochs.length * (chainLength - 1)
+      calc
+        _ = evalDist (uniformFixedChainTrajectories secret chain
+              (chainLength - 1) allEpochs >>= fun first =>
+            uniformAllChainTrajectories secret chains >>= fun rest =>
+            pure (fixedChainTrajectoryDrawTape first ++
+              allChainTrajectoryDrawTape rest chains)) := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro first
+          calc
+            _ = evalDist ((fun rest => allChainTrajectoryDrawTape
+                  (Function.update rest chain first) (chain :: chains)) <$>
+                uniformAllChainTrajectories secret chains) := by
+              rw [Functor.map_map]
+            _ = evalDist ((fun rest => fixedChainTrajectoryDrawTape first ++
+                  allChainTrajectoryDrawTape rest chains) <$>
+                uniformAllChainTrajectories secret chains) := by
+              congr 2
+              funext rest
+              exact allChainTrajectoryDrawTape_update_cons rest chain first
+                chains hnotMem
+            _ = _ := by
+              simp [map_eq_bind_pure_comp]
+        _ = evalDist ((fixedChainTrajectoryDrawTape <$>
+              uniformFixedChainTrajectories secret chain
+                (chainLength - 1) allEpochs) >>= fun first =>
+            ((fun rest => allChainTrajectoryDrawTape rest chains) <$>
+              uniformAllChainTrajectories secret chains) >>= fun rest =>
+            pure (first ++ rest)) := by
+          simp [map_eq_bind_pure_comp, bind_assoc]
+        _ = evalDist (OracleComp.drawList ($ᵗ Digest) blockSize >>=
+            fun first =>
+            OracleComp.drawList ($ᵗ Digest)
+              (chains.length * blockSize) >>= fun rest =>
+            pure (first ++ rest)) := by
+          rw [evalDist_bind,
+            evalDist_uniformFixedChainTrajectories_drawTape secret chain
+              (chainLength - 1) allEpochs, ← evalDist_bind]
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro first
+          rw [evalDist_bind, ih htailNodup, ← evalDist_bind]
+        _ = evalDist (OracleComp.drawList ($ᵗ Digest)
+              (blockSize + chains.length * blockSize)) := by
+          rw [drawList_append]
+        _ = evalDist (OracleComp.drawList ($ᵗ Digest)
+              ((chain :: chains).length *
+                (allEpochs.length * (chainLength - 1)))) := by
+          congr 3
+          dsimp only [blockSize]
+          simp [Nat.add_mul, Nat.add_comm]
+
+noncomputable def globalTrajectoryEdgeOrder : List GlobalChainEdgeIndex :=
+  allChains ×ˢ (allEpochs ×ˢ trajectoryChainSteps)
+
+theorem globalTrajectoryEdgeOrder_nodup :
+    globalTrajectoryEdgeOrder.Nodup := by
+  exact allChains_nodup.product
+    (allEpochs_nodup.product trajectoryChainSteps_nodup)
+
+theorem mem_globalTrajectoryEdgeOrder (edge : GlobalChainEdgeIndex) :
+    edge ∈ globalTrajectoryEdgeOrder := by
+  rcases edge with ⟨chain, epoch, step⟩
+  exact List.mem_product.mpr ⟨mem_allChains chain,
+    List.mem_product.mpr ⟨mem_allEpochs epoch,
+      mem_trajectoryChainSteps step⟩⟩
+
+theorem globalTrajectoryEdgeOrder_length :
+    globalTrajectoryEdgeOrder.length =
+      allChains.length * (allEpochs.length * (chainLength - 1)) := by
+  rw [globalTrajectoryEdgeOrder, List.length_product,
+    List.length_product, trajectoryChainSteps_length]
+
+noncomputable def globalTrajectoryEdgeTableTapeEquiv :
+    (GlobalChainEdgeIndex → Digest) ≃
+      (Fin globalTrajectoryEdgeOrder.length → Digest) :=
+  (Equiv.piCongrLeft (fun _ : GlobalChainEdgeIndex => Digest)
+    (globalTrajectoryEdgeOrder_nodup.getEquivOfForallMemList
+      globalTrajectoryEdgeOrder mem_globalTrajectoryEdgeOrder)).symm
+
+theorem listOfFn_globalTrajectoryEdgeTableTapeEquiv
+    (table : GlobalChainEdgeIndex → Digest) :
+    List.ofFn (globalTrajectoryEdgeTableTapeEquiv table) =
+      globalTrajectoryEdgeOrder.map table := by
+  rw [← List.ofFn_get (globalTrajectoryEdgeOrder.map table)]
+  apply List.ext_get
+  · simp
+  · intro index hleft hright
+    simp [globalTrajectoryEdgeTableTapeEquiv]
+
+noncomputable def globalTrajectoryEdgeTableOfTape
+    (targets : List Digest) : GlobalChainEdgeIndex → Digest :=
+  if hlength : targets.length = globalTrajectoryEdgeOrder.length then
+    globalTrajectoryEdgeTableTapeEquiv.symm fun index =>
+      targets.get (Fin.cast hlength.symm index)
+  else
+    fun _ => 0
+
+@[simp]
+theorem globalTrajectoryEdgeTableOfTape_map
+    (table : GlobalChainEdgeIndex → Digest) :
+    globalTrajectoryEdgeTableOfTape
+      (globalTrajectoryEdgeOrder.map table) = table := by
+  unfold globalTrajectoryEdgeTableOfTape
+  split
+  · rename_i hlength
+    apply globalTrajectoryEdgeTableTapeEquiv.injective
+    rw [globalTrajectoryEdgeTableTapeEquiv.apply_symm_apply]
+    funext index
+    simp [globalTrajectoryEdgeTableTapeEquiv]
+  · rename_i hlength
+    exact (hlength (by simp)).elim
+
+theorem evalDist_uniformGlobalTrajectoryEdgeTableTape_eq_drawList :
+    evalDist ((fun table : GlobalChainEdgeIndex → Digest =>
+      globalTrajectoryEdgeOrder.map table) <$>
+        ($ᵗ (GlobalChainEdgeIndex → Digest))) =
+      evalDist (OracleComp.drawList ($ᵗ Digest)
+        globalTrajectoryEdgeOrder.length) := by
+  calc
+    _ = evalDist (List.ofFn <$>
+        (globalTrajectoryEdgeTableTapeEquiv <$>
+          ($ᵗ (GlobalChainEdgeIndex → Digest)))) := by
+      simp only [Functor.map_map]
+      congr 2
+      funext table
+      exact (listOfFn_globalTrajectoryEdgeTableTapeEquiv table).symm
+    _ = evalDist (List.ofFn <$>
+        ($ᵗ (Fin globalTrajectoryEdgeOrder.length → Digest))) := by
+      rw [evalDist_map]
+      rw [evalDist_map_bijective_uniform_cross
+        (α := GlobalChainEdgeIndex → Digest)
+        (β := Fin globalTrajectoryEdgeOrder.length → Digest)
+        globalTrajectoryEdgeTableTapeEquiv
+          globalTrajectoryEdgeTableTapeEquiv.bijective]
+      rw [← evalDist_map]
+    _ = evalDist (OracleComp.drawList ($ᵗ Digest)
+        globalTrajectoryEdgeOrder.length) :=
+      evalDist_listOfFn_uniform_eq_drawList
+        globalTrajectoryEdgeOrder.length
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_globalTrajectoryEdgeTableOfTape_drawList_eq_uniform :
+    evalDist (globalTrajectoryEdgeTableOfTape <$>
+      OracleComp.drawList ($ᵗ Digest)
+        globalTrajectoryEdgeOrder.length) =
+      evalDist ($ᵗ (GlobalChainEdgeIndex → Digest)) := by
+  calc
+    _ = evalDist (globalTrajectoryEdgeTableOfTape <$>
+        ((fun table : GlobalChainEdgeIndex → Digest =>
+          globalTrajectoryEdgeOrder.map table) <$>
+            ($ᵗ (GlobalChainEdgeIndex → Digest)))) := by
+      rw [evalDist_map, evalDist_map,
+        evalDist_uniformGlobalTrajectoryEdgeTableTape_eq_drawList]
+    _ = evalDist ($ᵗ (GlobalChainEdgeIndex → Digest)) := by
+      simp [Functor.map_map]
+
+noncomputable def globalChainEdgeTableOfTrajectories
+    (trajectories : AllChainTrajectories) :
+    GlobalChainEdgeIndex → Digest := fun edge =>
+  chainValueTableOfList (trajectories edge.1)
+    (edge.2.1, chainStepNextDigit edge.2.2)
+
+theorem fixedChainTrajectoryDrawTape_eq_edgeMap
+    (trajectories : List FullChainTrajectory)
+    (hlength : trajectories.length = lifetime) :
+    fixedChainTrajectoryDrawTape trajectories =
+      (allEpochs ×ˢ trajectoryChainSteps).map fun edge =>
+        chainValueTableOfList trajectories
+          (edge.1, chainStepNextDigit edge.2) := by
+  let table := chainValueTableOfList trajectories
+  have hinverse : listOfChainValueTable table = trajectories :=
+    listOfChainValueTable_chainValueTableOfList trajectories hlength
+  conv_lhs => rw [← hinverse]
+  change List.flatMap trajectoryDrawTape (allEpochs.map fun epoch =>
+      FullChainTrajectory.ofDigitTable fun digit => table (epoch, digit)) =
+    (allEpochs ×ˢ trajectoryChainSteps).map fun edge =>
+      table (edge.1, chainStepNextDigit edge.2)
+  have hgeneral : ∀ epochs : List Epoch,
+      List.flatMap trajectoryDrawTape (epochs.map fun epoch =>
+        FullChainTrajectory.ofDigitTable fun digit => table (epoch, digit)) =
+      (epochs ×ˢ trajectoryChainSteps).map fun edge =>
+        table (edge.1, chainStepNextDigit edge.2) := by
+    intro epochs
+    induction epochs with
+    | nil => simp
+    | cons epoch epochs ih =>
+        rw [List.map_cons, List.flatMap_cons, List.product_cons,
+          List.map_append, ih]
+        rw [trajectoryDrawTape_ofDigitTable]
+        simp
+  exact hgeneral allEpochs
+
+theorem allChainTrajectoryDrawTape_eq_edgeMap
+    (trajectories : AllChainTrajectories) :
+    ∀ chains : List ChainIndex,
+      (∀ chain ∈ chains, (trajectories chain).length = lifetime) →
+      allChainTrajectoryDrawTape trajectories chains =
+        (chains ×ˢ (allEpochs ×ˢ trajectoryChainSteps)).map
+          (globalChainEdgeTableOfTrajectories trajectories) := by
+  intro chains
+  induction chains with
+  | nil => simp
+  | cons chain chains ih =>
+      intro hlength
+      have hhead := hlength chain (by simp)
+      have htail : ∀ selected ∈ chains,
+          (trajectories selected).length = lifetime := by
+        intro selected hselected
+        exact hlength selected (by simp [hselected])
+      rw [allChainTrajectoryDrawTape, List.product_cons, List.map_append, ih htail]
+      rw [fixedChainTrajectoryDrawTape_eq_edgeMap (trajectories chain) hhead]
+      simp [globalChainEdgeTableOfTrajectories]
+
+theorem globalTrajectoryEdgeTableOfTape_drawTape
+    (trajectories : AllChainTrajectories)
+    (hlength : ∀ chain, (trajectories chain).length = lifetime) :
+    globalTrajectoryEdgeTableOfTape
+        (allChainTrajectoryDrawTape trajectories allChains) =
+      globalChainEdgeTableOfTrajectories trajectories := by
+  rw [allChainTrajectoryDrawTape_eq_edgeMap trajectories allChains
+    (fun chain _hchain => hlength chain)]
+  exact globalTrajectoryEdgeTableOfTape_map
+    (globalChainEdgeTableOfTrajectories trajectories)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_uniformAllChainTrajectories_edgeTable_eq_uniform
+    (secret : Epoch → ChainIndex → Digest) :
+    evalDist (globalChainEdgeTableOfTrajectories <$>
+      uniformAllChainTrajectories secret allChains) =
+      evalDist ($ᵗ (GlobalChainEdgeIndex → Digest)) := by
+  calc
+    _ = evalDist (globalTrajectoryEdgeTableOfTape <$>
+          ((fun trajectories =>
+            allChainTrajectoryDrawTape trajectories allChains) <$>
+              uniformAllChainTrajectories secret allChains)) := by
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply evalDist_bind_congr
+      intro trajectories htrajectories
+      have hinfo := uniformAllChainTrajectories_support_info secret allChains
+        trajectories allChains_nodup htrajectories
+      rw [globalTrajectoryEdgeTableOfTape_drawTape trajectories
+        (fun chain => (hinfo chain (mem_allChains chain)).1)]
+      simp
+    _ = evalDist (globalTrajectoryEdgeTableOfTape <$>
+          OracleComp.drawList ($ᵗ Digest)
+            (allChains.length *
+              (allEpochs.length * (chainLength - 1)))) := by
+      rw [evalDist_map,
+        evalDist_uniformAllChainTrajectories_drawTape secret allChains
+          allChains_nodup,
+        ← evalDist_map]
+    _ = evalDist (globalTrajectoryEdgeTableOfTape <$>
+          OracleComp.drawList ($ᵗ Digest)
+            globalTrajectoryEdgeOrder.length) := by
+      rw [globalTrajectoryEdgeOrder_length]
+    _ = evalDist ($ᵗ (GlobalChainEdgeIndex → Digest)) :=
+      evalDist_globalTrajectoryEdgeTableOfTape_drawList_eq_uniform
+
+theorem globalChainTableMaterialEquiv_trajectories
+    (secret : Epoch → ChainIndex → Digest)
+    (trajectories : AllChainTrajectories)
+    (htrajectories : trajectories ∈ support
+      (uniformAllChainTrajectories secret allChains)) :
+    globalChainTableMaterialEquiv
+        (globalChainValueTableOfTrajectories trajectories) =
+      (secret, globalChainEdgeTableOfTrajectories trajectories) := by
+  apply Prod.ext
+  · exact uniformAllChainTrajectories_support_seeds secret trajectories
+      htrajectories
+  · rfl
+
+noncomputable def uniformGlobalChainTableFromTrajectories :
+    ProbComp (GlobalChainValueIndex → Digest) := do
+  let secret ← Concrete.sampleSecret
+  let trajectories ← uniformAllChainTrajectories secret allChains
+  pure (globalChainValueTableOfTrajectories trajectories)
+
+noncomputable def sampleSecretGlobalChainMaterial :
+    ProbComp ((Epoch → ChainIndex → Digest) ×
+      (GlobalChainEdgeIndex → Digest)) := do
+  let secret ← Concrete.sampleSecret
+  let edges ← $ᵗ (GlobalChainEdgeIndex → Digest)
+  pure (secret, edges)
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 2000000 in
+theorem sampleSecret_eq_uniform :
+    Concrete.sampleSecret = $ᵗ (Epoch → ChainIndex → Digest) := by
+  rw [Concrete.sampleSecret]
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 2000000 in
+theorem sampleSecretGlobalChainMaterial_eq_independent :
+    sampleSecretGlobalChainMaterial =
+      independentGlobalChainTableMaterial := by
+  unfold sampleSecretGlobalChainMaterial independentGlobalChainTableMaterial
+  rw [sampleSecret_eq_uniform]
+  rfl
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 2000000 in
+theorem evalDist_uniformGlobalChainTableFromTrajectories_eq_uniform :
+    evalDist uniformGlobalChainTableFromTrajectories =
+      evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
+  unfold uniformGlobalChainTableFromTrajectories
+  calc
+    _ = evalDist (Concrete.sampleSecret >>= fun secret =>
+          uniformAllChainTrajectories secret allChains >>= fun trajectories =>
+          pure (globalChainTableMaterialEquiv.symm
+            (secret, globalChainEdgeTableOfTrajectories trajectories))) := by
+      apply evalDist_bind_congr
+      intro secret _hsecret
+      apply evalDist_bind_congr
+      intro trajectories htrajectories
+      rw [← globalChainTableMaterialEquiv_trajectories secret trajectories
+        htrajectories, globalChainTableMaterialEquiv.symm_apply_apply]
+    _ = evalDist (Concrete.sampleSecret >>= fun secret =>
+          (globalChainEdgeTableOfTrajectories <$>
+            uniformAllChainTrajectories secret allChains) >>= fun edges =>
+          pure (globalChainTableMaterialEquiv.symm (secret, edges))) := by
+      simp [map_eq_bind_pure_comp, bind_assoc]
+    _ = evalDist (Concrete.sampleSecret >>= fun secret =>
+          ($ᵗ (GlobalChainEdgeIndex → Digest)) >>= fun edges =>
+          pure (globalChainTableMaterialEquiv.symm (secret, edges))) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro secret
+      rw [evalDist_bind,
+        evalDist_uniformAllChainTrajectories_edgeTable_eq_uniform secret,
+        ← evalDist_bind]
+    _ = evalDist (globalChainTableMaterialEquiv.symm <$>
+          sampleSecretGlobalChainMaterial) := by
+      simp [sampleSecretGlobalChainMaterial, map_eq_bind_pure_comp, bind_assoc]
+    _ = evalDist (globalChainTableMaterialEquiv.symm <$>
+          independentGlobalChainTableMaterial) := by
+      rw [sampleSecretGlobalChainMaterial_eq_independent]
+    _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
+      have h := evalDist_map_eq_of_evalDist_eq
+        evalDist_split_uniformGlobalChainTable_eq_independent
+        globalChainTableMaterialEquiv.symm
+      simpa [Functor.map_map] using h.symm
 
 set_option maxRecDepth 100000 in
 theorem evalDist_programmedAllChainTrajectories_fst_eq_uniform
@@ -506,6 +1401,37 @@ theorem evalDist_allChainTrajectoryKeygen_eq_programmed :
   conv_rhs => rw [evalDist_bind]
   rw [evalDist_allChainTrajectories_eq_programmed parameter secret allChains ∅
     allChains_nodup (by simp [AllChainAddressesAbsent])]
+
+theorem allChainTrajectoryKeygen_support_table
+    (result : ProgrammedGlobalChainKeygenView × AllChainTrajectories)
+    (hresult : result ∈ support allChainTrajectoryKeygen) :
+    result.1.table = globalChainValueTableOfTrajectories result.2 := by
+  unfold allChainTrajectoryKeygen at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨parameter, _hparameter, hsecret⟩ := hresult
+  rw [mem_support_bind_iff] at hsecret
+  obtain ⟨secret, _hsecret, htrajectory⟩ := hsecret
+  rw [mem_support_bind_iff] at htrajectory
+  obtain ⟨trajectoryResult, htrajectoryResult, hroot⟩ := htrajectory
+  rw [mem_support_bind_iff] at hroot
+  obtain ⟨rootResult, hrootResult, hpure⟩ := hroot
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  symm
+  apply Concrete.allChainTrajectoriesFromCache_globalTable_eq parameter secret
+    trajectoryResult rootResult.2 htrajectoryResult
+  exact Concrete.CacheReplay.randomOracle_cache_le
+    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+      OracleComp HashSpec Digest)
+    trajectoryResult.2 rootResult hrootResult
+
+theorem programmedAllChainTrajectoryKeygen_support_table
+    (result : ProgrammedGlobalChainKeygenView × AllChainTrajectories)
+    (hresult : result ∈ support programmedAllChainTrajectoryKeygen) :
+    result.1.table = globalChainValueTableOfTrajectories result.2 := by
+  apply allChainTrajectoryKeygen_support_table result
+  exact (mem_support_iff_of_evalDist_eq
+    evalDist_allChainTrajectoryKeygen_eq_programmed result).mpr hresult
 
 def eraseAllChainTrajectories
     (result : ProgrammedGlobalChainKeygenView × AllChainTrajectories) :
