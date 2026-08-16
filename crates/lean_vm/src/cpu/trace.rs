@@ -46,8 +46,8 @@ pub(crate) struct Jrow {
 /// `SHA-256` row: the eight per-cell memory access counts of the four
 /// message-chunk cells, the chaining value's two cells and the output's two. The
 /// addresses are `fp·g^{ins[i]}`, `fp·g^{cv}`, `fp·g^{out}` and the successors of
-/// the last two; the eighteen flock words are those cells' lanes plus the
-/// bytecode metadata immediate.
+/// the last two; the sixteen flock words are those cells' lanes. There is no
+/// metadata immediate: the compression takes none.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,

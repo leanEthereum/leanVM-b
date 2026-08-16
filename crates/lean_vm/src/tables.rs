@@ -141,8 +141,10 @@ impl FlushBuilder {
         );
     }
 
-    /// Bytecode read at `pc`: the program tuple (opcode + seven operand slots),
-    /// with the per-pc execution count advanced by ×g on the push side.
+    /// Bytecode read at `pc`: the program tuple (opcode + up to six operand
+    /// slots), with the per-pc execution count advanced by ×g on the push side.
+    /// A table passes only the operands it uses; the slots past them are zero in
+    /// the bytecode columns, so the shorter tuple fingerprints the same.
     pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: F64, operands: &[Coord]) {
         let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count, 1), Const(opcode)];
         let mut pull = vec![Const(SEP_BYTECODE), Col(pc), Col(count), Const(opcode)];

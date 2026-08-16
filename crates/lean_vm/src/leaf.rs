@@ -35,7 +35,7 @@ pub enum Coord {
     Index,
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
     /// its MLE directly, so it raises no claim. Shared rather than owned: push and
-    /// pull carry the same nine columns, tens of megabytes at production sizes.
+    /// pull carry the same seven columns, tens of megabytes at production sizes.
     Public(Arc<Vec<F64>>),
     /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
     /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
@@ -98,8 +98,10 @@ pub fn fingerprint_weights(alphas: &[F192]) -> Vec<F192> {
     w
 }
 
-/// Bits indexing a bus tuple's coordinates: `m = 12` coordinates live in the
-/// `2^4` slots of the bytecode encoding (§sec:m3, §sec:e2e-bc).
+/// Bits indexing a bus tuple's coordinates: `m = 10` coordinates live in the
+/// `2^4` slots of the bytecode encoding (§sec:m3, §sec:e2e-bc). Ten, not
+/// sixteen: the widest tuple is `SHA2`'s bytecode read, three prefix
+/// coordinates plus the opcode plus six operands.
 pub const N_TUPLE_BITS: usize = 4;
 
 /// Conservative sum of the degree bounds for every random-challenge failure in
@@ -414,7 +416,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                 Coord::Prod(..) | Coord::Sum(..) => {
                     unreachable!("only a table's bus block carries a degree-2 coordinate")
                 }
-                // The nine bytecode encoding columns, the largest evaluation on
+                // The seven bytecode encoding columns, the largest evaluation on
                 // this path. Outermost in both `decompose_prove` and
                 // `decompose_verify`, whose own dispatches have returned by here.
                 Coord::Public(vals) => primitives::multilinear::mle_eval_par(vals.as_slice(), zeta_lo),
@@ -517,8 +519,8 @@ fn decompose_verify(
     })
 }
 
-/// One reduced claim on the bytecode polynomial. The nine public encoding
-/// columns (opcode plus eight operand/immediate slots), padded to sixteen slots
+/// One reduced claim on the bytecode polynomial. The seven public encoding
+/// columns (opcode plus six operand/immediate slots), padded to sixteen slots
 /// along four selector bits, form one multilinear polynomial B̃ in `κ_bc + 4`
 /// variables. After decomposition both parties absorb the nine column
 /// evaluations (push and pull share the GKR point ζ), sample four selector
@@ -535,8 +537,9 @@ pub struct BytecodeClaim {
 }
 
 /// Selector bits of the stacked bytecode polynomial: the public encoding
-/// columns (opcode + eight operand/immediate slots = nine) stack along
-/// `2^N_BYTECODE_SELECTORS` slots.
+/// columns (opcode + six operand/immediate slots = seven) stack along
+/// `2^N_BYTECODE_SELECTORS` slots. Four bits, not three: a column's slot IS its
+/// bus tuple coordinate, and `BYTECODE_PUBLIC_SLOT` puts the last one at 9.
 pub const N_BYTECODE_SELECTORS: usize = 4;
 
 /// Slot of the first public column: the bytecode block leads with three
@@ -544,7 +547,7 @@ pub const N_BYTECODE_SELECTORS: usize = 4;
 /// bus tuple coordinate.
 pub const BYTECODE_PUBLIC_SLOT: usize = 3;
 
-/// The stacked bytecode polynomial as a dense table: nine public encoding
+/// The stacked bytecode polynomial as a dense table: seven public encoding
 /// columns at their tuple coordinates, padded to sixteen selector slots. This is
 /// the polynomial [`BytecodeClaim`]s are claims about; the outermost verifier
 /// evaluates it.

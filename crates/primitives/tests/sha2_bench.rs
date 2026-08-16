@@ -51,3 +51,38 @@ fn batched_throughput() {
     run::<768>(1 << 14);
     run::<1024>(1 << 14);
 }
+
+/// Single-threaded SERIAL throughput: one compression at a time, which is what
+/// the Fiat-Shamir sponge, PoW grinding and every verifier Merkle path do.
+///
+/// This exists because its absence hid an 11x regression. `sha2_eth` derives
+/// its starting chaining value from the message length, and `iv_for_len` is a
+/// `const fn`, so a call with a RUNTIME length silently ran a second, portable
+/// compression per hash. `hash_block` and `sha2::iv_at` are the fix, and the
+/// three numbers below are what says so: `hash_block` must sit on top of
+/// `compress`, and `hash` at 64 bytes must match it.
+#[test]
+#[ignore = "manual throughput measurement"]
+fn serial_throughput() {
+    const N: usize = 1 << 18;
+    let block: [u8; 64] = std::array::from_fn(|i| (i * 7 + 1) as u8);
+
+    let mut h = primitives::sha2::IV_64;
+    let m: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0x9E37_79B9));
+    let s = time(N, || h = primitives::sha2::compress(std::hint::black_box(h), m));
+    println!("  compress            {:>7.1} ns/op", s * 1e9);
+    std::hint::black_box(h);
+
+    let s = time(N, || {
+        std::hint::black_box(primitives::sha2::hash_block(std::hint::black_box(&block)));
+    });
+    println!("  hash_block (64 B)   {:>7.1} ns/op", s * 1e9);
+
+    for len in [64usize, 96, 704] {
+        let data: Vec<u8> = (0..len).map(|i| (i * 7 + 1) as u8).collect();
+        let s = time(N, || {
+            std::hint::black_box(primitives::sha2::hash(std::hint::black_box(&data)));
+        });
+        println!("  hash ({len:>3} B)        {:>7.1} ns/op", s * 1e9);
+    }
+}

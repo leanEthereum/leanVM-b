@@ -85,7 +85,7 @@ The memory is an array of $2^{h}$ cells, $16\le h\le32$ (\S\ref{sec:vm}). Bus in
 
 \subsection{Bytecode}\label{sec:bytecode}
 
-The bytecode is an array of $\nprog$ instructions, $\nprog\le2^{32}$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC}$. An instruction is an opcode plus eight operand or immediate slots, so $\ncomp=9$: the widest entry on the bus, which is what fixes $m=12$ (\S\ref{sec:m3}). The program is public, i.e. not committed, the verifier can evaluate it directly.
+The bytecode is an array of $\nprog$ instructions, $\nprog\le2^{32}$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC}$. An instruction is an opcode plus six operand or immediate slots, so $\ncomp=7$: the widest entry on the bus, which is what fixes $m=10$ (\S\ref{sec:m3}). Six and not eight because \texttt{SHA2} carries no immediate: the two slots a byte counter and finalization flags would occupy were zero for every other opcode. The program is public, i.e. not committed, the verifier can evaluate it directly.
 
 \subsection{The index column}\label{sec:idxcol}
 

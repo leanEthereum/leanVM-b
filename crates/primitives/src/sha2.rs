@@ -17,10 +17,18 @@
 //! from [`IV_ETH`], where `len_block(n)` is `n` as a 512-bit big-endian integer
 //! and the trailing zeros round the message up to a whole number of 64-byte
 //! blocks. Putting the length first rather than last makes the encoding
-//! prefix-free, which is what buys indifferentiability from a random oracle;
-//! the usual `10*` padding is then unnecessary, since the length block already
-//! separates messages of different lengths and the zero fill is injective at a
-//! fixed length.
+//! prefix-free, and prefix-free Merkle-Damgard is indifferentiable from a
+//! random oracle when the compression is (Coron et al.); SHA-256's `C` is
+//! Davies-Meyer, which provably is NOT an ideal fixed-input-length primitive,
+//! so as always the claim rests on the usual heuristic about `C` rather than on
+//! a theorem about SHA-256. The usual `10*` padding is unnecessary either way,
+//! since the length block already separates messages of different lengths and
+//! the zero fill is injective at a fixed length.
+//!
+//! Prefix-freeness is a statement about [`hash`]. [`compress`] and the VM's
+//! `Sha2` opcode expose a raw chain from a caller-chosen chaining value, and
+//! anything built on those (the sponge, the Merkle tree) needs its own
+//! argument.
 //!
 //! ## Why the length goes first: free hashing at known sizes
 //!
@@ -34,7 +42,16 @@
 //! compile time, so that compression is a constant: [`IV_64`] for the 64-byte
 //! hash the sponge and the Merkle parent use, [`iv_for_len`] for the rest. An
 //! `n`-byte hash is then exactly `ceil(n / 64)` compressions, the same count
-//! BLAKE2s cost, and the VM proves exactly those.
+//! BLAKE2s cost, and **the VM proves exactly those**.
+//!
+//! Natively, taking that constant is the caller's job and the type system will
+//! not do it for you: [`iv_for_len`] is a `const fn`, but called with a runtime
+//! length it is an ordinary function and runs a whole extra compression. So
+//! [`hash_block`] exists for the 64-byte case, which is most of the hashing a
+//! proof does, and [`hash`] at any other length pays one hardware compression
+//! for the length block on top of the `ceil(n / 64)`. Measured on an M4 Max
+//! (`tests/sha2_bench.rs`, `serial_throughput`): 33 ns for the 64-byte hash,
+//! 106 ns at 96 bytes, 346 ns at 704 bytes.
 //!
 //! ## Surfaces
 //!
@@ -42,6 +59,7 @@
 //!   `flock::sha2` proves it.
 //! - [`hash`] / [`Hasher`], `sha2_eth` over bytes. The hasher takes the total
 //!   length up front, because the construction needs it in the first block.
+//! - [`hash_block`], `sha2_eth` of exactly 64 bytes at one compression.
 //! - [`hash_many`], the batched form: `LANES` independent equal-length inputs
 //!   hashed together with the state transposed across lanes, which is how the
 //!   PCS Merkle tree gets SIMD out of hashes that are individually serial.
@@ -260,7 +278,7 @@ const fn state_bytes(h: &[u32; 8]) -> [u8; OUT_LEN] {
 
 #[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
 mod hw {
-    use super::{BLOCK_LEN, K, OUT_LEN, iv_for_len};
+    use super::{BLOCK_LEN, K, OUT_LEN};
     use core::arch::aarch64::*;
 
     /// The four-round step over `N` independent chains: `sha256h` produces the
@@ -346,7 +364,7 @@ mod hw {
     /// nonzero multiple of 64, one 32-byte digest per input.
     pub(super) fn hash_many(data: &[u8], len: usize, out: &mut [u8]) {
         let n = out.len() / OUT_LEN;
-        let iv = iv_for_len(len as u64);
+        let iv = super::iv_at(len as u64);
         let groups = n / INTERLEAVE;
         // SAFETY: `g * INTERLEAVE + j < n`, so each input's `len` bytes and
         // each digest's 32 bytes are in bounds.
@@ -547,6 +565,35 @@ pub const fn iv_for_len(n_bytes: u64) -> [u32; 8] {
 /// and the `Sha2` opcode's default chaining value all hash exactly one block.
 pub const IV_64: [u32; 8] = iv_for_len(64);
 
+/// [`BLOCK_LEN`] as the type [`iv_at`] matches on.
+const BLOCK_LEN_U64: u64 = BLOCK_LEN as u64;
+
+/// [`iv_for_len`] at a length known only at run time.
+///
+/// A `const fn` called with a runtime argument is just a function, so
+/// [`iv_for_len`] would otherwise run a full **portable** compression on every
+/// hash: measured at 137 ns against 14 ns for the compression the caller
+/// actually wanted, an 11x tax on the Fiat-Shamir sponge and on PoW grinding.
+/// So take the constant at the one length the protocol hashes in bulk, and the
+/// hardware compression otherwise.
+#[inline]
+fn iv_at(n_bytes: u64) -> [u32; 8] {
+    match n_bytes {
+        BLOCK_LEN_U64 => IV_64,
+        n => compress(IV_ETH, len_block((n as u128) * 8)),
+    }
+}
+
+/// `sha2_eth` of exactly 64 bytes: ONE compression from the constant [`IV_64`],
+/// and nothing else.
+///
+/// The sponge step, the Merkle parent and the `Sha2` opcode are all this shape,
+/// and between them they are most of the hashing a proof does, so they get a
+/// path on which the length cannot be anything but a constant.
+pub fn hash_block(block: &[u8; BLOCK_LEN]) -> [u8; OUT_LEN] {
+    state_bytes(&compress(IV_64, block_words(block)))
+}
+
 /// `sha2_eth` over bytes, streaming.
 ///
 /// The total length has to be known before the first block, so it is a
@@ -568,7 +615,7 @@ impl Hasher {
     /// A hasher for a message of exactly `total` bytes.
     pub fn new(total: usize) -> Self {
         Self {
-            h: iv_for_len(total as u64),
+            h: iv_at(total as u64),
             buf: [0u8; BLOCK_LEN],
             buf_len: 0,
             fed: 0,
@@ -611,7 +658,7 @@ impl Hasher {
 
 /// One-shot `sha2_eth`.
 pub fn hash(data: &[u8]) -> [u8; OUT_LEN] {
-    let mut h = iv_for_len(data.len() as u64);
+    let mut h = iv_at(data.len() as u64);
     let mut chunks = data.chunks_exact(BLOCK_LEN);
     for block in &mut chunks {
         h = compress(h, block_words(block.try_into().unwrap()));
@@ -828,6 +875,7 @@ mod x86 {
 
     /// Byte-reverse each 32-bit lane of a 16-byte group: the big-endian decode
     /// SHA-256's block loading and digest store both need.
+    #[cfg_attr(not(target_feature = "avx2"), allow(dead_code))]
     const BSWAP32: [i8; 16] = [3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12];
 
     /// AVX2: eight lanes. Every SHA-256 rotation is odd, so each is a shift
@@ -835,10 +883,11 @@ mod x86 {
     ///
     /// Unused by the library on an AVX-512 target (the dispatch is compile
     /// time), but always exercised by `every_backend_matches_scalar`.
-    #[cfg_attr(target_feature = "avx512f", allow(dead_code))]
+    #[cfg_attr(any(target_feature = "avx512f", not(target_feature = "avx2")), allow(dead_code))]
     #[derive(Clone, Copy)]
     pub(super) struct Avx2(__m256i);
 
+    #[cfg_attr(any(target_feature = "avx512f", not(target_feature = "avx2")), allow(dead_code))]
     impl Avx2 {
         #[inline(always)]
         fn bswap(self) -> Self {
@@ -957,11 +1006,17 @@ mod x86 {
     /// AVX-512: sixteen lanes, and `vprord` makes every rotation one
     /// instruction, which matters more here than it did for BLAKE2s since
     /// SHA-256 has ten distinct odd rotation amounts and no byte-aligned one.
-    #[cfg(target_feature = "avx512f")]
+    ///
+    /// Gated on `avx512bw` as well as `avx512f`, because the big-endian decode
+    /// is `vpshufb zmm` (`_mm512_shuffle_epi8`), which is a BW instruction.
+    /// Gating on `avx512f` alone compiles, but LLVM then refuses to inline the
+    /// intrinsic into a caller that does not declare BW and emits a real call
+    /// per block instead; on an F-without-BW part it would be a `#UD`.
+    #[cfg(all(target_feature = "avx512f", target_feature = "avx512bw"))]
     #[derive(Clone, Copy)]
     pub(super) struct Avx512(__m512i);
 
-    #[cfg(target_feature = "avx512f")]
+    #[cfg(all(target_feature = "avx512f", target_feature = "avx512bw"))]
     impl Avx512 {
         #[inline(always)]
         fn bswap(self) -> Self {
@@ -972,7 +1027,7 @@ mod x86 {
         }
     }
 
-    #[cfg(target_feature = "avx512f")]
+    #[cfg(all(target_feature = "avx512f", target_feature = "avx512bw"))]
     impl Lanes32 for Avx512 {
         const WIDTH: usize = 16;
 
@@ -1358,15 +1413,18 @@ unsafe fn compress_lanes<S: Lanes32>(h: &mut [S; 8], buf: *mut u32) {
 /// Hash `S::WIDTH` inputs of `len` bytes (a nonzero multiple of 64) into
 /// `S::WIDTH` consecutive 32-byte digests at `out`.
 ///
+/// `iv` is the caller's [`iv_at`] for `len`, passed in rather than recomputed:
+/// every group of one call shares it, and recomputing it here would put a
+/// portable compression on each group (see [`iv_at`]).
+///
 /// # Safety
 /// Every `inputs[l]` must be valid for `len` bytes, `out` for
 /// `S::WIDTH * OUT_LEN` bytes, `buf` must hold `64 * S::WIDTH` words, and `len`
 /// must be a nonzero multiple of 64.
 #[inline(always)]
 #[cfg_attr(all(target_arch = "aarch64", target_feature = "sha2"), allow(dead_code))]
-unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, buf: &mut [u32], out: *mut u8) {
+unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, iv: &[u32; 8], buf: &mut [u32], out: *mut u8) {
     debug_assert!(len > 0 && len.is_multiple_of(BLOCK_LEN));
-    let iv = iv_for_len(len as u64);
     let mut h: [S; 8] = std::array::from_fn(|i| S::splat(iv[i]));
     for b in 0..len / BLOCK_LEN {
         // SAFETY: `b * 64 + 64 <= len`, so the window is inside every input.
@@ -1390,6 +1448,7 @@ unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, buf: &mut [u3
 unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
     let n = out.len() / OUT_LEN;
     let groups = n / S::WIDTH;
+    let iv = iv_at(len as u64);
     let mut ptrs = [std::ptr::null::<u8>(); 16];
     // The widest backend's expanded schedule, 64 words by 16 lanes. One buffer
     // for the whole call keeps it on the stack, so the round's message operand
@@ -1403,7 +1462,13 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
         // SAFETY: each pointer has `len` readable bytes, and the output window
         // `[base, base + WIDTH)` is inside `out`.
         unsafe {
-            hash_group::<S>(&ptrs[..S::WIDTH], len, &mut buf, out.as_mut_ptr().add(base * OUT_LEN));
+            hash_group::<S>(
+                &ptrs[..S::WIDTH],
+                len,
+                &iv,
+                &mut buf,
+                out.as_mut_ptr().add(base * OUT_LEN),
+            );
         }
     }
     for i in groups * S::WIDTH..n {
@@ -1415,7 +1480,11 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
 /// targets: 16 on AVX-512, 8 on AVX2, 4 on NEON. Public so callers can size
 /// their groups; the batched entry points handle any count and scalar-tail the
 /// remainder.
-pub const LANES: usize = if cfg!(all(target_arch = "x86_64", target_feature = "avx512f")) {
+pub const LANES: usize = if cfg!(all(
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512bw"
+)) {
     16
 } else if cfg!(target_arch = "x86_64") {
     8
@@ -1453,11 +1522,15 @@ pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
     return hw::hash_many(data, len, out);
     // SAFETY (each arm): the asserts above pin the buffer sizes the backends
     // require, and every backend is gated on the feature its intrinsics need.
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
     unsafe {
         hash_many_with::<x86::Avx512>(data, len, out)
     }
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f"), target_feature = "avx2"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(all(target_feature = "avx512f", target_feature = "avx512bw")),
+        target_feature = "avx2"
+    ))]
     unsafe {
         hash_many_with::<x86::Avx2>(data, len, out)
     }
@@ -1465,6 +1538,10 @@ pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
     unsafe {
         hash_many_with::<arm::Neon>(data, len, out)
     }
+    // The arms are exhaustive and disjoint. The x86 fallback is written
+    // against `avx2` alone rather than also naming `avx512f`, which is only
+    // safe because rustc implies `avx2` from `avx512f`; `+avx512f,-avx2` would
+    // expand two arms and compute the batch twice.
     #[cfg(not(any(all(target_arch = "x86_64", target_feature = "avx2"), target_arch = "aarch64")))]
     unsafe {
         hash_many_with::<Scalar8>(data, len, out)
@@ -1569,6 +1646,31 @@ mod tests {
         }
     }
 
+    /// `hash_block` is a shortcut, not a second hash: it must agree with the
+    /// general path on every 64-byte input. It exists only so the sponge and
+    /// the Merkle parent reach `IV_64` as a constant instead of deriving it, so
+    /// the thing to guard is that the shortcut stayed a shortcut.
+    #[test]
+    fn hash_block_is_hash_at_64_bytes() {
+        for seed in [0usize, 1, 7, 255] {
+            let block: [u8; BLOCK_LEN] = std::array::from_fn(|i| ((i * 31 + seed) & 0xff) as u8);
+            assert_eq!(hash_block(&block), hash(&block), "seed {seed}");
+        }
+        assert_eq!(hash_block(&[0u8; BLOCK_LEN]), hash(&[0u8; BLOCK_LEN]));
+        assert_eq!(hash_block(&[0xffu8; BLOCK_LEN]), hash(&[0xffu8; BLOCK_LEN]));
+    }
+
+    /// `iv_at` is the runtime spelling of `iv_for_len` and must not drift from
+    /// it, including at the 64-byte length where it returns a constant instead
+    /// of compressing.
+    #[test]
+    fn iv_at_matches_iv_for_len() {
+        for n in [0u64, 1, 32, 48, 63, 64, 65, 96, 128, 704, 5824, 1 << 20] {
+            assert_eq!(iv_at(n), iv_for_len(n), "length {n}");
+        }
+        assert_eq!(iv_at(64), IV_64);
+    }
+
     /// Different lengths cannot collide even when one message is a prefix of
     /// the other, which is what the length-first ordering buys and what the
     /// zero fill on its own would lose.
@@ -1625,7 +1727,7 @@ mod tests {
         check::<Scalar8>("scalar");
         #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         check::<x86::Avx2>("avx2");
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
         check::<x86::Avx512>("avx512");
         #[cfg(target_arch = "aarch64")]
         check::<arm::Neon>("neon");

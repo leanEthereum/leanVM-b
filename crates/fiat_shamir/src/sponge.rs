@@ -34,13 +34,15 @@ use primitives::field::{F64, F192};
 /// A 64-byte input is one compression, `C(IV_64, a‖b)`: the length-prefixed
 /// Merkle-Damgard's first block depends only on the length, so at a fixed 64
 /// bytes it is the constant `IV_64` and nothing about the construction's
-/// framing can leak into the in-circuit version.
+/// framing can leak into the in-circuit version. `hash_block` is the entry
+/// point that takes that constant rather than deriving it, which matters:
+/// this runs once per absorb, once per squeeze, and once per PoW nonce trial.
 pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     let mut input = [0u8; 64];
     for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
         slot.copy_from_slice(&w.0.to_le_bytes());
     }
-    let d = primitives::sha2::hash(&input);
+    let d = primitives::sha2::hash_block(&input);
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 

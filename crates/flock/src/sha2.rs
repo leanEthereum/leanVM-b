@@ -10,11 +10,14 @@
 //! add, 61 for a fused three-operand one):
 //!
 //! ```text
-//!   64 rounds × (32 Ch + 32 Maj + 61 + 61 + 31 + 61)          = 17,408
-//!   48 schedule steps × (61 + 31)                             =  4,416
-//!   8 feed-forward adds × 31                                  =    248
-//!                                                    products = 22,072
+//!   64 rounds × (32 Ch + 32 Maj + 61 + 61 + 31 + 61) = 64 × 278 = 17,792
+//!   48 schedule steps × (61 + 31)                               =  4,416
+//!   8 feed-forward adds × 31                                    =    248
+//!                                                      products = 22,456
 //! ```
+//!
+//! Add the pins below (5,888), the free inputs (768) and the constant wire and
+//! that is exactly `USEFUL_BITS = 29,113`.
 //!
 //! That is already over `2^14`, so a compression needs `K_LOG = 15` whatever
 //! else is done: it is twice the block BLAKE2s occupied, and that factor is the
@@ -372,9 +375,9 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
 }
 
 /// [`BlockR1cs::r1cs_digest`] of this module's circuit, baked as a constant:
-/// recomputing it means building the matrices and hashing their 256 MiB bit
-/// image, which embedding protocols would otherwise pay inside their first
-/// prove. The `r1cs_digest_matches_baked` test recomputes and compares: a
+/// recomputing it means building the matrices and hashing their 384 MiB bit
+/// image (three `2^15 × 2^15` matrices at one bit per entry), which embedding
+/// protocols would otherwise pay inside their first prove. The `r1cs_digest_matches_baked` test recomputes and compares: a
 /// circuit change fails it until this constant is updated alongside. The same
 /// digest is mirrored in `python-verifier/verifier.py`, which cannot rebuild
 /// the matrices at all.
@@ -1118,6 +1121,103 @@ mod tests {
         }
     }
 
+    /// **The witness is the ONLY one, and it is the right one.** Two halves,
+    /// and both are needed.
+    ///
+    /// First, determinism: seed the determined set with the constant wire and
+    /// the free inputs `h`, `m`, then repeatedly mark a slot determined once
+    /// both its `A` and `B` supports are. Reaching all `2^K_LOG` slots says
+    /// every slot is a function of `(h, m)`, so at most one witness exists per
+    /// input.
+    ///
+    /// Second, correctness: replay that order, computing each slot as
+    /// `(A_i · z) & (B_i · z)` straight off the matrices, and check the result
+    /// is the honest witness bit for bit with `out` decoding to
+    /// `compress(h, m)`. Determinism alone is not enough, because a circuit
+    /// that computes the WRONG function deterministically passes it.
+    ///
+    /// Together they are the soundness statement: no prover can present any
+    /// other witness, in particular not one with a wrong `out`. This is what
+    /// `constrained_rows_tile_the_layout` cannot see, since a second gadget
+    /// overwriting an already-written row leaves both rows non-empty.
+    #[test]
+    fn the_satisfying_witness_is_unique_and_correct() {
+        let (a_0, b_0) = matrices();
+
+        let mut determined = vec![false; K];
+        determined[Z_CONST_POS] = true;
+        for s in H_BASE..H_BASE + 8 * WORD_BITS {
+            determined[s] = true;
+        }
+        for s in M_BASE..M_BASE + 16 * WORD_BITS {
+            determined[s] = true;
+        }
+        assert_eq!(
+            determined.iter().filter(|d| **d).count(),
+            769,
+            "the free bits are h, m and the constant wire"
+        );
+
+        let mut order: Vec<usize> = Vec::with_capacity(K);
+        loop {
+            let before = order.len();
+            for i in 0..K {
+                if determined[i] {
+                    continue;
+                }
+                if a_0.rows[i].iter().chain(&b_0.rows[i]).all(|&c| determined[c]) {
+                    determined[i] = true;
+                    order.push(i);
+                }
+            }
+            if order.len() == before {
+                break;
+            }
+        }
+        let stuck: Vec<usize> = (0..K).filter(|&i| !determined[i]).collect();
+        assert!(
+            stuck.is_empty(),
+            "{} slots are not determined by (h, m); first few: {:?}",
+            stuck.len(),
+            &stuck[..stuck.len().min(8)]
+        );
+        assert_eq!(order.len() + 769, K, "every non-free slot is settled exactly once");
+
+        let mut rng = Rng::new(0x5017_0DE5);
+        for trial in 0..4 {
+            let h: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
+            let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
+
+            let mut z = vec![false; K];
+            z[Z_CONST_POS] = true;
+            for (wd, &hw) in h.iter().enumerate() {
+                for j in 0..WORD_BITS {
+                    z[h_word(wd) + j] = (hw.swap_bytes() >> j) & 1 == 1;
+                }
+            }
+            for (i, &mi) in m.iter().enumerate() {
+                for j in 0..WORD_BITS {
+                    z[m_word(i) + j] = (mi.swap_bytes() >> j) & 1 == 1;
+                }
+            }
+            let parity = |row: &[usize], z: &[bool]| row.iter().fold(false, |acc, &c| acc ^ z[c]);
+            for &i in &order {
+                z[i] = parity(&a_0.rows[i], &z) & parity(&b_0.rows[i], &z);
+            }
+
+            let honest = generate_witness(&[(h, m)], 3);
+            assert_eq!(
+                &z[..],
+                &honest[..K],
+                "trial {trial}: solved witness differs from the honest one"
+            );
+            let expected = compress(h, m);
+            for wd in 0..8 {
+                assert_eq!(read_be_word(&z, out_word(wd)), expected[wd], "trial {trial}, out[{wd}]");
+            }
+        }
+    }
+
     #[test]
     fn mutated_witness_fails() {
         let mut rng = Rng::new(0xDEAD);
@@ -1125,9 +1225,10 @@ mod tests {
         let blocks = vec![(iv_64(), std::array::from_fn(|_| rng.next_u32()))];
         let mut z = generate_witness(&blocks, 3);
         assert!(r1cs.satisfies(&z));
-        // One bit in each row kind, in the last round where the cascade into
-        // the feed-forward is shortest and a wrong bit is least likely to be
-        // caught by something else.
+        // One bit in each PRODUCT row kind, in the last round. The pins, the
+        // free inputs, the constant and the padding are not probed here:
+        // `the_satisfying_witness_is_unique` covers the whole family at once,
+        // and this stays as the concrete, readable instance of it.
         for off in [
             R_CH + 5,
             R_MAJ + 9,

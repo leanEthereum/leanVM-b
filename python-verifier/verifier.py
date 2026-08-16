@@ -795,7 +795,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
             + weights[2] * memory_count
             + sum((weights[3 + limb] * memory[limb] for limb in range(3)), ZERO),
             # The public coordinates' weighted sum IS the stacked polynomial at
-            # (zeta, alpha), the weights being eq(alpha, .): one evaluation, not nine.
+            # (zeta, alpha), the weights being eq(alpha, .): one evaluation, not seven.
             weights[0] * SEP_BYTECODE
             + weights[1] * index_mle(bytecode_low)
             + weights[2] * bytecode_count

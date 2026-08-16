@@ -514,10 +514,10 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // `w.q` (≥1 instance, a program with no SHA-256 carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-SHA-256 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
-    // WHIR over this commitment (below). Message, chaining-value, and output words
-    // bind through the memory bus; counter and flags bind through bytecode. Their
-    // virtual value columns route to q_flock, so no separate pin claims are needed.
-    // Mirrored in `verify`.
+    // WHIR over this commitment (below). Message, chaining-value and output words
+    // all bind through the memory bus; there is nothing else to bind, the
+    // compression taking no immediate. Their virtual value columns route to
+    // q_flock, so no separate pin claims are needed. Mirrored in `verify`.
     let (owners, spans) = bus_wiring(program, &w.layout);
     // The columns are windows into `w.q`, so both stages read them in place: the
     // table sumcheck lifts each K-column into a fresh `E` copy on the round it
@@ -563,9 +563,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     for v in pi_limbs {
         ps.add_scalar(v);
     }
-    // Memory binds the message, chaining-value, and output words; bytecode binds
-    // the counter and flags. All corresponding value columns are virtual and route
-    // to q_flock through `slot_claims`.
+    // Memory binds the message, chaining-value and output words, which is all of
+    // them. Every corresponding value column is virtual and routes to q_flock
+    // through `slot_claims`.
     let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
@@ -730,7 +730,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 /// SHA-256 value columns are virtual: they have no committed placement. A bus
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
 /// to the equal `q_flock` slot evaluation: an ordinary claim on the committed
-/// `QFLOCK` column at the point freezing the low 8 coords to the slot's bits and
+/// `QFLOCK` column at the point freezing the low `SLOT_STRIDE_LOG` coords to the slot's bits and
 /// the high coords to `r`. No downstream special-casing: it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {

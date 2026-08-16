@@ -226,9 +226,16 @@ pub(crate) fn committed_log(log_mem: usize, log_bytecode: usize, taus: [usize; t
 ///
 /// Seven rather than nine because `SHA2` carries no metadata immediate: the two
 /// slots BLAKE2s spent on its counter and flags were zero for every other
-/// opcode, and are gone. Stacking pads the count to a power of two, so this is
-/// the difference between eight and sixteen slots per instruction in
-/// [`bytecode_table`].
+/// opcode, and are gone.
+///
+/// This does NOT shrink [`bytecode_table`]. A column's slot IS its bus tuple
+/// coordinate, so the seventh sits at slot 9 ([`crate::leaf::BYTECODE_PUBLIC_SLOT`]
+/// is 3) and the stacked polynomial still spans
+/// [`crate::leaf::N_BYTECODE_SELECTORS`] = 4 selector bits, i.e. sixteen slots,
+/// nine of them now zero rather than seven. Do not "follow up" by lowering that
+/// selector count: `N_TUPLE_BITS` in `rec_aggregation` is asserted equal to it,
+/// and lowering both would truncate `SHA2`'s ten-coordinate bytecode tuple,
+/// unbinding its chaining-value and output operands.
 pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 7] {
     let max_op = prog
         .iter()

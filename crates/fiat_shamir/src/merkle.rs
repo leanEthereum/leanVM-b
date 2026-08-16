@@ -52,7 +52,7 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
-    primitives::sha2::hash(&buf)
+    primitives::sha2::hash_block(&buf)
 }
 
 /// The committer's leaf preimage: the row's words, little-endian.

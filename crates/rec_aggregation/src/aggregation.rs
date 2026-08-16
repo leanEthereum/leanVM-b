@@ -499,7 +499,7 @@ fn stacked_bytecode() -> &'static [F64] {
 
 /// The slots of the stacked bytecode that are not structurally zero.
 ///
-/// Nine encoding columns sit inside sixteen stacking slots, so nearly half the
+/// Seven encoding columns sit inside sixteen stacking slots, so most of the
 /// table is zero and contributes nothing to any round of the batching sumcheck.
 /// Read off the table rather than from the column count, so an all-zero column
 /// at the edge only ever shrinks the window.
@@ -2122,7 +2122,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
     ps("PIN_COLUMN", flock::sha2::Z_CONST_POS.to_string());
     ps("K_LOG", flock::sha2::K_LOG.to_string());
-    // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
+    // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 9), so the
     // qflock point-claim slot must use THIS, not LOG2_FIELD_BITS.
     ps("SLOT_STRIDE_LOG", lean_vm::sha2_flock::SLOT_STRIDE_LOG.to_string());
 

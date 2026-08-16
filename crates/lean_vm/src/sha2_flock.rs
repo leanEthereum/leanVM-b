@@ -56,14 +56,24 @@ use zk_alloc::ArenaVec;
 /// Re-exported from [`flock::sha2`].
 pub use flock::sha2::SliceClaim;
 
-// Within-instance packed-word (slot) indices of the VM-visible words, fixed by
-// the flock layout (bit bases asserted by `layout_constants` there): `H_BASE =
-// 0` → cv words 0..4, `OUT_BASE = 256` → c words 4..8, `M_BASE = 512` → a words
-// 8..12 and b words 12..16.
+// Within-instance packed-word (slot) indices of the VM-visible words: `H_BASE
+// = 0` → cv words 0..4, `OUT_BASE = 256` → c words 4..8, `M_BASE = 512` → a
+// words 8..12 and b words 12..16. A slot is a 64-bit packed word, so each is
+// its flock bit base over 64, which the asserts below hold it to: move a
+// region in `flock::sha2` and this fails to compile rather than silently
+// routing a bus claim to the wrong slot.
 pub const SLOT_CV0: usize = 0;
 pub const SLOT_C0: usize = 4;
 pub const SLOT_A0: usize = 8;
 pub const SLOT_B0: usize = 12;
+
+const _: () = assert!(SLOT_CV0 * 64 == flock::sha2::H_BASE);
+const _: () = assert!(SLOT_C0 * 64 == flock::sha2::OUT_BASE);
+const _: () = assert!(SLOT_A0 * 64 == flock::sha2::M_BASE);
+const _: () = assert!(SLOT_B0 * 64 == flock::sha2::M_BASE + 8 * flock::sha2::WORD_BITS);
+// The sixteen VM-visible words are exactly the first `[0, 1024)` bits, so
+// nothing else may be placed there.
+const _: () = assert!(SLOT_B0 * 64 + 4 * 64 == flock::sha2::SCHED_BASE);
 
 /// The sixteen within-instance value slots in canonical order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3]`, matching `tables::SHA2_VALUE_COLS`.
@@ -289,7 +299,7 @@ pub fn warm_setup(n_blocks: usize) {
 /// announced and absorbed with the other sizes), so a transcript seeded with
 /// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement up
 /// front. Baked in flock (test-guarded): recomputing it costs a pass over the
-/// matrices' 256 MiB bit image, which used to land inside the first `prove`.
+/// matrices' 384 MiB bit image, which used to land inside the first `prove`.
 pub fn r1cs_digest() -> [u8; 32] {
     flock::sha2::R1CS_DIGEST
 }

@@ -127,8 +127,8 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
     verify(&r1cs, &transcript)
 }
 
-/// Ten rounds of SHA-256 inside a 2^14 block, proved and verified through the
-/// unmodified zerocheck and lincheck. The lincheck verifier here answers via
+/// A full SHA-256 compression inside a 2^15 block, proved and verified through
+/// the unmodified zerocheck and lincheck. The lincheck verifier here answers via
 /// [`flock::sha2::bilinear_walk`], so this also exercises the circuit walk
 /// against the same transcript the CSC-fold prover produced.
 #[test]
@@ -138,12 +138,15 @@ fn sha2_reduction_roundtrip() {
     }
 }
 
-/// A single flipped witness bit must not survive. Picks bits inside the deep
-/// end of the cascade (the last round's products) as well as an input bit.
+/// A single flipped witness bit must not survive. Picks an input bit, a
+/// message bit, a schedule pin, a product bit in the last round and the output
+/// region, so every row kind the block contains is represented.
 #[test]
 fn sha2_reduction_rejects_tampering() {
-    // GS_BASE + G_STRIDE * 79 = 15,816: the last G's product block.
-    for bit in [0usize, 700, 15_816, 15_900, 15_999] {
+    // One bit from each region of the block, per `flock::sha2`'s layout map:
+    // h[0] bit 0; m[5] bit 28; W[29]'s pin; round 63's Ch product and its
+    // A_NEW pin; and out[1] bit 12.
+    for bit in [0usize, 700, 2_728, 28_540, 28_860, 300] {
         assert!(
             !run(8, Some(bit)),
             "flipping witness bit {bit} must make the reduction reject"
