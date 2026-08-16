@@ -1,9 +1,41 @@
 import XmssSecurity.CappedSigningLogReplay
+import XmssSecurity.CappedEncodingEventProbability
+import XmssSecurity.CappedSuffixEventProbability
+import XmssSecurity.CappedLeafEventProbability
+import XmssSecurity.CappedMerkleEventProbability
+import XmssSecurity.CappedChain.ChainOriginProbability
+import XmssSecurity.CappedChain.CausalEagerHighDirectReduction
 import XmssSecurity.MainTheorem
 
 namespace XmssSecurity
 
 open OracleSpec
+
+theorem capped_xmss_remaining_core_probability_le_below_digest_space
+    (q : Nat) (_hq : 1 ≤ q) (_hqlt : q < 2 ^ digestBits)
+    (adversary : Adversary Concrete.cappedScheme)
+    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
+      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      2 * ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) ∧
+    ∀ chain : ChainIndex,
+      Pr[fun result =>
+        CappedChain.WinningOutcomeGuessesKeygenChainValue result.1.2 result.2.2
+          result.1.1.2 result.2.1 chain |
+        CappedChain.detailedGameWithKeygenCache adversary] ≤
+        (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
+  constructor
+  · exact cappedWinning_encoding_event_probability_le_two_terms q adversary
+      hbound
+  · intro chain
+    refine (CappedChain.winningKeygenValueGuess_probability_le_origin adversary
+      chain).trans ?_
+    apply CappedChain.winningChainOrigin_probability_le_of_eagerViewReduction
+      q adversary hbound chain
+    apply CappedChain.hasActionTracedEagerViewReduction_of_boundedFilteredHighDirectReduction
+    exact CappedChain.hasBoundedFilteredHighDirectReduction_of_hashQueryBound
+      q adversary chain hbound
 
 /-- The remaining capped-signer proof obligation is a weighted bound for each concrete bad event below the digest-space size. -/
 theorem capped_xmss_badEvent_probability_le_below_digest_space
@@ -16,7 +48,57 @@ theorem capped_xmss_badEvent_probability_le_below_digest_space
       detailedGameWithCache Concrete.cappedScheme adversary] ≤
       (badEventWeight event : ENNReal) *
         ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
-  sorry
+  cases event with
+  | encoding =>
+      simpa [badEventWeight] using
+        (capped_xmss_remaining_core_probability_le_below_digest_space
+          q hq hqlt adversary hbound).1
+  | chain chain =>
+      calc
+        Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+            WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
+            detailedGameWithCache Concrete.cappedScheme adversary] ≤
+          Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+              WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) ∧
+                OutcomeChainValueRevealed execution.2 execution.1 chain |
+              detailedGameWithCache Concrete.cappedScheme adversary] +
+            (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
+          CappedChain.winning_chain_outcomeBadEvent_probability_le_revealed_add
+            q adversary hbound chain
+        _ ≤ Pr[fun result =>
+              CappedChain.WinningOutcomeGuessesKeygenChainValue result.1.2
+                result.2.2 result.1.1.2 result.2.1 chain |
+              CappedChain.detailedGameWithKeygenCache adversary] +
+            (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
+          gcongr
+          exact
+            CappedChain.winningChainValueRevealed_probability_le_winningKeygenValueGuess
+              adversary chain
+        _ ≤ (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) +
+            (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
+          gcongr
+          exact (capped_xmss_remaining_core_probability_le_below_digest_space
+            q hq hqlt adversary hbound).2 chain
+        _ = (badEventWeight (.chain chain) : ENNReal) *
+            ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
+          simp [badEventWeight, two_mul]
+  | suffixCollision slot =>
+      exact (capped_winningOutcomeBadEvent_probability_le_outcomeBadEvent
+        adversary (.suffixCollision slot)).trans (by
+          simpa [badEventWeight] using
+            capped_suffixCollision_outcomeBadEvent_probability_le q adversary
+              hbound slot)
+  | leaf =>
+      exact (capped_winningOutcomeBadEvent_probability_le_outcomeBadEvent
+        adversary .leaf).trans (by
+          simpa [badEventWeight] using
+            capped_leaf_outcomeBadEvent_probability_le q adversary hbound)
+  | merkle level =>
+      exact (capped_winningOutcomeBadEvent_probability_le_outcomeBadEvent
+        adversary (.merkle level)).trans (by
+          simpa [badEventWeight] using
+            capped_merkle_outcomeBadEvent_probability_le q adversary hbound
+              level)
 
 theorem capped_xmss_badEvent_probability_le
     (q : Nat) (hq : 1 ≤ q)

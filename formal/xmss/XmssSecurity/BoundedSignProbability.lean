@@ -10,6 +10,17 @@ set_option maxRecDepth 100000
 noncomputable local instance : SampleableType Randomness :=
   SampleableType.ofFintype Randomness
 
+noncomputable def Concrete.signBoundedAttemptsContinuation
+    (attempts : Nat) (secretKey : SecretKey) (epoch : Epoch) (message : Message)
+    (result : Option Signature × QueryCache HashSpec) :
+    ProbComp (Option Signature × QueryCache HashSpec) :=
+  match result.1 with
+  | some signature => pure (some signature, result.2)
+  | none => (simulateQ xmssRomImpl
+      (Concrete.signBoundedAttempts attempts secretKey epoch message)).run result.2
+
+attribute [irreducible] Concrete.signBoundedAttemptsContinuation
+
 theorem Concrete.signBoundedAttempts_run_succ_eq
     (attempts : Nat) (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (cache : QueryCache HashSpec) :
@@ -18,13 +29,9 @@ theorem Concrete.signBoundedAttempts_run_succ_eq
       (($ᵗ Randomness) >>= fun randomness =>
         (simulateQ randomOracle
           (Concrete.signAttempt secretKey epoch message randomness :
-            OracleComp HashSpec (Option Signature))).run cache >>= fun result =>
-          match result.1 with
-          | some signature => pure (some signature, result.2)
-          | none =>
-              (simulateQ xmssRomImpl
-                (Concrete.signBoundedAttempts attempts secretKey epoch message)).run
-                  result.2) := by
+            OracleComp HashSpec (Option Signature))).run cache >>=
+          Concrete.signBoundedAttemptsContinuation attempts secretKey epoch
+            message) := by
   rw [Concrete.signBoundedAttempts, simulateQ_bind, StateT.run_bind]
   have hsampleRun :
       (simulateQ xmssRomImpl
@@ -60,7 +67,20 @@ theorem Concrete.signBoundedAttempts_run_succ_eq
   rw [hroute]
   apply bind_congr
   intro result
-  cases result.1 <;> simp
+  rcases result with ⟨result, resultCache⟩
+  cases result <;> simp [Concrete.signBoundedAttemptsContinuation]
+
+theorem Concrete.signBoundedAttempts_run_succ_eq_sign_bind
+    (attempts : Nat) (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec) :
+    (simulateQ xmssRomImpl
+      (Concrete.signBoundedAttempts (attempts + 1) secretKey epoch message)).run cache =
+      (simulateQ xmssRomImpl
+        (Concrete.sign publicKey secretKey epoch message)).run cache >>=
+          Concrete.signBoundedAttemptsContinuation attempts secretKey epoch
+            message := by
+  rw [Concrete.signBoundedAttempts_run_succ_eq, Concrete.sign_run_eq,
+    bind_assoc]
 
 set_option linter.constructorNameAsVariable false in
 theorem Concrete.signBoundedAttempts_encodingInput_referenceCache_hit_le
@@ -89,14 +109,20 @@ theorem Concrete.signBoundedAttempts_encodingInput_referenceCache_hit_le
         refine probEvent_bind_le_of_forall_le fun attemptResult hattempt => ?_
         cases hresult : attemptResult.1 with
         | none =>
-            simpa [hresult] using ih attemptResult.2
+            simpa [Concrete.signBoundedAttemptsContinuation, hresult] using
+              ih attemptResult.2
         | some signature =>
             refine le_of_eq_of_le (probEvent_eq_zero ?_) zero_le
             intro result hsupport hevent
+            have hsupport' : result ∈ support
+                (pure (some signature, attemptResult.2) :
+                  ProbComp (Option Signature × QueryCache HashSpec)) := by
+              simpa [Concrete.signBoundedAttemptsContinuation, hresult] using
+                hsupport
             obtain ⟨found, hfound, output, hhit⟩ := hevent
             have hreturned : result.1 = some signature := by
               simpa only [support_pure, Set.mem_singleton_iff] using
-                congrArg Prod.fst hsupport
+                congrArg Prod.fst hsupport'
             have hsignature : signature = found :=
               Option.some.inj (hreturned.symm.trans hfound)
             have hrandomness := Concrete.signAttempt_support_randomness secretKey epoch
