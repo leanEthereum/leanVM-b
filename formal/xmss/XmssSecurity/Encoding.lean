@@ -184,6 +184,24 @@ theorem decodeDigest_eq_some_iff {digest : Digest} {x : Encoding} :
     decodeDigest digest = some x ↔ digestView digest = (x, 0) ∧ Valid x := by
   exact decodeView_eq_some_iff
 
+theorem decodeDigest_zero_eq_none : decodeDigest (0 : Digest) = none := by
+  cases hdecode : decodeDigest (0 : Digest) with
+  | none => rfl
+  | some encoding =>
+      exfalso
+      have hview := decodeDigest_eq_some_iff.mp hdecode
+      have hencoding : digestEncoding (0 : Digest) = encoding :=
+        congrArg Prod.fst hview.1
+      rw [← hencoding] at hview
+      have hsum : sum (digestEncoding (0 : Digest)) = 0 := by
+        unfold sum
+        apply Finset.sum_eq_zero
+        intro chain _
+        simp [digestEncoding]
+      unfold Valid at hview
+      rw [hsum] at hview
+      exact (by decide : (0 : Nat) ≠ targetSum) hview.2
+
 /-- A valid target-sum encoding and zero padding determine one exact 128-bit digest. -/
 theorem digest_eq_of_decodeDigest_eq_some {left right : Digest} {x : Encoding}
     (hleft : decodeDigest left = some x) (hright : decodeDigest right = some x) :

@@ -74,7 +74,9 @@ import XmssSecurity.ConcreteQueryBound
 import XmssSecurity.ConcreteSign
 import XmssSecurity.ConcreteScheme
 import XmssSecurity.BoundedSign
+import XmssSecurity.BoundedSignProbability
 import XmssSecurity.BoundedSignQueryBound
+import XmssSecurity.EncodingAddressQueryBound
 import XmssSecurity.BoundedSignCache
 import XmssSecurity.BoundedSignTrace
 import XmssSecurity.CappedConcreteExecution

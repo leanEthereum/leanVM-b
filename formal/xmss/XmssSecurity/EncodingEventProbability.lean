@@ -10,41 +10,6 @@ open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
-theorem TargetSum.decodeDigest_zero_eq_none :
-    TargetSum.decodeDigest (0 : Digest) = none := by
-  cases hdecode : TargetSum.decodeDigest (0 : Digest) with
-  | none => rfl
-  | some encoding =>
-      exfalso
-      have hview := TargetSum.decodeDigest_eq_some_iff.mp hdecode
-      have hencoding : TargetSum.digestEncoding (0 : Digest) = encoding :=
-        congrArg Prod.fst hview.1
-      rw [← hencoding] at hview
-      have hsum : TargetSum.sum (TargetSum.digestEncoding (0 : Digest)) = 0 := by
-        unfold TargetSum.sum
-        apply Finset.sum_eq_zero
-        intro chain _
-        simp [TargetSum.digestEncoding]
-      unfold TargetSum.Valid at hview
-      rw [hsum] at hview
-      norm_num [targetSum] at hview
-
-theorem Concrete.CacheView.encodingInput_cached_of_decode_some
-    (cache : QueryCache HashSpec) (parameter : PublicParameter) (epoch : Epoch)
-    (message : Message) (randomness : Randomness) (encoding : Encoding)
-    (hdecode : TargetSum.decodeDigest
-      (Concrete.CacheView.encodingHash cache parameter epoch (message, randomness)) =
-        some encoding) :
-    ∃ output, cache
-      (Concrete.CacheView.encodingInput parameter epoch (message, randomness)) = some output := by
-  cases hcache : cache
-      (Concrete.CacheView.encodingInput parameter epoch (message, randomness)) with
-  | some output => exact ⟨output, rfl⟩
-  | none =>
-      rw [Concrete.CacheView.encodingHash, Concrete.CacheView.digestAt, hcache,
-        TargetSum.decodeDigest_zero_eq_none] at hdecode
-      contradiction
-
 /-- An encoding event contains two distinct cached encoding inputs with the same truncated output. -/
 theorem encoding_outcomeBadEvent_has_cached_collision
     (cache : QueryCache HashSpec) (outcome : GameOutcome)

@@ -48,6 +48,21 @@ theorem WinningOutcomeBadEventOccurs.signingLog_length_le_lifetime
     outcome.signingLog.length ≤ lifetime :=
   SigningTranscript.length_le_lifetime hevent.signingTranscript_valid
 
+theorem WinningOutcomeBadEventOccurs.forgery_decode
+    {cache : QueryCache HashSpec} {outcome : GameOutcome} {event : BadEvent}
+    (hevent : WinningOutcomeBadEventOccurs cache outcome event) :
+    ∃ encoding, TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash cache outcome.secretKey.parameter
+        outcome.forgery.epoch
+        (outcome.forgery.message, outcome.forgery.signature.randomness)) = some encoding := by
+  rcases hevent.2.2 with hsame | hfresh
+  · obtain ⟨request, signature, signedEncoding, forgedEncoding, hsignedDecode,
+      hforgedDecode, hreturned, hepoch, hbad⟩ := hsame
+    rw [hepoch] at hforgedDecode
+    exact ⟨forgedEncoding, hforgedDecode⟩
+  · obtain ⟨forgedEncoding, hvalid, hfreshEpoch, hforgedDecode, hbad⟩ := hfresh
+    exact ⟨forgedEncoding, hforgedDecode⟩
+
 theorem winningOutcomeBadEvent_probability_le_outcomeBadEvent
     (adversary : Adversary Concrete.scheme) (event : BadEvent) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>

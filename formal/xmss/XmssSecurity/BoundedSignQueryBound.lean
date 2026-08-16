@@ -1,5 +1,5 @@
 import XmssSecurity.BoundedSign
-import XmssSecurity.EncodingTraceBridge
+import XmssSecurity.EncodingAddressQueryBound
 
 open OracleComp OracleSpec ENNReal
 

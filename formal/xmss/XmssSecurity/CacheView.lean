@@ -1,4 +1,5 @@
 import XmssSecurity.ConcreteHash
+import XmssSecurity.Encoding
 import XmssSecurity.Execution
 
 open OracleComp OracleSpec
@@ -42,6 +43,18 @@ def merkleInput (parameter : PublicParameter) (level : MerkleLevel)
 def encodingHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
     (epoch : Epoch) (input : Message × Randomness) : Digest :=
   digestAt cache (encodingInput parameter epoch input)
+
+theorem encodingInput_cached_of_decode_some
+    (cache : QueryCache HashSpec) (parameter : PublicParameter) (epoch : Epoch)
+    (message : Message) (randomness : Randomness) (encoding : Encoding)
+    (hdecode : TargetSum.decodeDigest
+      (encodingHash cache parameter epoch (message, randomness)) = some encoding) :
+    ∃ output, cache (encodingInput parameter epoch (message, randomness)) = some output := by
+  cases hcache : cache (encodingInput parameter epoch (message, randomness)) with
+  | some output => exact ⟨output, rfl⟩
+  | none =>
+      rw [encodingHash, digestAt, hcache, TargetSum.decodeDigest_zero_eq_none] at hdecode
+      contradiction
 
 def chainStep (cache : QueryCache HashSpec) (parameter : PublicParameter)
     (epoch : Epoch) (chain : ChainIndex) (position : Nat) (value : Digest) : Digest :=

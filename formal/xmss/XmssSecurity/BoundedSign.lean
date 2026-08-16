@@ -114,6 +114,23 @@ theorem Concrete.cappedSign_success_replay
   exact Concrete.signBoundedAttempts_success_replay signingAttemptLimit secretKey request
     initialCache resultCache largerCache signature hmem hle
 
+theorem Concrete.cappedSign_success_encodingInput_cached
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (request : SignRequest) (initialCache finalCache : QueryCache HashSpec)
+    (signature : Signature)
+    (hmem : (some signature, finalCache) ∈ support
+      ((simulateQ xmssRomImpl
+        (Concrete.cappedSign publicKey secretKey request.epoch request.message)).run
+          initialCache)) :
+    ∃ output, finalCache
+      (Concrete.CacheView.encodingInput secretKey.parameter request.epoch
+        (request.message, signature.randomness)) = some output := by
+  obtain ⟨encoding, hdecode, _hsignature⟩ :=
+    Concrete.cappedSign_success_replay publicKey secretKey request initialCache finalCache
+      finalCache signature hmem le_rfl
+  exact Concrete.CacheView.encodingInput_cached_of_decode_some finalCache
+    secretKey.parameter request.epoch request.message signature.randomness encoding hdecode
+
 theorem Concrete.cappedSign_success_verifyFromCache
     (publicKey : PublicKey) (secretKey : SecretKey) (request : SignRequest)
     (initialCache resultCache largerCache : QueryCache HashSpec)
