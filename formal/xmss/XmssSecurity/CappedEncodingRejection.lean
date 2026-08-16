@@ -189,6 +189,37 @@ theorem boundedValidDigest_some_probability_le_inv_card
   rw [mul_comm]
   exact hsum
 
+theorem boundedValidDigest_hits_finset_le_inv_valid_card
+    (attempts : Nat) (targets : Finset Digest) :
+    Pr[fun result : Option Digest => ∃ digest ∈ targets, result = some digest |
+      boundedValidDigest attempts] ≤
+      (targets.card : ℝ≥0∞) * (validDigests.card : ℝ≥0∞)⁻¹ := by
+  calc
+    Pr[fun result : Option Digest => ∃ digest ∈ targets, result = some digest |
+        boundedValidDigest attempts] ≤
+      ∑ digest ∈ targets,
+        Pr[= some digest | boundedValidDigest attempts] :=
+          by
+            simpa only [probEvent_eq_eq_probOutput] using
+              probEvent_exists_finset_le_sum targets (boundedValidDigest attempts)
+                (fun digest result => result = some digest)
+    _ ≤ ∑ _digest ∈ targets,
+        (validDigests.card : ℝ≥0∞)⁻¹ := by
+          apply Finset.sum_le_sum
+          intro digest hdigest
+          by_cases hvalid : ValidDigest digest
+          · exact boundedValidDigest_some_probability_le_inv_card
+              attempts digest hvalid
+          · have hzero : Pr[= some digest | boundedValidDigest attempts] = 0 := by
+              apply probOutput_eq_zero
+              intro hmem
+              exact hvalid (boundedValidDigest_some_support_valid attempts digest hmem)
+            rw [hzero]
+            exact zero_le
+    _ = (targets.card : ℝ≥0∞) *
+        (validDigests.card : ℝ≥0∞)⁻¹ := by
+          rw [Finset.sum_const, nsmul_eq_mul]
+
 noncomputable def queryThenBoundedValidDigestCollision
     (attempts : Nat) : ProbComp Bool := do
   let queried ← $ᵗ Digest
