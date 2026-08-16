@@ -1489,4 +1489,61 @@ theorem evalDist_actualGlobalChainKeygen_eq_programmedAllChainTrajectories :
       rw [evalDist_map, evalDist_allChainTrajectoryKeygen_eq_programmed,
         ← evalDist_map]
 
+noncomputable def programmedAllChainTrajectoryKeygenTableOnly :
+    ProbComp (GlobalChainValueIndex → Digest) :=
+  (fun result => result.1.table) <$> programmedAllChainTrajectoryKeygen
+
+theorem evalDist_programmedAllChainTrajectoryKeygenTableOnly_eq_reconstructed :
+    evalDist programmedAllChainTrajectoryKeygenTableOnly =
+      evalDist ((fun result => globalChainValueTableOfTrajectories result.2) <$>
+        programmedAllChainTrajectoryKeygen) := by
+  unfold programmedAllChainTrajectoryKeygenTableOnly
+  simp only [map_eq_bind_pure_comp]
+  apply evalDist_bind_congr
+  intro result hresult
+  rw [programmedAllChainTrajectoryKeygen_support_table result hresult]
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 2000000 in
+theorem evalDist_programmedAllChainTrajectoryKeygen_reconstructed_eq_uniform :
+    evalDist ((fun result => globalChainValueTableOfTrajectories result.2) <$>
+      programmedAllChainTrajectoryKeygen) =
+    evalDist uniformGlobalChainTableFromTrajectories := by
+  unfold programmedAllChainTrajectoryKeygen uniformGlobalChainTableFromTrajectories
+  simp only [map_bind, bind_pure_comp, Functor.map_map]
+
+theorem evalDist_programmedAllChainTrajectoryKeygenTableOnly_eq_uniform :
+    evalDist programmedAllChainTrajectoryKeygenTableOnly =
+      evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
+  calc
+    _ = evalDist ((fun result =>
+          globalChainValueTableOfTrajectories result.2) <$>
+        programmedAllChainTrajectoryKeygen) :=
+      evalDist_programmedAllChainTrajectoryKeygenTableOnly_eq_reconstructed
+    _ = evalDist uniformGlobalChainTableFromTrajectories :=
+      evalDist_programmedAllChainTrajectoryKeygen_reconstructed_eq_uniform
+    _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest)) :=
+      evalDist_uniformGlobalChainTableFromTrajectories_eq_uniform
+
+noncomputable def actualGlobalChainKeygenTableOnly :
+    ProbComp (GlobalChainValueIndex → Digest) :=
+  ProgrammedGlobalChainKeygenView.table <$> actualGlobalChainKeygen
+
+theorem evalDist_actualGlobalChainKeygenTableOnly_eq_programmedTrajectories :
+    evalDist actualGlobalChainKeygenTableOnly =
+      evalDist programmedAllChainTrajectoryKeygenTableOnly := by
+  unfold actualGlobalChainKeygenTableOnly
+    programmedAllChainTrajectoryKeygenTableOnly
+  rw [evalDist_map,
+    evalDist_actualGlobalChainKeygen_eq_programmedAllChainTrajectories,
+    ← evalDist_map]
+  simp only [Functor.map_map, eraseAllChainTrajectories,
+    Function.comp_apply]
+
+theorem evalDist_actualGlobalChainKeygenTableOnly_eq_uniform :
+    evalDist actualGlobalChainKeygenTableOnly =
+      evalDist ($ᵗ (GlobalChainValueIndex → Digest)) :=
+  evalDist_actualGlobalChainKeygenTableOnly_eq_programmedTrajectories.trans
+    evalDist_programmedAllChainTrajectoryKeygenTableOnly_eq_uniform
+
 end XmssSecurity.CappedChain
