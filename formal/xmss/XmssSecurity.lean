@@ -97,6 +97,7 @@ import XmssSecurity.CappedSuffixEventProbability
 import XmssSecurity.CappedGlobalChainTracedGame
 import XmssSecurity.CappedGlobalChainPresampling
 import XmssSecurity.CappedGlobalChainKeygenCoupling
+import XmssSecurity.CappedGlobalCausalStrategyProgram
 import XmssSecurity.CappedGlobalMainTheorem
 import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.CappedEncodingMonitor
