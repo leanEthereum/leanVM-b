@@ -19,6 +19,12 @@ noncomputable local instance globalPresamplingSampleableEdges :
     SampleableType (GlobalChainEdgeIndex → Digest) :=
   SampleableType.ofFintype (GlobalChainEdgeIndex → Digest)
 
+structure ProgrammedGlobalChainKeygenView where
+  publicKey : PublicKey
+  secretKey : SecretKey
+  cache : QueryCache HashSpec
+  table : GlobalChainValueIndex → Digest
+
 def globalChainTableEdgeInput
     (parameter : PublicParameter) (table : GlobalChainValueIndex → Digest)
     (edge : GlobalChainEdgeIndex) : HashInput :=
@@ -42,6 +48,16 @@ def GlobalChainTableEdgesMatch
   ∀ edge, ∃ output,
     cache (globalChainTableEdgeInput parameter table edge) = some output ∧
       truncateHash output = globalChainTableEdgeTarget table edge
+
+theorem GlobalChainTableEdgesMatch.mono
+    {cache larger : QueryCache HashSpec} {parameter : PublicParameter}
+    {table : GlobalChainValueIndex → Digest}
+    (hmatch : GlobalChainTableEdgesMatch cache parameter table)
+    (hle : cache ≤ larger) :
+    GlobalChainTableEdgesMatch larger parameter table := by
+  intro edge
+  obtain ⟨output, hcached, htarget⟩ := hmatch edge
+  exact ⟨output, hle hcached, htarget⟩
 
 def globalChainTableSeedTargets
     (table : GlobalChainValueIndex → Digest) : Epoch → ChainIndex → Digest :=
@@ -162,6 +178,358 @@ theorem globalChainTableEdgeInputs_nodup
   allGlobalChainEdges_nodup.map
     (globalChainTableEdgeInput_injective parameter table)
 
+noncomputable def globalChainTableEdgeTargets
+    (table : GlobalChainValueIndex → Digest) : List Digest :=
+  allGlobalChainEdges.map (globalChainTableEdgeTarget table)
+
+noncomputable def programGlobalChainTableEdgesTrace
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    List GlobalChainEdgeIndex →
+      ProbComp (List HashOutput × QueryCache HashSpec)
+  | [] => pure ([], cache)
+  | edge :: edges => do
+      let output ← Rom.sampleHashOutputWithDigest
+        (globalChainTableEdgeTarget table edge)
+      let rest ← programGlobalChainTableEdgesTrace
+        (cache.cacheQuery (globalChainTableEdgeInput parameter table edge) output)
+        parameter table edges
+      return (output :: rest.1, rest.2)
+
+@[simp]
+theorem programGlobalChainTableEdgesTrace_nil
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    programGlobalChainTableEdgesTrace cache parameter table [] =
+      pure ([], cache) := rfl
+
+theorem programGlobalChainTableEdgesTrace_cons
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest)
+    (edge : GlobalChainEdgeIndex) (edges : List GlobalChainEdgeIndex) :
+    programGlobalChainTableEdgesTrace cache parameter table (edge :: edges) = (do
+      let output ← Rom.sampleHashOutputWithDigest
+        (globalChainTableEdgeTarget table edge)
+      let rest ← programGlobalChainTableEdgesTrace
+        (cache.cacheQuery (globalChainTableEdgeInput parameter table edge) output)
+        parameter table edges
+      return (output :: rest.1, rest.2)) := rfl
+
+theorem programGlobalChainTableEdgesTrace_neverFail
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest)
+    (edges : List GlobalChainEdgeIndex) :
+    NeverFail (programGlobalChainTableEdgesTrace cache parameter table edges) := by
+  induction edges generalizing cache with
+  | nil => simp
+  | cons edge edges ih =>
+      rw [programGlobalChainTableEdgesTrace_cons]
+      simp only [neverFail_bind_iff]
+      constructor
+      · infer_instance
+      · intro output _houtput
+        constructor
+        · exact ih _
+        · intro rest _hrest
+          infer_instance
+
+theorem evalDist_programGlobalChainTableEdgesTrace_discard
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest)
+    (edges : List GlobalChainEdgeIndex) :
+    evalDist (programGlobalChainTableEdgesTrace cache parameter table edges >>=
+      fun _result => (pure table : ProbComp
+        (GlobalChainValueIndex → Digest))) =
+      evalDist (pure table : ProbComp (GlobalChainValueIndex → Digest)) :=
+  OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+    (programGlobalChainTableEdgesTrace cache parameter table edges)
+    (probFailure_eq_zero'
+      (programGlobalChainTableEdgesTrace_neverFail cache parameter table edges))
+    (pure table : ProbComp (GlobalChainValueIndex → Digest))
+
+set_option linter.constructorNameAsVariable false in
+theorem programGlobalChainTableEdgesTrace_support_info
+    (parameter : PublicParameter) (table : GlobalChainValueIndex → Digest) :
+    ∀ (edges : List GlobalChainEdgeIndex) (cache : QueryCache HashSpec),
+      edges.Nodup →
+      (∀ edge ∈ edges,
+        cache (globalChainTableEdgeInput parameter table edge) = none) →
+      ∀ result ∈ support
+        (programGlobalChainTableEdgesTrace cache parameter table edges),
+        result.1.length = edges.length ∧ cache ≤ result.2 ∧
+          List.Forall₂
+            (fun edge output =>
+              result.2 (globalChainTableEdgeInput parameter table edge) =
+                  some output ∧
+                truncateHash output = globalChainTableEdgeTarget table edge)
+            edges result.1 := by
+  intro edges
+  induction edges with
+  | nil =>
+      intro cache _hnodup _habsent result hresult
+      simp only [programGlobalChainTableEdgesTrace_nil, support_pure,
+        Set.mem_singleton_iff] at hresult
+      subst result
+      simp
+  | cons edge edges ih =>
+      intro cache hnodup habsent result hresult
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      rw [programGlobalChainTableEdgesTrace_cons, mem_support_bind_iff] at hresult
+      obtain ⟨output, houtput, hrest⟩ := hresult
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨rest, hrest, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst result
+      have htailAbsent : ∀ target ∈ edges,
+          (cache.cacheQuery
+            (globalChainTableEdgeInput parameter table edge) output)
+            (globalChainTableEdgeInput parameter table target) = none := by
+        intro target htarget
+        rw [QueryCache.cacheQuery_of_ne]
+        · exact habsent target (by simp [htarget])
+        · intro heq
+          exact hnotMem
+            ((globalChainTableEdgeInput_injective parameter table) heq.symm ▸
+              htarget)
+      obtain ⟨hlength, hcacheLe, hpairs⟩ :=
+        ih (cache.cacheQuery
+          (globalChainTableEdgeInput parameter table edge) output)
+          htailNodup htailAbsent rest hrest
+      refine ⟨by simp [hlength], ?_, ?_⟩
+      · exact (QueryCache.le_cacheQuery cache
+          (habsent edge (by simp))).trans hcacheLe
+      · apply List.Forall₂.cons
+        · constructor
+          · exact hcacheLe (QueryCache.cacheQuery_self cache
+              (globalChainTableEdgeInput parameter table edge) output)
+          · exact Rom.sampleHashOutputWithDigest_support_truncate _ _ houtput
+        · exact hpairs
+
+theorem programAllGlobalChainTableEdgesTrace_edgesMatch
+    (parameter : PublicParameter) (table : GlobalChainValueIndex → Digest)
+    (result : List HashOutput × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (programGlobalChainTableEdgesTrace ∅ parameter table
+        allGlobalChainEdges)) :
+    GlobalChainTableEdgesMatch result.2 parameter table := by
+  have hinfo := programGlobalChainTableEdgesTrace_support_info parameter table
+    allGlobalChainEdges ∅ allGlobalChainEdges_nodup (by simp) result hresult
+  intro edge
+  obtain ⟨output, hcache, htruncate⟩ :=
+    exists_right_of_forall₂ hinfo.2.2 edge (mem_allGlobalChainEdges edge)
+  exact ⟨output, hcache, htruncate⟩
+
+theorem globalChainTableSeedTargets_materialEquiv_symm
+    (seeds : Epoch → ChainIndex → Digest)
+    (edges : GlobalChainEdgeIndex → Digest) :
+    globalChainTableSeedTargets
+      (globalChainTableMaterialEquiv.symm (seeds, edges)) = seeds := by
+  have hmaterial := globalChainTableMaterialEquiv.apply_symm_apply (seeds, edges)
+  exact congrArg Prod.fst hmaterial
+
+theorem globalChainTableEdgeTarget_materialEquiv_symm
+    (seeds : Epoch → ChainIndex → Digest)
+    (edges : GlobalChainEdgeIndex → Digest) :
+    globalChainTableEdgeTarget
+      (globalChainTableMaterialEquiv.symm (seeds, edges)) = edges := by
+  have hmaterial := globalChainTableMaterialEquiv.apply_symm_apply (seeds, edges)
+  exact congrArg Prod.snd hmaterial
+
+theorem globalChainTableSeedsMatch_materialEquiv_symm
+    (parameter : PublicParameter) (seeds : Epoch → ChainIndex → Digest)
+    (edges : GlobalChainEdgeIndex → Digest) :
+    GlobalChainTableSeedsMatch ⟨parameter, seeds⟩
+      (globalChainTableMaterialEquiv.symm (seeds, edges)) := by
+  intro epoch chain
+  have hseed := congrFun (congrFun
+    (globalChainTableSeedTargets_materialEquiv_symm seeds edges) epoch) chain
+  simpa [globalChainTableSeedTargets] using hseed.symm
+
+theorem globalChainTableSeedsMatch_local
+    (secretKey : SecretKey) (table : GlobalChainValueIndex → Digest)
+    (hmatches : GlobalChainTableSeedsMatch secretKey table)
+    (chain : ChainIndex) :
+    XmssSecurity.CappedChain.ChainTableSeedsMatch secretKey chain
+      (fun index => table (chain, index)) := by
+  intro epoch
+  exact hmatches epoch chain
+
+theorem globalChainTableEdgesMatch_local
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest)
+    (hmatches : GlobalChainTableEdgesMatch cache parameter table)
+    (chain : ChainIndex) :
+    XmssSecurity.CappedChain.ChainTableEdgesMatch cache parameter chain
+      (fun index => table (chain, index)) := by
+  intro edge
+  obtain ⟨output, hcached, htarget⟩ := hmatches (chain, edge)
+  refine ⟨output, ?_, ?_⟩
+  · have hdigit : XmssSecurity.CappedChain.chainStepDigit edge.2 =
+        XmssSecurity.chainStepDigit edge.2 := by
+      apply Fin.ext
+      rfl
+    simp only [globalChainTableEdgeInput] at hcached
+    rw [hdigit] at hcached
+    exact hcached
+  · simpa [globalChainTableEdgeTarget,
+      XmssSecurity.CappedChain.chainTableEdgeTarget] using htarget
+
+theorem globalKeygenChainValueTable_eq_of_matches
+    (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (table : GlobalChainValueIndex → Digest)
+    (hseeds : GlobalChainTableSeedsMatch secretKey table)
+    (hedges : GlobalChainTableEdgesMatch cache secretKey.parameter table) :
+    globalKeygenChainValueTable cache secretKey = table := by
+  funext index
+  have hlocal := XmssSecurity.CappedChain.keygenChainValueTable_eq_of_matches
+    cache secretKey index.1
+    (fun coordinate => table (index.1, coordinate))
+    (globalChainTableSeedsMatch_local secretKey table hseeds index.1)
+    (globalChainTableEdgesMatch_local cache secretKey.parameter table hedges
+      index.1)
+  exact congrFun hlocal index.2
+
+noncomputable def programmedGlobalChainKeygenFor
+    (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    ProbComp ProgrammedGlobalChainKeygenView := do
+  let secret := globalChainTableSeedTargets table
+  let edgeResult ← programGlobalChainTableEdgesTrace ∅ parameter table
+    allGlobalChainEdges
+  let rootResult ← (simulateQ randomOracle
+    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+      OracleComp HashSpec Digest)).run edgeResult.2
+  return {
+    publicKey := ⟨rootResult.1, parameter⟩
+    secretKey := ⟨parameter, secret⟩
+    cache := rootResult.2
+    table
+  }
+
+noncomputable def programmedGlobalChainKeygen :
+    ProbComp ProgrammedGlobalChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let table ← $ᵗ (GlobalChainValueIndex → Digest)
+  programmedGlobalChainKeygenFor parameter table
+
+theorem programmedGlobalChainKeygenFor_neverFail
+    (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    NeverFail (programmedGlobalChainKeygenFor parameter table) := by
+  unfold programmedGlobalChainKeygenFor
+  simp only [neverFail_bind_iff]
+  constructor
+  · exact programGlobalChainTableEdgesTrace_neverFail ∅ parameter table
+      allGlobalChainEdges
+  · intro edgeResult _hedgeResult
+    constructor
+    · exact neverFail_simulateQ_randomOracle_run
+        (Concrete.treeNode parameter (globalChainTableSeedTargets table)
+          treeHeight Concrete.rootNode : OracleComp HashSpec Digest)
+        edgeResult.2
+    · intro rootResult _hrootResult
+      infer_instance
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem programmedGlobalChainKeygen_support_table
+    (result : ProgrammedGlobalChainKeygenView)
+    (hresult : result ∈ support programmedGlobalChainKeygen) :
+    globalKeygenChainValueTable result.cache result.secretKey = result.table := by
+  unfold programmedGlobalChainKeygen at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨parameter, _hparameter, htable⟩ := hresult
+  rw [mem_support_bind_iff] at htable
+  obtain ⟨table, _htable, hedge⟩ := htable
+  unfold programmedGlobalChainKeygenFor at hedge
+  rw [mem_support_bind_iff] at hedge
+  obtain ⟨edgeResult, hedge, hroot⟩ := hedge
+  rw [mem_support_bind_iff] at hroot
+  obtain ⟨rootResult, hroot, hpure⟩ := hroot
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  rcases hpure with rfl
+  apply globalKeygenChainValueTable_eq_of_matches
+  · change GlobalChainTableSeedsMatch
+      ⟨parameter, globalChainTableSeedTargets table⟩ table
+    intro epoch chain
+    rfl
+  · exact (programAllGlobalChainTableEdgesTrace_edgesMatch parameter table
+      edgeResult hedge).mono
+        (Concrete.CacheReplay.randomOracle_cache_le
+          (Concrete.treeNode parameter (globalChainTableSeedTargets table)
+            treeHeight Concrete.rootNode : OracleComp HashSpec Digest)
+          edgeResult.2 rootResult hroot)
+
+noncomputable def programmedGlobalChainKeygenTableOnly :
+    ProbComp (GlobalChainValueIndex → Digest) :=
+  ProgrammedGlobalChainKeygenView.table <$> programmedGlobalChainKeygen
+
+theorem evalDist_programmedGlobalChainKeygenFor_table
+    (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    evalDist (ProgrammedGlobalChainKeygenView.table <$>
+      programmedGlobalChainKeygenFor parameter table) =
+      evalDist (pure table : ProbComp (GlobalChainValueIndex → Digest)) := by
+  unfold programmedGlobalChainKeygenFor
+  simp only [map_bind, bind_pure_comp]
+  calc
+    _ = evalDist (programGlobalChainTableEdgesTrace ∅ parameter table
+          allGlobalChainEdges >>= fun _edgeResult =>
+        (pure table : ProbComp (GlobalChainValueIndex → Digest))) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro edgeResult
+      simpa [map_eq_bind_pure_comp, bind_assoc] using
+        (OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+        ((simulateQ randomOracle
+          (Concrete.treeNode parameter (globalChainTableSeedTargets table)
+            treeHeight Concrete.rootNode : OracleComp HashSpec Digest)).run
+              edgeResult.2)
+        (probFailure_eq_zero' (neverFail_simulateQ_randomOracle_run
+          (Concrete.treeNode parameter (globalChainTableSeedTargets table)
+            treeHeight Concrete.rootNode : OracleComp HashSpec Digest)
+          edgeResult.2))
+        (pure table : ProbComp (GlobalChainValueIndex → Digest)))
+    _ = evalDist (pure table :
+        ProbComp (GlobalChainValueIndex → Digest)) :=
+      evalDist_programGlobalChainTableEdgesTrace_discard ∅ parameter table
+        allGlobalChainEdges
+
+set_option maxRecDepth 1000000 in
+theorem evalDist_programmedGlobalChainKeygenTableOnly_eq_uniform :
+    evalDist programmedGlobalChainKeygenTableOnly =
+      evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
+  unfold programmedGlobalChainKeygenTableOnly programmedGlobalChainKeygen
+  simp only [map_bind]
+  calc
+    _ = evalDist (($ᵗ (GlobalChainValueIndex → Digest)) >>= fun table =>
+          Concrete.samplePublicParameter >>= fun parameter =>
+          ProgrammedGlobalChainKeygenView.table <$>
+            programmedGlobalChainKeygenFor parameter table) :=
+      OracleComp.DeferredSampling.evalDist_bind_comm
+        Concrete.samplePublicParameter
+        ($ᵗ (GlobalChainValueIndex → Digest))
+        (fun parameter table => ProgrammedGlobalChainKeygenView.table <$>
+          programmedGlobalChainKeygenFor parameter table)
+    _ = evalDist (($ᵗ (GlobalChainValueIndex → Digest)) >>= fun table =>
+          (pure table : ProbComp (GlobalChainValueIndex → Digest))) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro table
+      calc
+        _ = evalDist (Concrete.samplePublicParameter >>= fun _parameter =>
+              (pure table : ProbComp
+                (GlobalChainValueIndex → Digest))) := by
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro parameter
+          exact evalDist_programmedGlobalChainKeygenFor_table parameter table
+        _ = evalDist (pure table :
+            ProbComp (GlobalChainValueIndex → Digest)) :=
+          OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+            Concrete.samplePublicParameter (probFailure_eq_zero' inferInstance)
+            (pure table : ProbComp (GlobalChainValueIndex → Digest))
+    _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
+      simp
+
 theorem evalDist_xmssRom_run'_eq_presample_globalChainTableTrace
     {alpha : Type} (computation : OracleComp OracleWorld alpha)
     (parameter : PublicParameter) (table : GlobalChainValueIndex → Digest) :
@@ -250,12 +618,6 @@ theorem evalDist_rootTree_run_eq_warmAllChains_then_rootTree
                     OracleComp HashSpec Digest)).run warmResult.2] := by
           rw [Concrete.warmAllChains_cons, simulateQ_bind, StateT.run_bind]
           simp only [bind_assoc]
-
-structure ProgrammedGlobalChainKeygenView where
-  publicKey : PublicKey
-  secretKey : SecretKey
-  cache : QueryCache HashSpec
-  table : GlobalChainValueIndex → Digest
 
 noncomputable def actualGlobalChainKeygen :
     ProbComp ProgrammedGlobalChainKeygenView := do
