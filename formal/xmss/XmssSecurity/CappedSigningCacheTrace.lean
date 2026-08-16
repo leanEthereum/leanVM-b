@@ -2,7 +2,7 @@ import XmssSecurity.BoundedSignCache
 import XmssSecurity.CappedSigningLogReplay
 import XmssSecurity.SigningCacheTrace
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
@@ -372,6 +372,19 @@ theorem cappedSelectivelyLoggedMappedAdversaryImpl_eq_mapped
       rw [cappedSelectivelyLoggedMappedAdversaryImpl_apply_inr,
         cappedMappedAdversaryImpl_apply_inr]
 
+theorem cappedCacheTracedMappedAdversaryImpl_cache_projection
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace) :
+    Prod.map id Prod.fst <$>
+        (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+          computation).run (initialCache, initialTrace) =
+      (simulateQ (cappedUnloggedMappedAdversaryImpl publicKey secretKey)
+        computation).run initialCache := by
+  exact OracleComp.extendState_run_proj_eq
+    (cappedUnloggedMappedAdversaryImpl publicKey secretKey) signingCacheTraceUpdate
+    computation initialCache initialTrace
+
 theorem cappedCacheTracedMappedAdversaryImpl_log_projection
     (publicKey : PublicKey) (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -595,6 +608,19 @@ theorem cappedDetailedGameWithSigningTrace_preservesOtherValidEncodingInputs
     (cappedDetailedGameAfterKeygenWithSigningTrace_invariants adversary publicKey
       secretKey keyCache result hrest).1
   simpa [hsecretKey] using hpreserves
+
+theorem cappedDetailedGameWithSigningTrace_cache_enncard_le_of_mem_support
+    (adversary : Adversary Concrete.cappedScheme) (q : Nat)
+    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
+    QueryCache.enncard result.2.1 ≤ (q : ℝ≥0∞) := by
+  have hprojected : (result.1, result.2.1) ∈
+      support (detailedGameWithCache Concrete.cappedScheme adversary) := by
+    rw [← cappedDetailedGameWithSigningTrace_cache_projection, support_map]
+    exact ⟨result, hmem, rfl⟩
+  exact Rom.detailedGame_cache_enncard_le_of_mem_support Concrete.cappedScheme
+    adversary q hbound (result.1, result.2.1) hprojected
 
 theorem SigningCacheEntry.freshForgedEncodingCollision_finalCache_none_of_valid
     (secretKey : SecretKey) (forgery : Forgery)
