@@ -6,7 +6,7 @@ A minimal (zero-knowledge Virtual Machine, which is actually not ZK in the real 
 
 - `doc/leanvm/` is the LaTeX project describing the machine ISA and the snark that proves it. Its root is `doc/leanvm/main.tex`; build it with `cd doc/leanvm && latexmk -pdf main.tex`, which writes to the gitignored `doc/leanvm/.build/`. Sections live in `doc/leanvm/body/`, numbered `01`..`10` plus the lettered annexes `a` (ring switching), `b` (the PCS), and `c` (Flock), and every symbol is defined once in `doc/leanvm/preamble/macros.tex`. If latexmk fails oddly (a bibtex error, or a missing `main.log`) right after inputs are renamed or `refs.bib` is edited, remove `doc/leanvm/.build` and rerun; it has not reproduced on unchanged inputs. **Drafting one section:** each section file carries a `% !TeX root` comment pointing at its generated driver in `doc/leanvm/drafts/`, so the LaTeX build key (`F5`, or the extension's `cmd+alt+b`) compiles only that section, numbered as in the full document and with cross-references and citations resolved against `.build/main.aux`; in `main.tex` the same key builds everything. Run `doc/leanvm/make-drafts.sh` after adding, renaming or renumbering a section.
 - `doc/xmss/` is the standalone specification of the concrete XMSS instance implemented by `crates/xmss`.
-- The one hash function is BLAKE2s, in `primitives::blake2s`: scalar, streaming, keyed, and a lane-transposed batched form for the PCS Merkle tree. The VM proves one compression per opcode, and BLAKE2s takes the byte counter and final-block flag as ordinary compression inputs, so a single opcode is a complete hash for any length, with no tree structure to reproduce in-circuit.
+- The one hash function is `sha2_eth`, in `primitives::sha2`: SHA-256's compression `C` under a length-prefixed Merkle-Damgard. `sha2_eth(msg)` absorbs `len_block(8·|msg|) ‖ msg ‖ 0…0` from `IV_ETH = sha256("Ethereum")`, big-endian throughout, which is prefix-free and so indifferentiable from a random oracle. Putting the length FIRST is what makes it cheap: the first compression depends only on the length, so `iv_for_len(n)` is a compile-time constant and an `n`-byte hash of known length is exactly `ceil(n/64)` compressions, with no counter, no final flag and no tree structure to reproduce in-circuit. The VM proves one compression per opcode. Surfaces: `compress` (the opcode's relation, dispatching to SHA-NI / ARMv8 `sha256h` where the target has one), `hash` / `Hasher` (which takes the total length up front), and `hash_many` for the PCS Merkle tree.
 - `crates/lean_compiler/zkDSL.md` documents the (pythonic) zkDSL (that compiles to the ISA that our VM runs, and that our snark proves).
 
 Primary goal:
@@ -24,10 +24,10 @@ Dependency order, leaves first:
 | `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, `bench` |
 | `fiat_shamir`     | VM-native sponge + prover/verifier transcript                          |
 | `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
-| `flock`           | batched R1CS over GF(2) for BLAKE2s: zerocheck + lincheck               |
+| `flock`           | batched R1CS over GF(2) for SHA-256: zerocheck + lincheck               |
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
-| `xmss`            | XMSS over BLAKE2s; an independent leaf, consumed only by `rec_aggregation` |
+| `xmss`            | XMSS over `sha2_eth`; an independent leaf, consumed only by `rec_aggregation` |
 | `rec_aggregation` | recursive XMSS aggregation: the one guest, the public API, the benchmarks |
 
 `src/main.rs` is the CLI; guests are zkDSL under `crates/rec_aggregation/guests/`.
@@ -36,7 +36,7 @@ Dependency order, leaves first:
 
 - `.cargo/config.toml` pins `-C target-cpu=native` and `-D warnings` for rustdoc
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
-- **One test binary per crate, not one per file:** each one rebuilds flock's BLAKE2s matrices from scratch. New `lean_compiler` integration tests go in `tests/suite/main.rs`. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary, phases being process-global (`rec_aggregation/tests/arena_prove.rs`).
+- **One test binary per crate, not one per file:** each one rebuilds flock's SHA-256 matrices from scratch. New `lean_compiler` integration tests go in `tests/suite/main.rs`. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary, phases being process-global (`rec_aggregation/tests/arena_prove.rs`).
 
 ```bash
 cargo testall                     # whole suite in seconds
@@ -46,7 +46,7 @@ cargo fmt --all                   # max_width = 120
 ruff format --line-length 150 python-verifier/verifier.py   # and `ruff check` it
 ```
 
-Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `blake2s_batch_prove_verify`, `pcs_throughput`, `aggregate_three_levels`, `aggregate_statement_binds`, `aggregate_hints_bind`, `aggregate_rejects_a_bad_signature`, `print_whir_query_counts`, `encoding_grinding_bits`.
+Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `sha2_batch_prove_verify`, `pcs_throughput`, `aggregate_three_levels`, `aggregate_statement_binds`, `aggregate_hints_bind`, `aggregate_rejects_a_bad_signature`, `print_whir_query_counts`, `encoding_grinding_bits`.
 
 ## Benchmarking
 
@@ -80,7 +80,7 @@ The same verification algorithm is written out three times, in three languages. 
 2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_vm/tests/verifiers/python_verifier.rs`.
 3. **Recursive verifier**, `crates/rec_aggregation/guests/aggregate.py` (~2.7k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
-The third is worth understanding before touching the verifier. `guests/aggregate.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~330k instructions (2^19 padded) and why its opcode mix is what the recursion benchmark reports. Two consequences:
+The third is worth understanding before touching the verifier. `guests/aggregate.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `SHA2`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~330k instructions (2^19 padded) and why its opcode mix is what the recursion benchmark reports. Two consequences:
 
 - The guest is **self-referential**: it verifies proofs of itself, so `unified_guest` compiles it to a fixed point on its own log size. The digest needs no fixed point, riding the statement instead of the code, which is also what lets one bytecode serve any inner size and PCS rate.
 - It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, flock's A0/B0) are deferred. Each node batches its children's carried claims with the fresh ones its verifications raise, `2n` per polynomial down to one; only the root's are discharged natively, by `AggregateSignature::verify` (explained in `doc/leanvm/`).
@@ -100,6 +100,14 @@ The third is worth understanding before touching the verifier. `guests/aggregate
 - **Doc labels are an API.** `crates/pcs` cites `thm:rbr` and `thm:mca-johnson` by name and several crates cite `doc/leanvm/main.tex` sections, so renaming a label breaks those pointers with nothing to catch it. `doc/leanvm/body/NN-*.tex` prefixes match section numbers, so inserting a section renumbers the rest.
 - **No em-dashes or en-dashes in prose**, anywhere a human reads it: docs, LaTeX, comments, commit messages. Restructure with a comma, colon, parentheses, or two sentences.
 - **Never hard-wrap prose in Markdown or LaTeX.** One paragraph is one line; let the editor wrap it. Artificial line breaks make every later edit a reflow, so diffs show rewrapped lines instead of changed words. Applies to `.md` and `.tex` alike; code blocks, tables and list items keep their own line.
+
+## The SHA-256 R1CS
+
+`flock::sha2` encodes one compression in `2^15` rows, 29,113 of them useful. That is twice the block BLAKE2s occupied, and the factor is unavoidable: `Ch`, `Maj` and the adds need ~22,000 AND rows however they are encoded, which is already over `2^14`. So a proof's flock share roughly doubled with the switch.
+
+What makes it cheaper than BLAKE2s in every other respect is the pins. BLAKE2s materialized nothing and let all sixteen lanes cascade through ten rounds, at ~89M matrix nonzeros. Here `A_NEW`, `E_NEW` and `W[t]` are materialized, because `a' = T1 + Sigma_0(a) + Maj` reads `a` four times over, so an unpinned bit's affine support quadruples every round and `4^64` is not a number of nonzeros anyone can build. With those three pin families the matrices carry 1.09M nonzeros, eighty times fewer, so building them, the CSC transpose and lincheck's `fold_alpha_batched` all got faster.
+
+`T1` is deliberately NOT pinned (its operands are all pinned already, so its support stays ~70 terms and inlining it saves 2,048 rows). The zk.golf `gf2-sha256-compress-canonical` frontier is 22,215 rows and gets there by dropping every pin, which is fine when the cost model counts rows over a shared expression DAG and nothing ever materializes a sparse matrix. It does not transfer. Reaching it here would first need lincheck's O(nnz) CSC fold replaced by a reverse-mode walk over the circuit DAG, which is worth doing on its own merits and is not on this branch.
 
 ## Soundness
 

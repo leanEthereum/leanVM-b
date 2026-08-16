@@ -1,7 +1,7 @@
 //! Every lean_compiler integration test, in ONE binary.
 //!
 //! Each file under `suite/` used to be its own test binary, and each one paid
-//! `flock::blake2s::build_matrices` again: ~1.9 s of sequential symbolic circuit
+//! `flock::sha2::build_matrices` again: ~1.9 s of sequential symbolic circuit
 //! building, cached per process, so thirteen processes meant thirteen builds.
 //! As modules of a single binary they build it once. None of these tests engages
 //! the proving arena (`lean_vm::init_prover`), so sharing a process is safe;

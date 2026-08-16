@@ -1,12 +1,12 @@
 //! Symbolic GF(2) words and the 32-bit adder gadgets the hash circuits share.
 //!
-//! BLAKE2s is a 32-bit ARX round whose XORs and rotations are free over GF(2)
-//! and whose only nonlinear constraints are the product bits of the modular
-//! ADDs. This module owns that part, separately from the hash's schedule and
-//! layout, because the adder algebra is where the subtlety lives: the fused
-//! three-operand gadget's bit-0 and bit-31 boundaries are what make the
-//! ten-round encoding fit, and they get their own tests here and in the
-//! circuit.
+//! SHA-256's XORs, rotations and shifts are free over GF(2), so the nonlinear
+//! constraints are the bitwise ANDs of `Ch` and `Maj` and the product bits of
+//! the modular ADDs. This module owns that part, separately from the hash's
+//! schedule and layout, because the adder algebra is where the subtlety lives:
+//! the fused three-operand gadget's bit-0 and bit-31 boundaries are what buy a
+//! three-operand sum for 61 rows instead of 62, and they get their own tests
+//! here and in the circuit.
 //!
 //! Two representations of the same thing appear here, and they have to agree
 //! row for row:
@@ -18,7 +18,7 @@
 //!   ops without materializing the substituted matrices.
 //!
 //! Each gadget therefore comes in a `write_*` (rows) and a `walk_*` (wires)
-//! flavour, and `blake2s`'s `bilinear_walk_matches_matrices` test is what pins
+//! flavour, and `sha2`'s `bilinear_walk_matches_matrices` test is what pins
 //! the two together.
 
 use crate::witness::xor_dedup;
@@ -85,6 +85,31 @@ impl Word {
     pub(crate) fn rotr(&self, n: usize) -> Word {
         Word {
             bits: std::array::from_fn(|i| self.bits[(i + n) % WORD_BITS].clone()),
+        }
+    }
+    /// `>> n`, zero-filling the top: the same permutation with the vacated bits
+    /// emptied, which is what `sigma_0` and `sigma_1` are built from.
+    pub(crate) fn shr(&self, n: usize) -> Word {
+        Word {
+            bits: std::array::from_fn(|i| {
+                if i + n < WORD_BITS {
+                    self.bits[i + n].clone()
+                } else {
+                    Vec::new()
+                }
+            }),
+        }
+    }
+    /// Reverse the word's four bytes: `out[j] = self[8·(3 − j/8) + j%8]`.
+    ///
+    /// This is the whole of SHA-256's big-endian convention as far as the
+    /// circuit is concerned. A word read big-endian from four bytes occupies
+    /// exactly the same 32 slots as one read little-endian, permuted by this
+    /// byte reversal, so applying it at the I/O boundary keeps every 64-bit
+    /// packed word equal to the VM's `u64`. An involution.
+    pub(crate) fn byteswap(&self) -> Word {
+        Word {
+            bits: std::array::from_fn(|j| self.bits[8 * (3 - j / 8) + j % 8].clone()),
         }
     }
     /// Sort + cancel duplicates per bit.
@@ -221,6 +246,26 @@ pub(crate) fn write_add3_fused_rows(
     out.dedup()
 }
 
+/// Write 32 consecutive AND rows `x[i] · y[i] = z[base + i]`, and return the
+/// resulting slot word.
+///
+/// The bitwise-nonlinear shape, which SHA-256 had none of and SHA-256 has two
+/// of per round: `Ch = g ⊕ e·(f ⊕ g)` and `Maj = a ⊕ (a ⊕ b)·(a ⊕ c)`, each one
+/// AND per bit, which is the multiplicative-complexity optimum for both.
+pub(crate) fn write_and_rows(
+    a_rows: &mut [Vec<usize>],
+    b_rows: &mut [Vec<usize>],
+    x: &Word,
+    y: &Word,
+    base: usize,
+) -> Word {
+    for i in 0..WORD_BITS {
+        a_rows[base + i] = xor_dedup(x.bits[i].clone());
+        b_rows[base + i] = xor_dedup(y.bits[i].clone());
+    }
+    Word::from_slot_base(base)
+}
+
 /// Write 32 consecutive `lin_func · 1 = slot` rows: the "lin-id" shape that
 /// materializes an affine word into its own slots, breaking the cascade.
 pub(crate) fn write_lin_word_rows(
@@ -276,6 +321,18 @@ pub(crate) fn wire_rotr(x: &WireWord, n: usize) -> WireWord {
     std::array::from_fn(|i| x[(i + n) % WORD_BITS])
 }
 
+/// [`Word::shr`] on the wire side.
+#[inline]
+pub(crate) fn wire_shr(x: &WireWord, n: usize) -> WireWord {
+    std::array::from_fn(|i| if i + n < WORD_BITS { x[i + n] } else { F192::ZERO })
+}
+
+/// [`Word::byteswap`] on the wire side.
+#[inline]
+pub(crate) fn wire_byteswap(x: &WireWord) -> WireWord {
+    std::array::from_fn(|j| x[8 * (3 - j / 8) + j % 8])
+}
+
 /// Pair of accumulators for the A-side and B-side bilinear forms, plus the
 /// running sum of `u` over rows whose B-side is the single constant-wire entry
 /// (lin-id / free-input rows), factored so those rows cost one B-side
@@ -322,6 +379,17 @@ impl WalkAcc {
         let wc = w[const_pos];
         (self.a + wc * u_abconst, self.b + wc * (self.u_bconst + u_abconst))
     }
+}
+
+/// Walk 32 AND rows (mirror of [`write_and_rows`]): accumulate them into `acc`
+/// and return the wires of the slot word they produce.
+pub(crate) fn walk_and(acc: &mut WalkAcc, u: &[F192], w: &[F192], x: &WireWord, y: &WireWord, base: usize) -> WireWord {
+    for i in 0..WORD_BITS {
+        let ui = u[base + i];
+        acc.a += ui * x[i];
+        acc.b += ui * y[i];
+    }
+    wire_from_slot_base(w, base)
 }
 
 /// Walk one 32-bit ADD (mirror of [`write_add_carry_rows`]): accumulate the 31

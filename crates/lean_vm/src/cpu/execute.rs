@@ -169,7 +169,7 @@ impl Program {
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
-        let mut blake2s: Vec<Brow> = Vec::new();
+        let mut sha2: Vec<Brow> = Vec::new();
         let mut pack64x2: Vec<Xrow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
@@ -301,7 +301,7 @@ impl Program {
                         set.len(),
                         deref.len(),
                         jump.len(),
-                        blake2s.len(),
+                        sha2.len(),
                         pack64x2.len(),
                     ];
                     base_counts = Some(counts);
@@ -775,7 +775,7 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Blake2s { ins, cv, out, metadata } => {
+                Op::Sha2 { ins, cv, out } => {
                     // Four independently-addressed 128-bit message chunks, each a
                     // single cell; the chaining value and the output each span two
                     // consecutive cells.
@@ -785,17 +785,17 @@ impl Program {
                     let words = [aa0, aa1, ab0, ab1, acv, acv + 1].map(|a| m.get(a));
                     assert!(
                         words.iter().all(|w| w.c2 == 0),
-                        "BLAKE2s input cell must be a canonical 128-bit embedding"
+                        "SHA-256 input cell must be a canonical 128-bit embedding"
                     );
                     let va = [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)];
                     let vb = [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)];
                     let vcv = [F64(words[4].c0), F64(words[4].c1), F64(words[5].c0), F64(words[5].c1)];
                     // Compress the 64 message bytes to the 32-byte result, then
                     // write it to c's two cells. No table constraint covers the
-                    // digest (the relation is proven by flock, §blake2s_flock); the
+                    // digest (the relation is proven by flock, §sha2_flock); the
                     // interpreter still computes the definite digest so the output
                     // cells are consistent for any later read.
-                    let vc = blake2s_compress(va, vb, vcv, metadata);
+                    let vc = sha2_compress(va, vb, vcv);
                     let outputs = [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)];
                     m.put(ac, outputs[0]);
                     m.put(ac + 1, outputs[1]);
@@ -803,7 +803,7 @@ impl Program {
                     let rb = [m.bump_access_count(ab0), m.bump_access_count(ab1)];
                     let rcv = [m.bump_access_count(acv), m.bump_access_count(acv + 1)];
                     let rc = [m.bump_access_count(ac), m.bump_access_count(ac + 1)];
-                    blake2s.push(Brow {
+                    sha2.push(Brow {
                         pc,
                         fp,
                         ra,
@@ -898,7 +898,7 @@ impl Program {
             set,
             deref,
             jump,
-            blake2s,
+            sha2,
             pack64x2,
             mem_count: m.count,
             bytecode_count,

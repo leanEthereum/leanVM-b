@@ -64,14 +64,14 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
-    /// `BLAKE2s`: the four 128-bit input chunks `ins` are addressed independently,
-    /// one frame cell each. The 32-byte output occupies the two consecutive
-    /// 128-bit cells `c, c+1`.
-    Blake2s {
+    /// `SHA2`: the four 128-bit input chunks `ins` are addressed independently,
+    /// one frame cell each, and are compressed into the chaining value at
+    /// `cv, cv+1`. The 32-byte output occupies the two consecutive 128-bit
+    /// cells `c, c+1`.
+    Sha2 {
         ins: [Off; 4],
         cv: Off,
         c: Off,
-        metadata: F192,
     },
 }
 
@@ -119,8 +119,8 @@ pub(crate) struct Lowered {
 
 /// A resolved run of consecutive cells ([`crate::lower::FnLower::cell_run`]): a
 /// frame (stack) run, used in place, or a heap slice (the buffer pointer's cell
-/// plus the first g-power offset), which a `blake2s` operand must bridge through
-/// the stack since `BLAKE2s` addresses only frame cells.
+/// plus the first g-power offset), which a `sha2` operand must bridge through
+/// the stack since `SHA-256` addresses only frame cells.
 pub(crate) enum CellRun {
     Stack { base: Off, len: u32 },
     Heap { ptr: Off, lo: u32, len: u32 },

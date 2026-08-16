@@ -1,23 +1,23 @@
-//! The BLAKE2s circuit driven through flock's actual reduction: zerocheck then
+//! The SHA-256 circuit driven through flock's actual reduction: zerocheck then
 //! lincheck, prover and verifier, on the shared transcript.
 //!
-//! The unit tests in `flock::blake2s` establish that the circuit is the right
+//! The unit tests in `flock::sha2` establish that the circuit is the right
 //! circuit (known-answer vectors, honest witness satisfies, walk agrees with
-//! the matrices). This establishes that the ten-round encoding is *provable*
-//! with the machinery as it stands: same zerocheck, same lincheck, same
-//! `k_log = 14` and `k_skip = 6`. Only the PCS opening is left out, which is
-//! generic in the claims and covered end to end by `blake2s_batch`.
+//! the matrices). This establishes that the encoding is *provable* with the
+//! machinery as it stands: same zerocheck, same lincheck, `k_log = 15` and
+//! `k_skip = 6`. Only the PCS opening is left out, which is generic in the
+//! claims and covered end to end by `sha2_batch`.
 
-use crate::blake2s::{
-    Compression, K_LOG, WalkLincheckCircuit, build_block_r1cs, generate_witness_with_ab_packed_and_lincheck,
-    min_n_blocks_log, param_iv,
-};
 use crate::lincheck::QuirkyPoint;
+use crate::sha2::{
+    Compression, K_LOG, WalkLincheckCircuit, build_block_r1cs, generate_witness_with_ab_packed_and_lincheck, iv_64,
+    min_n_blocks_log,
+};
 use crate::zerocheck::{PaddingSpec, ZerocheckClaim};
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use primitives::test_rng::Rng;
 
-const LABEL: &[u8] = b"flock-blake2s-reduction-test";
+const LABEL: &[u8] = b"flock-sha2-reduction-test";
 
 fn packed_bytes(words: &[u64]) -> &[u8] {
     // SAFETY: u64 has no padding and any bit pattern is a valid u8 sequence.
@@ -38,14 +38,11 @@ fn blocks_for(n: usize, seed: u64) -> Vec<Compression> {
         .map(|i| {
             (
                 if i == 0 {
-                    param_iv()
+                    iv_64()
                 } else {
                     std::array::from_fn(|_| rng.next_u32())
                 },
                 std::array::from_fn(|_| rng.next_u32()),
-                64 * (i as u64 + 1),
-                if i % 3 == 0 { u32::MAX } else { 0 },
-                0,
             )
         })
         .collect()
@@ -130,21 +127,21 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
     verify(&r1cs, &transcript)
 }
 
-/// Ten rounds of BLAKE2s inside a 2^14 block, proved and verified through the
+/// Ten rounds of SHA-256 inside a 2^14 block, proved and verified through the
 /// unmodified zerocheck and lincheck. The lincheck verifier here answers via
-/// [`flock::blake2s::bilinear_walk`], so this also exercises the circuit walk
+/// [`flock::sha2::bilinear_walk`], so this also exercises the circuit walk
 /// against the same transcript the CSC-fold prover produced.
 #[test]
-fn blake2s_reduction_roundtrip() {
+fn sha2_reduction_roundtrip() {
     for n in [8usize, 16] {
-        assert!(run(n, None), "honest BLAKE2s reduction must verify at n = {n}");
+        assert!(run(n, None), "honest SHA-256 reduction must verify at n = {n}");
     }
 }
 
 /// A single flipped witness bit must not survive. Picks bits inside the deep
 /// end of the cascade (the last round's products) as well as an input bit.
 #[test]
-fn blake2s_reduction_rejects_tampering() {
+fn sha2_reduction_rejects_tampering() {
     // GS_BASE + G_STRIDE * 79 = 15,816: the last G's product block.
     for bit in [0usize, 700, 15_816, 15_900, 15_999] {
         assert!(
@@ -160,7 +157,7 @@ fn blake2s_reduction_rejects_tampering() {
 /// and ĉ against the same witness vector, that catches it. This test is what
 /// stands behind that claim.
 #[test]
-fn blake2s_reduction_rejects_proof_mutations() {
+fn sha2_reduction_rejects_proof_mutations() {
     let n = 8;
     let (r1cs, transcript) = prove(n, None);
     assert!(verify(&r1cs, &transcript), "honest transcript must verify");

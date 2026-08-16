@@ -1,15 +1,15 @@
-//! Standalone batch BLAKE2s proving, isolated from the VM.
+//! Standalone batch SHA-256 proving, isolated from the VM.
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 LEANVM_NUM_THREADS=11 FLOCK_N_LOG=18 cargo test --release -p flock --test blake2s_batch -- --ignored --nocapture
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 LEANVM_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test sha2_batch -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
-use flock::blake2s::{
-    Blake2sSetup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
-    pinned_compression, ring_switch_open, ring_switch_verify,
+use flock::sha2::{
+    Compression, K_LOG, Sha2Setup, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log, pinned_compression,
+    ring_switch_open, ring_switch_verify,
 };
 use pcs::pack::LOG_PACKING;
 use pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
@@ -20,8 +20,8 @@ use primitives::{field::F64, pretty_integer, test_rng::Rng};
 
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
-fn blake2s_batch_prove_verify() {
-    // The XMSS n=820 workload executes about 2^17 BLAKE2s compressions.
+fn sha2_batch_prove_verify() {
+    // The XMSS n=820 workload executes about 2^17 SHA-256 compressions.
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
@@ -42,7 +42,7 @@ fn blake2s_batch_prove_verify() {
         .collect();
 
     let t = Instant::now();
-    let setup = Blake2sSetup::new(n);
+    let setup = Sha2Setup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let (prover_config, verifier_config) = configs_for(mu).expect("WHIR configuration");
@@ -65,7 +65,7 @@ fn blake2s_batch_prove_verify() {
         let witness_s = t.elapsed().as_secs_f64();
         assert_eq!(q_flock.len(), 1 << mu);
 
-        let mut ps = ProverState::new(b"flock-blake2s-batch", &[]);
+        let mut ps = ProverState::new(b"flock-sha2-batch", &[]);
         let t_prove = Instant::now();
 
         let t = Instant::now();
@@ -119,7 +119,7 @@ fn blake2s_batch_prove_verify() {
     });
 
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
-        let mut vs = VerifierState::new(b"flock-blake2s-batch", &transcript, &[]);
+        let mut vs = VerifierState::new(b"flock-sha2-batch", &transcript, &[]);
         let root = vs.next_root().expect("commitment root");
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = ring_switch_verify(n, 0, &replay.claim);
@@ -137,7 +137,7 @@ fn blake2s_batch_prove_verify() {
     let ms = |t: &Timing| format!("{:>8.1} ms{:<9}{}", t.mean() * 1e3, t.spread(), share(t.mean()));
     let named = witness.mean() + commit_stage.mean() + zerocheck.mean() + lincheck.mean() + open.mean();
     println!(
-        "\nFlock BLAKE2s batch proving, {} compressions (2^{n_log} slots)",
+        "\nFlock SHA-256 batch proving, {} compressions (2^{n_log} slots)",
         pretty_integer(n)
     );
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");

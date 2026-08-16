@@ -97,7 +97,7 @@ pub(crate) const OP_MUL: F64 = g_pow(1);
 pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
-pub(crate) const OP_BLAKE2S: F64 = g_pow(5);
+pub(crate) const OP_SHA2: F64 = g_pow(5);
 pub(crate) const OP_PACK64X2: F64 = g_pow(6);
 
 // ---- flush builder -----------------------------------------------------------
@@ -349,7 +349,7 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE2S, PACK64X2]`, the
+/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, SHA2, PACK64X2]`, the
 /// order of `row_counts` / `taus` throughout `cpu`.
 pub const N_TABLES: usize = 7;
 
@@ -360,20 +360,20 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
         &SetTable,
         &DerefTable,
         &JumpTable,
-        &Blake2sTable,
+        &Sha2Table,
         &Pack64x2Table,
     ]
 }
 
-/// Index of the BLAKE2s table in [`tables`].
-pub(crate) const BLAKE2S_TABLE: usize = 5;
+/// Index of the SHA-256 table in [`tables`].
+pub(crate) const SHA2_TABLE: usize = 5;
 
-/// The six base addresses a `BLAKE2s` row reads: the four message cells, the
+/// The six base addresses a `SHA2` row reads: the four message cells, the
 /// chaining-value base and the output base (each of the last two spans that cell
 /// and its successor). Recovered from the instruction, not stored per row.
-pub(crate) fn blake2s_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
+pub(crate) fn sha2_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
     match prog[r.pc as usize] {
-        Op::Blake2s { ins, cv, out, .. } => [
+        Op::Sha2 { ins, cv, out } => [
             r.fp + ins[0],
             r.fp + ins[1],
             r.fp + ins[2],
@@ -381,53 +381,37 @@ pub(crate) fn blake2s_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
             r.fp + cv,
             r.fp + out,
         ],
-        op => unreachable!("a BLAKE2s row's pc {} holds {op:?}", r.pc),
+        op => unreachable!("a SHA2 row's pc {} holds {op:?}", r.pc),
     }
 }
 
-/// A `BLAKE2s` row's metadata immediate (`counter | f0‖f1`).
-pub(crate) fn blake2s_metadata(prog: &[Op], pc: u32) -> F192 {
-    match prog[pc as usize] {
-        Op::Blake2s { metadata, .. } => metadata,
-        op => unreachable!("a BLAKE2s row's pc {pc} holds {op:?}"),
-    }
-}
-
-/// BLAKE2s value-column LOCAL indices in canonical slot order
-/// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
-/// `blake2s_flock::SLOTS`). These columns are
-/// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
-/// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
-/// (`slot_claims`): the value the bus flushes IS the flock-proven word.
-pub const BLAKE2S_VALUE_COLS: [usize; 18] = [
-    blake2st::VA0,
-    blake2st::VA0 + 1,
-    blake2st::VA0 + 2,
-    blake2st::VA0 + 3,
-    blake2st::VB0,
-    blake2st::VB0 + 1,
-    blake2st::VB0 + 2,
-    blake2st::VB0 + 3,
-    blake2st::VC0,
-    blake2st::VC0 + 1,
-    blake2st::VC0 + 2,
-    blake2st::VC0 + 3,
-    blake2st::VCV0,
-    blake2st::VCV0 + 1,
-    blake2st::VCV0 + 2,
-    blake2st::VCV0 + 3,
-    blake2st::MD0,
-    blake2st::MD1,
+/// SHA2 value-column LOCAL indices in canonical slot order
+/// `[a0..a3, b0..b3, c0..c3, cv0..cv3]` (matches `sha2_flock::SLOTS`). These
+/// columns are VIRTUAL (never committed): `q_flock` already holds those words at
+/// fixed packed slots, so `cpu` routes their memory-bus evaluation claims
+/// straight to `q_flock` (`slot_claims`): the value the bus flushes IS the
+/// flock-proven word.
+pub const SHA2_VALUE_COLS: [usize; 16] = [
+    sha2t::VA0,
+    sha2t::VA0 + 1,
+    sha2t::VA0 + 2,
+    sha2t::VA0 + 3,
+    sha2t::VB0,
+    sha2t::VB0 + 1,
+    sha2t::VB0 + 2,
+    sha2t::VB0 + 3,
+    sha2t::VC0,
+    sha2t::VC0 + 1,
+    sha2t::VC0 + 2,
+    sha2t::VC0 + 3,
+    sha2t::VCV0,
+    sha2t::VCV0 + 1,
+    sha2t::VCV0 + 2,
+    sha2t::VCV0 + 3,
 ];
-// The eighteen value lanes are laid out contiguously (VA0..VA0+17), so they map
-// 1:1 onto `blake2s_flock::SLOTS`.
-const _: () = assert!(
-    blake2st::VB0 == blake2st::VA0 + 4
-        && blake2st::VC0 == blake2st::VA0 + 8
-        && blake2st::VCV0 == blake2st::VA0 + 12
-        && blake2st::MD0 == blake2st::VA0 + 16
-        && blake2st::MD1 == blake2st::VA0 + 17
-);
+// The sixteen value lanes are laid out contiguously (VA0..VA0+15), so they map
+// 1:1 onto `sha2_flock::SLOTS`.
+const _: () = assert!(sha2t::VB0 == sha2t::VA0 + 4 && sha2t::VC0 == sha2t::VA0 + 8 && sha2t::VCV0 == sha2t::VA0 + 12);
 
 // ---- XOR / MUL ---------------------------------------------------------------
 
@@ -892,9 +876,9 @@ impl Table for Pack64x2Table {
     }
 }
 
-// ---- BLAKE2s ------------------------------------------------------------------
+// ---- SHA-256 ------------------------------------------------------------------
 
-/// `BLAKE2s` (“BLAKE2s” in `doc/leanvm/body/07-instruction-tables.tex`): one standard compression. The four 128-bit message
+/// `SHA-256` (“SHA-256” in `doc/leanvm/body/07-instruction-tables.tex`): one standard compression. The four 128-bit message
 /// chunks are addressed *independently* at `fp·o_i` (`o_i = g^{ins[i]}`), each a
 /// single cell, with no forced contiguity between chunks, so a caller hashing e.g.
 /// `(tweak, pp)` need not copy them into adjacent cells. The chaining value and the
@@ -902,18 +886,17 @@ impl Table for Pack64x2Table {
 /// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
 /// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
-/// (§blake2s_flock), which leaves this table with no identity of its own.
+/// (§sha2_flock), which leaves this table with no identity of its own.
 ///
 /// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the sixteen
-/// memory-borne flock words are sixteen value LANE columns over eight cells,
-/// plus the metadata immediate's two lanes. They are listed in
-/// `n_committed_columns` (they need a local index for the flushes and are filled
-/// from the trace for the bus), but `cpu` treats them as VIRTUAL (not committed)
-/// and routes their bus claims to `q_flock`, which already holds those words (see
-/// [`BLAKE2S_VALUE_COLS`]).
-struct Blake2sTable;
+/// memory-borne flock words are sixteen value LANE columns over eight cells.
+/// They are listed in `n_committed_columns` (they need a local index for the
+/// flushes and are filled from the trace for the bus), but `cpu` treats them as
+/// VIRTUAL (not committed) and routes their bus claims to `q_flock`, which
+/// already holds those words (see [`SHA2_VALUE_COLS`]).
+struct Sha2Table;
 
-pub(crate) mod blake2st {
+pub(crate) mod sha2t {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
     pub const OA0: usize = 2; // operand g-powers (offsets) of the four message cells …
@@ -922,52 +905,41 @@ pub(crate) mod blake2st {
     pub const OB1: usize = 5;
     pub const OCV: usize = 6; // … the chaining-value base …
     pub const OC: usize = 7; // … and the output base
-    // The eighteen flock words as value lanes: a's cells (a0, a1), b's cells
-    // (b0, b1), c's cells (c, g·c), cv's cells (cv, g·cv), two lanes
-    // (lo, hi) each, then the bytecode metadata immediate's two lanes.
+    // The sixteen flock words as value lanes: a's cells (a0, a1), b's cells
+    // (b0, b1), c's cells (c, g·c), cv's cells (cv, g·cv), two lanes (lo, hi)
+    // each. No metadata: the compression takes none.
     pub const VA0: usize = 8; // a0.lo, a0.hi, a1.lo, a1.hi
     pub const VB0: usize = 12; // b0.lo, b0.hi, b1.lo, b1.hi
     pub const VC0: usize = 16; // c.lo, c.hi, (g·c).lo, (g·c).hi
     pub const VCV0: usize = 20; // cv.lo, cv.hi, (g·cv).lo, (g·cv).hi
-    pub const MD0: usize = 24; // metadata: the counter lane …
-    pub const MD1: usize = 25; // … and the f0‖f1 lane
-    pub const RA0: usize = 26; // per-cell read counts (two a cells) …
-    pub const RA1: usize = 27;
-    pub const RB0: usize = 28; // … two b cells …
-    pub const RB1: usize = 29;
-    pub const RCV0: usize = 30; // … two cv cells …
-    pub const RCV1: usize = 31;
-    pub const RC0: usize = 32; // … two c cells.
-    pub const RC1: usize = 33;
-    pub const RBC: usize = 34;
-    pub const N: usize = 35;
+    pub const RA0: usize = 24; // per-cell read counts (two a cells) …
+    pub const RA1: usize = 25;
+    pub const RB0: usize = 26; // … two b cells …
+    pub const RB1: usize = 27;
+    pub const RCV0: usize = 28; // … two cv cells …
+    pub const RCV1: usize = 29;
+    pub const RC0: usize = 30; // … two c cells.
+    pub const RC1: usize = 31;
+    pub const RBC: usize = 32;
+    pub const N: usize = 33;
 }
 
-impl Table for Blake2sTable {
+impl Table for Sha2Table {
     fn n_committed_columns(&self) -> usize {
-        blake2st::N
+        sha2t::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        use blake2st::*;
+        use sha2t::*;
         &[RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC]
     }
     fn flushes(&self, f: &mut FlushBuilder) {
-        use blake2st::*;
+        use sha2t::*;
         f.state_step(PC, FP);
         f.bytecode(
             PC,
             RBC,
-            OP_BLAKE2S,
-            &[
-                Col(OA0),
-                Col(OA1),
-                Col(OB0),
-                Col(OB1),
-                Col(OCV),
-                Col(OC),
-                Col(MD0),
-                Col(MD1),
-            ],
+            OP_SHA2,
+            &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OCV), Col(OC)],
         );
         // Eight cell reads: four independent 128-bit message cells, the chaining
         // value's two consecutive cells (ACV, g·ACV), then the output's two
@@ -985,9 +957,9 @@ impl Table for Blake2sTable {
         f.memory_128(Prod(FP, OC, 1), RC1, VC0 + 2, VC0 + 3);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use blake2st::*;
-        let rows = &ctx.trace.blake2s;
-        let ad = |r: &Brow| blake2s_addresses(ctx.prog, r);
+        use sha2t::*;
+        let rows = &ctx.trace.sha2;
+        let ad = |r: &Brow| sha2_addresses(ctx.prog, r);
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
         // OA0..OC are the six base addresses' offsets, from the instruction decode.
@@ -1014,10 +986,6 @@ impl Table for Blake2sTable {
         ctx.cols(out, rows, VCV0, |r| {
             let a = ad(r);
             word_pair(a[4], a[4] + 1)
-        });
-        ctx.cols(out, rows, MD0, |r| {
-            let md = blake2s_metadata(ctx.prog, r.pc);
-            [F64(md.c0), F64(md.c1)]
         });
         ctx.cols(out, rows, RA0, |r| {
             [r.ra[0], r.ra[1], r.rb[0], r.rb[1], r.rcv[0], r.rcv[1], r.rc[0], r.rc[1]]

@@ -24,23 +24,24 @@ fn time(reps: usize, mut f: impl FnMut()) -> f64 {
     median(samples)
 }
 
-/// Single-threaded batched throughput, at every leaf size `pcs::merkle`
-/// dispatches.
+/// Single-threaded batched `sha2_eth` throughput, at every leaf size
+/// `pcs::merkle` dispatches.
 ///
-/// 4.1 to 5.6 GB/s on AVX-512, and 1.9 to 2.2 GB/s on 4-lane NEON (M4 Max). The
-/// two backends run into different limits: AVX-512 is bound by issue width, so
-/// its fixes were instruction-count ones, while NEON is bound by the G
-/// function's dependency chain and needed latency ones. See `blake2s::LANES`.
+/// Two shapes of backend answer this, and they run into different limits. On
+/// x86-64 it is lane transposition, sixteen independent inputs per AVX-512
+/// register, bound by issue width. On aarch64 it is the crypto extension, four
+/// chains interleaved to cover `sha256h`'s latency. `sha2::LANES` reports the
+/// group size either way.
 #[test]
 #[ignore = "manual throughput measurement"]
 fn batched_throughput() {
     fn run<const LEN: usize>(n: usize) {
         let data: Vec<u8> = (0..n * LEN).map(|i| (i & 0xff) as u8).collect();
         let mut out = vec![0u8; n * 32];
-        let s = time(20, || primitives::blake2s::hash_many::<LEN>(&data, &mut out));
+        let s = time(20, || primitives::sha2::hash_many::<LEN>(&data, &mut out));
         println!("  LEN={LEN:<5} {:>6.0} MB/s", (n * LEN) as f64 / 1e6 / s);
     }
-    println!("batched, single-threaded, LANES={}", primitives::blake2s::LANES);
+    println!("batched, single-threaded, LANES={}", primitives::sha2::LANES);
     run::<64>(1 << 18);
     run::<128>(1 << 17);
     run::<192>(1 << 16);

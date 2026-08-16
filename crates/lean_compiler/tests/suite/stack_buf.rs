@@ -1,8 +1,8 @@
 //! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
 //! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
-//! is a `blake2s` operand: its two canonical 128-bit cells hold the 256-bit value, so
-//! `blake2s(a, b, out)` reads them in place with no copies (a self-hash
-//! `blake2s(h, h, out)` aliases one pair into both input operands) and writes
+//! is a `sha2` operand: its two canonical 128-bit cells hold the 256-bit value, so
+//! `sha2(a, b, out)` reads them in place with no copies (a self-hash
+//! `sha2(h, h, out)` aliases one pair into both input operands) and writes
 //! the digest into the pre-allocated pair `out`.
 //!
 //! Since these DSL scalars are K-embedded F192 cells, a `StackBuf(2)` written
@@ -10,33 +10,33 @@
 //! — the reference `compress` is fed that lane layout.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake2s_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
-use lean_vm::cpu::{Op, prove, verify};
+use lean_vm::cpu::{prove, verify};
+use lean_vm::sha2_flock::{compression, digest, warm_setup};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
 
 use crate::common::mix;
 
 /// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
-/// hi = word 1/3) — what a `blake2s(...)` output `StackBuf(2)` holds cell-by-cell.
+/// hi = word 1/3) — what a `sha2(...)` output `StackBuf(2)` holds cell-by-cell.
 fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
     let d = compress(a, b);
     [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)]
 }
 
-/// A size-2 `StackBuf` fed to `blake2s` as a self-hash `blake2s(h, h)`, then the
+/// A size-2 `StackBuf` fed to `sha2` as a self-hash `sha2(h, h)`, then the
 /// digest's two 128-bit cells published to `m[0], m[1]`. Proves and verifies, and
 /// a wrong published digest is rejected — so the whole path (StackBuf load →
-/// aliased blake2s → stack read → publish) is exercised end-to-end.
+/// aliased sha2 → stack read → publish) is exercised end-to-end.
 #[test]
-fn stack_buf_blake2s_self_hash() {
+fn stack_buf_sha2_self_hash() {
     let src = "\
 def main():
     a = StackBuf(2)
     a[0] = 5
     a[1] = 7
     c = StackBuf(2)
-    blake2s(a, a, c)
+    sha2(a, a, c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
@@ -50,7 +50,7 @@ def main():
     let want = digest_cells(h, h);
 
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(mix(src, want)[5], 1, "one BLAKE2s instruction");
+    assert_eq!(mix(src, want)[5], 1, "one SHA-256 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
@@ -58,18 +58,19 @@ def main():
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
 }
 
-/// Optional BLAKE2s metadata and a memory-supplied chaining value reproduce a
-/// standard two-block (80-byte) BLAKE2s hash.
+/// `msg_bytes=` on the first block and a memory-supplied chaining value on the
+/// second reproduce a plain 80-byte `sha2_eth`, in two compressions: the length
+/// block folds into the constant `iv_for_len(80)` at compile time.
 #[test]
-fn blake2s_keywords_standard_multiblock() {
+fn sha2_keywords_standard_multiblock() {
     let src = "\
 def main():
     block0 = [1, 2, 3, 4]
     tail = [5, 0, 0, 0]
     cv = StackBuf(2)
-    blake2s(block0[0:2], block0[2:4], cv, counter=64, final=0)
+    sha2(block0[0:2], block0[2:4], cv, msg_bytes=80)
     out = StackBuf(2)
-    blake2s(tail[0:2], tail[2:4], out, cv=cv, counter=80, final=1)
+    sha2(tail[0:2], tail[2:4], out, cv=cv)
     p = 1
     p[1] = out[0]
     p[GEN] = out[1]
@@ -82,54 +83,65 @@ def main():
         input.extend_from_slice(&value.to_le_bytes());
         input.extend_from_slice(&0u64.to_le_bytes());
     }
-    let d = primitives::blake2s::hash(&input);
+    let d = primitives::sha2::hash(&input);
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
     let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 2);
-    verify(&program, &want, &proof).expect("standard two-block BLAKE2s verifies");
+    verify(&program, &want, &proof).expect("standard two-block SHA-256 verifies");
 }
 
+/// `msg_bytes=` and `cv=` say different things about the same slot, so asking
+/// for both is a mistake rather than something to resolve silently.
 #[test]
-fn blake2s_counter_accepts_full_u64_range() {
+#[should_panic(expected = "sha2 takes cv= (a continuation block) or msg_bytes=")]
+fn sha2_cv_and_msg_bytes_conflict() {
     let src = "\
 def main():
-    block = [1, 2, 3, 4]
+    msg = [1, 2, 3, 4]
+    cv = [5, 6]
     out = StackBuf(2)
-    counter = 18446744073709551615 // 1
-    blake2s(block[0:2], block[2:4], out, counter=counter, final=1)
+    sha2(msg[0:2], msg[2:4], out, cv=cv, msg_bytes=128)
+    return
+";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
+/// A one-block message shorter than 64 bytes: `msg_bytes=48` starts from
+/// `iv_for_len(48)`, and the caller zero-fills the rest of the block, which
+/// together IS `sha2_eth` of those 48 bytes at one compression.
+#[test]
+fn sha2_msg_bytes_hashes_a_short_message() {
+    let src = "\
+def main():
+    block = [1, 2, 3, 0]
+    out = StackBuf(2)
+    sha2(block[0:2], block[2:4], out, msg_bytes=48)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let metadata = program
-        .prog
-        .iter()
-        .find_map(|op| match op {
-            Op::Blake2s { metadata, .. } => Some(*metadata),
-            _ => None,
-        })
-        .expect("BLAKE2s instruction");
-    assert_eq!(unpack_metadata(metadata), (u64::MAX, u32::MAX, 0));
-}
-
-#[test]
-#[should_panic(expected = "BLAKE2s counter does not fit in u64")]
-fn blake2s_counter_rejects_values_above_u64() {
-    let src = "\
-def main():
-    block = [1, 2, 3, 4]
-    out = StackBuf(2)
-    blake2s(block[0:2], block[2:4], out, counter=18446744073709551616, final=1)
-    return
-";
-    compile(&parse(src).expect("parse"));
+    warm_setup(1);
+    let mut input = Vec::new();
+    for value in 1u64..=3 {
+        input.extend_from_slice(&value.to_le_bytes());
+        input.extend_from_slice(&0u64.to_le_bytes());
+    }
+    let d = primitives::sha2::hash(&input);
+    let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+    let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(mix(src, want)[5], 1, "a 48-byte hash is ONE compression");
+    verify(&program, &want, &proof).expect("48-byte sha2_eth verifies");
 }
 
 /// A default IV first materialized in an untaken runtime branch must not leak
 /// into the post-join lowering state. Both executions must initialize the IV
 /// on the path that reaches the second hash.
 #[test]
-fn blake2s_default_iv_after_runtime_branch() {
+fn sha2_default_iv_after_runtime_branch() {
     let src = "\
 def main():
     flag = StackBuf(1)
@@ -137,9 +149,9 @@ def main():
     a = [1, 2, 3, 4]
     if flag[0] == 1:
         ignored = StackBuf(2)
-        blake2s(a[0:2], a[2:4], ignored)
+        sha2(a[0:2], a[2:4], ignored)
     out = StackBuf(2)
-    blake2s(a[0:2], a[2:4], out)
+    sha2(a[0:2], a[2:4], out)
     p = 1
     p[1] = out[0]
     p[GEN] = out[1]
@@ -158,7 +170,7 @@ def main():
 /// Each mutually exclusive branch gets a path-local IV initialization when no
 /// dominating default-IV hash exists before the branch.
 #[test]
-fn blake2s_default_iv_in_both_runtime_branches() {
+fn sha2_default_iv_in_both_runtime_branches() {
     let src = "\
 def main():
     flag = StackBuf(1)
@@ -166,9 +178,9 @@ def main():
     a = [1, 2, 3, 4]
     out = StackBuf(2)
     if flag[0] == 1:
-        blake2s(a[0:2], a[2:4], out)
+        sha2(a[0:2], a[2:4], out)
     else:
-        blake2s(a[0:2], a[2:4], out)
+        sha2(a[0:2], a[2:4], out)
     p = 1
     p[1] = out[0]
     p[GEN] = out[1]
@@ -186,16 +198,16 @@ def main():
 
 /// Deferred aliases may expose non-adjacent source words for a syntactically
 /// consecutive CV StackBuf. The compiler must materialize that pair because
-/// the BLAKE2s opcode carries only one CV base offset.
+/// the SHA-256 opcode carries only one CV base offset.
 #[test]
-fn blake2s_materializes_aliased_cv_pair() {
+fn sha2_materializes_aliased_cv_pair() {
     let src = "\
 def main():
     msg = [1, 2, 3, 4]
     sources = [5, 99, 6]
     cv = [sources[0], sources[2]]
     out = StackBuf(2)
-    blake2s(msg[0:2], msg[2:4], out, cv=cv, counter=128)
+    sha2(msg[0:2], msg[2:4], out, cv=cv)
     p = 1
     p[1] = out[0]
     p[GEN] = out[1]
@@ -206,7 +218,6 @@ def main():
         [F64(1), F64(0), F64(2), F64(0)],
         [F64(3), F64(0), F64(4), F64(0)],
         [F64(5), F64(0), F64(6), F64(0)],
-        metadata(128, 0, 0),
     );
     let d = digest(&block);
     let want = [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)];
@@ -215,23 +226,7 @@ def main():
     verify(&program, &want, &proof).expect("materialized custom CV verifies");
 }
 
-/// A custom CV with the default one-block metadata is not a chained block.
-/// Require the caller to state the byte counter explicitly.
-#[test]
-#[should_panic(expected = "blake2s with cv= requires")]
-fn blake2s_cv_alone_is_rejected() {
-    let src = "\
-def main():
-    msg = [1, 2, 3, 4]
-    cv = [5, 6]
-    out = StackBuf(2)
-    blake2s(msg[0:2], msg[2:4], out, cv=cv)
-    return
-";
-    let _ = compile(&parse(src).expect("parse"));
-}
-
-/// A general (non-blake2s) `StackBuf(3)`: indexed writes, an indexed read feeding
+/// A general (non-sha2) `StackBuf(3)`: indexed writes, an indexed read feeding
 /// an arithmetic write into another slot, then two slots published. Confirms the
 /// stack cells are plain consecutive frame cells addressable by index.
 #[test]
@@ -251,7 +246,7 @@ def main():
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
     let want = [F192::from(F64(7)), F192::from(F64(4))];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(mix(src, want)[5], 0, "no BLAKE2s here");
+    assert_eq!(mix(src, want)[5], 0, "no SHA-256 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
@@ -384,7 +379,7 @@ def step(state, v):
     tg[0] = v
     tg[1] = 3
     nb = StackBuf(2)
-    blake2s(state, tg, nb)
+    sha2(state, tg, nb)
     return nb, v
 ";
     let program = compile(&parse(src).expect("parse"));
@@ -397,7 +392,7 @@ def step(state, v):
     let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
 
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(mix(src, want)[5], 2, "two BLAKE2s instructions (one per inlined step)");
+    assert_eq!(mix(src, want)[5], 2, "two SHA-256 instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
@@ -480,7 +475,7 @@ def step(state, cursor):
     tg[0] = x
     tg[1] = 3
     nb = StackBuf(2)
-    blake2s(state, tg, nb)
+    sha2(state, tg, nb)
     return nb, x, cursor * GEN
 ";
     let program = compile(&parse(src).expect("parse"));
@@ -493,7 +488,7 @@ def step(state, cursor):
 
 /// `x = [a, b, c, d]` — the list-literal StackBuf initializer: allocates the run
 /// and writes the elements in place, sugar for alloc-then-store. The test mixes a
-/// runtime value, a constant, and an expression; feeds the result to blake2s; and
+/// runtime value, a constant, and an expression; feeds the result to sha2; and
 /// swaps a buffer through itself (`s = [s[1], s[0], …]` reads the OLD binding,
 /// per the let-rebind rule).
 #[test]
@@ -505,7 +500,7 @@ def main():
     s = [s[1], s[0]]
     t = [s[0] + s[1], 3]
     out = StackBuf(2)
-    blake2s(s, t, out)
+    sha2(s, t, out)
     p = 1
     p[1] = out[0]
     p[GEN] = out[1]
@@ -515,7 +510,7 @@ def main():
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
     let want = digest_cells([F64(7), F64(0), F64(5), F64(0)], [F64(2), F64(0), F64(3), F64(0)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(mix(src, want)[5], 1, "one BLAKE2s instruction");
+    assert_eq!(mix(src, want)[5], 1, "one SHA-256 instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
 
@@ -554,13 +549,13 @@ fn heap_hint_slice_oob_rejected() {
     let _ = compile(&parse(src).expect("parse"));
 }
 
-/// A blake2s heap slice straddling the buffer end is rejected. The 256-bit
+/// A sha2 heap slice straddling the buffer end is rejected. The 256-bit
 /// operand `hb[7:9]` is two 128-bit cells, so the bound check trips at
 /// `7 + 2 = 9 > 8`.
 #[test]
 #[should_panic(expected = "heap slice 7:9 out of bounds for `hb` (HeapBuf size 8)")]
-fn heap_blake2s_slice_oob_rejected() {
-    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(2)\n    blake2s(hb[7:9], hb[7:9], out)\n    return\n";
+fn heap_sha2_slice_oob_rejected() {
+    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(2)\n    sha2(hb[7:9], hb[7:9], out)\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
 }
 

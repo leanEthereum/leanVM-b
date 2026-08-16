@@ -1,7 +1,7 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Binary Merkle tree with BLAKE2s, SIMD-batching independent hashes across
-//! leaves and internal levels through the lane-transposed multi-input hasher in
-//! [`primitives::blake2s`].
+//! Binary Merkle tree with `sha2_eth`, SIMD-batching independent hashes across
+//! leaves and internal levels through the multi-input hasher in
+//! [`primitives::sha2`].
 //!
 //! The committer's half. What a proof actually carries (the digest encoding,
 //! the leaf/node hashes, one phase's pruned octopus) lives in
@@ -17,12 +17,11 @@
 //! Total nodes: `2·num_leaves − 1`. The flat layout keeps the tree contiguous
 //! in memory for cheap Merkle-path extraction later.
 //!
-//! Hashing is standard BLAKE2s-256. Independent hashes of equal-length inputs
-//! step their block counters in lockstep, so the batched hasher is
-//! byte-identical to an independent [`hash_leaf`] per input; the leaf-size
-//! dispatch below exists only to make the length a compile-time constant.
-//! Leaves of other sizes use the scalar path. Internal 64-byte child pairs,
-//! which are one compression each, always take the batched path.
+//! Hashing is `sha2_eth`. Equal-length inputs share one `iv_for_len`, so the
+//! batched hasher is byte-identical to an independent [`hash_leaf`] per input;
+//! the leaf-size dispatch below exists only to make the length a compile-time
+//! constant. Leaves of other sizes use the scalar path. Internal 64-byte child
+//! pairs, which are one compression each, always take the batched path.
 
 pub use fiat_shamir::merkle::{Hash, hash_leaf, hash_pair};
 use parallel::SendPtr;
@@ -33,7 +32,7 @@ use zk_alloc::ArenaVec;
 /// keeping input references and output rows cache-resident.
 const HASH_GROUP: usize = 1024;
 
-/// Batch independent BLAKE2s hashes of contiguous `N`-byte inputs into
+/// Batch independent `sha2_eth` hashes of contiguous `N`-byte inputs into
 /// uninitialized output slots.
 fn hash_many_uninit<const N: usize>(data: &[u8], out: &mut [std::mem::MaybeUninit<Hash>]) {
     const {
@@ -43,7 +42,7 @@ fn hash_many_uninit<const N: usize>(data: &[u8], out: &mut [std::mem::MaybeUnini
     // Hash is [u8; 32] with no padding; expose the contiguous output storage
     // the batched hasher writes 32 bytes per input into.
     let out_bytes = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 32) };
-    primitives::blake2s::hash_many::<N>(data, out_bytes);
+    primitives::sha2::hash_many::<N>(data, out_bytes);
 }
 
 /// Dispatch one pool task per `HASH_GROUP`-sized output group, handing each
@@ -130,7 +129,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
     let total_nodes = 2 * num_leaves - 1;
     let mut tree = zk_alloc::alloc_uninit(total_nodes);
 
-    // 1. Leaves: independent standard BLAKE2s hashes.
+    // 1. Leaves: independent `sha2_eth` hashes.
     hash_leaves_batched_uninit(data, leaf_size, &mut tree[..num_leaves]);
 
     // 2. Internal levels: parallel within a level, sequential across levels.

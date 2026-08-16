@@ -38,21 +38,21 @@ pub fn scalars_to_hash(scalars: &[F192; 2]) -> Result<Hash, Error> {
     Ok(hash)
 }
 
-/// Hash one leaf with standard BLAKE2s-256.
+/// Hash one leaf with `sha2_eth`.
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
-    primitives::blake2s::hash(data)
+    primitives::sha2::hash(data)
 }
 
 /// Hash a pair of children into a parent node (64 B → 32 B): `f(a, b) =
-/// BLAKE2s(a‖b)`, one compression, which IS leanVM-b's `Blake2s` opcode
+/// sha2_eth(a‖b)`, one compression, which IS leanVM-b's `Sha2` opcode
 /// (`vmhash::compress`).
 #[inline]
 pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
-    primitives::blake2s::hash(&buf)
+    primitives::sha2::hash(&buf)
 }
 
 /// The committer's leaf preimage: the row's words, little-endian.

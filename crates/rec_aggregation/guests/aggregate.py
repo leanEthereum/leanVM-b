@@ -3,7 +3,7 @@ from snark_lib import *
 # The proof stream rides ONE padded witness hint (the guest walks only the
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
-# Per-table tau floor: BLAKE2s is sized to flock's instance count (>= 2^3).
+# Per-table tau floor: SHA2 is sized to flock's instance count (>= 2^3).
 FLOORS = [0, 0, 0, 0, 0, 3, 0]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
@@ -101,7 +101,7 @@ TABLE_MUL = 1
 TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
-TABLE_BLAKE2s = 5
+TABLE_SHA2 = 5
 TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
@@ -195,7 +195,7 @@ LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qflock capacity stride.
 # CLAIM_COMMITTED_COL maps each pooled logical claim to the compact index of the
-# committed column it must open. Virtual BLAKE2s value claims map to QFLOCK.
+# committed column it must open. Virtual SHA2 value claims map to QFLOCK.
 # CLAIM_QFLOCK_SLOT_BITS contains the fixed packed-slot bits for every logical
 # claim (zero for non-virtual claims), and QFLOCK_COMMITTED_COL identifies the
 # ring-switch target.
@@ -238,7 +238,7 @@ STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
 STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
 STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
-# The epoch digest: a plain BLAKE2s of its tag, the tweak table and the Merkle
+# The epoch digest: a plain sha2_eth of its tag, the tweak table and the Merkle
 # bits, streamed four cells to a 64-byte block.
 EPOCH_TAG_0 = EPOCH_TAG_0_PLACEHOLDER
 EPOCH_TAG_1 = EPOCH_TAG_1_PLACEHOLDER
@@ -278,7 +278,7 @@ LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER  # Merkle tree height
 CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
 CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
 
-WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE2s cell …
+WORDS_PER_VALUE = 1                 # a 16-byte native value = one 128-bit cell …
 WORDS_PER_BLOCK = 2                 # … and a 32-byte block = two
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
@@ -297,7 +297,7 @@ MERKLE_BIT_BLOCKS = LOG_LIFETIME / 4
 # (the lane's leftover top bits are ground to zero by the signer).
 DIGITS_PER_WORD = V / 2
 TIP_CELLS = WORDS_PER_VALUE * V    # the V chain tips, one cell each
-WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE2s block
+WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per hashed 64-byte block
 
 # Aggregation bounds. MAX_KEYS caps n_keys + n_dup, which is what the coverage
 # range check needs below 2^MIN_LOG_MEM; MAX_CHILDREN is the recursion arity.
@@ -348,12 +348,12 @@ def sponge_compress(state, scalar, tail, out):
     pack64x2_into(lo[0], lo[1], block[0])
     top = (scalar + block[0]) * (Y_INV * Y_INV)
     pack64x2_into(top, tail, block[1])
-    blake2s(state, block, out)
+    sha2(state, block, out)
     return
 
 
 def canonical_cell(word, out_cell):
-    # Prove a transcript word is a canonical BLAKE2s cell (d, d', 0): PACK64X2
+    # Prove a transcript word is a canonical 128-bit cell (d, d', 0): PACK64X2
     # writes the pack of two hinted K limbs, and the equality pins the word to
     # it, so a nonzero top lane cannot slip through.
     limbs = StackBuf(3)
@@ -534,7 +534,7 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
         left = [node_0 + dir_bit * diff_0, node_1 + dir_bit * diff_1]
         right = [diff_0 + left[0], diff_1 + left[1]]
         parent = StackBuf(2)
-        blake2s(left, right, parent)
+        sha2(left, right, parent)
         node_0 = parent[0]
         node_1 = parent[1]
     return node_0, node_1
@@ -875,13 +875,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                         # limbs (3w+1, 3w+2) are a pack; shift it by Y and add limb(3w).
                         row_word = lanes[3 * jw] + Y_TOWER * packed_row[(3 * jw + 1) // 2]
                     row_dot += row_word * row_eq_weights[GEN ** jw]
-            # Standard BLAKE2s of the packed row (a power of two of full 64-byte
+            # sha2_eth of the packed row (a power of two of full 64-byte
             # blocks, within one 1024-byte chunk).
             leaf_hash_state = StackBuf(2)
-            blake2s(packed_row[0:2], packed_row[2:4], leaf_hash_state, counter=64, final=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+            sha2(packed_row[0:2], packed_row[2:4], leaf_hash_state, msg_bytes=64 * LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
             for jb in unroll(1, LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl]):
                 leaf_digest = StackBuf(2)
-                blake2s(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state, counter=64 * (jb + 1), final=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+                sha2(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state)
                 leaf_hash_state = leaf_digest
             node_0 = leaf_hash_state[0]
             node_1 = leaf_hash_state[1]
@@ -1044,7 +1044,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]
-    fs = obs(fs, seed_0)  # the FS seed: H(flock BLAKE2s R1CS, inner program
+    fs = obs(fs, seed_0)  # the FS seed: H(flock SHA-256 R1CS, inner program
     fs = obs(fs, seed_1)  # bytecode, ...), from the recursion's public input
     fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
     fs = obs(fs, pi_1)
@@ -1083,7 +1083,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for t in unroll(0, N_TABLES):
         g_tau = g_power_of_word(sizes[t + 1], g_squares, LOG_WORD_BITS)
         assert log(g_tau) < COUNT_BITS
-        # A table's floor: flock sizes its BLAKE2s argument to at least 2^3 instances.
+        # A table's floor: flock sizes its SHA-256 argument to at least 2^3 instances.
         assert log(g_tau / GEN ** FLOORS[t]) < COUNT_BITS
         dims_g[GEN ** (t + 1)] = g_tau
     # kappa_base maps a kappa source index to its certified announced log
@@ -1573,7 +1573,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             b1 = b + 1
             constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (b + c * w)
             constraint_eval += eta_pows[ETA_OFFSET[t] + 1] * (c * b1)
-        if t == TABLE_BLAKE2s:
+        if t == TABLE_SHA2:
             constraint_eval = 0
         if t == TABLE_PACK64X2:
             constraint_eval = 0
@@ -1635,7 +1635,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     claim_idx += 1
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-    tau_blake2s_g = dims_g[GEN ** (TABLE_BLAKE2s + 1)]  # the BLAKE2s table's certified tau
+    tau_sha2_g = dims_g[GEN ** (TABLE_SHA2 + 1)]  # the SHA2 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
     # buffers are sized for that), and q_flock's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
@@ -1646,7 +1646,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # N_FIXED_CHALLENGE_ROUNDS fixed inner values followed by sampled outer values.
     # The prover builds round 1 from this equality tail, so its sampled part is
     # squeezed before round 1 is fetched (and round 1 before z, which evaluates it).
-    mr1cs_g = tau_blake2s_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
+    mr1cs_g = tau_sha2_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
     zerocheck_r = HeapBuf(mr1cs_g)
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
@@ -1695,7 +1695,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = g_0 + rho_v * (g_1 + rho_v * g_2)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
-    nmlv_g = tau_blake2s_g * GEN ** (K_LOG - K_SKIP)
+    nmlv_g = tau_sha2_g * GEN ** (K_LOG - K_SKIP)
     flock_round_size = mr1cs_rounds_g * GEN ** 2
     flock_round_fs0 = HeapBuf(flock_round_size)
     flock_round_fs1 = HeapBuf(flock_round_size)
@@ -1824,7 +1824,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
     zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
     zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
-    for xt in mul_range(1, tau_blake2s_g):
+    for xt in mul_range(1, tau_sha2_g):
         zv_lo[xt] = zr_hi[xt]
     # Observe every pooled point claim, then ONE batching challenge for all of
     # them: N_CLAIMS - 1 fewer sponge compressions than a challenge per claim.
@@ -2051,9 +2051,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # one contiguous FIELD_BITS-wide product row. Same product formula as the
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
-    qflockv_g = tau_blake2s_g * GEN ** SLOT_STRIDE_LOG
+    qflockv_g = tau_sha2_g * GEN ** SLOT_STRIDE_LOG
     # The opening's point is fold_challenges[0, lenris) ++ tail_challenges[0,
-    # yr_log_n), and this claim spans its first qflockv coordinates. A BLAKE2s
+    # yr_log_n), and this claim spans its first qflockv coordinates. A SHA2
     # dominated inner proof (every real XMSS aggregation: qflockv = tau_5 +
     # SLOT_STRIDE_LOG) pushes qflockv past lenris, so the top rs_nover
     # coordinates continue into the residual challenges. rs_nover is hinted and
@@ -2202,7 +2202,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     pp = pk_ptr[GEN]
 
-    # Encoding digest D = BLAKE2s(tweak | pp | msg | randomness | zero-pad), 96 bytes:
+    # Encoding digest D = sha2_eth(tweak | pp | msg | randomness | zero-pad), 96 bytes:
     # one full 64-byte block followed by a 32-byte final block (24 bytes of
     # randomness and the specified 8-byte zero pad).
     tweak_pp = StackBuf(WORDS_PER_BLOCK)
@@ -2212,18 +2212,18 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     msg_block[0] = message[1]
     msg_block[1] = message[GEN]
     after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake2s(tweak_pp, msg_block, after_msg, counter=64, final=0)
+    sha2(tweak_pp, msg_block, after_msg, msg_bytes=96)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
     # The spec's pad: cell 1 is randomness bytes 16..24 then 8 zero bytes. A PACK64X2
-    # source is read as (lo, 0, 0) where BLAKE2s reads (lo, hi, 0); the dest is unused.
+    # source is read as (lo, 0, 0) where the compression reads (lo, hi, 0); the dest is unused.
     rand_pad = StackBuf(1)
     pack64x2_into(rand_block[1], 0, rand_pad[0])
     digest = StackBuf(WORDS_PER_BLOCK)
     zero_block = StackBuf(WORDS_PER_BLOCK)
     zero_block[0] = 0
     zero_block[1] = 0
-    blake2s(rand_block, zero_block, digest, cv=after_msg, counter=96, final=1)
+    sha2(rand_block, zero_block, digest, cv=after_msg)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once; arm k walks the remaining
@@ -2268,16 +2268,16 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # Both lanes packed into D's first 128-bit cell.
     assert acc_lo + acc_hi * Y_TOWER == digest[0]
 
-    # WOTS public-key leaf = standard BLAKE2s over prefix + V tips: WOTS_PK_BLOCKS
+    # WOTS public-key leaf = sha2_eth over prefix + V tips: WOTS_PK_BLOCKS
     # full blocks, carrying the chaining value between instructions.
     pk_tweak_pp = StackBuf(WORDS_PER_BLOCK)
     pk_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)]
     pk_tweak_pp[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s(pk_tweak_pp, tips[0:2], leaf, counter=64, final=0)
+    sha2(pk_tweak_pp, tips[0:2], leaf, msg_bytes=64 * WOTS_PK_BLOCKS)
     for q in unroll(1, WOTS_PK_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
+        sha2(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf)
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the epoch bit orders the two
@@ -2300,7 +2300,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         merkle_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + l))]
         merkle_tweak_pp[1] = pp
         parent = StackBuf(WORDS_PER_BLOCK)
-        blake2s(merkle_tweak_pp, children, parent)
+        sha2(merkle_tweak_pp, children, parent)
         node = parent[0]
     assert node == pk_ptr[1]
     return
@@ -2318,7 +2318,7 @@ def walk(value, chain_tweaks, pp, k: Const):
         step_tweak[0] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
         step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake2s(step_tweak, block, out, counter=48, final=1)
+        sha2(step_tweak, block, out, msg_bytes=48)
         block = StackBuf(WORDS_PER_BLOCK)
         block[0] = out[0]
         block[1] = 0
@@ -2334,9 +2334,9 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     # the very same call, which is what forces the child to be a proof of THIS
     # bytecode against THIS message and epoch.
     #
-    # Fixed-length preimage, so a plain BLAKE2s beats the sponge, which spent a
+    # Fixed-length preimage, so a plain sha2_eth beats the sponge, which spent a
     # compression per scalar re-injecting its state. A header value is already a
-    # canonical cell and needs no check, the BLAKE2s table reading only cells
+    # canonical cell and needs no check, the SHA2 table reading only cells
     # whose top limb is zero. A deferred cell is a full field element, so two
     # fill three cells as (s0,s1) (s2,t0) (t1,t2), each top limb derived from the
     # two hinted below it and each PACK64X2 proving its lanes are in K.
@@ -2364,10 +2364,10 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     for k in unroll(0, STMT_PAD_CELLS):
         cells[STMT_DEFER_OFF + 3 * STMT_PAIRS + k] = 0
     st = StackBuf(2)
-    blake2s(cells[0:2], cells[2:4], st, counter=64, final=1 // STMT_BLOCKS)
+    sha2(cells[0:2], cells[2:4], st, msg_bytes=64 * STMT_BLOCKS)
     for b in unroll(1, STMT_BLOCKS):
         nxt = StackBuf(2)
-        blake2s(cells[4 * b:4 * b + 2], cells[4 * b + 2:4 * b + 4], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // STMT_BLOCKS)
+        sha2(cells[4 * b:4 * b + 2], cells[4 * b + 2:4 * b + 4], nxt, cv=st)
         st = nxt
     return st[0], st[1]
 
@@ -2413,9 +2413,9 @@ def main():
     # Both are hinted and bound by one digest in the statement; the outer
     # verifier rebuilds them from the epoch and rehashes. Nothing derives a
     # tweak in-circuit.
-    # A plain BLAKE2s, four cells a block, where a re-injected state left room
+    # A plain sha2_eth, four cells a block, where a re-injected state left room
     # for two. Each block is hashed out of the frame it was hinted into: a
-    # blake2s operand is addressed off `fp`, so a heap one would cost a DEREF
+    # sha2 operand is addressed off `fp`, so a heap one would cost a DEREF
     # per cell to read back.
     tag = StackBuf(4)
     tag[0] = EPOCH_TAG_0
@@ -2423,7 +2423,7 @@ def main():
     tag[2] = 0
     tag[3] = 0
     epoch_state = StackBuf(WORDS_PER_BLOCK)
-    blake2s(tag[0:2], tag[2:4], epoch_state, counter=64, final=0)
+    sha2(tag[0:2], tag[2:4], epoch_state, msg_bytes=64 * (1 + N_TWEAK_BLOCKS + MERKLE_BIT_BLOCKS))
     tweak_table = HeapBuf(N_TWEAK_CELLS)
     for t in unroll(0, N_TWEAK_BLOCKS):
         blk = StackBuf(4)
@@ -2431,7 +2431,7 @@ def main():
         for i in unroll(0, 4):
             tweak_table[GEN ** (4 * t + i)] = blk[i]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake2s(blk[0:2], blk[2:4], next_state, cv=epoch_state, counter=64 * (t + 2), final=0)
+        sha2(blk[0:2], blk[2:4], next_state, cv=epoch_state)
         epoch_state = next_state
     merkle_bits = HeapBuf(MERKLE_BIT_CELLS)
     for u in unroll(0, MERKLE_BIT_BLOCKS):
@@ -2440,7 +2440,7 @@ def main():
         for i in unroll(0, 4):
             merkle_bits[GEN ** (4 * u + i)] = blk[i]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake2s(blk[0:2], blk[2:4], next_state, cv=epoch_state, counter=64 * (N_TWEAK_BLOCKS + u + 2), final=(u + 1) // MERKLE_BIT_BLOCKS)
+        sha2(blk[0:2], blk[2:4], next_state, cv=epoch_state)
         epoch_state = next_state
     epoch = HeapBuf(WORDS_PER_BLOCK)
     epoch[1] = epoch_state[0]
@@ -2462,7 +2462,7 @@ def main():
     pk_seed[2] = n_keys_g
     pk_seed[3] = 0
     pk_chain = HeapBuf(n_keys_2 * GEN ** WORDS_PER_BLOCK)
-    blake2s(pk_seed[0:2], pk_seed[2:4], pk_chain[0:2])
+    sha2(pk_seed[0:2], pk_seed[2:4], pk_chain[0:2])
     # Two keys per iteration. The chain is unchanged, one compression per key;
     # what halves is the number of loop frames, and a frame costs far more memory
     # cells than the body it holds. `half` and `odd` are hinted and pinned by
@@ -2480,8 +2480,8 @@ def main():
         keys = all_pubkeys * pair
         hint_witness(keys[0:4], "pubkeys")
         state = pk_chain * pair
-        blake2s(state[0:2], keys[0:2], state[2:4])
-        blake2s(state[2:4], keys[2:4], state[4:6])
+        sha2(state[0:2], keys[0:2], state[2:4])
+        sha2(state[2:4], keys[2:4], state[4:6])
     # The odd key out, absorbed the same way. Only one branch runs, so both write
     # the digest cells and the join reads them.
     pk_hash = HeapBuf(WORDS_PER_BLOCK)
@@ -2492,7 +2492,7 @@ def main():
     else:
         last = all_pubkeys * (half_g ** 4)
         hint_witness(last[0:2], "pubkeys")
-        blake2s(paired_end[0:2], last[0:2], pk_hash[0:2])
+        sha2(paired_end[0:2], last[0:2], pk_hash[0:2])
     # The duplicate slots ride the same table but outside the hashed prefix.
     for xd in mul_range(1, n_dup_g):
         dup = all_pubkeys * (n_keys_2 * xd * xd)
@@ -2551,7 +2551,7 @@ def main():
         sub_seed[2] = nsub_g
         sub_seed[3] = 0
         sub_chain = HeapBuf(nsub_g * nsub_g * GEN ** WORDS_PER_BLOCK)
-        blake2s(sub_seed[0:2], sub_seed[2:4], sub_chain[0:2])
+        sha2(sub_seed[0:2], sub_seed[2:4], sub_chain[0:2])
         for xp in mul_range(1, sub_half_g):
             two = StackBuf(2)
             hint_witness(two, "child_index")
@@ -2565,8 +2565,8 @@ def main():
             state = sub_chain * (even * even)
             key_a = all_pubkeys * (first * first)
             key_b = all_pubkeys * (second * second)
-            blake2s(state[0:2], key_a[0:2], state[2:4])
-            blake2s(state[2:4], key_b[0:2], state[4:6])
+            sha2(state[0:2], key_a[0:2], state[2:4])
+            sha2(state[2:4], key_b[0:2], state[4:6])
         paired_end = sub_chain * (sub_half_g ** 4)
         sub_hash = HeapBuf(WORDS_PER_BLOCK)
         if sub_odd_g == 1:
@@ -2579,7 +2579,7 @@ def main():
             assert log(tail_idx) < log(n_total_g)
             cover[tail_idx] = base * (sub_half_g * sub_half_g)
             key_last = all_pubkeys * (tail_idx * tail_idx)
-            blake2s(paired_end[0:2], key_last[0:2], sub_hash[0:2])
+            sha2(paired_end[0:2], key_last[0:2], sub_hash[0:2])
         xd = xc ** DEFER_STMT_CELLS
         hint_witness(child_carried[xd:xd + DEFER_STMT_CELLS], "child_defer")
         pi_0, pi_1 = statement_digest(seed_0, seed_1, nsub_g, sub_hash, message, epoch, child_carried * xd)

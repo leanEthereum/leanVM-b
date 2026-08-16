@@ -245,14 +245,10 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Pack64x2 { a, b, c } => {
                 format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
             }
-            Op::Blake2s { ins, cv, out, metadata } => {
+            Op::Sha2 { ins, cv, out } => {
                 format!(
-                    "BLAKE2S fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}], meta={})",
-                    ins[0],
-                    ins[1],
-                    ins[2],
-                    ins[3],
-                    kfmt(*metadata)
+                    "SHA2   fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}])",
+                    ins[0], ins[1], ins[2], ins[3]
                 )
             }
         };
@@ -317,11 +313,10 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             of: *of,
         },
         LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
-        LOp::Blake2s { ins, cv, c, metadata } => Op::Blake2s {
+        LOp::Sha2 { ins, cv, c } => Op::Sha2 {
             ins: *ins,
             cv: *cv,
             out: *c,
-            metadata: *metadata,
         },
     }
 }

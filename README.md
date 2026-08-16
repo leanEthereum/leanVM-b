@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-780%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 780 XMSS/s"></a>
-  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.6s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.6s"></a>
+  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-748%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 748 XMSS/s"></a>
+  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.7s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.7s"></a>
 </p>
 
 Warning: highly experimental.
@@ -29,14 +29,14 @@ cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3
 
 ```
 XMSS aggregation, 900 signatures
-  cycles (VM steps)           : 1,542,704 = 2^20.557
+  cycles (VM steps)           : 1,546,157 = 2^20.56
     proven rows               : 1,967,104 = 2^20.908  (filled to powers of two)
-    details                   : DEREF 2^18.988 (33.7%)  SET 2^18.402 (22.4%)  MUL 2^18.198 (19.5%)  BLAKE2S 2^16.996 (8.5%)  XOR 2^16.96 (8.3%)  JUMP 2^16.831 (7.6%)  PACK64X2 2^9.938 (0.1%)  MEMORY 2^21.725  TOTAL_COMMITTED 2^26.195
+    details                   : DEREF 2^18.988 (33.6%)  SET 2^18.416 (22.6%)  MUL 2^18.198 (19.5%)  SHA2 2^16.995 (8.4%)  XOR 2^16.96 (8.2%)  JUMP 2^16.831 (7.5%)  PACK64X2 2^9.943 (0.1%)  MEMORY 2^21.726  TOTAL_COMMITTED 2^26.718
   signers                     : 900
-  proof size                  : 356.5 KiB
-  aggregating                 : 1.155 s ± 3.3%      peak memory 20.705 GiB
-  per signature               : 779.378 XMSS/s
-  verifying                   : 0.0128 s
+  proof size                  : 353.2 KiB
+  aggregating                 : 1.203 s ± 5.1%      peak memory 24.13 GiB
+  per signature               : 748.246 XMSS/s
+  verifying                   : 0.0133 s
 ```
 
 ### Recursion
@@ -48,13 +48,13 @@ cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
 
 ```
 recursion 2→1, over leaves of 900 signatures
-  cycles (VM steps)           : 830,516 = 2^19.664
+  cycles (VM steps)           : 800,007 = 2^19.61
     proven rows               : 1,196,032 = 2^20.19  (filled to powers of two)
-    details                   : DEREF 2^18.21 (36.5%)  MUL 2^17.928 (30.0%)  XOR 2^17.424 (21.2%)  SET 2^15.553 (5.8%)  BLAKE2S 2^14.462 (2.7%)  PACK64X2 2^14.384 (2.6%)  JUMP 2^13.279 (1.2%)  MEMORY 2^19.989  TOTAL_COMMITTED 2^24.863
+    details                   : DEREF 2^18.168 (36.8%)  MUL 2^17.826 (29.0%)  XOR 2^17.383 (21.4%)  SET 2^15.581 (6.1%)  SHA2 2^14.442 (2.8%)  PACK64X2 2^14.353 (2.6%)  JUMP 2^13.27 (1.2%)  MEMORY 2^19.94  TOTAL_COMMITTED 2^25.213
   signers                     : 1,800
-  proof size                  : 220.9 KiB
-  aggregating                 : 0.604 s ± 4.3%      peak memory 26.097 GiB
-  verifying                   : 0.0148 s
+  proof size                  : 226.3 KiB
+  aggregating                 : 0.736 s ± 4.2%      peak memory 28.47 GiB
+  verifying                   : 0.0127 s
 ```
 
 ### Fibonacci
@@ -68,9 +68,9 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   cycles (VM steps)           : 2,127,881
     details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%)  JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
-  proof size                  : 332.5 KiB
-  proving                     : 0.608 s ± 6.6%   3,499,102 cycles/s      peak memory 12.112 GiB
-  verifying                   : 0.00372 s
+  proof size                  : 331.3 KiB
+  proving                     : 0.567 s ± 4.9%   3,755,763 cycles/s      peak memory 10.016 GiB
+  verifying                   : 0.00392 s
 ```
 
 ## Security

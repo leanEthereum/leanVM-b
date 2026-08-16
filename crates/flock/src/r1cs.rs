@@ -136,7 +136,7 @@ impl BlockR1cs {
             .all(|((ai, bi), ci)| (*ai & *bi) == *ci)
     }
 
-    /// BLAKE2s hash of the R1CS itself: the per-block matrices and the shape
+    /// `sha2_eth` of the R1CS itself: the per-block matrices and the shape
     /// parameters, explicitly WITHOUT the instance count `m`. It therefore
     /// identifies every block-diagonal instance built from these matrices at
     /// once, whatever the count. The full instance is `m` copies of them, so a
@@ -144,10 +144,18 @@ impl BlockR1cs {
     /// statement; embedding protocols (leanVM-b) seed their transcript with it
     /// and announce the count.
     pub fn r1cs_digest(&self) -> [u8; 32] {
-        let mut h = primitives::blake2s::Hasher::new();
-        // v2: v1 absorbed the matrices in sparse form, this one absorbs their
-        // dense bit image (see `absorb_matrix`).
-        h.update(b"flock-r1cs-digest-v2");
+        const LABEL: &[u8] = b"flock-r1cs-digest-v3-sha2";
+        // `sha2_eth` puts the length in its first block, so the hasher is told
+        // the total up front rather than discovering it at `finalize`.
+        let total = LABEL.len()
+            + 17
+            + [&self.a_0, &self.b_0, &self.c_0]
+                .map(matrix_digest_len)
+                .iter()
+                .sum::<usize>();
+        let mut h = primitives::sha2::Hasher::new(total);
+        // v3: v2 was the same absorption under SHA-256.
+        h.update(LABEL);
         h.update(&(self.k_log as u64).to_le_bytes());
         h.update(&(self.k_skip as u64).to_le_bytes());
         // The layout determines which polynomial a given witness commits
@@ -162,16 +170,21 @@ impl BlockR1cs {
     }
 }
 
-/// Absorb a matrix into a BLAKE2s hasher as its DENSE bit image: the shape as
-/// two little-endian u64, then each row's `num_cols` bits packed LSB-first and
+/// Bytes [`absorb_matrix`] will feed for `m`.
+fn matrix_digest_len(m: &SparseBinaryMatrix) -> usize {
+    16 + m.num_rows * m.num_cols.div_ceil(8)
+}
+
+/// Absorb a matrix into the hasher as its DENSE bit image: the shape as two
+/// little-endian u64, then each row's `num_cols` bits packed LSB-first and
 /// padded to a byte boundary.
 ///
-/// Dense rather than sparse for two reasons. It is canonical: over GF(2) a
-/// repeated column index cancels and a reordered row is the same matrix, so the
-/// sparse form commits to an encoding rather than to the matrix. And at these
-/// densities (13% to 20%) it is seven times shorter, one bit per entry against
-/// eight bytes per nonzero, which is the whole cost of [`BlockR1cs::r1cs_digest`].
-fn absorb_matrix(h: &mut primitives::blake2s::Hasher, m: &SparseBinaryMatrix) {
+/// Dense rather than sparse because it is canonical: over GF(2) a repeated
+/// column index cancels and a reordered row is the same matrix, so the sparse
+/// form commits to an encoding rather than to the matrix. The dense image is
+/// also the whole cost of [`BlockR1cs::r1cs_digest`], which is why that result
+/// is baked as a constant by each circuit rather than recomputed.
+fn absorb_matrix(h: &mut primitives::sha2::Hasher, m: &SparseBinaryMatrix) {
     assert_eq!(m.rows.len(), m.num_rows);
     h.update(&(m.num_rows as u64).to_le_bytes());
     h.update(&(m.num_cols as u64).to_le_bytes());

@@ -3,9 +3,9 @@
 
 pub mod bench;
 pub mod bits;
-pub mod blake2s;
 pub mod field;
 pub mod multilinear;
+pub mod sha2;
 
 #[cfg(feature = "test-util")]
 pub mod test_rng;

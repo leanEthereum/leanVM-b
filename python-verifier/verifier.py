@@ -18,7 +18,7 @@ def require(condition: bool, message: str) -> None:
         raise VerificationError(message)
 
 
-# Field arithmetic and BLAKE2s ------------------------------------------------
+# Field arithmetic and sha2_eth ------------------------------------------------
 
 
 def _base_mul(left: int, right: int) -> int:
@@ -186,16 +186,67 @@ GEN = E(2)
 Y = E(0, 1)  # the tower generator, y^3 = y + 1
 
 
-# BLAKE2s -------------------------------------------------------------------
+# sha2_eth ------------------------------------------------------------------
+#
+# The repo's one hash: SHA-256's compression under a length-prefixed
+# Merkle-Damgard. `sha2_eth(msg)` absorbs `len_block(8*|msg|) || msg || 0...0`
+# from `IV_ETH = sha256("Ethereum")`. Putting the length first makes the
+# encoding prefix-free; it also makes the first compression a constant at any
+# fixed length, which is what keeps the in-circuit cost at one compression per
+# 64 message bytes.
 
-BLAKE2S_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)  # fmt: skip
-BLAKE2S_SIGMA = ((0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), (14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3), (11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4), (7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8), (9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13), (2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9), (12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11), (13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10), (6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5), (10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0))  # fmt: skip
-BLAKE2S_G_LANES = ((0, 4, 8, 12), (1, 5, 9, 13), (2, 6, 10, 14), (3, 7, 11, 15), (0, 5, 10, 15), (1, 6, 11, 12), (2, 7, 8, 13), (3, 4, 9, 14))  # fmt: skip
+SHA256_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)  # fmt: skip
+SHA256_K = (
+    0x428A2F98, 0x71374491, 0xB5C0FBCF, 0xE9B5DBA5, 0x3956C25B, 0x59F111F1, 0x923F82A4, 0xAB1C5ED5,
+    0xD807AA98, 0x12835B01, 0x243185BE, 0x550C7DC3, 0x72BE5D74, 0x80DEB1FE, 0x9BDC06A7, 0xC19BF174,
+    0xE49B69C1, 0xEFBE4786, 0x0FC19DC6, 0x240CA1CC, 0x2DE92C6F, 0x4A7484AA, 0x5CB0A9DC, 0x76F988DA,
+    0x983E5152, 0xA831C66D, 0xB00327C8, 0xBF597FC7, 0xC6E00BF3, 0xD5A79147, 0x06CA6351, 0x14292967,
+    0x27B70A85, 0x2E1B2138, 0x4D2C6DFC, 0x53380D13, 0x650A7354, 0x766A0ABB, 0x81C2C92E, 0x92722C85,
+    0xA2BFE8A1, 0xA81A664B, 0xC24B8B70, 0xC76C51A3, 0xD192E819, 0xD6990624, 0xF40E3585, 0x106AA070,
+    0x19A4C116, 0x1E376C08, 0x2748774C, 0x34B0BCB5, 0x391C0CB3, 0x4ED8AA4A, 0x5B9CCA4F, 0x682E6FF3,
+    0x748F82EE, 0x78A5636F, 0x84C87814, 0x8CC70208, 0x90BEFFFA, 0xA4506CEB, 0xBEF9A3F7, 0xC67178F2,
+)  # fmt: skip
+M32 = 0xFFFFFFFF
 
 
-def blake2s_hash(data: bytes) -> Digest:
-    """Standard 32-byte unkeyed BLAKE2s-256 hash."""
-    return Digest(hashlib.blake2s(data).digest())
+def _rotr(x: int, n: int) -> int:
+    return ((x >> n) | (x << (32 - n))) & M32
+
+
+def sha256_compress(state: Sequence[int], block: bytes) -> tuple[int, ...]:
+    """`C`: one SHA-256 compression, the block read as 16 big-endian words."""
+    w = list(unpack(">16I", block))
+    for t in range(16, 64):
+        s0 = _rotr(w[t - 15], 7) ^ _rotr(w[t - 15], 18) ^ (w[t - 15] >> 3)
+        s1 = _rotr(w[t - 2], 17) ^ _rotr(w[t - 2], 19) ^ (w[t - 2] >> 10)
+        w.append((w[t - 16] + s0 + w[t - 7] + s1) & M32)
+    a, b, c, d, e, f, g, h = state
+    for t in range(64):
+        big1 = _rotr(e, 6) ^ _rotr(e, 11) ^ _rotr(e, 25)
+        ch = g ^ (e & (f ^ g))
+        t1 = (h + big1 + ch + SHA256_K[t] + w[t]) & M32
+        big0 = _rotr(a, 2) ^ _rotr(a, 13) ^ _rotr(a, 22)
+        maj = a ^ ((a ^ b) & (a ^ c))
+        h, g, f, e, d, c, b, a = g, f, e, (d + t1) & M32, c, b, a, (t1 + big0 + maj) & M32
+    return tuple((x + y) & M32 for x, y in zip(state, (a, b, c, d, e, f, g, h), strict=True))
+
+
+IV_ETH = unpack(">8I", hashlib.sha256(b"Ethereum").digest())
+
+
+def iv_for_len(n_bytes: int) -> tuple[int, ...]:
+    """`C(IV_ETH, len_block(8*n_bytes))`, the state every `n_bytes`-long message
+    starts its blocks from."""
+    return sha256_compress(IV_ETH, (n_bytes * 8).to_bytes(64, "big"))
+
+
+def sha2_hash(data: bytes) -> Digest:
+    """`sha2_eth(data)`."""
+    state = iv_for_len(len(data))
+    padded = data + bytes(-len(data) % 64)
+    for offset in range(0, len(padded), 64):
+        state = sha256_compress(state, padded[offset : offset + 64])
+    return Digest(b"".join(word.to_bytes(4, "big") for word in state))
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,7 +507,7 @@ def compress(left: Sequence[K | int], right: Sequence[K | int]) -> tuple[int, in
     # Nothing downstream would catch a short operand: it would simply hash to a
     # different value.
     require(len(left) == len(right) == 4, "compression operands must contain four words")
-    return unpack("<4Q", blake2s_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
+    return unpack("<4Q", sha2_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
 
 
 class Transcript:
@@ -465,7 +516,7 @@ class Transcript:
         self.state = (0, 0, 0, 0)
         self.stream_offset = 0
         self.opening_offset = 0
-        self.absorb_bytes(b"leanvm-b/transcript/v3-blake2s")
+        self.absorb_bytes(b"leanvm-b/transcript/v4-sha2")
         self.absorb_bytes(label)
         for value in statement:
             self.observe(value)
@@ -853,7 +904,7 @@ def verify_constraints(
 
 # VM statement, layout, and AIR -----------------------------------------------
 
-R1CS_DIGEST = bytes.fromhex("ec91e9d8d9ca4e306205907a0d236e53a6cdbda0382ef6c433ef9363edfe042e")
+R1CS_DIGEST = bytes.fromhex("ea60ba3d4b1b627181ba90a2a43bdd8bd0589a9cb987cd37d813770a3f5cc89a")
 
 # The columns no instruction table owns (doc sec:e2e-unrolled, Commitment): the
 # memory image's three limbs, the two finalize counts, and flock's packed
@@ -861,11 +912,11 @@ R1CS_DIGEST = bytes.fromhex("ec91e9d8d9ca4e306205907a0d236e53a6cdbda0382ef6c433e
 GLOBAL_COLUMNS = ("mem_0", "mem_1", "mem_2", "mem_final_cnt", "bytecode_final_cnt", "qflock")
 MEM_0, MEM_1, MEM_2, MEM_FINAL_CNT, BYTECODE_FINAL_CNT, QFLOCK = range(len(GLOBAL_COLUMNS))
 
-BLAKE2S_R1CS_LOG_SIZE = 14
+SHA2_R1CS_LOG_SIZE = 15
 K_BITS = 64
 FLOCK_K_SKIP = log2_ceil(K_BITS)
-QFLOCK_SLOT_BITS = BLAKE2S_R1CS_LOG_SIZE - FLOCK_K_SKIP
-BLAKE2S_CONSTANT_COLUMN = 512
+QFLOCK_SLOT_BITS = SHA2_R1CS_LOG_SIZE - FLOCK_K_SKIP
+SHA2_CONSTANT_COLUMN = 29112
 
 
 @dataclass(frozen=True)
@@ -1087,9 +1138,9 @@ def _jump_constraints(get: Callable[[str], E]) -> tuple[E, ...]:
     return (flag + condition * inverse, condition * (flag + ONE))
 
 
-def _flushes_blake2s(table: Table) -> Flushes:
+def _flushes_sha2(table: Table) -> Flushes:
     pc, fp, cnt_bc = table.cols("pc", "fp", "cnt_bc")
-    operands = table.cols("o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
+    operands = table.cols("o_0", "o_1", "o_2", "o_3", "o_v", "o_out")
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, table.opcode, tuple(_col(i) for i in operands))
@@ -1148,11 +1199,11 @@ JUMP_COLUMNS = (
     "w", "b",  # witness columns: neither read from memory nor in the bytecode
 )  # fmt: skip
 
-BLAKE2S_COLUMNS = (
+SHA2_COLUMNS = (
     "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out",
-    # The eighteen value limbs are committed inside q_flock, not here.
+    # The sixteen value limbs are committed inside q_flock, not here.
     "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi",
-    "out0_lo", "out0_hi", "out1_lo", "out1_hi", "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "md_0", "md_1",
+    "out0_lo", "out0_hi", "out1_lo", "out1_hi", "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi",
     "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_bc",
 )  # fmt: skip
 
@@ -1164,17 +1215,17 @@ TABLES = (
     Table("set", 2, SET_COLUMNS, _flushes_set),
     Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
     Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints),
-    Table("blake2s", 5, BLAKE2S_COLUMNS, _flushes_blake2s),
+    Table("sha2", 5, SHA2_COLUMNS, _flushes_sha2),
     Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )
-BLAKE2S = TABLES[5]
+SHA2 = TABLES[5]
 
-# Where in the flock witness each embedded BLAKE2s limb lives (doc
-# sec:tab-blake2s): one 64-bit slot per limb, the chaining value first, then the
-# digest, the message block and the metadata. Slots 8 and 9 hold the
-# compression's high output words, which no memory cell carries.
-BLAKE2S_SLOT_BY_COLUMN = {
-    BLAKE2S.col(name): slot
+# Where in the flock witness each embedded SHA2 limb lives (doc sec:tab-sha2):
+# one 64-bit slot per limb, the chaining value first, then the digest, then the
+# message block. The compression takes no metadata, so unlike BLAKE2s there is
+# nothing after the message.
+SHA2_SLOT_BY_COLUMN = {
+    SHA2.col(name): slot
     for name, slot in {
         "cv0_lo": 0,
         "cv0_hi": 1,
@@ -1184,16 +1235,14 @@ BLAKE2S_SLOT_BY_COLUMN = {
         "out0_hi": 5,
         "out1_lo": 6,
         "out1_hi": 7,
-        "m0_lo": 10,
-        "m0_hi": 11,
-        "m1_lo": 12,
-        "m1_hi": 13,
-        "m2_lo": 14,
-        "m2_hi": 15,
-        "m3_lo": 16,
-        "m3_hi": 17,
-        "md_0": 18,
-        "md_1": 19,
+        "m0_lo": 8,
+        "m0_hi": 9,
+        "m1_lo": 10,
+        "m1_hi": 11,
+        "m2_lo": 12,
+        "m2_hi": 13,
+        "m3_lo": 14,
+        "m3_hi": 15,
     }.items()
 }
 
@@ -1204,7 +1253,7 @@ BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(T
 
 def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequence[int]) -> Layout:
     require(
-        16 <= log_memory <= 32 and all(0 <= log_height <= 32 for log_height in table_log_heights) and table_log_heights[BLAKE2S.opcode] >= 3,
+        16 <= log_memory <= 32 and all(0 <= log_height <= 32 for log_height in table_log_heights) and table_log_heights[SHA2.opcode] >= 3,
         "invalid announced table sizes",
     )
     table_log_heights = list(table_log_heights)
@@ -1222,16 +1271,16 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
         for local in table.count_columns:
             count.append(BusBlock(height, (_col(local),), table.opcode))
 
-    # Every column's height, in global numbering; None marks the BLAKE2s value
+    # Every column's height, in global numbering; None marks the SHA2 value
     # columns, which are committed inside q_flock rather than on their own.
     kappas: list[int | None] = [0] * (len(GLOBAL_COLUMNS) + sum(WIDTHS))
     kappas[MEM_0] = kappas[MEM_1] = kappas[MEM_2] = kappas[MEM_FINAL_CNT] = log_memory
     kappas[BYTECODE_FINAL_CNT] = framework.log_bytecode
-    kappas[QFLOCK] = table_log_heights[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
+    kappas[QFLOCK] = table_log_heights[SHA2.opcode] + QFLOCK_SLOT_BITS
     for table, (base, width) in enumerate(zip(BASES, WIDTHS, strict=True)):
         kappas[base : base + width] = [table_log_heights[table]] * width
-    for local in BLAKE2S_SLOT_BY_COLUMN:
-        kappas[BASES[BLAKE2S.opcode] + local] = None
+    for local in SHA2_SLOT_BY_COLUMN:
+        kappas[BASES[SHA2.opcode] + local] = None
     placements, total_log = stack_offsets(kappas)
     # Floor at the PCS minimum: WHIR's level ladder needs room, so a tiny
     # witness zero-pads up to it. Both sides derive this from the kappas.
@@ -1244,8 +1293,8 @@ def build_airs(layout: Layout, bus_forms: Sequence[Sequence[Form]]) -> list[Air]
 
 
 def virtual_slot(column: int) -> int | None:
-    """The q_flock slot a BLAKE2s value column rides in, or None if committed."""
-    return BLAKE2S_SLOT_BY_COLUMN.get(column - BASES[BLAKE2S.opcode])
+    """The q_flock slot a SHA2 value column rides in, or None if committed."""
+    return SHA2_SLOT_BY_COLUMN.get(column - BASES[SHA2.opcode])
 
 
 # WHIR opening ----------------------------------------------------------------
@@ -1295,12 +1344,12 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
 
 
 def _hash_pair(left: Digest, right: Digest) -> Digest:
-    return blake2s_hash(left.value + right.value)
+    return sha2_hash(left.value + right.value)
 
 
 def _row_hash(row: Sequence[K]) -> Digest:
     """The committer's leaf preimage: the row's words in their 8-byte transport image."""
-    return blake2s_hash(b"".join(word.to_bytes() for word in row))
+    return sha2_hash(b"".join(word.to_bytes() for word in row))
 
 
 def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
@@ -1560,49 +1609,75 @@ def verify_flock_lincheck(
     rho_in_prime = tuple(reversed(round_challenges))
     w_col = [value * weight for weight in eq_kernel(rho_in_prime) for value in s]
     terminal = (
-        blake2s_bilinear(alpha, e_row, w_col)
-        + alpha_sq * eq_eval(rho_in, rho_in_prime) * dot(skip_weights, s)
-        + alpha_cu * w_col[BLAKE2S_CONSTANT_COLUMN]
+        sha2_bilinear(alpha, e_row, w_col) + alpha_sq * eq_eval(rho_in, rho_in_prime) * dot(skip_weights, s) + alpha_cu * w_col[SHA2_CONSTANT_COLUMN]
     )
     require(terminal == r_lc, "Flock lincheck terminal mismatch")
     return rho_in_prime + rho[QFLOCK_SLOT_BITS:], s
 
 
-def blake2s_bilinear(
+def sha2_bilinear(
     alpha: E,
     row_weights: Sequence[E],
     column_weights: Sequence[E],
 ) -> E:
     """Both matrix terms at once, `sum_{k,j} (A0 + alpha*B0)(k,j) e_row(k) w_col(j)`,
-    by one forward walk of the circuit instead of touching its ~89M nonzeros."""
-    size = 2**BLAKE2S_R1CS_LOG_SIZE
-    require(len(row_weights) == size, "bad BLAKE2s row-weight vector")
-    require(len(column_weights) == size, "bad BLAKE2s column-weight vector")
-    constant = BLAKE2S_CONSTANT_COLUMN
-    message_base = 640
-    counter_low = 1152
-    counter_high = 1184
-    final_flag = 1216
-    last_node_flag = 1248
-    gates_base = 1280
-    gate_stride = 184
+    by one forward walk of the circuit instead of touching its million nonzeros.
+
+    Mirrors `flock::sha2::bilinear_walk_pair` gadget for gadget; the layout
+    constants below are that module's.
+    """
+    size = 2**SHA2_R1CS_LOG_SIZE
+    require(len(row_weights) == size, "bad SHA2 row-weight vector")
+    require(len(column_weights) == size, "bad SHA2 column-weight vector")
+    constant = SHA2_CONSTANT_COLUMN
+    h_base, out_base, m_base = 0, 256, 512
+    sched_base, sched_stride = 1024, 124
+    s_add3, s_add, s_pin = 0, 61, 92
+    round_base, round_stride = 6976, 342
+    r_ch, r_maj, r_t1a, r_t1b, r_enew, r_anew, r_epin, r_apin = 0, 32, 64, 125, 186, 217, 278, 310
+    out_carry_base = 28864
     left_total = ZERO
     right_total = ZERO
     constant_rows = ZERO
 
     def slots(base: int) -> tuple[E, ...]:
+        """A word this circuit owns: 32 consecutive slots, bit `j` at `base + j`."""
         return tuple(column_weights[base + bit] for bit in range(32))
 
-    empty_word = (ZERO,) * 32
+    def slots_be(base: int) -> tuple[E, ...]:
+        """An I/O word: the same 32 slots, permuted by the byte reversal that is
+        SHA-256's big-endian reading (see `Word::byteswap`)."""
+        return tuple(column_weights[base + 8 * (3 - bit // 8) + bit % 8] for bit in range(32))
 
     def literal(value: int) -> tuple[E, ...]:
         return tuple(column_weights[constant] if value >> bit & 1 else ZERO for bit in range(32))
 
-    def xor(x: Sequence[E], y: Sequence[E]) -> tuple[E, ...]:
-        return tuple(a + b for a, b in zip(x, y, strict=True))
+    def xor(*words: Sequence[E]) -> tuple[E, ...]:
+        return tuple(sum(w[bit] for w in words[1:]) + words[0][bit] for bit in range(32))
 
     def rotate_right(word: Sequence[E], amount: int) -> tuple[E, ...]:
         return tuple(word[(bit + amount) & 31] for bit in range(32))
+
+    def shift_right(word: Sequence[E], amount: int) -> tuple[E, ...]:
+        return tuple(word[bit + amount] if bit + amount < 32 else ZERO for bit in range(32))
+
+    def byteswap(word: Sequence[E]) -> tuple[E, ...]:
+        return tuple(word[8 * (3 - bit // 8) + bit % 8] for bit in range(32))
+
+    def big_sigma(word: Sequence[E], r0: int, r1: int, r2: int) -> tuple[E, ...]:
+        return xor(rotate_right(word, r0), rotate_right(word, r1), rotate_right(word, r2))
+
+    def small_sigma(word: Sequence[E], r0: int, r1: int, sh: int) -> tuple[E, ...]:
+        return xor(rotate_right(word, r0), rotate_right(word, r1), shift_right(word, sh))
+
+    def and_word(x: Sequence[E], y: Sequence[E], base: int) -> tuple[E, ...]:
+        """32 AND rows `x[i] * y[i] = z[base + i]`: `Ch` and `Maj`."""
+        nonlocal left_total, right_total
+        for bit in range(32):
+            weight = row_weights[base + bit]
+            left_total += weight * x[bit]
+            right_total += weight * y[bit]
+        return slots(base)
 
     def add(x: Sequence[E], y: Sequence[E], carry_base: int) -> tuple[E, ...]:
         nonlocal left_total, right_total
@@ -1649,51 +1724,56 @@ def blake2s_bilinear(
         return tuple(output)
 
     def linear_rows(values: Sequence[E], base: int) -> None:
+        """A lin-id pin: 32 rows `<values> * 1 = z[base + i]`."""
         nonlocal left_total, constant_rows
         for bit in range(32):
             left_total += row_weights[base + bit] * values[bit]
             constant_rows += row_weights[base + bit]
 
-    for base, length in ((0, 256), (message_base, 512), (counter_low, 128)):
+    # The free inputs: the chaining value and the message block.
+    for base, length in ((h_base, 256), (m_base, 512)):
         for row in range(base, base + length):
             left_total += row_weights[row] * column_weights[row]
             constant_rows += row_weights[row]
 
-    # v[0..8] = h, v[8..12] = IV[0..4], v[12..16] = IV[4..8] ^ (t_lo, t_hi, f0, f1).
-    state = [empty_word for _ in range(16)]
-    for word in range(8):
-        state[word] = slots(32 * word)
-    for word in range(4):
-        state[8 + word] = literal(BLAKE2S_IV[word])
-    for word, base in enumerate((counter_low, counter_high, final_flag, last_node_flag)):
-        state[12 + word] = xor(literal(BLAKE2S_IV[4 + word]), slots(base))
+    h_in = [slots_be(h_base + 32 * word) for word in range(8)]
 
-    for round_index in range(10):
-        sigma = BLAKE2S_SIGMA[round_index]
-        for gate_index, (lane_a, lane_b, lane_c, lane_d) in enumerate(BLAKE2S_G_LANES):
-            gate = round_index * 8 + gate_index
-            gate_base = gates_base + gate_stride * gate
-            a, b, c, d = state[lane_a], state[lane_b], state[lane_c], state[lane_d]
-            mx = slots(message_base + 32 * sigma[2 * gate_index])
-            my = slots(message_base + 32 * sigma[2 * gate_index + 1])
-            a1 = add3(a, b, mx, gate_base)
-            d1 = rotate_right(xor(d, a1), 16)
-            c1 = add(c, d1, gate_base + 61)
-            b1 = rotate_right(xor(b, c1), 12)
-            a2 = add3(a1, b1, my, gate_base + 92)
-            d2 = rotate_right(xor(d1, a2), 8)
-            c2 = add(c1, d2, gate_base + 153)
-            b2 = rotate_right(xor(b1, c2), 7)
-            # Every lane cascades: this encoding materializes no intermediate word.
-            state[lane_a] = a2
-            state[lane_b] = b2
-            state[lane_c] = c2
-            state[lane_d] = d2
+    # Message schedule: W[t] = sigma_1(W[t-2]) + W[t-7] + sigma_0(W[t-15]) + W[t-16].
+    w = [slots_be(m_base + 32 * i) for i in range(16)]
+    for step in range(48):
+        t = 16 + step
+        block = sched_base + sched_stride * step
+        partial = add3(
+            small_sigma(w[t - 2], 17, 19, 10),
+            small_sigma(w[t - 15], 7, 18, 3),
+            w[t - 7],
+            block + s_add3,
+        )
+        total = add(partial, w[t - 16], block + s_add)
+        linear_rows(total, block + s_pin)
+        w.append(slots(block + s_pin))
 
-    # out[w] = h[w] ^ v[w] ^ v[w+8], the only materialized words.
+    state = list(h_in)
+    for round_index in range(64):
+        a, b, c, d, e, f, g, h = state
+        block = round_base + round_stride * round_index
+        ch = xor(and_word(e, xor(f, g), block + r_ch), g)
+        maj = xor(and_word(xor(a, b), xor(a, c), block + r_maj), a)
+        # T1 = h + Sigma_1(e) + Ch + W[r] + K[r], as two fused adds.
+        t1a = add3(big_sigma(e, 6, 11, 25), ch, h, block + r_t1a)
+        t1 = add3(t1a, w[round_index], literal(SHA256_K[round_index]), block + r_t1b)
+        e_new = add(d, t1, block + r_enew)
+        linear_rows(e_new, block + r_epin)
+        a_new = add3(t1, big_sigma(a, 2, 13, 22), maj, block + r_anew)
+        linear_rows(a_new, block + r_apin)
+        # Both new words are read back from their pins, which is what stops the
+        # affine support cascade.
+        state = [slots(block + r_apin), a, b, c, slots(block + r_epin), e, f, g]
+
+    # Feed-forward: out[w] = state[w] + h[w].
     for word in range(8):
-        out = xor(xor(state[word], state[word + 8]), slots(32 * word))
-        linear_rows(out, 256 + 32 * word)
+        total = add(state[word], h_in[word], out_carry_base + 31 * word)
+        linear_rows(byteswap(total), out_base + 32 * word)
 
     constant_weight = column_weights[constant]
     left_total += constant_weight * row_weights[constant]
@@ -1828,8 +1908,8 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
     # The seed hashes the bytecode multilinear itself, not a structured program,
     # so a verifier holding only the polynomial can reproduce it.
-    bytecode_hash = blake2s_hash(b"".join(word.to_bytes() for word in bytecode))
-    seed = blake2s_hash(b"leanvm-b-fs-seed-v2-blake2s" + R1CS_DIGEST + bytecode_hash.value)
+    bytecode_hash = sha2_hash(b"".join(word.to_bytes() for word in bytecode))
+    seed = sha2_hash(b"leanvm-b-fs-seed-v3-sha2" + R1CS_DIGEST + bytecode_hash.value)
     transcript = Transcript(proof, b"leanvm-b", (*seed.halves(), *pi))
 
     # 1] memory log-size, table log-size, and log-inv-rate in WHIR
@@ -1882,12 +1962,12 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEM_0, MEM_1, MEM_2), public_limbs, strict=True))
 
     # 6] Locate every claim in the stack: a column claim keeps its point and
-    # gains its placement's selector bits; a BLAKE2s value claim is re-routed to
+    # gains its placement's selector bits; a SHA2 value claim is re-routed to
     # the equal q_flock slot evaluation.
     point_claims: list[tuple[tuple[E, ...], E]] = []
     qflock = layout.placements[QFLOCK]
     for claim in claims:
-        # A BLAKE2s value column is committed inside q_flock rather than on its
+        # A SHA2 value column is committed inside q_flock rather than on its
         # own, so its claim is re-routed to the equal evaluation of q_flock's
         # slot: the same point, under a different placement, behind the slot bits.
         slot = virtual_slot(claim.column)
@@ -1898,8 +1978,8 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         tail = _selector_point(placement.selector, layout.stack_log - placement.variables)
         point_claims.append((prefix + claim.point + tail, claim.value))
 
-    # 7] BLAKE2s validity, then the one opening that discharges every claim.
-    reduction = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_logs[BLAKE2S.opcode], transcript)
+    # 7] SHA-256 validity, then the one opening that discharges every claim.
+    reduction = verify_flock(SHA2_R1CS_LOG_SIZE + layout.table_logs[SHA2.opcode], transcript)
     verify_stacked_opening(
         transcript,
         root,

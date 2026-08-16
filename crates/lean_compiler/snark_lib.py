@@ -138,7 +138,7 @@ def HeapBuf(n) -> _Elt:
 
 def StackBuf(n: int) -> _Elt:
     """Allocate `n` consecutive frame (stack) cells. A size-2 StackBuf holds a
-    256-bit value and is a valid `blake2s` operand."""
+    256-bit value and is a valid `sha2` operand."""
     _ = n
     return _Elt()
 
@@ -175,34 +175,35 @@ def hint_f192_limbs(dest, value) -> None:
     _ = dest, value
 
 
-def blake2s(
+def sha2(
     a,
     b,
     out,
     *,
     cv=None,
-    counter: Optional[int] = None,
-    final: Optional[int] = None,
-    last_node: int = 0,
+    msg_bytes: Optional[int] = None,
 ) -> None:
-    """One standard BLAKE2s compression of the two 256-bit message operands
-    `a`, `b`, written into the 2-cell run `out` (write-once: if `out` was
-    already written, this asserts it equals the chaining value).
+    """One SHA-256 compression `C(cv, a || b)` of the two 256-bit message
+    operands `a`, `b`, written into the 2-cell run `out` (write-once: if `out`
+    was already written, this asserts it equals the result).
 
-    With no keywords this hashes exactly 64 bytes: the parameterized BLAKE2s-256
-    initial chaining value, byte counter 64, final-block flag set. That is
-    `blake2s(a || b)`, the form every sponge step and Merkle node uses.
+    With no keywords this is `sha2_eth(a || b)`, the hash of exactly 64 bytes,
+    which is the form every sponge step and Merkle node uses. `sha2_eth` puts
+    the message length in its FIRST block, so that block depends on nothing but
+    the length and folds into a compile-time chaining value; there is no byte
+    counter and no final flag to carry.
 
-    For a longer message, drive the blocks yourself. `counter` is the CUMULATIVE
-    byte count through this block (`64 * whole_blocks_before + bytes_in_this_block`)
-    and `final=1` marks the last block; `cv` carries the previous block's output
-    and requires `counter`, since a chained block is never the default one-block
-    hash. Setting any of `counter`, `final` or `last_node` makes `final` default
-    to 0, so a single short block needs `counter=<len>, final=1`. Bytes past the
-    block's real length must be zero-filled by the program. `last_node` is
-    BLAKE2s's tree-mode `f1` and is 0 everywhere here.
+    Longer messages drive their own blocks, and the two keywords are mutually
+    exclusive:
+
+    - `msg_bytes=<int>`: this is the FIRST block of a message of that many
+      bytes, so the chaining value is the constant `iv_for_len(msg_bytes)`;
+    - `cv=<2-cell run>`: this is a CONTINUATION block, chaining from the
+      previous compression's output.
+
+    Bytes past the message's real length must be zero-filled by the program.
 
     Message, chaining-value, and output operands are size-2 StackBufs or
     2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
     bridged through the stack, one DEREF per cell)."""
-    _ = a, b, out, cv, counter, final, last_node
+    _ = a, b, out, cv, msg_bytes

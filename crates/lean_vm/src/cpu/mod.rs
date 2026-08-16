@@ -3,9 +3,9 @@
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
-//! with each word carried by three committed `K = F64` limbs. `BLAKE2s`
+//! with each word carried by three committed `K = F64` limbs. `SHA-256`
 //! adds the memory/state/bytecode plumbing for a 64→32-byte compression
-//! whose relation is discharged by flock (see [`crate::blake2s_flock`]). All
+//! whose relation is discharged by flock (see [`crate::sha2_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
 use std::collections::HashMap;
@@ -14,8 +14,7 @@ use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
-    self, FillCtx, FlushBuilder, OP_BLAKE2S, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM,
-    SEP_STATE,
+    self, FillCtx, FlushBuilder, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_SHA2, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
 };
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use crate::witness;
@@ -32,13 +31,13 @@ pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE2s` compression: the four message cells' eight
-/// words are laid out little-endian into 64 bytes, combined with the supplied
-/// chaining value and metadata, and the 32-byte result is split back into the
-/// four output words `c`. Flock proves this same compression relation
-/// ([`crate::blake2s_flock`]).
-fn blake2s_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: F192) -> [F64; 4] {
-    crate::blake2s_flock::digest(&crate::blake2s_flock::compression(va, vb, vcv, metadata))
+/// Witness-gen SHA-256 compression: the four message cells' eight words are
+/// laid out little-endian into 64 bytes, compressed against the supplied
+/// chaining value, and the 32-byte result is split back into the four output
+/// words `c`. Flock proves this same compression relation
+/// ([`crate::sha2_flock`]).
+fn sha2_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4]) -> [F64; 4] {
+    crate::sha2_flock::digest(&crate::sha2_flock::compression(va, vb, vcv))
 }
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
@@ -63,9 +62,9 @@ const MAX_LOG_ROWS: usize = 32;
 const MAX_LOG_BYTECODE: usize = 32;
 
 /// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
-/// to everything fixed about the proving environment: the flock BLAKE2s R1CS
-/// (its per-block matrices, [`crate::blake2s_flock::r1cs_digest`])
-/// and the bytecode, via the hash cached on `Program`: BLAKE2s over the stacked
+/// to everything fixed about the proving environment: the flock SHA-256 R1CS
+/// (its per-block matrices, [`crate::sha2_flock::r1cs_digest`])
+/// and the bytecode, via the hash cached on `Program`: SHA-256 over the stacked
 /// multilinear ([`layout::bytecode_table`]) rather than over an assembler
 /// digest, so a verifier holding only that polynomial reproduces the seed. That
 /// inner hash is cached on the program, so the table is walked once per program
@@ -75,9 +74,10 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// else; a recursion guest carries the INNER program's seed in its public
 /// input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
-    let mut h = primitives::blake2s::Hasher::new();
-    h.update(b"leanvm-b-fs-seed-v2-blake2s");
-    h.update(&crate::blake2s_flock::r1cs_digest());
+    const LABEL: &[u8] = b"leanvm-b-fs-seed-v3-sha2";
+    let mut h = primitives::sha2::Hasher::new(LABEL.len() + 64);
+    h.update(LABEL);
+    h.update(&crate::sha2_flock::r1cs_digest());
     h.update(&program.bytecode_hash);
     let d = h.finalize();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
@@ -141,10 +141,10 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
         || taus.iter().any(|&t| t > MAX_LOG_ROWS)
         // flock sizes its argument to at least `n_blocks_log(1)` instances, and the
-        // BLAKE2s table's value columns share that instance cube, so a height below the
+        // SHA-256 table's value columns share that instance cube, so a height below the
         // floor describes a layout the arithmetization cannot express. The other two
         // verifiers reject it here too (`python-verifier`, `guests/aggregate.py`).
-        || taus[tables::BLAKE2S_TABLE] < crate::blake2s_flock::n_blocks_log(1)
+        || taus[tables::SHA2_TABLE] < crate::sha2_flock::n_blocks_log(1)
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
@@ -156,7 +156,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
 #[derive(Clone)]
 pub struct Program {
     pub prog: Vec<Op>, // bytecode (size B, power of two)
-    /// BLAKE2s over the stacked bytecode multilinear, computed once at assembly
+    /// SHA-256 over the stacked bytecode multilinear, computed once at assembly
     /// so proving and verifying the same program do not rehash it (that table is
     /// 16·2^kbc words, tens of megabytes at production sizes). Trusted to match
     /// `prog`: always set by [`Program::assemble`] from the bytecode, so a
@@ -211,7 +211,7 @@ impl Program {
             // exactly the concatenation of its `to_le_bytes` on little-endian targets.
             let bytes: &[u8] =
                 unsafe { core::slice::from_raw_parts(table.as_ptr().cast::<u8>(), core::mem::size_of_val(&table[..])) };
-            primitives::blake2s::Hasher::new().update(bytes).finalize()
+            primitives::sha2::Hasher::new(bytes.len()).update(bytes).finalize()
         };
         Self {
             prog,
@@ -267,10 +267,10 @@ pub enum Error {
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
-    /// flock's BLAKE2s R1CS validity sub-proof failed to verify. (A missing or
+    /// flock's SHA-256 R1CS validity sub-proof failed to verify. (A missing or
     /// malformed sub-proof surfaces as [`Error::Transcript`] when the shared
     /// `stream`/`openings` fail to reconstruct or fully consume.)
-    Blake2s(flock::verifier::VerifyError),
+    Sha2(flock::verifier::VerifyError),
 }
 
 /// Per side, which table (if any) owns each bus block, as `(table, column base)`.
@@ -398,21 +398,21 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
     v
 }
 
-/// If `col` is a BLAKE2s **value** column (global index), its `q_flock` packed slot.
+/// If `col` is a SHA-256 **value** column (global index), its `q_flock` packed slot.
 /// These columns are virtual (uncommitted): their memory-bus evaluation claims
 /// are re-routed to `q_flock` slot evaluations, which is the whole binding: the
 /// bus-tied value IS the proven `q_flock` word, no separate check needed.
-fn blake2s_value_slot(col: usize) -> Option<usize> {
-    let base = schema().base[tables::BLAKE2S_TABLE];
-    tables::BLAKE2S_VALUE_COLS
+fn sha2_value_slot(col: usize) -> Option<usize> {
+    let base = schema().base[tables::SHA2_TABLE];
+    tables::SHA2_VALUE_COLS
         .iter()
         .position(|&c| base + c == col)
-        .map(|i| crate::blake2s_flock::SLOTS[i])
+        .map(|i| crate::sha2_flock::SLOTS[i])
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE2s, PACK64X2]`, and the
+/// `[XOR, MUL, SET, DEREF, JUMP, SHA-256, PACK64X2]`, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -433,7 +433,7 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S", "PACK64X2"];
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "SHA2", "PACK64X2"];
 
     /// One line of run sizes, every one a power of two: the per-table instruction
     /// counts with their share of the run, largest first, then the data memory and
@@ -487,7 +487,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
     let exec = crate::stage!("Execute program", || program.execute_to_floor(public_input));
-    // The BLAKE2s R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
+    // The SHA-256 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
     // depends only on the compression count (the circuit *shape*), not the witness,
     // but it is otherwise built synchronously inside the final reduction, adding
     // that latency serially with nothing overlapping it. Now that `execute` has
@@ -495,9 +495,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
     // lands in the shared setup cache, so the reduction's `setup_for` is a cache
     // hit. Pure warm-up: the result is fetched from the cache, nothing here joins
-    // the handle. (A no-BLAKE2s program still warms the size-1 padding shape.)
-    let n_blake2s_warm = exec.trace.blake2s.len().max(1);
-    std::thread::spawn(move || crate::blake2s_flock::warm_setup(n_blake2s_warm));
+    // the handle. (A no-SHA-256 program still warms the size-1 padding shape.)
+    let n_sha2_warm = exec.trace.sha2.len().max(1);
+    std::thread::spawn(move || crate::sha2_flock::warm_setup(n_sha2_warm));
     let cycles = exec.cycles;
     let mut w = crate::stage!("Build witness", || program.build(&exec));
     let counts = w.layout.taus.map(|t| 1usize << t);
@@ -510,9 +510,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     announce_public(&mut ps, w.log_mem, w.layout.taus, log_inv_rate);
     let committed = crate::stage!("Commit", || { pcs::commit(&mut ps, &w.q, log_inv_rate) });
 
-    // BLAKE2s to flock (§blake2s_flock), single PCS: q_flock is ALWAYS a column in
-    // `w.q` (≥1 instance, a program with no BLAKE2s carries one padding instance,
-    // so the proof shape is uniform and there is no has/hasn't-BLAKE2s fork). flock's
+    // SHA-256 to flock (§sha2_flock), single PCS: q_flock is ALWAYS a column in
+    // `w.q` (≥1 instance, a program with no SHA-256 carries one padding instance,
+    // so the proof shape is uniform and there is no has/hasn't-SHA-256 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
     // WHIR over this commitment (below). Message, chaining-value, and output words
     // bind through the memory bus; counter and flags bind through bytecode. Their
@@ -581,7 +581,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
     let offset = w.layout.placements[QFLOCK].offset;
-    let ring = crate::blake2s_flock::ring_switch_open(n_blocks, offset, &reduced);
+    let ring = crate::sha2_flock::ring_switch_open(n_blocks, offset, &reduced);
     crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     (
         ps.into_proof(),
@@ -660,12 +660,12 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
-    // BLAKE2s to flock (single PCS): flock's R1CS validity and every leanVM point
+    // SHA-256 to flock (single PCS): flock's R1CS validity and every leanVM point
     // claim are verified together by ONE WHIR opening at the end. The padded
-    // BLAKE2s table size is public and announced; its flock sub-proof rides the
+    // SHA-256 table size is public and announced; its flock sub-proof rides the
     // shared stream and openings. Memory and bytecode bind every compression input
     // and output by routing their virtual value-column claims to q_flock.
-    let n_blake2s = 1usize << l.taus[tables::BLAKE2S_TABLE];
+    let n_sha2 = 1usize << l.taus[tables::SHA2_TABLE];
 
     let (owners, spans) = bus_wiring(program, &l);
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &owners, &spans, &mut vs).map_err(Error::Bus)?;
@@ -705,12 +705,12 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // as it is read) to recover its validity claim on q_flock, then
     // verify them alongside every point claim in the ONE WHIR opening
     // (mirroring `prove`). The padding convention always supplies at least one
-    // instance, including programs that execute no BLAKE2s instruction.
-    let n_blocks = n_blake2s.max(1);
+    // instance, including programs that execute no SHA-256 instruction.
+    let n_blocks = n_sha2.max(1);
     let offset = l.placements[QFLOCK].offset;
-    let replay = crate::blake2s_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
+    let replay = crate::sha2_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Sha2)?;
     let flock_stream_end = vs.stream_offset();
-    let ring = crate::blake2s_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
+    let ring = crate::sha2_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
     pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
@@ -727,7 +727,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in
 /// the slot at `placements[c].offset`, with the claim's point as the low point.
 ///
-/// BLAKE2s value columns are virtual: they have no committed placement. A bus
+/// SHA-256 value columns are virtual: they have no committed placement. A bus
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
 /// to the equal `q_flock` slot evaluation: an ordinary claim on the committed
 /// `QFLOCK` column at the point freezing the low 8 coords to the slot's bits and
@@ -737,15 +737,15 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
     claims
         .iter()
         .map(|c| {
-            // A virtual BLAKE2s value column (always virtual): its bus claim at
+            // A virtual SHA-256 value column (always virtual): its bus claim at
             // instance point `c.point` is the q_flock slot value, a boolean-selector
             // (strided) claim on QFLOCK, folded sparsely (2^n_log, not the 2^(8+n_log)
             // dense QFLOCK block).
-            if let Some(slot) = blake2s_value_slot(c.col) {
+            if let Some(slot) = sha2_value_slot(c.col) {
                 return pcs::SlotClaim::Strided {
                     offset: l.placements[QFLOCK].offset,
                     slot,
-                    stride_log: crate::blake2s_flock::SLOT_STRIDE_LOG,
+                    stride_log: crate::sha2_flock::SLOT_STRIDE_LOG,
                     point: c.point.clone(),
                     value: c.value,
                 };
@@ -768,14 +768,9 @@ mod tests {
         F192::new(x, 0, 0)
     }
 
-    /// Pack two 64-bit flock words into the canonical BLAKE2s subspace of F192.
+    /// Pack two 64-bit flock words into the canonical SHA-256 subspace of F192.
     fn cell(lo: F64, hi: F64) -> F192 {
         F192::new(lo.0, hi.0, 0)
-    }
-
-    /// The default one-block-root metadata for a hand-built BLAKE2s op.
-    fn md() -> F192 {
-        crate::blake2s_flock::metadata(crate::blake2s_flock::PINNED_T, crate::blake2s_flock::FINAL_FLAG, 0)
     }
 
     /// The four chaining-value lanes of the two cv cells.
@@ -783,15 +778,15 @@ mod tests {
         [F64(cv0.c0), F64(cv0.c1), F64(cv1.c0), F64(cv1.c1)]
     }
 
-    /// A hand-built straight-line program with one BLAKE2s row: set up the two
+    /// A hand-built straight-line program with one SHA-256 row: set up the two
     /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5, one 128-bit word per
     /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
     /// there. The flock validity sub-proof plus the memory / state / bytecode bus
     /// interactions are verified end-to-end (the proof carries the WHIR
     /// opening they assert on).
-    fn blake2s_program(a: [F64; 4], b: [F64; 4]) -> Program {
-        // a → cells 2,3 and b → cells 4,5 (two flock lanes per BLAKE2s cell).
+    fn sha2_program(a: [F64; 4], b: [F64; 4]) -> Program {
+        // a → cells 2,3 and b → cells 4,5 (two flock lanes per SHA-256 cell).
         let mut prog = vec![
             Op::Set {
                 o: 2,
@@ -811,15 +806,10 @@ mod tests {
             },
             // The chaining value reads cells 0,1 (the public input); any
             // canonical cv is legal.
-            Op::Blake2s {
+            Op::Sha2 {
                 ins: [2, 3, 4, 5],
                 cv: 0,
                 out: 6,
-                metadata: crate::blake2s_flock::metadata(
-                    crate::blake2s_flock::PINNED_T,
-                    crate::blake2s_flock::FINAL_FLAG,
-                    0,
-                ),
             },
         ]; // c → cells 6,7
         // 16 slots: 5 executed, then 10 filler SETs step the pc to 15, whose slot is
@@ -840,7 +830,7 @@ mod tests {
     /// is exercised from `lean_compiler`'s tests, which can compile one whose tables
     /// come out powers of two.
     #[test]
-    fn blake2s_computes_the_compression() {
+    fn sha2_computes_the_compression() {
         let a: [F64; 4] = [
             F64(0x0123_4567_89ab_cdef),
             F64(0xfedc_ba98_7654_3210),
@@ -853,25 +843,25 @@ mod tests {
             F64(0x9999_aaaa_bbbb_cccc),
             F64(0xdddd_eeee_ffff_0000),
         ];
-        let program = blake2s_program(a, b);
+        let program = sha2_program(a, b);
 
         let pi = [w(7), w(11)];
         let exec = program.execute(pi);
 
         // The output cells hold the compression of the two inputs under the
         // pi-supplied chaining value (two 128-bit chunks).
-        let d = blake2s_compress(a, b, cv_lanes(pi[0], pi[1]), md());
+        let d = sha2_compress(a, b, cv_lanes(pi[0], pi[1]));
         assert_eq!(exec.mem[6], cell(d[0], d[1]));
         assert_eq!(exec.mem[7], cell(d[2], d[3]));
     }
 
-    /// BLAKE consumes the `(c0,c1,0)` embedding. This is not an extra AIR
+    /// the compression consumes the `(c0,c1,0)` embedding. This is not an extra AIR
     /// constraint: the full three-limb memory bus makes a request carrying a
     /// literal zero in limb 2 match only such a stored word.
     #[test]
-    #[should_panic(expected = "BLAKE2s input cell must be a canonical 128-bit embedding")]
-    fn blake2s_requires_zero_third_limb() {
-        let mut program = blake2s_program([F64::ZERO; 4], [F64::ZERO; 4]);
+    #[should_panic(expected = "SHA-256 input cell must be a canonical 128-bit embedding")]
+    fn sha2_requires_zero_third_limb() {
+        let mut program = sha2_program([F64::ZERO; 4], [F64::ZERO; 4]);
         program.prog[0] = Op::Set {
             o: 2,
             k: F192::new(0, 0, 1),
@@ -879,13 +869,13 @@ mod tests {
         let _ = program.execute([w(7), w(11)]);
     }
 
-    /// A self-hash `BLAKE2s(h, h)` (the hash-chain step) passes the *same* input
+    /// A self-hash `SHA-256(h, h)` (the hash-chain step) passes the *same* input
     /// chunks as both `a` and `b` (`ins[0..2] == ins[2..4]`), so one 256-bit quad
     /// feeds both inputs with no copy. The row reads those cells twice; the
     /// running access counts thread through and the bus still balances. This is
     /// the aliasing the DSL's hash-chain lowering relies on.
     #[test]
-    fn blake2s_self_hash_aliased_operands() {
+    fn sha2_self_hash_aliased_operands() {
         let h: [F64; 4] = [
             F64(0xfeed_face_dead_beef),
             F64(0x0123_4567_89ab_cdef),
@@ -902,15 +892,10 @@ mod tests {
                 o: 3,
                 k: cell(h[2], h[3]),
             },
-            Op::Blake2s {
+            Op::Sha2 {
                 ins: [2, 3, 2, 3],
                 cv: 0,
                 out: 4,
-                metadata: crate::blake2s_flock::metadata(
-                    crate::blake2s_flock::PINNED_T,
-                    crate::blake2s_flock::FINAL_FLAG,
-                    0,
-                ),
             },
         ];
         // 8 slots: 3 executed, 4 filler SETs stepping the pc, then the sentinel.
@@ -926,7 +911,7 @@ mod tests {
         let pi = [w(3), w(5)];
 
         let exec = program.execute(pi);
-        let d = blake2s_compress(h, h, cv_lanes(pi[0], pi[1]), md());
+        let d = sha2_compress(h, h, cv_lanes(pi[0], pi[1]));
         assert_eq!(exec.mem[4], cell(d[0], d[1]));
         assert_eq!(exec.mem[5], cell(d[2], d[3]));
     }

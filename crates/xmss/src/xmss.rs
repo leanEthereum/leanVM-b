@@ -67,9 +67,12 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
     msg[..4].copy_from_slice(&domain.to_le_bytes());
     msg[4..12].copy_from_slice(&a.to_le_bytes());
     msg[12..20].copy_from_slice(&b.to_le_bytes());
-    primitives::blake2s::keyed_hash(seed, &msg)[..DIGEST_LEN]
-        .try_into()
-        .unwrap()
+    // `sha2_eth` has no keyed mode; the seed is simply the first 32 bytes of
+    // the hashed string. Prover-side only, so nothing in-circuit sees it.
+    let mut hasher = primitives::sha2::Hasher::new(seed.len() + msg.len());
+    hasher.update(seed);
+    hasher.update(&msg);
+    hasher.finalize()[..DIGEST_LEN].try_into().unwrap()
 }
 
 fn gen_wots_secret_key(seed: &[u8; 32], epoch: u32) -> WotsSecretKey {

@@ -41,23 +41,25 @@ pub enum Op {
         b: u32,
         c: u32,
     },
-    /// `BLAKE2s`: one standard BLAKE2s compression. The four 16-byte
-    /// message chunks `ins` (each a canonical 128-bit chunk in ONE 192-bit cell,
-    /// top limb zero) form the 64-byte block; the digest lands in the TWO
+    /// `SHA2`: one SHA-256 compression `C(cv, a‖b)`. The four 16-byte message
+    /// chunks `ins` (each a canonical 128-bit chunk in ONE 192-bit cell, top
+    /// limb zero) form the 64-byte block; the digest lands in the TWO
     /// consecutive cells `out, out+1`. Each message chunk is addressed
     /// independently, with no forced contiguity, so the caller need not assemble
     /// its operands into adjacent cells. The compression relation is proven by
     /// flock.
-    Blake2s {
+    ///
+    /// There is no per-block metadata. `sha2_eth` puts the message length in
+    /// its FIRST block, so a block carries no counter and no final flag, and a
+    /// hash of a known length starts from a compile-time chaining value
+    /// (`primitives::sha2::iv_for_len`, the default being
+    /// `sha2_flock::IV_CELLS` for 64 bytes).
+    Sha2 {
         ins: [u32; 4],
         /// Base of two consecutive cells holding the 256-bit chaining value
         /// (canonical 128-bit chunks, top limbs zero).
         cv: u32,
         out: u32,
-        /// `counter:u64 | f0:u32 | f1:u32`, little-endian, in the two low
-        /// K-lanes of a 192-bit immediate (top lane always zero). `f0` is the
-        /// final-block flag and `f1` is the last-node flag.
-        metadata: F192,
     },
 }
 

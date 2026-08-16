@@ -1,11 +1,11 @@
 % !TeX root = ../drafts/c-flock-protocol.tex
 \section{The Flock protocol}\label{annex:flock}
 
-Flock~\cite{Flock26} proves many executions of one Boolean circuit at once, in our case the BLAKE2s compression. Since we do not follow their protocol exactly, we describe our version here.
+Flock~\cite{Flock26} proves many executions of one Boolean circuit at once, in our case the SHA-256 compression. Since we do not follow their protocol exactly, we describe our version here.
 
 \subsection{Statement and commitment}\label{flock:statement}
 
-One BLAKE2s compression has a Boolean R1CS witness block of $2^{\kblock}$ bits, where $\kblock=14$. Its fixed matrices are $A_0,B_0,C_0\in\Ftwo^{2^{\kblock}\times 2^{\kblock}}$, with $C_0=I$. The witness includes the circuit inputs, outputs, AND-gate values, addition carries and one constant-one position; linear wires are substituted away. Within-block coordinates are the low-order coordinates and batch coordinates are the high-order coordinates throughout this annex, and a Boolean tuple is also read as an integer, lowest coordinate first.
+One SHA-256 compression has a Boolean R1CS witness block of $2^{\kblock}$ bits, where $\kblock=15$ ($29{,}113$ of those rows carry data, the rest are zero padding). Its fixed matrices are $A_0,B_0,C_0\in\Ftwo^{2^{\kblock}\times 2^{\kblock}}$, with $C_0=I$. The witness includes the circuit inputs, outputs, the $\mathrm{Ch}$ and $\mathrm{Maj}$ AND values, addition carries, the materialized message-schedule and round-state words and one constant-one position; every other linear wire is substituted away. Within-block coordinates are the low-order coordinates and batch coordinates are the high-order coordinates throughout this annex, and a Boolean tuple is also read as an integer, lowest coordinate first.
 
 For $2^{\kbatch}$ independent compressions, the witness is:
 \[
@@ -78,7 +78,7 @@ where $\rho\in\E^{\nflock}$ is the vector of sumcheck challenges and the third c
 
 \subsection{Lincheck}\label{flock:lincheck}
 
-Lincheck reduces the three zerocheck claims to claims on $z$. The block structure is what keeps it cheap: the matrices repeat one BLAKE2s circuit, so lincheck runs over a single block, not over the batch. Split $\rho=(\rho_{\mathrm{in}},\rho_{\mathrm{out}})$, where $\rho_{\mathrm{in}}\in\E^{\kblock-\kskip}$ selects the remaining within-block coordinates and $\rho_{\mathrm{out}}\in\E^{\kbatch}$ selects a batch instance.
+Lincheck reduces the three zerocheck claims to claims on $z$. The block structure is what keeps it cheap: the matrices repeat one SHA-256 circuit, so lincheck runs over a single block, not over the batch. Split $\rho=(\rho_{\mathrm{in}},\rho_{\mathrm{out}})$, where $\rho_{\mathrm{in}}\in\E^{\kblock-\kskip}$ selects the remaining within-block coordinates and $\rho_{\mathrm{out}}\in\E^{\kbatch}$ selects a batch instance.
 
 \begin{lemma}[Block diagonality folds the batch into $z$]\label{lem:flock-block-diagonal}
 For $a=Az$ with $A=I_{2^{\kbatch}}\otimes A_0$, at every point $(\zskip,\rho_{\mathrm{in}},\rho_{\mathrm{out}})\in\E\times\E^{\kblock-\kskip}\times\E^{\kbatch}$,
@@ -147,7 +147,7 @@ Writing $w_{\mathrm{col}}(\jsk,\jin)=s_{\jsk}\,\eq(\rho'_{\mathrm{in}},\jin)$ wi
 \sum_{i=0}^{63}\qext A_0(\zskip,\rho_{\mathrm{in}},i,\rho'_{\mathrm{in}})\,s_i=\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,e_{\mathrm{row}}(k)\,w_{\mathrm{col}}(j).
 \end{equation}
 
-One forward walk of the BLAKE2s circuit returns \eqref{flock:eq:matrix-form} for both matrices, in $O(\text{circuit})$ field operations, never touching the roughly $89$ million nonzero entries they hold. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\langle e_{\mathrm{row}},w_{\mathrm{col}}\rangle$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\rho_{\mathrm{in}},\rho'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
+One forward walk of the SHA-256 circuit returns \eqref{flock:eq:matrix-form} for both matrices, in $O(\text{circuit})$ field operations, never touching the roughly $1.1$ million nonzero entries they hold. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\langle e_{\mathrm{row}},w_{\mathrm{col}}\rangle$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\rho_{\mathrm{in}},\rho'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
 
 \subsubsection{Concluding Lincheck for a recursive verifier}\label{flock:defer}
 

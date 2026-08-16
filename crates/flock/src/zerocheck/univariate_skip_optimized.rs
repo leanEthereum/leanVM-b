@@ -1031,10 +1031,11 @@ mod tests {
     /// vectors as the dense URM — every chunk we skip would have contributed
     /// a literal zero to the dense sum (the convert table maps φ_8(0) = 0).
     ///
-    /// Covers the three hash padding shapes:
-    ///   - BLAKE2s: k_log=14, useful=16000 → b_med_counts ≈ [16, 16]
-    ///   - SHA-2:  k_log=15, useful=31401 → b_med_counts ≈ [16, 16, 16, 14]
-    ///   - Keccak: k_log=16, useful=42560 → b_med_counts = [16, 16, 16, 16, 16, 4, 0, 0]
+    /// Covers three hash padding shapes, the first being the one this repo
+    /// proves and the others two more skip boundaries:
+    ///   - SHA-256 here: k_log=15, useful=29113 → b_med_counts = [16, 16, 16, 9]
+    ///   - a denser 2^15 block: k_log=15, useful=31401 → [16, 16, 16, 14]
+    ///   - Keccak: k_log=16, useful=42560 → [16, 16, 16, 16, 16, 4, 0, 0]
     ///     (this is the only shape that exercises the full-skip case.)
     #[test]
     fn padded_matches_dense_with_zero_padding() {
@@ -1045,8 +1046,8 @@ mod tests {
         // m = k_log + n_blocks_log is small enough to keep the test fast
         // while still exercising the kernel's parallel + boundary paths.
         let cases = [
-            (14usize, 16_000usize, 0usize), // BLAKE2s, m=14
-            (15, 31_401, 0),                // SHA-2,  m=15
+            (15usize, 29_113usize, 0usize), // SHA-256 as encoded here, m=15
+            (15, 31_401, 0),                // a denser 2^15 block, m=15
             (16, 42_560, 0),                // Keccak, m=16
             (16, 42_560, 3),                // Keccak, m=19 (multiple hashes)
         ];

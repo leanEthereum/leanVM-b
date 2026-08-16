@@ -35,22 +35,26 @@ Instruction & Operands & Semantics\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
 \texttt{PACK64X2}      & $[o_A,o_B,o_C]$ & $\loc{o_C}=a_0+b_0y$ for $\loc{o_A}=a_0,\loc{o_B}=b_0\in\K$\\
-\texttt{BLAKE2S}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\md]$ & standard BLAKE2s compression (below)\\
+\texttt{SHA2}          & $[o_0,o_1,o_2,o_3,o_V,o_C]$ & SHA-256 compression (below)\\
 \hline
 \end{tabularx}
 \end{center}
 
 \texttt{PACK64X2} groups the low limbs of two $\E$-valued memory cells into one canonical $128$-bit cell.
 
-\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE2s operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\md$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
+\texttt{SHA2} is the SHA-256 compression $C$ \cite{fips180-4}, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a \texttt{SHA2} operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The instruction carries no immediate.
+
+The hash the machine actually computes is \shaeth, a length-prefixed Merkle--Damg\aa{}rd over $C$. For a message of $n$ bits,
 \[
-  \md=\mathit{counter}_{64}\;\Vert\;\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
+  \shaeth(m)=C\bigl(\cdots C(C(\ivbase,\lenblock(n)),m_1)\cdots,m_b\bigr),
 \]
-There is no block-length field: the byte counter is cumulative through the block being absorbed, so it is what says how many of the $64$ bytes are message, and only a final block may be partial. For a one-block $64$-byte hash, the chaining value is the parameterized BLAKE2s-256 IV (digest length $32$, unkeyed, fanout and depth $1$) and
+where $\ivbase=\mathrm{SHA256}(\texttt{"Ethereum"})$, $\lenblock(n)$ is $n$ as a $512$-bit big-endian integer, and $m_1,\dots,m_b$ are the $64$-byte blocks of $m$ zero-padded up to a whole number of blocks. Prefixing the length rather than appending it makes the encoding prefix-free, hence the construction indifferentiable from a random oracle; the usual $10^\ast$ padding is then unnecessary, the length block already separating messages of different lengths and the zero fill being injective at a fixed one.
+
+Prefixing is also what makes the machine's hash free of overhead. The first compression absorbs nothing but the length, so
 \[
-  \md=(64,\;2^{32}-1,\;0),
+  \ivlen(n)=C(\ivbase,\lenblock(8n))
 \]
-the final-block flag being all ones as RFC 7693~\cite{blake2} sets it on the last block, and the last-node flag zero: nothing here uses BLAKE2s's tree mode. A longer standard BLAKE2s hash of any length passes each compression result back through $o_V$ and sets the metadata immediate to the running byte counter, with the final-block flag on the last block. BLAKE2s has no chunk tree and no parent-node mode, so that one chain covers every input length: this is why a single compression opcode is a complete hash primitive here. The BLAKE2s table (\S\ref{sec:tab-blake2s}) wires its memory and bytecode operands into a flock~\cite{flock-impl} R1CS proof.
+depends on $n$ alone. Every call site in a program knows its length at assembly time, so that compression is a constant the bytecode supplies through $o_V$, never an executed instruction: an $n$-byte hash is exactly $\lceil n/64\rceil$ \texttt{SHA2} rows. A one-block $64$-byte hash, which is what every sponge step and Merkle node is, therefore takes the chaining value $\ivlen(64)$ and one row; a longer one passes each result back through $o_V$. There is no byte counter, no finalization flag, and no chunk tree: this is why a single compression opcode is a complete hash primitive here. The \texttt{SHA2} table (\S\ref{sec:tab-sha2}) wires its memory and bytecode operands into a flock~\cite{flock-impl} R1CS proof.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
