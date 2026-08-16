@@ -81,6 +81,7 @@ import XmssSecurity.BoundedSignCache
 import XmssSecurity.BoundedSignTrace
 import XmssSecurity.CappedConcreteExecution
 import XmssSecurity.CappedSigningLogReplay
+import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.ConcreteCorrectness
 import XmssSecurity.ConcreteVerify
 import XmssSecurity.MainTheorem
