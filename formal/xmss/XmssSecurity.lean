@@ -88,6 +88,8 @@ import XmssSecurity.CappedEncodingQueryBound
 import XmssSecurity.CappedEncodingCollisionProbability
 import XmssSecurity.CappedEncodingTraceBridge
 import XmssSecurity.CappedEncodingPrehitProbability
+import XmssSecurity.CappedEncodingActionTrace
+import XmssSecurity.CappedEncodingEventProbability
 import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.CappedEncodingMonitor
 import XmssSecurity.ConcreteCorrectness

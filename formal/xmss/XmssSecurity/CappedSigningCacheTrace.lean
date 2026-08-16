@@ -25,6 +25,17 @@ def SigningCacheTrace.PreservesOtherValidEncodingInputs
     (secretKey : SecretKey) (trace : SigningCacheTrace) : Prop :=
   ∀ entry ∈ trace, entry.PreservesOtherValidEncodingInputs secretKey
 
+def SigningCacheEntry.SuccessfulEncodingValid
+    (secretKey : SecretKey) (entry : SigningCacheEntry) : Prop :=
+  ∀ signature, entry.signature = some signature →
+    ∃ encoding, TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash entry.finalCache secretKey.parameter
+        entry.request.epoch (entry.request.message, signature.randomness)) = some encoding
+
+def SigningCacheTrace.SuccessfulEncodingsValid
+    (secretKey : SecretKey) (trace : SigningCacheTrace) : Prop :=
+  ∀ entry ∈ trace, entry.SuccessfulEncodingValid secretKey
+
 noncomputable def cappedUnloggedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec)
@@ -154,6 +165,39 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
         exact Concrete.cappedSign_success_encodingInput_cached publicKey secretKey request
           initialCache finalCache signature hbase
 
+theorem cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsValid
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      (QueryCache HashSpec × SigningCacheTrace))
+    (htrace : initialTrace.SuccessfulEncodingsValid secretKey)
+    (hmem : result ∈ support
+      ((cappedCacheTracedMappedAdversaryImpl publicKey secretKey input).run
+        (initialCache, initialTrace))) :
+    result.2.2.SuccessfulEncodingsValid secretKey := by
+  rw [cappedCacheTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    mem_support_bind_iff] at hmem
+  obtain ⟨⟨output, finalCache⟩, hbase, hpure⟩ := hmem
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  cases input with
+  | inl worldInput => simpa [signingCacheTraceUpdate] using htrace
+  | inr request =>
+      intro entry hentry
+      rw [signingCacheTraceUpdate, List.mem_append] at hentry
+      rcases hentry with hentry | hentry
+      · exact htrace entry hentry
+      · simp only [List.mem_singleton] at hentry
+        subst entry
+        intro signature hsignature
+        change output = some signature at hsignature
+        subst output
+        obtain ⟨encoding, hdecode, _hsignature⟩ :=
+          Concrete.cappedSign_success_replay publicKey secretKey request initialCache
+            finalCache finalCache signature hbase le_rfl
+        exact ⟨encoding, hdecode⟩
+
 theorem cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingInputs
     (publicKey : PublicKey) (secretKey : SecretKey)
     (input : (OracleWorld + SigningSpec).Domain)
@@ -282,6 +326,35 @@ theorem cappedCacheTracedMappedAdversaryImpl_successfulEncodingsCached
         simpa [simulateQ_query] using hquery
       exact ih output middleState.1 middleState.2 result
         (cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
+          publicKey secretKey input initialCache initialTrace (output, middleState)
+          htrace hquery') hrest
+
+theorem cappedCacheTracedMappedAdversaryImpl_successfulEncodingsValid
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace)
+    (result : α × (QueryCache HashSpec × SigningCacheTrace))
+    (htrace : initialTrace.SuccessfulEncodingsValid secretKey)
+    (hmem : result ∈ support
+      ((simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run (initialCache, initialTrace))) :
+    result.2.2.SuccessfulEncodingsValid secretKey := by
+  induction computation using OracleComp.inductionOn generalizing
+      initialCache initialTrace result with
+  | pure value =>
+      simp only [simulateQ_pure, StateT.run_pure, support_pure,
+        Set.mem_singleton_iff] at hmem
+      subst result
+      exact htrace
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
+      have hquery' : (output, middleState) ∈ support
+          ((cappedCacheTracedMappedAdversaryImpl publicKey secretKey input).run
+            (initialCache, initialTrace)) := by
+        simpa [simulateQ_query] using hquery
+      exact ih output middleState.1 middleState.2 result
+        (cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsValid
           publicKey secretKey input initialCache initialTrace (output, middleState)
           htrace hquery') hrest
 
@@ -608,6 +681,26 @@ theorem cappedDetailedGameWithSigningTrace_preservesOtherValidEncodingInputs
     (cappedDetailedGameAfterKeygenWithSigningTrace_invariants adversary publicKey
       secretKey keyCache result hrest).1
   simpa [hsecretKey] using hpreserves
+
+theorem cappedDetailedGameWithSigningTrace_successfulEncodingsValid
+    (adversary : Adversary Concrete.cappedScheme)
+    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
+    result.2.2.SuccessfulEncodingsValid result.1.secretKey := by
+  unfold cappedDetailedGameWithSigningTrace at hmem
+  rw [mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  unfold cappedDetailedGameAfterKeygenWithSigningTrace at hrest
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨⟨forgery, adversaryCache, trace⟩, hadversary, hverification⟩ := hrest
+  rw [mem_support_bind_iff] at hverification
+  obtain ⟨verificationResult, _hverify, hfinal⟩ := hverification
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  exact cappedCacheTracedMappedAdversaryImpl_successfulEncodingsValid
+    publicKey secretKey (adversary.main publicKey) keyCache []
+    (forgery, (adversaryCache, trace))
+    (by simp [SigningCacheTrace.SuccessfulEncodingsValid]) hadversary
 
 theorem cappedDetailedGameWithSigningTrace_cache_enncard_le_of_mem_support
     (adversary : Adversary Concrete.cappedScheme) (q : Nat)
