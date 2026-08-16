@@ -747,6 +747,23 @@ noncomputable def validObservedSignEpochs
     (actions : List EncodingMonitor.ObservedAction) : List Epoch :=
   EncodingMonitor.observedSignEpochs (validActions actions)
 
+@[simp]
+theorem validActions_append
+    (left right : List EncodingMonitor.ObservedAction) :
+    validActions (left ++ right) = validActions left ++ validActions right := by
+  induction left with
+  | nil => rfl
+  | cons action left ih =>
+      by_cases hvalid : ActionValid action <;>
+        simp [validActions, hvalid, ih]
+
+@[simp]
+theorem validObservedSignEpochs_append
+    (left right : List EncodingMonitor.ObservedAction) :
+    validObservedSignEpochs (left ++ right) =
+      validObservedSignEpochs left ++ validObservedSignEpochs right := by
+  simp [validObservedSignEpochs]
+
 theorem validActions_sublist_of_sublist
     {left right : List EncodingMonitor.ObservedAction}
     (hsub : left.Sublist right) :
@@ -761,6 +778,16 @@ theorem validActions_sublist_of_sublist
       by_cases hvalid : ActionValid action
       · simpa [validActions, hvalid] using ih.cons_cons action
       · simpa [validActions, hvalid] using ih
+
+theorem validActions_sublist
+    (actions : List EncodingMonitor.ObservedAction) :
+    (validActions actions).Sublist actions := by
+  induction actions with
+  | nil => simp [validActions]
+  | cons action actions ih =>
+      by_cases hvalid : ActionValid action
+      · simpa [validActions, hvalid] using ih.cons_cons action
+      · simpa [validActions, hvalid] using ih.cons action
 
 def State.Valid (state : EncodingMonitor.State) : Prop :=
   (∀ epoch digest, state.signed epoch = some digest →
