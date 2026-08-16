@@ -1198,25 +1198,23 @@ noncomputable def uniformGlobalChainTableFromTrajectories :
 
 noncomputable def sampleSecretGlobalChainMaterial :
     ProbComp ((Epoch → ChainIndex → Digest) ×
-      (GlobalChainEdgeIndex → Digest)) := do
-  let secret ← Concrete.sampleSecret
-  let edges ← $ᵗ (GlobalChainEdgeIndex → Digest)
-  pure (secret, edges)
+      (GlobalChainEdgeIndex → Digest)) :=
+  Prod.mk <$> Concrete.sampleSecret <*>
+    ($ᵗ (GlobalChainEdgeIndex → Digest))
 
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 2000000 in
-theorem sampleSecret_eq_uniform :
-    Concrete.sampleSecret = $ᵗ (Epoch → ChainIndex → Digest) := by
-  rw [Concrete.sampleSecret]
-
-set_option maxHeartbeats 2000000 in
-set_option maxRecDepth 2000000 in
-theorem sampleSecretGlobalChainMaterial_eq_independent :
-    sampleSecretGlobalChainMaterial =
-      independentGlobalChainTableMaterial := by
-  unfold sampleSecretGlobalChainMaterial independentGlobalChainTableMaterial
-  rw [sampleSecret_eq_uniform]
-  rfl
+theorem evalDist_sampleSecretGlobalChainMaterial_eq_independent :
+    evalDist sampleSecretGlobalChainMaterial =
+      evalDist independentGlobalChainTableMaterial := by
+  apply SPMF.ext
+  intro target
+  change Pr[= target | sampleSecretGlobalChainMaterial] =
+    Pr[= target | independentGlobalChainTableMaterial]
+  rw [sampleSecretGlobalChainMaterial, independentGlobalChainTableMaterial,
+    probOutput_seq_map_prod_mk_eq_mul,
+    probOutput_seq_map_prod_mk_eq_mul]
+  simp only [Concrete.probOutput_sampleSecret, probOutput_uniformSample]
 
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 2000000 in
@@ -1250,10 +1248,12 @@ theorem evalDist_uniformGlobalChainTableFromTrajectories_eq_uniform :
         ← evalDist_bind]
     _ = evalDist (globalChainTableMaterialEquiv.symm <$>
           sampleSecretGlobalChainMaterial) := by
-      simp [sampleSecretGlobalChainMaterial, map_eq_bind_pure_comp, bind_assoc]
+      simp [sampleSecretGlobalChainMaterial, monad_norm]
     _ = evalDist (globalChainTableMaterialEquiv.symm <$>
           independentGlobalChainTableMaterial) := by
-      rw [sampleSecretGlobalChainMaterial_eq_independent]
+      exact evalDist_map_eq_of_evalDist_eq
+        evalDist_sampleSecretGlobalChainMaterial_eq_independent
+        globalChainTableMaterialEquiv.symm
     _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
       have h := evalDist_map_eq_of_evalDist_eq
         evalDist_split_uniformGlobalChainTable_eq_independent
@@ -1501,6 +1501,7 @@ theorem evalDist_programmedAllChainTrajectoryKeygenTableOnly_eq_reconstructed :
   simp only [map_eq_bind_pure_comp]
   apply evalDist_bind_congr
   intro result hresult
+  simp only [Function.comp_apply]
   rw [programmedAllChainTrajectoryKeygen_support_table result hresult]
 
 set_option maxHeartbeats 2000000 in
@@ -1509,8 +1510,51 @@ theorem evalDist_programmedAllChainTrajectoryKeygen_reconstructed_eq_uniform :
     evalDist ((fun result => globalChainValueTableOfTrajectories result.2) <$>
       programmedAllChainTrajectoryKeygen) =
     evalDist uniformGlobalChainTableFromTrajectories := by
-  unfold programmedAllChainTrajectoryKeygen uniformGlobalChainTableFromTrajectories
+  unfold programmedAllChainTrajectoryKeygen
+    uniformGlobalChainTableFromTrajectories
   simp only [map_bind, bind_pure_comp, Functor.map_map]
+  calc
+    _ = evalDist (Concrete.samplePublicParameter >>= fun parameter =>
+          Concrete.sampleSecret >>= fun secret =>
+          globalChainValueTableOfTrajectories <$>
+            (Prod.fst <$> programmedAllChainTrajectoriesFromCache parameter
+              secret ∅ allChains)) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro parameter
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro secret
+      simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply]
+      apply evalDist_bind_congr
+      intro trajectoryResult _htrajectoryResult
+      exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+        ((simulateQ randomOracle
+          (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+            OracleComp HashSpec Digest)).run trajectoryResult.2)
+        (probFailure_eq_zero' (neverFail_simulateQ_randomOracle_run
+          (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+            OracleComp HashSpec Digest) trajectoryResult.2))
+        (pure (globalChainValueTableOfTrajectories trajectoryResult.1))
+    _ = evalDist (Concrete.samplePublicParameter >>= fun _parameter =>
+          Concrete.sampleSecret >>= fun secret =>
+          globalChainValueTableOfTrajectories <$>
+            uniformAllChainTrajectories secret allChains) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro parameter
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro secret
+      rw [evalDist_map,
+        evalDist_programmedAllChainTrajectories_fst_eq_uniform parameter
+          secret allChains ∅,
+        ← evalDist_map]
+    _ = evalDist (Concrete.sampleSecret >>= fun secret =>
+          globalChainValueTableOfTrajectories <$>
+            uniformAllChainTrajectories secret allChains) := by
+      exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+        Concrete.samplePublicParameter
+        (probFailure_eq_zero' inferInstance)
+        (Concrete.sampleSecret >>= fun secret =>
+          globalChainValueTableOfTrajectories <$>
+            uniformAllChainTrajectories secret allChains)
 
 theorem evalDist_programmedAllChainTrajectoryKeygenTableOnly_eq_uniform :
     evalDist programmedAllChainTrajectoryKeygenTableOnly =

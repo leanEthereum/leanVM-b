@@ -10,6 +10,26 @@ def globalCausalKeyResultOfReal
   (keyResult.1,
     { GlobalCausalHashState.empty with cache := keyResult.2 })
 
+def globalCausalRealKeyResultOfView
+    (keyView : ProgrammedGlobalChainKeygenView) :
+    (PublicKey × SecretKey) × QueryCache HashSpec :=
+  ((keyView.publicKey, keyView.secretKey), keyView.cache)
+
+theorem evalDist_realGlobalKeygen_eq_trajectoryProgrammedKeyResults :
+    evalDist ((simulateQ xmssRomImpl Concrete.keygen).run ∅) =
+      evalDist (globalCausalRealKeyResultOfView <$>
+        trajectoryProgrammedGlobalChainKeygen) := by
+  calc
+    _ = evalDist (globalCausalRealKeyResultOfView <$>
+          actualGlobalChainKeygen) := by
+      unfold actualGlobalChainKeygen globalCausalRealKeyResultOfView
+      simp [map_eq_bind_pure_comp, bind_assoc]
+    _ = evalDist (globalCausalRealKeyResultOfView <$>
+          trajectoryProgrammedGlobalChainKeygen) :=
+      evalDist_map_eq_of_evalDist_eq
+        evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed
+        globalCausalRealKeyResultOfView
+
 noncomputable def globalCausalStrategyAfterRealKeygen
     (adversary : Adversary Concrete.cappedScheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
@@ -62,7 +82,7 @@ noncomputable def globalCausalCompiledAfterRealKeygenExperiment
     ProbComp ((GlobalChainValueIndex → Digest) ×
       ((List Bool → GlobalChainValueIndex × Digest) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)) := do
-  let table ← $ᵗ (GlobalChainValueIndex → Digest)
+  let table ← RevealProbeOracleSimulation.eagerTableSample
   let keyResult ← (simulateQ xmssRomImpl Concrete.keygen).run ∅
   let result ← (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
     (RevealProbeOracleSimulation.compileStrategyProbes queries
@@ -81,16 +101,16 @@ theorem evalDist_eagerExperiment_globalCausalStrategyProgram_eq_afterRealKeygen
   apply OracleComp.DeferredSampling.evalDist_bind_congr_left
   intro table
   rw [simulate_eagerTrace_compileStrategyProbes_globalCausalStrategyProgram_eq_afterRealKeygen]
+  simp only [bind_assoc]
 
 noncomputable def globalCausalCompiledAfterProgrammedKeygenExperiment
     (queries : Nat) (adversary : Adversary Concrete.cappedScheme) :
     ProbComp ((GlobalChainValueIndex → Digest) ×
       ((List Bool → GlobalChainValueIndex × Digest) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)) := do
-  let table ← $ᵗ (GlobalChainValueIndex → Digest)
+  let table ← RevealProbeOracleSimulation.eagerTableSample
   let keyView ← trajectoryProgrammedGlobalChainKeygen
-  let keyResult :=
-    ((keyView.publicKey, keyView.secretKey), keyView.cache)
+  let keyResult := globalCausalRealKeyResultOfView keyView
   let result ← (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
     (RevealProbeOracleSimulation.compileStrategyProbes queries
       (globalCausalStrategyAfterRealKeygen adversary keyResult))).run
@@ -108,8 +128,7 @@ theorem evalDist_globalCausalCompiledAfterRealKeygen_eq_programmed
   intro table
   conv_lhs => rw [evalDist_bind]
   conv_rhs => rw [evalDist_bind]
-  rw [evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed]
-  simp only [actualGlobalChainKeygen, map_eq_bind_pure_comp, evalDist_bind,
-    bind_assoc, pure_bind]
+  rw [evalDist_realGlobalKeygen_eq_trajectoryProgrammedKeyResults]
+  simp [map_eq_bind_pure_comp, bind_assoc]
 
 end XmssSecurity.CappedChain

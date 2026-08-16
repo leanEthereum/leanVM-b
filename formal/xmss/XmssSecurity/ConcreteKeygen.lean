@@ -73,6 +73,14 @@ noncomputable def sampleSecret : ProbComp (Epoch → ChainIndex → Digest) :=
 
 attribute [irreducible] samplePublicParameter sampleSecret
 
+@[simp]
+theorem probOutput_sampleSecret
+    (secret : Epoch → ChainIndex → Digest) :
+    Pr[= secret | sampleSecret] =
+      (Fintype.card (Epoch → ChainIndex → Digest) : ENNReal)⁻¹ := by
+  rw [sampleSecret.eq_def]
+  exact probOutput_uniformSample (Epoch → ChainIndex → Digest) secret
+
 noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
   let parameter ← liftM samplePublicParameter
   let secret ← liftM sampleSecret

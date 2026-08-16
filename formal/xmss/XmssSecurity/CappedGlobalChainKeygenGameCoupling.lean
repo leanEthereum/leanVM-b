@@ -1,4 +1,5 @@
 import XmssSecurity.CappedGlobalChainKeygenCoupling
+import XmssSecurity.CappedGlobalChainTracedGame
 
 open OracleComp OracleSpec
 

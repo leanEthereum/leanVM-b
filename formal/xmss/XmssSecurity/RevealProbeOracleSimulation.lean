@@ -322,10 +322,13 @@ noncomputable local instance sampleableTable :
     SampleableType (Index → Digest) :=
   SampleableType.ofFintype (Index → Digest)
 
+noncomputable def eagerTableSample : ProbComp (Index → Digest) :=
+  $ᵗ (Index → Digest)
+
 noncomputable def eagerExperiment
     (computation : OracleComp (World Index) α) :
     ProbComp ((Index → Digest) × (α × ActionTrace Index)) := do
-  let table ← $ᵗ (Index → Digest)
+  let table ← eagerTableSample
   let result ← (simulateQ (eagerTraceImpl table) computation).run
   return (table, result)
 
@@ -1254,7 +1257,7 @@ theorem runTracedObserved_probability_le_structural
 
 noncomputable def tracedTableExperiment
     (computation : OracleComp (World Index) α) : ProbComp Bool := do
-  let table ← $ᵗ (Index → Digest)
+  let table ← eagerTableSample
   runTracedObserved table AdaptiveRevealMonitor.State.empty computation
 
 theorem map_eagerExperiment_observed_eq_tracedTableExperiment

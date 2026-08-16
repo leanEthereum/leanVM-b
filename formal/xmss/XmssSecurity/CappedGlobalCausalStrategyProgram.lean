@@ -217,7 +217,7 @@ noncomputable def globalCausalVerifierXmssRomImpl
   globalCausalUniformImpl + globalCausalAttackerHashQuery secretKey
 
 noncomputable def revealGlobalSignatureChains
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit) :
+    (request : SignRequest) (encoding : ChainIndex → Digit) :
     List ChainIndex → Signature →
       StateT GlobalCausalHashState
         (OracleComp
@@ -233,7 +233,7 @@ noncomputable def revealGlobalSignatureChains
 
 def globalSignatureRevealResult
     (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit) :
+    (request : SignRequest) (encoding : ChainIndex → Digit) :
     List ChainIndex → Signature → GlobalCausalHashState →
       Signature × GlobalCausalHashState
   | [], signature, state => (signature, state)
@@ -246,7 +246,7 @@ def globalSignatureRevealResult
 
 def globalSignatureRevealTrace
     (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit) :
+    (request : SignRequest) (encoding : ChainIndex → Digit) :
     List ChainIndex →
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex
   | [] => []
@@ -258,7 +258,7 @@ def globalSignatureRevealTrace
 
 theorem simulate_eagerImpl_revealGlobalSignatureChains
     (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
     (chains : List ChainIndex) (signature : Signature)
     (state : GlobalCausalHashState) :
     simulateQ (RevealProbeOracleSimulation.eagerImpl table)
@@ -270,13 +270,20 @@ theorem simulate_eagerImpl_revealGlobalSignatureChains
   | nil => simp [revealGlobalSignatureChains, globalSignatureRevealResult]
   | cons chain chains ih =>
       rw [revealGlobalSignatureChains]
+      change simulateQ (RevealProbeOracleSimulation.eagerImpl table) (do
+          let value ← RevealProbeOracleSimulation.revealQuery
+            (chain, request.epoch, encoding chain)
+          (revealGlobalSignatureChains request encoding chains
+            (replaceSignatureChainValue signature chain value)).run
+              (state.recordReveal
+                (chain, request.epoch, encoding chain) value)) = _
       simp only [simulateQ_bind,
         RevealProbeOracleSimulation.simulate_eagerImpl_revealQuery, pure_bind]
-      exact ih
+      exact ih _ _
 
 theorem simulate_eagerTrace_revealGlobalSignatureChains
     (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
     (chains : List ChainIndex) (signature : Signature)
     (state : GlobalCausalHashState) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
@@ -290,7 +297,15 @@ theorem simulate_eagerTrace_revealGlobalSignatureChains
       simp [revealGlobalSignatureChains, globalSignatureRevealResult,
         globalSignatureRevealTrace]
   | cons chain chains ih =>
-      rw [revealGlobalSignatureChains, simulateQ_bind, WriterT.run_bind',
+      rw [revealGlobalSignatureChains]
+      change (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table) (do
+          let value ← RevealProbeOracleSimulation.revealQuery
+            (chain, request.epoch, encoding chain)
+          (revealGlobalSignatureChains request encoding chains
+            (replaceSignatureChainValue signature chain value)).run
+              (state.recordReveal
+                (chain, request.epoch, encoding chain) value))).run = _
+      rw [simulateQ_bind, WriterT.run_bind',
         RevealProbeOracleSimulation.simulate_eagerTrace_revealQuery]
       simp only [pure_bind]
       rw [ih]
@@ -298,7 +313,7 @@ theorem simulate_eagerTrace_revealGlobalSignatureChains
 
 theorem globalSignatureRevealResult_chainValue_of_not_mem
     (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
     (chains : List ChainIndex) (signature : Signature)
     (state : GlobalCausalHashState) (candidate : ChainIndex)
     (hnotmem : candidate ∉ chains) :
@@ -311,11 +326,12 @@ theorem globalSignatureRevealResult_chainValue_of_not_mem
       rw [globalSignatureRevealResult]
       rw [ih _ _ hnotmem.2]
       exact replaceSignatureChainValue_other signature chain candidate
-        (Ne.symm hnotmem.1)
+        (table (chain, request.epoch, encoding chain))
+        hnotmem.1
 
 theorem globalSignatureRevealResult_chainValue_of_mem
     (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
     (chains : List ChainIndex) (signature : Signature)
     (state : GlobalCausalHashState) (candidate : ChainIndex)
     (hnodup : chains.Nodup) (hmem : candidate ∈ chains) :
@@ -338,7 +354,7 @@ theorem globalSignatureRevealResult_chainValue_of_mem
 
 theorem globalSignatureRevealResult_allChains_chainValue
     (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
     (signature : Signature) (state : GlobalCausalHashState)
     (chain : ChainIndex) :
     (globalSignatureRevealResult table request encoding allChains signature
@@ -526,7 +542,7 @@ theorem simulate_globalCausalVerifierXmssRomImpl_isProbeQueryBoundP
     secretKey input currentState
 
 theorem revealGlobalSignatureChains_run_isProbeQueryBoundP
-    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
     (chains : List ChainIndex) (signature : Signature)
     (state : GlobalCausalHashState) :
     (revealGlobalSignatureChains request encoding chains signature).run state
@@ -552,10 +568,18 @@ theorem revealGlobalSignatureOption_run_isProbeQueryBoundP
   | none => simp [revealGlobalSignatureOption]
   | some signature =>
       rw [revealGlobalSignatureOption]
+      change (match TargetSum.decodeDigest
+          (Concrete.CacheView.encodingHash state.cache secretKey.parameter
+            request.epoch (request.message, signature.randomness)) with
+        | none => pure (some signature, state)
+        | some encoding => do
+            let revealed ← (revealGlobalSignatureChains request encoding
+              allChains signature).run state
+            pure (some revealed.1, revealed.2)).IsQueryBoundP
+          RevealProbeOracleSimulation.IsProbeQuery 0
       split
       · simp
       · rename_i encoding hdecode
-        rw [StateT.run_bind]
         have hreveal := revealGlobalSignatureChains_run_isProbeQueryBoundP
           request encoding allChains signature state
         apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0) hreveal
