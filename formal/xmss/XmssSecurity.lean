@@ -95,6 +95,7 @@ import XmssSecurity.CappedLeafEventProbability
 import XmssSecurity.CappedMerkleEventProbability
 import XmssSecurity.CappedSuffixEventProbability
 import XmssSecurity.CappedGlobalChainTracedGame
+import XmssSecurity.CappedGlobalChainPresampling
 import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.CappedEncodingMonitor
 import XmssSecurity.ConcreteCorrectness

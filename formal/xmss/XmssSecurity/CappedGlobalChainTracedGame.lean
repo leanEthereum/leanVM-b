@@ -141,6 +141,33 @@ theorem globalWinningChainOrigin_probability_le_revealProbeView
   exact globalOrigin_implies_globalRevealProbeView_hit q adversary hbound result
     hresult horigin
 
+noncomputable def HasGlobalChainEagerReduction
+    (q : Nat) (adversary : Adversary Concrete.cappedScheme) : Prop :=
+  ∃ (Result : Type)
+      (computation : OracleComp
+        (RevealProbeOracleSimulation.World GlobalChainValueIndex) Result),
+    computation.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery q ∧
+      Pr[fun result =>
+        GlobalWinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+          result.1.1.2 result.2.1 |
+        detailedGameWithKeygenCache adversary] ≤
+      Pr[RevealProbeOracleSimulation.ObservedHit |
+        RevealProbeOracleSimulation.eagerExperiment computation]
+
+theorem globalWinningChainOrigin_probability_le_of_eagerReduction
+    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (hreduction : HasGlobalChainEagerReduction q adversary) :
+    Pr[fun result =>
+      GlobalWinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+        result.1.1.2 result.2.1 |
+      detailedGameWithKeygenCache adversary] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  obtain ⟨Result, computation, hbound, hprobability⟩ := hreduction
+  exact hprobability.trans
+    (RevealProbeOracleSimulation.eagerExperiment_observedHit_probability_le
+      q computation hbound)
+
+/-- Exact reveal-view independence is stronger than the eager reduction and is useful when it happens to be available. -/
 noncomputable def HasGlobalChainRevealViewCoupling
     (adversary : Adversary Concrete.cappedScheme) : Prop :=
   ∃ transcriptGenerator : ProbComp
