@@ -25,37 +25,39 @@
 //! This is a sum over only `2^k_log` terms, with `ẑ(·, x_outer)` being the
 //! partial fold of `z` at the outer half of the claim point.
 //!
-//! ## Protocol shape (circuit R1CS: C = I, A & B share a claim point)
+//! ## Protocol shape (circuit R1CS: C = I, one shared claim point)
 //!
-//! For R1CS coming from circuits, `C = I` (identity), so `c = Cz = z` and
-//! the zerocheck's c-claim `ĉ(point_c) = v_c` IS a direct `z`-claim
-//! `ẑ(point_c) = v_c`, handled by the PCS without going through lincheck.
-//! Likewise the zerocheck's `â` and `b̂` claims live at the **same** point
-//! `(z, ρ-values)`, so lincheck only needs to fold `z` **once** at that
-//! shared point.
+//! The zerocheck leaves `â`, `b̂` and `ĉ` at the **same** point `(z, ρ-values)`,
+//! so lincheck folds `z` **once**, at that shared point. For R1CS coming from
+//! circuits `C = I`, so the c-claim is a direct `z`-claim and enters the same
+//! batch as A and B rather than travelling to the PCS on its own.
 //!
 //! 1. **Prover sends** one length-`k = 2^k_log` F192 vector
 //!    `z_vec[i_inner] = ẑ(i_inner, x_ab.x_outer)`.
-//! 2. **Verifier checks** *two* consistency equations against the same
+//! 2. **Verifier checks** *three* consistency equations against the same
 //!    `z_vec`:
 //!    ```text
 //!    Σ_{i_inner}  Â_0_quirky(z_skip, x_inner_rest, i_inner) · z_vec[i_inner]  ==  v_a
 //!    Σ_{i_inner}  B̂_0_quirky(z_skip, x_inner_rest, i_inner) · z_vec[i_inner]  ==  v_b
+//!    Σ_{i_inner}  eq_inner(z_skip, x_inner_rest, i_inner)   · z_vec[i_inner]  ==  v_c
 //!    ```
+//!    batched in powers of one challenge α (A at 1, B at α, C at α², the
+//!    constant-wire pin at α³).
 //! 3. **The output claim IS `z_partial`**: the `2^k_skip` bit-slice values of
 //!    `z` at `(r_inner_rest, x_ab.x_outer)`, pinned by the checks above. Ring
 //!    switching binds every one of them against the commitment.
 //!
-//! Combined with the c-claim handed in directly by the caller, the PCS sees
-//! **two** ring-switched claims.
+//! So the PCS sees **one** ring-switched claim, not two.
 //!
 //! ## Soundness
 //!
-//! - The two scalar checks tie `z_vec` to `v_a` and `v_b` from the upstream
-//!   layer; without them a malicious prover could send any vector.
+//! - The three scalar checks tie `z_vec` to `v_a`, `v_b` and `v_c` from the
+//!   upstream layer; without them a malicious prover could send any vector.
+//!   They ride distinct powers of α, drawn after all three were bound, so
+//!   acceptance pins each of them except with 3/|F|.
 //! - `z_partial` itself travels to the PCS, and ring switching binds every one
 //!   of its entries to the commitment (error below `2⁻¹⁶⁰`), so a vector that
-//!   passes the two checks yet differs from the true partial fold of `z` is
+//!   passes the three checks yet differs from the true partial fold of `z` is
 //!   caught by the opening downstream.
 //!
 //! ## Quirky (univariate-skip) claim points
@@ -117,7 +119,7 @@ use crate::r1cs::SparseBinaryMatrix;
 use fiat_shamir::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use pcs::ring_switch::inner_product_ext;
 use primitives::field::F192;
-use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
+use primitives::multilinear::{eq_eval, eq_table as build_eq, lagrange_weights_naive};
 #[cfg(test)]
 use zk_alloc::ArenaVec;
 
@@ -127,7 +129,7 @@ use zk_alloc::ArenaVec;
 //
 // Lincheck's hot path computes a single length-`k = 2^k_log` vector
 //
-//   `comb_vec[c] = α · ξ_A(c) + ξ_B(c)`
+//   `comb_vec[c] = ξ_A(c) + α · ξ_B(c)`
 //
 // where `ξ_M(c) = Σ_r eq_inner[r] · M[r, c]` is the eq-weighted column
 // marginal of base matrix `M ∈ {A_0, B_0}`, at cost ∝ NNZ.
@@ -140,7 +142,7 @@ use zk_alloc::ArenaVec;
 // the marginal entirely via the circuit walk (flock.tex §Circuit walking).
 
 /// Per-block linear structure consumed by lincheck. Implementations produce
-/// the α-batched column marginal `comb_vec[c] = α · ξ_A(c) + ξ_B(c)` either
+/// the α-batched column marginal `comb_vec[c] = ξ_A(c) + α · ξ_B(c)` either
 /// by sparse-matrix iteration (default) or by walking the circuit directly.
 pub trait LincheckCircuit: Sync {
     /// Number of columns in the per-block matrices A_0, B_0 (= k = 2^k_log).
@@ -164,7 +166,7 @@ pub trait LincheckCircuit: Sync {
     /// Optional verifier-side fast path (flock.tex §Circuit walking): the
     /// α-batched bilinear form
     ///
-    ///   `α·(uᵀ A_0 w) + (uᵀ B_0 w)`
+    ///   `(uᵀ A_0 w) + α·(uᵀ B_0 w)`
     ///
     /// for arbitrary row weights `u` and column weights `w` (length
     /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
@@ -184,7 +186,7 @@ pub trait LincheckCircuit: Sync {
 /// independent (parallel with no per-thread accumulator copies and no write
 /// scatter) and the α-mul amortizes to one per column:
 ///
-///   `comb[c] = α · Σ_{r ∈ colA(c)} eq_inner[r] + Σ_{r ∈ colB(c)} eq_inner[r]`
+///   `comb[c] = Σ_{r ∈ colA(c)} eq_inner[r] + α · Σ_{r ∈ colB(c)} eq_inner[r]`
 ///
 /// On BLAKE2s's matrices (k = 2^14, ~16.7M nonzeros) this measures ~1.7× faster
 /// than the row-scatter fold. Construction costs one pass over the nonzeros
@@ -278,7 +280,7 @@ impl LincheckCircuit for CscCircuit {
             for &r in &self.b_rows[self.b_col_ptr[c] as usize..self.b_col_ptr[c + 1] as usize] {
                 sb += eq_inner[r as usize];
             }
-            alpha * sa + sb
+            sa + alpha * sb
         };
         if self.n_cols < SUMCHECK_PAR_THRESHOLD {
             return (0..self.n_cols).map(one_col).collect();
@@ -321,7 +323,7 @@ pub struct QuirkyPoint {
 pub struct LincheckClaim {
     /// The A/B batching challenge (sampled first).
     pub alpha: F192,
-    /// The constant-pin challenge `alpha²`; zero when the circuit has no pin
+    /// The constant-pin challenge `alpha³`; zero when the circuit has no pin
     /// column.
     pub beta: F192,
     /// The sumcheck round challenges, in round order (MSB-first binding).
@@ -1173,8 +1175,8 @@ pub fn prove_padded_capture_s_hat_v(
         }
     };
 
-    // 1. Sample α (matches verifier's order). Used to batch the two scalar
-    //    consistency checks v_a, v_b into a single sumcheck.
+    // 1. Sample α (matches verifier's order). Used to batch the scalar
+    //    consistency checks v_a, v_b, v_c into a single sumcheck.
     let alpha = ps.sample();
 
     // 2. Build the α-batched comb_vec via the circuit's per-block fold. For
@@ -1188,18 +1190,27 @@ pub fn prove_padded_capture_s_hat_v(
     let mut comb_vec = circuit.fold_alpha_batched(alpha, &eq_inner);
     stage("fold_alpha_batched", t);
 
-    // 3. Constant-wire pin. Fold β·eq(j*, ·) into the comb so the same sumcheck
-    //    also proves z_vec[j*] = 1 (the all-ones constant column). Since j* is a
-    //    boolean index, eq(j*, ·) is the one-hot vector and this is a single
-    //    entry update. β = α², so the three residuals ride powers of one
-    //    challenge. See lincheck's `LincheckCircuit::const_pin_col`.
+    // 3. The zerocheck's c-claim, at α². `C = I`, so `ĉ(x_ab)` is the z-claim
+    //    `Σ_j eq_inner[j]·ẑ(j, x_outer)`: the same row weights the matrices are
+    //    folded against, which is why it costs one pass over a length-k vector
+    //    and no extra sumcheck. It is what makes the AB and C claims come out
+    //    of lincheck at ONE point.
+    let alpha_sq = alpha.square();
+    for (c, e) in comb_vec.iter_mut().zip(&eq_inner) {
+        *c += alpha_sq * *e;
+    }
+
+    // 4. Constant-wire pin, at β = α³. Fold β·eq(j*, ·) into the comb so the
+    //    same sumcheck also proves z_vec[j*] = 1 (the all-ones constant
+    //    column). Since j* is a boolean index, eq(j*, ·) is the one-hot vector
+    //    and this is a single entry update. See `LincheckCircuit::const_pin_col`.
     let mut beta = F192::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        beta = alpha.square();
+        beta = alpha_sq * alpha;
         comb_vec[col] += beta;
     }
 
-    // 4. Partial fold of z at the shared outer half (length-k F192 vector).
+    // 5. Partial fold of z at the shared outer half (length-k F192 vector).
     let t = std::time::Instant::now();
     let eq_x_outer = build_eq(&x_ab.x_outer);
     let mut z_vec = partial_fold_packed_z_best(z_packed, m, k_log, useful_bits, &eq_x_outer);
@@ -1266,7 +1277,7 @@ pub fn prove_padded_capture_s_hat_v(
 }
 
 /// Verify a lincheck proof. Walks the sponge in lockstep with the prover,
-/// replays the α-batched product sumcheck against `v_a` and `v_b`, and
+/// replays the α-batched product sumcheck against `v_a`, `v_b` and `v_c`, and
 /// derives the single output z-claim `w`.
 pub fn verify(
     m: usize,
@@ -1276,6 +1287,7 @@ pub fn verify(
     x_ab: &QuirkyPoint,
     v_a: F192,
     v_b: F192,
+    v_c: F192,
     vs: &mut VerifierState<'_>,
 ) -> Result<LincheckClaim, VerifyError> {
     let k = 1usize << k_log;
@@ -1323,14 +1335,17 @@ pub fn verify(
     //    Only the transcript messages drive the running claim; the prover's
     //    lockstep comb_vec fold is linear, so its end state is reconstructed
     //    in step 5 as column weights instead of being folded here.
-    // Constant-wire pin (mirror of prove): β = α², the comb's +β at the
+    // Constant-wire pin (mirror of prove): β = α³, the comb's +β at the
     // constant column surfaces in step 5 as `+β·w_col[col]`, and the initial
     // target gains +β·1, since the honest all-ones constant column folds to 1.
     // See lincheck's `LincheckCircuit::const_pin_col`.
-    let mut target = alpha * v_a + v_b;
+    // The zerocheck's c-claim at α² (mirror of prove step 3): `C = I`, so it
+    // enters the comb as `α²·eq_inner` and the target as `α²·v_c`.
+    let alpha_sq = alpha.square();
+    let mut target = v_a + alpha * v_b + alpha_sq * v_c;
     let mut beta = F192::ZERO;
     if circuit.const_pin_col().is_some() {
-        beta = alpha.square();
+        beta = alpha_sq * alpha;
         target += beta;
     }
     let mut running = target;
@@ -1358,7 +1373,7 @@ pub fn verify(
     //      w_col[i_skip + i_rest·2^k_skip] = z_partial[i_skip] · eq(r_inner_rest, i_rest),
     //
     //    so the whole check collapses to ONE bilinear form
-    //    `eq_innerᵀ·(α·A_0 + B_0)·w_col + β·w_col[pin]` against the running
+    //    `eq_innerᵀ·(A_0 + α·B_0)·w_col + β·w_col[pin]` against the running
     //    claim. Ties z_partial to the upstream v_a, v_b. Walk-capable circuits
     //    (`bilinear_form`) evaluate it in O(circuit) field ops; the fallback
     //    materializes the marginal and takes the inner product (identical
@@ -1373,6 +1388,17 @@ pub fn verify(
     if let Some(col) = circuit.const_pin_col() {
         final_sum += beta * w_col[col];
     }
+    // The c term's `⟨eq_inner, w_col⟩`, by the tensor structure of both sides:
+    // `eq_inner = eq(x_inner_rest) ⊗ λ(z_skip)` and `w_col = eq(r_inner_rest) ⊗
+    // z_partial`, so it is 8 eq factors times a 64-term Lagrange combination
+    // instead of a length-k inner product. That is the form the recursive
+    // verifier can afford.
+    let lambda_skip = lagrange_weights_naive(k_skip, x_ab.z_skip);
+    let c_slice_value = lambda_skip
+        .iter()
+        .zip(&z_partial)
+        .fold(F192::ZERO, |acc, (&w, &s)| acc + w * s);
+    final_sum += alpha_sq * eq_eval(&x_ab.x_inner_rest, &r_inner_rest) * c_slice_value;
     if running != final_sum {
         return Err(VerifyError::ConsistencyFailed {
             which: "sumcheck-final",
@@ -1716,6 +1742,8 @@ mod tests {
             // True quirky-MLE eval claims at the shared point.
             let v_a = mle_eval_bool_quirky(&a, m, k_log, k_skip, &x_ab);
             let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
+            // C = I, so the c-claim is the quirky MLE of z itself.
+            let v_c = mle_eval_bool_quirky(&z, m, k_log, k_skip, &x_ab);
 
             // Prove and verify with matched challengers.
             let circuit = CscCircuit::from_matrices(&a_0, &b_0);
@@ -1724,7 +1752,7 @@ mod tests {
 
             let proof_t = ch_p.into_proof();
             let mut ch_v = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-            let claim_v = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &mut ch_v).unwrap_or_else(|e| {
+            let claim_v = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, v_c, &mut ch_v).unwrap_or_else(|e| {
                 panic!("verify rejected honest proof at m={m},k_log={k_log},k_skip={k_skip}: {e:?}")
             });
 
@@ -1777,6 +1805,7 @@ mod tests {
         let x_ab = random_quirky_point(m, k_log, k_skip, &mut rng);
         let v_a = mle_eval_bool_quirky(&a, m, k_log, k_skip, &x_ab);
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
+        let v_c = mle_eval_bool_quirky(&z, m, k_log, k_skip, &x_ab);
 
         let circuit = CscCircuit::from_matrices(&a_0, &b_0);
         let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
@@ -1809,7 +1838,7 @@ mod tests {
                 bad.stream[zp_word].c0 ^= 1;
             }
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
-            let res = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &mut ch);
+            let res = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, v_c, &mut ch);
             assert!(
                 matches!(res, Err(VerifyError::ConsistencyFailed { .. })),
                 "verify did not reject z_partial[{skip_idx}].{label} bit-flip: got {res:?}"
@@ -1834,6 +1863,7 @@ mod tests {
         let x_ab = random_quirky_point(m, k_log, k_skip, &mut rng);
         let v_a = mle_eval_bool_quirky(&a, m, k_log, k_skip, &x_ab);
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
+        let v_c = mle_eval_bool_quirky(&z, m, k_log, k_skip, &x_ab);
 
         let circuit = CscCircuit::from_matrices(&a_0, &b_0);
         let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
@@ -1845,7 +1875,7 @@ mod tests {
         bad.stream.pop();
         let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
         assert!(matches!(
-            verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &mut ch),
+            verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, v_c, &mut ch),
             Err(VerifyError::Transcript(_))
         ));
 
@@ -1857,14 +1887,14 @@ mod tests {
             x_outer: x_ab.x_outer.clone(),
         };
         assert!(matches!(
-            verify(m, k_log, k_skip, &circuit, &bad_x_ab, v_a, v_b, &mut ch),
+            verify(m, k_log, k_skip, &circuit, &bad_x_ab, v_a, v_b, v_c, &mut ch),
             Err(VerifyError::BadInnerRestLength { .. })
         ));
 
         // k_skip > k_log.
         let mut ch = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         assert!(matches!(
-            verify(m, k_log, k_log + 1, &circuit, &x_ab, v_a, v_b, &mut ch),
+            verify(m, k_log, k_log + 1, &circuit, &x_ab, v_a, v_b, v_c, &mut ch),
             Err(VerifyError::KSkipExceedsKLog { .. })
         ));
     }

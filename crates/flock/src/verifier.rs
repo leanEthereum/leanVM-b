@@ -9,9 +9,4 @@ use crate::zerocheck;
 pub enum VerifyError {
     Zerocheck(zerocheck::VerifyError),
     Lincheck(lincheck::VerifyError),
-    /// The stream ran out while reading the `c` family's bit slices.
-    CSlicesTruncated,
-    /// Those slices do not combine to the zerocheck's `c_eval` under the φ8
-    /// Lagrange weights at `z`.
-    CSlicesMismatch,
 }

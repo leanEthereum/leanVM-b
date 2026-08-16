@@ -9,7 +9,7 @@
 //!      on `(â, b̂, ĉ)`.
 //!   3. [`lincheck`] reduces those to the `2^k_skip` bit-slice values of `z` at
 //!      one point, against the per-block matrices.
-//!   4. The PCS binds both families of slices ([`blake2s::SliceClaim`]) to the
+//!   4. The PCS binds that family of slices ([`blake2s::SliceClaim`]) to the
 //!      commitment.
 //!
 //! [`blake2s`] is the one circuit: the BLAKE2s compression encoded as a

@@ -122,7 +122,7 @@ fn blake2s_batch_prove_verify() {
         let mut vs = VerifierState::new(b"flock-blake2s-batch", &transcript, &[]);
         let root = vs.next_root().expect("commitment root");
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
-        let ring = ring_switch_verify(n, 0, &replay.ab, &replay.c);
+        let ring = ring_switch_verify(n, 0, &replay.claim);
         assert!(
             verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring),
             "stacked PCS opening verifies"

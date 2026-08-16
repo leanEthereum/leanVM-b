@@ -921,8 +921,8 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
                 })
                 .collect(),
         );
-        ga.push(gf * d.matrix_a_coefficient);
-        gb.push(gf);
+        ga.push(gf);
+        gb.push(gf * d.matrix_a_coefficient);
         us.push(pcs::whir::build_eq_table_ext(&c.matrix_point[..klog]));
         ws.push(pcs::whir::build_eq_table_ext(&c.matrix_point[klog..]));
         ga.push(cga);
@@ -960,7 +960,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         if t % 2 == 0 {
             let d = &subs[t / 2];
             assert_eq!(
-                d.matrix_a_coefficient * fa + fb,
+                fa + d.matrix_a_coefficient * fb,
                 d.matrix_claim,
                 "fresh matrix claim, child {}",
                 t / 2
@@ -1306,8 +1306,12 @@ fn gen_verify(
     let lcz: Vec<F192> = summary.lc_claim.s_hat_v.clone();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
-    // claim minus (= plus, char 2) the const-pin contribution.
-    let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
+    // claim minus (= plus, char 2) the const-pin and c-claim contributions.
+    // α² from α, not from β: `LincheckClaim::beta` (the pin, at α³) is zero for
+    // a circuit with no const-pin column, while every verifier draws the
+    // c-claim's coefficient unconditionally.
+    let lc_sq = lc_alpha.square();
+    let mut lrun = zcf[0] + lc_alpha * zcf[1] + lc_sq * summary.zc_claim.c_eval + lc_beta;
     for i in 0..lcrounds {
         let (c0, c2) = (lcr[2 * i], lcr[2 * i + 1]);
         lrun = primitives::multilinear::poly_eval(&[c0, lrun + c2, c2], lrr[i]);
@@ -1318,7 +1322,17 @@ fn gen_verify(
         pinw *= if bit == 1 { rv } else { F192::ONE + rv };
     }
     pinw *= lcz[flock::blake2s::Z_CONST_POS % 64];
-    let matpart = lrun + pinw;
+    // The c term: eq(ρ_in, ρ'_in) times the φ8-Lagrange combination of the 64
+    // slices, ρ'_in being the lincheck challenges read back in coordinate order.
+    let mut c_point_eq = F192::ONE;
+    for (t, &rin) in zrho[..lcrounds].iter().enumerate() {
+        c_point_eq *= F192::ONE + rin + lrr[lcrounds - 1 - t];
+    }
+    let c_slice_value = primitives::multilinear::lagrange_weights_naive(6, zc_z)
+        .iter()
+        .zip(&lcz)
+        .fold(F192::ZERO, |acc, (&w, &s)| acc + w * s);
+    let matpart = lrun + pinw + lc_sq * c_point_eq * c_slice_value;
 
     // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
     // per the config schedule) then ONE query-phase
@@ -2099,14 +2113,10 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         }
         d.inv()
     };
-    let ilam: Vec<F192> = (0..64)
-        .map(|i| inv_den(&phi[64..128], phi[64 + i], phi[64 + i]))
-        .collect();
     let icmb: Vec<F192> = (0..64)
         .map(|i| inv_den(&phi[..128], phi[64 + i], phi[64 + i]))
         .collect();
     let isdom: Vec<F192> = (0..64).map(|i| inv_den(&phi[..64], phi[i], phi[i])).collect();
-    ps("LAGRANGE_INV_LAMBDA", flds(&ilam));
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
@@ -2766,6 +2776,13 @@ mod tests {
             }),
             ("rs_nover", &|h: &mut Hints| {
                 h.entries("rs_nover")[0][0] *= F192::from(primitives::field::G);
+            }),
+            // The one hint carrying flock's whole lincheck terminal. Pinned not
+            // by the guest's own assert (which merely defines it) but by the
+            // matrix batching, whose reduced claims the root discharges against
+            // the real A_0/B_0.
+            ("matpart", &|h: &mut Hints| {
+                h.entries("matpart")[0][0] += F192::ONE;
             }),
         ];
         for (what, tamper) in node_cases {

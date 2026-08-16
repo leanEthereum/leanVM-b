@@ -40,7 +40,11 @@
 \newcommand{\skipcoset}{\mathcal{H}'}         % 64 transmitted round-one nodes
 \newcommand{\fembed}{\varphi_{8}}             % embedding of F_{2^8} into E
 \newcommand{\zskip}{\upsilon_{\mathrm{zc}}}   % zerocheck univariate challenge
-\newcommand{\lcab}{\alpha_{\mathrm{AB}}}      % lincheck A/B batching challenge
+\newcommand{\lcalpha}{\alpha_{\mathrm{lc}}}      % lincheck batching challenge (A, B, C, the pin)
+\newcommand{\ksk}{k_{\mathrm{sk}}}              % row index, the skipped half
+\newcommand{\kin}{k_{\mathrm{in}}}              % row index, the within-block half
+\newcommand{\jsk}{j_{\mathrm{sk}}}              % column index, the skipped half
+\newcommand{\jin}{j_{\mathrm{in}}}              % column index, the within-block half
 
 % ---------- VM ----------
 \newcommand{\loc}[1]{\mem[\fp\cdot #1]}

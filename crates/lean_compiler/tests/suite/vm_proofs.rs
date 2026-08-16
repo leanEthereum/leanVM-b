@@ -59,7 +59,7 @@ fn a_tampered_opening_is_rejected() {
 
 /// flock's reduction sub-proof (zerocheck, lincheck, ring switch) rides the scalar
 /// stream as raw transport, but its values re-enter the sponge through the verifier's
-/// replay, so a flipped transport word diverges the recovered `(ab, c)` claims.
+/// replay, so a flipped transport word diverges the recovered flock claim.
 #[test]
 fn a_tampered_reduction_word_is_rejected() {
     let (program, pi, proof) = hashing_proof();

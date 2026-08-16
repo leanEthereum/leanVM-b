@@ -569,9 +569,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
-    // layouts retained from the fused q_flock build pass; it returns the `(ab, c)`
-    // validity claims on the committed `q_flock`, discharged by the PCS below in the
-    // SAME WHIR as every leanVM point claim (the point claims become the
+    // layouts retained from the fused q_flock build pass; it returns the
+    // validity claim on the committed `q_flock`, discharged by the PCS below in
+    // the SAME WHIR as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
     let flock_reduction = w
         .flock_reduction
@@ -702,7 +702,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Replay flock's reduction straight off the shared stream (each scalar bound
-    // as it is read) to recover its `(ab, c)` validity claims on q_flock, then
+    // as it is read) to recover its validity claim on q_flock, then
     // verify them alongside every point claim in the ONE WHIR opening
     // (mirroring `prove`). The padding convention always supplies at least one
     // instance, including programs that execute no BLAKE2s instruction.
@@ -710,7 +710,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::blake2s_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
     let flock_stream_end = vs.stream_offset();
-    let ring = crate::blake2s_flock::ring_switch_verify(n_blocks, offset, &replay.ab, &replay.c);
+    let ring = crate::blake2s_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
     pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {

@@ -33,8 +33,8 @@
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use flock::blake2s::{
-    Blake2sSetup, Compression, K_LOG, PackedWitnessClaims, ReductionReplay, blake2s_compress,
-    generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
+    Blake2sSetup, Compression, K_LOG, ReductionReplay, blake2s_compress, generate_witness_with_ab_packed_and_lincheck,
+    min_n_blocks_log,
 };
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
@@ -69,7 +69,7 @@ impl PreparedReductionWitness {
         self.n_blocks
     }
 
-    pub(crate) fn prove(&self, ps: &mut ProverState) -> PackedWitnessClaims {
+    pub(crate) fn prove(&self, ps: &mut ProverState) -> SliceClaim {
         setup_for(self.n_blocks).prove_reduction_precomputed(
             &self.z_packed,
             &self.a_packed,
@@ -289,15 +289,15 @@ pub fn r1cs_digest() -> [u8; 32] {
 }
 
 /// **Flock reduction only** (prover): run flock's BLAKE2s zerocheck + lincheck
-/// over `blocks` and return the two [`PackedWitnessClaims`] on the committed
-/// witness `q_flock`, `ab` (`A∘B`, lincheck) and `c` (`C`, zerocheck), along
-/// with the regenerated packed witness (already flattened to the committed
-/// `F64` packing). The sub-proof scalars ride the shared transcript stream
-/// (`ps.add_scalar` at the protocol points); flock runs natively in the tower
-/// field on the shared sponge. Does NOT open the PCS: the caller discharges the
-/// returned claims via [`crate::pcs::open`] (as [`crate::cpu`]'s prove does).
+/// over `blocks` and return the one [`SliceClaim`] on the committed witness
+/// `q_flock`, along with the regenerated packed witness (already flattened to
+/// the committed `F64` packing). The sub-proof scalars ride the shared
+/// transcript stream (`ps.add_scalar` at the protocol points); flock runs
+/// natively in the tower field on the shared sponge. Does NOT open the PCS: the
+/// caller discharges the returned claim via [`crate::pcs::open`] (as
+/// [`crate::cpu`]'s prove does).
 #[cfg(test)]
-fn prove_reduction(blocks: &[Compression], ps: &mut ProverState) -> (Vec<F64>, PackedWitnessClaims) {
+fn prove_reduction(blocks: &[Compression], ps: &mut ProverState) -> (Vec<F64>, SliceClaim) {
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
     let mut q_flock = vec![F64::ZERO; z_packed.len()];
     flatten_packed_into(&z_packed, &mut q_flock);
@@ -314,7 +314,7 @@ fn build_qflock(blocks: &[Compression]) -> Vec<F64> {
 
 /// **Flock reduction only** (verifier): mirror of `prove_reduction`. Replay
 /// the zerocheck + lincheck sub-proofs straight off the shared stream (each
-/// scalar bound as it is read), and recover the two `(ab, c)` claims on `q_flock`
+/// scalar bound as it is read), and recover the one claim on `q_flock`
 /// for the PCS to discharge, plus the reassembled reduction claims
 /// ([`ReductionReplay`]). The statement is already bound (the seed, the announced
 /// sizes, and the commitment root on the stream), so nothing else enters here.
@@ -326,7 +326,7 @@ pub fn verify_reduction(n_blocks: usize, vs: &mut VerifierState) -> Result<Reduc
 /// `2^K_SKIP` bit slices and the suffix point they live at, which is the WHOLE
 /// multilinear tail of the quirky point (`q_flock` has `2^(K_LOG + n_log − 6)`
 /// words, and the packing prefix is exactly the skipped coordinates, so nothing
-/// is split off into it). Both families arrive transmitted and checked, by
+/// is split off into it). The family arrives transmitted and checked, by
 /// flock's reduction, so there is nothing to tie here.
 fn ring_claim(claim: &SliceClaim, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
     assert_eq!(
@@ -341,37 +341,29 @@ fn ring_claim(claim: &SliceClaim, qflock_vars: usize) -> crate::pcs::RingSwitchC
     }
 }
 
-/// Package the prover's reduction claims ([`PackedWitnessClaims`]) as a
-/// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's `(ab, c)`
-/// validity in the same opening as leanVM's point claims. `offset` is `q_flock`'s
-/// slot in the committed stack; the opener slices `q_flock` from there.
-pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessClaims) -> crate::pcs::RingSwitchOpen {
+/// Package the prover's reduction claim ([`SliceClaim`]) as a
+/// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's validity in the
+/// same opening as leanVM's point claims. `offset` is `q_flock`'s slot in the
+/// committed stack; the opener slices `q_flock` from there.
+pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &SliceClaim) -> crate::pcs::RingSwitchOpen {
     let qflock_vars = qflock_kappa(n_blocks);
     crate::pcs::RingSwitchOpen {
         offset,
         qflock_vars,
-        claims: vec![
-            ring_claim(&reduced.ab, qflock_vars),
-            ring_claim(&reduced.c, qflock_vars),
-        ],
+        claims: vec![ring_claim(reduced, qflock_vars)],
     }
 }
 
-/// Verifier counterpart of [`ring_switch_open`]: package the recovered `(ab, c)`
-/// claims (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the
-/// same statement data; the transmitted opening travels separately (read off the
+/// Verifier counterpart of [`ring_switch_open`]: package the recovered claim
+/// (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the same
+/// statement data; the transmitted opening travels separately (read off the
 /// `openings` hint channel by the caller).
-pub fn ring_switch_verify(
-    n_blocks: usize,
-    offset: usize,
-    ab: &SliceClaim,
-    c: &SliceClaim,
-) -> crate::pcs::RingSwitchVerify {
+pub fn ring_switch_verify(n_blocks: usize, offset: usize, claim: &SliceClaim) -> crate::pcs::RingSwitchVerify {
     let qflock_vars = qflock_kappa(n_blocks);
     crate::pcs::RingSwitchVerify {
         offset,
         qflock_vars,
-        claims: vec![ring_claim(ab, qflock_vars), ring_claim(c, qflock_vars)],
+        claims: vec![ring_claim(claim, qflock_vars)],
     }
 }
 
@@ -464,7 +456,7 @@ mod tests {
     }
 
     /// The Flock reduction (zerocheck + lincheck) is a clean, self-contained
-    /// unit: run WITHOUT any PCS open, the prover's `(ab, c)` claims on the
+    /// unit: run WITHOUT any PCS open, the prover's claim on the
     /// committed witness `q_flock` are exactly what the verifier recovers by
     /// replaying the sub-proofs. This is the seam the PCS builds on.
     #[test]
@@ -490,9 +482,8 @@ mod tests {
         let _root = crate::pcs::read_commitment(&mut vs).unwrap();
         let replay = verify_reduction(blocks.len(), &mut vs).expect("reduction verifies");
 
-        // Prover and verifier agree on the claims left for the PCS.
-        assert_eq!(reduced.ab, replay.ab, "ab claim mismatch");
-        assert_eq!(reduced.c, replay.c, "c claim mismatch");
+        // Prover and verifier agree on the claim left for the PCS.
+        assert_eq!(reduced, replay.claim, "reduction claim mismatch");
 
         // A mismatched transcript domain diverges the sponge, so the recovered
         // claims must NOT match the prover's (the reduction is transcript-bound).
@@ -500,8 +491,8 @@ mod tests {
         let _root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
         if let Ok(replay_b) = verify_reduction(blocks.len(), &mut vs_bad) {
             assert!(
-                replay_b.ab != replay.ab || replay_b.c != replay.c,
-                "a diverged sponge must not reproduce the prover's claims"
+                replay_b.claim != replay.claim,
+                "a diverged sponge must not reproduce the prover's claim"
             );
         }
     }
@@ -544,7 +535,7 @@ mod tests {
             let mut vs = VerifierState::new(label, &bundle, &[]);
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
-            let ring = ring_switch_verify(blocks.len(), offset, &replay.ab, &replay.c);
+            let ring = ring_switch_verify(blocks.len(), offset, &replay.claim);
             crate::pcs::verify(&mut vs, points, &ring, stacked.m, crate::pcs::LOG_INV_RATE, &root)
                 .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")

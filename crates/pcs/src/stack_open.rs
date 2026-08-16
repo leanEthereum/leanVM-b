@@ -108,9 +108,8 @@ impl StackClaim {
 /// `qflock_vars` coords.
 ///
 /// `s_hat_v` holds those 64 values. The caller transmits and checks them itself
-/// (flock sends both of its families, tying the C one to its univariate-skip
-/// claim), so this layer reads nothing off the stream and only binds them to the
-/// commitment. Prover-side `None` folds them out of the witness instead;
+/// (flock sends its family and pins it in its own lincheck terminal), so this
+/// layer reads nothing off the stream and only binds them to the commitment. Prover-side `None` folds them out of the witness instead;
 /// verifier-side bundles must supply them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RingSwitchClaim {
@@ -637,7 +636,7 @@ mod tests {
             }],
         };
         // The verifier's copy of the same claim: the slices ride the statement,
-        // bound by the caller, as flock binds both of its families.
+        // bound by the caller, as flock binds its family.
         let ring_verify = vec![RingSwitchClaim {
             suffix_point,
             s_hat_v: Some(s_hat_v.clone()),

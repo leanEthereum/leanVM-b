@@ -105,8 +105,8 @@ TABLE_BLAKE2s = 5
 TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
-# the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
-# combined domain, S domain). The zerocheck point/round buffers are sized at
+# the phi8 node table + baked Lagrange inverse denominators (combined domain,
+# S domain). The zerocheck point/round buffers are sized at
 # runtime in the exponent (m = K_LOG + tau_5 and m - 6, both certified);
 # LINCHECK_ROUNDS = k_log - k_skip is protocol-fixed, PIN_COLUMN the
 # const-pin column.
@@ -125,7 +125,6 @@ Y_INV = Y_INV_PLACEHOLDER
 # emits a word's coordinate bits, so a value reconstructs as Σ b_i·COORD_BASIS[i]
 # = v. (NOT the g-power basis GEN**i, which spans only F64 in the tower.)
 COORD_BASIS = COORD_BASIS_PLACEHOLDER
-LAGRANGE_INV_LAMBDA = LAGRANGE_INV_LAMBDA_PLACEHOLDER
 LAGRANGE_INV_COMBINED = LAGRANGE_INV_COMBINED_PLACEHOLDER
 LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
@@ -634,7 +633,7 @@ def squeeze(state):
 def lag64(z, out, node_base: Const):
     # The 64 phi8-domain Lagrange NUMERATORS at z, nodes PHI8_NODES[node_base..node_base+64]:
     # out[i] = prod_{j != i} (z + PHI8_NODES[node_base + j]). Callers multiply by their
-    # baked inverse-denominator table (LAGRANGE_INV_S / LAGRANGE_INV_LAMBDA / LAGRANGE_INV_COMBINED).
+    # baked inverse-denominator table (LAGRANGE_INV_S / LAGRANGE_INV_COMBINED).
     pre = StackBuf(65)
     pre[0] = 1
     for i in unroll(0, 64):
@@ -1664,31 +1663,26 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         flock_point_fs0[xin] = point_fs[0]
         flock_point_fs1[xin] = point_fs[1]
     fs = [flock_point_fs0[mr1cs_g], flock_point_fs1[mr1cs_g]]
-    # round-1 message (ab ‖ c, 2 * 2^K_SKIP words): fetch + observe each word as
-    # it comes off the stream, then sample z.
-    zc_round1 = HeapBuf(2 * 2 ** K_SKIP)
-    for i in unroll(0, 2 * 2 ** K_SKIP):
+    # round-1 message (P = P^AB + P^C on Lambda, 2^K_SKIP words): fetch +
+    # observe each word as it comes off the stream, then sample z.
+    zc_round1 = HeapBuf(2 ** K_SKIP)
+    for i in unroll(0, 2 ** K_SKIP):
         fs, w, cursor = fs_next(fs, cursor)
         zc_round1[GEN ** i] = w
     fs, zerocheck_z = squeeze(fs)  # cursor now sits at the multilinear round messages, walked below
-    # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
-    # suffix numerator products with baked inverse denominators.
+    # P(z), interpolated at z over ALL 128 phi8 nodes: the transmitted Lambda
+    # values (nodes 64..128) plus the S half, zero by the zerocheck identity.
+    # Prefix/suffix numerator products with baked inverse denominators; the
+    # full-domain product only adds the S-half factor to the Lambda numerators.
     lagrange_nums = StackBuf(2 ** K_SKIP)
     lag64(zerocheck_z, lagrange_nums, 2 ** K_SKIP)
-    c_eval = 0  # P^C(z): Lagrange-interpolate the round-1 message over the Lambda nodes
-    for i in unroll(0, 2 ** K_SKIP):
-        c_eval += lagrange_nums[i] * LAGRANGE_INV_LAMBDA[i] * zc_round1[GEN ** (2 ** K_SKIP + i)]
-    # combined interpolation at z over ALL 128 phi8 nodes (Lambda values only;
-    # the S half is zero by the zerocheck identity). The Lambda-node numerators
-    # reuse lagrange_nums: the full-domain product only adds the S-half factor.
     s_half_product = GEN ** 0  # the S-domain half of the combined interpolation (zero by the identity)
     for i in unroll(0, 2 ** K_SKIP):
         s_half_product *= (zerocheck_z + PHI8_NODES[i])
-    combined_eval = 0
+    zc_running = 0  # the zerocheck running claim entering the multilinear rounds
     for i in unroll(0, 2 ** K_SKIP):
-        combined_eval += lagrange_nums[i] * LAGRANGE_INV_COMBINED[i] * (zc_round1[GEN ** i] + zc_round1[GEN ** (2 ** K_SKIP + i)])
-    combined_eval *= s_half_product
-    zc_running = combined_eval + c_eval  # the zerocheck running claim entering the multilinear rounds
+        zc_running += lagrange_nums[i] * LAGRANGE_INV_COMBINED[i] * zc_round1[GEN ** i]
+    zc_running *= s_half_product
     # multilinear rounds.
     mr1cs_rounds_g = mr1cs_g * INV_GEN ** 6  # runtime zerocheck mlv rounds: m - 6
     zerocheck_rhos = HeapBuf(mr1cs_rounds_g)
@@ -1730,32 +1724,24 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     fs = [flock_round_fs0[nmlv_g], flock_round_fs1[nmlv_g]]
     zc_running = flock_round_running[nmlv_g]
     cursor = flock_round_cursor[nmlv_g]  # walked past all 2*n_mlv round words, now at a_eval
-    # final: zc_running == a_eval * b_eval; observe both.
+    # final: observe a_eval, b_eval; the terminal identity is what defines
+    # c_eval, so nothing is checked here. C rode the rounds above, so all three
+    # claims sit at the same point and lincheck pins all three at once.
     fs, a_eval, cursor = fs_next(fs, cursor)
     fs, b_eval, cursor = fs_next(fs, cursor)
-    ab_product = a_eval * b_eval  # zerocheck closes: running claim == a(r) * b(r)
-    assert zc_running == ab_product
-
-    # ---- the C family: 2^K_SKIP slices of z at (zerocheck_z, equality tail) ----
-    # Sent here, tied to c_eval by the quirky extension's own phi8 Lagrange
-    # combination, so both families leave flock in one shape. (The prover's
-    # 128->64 half-fold is already baked into the transmitted values.)
+    c_eval = zc_running + a_eval * b_eval
+    # The phi8 Lagrange weights at z over the S nodes: the quirky extension's
+    # own combination, which the lincheck terminal applies to the 64 slices.
     claim_nums = StackBuf(2 ** K_SKIP)
     lag64(zerocheck_z, claim_nums, 0)
-    claim_check = 0
-    s_hat_v_c = HeapBuf(2 ** K_SKIP)
-    for i in unroll(0, 2 ** K_SKIP):
-        fs, w, cursor = fs_next(fs, cursor)
-        s_hat_v_c[GEN ** i] = w
-        claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * w
-    assert claim_check == c_eval
 
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
     fs, lincheck_alpha = squeeze(fs)
     lincheck_beta = lincheck_alpha * lincheck_alpha
-    lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta  # lincheck seed: alpha*a + b + alpha^2 (batches the two matrix claims and the pin)
+    lincheck_cube = lincheck_beta * lincheck_alpha
+    lc_running = a_eval + lincheck_alpha * b_eval + lincheck_beta * c_eval + lincheck_cube  # seed: a + alpha*b + alpha^2*c + alpha^3 (the two matrix claims, C, and the pin)
     lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
     for i in unroll(0, LINCHECK_ROUNDS):
         fs, c0, cursor = fs_next(fs, cursor)  # q's coefficients, bar the linear one
@@ -1772,22 +1758,32 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # const-pin column folds through the top-variable bindings: weight =
     # prod_j (bit_{klog-1-j}(PIN_COLUMN) ? r_j : 1+r_j), surviving z_partial index
     # = PIN_COLUMN low 6 bits.
-    pin_term = lincheck_beta * eq_weight(lincheck_rs, LINCHECK_ROUNDS, PIN_COLUMN, K_LOG)
+    pin_term = lincheck_cube * eq_weight(lincheck_rs, LINCHECK_ROUNDS, PIN_COLUMN, K_LOG)
     pin_term *= z_partial[GEN ** (PIN_COLUMN % 2 ** K_SKIP)]
+    # The C term. Its column weight is the row weight itself (C = I), and both
+    # sides are tensors, so it collapses to eq(rho_in, rho_in_prime) times the
+    # phi8 Lagrange combination of the 64 slices: no second matrix walk, no
+    # second family.
+    c_point_eq = GEN ** 0
+    for t in unroll(0, LINCHECK_ROUNDS):
+        c_point_eq *= (1 + zerocheck_rhos[GEN ** t] + lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)])
+    c_slice_value = 0
+    for i in unroll(0, 2 ** K_SKIP):
+        c_slice_value += claim_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
     matrix_part = matrix_eval[0]
-    lincheck_final = matrix_part + pin_term  # running == deferred matrix eval + the const-pin column contribution
+    lincheck_final = matrix_part + pin_term + lincheck_beta * c_point_eq * c_slice_value  # deferred matrix eval + pin + C
     assert lc_running == lincheck_final
-    # z_partial IS the ab claim: the terminal identity above pins its 64 slices,
+    # z_partial IS the claim: the terminal identity above pins its 64 slices,
     # and ring switching binds every one of them.
 
-    # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    # The two ring-switch slices are z_partial (ab) and s_hat_v_c (c), both read
-    # and bound above; this block only binds them to the commitment.
-    transposed_claims = StackBuf(2)
-    rs_eq_vals = StackBuf(2)
+    # ---- stacked mixed opening: ring-switch front + claim combination ----
+    # The ring-switch slices are z_partial, read and bound above; this block
+    # only binds them to the commitment.
+    transposed_claims = StackBuf(1)
+    rs_eq_vals = StackBuf(1)
     map_challenges = HeapBuf(6)
     c_table = HeapBuf(BASE_FIELD_BITS)
-    z_vals = HeapBuf(2 * QFLOCK_VARS_CAP)
+    z_vals = HeapBuf(QFLOCK_VARS_CAP)
     # Compose six two-term F2-linear maps with shifts 32,16,8,4,2,1. Their
     # expansion has all 64 Frobenius terms required for soundness, while direct
     # application costs 63 squarings and only six general multiplications.
@@ -1806,54 +1802,40 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for k in unroll(0, shift):
                 coefficient *= coefficient
             c_table[GEN ** (slot * 2 * shift + shift)] = map_challenge * coefficient
-    # Evaluate both claims together and combine their 64 packing rows.
-    s_hat_row_0 = z_partial
-    s_hat_row_1 = s_hat_v_c
+    # Evaluate the claim and combine its 64 packing rows.
     x_pow_chain = HeapBuf((2 ** K_SKIP) + 1)
     x_pow_chain[GEN ** 0] = GEN ** 0
     t_chain_0 = HeapBuf((2 ** K_SKIP) + 1)
-    t_chain_1 = HeapBuf((2 ** K_SKIP) + 1)
     t_chain_0[GEN ** 0] = 0
-    t_chain_1[GEN ** 0] = 0
     for x_round in mul_range(1, GEN ** (2 ** K_SKIP)):
-        lin_eval_0 = s_hat_row_0[x_round]
-        lin_eval_1 = s_hat_row_1[x_round]
+        lin_eval_0 = z_partial[x_round]
         for stage in unroll(0, len(RING_MAP_SHIFTS)):
             frobenius_0 = lin_eval_0
-            frobenius_1 = lin_eval_1
             for k in unroll(0, RING_MAP_SHIFTS[stage]):
                 frobenius_0 *= frobenius_0
-                frobenius_1 *= frobenius_1
             map_challenge = map_challenges[GEN ** stage]
             lin_eval_0 += map_challenge * frobenius_0
-            lin_eval_1 += map_challenge * frobenius_1
         x_pow = x_pow_chain[x_round]
         t_chain_0[x_round * GEN] = t_chain_0[x_round] + x_pow * lin_eval_0
-        t_chain_1[x_round * GEN] = t_chain_1[x_round] + x_pow * lin_eval_1
         x_pow_chain[x_round * GEN] = x_pow * 2
     transposed_claims[0] = t_chain_0[GEN ** (2 ** K_SKIP)]
-    transposed_claims[1] = t_chain_1[GEN ** (2 ** K_SKIP)]
-    # Suffix points for the two transparent weights.
+    # Suffix point for the transparent weight.
     for t in unroll(0, LINCHECK_ROUNDS):
         z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
     zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
     zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
     for xt in mul_range(1, tau_blake2s_g):
         zv_lo[xt] = zr_hi[xt]
-    zv_hi = z_vals * GEN ** QFLOCK_VARS_CAP
-    zcr7 = zerocheck_r * GEN ** K_SKIP
-    for xt in mul_range(1, tau_blake2s_g * GEN ** SLOT_STRIDE_LOG):
-        zv_hi[xt] = zcr7[xt]
-    # Observe every pooled point claim, then ONE batching challenge for both
-    # families: N_CLAIMS - 1 fewer sponge compressions than a challenge per claim.
+    # Observe every pooled point claim, then ONE batching challenge for all of
+    # them: N_CLAIMS - 1 fewer sponge compressions than a challenge per claim.
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, claim_pool[GEN ** j])
     fs, gamma = squeeze(fs)
-    # Disjoint power ranges, as for the eta-powers above: the two ring-switch
-    # claims take gamma^0 and gamma^1, the pool gamma^2 onward.
-    target = transposed_claims[0] + gamma * transposed_claims[1]
+    # Disjoint power ranges, as for the eta-powers above: the ring-switch claim
+    # takes gamma^0, the pool gamma^1 onward.
+    target = transposed_claims[0]
     gamma_pool = HeapBuf(N_CLAIMS)
-    gv = gamma * gamma
+    gv = gamma
     for j in unroll(0, N_CLAIMS):
         gamma_pool[GEN ** j] = gv
         target += gv * claim_pool[GEN ** j]
@@ -2070,9 +2052,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
     qflockv_g = tau_blake2s_g * GEN ** SLOT_STRIDE_LOG
-    # Evaluate both transparent weights in lockstep, sharing c_k and the
-    # verifier-point factor in every inner iteration.
-    z_row_src_1 = z_vals * GEN ** QFLOCK_VARS_CAP
     # The opening's point is fold_challenges[0, lenris) ++ tail_challenges[0,
     # yr_log_n), and this claim spans its first qflockv coordinates. A BLAKE2s
     # dominated inner proof (every real XMSS aggregation: qflockv = tau_5 +
@@ -2088,57 +2067,38 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_low_g = qflockv_g / rs_nover_g
     assert log(rs_low_g) < SIZE_BITS
     prod_chains_0 = HeapBuf((qflockv_g * GEN) ** BASE_FIELD_BITS)
-    prod_chains_1 = HeapBuf((qflockv_g * GEN) ** BASE_FIELD_BITS)
     for k in unroll(0, BASE_FIELD_BITS):
         prod_chains_0[GEN ** k] = 1
-        prod_chains_1[GEN ** k] = 1
     for x_round in mul_range(1, rs_low_g):
         zv_0 = z_vals[x_round]
-        zv_1 = z_row_src_1[x_round]
         one_plus = 1 + fold_challenges[x_round]
         prod_row_0 = prod_chains_0 * x_round ** BASE_FIELD_BITS
-        prod_row_1 = prod_chains_1 * x_round ** BASE_FIELD_BITS
         prod_row_next_0 = prod_row_0 * GEN ** BASE_FIELD_BITS
-        prod_row_next_1 = prod_row_1 * GEN ** BASE_FIELD_BITS
         for k in unroll(0, BASE_FIELD_BITS):
             prod_row_next_0[GEN ** k] = prod_row_0[GEN ** k] * (zv_0 + one_plus)
-            prod_row_next_1[GEN ** k] = prod_row_1[GEN ** k] * (zv_1 + one_plus)
             if k != BASE_FIELD_BITS - 1:
                 zv_0 *= zv_0
-                zv_1 *= zv_1
     # coordinates [rs_low, qflockv) = [lenris, lenris + rs_nover), against the
     # residual challenges; the chain rows stay indexed by absolute coordinate.
     z_over_0 = z_vals * rs_low_g
-    z_over_1 = z_row_src_1 * rs_low_g
     chain_over_0 = prod_chains_0 * rs_low_g ** BASE_FIELD_BITS
-    chain_over_1 = prod_chains_1 * rs_low_g ** BASE_FIELD_BITS
     for xk in mul_range(1, rs_nover_g):
         zv_0 = z_over_0[xk]
-        zv_1 = z_over_1[xk]
         one_plus = 1 + tail_challenges[xk]
         prod_row_0 = chain_over_0 * xk ** BASE_FIELD_BITS
-        prod_row_1 = chain_over_1 * xk ** BASE_FIELD_BITS
         prod_row_next_0 = prod_row_0 * GEN ** BASE_FIELD_BITS
-        prod_row_next_1 = prod_row_1 * GEN ** BASE_FIELD_BITS
         for k in unroll(0, BASE_FIELD_BITS):
             prod_row_next_0[GEN ** k] = prod_row_0[GEN ** k] * (zv_0 + one_plus)
-            prod_row_next_1[GEN ** k] = prod_row_1[GEN ** k] * (zv_1 + one_plus)
             if k != BASE_FIELD_BITS - 1:
                 zv_0 *= zv_0
-                zv_1 *= zv_1
     prod_final_0 = prod_chains_0 * qflockv_g ** BASE_FIELD_BITS
-    prod_final_1 = prod_chains_1 * qflockv_g ** BASE_FIELD_BITS
     e_acc_0 = 0
-    e_acc_1 = 0
     for k in unroll(0, BASE_FIELD_BITS):
-        ck = c_table[GEN ** k]
-        e_acc_0 += ck * prod_final_0[GEN ** k]
-        e_acc_1 += ck * prod_final_1[GEN ** k]
+        e_acc_0 += c_table[GEN ** k] * prod_final_0[GEN ** k]
     rs_eq_vals[0] = e_acc_0
-    rs_eq_vals[1] = e_acc_1
     # ring-switch weight: extend by the selector bits over the fold_challenges
     # coords [qflockv, lenris), empty when the claim already reached past lenris.
-    rs_weight = rs_eq_vals[0] + gamma * rs_eq_vals[1]
+    rs_weight = rs_eq_vals[0]
     rs_len_g = fold_cap_g * rs_nover_g / qflockv_g
     assert log(rs_len_g) < SIZE_BITS
     assert (rs_nover_g + 1) * (rs_len_g + 1) == 0  # rs_nover == 0 OR rs_len == 0
@@ -2829,8 +2789,8 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
         ga = gamma_mat[x3 * GEN]
         gb = gamma_mat[x3 * GEN ** 2]
         xcn = xc * GEN
-        wa_sum[xcn] = wa_sum[xc] + gf * fresh[GEN ** (BYTECODE_VARS + 1)] * weight_u + ga * eq_carried
-        wb_sum[xcn] = wb_sum[xc] + gf * weight_u + gb * eq_carried
+        wa_sum[xcn] = wa_sum[xc] + gf * weight_u + ga * eq_carried
+        wb_sum[xcn] = wb_sum[xc] + gf * fresh[GEN ** (BYTECODE_VARS + 1)] * weight_u + gb * eq_carried
     a_star = mat_stars_hint[0]
     b_star = mat_stars_hint[1]
     assert mat_running == a_star * wa_sum[n_children_g] + b_star * wb_sum[n_children_g]

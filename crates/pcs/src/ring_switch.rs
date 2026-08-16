@@ -32,9 +32,9 @@
 //! - **The 64 slices come in bound**: `s_hat_v[i] = sum_y eq(r_suffix, y) *
 //!   bit_i(packed[y])`, the MLE of the i-th bit-slice at the suffix point, is
 //!   supplied by the caller on both sides, which is where it was transmitted
-//!   and checked (flock sends both of its families itself, tying the C one to
-//!   its univariate-skip claim). This module therefore reads nothing off the
-//!   stream and only has to bind the slices to the commitment.
+//!   and checked (flock sends its family itself and pins it in its lincheck
+//!   terminal). This module therefore reads nothing off the stream and only has
+//!   to bind the slices to the commitment.
 //!
 //! ## Protocol (prover)
 //!
@@ -518,7 +518,7 @@ pub struct RingSwitchProveState {
 /// possibly shared map afterwards.
 ///
 /// The slices are NOT sent here: the caller has already bound them (flock sends
-/// both of its families itself, see `flock::blake2s`), which is what lets this
+/// its family itself, see `flock::blake2s`), which is what lets this
 /// phase touch no transcript at all. `precomputed_s_hat_v` is `None` only for a
 /// caller that wants them folded out of the witness instead.
 pub fn prove_prepare(
