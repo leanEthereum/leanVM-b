@@ -10,4 +10,10 @@ noncomputable def scheme : Scheme where
   verify := fun publicKey epoch message signature =>
     liftM (Concrete.verify publicKey epoch message signature : OracleComp HashSpec Bool)
 
+noncomputable def cappedScheme : Scheme where
+  keygen := Concrete.keygen
+  sign := Concrete.cappedSign
+  verify := fun publicKey epoch message signature =>
+    liftM (Concrete.verify publicKey epoch message signature : OracleComp HashSpec Bool)
+
 end XmssSecurity.Concrete

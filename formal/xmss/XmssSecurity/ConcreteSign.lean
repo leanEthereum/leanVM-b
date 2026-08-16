@@ -61,4 +61,26 @@ theorem sign_eq (publicKey : PublicKey) (secretKey : SecretKey)
 
 attribute [irreducible] sign
 
+noncomputable def signBoundedAttempts : Nat → SecretKey → Epoch → Message →
+    OracleComp OracleWorld (Option Signature)
+  | 0, _secretKey, _epoch, _message => pure none
+  | attempts + 1, secretKey, epoch, message => do
+      let randomness ← liftM signingRandomness
+      let result ← liftM (signAttempt secretKey epoch message randomness :
+        OracleComp HashSpec (Option Signature))
+      match result with
+      | some signature => pure (some signature)
+      | none => signBoundedAttempts attempts secretKey epoch message
+
+noncomputable def cappedSign (_publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) : OracleComp OracleWorld (Option Signature) :=
+  signBoundedAttempts signingAttemptLimit secretKey epoch message
+
+theorem cappedSign_eq (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) :
+    cappedSign publicKey secretKey epoch message =
+      signBoundedAttempts signingAttemptLimit secretKey epoch message := rfl
+
+attribute [irreducible] cappedSign
+
 end XmssSecurity.Concrete

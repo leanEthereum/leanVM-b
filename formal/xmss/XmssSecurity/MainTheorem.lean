@@ -144,8 +144,8 @@ theorem xmss_forgeAdvantage_le (q : Nat) (hq : 1 ≤ q)
   intro event
   exact xmss_badEvent_probability_le q hq adversary hbound event
 
-/-- The concrete XMSS scheme has at least 120 bits of classical security in the random-oracle game. -/
-theorem xmss_has_120_bits_of_classical_security :
+/-- The one-attempt stepping-stone scheme has at least 120 bits of classical security in the random-oracle game. -/
+theorem xmss_oneAttempt_has_120_bits_of_classical_security :
     HasClassicalSecurityBits Concrete.scheme 120 := by
   intro q hq
   unfold forgeAtMost

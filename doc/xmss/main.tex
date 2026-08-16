@@ -39,6 +39,7 @@
 \newcommand{\lpar}{\ell_{\mathrm{p}}}
 \newcommand{\ltwk}{\ell_{\mathrm{t}}}
 \newcommand{\lrnd}{\ell_{\mathrm{rnd}}}
+\newcommand{\amax}{A_{\max}}
 
 \emergencystretch=1.5em
 
@@ -91,6 +92,7 @@ $v$ & $42$ & code length\\
 $T$ & $195$ & target sum\\
 $h$ & $32$ & Merkle tree height\\
 $L$ & $2^{32}$ & lifetime\\
+$\amax$ & $2^{23}$ & maximum encoding attempts per signature\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -177,7 +179,7 @@ Key generation may be restricted to a smaller interval of epochs by replacing su
 
 \section{Signing}
 
-$\Sig(\sk,\ep,m)$ returns $\bot$ if epoch $\ep$ has already been used and otherwise marks it used. It independently samples $\rho\getsr\bits{\lrnd}$ until $x=\IncEnc(P,m,\rho,\ep)\neq\bot$, then computes
+$\Sig(\sk,\ep,m)$ returns $\bot$ if epoch $\ep$ has already been used and otherwise marks it used. It makes at most $\amax=2^{23}$ attempts. In each attempt it independently samples $\rho\getsr\bits{\lrnd}$ and computes $x=\IncEnc(P,m,\rho,\ep)$. If $x\neq\bot$, it immediately computes
 \[
   \sigma_{\mathrm{OTS},i}=\Chain_{\Th,i,\ep}(P,0,x_i,\mathit{sk}_{\ep,i}),
   \qquad 0\leq i<v,
@@ -187,15 +189,15 @@ and the authentication path
   A_\ell=X_{\ell,\,\left\lfloor\ep/2^\ell\right\rfloor\mathbin{\mathsf{xor}}1},
   \qquad 0\leq\ell<h.
 \]
-It returns
+and returns
 \[
   \sigma=(\rho,\sigma_{\mathrm{OTS}},\mathit{path}_{\ep}),
   \qquad
   \mathit{path}_{\ep}=(A_0,\ldots,A_{h-1}),
 \]
-serialized as $\sigma_{\mathrm{OTS},0}\concat\cdots\concat\sigma_{\mathrm{OTS},v-1}\concat\rho\concat A_0\concat\cdots\concat A_{h-1}$.
+serialized as $\sigma_{\mathrm{OTS},0}\concat\cdots\concat\sigma_{\mathrm{OTS},v-1}\concat\rho\concat A_0\concat\cdots\concat A_{h-1}$. If all $\amax$ attempts produce $x=\bot$, it returns $\bot$.
 
-$\Sig$ is not guaranteed to terminate, but after $2^{23}$ attempts a valid encoding should have been found except with probability less than $2^{-256}$ when $\hash$ is modeled as a random oracle.
+When $\hash$ is modeled as a random oracle, a single attempt succeeds with probability approximately $2^{-14.848}$. Consequently, the probability that all $2^{23}$ attempts fail is less than $2^{-410}$.
 
 \section{Verification}
 

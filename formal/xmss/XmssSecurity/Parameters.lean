@@ -7,6 +7,7 @@ def hashOutputBits : Nat := 256
 def messageBits : Nat := 256
 def publicParameterBits : Nat := 128
 def randomnessBits : Nat := 192
+def signingAttemptLimit : Nat := 2 ^ 23
 def treeHeight : Nat := 32
 def lifetime : Nat := 2 ^ treeHeight
 def winternitzBits : Nat := 3
@@ -30,6 +31,11 @@ abbrev Encoding := ChainIndex → Digit
 abbrev HashInput := List UInt8
 
 theorem hashOutputBits_eq : hashOutputBits = digestBits + digestBits := by
+  decide
+
+theorem signingAttemptLimit_eq : signingAttemptLimit = 2 ^ 23 := rfl
+
+theorem signingAttemptLimit_pos : 0 < signingAttemptLimit := by
   decide
 
 def splitHashOutput (output : HashOutput) : BitVec (digestBits + digestBits) :=
