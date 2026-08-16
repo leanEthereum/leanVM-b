@@ -231,6 +231,123 @@ noncomputable def revealGlobalSignatureChains
         (replaceSignatureChainValue signature chain value)).run
           (state.recordReveal index value)
 
+def globalSignatureRevealResult
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → ChainDigit) :
+    List ChainIndex → Signature → GlobalCausalHashState →
+      Signature × GlobalCausalHashState
+  | [], signature, state => (signature, state)
+  | chain :: chains, signature, state =>
+      let index : GlobalChainValueIndex :=
+        (chain, request.epoch, encoding chain)
+      globalSignatureRevealResult table request encoding chains
+        (replaceSignatureChainValue signature chain (table index))
+        (state.recordReveal index (table index))
+
+def globalSignatureRevealTrace
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → ChainDigit) :
+    List ChainIndex →
+      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex
+  | [] => []
+  | chain :: chains =>
+      let index : GlobalChainValueIndex :=
+        (chain, request.epoch, encoding chain)
+      .reveal index (table index) ::
+        globalSignatureRevealTrace table request encoding chains
+
+theorem simulate_eagerImpl_revealGlobalSignatureChains
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (chains : List ChainIndex) (signature : Signature)
+    (state : GlobalCausalHashState) :
+    simulateQ (RevealProbeOracleSimulation.eagerImpl table)
+        ((revealGlobalSignatureChains request encoding chains signature).run
+          state) =
+      pure (globalSignatureRevealResult table request encoding chains
+        signature state) := by
+  induction chains generalizing signature state with
+  | nil => simp [revealGlobalSignatureChains, globalSignatureRevealResult]
+  | cons chain chains ih =>
+      rw [revealGlobalSignatureChains]
+      simp only [simulateQ_bind,
+        RevealProbeOracleSimulation.simulate_eagerImpl_revealQuery, pure_bind]
+      exact ih
+
+theorem simulate_eagerTrace_revealGlobalSignatureChains
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (chains : List ChainIndex) (signature : Signature)
+    (state : GlobalCausalHashState) :
+    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+        ((revealGlobalSignatureChains request encoding chains signature).run
+          state)).run =
+      pure (globalSignatureRevealResult table request encoding chains
+          signature state,
+        globalSignatureRevealTrace table request encoding chains) := by
+  induction chains generalizing signature state with
+  | nil =>
+      simp [revealGlobalSignatureChains, globalSignatureRevealResult,
+        globalSignatureRevealTrace]
+  | cons chain chains ih =>
+      rw [revealGlobalSignatureChains, simulateQ_bind, WriterT.run_bind',
+        RevealProbeOracleSimulation.simulate_eagerTrace_revealQuery]
+      simp only [pure_bind]
+      rw [ih]
+      simp [globalSignatureRevealResult, globalSignatureRevealTrace]
+
+theorem globalSignatureRevealResult_chainValue_of_not_mem
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (chains : List ChainIndex) (signature : Signature)
+    (state : GlobalCausalHashState) (candidate : ChainIndex)
+    (hnotmem : candidate ∉ chains) :
+    (globalSignatureRevealResult table request encoding chains signature
+      state).1.chainValue candidate = signature.chainValue candidate := by
+  induction chains generalizing signature state with
+  | nil => rfl
+  | cons chain chains ih =>
+      simp only [List.mem_cons, not_or] at hnotmem
+      rw [globalSignatureRevealResult]
+      rw [ih _ _ hnotmem.2]
+      exact replaceSignatureChainValue_other signature chain candidate
+        (Ne.symm hnotmem.1)
+
+theorem globalSignatureRevealResult_chainValue_of_mem
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (chains : List ChainIndex) (signature : Signature)
+    (state : GlobalCausalHashState) (candidate : ChainIndex)
+    (hnodup : chains.Nodup) (hmem : candidate ∈ chains) :
+    (globalSignatureRevealResult table request encoding chains signature
+      state).1.chainValue candidate =
+        table (candidate, request.epoch, encoding candidate) := by
+  induction chains generalizing signature state with
+  | nil => simp at hmem
+  | cons chain chains ih =>
+      rw [List.nodup_cons] at hnodup
+      rw [List.mem_cons] at hmem
+      rcases hmem with heq | hmem
+      · subst candidate
+        rw [globalSignatureRevealResult,
+          globalSignatureRevealResult_chainValue_of_not_mem]
+        · exact replaceSignatureChainValue_same signature chain _
+        · exact hnodup.1
+      · rw [globalSignatureRevealResult]
+        exact ih _ _ hnodup.2 hmem
+
+theorem globalSignatureRevealResult_allChains_chainValue
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → ChainDigit)
+    (signature : Signature) (state : GlobalCausalHashState)
+    (chain : ChainIndex) :
+    (globalSignatureRevealResult table request encoding allChains signature
+      state).1.chainValue chain =
+        table (chain, request.epoch, encoding chain) := by
+  apply globalSignatureRevealResult_chainValue_of_mem
+  · exact allChains_nodup
+  · simp [allChains]
+
 noncomputable def revealGlobalSignatureOption
     (secretKey : SecretKey) (request : SignRequest) :
     Option Signature →
