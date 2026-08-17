@@ -1153,4 +1153,83 @@ theorem relTriple_globalMaterial_merkleTreeValues_run
       · simpa [nextRightBase, List.append_assoc] using
           htailResult.2.2.2.2.2
 
+theorem relTriple_globalMaterial_merkleHeight_run
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (height : Fin (treeHeight + 1)) (hpositive : 0 < height.val)
+    (leftBase rightBase : List Digest × QueryCache HashSpec)
+    (hleftBase : leftBase ∈ support
+      (treeValues parameter left.1 (treeValueIndicesBelow height.val)
+        left.2.2))
+    (hrightBase : rightBase ∈ support
+      (treeValues parameter right.1 (treeValueIndicesBelow height.val)
+        right.2.2))
+    (hbaseValues : leftBase.1 = rightBase.1)
+    (hleftFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight height) leftBase.2)
+    (hrightFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight height) rightBase.2)
+    (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+    (hcache : GlobalTreeCacheCorrespondence parameter leftEndpoints
+      rightEndpoints leftBase.2 rightBase.2)
+    (hleftReplay : ReplayEndpointsMatch parameter left.1 leftEndpoints
+      leftBase.2)
+    (hrightReplay : ReplayEndpointsMatch parameter right.1 rightEndpoints
+      rightBase.2) :
+    RelTriple
+      (treeValues parameter left.1 (treeValueIndicesAtHeight height)
+        leftBase.2)
+      (treeValues parameter right.1 (treeValueIndicesAtHeight height)
+        rightBase.2)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+            leftResult.2 rightResult.2 ∧
+          ReplayEndpointsMatch parameter left.1 leftEndpoints leftResult.2 ∧
+          ReplayEndpointsMatch parameter right.1 rightEndpoints
+            rightResult.2 ∧
+          (leftBase.1 ++ leftResult.1, leftResult.2) ∈ support
+            (treeValues parameter left.1
+              (treeValueIndicesBelow (height.val + 1)) left.2.2) ∧
+          (rightBase.1 ++ rightResult.1, rightResult.2) ∈ support
+            (treeValues parameter right.1
+              (treeValueIndicesBelow (height.val + 1)) right.2.2)) := by
+  have hchildren : ∀ current ∈ treeValueIndicesAtHeight height,
+      ∃ hcurrentPositive : 0 < current.1.val,
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node false) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node false
+            (by simpa [Nat.sub_add_cancel hcurrentPositive] using
+              current.subtreeValid)) ∈ treeValueIndicesBelow height.val ∧
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node true) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node true
+            (by simpa [Nat.sub_add_cancel hcurrentPositive] using
+              current.subtreeValid)) ∈ treeValueIndicesBelow height.val := by
+    intro current hcurrent
+    have hheight := (mem_treeValueIndicesAtHeight_iff height current).1 hcurrent
+    have hvalue : current.1.val = height.val := congrArg Fin.val hheight
+    have hcurrentPositive : 0 < current.1.val := by omega
+    refine ⟨hcurrentPositive, ?_, ?_⟩
+    · simpa only [hvalue] using
+        (childTreeValueIndex_mem_below current hcurrentPositive false)
+    · simpa only [hvalue] using
+        (childTreeValueIndex_mem_below current hcurrentPositive true)
+  have hordered : (treeValueIndicesAtHeight height).Pairwise
+      TreeValueIndex.Precedes := by
+    simp only [treeValueIndicesAtHeight, List.pairwise_ofFn]
+    intro leftNode rightNode hlt
+    exact Or.inr ⟨rfl, hlt⟩
+  have hcoupling := relTriple_globalMaterial_merkleTreeValues_run parameter
+    left right (treeValueIndicesAtHeight height)
+      (treeValueIndicesBelow height.val) leftBase rightBase hchildren hordered
+        hleftBase hrightBase hbaseValues hleftFresh hrightFresh leftEndpoints
+          rightEndpoints hcache hleftReplay hrightReplay
+  apply relTriple_post_mono hcoupling
+  intro leftResult rightResult hresult
+  have hbelow := treeValueIndicesBelow_succ height.val height.isLt
+  exact ⟨hresult.1, hresult.2.1, hresult.2.2.1,
+    hresult.2.2.2.1, hbelow ▸ hresult.2.2.2.2.1,
+      hbelow ▸ hresult.2.2.2.2.2⟩
+
 end XmssSecurity.CappedChain
