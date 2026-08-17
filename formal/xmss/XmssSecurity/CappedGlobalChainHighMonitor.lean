@@ -139,9 +139,9 @@ theorem relTriple_monitorGlobalCausalTrace_of_filtered_until_hit
     (left : ProgrammedGlobalChainKeygenView)
     (right : ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest))
-    (leftComputation : ProbComp (HashOutput × QueryCache HashSpec))
+    (leftComputation : ProbComp (α × QueryCache HashSpec))
     (rightComputation : GlobalCausalHashState → ProbComp
-      ((HashOutput × GlobalCausalHashState) ×
+      ((α × GlobalCausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
     (rightState : GlobalMonitoredCausalState)
     (monitor : AdaptiveRevealMonitor.State GlobalChainValueIndex)
@@ -151,7 +151,9 @@ theorem relTriple_monitorGlobalCausalTrace_of_filtered_until_hit
     (hcouple : RelTriple leftComputation
       (rightComputation rightState.causal)
       (fun leftResult rightResult =>
-        GlobalFilteredHashResultRelation left right leftResult rightResult ∨
+        (leftResult.1 = rightResult.1.1 ∧
+          GlobalFilteredCausalStateRelation left right leftResult.2
+            rightResult.1.2) ∨
           RevealProbeOracleSimulation.runObserved right.2 monitor
             rightResult.2 = true))
     (htrace : ∀ result ∈ support (rightComputation rightState.causal),
