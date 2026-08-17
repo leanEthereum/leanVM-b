@@ -1264,4 +1264,131 @@ theorem globalMaterial_treeValuesBelow_fresh_at_height
     (treeValueIndicesBelow height.val) (treeValueIndicesAtHeight height)
     hbefore material.2.2 hinitialFresh result hresult
 
+def GlobalTreeValuesResult
+    (parameter : PublicParameter)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (leftResult rightResult : List Digest × QueryCache HashSpec) : Prop :=
+  leftResult.1 = rightResult.1 ∧
+    ∃ leftEndpoints rightEndpoints,
+      GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+        leftResult.2 rightResult.2 ∧
+      ReplayEndpointsMatch parameter leftSecret leftEndpoints leftResult.2 ∧
+      ReplayEndpointsMatch parameter rightSecret rightEndpoints rightResult.2
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_globalMaterial_treeValuesBelow_one
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (hleft : left ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (hright : right ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter)) :
+    RelTriple
+      (treeValues parameter left.1 (treeValueIndicesBelow 1) left.2.2)
+      (treeValues parameter right.1 (treeValueIndicesBelow 1) right.2.2)
+      (GlobalTreeValuesResult parameter left.1 right.1) := by
+  have hheight : treeValueIndicesBelow 1 = treeValueIndicesAtHeight 0 := by
+    rw [treeValueIndicesBelow_succ 0 (by omega)]
+    rw [treeValueIndicesBelow]
+    exact List.nil_append _
+  rw [hheight]
+  apply relTriple_post_mono
+    (relTriple_globalMaterial_allLeafValues_run parameter left right hleft
+      hright)
+  intro leftResult rightResult hresult
+  exact hresult
+
+set_option maxRecDepth 1000000 in
+theorem relTriple_globalMaterial_treeValuesBelow_succ
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (hleft : left ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (hright : right ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (height : Nat) (hpositive : 1 ≤ height)
+    (hcurrentBound : height < treeHeight + 1)
+    (hprefix : RelTriple
+      (treeValues parameter left.1 (treeValueIndicesBelow height) left.2.2)
+      (treeValues parameter right.1 (treeValueIndicesBelow height) right.2.2)
+      (GlobalTreeValuesResult parameter left.1 right.1)) :
+    RelTriple
+      (treeValues parameter left.1 (treeValueIndicesBelow (height + 1))
+        left.2.2)
+      (treeValues parameter right.1 (treeValueIndicesBelow (height + 1))
+        right.2.2)
+      (GlobalTreeValuesResult parameter left.1 right.1) := by
+  let currentHeight : Fin (treeHeight + 1) := ⟨height, hcurrentBound⟩
+  have hdecompose := treeValueIndicesBelow_succ height hcurrentBound
+  rw [hdecompose, treeValues_append, treeValues_append]
+  apply relTriple_bind (relTriple_with_support hprefix)
+  intro leftBase rightBase hbase
+  obtain ⟨hbaseRelation, hleftBase, hrightBase⟩ := hbase
+  unfold GlobalTreeValuesResult at hbaseRelation
+  obtain ⟨hbaseValues, leftEndpoints, rightEndpoints, hbaseCache,
+    hleftReplay, hrightReplay⟩ := hbaseRelation
+  have hleftFresh := globalMaterial_treeValuesBelow_fresh_at_height parameter
+    left hleft currentHeight leftBase hleftBase
+  have hrightFresh := globalMaterial_treeValuesBelow_fresh_at_height parameter
+    right hright currentHeight rightBase hrightBase
+  have hheightCoupling := relTriple_globalMaterial_merkleHeight_run parameter
+    left right currentHeight (by
+      dsimp [currentHeight]
+      exact hpositive)
+    leftBase rightBase hleftBase hrightBase hbaseValues hleftFresh hrightFresh
+      leftEndpoints rightEndpoints hbaseCache hleftReplay hrightReplay
+  apply relTriple_bind hheightCoupling
+  intro leftCurrent rightCurrent hcurrent
+  obtain ⟨leftValues, leftCache⟩ := leftBase
+  obtain ⟨rightValues, rightCache⟩ := rightBase
+  obtain ⟨leftNewValues, leftNewCache⟩ := leftCurrent
+  obtain ⟨rightNewValues, rightNewCache⟩ := rightCurrent
+  dsimp only at hbaseValues hcurrent ⊢
+  apply relTriple_pure_pure
+  unfold GlobalTreeValuesResult
+  exact ⟨congrArg₂ List.append hbaseValues hcurrent.1,
+    leftEndpoints, rightEndpoints, hcurrent.2.1, hcurrent.2.2.1,
+      hcurrent.2.2.2.1⟩
+
+theorem relTriple_globalMaterial_treeValuesBelow
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (hleft : left ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (hright : right ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter)) :
+    ∀ (height : Nat), 1 ≤ height → height ≤ treeHeight + 1 →
+      RelTriple
+        (treeValues parameter left.1 (treeValueIndicesBelow height) left.2.2)
+        (treeValues parameter right.1 (treeValueIndicesBelow height) right.2.2)
+        (GlobalTreeValuesResult parameter left.1 right.1) := by
+  intro height
+  induction height with
+  | zero => intro hpositive _hbound; omega
+  | succ height ih =>
+      intro _hpositive hbound
+      by_cases hzero : height = 0
+      · subst height
+        exact relTriple_globalMaterial_treeValuesBelow_one parameter left right
+          hleft hright
+      · apply relTriple_globalMaterial_treeValuesBelow_succ parameter left
+          right hleft hright height (by omega) (by omega)
+        exact ih (by omega) (by omega)
+
+theorem relTriple_globalMaterial_allTreeValues_run
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (hleft : left ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (hright : right ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter)) :
+    RelTriple
+      (treeValues parameter left.1 allTreeValueIndices left.2.2)
+      (treeValues parameter right.1 allTreeValueIndices right.2.2)
+      (GlobalTreeValuesResult parameter left.1 right.1) := by
+  rw [← treeValueIndicesBelow_all]
+  exact relTriple_globalMaterial_treeValuesBelow parameter left right hleft
+    hright (treeHeight + 1) (by omega) le_rfl
+
 end XmssSecurity.CappedChain
