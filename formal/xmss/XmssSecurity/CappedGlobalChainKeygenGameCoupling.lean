@@ -1,13 +1,38 @@
-import XmssSecurity.CappedGlobalChainKeygenCoupling
+import XmssSecurity.CappedGlobalTreeCoupling
 import XmssSecurity.CappedGlobalChainTracedGame
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 namespace XmssSecurity.CappedChain
 
 noncomputable def trajectoryProgrammedGlobalChainKeygen :
     ProbComp ProgrammedGlobalChainKeygenView :=
   eraseAllChainTrajectories <$> programmedAllChainTrajectoryKeygen
+
+theorem evalDist_coupledGlobalChainKeygen_eq_trajectoryProgrammed :
+    evalDist coupledGlobalChainKeygen =
+      evalDist trajectoryProgrammedGlobalChainKeygen :=
+  evalDist_coupledGlobalChainKeygen_eq_programmedTrajectories
+
+theorem evalDist_coupledGlobalChainKeygenWithBaseFull_eq_trajectoryProgrammed :
+    evalDist coupledGlobalChainKeygenWithBaseFull =
+    evalDist (trajectoryProgrammedGlobalChainKeygen >>= fun keyView =>
+      ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
+      pure (keyView, base)) :=
+  evalDist_coupledGlobalChainKeygenWithBaseFull_eq_programmed
+
+theorem relTriple_trajectoryProgrammedGlobalChainKeygen_withBase :
+    RelTriple trajectoryProgrammedGlobalChainKeygen
+      (trajectoryProgrammedGlobalChainKeygen >>= fun keyView =>
+        ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
+        pure (keyView, base))
+      ProgrammedGlobalChainKeygenRelation := by
+  apply relTriple_of_evalDist_eq_left
+    evalDist_coupledGlobalChainKeygen_eq_trajectoryProgrammed.symm
+  exact relTriple_of_evalDist_eq_right
+    evalDist_coupledGlobalChainKeygenWithBaseFull_eq_trajectoryProgrammed
+    relTriple_coupledGlobalChainKeygenWithBaseFull
 
 theorem evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed :
     evalDist actualGlobalChainKeygen =
