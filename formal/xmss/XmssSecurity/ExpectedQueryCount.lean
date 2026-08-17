@@ -136,6 +136,34 @@ theorem expectedSimulatedQueryCount_mono
       gcongr
       exact ih result.1 result.2
 
+/-- Expected simulated query count decomposes into the head count plus the expected continuation
+count. -/
+theorem expectedSimulatedQueryCount_bind
+    {ι : Type} {spec : OracleSpec ι} {α β state : Type}
+    (implementation : QueryImpl spec (StateT state ProbComp))
+    (predicate : spec.Domain → Prop) [DecidablePred predicate]
+    (head : OracleComp spec α) (continuation : α → OracleComp spec β)
+    (initialState : state) :
+    expectedSimulatedQueryCount implementation predicate
+        (head >>= continuation) initialState =
+      expectedSimulatedQueryCount implementation predicate head initialState +
+        ∑' result, Pr[= result | (simulateQ implementation head).run initialState] *
+          expectedSimulatedQueryCount implementation predicate
+            (continuation result.1) result.2 := by
+  induction head using OracleComp.inductionOn generalizing initialState with
+  | pure value =>
+      simp [simulateQ_pure, tsum_probOutput_pure_mul]
+  | query_bind input next ih =>
+      rw [bind_assoc, expectedSimulatedQueryCount_query_bind,
+        expectedSimulatedQueryCount_query_bind]
+      simp_rw [ih, mul_add]
+      rw [ENNReal.tsum_add]
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_query,
+        tsum_probOutput_bind_mul]
+      simp only [OracleQuery.input_query, OracleQuery.cont_query]
+      rw [id_map]
+      ac_rfl
+
 /-- Expected simulated query counts add exactly for disjoint source predicates. -/
 theorem expectedSimulatedQueryCount_or_of_disjoint
     {ι : Type} {spec : OracleSpec ι} {α state : Type}
