@@ -638,4 +638,105 @@ theorem globalHighMonitoredDetailedExecution_traceConsistent
       handled.1.message handled.1.signature)
     handled.2 hhandledConsistent verified hvertified
 
+def sourceGlobalExecutionResult
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (execution : (Forgery × Bool) × SourceTracedState) :
+    (GameOutcome × QueryCache HashSpec) × AttackerActionTrace :=
+  ((actionTraceOutcome keyView.publicKey keyView.secretKey
+    (execution.1, execution.2.2), execution.2.1), execution.2.2)
+
+theorem sourceGlobalTracedDetailedExecution_eq_actionTraced
+    (adversary : Adversary Concrete.cappedScheme)
+    (keyView : ProgrammedGlobalChainKeygenView) :
+    sourceGlobalExecutionResult keyView <$>
+        sourceGlobalTracedDetailedExecution adversary keyView =
+      detailedGameAfterKeygenWithActionTrace adversary keyView.publicKey
+        keyView.secretKey keyView.cache := by
+  unfold sourceGlobalTracedDetailedExecution
+    detailedGameAfterKeygenWithActionTrace
+    sourceActionTracedDetailedGameAfterKeygen
+  rw [sourceDirectTracedMappedAdversaryImpl_run_eq]
+  simp only [List.nil_append, map_eq_bind_pure_comp, bind_assoc, pure_bind,
+    simulateQ_bind, StateT.run_bind]
+  apply bind_congr
+  intro handled
+  simp only [Function.comp_apply, pure_bind]
+  rw [sourceDirectTracedVerifierImpl_run_eq]
+  simp [sourceGlobalExecutionResult, map_eq_bind_pure_comp]
+
+abbrev SourceGlobalTracedProgramResult :=
+  ProgrammedGlobalChainKeygenView ×
+    ((Forgery × Bool) × SourceTracedState)
+
+abbrev GlobalHighMonitoredProgramResult :=
+  ((ProgrammedGlobalChainKeygenView ×
+    (GlobalChainValueIndex → Digest)) ×
+    (GlobalChainEdgeIndex → Digest)) ×
+      ((Forgery × Bool) × GlobalMonitoredTracedState)
+
+noncomputable def sourceGlobalTracedProgram
+    (adversary : Adversary Concrete.cappedScheme) :
+    ProbComp SourceGlobalTracedProgramResult := do
+  let keyView ← trajectoryProgrammedGlobalChainKeygen
+  let execution ← sourceGlobalTracedDetailedExecution adversary keyView
+  pure (keyView, execution)
+
+def sourceGlobalProgramResult
+    (result : SourceGlobalTracedProgramResult) :
+    GlobalChainActionTracedResult :=
+  let execution := sourceGlobalExecutionResult result.1 result.2
+  ((result.1, execution.1), execution.2)
+
+theorem sourceGlobalTracedProgram_eq_trajectoryProgrammedDetailedGame
+    (adversary : Adversary Concrete.cappedScheme) :
+    sourceGlobalProgramResult <$> sourceGlobalTracedProgram adversary =
+      trajectoryProgrammedGlobalChainDetailedGame adversary := by
+  unfold sourceGlobalTracedProgram
+    trajectoryProgrammedGlobalChainDetailedGame
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  apply bind_congr
+  intro keyView
+  rw [← sourceGlobalTracedDetailedExecution_eq_actionTraced]
+  simp [sourceGlobalProgramResult, map_eq_bind_pure_comp]
+
+noncomputable def globalHighMonitoredProgram
+    (adversary : Adversary Concrete.cappedScheme) :
+    ProbComp GlobalHighMonitoredProgramResult := do
+  let right ← coupledGlobalChainKeygenWithBaseHighFull
+  let execution ← globalHighMonitoredDetailedExecution adversary right
+  pure (right, execution)
+
+def SourceGlobalHighMonitoredProgramRelation
+    (left : SourceGlobalTracedProgramResult)
+    (right : GlobalHighMonitoredProgramResult) : Prop :=
+  ProgrammedGlobalChainKeygenBaseHighStableRelation left.1 right.1 ∧
+    ((left.2.1 = right.2.1 ∧
+      GlobalMonitoredTracedStateRelation left.1 right.1.1 left.2.2
+        right.2.2) ∨ right.2.2.1.bad) ∧
+    right.2.2.1.TraceConsistent right.1.1.2
+
+theorem relTriple_sourceGlobal_globalHighMonitored_program
+    (adversary : Adversary Concrete.cappedScheme) :
+    RelTriple (sourceGlobalTracedProgram adversary)
+      (globalHighMonitoredProgram adversary)
+      SourceGlobalHighMonitoredProgramRelation := by
+  unfold sourceGlobalTracedProgram globalHighMonitoredProgram
+  apply relTriple_bind
+    (relTriple_with_support
+      relTriple_trajectoryProgrammedGlobalChainKeygen_withBaseHigh_stable)
+  intro left right hkeygen
+  obtain ⟨hrel, hleftSupport, hrightSupport⟩ := hkeygen
+  have hrightViewSupport :=
+    coupledGlobalChainKeygenWithBaseHighFull_support_keyView right
+      hrightSupport
+  apply relTriple_bind
+    (relTriple_with_support
+      (relTriple_sourceGlobal_globalHighMonitored_detailedExecution adversary
+        left right hrel hleftSupport hrightViewSupport))
+  intro leftExecution rightExecution hexecution
+  apply relTriple_pure_pure
+  exact ⟨hrel, hexecution.1,
+    globalHighMonitoredDetailedExecution_traceConsistent adversary right
+      rightExecution hexecution.2.2⟩
+
 end XmssSecurity.CappedChain
