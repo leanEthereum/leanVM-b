@@ -73,6 +73,10 @@ import XmssSecurity.ConcreteKeygen
 import XmssSecurity.ConcreteQueryBound
 import XmssSecurity.ConcreteSign
 import XmssSecurity.ConcreteScheme
+import XmssSecurity.PrecomputedKeygen
+import XmssSecurity.PrecomputedSign
+import XmssSecurity.PrecomputedScheme
+import XmssSecurity.PrecomputedSignQueryBound
 import XmssSecurity.BoundedSign
 import XmssSecurity.BoundedSignProbability
 import XmssSecurity.BoundedSignQueryBound
