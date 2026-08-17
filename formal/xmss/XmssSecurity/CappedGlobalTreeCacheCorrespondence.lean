@@ -602,4 +602,180 @@ theorem relTriple_globalTreeNode_succ_run
       hcache hleftReplay hrightReplay ⟨levels, hlevel⟩ node leftChild
         rightChild
 
+set_option maxHeartbeats 800000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_globalMaterial_leafTreeValues_run
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (hleft : left ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (hright : right ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter)) :
+    ∀ (indices : List TreeValueIndex),
+      (∀ index ∈ indices, index.1.val = 0) →
+      indices.Pairwise TreeValueIndex.Precedes →
+      ∀ (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+        (leftCache rightCache : QueryCache HashSpec),
+        TreeValuesFresh parameter indices leftCache →
+        TreeValuesFresh parameter indices rightCache →
+        GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+          leftCache rightCache →
+        left.2.2 ≤ leftCache → right.2.2 ≤ rightCache →
+        RelTriple
+          (treeValues parameter left.1 indices leftCache)
+          (treeValues parameter right.1 indices rightCache)
+          (fun leftResult rightResult =>
+            leftResult.1 = rightResult.1 ∧
+              ∃ finalLeft finalRight,
+                GlobalTreeCacheCorrespondence parameter finalLeft finalRight
+                  leftResult.2 rightResult.2 ∧
+                LeafReplayOutputsCorrespondOn parameter left.1 right.1 indices
+                  leftResult.2 rightResult.2) := by
+  intro indices
+  induction indices with
+  | nil =>
+      intro _hzero _hordered leftEndpoints rightEndpoints leftCache rightCache
+        _hleftFresh _hrightFresh hcache _hleftLe _hrightLe
+      simp only [treeValues_nil]
+      exact relTriple_pure_pure ⟨rfl, leftEndpoints, rightEndpoints, hcache,
+        by simp [LeafReplayOutputsCorrespondOn]⟩
+  | cons current indices ih =>
+      intro hzero hordered leftEndpoints rightEndpoints leftCache rightCache
+        hleftFresh hrightFresh hcache hleftLe hrightLe
+      have hcurrentZero : current.1.val = 0 := hzero current (by simp)
+      have htailZero : ∀ index ∈ indices, index.1.val = 0 := by
+        intro index hindex
+        exact hzero index (by simp [hindex])
+      have hcurrentBefore : ∀ target ∈ indices,
+          current.Precedes target := (List.pairwise_cons.mp hordered).1
+      have htailOrdered : indices.Pairwise TreeValueIndex.Precedes :=
+        (List.pairwise_cons.mp hordered).2
+      have hleftAbsent : ∀ input,
+          AtHashAddress parameter (.leaf current.node) input →
+            leftCache input = none := by
+        intro input hinput
+        apply hleftFresh current (by simp) input
+        unfold TreeValueIndex.domain
+        rw [dif_pos hcurrentZero]
+        exact hinput
+      have hrightAbsent : ∀ input,
+          AtHashAddress parameter (.leaf current.node) input →
+            rightCache input = none := by
+        intro input hinput
+        apply hrightFresh current (by simp) input
+        unfold TreeValueIndex.domain
+        rw [dif_pos hcurrentZero]
+        exact hinput
+      have hhead : RelTriple
+          ((simulateQ randomOracle
+            (current.computation parameter left.1)).run leftCache)
+          ((simulateQ randomOracle
+            (current.computation parameter right.1)).run rightCache)
+          (fun leftResult rightResult =>
+            leftResult.1 = rightResult.1 ∧
+              ∃ newLeft newRight,
+                GlobalTreeCacheCorrespondence parameter
+                  (Function.update leftEndpoints current.node newLeft)
+                  (Function.update rightEndpoints current.node newRight)
+                  leftResult.2 rightResult.2 ∧
+                newLeft = Concrete.CacheReplay.oneTimePublicKey leftResult.2
+                  parameter left.1 current.node ∧
+                newRight = Concrete.CacheReplay.oneTimePublicKey rightResult.2
+                  parameter right.1 current.node) := by
+        simpa [TreeValueIndex.computation, hcurrentZero] using
+          (relTriple_globalMaterial_leafAt_run parameter left right hleft hright
+            leftEndpoints rightEndpoints current.node leftCache rightCache
+              hcache hleftLe hrightLe hleftAbsent hrightAbsent)
+      have hheadSupport := relTriple_with_support hhead
+      simp only [treeValues_cons]
+      apply relTriple_bind hheadSupport
+      intro leftHeadResult rightHeadResult hheadResult
+      obtain ⟨hheadRelation, hleftHeadSupport, hrightHeadSupport⟩ :=
+        hheadResult
+      obtain ⟨hheadValue, nextLeft, nextRight, hnextCache,
+        hnextLeft, hnextRight⟩ := hheadRelation
+      have hleftTailFresh := treeValue_preserves_tail_fresh parameter left.1
+        current indices hcurrentBefore leftCache hleftFresh leftHeadResult
+          hleftHeadSupport
+      have hrightTailFresh := treeValue_preserves_tail_fresh parameter right.1
+        current indices hcurrentBefore rightCache hrightFresh rightHeadResult
+          hrightHeadSupport
+      have hleftNextLe : left.2.2 ≤ leftHeadResult.2 := hleftLe.trans
+        (Concrete.CacheReplay.randomOracle_cache_le
+          (current.computation parameter left.1) leftCache leftHeadResult
+            hleftHeadSupport)
+      have hrightNextLe : right.2.2 ≤ rightHeadResult.2 := hrightLe.trans
+        (Concrete.CacheReplay.randomOracle_cache_le
+          (current.computation parameter right.1) rightCache rightHeadResult
+            hrightHeadSupport)
+      apply relTriple_bind
+        (relTriple_with_support (ih htailZero htailOrdered
+          (Function.update leftEndpoints current.node nextLeft)
+          (Function.update rightEndpoints current.node nextRight)
+          leftHeadResult.2 rightHeadResult.2 hleftTailFresh hrightTailFresh
+            hnextCache hleftNextLe hrightNextLe))
+      intro leftTailResult rightTailResult htailResult
+      obtain ⟨htailRelation, hleftTailSupport, hrightTailSupport⟩ :=
+        htailResult
+      obtain ⟨htailValues, finalLeft, finalRight, hfinalCache,
+        htailReplay⟩ := htailRelation
+      have hleftTailLe := treeValues_cache_le parameter left.1 indices
+        leftHeadResult.2 leftTailResult hleftTailSupport
+      have hrightTailLe := treeValues_cache_le parameter right.1 indices
+        rightHeadResult.2 rightTailResult hrightTailSupport
+      have hleftCurrentStable :=
+        Concrete.CacheReplay.leafAt_oneTimePublicKey_eq_in_largerCache
+          parameter left.1 current.node leftCache leftHeadResult.2
+            leftTailResult.2 leftHeadResult.1 (by
+              simpa [TreeValueIndex.computation, hcurrentZero] using
+                hleftHeadSupport) hleftTailLe
+      have hrightCurrentStable :=
+        Concrete.CacheReplay.leafAt_oneTimePublicKey_eq_in_largerCache
+          parameter right.1 current.node rightCache rightHeadResult.2
+            rightTailResult.2 rightHeadResult.1 (by
+              simpa [TreeValueIndex.computation, hcurrentZero] using
+                hrightHeadSupport) hrightTailLe
+      obtain ⟨leftOutput, hleftCached⟩ :=
+        Concrete.CacheReplay.leafAt_query_cached parameter left.1 current.node
+          leftCache leftHeadResult.2 leftHeadResult.1 (by
+            simpa [TreeValueIndex.computation, hcurrentZero] using
+              hleftHeadSupport)
+      have hheadReplay :
+          leftHeadResult.2 (Concrete.CacheView.leafInput parameter current.node
+            (Concrete.CacheReplay.oneTimePublicKey leftHeadResult.2 parameter
+              left.1 current.node)) =
+          rightHeadResult.2 (Concrete.CacheView.leafInput parameter current.node
+            (Concrete.CacheReplay.oneTimePublicKey rightHeadResult.2 parameter
+              right.1 current.node)) := by
+        have hleaf := hnextCache.leaves current.node
+        rw [Function.update_self, Function.update_self] at hleaf
+        calc
+          leftHeadResult.2 (Concrete.CacheView.leafInput parameter current.node
+              (Concrete.CacheReplay.oneTimePublicKey leftHeadResult.2 parameter
+                left.1 current.node)) =
+              leftHeadResult.2 (Concrete.CacheView.leafInput parameter
+                current.node nextLeft) := by rw [hnextLeft]
+          _ = rightHeadResult.2 (Concrete.CacheView.leafInput parameter
+                current.node nextRight) := hleaf
+          _ = rightHeadResult.2 (Concrete.CacheView.leafInput parameter
+              current.node
+              (Concrete.CacheReplay.oneTimePublicKey rightHeadResult.2 parameter
+                right.1 current.node)) := by rw [hnextRight]
+      have hrightCached :
+          rightHeadResult.2 (Concrete.CacheView.leafInput parameter current.node
+            (Concrete.CacheReplay.oneTimePublicKey rightHeadResult.2 parameter
+              right.1 current.node)) = some leftOutput := by
+        rw [← hheadReplay]
+        exact hleftCached
+      apply relTriple_pure_pure
+      refine ⟨congrArg₂ List.cons hheadValue htailValues,
+        finalLeft, finalRight, hfinalCache, ?_⟩
+      intro index hindex
+      simp only [List.mem_cons] at hindex
+      rcases hindex with rfl | hindex
+      · rw [← hleftCurrentStable, ← hrightCurrentStable]
+        exact (hleftTailLe hleftCached).trans
+          (hrightTailLe hrightCached).symm
+      · exact htailReplay index hindex
+
 end XmssSecurity.CappedChain
