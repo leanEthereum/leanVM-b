@@ -529,4 +529,124 @@ theorem relTriple_coupledGlobalChainKeygen_withBase
       leftMaterial.1 rightMaterial.1 leftTree.2 rightTree.2 leftTree.1
         htree.2.1 (htree.1 ▸ htree.2.2) epoch
 
+theorem programmedGlobalChainTrajectoryMaterial_table_eq_keygenTable
+    (parameter : PublicParameter) (material : GlobalChainTrajectoryMaterial)
+    (hmaterial : material ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (tree : List Digest × QueryCache HashSpec)
+    (htree : tree ∈ support
+      (treeValues parameter material.1 allTreeValueIndices material.2.2)) :
+    globalChainTrajectoryMaterialTable material =
+      globalKeygenChainValueTable tree.2 ⟨parameter, material.1⟩ := by
+  have hprogrammed :=
+    programmedGlobalChainTrajectoryMaterial_support_trajectories parameter
+      material hmaterial
+  have hactual : material.2 ∈ support
+      (Concrete.allChainTrajectoriesFromCache parameter material.1 ∅
+        allChains) := by
+    apply (mem_support_iff_of_evalDist_eq
+      (evalDist_allChainTrajectories_eq_programmed parameter material.1
+        allChains ∅ allChains_nodup
+          (by simp [AllChainAddressesAbsent])) material.2).mpr
+    exact hprogrammed
+  exact Concrete.allChainTrajectoriesFromCache_globalTable_eq parameter
+    material.1 material.2 tree.2 hactual
+      (treeValues_cache_le parameter material.1 allTreeValueIndices
+        material.2.2 tree htree)
+
+def CoupledGlobalChainKeygenView.toProgrammedView
+    (parameter : PublicParameter) (view : CoupledGlobalChainKeygenView) :
+    ProgrammedGlobalChainKeygenView := {
+  publicKey := ⟨view.root parameter, parameter⟩
+  secretKey := ⟨parameter, view.secret⟩
+  cache := view.cache
+  table := view.table
+}
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_coupledGlobalChainKeygen_toProgrammedView_eq
+    (parameter : PublicParameter) :
+    evalDist (CoupledGlobalChainKeygenView.toProgrammedView parameter <$>
+      coupledGlobalChainKeygenExperiment parameter) =
+    evalDist (programmedGlobalChainTrajectoryMaterial parameter >>=
+      fun material =>
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter material.1 treeHeight Concrete.rootNode :
+          OracleComp HashSpec Digest)).run material.2.2 >>= fun rootResult =>
+      pure ({
+        publicKey := ⟨rootResult.1, parameter⟩
+        secretKey := ⟨parameter, material.1⟩
+        cache := rootResult.2
+        table := globalKeygenChainValueTable rootResult.2
+          ⟨parameter, material.1⟩
+      } : ProgrammedGlobalChainKeygenView)) := by
+  unfold coupledGlobalChainKeygenExperiment
+  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+    Function.comp_apply]
+  apply evalDist_bind_congr
+  intro material hmaterial
+  let finish : Digest × QueryCache HashSpec →
+      ProbComp ProgrammedGlobalChainKeygenView := fun rootResult => pure {
+    publicKey := ⟨rootResult.1, parameter⟩
+    secretKey := ⟨parameter, material.1⟩
+    cache := rootResult.2
+    table := globalKeygenChainValueTable rootResult.2
+      ⟨parameter, material.1⟩
+  }
+  symm
+  calc
+    evalDist ((simulateQ randomOracle
+          (Concrete.treeNode parameter material.1 treeHeight Concrete.rootNode :
+            OracleComp HashSpec Digest)).run material.2.2 >>= finish) =
+      evalDist (((fun tree : List Digest × QueryCache HashSpec =>
+          (Concrete.CacheReplay.treeNode tree.2 parameter material.1
+            treeHeight Concrete.rootNode, tree.2)) <$>
+            treeValues parameter material.1 allTreeValueIndices
+              material.2.2) >>= finish) := by
+        rw [evalDist_bind,
+          evalDist_rootTree_run_eq_treeValues_root_cache,
+          ← evalDist_bind]
+    _ = evalDist (treeValues parameter material.1 allTreeValueIndices
+          material.2.2 >>= fun tree =>
+        pure (CoupledGlobalChainKeygenView.toProgrammedView parameter {
+          secret := material.1
+          table := globalChainTrajectoryMaterialTable material
+          values := tree.1
+          cache := tree.2
+        })) := by
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply evalDist_bind_congr
+      intro tree htree
+      unfold finish CoupledGlobalChainKeygenView.toProgrammedView
+        CoupledGlobalChainKeygenView.root
+      rw [programmedGlobalChainTrajectoryMaterial_table_eq_keygenTable
+        parameter material hmaterial tree htree]
+
+noncomputable def coupledGlobalChainKeygen :
+    ProbComp ProgrammedGlobalChainKeygenView := do
+  let parameter ← Concrete.samplePublicParameter
+  let view ← coupledGlobalChainKeygenExperiment parameter
+  pure (view.toProgrammedView parameter)
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_coupledGlobalChainKeygen_eq_programmedTrajectories :
+    evalDist coupledGlobalChainKeygen =
+      evalDist (eraseAllChainTrajectories <$>
+        programmedAllChainTrajectoryKeygen) := by
+  unfold coupledGlobalChainKeygen programmedAllChainTrajectoryKeygen
+    eraseAllChainTrajectories
+  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+    Function.comp_apply]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro parameter
+  change evalDist
+      (CoupledGlobalChainKeygenView.toProgrammedView parameter <$>
+        coupledGlobalChainKeygenExperiment parameter) = _
+  rw [evalDist_coupledGlobalChainKeygen_toProgrammedView_eq parameter]
+  unfold programmedGlobalChainTrajectoryMaterial
+  simp only [bind_assoc, pure_bind]
+
 end XmssSecurity.CappedChain
