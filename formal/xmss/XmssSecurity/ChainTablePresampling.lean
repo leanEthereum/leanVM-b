@@ -1591,7 +1591,7 @@ theorem uniformInstalledChainEdgeCache_keygenChainValueTable_eq
     let secret := secretWithFixedChainSeeds other chain seeds
     let table := chainTableMaterialEquiv.symm
       (seeds, chainEdgeTableOfTape result.1)
-    keygenChainValueTable result.2.2 ⟨parameter, secret⟩ chain = table := by
+    keygenChainValueTable result.2.2 (SecretKey.withoutPrecomputation parameter secret) chain = table := by
   dsimp only
   apply keygenChainValueTable_eq_of_matches
   · intro epoch
@@ -1615,7 +1615,8 @@ theorem fixedChainMaterialRepresentation_support_info
         (fun epoch value => result.1.2 (epoch, chain) = value)
         allEpochs result.1.1 ∧
       keygenChainValueTable result.2.2.2
-        ⟨parameter, unflattenSecret result.1.2⟩ chain =
+        (SecretKey.withoutPrecomputation parameter
+          (unflattenSecret result.1.2)) chain =
         chainTableMaterialEquiv.symm
           ((fun epoch => result.1.2 (epoch, chain)),
             chainEdgeTableOfTape result.2.1) := by
@@ -1642,7 +1643,8 @@ theorem fixedChainMaterialRepresentation_keygenTable_eq_materialTable
     (hresult : result ∈ support
       (fixedChainMaterialRepresentation parameter chain)) :
     keygenChainValueTable result.2.2.2
-        ⟨parameter, unflattenSecret result.1.2⟩ chain =
+        (SecretKey.withoutPrecomputation parameter
+          (unflattenSecret result.1.2)) chain =
       fixedChainMaterialTable chain result := by
   exact (fixedChainMaterialRepresentation_support_info
     parameter chain result hresult).2
@@ -1653,7 +1655,8 @@ theorem fixedChainMaterialRepresentation_matches
       (List Digest × (List HashOutput × QueryCache HashSpec)))
     (hresult : result ∈ support
       (fixedChainMaterialRepresentation parameter chain)) :
-    let secretKey : SecretKey := ⟨parameter, unflattenSecret result.1.2⟩
+    let secretKey : SecretKey := SecretKey.withoutPrecomputation parameter
+      (unflattenSecret result.1.2)
     let table := fixedChainMaterialTable chain result
     ChainTableSeedsMatch secretKey chain table ∧
       ChainTableEdgesMatch result.2.2.2 parameter chain table := by
@@ -1672,7 +1675,8 @@ theorem fixedChainMaterialRepresentation_matches
         (fun target => secretView.2 (target, chain))
         (chainEdgeTableOfTape edgeView.1)) epoch
     simpa [fixedChainMaterialTable, ChainTableSeedsMatch,
-      chainTableSeedTargets, unflattenSecret] using hseed.symm
+      chainTableSeedTargets, unflattenSecret,
+      SecretKey.withoutPrecomputation] using hseed.symm
   · exact uniformInstalledChainEdgeCache_edgesMatch parameter chain
       (fun epoch => secretView.2 (epoch, chain)) edgeView hedgeView
 
@@ -1712,9 +1716,9 @@ noncomputable def explicitFixedChainKeygenFromSecret
       OracleComp HashSpec Digest)).run ∅
   return {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
-    table := keygenChainValueTable rootResult.2 ⟨parameter, secret⟩ chain
+    table := keygenChainValueTable rootResult.2 (SecretKey.withoutPrecomputation parameter secret) chain
   }
 
 noncomputable def explicitFixedChainKeygen
@@ -1862,7 +1866,7 @@ noncomputable def directlyProgrammedFixedChainKeygen
       OracleComp HashSpec Digest)).run edgeView.2.2
   return {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
     table := chainTableMaterialEquiv.symm
       (seeds, chainEdgeTableOfTape edgeView.1)
@@ -1878,7 +1882,7 @@ noncomputable def programmedFixedChainKeygen
       OracleComp HashSpec Digest)).run material.2.2.2
   return {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
     table := fixedChainMaterialTable chain material
   }
@@ -1990,20 +1994,20 @@ theorem sampleSecret_chainTableSeedsMatch_probability
     (parameter : PublicParameter) (chain : ChainIndex)
     (table : ChainValueIndex → Digest) :
     Pr[fun secret : Epoch → ChainIndex → Digest =>
-        ChainTableSeedsMatch ⟨parameter, secret⟩ chain table |
+        ChainTableSeedsMatch (SecretKey.withoutPrecomputation parameter secret) chain table |
       Concrete.sampleSecret] =
       ((((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ^ lifetime) := by
   let target := chainTableSeedTargets table
   calc
     Pr[fun secret : Epoch → ChainIndex → Digest =>
-          ChainTableSeedsMatch ⟨parameter, secret⟩ chain table |
+          ChainTableSeedsMatch (SecretKey.withoutPrecomputation parameter secret) chain table |
         Concrete.sampleSecret] =
         Pr[= target |
           (fun secret : Epoch → ChainIndex → Digest =>
             fun epoch => secret epoch chain) <$> Concrete.sampleSecret] := by
       rw [← probEvent_eq_eq_probOutput, probEvent_map]
       apply probEvent_congr' (fun secret _ => ?_) rfl
-      change (ChainTableSeedsMatch ⟨parameter, secret⟩ chain table ↔
+      change (ChainTableSeedsMatch (SecretKey.withoutPrecomputation parameter secret) chain table ↔
         (fun epoch => secret epoch chain) = target)
       constructor
       · intro hmatch
@@ -2028,7 +2032,8 @@ def ChainTableMaterialMatches
     (table : ChainValueIndex → Digest)
     (result : (Epoch → ChainIndex → Digest) ×
       (List HashOutput × QueryCache HashSpec)) : Prop :=
-  ChainTableSeedsMatch ⟨parameter, result.1⟩ chain table ∧
+  ChainTableSeedsMatch
+      (SecretKey.withoutPrecomputation parameter result.1) chain table ∧
     result.2.1.map truncateHash = chainTableEdgeTargets table
 
 set_option maxHeartbeats 1600000 in
@@ -2046,7 +2051,7 @@ theorem presampledChainTableMaterial_probability
           OracleComp.presampleCacheEntriesTrace ∅
             (chainTableEdgeInputs parameter chain table)] =
         Pr[fun secret : Epoch → ChainIndex → Digest =>
-            ChainTableSeedsMatch ⟨parameter, secret⟩ chain table |
+            ChainTableSeedsMatch (SecretKey.withoutPrecomputation parameter secret) chain table |
           Concrete.sampleSecret] *
         Pr[fun result : List HashOutput × QueryCache HashSpec =>
             result.1.map truncateHash = chainTableEdgeTargets table |
@@ -2073,7 +2078,8 @@ theorem presampledChainTableMaterial_eq_table
     (hresult : result ∈ support
       (presampledChainTableMaterial parameter chain table))
     (hmatches : ChainTableMaterialMatches parameter chain table result) :
-    keygenChainValueTable result.2.2 ⟨parameter, result.1⟩ chain = table := by
+    keygenChainValueTable result.2.2
+      (SecretKey.withoutPrecomputation parameter result.1) chain = table := by
   have hedgeSupport : result.2 ∈ support
       (OracleComp.presampleCacheEntriesTrace ∅
         (chainTableEdgeInputs parameter chain table)) := by
@@ -2506,7 +2512,7 @@ theorem Concrete.fixedSeedChainTrajectoriesFromCache_table_eq
       (Concrete.fixedSeedChainTrajectoriesFromCache parameter secret chain
         (chainLength - 1) ∅ allEpochs)) :
     chainValueTableOfList result.1 =
-      keygenChainValueTable result.2 ⟨parameter, secret⟩ chain := by
+      keygenChainValueTable result.2 (SecretKey.withoutPrecomputation parameter secret) chain := by
   obtain ⟨_hcache, hlength, hpairs⟩ :=
     Concrete.fixedSeedChainTrajectoriesFromCache_support_info parameter secret
       chain (chainLength - 1) allEpochs ∅ result hresult
@@ -2587,7 +2593,7 @@ theorem Concrete.fixedSeedChainTrajectoriesFromCache_table_eq_in_largerCache
         (chainLength - 1) ∅ allEpochs))
     (hle : result.2 ≤ largerCache) :
     chainValueTableOfList result.1 =
-      keygenChainValueTable largerCache ⟨parameter, secret⟩ chain := by
+      keygenChainValueTable largerCache (SecretKey.withoutPrecomputation parameter secret) chain := by
   have hinfo := Concrete.fixedSeedChainTrajectoriesFromCache_support_info
     parameter secret chain (chainLength - 1) allEpochs ∅ result hresult
   have hpairs :=
@@ -2915,9 +2921,9 @@ noncomputable def chronologicallyWarmedExtractedFixedChainKeygen
         OracleComp HashSpec Digest)).run trajectoryResult.2)
   return {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
-    table := keygenChainValueTable rootResult.2 ⟨parameter, secret⟩ chain
+    table := keygenChainValueTable rootResult.2 (SecretKey.withoutPrecomputation parameter secret) chain
   }
 
 theorem evalDist_extractedFixedChainKeygen_eq_chronologicallyWarmed
@@ -2936,9 +2942,9 @@ theorem evalDist_extractedFixedChainKeygen_eq_chronologicallyWarmed
       ProbComp ProgrammedFixedChainKeygenView := fun rootResult =>
     pure ({
       publicKey := ⟨rootResult.1, parameter⟩
-      secretKey := ⟨parameter, secret⟩
+      secretKey := (SecretKey.withoutPrecomputation parameter secret)
       cache := rootResult.2
-      table := keygenChainValueTable rootResult.2 ⟨parameter, secret⟩ chain
+      table := keygenChainValueTable rootResult.2 (SecretKey.withoutPrecomputation parameter secret) chain
     } : ProgrammedFixedChainKeygenView)
   change evalDist ((simulateQ randomOracle
       (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
@@ -2984,7 +2990,8 @@ theorem evalDist_chronologicallyWarmedFixedChainKeygenTableOnly_eq_uniform
           Concrete.rootNode : OracleComp HashSpec Digest)).run
             trajectoryResult.2 >>= fun rootResult =>
       pure (keygenChainValueTable rootResult.2
-        ⟨parameter, unflattenSecret secretView.2⟩ chain)) = _
+        (SecretKey.withoutPrecomputation parameter
+          (unflattenSecret secretView.2)) chain)) = _
   calc
     evalDist (Concrete.samplePublicParameter >>= fun parameter =>
         extractFixedChainSeeds chain allEpochs >>= fun secretView =>
@@ -2996,7 +3003,8 @@ theorem evalDist_chronologicallyWarmedFixedChainKeygenTableOnly_eq_uniform
             Concrete.rootNode : OracleComp HashSpec Digest)).run
               trajectoryResult.2 >>= fun rootResult =>
         pure (keygenChainValueTable rootResult.2
-          ⟨parameter, unflattenSecret secretView.2⟩ chain)) =
+          (SecretKey.withoutPrecomputation parameter
+            (unflattenSecret secretView.2)) chain)) =
         evalDist (Concrete.samplePublicParameter >>= fun parameter =>
           extractFixedChainSeeds chain allEpochs >>= fun secretView =>
           Concrete.fixedSeedChainTrajectoriesFromCache parameter
@@ -3260,7 +3268,7 @@ noncomputable def Concrete.keygenAfterParameter
   let root ← liftM
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
       OracleComp HashSpec Digest)
-  return (⟨root, parameter⟩, ⟨parameter, secret⟩)
+  return (⟨root, parameter⟩, (SecretKey.withoutPrecomputation parameter secret))
 
 theorem Concrete.keygen_eq_samplePublicParameter_bind :
     Concrete.keygen =

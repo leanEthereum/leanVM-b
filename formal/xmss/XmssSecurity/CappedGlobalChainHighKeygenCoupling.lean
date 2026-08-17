@@ -142,7 +142,8 @@ theorem Concrete.allChainTrajectoriesFromCache_edgesMatch
   · convert hcached using 1
     all_goals
       simp [globalChainTableEdgeInput, globalKeygenChainValueTable,
-        keygenChainValueTable, chainStepDigit]
+        keygenChainValueTable, chainStepDigit,
+        SecretKey.withoutPrecomputation]
   · let stepFunction :=
       Concrete.CacheView.chainStep result.2 parameter epoch chain
     calc
@@ -156,7 +157,7 @@ theorem Concrete.allChainTrajectoriesFromCache_edgesMatch
         exact Concrete.CacheView.chainStep_eq result.2 parameter epoch chain
           step.val _ step.isLt
       _ = globalChainTableEdgeTarget
-          (globalKeygenChainValueTable result.2 ⟨parameter, secret⟩)
+          (globalKeygenChainValueTable result.2 (SecretKey.withoutPrecomputation parameter secret))
           (chain, epoch, step) := by
         change stepFunction step.val
             (Wots.walk stepFunction 0 step.val (secret epoch chain)) =

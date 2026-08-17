@@ -657,7 +657,8 @@ theorem relTriple_programmedWarmedFixedChainKeygen_exposes_high
   apply relTriple_pure_pure
   refine ⟨congrArg (CoupledWarmedKeygenView.toProgrammedView leftParameter)
     hview.1, ?_⟩
-  simpa [CoupledWarmedKeygenView.toProgrammedView] using hview.2
+  simpa [CoupledWarmedKeygenView.toProgrammedView,
+    SecretKey.withoutPrecomputation] using hview.2
 
 theorem evalDist_coupledWarmedFixedChainKeygenWithHigh_fst_eq_actual
     (chain : ChainIndex) :
@@ -1755,7 +1756,8 @@ theorem relTriple_coupledWarmedFixedChainKeygen_withBaseHigh
       hview.base.1.2.2.2.2.2.2⟩, hview.base.2⟩
     exact congrArg (fun root => PublicKey.mk root leftParameter)
       hview.base.1.2.2.2.2.2.1
-  · simpa [CoupledWarmedKeygenView.toProgrammedView] using hview.highEq
+  · simpa [CoupledWarmedKeygenView.toProgrammedView,
+      SecretKey.withoutPrecomputation] using hview.highEq
 
 theorem relTriple_programmedWarmedFixedChainKeygen_withBaseHigh
     (chain : ChainIndex) :

@@ -132,9 +132,10 @@ theorem Concrete.CacheReplay.eval_fixedChainValues
     (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex) :
     evalWithAnswerFn (Concrete.CacheReplay.answerFn cache)
       (Concrete.fixedChainValues parameter secret chain) =
-      keygenChainValueTable cache ⟨parameter, secret⟩ chain := by
+      keygenChainValueTable cache (SecretKey.withoutPrecomputation parameter secret) chain := by
   funext index
-  simp [Concrete.fixedChainValues, keygenChainValueTable]
+  simp [Concrete.fixedChainValues, keygenChainValueTable,
+    SecretKey.withoutPrecomputation]
 
 @[simp]
 theorem Concrete.CacheReplay.eval_treeAndFixedChainValues
@@ -143,7 +144,7 @@ theorem Concrete.CacheReplay.eval_treeAndFixedChainValues
     evalWithAnswerFn (Concrete.CacheReplay.answerFn cache)
       (Concrete.treeAndFixedChainValues parameter secret chain) =
       (Concrete.CacheReplay.treeNode cache parameter secret treeHeight
-        Concrete.rootNode, keygenChainValueTable cache ⟨parameter, secret⟩ chain) := by
+        Concrete.rootNode, keygenChainValueTable cache (SecretKey.withoutPrecomputation parameter secret) chain) := by
   simp [Concrete.treeAndFixedChainValues]
 
 @[simp]
@@ -152,7 +153,7 @@ theorem Concrete.CacheReplay.eval_fixedChainTrajectoryValues
     (secret : Epoch → ChainIndex → Digest) (chain : ChainIndex) :
     evalWithAnswerFn (Concrete.CacheReplay.answerFn cache)
       (Concrete.fixedChainTrajectoryValues parameter secret chain) =
-      keygenChainValueTable cache ⟨parameter, secret⟩ chain := by
+      keygenChainValueTable cache (SecretKey.withoutPrecomputation parameter secret) chain := by
   funext index
   simp only [Concrete.fixedChainTrajectoryValues, evalWithAnswerFn_bind,
     Concrete.CacheReplay.eval_sequenceFin, evalWithAnswerFn_pure]

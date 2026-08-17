@@ -180,9 +180,11 @@ theorem relTriple_coupledWarmedKeygenExperiment_withBaseHigh_tree
         (hvalues ▸ hrightTreeReplay)
   have hauth : ∀ epoch,
       Concrete.CacheReplay.authenticationPath leftTree.2
-          ⟨parameter, unflattenSecret leftMaterial.1.2⟩ epoch =
+          (SecretKey.withoutPrecomputation parameter
+            (unflattenSecret leftMaterial.1.2)) epoch =
         Concrete.CacheReplay.authenticationPath rightTree.2
-          ⟨parameter, unflattenSecret rightMaterial.1.2⟩ epoch := by
+          (SecretKey.withoutPrecomputation parameter
+            (unflattenSecret rightMaterial.1.2)) epoch := by
     intro epoch
     exact globalTreeValuesReplay_eq_authenticationPath parameter
       (unflattenSecret leftMaterial.1.2) (unflattenSecret rightMaterial.1.2)
@@ -353,8 +355,10 @@ theorem relTriple_coupledWarmedFixedChainKeygen_withBaseHigh_tree
           hview.base.base.1.2.2.2.2.2.2⟩, hview.base.base.2⟩
       exact congrArg (fun root => PublicKey.mk root leftParameter)
         hview.base.base.1.2.2.2.2.2.1
-    · simpa [CoupledWarmedKeygenView.toProgrammedView] using hview.base.highEq
-  · simpa [CoupledWarmedKeygenView.toProgrammedView] using hview.retained
+    · simpa [CoupledWarmedKeygenView.toProgrammedView,
+        SecretKey.withoutPrecomputation] using hview.base.highEq
+  · simpa [CoupledWarmedKeygenView.toProgrammedView,
+      SecretKey.withoutPrecomputation] using hview.retained
   · obtain ⟨leftEndpoints, rightEndpoints, hwitness⟩ := hview.replayLeaves
     have houtputs := LeafReplayWitness.outputsCorrespond _ _ _ _ _
       leftEndpoints rightEndpoints hwitness

@@ -361,10 +361,10 @@ theorem relTriple_signingChainWalk_run
     (houtside : secretOutsideChain selected leftSecret =
       secretOutsideChain selected rightSecret)
     (hleftSeeds : ChainTableSeedsMatch
-      ⟨parameter, leftSecret⟩ selected leftTable)
+      (SecretKey.withoutPrecomputation parameter leftSecret) selected leftTable)
     (hleftEdges : ChainTableEdgesMatch initialLeft parameter selected leftTable)
     (hrightSeeds : ChainTableSeedsMatch
-      ⟨parameter, rightSecret⟩ selected rightTable)
+      (SecretKey.withoutPrecomputation parameter rightSecret) selected rightTable)
     (hrightEdges : ChainTableEdgesMatch initialRight parameter selected rightTable)
     (hagrees : HashCachesAgreeOn
       (OutsideChainHashInput parameter selected) left right)
@@ -385,12 +385,14 @@ theorem relTriple_signingChainWalk_run
         initialLeft ≤ leftResult.2 ∧ initialRight ≤ rightResult.2) := by
   by_cases hcandidate : candidate = selected
   · subst candidate
-    rw [simulate_chainWalk_run_eq_pure_of_table_matches left
-        ⟨parameter, leftSecret⟩ selected leftTable hleftSeeds
-          (hleftEdges.mono hleftLe) epoch steps hsteps,
-      simulate_chainWalk_run_eq_pure_of_table_matches right
-        ⟨parameter, rightSecret⟩ selected rightTable hrightSeeds
-          (hrightEdges.mono hrightLe) epoch steps hsteps]
+    have hleftRun := simulate_chainWalk_run_eq_pure_of_table_matches left
+      (SecretKey.withoutPrecomputation parameter leftSecret) selected leftTable
+        hleftSeeds (hleftEdges.mono hleftLe) epoch steps hsteps
+    have hrightRun := simulate_chainWalk_run_eq_pure_of_table_matches right
+      (SecretKey.withoutPrecomputation parameter rightSecret) selected rightTable
+        hrightSeeds (hrightEdges.mono hrightLe) epoch steps hsteps
+    simp only [SecretKey.withoutPrecomputation] at hleftRun hrightRun
+    rw [hleftRun, hrightRun]
     exact relTriple_pure_pure
       ⟨fun _ => rfl, fun hne => (hne rfl).elim, hagrees,
         hleftLe, hrightLe⟩
@@ -417,20 +419,20 @@ theorem relTriple_signedChainValues_run
     (houtside : secretOutsideChain selected leftSecret =
       secretOutsideChain selected rightSecret)
     (hleftSeeds : ChainTableSeedsMatch
-      ⟨parameter, leftSecret⟩ selected leftTable)
+      (SecretKey.withoutPrecomputation parameter leftSecret) selected leftTable)
     (hleftEdges : ChainTableEdgesMatch initialLeft parameter selected leftTable)
     (hrightSeeds : ChainTableSeedsMatch
-      ⟨parameter, rightSecret⟩ selected rightTable)
+      (SecretKey.withoutPrecomputation parameter rightSecret) selected rightTable)
     (hrightEdges : ChainTableEdgesMatch initialRight parameter selected rightTable)
     (hagrees : HashCachesAgreeOn
       (OutsideChainHashInput parameter selected) left right)
     (hleftLe : initialLeft ≤ left) (hrightLe : initialRight ≤ right) :
     RelTriple
       ((simulateQ randomOracle
-        (Concrete.signedChainValues ⟨parameter, leftSecret⟩ epoch encoding)).run
+        (Concrete.signedChainValues (SecretKey.withoutPrecomputation parameter leftSecret) epoch encoding)).run
           left)
       ((simulateQ randomOracle
-        (Concrete.signedChainValues ⟨parameter, rightSecret⟩ epoch encoding)).run
+        (Concrete.signedChainValues (SecretKey.withoutPrecomputation parameter rightSecret) epoch encoding)).run
           right)
       (fun leftResult rightResult =>
         leftResult.1 selected = leftTable (epoch, encoding selected) ∧
@@ -617,11 +619,11 @@ theorem Concrete.CacheReplay.signedChainValues_other_eq
       (OutsideChainHashInput parameter selected) left right)
     (epoch : Epoch) (encoding : Encoding) :
     Concrete.CacheReplay.signedChainValues left
-        ⟨parameter, leftSecret⟩ epoch encoding candidate =
+        (SecretKey.withoutPrecomputation parameter leftSecret) epoch encoding candidate =
     Concrete.CacheReplay.signedChainValues right
-        ⟨parameter, rightSecret⟩ epoch encoding candidate := by
+        (SecretKey.withoutPrecomputation parameter rightSecret) epoch encoding candidate := by
   unfold Concrete.CacheReplay.signedChainValues
-  dsimp only [SecretKey.parameter, SecretKey.chainStart]
+  simp only [SecretKey.withoutPrecomputation]
   rw [secret_eq_of_outsideChain_eq selected leftSecret rightSecret
       houtside epoch candidate hne,
     Concrete.CacheReplay.chainStep_eq_of_outsideChainCachesAgree

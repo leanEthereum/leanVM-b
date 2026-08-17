@@ -311,9 +311,9 @@ noncomputable def programmedWarmedFixedChainKeygenReplayTable
       OracleComp HashSpec Digest)).run trajectoryResult.2
   pure {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
-    table := keygenChainValueTable rootResult.2 ⟨parameter, secret⟩ chain
+    table := keygenChainValueTable rootResult.2 (SecretKey.withoutPrecomputation parameter secret) chain
   }
 
 set_option maxHeartbeats 2400000 in
@@ -336,10 +336,10 @@ theorem evalDist_chronologicallyWarmedFixedChainKeygen_eq_programmedReplay
         OracleComp HashSpec Digest)).run trajectoryResult.2
     pure ({
       publicKey := ⟨rootResult.1, parameter⟩
-      secretKey := ⟨parameter, secret⟩
+      secretKey := (SecretKey.withoutPrecomputation parameter secret)
       cache := rootResult.2
       table := keygenChainValueTable rootResult.2
-        ⟨parameter, secret⟩ chain
+        (SecretKey.withoutPrecomputation parameter secret) chain
     } : ProgrammedFixedChainKeygenView)
   dsimp only
   simp only [bind_assoc]
@@ -366,7 +366,7 @@ noncomputable def programmedWarmedFixedChainKeygen
       OracleComp HashSpec Digest)).run trajectoryResult.2
   pure {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
     table := chainValueTableOfList trajectoryResult.1
   }
@@ -406,7 +406,7 @@ theorem evalDist_programmedWarmedFixedChainKeygenReplayTable_eq_explicit
       (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
         OracleComp HashSpec Digest) trajectoryResult.2 rootResult hroot
   have htable : chainValueTableOfList trajectoryResult.1 =
-      keygenChainValueTable rootResult.2 ⟨parameter, secret⟩ chain :=
+      keygenChainValueTable rootResult.2 (SecretKey.withoutPrecomputation parameter secret) chain :=
     Concrete.fixedSeedChainTrajectoriesFromCache_table_eq_in_largerCache
       parameter secret chain trajectoryResult rootResult.2 hactual hcacheLe
   rw [htable]

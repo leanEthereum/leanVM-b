@@ -91,7 +91,7 @@ theorem capped_detailed_execution_key_components_consistent
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
       OracleComp HashSpec Digest) secretCache keyCache finalCache root hroot hkeyCacheLe
   rw [Concrete.CacheReplay.eval_treeNode] at heval
-  exact ⟨True.intro, heval.symm⟩
+  exact ⟨rfl, heval.symm⟩
 
 theorem capped_detailed_execution_key_consistent
     (adversary : Adversary Concrete.cappedScheme)
@@ -105,11 +105,11 @@ theorem capped_detailed_execution_key_consistent
   cases hpublicKey : execution.1.publicKey with
   | mk root parameter =>
       cases hsecretKey : execution.1.secretKey with
-      | mk secretParameter chainStart =>
+      | mk secretParameter chainStart chainValue treeValue =>
           simp only [hpublicKey, hsecretKey] at hparameter hroot ⊢
           subst parameter
           exact Concrete.CacheReplay.publicKey_eq_publicKeyFromCache execution.2
-            ⟨secretParameter, chainStart⟩ root hroot
+            ⟨secretParameter, chainStart, chainValue, treeValue⟩ root hroot
 
 theorem capped_detailed_execution_consistent_of_signing
     (adversary : Adversary Concrete.cappedScheme)

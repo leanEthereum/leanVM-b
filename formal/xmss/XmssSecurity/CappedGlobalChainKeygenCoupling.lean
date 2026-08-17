@@ -114,7 +114,7 @@ theorem chainValueTableOfList_eq_keygenChainValueTable_of_replay
             (chainLength - 1) (secret epoch chain)) = trajectory)
       allEpochs trajectories) :
     chainValueTableOfList trajectories =
-      keygenChainValueTable cache ⟨parameter, secret⟩ chain := by
+      keygenChainValueTable cache (SecretKey.withoutPrecomputation parameter secret) chain := by
   funext index
   unfold chainValueTableOfList
   split
@@ -145,7 +145,7 @@ theorem Concrete.allChainTrajectoriesFromCache_globalTable_eq
       (Concrete.allChainTrajectoriesFromCache parameter secret ∅ allChains))
     (hle : result.2 ≤ largerCache) :
     globalChainValueTableOfTrajectories result.1 =
-      globalKeygenChainValueTable largerCache ⟨parameter, secret⟩ := by
+      globalKeygenChainValueTable largerCache (SecretKey.withoutPrecomputation parameter secret) := by
   have hinfo := Concrete.allChainTrajectoriesFromCache_support_info parameter
     secret allChains ∅ result allChains_nodup hresult
   funext index
@@ -1364,7 +1364,7 @@ noncomputable def allChainTrajectoryKeygen :
   let rootResult ← (simulateQ randomOracle
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
       OracleComp HashSpec Digest)).run trajectoryResult.2
-  let secretKey : SecretKey := ⟨parameter, secret⟩
+  let secretKey : SecretKey := (SecretKey.withoutPrecomputation parameter secret)
   pure ({
     publicKey := ⟨rootResult.1, parameter⟩
     secretKey
@@ -1381,7 +1381,7 @@ noncomputable def programmedAllChainTrajectoryKeygen :
   let rootResult ← (simulateQ randomOracle
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
       OracleComp HashSpec Digest)).run trajectoryResult.2
-  let secretKey : SecretKey := ⟨parameter, secret⟩
+  let secretKey : SecretKey := (SecretKey.withoutPrecomputation parameter secret)
   pure ({
     publicKey := ⟨rootResult.1, parameter⟩
     secretKey
@@ -1449,7 +1449,7 @@ theorem evalDist_explicitGlobalChainKeygen_eq_allChainTrajectoryKeygen :
   intro secret
   let finish : Digest × QueryCache HashSpec →
       ProbComp ProgrammedGlobalChainKeygenView := fun rootResult =>
-    let secretKey : SecretKey := ⟨parameter, secret⟩
+    let secretKey : SecretKey := (SecretKey.withoutPrecomputation parameter secret)
     pure {
       publicKey := ⟨rootResult.1, parameter⟩
       secretKey

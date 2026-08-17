@@ -697,7 +697,8 @@ theorem programmedWarmedFixedChainAuthenticationPathPublicTableView_eq_actualVie
   simp [programmedWarmedFixedChainAuthenticationPathPublicTableView,
     programmedWarmedFixedChainKeygen, actualAuthenticationPathPublicTableView,
     actualAuthenticationPathRootPairFromCache,
-    programmedWarmedTrajectoryMaterial, map_eq_bind_pure_comp, bind_assoc]
+    programmedWarmedTrajectoryMaterial, SecretKey.withoutPrecomputation,
+    map_eq_bind_pure_comp, bind_assoc]
 
 theorem evalDist_programmedWarmedFixedChainAuthenticationPathPublicTableView_eq_independent
     (chain : ChainIndex) (epoch : Epoch) :

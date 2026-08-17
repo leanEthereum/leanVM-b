@@ -97,7 +97,7 @@ def CoupledWarmedKeygenView.authenticationPath
     (parameter : PublicParameter) (view : CoupledWarmedKeygenView)
     (epoch : Epoch) : MerkleLevel → Digest :=
   Concrete.CacheReplay.authenticationPath view.cache
-    ⟨parameter, view.secret⟩ epoch
+    (SecretKey.withoutPrecomputation parameter view.secret) epoch
 
 noncomputable def coupledWarmedKeygenExperiment
     (parameter : PublicParameter) (chain : ChainIndex) :
@@ -156,7 +156,7 @@ def CoupledWarmedKeygenView.toProgrammedView
     (parameter : PublicParameter) (view : CoupledWarmedKeygenView) :
     ProgrammedFixedChainKeygenView := {
   publicKey := ⟨view.root parameter, parameter⟩
-  secretKey := ⟨parameter, view.secret⟩
+  secretKey := SecretKey.withoutPrecomputation parameter view.secret
   cache := view.cache
   table := view.table
 }
@@ -174,7 +174,8 @@ theorem evalDist_coupledWarmedKeygen_toProgrammedView_eq
             material.2.2 >>= fun rootResult =>
       pure ({
         publicKey := ⟨rootResult.1, parameter⟩
-        secretKey := ⟨parameter, unflattenSecret material.1.2⟩
+        secretKey := SecretKey.withoutPrecomputation parameter
+          (unflattenSecret material.1.2)
         cache := rootResult.2
         table := chainValueTableOfList material.2.1
       } : ProgrammedFixedChainKeygenView)] := by
@@ -187,7 +188,7 @@ theorem evalDist_coupledWarmedKeygen_toProgrammedView_eq
   let finish : Digest × QueryCache HashSpec →
       ProbComp ProgrammedFixedChainKeygenView := fun rootResult => pure {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
     table := chainValueTableOfList material.2.1
   }

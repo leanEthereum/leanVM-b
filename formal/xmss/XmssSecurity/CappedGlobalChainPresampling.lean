@@ -672,12 +672,14 @@ theorem evalDist_programmedUniformGlobalChainEdgeCache_eq_uniformInstalled
 theorem globalChainTableSeedsMatch_materialEquiv_symm
     (parameter : PublicParameter) (seeds : Epoch → ChainIndex → Digest)
     (edges : GlobalChainEdgeIndex → Digest) :
-    GlobalChainTableSeedsMatch ⟨parameter, seeds⟩
+    GlobalChainTableSeedsMatch
+      (SecretKey.withoutPrecomputation parameter seeds)
       (globalChainTableMaterialEquiv.symm (seeds, edges)) := by
   intro epoch chain
   have hseed := congrFun (congrFun
     (globalChainTableSeedTargets_materialEquiv_symm seeds edges) epoch) chain
-  simpa [globalChainTableSeedTargets] using hseed.symm
+  simpa [globalChainTableSeedTargets,
+    SecretKey.withoutPrecomputation] using hseed.symm
 
 theorem globalChainTableSeedsMatch_local
     (secretKey : SecretKey) (table : GlobalChainValueIndex → Digest)
@@ -735,7 +737,7 @@ noncomputable def programmedGlobalChainKeygenFor
       OracleComp HashSpec Digest)).run edgeResult.2
   return {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
     table
   }
@@ -785,7 +787,8 @@ theorem programmedGlobalChainKeygen_support_table
   rcases hpure with rfl
   apply globalKeygenChainValueTable_eq_of_matches
   · change GlobalChainTableSeedsMatch
-      ⟨parameter, globalChainTableSeedTargets table⟩ table
+      (SecretKey.withoutPrecomputation parameter
+        (globalChainTableSeedTargets table)) table
     intro epoch chain
     rfl
   · exact (programAllGlobalChainTableEdgesTrace_edgesMatch parameter table
@@ -981,7 +984,7 @@ noncomputable def explicitGlobalChainKeygen :
   let rootResult ← (simulateQ randomOracle
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
       OracleComp HashSpec Digest)).run ∅
-  let secretKey : SecretKey := ⟨parameter, secret⟩
+  let secretKey : SecretKey := (SecretKey.withoutPrecomputation parameter secret)
   return {
     publicKey := ⟨rootResult.1, parameter⟩
     secretKey
@@ -1047,7 +1050,7 @@ noncomputable def chronologicallyWarmedGlobalChainKeygen :
   let rootResult ← (simulateQ randomOracle
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
       OracleComp HashSpec Digest)).run warmResult.2
-  let secretKey : SecretKey := ⟨parameter, secret⟩
+  let secretKey : SecretKey := (SecretKey.withoutPrecomputation parameter secret)
   return {
     publicKey := ⟨rootResult.1, parameter⟩
     secretKey
@@ -1065,7 +1068,7 @@ theorem evalDist_explicitGlobalChainKeygen_eq_chronologicallyWarmed :
   intro secret
   let finish : Digest × QueryCache HashSpec →
       ProbComp ProgrammedGlobalChainKeygenView := fun rootResult =>
-    let secretKey : SecretKey := ⟨parameter, secret⟩
+    let secretKey : SecretKey := (SecretKey.withoutPrecomputation parameter secret)
     pure ({
       publicKey := ⟨rootResult.1, parameter⟩
       secretKey

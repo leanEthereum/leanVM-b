@@ -52,7 +52,6 @@ theorem encodeTweak_eq_iff {left right : TweakFields} :
 
 abbrev ChainStep := Fin (chainLength - 1)
 abbrev MerkleLevel := Fin treeHeight
-abbrev MerkleNode := Fin lifetime
 
 /-- Every domain-separated hash call made by the concrete XMSS instance. -/
 inductive HashDomain where

@@ -249,9 +249,9 @@ theorem relTriple_programmedAllChainTreeValues_same_root_and_paths
               treeHeight Concrete.rootNode ∧
           ∀ epoch,
             Concrete.CacheReplay.authenticationPath leftTree.2
-                ⟨parameter, leftSecret⟩ epoch =
+                (SecretKey.withoutPrecomputation parameter leftSecret) epoch =
               Concrete.CacheReplay.authenticationPath rightTree.2
-                ⟨parameter, rightSecret⟩ epoch) := by
+                (SecretKey.withoutPrecomputation parameter rightSecret) epoch) := by
   apply relTriple_post_mono
     (relTriple_programmedAllChainTreeValues_same_values parameter
       leftSecret rightSecret left right hleft hright)
@@ -440,7 +440,7 @@ def CoupledGlobalChainKeygenView.authenticationPath
     (parameter : PublicParameter) (view : CoupledGlobalChainKeygenView)
     (epoch : Epoch) : MerkleLevel → Digest :=
   Concrete.CacheReplay.authenticationPath view.cache
-    ⟨parameter, view.secret⟩ epoch
+    (SecretKey.withoutPrecomputation parameter view.secret) epoch
 
 noncomputable def coupledGlobalChainKeygenExperiment
     (parameter : PublicParameter) : ProbComp CoupledGlobalChainKeygenView := do
@@ -546,7 +546,8 @@ theorem programmedGlobalChainTrajectoryMaterial_table_eq_keygenTable
     (htree : tree ∈ support
       (treeValues parameter material.1 allTreeValueIndices material.2.2)) :
     globalChainTrajectoryMaterialTable material =
-      globalKeygenChainValueTable tree.2 ⟨parameter, material.1⟩ := by
+      globalKeygenChainValueTable tree.2
+        (SecretKey.withoutPrecomputation parameter material.1) := by
   have hprogrammed :=
     programmedGlobalChainTrajectoryMaterial_support_trajectories parameter
       material hmaterial
@@ -567,7 +568,7 @@ def CoupledGlobalChainKeygenView.toProgrammedView
     (parameter : PublicParameter) (view : CoupledGlobalChainKeygenView) :
     ProgrammedGlobalChainKeygenView := {
   publicKey := ⟨view.root parameter, parameter⟩
-  secretKey := ⟨parameter, view.secret⟩
+  secretKey := SecretKey.withoutPrecomputation parameter view.secret
   cache := view.cache
   table := view.table
 }
@@ -585,10 +586,10 @@ theorem evalDist_coupledGlobalChainKeygen_toProgrammedView_eq
           OracleComp HashSpec Digest)).run material.2.2 >>= fun rootResult =>
       pure ({
         publicKey := ⟨rootResult.1, parameter⟩
-        secretKey := ⟨parameter, material.1⟩
+        secretKey := SecretKey.withoutPrecomputation parameter material.1
         cache := rootResult.2
         table := globalKeygenChainValueTable rootResult.2
-          ⟨parameter, material.1⟩
+          (SecretKey.withoutPrecomputation parameter material.1)
       } : ProgrammedGlobalChainKeygenView)) := by
   unfold coupledGlobalChainKeygenExperiment
   simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
@@ -598,10 +599,10 @@ theorem evalDist_coupledGlobalChainKeygen_toProgrammedView_eq
   let finish : Digest × QueryCache HashSpec →
       ProbComp ProgrammedGlobalChainKeygenView := fun rootResult => pure {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, material.1⟩
+    secretKey := SecretKey.withoutPrecomputation parameter material.1
     cache := rootResult.2
     table := globalKeygenChainValueTable rootResult.2
-      ⟨parameter, material.1⟩
+      (SecretKey.withoutPrecomputation parameter material.1)
   }
   symm
   calc

@@ -175,12 +175,14 @@ structure CoupledFixedChainMaterialInvariant
   outsideEq : outsideChainSecret selected left.1.2 =
     outsideChainSecret selected right.1.1.2
   leftMatches : ChainTableSeedsMatch
-      ⟨parameter, unflattenSecret left.1.2⟩ selected
+      (SecretKey.withoutPrecomputation parameter
+        (unflattenSecret left.1.2)) selected
         (fixedChainMaterialTable selected left) ∧
     ChainTableEdgesMatch left.2.2.2 parameter selected
       (fixedChainMaterialTable selected left)
   rightMatches : ChainTableSeedsMatch
-      ⟨parameter, unflattenSecret right.1.1.2⟩ selected
+      (SecretKey.withoutPrecomputation parameter
+        (unflattenSecret right.1.1.2)) selected
         (fixedChainMaterialTable selected right.1) ∧
     ChainTableEdgesMatch right.1.2.2.2 parameter selected
       (fixedChainMaterialTable selected right.1)
@@ -264,7 +266,7 @@ theorem programmedFixedSeedChainTrajectories_table_eq
       (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
         (chainLength - 1) ∅ allEpochs)) :
     chainValueTableOfList result.1 =
-      keygenChainValueTable result.2 ⟨parameter, secret⟩ chain := by
+      keygenChainValueTable result.2 (SecretKey.withoutPrecomputation parameter secret) chain := by
   exact Concrete.fixedSeedChainTrajectoriesFromCache_table_eq
     parameter secret chain result
       (programmedFixedSeedChainTrajectories_support_as_actual
@@ -418,7 +420,7 @@ theorem Concrete.fixedSeedChainTrajectoriesFromCache_edgesMatch
   rw [hstepIndex] at hcached
   refine ⟨output, ?_, ?_⟩
   · simpa [chainTableEdgeInput, keygenChainValueTable,
-      chainStepDigit] using hcached
+      chainStepDigit, SecretKey.withoutPrecomputation] using hcached
   · let stepFunction :=
       Concrete.CacheView.chainStep result.2 parameter epoch chain
     calc
@@ -432,7 +434,7 @@ theorem Concrete.fixedSeedChainTrajectoriesFromCache_edgesMatch
         exact Concrete.CacheView.chainStep_eq result.2 parameter epoch chain
           step.val _ step.isLt
       _ = chainTableEdgeTarget
-          (keygenChainValueTable result.2 ⟨parameter, secret⟩ chain)
+          (keygenChainValueTable result.2 (SecretKey.withoutPrecomputation parameter secret) chain)
           (epoch, step) := by
         change stepFunction step.val
             (Wots.walk stepFunction 0 step.val (secret epoch chain)) =
@@ -480,10 +482,11 @@ theorem fixedChainMaterialTable_warmedMaterialAsFixed
       chainTableSeedTargets table := by
     funext epoch
     have hmatch := keygenChainValueTable_seedsMatch material.2.2
-      ⟨parameter, unflattenSecret material.1.2⟩ chain epoch
+      (SecretKey.withoutPrecomputation parameter
+        (unflattenSecret material.1.2)) chain epoch
     rw [← htable] at hmatch
     simpa [table, ChainTableSeedsMatch, unflattenSecret,
-      chainTableSeedTargets] using hmatch
+      chainTableSeedTargets, SecretKey.withoutPrecomputation] using hmatch
   unfold warmedMaterialAsFixed fixedChainMaterialTable
   dsimp only
   rw [chainEdgeTableOfTape_map, hseeds]
@@ -520,7 +523,8 @@ theorem warmedMaterialAsFixed_invariant
           parameter (unflattenSecret leftMaterial.1.2) selected
             leftMaterial.2 htrajectory]
       exact keygenChainValueTable_seedsMatch leftMaterial.2.2
-        ⟨parameter, unflattenSecret leftMaterial.1.2⟩ selected
+        (SecretKey.withoutPrecomputation parameter
+          (unflattenSecret leftMaterial.1.2)) selected
     · exact programmedFixedSeedChainTrajectories_edgesMatch
         parameter (unflattenSecret leftMaterial.1.2) selected
           leftMaterial.2 htrajectory
@@ -581,7 +585,8 @@ theorem warmedMaterialsAsFixed_invariant
           parameter (unflattenSecret leftMaterial.1.2) selected
             leftMaterial.2 hleftTrajectory]
       exact keygenChainValueTable_seedsMatch leftMaterial.2.2
-        ⟨parameter, unflattenSecret leftMaterial.1.2⟩ selected
+        (SecretKey.withoutPrecomputation parameter
+          (unflattenSecret leftMaterial.1.2)) selected
     · exact programmedFixedSeedChainTrajectories_edgesMatch
         parameter (unflattenSecret leftMaterial.1.2) selected
           leftMaterial.2 hleftTrajectory
@@ -591,7 +596,8 @@ theorem warmedMaterialsAsFixed_invariant
           parameter (unflattenSecret rightMaterial.1.2) selected
             rightMaterial.2 hrightTrajectory]
       exact keygenChainValueTable_seedsMatch rightMaterial.2.2
-        ⟨parameter, unflattenSecret rightMaterial.1.2⟩ selected
+        (SecretKey.withoutPrecomputation parameter
+          (unflattenSecret rightMaterial.1.2)) selected
     · exact programmedFixedSeedChainTrajectories_edgesMatch
         parameter (unflattenSecret rightMaterial.1.2) selected
           rightMaterial.2 hrightTrajectory
@@ -997,11 +1003,11 @@ theorem relTriple_keygenChainWalk_run
     (houtside : secretOutsideChain selected leftSecret =
       secretOutsideChain selected rightSecret)
     (hleftSeeds : ChainTableSeedsMatch
-      ⟨parameter, leftSecret⟩ selected leftTable)
+      (SecretKey.withoutPrecomputation parameter leftSecret) selected leftTable)
     (hleftEdges : ChainTableEdgesMatch initialLeft
       parameter selected leftTable)
     (hrightSeeds : ChainTableSeedsMatch
-      ⟨parameter, rightSecret⟩ selected rightTable)
+      (SecretKey.withoutPrecomputation parameter rightSecret) selected rightTable)
     (hrightEdges : ChainTableEdgesMatch initialRight
       parameter selected rightTable)
     (left right : QueryCache HashSpec)
@@ -1025,12 +1031,14 @@ theorem relTriple_keygenChainWalk_run
   · subst candidate
     have hsteps : chainLength - 1 < chainLength := by
       simp [chainLength]
-    rw [simulate_chainWalk_run_eq_pure_of_table_matches left
-        ⟨parameter, leftSecret⟩ selected leftTable hleftSeeds
-          (hleftEdges.mono hleftLe) epoch (chainLength - 1) hsteps,
-      simulate_chainWalk_run_eq_pure_of_table_matches right
-        ⟨parameter, rightSecret⟩ selected rightTable hrightSeeds
-          (hrightEdges.mono hrightLe) epoch (chainLength - 1) hsteps]
+    have hleftRun := simulate_chainWalk_run_eq_pure_of_table_matches left
+      (SecretKey.withoutPrecomputation parameter leftSecret) selected leftTable
+        hleftSeeds (hleftEdges.mono hleftLe) epoch (chainLength - 1) hsteps
+    have hrightRun := simulate_chainWalk_run_eq_pure_of_table_matches right
+      (SecretKey.withoutPrecomputation parameter rightSecret) selected rightTable
+        hrightSeeds (hrightEdges.mono hrightLe) epoch (chainLength - 1) hsteps
+    simp only [SecretKey.withoutPrecomputation] at hleftRun hrightRun
+    rw [hleftRun, hrightRun]
     exact relTriple_pure_pure
       ⟨fun hne => (hne rfl).elim, hagrees, hleftLe, hrightLe⟩
   · have hsecret : leftSecret epoch candidate =
@@ -1110,11 +1118,11 @@ theorem relTriple_sequenceFin_keygenChainWalk_run
     (houtside : secretOutsideChain selected leftSecret =
       secretOutsideChain selected rightSecret)
     (hleftSeeds : ChainTableSeedsMatch
-      ⟨parameter, leftSecret⟩ selected leftTable)
+      (SecretKey.withoutPrecomputation parameter leftSecret) selected leftTable)
     (hleftEdges : ChainTableEdgesMatch initialLeft
       parameter selected leftTable)
     (hrightSeeds : ChainTableSeedsMatch
-      ⟨parameter, rightSecret⟩ selected rightTable)
+      (SecretKey.withoutPrecomputation parameter rightSecret) selected rightTable)
     (hrightEdges : ChainTableEdgesMatch initialRight
       parameter selected rightTable) :
     ∀ (count : Nat) (chainAt : Fin count → ChainIndex)
@@ -2331,9 +2339,11 @@ theorem relTriple_fixedChainMaterial_allTreeValues_root_and_paths
               (unflattenSecret right.1.1.2) treeHeight Concrete.rootNode ∧
           (∀ epoch,
             Concrete.CacheReplay.authenticationPath leftResult.2
-                ⟨parameter, unflattenSecret left.1.2⟩ epoch =
+                (SecretKey.withoutPrecomputation parameter
+                  (unflattenSecret left.1.2)) epoch =
               Concrete.CacheReplay.authenticationPath rightResult.2
-                ⟨parameter, unflattenSecret right.1.1.2⟩ epoch) ∧
+                (SecretKey.withoutPrecomputation parameter
+                  (unflattenSecret right.1.1.2)) epoch) ∧
           HashCachesAgreeOn (OutsideChainHashInput parameter selected)
             leftResult.2 rightResult.2 ∧
           left.2.2.2 ≤ leftResult.2 ∧
@@ -2494,7 +2504,8 @@ noncomputable def fixedChainTreeKeygenView
     ProgrammedFixedChainKeygenView := {
   publicKey := ⟨Concrete.CacheReplay.treeNode tree.2 parameter
     (unflattenSecret material.1.2) treeHeight Concrete.rootNode, parameter⟩
-  secretKey := ⟨parameter, unflattenSecret material.1.2⟩
+  secretKey := SecretKey.withoutPrecomputation parameter
+    (unflattenSecret material.1.2)
   cache := tree.2
   table := fixedChainMaterialTable chain material
 }
@@ -2533,7 +2544,7 @@ theorem evalDist_fixedChainTreeKeygen_eq_programmedFixed
   let finish : Digest × QueryCache HashSpec →
       ProbComp ProgrammedFixedChainKeygenView := fun rootResult => pure {
     publicKey := ⟨rootResult.1, parameter⟩
-    secretKey := ⟨parameter, secret⟩
+    secretKey := (SecretKey.withoutPrecomputation parameter secret)
     cache := rootResult.2
     table := fixedChainMaterialTable chain material
   }
@@ -2554,7 +2565,7 @@ theorem evalDist_fixedChainTreeKeygen_eq_programmedFixed
           material.2.2.2 >>= fun tree =>
         pure (fixedChainTreeKeygenView parameter chain material tree)) := by
       simp [finish, fixedChainTreeKeygenView, secret,
-        map_eq_bind_pure_comp, bind_assoc]
+        SecretKey.withoutPrecomputation, map_eq_bind_pure_comp, bind_assoc]
 
 theorem evalDist_fixedChainTreeKeygenWithBase_eq_independentBase
     (chain : ChainIndex) :

@@ -86,7 +86,7 @@ noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
   let secret ← liftM sampleSecret
   let root ← liftM
     (treeNode parameter secret treeHeight rootNode : OracleComp HashSpec Digest)
-  return (⟨root, parameter⟩, ⟨parameter, secret⟩)
+  return (⟨root, parameter⟩, SecretKey.withoutPrecomputation parameter secret)
 
 attribute [irreducible] keygen
 

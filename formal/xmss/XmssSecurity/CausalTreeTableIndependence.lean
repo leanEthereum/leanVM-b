@@ -707,9 +707,9 @@ theorem globalTreeValuesReplay_eq_authenticationPath
       allTreeValueIndices values)
     (epoch : Epoch) :
     Concrete.CacheReplay.authenticationPath leftCache
-        ⟨parameter, leftSecret⟩ epoch =
+        (SecretKey.withoutPrecomputation parameter leftSecret) epoch =
       Concrete.CacheReplay.authenticationPath rightCache
-        ⟨parameter, rightSecret⟩ epoch := by
+        (SecretKey.withoutPrecomputation parameter rightSecret) epoch := by
   funext level
   apply globalTreeValuesReplay_eq_treeNode parameter parameter
     leftSecret rightSecret leftCache rightCache values hleft hright
@@ -799,9 +799,9 @@ theorem relTriple_programmedWarmedTreeValues_same_root_and_paths
               treeHeight Concrete.rootNode ∧
           ∀ epoch,
             Concrete.CacheReplay.authenticationPath left.2
-                ⟨parameter, leftSecret⟩ epoch =
+                (SecretKey.withoutPrecomputation parameter leftSecret) epoch =
               Concrete.CacheReplay.authenticationPath right.2
-                ⟨parameter, rightSecret⟩ epoch) := by
+                (SecretKey.withoutPrecomputation parameter rightSecret) epoch) := by
   apply relTriple_post_mono
     (relTriple_treeValues_same_values parameter parameter leftSecret rightSecret
       allTreeValueIndices leftTrajectory.2 rightTrajectory.2

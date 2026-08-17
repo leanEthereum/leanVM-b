@@ -9,7 +9,8 @@ theorem Concrete.keygen_support_rootTree
     (hmem : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.keygen).run ∅)) :
     ∃ parameter secret root,
-      keyResult.1 = (⟨root, parameter⟩, ⟨parameter, secret⟩) ∧
+      keyResult.1 = (⟨root, parameter⟩,
+        SecretKey.withoutPrecomputation parameter secret) ∧
       (root, keyResult.2) ∈ support
         ((simulateQ randomOracle
           (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :

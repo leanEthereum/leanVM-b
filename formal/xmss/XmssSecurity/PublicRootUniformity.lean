@@ -242,12 +242,14 @@ noncomputable def Concrete.keygenKeysOnly : ProbComp (PublicKey × SecretKey) :=
 noncomputable def Concrete.decomposedKeygenKeysOnly : ProbComp (PublicKey × SecretKey) := do
   let parameter ← Concrete.samplePublicParameter
   let result ← Concrete.keygenAtParameter parameter
-  return (⟨result.1, parameter⟩, ⟨parameter, result.2⟩)
+  return (⟨result.1, parameter⟩,
+    SecretKey.withoutPrecomputation parameter result.2)
 
 noncomputable def Concrete.idealKeygenKeysOnly : ProbComp (PublicKey × SecretKey) := do
   let parameter ← Concrete.samplePublicParameter
   let result ← Concrete.idealKeygenAtParameter parameter
-  return (⟨result.1, parameter⟩, ⟨parameter, result.2⟩)
+  return (⟨result.1, parameter⟩,
+    SecretKey.withoutPrecomputation parameter result.2)
 
 theorem Concrete.keygenKeysOnly_eq_decomposed :
     Concrete.keygenKeysOnly = Concrete.decomposedKeygenKeysOnly := by
@@ -307,7 +309,8 @@ noncomputable def Concrete.independentKeygenKeysOnly : ProbComp (PublicKey × Se
   let parameter ← Concrete.samplePublicParameter
   let root ← $ᵗ Digest
   let secret ← Concrete.sampleSecret
-  return (⟨root, parameter⟩, ⟨parameter, secret⟩)
+  return (⟨root, parameter⟩,
+    SecretKey.withoutPrecomputation parameter secret)
 
 theorem Concrete.evalDist_idealKeygenKeysOnly_eq_independent :
     𝒟[Concrete.idealKeygenKeysOnly] =
@@ -321,7 +324,7 @@ theorem Concrete.evalDist_idealKeygenKeysOnly_eq_independent :
     Concrete.sampleSecret ($ᵗ Digest)
     (fun secret root => pure
       ((⟨root, parameter⟩ : PublicKey),
-        (⟨parameter, secret⟩ : SecretKey)))
+        SecretKey.withoutPrecomputation parameter secret))
 
 /-- The actual public key is independent of the full secret table once the private key-generation cache is hidden. -/
 theorem Concrete.evalDist_keygenKeysOnly_eq_independent :

@@ -27,6 +27,8 @@ abbrev Randomness := BitVec randomnessBits
 abbrev Epoch := Fin lifetime
 abbrev ChainIndex := Fin numChains
 abbrev Digit := Fin chainLength
+abbrev MerkleHeight := Fin (treeHeight + 1)
+abbrev MerkleNode := Fin lifetime
 abbrev Encoding := ChainIndex → Digit
 abbrev HashInput := List UInt8
 
@@ -53,6 +55,13 @@ deriving DecidableEq
 structure SecretKey where
   parameter : PublicParameter
   chainStart : Epoch → ChainIndex → Digest
+  chainValue : Epoch → ChainIndex → Digit → Digest
+  treeValue : MerkleHeight → MerkleNode → Digest
+
+def SecretKey.withoutPrecomputation
+    (parameter : PublicParameter) (chainStart : Epoch → ChainIndex → Digest) :
+    SecretKey :=
+  ⟨parameter, chainStart, fun _ _ _ => 0, fun _ _ => 0⟩
 
 structure Signature where
   randomness : Randomness
