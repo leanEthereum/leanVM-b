@@ -149,8 +149,11 @@ fn assert_grinding_unnecessary(
 /// Stack blocks largest-first at aligned offsets; `μ = ⌈log2 Σ 2^{κ_b}⌉`.
 pub fn layout(blocks: &[Block]) -> Layout {
     let kappas: Vec<Option<usize>> = blocks.iter().map(|b| Some(b.kappa)).collect();
-    let (offsets, mu) = crate::witness::stack_offsets(&kappas);
-    Layout { mu, offsets }
+    let (offsets, placed) = crate::witness::stack_offsets(&kappas);
+    Layout {
+        mu: crate::log2_ceil_usize(placed.max(1)),
+        offsets,
+    }
 }
 
 /// A non-constant coordinate as `(source, coefficient)`: its leaf contribution is

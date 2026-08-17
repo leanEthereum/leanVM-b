@@ -63,7 +63,7 @@ pub fn message() -> Message {
 fn compute_signer(index: usize) -> CachedSignature {
     // The index over its full width: a one-byte seed repeats every 256 signers,
     // and a repeated signer is invisible until something deduplicates the set,
-    // at which point a batch of 890 quietly becomes one of 256.
+    // at which point a batch of 900 quietly becomes one of 256.
     let mut seed = [10u8; 32];
     seed[..8].copy_from_slice(&(index as u64).to_le_bytes());
     let (sk, pk) = xmss_key_gen(seed, KEY_START, KEY_END).expect("keygen");

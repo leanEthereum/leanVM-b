@@ -924,7 +924,7 @@ mod tests {
         let packed = pack_witness(&bits, m);
         let log_n = m - LOG_PACKING;
         let (pc, vc) = test_configs_for(log_n);
-        let (cm, pd) = commit(&packed, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&packed, log_n, pc.initial_k, pc.log_inv_rates[0]);
 
         let suffix_point = rng.ext_vec(log_n);
         let prefix_weights: Vec<F192> = if generalized_weights {
@@ -949,6 +949,7 @@ mod tests {
         assert_eq!(inner_product_base_ext(&packed, &rs_eq_ind), sumcheck_claim);
         recursive_prover_with_basis(
             &pc,
+            log_n,
             &packed,
             zk_alloc::ArenaVec::from_slice(&rs_eq_ind),
             sumcheck_claim,

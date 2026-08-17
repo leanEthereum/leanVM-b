@@ -2,7 +2,9 @@
 //! Stacked batch-mixed opening for the F64-committed PCS.
 //!
 //! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
-//! [`super::whir::commit`]), and one WHIR run discharges
+//! [`super::whir::commit`], which only encodes the lane blocks that carry data:
+//! every claim lives inside them and the weight is zero past them), and one WHIR
+//! run discharges
 //!
 //! - **point claims** ([`StackClaim`]): plain multilinear evaluations of
 //!   aligned sub-slices of the stack (a `Point` claim's weight is
@@ -329,12 +331,15 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F192]) -> F192 {
 /// evaluation AND the ring-switched q_flock claims (`ring`) in ONE WHIR
 /// run, reusing the caller's [`super::whir::commit`] output as L0.
 ///
-/// `stack` is the committed message (the caller retains it; it is not stored
-/// in [`ProverData`]); `config.initial_k` / `config.log_inv_rates[0]` must
-/// match the commit's `log_batch_size` / `log_inv_rate` (enforced by shape
+/// `stack` is the committed message (the caller retains it; it is not stored in
+/// [`ProverData`]): the `2^log_n`-word stack truncated to the lane blocks that
+/// carry data, so every claim must live inside it and the padding past it is
+/// exactly the weight's zero region. `config.initial_k` / `config.log_inv_rates[0]`
+/// must match the commit's `log_batch_size` / `log_inv_rate` (enforced by shape
 /// asserts inside the WHIR prover).
 pub fn open_batch_mixed_whir_stacked(
     ps: &mut impl Transmitter,
+    log_n: usize,
     stack: &[F64],
     prover_data: &ProverData,
     config: &ProverConfig,
@@ -349,6 +354,10 @@ pub fn open_batch_mixed_whir_stacked(
     assert!(
         ring.offset + qflock_len <= stack.len(),
         "q_flock slice must fit inside the stack"
+    );
+    assert!(
+        point_claims.iter().all(|c| claim_range(c).1 <= stack.len()),
+        "every claim must live inside the committed lanes"
     );
     assert!(
         !ring.claims.is_empty(),
@@ -443,6 +452,7 @@ pub fn open_batch_mixed_whir_stacked(
     //    stack is borrowed by the prover; no copy).
     recursive_prover_with_basis(
         config,
+        log_n,
         stack,
         b_stack,
         target,
@@ -481,6 +491,13 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     for claim in &ring.claims {
         assert_eq!(claim.suffix_point.len(), qflock_vars);
     }
+    // Every claim's support must lie inside the cube, or its selector coords would
+    // run off the end of the fold point (mirror of the opener's own bound).
+    assert!(ring.offset + (1usize << qflock_vars) <= 1usize << log_n);
+    assert!(
+        point_claims.iter().all(|c| claim_range(c).1 <= 1usize << log_n),
+        "every claim must live inside the committed cube"
+    );
 
     // 1. Ring-switch verify: every claim arrives with its 64 slices, bound
     //    upstream by the caller, so nothing is read here. Then sample one
@@ -651,9 +668,9 @@ mod tests {
             qflock_vars < log_n - yr_log_n,
             "test shape must keep the residual cube above q_flock (yr_log_n = {yr_log_n})"
         );
-        let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&stack, log_n, pc.initial_k, pc.log_inv_rates[0]);
         let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
-        open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
+        open_batch_mixed_whir_stacked(&mut ps, log_n, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
             vc,
@@ -798,14 +815,14 @@ mod tests {
             "test shape must exercise the crossing regime (yr_log_n = {yr_log_n})"
         );
 
-        let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&stack, log_n, pc.initial_k, pc.log_inv_rates[0]);
         let ring = RingSwitchOpen {
             offset: qflock_offset,
             qflock_vars,
             claims,
         };
         let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
-        open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
+        open_batch_mixed_whir_stacked(&mut ps, log_n, &stack, &pd, &pc, &point_claims, &ring);
         let fs = ps.into_proof();
 
         let ring_v = RingSwitchVerify {

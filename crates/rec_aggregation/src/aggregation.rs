@@ -1256,8 +1256,10 @@ fn gen_verify(
     // The guest holds one opening arm per candidate committed size, so a child
     // outside that window has no arm to dispatch to. `min_log_committed` keeps
     // every aggregate above the low end, leaving only the ceiling reachable.
-    if !(MU_MIN..=MU_MAX).contains(&l.m) {
-        return Err(AggregateError::ChildOutOfRange { log_committed: l.m });
+    if !(MU_MIN..=MU_MAX).contains(&l.shape.mu) {
+        return Err(AggregateError::ChildOutOfRange {
+            log_committed: l.shape.mu,
+        });
     }
 
     // ---- typed extraction: proof structs + the verifier's summary ----
@@ -1293,7 +1295,7 @@ fn gen_verify(
     let lrr = summary.lc_claim.r_rounds.clone();
 
     // ---- the stacked opening: config + the opening summary ----
-    let stack = whir_shape(l.m, summary.log_inv_rate);
+    let stack = whir_shape(l.shape.mu, summary.log_inv_rate);
     let (vcfg, shapes) = (&stack.config, &stack.levels);
     let nlev = shapes.levels;
     let klvl = &shapes.ks;
@@ -2260,6 +2262,14 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         let scal = |f: &dyn Fn(&OpeningShape) -> usize| -> Vec<usize> { cands.iter().map(f).collect() };
         ps("LIG_N_LEVELS", ints(&scal(&|c| c.n_levels)));
         ps("LIG_YR_LEVEL", ints(&scal(&|c| c.yr_level)));
+        // The guest rotates the terminal point by the lane-fold count to index it by
+        // witness coordinate, and the residual segment is what it rotates the last
+        // lane challenges past, so the residual may never be longer than that fold
+        // (`RESIDUAL_MAX_LOG` < `INITIAL_FOLDING_FACTOR` keeps this true by a margin).
+        assert!(
+            cands.iter().all(|c| c.yr_log_len <= c.folds[0]),
+            "residual longer than the lane fold: the guest's point rotation has no room"
+        );
         ps("LIG_YR_LOG_LEN", ints(&scal(&|c| c.yr_log_len)));
         ps("LIG_YR_LEN", ints(&scal(&|c| 1usize << c.yr_log_len)));
         ps("LIG_TOTAL_FOLDS", ints(&scal(&|c| c.folds.iter().sum())));

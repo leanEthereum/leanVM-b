@@ -32,6 +32,7 @@ $\qset_i$      & $J_i$        & the sampled columns\\
 $\blen$        & $n$          & code block length ($n$ is the tallest table, \S\ref{sec:air})\\
 $\dom$         & $S$          & evaluation domain\\
 $\orc^{(i)}$   & $C^{(i)}$    & oracle, an interleaved word ($C_j$ is a constraint)\\
+$\nrows$       & (none)       & rows of $\orc^{(0)}$ the prover commits, $\nrows \le 2^{\ell_0}$\\
 $\lst_{\rad}$  & $\lambda_\gamma$ & list of codewords within $\rad$\\
 $\kdim$        & $k$          & message dimension\\
 $W$, $c$       & $w$, $v$     & weight and value of a claim, as in \S\ref{sec:stacking}\\
@@ -113,6 +114,8 @@ For $\rexp \ge 1$ and $\kappa + \rexp \le \beta$, \S\ref{app:ntt} constructs, fo
 \smallskip
 \textbf{Commit}$(f : \cube{\nv} \to \F)$: $\mathbf{P}$ sends the oracle $\orc^{(0)}[u, \cdot] := \Enc_0(f(u, \cdot))$, $u \in \cube{\ell_0}$. No OOD sample is taken.
 
+\emph{Coordinate order.} Throughout the protocol a multilinear's leading arguments are the ones folded first, so at level $i$ the row index $u$ of $\orc^{(i)}$ carries the $\ell_i$ coordinates the sumcheck of step 2 binds. Which coordinates of the committed object those are is the caller's choice, and it matters: \S\ref{sec:stacking} takes them to be the TOP $\ell_0$ coordinates of the stacked witness, which is what makes the stack's zero padding whole rows of $\orc^{(0)}$.
+
 \smallskip
 \textbf{Open}$\bigl(\{(W_\tau, c_\tau)\}_{\tau \in [J_0]}\bigr)$, $J_0 \ge 1$ weighted claims about $f$: set $f^{(0)} := f$. For $i = 0, 1, \dots, \nlev - 1$:
 \begin{enumerate}[itemsep=0.5pt,topsep=2pt]
@@ -134,6 +137,8 @@ $\mathbf{V}$ accepts iff every check above passed.
 All weights in the protocol are MLE-friendly and multilinear, so every sumcheck summand $\mle{W} \cdot \mle{f^{(i)}}$ has individual degree at most $2$.
 
 Completeness is perfect: the honest prover passes every check ($h_j(0) + h_j(1) = \rc{j-1}$ by definition of $h_j$, $c_q = \Enc_i(f^{(i+1)})[x_q]$ by Fact~\ref{fact:fold-decode}, the OOD and residual claims by construction, the final checks as identities).
+
+\paragraph{Rows the prover may omit.} If $f$ vanishes on all but $\nrows$ of the $2^{\ell_0}$ row indices, the remaining rows of $\orc^{(0)}$ are zero because $\Enc_0$ is linear, so the prover need not encode them: it commits the $\nrows$ rows that carry data and supplies zeros for the others wherever step 3(c) reads a column. Nothing above changes, and in particular nothing in \S\ref{sec:soundness} does: the oracle, its list, and every bound are still the full $2^{\ell_0}$-row ones. A prover that fills the omitted rows with anything at all commits $f + \delta$ for some $\delta$ supported on them, and if every weight of the batched claim vanishes on those rows then $\inner{W}{f + \delta} = \inner{W}{f}$, so it has proved the same claims. \S\ref{sec:stacking} arranges both conditions, and that is where the saving is: the omitted rows are the stack's zero padding.
 
 %=====================================================================
 \subsection{Round-by-round soundness}\label{sec:soundness}

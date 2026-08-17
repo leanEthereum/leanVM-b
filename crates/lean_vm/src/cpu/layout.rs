@@ -75,8 +75,9 @@ pub struct Layout {
     /// Per-column placement (offset + n_vars) in the stacked witness; from the
     /// columns' log-sizes alone, so reconstructable by the verifier.
     pub placements: Vec<witness::Placement>,
-    /// `log2` of the stacked witness length.
-    pub m: usize,
+    /// The stacked witness's shape: its announced `2^mu` size, plus how many lane
+    /// blocks of it the prover actually commits (see [`witness::StackShape`]).
+    pub shape: witness::StackShape,
     /// Public input: the first two memory cells `m[0], m[1]` (each a 192-bit
     /// word), bound to the committed memory at verification (§sec:e2e-pi).
     pub pi: [F192; 2],
@@ -207,7 +208,9 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLE
 /// `log2` of the stacked witness the announced sizes imply. The one part of
 /// [`layout`] a size floor needs, and far cheaper than the rest of it.
 pub(crate) fn committed_log(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLES]) -> usize {
-    crate::witness::placements_of(&col_kappas(log_mem, log_bytecode, taus)).1
+    crate::witness::placements_of(&col_kappas(log_mem, log_bytecode, taus))
+        .1
+        .mu
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
@@ -420,13 +423,13 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
         }
     }
 
-    let (placements, m) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
+    let (placements, shape) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
     Layout {
         push,
         pull,
         count: count_blocks,
         placements,
-        m,
+        shape,
         pi,
         taus,
     }
@@ -486,7 +489,7 @@ impl Program {
         // SAFETY: the allocation is uninitialized. `split_stack` zeroes the pad tail
         // and hands out windows tiling the rest; `fill_table` checks that each table
         // wrote every window it was given, and the shared columns below write theirs.
-        let mut q = unsafe { witness::alloc_stack(l.m) };
+        let mut q = unsafe { witness::alloc_stack(l.shape) };
         // A virtual column is not in the stack, so its values need storage of their
         // own: it carries data for the bus, and only its evaluation claims route
         // elsewhere (to `q_flock`).

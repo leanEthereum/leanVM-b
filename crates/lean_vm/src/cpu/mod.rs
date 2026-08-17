@@ -508,7 +508,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.layout.taus, log_inv_rate);
-    let committed = crate::stage!("Commit", || { pcs::commit(&mut ps, &w.q, log_inv_rate) });
+    let committed = crate::stage!("Commit", || {
+        pcs::commit(&mut ps, &w.q, w.layout.shape, log_inv_rate)
+    });
 
     // BLAKE2s to flock (§blake2s_flock), single PCS: q_flock is ALWAYS a column in
     // `w.q` (≥1 instance, a program with no BLAKE2s carries one padding instance,
@@ -711,7 +713,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let replay = crate::blake2s_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
     let flock_stream_end = vs.stream_offset();
     let ring = crate::blake2s_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
-    pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
+    pcs::verify(&mut vs, &slots, &ring, l.shape.mu, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,

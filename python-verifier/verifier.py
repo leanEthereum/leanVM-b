@@ -1471,7 +1471,19 @@ def verify_whir(
                     running_quad = transcript.round_poly(3, running_target)
             # Each glued claim is rebound at the terminal point: the fold
             # challenges its level fixed after it was made, then the tail.
-            weight = evaluate_basis(list(folds) + tail_folds)
+            #
+            # `folds + tail_folds` is the fold challenges in ROUND order, and the
+            # first INITIAL_FOLDING_FACTOR rounds are the lane fold, which binds
+            # the committed witness's TOP coords: lane l is the stack block
+            # q[l * 2^(log_n - k) ...], so the padding-free commitment can leave
+            # the witness's zero tail out entirely. Rotating by that many rounds
+            # re-indexes the point by witness coord, which is what
+            # `evaluate_basis` (eq / stride selectors, ring-switch weight) reads.
+            # The per-level claims below stay in round order: they live on the
+            # codeword's own coords, not the witness's.
+            point = list(folds) + tail_folds
+            lane_folds = config.folds[0]
+            weight = evaluate_basis(point[lane_folds:] + point[:lane_folds])
             for claim in glued:
                 weight += claim.scalar * claim.weight_at(list(folds[claim.fold_start :]) + tail_folds)
             terminal = weight * multilinear_eval(residual, tail_folds)

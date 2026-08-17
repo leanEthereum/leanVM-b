@@ -69,7 +69,7 @@ fn blake2s_batch_prove_verify() {
         let t_prove = Instant::now();
 
         let t = Instant::now();
-        let (commitment, prover_data) = commit(&q_flock, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
+        let (commitment, prover_data) = commit(&q_flock, mu, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
         ps.add_root(&commitment.root);
         let commit_s = t.elapsed().as_secs_f64();
 
@@ -84,7 +84,7 @@ fn blake2s_batch_prove_verify() {
 
         let t = Instant::now();
         let ring = ring_switch_open(n, 0, &reduced);
-        open_batch_mixed_whir_stacked(&mut ps, &q_flock, &prover_data, &prover_config, &[], &ring);
+        open_batch_mixed_whir_stacked(&mut ps, mu, &q_flock, &prover_data, &prover_config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 

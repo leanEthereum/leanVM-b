@@ -691,11 +691,19 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # candidate: every LIG_* table below reads row m_idx, and all opening proof
     # data is hinted here, so only the executed arm pops its streams.
     #
-    # Returns, as the caller names them: sumcheck_target, fold_challenges,
-    # inner_total, g^yr_log_n, g^(YR_LOG_CAP - yr_log_n), g^lenris,
-    # tail_challenges, yr_at_tail. The two g-powers let the terminal zero-pin
-    # residual coordinates past final_msg's 2^yr_log_n cells; g^lenris is the
-    # certified fold count it pins its hinted claim lengths against.
+    # Returns, as the caller names them: sumcheck_target, point_fold, inner_total,
+    # g^yr_log_n, g^(YR_LOG_CAP - yr_log_n), g^lenris, point_tail, yr_at_tail. The
+    # two g-powers let the terminal zero-pin residual coordinates past final_msg's
+    # 2^yr_log_n cells; g^lenris is the certified fold count it pins its hinted
+    # claim lengths against.
+    #
+    # point_fold/point_tail are the opening's point indexed by WITNESS coordinate
+    # (see the rotation below), which is what every transparent weight downstream is
+    # written in. The ROUND-order buffers fold_challenges/tail_challenges stay local
+    # to this function on purpose: everything that reads the point in round order
+    # (per-level induced weights, OOD claim points, the residual `yr_at_tail`) is
+    # computed here. A new round-order consumer must NOT reach for the returned
+    # pair, or it silently evaluates its weight at the wrong point.
     fs = [fs0, fs1]
 
     # The K opener binds the initial Merkle root as its two F192 scalars, not as
@@ -948,6 +956,35 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         tail_w[2 * j + 1] = tail_challenges[GEN ** j]
     yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
 
+    # ---- the same point, indexed by committed-witness coordinate ----
+    # The folds bound the coordinates in ROUND order, and level 0's folds are the
+    # lane fold: they bind the committed witness's TOP k coordinates, because lane
+    # l of the commitment is the contiguous stack block q[l * 2^(mu-k) ...]. That
+    # is what makes the witness's zero padding whole lanes, which the committer
+    # then leaves out of the encode entirely. Every transparent weight downstream
+    # (the stacked point claims' eq / stride selectors, the ring-switch weight) is
+    # written in witness coordinates, so rotate the point left by k rounds here,
+    # where the level shape is still a compile-time constant. The rotated pair
+    # keeps the same split point, so coordinate c still reads point_fold[c] below
+    # lenris and point_tail[c - lenris] above it, and every closed form and
+    # overlap pin downstream is untouched. yr_log_len <= k on every candidate (the
+    # residual is at most RESIDUAL_MAX_LOG coordinates), which is what makes the
+    # third segment's length non-negative.
+    lane_folds = LIG_FOLDS[m_idx * LIG_MAX_LEVELS + 0]
+    fold_head = LIG_TOTAL_FOLDS[m_idx] - lane_folds
+    point_fold = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
+    point_tail = HeapBuf(GEN ** YR_LOG_CAP)
+    for j in unroll(0, fold_head):
+        point_fold[GEN ** j] = fold_challenges[GEN ** (lane_folds + j)]
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+        point_fold[GEN ** (fold_head + j)] = tail_challenges[GEN ** j]
+    for j in unroll(0, lane_folds - LIG_YR_LOG_LEN[m_idx]):
+        point_fold[GEN ** (fold_head + LIG_YR_LOG_LEN[m_idx] + j)] = fold_challenges[GEN ** j]
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+        point_tail[GEN ** j] = fold_challenges[GEN ** (lane_folds - LIG_YR_LOG_LEN[m_idx] + j)]
+    for j in unroll(LIG_YR_LOG_LEN[m_idx], YR_LOG_CAP):
+        point_tail[GEN ** j] = 0
+
     # ---- per-level induced bases at the single terminal point ----
     # Every query of a level runs the SAME product shape over the level's
     # message-column coordinates, and only the novel-basis chain (the query
@@ -997,7 +1034,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 zt = oz[GEN ** (z_folded + t)]
                 scalar *= (1 + zt + tail_challenges[GEN ** t])
             ood_inner += scalar
-    return sumcheck_target, fold_challenges, inner_chain[GEN ** LIG_N_LEVELS[m_idx]] + ood_inner, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx], tail_challenges, yr_at_tail
+    return sumcheck_target, point_fold, inner_chain[GEN ** LIG_N_LEVELS[m_idx]] + ood_inner, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx], point_tail, yr_at_tail
 
 
 def exponent_tables():
@@ -1920,7 +1957,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # dispatch independently for every inner proof in a mixed-rate batch.
     config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
     assert log(config_sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, tail_challenges, yr_at_tail = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, point_fold, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, point_tail, yr_at_tail = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
@@ -1960,17 +1997,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zeta_eq_chain = HeapBuf(SIZE_BITS + 1)
     zeta_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_bus_mu):
-        zeta_eq_chain[xk * GEN] = zeta_eq_chain[xk] * (1 + zeta[xk] + fold_challenges[xk])
+        zeta_eq_chain[xk * GEN] = zeta_eq_chain[xk] * (1 + zeta[xk] + point_fold[xk])
     rho_eq_chain = HeapBuf(SIZE_BITS + 1)
     rho_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
-        rho_eq_chain[xk * GEN] = rho_eq_chain[xk] * (1 + rho[xk] + fold_challenges[xk])
+        rho_eq_chain[xk * GEN] = rho_eq_chain[xk] * (1 + rho[xk] + point_fold[xk])
     # The qflock variant reads rho against ris shifted past the slot coordinates,
     # so it needs its own chain. There is no zeta counterpart: a virtual value
     # column is referenced only by its own table's bus blocks, which the zerocheck
     # settles, so no framework block can raise one (asserted while the placeholder
     # map is built).
-    ris_slot = fold_challenges * GEN ** SLOT_STRIDE_LOG
+    ris_slot = point_fold * GEN ** SLOT_STRIDE_LOG
     rho_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
     rho_slot_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
@@ -2009,7 +2046,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         seln = fold_cap_g * nover_g / nlow         # seln = lenris + nover - nlow
         assert log(seln) < SIZE_BITS
         assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
-        # selector loop reads fold_challenges[nlow .. nlow+seln); pin the reach
+        # selector loop reads point_fold[nlow .. nlow+seln); pin the reach
         # so it stays in [0, lenris): either seln == 0 (empty loop) or
         # nlow + seln == lenris (the honest overlap-free case).
         assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
@@ -2022,17 +2059,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
             low_chain = HeapBuf(SIZE_BITS + 1)
             low_chain[GEN ** 0] = 1
-            low_chain[GEN ** 1] = 1 + rm + fold_challenges[GEN ** 0]
+            low_chain[GEN ** 1] = 1 + rm + point_fold[GEN ** 0]
             for xk in mul_range(GEN, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
+                low_chain[xk * GEN] = low_chain[xk] * (1 + point_fold[xk])
             low_eq = low_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
             qflock_slot_eq = GEN ** 0
             for k in unroll(0, SLOT_STRIDE_LOG):
                 sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
-                qflock_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
+                qflock_slot_eq *= (1 + sb3 + point_fold[GEN ** k])
             low_eq = qflock_slot_eq * rho_slot_eq_chain[low_len_g]
-        ris_hi = fold_challenges * nlow
+        ris_hi = point_fold * nlow
         # Selector coordinates [nlow, lenris) are exactly the corresponding
         # certified placement-offset bits.
         selrow = claim_offset_bits * nlow
@@ -2052,8 +2089,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
     qflockv_g = tau_blake2s_g * GEN ** SLOT_STRIDE_LOG
-    # The opening's point is fold_challenges[0, lenris) ++ tail_challenges[0,
-    # yr_log_n), and this claim spans its first qflockv coordinates. A BLAKE2s
+    # The opening's point, in witness coordinates, is point_fold[0, lenris) ++
+    # point_tail[0, yr_log_n), and this claim spans its first qflockv
+    # coordinates. A BLAKE2s
     # dominated inner proof (every real XMSS aggregation: qflockv = tau_5 +
     # SLOT_STRIDE_LOG) pushes qflockv past lenris, so the top rs_nover
     # coordinates continue into the residual challenges. rs_nover is hinted and
@@ -2071,7 +2109,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         prod_chains_0[GEN ** k] = 1
     for x_round in mul_range(1, rs_low_g):
         zv_0 = z_vals[x_round]
-        one_plus = 1 + fold_challenges[x_round]
+        one_plus = 1 + point_fold[x_round]
         prod_row_0 = prod_chains_0 * x_round ** BASE_FIELD_BITS
         prod_row_next_0 = prod_row_0 * GEN ** BASE_FIELD_BITS
         for k in unroll(0, BASE_FIELD_BITS):
@@ -2084,7 +2122,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     chain_over_0 = prod_chains_0 * rs_low_g ** BASE_FIELD_BITS
     for xk in mul_range(1, rs_nover_g):
         zv_0 = z_over_0[xk]
-        one_plus = 1 + tail_challenges[xk]
+        one_plus = 1 + point_tail[xk]
         prod_row_0 = chain_over_0 * xk ** BASE_FIELD_BITS
         prod_row_next_0 = prod_row_0 * GEN ** BASE_FIELD_BITS
         for k in unroll(0, BASE_FIELD_BITS):
@@ -2096,13 +2134,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for k in unroll(0, BASE_FIELD_BITS):
         e_acc_0 += c_table[GEN ** k] * prod_final_0[GEN ** k]
     rs_eq_vals[0] = e_acc_0
-    # ring-switch weight: extend by the selector bits over the fold_challenges
+    # ring-switch weight: extend by the selector bits over the point_fold
     # coords [qflockv, lenris), empty when the claim already reached past lenris.
     rs_weight = rs_eq_vals[0]
     rs_len_g = fold_cap_g * rs_nover_g / qflockv_g
     assert log(rs_len_g) < SIZE_BITS
     assert (rs_nover_g + 1) * (rs_len_g + 1) == 0  # rs_nover == 0 OR rs_len == 0
-    ris_q = fold_challenges * qflockv_g
+    ris_q = point_fold * qflockv_g
     qflock_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * QFLOCK_COMMITTED_COL)
     rs_sel_bits = qflock_offset_bits * qflockv_g
     rsw_chain = HeapBuf(SIZE_BITS + 1)
@@ -2112,7 +2150,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + rs_bit + ris_q[xk])
     rs_weight = rsw_chain[rs_len_g]
     # Evaluate every transparent weight at the one terminal fold point. Claim
-    # j contributes cw_j * eq(slot_point_j, tail_challenges); the transmitted
+    # j contributes cw_j * eq(slot_point_j, point_tail); the transmitted
     # final message is evaluated once and multiplied into their combined weight.
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
@@ -2134,7 +2172,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             mask_bit = mask_row[GEN ** k]
             slot_bit = residual_offset_bits[GEN ** k]
             slot_coord = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
-            tail_eq *= (1 + slot_coord + tail_challenges[GEN ** k])
+            tail_eq *= (1 + slot_coord + point_tail[GEN ** k])
         # zero-pin coords beyond final_msg's log-length (no over-cap weight): the
         # pointers start at yr_log_n. The zero asserts double as the
         # nover <= yr_log_n pin: a larger nover selects a row whose prefix
@@ -2156,7 +2194,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for k in unroll(0, YR_LOG_CAP):
         mb = rs_mask_row[GEN ** k]
         yb = rs_yslot_bits[GEN ** k]
-        rs_tail_eq *= (1 + mb) * (1 + yb + tail_challenges[GEN ** k]) + mb
+        rs_tail_eq *= (1 + mb) * (1 + yb + point_tail[GEN ** k]) + mb
     rs_hi = rs_yslot_bits * yr_log_n_g
     rs_hi_mask = rs_mask_row * yr_log_n_g
     for xk in mul_range(1, yr_pad_g):

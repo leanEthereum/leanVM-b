@@ -129,9 +129,14 @@ impl AdditiveNttF64 {
     /// cache-resident sub-NTTs. The split targets a sub-block of about 2 MB and
     /// then, if the transform is big enough to be worth splitting, enough
     /// sub-blocks to keep every worker busy.
+    ///
+    /// `num_ntts` need not be a power of two (a padding-free commitment interleaves
+    /// only the lanes that carry data), so the position size rounds UP to a log:
+    /// rounding down would size the deep phase's sub-block against half the real
+    /// bytes per position and overshoot the cache target by up to 2x.
     fn cache_split(log_d: usize, num_ntts: usize) -> usize {
         const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
-        let log_bytes_per_position = 3 + log2_strict_usize(num_ntts);
+        let log_bytes_per_position = 3 + num_ntts.next_power_of_two().ilog2() as usize;
         let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
         let cache_n_top = log_d.saturating_sub(target_log_positions);
 
@@ -148,6 +153,12 @@ impl AdditiveNttF64 {
 
     /// RS-encode `msg` into the codeword `data`: `data` is `2^log_inv_rate`
     /// replicas of `msg`, transformed from layer `log_inv_rate`.
+    ///
+    /// This reads `msg` ROW-major (`msg[row * num_ntts + lane]`), which the L0
+    /// commitment no longer produces: its lanes are contiguous witness blocks, so it
+    /// goes through [`Self::encode_interleaved_lane_major_msg`] and this is now the
+    /// reference oracle pinning it, plus the record of what fusing the replication
+    /// into a radix-8 first pass is worth when the read IS contiguous.
     ///
     /// The replication is fused into the first pass. Each block at layer
     /// `log_inv_rate` IS one replica, so a block's eight participating rows are
@@ -193,6 +204,44 @@ impl AdditiveNttF64 {
             }
         });
         self.forward_transform_interleaved_parallel_from_layer(data, num_ntts, log_inv_rate + 3);
+    }
+
+    /// RS-encode a **lane-major message** into the interleaved codeword the rest of
+    /// the PCS reads: lane `l`'s message is the contiguous block
+    /// `msg[l << log_rows ..][..1 << log_rows]`, and the codeword stays
+    /// `codeword[pos * n_lanes + lane]`, one Merkle leaf per position.
+    ///
+    /// `n_lanes` is arbitrary, because the caller commits only the lanes that carry
+    /// data: the stacked witness's zero tail is whole lanes and is simply absent. So
+    /// the interleaving width is no longer a power of two, which nothing in the
+    /// transform needs it to be.
+    ///
+    /// Unlike [`Self::encode_interleaved`] this does NOT fuse the first three layers
+    /// into the replication, because the replication here also transposes: lane `l`'s
+    /// block starts `2^log_rows` words into the message, so a codeword row gathers
+    /// one word from each of `n_lanes` streams that far apart. Read in the fused
+    /// pass's order (eight radix-8 slices at once, one row window at a time) that
+    /// gather runs at a fraction of DRAM bandwidth, and measured 28% ON TOP of the
+    /// whole encode at the XMSS shape. Blocked into row tiles instead, every stream
+    /// is read in `TILE`-word bursts and every write is contiguous, which costs the
+    /// one extra whole-codeword pass the fusion would have saved and comes out 3%
+    /// over the contiguous encode rather than 28%.
+    pub fn encode_interleaved_lane_major_msg(
+        &self,
+        codeword: &mut [F64],
+        msg: &[F64],
+        n_lanes: usize,
+        log_rows: usize,
+        log_inv_rate: usize,
+    ) {
+        let rows = 1usize << log_rows;
+        assert!(n_lanes > 0, "a commitment needs at least one lane");
+        assert_eq!(msg.len(), n_lanes * rows, "message is n_lanes contiguous lane blocks");
+        assert_eq!(codeword.len(), msg.len() << log_inv_rate, "codeword is 2^rate messages");
+        assert!(log_rows + log_inv_rate <= self.log_domain_size());
+
+        transpose_replicate(codeword, msg, n_lanes, rows);
+        self.forward_transform_interleaved_parallel_from_layer(codeword, n_lanes, log_inv_rate);
     }
 
     /// Scalar reference for the interleaved forward NTT (test oracle).
@@ -245,7 +294,10 @@ impl AdditiveNttF64 {
         num_ntts: usize,
         start_layer: usize,
     ) {
-        assert!(num_ntts.is_power_of_two() && num_ntts > 0);
+        // `num_ntts` is a plain interleaving stride here: a padding-free L0
+        // commitment interleaves only the lanes that carry data, so it is not a
+        // power of two, while `n_total / num_ntts` (the transform's domain) still is.
+        assert!(num_ntts > 0);
         let n_total = data.len();
         assert_eq!(n_total % num_ntts, 0);
         let log_d = log2_strict_usize(n_total / num_ntts);
@@ -476,6 +528,49 @@ fn radix8_butterflies(rows: &mut [&mut [F64]; 8], t: &[F64; 7]) {
     butterfly_lanes(r2, r3, t[4]);
     butterfly_lanes(r4, r5, t[5]);
     butterfly_lanes(r6, r7, t[6]);
+}
+
+/// Fill every replica of `data` with the interleaved transpose of the lane-major
+/// `msg`: row `r` of a replica is `msg[lane * rows + r]` across lanes.
+///
+/// Blocked by row tile: each lane contributes a `TILE`-word burst, the transposed
+/// tile is L1-resident, and each replica takes it as one contiguous write. That is
+/// what keeps a `n_lanes`-way gather at `2^log_rows` stride near bandwidth.
+fn transpose_replicate(data: &mut [F64], msg: &[F64], n_lanes: usize, rows: usize) {
+    /// Row tile, in words: 32 KiB, small enough to sit on a pool task's stack and
+    /// stay L1-resident.
+    const TILE_WORDS: usize = 4096;
+    assert!(n_lanes <= TILE_WORDS, "a codeword row must fit the transpose tile");
+    // Largest power-of-two row count whose tile fits: both it and `rows` are then
+    // powers of two, so the tiles cover every row.
+    let tile_rows = (1usize << (TILE_WORDS / n_lanes).ilog2()).min(rows);
+    // This is the SOLE initializer of an uninitialized codeword, so the tiles have
+    // to cover every row: a truncating `n_tiles` would leave the tail reading the
+    // previous phase's plausible bytes, whose symptom is a proof that stops
+    // verifying rather than a crash.
+    assert_eq!(rows % tile_rows, 0, "row tiles must cover every row");
+    let n_tiles = rows / tile_rows;
+    let replicas = data.len() / msg.len();
+    let dst = parallel::SendPtr(data.as_mut_ptr());
+    parallel::for_each_chunk(n_tiles, |lo, hi| {
+        // On the stack: every slot is overwritten per tile, so there is nothing to
+        // allocate or zero per pool claim.
+        let mut tile = [F64::ZERO; TILE_WORDS];
+        let tile = &mut tile[..tile_rows * n_lanes];
+        for t in lo..hi {
+            let r0 = t * tile_rows;
+            for lane in 0..n_lanes {
+                for (rr, &word) in msg[lane * rows + r0..][..tile_rows].iter().enumerate() {
+                    tile[rr * n_lanes + lane] = word;
+                }
+            }
+            for replica in 0..replicas {
+                // SAFETY: disjoint across (replica, t), in bounds.
+                let out = unsafe { dst.slice((replica * rows + r0) * n_lanes, tile_rows * n_lanes) };
+                out.copy_from_slice(tile);
+            }
+        }
+    });
 }
 
 /// Fill `data` with `data.len() / msg.len()` copies of `msg`, the un-fused form of
@@ -815,6 +910,46 @@ mod tests {
                     assert_eq!(
                         got, want,
                         "fused != replicate+transform at log_d={log_d}, lanes={lanes}, rate={log_inv_rate}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every lane of the codeword must be exactly the single-lane RS codeword of
+    /// that lane's contiguous message block, which is what makes a commitment over
+    /// `n_lanes` lanes equal to the `2^log_batch_size`-lane one with a zero tail.
+    /// The shapes cover the transposing fused first pass, its fallback, and lane
+    /// counts that are not powers of two (the padding-free commit's whole point).
+    #[test]
+    fn lane_major_msg_encode_matches_per_lane_reference() {
+        let mut rng = Rng::new(0x1A2E);
+        for (log_rows, log_inv_rate, n_lanes) in [
+            (2usize, 1usize, 3usize),
+            (3, 1, 1),
+            (5, 2, 7),
+            (9, 1, 5),
+            (12, 2, 37),
+            (14, 1, 64),
+        ] {
+            let log_d = log_rows + log_inv_rate;
+            let ntt = AdditiveNttF64::standard(log_d);
+            let rows = 1usize << log_rows;
+            let msg: Vec<F64> = (0..rows * n_lanes).map(|_| F64(rng.next_u64())).collect();
+
+            let mut got = vec![F64::ZERO; msg.len() << log_inv_rate];
+            ntt.encode_interleaved_lane_major_msg(&mut got, &msg, n_lanes, log_rows, log_inv_rate);
+
+            let block_len = 1usize << log_d;
+            for lane in 0..n_lanes {
+                let mut want = vec![F64::ZERO; block_len];
+                replicate_rows(&mut want, &msg[lane * rows..(lane + 1) * rows]);
+                ntt.forward_transform_interleaved_parallel_from_layer(&mut want, 1, log_inv_rate);
+                for pos in 0..block_len {
+                    assert_eq!(
+                        got[pos * n_lanes + lane],
+                        want[pos],
+                        "lane {lane} pos {pos} at log_rows={log_rows}, rate={log_inv_rate}, n_lanes={n_lanes}"
                     );
                 }
             }

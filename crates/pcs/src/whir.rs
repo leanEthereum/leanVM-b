@@ -36,7 +36,6 @@ use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
 use fiat_shamir::merkle::PrunedMerklePaths;
 use fiat_shamir::transcript::{Challenger, Receiver, Transmitter};
-use primitives::log2_strict_usize;
 use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
     multilinear::eq_eval,
@@ -327,55 +326,55 @@ fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem
     });
 }
 
-/// Commit to an `F64` message: replicate it `2^log_inv_rate` times, run the interleaved additive
-/// NTT over F_{2^64} from layer `log_inv_rate`, then Merkle-commit one leaf
-/// per codeword position (= `2^log_batch_size` F64 = `2^log_batch_size * 8`
-/// bytes per leaf).
+/// Commit to the `F64` message of a `2^log_n`-word witness: the message is its
+/// leading `n_lanes` lane blocks of `2^(log_n - log_batch_size)` words each, one
+/// RS codeword per lane, Merkle-committed one leaf per codeword position, the
+/// leaf being that position across all `2^log_batch_size` lanes
+/// (`2^log_batch_size * 8` bytes).
 ///
-/// `message.len()` must be a power of two `>= 2^log_batch_size`.
-pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (Commitment, ProverData) {
-    let log_msg_len = log2_strict_usize(message.len());
-    assert!(log_msg_len >= log_batch_size, "message too small for log_batch_size");
+/// `n_lanes` is read off the message length, and `n_lanes < 2^log_batch_size` is
+/// the padding-free case: the stacked witness's zero tail is whole lanes, so
+/// those lanes are never encoded and never read. Their codeword is zero (the
+/// encoding is linear), which is exactly what the leaf image and an opened row
+/// carry for them, so the verifier sees the same `2^log_batch_size`-wide
+/// interleaved commitment either way and never learns `n_lanes`.
+pub fn commit(message: &[F64], log_n: usize, log_batch_size: usize, log_inv_rate: usize) -> (Commitment, ProverData) {
     assert!(log_inv_rate >= 1, "log_inv_rate must be >= 1 for a non-trivial RS code");
-    let log_dim = log_msg_len - log_batch_size;
-    let k_code = log_dim + log_inv_rate;
-    let num_ntts = 1usize << log_batch_size;
+    assert!(log_n > log_batch_size, "witness must be wider than the interleaving");
+    let log_rows = log_n - log_batch_size;
+    let n_lanes = message.len() >> log_rows;
+    assert_eq!(message.len(), n_lanes << log_rows, "message is whole lane blocks");
+    assert!(
+        n_lanes >= 1 && n_lanes <= 1usize << log_batch_size,
+        "at most 2^log_batch_size lanes carry data"
+    );
+    let k_code = log_rows + log_inv_rate;
     let n_positions = 1usize << k_code;
-    let codeword_len = n_positions * num_ntts;
+    let codeword_len = n_positions * n_lanes;
 
-    // SAFETY: `encode_interleaved` writes every codeword element, either through
-    // its fused first pass or through the replicate its fallback does.
+    // SAFETY: `encode_interleaved_lane_major_msg` writes every codeword element:
+    // its transposing replication covers every row of every replica (asserted
+    // there), and the transform that follows is in place.
     let mut codeword = unsafe { zk_alloc::ArenaVec::<F64>::uninitialized(codeword_len) };
 
     // Optional phase timing (WHIR_TRACE): one env lookup per commit, no
     // work when unset.
     let trace = std::env::var_os("WHIR_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
-    tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = num_ntts).in_scope(|| {
+    tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = n_lanes).in_scope(|| {
         let ntt = AdditiveNttF64::standard(k_code);
-        ntt.encode_interleaved(&mut codeword, message, num_ntts, log_inv_rate);
+        ntt.encode_interleaved_lane_major_msg(&mut codeword, message, n_lanes, log_rows, log_inv_rate);
     });
     let ntt_elapsed = t_ntt.elapsed();
     let t_merkle = std::time::Instant::now();
 
-    // Merkle commitment, zero-copy over the codeword bytes.
-    // SAFETY: F64 is repr(transparent) over u64; a `[F64]` slice is therefore
-    // a contiguous little-endian u64 byte image (8 bytes each), identical to
-    // an explicit `to_le_bytes()` serialization on this (LE) target. The cast
-    // covers exactly `codeword.len() * size_of::<F64>()` initialized bytes.
-    let codeword_bytes: &[u8] = unsafe {
-        core::slice::from_raw_parts(
-            codeword.as_ptr() as *const u8,
-            codeword.len() * core::mem::size_of::<F64>(),
-        )
-    };
-    let merkle_tree = merkle::merkle_tree(codeword_bytes, n_positions);
+    let merkle_tree = merkle::merkle_tree_padded_rows(&codeword, n_positions, n_lanes, 1usize << log_batch_size);
     let root = *merkle_tree.last().expect("merkle tree non-empty");
     if trace {
         let k_code = pretty_integer(k_code);
-        let num_ntts = pretty_integer(num_ntts);
+        let lanes = pretty_integer(n_lanes);
         eprintln!(
-            "[lig-commit] k_code={k_code} lanes={num_ntts}: ntt = {:.4} s, merkle = {:.4} s",
+            "[lig-commit] k_code={k_code} lanes={lanes}: ntt = {:.4} s, merkle = {:.4} s",
             ntt_elapsed.as_secs_f64(),
             t_merkle.elapsed().as_secs_f64(),
         );
@@ -562,6 +561,10 @@ trait RoundWitness: Copy + Sync + std::ops::Add<Output = Self> {
     /// lifting the witness into E. One product rather than two, bit-identical
     /// to the two-product form and still just one reduction.
     fn fold_pair(x0: Self, x1: Self, r: F192) -> F192;
+    /// [`Self::fold_pair`] against an absent partner: the lane rounds pair the
+    /// last committed lane with the stacked witness's zero padding, so the
+    /// interpolation collapses to `x0·(1+r)`.
+    fn fold_lone(x0: Self, r: F192) -> F192;
 }
 
 impl RoundWitness for F64 {
@@ -578,6 +581,10 @@ impl RoundWitness for F64 {
     #[inline]
     fn fold_pair(x0: Self, x1: Self, r: F192) -> F192 {
         F192::from(x0) + r.mul_base(x0 + x1)
+    }
+    #[inline]
+    fn fold_lone(x0: Self, r: F192) -> F192 {
+        F192::from(x0) + r.mul_base(x0)
     }
 }
 
@@ -596,6 +603,10 @@ impl RoundWitness for F192 {
     fn fold_pair(x0: Self, x1: Self, r: F192) -> F192 {
         x0 + r * (x0 + x1)
     }
+    #[inline]
+    fn fold_lone(x0: Self, r: F192) -> F192 {
+        x0 + r * x0
+    }
 }
 
 /// Round message over a witness `f` and an E basis `b`. Mirror of
@@ -609,37 +620,13 @@ fn round_msg_lsb<T: RoundWitness>(f: &[T], b: &[F192]) -> SumcheckMessage {
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
 
-    const PAR_THRESHOLD: usize = 4096;
     let half = n / 2;
     let term = |j: usize| -> (T::Acc, T::Acc) {
         let (f0, f1) = (f[2 * j], f[2 * j + 1]);
         let (b0, b1) = (b[2 * j], b[2 * j + 1]);
         (f0.mul_basis_unreduced(b0), (f0 + f1).mul_basis_unreduced(b0 + b1))
     };
-    let (u_0, u_2) = if half < PAR_THRESHOLD {
-        let mut u_0 = T::ZERO_ACC;
-        let mut u_2 = T::ZERO_ACC;
-        for j in 0..half {
-            let (t0, t2) = term(j);
-            u_0 ^= t0;
-            u_2 ^= t2;
-        }
-        (u_0, u_2)
-    } else {
-        parallel::map_reduce(
-            half,
-            || (T::ZERO_ACC, T::ZERO_ACC),
-            term,
-            // Unreduced accumulators combine by XOR just as they do within a
-            // worker, and `reduce` is linear, so one reduction at the very end
-            // matches the sequential path above exactly.
-            |(mut a0, mut a2), (c0, c2)| {
-                a0 ^= c0;
-                a2 ^= c2;
-                (a0, a2)
-            },
-        )
-    };
+    let (u_0, u_2) = accumulate_msg(half, half, T::ZERO_ACC, term);
     SumcheckMessage {
         u_0: T::reduce(u_0),
         u_2: T::reduce(u_2),
@@ -748,10 +735,9 @@ fn fold_and_msg_lsb<T: RoundWitness>(
         );
     }
 
-    // Parallel path: `half` is a power of two >= PAR_THRESHOLD and CHUNK is a
+    // Parallel path: `half` is a power of two >= PAR_THRESHOLD and ROUND_CHUNK is a
     // power of two, so every chunk has even length and starts at an even
     // global index (message pairs never straddle a chunk boundary).
-    const CHUNK: usize = 2048;
     // SAFETY (x2): every slot of `nf`/`nb` is written by the chunked loop below
     // (one output per input pair) before any is read.
     let mut nf = unsafe { fold_out_buf(half) };
@@ -761,12 +747,12 @@ fn fold_and_msg_lsb<T: RoundWitness>(
     let nf_base = parallel::SendPtr(nf.as_mut_ptr());
     let nb_base = parallel::SendPtr(nb.as_mut_ptr());
     let (u_0, u_2) = parallel::map_reduce(
-        half.div_ceil(CHUNK),
+        half.div_ceil(ROUND_CHUNK),
         || (F192Unreduced::ZERO, F192Unreduced::ZERO),
         |ci| {
-            let base = ci * CHUNK;
-            let len = CHUNK.min(half - base);
-            // SAFETY: distinct `ci` own disjoint in-bounds `CHUNK`-windows of
+            let base = ci * ROUND_CHUNK;
+            let len = ROUND_CHUNK.min(half - base);
+            // SAFETY: distinct `ci` own disjoint in-bounds `ROUND_CHUNK`-windows of
             // `nf`/`nb`, and both buffers stay borrowed for the whole dispatch.
             let fc = unsafe { nf_base.slice(base, len) };
             let bc = unsafe { nb_base.slice(base, len) };
@@ -783,6 +769,194 @@ fn fold_and_msg_lsb<T: RoundWitness>(
             (a0, a2)
         },
     );
+    (
+        nf,
+        nb,
+        SumcheckMessage {
+            u_0: u_0.reduce(),
+            u_2: u_2.reduce(),
+        },
+    )
+}
+
+// ===================================================================
+// Lane rounds: the L0 fold binds whole lanes, not adjacent words
+// ===================================================================
+//
+// The committed witness is stored lane-major (lane `l` is the contiguous stack
+// block `q[l·H .. (l+1)·H)`, `H = 2^(log_n − initial_k)`), because that is what
+// makes the stacked witness's zero padding whole lanes and lets the commitment
+// leave them out entirely. The first `initial_k` sumcheck rounds are therefore
+// the lane fold: round `j` binds lane bit `j`, pairing block `2i` with block
+// `2i+1`, and an odd block count pairs the last one with the absent zero
+// padding. After them the buffer is one `H`-element block and every later round
+// is the ordinary adjacent-pair fold.
+
+/// Elements per task wherever a round is chunked: the fused adjacent-pair fold,
+/// and the lane rounds, whose block is the whole L0 message divided by the
+/// interleaving and so has to be fed to the pool from inside a block pair rather
+/// than across them.
+const ROUND_CHUNK: usize = 2048;
+
+/// Sum the per-task `(u_0, u_2)` accumulators, sequentially for the small
+/// instances where dispatch costs more than the work. Unreduced accumulators
+/// combine by XOR and `reduce` is linear, so both paths land on the same message.
+#[inline]
+fn accumulate_msg<A: Copy + Send + core::ops::BitXorAssign>(
+    n_tasks: usize,
+    n_pairs: usize,
+    zero: A,
+    task: impl Fn(usize) -> (A, A) + Sync,
+) -> (A, A) {
+    const PAR_THRESHOLD: usize = 4096;
+    if n_pairs < PAR_THRESHOLD {
+        let mut u_0 = zero;
+        let mut u_2 = zero;
+        for t in 0..n_tasks {
+            let (t0, t2) = task(t);
+            u_0 ^= t0;
+            u_2 ^= t2;
+        }
+        (u_0, u_2)
+    } else {
+        parallel::map_reduce(
+            n_tasks,
+            || (zero, zero),
+            task,
+            |(mut a0, mut a2), (c0, c2)| {
+                a0 ^= c0;
+                a2 ^= c2;
+                (a0, a2)
+            },
+        )
+    }
+}
+
+/// `(u_0, u_2)` over one pair of blocks, elementwise.
+#[inline]
+fn msg_terms_pair<T: RoundWitness>(f0: &[T], f1: &[T], b0: &[F192], b1: &[F192]) -> (T::Acc, T::Acc) {
+    let mut u_0 = T::ZERO_ACC;
+    let mut u_2 = T::ZERO_ACC;
+    for (((&x0, &x1), &y0), &y1) in f0.iter().zip(f1).zip(b0).zip(b1) {
+        u_0 ^= x0.mul_basis_unreduced(y0);
+        u_2 ^= (x0 + x1).mul_basis_unreduced(y0 + y1);
+    }
+    (u_0, u_2)
+}
+
+/// [`msg_terms_pair`] against an absent partner block. With `f1 = b1 = 0` both
+/// `h(0)` and `h(inf)` collect the same `Σ f0·b0`, so this is NOT a no-op the way
+/// a trailing odd element is in an adjacent-pair round.
+#[inline]
+fn msg_terms_lone<T: RoundWitness>(f0: &[T], b0: &[F192]) -> (T::Acc, T::Acc) {
+    let mut u = T::ZERO_ACC;
+    for (&x0, &y0) in f0.iter().zip(b0) {
+        u ^= x0.mul_basis_unreduced(y0);
+    }
+    (u, u)
+}
+
+/// Round message for a lane round, over `f.len() / block` blocks.
+fn round_msg_blocks<T: RoundWitness>(f: &[T], b: &[F192], block: usize) -> SumcheckMessage {
+    // Real asserts, not debug ones: the crate is only ever built in release, and a
+    // block count that truncates drops the trailing block from BOTH u_0 and u_2,
+    // which is a well-formed but wrong round message rather than a panic.
+    assert_eq!(b.len(), f.len());
+    assert!(block > 0 && f.len().is_multiple_of(block));
+    let n_blocks = f.len() / block;
+    let per = block.div_ceil(ROUND_CHUNK);
+    let task = |t: usize| -> (T::Acc, T::Acc) {
+        let (i, c) = (t / per, t % per);
+        let x0 = c * ROUND_CHUNK;
+        let len = ROUND_CHUNK.min(block - x0);
+        let lo = 2 * i * block + x0;
+        if 2 * i + 1 < n_blocks {
+            let hi = lo + block;
+            msg_terms_pair(&f[lo..lo + len], &f[hi..hi + len], &b[lo..lo + len], &b[hi..hi + len])
+        } else {
+            msg_terms_lone(&f[lo..lo + len], &b[lo..lo + len])
+        }
+    };
+    let (u_0, u_2) = accumulate_msg(n_blocks.div_ceil(2) * per, f.len() / 2, T::ZERO_ACC, task);
+    SumcheckMessage {
+        u_0: T::reduce(u_0),
+        u_2: T::reduce(u_2),
+    }
+}
+
+/// Fused lane fold + next-round message. Mirror of [`fold_and_msg_lsb`] for the
+/// block pairing: a task owns one output *pair* (so four input blocks), because
+/// that is the smallest unit the next round's message is local to.
+///
+/// `last` says this is the final lane round, so the round after it pairs adjacent
+/// elements of the single output block rather than another pair of blocks. Which
+/// pairing comes next is what lets the message be built here, while the folded
+/// values are still in L1.
+fn fold_and_msg_blocks<T: RoundWitness>(
+    f: &[T],
+    b: &[F192],
+    r: F192,
+    block: usize,
+    last: bool,
+) -> (ArenaVec<F192>, ArenaVec<F192>, SumcheckMessage) {
+    assert_eq!(b.len(), f.len());
+    assert!(block > 0 && f.len().is_multiple_of(block));
+    let n_in = f.len() / block;
+    let n_out = n_in.div_ceil(2);
+    // Adjacent pairing next round is only possible once the lanes have collapsed
+    // to a single block.
+    assert!(!last || n_out == 1);
+
+    // SAFETY (x2): the loop below writes every slot of both buffers, one output
+    // element per input pair, before any is read.
+    let mut nf = unsafe { fold_out_buf(n_out * block) };
+    let mut nb = unsafe { fold_out_buf(n_out * block) };
+    let nf_base = parallel::SendPtr(nf.as_mut_ptr());
+    let nb_base = parallel::SendPtr(nb.as_mut_ptr());
+
+    let per = block.div_ceil(ROUND_CHUNK);
+    let fold_block = |out_blk: usize, x0: usize, len: usize| -> (&mut [F192], &mut [F192]) {
+        // SAFETY: distinct (out_blk, x0) name disjoint in-bounds windows of `nf`
+        // and `nb`, which stay borrowed for the whole dispatch.
+        let (dst_f, dst_b) = unsafe {
+            (
+                nf_base.slice(out_blk * block + x0, len),
+                nb_base.slice(out_blk * block + x0, len),
+            )
+        };
+        let src0 = 2 * out_blk * block + x0;
+        if 2 * out_blk + 1 < n_in {
+            let src1 = src0 + block;
+            for t in 0..len {
+                dst_f[t] = T::fold_pair(f[src0 + t], f[src1 + t], r);
+                dst_b[t] = F192::fold_pair(b[src0 + t], b[src1 + t], r);
+            }
+        } else {
+            for t in 0..len {
+                dst_f[t] = T::fold_lone(f[src0 + t], r);
+                dst_b[t] = F192::fold_lone(b[src0 + t], r);
+            }
+        }
+        (dst_f, dst_b)
+    };
+
+    let task = |t: usize| -> (F192Unreduced, F192Unreduced) {
+        let (i, c) = (t / per, t % per);
+        let x0 = c * ROUND_CHUNK;
+        let len = ROUND_CHUNK.min(block - x0);
+        let (f_lo, b_lo) = fold_block(2 * i, x0, len);
+        if 2 * i + 1 < n_out {
+            let (f_hi, b_hi) = fold_block(2 * i + 1, x0, len);
+            msg_terms_pair(f_lo, f_hi, b_lo, b_hi)
+        } else if last {
+            // `ROUND_CHUNK` and `block` are powers of two, so every chunk has even
+            // length and starts even: no message pair straddles a task.
+            fold_msg_terms(f_lo, b_lo)
+        } else {
+            msg_terms_lone(f_lo, b_lo)
+        }
+    };
+    let (u_0, u_2) = accumulate_msg(n_out.div_ceil(2) * per, f.len() / 2, F192Unreduced::ZERO, task);
     (
         nf,
         nb,
@@ -820,10 +994,13 @@ struct SumcheckProver<'a> {
 }
 
 impl<'a> SumcheckProver<'a> {
-    fn new(f: &'a [F64], b1: ArenaVec<F192>, h1: F192) -> (Self, SumcheckMessage) {
-        let _span = tracing::info_span!("Sumcheck round", round = 0, log_size = f.len().trailing_zeros()).entered();
+    /// `block` is the lane block size `2^(log_n - initial_k)`: the first
+    /// `initial_k` rounds are the lane fold, so round 0's message already pairs
+    /// whole blocks rather than adjacent words.
+    fn new(f: &'a [F64], b1: ArenaVec<F192>, h1: F192, block: usize) -> (Self, SumcheckMessage) {
+        let _span = tracing::info_span!("Sumcheck round", round = 0, log_size = f.len().ilog2()).entered();
         assert_eq!(f.len(), b1.len());
-        let msg = round_msg_lsb(f, &b1);
+        let msg = round_msg_blocks(f, &b1, block);
         let inst = Self {
             f: Witness::Base(f),
             combined_basis: b1,
@@ -842,12 +1019,36 @@ impl<'a> SumcheckProver<'a> {
         self.t_r
     }
 
+    /// One lane round: fold block `2i` with block `2i+1` (the last one with the
+    /// absent zero padding when the block count is odd) and build the message for
+    /// the round after it, which is another lane round unless this was the last.
+    fn fold_lane(&mut self, r: F192, block: usize, last: bool) -> SumcheckMessage {
+        self.t_r = self.quad.eval(r);
+        self.round += 1;
+        // `ilog2` rather than `trailing_zeros`: a lane round's length is
+        // `n_lanes * block`, so it is generally not a power of two, and the two
+        // kinds of round have to report a comparable number.
+        let log_size = match &self.f {
+            Witness::Base(f) => f.len().ilog2(),
+            Witness::Ext(f) => f.len().ilog2(),
+        };
+        let _span = tracing::info_span!("Sumcheck round", round = self.round, log_size).entered();
+        let (nf, nb, msg) = match &self.f {
+            Witness::Base(f) => fold_and_msg_blocks(f, &self.combined_basis, r, block, last),
+            Witness::Ext(f) => fold_and_msg_blocks(f, &self.combined_basis, r, block, last),
+        };
+        drop(std::mem::replace(&mut self.f, Witness::Ext(nf)));
+        drop(std::mem::replace(&mut self.combined_basis, nb));
+        self.quad = RoundQuad::from_msg(msg, self.t_r);
+        msg
+    }
+
     fn fold(&mut self, r: F192) -> SumcheckMessage {
         self.t_r = self.quad.eval(r);
         self.round += 1;
         let log_size = match &self.f {
-            Witness::Base(f) => f.len().trailing_zeros(),
-            Witness::Ext(f) => f.len().trailing_zeros(),
+            Witness::Base(f) => f.len().ilog2(),
+            Witness::Ext(f) => f.len().ilog2(),
         };
         let _span = tracing::info_span!("Sumcheck round", round = self.round, log_size).entered();
         let (nf, nb, msg) = match &self.f {
@@ -997,6 +1198,16 @@ fn ext_row_from_words(words: &[F64]) -> Vec<F192> {
 /// fold, which lifts it into an owned E-vector), so callers with a large
 /// committed stack pass the slice directly instead of paying a full copy.
 ///
+/// PRECONDITION, and the reason `witness` may be shorter than `2^log_n`: it is a
+/// whole number of lane blocks, and `b_initial` must be the weight restricted to
+/// them, with the weight VANISHING at every boolean point of
+/// `[witness.len(), 2^log_n)`. The lane rounds treat the absent blocks as zero
+/// while the verifier's `eval_b_at` evaluates the closed form over the whole cube,
+/// so a weight that is nonzero out there produces a proof that fails only at the
+/// terminal check. `stack_open` discharges this by bounding every claim's support
+/// by `stack.len()`; `ood_samples[0] == 0` is what keeps a full-tensor OOD weight
+/// out of these rounds.
+///
 /// Transcript order is identical to the original (target, roots, OOD claims,
 /// `(u_0, u_2)` stream, tapered fold grinds, query grinds, queries, alphas,
 /// betas, and `yr` in the clear at the end). Everything goes to `ps`: the
@@ -1004,6 +1215,7 @@ fn ext_row_from_words(words: &[F64]) -> Vec<F192> {
 /// level order.
 pub fn recursive_prover_with_basis(
     config: &ProverConfig,
+    log_n: usize,
     witness: &[F64],
     b_initial: ArenaVec<F192>,
     target: F192,
@@ -1011,23 +1223,34 @@ pub fn recursive_prover_with_basis(
     l0_tree: &[Hash],
     ps: &mut impl Transmitter,
 ) {
-    let log_n = witness.len().trailing_zeros() as usize;
     let r = config.level_steps;
     let initial_k = config.initial_k;
 
-    assert_eq!(witness.len(), 1usize << log_n);
-    assert_eq!(b_initial.len(), 1usize << log_n);
     assert_eq!(config.level_ks.len(), r);
     assert_eq!(config.log_inv_rates.len(), r + 1);
     assert!(r >= 1);
     assert!(initial_k >= 1);
+    // L0 takes no OOD sample, and the padding-free truncation now depends on it:
+    // the lane rounds are the only ones folding the truncated witness against a
+    // weight over the whole `2^log_n` cube, and an OOD weight `eq(z, .)` is a full
+    // tensor that does NOT vanish on the absent lanes, unlike every claim weight.
     assert_eq!(config.ood_samples.first().copied().unwrap_or(0), 0);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
     let block_len_0 = 1usize << (log_msg_cols_0 + log_inv_rate_0);
     let num_interleaved_0 = 1usize << initial_k;
-    assert_eq!(l0_codeword.len(), block_len_0 * num_interleaved_0);
+    // The committed lanes: only the ones that carry data, so the witness is a
+    // whole number of lane blocks but generally NOT `2^log_n` words.
+    let lane_block = 1usize << log_msg_cols_0;
+    let n_lanes = witness.len() / lane_block;
+    assert_eq!(witness.len(), n_lanes * lane_block, "witness is whole lane blocks");
+    assert!(
+        n_lanes >= 1 && n_lanes <= num_interleaved_0,
+        "at most 2^initial_k lanes"
+    );
+    assert_eq!(b_initial.len(), witness.len());
+    assert_eq!(l0_codeword.len(), block_len_0 * n_lanes);
     assert_eq!(l0_tree.len(), 2 * block_len_0 - 1);
 
     // Optional per-phase timing (WHIR_TRACE): mirror of the original's
@@ -1049,9 +1272,13 @@ pub fn recursive_prover_with_basis(
 
     // L0 codeword + tree are borrowed (reused from `commit`).
     let initial_root: Hash = l0_tree[l0_tree.len() - 1];
-    let l0_row = |q: usize| -> &[F64] {
-        let start = q * num_interleaved_0;
-        &l0_codeword[start..start + num_interleaved_0]
+    // The codeword interleaves only the committed lanes, so a row is that many
+    // words; the lanes past them are the stacked witness's zero padding, whose
+    // codeword is zero, which is exactly what the leaf image hashed for them.
+    let l0_row = |q: usize| -> Vec<F64> {
+        let mut row = vec![F64::ZERO; num_interleaved_0];
+        row[..n_lanes].copy_from_slice(&l0_codeword[q * n_lanes..(q + 1) * n_lanes]);
+        row
     };
     ps.observe_root(&initial_root);
 
@@ -1060,7 +1287,8 @@ pub fn recursive_prover_with_basis(
 
     let _t = std::time::Instant::now();
     let sumcheck_span = tracing::info_span!("Sumcheck");
-    let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| SumcheckProver::new(witness, b_initial, target));
+    let (mut sc_prover, start_msg) =
+        sumcheck_span.in_scope(|| SumcheckProver::new(witness, b_initial, target, lane_block));
     send_msg(ps, start_msg, target);
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
@@ -1073,7 +1301,7 @@ pub fn recursive_prover_with_basis(
             ps.grind(bits);
         }
         let r_j = ps.sample();
-        let msg = sumcheck_span.in_scope(|| sc_prover.fold(r_j));
+        let msg = sumcheck_span.in_scope(|| sc_prover.fold_lane(r_j, lane_block, j + 1 == initial_k));
         send_msg(ps, msg, sc_prover.claim());
         r_lane_fold.push(r_j);
     }
@@ -1119,12 +1347,10 @@ pub fn recursive_prover_with_basis(
     let weights_0 = power_weights(lambda_0, num_queries_0);
     let _t = std::time::Instant::now();
     // Ordered (dup-possible) rows for the local induce math ...
-    let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
+    let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q)).collect();
     // ... but the stored proof carries the sorted-unique rows + one octopus over
     // the sorted-unique positions (the verifier re-fans them to ordered).
-    ps.hint_merkle(PrunedMerklePaths::prune(l0_tree, block_len_0, &queries_0, |q| {
-        l0_row(q).to_vec()
-    }));
+    ps.hint_merkle(PrunedMerklePaths::prune(l0_tree, block_len_0, &queries_0, l0_row));
     if trace {
         t_opens += _t.elapsed();
     }
@@ -1566,7 +1792,9 @@ pub fn recursive_verifier_with_basis(
     // Basis poly tracking for the residual check. b_initial folds at ALL ris;
     // basis_0_induced starts after the lane folds.
     let mut basis_polys: Vec<ArenaVec<F192>> = vec![ArenaVec::from_slice(b_initial), basis_0_induced];
-    let mut basis_ris_starts: Vec<usize> = vec![0, initial_k];
+    // Slot 0 is `b_initial`, which is evaluated at the whole rotated point rather
+    // than a suffix of `ris`, so its start is never read; `usize::MAX` says so.
+    let mut basis_ris_starts: Vec<usize> = vec![usize::MAX, initial_k];
     let mut basis_separations: Vec<F192> = vec![query_scalar_0];
     let mut ris: Vec<F192> = r_lane_fold.clone();
 
@@ -1662,13 +1890,26 @@ pub fn recursive_verifier_with_basis(
             ris.extend_from_slice(&ris_tail);
             let mut weight = F192::ZERO;
             for (k, basis) in basis_polys.iter().enumerate() {
-                let start = basis_ris_starts[k];
-                let at = partial_eval_lsb_ext(basis, &ris[start..]);
-                if at.len() != 1 {
-                    return false;
-                }
+                let at = if k == 0 {
+                    // `b_initial` is indexed by witness variable, while `ris` is in
+                    // round order and the first `initial_k` rounds bound the lane
+                    // (top) variables: the same rotation the succinct path applies
+                    // before `eval_b_at`.
+                    if basis.len() != 1usize << ris.len() {
+                        return false;
+                    }
+                    let mut point = ris.clone();
+                    point.rotate_left(initial_k);
+                    mle_eval_ext(basis, &point)
+                } else {
+                    let folded = partial_eval_lsb_ext(basis, &ris[basis_ris_starts[k]..]);
+                    if folded.len() != 1 {
+                        return false;
+                    }
+                    folded[0]
+                };
                 let sep = if k == 0 { F192::ONE } else { basis_separations[k - 1] };
-                weight += sep * at[0];
+                weight += sep * at;
             }
             for (basis, start, beta) in &ood_bases {
                 let at = partial_eval_lsb_ext(basis, &ris[*start..]);
@@ -1765,7 +2006,10 @@ pub fn recursive_verifier_with_basis(
 /// Succinct verifier for [`recursive_prover_with_basis`] (mirror of
 /// `whir::recursive_verifier_with_basis_succinct`): instead of a dense
 /// `b_initial` (2^log_n E-values) it takes a closure `eval_b_at` that evaluates
-/// b's multilinear extension once, at the final fold point.
+/// b's multilinear extension once, at the final fold point INDEXED BY WITNESS
+/// COORDINATE: the fold challenges arrive in round order and the first `initial_k`
+/// rounds are the lane fold, which binds the witness's top `initial_k` coords, so
+/// the point is rotated left by `initial_k` before the closure sees it.
 ///
 /// Per-level induced bases are never materialized: intro time uses the cheap
 /// enforced-sum recomputation, and the residual uses the closed-form
@@ -2015,8 +2259,16 @@ where
                 weight += scalar * eq_eval(&ctx.z[folded..], &ris_tail);
             }
 
+            // `ris ++ ris_tail` is the fold challenges in ROUND order, and the
+            // first `initial_k` rounds are the lane fold, which binds the
+            // committed witness's TOP `initial_k` variables (lane `l` is the
+            // stack block `q[l·H ..)`). Rotating by `initial_k` re-indexes the
+            // point by witness variable, which is the only thing this whole
+            // relayout changes for a verifier: `eval_b_at` and every closed form
+            // under it stay exactly as they were.
             let mut full_point = ris.clone();
             full_point.extend_from_slice(&ris_tail);
+            full_point.rotate_left(initial_k);
             weight += eval_b_at(&full_point);
             return weight * mle_eval_ext(&yr, &ris_tail) == t_r;
         }
@@ -2159,13 +2411,14 @@ mod tests {
         let (pc, vc) = test_configs_for(log_n);
         let mut rng = Rng::new(seed);
         let witness: Vec<F64> = (0..1usize << log_n).map(|_| F64(rng.next_u64())).collect();
-        let (cm, pd) = commit(&witness, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&witness, log_n, pc.initial_k, pc.log_inv_rates[0]);
         let point: Vec<F192> = (0..log_n).map(|_| rng.ext()).collect();
         let b_initial = build_eq_table_ext(&point);
         let target = inner_product_base_ext(&witness, &b_initial);
         let mut ps = fiat_shamir::transcript::ProverState::new(b"whir-test", &[]);
         recursive_prover_with_basis(
             &pc,
+            log_n,
             &witness,
             ArenaVec::from_slice(&b_initial),
             target,
@@ -2366,6 +2619,72 @@ mod tests {
         let a = prove_instance(12, 7);
         let b = prove_instance(12, 7);
         assert_eq!(a.fs, b.fs, "same inputs must yield an identical transcript");
+    }
+
+    /// Committing only the lanes that carry data must be indistinguishable from
+    /// committing the whole `2^log_n` witness with an explicit zero tail: same
+    /// root, byte-identical transcript, and the dense verifier (which always sees
+    /// the full `2^log_n` weight) accepts. That indistinguishability is what lets
+    /// the verifier stay unaware of the lane count.
+    #[test]
+    fn truncated_lanes_match_an_explicit_zero_tail() {
+        // `log_n = 18` puts the lane block over `ROUND_CHUNK`, so the fold runs several
+        // x-chunks per block; at 13 it is one chunk per block. Both matter: the chunked
+        // path is what production takes, and it is where a message pair could straddle
+        // a task.
+        for (log_n, lanes) in [(13usize, &[1usize, 5, 64][..]), (18, &[5, 64][..])] {
+            let (pc, _vc) = test_configs_for(log_n);
+            let lane_block = 1usize << (log_n - pc.initial_k);
+            for &n_lanes in lanes {
+                let mut rng = Rng::new(0x5AFE + n_lanes as u64);
+                let used = n_lanes * lane_block;
+                let mut witness: Vec<F64> = (0..1usize << log_n).map(|_| F64(rng.next_u64())).collect();
+                let mut b_initial: Vec<F192> = (0..1usize << log_n).map(|_| rng.ext()).collect();
+                witness[used..].fill(F64::ZERO);
+                b_initial[used..].fill(F192::ZERO);
+                let target = inner_product_base_ext(&witness, &b_initial);
+
+                let prove = |msg: &[F64], b: &[F192]| {
+                    let (cm, pd) = commit(msg, log_n, pc.initial_k, pc.log_inv_rates[0]);
+                    let mut ps = fiat_shamir::transcript::ProverState::new(b"whir-test", &[]);
+                    recursive_prover_with_basis(
+                        &pc,
+                        log_n,
+                        msg,
+                        ArenaVec::from_slice(b),
+                        target,
+                        &pd.codeword,
+                        &pd.merkle_tree,
+                        &mut ps,
+                    );
+                    (cm.root, ps.into_proof())
+                };
+                let (root_trunc, fs_trunc) = prove(&witness[..used], &b_initial[..used]);
+                let (root_full, fs_full) = prove(&witness, &b_initial);
+                assert_eq!(root_trunc, root_full, "root differs at n_lanes = {n_lanes}");
+                assert_eq!(fs_trunc, fs_full, "transcript differs at n_lanes = {n_lanes}");
+
+                let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", &fs_trunc, &[]);
+                assert!(
+                    recursive_verifier_with_basis(&pc, &b_initial, target, &root_trunc, &mut vs),
+                    "dense verify failed at n_lanes = {n_lanes}"
+                );
+
+                // The lanes past `n_lanes` are hashed into the leaf image even though
+                // nothing was committed to them, which is exactly what lets the verifier
+                // stay unaware of the lane count: it folds all `2^initial_k` words of an
+                // opened row, so a flipped padding lane has to be caught like any other.
+                if n_lanes < 1usize << pc.initial_k {
+                    let mut bad_fs = fs_trunc.clone();
+                    bad_fs.merkle[0].leaf_data[0][(1usize << pc.initial_k) - 1].0 ^= 1;
+                    let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", &bad_fs, &[]);
+                    assert!(
+                        !recursive_verifier_with_basis(&pc, &b_initial, target, &root_trunc, &mut vs),
+                        "a flipped padding lane was accepted at n_lanes = {n_lanes}"
+                    );
+                }
+            }
+        }
     }
 
     /// The E-valued interleaved NTT with K-twiddles must act lane-wise on the

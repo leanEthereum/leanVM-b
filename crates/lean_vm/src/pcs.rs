@@ -7,6 +7,16 @@
 //! so it never travels. flock's ring-switched `q_flock` claims join the same batch
 //! ([`::pcs::stack_open`]).
 //!
+//! The stacked witness is `2^μ` words, but its tail past the placed columns is
+//! zero, and the L0 interleaving makes that tail whole lanes: lane `l` is the
+//! contiguous block `q[l·2^(μ-LOG_BATCH) ..)`, so only
+//! [`crate::witness::StackShape::n_lanes`] of them are ever ENCODED, and the
+//! opening's dense weight and its first `LOG_BATCH` rounds shrink with them. The
+//! Merkle half does not: a leaf is still `2^LOG_BATCH` words, the absent lanes
+//! contributing the zeros their codeword would have been. That is what keeps this
+//! invisible to a verifier, which sees the same `2^μ`-word commitment either way
+//! and never needs the lane count.
+//!
 //! Security: the K configs use rate-1/2 Johnson list decoding with OOD binding
 //! and 128-bit round-by-round soundness ([`::pcs::whir::SECURITY_BITS`]).
 //! L0's opening claim supplies its binding evaluation; each deeper commitment
@@ -26,7 +36,7 @@ use ::pcs::whir::{ProverConfig, VerifierConfig};
 /// = 512 bytes/leaf) IS WHIR's INITIAL folding factor: the L0 commit is
 /// reused, so the two are one knob ([`::pcs::whir::INITIAL_FOLDING_FACTOR`]).
 /// Larger ⇒ far fewer Merkle nodes to hash at the cost of fatter query openings.
-const LOG_BATCH: usize = ::pcs::whir::INITIAL_FOLDING_FACTOR;
+pub(crate) const LOG_BATCH: usize = ::pcs::whir::INITIAL_FOLDING_FACTOR;
 /// Default L0 rate index.
 pub const LOG_INV_RATE: usize = ::pcs::whir::LOG_INV_RATE_0;
 // The PCS and the unground F192 bus argument both target `SECURITY_BITS`.
@@ -78,18 +88,32 @@ pub enum Error {
     Whir,
 }
 
-/// Commit a `K`-valued witness of length `2^μ` (`μ ≥ MIN_MU`; smaller stacks
-/// are zero-padded up by [`crate::witness::placements_of`]) and bind its root
-/// into the transcript, before any challenge is sampled. The verifier reads it
-/// with [`read_commitment`].
-pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Committed {
-    let n = witness.len();
-    let mu = crate::log2_strict_usize(n);
+/// Commit a `K`-valued witness of `2^μ` words (`μ ≥ MIN_MU`, from
+/// [`crate::witness::placements_of`]) and bind its root into the transcript,
+/// before any challenge is sampled. The verifier reads it with
+/// [`read_commitment`].
+///
+/// `witness` is the stack truncated to the lane blocks that carry data
+/// ([`crate::witness::StackShape::committed_len`]); the zero tail past them is
+/// neither encoded nor hashed, and the resulting commitment is the same one the
+/// full `2^μ` witness would have produced.
+pub fn commit(
+    ps: &mut ProverState,
+    witness: &[F64],
+    shape: crate::witness::StackShape,
+    log_inv_rate: usize,
+) -> Committed {
+    let mu = shape.mu;
     assert!(
         mu >= MIN_MU,
         "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
     );
-    let (commitment, prover_data) = whir_commit(witness, LOG_BATCH, log_inv_rate);
+    assert_eq!(
+        witness.len(),
+        shape.committed_len(),
+        "witness must be the committed lanes"
+    );
+    let (commitment, prover_data) = whir_commit(witness, mu, LOG_BATCH, log_inv_rate);
     ps.add_root(&commitment.root);
     Committed {
         commitment,
@@ -122,9 +146,11 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
 /// There is no plain (non-ring-switch) path: the witness ALWAYS carries a `q_flock`
 /// sub-block (≥ 1 padding instance, §cpu), so every opening is stacked.
 pub fn open(ps: &mut ProverState, c: &Committed, q: &[F64], points: &[SlotClaim], ring: &RingSwitchOpen) {
-    debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
+    let lane_block = 1usize << (c.mu - LOG_BATCH);
+    assert_eq!(q.len() % lane_block, 0, "witness must be whole committed lanes");
+    assert!(q.len() <= 1usize << c.mu, "witness must fit the announced size");
     let cfg = whir_configs(c.mu, c.log_inv_rate);
-    open_batch_mixed_whir_stacked(ps, q, &c.prover_data, &cfg.0, points, ring)
+    open_batch_mixed_whir_stacked(ps, c.mu, q, &c.prover_data, &cfg.0, points, ring)
 }
 
 /// Verify the opening (mirror of [`open`]): flock's ring-switched claim

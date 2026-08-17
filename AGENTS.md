@@ -51,8 +51,8 @@ Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- -
 ## Benchmarking
 
 The benchmarks we care about:
-- `cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3`
-- `cargo run --release -- recursion --n 2 --xmss-per-leaf 890 --log-inv-rate 2 --repeat 3`
+- `cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- recursion --n 2 --xmss-per-leaf 900 --log-inv-rate 2 --repeat 3`
 
 ## The proving arena (`zk_alloc`)
 
@@ -94,6 +94,7 @@ The third is worth understanding before touching the verifier. `guests/aggregate
 - Simpler is better.
 - **Fiat-Shamir:** `add_scalar`/`next_scalar` bind into the sponge as a side effect. `observe_*` is only for the public statement. Never re-observe data that rode the stream, which silently desynchronizes the two sides.
 - **Prover and verifier derive the layout identically** from announced sizes. Changes to `placements_of` or the schema land on both sides. `col_kappas` is derived from `col_kappa_sources` rather than written out twice, so the two can no longer drift; keep it that way.
+- **The L0 lane fold binds the committed witness's TOP `INITIAL_FOLDING_FACTOR` variables**, because lane `l` of the interleaved commitment is the contiguous stack block `q[l·2^(μ-k) ..)`. That is what makes the stacked witness's zero tail whole lanes, so `whir::commit` encodes only `StackShape::n_lanes` of them, and the opening's dense weight, its first `k` sumcheck rounds and the stack allocation shrink with it (prover-side only: the absent lanes encode to zero, so the leaf image and an opened row are what a full-width commitment would have given, and no verifier learns the lane count). The MERKLE work is unchanged: the leaf image is still `2^k` words, with the absent lanes' zeros supplied from a staging tile, so the tree, the proof and the hashing cost are all full width. Since `mu = log2_ceil(placed)`, `n_lanes` is always in `[2^(k-1)+1, 2^k]`, which caps the encode saving near half and makes it ~0 for a witness that just exceeds a power of two. The cost is that the fold challenges arrive in round order while every transparent weight is written in witness coordinates, so all three verifiers rotate the terminal point left by `k` before evaluating it (`whir.rs` before `eval_b_at`, `verifier.py` before `evaluate_basis`, and `open_stacked` returns the rotated pair in the guest). Anything else that reads the opening's point (per-level induced weights, the residual) stays in round order.
 - **A failed guest `assert` surfaces as a write-once memory conflict**, not an assertion message, so disassemble around the reported `pc` (`DBG_DISASM`).
 - Guests are single-file; the compiler skips `from snark_lib import *`, which exists only so editors accept the file as Python.
 - **One symbol, one meaning, across the whole leanVM document.** All notation is defined in `doc/leanvm/preamble/macros.tex`; define a new macro there rather than inline, and check the letter is free first. Annex B's symbols were deliberately renamed away from the letters WHIR/Ligerito/BCHKS25 use (rate is `\rate`, not `\rho`, which is a sumcheck point) and its "Symbols" table is the map back, so reintroducing a paper's letter silently collides with the main matter.
