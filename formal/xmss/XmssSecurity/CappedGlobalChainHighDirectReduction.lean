@@ -45,7 +45,7 @@ noncomputable def globalHighDirectVerifierImpl
   fun input => globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh (.inl input)
 
 noncomputable def globalHighDirectDetailedExecution
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     StateT GlobalCausalHashState
@@ -55,7 +55,7 @@ noncomputable def globalHighDirectDetailedExecution
     (globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh)
       (adversary.main keyView.publicKey))
   let verified ← simulateQ (globalHighDirectVerifierImpl keyView edgeHigh)
-    (Concrete.cappedScheme.verify keyView.publicKey handled.epoch
+    (Concrete.scheme.verify keyView.publicKey handled.epoch
       handled.message handled.signature)
   pure (handled, verified)
 
@@ -92,7 +92,7 @@ abbrev GlobalHighDirectResult :=
     ((Forgery × Bool) × GlobalCausalHashState)
 
 noncomputable def globalHighDirectProgram
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
       GlobalHighDirectResult := do
   let keyResult ←
@@ -417,7 +417,7 @@ theorem map_simulate_globalHighMonitored_verifier_erased_projection
 
 set_option maxHeartbeats 3000000 in
 theorem map_globalHighMonitoredDetailedExecution_erased_projection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyView : ProgrammedGlobalChainKeygenView)
     (base : GlobalChainValueIndex → Digest)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
@@ -440,20 +440,20 @@ theorem map_globalHighMonitoredDetailedExecution_erased_projection
       (((head.1.1, result.1.1), result.1.2), head.2 ++ result.2)) <$>
       (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
         ((simulateQ (globalHighDirectVerifierImpl keyView edgeHigh)
-          (Concrete.cappedScheme.verify keyView.publicKey head.1.1.epoch
+          (Concrete.scheme.verify keyView.publicKey head.1.1.epoch
             head.1.1.message head.1.1.signature)).run head.1.2)).run
   have htail (handled : Forgery × GlobalMonitoredTracedState) :
       (do
         let verified ← (simulateQ (globalHighMonitoredVerifierImpl
           ((keyView, base), edgeHigh))
-          (Concrete.cappedScheme.verify keyView.publicKey handled.1.epoch
+          (Concrete.scheme.verify keyView.publicKey handled.1.epoch
             handled.1.message handled.1.signature)).run handled.2
         pure (((handled.1, verified.1), verified.2.1.causal),
           verified.2.1.trace)) = tail (project handled) := by
     have hvertifier :=
       map_simulate_globalHighMonitored_verifier_erased_projection keyView base
         edgeHigh
-        (Concrete.cappedScheme.verify keyView.publicKey handled.1.epoch
+        (Concrete.scheme.verify keyView.publicKey handled.1.epoch
           handled.1.message handled.1.signature)
         handled.2.1 handled.2.2
     simpa [tail, project, Functor.map_map] using congrArg
@@ -494,7 +494,7 @@ def globalHighMonitoredDirectProjection
       (result.2.1, result.2.2.1.causal)), result.2.2.1.trace))
 
 noncomputable def globalHighMonitoredContinuation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (parameter : PublicParameter)
     (base : GlobalChainValueIndex → Digest) :
     ProbComp GlobalHighMonitoredProgramResult := do
@@ -504,7 +504,7 @@ noncomputable def globalHighMonitoredContinuation
   pure (((keyResult.1, base), keyResult.2), execution)
 
 noncomputable def globalHighDirectContinuation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (parameter : PublicParameter)
     (base : GlobalChainValueIndex → Digest) :
     ProbComp ((GlobalChainValueIndex → Digest) ×
@@ -522,7 +522,7 @@ attribute [local irreducible]
   globalHighDirectContinuation
 
 theorem globalHighMonitored_afterKey_projection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (parameter : PublicParameter)
     (base : GlobalChainValueIndex → Digest) :
     (do
@@ -560,7 +560,7 @@ attribute [local irreducible]
   globalHighMonitoredProgram
 
 theorem globalHighMonitoredProgram_eq_directKeygen
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     globalHighMonitoredProgram adversary = (do
       let parameter ← Concrete.samplePublicParameter
       let base ← independentGlobalChainValueTable

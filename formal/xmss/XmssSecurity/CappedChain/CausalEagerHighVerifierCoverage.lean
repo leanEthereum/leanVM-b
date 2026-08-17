@@ -1093,7 +1093,7 @@ theorem filteredHighVerifier_support_verify_true_primaryProbe_observed
     (hresult : result ∈ support
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-          (Concrete.cappedScheme.verify publicKey epoch message signature)).run
+          (Concrete.scheme.verify publicKey epoch message signature)).run
             state)).run))
     (hverified : result.1.1 = true) :
     ∃ digest encoding,
@@ -1102,7 +1102,7 @@ theorem filteredHighVerifier_support_verify_true_primaryProbe_observed
         RevealProbeOracleSimulation.ObservedAction.probe
           (epoch, encoding selected) (signature.chainValue selected) ∈
             result.2) := by
-  unfold Concrete.cappedScheme at hresult
+  unfold Concrete.scheme at hresult
   rw [simulate_filteredHighVerifier_liftM_eq_hashOnly] at hresult
   obtain ⟨tracedResult, htracedResult, heq⟩ :=
     filteredHighVerifierRunSupport_lift
@@ -1116,7 +1116,7 @@ theorem filteredHighVerifier_support_verify_true_primaryProbe_observed
 
 def FilteredHighDetailedRunSupport
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (state : CausalHashState)
@@ -1129,7 +1129,7 @@ def FilteredHighDetailedRunSupport
 set_option maxHeartbeats 1000000 in
 theorem filteredHighDetailedRunSupport_decompose
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (state : CausalHashState)
@@ -1142,7 +1142,7 @@ theorem filteredHighDetailedRunSupport_decompose
         (adversary.main keyHigh.1.publicKey) state handled ∧
       EagerTraceSupport table
         ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-          (Concrete.cappedScheme.verify keyHigh.1.publicKey handled.1.1.1.epoch
+          (Concrete.scheme.verify keyHigh.1.publicKey handled.1.1.1.epoch
             handled.1.1.1.message handled.1.1.1.signature)).run
               handled.1.2) verifier ∧
       result = ((((handled.1.1.1, verifier.1.1), handled.1.1.2),
@@ -1200,10 +1200,10 @@ theorem filteredHighVerifier_support_scheme_revealsMonotone
     (hresult : result ∈ support
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-          (Concrete.cappedScheme.verify publicKey epoch message signature)).run
+          (Concrete.scheme.verify publicKey epoch message signature)).run
             state)).run)) :
     RevealsMonotone state.revealed result.1.2.revealed := by
-  unfold Concrete.cappedScheme at hresult
+  unfold Concrete.scheme at hresult
   rw [simulate_filteredHighVerifier_liftM_eq_hashOnly] at hresult
   exact filteredHighVerifier_support_revealsMonotone table keyHigh selected
     (Concrete.verify publicKey epoch message signature) state result hresult
@@ -1211,7 +1211,7 @@ theorem filteredHighVerifier_support_scheme_revealsMonotone
 set_option maxHeartbeats 1000000 in
 theorem filteredHighDetailedRunSupport_verified_coverage
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex)
@@ -1428,7 +1428,7 @@ theorem filteredHighMonitoredVerifier_simulation_preserves_attackerTrace
 set_option maxHeartbeats 1000000 in
 theorem filteredHighMonitoredDetailedExecution_support_action_projection
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex)
@@ -1449,7 +1449,7 @@ theorem filteredHighMonitoredDetailedExecution_support_action_projection
   have htrace : verifier.2.2 = handled.2.2 :=
     filteredHighMonitoredVerifier_simulation_preserves_attackerTrace keyHigh
       selected table
-      (Concrete.cappedScheme.verify keyHigh.1.publicKey handled.1.epoch
+      (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
         handled.1.message handled.1.signature)
       handled.2 handled.2.2 rfl verifier hverifier
   have hhandledMapped :
@@ -1478,7 +1478,7 @@ theorem filteredHighMonitoredDetailedExecution_support_action_projection
           ((mapped.1, mapped.2.1.causal), mapped.2.1.trace)) <$>
           (simulateQ
             (filteredHighMonitoredVerifierImpl keyHigh selected table)
-              (Concrete.cappedScheme.verify keyHigh.1.publicKey handled.1.epoch
+              (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
                 handled.1.message handled.1.signature)).run handled.2) := by
     rw [support_map]
     exact ⟨verifier, hverifier, rfl⟩
@@ -1508,7 +1508,7 @@ theorem filteredHighMonitoredDetailedExecution_support_action_projection
     congrArg Prod.snd hverifierEq
   have hrawVerifier' : EagerTraceSupport table
       ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-        (Concrete.cappedScheme.verify keyHigh.1.publicKey rawHandled.1.1.1.epoch
+        (Concrete.scheme.verify keyHigh.1.publicKey rawHandled.1.1.1.epoch
           rawHandled.1.1.1.message rawHandled.1.1.1.signature)).run
             rawHandled.1.2) rawVerifier := by
     unfold EagerTraceSupport
@@ -1527,7 +1527,7 @@ theorem filteredHighMonitoredDetailedExecution_support_action_projection
     · rw [StateT.run_bind]
       let verifierRun :=
         (simulateQ (filteredHighVerifierImpl keyHigh selected)
-          (Concrete.cappedScheme.verify keyHigh.1.publicKey
+          (Concrete.scheme.verify keyHigh.1.publicKey
             rawHandled.1.1.1.epoch rawHandled.1.1.1.message
               rawHandled.1.1.1.signature)).run rawHandled.1.2
       let afterVerifier : Bool × CausalHashState → OracleComp
@@ -1554,7 +1554,7 @@ theorem filteredHighMonitoredDetailedExecution_support_action_projection
 set_option maxHeartbeats 1000000 in
 theorem filteredHighMonitoredDetailedExecution_support_verified_coverage
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex)

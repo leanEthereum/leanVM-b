@@ -6,7 +6,7 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity
 
 /-- The concrete XMSS scheme studied by this development. -/
-noncomputable abbrev xmssScheme : Scheme := Concrete.cappedScheme
+noncomputable abbrev xmssScheme : Scheme := Concrete.scheme
 
 /-- An adaptive adversary against the concrete XMSS scheme. -/
 abbrev XmssAdversary := Adversary xmssScheme

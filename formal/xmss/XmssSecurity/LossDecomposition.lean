@@ -21,7 +21,7 @@ def WinningDigestBadEventOccurs
       WinningStructuralCollisionOccurs execution.2.1.1 execution.1
 
 theorem capped_winning_implies_encodingPrehit_or_digestBad
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : CappedEncodingTraceExecution)
     (hmem : execution ∈ support
       (cappedDetailedGameWithEncodingTrace adversary))
@@ -29,7 +29,7 @@ theorem capped_winning_implies_encodingPrehit_or_digestBad
     WinningEncodingPrehitOccurs execution ∨
       WinningDigestBadEventOccurs execution := by
   have hcache : (execution.1, execution.2.1.1) ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary) := by
+      (detailedGameWithCache Concrete.scheme adversary) := by
     rw [← cappedDetailedGameWithEncodingTrace_cache_projection, support_map]
     exact ⟨execution, hmem, rfl⟩
   have hunified := winning_outcome_has_unifiedBadEvent execution.2.1.1
@@ -61,14 +61,14 @@ theorem capped_winning_implies_encodingPrehit_or_digestBad
   · exact Or.inr (Or.inr (Or.inr hstructural))
 
 theorem capped_forgeAdvantage_le_encodingPrehit_add_digestBad
-    (adversary : Adversary Concrete.cappedScheme) :
-    forgeAdvantage Concrete.cappedScheme adversary ≤
+    (adversary : Adversary Concrete.scheme) :
+    forgeAdvantage Concrete.scheme adversary ≤
       Pr[WinningEncodingPrehitOccurs |
         cappedDetailedGameWithEncodingTrace adversary] +
       Pr[WinningDigestBadEventOccurs |
         cappedDetailedGameWithEncodingTrace adversary] := by
   calc
-    forgeAdvantage Concrete.cappedScheme adversary =
+    forgeAdvantage Concrete.scheme adversary =
         Pr[fun execution : CappedEncodingTraceExecution =>
           execution.1.won = true |
           cappedDetailedGameWithEncodingTrace adversary] := by
@@ -86,8 +86,8 @@ theorem capped_forgeAdvantage_le_encodingPrehit_add_digestBad
     _ ≤ _ := probEvent_or_le _ _ _
 
 theorem capped_encodingPrehit_probability_le_exact
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[WinningEncodingPrehitOccurs |
       cappedDetailedGameWithEncodingTrace adversary] ≤
       (lifetime : ENNReal) *

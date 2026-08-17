@@ -560,7 +560,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_verifier_boundedHit
 
 theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
     (countLimit hitLimit : Nat)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -569,7 +569,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
     (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
     (hrightSupport : right.1.1 ∈ support
       trajectoryProgrammedGlobalChainKeygen)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary countLimit)
+    (hbound : HasHashQueryBound Concrete.scheme adversary countLimit)
     (hlimits : countLimit ≤ hitLimit) :
     RelTriple
       (sourceGlobalTracedDetailedExecution adversary left)
@@ -590,7 +590,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
     left hleftSupport
   have hmaterializedKeyResult :
       Concrete.materializeCachedKeyResult left.keyResult ∈ support
-        ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅) := by
+        ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
     exact Concrete.oldKeygen_support_materializedPrecomputedKeygen
       left.keyResult hleftKeyResult
   have hsourceBound := sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
@@ -598,7 +598,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
       (Concrete.materializeCachedKeyResult left.keyResult)
         hmaterializedKeyResult
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) :=
-    fun forgery => Prod.mk forgery <$> Concrete.cappedScheme.verify
+    fun forgery => Prod.mk forgery <$> Concrete.scheme.verify
       left.publicKey forgery.epoch forgery.message forgery.signature
   have hfullBound : (simulateQ
       (sourceUnloggedMappedAdversaryImpl left.publicKey
@@ -646,7 +646,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
             (adversary.main left.publicKey) finish countLimit hfullBound
               left.cache leftHandled hhandled.2.1
     have hverifyBound :
-        (Concrete.cappedScheme.verify left.publicKey leftHandled.1.epoch
+        (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
           leftHandled.1.message leftHandled.1.signature).IsQueryBoundP
             (· matches .inr _)
               (countLimit - leftHandled.2.2.hashInputs.length) := by
@@ -658,7 +658,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
         countLimit hitLimit leftHandled.2.2.hashInputs.length
           (countLimit - leftHandled.2.2.hashInputs.length) left right hrel
             hleftSupport hrightSupport
-              (Concrete.cappedScheme.verify left.publicKey leftHandled.1.epoch
+              (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
                 leftHandled.1.message leftHandled.1.signature)
               hverifyBound leftHandled.2 rightHandled.2 hstates
                 (OracleComp.simulateQ_run_preservesInv
@@ -683,7 +683,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
         (fun _result _hresult => True.intro)
         (globalHighMonitoredVerifier_simulation_preserves_boundedObservedHit
           hitLimit right
-            (Concrete.cappedScheme.verify left.publicKey rightHandled.1.epoch
+            (Concrete.scheme.verify left.publicKey rightHandled.1.epoch
               rightHandled.1.message rightHandled.1.signature)
             rightHandled.2 hhit))
     intro leftVerified rightVerified hvertified
@@ -705,8 +705,8 @@ def SourceGlobalHighBoundedProgramRelation
 
 theorem relTriple_sourceGlobal_globalHighMonitored_program_boundedHit
     (countLimit hitLimit : Nat)
-    (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary countLimit)
+    (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary countLimit)
     (hlimits : countLimit ≤ hitLimit) :
     RelTriple (sourceGlobalTracedProgram adversary)
       (globalHighMonitoredProgram adversary)

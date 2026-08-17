@@ -85,7 +85,7 @@ def eraseGlobalChainKeygenView
     result.1.2), result.2)
 
 noncomputable def detailedGameWithGlobalChainKeygenView
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp GlobalChainActionTracedResult := do
   let keyView ← actualGlobalChainKeygen
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
@@ -94,7 +94,7 @@ noncomputable def detailedGameWithGlobalChainKeygenView
   pure ((keyView, execution.1), execution.2)
 
 noncomputable def trajectoryProgrammedGlobalChainDetailedGame
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp GlobalChainActionTracedResult := do
   let keyView ← trajectoryProgrammedGlobalChainKeygen
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
@@ -103,14 +103,14 @@ noncomputable def trajectoryProgrammedGlobalChainDetailedGame
   pure ((keyView, execution.1), execution.2)
 
 theorem erase_detailedGameWithGlobalChainKeygenView
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (eraseGlobalChainKeygenView <$>
         detailedGameWithGlobalChainKeygenView adversary) =
       evalDist (detailedGameWithKeygenCacheAndActionTrace adversary) := by
   unfold detailedGameWithGlobalChainKeygenView actualGlobalChainKeygen
     detailedGameWithKeygenCacheAndActionTrace
   simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind]
-  simp only [Concrete.cappedScheme]
+  simp only [Concrete.scheme]
   rw [evalDist_bind, evalDist_bind]
   calc
     _ = evalDist (Concrete.materializeCachedKeyResult <$>
@@ -128,7 +128,7 @@ theorem erase_detailedGameWithGlobalChainKeygenView
       rw [Concrete.evalDist_materialized_keygen_eq_precomputedKeygen]
 
 theorem evalDist_detailedGameWithGlobalChainKeygenView_eq_programmed
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (detailedGameWithGlobalChainKeygenView adversary) =
       evalDist (trajectoryProgrammedGlobalChainDetailedGame adversary) := by
   unfold detailedGameWithGlobalChainKeygenView
@@ -138,7 +138,7 @@ theorem evalDist_detailedGameWithGlobalChainKeygenView_eq_programmed
   rw [evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed]
 
 theorem evalDist_originalActionTracedGame_eq_erase_globalProgrammed
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (detailedGameWithKeygenCacheAndActionTrace adversary) =
       evalDist (eraseGlobalChainKeygenView <$>
         trajectoryProgrammedGlobalChainDetailedGame adversary) := by
@@ -148,7 +148,7 @@ theorem evalDist_originalActionTracedGame_eq_erase_globalProgrammed
     ← evalDist_map]
 
 theorem trajectoryProgrammedGlobalChainDetailedGame_support_keyView
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GlobalChainActionTracedResult)
     (hresult : result ∈ support
       (trajectoryProgrammedGlobalChainDetailedGame adversary)) :
@@ -163,7 +163,7 @@ theorem trajectoryProgrammedGlobalChainDetailedGame_support_keyView
   exact hkeyView
 
 theorem trajectoryProgrammedGlobalChainDetailedGame_support_table
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GlobalChainActionTracedResult)
     (hresult : result ∈ support
       (trajectoryProgrammedGlobalChainDetailedGame adversary)) :
@@ -174,7 +174,7 @@ theorem trajectoryProgrammedGlobalChainDetailedGame_support_table
     adversary result hresult
 
 theorem trajectoryProgrammedGlobalRevealProbeView_table_eq_keyView
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GlobalChainActionTracedResult)
     (hresult : result ∈ support
       (trajectoryProgrammedGlobalChainDetailedGame adversary)) :
@@ -186,14 +186,14 @@ theorem trajectoryProgrammedGlobalRevealProbeView_table_eq_keyView
     adversary result hresult
 
 noncomputable def trajectoryProgrammedGlobalRevealProbeViewExperiment
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp (IndexedHiddenValue.RevealProbeView GlobalChainValueIndex) :=
   (fun result => globalActionTracedRevealProbeView
     (eraseGlobalChainKeygenView result)) <$>
       trajectoryProgrammedGlobalChainDetailedGame adversary
 
 theorem evalDist_globalActionTracedRevealProbeView_eq_programmed
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (globalActionTracedRevealProbeView <$>
       detailedGameWithKeygenCacheAndActionTrace adversary) =
     evalDist (trajectoryProgrammedGlobalRevealProbeViewExperiment adversary) := by

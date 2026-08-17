@@ -73,14 +73,14 @@ noncomputable def OutcomeGuessesKeygenChainValue (keygenCache finalCache : Query
           (encoding chain) (secretKey.chainStart outcome.forgery.epoch chain)
 
 theorem chainValueRevealed_afterKeygen_guesses_keygenValue
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (chain : ChainIndex)
     (hrevealed : OutcomeChainValueRevealed execution.2 execution.1 chain) :
@@ -90,11 +90,11 @@ theorem chainValueRevealed_afterKeygen_guesses_keygenValue
     keyResult.2 execution hafter
   rw [hkeys.2] at hdecode hvalue
   have hcacheLe := xmssRom_cache_le
-    (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
+    (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
   have hkeygen' : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
-    simpa only [Concrete.cappedScheme] using hkeygen
+    simpa only [Concrete.scheme] using hkeygen
   have hwalk := Concrete.precomputedKeygen_chainWalk_eq_of_cache_le keyResult hkeygen'
     execution.2
     hcacheLe execution.1.forgery.epoch chain (encoding chain).val
@@ -103,14 +103,14 @@ theorem chainValueRevealed_afterKeygen_guesses_keygenValue
   exact hvalue.trans (by simpa only [Wots.signChain] using hwalk.symm)
 
 theorem chainValueRevealed_afterKeygen_has_origin
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (chain : ChainIndex)
     (hrevealed : OutcomeChainValueRevealed execution.2 execution.1 chain) :
@@ -120,11 +120,11 @@ theorem chainValueRevealed_afterKeygen_has_origin
     keyResult.2 execution hafter
   rw [hkeys.2] at hdecode hvalue
   have hcacheLe := xmssRom_cache_le
-    (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
+    (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
   have hkeygen' : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
-    simpa only [Concrete.cappedScheme] using hkeygen
+    simpa only [Concrete.scheme] using hkeygen
   have hwalk := Concrete.precomputedKeygen_chainWalk_eq_of_cache_le keyResult hkeygen'
     execution.2
     hcacheLe execution.1.forgery.epoch chain (encoding chain).val
@@ -155,20 +155,20 @@ theorem chainValueRevealed_afterKeygen_has_origin
         _ = execution.1.forgery.signature.chainValue chain := hvalue.symm
 
 theorem chainValueRevealed_afterKeygen_probability_le_origin
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (chain : ChainIndex) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeChainValueRevealed execution.2 execution.1 chain |
       (simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         OutcomeChainValueHasKeygenOrigin keyResult.2 execution.2 keyResult.1.2 execution.1 chain |
         (simulateQ xmssRomImpl
-          (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+          (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
             keyResult.2] := by
   apply probEvent_mono
   intro execution hafter hrevealed
@@ -176,14 +176,14 @@ theorem chainValueRevealed_afterKeygen_probability_le_origin
     hafter chain hrevealed
 
 theorem chain_event_afterKeygen_revealed_or_collision
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (chain : ChainIndex)
     (hevent : OutcomeBadEventOccurs execution.2 execution.1 (.chain chain)) :
@@ -257,58 +257,58 @@ theorem chain_event_afterKeygen_revealed_or_collision
     exact hchain
 
 theorem chain_outcomeBadEvent_probability_le_revealed_add
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) (chain : ChainIndex) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) (chain : ChainIndex) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         OutcomeChainValueRevealed execution.2 execution.1 chain |
-        detailedGameWithCache Concrete.cappedScheme adversary] +
+        detailedGameWithCache Concrete.scheme adversary] +
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
   have hdetailedBound :
-      (detailedGameCore Concrete.cappedScheme adversary).IsQueryBoundP
+      (detailedGameCore Concrete.scheme adversary).IsQueryBoundP
         (· matches .inr _) q :=
-    (hasHashQueryBound_iff_detailedGameCore Concrete.cappedScheme adversary q).mp hbound
+    (hasHashQueryBound_iff_detailedGameCore Concrete.scheme adversary q).mp hbound
   unfold detailedGameCore at hdetailedBound
   unfold detailedGameWithCache detailedGameCore
   rw [simulateQ_bind, StateT.run_bind, probEvent_bind_eq_tsum,
     probEvent_bind_eq_tsum]
   calc
     ∑' keyResult,
-        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅] *
+        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
           Pr[fun execution : GameOutcome × QueryCache HashSpec =>
             OutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
             (simulateQ xmssRomImpl
-              (detailedGameAfterKeygen Concrete.cappedScheme adversary
+              (detailedGameAfterKeygen Concrete.scheme adversary
                 keyResult.1.1 keyResult.1.2)).run keyResult.2] ≤
       ∑' keyResult,
-        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅] *
+        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
           (Pr[fun execution : GameOutcome × QueryCache HashSpec =>
               OutcomeChainValueRevealed execution.2 execution.1 chain |
               (simulateQ xmssRomImpl
-                (detailedGameAfterKeygen Concrete.cappedScheme adversary
+                (detailedGameAfterKeygen Concrete.scheme adversary
                   keyResult.1.1 keyResult.1.2)).run keyResult.2] +
             (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
       apply ENNReal.tsum_le_tsum
       intro keyResult
       by_cases hkeygen : keyResult ∈ support
-          ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅)
+          ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)
       · apply mul_le_mul_right
-        have hkeySupport : keyResult.1 ∈ support Concrete.cappedScheme.keygen := by
-          apply support_simulateQ_run'_subset xmssRomImpl Concrete.cappedScheme.keygen ∅
+        have hkeySupport : keyResult.1 ∈ support Concrete.scheme.keygen := by
+          apply support_simulateQ_run'_subset xmssRomImpl Concrete.scheme.keygen ∅
           rw [StateT.run'_eq, support_map]
           exact ⟨keyResult, hkeygen, rfl⟩
         have hcontinuationBound :
-            (detailedGameAfterKeygen Concrete.cappedScheme adversary
+            (detailedGameAfterKeygen Concrete.scheme adversary
               keyResult.1.1 keyResult.1.2).IsQueryBoundP (· matches .inr _) q :=
           OracleComp.IsQueryBoundP.continuation_mono_of_mem_support
-            (· matches .inr _) Concrete.cappedScheme.keygen
-            (fun key => detailedGameAfterKeygen Concrete.cappedScheme adversary key.1 key.2)
+            (· matches .inr _) Concrete.scheme.keygen
+            (fun key => detailedGameAfterKeygen Concrete.scheme adversary key.1 key.2)
             q hdetailedBound keyResult.1 hkeySupport
         let continuation :=
           (simulateQ xmssRomImpl
-            (detailedGameAfterKeygen Concrete.cappedScheme adversary
+            (detailedGameAfterKeygen Concrete.scheme adversary
               keyResult.1.1 keyResult.1.2)).run keyResult.2
         let collision := fun execution : GameOutcome × QueryCache HashSpec =>
           Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
@@ -334,7 +334,7 @@ theorem chain_outcomeBadEvent_probability_le_revealed_add
               (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
             gcongr
             exact Rom.mixed_adaptiveFreshDigestCollisionWith_le
-              (detailedGameAfterKeygen Concrete.cappedScheme adversary
+              (detailedGameAfterKeygen Concrete.scheme adversary
                 keyResult.1.1 keyResult.1.2) q hcontinuationBound keyResult.2
               (keygenChainTargetInput keyResult.1.2 keyResult.2) collision
               (fun _ _ hcollision => hcollision)
@@ -342,42 +342,42 @@ theorem chain_outcomeBadEvent_probability_le_revealed_add
         simp only [zero_mul]
         exact le_rfl
     _ = ∑' keyResult, (
-        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅] *
+        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
             Pr[fun execution : GameOutcome × QueryCache HashSpec =>
               OutcomeChainValueRevealed execution.2 execution.1 chain |
               (simulateQ xmssRomImpl
-                (detailedGameAfterKeygen Concrete.cappedScheme adversary
+                (detailedGameAfterKeygen Concrete.scheme adversary
                   keyResult.1.1 keyResult.1.2)).run keyResult.2] +
-          Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅] *
+          Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
             ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal))) := by
       apply tsum_congr
       intro keyResult
       rw [left_distrib]
     _ =
       (∑' keyResult,
-        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅] *
+        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
           Pr[fun execution : GameOutcome × QueryCache HashSpec =>
             OutcomeChainValueRevealed execution.2 execution.1 chain |
             (simulateQ xmssRomImpl
-              (detailedGameAfterKeygen Concrete.cappedScheme adversary
+              (detailedGameAfterKeygen Concrete.scheme adversary
                 keyResult.1.1 keyResult.1.2)).run keyResult.2]) +
         (∑' keyResult,
-          Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅]) *
+          Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅]) *
           ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) := by
       rw [ENNReal.tsum_add, ENNReal.tsum_mul_right]
     _ ≤
       (∑' keyResult,
-        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅] *
+        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
           Pr[fun execution : GameOutcome × QueryCache HashSpec =>
             OutcomeChainValueRevealed execution.2 execution.1 chain |
             (simulateQ xmssRomImpl
-              (detailedGameAfterKeygen Concrete.cappedScheme adversary
+              (detailedGameAfterKeygen Concrete.scheme adversary
                 keyResult.1.1 keyResult.1.2)).run keyResult.2]) +
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
       apply add_le_add_right
       calc
         (∑' keyResult,
-            Pr[= keyResult | (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅]) *
+            Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅]) *
             ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) ≤
           1 * ((q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal)) :=
             mul_le_mul_left tsum_probOutput_le_one _

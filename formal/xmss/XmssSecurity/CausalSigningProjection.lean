@@ -11,7 +11,7 @@ noncomputable def causalSigningQueryAfterRealRom
       (Option Signature × CausalHashState) := do
   let signed ← RevealProbeOracleSimulation.liftProbComp
     ((simulateQ xmssRomImpl
-      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
+      (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch request.message)).run
         state.cache)
   (revealFixedChainSignatureOption secretKey chain request signed.1).run
     { state with cache := signed.2 }
@@ -23,7 +23,7 @@ theorem simulate_eagerTrace_causalSigningQuery_eq_afterRealRom
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((do
           let signature ← simulateQ causalXmssRomImpl
-            (Concrete.scheme.sign publicKey secretKey request.epoch
+            (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch
               request.message)
           revealFixedChainSignatureOption secretKey chain request signature).run
             state)).run =
@@ -151,7 +151,7 @@ theorem simulate_eagerTrace_simulate_causalActionTracedMappedAdversaryImpl_eq_af
       rw [StateT.run_map, StateT.run_map, simulateQ_map, simulateQ_map, ih]
 
 noncomputable def causalDetailedGameAfterKeygenAfterRealRom
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex) :
     StateT CausalHashState
       (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))
@@ -160,13 +160,13 @@ noncomputable def causalDetailedGameAfterKeygenAfterRealRom
     (causalActionTracedMappedAdversaryAfterRealRomImpl
       publicKey secretKey chain) (adversary.main publicKey)).run
   let verified ← simulateQ (causalVerifierXmssRomImpl secretKey chain)
-    (Concrete.scheme.verify publicKey result.1.epoch result.1.message
+    (Concrete.singleAttemptScheme.verify publicKey result.1.epoch result.1.message
       result.1.signature)
   pure ((result.1, verified), result.2)
 
 theorem simulate_eagerTrace_causalDetailedGameAfterKeygen_eq_afterRealRom
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState) :
     simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
@@ -181,7 +181,7 @@ theorem simulate_eagerTrace_causalDetailedGameAfterKeygen_eq_afterRealRom
     simulate_eagerTrace_simulate_causalActionTracedMappedAdversaryImpl_eq_afterRealRom]
 
 noncomputable def causalStrategyAfterRealKeygenAndSigning
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       (List Bool → ChainValueIndex × Digest) := do
@@ -194,7 +194,7 @@ noncomputable def causalStrategyAfterRealKeygenAndSigning
 
 theorem simulate_eagerTrace_causalStrategyAfterRealKeygen_eq_afterRealSigning
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (causalStrategyAfterRealKeygen adversary chain keyResult) =
@@ -208,7 +208,7 @@ theorem simulate_eagerTrace_causalStrategyAfterRealKeygen_eq_afterRealSigning
 
 theorem simulate_eagerTrace_compileStrategyProbes_afterRealKeygen_eq_afterRealSigning
     (table : ChainValueIndex → Digest) (queries : Nat)
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (RevealProbeOracleSimulation.compileStrategyProbes queries
@@ -223,7 +223,7 @@ theorem simulate_eagerTrace_compileStrategyProbes_afterRealKeygen_eq_afterRealSi
 
 theorem simulate_eagerTrace_compileStrategyProbes_causalStrategyProgram_eq_afterRealKeygenAndSigning
     (table : ChainValueIndex → Digest) (queries : Nat)
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (RevealProbeOracleSimulation.compileStrategyProbes queries
           (causalStrategyProgram adversary chain))).run =

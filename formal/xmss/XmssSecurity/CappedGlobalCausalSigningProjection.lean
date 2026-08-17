@@ -11,7 +11,7 @@ noncomputable def globalCausalSigningQueryAfterRealRom
       (Option Signature × GlobalCausalHashState) := do
   let signed ← RevealProbeOracleSimulation.liftProbComp
     ((simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
         state.cache)
   (revealGlobalSignatureOption secretKey request signed.1).run
     { state with cache := signed.2 }
@@ -23,7 +23,7 @@ theorem simulate_eagerTrace_globalCausalSigningQuery_eq_afterRealRom
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((do
           let signature ← simulateQ globalCausalXmssRomImpl
-            (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+            (Concrete.scheme.sign publicKey secretKey request.epoch
               request.message)
           revealGlobalSignatureOption secretKey request signature).run
             state)).run =
@@ -157,7 +157,7 @@ theorem simulate_eagerTrace_simulate_globalCausalActionTracedMappedAdversaryImpl
       rw [StateT.run_map, StateT.run_map, simulateQ_map, simulateQ_map, ih]
 
 noncomputable def globalCausalDetailedGameAfterKeygenAfterRealRom
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     StateT GlobalCausalHashState
       (OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex))
@@ -166,13 +166,13 @@ noncomputable def globalCausalDetailedGameAfterKeygenAfterRealRom
     (globalCausalActionTracedMappedAdversaryAfterRealRomImpl
       publicKey secretKey) (adversary.main publicKey)).run
   let verified ← simulateQ (globalCausalVerifierXmssRomImpl secretKey)
-    (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+    (Concrete.scheme.verify publicKey result.1.epoch result.1.message
       result.1.signature)
   pure ((result.1, verified), result.2)
 
 theorem simulate_eagerTrace_globalCausalDetailedGameAfterKeygen_eq_afterRealRom
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (state : GlobalCausalHashState) :
     simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
@@ -187,7 +187,7 @@ theorem simulate_eagerTrace_globalCausalDetailedGameAfterKeygen_eq_afterRealRom
     simulate_eagerTrace_simulate_globalCausalActionTracedMappedAdversaryImpl_eq_afterRealRom]
 
 noncomputable def globalCausalStrategyAfterRealKeygenAndSigning
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
       (List Bool → GlobalChainValueIndex × Digest) := do
@@ -200,7 +200,7 @@ noncomputable def globalCausalStrategyAfterRealKeygenAndSigning
 
 theorem simulate_eagerTrace_globalCausalStrategyAfterRealKeygen_eq_afterRealSigning
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (globalCausalStrategyAfterRealKeygen adversary keyResult) =
@@ -214,7 +214,7 @@ theorem simulate_eagerTrace_globalCausalStrategyAfterRealKeygen_eq_afterRealSign
 
 theorem simulate_eagerTrace_compileStrategyProbes_globalAfterRealKeygen_eq_afterRealSigning
     (table : GlobalChainValueIndex → Digest) (queries : Nat)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (RevealProbeOracleSimulation.compileStrategyProbes queries

@@ -201,7 +201,7 @@ theorem revealTrace_chainValueReveals_covered_by_actionTracedRevealProbeView
   exact result.2.sign_mem_toSigningLog request signature hsign
 
 theorem evalDist_originalActionTracedGame_eq_erase_programmed
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     evalDist (detailedGameWithKeygenCacheAndActionTrace adversary) =
       evalDist (eraseFixedChainKeygenView <$>
         programmedWarmedDetailedGame adversary chain) := by
@@ -211,7 +211,7 @@ theorem evalDist_originalActionTracedGame_eq_erase_programmed
     ← evalDist_map]
 
 theorem programmedWarmedDetailedGame_support_erased
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex)
     (result : FixedChainActionTracedResult)
     (hresult : result ∈ support
       (programmedWarmedDetailedGame adversary chain)) :
@@ -223,7 +223,7 @@ theorem programmedWarmedDetailedGame_support_erased
   exact ⟨result, hresult, rfl⟩
 
 noncomputable def programmedWarmedSkeletonStrategyViewExperiment
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     ProbComp ((ChainValueIndex → Digest) ×
       ((List Bool → ChainValueIndex × Digest) ×
         RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) := do
@@ -248,7 +248,7 @@ noncomputable def programmedWarmedSkeletonResult
 
 set_option maxRecDepth 100000 in
 theorem evalDist_programmedWarmedSkeletonStrategyViewExperiment_eq_map
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     evalDist (programmedWarmedSkeletonStrategyViewExperiment adversary chain) =
       evalDist (programmedWarmedSkeletonResult chain <$>
         programmedWarmedDetailedGame adversary chain) := by
@@ -296,7 +296,7 @@ def ProgrammedCausalHitRelation
 
 set_option maxRecDepth 100000 in
 theorem relTriple_programmedWarmedRevealProbeView_skeleton
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     RelTriple
       (programmedWarmedRevealProbeViewExperiment adversary chain)
       (programmedWarmedSkeletonStrategyViewExperiment adversary chain)
@@ -359,7 +359,7 @@ theorem relTriple_programmedWarmedRevealProbeView_skeleton
     map_eq_bind_pure_comp, Function.comp_apply] using hbound
 
 theorem programmedCausalViewRelation_of_causalExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyResult : (PublicKey × SecretKey) × CausalHashState)
     (chain : ChainIndex)
     (execution : ((((Forgery × Bool) × AttackerActionTrace) ×
@@ -424,7 +424,7 @@ theorem programmedCausalHitRelation_of_viewRelation
   exact programmedCausalViewRelation_transfers_hit q programmed causal hrel hhit
 
 theorem programmed_causal_trace_probability_le_of_hit_relTriple
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hcoupling : RelTriple
       (programmedWarmedRevealProbeViewExperiment adversary chain)
@@ -439,7 +439,7 @@ theorem programmed_causal_trace_probability_le_of_hit_relTriple
   exact hrel hhit
 
 theorem programmed_causal_trace_probability_le_of_eager_hit_relTriple
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hcoupling : RelTriple
       (programmedWarmedRevealProbeViewExperiment adversary chain)
@@ -463,7 +463,7 @@ theorem programmed_causal_trace_probability_le_of_eager_hit_relTriple
         (evalDist_causalEagerStrategyViewExperiment_eq_lazy adversary chain)
 
 theorem programmed_causal_trace_probability_le_of_relTriple
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hcoupling : RelTriple
       (programmedWarmedRevealProbeViewExperiment adversary chain)
@@ -479,7 +479,7 @@ theorem programmed_causal_trace_probability_le_of_relTriple
     q programmed causal hrel hhit
 
 theorem programmed_causal_trace_probability_le_of_eager_relTriple
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hcoupling : RelTriple
       (programmedWarmedRevealProbeViewExperiment adversary chain)

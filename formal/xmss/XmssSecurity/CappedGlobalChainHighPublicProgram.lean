@@ -78,7 +78,7 @@ theorem evalDist_map_factor_of_evalDist_eq
     (evalDist_map_congr_of_evalDist_eq outer (inner <$> left) right hdist)
 
 theorem evalDist_globalHighMonitoredPublicProjection_eq_append_direct
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (globalHighMonitoredPublicProjection <$>
       globalHighMonitoredProgram adversary) =
     evalDist (appendGlobalHighDirectPublicTrace <$>

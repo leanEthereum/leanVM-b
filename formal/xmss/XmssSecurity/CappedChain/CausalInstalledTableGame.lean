@@ -222,7 +222,7 @@ theorem simulate_eagerImpl_simulate_causalVerifierXmssRomImpl_support_installedI
 
 theorem simulate_eagerImpl_causalDetailedGameAfterKeygenAfterRealRom_support_installedInvariant
     (table : ChainValueIndex → Digest) (initial : CausalHashState)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (result : (((Forgery × Bool) × AttackerActionTrace) × CausalHashState))
     (hinvariant : CausalInstalledInvariant table initial initial)
@@ -243,7 +243,7 @@ theorem simulate_eagerImpl_causalDetailedGameAfterKeygenAfterRealRom_support_ins
   have hvertifiedInvariant :=
     simulate_eagerImpl_simulate_causalVerifierXmssRomImpl_support_installedInvariant
       table initial secretKey chain
-      (Concrete.cappedScheme.verify publicKey handled.1.1.epoch
+      (Concrete.scheme.verify publicKey handled.1.1.epoch
         handled.1.1.message handled.1.1.signature)
       handled.2 verified hhandledInvariant hvertified
   simp only [StateT.run_pure, simulateQ_pure, support_pure,
@@ -253,7 +253,7 @@ theorem simulate_eagerImpl_causalDetailedGameAfterKeygenAfterRealRom_support_ins
 
 theorem simulate_eagerImpl_causalDetailedGameAfterKeygenAfterRealRom_support_installedTable
     (base : ChainValueIndex → Digest) (initial : CausalHashState)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (result : (((Forgery × Bool) × AttackerActionTrace) × CausalHashState))
     (hresult : result ∈ support
@@ -275,7 +275,7 @@ theorem simulate_eagerImpl_causalDetailedGameAfterKeygenAfterRealRom_support_ins
 
 theorem simulate_eagerTrace_causalDetailedGameAfterKeygenAfterRealRom_support_installedTable
     (base : ChainValueIndex → Digest) (initial : CausalHashState)
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (result : ((((Forgery × Bool) × AttackerActionTrace) ×
       CausalHashState) ×

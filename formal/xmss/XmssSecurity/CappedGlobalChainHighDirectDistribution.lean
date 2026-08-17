@@ -15,7 +15,7 @@ abbrev GlobalHighEagerResult :=
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)
 
 theorem globalHighMonitoredProgram_projection_eq_parameterFirst
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     globalHighMonitoredDirectProjection <$>
       globalHighMonitoredProgram adversary =
     (do
@@ -33,7 +33,7 @@ theorem globalHighMonitoredProgram_projection_eq_parameterFirst
   exact globalHighMonitored_afterKey_projection adversary parameter base
 
 theorem evalDist_globalHighParameterFirst_eq_baseFirst
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (do
       let parameter ← Concrete.samplePublicParameter
       let base ← independentGlobalChainValueTable
@@ -69,7 +69,7 @@ theorem eagerTrace_liftProbComp_then_bind
   simp [simulateQ_pure, WriterT.run_pure, Function.comp_def]
 
 theorem globalHighDirectContinuation_eq_eagerAfterBase
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (base : GlobalChainValueIndex → Digest) :
     (do
       let parameter ← Concrete.samplePublicParameter
@@ -91,14 +91,14 @@ theorem globalHighDirectContinuation_eq_eagerAfterBase
           (globalFilteredCausalKeygenState keyResult.1)))
 
 noncomputable def globalHighLeftContinuation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (base : GlobalChainValueIndex → Digest) :
     ProbComp GlobalHighEagerResult := do
   let parameter ← Concrete.samplePublicParameter
   globalHighDirectContinuation adversary parameter base
 
 noncomputable def globalHighRightContinuation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (base : GlobalChainValueIndex → Digest) :
     ProbComp GlobalHighEagerResult := do
   let result ← (simulateQ
@@ -107,7 +107,7 @@ noncomputable def globalHighRightContinuation
   pure (base, result)
 
 theorem globalHighContinuations_eq
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     globalHighLeftContinuation adversary =
       globalHighRightContinuation adversary := by
   funext base
@@ -115,18 +115,18 @@ theorem globalHighContinuations_eq
   exact globalHighDirectContinuation_eq_eagerAfterBase adversary base
 
 noncomputable def globalHighBaseFirstProgram
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp GlobalHighEagerResult :=
   independentGlobalChainValueTable >>= globalHighLeftContinuation adversary
 
 noncomputable def globalHighDirectEagerExperiment
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp GlobalHighEagerResult :=
   RevealProbeOracleSimulation.eagerExperiment
     (globalHighDirectProgram adversary)
 
 theorem globalHighBaseFirstExperiment_eq_eagerExperiment
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (globalHighBaseFirstProgram adversary) =
       evalDist (globalHighDirectEagerExperiment adversary) := by
   unfold globalHighBaseFirstProgram globalHighDirectEagerExperiment
@@ -140,7 +140,7 @@ theorem globalHighBaseFirstExperiment_eq_eagerExperiment
   rfl
 
 theorem evalDist_globalHighMonitoredDirectProjection_eq_eagerExperiment
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (globalHighMonitoredDirectProjection <$>
       globalHighMonitoredProgram adversary) =
     evalDist (globalHighDirectEagerExperiment adversary) := by

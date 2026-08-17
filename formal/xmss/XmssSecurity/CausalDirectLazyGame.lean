@@ -29,7 +29,7 @@ def combineFilteredDirectDetailedResult
     handled.2 ++ verified.2)
 
 noncomputable def filteredDirectLazyDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
     (state : CausalHashState) :
     ProbComp (FilteredDirectExecution ×
@@ -39,7 +39,7 @@ noncomputable def filteredDirectLazyDetailedGameAfterKeygen
       (adversary.main keyView.publicKey)).run).run state).run
   let verified ← ((simulateQ
     (filteredDirectLazyVerifierImpl keyView selected)
-    (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+    (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
       handled.1.1.1.message handled.1.1.1.signature)).run handled.1.2).run
   pure (combineFilteredDirectDetailedResult handled verified)
 
@@ -54,7 +54,7 @@ noncomputable def filteredDirectEagerVerificationContinuation
   let verified ← (simulateQ
     (RevealProbeOracleSimulation.eagerTraceImpl table)
     ((simulateQ (filteredDirectVerifierImpl keyView selected)
-      (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+      (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
         handled.1.1.1.message handled.1.1.1.signature)).run
           handled.1.2)).run
   continuation table (combineFilteredDirectDetailedResult handled verified)
@@ -63,7 +63,7 @@ set_option maxHeartbeats 2000 in
 set_option maxRecDepth 100000 in
 theorem simulate_eagerTrace_filteredDirectDetailedGameAfterKeygen
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
     (state : CausalHashState) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
@@ -77,7 +77,7 @@ theorem simulate_eagerTrace_filteredDirectDetailedGameAfterKeygen
       let verified ← (simulateQ
         (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((simulateQ (filteredDirectVerifierImpl keyView selected)
-          (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+          (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
             handled.1.1.1.message handled.1.1.1.signature)).run
               handled.1.2)).run
       pure (combineFilteredDirectDetailedResult handled verified)) := by
@@ -94,7 +94,7 @@ theorem simulate_eagerTrace_filteredDirectDetailedGameAfterKeygen
 
 set_option maxRecDepth 100000 in
 theorem evalDist_installed_filteredDirectDetailedGameAfterKeygen_decompose
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
     (state : CausalHashState)
     (continuation : (ChainValueIndex → Digest) →
@@ -152,7 +152,7 @@ theorem evalDist_filteredDirectEagerVerificationContinuation_eq_lazy
     𝒟[do
       let verified ← ((simulateQ
         (filteredDirectLazyVerifierImpl keyView selected)
-        (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+        (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
           handled.1.1.1.message handled.1.1.1.signature)).run
             handled.1.2).run
       let base ← $ᵗ (ChainValueIndex → Digest)
@@ -163,14 +163,14 @@ theorem evalDist_filteredDirectEagerVerificationContinuation_eq_lazy
     bind_assoc, Function.comp_apply] using
     (evalDist_installed_simulate_filteredDirectVerifier_eq_lazy
       keyView selected
-        (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+        (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
           handled.1.1.1.message handled.1.1.1.signature)
         handled.1.2
         (fun table verified => continuation table
           (combineFilteredDirectDetailedResult handled verified)))
 
 theorem evalDist_filteredDirectLazyAdversary_eagerVerifier_eq_lazyVerifier
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
     (state : CausalHashState)
     (continuation : (ChainValueIndex → Digest) →
@@ -189,7 +189,7 @@ theorem evalDist_filteredDirectLazyAdversary_eagerVerifier_eq_lazyVerifier
           (adversary.main keyView.publicKey)).run).run state).run
       let verified ← ((simulateQ
         (filteredDirectLazyVerifierImpl keyView selected)
-        (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+        (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
           handled.1.1.1.message handled.1.1.1.signature)).run
             handled.1.2).run
       let base ← $ᵗ (ChainValueIndex → Digest)
@@ -201,7 +201,7 @@ theorem evalDist_filteredDirectLazyAdversary_eagerVerifier_eq_lazyVerifier
     keyView selected handled continuation
 
 theorem filteredDirectLazyDetailedGameAfterKeygen_bind
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
     (state : CausalHashState)
     (continuation : (ChainValueIndex → Digest) →
@@ -218,7 +218,7 @@ theorem filteredDirectLazyDetailedGameAfterKeygen_bind
           (adversary.main keyView.publicKey)).run).run state).run
       let verified ← ((simulateQ
         (filteredDirectLazyVerifierImpl keyView selected)
-        (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+        (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
           handled.1.1.1.message handled.1.1.1.signature)).run
             handled.1.2).run
       let base ← $ᵗ (ChainValueIndex → Digest)
@@ -230,7 +230,7 @@ theorem filteredDirectLazyDetailedGameAfterKeygen_bind
 set_option maxHeartbeats 10000 in
 set_option maxRecDepth 100000 in
 theorem evalDist_installed_filteredDirectDetailedGameAfterKeygen_eq_lazy
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex)
     (state : CausalHashState)
     (continuation : (ChainValueIndex → Digest) →
@@ -280,7 +280,7 @@ theorem evalDist_installed_filteredDirectDetailedGameAfterKeygen_eq_lazy
             (adversary.main keyView.publicKey)).run).run state).run
         let verified ← ((simulateQ
           (filteredDirectLazyVerifierImpl keyView selected)
-          (Concrete.scheme.verify keyView.publicKey handled.1.1.1.epoch
+          (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.1.1.epoch
             handled.1.1.1.message handled.1.1.1.signature)).run
               handled.1.2).run
         let base ← $ᵗ (ChainValueIndex → Digest)
@@ -295,7 +295,7 @@ theorem evalDist_installed_filteredDirectDetailedGameAfterKeygen_eq_lazy
           adversary keyView selected state continuation).symm
 
 noncomputable def filteredDirectLazyProgramExperiment
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     ProbComp ((ChainValueIndex → Digest) ×
       (FilteredDirectResult ×
         RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) := do
@@ -310,7 +310,7 @@ noncomputable def filteredDirectLazyProgramExperiment
 set_option maxRecDepth 100000 in
 theorem simulate_eagerTrace_filteredDirectProgram
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
       (filteredDirectProgram adversary selected)).run = (do
       let keyView ← actualFixedChainKeygen selected
@@ -331,7 +331,7 @@ theorem simulate_eagerTrace_filteredDirectProgram
 
 set_option maxRecDepth 100000 in
 theorem evalDist_eagerExperiment_filteredDirectProgram_eq_lazy
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     𝒟[RevealProbeOracleSimulation.eagerExperiment
       (filteredDirectProgram adversary selected)] =
     𝒟[filteredDirectLazyProgramExperiment adversary selected] := by

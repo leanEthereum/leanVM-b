@@ -305,11 +305,11 @@ theorem cappedCacheTracedMappedAdversary_prehit_probability_le
     signingAttemptLimit_mul_lifetime_randomness_loss_le_digest_loss q
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le_exact
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅)) :
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
@@ -355,7 +355,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
         adversary q hbound _ hgame
     have hadversaryCacheLe : adversaryResult.2.1 ≤ finalCache :=
       xmssRom_cache_le
-        (Concrete.cappedScheme.verify keyResult.1.1 adversaryResult.1.epoch
+        (Concrete.scheme.verify keyResult.1.1 adversaryResult.1.epoch
           adversaryResult.1.message adversaryResult.1.signature)
         adversaryResult.2.1 (verified, finalCache) hverify
     apply hprefix
@@ -370,11 +370,11 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
         keyResult.2 q
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅)) :
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
@@ -389,8 +389,8 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
     signingAttemptLimit_mul_lifetime_randomness_loss_le_digest_loss q
 
 theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_exact
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
@@ -406,8 +406,8 @@ theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_exact
       q adversary hbound keyResult hkeyResult
 
 theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧

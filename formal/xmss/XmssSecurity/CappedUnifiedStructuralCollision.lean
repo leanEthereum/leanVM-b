@@ -255,14 +255,14 @@ def WinningStructuralCollisionOccurs
     WinningGlobalBadEventOccurs cache outcome .merkle
 
 theorem winningStructuralCollision_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary
+        (detailedGameAfterKeygen Concrete.scheme adversary
           keyResult.1.1 keyResult.1.2)).run keyResult.2))
     (hevent : WinningStructuralCollisionOccurs execution.2 execution.1) :
     Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
@@ -287,11 +287,11 @@ theorem winningStructuralCollision_afterKeygen_orientation
       hkeygen execution hafter hmerkle.2
 
 theorem capped_winningStructuralCollision_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningStructuralCollisionOccurs execution.2 execution.1 |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
   apply capped_outcomePredicate_probability_le_of_afterKeygen_freshCollision
     q adversary hbound _

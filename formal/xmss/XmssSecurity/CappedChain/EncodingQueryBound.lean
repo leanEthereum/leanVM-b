@@ -16,7 +16,7 @@ noncomputable def unloggedMappedAdversaryImpl
       exact xmssRomImpl worldInput
   | inr request =>
       exact simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
 
 theorem unloggedMappedAdversaryImpl_apply_inl
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -30,7 +30,7 @@ theorem unloggedMappedAdversaryImpl_apply_inr
     (request : SignRequest) :
     unloggedMappedAdversaryImpl publicKey secretKey (.inr request) =
       (simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message) :
+        (Concrete.scheme.sign publicKey secretKey request.epoch request.message) :
           StateT (QueryCache HashSpec) ProbComp (Option Signature)) := by
   rfl
 
@@ -41,7 +41,7 @@ noncomputable def sourceUnloggedMappedAdversaryImpl
   cases input with
   | inl worldInput => exact liftM (OracleWorld.query worldInput)
   | inr request =>
-      exact Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message
+      exact Concrete.scheme.sign publicKey secretKey request.epoch request.message
 
 theorem sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
     (publicKey : PublicKey) (secretKey : SecretKey) :
@@ -50,7 +50,7 @@ theorem sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
       ((HasQuery.toQueryImpl
           (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget
             (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) +
-        signingOracle Concrete.cappedScheme publicKey secretKey) := by
+        signingOracle Concrete.scheme publicKey secretKey) := by
   funext input
   cases input with
   | inl worldInput =>
@@ -61,21 +61,21 @@ theorem sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
       simp [sourceUnloggedMappedAdversaryImpl, signingLogFragment, signingOracle]
 
 noncomputable def sourceUnloggedDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     OracleComp OracleWorld (Forgery × Bool) := do
   let forgery ← simulateQ
     (sourceUnloggedMappedAdversaryImpl publicKey secretKey)
     (adversary.main publicKey)
-  let verified ← Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+  let verified ← Concrete.scheme.verify publicKey forgery.epoch forgery.message
     forgery.signature
   pure (forgery, verified)
 
 theorem detailedGameAfterKeygen_unlogged_projection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     (fun outcome : GameOutcome => (outcome.forgery, outcome.verified)) <$>
-        detailedGameAfterKeygen Concrete.cappedScheme adversary publicKey secretKey =
+        detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey =
       sourceUnloggedDetailedGameAfterKeygen adversary publicKey secretKey := by
   let loggedAdversary :=
     (simulateQ
@@ -85,7 +85,7 @@ theorem detailedGameAfterKeygen_unlogged_projection
     (sourceUnloggedMappedAdversaryImpl publicKey secretKey)
     (adversary.main publicKey)
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) := fun forgery => do
-    let verified ← Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+    let verified ← Concrete.scheme.verify publicKey forgery.epoch forgery.message
       forgery.signature
     pure (forgery, verified)
   have hprojection : Prod.fst <$> loggedAdversary = unloggedAdversary := by
@@ -96,7 +96,7 @@ theorem detailedGameAfterKeygen_unlogged_projection
     sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq]
   change (fun outcome : GameOutcome => (outcome.forgery, outcome.verified)) <$>
       (loggedAdversary >>= fun result => do
-        let verified ← Concrete.cappedScheme.verify publicKey result.1.epoch
+        let verified ← Concrete.scheme.verify publicKey result.1.epoch
           result.1.message result.1.signature
         pure ⟨publicKey, secretKey, result.1, result.2, verified⟩) = _
   simp only [map_bind, map_pure]
@@ -106,25 +106,25 @@ theorem detailedGameAfterKeygen_unlogged_projection
   rw [← bind_map_left, hprojection]
 
 theorem sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅)) :
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
     (sourceUnloggedDetailedGameAfterKeygen adversary keyResult.1.1 keyResult.1.2)
       |>.IsQueryBoundP (· matches .inr _) q := by
   have hdetailed :=
-    (hasHashQueryBound_iff_detailedGameCore Concrete.cappedScheme adversary q).mp hbound
-  have hkeySupport : keyResult.1 ∈ support Concrete.cappedScheme.keygen := by
-    apply support_simulateQ_run'_subset xmssRomImpl Concrete.cappedScheme.keygen ∅
+    (hasHashQueryBound_iff_detailedGameCore Concrete.scheme adversary q).mp hbound
+  have hkeySupport : keyResult.1 ∈ support Concrete.scheme.keygen := by
+    apply support_simulateQ_run'_subset xmssRomImpl Concrete.scheme.keygen ∅
     rw [StateT.run'_eq, support_map]
     exact ⟨keyResult, hkeyResult, rfl⟩
   have hcontinuation :
-      (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1
+      (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1
         keyResult.1.2).IsQueryBoundP (· matches .inr _) q := by
     apply OracleComp.IsQueryBoundP.bind_right_of_mem_support
-      (head := Concrete.cappedScheme.keygen)
-      (next := fun key => detailedGameAfterKeygen Concrete.cappedScheme adversary key.1 key.2)
+      (head := Concrete.scheme.keygen)
+      (next := fun key => detailedGameAfterKeygen Concrete.scheme adversary key.1 key.2)
       hdetailed keyResult.1 hkeySupport
   exact (OracleComp.isQueryBoundP_iff_of_map_eq
     (detailedGameAfterKeygen_unlogged_projection adversary keyResult.1.1

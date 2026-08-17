@@ -21,7 +21,7 @@ noncomputable def lazyCausalStrategyResult
 
 set_option maxRecDepth 100000 in
 theorem evalDist_installed_causalStrategyAfterRealKeygenAndSigning_eq_lazy
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (continuation : (ChainValueIndex → Digest) →
       ((List Bool → ChainValueIndex × Digest) ×
@@ -61,7 +61,7 @@ def strategyProbeTrace
     RevealProbeOracleSimulation.ObservedAction.probe probe.1 probe.2
 
 noncomputable def lazyCausalStrategyViewAfterKeygen
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     ProbComp ((ChainValueIndex → Digest) ×
       ((List Bool → ChainValueIndex × Digest) ×
@@ -75,7 +75,7 @@ noncomputable def lazyCausalStrategyViewAfterKeygen
   pure (table, lazyCausalStrategyResult chain causalKeyResult execution)
 
 noncomputable def causalLazyStrategyViewExperiment
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     ProbComp ((ChainValueIndex → Digest) ×
       ((List Bool → ChainValueIndex × Digest) ×
         RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) := do
@@ -83,7 +83,7 @@ noncomputable def causalLazyStrategyViewExperiment
   lazyCausalStrategyViewAfterKeygen adversary chain keyResult
 
 noncomputable def causalEagerStrategyViewExperiment
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     ProbComp ((ChainValueIndex → Digest) ×
       ((List Bool → ChainValueIndex × Digest) ×
         RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) := do
@@ -131,7 +131,7 @@ theorem simulate_eagerTrace_emitProbes
       simp
 
 noncomputable def lazyCompiledStrategyExperimentAfterKeygen
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     ProbComp ((ChainValueIndex → Digest) ×
@@ -149,7 +149,7 @@ noncomputable def lazyCompiledStrategyExperimentAfterKeygen
 
 set_option maxRecDepth 100000 in
 theorem evalDist_installed_compileStrategyProbes_afterRealKeygenAndSigning_eq_lazy
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     let initial := (causalKeyResultOfReal keyResult).2.finishKeygen
@@ -181,7 +181,7 @@ theorem evalDist_installed_compileStrategyProbes_afterRealKeygenAndSigning_eq_la
         pure (table, (strategyResult.1, strategyResult.2 ++ emitted.2))))
 
 noncomputable def causalLazyCompiledStrategyExperiment
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (chain : ChainIndex) :
     ProbComp ((ChainValueIndex → Digest) ×
       ((List Bool → ChainValueIndex × Digest) ×
@@ -191,7 +191,7 @@ noncomputable def causalLazyCompiledStrategyExperiment
     queries adversary chain keyResult
 
 theorem causalLazyCompiledStrategyExperiment_eq_map_view
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (chain : ChainIndex) :
     causalLazyCompiledStrategyExperiment queries adversary chain =
       appendStrategyProbeTrace queries <$>
@@ -217,7 +217,7 @@ theorem causalInstalledTable_causalKeyResultOfReal_finishKeygen
 
 set_option maxRecDepth 100000 in
 theorem evalDist_causalEagerStrategyViewExperiment_eq_lazy
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     𝒟[causalEagerStrategyViewExperiment adversary chain] =
       𝒟[causalLazyStrategyViewExperiment adversary chain] := by
   unfold causalEagerStrategyViewExperiment causalLazyStrategyViewExperiment
@@ -230,7 +230,7 @@ theorem evalDist_causalEagerStrategyViewExperiment_eq_lazy
 
 set_option maxRecDepth 100000 in
 theorem evalDist_eagerExperiment_compile_causalStrategyProgram_eq_lazy
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (chain : ChainIndex) :
     𝒟[RevealProbeOracleSimulation.eagerExperiment
       (RevealProbeOracleSimulation.compileStrategyProbes queries

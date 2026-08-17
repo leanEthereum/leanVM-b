@@ -31,7 +31,7 @@ theorem evalDist_realGlobalKeygen_eq_trajectoryProgrammedKeyResults :
         globalCausalRealKeyResultOfView
 
 noncomputable def globalCausalStrategyAfterRealKeygen
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
       (List Bool → GlobalChainValueIndex × Digest) := do
@@ -44,7 +44,7 @@ noncomputable def globalCausalStrategyAfterRealKeygen
 
 theorem simulate_eagerTrace_globalCausalStrategyProgram_eq_afterRealKeygen
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (globalCausalStrategyProgram adversary)).run =
       ((simulateQ xmssRomImpl Concrete.keygen).run ∅ >>= fun keyResult =>
@@ -61,7 +61,7 @@ theorem simulate_eagerTrace_globalCausalStrategyProgram_eq_afterRealKeygen
 
 theorem simulate_eagerTrace_compileStrategyProbes_globalCausalStrategyProgram_eq_afterRealKeygen
     (table : GlobalChainValueIndex → Digest) (queries : Nat)
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (RevealProbeOracleSimulation.compileStrategyProbes queries
           (globalCausalStrategyProgram adversary))).run =
@@ -78,7 +78,7 @@ theorem simulate_eagerTrace_compileStrategyProbes_globalCausalStrategyProgram_eq
   rw [simulateQ_bind, WriterT.run_bind']
 
 noncomputable def globalCausalCompiledAfterRealKeygenExperiment
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme) :
+    (queries : Nat) (adversary : Adversary Concrete.scheme) :
     ProbComp ((GlobalChainValueIndex → Digest) ×
       ((List Bool → GlobalChainValueIndex × Digest) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)) := do
@@ -90,7 +90,7 @@ noncomputable def globalCausalCompiledAfterRealKeygenExperiment
   pure (table, result)
 
 theorem evalDist_eagerExperiment_globalCausalStrategyProgram_eq_afterRealKeygen
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme) :
+    (queries : Nat) (adversary : Adversary Concrete.scheme) :
     evalDist (RevealProbeOracleSimulation.eagerExperiment
       (RevealProbeOracleSimulation.compileStrategyProbes queries
         (globalCausalStrategyProgram adversary))) =
@@ -104,7 +104,7 @@ theorem evalDist_eagerExperiment_globalCausalStrategyProgram_eq_afterRealKeygen
   simp only [bind_assoc]
 
 noncomputable def globalCausalCompiledAfterProgrammedKeygenExperiment
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme) :
+    (queries : Nat) (adversary : Adversary Concrete.scheme) :
     ProbComp ((GlobalChainValueIndex → Digest) ×
       ((List Bool → GlobalChainValueIndex × Digest) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)) := do
@@ -117,7 +117,7 @@ noncomputable def globalCausalCompiledAfterProgrammedKeygenExperiment
   pure (table, result)
 
 theorem evalDist_globalCausalCompiledAfterRealKeygen_eq_programmed
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme) :
+    (queries : Nat) (adversary : Adversary Concrete.scheme) :
     evalDist (globalCausalCompiledAfterRealKeygenExperiment queries
       adversary) =
     evalDist (globalCausalCompiledAfterProgrammedKeygenExperiment queries

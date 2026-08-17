@@ -238,7 +238,7 @@ noncomputable def causalMappedAdversaryImpl
         causalAttackerHashQuery secretKey chain hashInput
     | .inr request => do
         let signature ← simulateQ causalXmssRomImpl
-          (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
+          (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch request.message)
         revealFixedChainSignatureOption secretKey chain request signature
 
 noncomputable def causalActionTracedMappedAdversaryImpl
@@ -251,7 +251,7 @@ noncomputable def causalActionTracedMappedAdversaryImpl
     attackerActionFragment
 
 noncomputable def causalDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex) :
     StateT CausalHashState
       (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))
@@ -260,7 +260,7 @@ noncomputable def causalDetailedGameAfterKeygen
     (causalActionTracedMappedAdversaryImpl publicKey secretKey chain)
       (adversary.main publicKey)).run
   let verified ← simulateQ (causalVerifierXmssRomImpl secretKey chain)
-    (Concrete.scheme.verify publicKey result.1.epoch result.1.message
+    (Concrete.singleAttemptScheme.verify publicKey result.1.epoch result.1.message
       result.1.signature)
   pure ((result.1, verified), result.2)
 
@@ -273,7 +273,7 @@ def causalDetailedResult
         execution.2.cache))), execution.1.2)
 
 noncomputable def causalStrategyProgram
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       (List Bool → ChainValueIndex × Digest) := do
   let keyResult ← (simulateQ causalXmssRomImpl Concrete.keygen).run
@@ -433,7 +433,7 @@ theorem causalMappedAdversaryImpl_step_isProbeQueryBoundP
   · unfold causalMappedAdversaryImpl
     rw [StateT.run_bind]
     have hsign := simulate_causalXmssRomImpl_isProbeQueryBoundP
-      (Concrete.scheme.sign publicKey secretKey request.epoch request.message) state
+      (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch request.message) state
     have hbind := OracleComp.isQueryBoundP_bind
       (n := 0) (m := 0) hsign fun result _hresult =>
         revealFixedChainSignatureOption_run_isProbeQueryBoundP secretKey chain
@@ -493,7 +493,7 @@ theorem simulate_causalActionTracedMappedAdversaryImpl_isProbeQueryBoundP
       exact ih handled.1.1 handled.2
 
 theorem causalDetailedGameAfterKeygen_run_isProbeQueryBoundP
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState) :
     (causalDetailedGameAfterKeygen adversary publicKey secretKey chain).run
@@ -509,7 +509,7 @@ theorem causalDetailedGameAfterKeygen_run_isProbeQueryBoundP
   rw [StateT.run_bind]
   have hverify := simulate_causalVerifierXmssRomImpl_isProbeQueryBoundP
     secretKey chain
-    (Concrete.scheme.verify publicKey handled.1.1.epoch handled.1.1.message
+    (Concrete.singleAttemptScheme.verify publicKey handled.1.1.epoch handled.1.1.message
       handled.1.1.signature) handled.2
   have hbind := OracleComp.isQueryBoundP_bind
     (n := 0) (m := 0) hverify fun verified _hverified =>
@@ -519,7 +519,7 @@ theorem causalDetailedGameAfterKeygen_run_isProbeQueryBoundP
   simpa using hbind
 
 theorem causalStrategyProgram_isProbeQueryBoundP
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     (causalStrategyProgram adversary chain).IsQueryBoundP
       RevealProbeOracleSimulation.IsProbeQuery 0 := by
   unfold causalStrategyProgram

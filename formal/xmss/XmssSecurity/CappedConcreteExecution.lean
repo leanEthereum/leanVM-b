@@ -7,10 +7,10 @@ open OracleComp OracleSpec
 namespace XmssSecurity
 
 theorem capped_detailed_execution_verification_consistent
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary)) :
+      (detailedGameWithCache Concrete.scheme adversary)) :
     execution.1.verified = Concrete.verifyFromCache execution.2 execution.1.publicKey
       execution.1.forgery.epoch execution.1.forgery.message execution.1.forgery.signature := by
   unfold detailedGameWithCache detailedGameCore at hmem
@@ -27,12 +27,12 @@ theorem capped_detailed_execution_verification_consistent
   simp only
   have hroute :
       simulateQ xmssRomImpl
-          (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+          (Concrete.scheme.verify publicKey forgery.epoch forgery.message
             forgery.signature) =
         simulateQ randomOracle
           (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
             OracleComp HashSpec Bool) := by
-    simp only [Concrete.cappedScheme, xmssRomImpl]
+    simp only [Concrete.scheme, xmssRomImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
@@ -43,10 +43,10 @@ theorem capped_detailed_execution_verification_consistent
 
 set_option linter.constructorNameAsVariable false in
 theorem capped_detailed_execution_key_components_consistent
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary)) :
+      (detailedGameWithCache Concrete.scheme adversary)) :
     execution.1.publicKey.parameter = execution.1.secretKey.parameter ∧
       execution.1.publicKey.root = Concrete.CacheReplay.treeNode execution.2
         execution.1.secretKey.parameter execution.1.secretKey.chainStart treeHeight
@@ -56,7 +56,7 @@ theorem capped_detailed_execution_key_components_consistent
   obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, hkeygen, hrest⟩ := hmem
   have hkeyCacheLe : keyCache ≤ execution.2 :=
     xmssRom_cache_le _ keyCache execution hrest
-  simp only [Concrete.cappedScheme] at hkeygen
+  simp only [Concrete.scheme] at hkeygen
   unfold Concrete.precomputedKeygen at hkeygen
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hkeygen
   obtain ⟨⟨parameter, parameterCache⟩, _hparameter, hafterParameter⟩ := hkeygen
@@ -103,10 +103,10 @@ theorem capped_detailed_execution_key_components_consistent
   exact ⟨rfl, heval.symm⟩
 
 theorem capped_detailed_execution_key_consistent
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary)) :
+      (detailedGameWithCache Concrete.scheme adversary)) :
     execution.1.publicKey =
       Concrete.CacheReplay.publicKeyFromCache execution.2 execution.1.secretKey := by
   obtain ⟨hparameter, hroot⟩ :=
@@ -121,10 +121,10 @@ theorem capped_detailed_execution_key_consistent
             ⟨secretParameter, chainStart, chainValue, treeValue⟩ root hroot
 
 theorem capped_detailed_execution_consistent_of_signing
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary))
+      (detailedGameWithCache Concrete.scheme adversary))
     (hsigning : ∀ request signature,
       SigningTranscript.Returned execution.1.signingLog request signature →
       ∃ encoding,

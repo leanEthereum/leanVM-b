@@ -11,7 +11,7 @@ set_option maxHeartbeats 3000000 in
 set_option maxRecDepth 2000000 in
 theorem filteredHighDetailedGameAfterKeygen_support_resultCovered_of_final
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (state : CausalHashState)
@@ -46,7 +46,7 @@ theorem filteredHighDetailedGameAfterKeygen_support_resultCovered_of_final
         (publicKey := keyHigh.1.publicKey) (epoch := forgery.epoch)
         (message := forgery.message) (signature := forgery.signature)
         (state := handledState) (result := verifier)
-      generalize (Concrete.scheme.verify keyHigh.1.publicKey forgery.epoch
+      generalize (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey forgery.epoch
         forgery.message forgery.signature : OracleComp OracleWorld Bool) =
           computation at hverifier ⊢
       exact hverifier
@@ -66,7 +66,7 @@ theorem filteredHighDetailedGameAfterKeygen_support_resultCovered_of_final
       (state := handledState) (covered := covered)
       (hcovered := hhandledCovered.1) (hforward := hforward)
       (result := verifier)
-    generalize (Concrete.scheme.verify keyHigh.1.publicKey forgery.epoch
+    generalize (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey forgery.epoch
       forgery.message forgery.signature : OracleComp OracleWorld Bool) =
         computation at hverifier ⊢
     exact hverifier
@@ -77,7 +77,7 @@ set_option maxHeartbeats 3000000 in
 set_option maxRecDepth 2000000 in
 theorem filteredHighDetailedGameAfterKeygen_support_returnedCovered
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (state : CausalHashState)
@@ -109,7 +109,7 @@ theorem filteredHighDetailedGameAfterKeygen_support_returnedCovered
 set_option maxHeartbeats 1000000 in
 theorem filteredHighMonitoredDetailedExecution_support_returnedCovered
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex)

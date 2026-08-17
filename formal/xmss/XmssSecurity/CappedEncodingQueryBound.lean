@@ -18,7 +18,7 @@ noncomputable def cappedNormalizedSplitUnloggedMappedAdversaryImpl
       exact splitXmssRomImpl secretKey.parameter kind worldInput
   | inr request =>
       exact simulateQ (splitXmssRomImpl secretKey.parameter kind)
-        (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
 
 noncomputable def cappedSourceUnloggedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
@@ -27,7 +27,7 @@ noncomputable def cappedSourceUnloggedMappedAdversaryImpl
   cases input with
   | inl worldInput => exact liftM (OracleWorld.query worldInput)
   | inr request =>
-      exact Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message
+      exact Concrete.scheme.sign publicKey secretKey request.epoch request.message
 
 theorem cappedNormalizedSplitUnloggedMappedAdversaryImpl_eq_compose
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -62,7 +62,7 @@ theorem cappedSourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
       ((HasQuery.toQueryImpl
           (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget
             (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) +
-        signingOracle Concrete.cappedScheme publicKey secretKey) := by
+        signingOracle Concrete.scheme publicKey secretKey) := by
   funext input
   cases input with
   | inl worldInput =>
@@ -73,21 +73,21 @@ theorem cappedSourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
       simp [cappedSourceUnloggedMappedAdversaryImpl, signingLogFragment, signingOracle]
 
 noncomputable def cappedSourceUnloggedDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     OracleComp OracleWorld (Forgery × Bool) := do
   let forgery ← simulateQ
     (cappedSourceUnloggedMappedAdversaryImpl publicKey secretKey)
     (adversary.main publicKey)
-  let verified ← Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+  let verified ← Concrete.scheme.verify publicKey forgery.epoch forgery.message
     forgery.signature
   pure (forgery, verified)
 
 theorem cappedDetailedGameAfterKeygen_unloggedProjection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     (fun outcome : GameOutcome => (outcome.forgery, outcome.verified)) <$>
-        detailedGameAfterKeygen Concrete.cappedScheme adversary publicKey secretKey =
+        detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey =
       cappedSourceUnloggedDetailedGameAfterKeygen adversary publicKey secretKey := by
   let loggedAdversary :=
     (simulateQ
@@ -97,7 +97,7 @@ theorem cappedDetailedGameAfterKeygen_unloggedProjection
     (cappedSourceUnloggedMappedAdversaryImpl publicKey secretKey)
     (adversary.main publicKey)
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) := fun forgery => do
-    let verified ← Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+    let verified ← Concrete.scheme.verify publicKey forgery.epoch forgery.message
       forgery.signature
     pure (forgery, verified)
   have hprojection : Prod.fst <$> loggedAdversary = unloggedAdversary := by
@@ -108,7 +108,7 @@ theorem cappedDetailedGameAfterKeygen_unloggedProjection
     cappedSourceUnloggedMappedAdversaryImpl_withTraceAppend_eq]
   change (fun outcome : GameOutcome => (outcome.forgery, outcome.verified)) <$>
       (loggedAdversary >>= fun result => do
-        let verified ← Concrete.cappedScheme.verify publicKey result.1.epoch
+        let verified ← Concrete.scheme.verify publicKey result.1.epoch
           result.1.message result.1.signature
         pure ⟨publicKey, secretKey, result.1, result.2, verified⟩) = _
   simp only [map_bind, map_pure]
@@ -118,25 +118,25 @@ theorem cappedDetailedGameAfterKeygen_unloggedProjection
   rw [← bind_map_left, hprojection]
 
 theorem cappedSourceUnloggedDetailedGameAfterKeygen_hashQueryBound
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅)) :
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
     (cappedSourceUnloggedDetailedGameAfterKeygen adversary keyResult.1.1 keyResult.1.2)
       |>.IsQueryBoundP (· matches .inr _) q := by
   have hdetailed :=
-    (hasHashQueryBound_iff_detailedGameCore Concrete.cappedScheme adversary q).mp hbound
-  have hkeySupport : keyResult.1 ∈ support Concrete.cappedScheme.keygen := by
-    apply support_simulateQ_run'_subset xmssRomImpl Concrete.cappedScheme.keygen ∅
+    (hasHashQueryBound_iff_detailedGameCore Concrete.scheme adversary q).mp hbound
+  have hkeySupport : keyResult.1 ∈ support Concrete.scheme.keygen := by
+    apply support_simulateQ_run'_subset xmssRomImpl Concrete.scheme.keygen ∅
     rw [StateT.run'_eq, support_map]
     exact ⟨keyResult, hkeyResult, rfl⟩
   have hcontinuation :
-      (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1
+      (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1
         keyResult.1.2).IsQueryBoundP (· matches .inr _) q := by
     apply OracleComp.IsQueryBoundP.bind_right_of_mem_support
-      (head := Concrete.cappedScheme.keygen)
-      (next := fun key => detailedGameAfterKeygen Concrete.cappedScheme adversary key.1 key.2)
+      (head := Concrete.scheme.keygen)
+      (next := fun key => detailedGameAfterKeygen Concrete.scheme adversary key.1 key.2)
       hdetailed keyResult.1 hkeySupport
   exact (OracleComp.isQueryBoundP_iff_of_map_eq
     (cappedDetailedGameAfterKeygen_unloggedProjection adversary keyResult.1.1
@@ -169,7 +169,7 @@ theorem cappedSplitUnloggedMappedAdversaryImpl_bind_normalized_isQueryBoundP_iff
         cappedNormalizedSplitUnloggedMappedAdversaryImpl]
       exact splitXmssRom_simulateQ_bind_kind_isQueryBoundP_iff
         secretKey.parameter .sign kind
-        (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
         cache leftNext rightNext hnext fuel
 
 theorem cappedSplitUnloggedMappedAdversary_normalized_isQueryBoundP_iff
@@ -257,7 +257,7 @@ theorem cappedSplitEncodingTracedMappedAdversary_isQueryBoundP_iff_unlogged
     (OracleComp.isQueryBoundP_iff_of_map_eq hsigning)
 
 noncomputable def cappedSplitUnloggedDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     OracleComp EncodingSamplingWorld ((Forgery × Bool) × QueryCache HashSpec) := do
@@ -266,12 +266,12 @@ noncomputable def cappedSplitUnloggedDetailedGameAfterKeygen
       (adversary.main publicKey)).run initialCache
   let (verified, finalCache) ←
     (simulateQ (splitXmssRomImpl secretKey.parameter .query)
-      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
         forgery.signature)).run adversaryCache
   pure ((forgery, verified), finalCache)
 
 noncomputable def cappedNormalizedSplitUnloggedDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (kind : EncodingSampleKind) (initialCache : QueryCache HashSpec) :
     OracleComp EncodingSamplingWorld ((Forgery × Bool) × QueryCache HashSpec) := do
@@ -281,12 +281,12 @@ noncomputable def cappedNormalizedSplitUnloggedDetailedGameAfterKeygen
       (adversary.main publicKey)).run initialCache
   let (verified, finalCache) ←
     (simulateQ (splitXmssRomImpl secretKey.parameter kind)
-      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
         forgery.signature)).run adversaryCache
   pure ((forgery, verified), finalCache)
 
 theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_unlogged_projection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     (fun result : GameOutcome ×
@@ -330,7 +330,7 @@ theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_unlogged_projection
     fun result => do
       let (verified, finalCache) ←
         (simulateQ (splitXmssRomImpl secretKey.parameter .query)
-          (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+          (Concrete.scheme.verify publicKey result.1.epoch result.1.message
             result.1.signature)).run result.2
       pure ((result.1, verified), finalCache)
   unfold cappedSplitDetailedGameAfterKeygenWithEncodingTrace
@@ -341,7 +341,7 @@ theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_unlogged_projection
       (encodedAdversary >>= fun result => do
         let (verified, finalCache) ←
           (simulateQ (splitXmssRomImpl secretKey.parameter .query)
-            (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+            (Concrete.scheme.verify publicKey result.1.epoch result.1.message
               result.1.signature)).run result.2.1.1
         let finalEncodingTrace := appendVerificationEncodingObservation secretKey
           result.1 result.2.1.1 finalCache result.2.2
@@ -354,7 +354,7 @@ theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_unlogged_projection
   rw [← hadversary, bind_map_left]
 
 theorem cappedSplitUnloggedDetailedGameAfterKeygen_normalized_isQueryBoundP_iff
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (kind : EncodingSampleKind) (initialCache : QueryCache HashSpec)
     (fuel : Nat) :
@@ -368,18 +368,18 @@ theorem cappedSplitUnloggedDetailedGameAfterKeygen_normalized_isQueryBoundP_iff
     publicKey secretKey kind (adversary.main publicKey) initialCache
       (fun result =>
         (simulateQ (splitXmssRomImpl secretKey.parameter .query)
-          (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+          (Concrete.scheme.verify publicKey result.1.epoch result.1.message
             result.1.signature)).run result.2 >>= fun verifiedResult =>
               pure ((result.1, verifiedResult.1), verifiedResult.2))
       (fun result =>
         (simulateQ (splitXmssRomImpl secretKey.parameter kind)
-          (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+          (Concrete.scheme.verify publicKey result.1.epoch result.1.message
             result.1.signature)).run result.2 >>= fun verifiedResult =>
               pure ((result.1, verifiedResult.1), verifiedResult.2))
       (fun result remaining =>
         splitXmssRom_simulateQ_bind_kind_isQueryBoundP_iff
           secretKey.parameter .query kind
-          (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+          (Concrete.scheme.verify publicKey result.1.epoch result.1.message
             result.1.signature) result.2
           (fun verifiedResult => pure ((result.1, verifiedResult.1), verifiedResult.2))
           (fun verifiedResult => pure ((result.1, verifiedResult.1), verifiedResult.2))
@@ -387,7 +387,7 @@ theorem cappedSplitUnloggedDetailedGameAfterKeygen_normalized_isQueryBoundP_iff
       fuel
 
 theorem cappedNormalizedSplitUnloggedDetailedGameAfterKeygen_eq_simulation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (kind : EncodingSampleKind) (initialCache : QueryCache HashSpec) :
     cappedNormalizedSplitUnloggedDetailedGameAfterKeygen adversary publicKey secretKey
@@ -407,11 +407,11 @@ theorem cappedNormalizedSplitUnloggedDetailedGameAfterKeygen_eq_simulation
   simp only [simulateQ_pure, StateT.run_pure]
 
 theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_encodingSample_bound
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅)) :
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
     (cappedSplitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
       keyResult.1.2 keyResult.2).IsQueryBoundP (· matches .inr _) q := by
   have hsource := cappedSourceUnloggedDetailedGameAfterKeygen_hashQueryBound

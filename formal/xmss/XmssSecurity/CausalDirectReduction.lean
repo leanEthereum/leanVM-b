@@ -12,7 +12,7 @@ abbrev FilteredDirectResult :=
   ProgrammedFixedChainKeygenView × FilteredDirectExecution
 
 noncomputable def filteredDirectProgram
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       FilteredDirectResult := do
   let keyView ← RevealProbeOracleSimulation.liftProbComp
@@ -22,7 +22,7 @@ noncomputable def filteredDirectProgram
   pure (keyView, execution)
 
 noncomputable def boundedFilteredDirectProgram
-    (queries : Nat) (adversary : Adversary Concrete.scheme)
+    (queries : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       FilteredDirectResult :=
@@ -30,7 +30,7 @@ noncomputable def boundedFilteredDirectProgram
     (filteredDirectProgram adversary selected)
 
 theorem boundedFilteredDirectProgram_isProbeQueryBoundP
-    (queries : Nat) (adversary : Adversary Concrete.scheme)
+    (queries : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex) :
     (boundedFilteredDirectProgram queries adversary selected).IsQueryBoundP
       RevealProbeOracleSimulation.IsProbeQuery queries := by
@@ -38,7 +38,7 @@ theorem boundedFilteredDirectProgram_isProbeQueryBoundP
     queries (filteredDirectProgram adversary selected)
 
 theorem hasActionTracedEagerViewReduction_of_boundedFilteredDirectProgram
-    (queries : Nat) (adversary : Adversary Concrete.scheme)
+    (queries : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex)
     (hprobability :
       Pr[ActionTracedChainProbeHit queries selected |
@@ -62,7 +62,7 @@ def FilteredDirectHitRelation
     RevealProbeOracleSimulation.ObservedHit ideal
 
 theorem hasActionTracedEagerViewReduction_of_boundedFilteredDirectRelTriple
-    (queries : Nat) (adversary : Adversary Concrete.scheme)
+    (queries : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex)
     (hcoupling : RelTriple
       (detailedGameWithKeygenCacheAndActionTrace adversary)

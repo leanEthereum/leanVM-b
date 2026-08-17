@@ -5,9 +5,9 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity
 
 theorem cappedSampledDetailedGame_externalCollision_probability_le_of_bound
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
     (hbound : ∀ keyResult ∈
-      support ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅),
+      support ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅),
       (cappedSplitDetailedGameAfterKeygenWithEncodingTrace adversary
         keyResult.1.1 keyResult.1.2 keyResult.2).IsQueryBoundP
           (· matches .inr _) q) :
@@ -26,8 +26,8 @@ theorem cappedSampledDetailedGame_externalCollision_probability_le_of_bound
     (hbound keyResult hkeyResult)
 
 theorem cappedSampledDetailedGame_externalCollision_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : (GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
           EncodingActionTrace =>

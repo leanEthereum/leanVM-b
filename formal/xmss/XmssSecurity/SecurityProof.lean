@@ -7,11 +7,11 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity
 
 theorem capped_globalWinningChainValueRevealed_probability_le_q_add_numChains
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
     (hreduction : CappedChain.HasGlobalHighBoundedPublicReduction q adversary) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       GlobalWinningChainValueRevealed execution.2 execution.1 |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       ((q + numChains : Nat) : ENNReal) /
         ((2 ^ digestBits : Nat) : ENNReal) := by
   calc
@@ -31,8 +31,8 @@ theorem capped_globalWinningChainValueRevealed_probability_le_q_add_numChains
         q adversary hreduction
 
 theorem capped_winningDigestBadEvent_probability_le_separate
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (hchain : CappedChain.HasGlobalHighBoundedPublicReduction q adversary) :
     Pr[WinningDigestBadEventOccurs |
       cappedDetailedGameWithEncodingTrace adversary] ≤
@@ -76,7 +76,7 @@ theorem capped_winningDigestBadEvent_probability_le_separate
         calc
           _ = Pr[fun execution : GameOutcome × QueryCache HashSpec =>
                 GlobalWinningChainValueRevealed execution.2 execution.1 |
-              detailedGameWithCache Concrete.cappedScheme adversary] := by
+              detailedGameWithCache Concrete.scheme adversary] := by
             rw [← cappedDetailedGameWithEncodingTrace_cache_projection,
               probEvent_map]
             rfl
@@ -89,7 +89,7 @@ theorem capped_winningDigestBadEvent_probability_le_separate
         calc
           _ = Pr[fun execution : GameOutcome × QueryCache HashSpec =>
                 WinningStructuralCollisionOccurs execution.2 execution.1 |
-              detailedGameWithCache Concrete.cappedScheme adversary] := by
+              detailedGameWithCache Concrete.scheme adversary] := by
             rw [← cappedDetailedGameWithEncodingTrace_cache_projection,
               probEvent_map]
             rfl
@@ -119,13 +119,13 @@ theorem capped_separate_loss_budget_le_126
   linarith [hqreal]
 
 theorem capped_xmss_forgeAdvantage_le_126_of_boundedPublicReduction
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (hchain : CappedChain.HasGlobalHighBoundedPublicReduction q adversary) :
-    forgeAdvantage Concrete.cappedScheme adversary ≤
+    forgeAdvantage Concrete.scheme adversary ≤
       (q : ENNReal) / ((2 ^ 126 : Nat) : ENNReal) := by
   calc
-    forgeAdvantage Concrete.cappedScheme adversary ≤
+    forgeAdvantage Concrete.scheme adversary ≤
         Pr[WinningEncodingPrehitOccurs |
           cappedDetailedGameWithEncodingTrace adversary] +
         Pr[WinningDigestBadEventOccurs |

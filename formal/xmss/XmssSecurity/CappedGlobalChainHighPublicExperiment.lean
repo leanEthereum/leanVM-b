@@ -65,7 +65,7 @@ theorem simulate_eagerTrace_bind_emitObservedTrace
   · exact hagrees result
 
 noncomputable def globalHighDirectPublicProgram
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
       Unit := do
   let result ← globalHighDirectProgram adversary
@@ -73,7 +73,7 @@ noncomputable def globalHighDirectPublicProgram
     (globalHighDirectForgeryPrimaryProbeTrace result)
 
 theorem eagerExperiment_globalHighDirectPublicProgram_eq_append
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     RevealProbeOracleSimulation.eagerExperiment
       (globalHighDirectPublicProgram adversary) =
     appendGlobalHighDirectPublicTrace <$>
@@ -91,7 +91,7 @@ theorem eagerExperiment_globalHighDirectPublicProgram_eq_append
     bind_assoc]
 
 theorem evalDist_globalHighMonitoredPublicProjection_eq_publicExperiment
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist (globalHighMonitoredPublicProjection <$>
       globalHighMonitoredProgram adversary) =
     evalDist (RevealProbeOracleSimulation.eagerExperiment

@@ -7,9 +7,9 @@ namespace XmssSecurity
 
 /-- Every supported detailed execution whose final verification succeeds caches the forged leaf input. -/
 theorem detailed_execution_verified_leaf_cached
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary))
     (hverified : execution.1.verified = true) :
     ∃ encoding output,
       TargetSum.decodeDigest
@@ -42,11 +42,11 @@ theorem detailed_execution_verified_leaf_cached
   subst verified
   have hroute :
       simulateQ xmssRomImpl
-          (Concrete.scheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
+          (Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
         simulateQ (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
           (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
             OracleComp HashSpec Bool) := by
-    simp only [Concrete.scheme, xmssRomImpl]
+    simp only [Concrete.singleAttemptScheme, xmssRomImpl]
     change simulateQ (unifFwdImpl HashSpec +
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
       (liftM (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :

@@ -335,18 +335,18 @@ theorem sourceActionTracedMappedAdversary_hashInputs_length_le
       omega
 
 noncomputable def sourceActionTracedDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     OracleComp OracleWorld ((Forgery × Bool) × AttackerActionTrace) := do
   let result ←
     (simulateQ (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
       (adversary.main publicKey)).run
-  let verified ← Concrete.scheme.verify publicKey result.1.epoch result.1.message
+  let verified ← Concrete.singleAttemptScheme.verify publicKey result.1.epoch result.1.message
     result.1.signature
   return ((result.1, verified), result.2)
 
 theorem sourceActionTracedDetailedGameAfterKeygen_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     Prod.fst <$>
         sourceActionTracedDetailedGameAfterKeygen adversary publicKey secretKey =
@@ -358,7 +358,7 @@ theorem sourceActionTracedDetailedGameAfterKeygen_projection
     simulateQ (sourceUnloggedMappedAdversaryImpl publicKey secretKey)
       (adversary.main publicKey)
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) := fun forgery => do
-    let verified ← Concrete.scheme.verify publicKey forgery.epoch forgery.message
+    let verified ← Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message
       forgery.signature
     return (forgery, verified)
   have hprojection : Prod.fst <$> tracedAdversary = unloggedAdversary :=
@@ -370,12 +370,12 @@ theorem sourceActionTracedDetailedGameAfterKeygen_projection
     finish, bind_map_left, map_bind, bind_assoc] using hbridge
 
 theorem sourceActionTracedDetailedGameAfterKeygen_log_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     (fun result =>
       ⟨publicKey, secretKey, result.1.1, result.2.toSigningLog, result.1.2⟩) <$>
         sourceActionTracedDetailedGameAfterKeygen adversary publicKey secretKey =
-      detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey := by
+      detailedGameAfterKeygen Concrete.singleAttemptScheme adversary publicKey secretKey := by
   let tracedAdversary :=
     (simulateQ (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
       (adversary.main publicKey)).run
@@ -385,7 +385,7 @@ theorem sourceActionTracedDetailedGameAfterKeygen_log_projection
         signingLogFragment) (adversary.main publicKey)).run
   let finishLogged : Forgery × QueryLog SigningSpec → OracleComp OracleWorld GameOutcome :=
     fun result => do
-      let verified ← Concrete.scheme.verify publicKey result.1.epoch result.1.message
+      let verified ← Concrete.singleAttemptScheme.verify publicKey result.1.epoch result.1.message
         result.1.signature
       pure ⟨publicKey, secretKey, result.1, result.2, verified⟩
   have hprojection :
@@ -402,7 +402,7 @@ theorem sourceActionTracedDetailedGameAfterKeygen_log_projection
 theorem Concrete.verify_hashQueryBound_positive
     (publicKey : PublicKey) (epoch : Epoch) (message : Message)
     (signature : Signature) (q : Nat)
-    (hbound : (Concrete.scheme.verify publicKey epoch message signature)
+    (hbound : (Concrete.singleAttemptScheme.verify publicKey epoch message signature)
       |>.IsQueryBoundP (· matches .inr _) q) :
     0 < q := by
   change (liftM (Concrete.verify publicKey epoch message signature :
@@ -413,11 +413,11 @@ theorem Concrete.verify_hashQueryBound_positive
   exact hbound.1.resolve_left (by simp)
 
 theorem sourceActionTracedDetailedGameAfterKeygen_hashInputs_length_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅))
     (result : ((Forgery × Bool) × AttackerActionTrace))
     (hresult : result ∈ support
       (sourceActionTracedDetailedGameAfterKeygen adversary keyResult.1.1
@@ -443,18 +443,18 @@ theorem sourceActionTracedDetailedGameAfterKeygen_hashInputs_length_le
 
 /-- A completed post-keygen execution reserves at least one hash query for verification. -/
 theorem sourceActionTracedDetailedGameAfterKeygen_hashInputs_length_lt
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅))
     (result : ((Forgery × Bool) × AttackerActionTrace))
     (hresult : result ∈ support
       (sourceActionTracedDetailedGameAfterKeygen adversary keyResult.1.1
         keyResult.1.2)) :
     result.2.hashInputs.length < q := by
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) := fun forgery =>
-    Prod.mk forgery <$> Concrete.scheme.verify keyResult.1.1 forgery.epoch
+    Prod.mk forgery <$> Concrete.singleAttemptScheme.verify keyResult.1.1 forgery.epoch
       forgery.message forgery.signature
   have hsource := sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
     q adversary hbound keyResult hkeyResult
@@ -475,7 +475,7 @@ theorem sourceActionTracedDetailedGameAfterKeygen_hashInputs_length_lt
     keyResult.1.1 keyResult.1.2 (adversary.main keyResult.1.1) finish q
     hfull adversaryResult hadversaryResult
   have hverifyBound :
-      (Concrete.scheme.verify keyResult.1.1 adversaryResult.1.epoch
+      (Concrete.singleAttemptScheme.verify keyResult.1.1 adversaryResult.1.epoch
         adversaryResult.1.message adversaryResult.1.signature)
           |>.IsQueryBoundP (· matches .inr _)
             (q - adversaryResult.2.hashInputs.length) := by

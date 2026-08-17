@@ -287,11 +287,11 @@ theorem cacheTracedMappedAdversary_prehit_probability_le
       simpa [div_eq_mul_inv] using lifetime_mul_randomness_loss_le_digest_loss q
 
 theorem detailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅)) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
@@ -335,7 +335,7 @@ theorem detailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le
         adversary q hbound _ hgame
     have hadversaryCacheLe : adversaryResult.2.1 ≤ finalCache :=
       xmssRom_cache_le
-        (Concrete.scheme.verify keyResult.1.1 adversaryResult.1.epoch
+        (Concrete.singleAttemptScheme.verify keyResult.1.1 adversaryResult.1.epoch
           adversaryResult.1.message adversaryResult.1.signature)
         adversaryResult.2.1 (verified, finalCache) hverify
     apply hprefix
@@ -349,8 +349,8 @@ theorem detailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le
       keyResult.1.2 (adversary.main keyResult.1.1) keyResult.2 q
 
 theorem detailedGameWithSigningTrace_winning_prehit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧

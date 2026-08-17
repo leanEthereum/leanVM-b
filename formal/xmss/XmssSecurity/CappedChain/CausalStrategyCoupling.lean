@@ -19,7 +19,7 @@ def eraseFixedChainKeygenView
     result.1.2), result.2)
 
 noncomputable def detailedGameWithFixedChainKeygenView
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     ProbComp FixedChainActionTracedResult := do
   let keyView ← actualFixedChainKeygen chain
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
@@ -28,7 +28,7 @@ noncomputable def detailedGameWithFixedChainKeygenView
   pure ((keyView, execution.1), execution.2)
 
 noncomputable def chronologicallyWarmedDetailedGame
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     ProbComp FixedChainActionTracedResult := do
   let keyView ← chronologicallyWarmedExtractedFixedChainKeygen chain
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
@@ -37,14 +37,14 @@ noncomputable def chronologicallyWarmedDetailedGame
   pure ((keyView, execution.1), execution.2)
 
 theorem erase_detailedGameWithFixedChainKeygenView
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     evalDist (eraseFixedChainKeygenView <$>
         detailedGameWithFixedChainKeygenView adversary chain) =
       evalDist (detailedGameWithKeygenCacheAndActionTrace adversary) := by
   unfold detailedGameWithFixedChainKeygenView actualFixedChainKeygen
     detailedGameWithKeygenCacheAndActionTrace
   simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind]
-  simp only [Concrete.cappedScheme]
+  simp only [Concrete.scheme]
   rw [evalDist_bind, evalDist_bind]
   calc
     _ = evalDist (Concrete.materializeCachedKeyResult <$>
@@ -62,7 +62,7 @@ theorem erase_detailedGameWithFixedChainKeygenView
       rw [Concrete.evalDist_materialized_keygen_eq_precomputedKeygen]
 
 theorem evalDist_detailedGameWithFixedChainKeygenView_eq_warmed
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     evalDist (detailedGameWithFixedChainKeygenView adversary chain) =
       evalDist (chronologicallyWarmedDetailedGame adversary chain) := by
   unfold detailedGameWithFixedChainKeygenView
@@ -72,7 +72,7 @@ theorem evalDist_detailedGameWithFixedChainKeygenView_eq_warmed
   rw [evalDist_actualFixedChainKeygen_eq_chronologicallyWarmed]
 
 theorem evalDist_originalActionTracedGame_eq_erase_warmed
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     evalDist (detailedGameWithKeygenCacheAndActionTrace adversary) =
       evalDist (eraseFixedChainKeygenView <$>
         chronologicallyWarmedDetailedGame adversary chain) := by
@@ -82,7 +82,7 @@ theorem evalDist_originalActionTracedGame_eq_erase_warmed
     ← evalDist_map]
 
 theorem chronologicallyWarmedDetailedGame_support_keyView
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (result : FixedChainActionTracedResult)
     (hresult : result ∈ support
       (chronologicallyWarmedDetailedGame adversary chain)) :
@@ -108,7 +108,7 @@ theorem chronologicallyWarmedKeygen_support_keygenTable
       hresult
 
 theorem chronologicallyWarmedDetailedGame_support_trajectoryTable
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (result : FixedChainActionTracedResult)
     (hresult : result ∈ support
       (chronologicallyWarmedDetailedGame adversary chain)) :
@@ -132,14 +132,14 @@ theorem chronologicallyWarmedDetailedGame_support_trajectoryTable
     hkeyView, htable]
 
 noncomputable def chronologicallyWarmedRevealProbeViewExperiment
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     ProbComp (IndexedHiddenValue.RevealProbeView ChainValueIndex) :=
   (fun result => actionTracedRevealProbeView chain
     (eraseFixedChainKeygenView result)) <$>
       chronologicallyWarmedDetailedGame adversary chain
 
 theorem evalDist_actionTracedRevealProbeView_eq_warmed
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     evalDist (actionTracedRevealProbeView chain <$>
       detailedGameWithKeygenCacheAndActionTrace adversary) =
       evalDist (chronologicallyWarmedRevealProbeViewExperiment adversary chain) := by
@@ -313,7 +313,7 @@ def FixedChainRevealsAgree
     table reveal.1 = reveal.2
 
 theorem detailedGame_fixedChainRevealsAgree
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
     (hresult : result ∈ support
@@ -434,7 +434,7 @@ theorem transcriptProgramFromActionSkeleton_isProbeQueryBoundP
       (replaceDetailedActionTrace result trace)).strategy 0
 
 theorem simulate_eagerImpl_transcriptProgramFromActionSkeleton
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (chain : ChainIndex) (result : DetailedActionTracedResult)
     (hresult : result ∈ support
       (detailedGameWithKeygenCacheAndActionTrace adversary)) :

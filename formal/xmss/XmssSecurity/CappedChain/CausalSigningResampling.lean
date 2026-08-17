@@ -17,7 +17,7 @@ theorem simulate_eagerTrace_causalSigningQueryAfterRealRom
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
       (causalSigningQueryAfterRealRom publicKey secretKey chain request state)).run =
     ((simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
         state.cache >>= fun signed =>
       (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((revealFixedChainSignatureOption secretKey chain request signed.1).run
@@ -99,7 +99,7 @@ theorem simulate_eagerImpl_causalSigningQueryAfterRealRom_support_cacheExtendsKe
       result
   · apply hextends.setCache
     exact xmssRom_cache_le
-      (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)
+      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
         state.cache signed hsigned
   · exact hrest
 
@@ -112,7 +112,7 @@ theorem causalSigningResult_chainValue_eq_keygenChainValueTable
     (resultCache : QueryCache HashSpec)
     (hsigned : (some signature, resultCache) ∈ support
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign keyResult.1.1
+        (Concrete.scheme.sign keyResult.1.1
           (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
           request.epoch request.message)).run state.cache))
     (chain : ChainIndex) :
@@ -125,7 +125,7 @@ theorem causalSigningResult_chainValue_eq_keygenChainValueTable
           (request.epoch, encoding chain) := by
   have hresultCache : state.cache ≤ resultCache :=
     xmssRom_cache_le
-      (Concrete.cappedScheme.sign keyResult.1.1
+      (Concrete.scheme.sign keyResult.1.1
         (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
         request.epoch request.message)
       state.cache (some signature, resultCache) hsigned
@@ -157,7 +157,7 @@ theorem simulate_eagerTrace_revealSigningResult_with_keygenTable
     (resultCache : QueryCache HashSpec)
     (hsigned : (some signature, resultCache) ∈ support
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign keyResult.1.1
+        (Concrete.scheme.sign keyResult.1.1
           (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
           request.epoch request.message)).run state.cache))
     (chain : ChainIndex) :
@@ -227,7 +227,7 @@ theorem evalDist_uniformTable_simulate_eagerTrace_causalSigningQueryAfterRealRom
         (causalSigningQueryAfterRealRom publicKey secretKey chain request state)).run
       continuation table result] =
     𝒟[(simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
         state.cache >>= fun signed =>
       causalResampledSigningContinuation secretKey chain request state signed
         continuation] := by
@@ -241,7 +241,7 @@ theorem evalDist_uniformTable_simulate_eagerTrace_causalSigningQueryAfterRealRom
         𝒟[do
           let table ← $ᵗ (ChainValueIndex → Digest)
           let signed ← (simulateQ xmssRomImpl
-            (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+            (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
               state.cache
           let result ← (simulateQ
             (RevealProbeOracleSimulation.eagerTraceImpl table)
@@ -253,7 +253,7 @@ theorem evalDist_uniformTable_simulate_eagerTrace_causalSigningQueryAfterRealRom
       rw [simulate_eagerTrace_causalSigningQueryAfterRealRom]
       simp only [bind_assoc]
     _ = 𝒟[(simulateQ xmssRomImpl
-          (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+          (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
             state.cache >>= fun signed => do
           let table ← $ᵗ (ChainValueIndex → Digest)
           let result ← (simulateQ
@@ -305,7 +305,7 @@ noncomputable def causalResampledSigningStep
       ((Option Signature × CausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) :=
   (simulateQ xmssRomImpl
-    (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+    (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
       state.cache >>= fun signed =>
     causalResampledSigningContinuation secretKey chain request state signed
       (fun table result => pure (table, result))

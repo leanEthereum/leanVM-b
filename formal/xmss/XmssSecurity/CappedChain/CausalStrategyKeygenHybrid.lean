@@ -10,7 +10,7 @@ def causalKeyResultOfReal
   (keyResult.1, { CausalHashState.empty with cache := keyResult.2 })
 
 noncomputable def causalStrategyAfterRealKeygen
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       (List Bool → ChainValueIndex × Digest) := do
@@ -23,7 +23,7 @@ noncomputable def causalStrategyAfterRealKeygen
 
 theorem simulate_eagerTrace_causalStrategyProgram_eq_afterRealKeygen
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (causalStrategyProgram adversary chain)).run =
       ((simulateQ xmssRomImpl Concrete.keygen).run ∅ >>= fun keyResult =>
@@ -40,7 +40,7 @@ theorem simulate_eagerTrace_causalStrategyProgram_eq_afterRealKeygen
 
 theorem simulate_eagerTrace_compileStrategyProbes_causalStrategyProgram_eq_afterRealKeygen
     (table : ChainValueIndex → Digest) (queries : Nat)
-    (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         (RevealProbeOracleSimulation.compileStrategyProbes queries
           (causalStrategyProgram adversary chain))).run =

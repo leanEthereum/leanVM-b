@@ -628,7 +628,7 @@ noncomputable def globalCausalLazySigningQuery
     ProbComp ((Option Signature × GlobalCausalHashState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) := do
   let signed ← (simulateQ xmssRomImpl
-    (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+    (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
       state.cache
   globalCausalLazyRevealSignatureOption secretKey request signed.1
     { state with cache := signed.2 }
@@ -658,7 +658,7 @@ theorem evalDist_installed_globalCausalSigningQueryAfterRealRom_continuation_eq_
     _ = 𝒟[do
         let base ← $ᵗ (GlobalChainValueIndex → Digest)
         let signed ← (simulateQ xmssRomImpl
-          (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+          (Concrete.scheme.sign publicKey secretKey request.epoch
             request.message)).run state.cache
         let signedState := { state with cache := signed.2 }
         let result ← (simulateQ
@@ -673,7 +673,7 @@ theorem evalDist_installed_globalCausalSigningQueryAfterRealRom_continuation_eq_
       simp [globalCausalInstalledTable_setCache, bind_assoc]
     _ = 𝒟[do
         let signed ← (simulateQ xmssRomImpl
-          (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+          (Concrete.scheme.sign publicKey secretKey request.epoch
             request.message)).run state.cache
         let base ← $ᵗ (GlobalChainValueIndex → Digest)
         let signedState := { state with cache := signed.2 }

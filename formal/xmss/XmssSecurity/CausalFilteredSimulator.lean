@@ -662,7 +662,7 @@ theorem relTriple_programmed_filteredCausalSigningQuery
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.scheme.sign left.publicKey left.secretKey
+        (Concrete.singleAttemptScheme.sign left.publicKey left.secretKey
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
         (filteredCausalSigningQuery right.1 selected request rightState)).run)
@@ -680,7 +680,7 @@ theorem relTriple_programmed_filteredCausalSigningQuery
       _ = right.1.publicKey.parameter :=
         congrArg PublicKey.parameter hrel.1.1.2.1
       _ = right.1.secretKey.parameter := right.1.parameter_eq hrightKey
-  simp only [Concrete.scheme]
+  simp only [Concrete.singleAttemptScheme]
   rw [Concrete.sign_run_eq]
   unfold filteredCausalSigningQuery
   rw [simulateQ_bind, WriterT.run_bind',

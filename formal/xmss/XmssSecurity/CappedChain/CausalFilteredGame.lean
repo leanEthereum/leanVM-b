@@ -122,7 +122,7 @@ noncomputable def filteredDirectActionTracedMappedAdversaryImpl
     attackerActionFragment
 
 noncomputable def filteredDirectDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyView : ProgrammedFixedChainKeygenView) (selected : ChainIndex) :
     StateT CausalHashState
       (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))
@@ -131,7 +131,7 @@ noncomputable def filteredDirectDetailedGameAfterKeygen
     (filteredDirectActionTracedMappedAdversaryImpl keyView selected)
       (adversary.main keyView.publicKey)).run
   let verified ← simulateQ (filteredDirectVerifierImpl keyView selected)
-    (Concrete.cappedScheme.verify keyView.publicKey handled.1.epoch
+    (Concrete.scheme.verify keyView.publicKey handled.1.epoch
       handled.1.message handled.1.signature)
   pure ((handled.1, verified), handled.2)
 

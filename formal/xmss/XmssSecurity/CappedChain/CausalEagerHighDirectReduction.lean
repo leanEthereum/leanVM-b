@@ -828,7 +828,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_verifier_boundedHit
 set_option maxHeartbeats 1000000 in
 set_option maxRecDepth 2000000 in
 theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution_boundedHit
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex)
     (left : ProgrammedFixedChainKeygenView)
     (right : (ProgrammedFixedChainKeygenView ×
@@ -838,7 +838,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution_boundedHi
       (XmssSecurity.programmedWarmedFixedChainKeygen selected))
     (hrightSupport : right.1.1 ∈ support
       (actualFixedChainKeygen selected))
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary queries) :
+    (hbound : HasHashQueryBound Concrete.scheme adversary queries) :
     RelTriple
       (sourceDirectTracedDetailedExecution adversary left)
       (filteredHighMonitoredDetailedExecution adversary
@@ -861,14 +861,14 @@ theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution_boundedHi
     selected left hleftSupport
   have hmaterializedKeyResult :
       Concrete.materializeCachedKeyResult left.keyResult ∈ support
-        ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅) := by
+        ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
     exact Concrete.oldKeygen_support_materializedPrecomputedKeygen
       left.keyResult hleftKeyResult
   have hsourceBound := sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
     queries adversary hbound (Concrete.materializeCachedKeyResult left.keyResult)
       hmaterializedKeyResult
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) :=
-    fun forgery => Prod.mk forgery <$> Concrete.cappedScheme.verify left.publicKey
+    fun forgery => Prod.mk forgery <$> Concrete.scheme.verify left.publicKey
       forgery.epoch forgery.message forgery.signature
   have hfullBound : (simulateQ
       (sourceUnloggedMappedAdversaryImpl left.publicKey
@@ -912,7 +912,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution_boundedHi
           (adversary.main left.publicKey) finish queries hfullBound left.cache
             leftHandled hhandled.2.1
     have hverifyBound :
-        (Concrete.cappedScheme.verify left.publicKey leftHandled.1.epoch
+        (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
           leftHandled.1.message leftHandled.1.signature).IsQueryBoundP
             (· matches .inr _)
               (queries - leftHandled.2.2.hashInputs.length) := by
@@ -924,7 +924,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution_boundedHi
         queries leftHandled.2.2.hashInputs.length
           (queries - leftHandled.2.2.hashInputs.length) selected left right hrel
             hleftSupport hrightSupport
-              (Concrete.cappedScheme.verify left.publicKey leftHandled.1.epoch
+              (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
                 leftHandled.1.message leftHandled.1.signature)
               hverifyBound leftHandled.2 rightHandled.2 hstates
                 (filteredHighMonitoredAdversary_simulation_preserves_traceConsistent
@@ -945,7 +945,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution_boundedHi
         (fun _result _hresult => True.intro)
         (filteredHighMonitoredVerifier_simulation_preserves_boundedObservedHit
           queries right.1.2 (right.1.1, right.2) selected
-            (Concrete.cappedScheme.verify left.publicKey rightHandled.1.epoch
+            (Concrete.scheme.verify left.publicKey rightHandled.1.epoch
               rightHandled.1.message rightHandled.1.signature)
             rightHandled.2 hhit))
     intro leftVerified rightVerified hverified
@@ -1020,7 +1020,7 @@ theorem map_simulate_filteredHighMonitoredVerifier_action_projection
       (((result.1, result.2.2), result.2.1.causal), result.2.1.trace)) <$>
         (simulateQ
           (filteredHighMonitoredVerifierImpl keyHigh selected table)
-          (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+          (Concrete.scheme.verify publicKey forgery.epoch forgery.message
             forgery.signature)).run (state, attackerTrace) =
       (fun result : ((Bool × CausalHashState) ×
           RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
@@ -1028,7 +1028,7 @@ theorem map_simulate_filteredHighMonitoredVerifier_action_projection
           state.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-            (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+            (Concrete.scheme.verify publicKey forgery.epoch forgery.message
               forgery.signature)).run state.causal)).run := by
   let project := fun result : Bool × MonitoredTracedState =>
     ((result.1, result.2.1.causal), result.2.1.trace)
@@ -1039,7 +1039,7 @@ theorem map_simulate_filteredHighMonitoredVerifier_action_projection
     _ = augment <$> (project <$>
         (simulateQ
           (filteredHighMonitoredVerifierImpl keyHigh selected table)
-          (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+          (Concrete.scheme.verify publicKey forgery.epoch forgery.message
             forgery.signature)).run (state, attackerTrace)) := by
       rw [filteredHighMonitoredVerifierImpl_run_eq]
       simp [augment, project, Functor.map_map]
@@ -1050,7 +1050,7 @@ theorem map_simulate_filteredHighMonitoredVerifier_action_projection
 
 set_option maxHeartbeats 1000000 in
 theorem map_filteredHighMonitoredDetailedExecution_action_projection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (table : ChainValueIndex → Digest) :
@@ -1070,7 +1070,7 @@ theorem map_filteredHighMonitoredDetailedExecution_action_projection
         (do
           let verified ←
             (simulateQ (filteredHighVerifierImpl keyHigh selected)
-              (Concrete.cappedScheme.verify keyHigh.1.publicKey
+              (Concrete.scheme.verify keyHigh.1.publicKey
                 handled.1.1.epoch handled.1.1.message
                   handled.1.1.signature)).run handled.2
           pure (((handled.1.1, verified.1), handled.1.2), verified.2))).run =
@@ -1080,7 +1080,7 @@ theorem map_filteredHighMonitoredDetailedExecution_action_projection
             result.2)) <$>
           (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
             ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-              (Concrete.cappedScheme.verify keyHigh.1.publicKey
+              (Concrete.scheme.verify keyHigh.1.publicKey
                 handled.1.1.epoch handled.1.1.message
                   handled.1.1.signature)).run handled.2)).run := by
     rw [simulateQ_bind, WriterT.run_bind']
@@ -1089,7 +1089,7 @@ theorem map_filteredHighMonitoredDetailedExecution_action_projection
       (do
         let verified ← (simulateQ
           (filteredHighMonitoredVerifierImpl keyHigh selected table)
-          (Concrete.cappedScheme.verify keyHigh.1.publicKey handled.1.epoch
+          (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
             handled.1.message handled.1.signature)).run handled.2
         pure ((((handled.1, verified.1), verified.2.2),
           verified.2.1.causal), verified.2.1.trace)) =
@@ -1102,7 +1102,7 @@ theorem map_filteredHighMonitoredDetailedExecution_action_projection
             (result.1, handled.2.1.trace ++ result.2)) <$>
             (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
               ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-                (Concrete.cappedScheme.verify keyHigh.1.publicKey handled.1.epoch
+                (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
                   handled.1.message handled.1.signature)).run
                     handled.2.1.causal)).run) := by
     have hverifier :=
@@ -1133,7 +1133,7 @@ theorem map_filteredHighMonitoredDetailedExecution_action_projection
         (result.1, head.2 ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-            (Concrete.cappedScheme.verify keyHigh.1.publicKey head.1.1.1.epoch
+            (Concrete.scheme.verify keyHigh.1.publicKey head.1.1.1.epoch
               head.1.1.1.message head.1.1.1.signature)).run
                 head.1.2)).run)
   change (do
@@ -1157,7 +1157,7 @@ theorem map_filteredHighMonitoredDetailedExecution_action_projection
 
 set_option maxHeartbeats 1000000 in
 theorem filteredHighMonitoredProgram_action_projection_eq_eagerExperiment
-    (adversary : Adversary Concrete.cappedScheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
     filteredHighMonitoredProgramProjection <$>
         filteredHighMonitoredProgram adversary selected =
       RevealProbeOracleSimulation.eagerExperiment
@@ -1220,9 +1220,9 @@ attribute [local irreducible]
 set_option maxHeartbeats 1000000 in
 set_option maxRecDepth 3000000 in
 theorem relTriple_sourceDirect_filteredHighMonitored_program_boundedHit
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary queries) :
+    (hbound : HasHashQueryBound Concrete.scheme adversary queries) :
     RelTriple
       (sourceDirectTracedProgram adversary selected)
       (filteredHighMonitoredProgram adversary selected)
@@ -1251,7 +1251,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_program_boundedHit
 set_option maxHeartbeats 1000000 in
 set_option maxRecDepth 3000000 in
 theorem filteredHighMonitoredProgram_support_info
-    (adversary : Adversary Concrete.cappedScheme) (selected : ChainIndex)
+    (adversary : Adversary Concrete.scheme) (selected : ChainIndex)
     (result : FilteredHighMonitoredProgramResult)
     (hresult : result ∈ support
       (filteredHighMonitoredProgram adversary selected)) :
@@ -1279,7 +1279,7 @@ def filteredHighBoundedMonitoredProgramProjection
 
 set_option maxHeartbeats 1000000 in
 theorem filteredHighBoundedMonitoredProgram_projection_eq_eagerExperiment
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex) :
     filteredHighBoundedMonitoredProgramProjection queries <$>
         filteredHighMonitoredProgram adversary selected =
@@ -1301,7 +1301,7 @@ theorem filteredHighBoundedMonitoredProgram_projection_eq_eagerExperiment
 
 set_option maxHeartbeats 1000000 in
 theorem sourceFilteredHighBoundedProgramRelation_hit_implies_observedHit
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex)
     (left : SourceDirectTracedProgramResult)
     (right : FilteredHighMonitoredProgramResult)
@@ -1347,7 +1347,7 @@ def ProgrammedFilteredHighDirectHitRelation
     RevealProbeOracleSimulation.ObservedHit ideal
 
 def HasBoundedFilteredHighDirectReduction
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex) : Prop :=
   RelTriple
     (programmedWarmedDetailedGame adversary selected)
@@ -1357,9 +1357,9 @@ def HasBoundedFilteredHighDirectReduction
 
 set_option maxHeartbeats 1000000 in
 theorem hasBoundedFilteredHighDirectReduction_of_hashQueryBound
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary queries) :
+    (hbound : HasHashQueryBound Concrete.scheme adversary queries) :
     HasBoundedFilteredHighDirectReduction queries adversary selected := by
   have hbase := relTriple_with_support
     (relTriple_sourceDirect_filteredHighMonitored_program_boundedHit queries
@@ -1388,7 +1388,7 @@ theorem hasBoundedFilteredHighDirectReduction_of_hashQueryBound
         selected)
 
 theorem hasActionTracedEagerViewReduction_of_boundedFilteredHighDirectProbability
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex)
     (hprogrammed :
       Pr[WarmedActionTracedChainProbeHit queries selected |
@@ -1418,7 +1418,7 @@ theorem hasActionTracedEagerViewReduction_of_boundedFilteredHighDirectProbabilit
       hprogrammed
 
 theorem hasActionTracedEagerViewReduction_of_boundedFilteredHighDirectRelTriple
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex)
     (hcoupling : RelTriple
       (programmedWarmedDetailedGame adversary selected)
@@ -1433,7 +1433,7 @@ theorem hasActionTracedEagerViewReduction_of_boundedFilteredHighDirectRelTriple
   exact hrel hhit
 
 theorem hasActionTracedEagerViewReduction_of_boundedFilteredHighDirectReduction
-    (queries : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (queries : Nat) (adversary : Adversary Concrete.scheme)
     (selected : ChainIndex)
     (hreduction :
       HasBoundedFilteredHighDirectReduction queries adversary selected) :

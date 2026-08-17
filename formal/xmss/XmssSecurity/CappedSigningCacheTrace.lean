@@ -46,7 +46,7 @@ noncomputable def cappedUnloggedMappedAdversaryImpl
   | inl worldInput => exact xmssRomImpl worldInput
   | inr request =>
       exact simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
 
 noncomputable def cappedCacheTracedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
@@ -87,7 +87,7 @@ theorem cappedUnloggedMappedAdversaryImpl_cache_le
             result hmem
   | inr request =>
       exact xmssRom_cache_le
-        (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
         initialCache result hmem
 
 theorem cappedCacheTracedMappedAdversaryImpl_query_cachesLe
@@ -407,7 +407,7 @@ theorem cappedSelectivelyLoggedMappedAdversaryImpl_apply_inr
     cappedSelectivelyLoggedMappedAdversaryImpl publicKey secretKey (.inr request) =
       QueryImpl.withLogging
         (fun request => simulateQ xmssRomImpl
-          (Concrete.cappedScheme.sign publicKey secretKey
+          (Concrete.scheme.sign publicKey secretKey
             request.epoch request.message)) request := by
   rfl
 
@@ -416,11 +416,11 @@ theorem cappedMappedAdversaryImpl_apply_inr
     cappedMappedAdversaryImpl publicKey secretKey (.inr request) =
       QueryImpl.withLogging
         (fun request => simulateQ xmssRomImpl
-          (Concrete.cappedScheme.sign publicKey secretKey
+          (Concrete.scheme.sign publicKey secretKey
             request.epoch request.message)) request := by
   change WriterT.mk (simulateQ xmssRomImpl
       ((QueryImpl.withLogging (spec := SigningSpec)
-        (fun request => Concrete.cappedScheme.sign publicKey secretKey
+        (fun request => Concrete.scheme.sign publicKey secretKey
           request.epoch request.message) request).run)) = _
   apply WriterT.ext
   rw [WriterT.run_mk, QueryImpl.run_withLogging_apply,
@@ -542,7 +542,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_log_projection_eq_mapped
   rfl
 
 noncomputable def cappedDetailedGameAfterKeygenWithSigningTrace
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) := do
@@ -551,26 +551,26 @@ noncomputable def cappedDetailedGameAfterKeygenWithSigningTrace
       (adversary.main publicKey)).run (initialCache, [])
   let (verified, finalCache) ←
     (simulateQ xmssRomImpl
-      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
         forgery.signature)).run adversaryCache
   pure (⟨publicKey, secretKey, forgery, trace.toSigningLog, verified⟩,
     (finalCache, trace))
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     Prod.map id Prod.fst <$>
         cappedDetailedGameAfterKeygenWithSigningTrace adversary publicKey secretKey
           initialCache =
       (simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary publicKey secretKey)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey)).run
           initialCache := by
   let finish : Forgery × (QueryCache HashSpec × QueryLog SigningSpec) →
       ProbComp (GameOutcome × QueryCache HashSpec) := fun result => do
     let (verified, finalCache) ←
       (simulateQ xmssRomImpl
-        (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+        (Concrete.scheme.verify publicKey result.1.epoch result.1.message
           result.1.signature)).run result.2.1
     pure (⟨publicKey, secretKey, result.1, result.2.2, verified⟩, finalCache)
   have hbridge := congrArg (fun computation => computation >>= finish)
@@ -581,16 +581,16 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection
     Prod.map, QueryImpl.simulateQ_writerTMapBase_run] using hbridge
 
 noncomputable def cappedDetailedGameWithSigningTrace
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅
+  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
   cappedDetailedGameAfterKeygenWithSigningTrace adversary keyResult.1.1 keyResult.1.2
     keyResult.2
 
 theorem cappedDetailedGameWithSigningTrace_cache_projection
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Prod.map id Prod.fst <$> cappedDetailedGameWithSigningTrace adversary =
-      detailedGameWithCache Concrete.cappedScheme adversary := by
+      detailedGameWithCache Concrete.scheme adversary := by
   unfold cappedDetailedGameWithSigningTrace detailedGameWithCache detailedGameCore
   rw [simulateQ_bind, StateT.run_bind]
   simp only [map_bind]
@@ -600,7 +600,7 @@ theorem cappedDetailedGameWithSigningTrace_cache_projection
     keyResult.1.1 keyResult.1.2 keyResult.2
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_invariants
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
@@ -624,7 +624,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_invariants
       (forgery, (adversaryCache, trace)) (by simp [SigningCacheTrace.CachesLe])
       hadversary
     exact htrace.mono (xmssRom_cache_le
-      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
         forgery.signature) adversaryCache (verified, finalCache) hverify)
   · exact cappedCacheTracedMappedAdversaryImpl_successfulEncodingsCached
       publicKey secretKey (adversary.main publicKey) initialCache []
@@ -632,7 +632,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_invariants
       (by simp [SigningCacheTrace.SuccessfulEncodingsCached]) hadversary
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_preservesOtherValidEncodingInputs
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
@@ -653,7 +653,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_preservesOtherValidEncodin
     (by simp [SigningCacheTrace.PreservesOtherValidEncodingInputs]) hadversary
 
 theorem cappedDetailedGameWithSigningTrace_invariants
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
     result.2.2.toSigningLog = result.1.signingLog ∧
@@ -668,7 +668,7 @@ theorem cappedDetailedGameWithSigningTrace_invariants
   exact ⟨hlog, hcaches, by simpa [hsecretKey] using hcached⟩
 
 theorem cappedDetailedGameWithSigningTrace_preservesOtherValidEncodingInputs
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
     result.2.2.PreservesOtherValidEncodingInputs result.1.secretKey := by
@@ -684,7 +684,7 @@ theorem cappedDetailedGameWithSigningTrace_preservesOtherValidEncodingInputs
   simpa [hsecretKey] using hpreserves
 
 theorem cappedDetailedGameWithSigningTrace_successfulEncodingsValid
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
     result.2.2.SuccessfulEncodingsValid result.1.secretKey := by
@@ -704,16 +704,16 @@ theorem cappedDetailedGameWithSigningTrace_successfulEncodingsValid
     (by simp [SigningCacheTrace.SuccessfulEncodingsValid]) hadversary
 
 theorem cappedDetailedGameWithSigningTrace_cache_enncard_le_of_mem_support
-    (adversary : Adversary Concrete.cappedScheme) (q : Nat)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (adversary : Adversary Concrete.scheme) (q : Nat)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
     QueryCache.enncard result.2.1 ≤ (q : ℝ≥0∞) := by
   have hprojected : (result.1, result.2.1) ∈
-      support (detailedGameWithCache Concrete.cappedScheme adversary) := by
+      support (detailedGameWithCache Concrete.scheme adversary) := by
     rw [← cappedDetailedGameWithSigningTrace_cache_projection, support_map]
     exact ⟨result, hmem, rfl⟩
-  exact Rom.detailedGame_cache_enncard_le_of_mem_support Concrete.cappedScheme
+  exact Rom.detailedGame_cache_enncard_le_of_mem_support Concrete.scheme
     adversary q hbound (result.1, result.2.1) hprojected
 
 theorem SigningCacheEntry.freshForgedEncodingCollision_finalCache_none_of_valid

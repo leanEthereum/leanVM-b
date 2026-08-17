@@ -62,7 +62,7 @@ theorem xmssForgeAdvantage_le_127_of_unifiedDigestReduction
     xmssForgeAdvantage adversary ≤
       (q : ENNReal) / ((2 ^ 127 : Nat) : ENNReal) := by
   calc
-    forgeAdvantage Concrete.cappedScheme adversary ≤
+    forgeAdvantage Concrete.scheme adversary ≤
         Pr[WinningEncodingPrehitOccurs |
           cappedDetailedGameWithEncodingTrace adversary] +
         Pr[WinningDigestBadEventOccurs |

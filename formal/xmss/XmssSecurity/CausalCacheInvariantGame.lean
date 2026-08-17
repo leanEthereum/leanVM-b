@@ -156,7 +156,7 @@ theorem simulate_eagerImpl_simulate_causalActionTracedMappedAdversaryAfterRealRo
 
 theorem simulate_eagerImpl_causalDetailedGameAfterKeygenAfterRealRom_support_cacheExtendsKeygen
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState)
     (result : (((Forgery × Bool) × AttackerActionTrace) × CausalHashState))
@@ -178,7 +178,7 @@ theorem simulate_eagerImpl_causalDetailedGameAfterKeygenAfterRealRom_support_cac
   have hvertifiedExtends :=
     simulate_eagerImpl_simulate_causalVerifierXmssRomImpl_support_cacheExtendsKeygen
       table secretKey chain
-      (Concrete.scheme.verify publicKey handled.1.1.epoch
+      (Concrete.singleAttemptScheme.verify publicKey handled.1.1.epoch
         handled.1.1.message handled.1.1.signature)
       handled.2 verified hhandledExtends hvertified
   simp only [StateT.run_pure, simulateQ_pure, support_pure,

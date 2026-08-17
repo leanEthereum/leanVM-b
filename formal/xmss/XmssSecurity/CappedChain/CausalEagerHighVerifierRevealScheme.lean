@@ -22,10 +22,10 @@ theorem filteredHighVerifier_support_scheme_cache_le
     (hresult : result ∈ support
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-          (Concrete.cappedScheme.verify publicKey epoch message signature)).run
+          (Concrete.scheme.verify publicKey epoch message signature)).run
             state)).run)) :
     state.cache ≤ result.1.2.cache := by
-  unfold Concrete.cappedScheme at hresult
+  unfold Concrete.scheme at hresult
   rw [simulate_filteredHighVerifier_liftM_eq_hashOnly] at hresult
   generalize (Concrete.verify publicKey epoch message signature :
     OracleComp HashSpec Bool) = computation at hresult
@@ -48,10 +48,10 @@ theorem filteredHighVerifier_support_scheme_resultCovered
     (hresult : result ∈ support
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-          (Concrete.cappedScheme.verify publicKey epoch message signature)).run
+          (Concrete.scheme.verify publicKey epoch message signature)).run
             state)).run)) :
     CausalResultCovered covered result := by
-  unfold Concrete.cappedScheme at hresult
+  unfold Concrete.scheme at hresult
   rw [simulate_filteredHighVerifier_liftM_eq_hashOnly] at hresult
   generalize (Concrete.verify publicKey epoch message signature :
     OracleComp HashSpec Bool) = computation at hresult

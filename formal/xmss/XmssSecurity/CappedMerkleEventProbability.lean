@@ -7,9 +7,9 @@ namespace XmssSecurity.CappedMerkle
 
 
 theorem detailed_execution_verified_merkle_query_cached_as
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.cappedScheme adversary))
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (encoding : Encoding) (hverified : execution.1.verified = true)
     (hdecode : TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
@@ -49,11 +49,11 @@ theorem detailed_execution_verified_merkle_query_cached_as
   subst verified
   have hroute :
       simulateQ xmssRomImpl
-          (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
+          (Concrete.scheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
         simulateQ (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
           (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
             OracleComp HashSpec Bool) := by
-    simp only [Concrete.cappedScheme, xmssRomImpl]
+    simp only [Concrete.scheme, xmssRomImpl]
     change simulateQ (unifFwdImpl HashSpec +
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
       (liftM (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
@@ -228,14 +228,14 @@ theorem adaptiveFreshDigestCollisionWith_of_merkleCollision
     exact hcollision'
 
 theorem merkleCollision_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (secretKey : SecretKey) (hsecret : secretKey = keyResult.1.2)
     (epoch : Epoch) (level : MerkleLevel)
@@ -260,11 +260,11 @@ theorem merkleCollision_afterKeygen_orientation
       (keygenMerkleTargetInput keyResult.1.2 keyResult.2) := by
   subst secretKey
   have hafterCacheLe := xmssRom_cache_le
-    (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
+    (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
   have hkeygen' : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
-    simpa only [Concrete.cappedScheme] using hkeygen
+    simpa only [Concrete.scheme] using hkeygen
   let node := Concrete.CacheView.nodeIndex epoch level.val
   have horderedNe : orderedNodePair epoch level.val forgedCurrent forgedSibling ≠
       orderedNodePair epoch level.val honestCurrent honestSibling := by
@@ -437,14 +437,14 @@ inductive CachedMerkleCollision (execution : GameOutcome × QueryCache HashSpec)
       CachedMerkleCollision execution
 
 theorem afterKeygen_verified_merkle_query_cached_as
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (encoding : Encoding) (hverified : execution.1.verified = true)
     (hdecode : TargetSum.decodeDigest
@@ -545,14 +545,14 @@ theorem MerkleWitness.toOriented (execution : GameOutcome × QueryCache HashSpec
     forgedSibling honestCurrent honestSibling rfl rfl hevent.1 heq hhonest
 
 theorem afterKeygen_verified_forgedMerkleQuery_cached
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (encoding : Encoding) (hverified : execution.1.verified = true)
     (hdecode : TargetSum.decodeDigest
@@ -579,14 +579,14 @@ theorem forgedMerkleQueryInput_eq_of_epoch
   rfl
 
 theorem afterKeygen_verified_forgedMerkleQuery_cached_at
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (encoding : Encoding) (hverified : execution.1.verified = true)
     (hdecode : TargetSum.decodeDigest
@@ -622,14 +622,14 @@ theorem cachedMerkleInput_eq_forgedMerkleQueryInput
   rw [cachedMerkleInput_eq, forgedMerkleQueryInput_eq, hcurrent, hsibling]
 
 theorem OrientedMerkleWitness.cachedQuery
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (witness : OrientedMerkleWitness execution) :
     ∃ epoch level forgedCurrent forgedSibling honestCurrent honestSibling forgedOutput,
@@ -654,14 +654,14 @@ theorem OrientedMerkleWitness.cachedQuery
   exact hcached
 
 theorem OrientedMerkleWitness.withCachedQuery
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (witness : OrientedMerkleWitness execution) : CachedMerkleCollision execution := by
   obtain ⟨epoch, level, forgedCurrent, forgedSibling, honestCurrent, honestSibling,
@@ -671,28 +671,28 @@ theorem OrientedMerkleWitness.withCachedQuery
     hforgedCached hne heq hhonest
 
 theorem MerkleWitness.toCachedCollision
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (witness : MerkleWitness execution) : CachedMerkleCollision execution :=
   OrientedMerkleWitness.withCachedQuery adversary keyResult hkeygen execution hafter
     (MerkleWitness.toOriented execution witness)
 
 theorem CachedMerkleCollision.afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (collision : CachedMerkleCollision execution) :
     Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
@@ -728,14 +728,14 @@ theorem CachedMerkleCollision.afterKeygen_orientation
     honestSibling forgedOutput hforgedCached' hne heq' hhonest'
 
 theorem merkle_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (witness : MerkleWitness execution) :
     Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
@@ -746,14 +746,14 @@ theorem merkle_witness_afterKeygen_orientation
 
 
 theorem same_merkle_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hverified : execution.1.verified = true)
     (request : SignRequest) (signature : Signature)
@@ -822,14 +822,14 @@ theorem same_merkle_witness_afterKeygen_orientation
       Concrete.CacheReplay.authenticationPath, level.isLt]
 
 theorem fresh_merkle_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hverified : execution.1.verified = true)
     (forgedEncoding : Encoding)
@@ -895,14 +895,14 @@ theorem fresh_merkle_witness_afterKeygen_orientation
       level.isLt]
 
 theorem merkle_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (level : MerkleLevel)
     (hevent : OutcomeBadEventOccurs execution.2 execution.1 (.merkle level)) :
@@ -919,13 +919,13 @@ theorem merkle_event_afterKeygen_orientation
       hafter hevent.1 forgedEncoding hforgedDecode level hmerkle
 
 theorem merkle_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) (level : MerkleLevel) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) (level : MerkleLevel) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 (.merkle level) |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme Concrete.cappedScheme q adversary hbound
+  apply outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme Concrete.scheme q adversary hbound
     (.merkle level) (fun key cache => keygenMerkleTargetInput key.2 cache)
   intro keyResult hkeygen execution hafter hevent
   exact merkle_event_afterKeygen_orientation adversary keyResult hkeygen execution hafter
@@ -937,12 +937,12 @@ end XmssSecurity.CappedMerkle
 namespace XmssSecurity
 
 theorem capped_merkle_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (level : MerkleLevel) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 (.merkle level) |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
   CappedMerkle.merkle_outcomeBadEvent_probability_le q adversary hbound level
 

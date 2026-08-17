@@ -324,7 +324,7 @@ noncomputable def splitUnloggedMappedAdversaryImpl
       exact splitXmssRomImpl secretKey.parameter .query worldInput
   | inr request =>
       exact simulateQ (splitXmssRomImpl secretKey.parameter .sign)
-        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch request.message)
 
 theorem splitUnloggedMappedAdversaryImpl_query_bridge
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -351,7 +351,7 @@ theorem splitUnloggedMappedAdversaryImpl_query_bridge
       simp only [splitUnloggedMappedAdversaryImpl,
         unloggedMappedAdversaryImpl_apply_inr]
       exact splitXmssRom_evalDist_simulation secretKey.parameter .sign
-        (Concrete.scheme.sign publicKey secretKey request.epoch request.message) cache
+        (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch request.message) cache
 
 theorem splitUnloggedMappedAdversary_evalDist_simulation
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -442,7 +442,7 @@ theorem splitEncodingTracedMappedAdversary_evalDist_simulation
     publicKey secretKey input currentState
 
 noncomputable def splitDetailedGameAfterKeygenWithEncodingTrace
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     OracleComp EncodingSamplingWorld (GameOutcome ×
@@ -452,7 +452,7 @@ noncomputable def splitDetailedGameAfterKeygenWithEncodingTrace
       (adversary.main publicKey)).run ((initialCache, []), [])
   let (verified, finalCache) ←
     (simulateQ (splitXmssRomImpl secretKey.parameter .query)
-      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
+      (Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message
         forgery.signature)).run adversaryState.1.1
   let finalEncodingTrace := appendVerificationEncodingObservation secretKey forgery
     adversaryState.1.1 finalCache adversaryState.2
@@ -460,7 +460,7 @@ noncomputable def splitDetailedGameAfterKeygenWithEncodingTrace
     ((finalCache, adversaryState.1.2), finalEncodingTrace))
 
 theorem splitDetailedGameAfterKeygenWithEncodingTrace_evalDist_simulation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     𝒟[simulateQ encodingSamplingWorldImpl
@@ -475,16 +475,16 @@ theorem splitDetailedGameAfterKeygenWithEncodingTrace_evalDist_simulation
   simp_rw [splitXmssRom_evalDist_simulation]
 
 noncomputable def splitDetailedGameWithEncodingTrace
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     ProbComp (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
+  let keyResult ← (simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅
   simulateQ encodingSamplingWorldImpl
     (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
       keyResult.1.2 keyResult.2)
 
 theorem splitDetailedGameWithEncodingTrace_evalDist_simulation
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     𝒟[splitDetailedGameWithEncodingTrace adversary] =
       𝒟[detailedGameWithEncodingTrace adversary] := by
   unfold splitDetailedGameWithEncodingTrace detailedGameWithEncodingTrace
@@ -728,17 +728,17 @@ theorem encodingSamplingTrace_projection
     encodingSamplingWorldImpl encodingSamplingTraceFragment computation
 
 noncomputable def sampledDetailedGameWithEncodingTrace
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     ProbComp ((GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
         EncodingActionTrace) := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
+  let keyResult ← (simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅
   (simulateQ encodingSamplingTraceImpl
     (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
       keyResult.1.2 keyResult.2)).run
 
 theorem sampledDetailedGameWithEncodingTrace_projection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Prod.fst <$> sampledDetailedGameWithEncodingTrace adversary =
       splitDetailedGameWithEncodingTrace adversary := by
   unfold sampledDetailedGameWithEncodingTrace splitDetailedGameWithEncodingTrace
@@ -750,7 +750,7 @@ theorem sampledDetailedGameWithEncodingTrace_projection
       keyResult.1.2 keyResult.2)
 
 theorem detailedGameWithEncodingTrace_monitorHit_probability_eq_sampled
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[(fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       EncodingMonitor.runObserved EncodingMonitor.State.empty execution.2.2 = true) |

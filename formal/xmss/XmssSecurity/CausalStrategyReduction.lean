@@ -86,7 +86,7 @@ theorem avoids_observedTraceReveals_of_returnedCovered
     keygenCache finalCache secretKey log chain (strategy history).1 hmem)
 
 theorem lazyCausalStrategyResult_avoids_observedTraceReveals
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyResult : (PublicKey × SecretKey) × CausalHashState)
     (chain : ChainIndex)
     (execution : ((((Forgery × Bool) × AttackerActionTrace) ×
@@ -289,7 +289,7 @@ theorem causalTraceHitsAvoidingReveals_implies_observedHit
     result.1 result.2.2 q result.2.1 hhit.2 hhit.1
 
 theorem causalTraceHit_probability_le_lazyObservedHit
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     Pr[CausalTraceHitsAvoidingReveals q |
         causalLazyStrategyViewExperiment adversary chain] ≤
@@ -310,7 +310,7 @@ theorem causalTraceHit_probability_le_lazyObservedHit
       rfl
 
 noncomputable def chronologicallyWarmedObservedProbeExperiment
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     ProbComp ((ChainValueIndex → Digest) ×
       (Unit × RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) :=
@@ -318,7 +318,7 @@ noncomputable def chronologicallyWarmedObservedProbeExperiment
     chronologicallyWarmedRevealProbeViewExperiment adversary chain
 
 theorem evalDist_actionTracedObservedProbeViewExperiment_eq_warmed
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     evalDist (actionTracedObservedProbeViewExperiment q adversary chain) =
       evalDist (chronologicallyWarmedObservedProbeExperiment
@@ -338,7 +338,7 @@ theorem evalDist_actionTracedObservedProbeViewExperiment_eq_warmed
           q adversary chain) := rfl
 
 theorem actionTracedChainProbeHit_probability_le_warmedObservedHit
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     Pr[ActionTracedChainProbeHit q chain |
         detailedGameWithKeygenCacheAndActionTrace adversary] ≤
@@ -359,7 +359,7 @@ theorem actionTracedChainProbeHit_probability_le_warmedObservedHit
         q adversary chain)
 
 theorem causalStrategyProgram_observedHit_probability_eq_lazy
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     Pr[RevealProbeOracleSimulation.ObservedHit |
         RevealProbeOracleSimulation.eagerExperiment
@@ -376,7 +376,7 @@ def WarmedActionTracedChainProbeHit
   ActionTracedChainProbeHit q chain (eraseFixedChainKeygenView result)
 
 theorem actionTracedChainProbeHit_probability_eq_warmed
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     Pr[ActionTracedChainProbeHit q chain |
         detailedGameWithKeygenCacheAndActionTrace adversary] =
@@ -396,7 +396,7 @@ theorem actionTracedChainProbeHit_probability_eq_warmed
       rfl
 
 theorem actionTracedChainProbeHit_probability_le_warmedRevealProbeHit
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     Pr[ActionTracedChainProbeHit q chain |
         detailedGameWithKeygenCacheAndActionTrace adversary] ≤
@@ -417,7 +417,7 @@ theorem actionTracedChainProbeHit_probability_le_warmedRevealProbeHit
 
 /-- The remaining causal reduction obligation is exactly the comparison between the real traced game and the fully lazy simulator. -/
 theorem hasActionTracedCausalStrategyReduction_of_lazy_probability
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hprobability :
       Pr[ActionTracedChainProbeHit q chain |
@@ -431,7 +431,7 @@ theorem hasActionTracedCausalStrategyReduction_of_lazy_probability
   exact hprobability
 
 theorem hasActionTracedCausalStrategyReduction_of_warmed_probability
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hwarmed :
       Pr[WarmedActionTracedChainProbeHit q chain |
@@ -444,7 +444,7 @@ theorem hasActionTracedCausalStrategyReduction_of_warmed_probability
   exact hwarmed
 
 theorem hasActionTracedCausalStrategyReduction_of_warmed_view_probability
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hwarmed :
       Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
@@ -457,7 +457,7 @@ theorem hasActionTracedCausalStrategyReduction_of_warmed_view_probability
     q adversary chain).trans hwarmed
 
 theorem hasActionTracedCausalStrategyReduction_of_programmed_view_probability
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hprogrammed :
       Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
@@ -470,7 +470,7 @@ theorem hasActionTracedCausalStrategyReduction_of_programmed_view_probability
   exact hprogrammed
 
 theorem hasActionTracedCausalStrategyReduction_of_programmed_causal_trace_probability
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex)
     (hprogrammed :
       Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |

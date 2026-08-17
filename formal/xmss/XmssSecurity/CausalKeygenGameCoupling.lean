@@ -6,7 +6,7 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity
 
 noncomputable def programmedWarmedDetailedGame
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     ProbComp FixedChainActionTracedResult := do
   let keyView ← programmedWarmedFixedChainKeygen chain
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
@@ -14,7 +14,7 @@ noncomputable def programmedWarmedDetailedGame
   pure ((keyView, execution.1), execution.2)
 
 theorem evalDist_chronologicallyWarmedDetailedGame_eq_programmed
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     evalDist (chronologicallyWarmedDetailedGame adversary chain) =
       evalDist (programmedWarmedDetailedGame adversary chain) := by
   unfold chronologicallyWarmedDetailedGame programmedWarmedDetailedGame
@@ -23,7 +23,7 @@ theorem evalDist_chronologicallyWarmedDetailedGame_eq_programmed
   rw [evalDist_chronologicallyWarmedFixedChainKeygen_eq_programmed]
 
 theorem programmedWarmedDetailedGame_support_keyView
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex)
     (result : FixedChainActionTracedResult)
     (hresult : result ∈ support
       (programmedWarmedDetailedGame adversary chain)) :
@@ -38,7 +38,7 @@ theorem programmedWarmedDetailedGame_support_keyView
   exact hkeyView
 
 theorem programmedWarmedDetailedGame_support_keygenTable
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex)
     (result : FixedChainActionTracedResult)
     (hresult : result ∈ support
       (programmedWarmedDetailedGame adversary chain)) :
@@ -49,7 +49,7 @@ theorem programmedWarmedDetailedGame_support_keygenTable
     adversary chain result hresult
 
 theorem programmedWarmedRevealProbeView_table_eq_keyView
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex)
     (result : FixedChainActionTracedResult)
     (hresult : result ∈ support
       (programmedWarmedDetailedGame adversary chain)) :
@@ -61,14 +61,14 @@ theorem programmedWarmedRevealProbeView_table_eq_keyView
     adversary chain result hresult
 
 noncomputable def programmedWarmedRevealProbeViewExperiment
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     ProbComp (IndexedHiddenValue.RevealProbeView ChainValueIndex) :=
   (fun result => actionTracedRevealProbeView chain
     (eraseFixedChainKeygenView result)) <$>
       programmedWarmedDetailedGame adversary chain
 
 theorem evalDist_chronologicallyWarmedRevealProbeView_eq_programmed
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     evalDist (chronologicallyWarmedRevealProbeViewExperiment adversary chain) =
       evalDist (programmedWarmedRevealProbeViewExperiment adversary chain) := by
   unfold chronologicallyWarmedRevealProbeViewExperiment
@@ -78,7 +78,7 @@ theorem evalDist_chronologicallyWarmedRevealProbeView_eq_programmed
     ← evalDist_map]
 
 theorem chronologicallyWarmedRevealProbeHit_probability_eq_programmed
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (chain : ChainIndex) :
     Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
         chronologicallyWarmedRevealProbeViewExperiment adversary chain] =

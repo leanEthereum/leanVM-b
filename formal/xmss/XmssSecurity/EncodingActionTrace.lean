@@ -965,7 +965,7 @@ def appendVerificationEncodingObservation
     trace
 
 noncomputable def detailedGameAfterKeygenWithEncodingTrace
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     ProbComp (GameOutcome ×
@@ -975,7 +975,7 @@ noncomputable def detailedGameAfterKeygenWithEncodingTrace
       (adversary.main publicKey)).run ((initialCache, []), [])
   let (verified, finalCache) ←
     (simulateQ xmssRomImpl
-      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
+      (Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message
         forgery.signature)).run adversaryState.1
   let finalEncodingTrace := appendVerificationEncodingObservation secretKey forgery
     adversaryState.1 finalCache encodingTrace
@@ -983,7 +983,7 @@ noncomputable def detailedGameAfterKeygenWithEncodingTrace
     ((finalCache, adversaryState.2), finalEncodingTrace))
 
 theorem detailedGameAfterKeygenWithEncodingTrace_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     (fun result => (result.1, result.2.1)) <$>
@@ -995,7 +995,7 @@ theorem detailedGameAfterKeygenWithEncodingTrace_projection
     fun result => do
       let (verified, finalCache) ←
         (simulateQ xmssRomImpl
-          (Concrete.scheme.verify publicKey result.1.epoch result.1.message
+          (Concrete.singleAttemptScheme.verify publicKey result.1.epoch result.1.message
             result.1.signature)).run result.2.1.1
       pure (⟨publicKey, secretKey, result.1, result.2.1.2.toSigningLog, verified⟩,
         (finalCache, result.2.1.2))
@@ -1004,7 +1004,7 @@ theorem detailedGameAfterKeygenWithEncodingTrace_projection
     fun result => do
       let (verified, finalCache) ←
         (simulateQ xmssRomImpl
-          (Concrete.scheme.verify publicKey result.1.epoch result.1.message
+          (Concrete.singleAttemptScheme.verify publicKey result.1.epoch result.1.message
             result.1.signature)).run result.2.1
       pure (⟨publicKey, secretKey, result.1, result.2.2.toSigningLog, verified⟩,
         (finalCache, result.2.2))
@@ -1016,15 +1016,15 @@ theorem detailedGameAfterKeygenWithEncodingTrace_projection
     bind_map_left, map_bind, bind_assoc, Prod.map] using hbridge
 
 noncomputable def detailedGameWithEncodingTrace
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     ProbComp (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
+  let keyResult ← (simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅
   detailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1 keyResult.1.2
     keyResult.2
 
 theorem detailedGameWithEncodingTrace_projection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     (fun result => (result.1, result.2.1)) <$>
         detailedGameWithEncodingTrace adversary =
       detailedGameWithSigningTrace adversary := by
@@ -1036,7 +1036,7 @@ theorem detailedGameWithEncodingTrace_projection
     keyResult.1.2 keyResult.2
 
 theorem detailedGameAfterKeygenWithEncodingTrace_signEpochs_sublist
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome ×
@@ -1074,7 +1074,7 @@ theorem detailedGameAfterKeygenWithEncodingTrace_signEpochs_sublist
       EncodingMonitor.observedSignEpochs] using hsublist
 
 theorem detailedGameAfterKeygenWithEncodingTrace_freshSigningActionsRepresented
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome ×
@@ -1112,7 +1112,7 @@ theorem detailedGameAfterKeygenWithEncodingTrace_freshSigningActionsRepresented
   · simpa [appendVerificationEncodingObservation, forgedInput, hfresh] using hrepresented
 
 theorem detailedGameAfterKeygenWithEncodingTrace_freshSigningCollisionsRepresented
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (hinitialEncodingFree : ∀ epoch input,
@@ -1154,7 +1154,7 @@ theorem detailedGameAfterKeygenWithEncodingTrace_freshSigningCollisionsRepresent
   · simpa [appendVerificationEncodingObservation, forgedInput, hfresh] using hrepresented
 
 theorem detailedGameWithEncodingTrace_signEpochs_sublist
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (detailedGameWithEncodingTrace adversary)) :
@@ -1167,7 +1167,7 @@ theorem detailedGameWithEncodingTrace_signEpochs_sublist
     publicKey secretKey keyCache result hrest
 
 theorem detailedGameWithEncodingTrace_freshSigningActionsRepresented
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (detailedGameWithEncodingTrace adversary)) :
@@ -1191,7 +1191,7 @@ theorem detailedGameWithEncodingTrace_freshSigningActionsRepresented
   exact hrepresented
 
 theorem detailedGameWithEncodingTrace_freshSigningCollisionsRepresented
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (detailedGameWithEncodingTrace adversary)) :
@@ -1218,7 +1218,7 @@ theorem detailedGameWithEncodingTrace_freshSigningCollisionsRepresented
   exact hrepresented
 
 theorem detailedGameWithEncodingTrace_signingEpochs_nodup_of_winning
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (detailedGameWithEncodingTrace adversary))
@@ -1239,7 +1239,7 @@ theorem detailedGameWithEncodingTrace_signingEpochs_nodup_of_winning
   exact htraceNodup
 
 theorem detailedGameWithEncodingTrace_signEpochs_nodup_of_winning
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (detailedGameWithEncodingTrace adversary))
@@ -1252,7 +1252,7 @@ theorem detailedGameWithEncodingTrace_signEpochs_nodup_of_winning
     (detailedGameWithEncodingTrace_signEpochs_sublist adversary result hmem)
 
 theorem detailedGameWithEncodingTrace_freshSigningCollision_monitorHit
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (detailedGameWithEncodingTrace adversary))
@@ -1277,7 +1277,7 @@ theorem detailedGameWithEncodingTrace_freshSigningCollision_monitorHit
     (by simpa [hactions] using hactionNodup)
 
 theorem detailedGameWithEncodingTrace_postSigningFreshForgedCollision_monitorHit
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (detailedGameWithEncodingTrace adversary))

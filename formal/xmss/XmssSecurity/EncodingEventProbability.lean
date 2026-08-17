@@ -221,7 +221,7 @@ theorem winning_encoding_event_trace_monitor_decomposition
 
 /-- In an actual supported execution, the post-signing orientation is genuinely fresh after the signer finishes. Thus the two digest-collision cases have exactly the temporal semantics of `EncodingMonitor.sign` and a later `EncodingMonitor.query`. -/
 theorem winning_encoding_event_trace_postSigning_decomposition
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
     (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
@@ -255,10 +255,10 @@ theorem winning_encoding_event_trace_postSigning_decomposition
         exact ⟨entry, hentry, Or.inl ⟨signature, output, hsignature, hsignedFresh⟩⟩
 
 theorem winning_encoding_event_probability_eq_signingTrace
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] =
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] =
     Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding |
       detailedGameWithSigningTrace adversary] := by
@@ -266,10 +266,10 @@ theorem winning_encoding_event_probability_eq_signingTrace
   rfl
 
 theorem winning_encoding_event_probability_eq_encodingTrace
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] =
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] =
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding |
@@ -280,10 +280,10 @@ theorem winning_encoding_event_probability_eq_encodingTrace
 
 /-- The concrete encoding event is reduced to a 192-bit signing-input prehit or a hit in the adaptive epoch-collision monitor. -/
 theorem winning_encoding_event_probability_le_prehit_add_monitorHit
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
@@ -335,7 +335,7 @@ theorem winning_encoding_event_probability_le_prehit_add_monitorHit
       probEvent_or_le _ _ _
 
 theorem winning_encoding_monitorHit_probability_le_sampled_external
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
@@ -370,9 +370,9 @@ theorem winning_encoding_monitorHit_probability_le_sampled_external
         adversary execution hmem hevent.1 hevent.2
 
 theorem sampledDetailedGame_external_collision_probability_le_of_bound
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (hbound : ∀ keyResult ∈
-      support ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅),
+      support ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅),
       (splitDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
         keyResult.1.2 keyResult.2).IsQueryBoundP (· matches .inr _) q) :
     Pr[fun execution : (GameOutcome ×
@@ -388,8 +388,8 @@ theorem sampledDetailedGame_external_collision_probability_le_of_bound
       keyResult.1.2 keyResult.2) q (hbound keyResult hkeyResult)
 
 theorem sampledDetailedGame_external_collision_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q) :
     Pr[fun execution : (GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
           EncodingActionTrace =>
@@ -402,8 +402,8 @@ theorem sampledDetailedGame_external_collision_probability_le
         q adversary hbound keyResult hkeyResult)
 
 theorem winning_encoding_monitorHit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q) :
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
@@ -414,8 +414,8 @@ theorem winning_encoding_monitorHit_probability_le
     (sampledDetailedGame_external_collision_probability_le q adversary hbound)
 
 theorem winning_encoding_prehit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q) :
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
@@ -435,11 +435,11 @@ theorem winning_encoding_prehit_probability_le
       q adversary hbound
 
 theorem winning_encoding_event_probability_le_two_terms
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       2 * ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
   calc
     _ ≤
@@ -464,10 +464,10 @@ theorem winning_encoding_event_probability_le_two_terms
 
 /-- The concrete winning encoding event reduces inside the actual game distribution to the two signing-boundary orientations used by the probability argument. -/
 theorem winning_encoding_event_probability_le_signingTrace_orientations
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
     Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
         ∃ entry ∈ execution.2.2,
@@ -484,10 +484,10 @@ theorem winning_encoding_event_probability_le_signingTrace_orientations
     execution.1 execution.2.2 hlog hcaches hcached hevent⟩
 
 theorem winning_encoding_event_probability_le_preexisting_add_fresh
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
     Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
         ∃ entry ∈ execution.2.2,
@@ -537,10 +537,10 @@ theorem winning_encoding_event_probability_le_preexisting_add_fresh
       probEvent_or_le _ _ _
 
 theorem winning_encoding_event_probability_le_prehit_add_digestCollisions
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary Concrete.singleAttemptScheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
     Pr[fun execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
         ∃ entry ∈ execution.2.2,
@@ -594,8 +594,8 @@ theorem winning_encoding_event_probability_le_prehit_add_digestCollisions
       probEvent_or_le _ _ _
 
 theorem winning_encoding_event_trace_preexistingRisk_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
     (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
@@ -614,8 +614,8 @@ theorem winning_encoding_event_trace_preexistingRisk_le
       adversary q hbound execution hmem)
 
 theorem winning_encoding_event_trace_encodingInputPrehitRisk_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
     (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
@@ -632,8 +632,8 @@ theorem winning_encoding_event_trace_encodingInputPrehitRisk_le
       adversary q hbound execution hmem)
 
 theorem winning_encoding_event_trace_freshSigningEncodingCollisionRisk_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : execution ∈ support (detailedGameWithSigningTrace adversary))
     (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :

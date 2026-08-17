@@ -29,13 +29,13 @@ noncomputable def causalEagerVerificationContinuation
   let verified ← (simulateQ
     (RevealProbeOracleSimulation.eagerTraceImpl table)
     ((simulateQ (causalVerifierXmssRomImpl secretKey chain)
-      (Concrete.scheme.verify publicKey handled.1.1.1.epoch
+      (Concrete.singleAttemptScheme.verify publicKey handled.1.1.1.epoch
         handled.1.1.1.message handled.1.1.1.signature)).run
           handled.1.2)).run
   continuation table (combineCausalDetailedResult handled verified)
 
 noncomputable def causalLazyDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState) :
     ProbComp (((((Forgery × Bool) × AttackerActionTrace) ×
@@ -46,13 +46,13 @@ noncomputable def causalLazyDetailedGameAfterKeygen
       (adversary.main publicKey)).run).run state).run
   let verified ← ((simulateQ
     (causalLazyVerifierImpl publicKey secretKey chain)
-    (Concrete.scheme.verify publicKey handled.1.1.1.epoch
+    (Concrete.singleAttemptScheme.verify publicKey handled.1.1.1.epoch
       handled.1.1.1.message handled.1.1.1.signature)).run handled.1.2).run
   pure (combineCausalDetailedResult handled verified)
 
 set_option maxRecDepth 100000 in
 theorem evalDist_installed_causalDetailedGameAfterKeygenAfterRealRom_eq_lazy
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState)
     (continuation : (ChainValueIndex → Digest) →
@@ -93,7 +93,7 @@ theorem evalDist_installed_causalDetailedGameAfterKeygenAfterRealRom_eq_lazy
             (adversary.main publicKey)).run).run state).run
         let verified ← ((simulateQ
           (causalLazyVerifierImpl publicKey secretKey chain)
-          (Concrete.scheme.verify publicKey handled.1.1.1.epoch
+          (Concrete.singleAttemptScheme.verify publicKey handled.1.1.1.epoch
             handled.1.1.1.message handled.1.1.1.signature)).run
               handled.1.2).run
         let base ← $ᵗ (ChainValueIndex → Digest)
@@ -106,7 +106,7 @@ theorem evalDist_installed_causalDetailedGameAfterKeygenAfterRealRom_eq_lazy
         bind_assoc, Function.comp_apply] using
         (evalDist_installed_simulate_causalVerifier_eq_lazy
           publicKey secretKey chain
-            (Concrete.scheme.verify publicKey handled.1.1.1.epoch
+            (Concrete.singleAttemptScheme.verify publicKey handled.1.1.1.epoch
               handled.1.1.1.message handled.1.1.1.signature)
             handled.1.2
             (fun table verified => continuation table

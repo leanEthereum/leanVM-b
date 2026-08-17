@@ -7,7 +7,7 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity
 
 theorem cappedWinning_encoding_event_trace_postSigning_decomposition
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : execution ∈ support (cappedDetailedGameWithSigningTrace adversary))
     (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :
@@ -42,10 +42,10 @@ theorem cappedWinning_encoding_event_trace_postSigning_decomposition
         exact ⟨entry, hentry, Or.inl ⟨signature, output, hsignature, hsignedFresh⟩⟩
 
 theorem cappedWinning_encoding_event_probability_eq_encodingTrace
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.cappedScheme adversary] =
+      detailedGameWithCache Concrete.scheme adversary] =
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding |
@@ -54,10 +54,10 @@ theorem cappedWinning_encoding_event_probability_eq_encodingTrace
   rfl
 
 theorem cappedWinning_encoding_event_probability_le_prehit_add_monitorHit
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
@@ -112,8 +112,8 @@ theorem cappedWinning_encoding_event_probability_le_prehit_add_monitorHit
       probEvent_or_le _ _ _
 
 theorem cappedWinning_encoding_prehit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
@@ -133,11 +133,11 @@ theorem cappedWinning_encoding_prehit_probability_le
       q adversary hbound
 
 theorem cappedWinning_encoding_event_probability_le_two_terms
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       2 * ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
   calc
     _ ≤

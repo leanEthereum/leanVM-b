@@ -559,12 +559,12 @@ theorem cappedSplitEncodingTracedMappedAdversaryImpl_query_trace_sublist
                 change ((some signature, finalCache), baseTrace) ∈ support
                   ((simulateQ encodingSamplingTraceImpl
                     ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
-                      (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+                      (Concrete.scheme.sign publicKey secretKey request.epoch
                         request.message)).run initialState.1.1)).run) at hunlogged
                 have haction := splitXmssRom_simulateQ_sign_fresh_trace
                   secretKey.parameter (request.message, signature.randomness)
                     request.epoch
-                    (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+                    (Concrete.scheme.sign publicKey secretKey request.epoch
                       request.message) initialState.1.1
                     ((some signature, finalCache), baseTrace) hashOutput hfresh
                     houtput hunlogged
@@ -630,7 +630,7 @@ theorem cappedSplitEncodingTracedMappedAdversaryImpl_query_validSignEpochs_subli
       change ((output, finalCache), baseTrace) ∈ support
         ((simulateQ encodingSamplingTraceImpl
           ((simulateQ (splitXmssRomImpl secretKey.parameter .sign)
-            (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+            (Concrete.scheme.sign publicKey secretKey request.epoch
               request.message)).run initialState.1.1)).run) at hunlogged
       have htrace := Concrete.precomputedCappedSign_traced_validSignEpochs_sublist_singleton
         publicKey secretKey request.epoch request.message initialState.1.1
@@ -734,7 +734,7 @@ theorem cappedSplitEncodingTracedMappedAdversary_simulateQ_validSignEpochs_subli
       simpa [List.append_assoc] using hcombined
 
 theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : (GameOutcome ×
@@ -778,7 +778,7 @@ theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist
         have haction := splitXmssRom_simulateQ_query_fresh_trace
           secretKey.parameter
             (forgery.message, forgery.signature.randomness) forgery.epoch
-            (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+            (Concrete.scheme.verify publicKey forgery.epoch forgery.message
               forgery.signature) adversaryState.1.1
             ((verified, finalCache), verificationTrace) output hfresh houtput
             hverify
@@ -791,7 +791,7 @@ theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_trace_sublist
     simpa [appendVerificationEncodingObservation, forgedInput, hfresh] using hsub
 
 theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_validSignEpochs_sublist
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : (GameOutcome ×
@@ -830,7 +830,7 @@ theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_validSignEpochs_subl
       EncodingMonitor.observedSignEpochs] using hadversarySub
   have hverificationEpochs :=
     splitXmssRom_simulateQ_query_observedSignEpochs_eq_nil secretKey.parameter
-      (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message
+      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
         forgery.signature) adversaryState.1.1
           ((verified, finalCache), verificationTrace) hverify
   have hvalidVerification :
@@ -850,7 +850,7 @@ theorem cappedSplitDetailedGameAfterKeygenWithEncodingTrace_validSignEpochs_subl
   simpa using hadversarySub'
 
 theorem cappedSampledDetailedGameWithEncodingTrace_trace_sublist
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
         EncodingActionTrace)
@@ -864,7 +864,7 @@ theorem cappedSampledDetailedGameWithEncodingTrace_trace_sublist
     publicKey secretKey keyCache result hrest
 
 theorem cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_sublist
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
         EncodingActionTrace)
@@ -880,7 +880,7 @@ theorem cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_sublist
       adversary publicKey secretKey keyCache result hrest
 
 theorem cappedDetailedGameWithEncodingTrace_signingLog_eq_trace
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support
@@ -899,7 +899,7 @@ theorem cappedDetailedGameWithEncodingTrace_signingLog_eq_trace
   rfl
 
 theorem cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_nodup_of_winning
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
         EncodingActionTrace)
@@ -929,7 +929,7 @@ theorem cappedSampledDetailedGameWithEncodingTrace_validSignEpochs_nodup_of_winn
       adversary result hmem)
 
 theorem cappedSampledDetailedGameWithEncodingTrace_external_monitorHit_of_winning
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) ×
         EncodingActionTrace)
@@ -946,7 +946,7 @@ theorem cappedSampledDetailedGameWithEncodingTrace_external_monitorHit_of_winnin
       adversary result hmem hevent) hhit
 
 theorem cappedWinning_encoding_monitorHit_probability_le_sampled_external
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
@@ -984,8 +984,8 @@ theorem cappedWinning_encoding_monitorHit_probability_le_sampled_external
         adversary execution hmem hevent.1 hevent.2
 
 theorem cappedWinning_encoding_monitorHit_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome ×
         ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧

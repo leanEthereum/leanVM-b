@@ -472,7 +472,7 @@ theorem simulate_globalHighMonitoredVerifier_support_attacker_trace_eq
 set_option maxHeartbeats 3000000 in
 set_option maxRecDepth 2000000 in
 theorem globalHighMonitoredDetailedExecution_support_returnedCovered
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest))
@@ -505,7 +505,7 @@ theorem globalHighMonitoredDetailedExecution_support_returnedCovered
   have hhandledCacheLe : handled.2.1.causal.cache ≤
       verified.2.1.causal.cache :=
     simulate_globalHighMonitoredVerifier_support_cache_le right
-      (Concrete.cappedScheme.verify right.1.1.publicKey handled.1.epoch
+      (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
         handled.1.message handled.1.signature) handled.2 verified hvertified
   have hhandledCovered : GlobalMonitoredCausalStateCovered covered
       handled.2.1 := by
@@ -524,11 +524,11 @@ theorem globalHighMonitoredDetailedExecution_support_returnedCovered
     · exact hhandledCacheLe
     · intro action haction
       rw [simulate_globalHighMonitoredVerifier_support_attacker_trace_eq right
-        (Concrete.cappedScheme.verify right.1.1.publicKey handled.1.epoch
+        (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
           handled.1.message handled.1.signature) handled.2 verified hvertified]
       exact haction
   exact simulate_globalHighMonitoredVerifier_support_covered right
-    (Concrete.cappedScheme.verify right.1.1.publicKey handled.1.epoch
+    (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
       handled.1.message handled.1.signature) handled.2 covered hhandledCovered
         hforward verified hvertified
 

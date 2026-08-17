@@ -5,9 +5,9 @@ open OracleComp OracleSpec
 namespace XmssSecurity
 
 theorem detailed_execution_verification_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary)) :
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary)) :
     execution.1.verified = Concrete.verifyFromCache execution.2 execution.1.publicKey
       execution.1.forgery.epoch execution.1.forgery.message execution.1.forgery.signature := by
   unfold detailedGameWithCache detailedGameCore at hmem
@@ -24,11 +24,11 @@ theorem detailed_execution_verification_consistent
   simp only
   have hroute :
       simulateQ xmssRomImpl
-          (Concrete.scheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
+          (Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
         simulateQ (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
           (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
             OracleComp HashSpec Bool) := by
-    simp only [Concrete.scheme, xmssRomImpl]
+    simp only [Concrete.singleAttemptScheme, xmssRomImpl]
     change simulateQ (unifFwdImpl HashSpec +
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
       (liftM (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
@@ -43,9 +43,9 @@ theorem detailed_execution_verification_consistent
 
 set_option linter.constructorNameAsVariable false in
 theorem detailed_execution_key_components_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary)) :
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary)) :
     execution.1.publicKey.parameter = execution.1.secretKey.parameter ∧
       execution.1.publicKey.root = Concrete.CacheReplay.treeNode execution.2
         execution.1.secretKey.parameter execution.1.secretKey.chainStart treeHeight
@@ -55,7 +55,7 @@ theorem detailed_execution_key_components_consistent
   obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, hkeygen, hrest⟩ := hmem
   have hkeyCacheLe : keyCache ≤ execution.2 :=
     xmssRom_cache_le _ keyCache execution hrest
-  simp only [Concrete.scheme] at hkeygen
+  simp only [Concrete.singleAttemptScheme] at hkeygen
   unfold Concrete.keygen at hkeygen
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hkeygen
   obtain ⟨⟨parameter, parameterCache⟩, _hparameter, hafterParameter⟩ := hkeygen
@@ -94,9 +94,9 @@ theorem detailed_execution_key_components_consistent
   exact ⟨rfl, heval.symm⟩
 
 theorem detailed_execution_key_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary)) :
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary)) :
     execution.1.publicKey =
       Concrete.CacheReplay.publicKeyFromCache execution.2 execution.1.secretKey := by
   obtain ⟨hparameter, hroot⟩ :=
@@ -161,9 +161,9 @@ theorem concrete_sign_support_replay (publicKey : PublicKey) (secretKey : Secret
       exact heval.symm
 
 theorem detailed_execution_consistent_of_signing
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary))
     (hsigning : ∀ request signature,
       SigningTranscript.Returned execution.1.signingLog request signature →
       ∃ encoding,

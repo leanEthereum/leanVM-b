@@ -36,23 +36,23 @@ theorem outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme
   exact horient
 
 theorem outcomeBadEvent_probability_le_of_afterKeygen_freshCollision
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) (event : BadEvent)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q) (event : BadEvent)
     (targetInput : (PublicKey × SecretKey) → QueryCache HashSpec → HashInput → HashInput)
     (horient : ∀ keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅),
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅),
       ∀ execution ∈ support
         ((simulateQ xmssRomImpl
-          (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
+          (detailedGameAfterKeygen Concrete.singleAttemptScheme adversary keyResult.1.1 keyResult.1.2)).run
             keyResult.2),
         OutcomeBadEventOccurs execution.2 execution.1 event →
           Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
             (targetInput keyResult.1 keyResult.2)) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 event |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
   outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme
-    Concrete.scheme q adversary hbound event targetInput horient
+    Concrete.singleAttemptScheme q adversary hbound event targetInput horient
 
 end XmssSecurity

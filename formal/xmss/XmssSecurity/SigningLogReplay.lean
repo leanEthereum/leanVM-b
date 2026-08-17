@@ -11,7 +11,7 @@ noncomputable def mappedAdversaryImpl (publicKey : PublicKey) (secretKey : Secre
   let forward : QueryImpl OracleWorld
       (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
     (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
-  xmssRomImpl.writerTMapBase (forward + signingOracle Concrete.scheme publicKey secretKey)
+  xmssRomImpl.writerTMapBase (forward + signingOracle Concrete.singleAttemptScheme publicKey secretKey)
 
 theorem mappedAdversary_cache_le (publicKey : PublicKey) (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -24,7 +24,7 @@ theorem mappedAdversary_cache_le (publicKey : PublicKey) (secretKey : SecretKey)
       (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
     (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
   apply xmssRom_cache_le
-    ((simulateQ (forward + signingOracle Concrete.scheme publicKey secretKey) computation).run)
+    ((simulateQ (forward + signingOracle Concrete.singleAttemptScheme publicKey secretKey) computation).run)
     initialCache result
   rw [QueryImpl.simulateQ_writerTMapBase_run]
   exact hmem
@@ -110,9 +110,9 @@ theorem mappedAdversary_signingLog_consistent (publicKey : PublicKey) (secretKey
         exact ⟨entry, hlater, hrequest, hsignature⟩
 
 theorem detailed_execution_signingLog_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary)) :
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary)) :
     SigningLogConsistent execution.2 execution.1.secretKey execution.1.signingLog := by
   have hgame := hmem
   unfold detailedGameWithCache detailedGameCore at hgame
@@ -144,27 +144,27 @@ theorem detailed_execution_signingLog_consistent
     hadversary' finalCache hcacheLe
 
 theorem detailed_execution_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary)) :
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary)) :
     ConcreteOutcomeConsistent execution.2 execution.1 :=
   detailed_execution_consistent_of_signing adversary execution hmem
     (detailed_execution_signingLog_consistent adversary execution hmem)
 
 /-- Concrete winning executions are bounded by the sum of their 175 cache-level bad-event probabilities. -/
 theorem forgeAdvantage_le_outcomeBadEvent_sum
-    (adversary : Adversary Concrete.scheme) :
-    forgeAdvantage Concrete.scheme adversary ≤
+    (adversary : Adversary Concrete.singleAttemptScheme) :
+    forgeAdvantage Concrete.singleAttemptScheme adversary ≤
       ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         OutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
   rw [forgeAdvantage_eq_detailedGameWithCache]
   calc
     Pr[fun execution : GameOutcome × QueryCache HashSpec => execution.1.won = true |
-        detailedGameWithCache Concrete.scheme adversary] ≤
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec => ∃ event : BadEvent,
         OutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
       apply probEvent_mono
       intro execution hmem hwin
       exact winning_outcome_has_badEvent execution.2 execution.1
@@ -172,10 +172,10 @@ theorem forgeAdvantage_le_outcomeBadEvent_sum
     _ ≤ ∑ event : BadEvent,
         Pr[fun execution : GameOutcome × QueryCache HashSpec =>
           OutcomeBadEventOccurs execution.2 execution.1 event |
-          detailedGameWithCache Concrete.scheme adversary] := by
+          detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
       simpa only [Finset.mem_univ, true_and] using
         probEvent_exists_finset_le_sum (Finset.univ : Finset BadEvent)
-          (detailedGameWithCache Concrete.scheme adversary)
+          (detailedGameWithCache Concrete.singleAttemptScheme adversary)
           (fun event execution => OutcomeBadEventOccurs execution.2 execution.1 event)
 
 end XmssSecurity

@@ -42,11 +42,11 @@ theorem keygenLeafTargetInput_leafInput (secretKey : SecretKey)
 attribute [irreducible] keygenLeafTargetInput
 
 theorem detailedGameAfterKeygen_keys_eq
-    (adversary : Adversary Concrete.cappedScheme) (publicKey : PublicKey) (secretKey : SecretKey)
+    (adversary : Adversary Concrete.scheme) (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary publicKey secretKey)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey)).run
           initialCache)) :
     execution.1.publicKey = publicKey ∧ execution.1.secretKey = secretKey := by
   unfold detailedGameAfterKeygen at hmem
@@ -107,14 +107,14 @@ theorem adaptiveFreshDigestCollisionWith_of_leafCollision
 
 /-- A final-cache leaf collision against the honest WOTS public key is fresh after key generation. -/
 theorem leafCollision_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (secretKey : SecretKey) (hsecret : secretKey = keyResult.1.2)
     (epoch : Epoch) (forgedEndpoints : ChainIndex → Digest) (forgedOutput : HashOutput)
@@ -130,11 +130,11 @@ theorem leafCollision_afterKeygen_orientation
       (keygenLeafTargetInput keyResult.1.2 keyResult.2) := by
   subst secretKey
   have hafterCacheLe := xmssRom_cache_le
-    (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
+    (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
   have hkeygen' : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
-    simpa only [Concrete.cappedScheme] using hkeygen
+    simpa only [Concrete.scheme] using hkeygen
   let oldKeyResult : (PublicKey × SecretKey) × QueryCache HashSpec :=
     ((keyResult.1.1, Concrete.erasePrecomputation keyResult.1.2), keyResult.2)
   have holdKeygen : oldKeyResult ∈ support
@@ -191,9 +191,9 @@ theorem fresh_leaf_badEvent_is_collision
 
 /-- A successful detailed execution caches the forged leaf for its uniquely decoded encoding. -/
 theorem detailed_execution_verified_leaf_cached_as
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hgame : execution ∈ support (detailedGameWithCache Concrete.cappedScheme adversary))
+    (hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (encoding : Encoding) (hverified : execution.1.verified = true)
     (hdecode : TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
@@ -216,9 +216,9 @@ theorem detailed_execution_verified_leaf_cached_as
 
 /-- A supported fresh leaf witness supplies both the verifier query and its concrete leaf collision. -/
 theorem detailed_execution_fresh_leaf_cached_collision
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hgame : execution ∈ support (detailedGameWithCache Concrete.cappedScheme adversary))
+    (hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (forgedEncoding : Encoding) (hforgedValid : TargetSum.Valid forgedEncoding)
     (hverified : execution.1.verified = true)
     (hforgedDecode : TargetSum.decodeDigest
@@ -265,14 +265,14 @@ theorem detailed_execution_fresh_leaf_cached_collision
 
 /-- One decoded fresh-epoch leaf witness is oriented against the leaf fixed by key generation. -/
 theorem fresh_leaf_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (forgedEncoding : Encoding) (hforgedValid : TargetSum.Valid forgedEncoding)
     (hverified : execution.1.verified = true)
@@ -293,7 +293,7 @@ theorem fresh_leaf_witness_afterKeygen_orientation
       (keygenLeafTargetInput keyResult.1.2 keyResult.2) := by
   have hkeys := detailedGameAfterKeygen_keys_eq adversary keyResult.1.1 keyResult.1.2
     keyResult.2 execution hafter
-  have hgame : execution ∈ support (detailedGameWithCache Concrete.cappedScheme adversary) := by
+  have hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary) := by
     unfold detailedGameWithCache detailedGameCore
     rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff]
     exact ⟨keyResult, hkeygen, hafter⟩
@@ -311,14 +311,14 @@ theorem fresh_leaf_witness_afterKeygen_orientation
 
 /-- A fresh-epoch leaf event is a collision against the honest leaf fixed at key generation. -/
 theorem fresh_leaf_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hevent : OutcomeBadEventOccurs execution.2 execution.1 .leaf)
     (hfresh : ∃ forgedEncoding,
@@ -397,9 +397,9 @@ theorem same_leaf_badEvent_is_collision
   exact hevent
 
 theorem detailed_execution_returned_signature_eq
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hgame : execution ∈ support (detailedGameWithCache Concrete.cappedScheme adversary))
+    (hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (request : SignRequest) (signature : Signature) (encoding : Encoding)
     (hdecode : TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
@@ -416,29 +416,29 @@ theorem detailed_execution_returned_signature_eq
   exact hsignature
 
 theorem afterKeygen_execution_mem_detailedGame
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2)) :
-    execution ∈ support (detailedGameWithCache Concrete.cappedScheme adversary) := by
+    execution ∈ support (detailedGameWithCache Concrete.scheme adversary) := by
   unfold detailedGameWithCache detailedGameCore
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff]
   exact ⟨keyResult, hkeygen, hafter⟩
 
 theorem sameLeafCollision_afterKeygen_orientation_eq_epoch
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (secretKey : SecretKey) (hsecret : secretKey = keyResult.1.2)
     (epoch : Epoch) (hepoch : epoch = execution.1.forgery.epoch)
@@ -468,14 +468,14 @@ theorem sameLeafCollision_afterKeygen_orientation_eq_epoch
     forgedOutput hforgedCached hleafCollision
 
 theorem same_leaf_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hverified : execution.1.verified = true)
     (request : SignRequest) (signature : Signature)
@@ -523,14 +523,14 @@ theorem same_leaf_witness_afterKeygen_orientation
     forgedOutput hforgedCached hleafCollision
 
 theorem leaf_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hevent : OutcomeBadEventOccurs execution.2 execution.1 .leaf) :
     Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
@@ -545,13 +545,13 @@ theorem leaf_event_afterKeygen_orientation
       hafter hevent hfresh
 
 theorem leaf_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 .leaf |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme Concrete.cappedScheme q adversary hbound .leaf
+  apply outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme Concrete.scheme q adversary hbound .leaf
     (fun key cache => keygenLeafTargetInput key.2 cache)
   intro keyResult hkeygen execution hafter hevent
   exact leaf_event_afterKeygen_orientation adversary keyResult hkeygen execution hafter hevent
@@ -562,11 +562,11 @@ end XmssSecurity.CappedLeaf
 namespace XmssSecurity
 
  theorem capped_leaf_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 .leaf |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
       (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
   CappedLeaf.leaf_outcomeBadEvent_probability_le q adversary hbound
 

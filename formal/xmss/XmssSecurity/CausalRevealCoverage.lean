@@ -476,7 +476,7 @@ theorem causalLazySigningQuery_support_resultCovered
     (hcovered : CausalRevealsCovered covered state)
     (hdirect : ∀ signature resultCache encoding,
       (some signature, resultCache) ∈ support ((simulateQ xmssRomImpl
-        (Concrete.scheme.sign publicKey secretKey request.epoch
+        (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch
           request.message)).run state.cache) →
       TargetSum.decodeDigest
         (Concrete.CacheView.encodingHash resultCache secretKey.parameter
@@ -509,7 +509,7 @@ theorem encodingHash_eq_of_sign_support_of_cache_le
     (initialCache resultCache largerCache : QueryCache HashSpec)
     (signature : Signature)
     (hsigned : (some signature, resultCache) ∈ support ((simulateQ xmssRomImpl
-      (Concrete.scheme.sign publicKey secretKey request.epoch
+      (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch
         request.message)).run initialCache))
     (hle : resultCache ≤ largerCache) :
     Concrete.CacheView.encodingHash resultCache secretKey.parameter
@@ -595,7 +595,7 @@ theorem causalLazySigningQuery_support_cache_le
   obtain ⟨signed, hsigned, hrest⟩ := hresult
   have hsignedLe : state.cache ≤ signed.2 :=
     xmssRom_cache_le
-      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
+      (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch request.message)
       state.cache signed hsigned
   have hcache := causalLazyRevealSignatureOption_support_cache_eq
     secretKey chain request signed.1 { state with cache := signed.2 }
@@ -638,7 +638,7 @@ theorem causalLazySigningQuery_support_resultCovered_of_final
       (request.epoch, encoding chain) ∈ covered := by
     intro signature encoding hsignature hdecode
     have hsignedSome : (some signature, signed.2) ∈ support ((simulateQ xmssRomImpl
-        (Concrete.scheme.sign publicKey secretKey request.epoch
+        (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch
           request.message)).run state.cache) := by
       have heq : (some signature, signed.2) = signed := by
         apply Prod.ext
@@ -672,7 +672,7 @@ theorem causalLazyMappedStep_support_resultCovered
     (hdirect : ∀ request signature resultCache encoding,
       input = .inr request →
       (some signature, resultCache) ∈ support ((simulateQ xmssRomImpl
-        (Concrete.scheme.sign publicKey secretKey request.epoch
+        (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch
           request.message)).run state.cache) →
       TargetSum.decodeDigest
         (Concrete.CacheView.encodingHash resultCache secretKey.parameter
@@ -707,7 +707,7 @@ theorem causalLazyActionTracedStep_support_resultCovered
     (hdirect : ∀ request signature resultCache encoding,
       input = .inr request →
       (some signature, resultCache) ∈ support ((simulateQ xmssRomImpl
-        (Concrete.scheme.sign publicKey secretKey request.epoch
+        (Concrete.singleAttemptScheme.sign publicKey secretKey request.epoch
           request.message)).run state.cache) →
       TargetSum.decodeDigest
         (Concrete.CacheView.encodingHash resultCache secretKey.parameter

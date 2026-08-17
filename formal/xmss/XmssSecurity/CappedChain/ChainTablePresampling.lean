@@ -3295,28 +3295,28 @@ theorem evalDist_keygen_eq_presample_chainTableTrace
     Concrete.keygenAfterParameter chain table
 
 noncomputable def Concrete.detailedGameAfterParameter
-    (adversary : Adversary Concrete.cappedScheme) (parameter : PublicParameter) :
+    (adversary : Adversary Concrete.scheme) (parameter : PublicParameter) :
     OracleComp OracleWorld GameOutcome := do
   let keys ← Concrete.keygenAfterParameter parameter
-  detailedGameAfterKeygen Concrete.cappedScheme adversary keys.1 keys.2
+  detailedGameAfterKeygen Concrete.scheme adversary keys.1 keys.2
 
 theorem Concrete.detailedGameCore_eq_samplePublicParameter_bind
-    (adversary : Adversary Concrete.cappedScheme) :
-    detailedGameCore Concrete.cappedScheme adversary =
+    (adversary : Adversary Concrete.scheme) :
+    detailedGameCore Concrete.scheme adversary =
       (liftM Concrete.samplePublicParameter >>=
         Concrete.detailedGameAfterParameter adversary) := by
   unfold detailedGameCore Concrete.detailedGameAfterParameter
   change (Concrete.precomputedKeygen >>= fun keys =>
-    detailedGameAfterKeygen Concrete.cappedScheme adversary keys.1 keys.2) = _
+    detailedGameAfterKeygen Concrete.scheme adversary keys.1 keys.2) = _
   rw [Concrete.keygen_eq_samplePublicParameter_bind]
   simp only [bind_assoc]
 
 /-- The full detailed game admits candidate fixed-chain presampling after the real public parameter is sampled. -/
 theorem evalDist_detailedGame_eq_presample_chainTableTrace
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (chain : ChainIndex) (table : ChainValueIndex → Digest) :
     𝒟[(simulateQ xmssRomImpl
-      (detailedGameCore Concrete.cappedScheme adversary)).run' ∅] =
+      (detailedGameCore Concrete.scheme adversary)).run' ∅] =
       𝒟[Concrete.samplePublicParameter >>= fun parameter => do
         let trace ← OracleComp.presampleCacheEntriesTrace ∅
           (chainTableEdgeInputs parameter chain table)

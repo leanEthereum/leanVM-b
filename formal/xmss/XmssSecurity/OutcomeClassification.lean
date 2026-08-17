@@ -156,20 +156,20 @@ theorem winning_outcome_has_badEvent (cache : QueryCache HashSpec)
 
 /-- Cache-consistent winning executions are bounded by the sum of their 175 concrete bad-event probabilities. -/
 theorem forgeAdvantage_le_outcomeBadEvent_sum_of_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (hconsistent : ∀ execution : GameOutcome × QueryCache HashSpec,
       execution.1.won = true → ConcreteOutcomeConsistent execution.2 execution.1) :
-    forgeAdvantage Concrete.scheme adversary ≤
+    forgeAdvantage Concrete.singleAttemptScheme adversary ≤
       ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         OutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
   rw [forgeAdvantage_eq_detailedGameWithCache]
   calc
     Pr[fun execution : GameOutcome × QueryCache HashSpec => execution.1.won = true |
-        detailedGameWithCache Concrete.scheme adversary] ≤
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec => ∃ event : BadEvent,
         OutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
       apply probEvent_mono''
       intro execution hwin
       exact winning_outcome_has_badEvent execution.2 execution.1
@@ -177,10 +177,10 @@ theorem forgeAdvantage_le_outcomeBadEvent_sum_of_consistent
     _ ≤ ∑ event : BadEvent,
         Pr[fun execution : GameOutcome × QueryCache HashSpec =>
           OutcomeBadEventOccurs execution.2 execution.1 event |
-          detailedGameWithCache Concrete.scheme adversary] := by
+          detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
       simpa only [Finset.mem_univ, true_and] using
         probEvent_exists_finset_le_sum (Finset.univ : Finset BadEvent)
-          (detailedGameWithCache Concrete.scheme adversary)
+          (detailedGameWithCache Concrete.singleAttemptScheme adversary)
           (fun event execution => OutcomeBadEventOccurs execution.2 execution.1 event)
 
 end XmssSecurity

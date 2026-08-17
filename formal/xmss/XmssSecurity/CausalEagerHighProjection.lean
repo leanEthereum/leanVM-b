@@ -326,23 +326,23 @@ theorem map_simulate_filteredHighMonitoredVerifier_verify_projection
       ((result.1, result.2.1.causal), result.2.1.trace)) <$>
         (simulateQ
           (filteredHighMonitoredVerifierImpl keyHigh selected table)
-          (Concrete.scheme.verify publicKey forgery.epoch forgery.message
+          (Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message
             forgery.signature)).run (state, attackerTrace) =
       (fun result : ((Bool × CausalHashState) ×
           RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
         (result.1, state.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-            (Concrete.scheme.verify publicKey forgery.epoch forgery.message
+            (Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message
               forgery.signature)).run state.causal)).run := by
-  unfold Concrete.scheme
+  unfold Concrete.singleAttemptScheme
   exact map_simulate_filteredHighMonitoredVerifier_liftM_projection keyHigh
     selected table
     (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature)
     state attackerTrace
 
 noncomputable def filteredHighUntracedDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) :
@@ -353,12 +353,12 @@ noncomputable def filteredHighUntracedDetailedExecution
     (adversary.main keyHigh.1.publicKey)
   (fun verified => (handled, verified)) <$>
     simulateQ (filteredHighVerifierImpl keyHigh selected)
-      (Concrete.scheme.verify keyHigh.1.publicKey handled.epoch handled.message
+      (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.epoch handled.message
         handled.signature)
 
 set_option maxHeartbeats 1000000 in
 theorem map_filteredHighMonitoredDetailedExecution_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (table : ChainValueIndex → Digest) :
@@ -377,14 +377,14 @@ theorem map_filteredHighMonitoredDetailedExecution_projection
         ((fun result : Bool × CausalHashState =>
           ((handled.1, result.1), result.2)) <$>
           (simulateQ (filteredHighVerifierImpl keyHigh selected)
-            (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+            (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.1.epoch
               handled.1.message handled.1.signature)).run handled.2)).run =
         (fun result : ((Bool × CausalHashState) ×
             RevealProbeOracleSimulation.ActionTrace ChainValueIndex) =>
           (((handled.1, result.1.1), result.1.2), result.2)) <$>
           (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
             ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-              (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+              (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.1.epoch
                 handled.1.message handled.1.signature)).run handled.2)).run := by
     rw [simulateQ_map, WriterT.run_map']
     rfl
@@ -392,7 +392,7 @@ theorem map_filteredHighMonitoredDetailedExecution_projection
       (do
         let verified ← (simulateQ
           (filteredHighMonitoredVerifierImpl keyHigh selected table)
-          (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+          (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.1.epoch
             handled.1.message handled.1.signature)).run handled.2
         pure (((handled.1, verified.1), verified.2.1.causal),
           verified.2.1.trace)) =
@@ -404,7 +404,7 @@ theorem map_filteredHighMonitoredDetailedExecution_projection
             (result.1, handled.2.1.trace ++ result.2)) <$>
             (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
               ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-                (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+                (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.1.epoch
                   handled.1.message handled.1.signature)).run
                     handled.2.1.causal)).run) := by
     have hverifier :=
@@ -428,7 +428,7 @@ theorem map_filteredHighMonitoredDetailedExecution_projection
         (result.1, head.2 ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-            (Concrete.scheme.verify keyHigh.1.publicKey head.1.1.epoch
+            (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey head.1.1.epoch
               head.1.1.message head.1.1.signature)).run head.1.2)).run)
   change (do
     let head ← (simulateQ
@@ -452,7 +452,7 @@ abbrev FilteredHighUntracedDirectResult :=
     ((Forgery × Bool) × CausalHashState)
 
 noncomputable def filteredHighUntracedDirectProgram
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       FilteredHighUntracedDirectResult := do
   let keyHigh ← RevealProbeOracleSimulation.liftProbComp
@@ -472,7 +472,7 @@ def filteredHighMonitoredUntracedProjection
 
 set_option maxHeartbeats 1000000 in
 theorem filteredHighMonitoredProgram_projection_eq_eagerExperiment
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     filteredHighMonitoredUntracedProjection <$>
         filteredHighMonitoredProgram adversary selected =
       RevealProbeOracleSimulation.eagerExperiment

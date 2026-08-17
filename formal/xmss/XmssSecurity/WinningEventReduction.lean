@@ -64,31 +64,31 @@ theorem WinningOutcomeBadEventOccurs.forgery_decode
     exact ⟨forgedEncoding, hforgedDecode⟩
 
 theorem winningOutcomeBadEvent_probability_le_outcomeBadEvent
-    (adversary : Adversary Concrete.scheme) (event : BadEvent) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (event : BadEvent) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 event |
-      detailedGameWithCache Concrete.scheme adversary] := by
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
   apply probEvent_mono''
   intro execution hevent
   exact hevent.2
 
 /-- The forging advantage is bounded by the union of bad events restricted to winning executions. -/
 theorem forgeAdvantage_le_winningOutcomeBadEvent_sum
-    (adversary : Adversary Concrete.scheme) :
-    forgeAdvantage Concrete.scheme adversary ≤
+    (adversary : Adversary Concrete.singleAttemptScheme) :
+    forgeAdvantage Concrete.singleAttemptScheme adversary ≤
       ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
   rw [forgeAdvantage_eq_detailedGameWithCache]
   calc
     Pr[fun execution : GameOutcome × QueryCache HashSpec => execution.1.won = true |
-        detailedGameWithCache Concrete.scheme adversary] ≤
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec => ∃ event : BadEvent,
         WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
       apply probEvent_mono
       intro execution hmem hwin
       obtain ⟨event, hevent⟩ := winning_outcome_has_badEvent execution.2 execution.1
@@ -97,10 +97,10 @@ theorem forgeAdvantage_le_winningOutcomeBadEvent_sum
     _ ≤ ∑ event : BadEvent,
         Pr[fun execution : GameOutcome × QueryCache HashSpec =>
           WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-          detailedGameWithCache Concrete.scheme adversary] := by
+          detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
       simpa only [Finset.mem_univ, true_and] using
         probEvent_exists_finset_le_sum (Finset.univ : Finset BadEvent)
-          (detailedGameWithCache Concrete.scheme adversary)
+          (detailedGameWithCache Concrete.singleAttemptScheme adversary)
           (fun event execution =>
             WinningOutcomeBadEventOccurs execution.2 execution.1 event)
 

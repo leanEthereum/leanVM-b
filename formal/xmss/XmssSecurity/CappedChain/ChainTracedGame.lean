@@ -11,7 +11,7 @@ def actionTraceOutcome
   ⟨publicKey, secretKey, result.1.1, result.2.toSigningLog, result.1.2⟩
 
 noncomputable def detailedGameAfterKeygenWithActionTrace
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     ProbComp ((GameOutcome × QueryCache HashSpec) × AttackerActionTrace) :=
@@ -20,12 +20,12 @@ noncomputable def detailedGameAfterKeygenWithActionTrace
       (sourceActionTracedDetailedGameAfterKeygen adversary publicKey secretKey)).run initialCache
 
 theorem detailedGameAfterKeygenWithActionTrace_projection
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     Prod.fst <$> detailedGameAfterKeygenWithActionTrace adversary publicKey secretKey initialCache =
       (simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary publicKey secretKey)).run initialCache := by
+        (detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey)).run initialCache := by
   have hsource := sourceActionTracedDetailedGameAfterKeygen_log_projection adversary
     publicKey secretKey
   have hsimulated := congrArg
@@ -34,7 +34,7 @@ theorem detailedGameAfterKeygenWithActionTrace_projection
     simulateQ_map, StateT.run_map, Functor.map_map, Function.comp_def] using hsimulated
 
 theorem detailedGameAfterKeygenWithActionTrace_support_info
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : (GameOutcome × QueryCache HashSpec) × AttackerActionTrace)
@@ -59,16 +59,16 @@ theorem detailedGameAfterKeygenWithActionTrace_support_info
   exact ⟨sourceResult, hsourceRun, rfl⟩
 
 noncomputable def detailedGameWithKeygenCacheAndActionTrace
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace) := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅
+  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
   let execution ← detailedGameAfterKeygenWithActionTrace adversary keyResult.1.1
     keyResult.1.2 keyResult.2
   pure ((keyResult, execution.1), execution.2)
 
 theorem detailedGameWithKeygenCacheAndActionTrace_projection
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Prod.fst <$> detailedGameWithKeygenCacheAndActionTrace adversary =
       detailedGameWithKeygenCache adversary := by
   unfold detailedGameWithKeygenCacheAndActionTrace detailedGameWithKeygenCache
@@ -80,11 +80,11 @@ theorem detailedGameWithKeygenCacheAndActionTrace_projection
   simp [Functor.map_map]
 
 theorem detailedGameWithKeygenCacheAndActionTrace_support_info
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
     (hresult : result ∈ support (detailedGameWithKeygenCacheAndActionTrace adversary)) :
-    result.1.1 ∈ support ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅) ∧
+    result.1.1 ∈ support ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) ∧
       result.1.2.1.publicKey = result.1.1.1.1 ∧
       result.1.2.1.secretKey = result.1.1.1.2 ∧
       result.1.2.1.signingLog = result.2.toSigningLog ∧
@@ -104,14 +104,14 @@ theorem detailedGameWithKeygenCacheAndActionTrace_support_info
   exact ⟨hkeyResult, hpublic, hsecret, hlog, hsource⟩
 
 theorem detailedGameWithKeygenCacheAndActionTrace_afterKeygen_mem
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
     (hresult : result ∈ support
       (detailedGameWithKeygenCacheAndActionTrace adversary)) :
     result.1.2 ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.cappedScheme adversary
+        (detailedGameAfterKeygen Concrete.scheme adversary
           result.1.1.1.1 result.1.1.1.2)).run result.1.1.2) := by
   unfold detailedGameWithKeygenCacheAndActionTrace at hresult
   rw [mem_support_bind_iff] at hresult
@@ -125,7 +125,7 @@ theorem detailedGameWithKeygenCacheAndActionTrace_afterKeygen_mem
   exact ⟨execution, hexecution, rfl⟩
 
 theorem detailedGameWithKeygenCacheAndActionTrace_chainValueReveals_eq_table
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
     (hresult : result ∈ support
@@ -163,8 +163,8 @@ noncomputable def actionTracedForgeryEncoding
           (fun _ => ⟨0, by simp [chainLength]⟩)
 
 theorem detailedGameWithKeygenCacheAndActionTrace_unrevealedProbes_length_le
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
     (hresult : result ∈ support (detailedGameWithKeygenCacheAndActionTrace adversary))
@@ -180,8 +180,8 @@ theorem detailedGameWithKeygenCacheAndActionTrace_unrevealedProbes_length_le
   simpa [hsecret] using hlength
 
 theorem WinningOutcomeChainValueHasKeygenOrigin.readMany_of_mem_actionTracedGame
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace))
     (hresult : result ∈ support (detailedGameWithKeygenCacheAndActionTrace adversary))
@@ -281,7 +281,7 @@ theorem actionTracedChainProbeHit_implies_revealProbeView_hit
     actionTracedRevealProbeView, hencoding] using hhit
 
 theorem actionTracedChainProbeHit_probability_le_revealProbeView
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     Pr[ActionTracedChainProbeHit q chain |
       detailedGameWithKeygenCacheAndActionTrace adversary] ≤
     Pr[IndexedHiddenValue.RevealProbeView.HitsAvoidingReveals q |
@@ -315,7 +315,7 @@ theorem actionTracedChainProbeHit_implies_observedProbeHit
     (actionTracedRevealProbeView chain result).strategy hview.1
 
 theorem actionTracedChainProbeHit_probability_le_observedProbeHit
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     Pr[ActionTracedChainProbeHit q chain |
       detailedGameWithKeygenCacheAndActionTrace adversary] ≤
     Pr[ActionTracedObservedProbeHit q chain |
@@ -325,7 +325,7 @@ theorem actionTracedChainProbeHit_probability_le_observedProbeHit
   exact actionTracedChainProbeHit_implies_observedProbeHit q chain result hhit
 
 noncomputable def actionTracedObservedProbeViewExperiment
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
     ProbComp ((ChainValueIndex → Digest) ×
       (Unit × RevealProbeOracleSimulation.ActionTrace ChainValueIndex)) :=
   (fun result =>
@@ -336,7 +336,7 @@ noncomputable def actionTracedObservedProbeViewExperiment
       detailedGameWithKeygenCacheAndActionTrace adversary
 
 noncomputable def HasActionTracedEagerViewReduction
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) : Prop :=
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
   ∃ (Result : Type)
       (computation : OracleComp
         (RevealProbeOracleSimulation.World ChainValueIndex) Result),
@@ -347,7 +347,7 @@ noncomputable def HasActionTracedEagerViewReduction
           RevealProbeOracleSimulation.eagerExperiment computation]
 
 noncomputable def HasActionTracedCausalStrategyReduction
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) : Prop :=
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex) : Prop :=
   ∃ transcriptProgram : OracleComp
       (RevealProbeOracleSimulation.World ChainValueIndex)
       (List Bool → ChainValueIndex × Digest),
@@ -361,7 +361,7 @@ noncomputable def HasActionTracedCausalStrategyReduction
               q transcriptProgram)]
 
 theorem hasActionTracedEagerViewReduction_of_causalStrategy
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (hreduction : HasActionTracedCausalStrategyReduction q adversary chain) :
     HasActionTracedEagerViewReduction q adversary chain := by
   obtain ⟨transcriptProgram, hzero, hprobability⟩ := hreduction
@@ -372,7 +372,7 @@ theorem hasActionTracedEagerViewReduction_of_causalStrategy
     hprobability⟩
 
 theorem hasActionTracedEagerViewReduction_of_observedProbeCoupling
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
+    (q : Nat) (adversary : Adversary Concrete.scheme) (chain : ChainIndex)
     (computation : OracleComp
       (RevealProbeOracleSimulation.World ChainValueIndex) Unit)
     (hbound : computation.IsQueryBoundP
@@ -398,8 +398,8 @@ theorem hasActionTracedEagerViewReduction_of_observedProbeCoupling
       probEvent_congr' (fun _ _ => Iff.rfl) hdist
 
 theorem winningChainOrigin_probability_le_actionTracedProbeHit
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (chain : ChainIndex) :
     Pr[fun result =>
       WinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
@@ -415,8 +415,8 @@ theorem winningChainOrigin_probability_le_actionTracedProbeHit
     chain
 
 theorem winningChainOrigin_probability_le_of_eagerViewReduction
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (chain : ChainIndex)
     (hreduction : HasActionTracedEagerViewReduction q adversary chain) :
     Pr[fun result =>
@@ -432,8 +432,8 @@ theorem winningChainOrigin_probability_le_of_eagerViewReduction
           q computation hprobes))
 
 theorem winningChainOrigin_probability_le_of_causalStrategy
-    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (chain : ChainIndex)
     (hreduction : HasActionTracedCausalStrategyReduction q adversary chain) :
     Pr[fun result =>

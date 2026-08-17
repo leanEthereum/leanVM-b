@@ -310,7 +310,7 @@ theorem globalHighMonitoredMappedAdversaryImpl_preserves_traceConsistent
     right input state.1 hconsistent baseResult hbaseResult
 
 theorem relTriple_programmed_globalHighMonitored_adversary
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -522,7 +522,7 @@ theorem globalMonitoredTracedStateRelation_initial
     simp [globalFilteredCausalKeygenState]
 
 noncomputable def sourceGlobalTracedDetailedExecution
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyView : ProgrammedGlobalChainKeygenView) :
     ProbComp ((Forgery × Bool) × SourceTracedState) := do
   let handled ← (simulateQ
@@ -530,12 +530,12 @@ noncomputable def sourceGlobalTracedDetailedExecution
       (Concrete.materializePrecomputation keyView.cache keyView.secretKey))
       (adversary.main keyView.publicKey)).run (keyView.cache, [])
   let verified ← (simulateQ sourceDirectTracedVerifierImpl
-    (Concrete.cappedScheme.verify keyView.publicKey handled.1.epoch
+    (Concrete.scheme.verify keyView.publicKey handled.1.epoch
       handled.1.message handled.1.signature)).run handled.2
   pure ((handled.1, verified.1), verified.2)
 
 noncomputable def globalHighMonitoredDetailedExecution
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest)) :
@@ -546,12 +546,12 @@ noncomputable def globalHighMonitoredDetailedExecution
   let handled ← (simulateQ (globalHighMonitoredMappedAdversaryImpl right)
     (adversary.main right.1.1.publicKey)).run initial
   let verified ← (simulateQ (globalHighMonitoredVerifierImpl right)
-    (Concrete.cappedScheme.verify right.1.1.publicKey handled.1.epoch
+    (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
       handled.1.message handled.1.signature)).run handled.2
   pure ((handled.1, verified.1), verified.2)
 
 theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -585,7 +585,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution
     apply relTriple_bind
       (relTriple_programmed_globalHighMonitored_verifier left right hrel
         hleftSupport hrightSupport
-        (Concrete.cappedScheme.verify left.publicKey leftHandled.1.epoch
+        (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
           leftHandled.1.message leftHandled.1.signature)
         leftHandled.2 rightHandled.2 hstates)
     intro leftVerified rightVerified hvertified
@@ -601,7 +601,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution
             (globalHighMonitoredVerifierImpl right)
             (fun state : GlobalMonitoredTracedState => state.1.bad)
             (globalHighMonitoredVerifierImpl_preserves_bad right)
-            (Concrete.cappedScheme.verify left.publicKey rightHandled.1.epoch
+            (Concrete.scheme.verify left.publicKey rightHandled.1.epoch
               rightHandled.1.message rightHandled.1.signature)
             rightHandled.2 hbad rightResult hrightResult))
     intro leftVerified rightVerified _hverified
@@ -609,7 +609,7 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution
     exact Or.inr _hverified.2
 
 theorem globalHighMonitoredDetailedExecution_traceConsistent
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest))
@@ -639,7 +639,7 @@ theorem globalHighMonitoredDetailedExecution_traceConsistent
     (fun state : GlobalMonitoredTracedState =>
       state.1.TraceConsistent right.1.2)
     (globalHighMonitoredVerifierImpl_preserves_traceConsistent right)
-    (Concrete.cappedScheme.verify right.1.1.publicKey handled.1.epoch
+    (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
       handled.1.message handled.1.signature)
     handled.2 hhandledConsistent verified hvertified
 
@@ -652,7 +652,7 @@ def sourceGlobalExecutionResult
     (execution.1, execution.2.2), execution.2.1), execution.2.2)
 
 theorem sourceGlobalTracedDetailedExecution_eq_actionTraced
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (keyView : ProgrammedGlobalChainKeygenView) :
     sourceGlobalExecutionResult keyView <$>
         sourceGlobalTracedDetailedExecution adversary keyView =
@@ -682,7 +682,7 @@ abbrev GlobalHighMonitoredProgramResult :=
       ((Forgery × Bool) × GlobalMonitoredTracedState)
 
 noncomputable def sourceGlobalTracedProgram
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp SourceGlobalTracedProgramResult := do
   let keyView ← trajectoryProgrammedGlobalChainKeygen
   let execution ← sourceGlobalTracedDetailedExecution adversary keyView
@@ -695,7 +695,7 @@ def sourceGlobalProgramResult
   ((result.1, execution.1), execution.2)
 
 theorem sourceGlobalTracedProgram_eq_trajectoryProgrammedDetailedGame
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     sourceGlobalProgramResult <$> sourceGlobalTracedProgram adversary =
       trajectoryProgrammedGlobalChainDetailedGame adversary := by
   unfold sourceGlobalTracedProgram
@@ -707,7 +707,7 @@ theorem sourceGlobalTracedProgram_eq_trajectoryProgrammedDetailedGame
   simp [sourceGlobalProgramResult, map_eq_bind_pure_comp]
 
 noncomputable def globalHighMonitoredProgram
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     ProbComp GlobalHighMonitoredProgramResult := do
   let right ← coupledGlobalChainKeygenWithBaseHighFull
   let execution ← globalHighMonitoredDetailedExecution adversary right
@@ -723,7 +723,7 @@ def SourceGlobalHighMonitoredProgramRelation
     right.2.2.1.TraceConsistent right.1.1.2
 
 theorem relTriple_sourceGlobal_globalHighMonitored_program
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     RelTriple (sourceGlobalTracedProgram adversary)
       (globalHighMonitoredProgram adversary)
       SourceGlobalHighMonitoredProgramRelation := by

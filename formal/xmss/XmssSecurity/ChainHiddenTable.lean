@@ -225,11 +225,11 @@ theorem winningOutcomeChainValueHasKeygenOrigin_has_probe
   · exact hvalue.symm
 
 theorem traced_chainValueProbes_length_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅))
     (result : ((Forgery × Bool) × AttackerActionTrace))
     (hresult : result ∈ support
       (sourceActionTracedDetailedGameAfterKeygen adversary keyResult.1.1
@@ -384,14 +384,14 @@ theorem WinningOutcomeBadEventOccurs.forged_chain_coordinate_not_mem_returned
 
 /-- Every chain value returned by the signer is the corresponding entry of the table fixed during key generation. -/
 theorem returned_chainValue_eq_keygenChainValueTable
-    (qAdversary : Adversary Concrete.scheme)
+    (qAdversary : Adversary Concrete.singleAttemptScheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
       ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.scheme qAdversary keyResult.1.1
+        (detailedGameAfterKeygen Concrete.singleAttemptScheme qAdversary keyResult.1.1
           keyResult.1.2)).run keyResult.2))
     (request : SignRequest) (signature : Signature) (encoding : Encoding)
     (hdecode : TargetSum.decodeDigest
@@ -409,7 +409,7 @@ theorem returned_chainValue_eq_keygenChainValueTable
   have hsignature := detailed_execution_returned_signature_eq qAdversary execution hgame
     request signature encoding hdecode hreturned
   have hcacheLe := xmssRom_cache_le
-    (detailedGameAfterKeygen Concrete.scheme qAdversary keyResult.1.1 keyResult.1.2)
+    (detailedGameAfterKeygen Concrete.singleAttemptScheme qAdversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
   have hwalk := Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeygen execution.2
     hcacheLe request.epoch chain (encoding chain).val

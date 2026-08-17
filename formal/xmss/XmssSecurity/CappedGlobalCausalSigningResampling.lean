@@ -100,7 +100,7 @@ theorem simulate_eagerTrace_globalCausalSigningQueryAfterRealRom
       (globalCausalSigningQueryAfterRealRom
         publicKey secretKey request state)).run =
     ((simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
         state.cache >>= fun signed =>
       (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((revealGlobalSignatureOption secretKey request signed.1).run
@@ -157,7 +157,7 @@ theorem evalDist_uniformGlobalTable_simulate_eagerTrace_globalCausalSigningQuery
           publicKey secretKey request state)).run
       continuation table result] =
     𝒟[(simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+      (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
         state.cache >>= fun signed =>
       globalCausalResampledSigningContinuation secretKey request state signed
         continuation] := by
@@ -172,7 +172,7 @@ theorem evalDist_uniformGlobalTable_simulate_eagerTrace_globalCausalSigningQuery
         𝒟[do
           let table ← $ᵗ (GlobalChainValueIndex → Digest)
           let signed ← (simulateQ xmssRomImpl
-            (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+            (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
               state.cache
           let result ← (simulateQ
             (RevealProbeOracleSimulation.eagerTraceImpl table)
@@ -184,7 +184,7 @@ theorem evalDist_uniformGlobalTable_simulate_eagerTrace_globalCausalSigningQuery
       rw [simulate_eagerTrace_globalCausalSigningQueryAfterRealRom]
       simp only [bind_assoc]
     _ = 𝒟[(simulateQ xmssRomImpl
-          (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+          (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
             state.cache >>= fun signed => do
           let table ← $ᵗ (GlobalChainValueIndex → Digest)
           let result ← (simulateQ
@@ -265,7 +265,7 @@ noncomputable def globalCausalResampledSigningStep
       ((Option Signature × GlobalCausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)) :=
   (simulateQ xmssRomImpl
-    (Concrete.cappedScheme.sign publicKey secretKey request.epoch request.message)).run
+    (Concrete.scheme.sign publicKey secretKey request.epoch request.message)).run
       state.cache >>= fun signed =>
     globalCausalResampledSigningContinuation secretKey request state signed
       (fun table result => pure (table, result))

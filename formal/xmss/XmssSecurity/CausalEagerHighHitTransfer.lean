@@ -409,7 +409,7 @@ theorem filteredHighVerifier_support_verify_true_primaryProbe_from_finalCache
     (hresult : result ∈ support
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
         ((simulateQ (filteredHighVerifierImpl keyHigh selected)
-          (Concrete.scheme.verify publicKey epoch message signature)).run
+          (Concrete.singleAttemptScheme.verify publicKey epoch message signature)).run
             state)).run))
     (hverified : result.1.1 = true) :
     ∃ encoding,
@@ -420,7 +420,7 @@ theorem filteredHighVerifier_support_verify_true_primaryProbe_from_finalCache
         RevealProbeOracleSimulation.ObservedAction.probe
           (epoch, encoding selected) (signature.chainValue selected) ∈
             result.2) := by
-  unfold Concrete.scheme at hresult
+  unfold Concrete.singleAttemptScheme at hresult
   rw [simulate_filteredHighVerifier_liftM_eq_hashOnly] at hresult
   obtain ⟨tracedResult, htracedResult, heq⟩ :=
     filteredHighVerifierRunSupport_lift
@@ -435,7 +435,7 @@ theorem filteredHighVerifier_support_verify_true_primaryProbe_from_finalCache
 set_option maxHeartbeats 2000000 in
 theorem filteredHighDetailedRunSupport_verified_primaryProbe_from_finalCache
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex)
@@ -476,7 +476,7 @@ theorem filteredHighDetailedRunSupport_verified_primaryProbe_from_finalCache
 set_option maxHeartbeats 2000000 in
 theorem filteredHighMonitoredDetailedExecution_support_verified_primaryProbe_from_finalCache
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex)
@@ -539,7 +539,7 @@ theorem listStrategy_unrevealedChainValueProbes_eq_primary_or_attacker
     · exact Or.inl (by simpa using hprimary)
 
 theorem sourceDirectTracedProgram_support_keygen
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex)
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex)
     (result : SourceDirectTracedProgramResult)
     (hresult : result ∈ support
       (sourceDirectTracedProgram adversary selected)) :
@@ -586,7 +586,7 @@ theorem returnedChainValueCovered_of_signingComparableCaches
     exact hdecode
 
 theorem sourceFilteredHighMonitoredProgramRelation_hit_implies_observedHit
-    (queries : Nat) (adversary : Adversary Concrete.scheme)
+    (queries : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex)
     (left : SourceDirectTracedProgramResult)
     (right : FilteredHighMonitoredProgramResult)

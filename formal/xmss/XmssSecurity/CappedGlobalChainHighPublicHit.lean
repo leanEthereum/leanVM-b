@@ -111,7 +111,7 @@ theorem globalForgeryPrimaryProbeTrace_mem
   simp [globalForgeryPrimaryProbeTrace]
 
 theorem sourceGlobalTracedProgram_support_keyView
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : SourceGlobalTracedProgramResult)
     (hresult : result ∈ support (sourceGlobalTracedProgram adversary)) :
     result.1 ∈ support trajectoryProgrammedGlobalChainKeygen := by
@@ -125,7 +125,7 @@ theorem sourceGlobalTracedProgram_support_keyView
   exact hkeyView
 
 theorem globalHighMonitoredProgram_support_info
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GlobalHighMonitoredProgramResult)
     (hresult : result ∈ support (globalHighMonitoredProgram adversary)) :
     result.1.1.1 ∈ support trajectoryProgrammedGlobalChainKeygen ∧
@@ -143,7 +143,7 @@ theorem globalHighMonitoredProgram_support_info
 
 set_option maxRecDepth 1000000 in
 theorem sourceGlobal_origin_implies_right_publicObservedHit
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (left : SourceGlobalTracedProgramResult)
     (right : GlobalHighMonitoredProgramResult)
     (hleftSupport : left ∈ support (sourceGlobalTracedProgram adversary))
@@ -303,7 +303,7 @@ theorem sourceGlobal_origin_implies_right_publicObservedHit
     exact right.2.2.1.bad_implies_runObserved right.1.1.2 hrel.2.2 hbad
 
 theorem sourceGlobal_origin_probability_le_publicObservedHit
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Pr[fun left : SourceGlobalTracedProgramResult =>
         GlobalWinningOutcomeChainValueHasKeygenOrigin
           (eraseGlobalChainKeygenView
@@ -327,7 +327,7 @@ theorem sourceGlobal_origin_probability_le_publicObservedHit
     hrel.2.1 hrel.2.2 hrel.1 horigin
 
 theorem evalDist_sourceGlobalErased_eq_originalActionTraced
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     evalDist ((fun left : SourceGlobalTracedProgramResult =>
         eraseGlobalChainKeygenView (sourceGlobalProgramResult left)) <$>
       sourceGlobalTracedProgram adversary) =
@@ -344,7 +344,7 @@ theorem evalDist_sourceGlobalErased_eq_originalActionTraced
         adversary).symm
 
 theorem globalWinningChainOrigin_probability_le_publicObservedHit
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Pr[fun result =>
         GlobalWinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
           result.1.1.2 result.2.1 |

@@ -641,17 +641,17 @@ theorem relTriple_keygenViews_globalSign_run_full
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey
+        (Concrete.scheme.sign left.publicKey
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign right.1.publicKey
+        (Concrete.scheme.sign right.1.publicKey
           (Concrete.materializePrecomputation right.1.cache right.1.secretKey)
           request.epoch request.message)).run rightCache)
       (GlobalSignFullResultRelation right.2 left.secretKey.parameter
         left.secretKey.chainStart right.1.secretKey.chainStart request
           left.cache right.1.cache) := by
-  simp only [Concrete.cappedScheme]
+  simp only [Concrete.scheme]
   have hleftKey := trajectoryProgrammedGlobalChainKeygen_support_keyResult
     left hleftSupport
   have hrightKey := trajectoryProgrammedGlobalChainKeygen_support_keyResult
@@ -707,7 +707,7 @@ theorem relTriple_keygenViews_globalCausalSigningQuery_run_full
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey
+        (Concrete.scheme.sign left.publicKey
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
@@ -723,11 +723,11 @@ theorem relTriple_keygenViews_globalCausalSigningQuery_run_full
   rw [simulate_eagerTrace_globalCausalSigningQueryAfterRealRom]
   rw [show
     (simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign left.publicKey
+      (Concrete.scheme.sign left.publicKey
         (Concrete.materializePrecomputation left.cache left.secretKey)
         request.epoch request.message)).run leftCache =
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey
+        (Concrete.scheme.sign left.publicKey
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache >>= pure) by simp]
   apply relTriple_bind hsign

@@ -2494,7 +2494,7 @@ noncomputable def filteredHighVerifierImpl
   fun input => StateT.mk (filteredHighVerifierRun keyHigh selected input)
 
 noncomputable def filteredHighDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) :
@@ -2505,7 +2505,7 @@ noncomputable def filteredHighDetailedGameAfterKeygen
     (filteredHighActionTracedMappedAdversaryImpl keyHigh selected)
       (adversary.main keyHigh.1.publicKey)).run
   let verified ← simulateQ (filteredHighVerifierImpl keyHigh selected)
-    (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+    (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.1.epoch
       handled.1.message handled.1.signature)
   pure ((handled.1, verified), handled.2)
 
@@ -2514,7 +2514,7 @@ abbrev FilteredHighDirectResult :=
     FilteredDirectExecution
 
 noncomputable def filteredHighDirectProgram
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       FilteredHighDirectResult := do
   let keyHigh ← RevealProbeOracleSimulation.liftProbComp
@@ -2524,7 +2524,7 @@ noncomputable def filteredHighDirectProgram
   pure (keyHigh, execution)
 
 noncomputable def boundedFilteredHighDirectProgram
-    (queries : Nat) (adversary : Adversary Concrete.scheme)
+    (queries : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex) :
     OracleComp (RevealProbeOracleSimulation.World ChainValueIndex)
       FilteredHighDirectResult :=
@@ -2533,7 +2533,7 @@ noncomputable def boundedFilteredHighDirectProgram
 
 
 theorem boundedFilteredHighDirectProgram_isProbeQueryBoundP
-    (queries : Nat) (adversary : Adversary Concrete.scheme)
+    (queries : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex) :
     (boundedFilteredHighDirectProgram queries adversary selected).IsQueryBoundP
       RevealProbeOracleSimulation.IsProbeQuery queries := by
@@ -3846,7 +3846,7 @@ theorem filteredHighMonitoredAdversary_simulation_preserves_traceConsistent
 
 set_option maxRecDepth 1000000 in
 theorem relTriple_sourceDirect_filteredHighMonitored_adversary
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex)
     (left : ProgrammedFixedChainKeygenView)
     (right : (ProgrammedFixedChainKeygenView ×
@@ -3889,19 +3889,19 @@ theorem relTriple_sourceDirect_filteredHighMonitored_adversary
 
 
 noncomputable def sourceDirectTracedDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) :
     ProbComp ((Forgery × Bool) × SourceTracedState) := do
   let handled ← (simulateQ
     (sourceDirectTracedMappedAdversaryImpl keyView.publicKey keyView.secretKey)
       (adversary.main keyView.publicKey)).run (keyView.cache, [])
   let verified ← (simulateQ sourceDirectTracedVerifierImpl
-    (Concrete.scheme.verify keyView.publicKey handled.1.epoch
+    (Concrete.singleAttemptScheme.verify keyView.publicKey handled.1.epoch
       handled.1.message handled.1.signature)).run handled.2
   pure ((handled.1, verified.1), verified.2)
 
 noncomputable def filteredHighMonitoredDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (table : ChainValueIndex → Digest) :
@@ -3914,12 +3914,12 @@ noncomputable def filteredHighMonitoredDetailedExecution
       (adversary.main keyHigh.1.publicKey)).run initial
   let verified ← (simulateQ
     (filteredHighMonitoredVerifierImpl keyHigh selected table)
-    (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+    (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.1.epoch
       handled.1.message handled.1.signature)).run handled.2
   pure ((handled.1, verified.1), verified.2)
 
 theorem filteredHighMonitoredDetailedExecution_traceConsistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (table : ChainValueIndex → Digest)
@@ -3944,7 +3944,7 @@ theorem filteredHighMonitoredDetailedExecution_traceConsistent
   subst result
   exact filteredHighMonitoredVerifier_simulation_preserves_traceConsistent
     keyHigh selected table
-    (Concrete.scheme.verify keyHigh.1.publicKey handled.1.epoch
+    (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey handled.1.epoch
       handled.1.message handled.1.signature)
     handled.2 hhandledConsistent verified hvertified
 
@@ -3957,7 +3957,7 @@ def sourceDirectExecutionResult
 
 set_option maxRecDepth 1000000 in
 theorem sourceDirectTracedDetailedExecution_eq_actionTraced
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyView : ProgrammedFixedChainKeygenView) :
     sourceDirectExecutionResult keyView <$>
         sourceDirectTracedDetailedExecution adversary keyView =
@@ -3977,7 +3977,7 @@ theorem sourceDirectTracedDetailedExecution_eq_actionTraced
 
 set_option maxRecDepth 1000000 in
 theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (selected : ChainIndex)
     (left : ProgrammedFixedChainKeygenView)
     (right : (ProgrammedFixedChainKeygenView ×
@@ -4016,7 +4016,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution
     apply relTriple_bind
       (relTriple_sourceDirect_filteredHighMonitored_verifier selected left right
         hrel hleftSupport hrightSupport
-        (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
+        (Concrete.singleAttemptScheme.verify left.publicKey leftHandled.1.epoch
           leftHandled.1.message leftHandled.1.signature)
         leftHandled.2 rightHandled.2 hstates)
     intro leftVerified rightVerified hverified
@@ -4030,7 +4030,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_detailedExecution
         (fun _result _hresult => True.intro)
         (filteredHighMonitoredVerifier_simulation_preserves_bad
           (right.1.1, right.2) selected right.1.2
-          (Concrete.scheme.verify left.publicKey rightHandled.1.epoch
+          (Concrete.singleAttemptScheme.verify left.publicKey rightHandled.1.epoch
             rightHandled.1.message rightHandled.1.signature)
           rightHandled.2 hbad))
     intro leftVerified rightVerified hverified
@@ -4086,7 +4086,7 @@ def filteredHighMonitoredProgramProjection
       result.2.2.1.trace))
 
 noncomputable def sourceDirectTracedProgram
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     ProbComp SourceDirectTracedProgramResult := do
   let keyView ← programmedWarmedFixedChainKeygen selected
   let execution ← sourceDirectTracedDetailedExecution adversary keyView
@@ -4100,7 +4100,7 @@ def sourceDirectProgramResult
 
 set_option maxRecDepth 1000000 in
 theorem sourceDirectTracedProgram_eq_programmedWarmedDetailedGame
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     sourceDirectProgramResult <$> sourceDirectTracedProgram adversary selected =
       programmedWarmedDetailedGame adversary selected := by
   unfold sourceDirectTracedProgram programmedWarmedDetailedGame
@@ -4111,7 +4111,7 @@ theorem sourceDirectTracedProgram_eq_programmedWarmedDetailedGame
   simp [sourceDirectProgramResult, map_eq_bind_pure_comp]
 
 noncomputable def filteredHighMonitoredProgram
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     ProbComp FilteredHighMonitoredProgramResult := do
   let keyHigh ← uniformCoupledWarmedFixedChainKeygenWithHigh selected
   let execution ← filteredHighMonitoredDetailedExecution adversary
@@ -4142,7 +4142,7 @@ theorem sourceFilteredHighMonitoredProgramRelation_bad_implies_observedHit
 
 set_option maxRecDepth 1000000 in
 theorem relTriple_sourceDirect_filteredHighMonitored_program
-    (adversary : Adversary Concrete.scheme) (selected : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (selected : ChainIndex) :
     RelTriple
       (sourceDirectTracedProgram adversary selected)
       (filteredHighMonitoredProgram adversary selected)

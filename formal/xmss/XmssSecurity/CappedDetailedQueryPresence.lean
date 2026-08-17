@@ -6,9 +6,9 @@ open OracleComp OracleSpec
 namespace XmssSecurity
 
 theorem capped_detailed_execution_verified_leaf_cached
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
-    (hmem : execution ∈ support (detailedGameWithCache Concrete.cappedScheme adversary))
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (hverified : execution.1.verified = true) :
     ∃ encoding output,
       TargetSum.decodeDigest
@@ -41,11 +41,11 @@ theorem capped_detailed_execution_verified_leaf_cached
   subst verified
   have hroute :
       simulateQ xmssRomImpl
-          (Concrete.cappedScheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
+          (Concrete.scheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
         simulateQ (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
           (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
             OracleComp HashSpec Bool) := by
-    simp only [Concrete.cappedScheme, xmssRomImpl]
+    simp only [Concrete.scheme, xmssRomImpl]
     change simulateQ (unifFwdImpl HashSpec +
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
       (liftM (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
@@ -61,10 +61,10 @@ theorem capped_detailed_execution_verified_leaf_cached
     hverify le_rfl
 
 theorem capped_detailed_execution_verified_leaf_cached_as
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
     (hgame : execution ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary))
+      (detailedGameWithCache Concrete.scheme adversary))
     (encoding : Encoding) (hverified : execution.1.verified = true)
     (hdecode : TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter

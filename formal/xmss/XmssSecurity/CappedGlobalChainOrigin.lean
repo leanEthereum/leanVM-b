@@ -17,10 +17,10 @@ noncomputable def GlobalWinningOutcomeChainValueHasKeygenOrigin
     secretKey outcome chain
 
 theorem globalWinningChainValueRevealed_probability_le_globalKeygenValueGuess
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       GlobalWinningChainValueRevealed execution.2 execution.1 |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
     Pr[fun result =>
       GlobalWinningOutcomeGuessesKeygenChainValue result.1.2 result.2.2
         result.1.1.2 result.2.1 |
@@ -40,7 +40,7 @@ theorem globalWinningChainValueRevealed_probability_le_globalKeygenValueGuess
       hkeygen execution hafter chain hrevealed⟩
 
 theorem globalWinningKeygenValueGuess_probability_le_origin
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     Pr[fun result =>
       GlobalWinningOutcomeGuessesKeygenChainValue result.1.2 result.2.2
         result.1.1.2 result.2.1 |

@@ -880,7 +880,7 @@ theorem cappedEncodingTracedMappedAdversaryImpl_postSigningInvariants
 
 
 theorem cappedDetailedGameAfterKeygenWithEncodingTrace_signEpochs_sublist
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome ×
@@ -918,7 +918,7 @@ theorem cappedDetailedGameAfterKeygenWithEncodingTrace_signEpochs_sublist
       EncodingMonitor.observedSignEpochs] using hsublist
 
 theorem cappedDetailedGameAfterKeygenWithEncodingTrace_freshSigningActionsRepresented
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome ×
@@ -956,7 +956,7 @@ theorem cappedDetailedGameAfterKeygenWithEncodingTrace_freshSigningActionsRepres
   · simpa [appendVerificationEncodingObservation, forgedInput, hfresh] using hrepresented
 
 theorem cappedDetailedGameAfterKeygenWithEncodingTrace_freshSigningCollisionsRepresented
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (hinitialEncodingFree : ∀ epoch input,
@@ -998,7 +998,7 @@ theorem cappedDetailedGameAfterKeygenWithEncodingTrace_freshSigningCollisionsRep
   · simpa [appendVerificationEncodingObservation, forgedInput, hfresh] using hrepresented
 
 theorem cappedDetailedGameAfterKeygenWithEncodingTrace_validFreshSigningCollisionsRepresented
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (hinitialEncodingFree : ∀ epoch input,
@@ -1041,7 +1041,7 @@ theorem cappedDetailedGameAfterKeygenWithEncodingTrace_validFreshSigningCollisio
 
 
 theorem cappedDetailedGameWithEncodingTrace_signEpochs_sublist
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary)) :
@@ -1054,7 +1054,7 @@ theorem cappedDetailedGameWithEncodingTrace_signEpochs_sublist
     publicKey secretKey keyCache result hrest
 
 theorem cappedDetailedGameWithEncodingTrace_freshSigningActionsRepresented
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary)) :
@@ -1078,7 +1078,7 @@ theorem cappedDetailedGameWithEncodingTrace_freshSigningActionsRepresented
   exact hrepresented
 
 theorem cappedDetailedGameWithEncodingTrace_freshSigningCollisionsRepresented
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary)) :
@@ -1089,7 +1089,7 @@ theorem cappedDetailedGameWithEncodingTrace_freshSigningCollisionsRepresented
   obtain ⟨⟨publicKey, secretKey⟩, keyCache⟩ := keyResult
   have hkeygen' : ((publicKey, secretKey), keyCache) ∈ support
       ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
-    simpa only [Concrete.cappedScheme] using hkeygen
+    simpa only [Concrete.scheme] using hkeygen
   have hencodingFree : ∀ epoch input,
       keyCache (Concrete.CacheView.encodingInput secretKey.parameter epoch input) = none :=
     fun epoch input => Concrete.precomputedKeygen_cache_none_encodingInput
@@ -1108,7 +1108,7 @@ theorem cappedDetailedGameWithEncodingTrace_freshSigningCollisionsRepresented
   exact hrepresented
 
 theorem cappedDetailedGameWithEncodingTrace_validFreshSigningCollisionsRepresented
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary)) :
@@ -1119,7 +1119,7 @@ theorem cappedDetailedGameWithEncodingTrace_validFreshSigningCollisionsRepresent
   obtain ⟨⟨publicKey, secretKey⟩, keyCache⟩ := keyResult
   have hkeygen' : ((publicKey, secretKey), keyCache) ∈ support
       ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
-    simpa only [Concrete.cappedScheme] using hkeygen
+    simpa only [Concrete.scheme] using hkeygen
   have hencodingFree : ∀ epoch input,
       keyCache (Concrete.CacheView.encodingInput secretKey.parameter epoch input) = none :=
     fun epoch input => Concrete.precomputedKeygen_cache_none_encodingInput
@@ -1139,7 +1139,7 @@ theorem cappedDetailedGameWithEncodingTrace_validFreshSigningCollisionsRepresent
 
 
 theorem cappedDetailedGameWithEncodingTrace_signingEpochs_nodup_of_winning
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary))
@@ -1160,7 +1160,7 @@ theorem cappedDetailedGameWithEncodingTrace_signingEpochs_nodup_of_winning
   exact htraceNodup
 
 theorem cappedDetailedGameWithEncodingTrace_signEpochs_nodup_of_winning
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary))
@@ -1173,7 +1173,7 @@ theorem cappedDetailedGameWithEncodingTrace_signEpochs_nodup_of_winning
     (cappedDetailedGameWithEncodingTrace_signEpochs_sublist adversary result hmem)
 
 theorem cappedDetailedGameWithEncodingTrace_validSignEpochs_nodup_of_winning
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary))
@@ -1255,7 +1255,7 @@ theorem CappedEncodingMonitor.runObserved_empty_eq_true_of_sign_before_query_of_
   exact hnodup
 
 theorem cappedDetailedGameWithEncodingTrace_freshSigningCollision_monitorHit
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary))
@@ -1282,7 +1282,7 @@ theorem cappedDetailedGameWithEncodingTrace_freshSigningCollision_monitorHit
       hsignedValid hdigest.symm (by simpa [hactions] using hactionNodup)
 
 theorem cappedDetailedGameWithEncodingTrace_postSigningFreshForgedCollision_monitorHit
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (result : GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
     (hmem : result ∈ support (cappedDetailedGameWithEncodingTrace adversary))

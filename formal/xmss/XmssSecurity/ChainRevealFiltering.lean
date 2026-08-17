@@ -298,11 +298,11 @@ theorem WinningOutcomeChainValueHasKeygenOrigin.readMany_unrevealed_eq_true
           outcome.signingLog chain trace outcome.forgery encoding candidate hcandidate)
 
 theorem traced_unrevealedChainValueProbes_length_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅))
     (result : ((Forgery × Bool) × AttackerActionTrace))
     (hresult : result ∈ support
       (sourceActionTracedDetailedGameAfterKeygen adversary keyResult.1.1 keyResult.1.2))

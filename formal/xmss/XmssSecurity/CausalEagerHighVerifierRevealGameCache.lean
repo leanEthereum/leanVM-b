@@ -11,7 +11,7 @@ set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 2000000 in
 theorem filteredHighDetailedGameAfterKeygen_support_cache_le
     (table : ChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (keyHigh : ProgrammedFixedChainKeygenView ×
       (ChainEdgeIndex → Digest))
     (selected : ChainIndex) (state : CausalHashState)
@@ -38,7 +38,7 @@ theorem filteredHighDetailedGameAfterKeygen_support_cache_le
       (publicKey := keyHigh.1.publicKey) (epoch := forgery.epoch)
       (message := forgery.message) (signature := forgery.signature)
       (state := handledState) (result := verifier)
-    generalize (Concrete.scheme.verify keyHigh.1.publicKey forgery.epoch
+    generalize (Concrete.singleAttemptScheme.verify keyHigh.1.publicKey forgery.epoch
       forgery.message forgery.signature : OracleComp OracleWorld Bool) =
         computation at hverifier ⊢
     exact hverifier

@@ -8,7 +8,7 @@ namespace XmssSecurity
 set_option maxRecDepth 100000
 
 theorem causalLazyDetailedGameAfterKeygen_support_cache_le
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState)
     (result : ((((Forgery × Bool) × AttackerActionTrace) ×
@@ -30,12 +30,12 @@ theorem causalLazyDetailedGameAfterKeygen_support_cache_le
       hhandled).trans
     (simulate_causalLazyVerifierImpl_support_cache_le
       publicKey secretKey chain
-        (Concrete.scheme.verify publicKey handled.1.1.1.epoch
+        (Concrete.singleAttemptScheme.verify publicKey handled.1.1.1.epoch
           handled.1.1.1.message handled.1.1.1.signature)
         handled.1.2 verified hverified)
 
 theorem causalLazyDetailedGameAfterKeygen_support_resultCovered_of_final
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState) (covered : Set ChainValueIndex)
     (hcovered : CausalRevealsCovered covered state)
@@ -64,7 +64,7 @@ theorem causalLazyDetailedGameAfterKeygen_support_resultCovered_of_final
   have hhandledCacheLe : handled.1.2.cache ≤ verified.1.2.cache :=
     simulate_causalLazyVerifierImpl_support_cache_le
       publicKey secretKey chain
-        (Concrete.scheme.verify publicKey handled.1.1.1.epoch
+        (Concrete.singleAttemptScheme.verify publicKey handled.1.1.1.epoch
           handled.1.1.1.message handled.1.1.1.signature)
         handled.1.2 verified hverified
   have hhandledCovered :=
@@ -78,14 +78,14 @@ theorem causalLazyDetailedGameAfterKeygen_support_resultCovered_of_final
   have hverifiedCovered :=
     simulate_causalLazyVerifierImpl_support_resultCovered
       publicKey secretKey chain
-        (Concrete.scheme.verify publicKey handled.1.1.1.epoch
+        (Concrete.singleAttemptScheme.verify publicKey handled.1.1.1.epoch
           handled.1.1.1.message handled.1.1.1.signature)
         handled.1.2 covered hhandledCovered.1 hforward verified hverified
   exact ⟨hverifiedCovered.1,
     hhandledCovered.2.append hverifiedCovered.2⟩
 
 theorem causalLazyDetailedGameAfterKeygen_support_returnedCovered
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary Concrete.singleAttemptScheme)
     (publicKey : PublicKey) (secretKey : SecretKey) (chain : ChainIndex)
     (state : CausalHashState)
     (hinitial : ∀ index, state.revealed index = none)

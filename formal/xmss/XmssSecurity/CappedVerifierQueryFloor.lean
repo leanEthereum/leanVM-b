@@ -247,7 +247,7 @@ end ExactQueryCount
 theorem Concrete.verify_hashQueryBound_at_least_verificationWork
     (publicKey : PublicKey) (epoch : Epoch) (message : Message)
     (signature : Signature) (q : Nat)
-    (hbound : (Concrete.cappedScheme.verify publicKey epoch message signature)
+    (hbound : (Concrete.scheme.verify publicKey epoch message signature)
       |>.IsQueryBoundP (· matches .inr _) q) :
     verificationChainHashes + 1 ≤ q := by
   obtain ⟨digest, hdigestMem⟩ := TargetSum.validDigests_nonempty
@@ -297,11 +297,11 @@ theorem Concrete.verify_hashQueryBound_at_least_verificationWork
   omega
 
 theorem hashQueryBound_at_least_verificationQueries
-    (adversary : Adversary Concrete.cappedScheme) (q : Nat)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (adversary : Adversary Concrete.scheme) (q : Nat)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     verificationChainHashes + 1 ≤ q := by
   have hdetailed :=
-    (hasHashQueryBound_iff_detailedGameCore Concrete.cappedScheme adversary q).mp
+    (hasHashQueryBound_iff_detailedGameCore Concrete.scheme adversary q).mp
       hbound
   unfold detailedGameCore at hdetailed
   obtain ⟨key, hafterKeygen⟩ :=
@@ -310,7 +310,7 @@ theorem hashQueryBound_at_least_verificationQueries
   obtain ⟨adversaryResult, hfinish⟩ :=
     ExactQueryCount.exists_queryBoundP_continuation hafterKeygen
   have hverify :
-      (Concrete.cappedScheme.verify key.1 adversaryResult.1.epoch
+      (Concrete.scheme.verify key.1 adversaryResult.1.epoch
         adversaryResult.1.message adversaryResult.1.signature)
           |>.IsQueryBoundP (· matches .inr _) q :=
     OracleComp.IsQueryBoundP.of_bind_left hfinish
@@ -320,8 +320,8 @@ theorem hashQueryBound_at_least_verificationQueries
   exact hlower
 
 theorem hashQueryBound_at_least_numChains
-    (adversary : Adversary Concrete.cappedScheme) (q : Nat)
-    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    (adversary : Adversary Concrete.scheme) (q : Nat)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     numChains ≤ q := by
   have hlower := hashQueryBound_at_least_verificationQueries adversary q hbound
   rw [verificationChainHashes_eq] at hlower

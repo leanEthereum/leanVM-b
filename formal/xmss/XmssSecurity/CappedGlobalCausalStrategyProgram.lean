@@ -405,7 +405,7 @@ noncomputable def globalCausalMappedAdversaryImpl
         globalCausalAttackerHashQuery secretKey hashInput
     | .inr request => do
         let signature ← simulateQ globalCausalXmssRomImpl
-          (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+          (Concrete.scheme.sign publicKey secretKey request.epoch
             request.message)
         revealGlobalSignatureOption secretKey request signature
 
@@ -420,7 +420,7 @@ noncomputable def globalCausalActionTracedMappedAdversaryImpl
     attackerActionFragment
 
 noncomputable def globalCausalDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     StateT GlobalCausalHashState
       (OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex))
@@ -429,7 +429,7 @@ noncomputable def globalCausalDetailedGameAfterKeygen
     (globalCausalActionTracedMappedAdversaryImpl publicKey secretKey)
       (adversary.main publicKey)).run
   let verified ← simulateQ (globalCausalVerifierXmssRomImpl secretKey)
-    (Concrete.cappedScheme.verify publicKey result.1.epoch result.1.message
+    (Concrete.scheme.verify publicKey result.1.epoch result.1.message
       result.1.signature)
   pure ((result.1, verified), result.2)
 
@@ -443,7 +443,7 @@ def globalCausalDetailedResult
         execution.2.cache))), execution.1.2)
 
 noncomputable def globalCausalStrategyProgram
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
       (List Bool → GlobalChainValueIndex × Digest) := do
   let keyResult ← (simulateQ globalCausalXmssRomImpl Concrete.keygen).run
@@ -612,7 +612,7 @@ theorem globalCausalMappedAdversaryImpl_step_isProbeQueryBoundP
   · unfold globalCausalMappedAdversaryImpl
     rw [StateT.run_bind]
     have hsign := simulate_globalCausalXmssRomImpl_isProbeQueryBoundP
-      (Concrete.cappedScheme.sign publicKey secretKey request.epoch
+      (Concrete.scheme.sign publicKey secretKey request.epoch
         request.message) state
     have hbind := OracleComp.isQueryBoundP_bind
       (n := 0) (m := 0) hsign fun result _hresult =>
@@ -660,7 +660,7 @@ theorem simulate_globalCausalActionTracedMappedAdversaryImpl_isProbeQueryBoundP
       exact ih handled.1.1 handled.2
 
 theorem globalCausalDetailedGameAfterKeygen_run_isProbeQueryBoundP
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (state : GlobalCausalHashState) :
     (globalCausalDetailedGameAfterKeygen adversary publicKey secretKey).run
@@ -676,7 +676,7 @@ theorem globalCausalDetailedGameAfterKeygen_run_isProbeQueryBoundP
   rw [StateT.run_bind]
   have hverify := simulate_globalCausalVerifierXmssRomImpl_isProbeQueryBoundP
     secretKey
-    (Concrete.cappedScheme.verify publicKey handled.1.1.epoch
+    (Concrete.scheme.verify publicKey handled.1.1.epoch
       handled.1.1.message handled.1.1.signature) handled.2
   have hbind := OracleComp.isQueryBoundP_bind
     (n := 0) (m := 0) hverify fun verified _hverified =>
@@ -686,7 +686,7 @@ theorem globalCausalDetailedGameAfterKeygen_run_isProbeQueryBoundP
   simpa using hbind
 
 theorem globalCausalStrategyProgram_isProbeQueryBoundP
-    (adversary : Adversary Concrete.cappedScheme) :
+    (adversary : Adversary Concrete.scheme) :
     (globalCausalStrategyProgram adversary).IsQueryBoundP
       RevealProbeOracleSimulation.IsProbeQuery 0 := by
   unfold globalCausalStrategyProgram

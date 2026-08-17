@@ -6,28 +6,28 @@ open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
-noncomputable def detailedGameWithKeygenCache (adversary : Adversary Concrete.scheme) :
+noncomputable def detailedGameWithKeygenCache (adversary : Adversary Concrete.singleAttemptScheme) :
     ProbComp (((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) :=
-  (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅ >>= fun keyResult =>
+  (simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅ >>= fun keyResult =>
     (fun execution => (keyResult, execution)) <$>
       (simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
+        (detailedGameAfterKeygen Concrete.singleAttemptScheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2
 
 theorem detailedGameWithCache_eq_map_detailedGameWithKeygenCache
-    (adversary : Adversary Concrete.scheme) :
-    detailedGameWithCache Concrete.scheme adversary =
+    (adversary : Adversary Concrete.singleAttemptScheme) :
+    detailedGameWithCache Concrete.singleAttemptScheme adversary =
       Prod.snd <$> detailedGameWithKeygenCache adversary := by
   unfold detailedGameWithCache detailedGameCore detailedGameWithKeygenCache
   rw [simulateQ_bind, StateT.run_bind]
   simp
 
 theorem chainValueRevealed_probability_le_keygenValueGuess
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeChainValueRevealed execution.2 execution.1 chain |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       Pr[fun result =>
         OutcomeGuessesKeygenChainValue result.1.2 result.2.2 result.1.1.2
           result.2.1 chain |
@@ -59,7 +59,7 @@ noncomputable def WinningOutcomeChainValueHasKeygenOrigin
 theorem winningKeygenValueGuess_has_origin
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec) (chain : ChainIndex)
     (hevent : WinningOutcomeGuessesKeygenChainValue keyResult.2 execution.2
       keyResult.1.2 execution.1 chain) :
@@ -79,7 +79,7 @@ theorem winningKeygenValueGuess_has_origin
     exact ⟨previous, output, hprevious, hcached, houtput.trans hvalue.symm⟩
 
 theorem winningKeygenValueGuess_probability_le_origin
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     Pr[fun result =>
       WinningOutcomeGuessesKeygenChainValue result.1.2 result.2.2 result.1.1.2
         result.2.1 chain |
@@ -100,11 +100,11 @@ theorem winningKeygenValueGuess_probability_le_origin
 
 /-- Retaining the winning chain witness prevents the hidden-value event from including trivial replays of an honestly returned signature. -/
 theorem winningChainValueRevealed_probability_le_winningKeygenValueGuess
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) ∧
         OutcomeChainValueRevealed execution.2 execution.1 chain |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       Pr[fun result =>
         WinningOutcomeGuessesKeygenChainValue result.1.2 result.2.2 result.1.1.2
           result.2.1 chain |
@@ -124,15 +124,15 @@ theorem winningChainValueRevealed_probability_le_winningKeygenValueGuess
 
 /-- A winning chain event either reveals the honest key-generation value while retaining its freshness witness, or creates one adaptive fresh collision after key generation. -/
 theorem winning_chain_outcomeBadEvent_probability_le_revealed_add
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) (chain : ChainIndex) :
+    (q : Nat) (adversary : Adversary Concrete.singleAttemptScheme)
+    (hbound : HasHashQueryBound Concrete.singleAttemptScheme adversary q) (chain : ChainIndex) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain) ∧
           OutcomeChainValueRevealed execution.2 execution.1 chain |
-        detailedGameWithCache Concrete.scheme adversary] +
+        detailedGameWithCache Concrete.singleAttemptScheme adversary] +
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
   let bad := fun execution : GameOutcome × QueryCache HashSpec =>
     WinningOutcomeBadEventOccurs execution.2 execution.1 (.chain chain)
@@ -141,16 +141,16 @@ theorem winning_chain_outcomeBadEvent_probability_le_revealed_add
   let remainder := fun execution : GameOutcome × QueryCache HashSpec =>
     bad execution ∧ ¬revealed execution
   have hdetailedBound :
-      (detailedGameCore Concrete.scheme adversary).IsQueryBoundP
+      (detailedGameCore Concrete.singleAttemptScheme adversary).IsQueryBoundP
         (· matches .inr _) q :=
-    (hasHashQueryBound_iff_detailedGameCore Concrete.scheme adversary q).mp hbound
+    (hasHashQueryBound_iff_detailedGameCore Concrete.singleAttemptScheme adversary q).mp hbound
   have hcollision :
-      Pr[remainder | detailedGameWithCache Concrete.scheme adversary] ≤
+      Pr[remainder | detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
     unfold detailedGameWithCache detailedGameCore
     apply Rom.mixed_adaptiveFreshDigestCollision_after_prefix_le
-      Concrete.scheme.keygen
-      (fun key => detailedGameAfterKeygen Concrete.scheme adversary key.1 key.2)
+      Concrete.singleAttemptScheme.keygen
+      (fun key => detailedGameAfterKeygen Concrete.singleAttemptScheme adversary key.1 key.2)
       q hdetailedBound ∅
       (fun key keyCache => keygenChainTargetInput key.2 keyCache)
       remainder
@@ -160,29 +160,29 @@ theorem winning_chain_outcomeBadEvent_probability_le_revealed_add
     · exact (hrest.2 hrevealed).elim
     · exact hcollision
   calc
-    Pr[bad | detailedGameWithCache Concrete.scheme adversary] ≤
+    Pr[bad | detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
         Pr[fun execution =>
           (bad execution ∧ revealed execution) ∨ remainder execution |
-          detailedGameWithCache Concrete.scheme adversary] := by
+          detailedGameWithCache Concrete.singleAttemptScheme adversary] := by
       apply probEvent_mono''
       intro execution hbad
       by_cases hreveal : revealed execution
       · exact Or.inl ⟨hbad, hreveal⟩
       · exact Or.inr ⟨hbad, hreveal⟩
     _ ≤ Pr[fun execution => bad execution ∧ revealed execution |
-          detailedGameWithCache Concrete.scheme adversary] +
-        Pr[remainder | detailedGameWithCache Concrete.scheme adversary] :=
+          detailedGameWithCache Concrete.singleAttemptScheme adversary] +
+        Pr[remainder | detailedGameWithCache Concrete.singleAttemptScheme adversary] :=
       probEvent_or_le _ _ _
     _ ≤ Pr[fun execution => bad execution ∧ revealed execution |
-          detailedGameWithCache Concrete.scheme adversary] +
+          detailedGameWithCache Concrete.singleAttemptScheme adversary] +
         (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
       exact add_le_add_right hcollision _
 
 theorem chainValueRevealed_probability_le_keygenOrigin
-    (adversary : Adversary Concrete.scheme) (chain : ChainIndex) :
+    (adversary : Adversary Concrete.singleAttemptScheme) (chain : ChainIndex) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeChainValueRevealed execution.2 execution.1 chain |
-      detailedGameWithCache Concrete.scheme adversary] ≤
+      detailedGameWithCache Concrete.singleAttemptScheme adversary] ≤
       Pr[fun result =>
         OutcomeChainValueHasKeygenOrigin result.1.2 result.2.2 result.1.1.2
           result.2.1 chain |

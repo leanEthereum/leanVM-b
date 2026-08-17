@@ -16,7 +16,7 @@ noncomputable def cappedMappedAdversaryImpl
       (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
     (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
   xmssRomImpl.writerTMapBase
-    (forward + signingOracle Concrete.cappedScheme publicKey secretKey)
+    (forward + signingOracle Concrete.scheme publicKey secretKey)
 
 theorem cappedMappedAdversary_cache_le
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -31,7 +31,7 @@ theorem cappedMappedAdversary_cache_le
       (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
     (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
   apply xmssRom_cache_le
-    ((simulateQ (forward + signingOracle Concrete.cappedScheme publicKey secretKey)
+    ((simulateQ (forward + signingOracle Concrete.scheme publicKey secretKey)
       computation).run) initialCache result
   rw [QueryImpl.simulateQ_writerTMapBase_run]
   exact hmem
@@ -110,10 +110,10 @@ theorem cappedMappedAdversary_signingLog_consistent
         exact ⟨entry, hlater, hrequest, hsignature⟩
 
 theorem capped_detailed_execution_signingLog_consistent
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary)) :
+      (detailedGameWithCache Concrete.scheme adversary)) :
     SigningLogConsistent execution.2 execution.1.secretKey execution.1.signingLog := by
   have hgame := hmem
   unfold detailedGameWithCache detailedGameCore at hgame
@@ -142,7 +142,7 @@ theorem capped_detailed_execution_signingLog_consistent
     xmssRom_cache_le _ adversaryCache (verified, finalCache) hverify
   have hkeygen' : ((publicKey, secretKey), keyCache) ∈ support
       ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
-    simpa only [Concrete.cappedScheme] using hkeygen
+    simpa only [Concrete.scheme] using hkeygen
   have hconsistent :=
     Concrete.precomputedKeygen_support_consistent
       ((publicKey, secretKey), keyCache) hkeygen'
@@ -155,28 +155,28 @@ theorem capped_detailed_execution_signingLog_consistent
       (hkeygenLeAdversary.trans hcacheLe) hcacheLe
 
 theorem capped_detailed_execution_consistent
-    (adversary : Adversary Concrete.cappedScheme)
+    (adversary : Adversary Concrete.scheme)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
-      (detailedGameWithCache Concrete.cappedScheme adversary)) :
+      (detailedGameWithCache Concrete.scheme adversary)) :
     ConcreteOutcomeConsistent execution.2 execution.1 :=
   capped_detailed_execution_consistent_of_signing adversary execution hmem
     (capped_detailed_execution_signingLog_consistent adversary execution hmem)
 
 /-- Capped-signer winning executions are bounded by the sum of their 175 cache-level bad-event probabilities. -/
 theorem capped_forgeAdvantage_le_outcomeBadEvent_sum
-    (adversary : Adversary Concrete.cappedScheme) :
-    forgeAdvantage Concrete.cappedScheme adversary ≤
+    (adversary : Adversary Concrete.scheme) :
+    forgeAdvantage Concrete.scheme adversary ≤
       ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         OutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.cappedScheme adversary] := by
+        detailedGameWithCache Concrete.scheme adversary] := by
   rw [forgeAdvantage_eq_detailedGameWithCache]
   calc
     Pr[fun execution : GameOutcome × QueryCache HashSpec => execution.1.won = true |
-        detailedGameWithCache Concrete.cappedScheme adversary] ≤
+        detailedGameWithCache Concrete.scheme adversary] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec => ∃ event : BadEvent,
         OutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.cappedScheme adversary] := by
+        detailedGameWithCache Concrete.scheme adversary] := by
       apply probEvent_mono
       intro execution hmem hwin
       exact winning_outcome_has_badEvent execution.2 execution.1
@@ -184,38 +184,38 @@ theorem capped_forgeAdvantage_le_outcomeBadEvent_sum
     _ ≤ ∑ event : BadEvent,
         Pr[fun execution : GameOutcome × QueryCache HashSpec =>
           OutcomeBadEventOccurs execution.2 execution.1 event |
-          detailedGameWithCache Concrete.cappedScheme adversary] := by
+          detailedGameWithCache Concrete.scheme adversary] := by
       simpa only [Finset.mem_univ, true_and] using
         probEvent_exists_finset_le_sum (Finset.univ : Finset BadEvent)
-          (detailedGameWithCache Concrete.cappedScheme adversary)
+          (detailedGameWithCache Concrete.scheme adversary)
           (fun event execution => OutcomeBadEventOccurs execution.2 execution.1 event)
 
 theorem capped_winningOutcomeBadEvent_probability_le_outcomeBadEvent
-    (adversary : Adversary Concrete.cappedScheme) (event : BadEvent) :
+    (adversary : Adversary Concrete.scheme) (event : BadEvent) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-      detailedGameWithCache Concrete.cappedScheme adversary] ≤
+      detailedGameWithCache Concrete.scheme adversary] ≤
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       OutcomeBadEventOccurs execution.2 execution.1 event |
-      detailedGameWithCache Concrete.cappedScheme adversary] := by
+      detailedGameWithCache Concrete.scheme adversary] := by
   apply probEvent_mono''
   intro execution hevent
   exact hevent.2
 
 /-- The capped-signer forging advantage is bounded by classified events that occur on winning executions. -/
 theorem capped_forgeAdvantage_le_winningOutcomeBadEvent_sum
-    (adversary : Adversary Concrete.cappedScheme) :
-    forgeAdvantage Concrete.cappedScheme adversary ≤
+    (adversary : Adversary Concrete.scheme) :
+    forgeAdvantage Concrete.scheme adversary ≤
       ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
         WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.cappedScheme adversary] := by
+        detailedGameWithCache Concrete.scheme adversary] := by
   rw [forgeAdvantage_eq_detailedGameWithCache]
   calc
     Pr[fun execution : GameOutcome × QueryCache HashSpec => execution.1.won = true |
-        detailedGameWithCache Concrete.cappedScheme adversary] ≤
+        detailedGameWithCache Concrete.scheme adversary] ≤
       Pr[fun execution : GameOutcome × QueryCache HashSpec => ∃ event : BadEvent,
         WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.cappedScheme adversary] := by
+        detailedGameWithCache Concrete.scheme adversary] := by
       apply probEvent_mono
       intro execution hmem hwin
       obtain ⟨event, hevent⟩ := winning_outcome_has_badEvent execution.2 execution.1
@@ -224,10 +224,10 @@ theorem capped_forgeAdvantage_le_winningOutcomeBadEvent_sum
     _ ≤ ∑ event : BadEvent,
         Pr[fun execution : GameOutcome × QueryCache HashSpec =>
           WinningOutcomeBadEventOccurs execution.2 execution.1 event |
-          detailedGameWithCache Concrete.cappedScheme adversary] := by
+          detailedGameWithCache Concrete.scheme adversary] := by
       simpa only [Finset.mem_univ, true_and] using
         probEvent_exists_finset_le_sum (Finset.univ : Finset BadEvent)
-          (detailedGameWithCache Concrete.cappedScheme adversary)
+          (detailedGameWithCache Concrete.scheme adversary)
           (fun event execution =>
             WinningOutcomeBadEventOccurs execution.2 execution.1 event)
 
