@@ -357,7 +357,8 @@ theorem relTriple_sourceGlobal_globalHighMonitored_adversary_boundedHit
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (finish : α → OracleComp OracleWorld β)
     (hbound : (simulateQ
-      (sourceUnloggedMappedAdversaryImpl left.publicKey left.secretKey)
+      (sourceUnloggedMappedAdversaryImpl left.publicKey
+        (Concrete.materializePrecomputation left.cache left.secretKey))
         computation >>= finish).IsQueryBoundP (· matches .inr _) fuel)
     (leftState : SourceTracedState)
     (rightState : GlobalMonitoredTracedState)
@@ -370,7 +371,8 @@ theorem relTriple_sourceGlobal_globalHighMonitored_adversary_boundedHit
     (hlimits : countLimit ≤ hitLimit) :
     RelTriple
       ((simulateQ
-        (sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey)
+        (sourceDirectTracedMappedAdversaryImpl left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey))
           computation).run leftState)
       ((simulateQ (globalHighMonitoredMappedAdversaryImpl right)
         computation).run rightState)
@@ -396,20 +398,25 @@ theorem relTriple_sourceGlobal_globalHighMonitored_adversary_boundedHit
           hleftSupport hrightSupport leftState rightState hstate input))
       intro headLeft headRight hhead
       have hleftInfo := sourceDirectTracedMappedAdversaryImpl_support_info
-        left.publicKey left.secretKey input leftState headLeft hhead.2.1
+        left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
+            input leftState headLeft hhead.2.1
       let continuation := fun response =>
         simulateQ
-          (sourceUnloggedMappedAdversaryImpl left.publicKey left.secretKey)
+          (sourceUnloggedMappedAdversaryImpl left.publicKey
+            (Concrete.materializePrecomputation left.cache left.secretKey))
             (next ((OracleSpec.query input).cont response)) >>= finish
       have hstepBound :
           (liftM (sourceUnloggedMappedAdversaryImpl left.publicKey
-            left.secretKey input) >>= continuation).IsQueryBoundP
+            (Concrete.materializePrecomputation left.cache left.secretKey)
+              input) >>= continuation).IsQueryBoundP
               (· matches .inr _) fuel := by
         exact hbound
       have hrestBound :=
         sourceUnloggedMappedAdversaryImpl_continuation_hashQueryBound
-          left.publicKey left.secretKey input continuation fuel hstepBound
-            headLeft.1 hleftInfo.1
+          left.publicKey
+            (Concrete.materializePrecomputation left.cache left.secretKey)
+              input continuation fuel hstepBound headLeft.1 hleftInfo.1
       rw [attackerActionFragment_hashInputs_length] at hrestBound
       have hnextCount :=
         globalHighMonitoredMappedAdversaryImpl_support_probeCount_growth right
@@ -581,13 +588,21 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
     right.1.2 (globalFilteredCausalKeygenState right.1.1)
   have hleftKeyResult := trajectoryProgrammedGlobalChainKeygen_support_keyResult
     left hleftSupport
+  have hmaterializedKeyResult :
+      Concrete.materializeCachedKeyResult left.keyResult ∈ support
+        ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅) := by
+    exact Concrete.oldKeygen_support_materializedPrecomputedKeygen
+      left.keyResult hleftKeyResult
   have hsourceBound := sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
-    countLimit adversary hbound left.keyResult hleftKeyResult
+    countLimit adversary hbound
+      (Concrete.materializeCachedKeyResult left.keyResult)
+        hmaterializedKeyResult
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) :=
     fun forgery => Prod.mk forgery <$> Concrete.cappedScheme.verify
       left.publicKey forgery.epoch forgery.message forgery.signature
   have hfullBound : (simulateQ
-      (sourceUnloggedMappedAdversaryImpl left.publicKey left.secretKey)
+      (sourceUnloggedMappedAdversaryImpl left.publicKey
+        (Concrete.materializePrecomputation left.cache left.secretKey))
         (adversary.main left.publicKey) >>= finish).IsQueryBoundP
           (· matches .inr _) countLimit := by
     unfold sourceUnloggedDetailedGameAfterKeygen at hsourceBound
@@ -626,8 +641,10 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
       exact hrightCovered
     have hresidual :=
       sourceDirectTracedMappedAdversary_residual_hashQueryBound
-        left.publicKey left.secretKey (adversary.main left.publicKey) finish
-          countLimit hfullBound left.cache leftHandled hhandled.2.1
+        left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
+            (adversary.main left.publicKey) finish countLimit hfullBound
+              left.cache leftHandled hhandled.2.1
     have hverifyBound :
         (Concrete.cappedScheme.verify left.publicKey leftHandled.1.epoch
           leftHandled.1.message leftHandled.1.signature).IsQueryBoundP

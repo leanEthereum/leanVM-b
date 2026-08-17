@@ -10,7 +10,8 @@ noncomputable def programmedWarmedDetailedGame
     ProbComp FixedChainActionTracedResult := do
   let keyView ← programmedWarmedFixedChainKeygen chain
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
-    keyView.publicKey keyView.secretKey keyView.cache
+    keyView.publicKey
+      (Concrete.materializePrecomputation keyView.cache keyView.secretKey) keyView.cache
   pure ((keyView, execution.1), execution.2)
 
 theorem evalDist_chronologicallyWarmedDetailedGame_eq_programmed
@@ -55,8 +56,11 @@ theorem programmedWarmedRevealProbeView_table_eq_keyView
       (programmedWarmedDetailedGame adversary chain)) :
     (actionTracedRevealProbeView chain
       (eraseFixedChainKeygenView result)).table = result.1.1.table := by
+  change keygenChainValueTable result.1.1.cache
+      (Concrete.materializePrecomputation result.1.1.cache
+        result.1.1.secretKey) chain = result.1.1.table
   change keygenChainValueTable result.1.1.cache result.1.1.secretKey chain =
-    result.1.1.table
+      result.1.1.table
   exact programmedWarmedDetailedGame_support_keygenTable
     adversary chain result hresult
 

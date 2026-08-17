@@ -1,4 +1,5 @@
 import XmssSecurity.CappedConcreteExecution
+import XmssSecurity.PrecomputedBoundedSign
 import XmssSecurity.SigningLogReplay
 import XmssSecurity.WinningEventReduction
 
@@ -43,7 +44,9 @@ theorem cappedMappedAdversary_signingLog_consistent
     (hmem : result ∈ support
       (((simulateQ (cappedMappedAdversaryImpl publicKey secretKey) computation).run).run
         initialCache))
-    (largerCache : QueryCache HashSpec) (hle : result.2 ≤ largerCache) :
+    (keygenCache largerCache : QueryCache HashSpec)
+    (hconsistent : PrecomputedKeyConsistent keygenCache secretKey)
+    (hkeygenLe : keygenCache ≤ largerCache) (hle : result.2 ≤ largerCache) :
     SigningLogConsistent largerCache secretKey result.1.2 := by
   induction computation using OracleComp.inductionOn generalizing initialCache result with
   | pure value =>
@@ -97,10 +100,10 @@ theorem cappedMappedAdversary_signingLog_consistent
             rw [hsignature] at hsign
             change (some signature, signCache) ∈ support
               ((simulateQ xmssRomImpl
-                (Concrete.cappedSign publicKey secretKey request.epoch request.message)).run
-                initialCache) at hsign
-            apply Concrete.cappedSign_success_replay publicKey secretKey request
-              initialCache signCache largerCache signature
+                (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                  request.message)).run initialCache) at hsign
+            apply Concrete.precomputedCappedSign_success_replay publicKey secretKey request
+              keygenCache initialCache signCache largerCache signature hconsistent hkeygenLe
             · exact hsign
             · exact hmiddleFinal.trans hle
       · apply ih output middleCache ((value, restLog), finalCache) hrest hle
@@ -115,7 +118,7 @@ theorem capped_detailed_execution_signingLog_consistent
   have hgame := hmem
   unfold detailedGameWithCache detailedGameCore at hgame
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hgame
-  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hgame
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, hkeygen, hrest⟩ := hgame
   unfold detailedGameAfterKeygen at hrest
   simp only at hrest
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hrest
@@ -137,9 +140,19 @@ theorem capped_detailed_execution_signingLog_consistent
     exact hadversary
   have hcacheLe : adversaryCache ≤ finalCache :=
     xmssRom_cache_le _ adversaryCache (verified, finalCache) hverify
+  have hkeygen' : ((publicKey, secretKey), keyCache) ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+    simpa only [Concrete.cappedScheme] using hkeygen
+  have hconsistent :=
+    Concrete.precomputedKeygen_support_consistent
+      ((publicKey, secretKey), keyCache) hkeygen'
+  have hkeygenLeAdversary : keyCache ≤ adversaryCache :=
+    cappedMappedAdversary_cache_le publicKey secretKey (adversary.main publicKey)
+      keyCache ((forgery, signingLog), adversaryCache) hadversary'
   exact cappedMappedAdversary_signingLog_consistent publicKey secretKey
     (adversary.main publicKey) keyCache ((forgery, signingLog), adversaryCache)
-    hadversary' finalCache hcacheLe
+    hadversary' keyCache finalCache hconsistent
+      (hkeygenLeAdversary.trans hcacheLe) hcacheLe
 
 theorem capped_detailed_execution_consistent
     (adversary : Adversary Concrete.cappedScheme)

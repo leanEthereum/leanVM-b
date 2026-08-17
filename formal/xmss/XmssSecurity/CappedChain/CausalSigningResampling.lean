@@ -112,7 +112,8 @@ theorem causalSigningResult_chainValue_eq_keygenChainValueTable
     (resultCache : QueryCache HashSpec)
     (hsigned : (some signature, resultCache) ∈ support
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign keyResult.1.1 keyResult.1.2
+        (Concrete.cappedScheme.sign keyResult.1.1
+          (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
           request.epoch request.message)).run state.cache))
     (chain : ChainIndex) :
     ∃ encoding,
@@ -124,12 +125,23 @@ theorem causalSigningResult_chainValue_eq_keygenChainValueTable
           (request.epoch, encoding chain) := by
   have hresultCache : state.cache ≤ resultCache :=
     xmssRom_cache_le
-      (Concrete.cappedScheme.sign keyResult.1.1 keyResult.1.2
+      (Concrete.cappedScheme.sign keyResult.1.1
+        (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
         request.epoch request.message)
       state.cache (some signature, resultCache) hsigned
-  obtain ⟨encoding, hdecode, hsignature⟩ := Concrete.cappedSign_success_replay
-    keyResult.1.1 keyResult.1.2 request state.cache resultCache resultCache
-      signature hsigned le_rfl
+  let materializedKeyResult := Concrete.materializeCachedKeyResult keyResult
+  have hmaterialized : materializedKeyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) :=
+    Concrete.oldKeygen_support_materializedPrecomputedKeygen keyResult hkeygen
+  have hconsistent := Concrete.precomputedKeygen_support_consistent
+    materializedKeyResult hmaterialized
+  obtain ⟨encoding, hdecode, hsignature⟩ :=
+    Concrete.precomputedCappedSign_success_replay keyResult.1.1
+      (Concrete.materializePrecomputation keyResult.2 keyResult.1.2) request
+      keyResult.2 state.cache resultCache resultCache signature hconsistent
+        (hkeyCache.trans hresultCache) hsigned le_rfl
+  change signature = Concrete.CacheReplay.signWithEncoding resultCache
+    keyResult.1.2 request.epoch signature.randomness encoding at hsignature
   refine ⟨encoding, hdecode, ?_⟩
   rw [hsignature]
   exact Concrete.CacheReplay.signWithEncoding_chainValue_eq_keygenChainValueTable
@@ -145,7 +157,8 @@ theorem simulate_eagerTrace_revealSigningResult_with_keygenTable
     (resultCache : QueryCache HashSpec)
     (hsigned : (some signature, resultCache) ∈ support
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign keyResult.1.1 keyResult.1.2
+        (Concrete.cappedScheme.sign keyResult.1.1
+          (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
           request.epoch request.message)).run state.cache))
     (chain : ChainIndex) :
     ∃ encoding,

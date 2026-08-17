@@ -1,6 +1,7 @@
 import XmssSecurity.ChainTableUniformity
 import XmssSecurity.ChainTablePresampling
 import XmssSecurity.MixedOraclePresampling
+import XmssSecurity.PrecomputedKeygen
 
 open OracleComp OracleSpec ENNReal
 
@@ -3262,21 +3263,23 @@ noncomputable def Concrete.keygenAfterParameter
     (parameter : PublicParameter) :
     OracleComp OracleWorld (PublicKey × SecretKey) := do
   let secret ← liftM Concrete.sampleSecret
-  let root ← liftM
+  let result ← liftM
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-      OracleComp HashSpec Digest)
-  return (⟨root, parameter⟩, (SecretKey.withoutPrecomputation parameter secret))
+      OracleComp HashSpec Digest).withQueryLog
+  let cache := hashCacheOfLog result.2
+  return (⟨result.1, parameter⟩,
+    Concrete.precomputedSecretKey parameter secret cache)
 
 theorem Concrete.keygen_eq_samplePublicParameter_bind :
-    Concrete.keygen =
+    Concrete.precomputedKeygen =
       (liftM Concrete.samplePublicParameter >>= Concrete.keygenAfterParameter) := by
-  unfold Concrete.keygen Concrete.keygenAfterParameter
+  unfold Concrete.precomputedKeygen Concrete.keygenAfterParameter
   rfl
 
 /-- After separating the public-parameter draw, every candidate fixed-chain edge can be front-loaded before the remainder of key generation. -/
 theorem evalDist_keygen_eq_presample_chainTableTrace
     (chain : ChainIndex) (table : ChainValueIndex → Digest) :
-    𝒟[(simulateQ xmssRomImpl Concrete.keygen).run' ∅] =
+    𝒟[(simulateQ xmssRomImpl Concrete.precomputedKeygen).run' ∅] =
       𝒟[Concrete.samplePublicParameter >>= fun parameter => do
         let trace ← OracleComp.presampleCacheEntriesTrace ∅
           (chainTableEdgeInputs parameter chain table)
@@ -3303,7 +3306,7 @@ theorem Concrete.detailedGameCore_eq_samplePublicParameter_bind
       (liftM Concrete.samplePublicParameter >>=
         Concrete.detailedGameAfterParameter adversary) := by
   unfold detailedGameCore Concrete.detailedGameAfterParameter
-  change (Concrete.keygen >>= fun keys =>
+  change (Concrete.precomputedKeygen >>= fun keys =>
     detailedGameAfterKeygen Concrete.cappedScheme adversary keys.1 keys.2) = _
   rw [Concrete.keygen_eq_samplePublicParameter_bind]
   simp only [bind_assoc]

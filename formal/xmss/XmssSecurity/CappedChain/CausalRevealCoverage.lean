@@ -517,8 +517,9 @@ theorem encodingHash_eq_of_sign_support_of_cache_le
       Concrete.CacheView.encodingHash largerCache secretKey.parameter
         request.epoch (request.message, signature.randomness) := by
   obtain ⟨output, hcached⟩ :=
-    Concrete.cappedSign_success_encodingInput_cached
-      publicKey secretKey request initialCache resultCache signature hsigned
+    Concrete.precomputedCappedSign_success_encodingInput_cached
+      publicKey secretKey request initialCache resultCache signature (by
+        simpa only [Concrete.cappedScheme] using hsigned)
   have hcachedLarger := hle hcached
   unfold Concrete.CacheView.encodingHash
   rw [Concrete.CacheView.digestAt_eq_of_cache_eq_some hcached,

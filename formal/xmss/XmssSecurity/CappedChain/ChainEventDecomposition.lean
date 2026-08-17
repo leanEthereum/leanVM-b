@@ -92,7 +92,11 @@ theorem chainValueRevealed_afterKeygen_guesses_keygenValue
   have hcacheLe := xmssRom_cache_le
     (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
-  have hwalk := Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeygen execution.2
+  have hkeygen' : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+    simpa only [Concrete.cappedScheme] using hkeygen
+  have hwalk := Concrete.precomputedKeygen_chainWalk_eq_of_cache_le keyResult hkeygen'
+    execution.2
     hcacheLe execution.1.forgery.epoch chain (encoding chain).val
     (Nat.le_pred_of_lt (encoding chain).isLt)
   refine ⟨hverified, encoding, hdecode, ?_⟩
@@ -118,7 +122,11 @@ theorem chainValueRevealed_afterKeygen_has_origin
   have hcacheLe := xmssRom_cache_le
     (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
-  have hwalk := Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeygen execution.2
+  have hkeygen' : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+    simpa only [Concrete.cappedScheme] using hkeygen
+  have hwalk := Concrete.precomputedKeygen_chainWalk_eq_of_cache_le keyResult hkeygen'
+    execution.2
     hcacheLe execution.1.forgery.epoch chain (encoding chain).val
     (Nat.le_pred_of_lt (encoding chain).isLt)
   refine ⟨hverified, encoding, hdecode, ?_⟩
@@ -129,7 +137,7 @@ theorem chainValueRevealed_afterKeygen_has_origin
   · right
     have hpositive : 0 < (encoding chain).val := Nat.pos_of_ne_zero hzero
     obtain ⟨previous, output, hprevious, hcached, houtput⟩ :=
-      Concrete.keygen_cache_has_chainValue_preimage keyResult hkeygen
+      Concrete.precomputedKeygen_cache_has_chainValue_preimage keyResult hkeygen'
         execution.1.forgery.epoch chain (encoding chain) hpositive
     refine ⟨previous, output, hprevious, ?_, ?_⟩
     · exact hcached

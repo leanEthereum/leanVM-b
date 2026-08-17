@@ -1,5 +1,6 @@
 import XmssSecurity.BoundedSignCache
 import XmssSecurity.CappedSigningLogReplay
+import XmssSecurity.PrecomputedBoundedSignCache
 import XmssSecurity.SigningCacheTrace
 
 open OracleComp OracleSpec ENNReal
@@ -162,7 +163,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
         intro signature hsignature
         change output = some signature at hsignature
         subst output
-        exact Concrete.cappedSign_success_encodingInput_cached publicKey secretKey request
+        exact Concrete.precomputedCappedSign_success_encodingInput_cached publicKey secretKey request
           initialCache finalCache signature hbase
 
 theorem cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsValid
@@ -193,9 +194,9 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsValid
         intro signature hsignature
         change output = some signature at hsignature
         subst output
-        obtain ⟨encoding, hdecode, _hsignature⟩ :=
-          Concrete.cappedSign_success_replay publicKey secretKey request initialCache
-            finalCache finalCache signature hbase le_rfl
+        obtain ⟨encoding, hdecode⟩ :=
+          Concrete.precomputedCappedSign_success_decode publicKey secretKey request
+            initialCache finalCache signature hbase
         exact ⟨encoding, hdecode⟩
 
 theorem cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingInputs
@@ -228,7 +229,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingIn
         change output = some signature at hsignature
         subst output
         by_cases hepoch : request.epoch = targetEpoch
-        · exact Concrete.cappedSign_preserves_later_valid_other_encodingInput
+        · exact Concrete.precomputedCappedSign_preserves_later_valid_other_encodingInput
             publicKey secretKey request.epoch targetEpoch request.message targetInput
             initialCache finalCache finalCache (some signature) hbase le_rfl encoding hdecode
             (by
@@ -237,7 +238,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingIn
               subst candidate
               exact hother)
             hnone
-        · exact Concrete.cappedSign_preserves_other_epoch_encodingInput
+        · exact Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput
             publicKey secretKey request.epoch targetEpoch request.message targetInput
             initialCache finalCache (some signature) hbase hepoch hnone
 

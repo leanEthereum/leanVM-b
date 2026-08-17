@@ -5,10 +5,14 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity
 
-def hashCacheOfLog : QueryLog HashSpec → QueryCache HashSpec
-  | [] => ∅
+def extendHashCacheWithLog (initialCache : QueryCache HashSpec) :
+    QueryLog HashSpec → QueryCache HashSpec
+  | [] => initialCache
   | ⟨input, output⟩ :: tail =>
-      (hashCacheOfLog tail).cacheQuery input output
+      extendHashCacheWithLog (initialCache.cacheQuery input output) tail
+
+def hashCacheOfLog (log : QueryLog HashSpec) : QueryCache HashSpec :=
+  extendHashCacheWithLog ∅ log
 
 namespace Concrete
 

@@ -185,7 +185,9 @@ theorem sourceGlobal_origin_implies_right_publicObservedHit
           (left.2.1.1.message, left.2.1.1.signature.randomness)) =
         some encoding := by
       simpa [sourceGlobalProgramResult, sourceGlobalExecutionResult,
-        eraseGlobalChainKeygenView, actionTraceOutcome] using hdecode
+        eraseGlobalChainKeygenView, actionTraceOutcome,
+        Concrete.materializePrecomputation,
+        Concrete.precomputedSecretKey] using hdecode
     have hsourceUnrevealed :
         (chain, left.2.1.1.epoch, encoding chain) ∉
           GlobalReturnedChainValueCovered left.2.2.1 left.1.secretKey
@@ -235,7 +237,8 @@ theorem sourceGlobal_origin_implies_right_publicObservedHit
           (chain, left.2.1.1.epoch, encoding chain) := by
       simpa [sourceGlobalProgramResult, sourceGlobalExecutionResult,
         eraseGlobalChainKeygenView, actionTraceOutcome,
-        globalKeygenChainValueTable] using hvalue
+        globalKeygenChainValueTable, Concrete.materializePrecomputation,
+        Concrete.precomputedSecretKey, keygenChainValueTable] using hvalue
     have hrightValue : right.1.1.2
         (chain, right.2.1.1.epoch, encoding chain) =
           right.2.1.1.signature.chainValue chain := by

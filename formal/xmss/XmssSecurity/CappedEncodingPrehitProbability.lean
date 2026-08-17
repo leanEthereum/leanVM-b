@@ -1,6 +1,7 @@
 import XmssSecurity.CappedEncodingTraceBridge
 import XmssSecurity.BoundedSignProbability
 import XmssSecurity.EncodingPrehitProbability
+import XmssSecurity.PrecomputedBoundedSignProbability
 
 open OracleComp OracleSpec ENNReal
 
@@ -120,13 +121,15 @@ theorem cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le
       Prod.map id Prod.fst <$>
           cappedCacheTracedSigningQuery publicKey secretKey request initialCache initialTrace =
         (simulateQ xmssRomImpl
-          (Concrete.cappedSign publicKey secretKey request.epoch request.message)).run
+          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+            request.message)).run
             initialCache := by
     unfold cappedCacheTracedSigningQuery cappedCacheTracedMappedAdversaryImpl
     rw [QueryImpl.extendState_apply]
     change Prod.map id Prod.fst <$>
         ((simulateQ xmssRomImpl
-          (Concrete.cappedSign publicKey secretKey request.epoch request.message)).run
+          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+            request.message)).run
             initialCache >>= _) = _
     simp
   calc
@@ -142,11 +145,12 @@ theorem cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le
         (SigningCacheEntry.mk request result.1 initialCache result.2)
           |>.EncodingInputPrehit secretKey |
         (simulateQ xmssRomImpl
-          (Concrete.cappedSign publicKey secretKey request.epoch request.message)).run
+          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+            request.message)).run
             initialCache] := by rw [hprojection]
     _ ≤ _ := by
       simpa [SigningCacheEntry.EncodingInputPrehit] using
-        Concrete.cappedSign_encodingInput_initialCache_hit_le publicKey secretKey
+        Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le publicKey secretKey
           request.epoch request.message initialCache
 
 theorem cappedCacheTracedMappedAdversary_fixedEpoch_prehit_probability_le

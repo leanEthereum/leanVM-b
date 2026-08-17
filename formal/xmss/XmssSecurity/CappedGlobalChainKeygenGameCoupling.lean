@@ -1,5 +1,6 @@
 import XmssSecurity.CappedGlobalTreeCoupling
 import XmssSecurity.CappedGlobalChainTracedGame
+import XmssSecurity.PrecomputedKeygenCache
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -79,7 +80,8 @@ def eraseGlobalChainKeygenView
     (result : GlobalChainActionTracedResult) :
     ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace) :=
-  ((((result.1.1.publicKey, result.1.1.secretKey), result.1.1.cache),
+  ((((result.1.1.publicKey, Concrete.materializePrecomputation
+      result.1.1.cache result.1.1.secretKey), result.1.1.cache),
     result.1.2), result.2)
 
 noncomputable def detailedGameWithGlobalChainKeygenView
@@ -87,7 +89,8 @@ noncomputable def detailedGameWithGlobalChainKeygenView
     ProbComp GlobalChainActionTracedResult := do
   let keyView ← actualGlobalChainKeygen
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
-    keyView.publicKey keyView.secretKey keyView.cache
+    keyView.publicKey
+      (Concrete.materializePrecomputation keyView.cache keyView.secretKey) keyView.cache
   pure ((keyView, execution.1), execution.2)
 
 noncomputable def trajectoryProgrammedGlobalChainDetailedGame
@@ -95,20 +98,34 @@ noncomputable def trajectoryProgrammedGlobalChainDetailedGame
     ProbComp GlobalChainActionTracedResult := do
   let keyView ← trajectoryProgrammedGlobalChainKeygen
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
-    keyView.publicKey keyView.secretKey keyView.cache
+    keyView.publicKey
+      (Concrete.materializePrecomputation keyView.cache keyView.secretKey) keyView.cache
   pure ((keyView, execution.1), execution.2)
 
 theorem erase_detailedGameWithGlobalChainKeygenView
     (adversary : Adversary Concrete.cappedScheme) :
-    eraseGlobalChainKeygenView <$>
-        detailedGameWithGlobalChainKeygenView adversary =
-      detailedGameWithKeygenCacheAndActionTrace adversary := by
+    evalDist (eraseGlobalChainKeygenView <$>
+        detailedGameWithGlobalChainKeygenView adversary) =
+      evalDist (detailedGameWithKeygenCacheAndActionTrace adversary) := by
   unfold detailedGameWithGlobalChainKeygenView actualGlobalChainKeygen
     detailedGameWithKeygenCacheAndActionTrace
   simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind]
-  apply bind_congr
-  intro keyResult
-  rfl
+  simp only [Concrete.cappedScheme]
+  rw [evalDist_bind, evalDist_bind]
+  calc
+    _ = evalDist (Concrete.materializeCachedKeyResult <$>
+          (simulateQ xmssRomImpl Concrete.keygen).run ∅) >>= fun keyResult =>
+        evalDist (do
+          let execution ← detailedGameAfterKeygenWithActionTrace adversary
+            keyResult.1.1 keyResult.1.2 keyResult.2
+          pure ((keyResult, execution.1), execution.2)) := by
+      rw [evalDist_map, map_eq_bind_pure_comp, bind_assoc]
+      apply bind_congr
+      intro keyResult
+      simp only [Function.comp_apply, pure_bind]
+      rfl
+    _ = _ := by
+      rw [Concrete.evalDist_materialized_keygen_eq_precomputedKeygen]
 
 theorem evalDist_detailedGameWithGlobalChainKeygenView_eq_programmed
     (adversary : Adversary Concrete.cappedScheme) :
@@ -126,8 +143,9 @@ theorem evalDist_originalActionTracedGame_eq_erase_globalProgrammed
       evalDist (eraseGlobalChainKeygenView <$>
         trajectoryProgrammedGlobalChainDetailedGame adversary) := by
   rw [← erase_detailedGameWithGlobalChainKeygenView adversary]
-  simp only [evalDist_map]
-  rw [evalDist_detailedGameWithGlobalChainKeygenView_eq_programmed]
+  rw [evalDist_map,
+    evalDist_detailedGameWithGlobalChainKeygenView_eq_programmed,
+    ← evalDist_map]
 
 theorem trajectoryProgrammedGlobalChainDetailedGame_support_keyView
     (adversary : Adversary Concrete.cappedScheme)

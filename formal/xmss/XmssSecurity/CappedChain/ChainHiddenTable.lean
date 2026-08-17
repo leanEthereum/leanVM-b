@@ -417,7 +417,11 @@ theorem returned_chainValue_eq_keygenChainValueTable
   have hcacheLe := xmssRom_cache_le
     (detailedGameAfterKeygen Concrete.cappedScheme qAdversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
-  have hwalk := Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeygen execution.2
+  have hkeygen' : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+    simpa only [Concrete.cappedScheme] using hkeygen
+  have hwalk := Concrete.precomputedKeygen_chainWalk_eq_of_cache_le keyResult hkeygen'
+    execution.2
     hcacheLe request.epoch chain (encoding chain).val
     (Nat.le_pred_of_lt (encoding chain).isLt)
   rw [hsignature, keygenChainValueTable]

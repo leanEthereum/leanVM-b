@@ -902,14 +902,21 @@ theorem relTriple_programmed_filteredCausalSigningQuery
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
         (filteredCausalSigningQuery right.1 selected request rightState)).run)
       (FilteredSigningResultRelation left.secretKey.parameter selected
         left.cache right.1.cache right.2) := by
-  simp only [Concrete.cappedScheme, Concrete.cappedSign_eq,
-    filteredCausalSigningQuery]
+  simp only [Concrete.cappedScheme, filteredCausalSigningQuery]
+  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+    selected left hleftSupport
+  apply relTriple_of_evalDist_eq_left
+    (Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
+      left.keyResult hleftKey hrel.2.1 leftCache
+        hstate.2.2.1 request.epoch request.message)
+  rw [Concrete.cappedSign_eq]
   exact relTriple_programmed_filteredCausalSignBoundedAttempts
     signingAttemptLimit selected left right hrel hleftSupport hrightSupport
       leftCache rightState hstate request

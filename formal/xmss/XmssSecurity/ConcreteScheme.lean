@@ -1,6 +1,4 @@
-import XmssSecurity.ConcreteKeygen
-import XmssSecurity.ConcreteSign
-import XmssSecurity.ConcreteVerify
+import XmssSecurity.PrecomputedSign
 
 namespace XmssSecurity.Concrete
 
@@ -11,8 +9,8 @@ noncomputable def scheme : Scheme where
     liftM (Concrete.verify publicKey epoch message signature : OracleComp HashSpec Bool)
 
 noncomputable def cappedScheme : Scheme where
-  keygen := Concrete.keygen
-  sign := Concrete.cappedSign
+  keygen := Concrete.precomputedKeygen
+  sign := Concrete.precomputedCappedSign
   verify := fun publicKey epoch message signature =>
     liftM (Concrete.verify publicKey epoch message signature : OracleComp HashSpec Bool)
 

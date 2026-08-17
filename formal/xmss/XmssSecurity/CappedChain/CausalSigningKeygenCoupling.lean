@@ -1,6 +1,7 @@
 import XmssSecurity.CausalKeygenCacheCoupling
 import XmssSecurity.CausalCacheInvariant
 import XmssSecurity.BoundedSignProbability
+import XmssSecurity.PrecomputedBoundedSignProbability
 import XmssSecurity.CappedChain.CausalSigningProjection
 import XmssSecurity.CappedChain.CausalStrategyCoupling
 import XmssSecurity.KeygenCache
@@ -233,6 +234,141 @@ theorem Concrete.keygen_signWithEncoding_run_eq_pure
     hstable.authenticationPath_run_eq_pure keyResult.1.2 keyResult.2
       largerCache hle epoch]
   simp [Concrete.CacheReplay.signWithEncoding]
+
+theorem Concrete.precomputedSignAttempt_materialized_run_eq_signAttempt
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeyResult : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (hstable : TreeCacheStable keyResult.1.2.parameter
+      keyResult.1.2.chainStart keyResult.2)
+    (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
+    (epoch : Epoch) (message : Message) (randomness : Randomness) :
+    evalDist ((simulateQ randomOracle
+      (Concrete.precomputedSignAttempt
+        (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
+          epoch message randomness : OracleComp HashSpec (Option Signature))).run
+        largerCache) =
+      evalDist ((simulateQ randomOracle
+        (Concrete.signAttempt keyResult.1.2 epoch message randomness :
+          OracleComp HashSpec (Option Signature))).run largerCache) := by
+  have hmaterialized :=
+    Concrete.oldKeygen_support_materializedPrecomputedKeygen keyResult hkeyResult
+  have hconsistent := Concrete.precomputedKeygen_support_consistent
+    (Concrete.materializeCachedKeyResult keyResult) hmaterialized
+  unfold Concrete.precomputedSignAttempt Concrete.signAttempt
+  rw [simulateQ_bind, StateT.run_bind, simulateQ_bind, StateT.run_bind]
+  simp only [Concrete.materializePrecomputation,
+    Concrete.precomputedSecretKey]
+  apply evalDist_bind_congr
+  intro digestResult hdigestResult
+  have hdigestLe := Concrete.CacheReplay.randomOracle_cache_le
+    (Concrete.encodingHash keyResult.1.2.parameter epoch message randomness)
+      largerCache digestResult (by
+        simpa [Concrete.materializePrecomputation] using hdigestResult)
+  cases hdecode : TargetSum.decodeDigest digestResult.1 with
+  | none =>
+    simp only
+  | some encoding =>
+    simp only
+    rw [simulateQ_map, StateT.run_map]
+    rw [Concrete.keygen_signWithEncoding_run_eq_pure keyResult hkeyResult
+      hstable digestResult.2 (hle.trans hdigestLe)
+      epoch randomness encoding]
+    simp only [Functor.map]
+    have hsignature := hconsistent digestResult.2 (hle.trans hdigestLe)
+      epoch randomness encoding
+    change Concrete.precomputedSignWithEncoding
+      (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
+        epoch randomness encoding =
+      Concrete.CacheReplay.signWithEncoding digestResult.2 keyResult.1.2
+        epoch randomness encoding at hsignature
+    simp only [Concrete.materializePrecomputation,
+      Concrete.precomputedSecretKey] at hsignature
+    rw [hsignature]
+    rfl
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem Concrete.evalDist_precomputedSignBoundedAttempts_materialized_eq
+    (attempts : Nat)
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeyResult : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (hstable : TreeCacheStable keyResult.1.2.parameter
+      keyResult.1.2.chainStart keyResult.2)
+    (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
+    (epoch : Epoch) (message : Message) :
+    evalDist ((simulateQ xmssRomImpl
+      (Concrete.precomputedSignBoundedAttempts attempts
+        (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
+          epoch message)).run largerCache) =
+      evalDist ((simulateQ xmssRomImpl
+        (Concrete.signBoundedAttempts attempts keyResult.1.2 epoch message)).run
+          largerCache) := by
+  induction attempts generalizing largerCache with
+  | zero => rfl
+  | succ attempts ih =>
+      rw [Concrete.precomputedSignBoundedAttempts_run_succ_eq,
+        Concrete.signBoundedAttempts_run_succ_eq]
+      apply evalDist_bind_congr
+      intro randomness _hrandomness
+      calc
+        evalDist ((simulateQ randomOracle
+              (Concrete.precomputedSignAttempt
+                (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
+                  epoch message randomness :
+                    OracleComp HashSpec (Option Signature))).run largerCache >>=
+            Concrete.precomputedSignBoundedAttemptsContinuation attempts
+              (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
+                epoch message) =
+            evalDist ((simulateQ randomOracle
+              (Concrete.signAttempt keyResult.1.2 epoch message randomness :
+                OracleComp HashSpec (Option Signature))).run largerCache >>=
+              Concrete.precomputedSignBoundedAttemptsContinuation attempts
+                (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
+                  epoch message) := by
+          rw [evalDist_bind, evalDist_bind,
+            Concrete.precomputedSignAttempt_materialized_run_eq_signAttempt
+              keyResult hkeyResult hstable largerCache hle epoch message randomness]
+        _ = evalDist ((simulateQ randomOracle
+              (Concrete.signAttempt keyResult.1.2 epoch message randomness :
+                OracleComp HashSpec (Option Signature))).run largerCache >>=
+              Concrete.signBoundedAttemptsContinuation attempts keyResult.1.2
+                epoch message) := by
+          apply evalDist_bind_congr
+          intro result hresult
+          cases hoption : result.1 with
+          | none =>
+              simp only [Concrete.precomputedSignBoundedAttemptsContinuation,
+                Concrete.signBoundedAttemptsContinuation]
+              rw [hoption]
+              apply ih result.2
+              exact hle.trans (Concrete.CacheReplay.randomOracle_cache_le
+                (Concrete.signAttempt keyResult.1.2 epoch message randomness :
+                  OracleComp HashSpec (Option Signature)) largerCache result hresult)
+          | some signature =>
+              simp only [Concrete.precomputedSignBoundedAttemptsContinuation,
+                Concrete.signBoundedAttemptsContinuation]
+              rw [hoption]
+
+theorem Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeyResult : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (hstable : TreeCacheStable keyResult.1.2.parameter
+      keyResult.1.2.chainStart keyResult.2)
+    (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
+    (epoch : Epoch) (message : Message) :
+    evalDist ((simulateQ xmssRomImpl
+      (Concrete.precomputedCappedSign keyResult.1.1
+        (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
+          epoch message)).run largerCache) =
+      evalDist ((simulateQ xmssRomImpl
+        (Concrete.cappedSign keyResult.1.1 keyResult.1.2 epoch message)).run
+          largerCache) := by
+  rw [Concrete.precomputedCappedSign, Concrete.cappedSign_eq]
+  exact Concrete.evalDist_precomputedSignBoundedAttempts_materialized_eq
+    signingAttemptLimit keyResult hkeyResult hstable largerCache hle epoch message
 
 theorem coupledWarmedKeygenExperiment_support_treeCacheStable
     (parameter : PublicParameter) (chain : ChainIndex)
@@ -1272,14 +1408,29 @@ theorem relTriple_keygenViews_sign_run
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign right.1.publicKey right.1.secretKey
+        (Concrete.cappedScheme.sign right.1.publicKey
+          (Concrete.materializePrecomputation right.1.cache right.1.secretKey)
           request.epoch request.message)).run rightCache)
       (SignResultRelation right.2 selected left.secretKey.parameter
         request.epoch request.message left.cache right.1.cache) := by
-  simp only [Concrete.cappedScheme, Concrete.cappedSign_eq]
+  simp only [Concrete.cappedScheme]
+  have hleftKey := programmedWarmedFixedChainKeygen_support_keyResult
+    selected left hleftSupport
+  have hrightKey := actualFixedChainKeygen_support_keyResult
+    selected right.1 hrightSupport
+  apply relTriple_of_evalDist_eq_left
+    (Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
+      left.keyResult hleftKey hrel.2.1 leftCache hleftLe
+        request.epoch request.message)
+  apply relTriple_of_evalDist_eq_right
+    (Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
+      right.1.keyResult hrightKey hrel.2.2 rightCache hrightLe
+        request.epoch request.message).symm
+  rw [Concrete.cappedSign_eq, Concrete.cappedSign_eq]
   have hlimit : signingAttemptLimit = (signingAttemptLimit - 1) + 1 := by
     norm_num [signingAttemptLimit]
   rw [hlimit]
@@ -1322,11 +1473,13 @@ theorem relTriple_keygenViews_causalSigningQuery_run
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
-        (causalSigningQueryAfterRealRom right.1.publicKey right.1.secretKey
-          selected request rightState)).run)
+        (causalSigningQueryAfterRealRom right.1.publicKey
+          (Concrete.materializePrecomputation right.1.cache right.1.secretKey)
+            selected request rightState)).run)
       (SigningQueryResultRelation left.secretKey.parameter selected
         left.cache right.1.cache right.2) := by
   have hsign := relTriple_keygenViews_sign_run selected left right hrel
@@ -1339,10 +1492,12 @@ theorem relTriple_keygenViews_causalSigningQuery_run
     Function.comp_apply, List.nil_append]
   rw [show
     (simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign left.publicKey left.secretKey
+      (Concrete.cappedScheme.sign left.publicKey
+        (Concrete.materializePrecomputation left.cache left.secretKey)
         request.epoch request.message)).run leftCache =
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache >>= pure) by simp]
   apply relTriple_bind hsign
   intro leftSigned rightSigned hsigned
@@ -1393,6 +1548,15 @@ theorem relTriple_keygenViews_causalSigningQuery_run
               (request.message, signature.randomness)) = some encoding := by
         rw [hrandomness, ← hencodingHash]
         exact hdecode
+      have hreveal :
+          revealFixedChainSignatureOption
+              (Concrete.materializePrecomputation right.1.cache right.1.secretKey)
+                selected request (some signature) =
+            revealFixedChainSignatureOption right.1.secretKey selected request
+              (some signature) := by
+        unfold revealFixedChainSignatureOption
+        rfl
+      rw [hreveal]
       rw [simulate_eagerTrace_revealFixedChainSignatureOption_some_of_decode
         right.2 right.1.secretKey selected request signature
           { rightState with cache := rightSigned.2 } encoding hdecodeRight]

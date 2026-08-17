@@ -179,15 +179,17 @@ theorem relTriple_programmed_globalHighMonitored_action
       rightState)
     (input : (OracleWorld + SigningSpec).Domain) :
     RelTriple
-      ((sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey
-        input).run leftState)
+      ((sourceDirectTracedMappedAdversaryImpl left.publicKey
+        (Concrete.materializePrecomputation left.cache left.secretKey)
+          input).run leftState)
       ((globalHighMonitoredMappedAdversaryImpl right input).run rightState)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredTracedStateRelation left right.1 leftResult.2
             rightResult.2) ∨ rightResult.2.1.bad) := by
   have liftBase := relTriple_globalActionTracedState_until_bad input left
-    right.1 (sourceDirectMappedAdversaryImpl left.publicKey left.secretKey)
+    right.1 (sourceDirectMappedAdversaryImpl left.publicKey
+      (Concrete.materializePrecomputation left.cache left.secretKey))
       (globalHighMonitoredBaseMappedAdversaryImpl right) leftState rightState
         hstate.2
   rcases input with (worldInput | request)
@@ -323,7 +325,8 @@ theorem relTriple_programmed_globalHighMonitored_adversary
       rightState) :
     RelTriple
       ((simulateQ
-        (sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey)
+        (sourceDirectTracedMappedAdversaryImpl left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey))
           (adversary.main left.publicKey)).run leftState)
       ((simulateQ (globalHighMonitoredMappedAdversaryImpl right)
         (adversary.main left.publicKey)).run rightState)
@@ -332,7 +335,8 @@ theorem relTriple_programmed_globalHighMonitored_adversary
           GlobalMonitoredTracedStateRelation left right.1 leftResult.2
             rightResult.2) ∨ rightResult.2.1.bad) := by
   exact relTriple_simulateQ_run_until_bad_right
-    (sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey)
+    (sourceDirectTracedMappedAdversaryImpl left.publicKey
+      (Concrete.materializePrecomputation left.cache left.secretKey))
     (globalHighMonitoredMappedAdversaryImpl right)
     (GlobalMonitoredTracedStateRelation left right.1)
     (fun state : GlobalMonitoredTracedState => state.1.bad)
@@ -522,7 +526,8 @@ noncomputable def sourceGlobalTracedDetailedExecution
     (keyView : ProgrammedGlobalChainKeygenView) :
     ProbComp ((Forgery × Bool) × SourceTracedState) := do
   let handled ← (simulateQ
-    (sourceDirectTracedMappedAdversaryImpl keyView.publicKey keyView.secretKey)
+    (sourceDirectTracedMappedAdversaryImpl keyView.publicKey
+      (Concrete.materializePrecomputation keyView.cache keyView.secretKey))
       (adversary.main keyView.publicKey)).run (keyView.cache, [])
   let verified ← (simulateQ sourceDirectTracedVerifierImpl
     (Concrete.cappedScheme.verify keyView.publicKey handled.1.epoch
@@ -642,7 +647,8 @@ def sourceGlobalExecutionResult
     (keyView : ProgrammedGlobalChainKeygenView)
     (execution : (Forgery × Bool) × SourceTracedState) :
     (GameOutcome × QueryCache HashSpec) × AttackerActionTrace :=
-  ((actionTraceOutcome keyView.publicKey keyView.secretKey
+  ((actionTraceOutcome keyView.publicKey
+    (Concrete.materializePrecomputation keyView.cache keyView.secretKey)
     (execution.1, execution.2.2), execution.2.1), execution.2.2)
 
 theorem sourceGlobalTracedDetailedExecution_eq_actionTraced
@@ -651,7 +657,8 @@ theorem sourceGlobalTracedDetailedExecution_eq_actionTraced
     sourceGlobalExecutionResult keyView <$>
         sourceGlobalTracedDetailedExecution adversary keyView =
       detailedGameAfterKeygenWithActionTrace adversary keyView.publicKey
-        keyView.secretKey keyView.cache := by
+        (Concrete.materializePrecomputation keyView.cache keyView.secretKey)
+          keyView.cache := by
   unfold sourceGlobalTracedDetailedExecution
     detailedGameAfterKeygenWithActionTrace
     sourceActionTracedDetailedGameAfterKeygen

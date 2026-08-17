@@ -22,12 +22,39 @@ attribute [local irreducible]
   coupledWarmedKeygenWithBaseHigh
   programmedWarmedFixedChainKeygen
 
+noncomputable def materializedFixedChainSecretKey
+    (keyView : ProgrammedFixedChainKeygenView) : SecretKey :=
+  Concrete.materializePrecomputation keyView.cache keyView.secretKey
+
+theorem materializedFixedChainSecretKey_eq
+    (keyView : ProgrammedFixedChainKeygenView) :
+    materializedFixedChainSecretKey keyView =
+      Concrete.materializePrecomputation keyView.cache keyView.secretKey := rfl
+
+@[simp]
+theorem materializedFixedChainSecretKey_parameter
+    (keyView : ProgrammedFixedChainKeygenView) :
+    (materializedFixedChainSecretKey keyView).parameter =
+      keyView.secretKey.parameter := by
+  rw [materializedFixedChainSecretKey_eq]
+  rfl
+
+@[simp]
+theorem materializedFixedChainSecretKey_chainStart
+    (keyView : ProgrammedFixedChainKeygenView) :
+    (materializedFixedChainSecretKey keyView).chainStart =
+      keyView.secretKey.chainStart := by
+  rw [materializedFixedChainSecretKey_eq]
+  rfl
+
+attribute [local irreducible] materializedFixedChainSecretKey
+
 noncomputable def highProgrammedWarmedDetailedGame
     (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
     ProbComp FixedChainActionTracedResult := do
   let keyView ← XmssSecurity.programmedWarmedFixedChainKeygen chain
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
-    keyView.publicKey keyView.secretKey keyView.cache
+    keyView.publicKey (materializedFixedChainSecretKey keyView) keyView.cache
   pure ((keyView, execution.1), execution.2)
 
 theorem evalDist_chronologicallyWarmedDetailedGame_eq_highProgrammed
@@ -48,6 +75,9 @@ theorem evalDist_chronologicallyWarmedDetailedGame_eq_highProgrammed
       _ = evalDist (XmssSecurity.programmedWarmedFixedChainKeygen chain) :=
         XmssSecurity.evalDist_actualFixedChainKeygen_eq_programmedWarmed chain
   rw [hkeygen]
+  apply bind_congr
+  intro keyView
+  rw [materializedFixedChainSecretKey_eq]
 
 
 noncomputable def uniformCoupledWarmedFixedChainKeygenWithHigh
@@ -2606,6 +2636,24 @@ noncomputable def sourceDirectTracedMappedAdversaryImpl
     (sourceDirectMappedAdversaryImpl publicKey secretKey)
     attackerActionFragment
 
+noncomputable def materializedSourceDirectMappedAdversaryImpl
+    (keyView : ProgrammedFixedChainKeygenView) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT (QueryCache HashSpec) ProbComp) :=
+  sourceDirectMappedAdversaryImpl keyView.publicKey
+    (materializedFixedChainSecretKey keyView)
+
+noncomputable def materializedSourceDirectTracedMappedAdversaryImpl
+    (keyView : ProgrammedFixedChainKeygenView) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT SourceTracedState ProbComp) :=
+  sourceDirectTracedMappedAdversaryImpl keyView.publicKey
+    (materializedFixedChainSecretKey keyView)
+
+attribute [local irreducible]
+  materializedSourceDirectMappedAdversaryImpl
+  materializedSourceDirectTracedMappedAdversaryImpl
+
 theorem sourceDirectTracedMappedAdversaryImpl_query_run_eq
     (publicKey : PublicKey) (secretKey : SecretKey)
     (input : (OracleWorld + SigningSpec).Domain)
@@ -3676,7 +3724,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_signing
       left.cache right.1.1.cache right.1.2 leftState rightState)
     (request : SignRequest) :
     RelTriple
-      ((sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey
+      ((materializedSourceDirectTracedMappedAdversaryImpl left
         (Sum.inr request)).run leftState)
       ((filteredHighMonitoredMappedAdversaryImpl (right.1.1, right.2)
         selected right.1.2 (Sum.inr request)).run rightState)
@@ -3694,13 +3742,18 @@ theorem relTriple_sourceDirect_filteredHighMonitored_signing
   have hbase := hcouple
   have hlift := relTriple_actionTracedState_until_bad (Sum.inr request)
     left.secretKey.parameter selected left.cache right.1.1.cache right.1.2
-      (sourceDirectMappedAdversaryImpl left.publicKey left.secretKey)
+      (sourceDirectMappedAdversaryImpl left.publicKey
+        (Concrete.materializePrecomputation left.cache left.secretKey))
       (filteredHighMonitoredBaseMappedAdversaryImpl (right.1.1, right.2)
         selected right.1.2)
       leftState rightState hstate.2 hbase
-  simpa only [sourceDirectTracedMappedAdversaryImpl,
+  simpa only [materializedSourceDirectTracedMappedAdversaryImpl,
+    materializedSourceDirectMappedAdversaryImpl,
+    materializedFixedChainSecretKey_eq,
+    sourceDirectTracedMappedAdversaryImpl,
     filteredHighMonitoredMappedAdversaryImpl] using hlift
 
+set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 1000000 in
 theorem relTriple_sourceDirect_filteredHighMonitored_action
     (selected : ChainIndex)
@@ -3717,8 +3770,8 @@ theorem relTriple_sourceDirect_filteredHighMonitored_action
       left.cache right.1.1.cache right.1.2 leftState rightState)
     (input : (OracleWorld + SigningSpec).Domain) :
     RelTriple
-      ((sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey
-        input).run leftState)
+      ((materializedSourceDirectTracedMappedAdversaryImpl left input).run
+        leftState)
       ((filteredHighMonitoredMappedAdversaryImpl (right.1.1, right.2)
         selected right.1.2 input).run rightState)
       (fun leftResult rightResult =>
@@ -3736,6 +3789,8 @@ theorem relTriple_sourceDirect_filteredHighMonitored_action
             right.1.2 leftState rightState := by
         simpa [hparameter] using hstate
       simpa [hparameter, sourceDirectTracedMappedAdversaryImpl,
+        materializedSourceDirectTracedMappedAdversaryImpl,
+        materializedSourceDirectMappedAdversaryImpl,
         sourceDirectMappedAdversaryImpl, actionTracedStateImpl,
         unloggedMappedAdversaryImpl_apply_inl,
         filteredHighMonitoredMappedAdversaryImpl,
@@ -3743,8 +3798,12 @@ theorem relTriple_sourceDirect_filteredHighMonitored_action
         (relTriple_sourceDirect_filteredHighMonitored_uniform
           (right.1.1, right.2) selected right.1.2 left.cache leftState
             rightState hstateRight n)
-    · exact relTriple_sourceDirect_filteredHighMonitored_hash selected left
-        right hrel hleftSupport hrightSupport leftState rightState hstate input
+    · simpa [materializedSourceDirectTracedMappedAdversaryImpl,
+        materializedSourceDirectMappedAdversaryImpl,
+        sourceDirectTracedMappedAdversaryImpl, actionTracedStateImpl,
+        sourceDirectMappedAdversaryImpl, unloggedMappedAdversaryImpl_apply_inl]
+        using (relTriple_sourceDirect_filteredHighMonitored_hash selected left
+          right hrel hleftSupport hrightSupport leftState rightState hstate input)
   · exact relTriple_sourceDirect_filteredHighMonitored_signing selected left
       right hrel.base hleftSupport hrightSupport leftState rightState hstate
         request
@@ -3875,7 +3934,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_adversary
       left.cache right.1.1.cache right.1.2 leftState rightState) :
     RelTriple
       ((simulateQ
-        (sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey)
+        (materializedSourceDirectTracedMappedAdversaryImpl left)
           (adversary.main left.publicKey)).run leftState)
       ((simulateQ
         (filteredHighMonitoredMappedAdversaryImpl (right.1.1, right.2)
@@ -3887,7 +3946,7 @@ theorem relTriple_sourceDirect_filteredHighMonitored_adversary
               leftResult.2 rightResult.2) ∨
         rightResult.2.1.bad) := by
   exact relTriple_simulateQ_run_until_bad_right
-    (sourceDirectTracedMappedAdversaryImpl left.publicKey left.secretKey)
+    (materializedSourceDirectTracedMappedAdversaryImpl left)
     (filteredHighMonitoredMappedAdversaryImpl (right.1.1, right.2) selected
       right.1.2)
     (MonitoredTracedStateRelation left.secretKey.parameter selected left.cache
@@ -3907,7 +3966,7 @@ noncomputable def sourceDirectTracedDetailedExecution
     (keyView : ProgrammedFixedChainKeygenView) :
     ProbComp ((Forgery × Bool) × SourceTracedState) := do
   let handled ← (simulateQ
-    (sourceDirectTracedMappedAdversaryImpl keyView.publicKey keyView.secretKey)
+    (materializedSourceDirectTracedMappedAdversaryImpl keyView)
       (adversary.main keyView.publicKey)).run (keyView.cache, [])
   let verified ← (simulateQ sourceDirectTracedVerifierImpl
     (Concrete.cappedScheme.verify keyView.publicKey handled.1.epoch
@@ -3962,11 +4021,12 @@ theorem filteredHighMonitoredDetailedExecution_traceConsistent
       handled.1.message handled.1.signature)
     handled.2 hhandledConsistent verified hvertified
 
-def sourceDirectExecutionResult
+noncomputable def sourceDirectExecutionResult
     (keyView : ProgrammedFixedChainKeygenView)
     (execution : (Forgery × Bool) × SourceTracedState) :
     (GameOutcome × QueryCache HashSpec) × AttackerActionTrace :=
-  ((actionTraceOutcome keyView.publicKey keyView.secretKey
+  ((actionTraceOutcome keyView.publicKey
+      (materializedFixedChainSecretKey keyView)
       (execution.1, execution.2.2), execution.2.1), execution.2.2)
 
 set_option maxRecDepth 1000000 in
@@ -3976,10 +4036,11 @@ theorem sourceDirectTracedDetailedExecution_eq_actionTraced
     sourceDirectExecutionResult keyView <$>
         sourceDirectTracedDetailedExecution adversary keyView =
       detailedGameAfterKeygenWithActionTrace adversary keyView.publicKey
-        keyView.secretKey keyView.cache := by
+        (materializedFixedChainSecretKey keyView) keyView.cache := by
   unfold sourceDirectTracedDetailedExecution
     detailedGameAfterKeygenWithActionTrace
     sourceActionTracedDetailedGameAfterKeygen
+  unfold materializedSourceDirectTracedMappedAdversaryImpl
   rw [sourceDirectTracedMappedAdversaryImpl_run_eq]
   simp only [List.nil_append, map_eq_bind_pure_comp, bind_assoc, pure_bind,
     simulateQ_bind, StateT.run_bind]
@@ -4108,7 +4169,7 @@ noncomputable def sourceDirectTracedProgram
   let execution ← sourceDirectTracedDetailedExecution adversary keyView
   pure (keyView, execution)
 
-def sourceDirectProgramResult
+noncomputable def sourceDirectProgramResult
     (result : SourceDirectTracedProgramResult) :
     FixedChainActionTracedResult :=
   let execution := sourceDirectExecutionResult result.1 result.2

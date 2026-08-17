@@ -132,13 +132,30 @@ theorem leafCollision_afterKeygen_orientation
   have hafterCacheLe := xmssRom_cache_le
     (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
-  have honeTimeStable := (Concrete.keygen_oneTimePublicKey_eq_of_cache_le keyResult
-    hkeygen execution.2 hafterCacheLe epoch).symm
+  have hkeygen' : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+    simpa only [Concrete.cappedScheme] using hkeygen
+  let oldKeyResult : (PublicKey × SecretKey) × QueryCache HashSpec :=
+    ((keyResult.1.1, Concrete.erasePrecomputation keyResult.1.2), keyResult.2)
+  have holdKeygen : oldKeyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅) :=
+    Concrete.precomputedKeygen_support_oldKeygen keyResult hkeygen'
+  have honeTimeStable := (Concrete.keygen_oneTimePublicKey_eq_of_cache_le oldKeyResult
+    holdKeygen execution.2 hafterCacheLe epoch).symm
+  change Concrete.CacheReplay.oneTimePublicKey execution.2 keyResult.1.2.parameter
+      keyResult.1.2.chainStart epoch =
+    Concrete.CacheReplay.oneTimePublicKey keyResult.2 keyResult.1.2.parameter
+      keyResult.1.2.chainStart epoch at honeTimeStable
   obtain ⟨honestOutput, hhonestCached⟩ :=
-    Concrete.keygen_cache_has_leafInput keyResult hkeygen epoch
+    Concrete.keygen_cache_has_leafInput oldKeyResult holdKeygen epoch
+  change keyResult.2
+      (Concrete.CacheView.leafInput keyResult.1.2.parameter epoch
+        (Concrete.CacheReplay.oneTimePublicKey keyResult.2 keyResult.1.2.parameter
+          keyResult.1.2.chainStart epoch)) = some honestOutput at hhonestCached
   have hforgedInitial : keyResult.2
       (Concrete.CacheView.leafInput keyResult.1.2.parameter epoch forgedEndpoints) = none := by
-    apply Concrete.keygen_cache_leafInput_eq_none_of_ne keyResult hkeygen epoch forgedEndpoints
+    apply Concrete.keygen_cache_leafInput_eq_none_of_ne oldKeyResult holdKeygen epoch
+      forgedEndpoints
     intro heq
     apply hleafCollision.1
     exact heq.trans honeTimeStable.symm

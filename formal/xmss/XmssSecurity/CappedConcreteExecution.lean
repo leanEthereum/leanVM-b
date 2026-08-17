@@ -1,5 +1,6 @@
 import XmssSecurity.BoundedSign
 import XmssSecurity.OutcomeClassification
+import XmssSecurity.PrecomputedKeygenCache
 
 open OracleComp OracleSpec
 
@@ -56,13 +57,13 @@ theorem capped_detailed_execution_key_components_consistent
   have hkeyCacheLe : keyCache ≤ execution.2 :=
     xmssRom_cache_le _ keyCache execution hrest
   simp only [Concrete.cappedScheme] at hkeygen
-  unfold Concrete.keygen at hkeygen
+  unfold Concrete.precomputedKeygen at hkeygen
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hkeygen
   obtain ⟨⟨parameter, parameterCache⟩, _hparameter, hafterParameter⟩ := hkeygen
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hafterParameter
   obtain ⟨⟨secret, secretCache⟩, _hsecret, hafterSecret⟩ := hafterParameter
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hafterSecret
-  obtain ⟨⟨root, rootCache⟩, hroot, hout⟩ := hafterSecret
+  obtain ⟨⟨treeResult, rootCache⟩, hroot, hout⟩ := hafterSecret
   simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hout
   cases hout
   unfold detailedGameAfterKeygen at hrest
@@ -77,19 +78,27 @@ theorem capped_detailed_execution_key_components_consistent
   have hroute :
       simulateQ xmssRomImpl
           (liftM (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-            OracleComp HashSpec Digest)) =
+            OracleComp HashSpec Digest).withQueryLog) =
         simulateQ randomOracle
           (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-            OracleComp HashSpec Digest) := by
+            OracleComp HashSpec Digest).withQueryLog := by
     simp only [xmssRomImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-        OracleComp HashSpec Digest)
+        OracleComp HashSpec Digest).withQueryLog
   rw [hroute] at hroot
+  have hroot' : (treeResult.1, keyCache) ∈ support
+      ((simulateQ randomOracle
+        (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
+          OracleComp HashSpec Digest)).run secretCache) := by
+    rw [← withQueryLog_cache_projection]
+    rw [support_map]
+    exact ⟨(treeResult, keyCache), hroot, rfl⟩
   have heval := Concrete.CacheReplay.eval_answerFn_largerCache_eq_of_mem_support
     (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-      OracleComp HashSpec Digest) secretCache keyCache finalCache root hroot hkeyCacheLe
+      OracleComp HashSpec Digest) secretCache keyCache finalCache treeResult.1 hroot'
+        hkeyCacheLe
   rw [Concrete.CacheReplay.eval_treeNode] at heval
   exact ⟨rfl, heval.symm⟩
 

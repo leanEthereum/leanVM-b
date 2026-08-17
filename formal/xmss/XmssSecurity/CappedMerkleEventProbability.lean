@@ -262,22 +262,25 @@ theorem merkleCollision_afterKeygen_orientation
   have hafterCacheLe := xmssRom_cache_le
     (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
+  have hkeygen' : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+    simpa only [Concrete.cappedScheme] using hkeygen
   let node := Concrete.CacheView.nodeIndex epoch level.val
   have horderedNe : orderedNodePair epoch level.val forgedCurrent forgedSibling ≠
       orderedNodePair epoch level.val honestCurrent honestSibling := by
     intro hordered
     exact hne (orderedNodePair_injective epoch level.val hordered)
   have hforgedInitial :=
-    Concrete.keygen_cache_merkleInput_eq_none_of_ne_in_largerCache keyResult hkeygen
-      execution.2 hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
+    Concrete.precomputedKeygen_cache_merkleInput_eq_none_of_ne_in_largerCache keyResult
+      hkeygen' execution.2 hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
       (orderedNodePair epoch level.val forgedCurrent forgedSibling).1
       (orderedNodePair epoch level.val forgedCurrent forgedSibling).2 (by
         rw [← hhonest]
         exact horderedNe)
   rw [← nodeInput_eq_merkleInput_ordered] at hforgedInitial
   obtain ⟨honestOutput, hhonestCached⟩ :=
-    Concrete.keygen_cache_has_merkleInput_in_largerCache keyResult hkeygen execution.2
-      hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
+    Concrete.precomputedKeygen_cache_has_merkleInput_in_largerCache keyResult hkeygen'
+      execution.2 hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
   dsimp only [node] at hhonestCached
   have hhonestLeft := congrArg Prod.fst hhonest
   have hhonestRight := congrArg Prod.snd hhonest
@@ -286,7 +289,7 @@ theorem merkleCollision_afterKeygen_orientation
   have hcollision := heq
   rw [Concrete.CacheView.nodeHash_eq _ _ _ _ _ _ level.isLt,
     Concrete.CacheView.nodeHash_eq _ _ _ _ _ _ level.isLt] at hcollision
-  have hstable := Concrete.keygen_merkleChildren_eq_of_cache_le keyResult hkeygen
+  have hstable := Concrete.precomputedKeygen_merkleChildren_eq_of_cache_le keyResult hkeygen'
     execution.2 hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
   have hhonestInitial : orderedNodePair epoch level.val honestCurrent honestSibling =
       (Concrete.CacheReplay.treeNode keyResult.2 keyResult.1.2.parameter

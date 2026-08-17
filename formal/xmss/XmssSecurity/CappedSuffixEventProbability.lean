@@ -177,12 +177,16 @@ theorem chainCollision_afterKeygen_orientation
   have hafterCacheLe := xmssRom_cache_le
     (detailedGameAfterKeygen Concrete.cappedScheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
-  have hstable := Concrete.keygen_chainWalk_eq_of_cache_le keyResult hkeygen execution.2
+  have hkeygen' : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+    simpa only [Concrete.cappedScheme] using hkeygen
+  have hstable := Concrete.precomputedKeygen_chainWalk_eq_of_cache_le keyResult hkeygen'
+    execution.2
     hafterCacheLe epoch chain step.val (Nat.le_of_lt step.isLt)
   obtain ⟨honestOutput, hhonestCached⟩ :=
-    Concrete.keygen_cache_has_chainInput keyResult hkeygen epoch chain step
-  have hforgedInitial := Concrete.keygen_cache_chainInput_eq_none_of_ne keyResult hkeygen
-    epoch chain step forgedValue (by
+    Concrete.precomputedKeygen_cache_has_chainInput keyResult hkeygen' epoch chain step
+  have hforgedInitial := Concrete.precomputedKeygen_cache_chainInput_eq_none_of_ne
+    keyResult hkeygen' epoch chain step forgedValue (by
       intro heq
       apply hne
       exact heq.trans hstable)
@@ -590,4 +594,3 @@ theorem capped_suffixCollision_outcomeBadEvent_probability_le
   CappedSuffix.suffixCollision_outcomeBadEvent_probability_le q adversary hbound slot
 
 end XmssSecurity
-

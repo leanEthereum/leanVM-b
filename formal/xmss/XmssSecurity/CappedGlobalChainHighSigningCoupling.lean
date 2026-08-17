@@ -222,10 +222,13 @@ theorem relTriple_keygenViews_globalSign_run_full_baseHigh
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign right.1.1.publicKey right.1.1.secretKey
+        (Concrete.cappedScheme.sign right.1.1.publicKey
+          (Concrete.materializePrecomputation right.1.1.cache
+            right.1.1.secretKey)
           request.epoch request.message)).run rightCache)
       (GlobalSignFullBaseHighResultRelation left right request) := by
   apply relTriple_post_mono
@@ -279,11 +282,13 @@ theorem relTriple_keygenViews_globalCausalSigningQuery_run_full_baseHigh
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
         (globalCausalSigningQueryAfterRealRom right.1.1.publicKey
-          right.1.1.secretKey request rightState)).run)
+          (Concrete.materializePrecomputation right.1.1.cache
+            right.1.1.secretKey) request rightState)).run)
       (GlobalSigningQueryFullBaseHighResultRelation left right) := by
   apply relTriple_post_mono
     (relTriple_keygenViews_globalCausalSigningQuery_run_full left right.1

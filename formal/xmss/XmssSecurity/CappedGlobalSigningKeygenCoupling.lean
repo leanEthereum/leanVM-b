@@ -638,14 +638,29 @@ theorem relTriple_keygenViews_globalSign_run
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign right.1.publicKey right.1.secretKey
+        (Concrete.cappedScheme.sign right.1.publicKey
+          (Concrete.materializePrecomputation right.1.cache right.1.secretKey)
           request.epoch request.message)).run rightCache)
       (GlobalSignResultRelation right.2 left.secretKey.parameter request
         left.cache right.1.cache) := by
-  simp only [Concrete.cappedScheme, Concrete.cappedSign_eq]
+  simp only [Concrete.cappedScheme]
+  have hleftKey := trajectoryProgrammedGlobalChainKeygen_support_keyResult
+    left hleftSupport
+  have hrightKey := trajectoryProgrammedGlobalChainKeygen_support_keyResult
+    right.1 hrightSupport
+  apply relTriple_of_evalDist_eq_left
+    (Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
+      left.keyResult hleftKey hrel.2.1 leftCache hleftLe
+        request.epoch request.message)
+  apply relTriple_of_evalDist_eq_right
+    (Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
+      right.1.keyResult hrightKey hrel.2.2 rightCache hrightLe
+        request.epoch request.message).symm
+  rw [Concrete.cappedSign_eq, Concrete.cappedSign_eq]
   have hlimit : signingAttemptLimit = (signingAttemptLimit - 1) + 1 := by
     norm_num [signingAttemptLimit]
   rw [hlimit]
@@ -739,11 +754,13 @@ theorem relTriple_keygenViews_globalCausalSigningQuery_run
     (request : SignRequest) :
     RelTriple
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
         (globalCausalSigningQueryAfterRealRom right.1.publicKey
-          right.1.secretKey request rightState)).run)
+          (Concrete.materializePrecomputation right.1.cache right.1.secretKey)
+            request rightState)).run)
       (GlobalSigningQueryResultRelation left.secretKey.parameter
         left.cache right.1.cache right.2) := by
   have hsign := relTriple_keygenViews_globalSign_run left right hrel
@@ -752,10 +769,12 @@ theorem relTriple_keygenViews_globalCausalSigningQuery_run
   rw [simulate_eagerTrace_globalCausalSigningQueryAfterRealRom]
   rw [show
     (simulateQ xmssRomImpl
-      (Concrete.cappedScheme.sign left.publicKey left.secretKey
+      (Concrete.cappedScheme.sign left.publicKey
+        (Concrete.materializePrecomputation left.cache left.secretKey)
         request.epoch request.message)).run leftCache =
       ((simulateQ xmssRomImpl
-        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        (Concrete.cappedScheme.sign left.publicKey
+          (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache >>= pure) by simp]
   apply relTriple_bind hsign
   intro leftSigned rightSigned hsigned
@@ -803,6 +822,15 @@ theorem relTriple_keygenViews_globalCausalSigningQuery_run
               (request.message, signature.randomness)) = some encoding := by
         rw [hrandomness, ← hencodingHash]
         exact hdecode
+      have hreveal :
+          revealGlobalSignatureOption
+              (Concrete.materializePrecomputation right.1.cache right.1.secretKey)
+                request (some signature) =
+            revealGlobalSignatureOption right.1.secretKey request
+              (some signature) := by
+        unfold revealGlobalSignatureOption
+        rfl
+      rw [hreveal]
       rw [simulate_eagerTrace_revealGlobalSignatureOption_some_of_decode
         right.2 right.1.secretKey request signature
           { rightState with cache := rightSigned.2 } encoding hdecodeRight]

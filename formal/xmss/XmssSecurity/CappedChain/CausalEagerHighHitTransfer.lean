@@ -657,7 +657,14 @@ theorem sourceFilteredHighMonitoredProgramRelation_hit_implies_observedHit
       rw [hencodingHash]
       exact hrightDecode
     have hencodingEq : rightEncoding = encoding := by
-      rw [hdecode] at hrightDecodeAtLeft
+      have hdecodeAtErasedKey : TargetSum.decodeDigest
+          (Concrete.CacheView.encodingHash left.2.2.1
+            left.1.secretKey.parameter left.2.1.1.epoch
+            (left.2.1.1.message, left.2.1.1.signature.randomness)) =
+            some encoding := by
+        simpa [Concrete.materializePrecomputation,
+          Concrete.precomputedSecretKey] using hdecode
+      rw [hdecodeAtErasedKey] at hrightDecodeAtLeft
       exact (Option.some.inj hrightDecodeAtLeft).symm
     subst rightEncoding
     obtain ⟨_digest, _coveredEncoding, _hcoveredDecode, hchainCovered,
@@ -669,7 +676,17 @@ theorem sourceFilteredHighMonitoredProgramRelation_hit_implies_observedHit
       filteredHighMonitoredDetailedExecution_support_returnedCovered
         right.1.1.2 adversary (right.1.1.1, right.1.2) selected right.2
           hrightExecutionSupport
-    rw [IndexedHiddenValue.readMany_true_iff] at hread
+    have htableMaterialized : keygenChainValueTable left.1.cache
+        (Concrete.materializePrecomputation left.1.cache left.1.secretKey)
+          selected = keygenChainValueTable left.1.cache left.1.secretKey
+            selected := rfl
+    have hprobesMaterialized : unrevealedChainValueProbes left.2.2.1
+        (Concrete.materializePrecomputation left.1.cache left.1.secretKey)
+          left.2.2.2.toSigningLog selected left.2.2.2 left.2.1.1 encoding =
+        unrevealedChainValueProbes left.2.2.1 left.1.secretKey
+          left.2.2.2.toSigningLog selected left.2.2.2 left.2.1.1 encoding := rfl
+    rw [htableMaterialized, hprobesMaterialized,
+      IndexedHiddenValue.readMany_true_iff] at hread
     obtain ⟨round, hround, hvalue⟩ := hread
     let history := List.replicate round false
     let primary : ChainValueIndex × Digest :=

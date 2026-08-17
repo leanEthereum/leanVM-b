@@ -73,8 +73,11 @@ theorem winningKeygenValueGuess_has_origin
     simpa [Wots.signChain, hzero] using hvalue
   · right
     have hpositive : 0 < (encoding chain).val := Nat.pos_of_ne_zero hzero
+    have hkeygen' : keyResult ∈ support
+        ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+      simpa only [Concrete.cappedScheme] using hkeygen
     obtain ⟨previous, output, hprevious, hcached, houtput⟩ :=
-      Concrete.keygen_cache_has_chainValue_preimage keyResult hkeygen
+      Concrete.precomputedKeygen_cache_has_chainValue_preimage keyResult hkeygen'
         execution.1.forgery.epoch chain (encoding chain) hpositive
     exact ⟨previous, output, hprevious, hcached, houtput.trans hvalue.symm⟩
 

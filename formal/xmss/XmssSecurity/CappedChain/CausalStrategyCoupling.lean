@@ -1,5 +1,6 @@
 import XmssSecurity.CappedChain.ChainTablePresampling
 import XmssSecurity.CappedChain.ChainTracedGame
+import XmssSecurity.PrecomputedKeygenCache
 
 open OracleComp OracleSpec ENNReal
 
@@ -13,7 +14,8 @@ def eraseFixedChainKeygenView
     (result : FixedChainActionTracedResult) :
     ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
       (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace) :=
-  ((((result.1.1.publicKey, result.1.1.secretKey), result.1.1.cache),
+  ((((result.1.1.publicKey, Concrete.materializePrecomputation
+      result.1.1.cache result.1.1.secretKey), result.1.1.cache),
     result.1.2), result.2)
 
 noncomputable def detailedGameWithFixedChainKeygenView
@@ -21,7 +23,8 @@ noncomputable def detailedGameWithFixedChainKeygenView
     ProbComp FixedChainActionTracedResult := do
   let keyView ← actualFixedChainKeygen chain
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
-    keyView.publicKey keyView.secretKey keyView.cache
+    keyView.publicKey
+      (Concrete.materializePrecomputation keyView.cache keyView.secretKey) keyView.cache
   pure ((keyView, execution.1), execution.2)
 
 noncomputable def chronologicallyWarmedDetailedGame
@@ -29,20 +32,34 @@ noncomputable def chronologicallyWarmedDetailedGame
     ProbComp FixedChainActionTracedResult := do
   let keyView ← chronologicallyWarmedExtractedFixedChainKeygen chain
   let execution ← detailedGameAfterKeygenWithActionTrace adversary
-    keyView.publicKey keyView.secretKey keyView.cache
+    keyView.publicKey
+      (Concrete.materializePrecomputation keyView.cache keyView.secretKey) keyView.cache
   pure ((keyView, execution.1), execution.2)
 
 theorem erase_detailedGameWithFixedChainKeygenView
     (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
-    eraseFixedChainKeygenView <$>
-        detailedGameWithFixedChainKeygenView adversary chain =
-      detailedGameWithKeygenCacheAndActionTrace adversary := by
+    evalDist (eraseFixedChainKeygenView <$>
+        detailedGameWithFixedChainKeygenView adversary chain) =
+      evalDist (detailedGameWithKeygenCacheAndActionTrace adversary) := by
   unfold detailedGameWithFixedChainKeygenView actualFixedChainKeygen
     detailedGameWithKeygenCacheAndActionTrace
   simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind]
-  apply bind_congr
-  intro keyResult
-  rfl
+  simp only [Concrete.cappedScheme]
+  rw [evalDist_bind, evalDist_bind]
+  calc
+    _ = evalDist (Concrete.materializeCachedKeyResult <$>
+          (simulateQ xmssRomImpl Concrete.keygen).run ∅) >>= fun keyResult =>
+        evalDist (do
+          let execution ← detailedGameAfterKeygenWithActionTrace adversary
+            keyResult.1.1 keyResult.1.2 keyResult.2
+          pure ((keyResult, execution.1), execution.2)) := by
+      rw [evalDist_map, map_eq_bind_pure_comp, bind_assoc]
+      apply bind_congr
+      intro keyResult
+      simp only [Function.comp_apply, pure_bind]
+      rfl
+    _ = _ := by
+      rw [Concrete.evalDist_materialized_keygen_eq_precomputedKeygen]
 
 theorem evalDist_detailedGameWithFixedChainKeygenView_eq_warmed
     (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex) :
@@ -60,8 +77,9 @@ theorem evalDist_originalActionTracedGame_eq_erase_warmed
       evalDist (eraseFixedChainKeygenView <$>
         chronologicallyWarmedDetailedGame adversary chain) := by
   rw [← erase_detailedGameWithFixedChainKeygenView adversary chain]
-  simp only [evalDist_map]
-  rw [evalDist_detailedGameWithFixedChainKeygenView_eq_warmed]
+  rw [evalDist_map,
+    evalDist_detailedGameWithFixedChainKeygenView_eq_warmed,
+    ← evalDist_map]
 
 theorem chronologicallyWarmedDetailedGame_support_keyView
     (adversary : Adversary Concrete.cappedScheme) (chain : ChainIndex)
@@ -105,8 +123,11 @@ theorem chronologicallyWarmedDetailedGame_support_trajectoryTable
     chronologicallyWarmedExtractedFixedChainKeygen_support_table chain
       result.1.1 hkeyView
   refine ⟨trajectories, ?_, hlength⟩
+  change keygenChainValueTable result.1.1.cache
+      (Concrete.materializePrecomputation result.1.1.cache
+        result.1.1.secretKey) chain = chainValueTableOfList trajectories
   change keygenChainValueTable result.1.1.cache result.1.1.secretKey chain =
-    chainValueTableOfList trajectories
+      chainValueTableOfList trajectories
   rw [chronologicallyWarmedKeygen_support_keygenTable chain result.1.1
     hkeyView, htable]
 
