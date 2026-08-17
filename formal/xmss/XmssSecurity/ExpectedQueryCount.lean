@@ -188,6 +188,81 @@ theorem expectedSimulatedQueryCount_map
         (fun value => pure (project value)) initialState
     _ = _ := by simp
 
+/-- A resource that grows by at most one on each matching interpreted query has expected final
+value at most its initial value plus the expected matching-query count. -/
+theorem expectedResource_le_initial_add_expectedSimulatedQueryCount
+    {ι : Type} {spec : OracleSpec ι} {α state : Type}
+    (implementation : QueryImpl spec (StateT state ProbComp))
+    (predicate : spec.Domain → Prop) [DecidablePred predicate]
+    (resource : state → ENNReal)
+    (hstep : ∀ input initialState result,
+      result ∈ support ((implementation input).run initialState) →
+        resource result.2 ≤ resource initialState +
+          if predicate input then 1 else 0)
+    (computation : OracleComp spec α) (initialState : state) :
+    (∑' result,
+      Pr[= result | (simulateQ implementation computation).run initialState] *
+        resource result.2) ≤
+      resource initialState +
+        expectedSimulatedQueryCount implementation predicate computation initialState := by
+  induction computation using OracleComp.inductionOn generalizing initialState with
+  | pure value =>
+      simp [simulateQ_pure, tsum_probOutput_pure_mul]
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_query,
+        tsum_probOutput_bind_mul]
+      simp only [OracleQuery.input_query, OracleQuery.cont_query, id_map,
+        expectedSimulatedQueryCount_query_bind]
+      let head := (implementation input).run initialState
+      let indicator : ENNReal := if predicate input then 1 else 0
+      have hhead :
+          (∑' result, Pr[= result | head] * resource result.2) ≤
+            resource initialState + indicator := by
+        calc
+          _ ≤ ∑' result, Pr[= result | head] *
+                (resource initialState + indicator) := by
+              apply ENNReal.tsum_le_tsum
+              intro result
+              by_cases hresult : result ∈ support head
+              · exact mul_le_mul_right (hstep input initialState result hresult) _
+              · rw [probOutput_eq_zero_of_not_mem_support hresult]
+                simp
+          _ = (∑' result, Pr[= result | head]) *
+                (resource initialState + indicator) :=
+              ENNReal.tsum_mul_right
+          _ ≤ 1 * (resource initialState + indicator) := by
+              gcongr
+              exact tsum_probOutput_le_one
+          _ = resource initialState + indicator := one_mul _
+      calc
+        (∑' result, Pr[= result | head] *
+            ∑' finalResult,
+              Pr[= finalResult |
+                (simulateQ implementation (next result.1)).run result.2] *
+                resource finalResult.2) ≤
+          ∑' result, Pr[= result | head] *
+            (resource result.2 +
+              expectedSimulatedQueryCount implementation predicate
+                (next result.1) result.2) := by
+            apply ENNReal.tsum_le_tsum
+            intro result
+            exact mul_le_mul_right (ih result.1 result.2) _
+        _ = (∑' result, Pr[= result | head] * resource result.2) +
+            ∑' result, Pr[= result | head] *
+              expectedSimulatedQueryCount implementation predicate
+                (next result.1) result.2 := by
+            simp_rw [mul_add]
+            rw [ENNReal.tsum_add]
+        _ ≤ (resource initialState + indicator) +
+            ∑' result, Pr[= result | head] *
+              expectedSimulatedQueryCount implementation predicate
+                (next result.1) result.2 := add_le_add hhead le_rfl
+        _ = resource initialState +
+            (indicator +
+              ∑' result, Pr[= result | head] *
+                expectedSimulatedQueryCount implementation predicate
+                  (next result.1) result.2) := by ac_rfl
+
 /-- Expected simulated query counts add exactly for disjoint source predicates. -/
 theorem expectedSimulatedQueryCount_or_of_disjoint
     {ι : Type} {spec : OracleSpec ι} {α state : Type}

@@ -106,6 +106,69 @@ noncomputable def cappedCacheTracedSigningQuery
     StateT (QueryCache HashSpec × SigningCacheTrace) ProbComp
       (Option Signature))).run (initialCache, initialTrace)
 
+theorem cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le_cachedCount
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (request : SignRequest) (initialCache : QueryCache HashSpec)
+    (initialTrace : SigningCacheTrace) :
+    Pr[fun result : Option Signature ×
+        (QueryCache HashSpec × SigningCacheTrace) =>
+      (SigningCacheEntry.mk request result.1 initialCache result.2.1)
+        |>.EncodingInputPrehit secretKey |
+      cappedCacheTracedSigningQuery publicKey secretKey request initialCache initialTrace] ≤
+      (signingAttemptLimit : ℝ≥0∞) *
+        cachedEncodingEntryCount initialCache secretKey.parameter request.epoch *
+        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
+  have hprojection :
+      Prod.map id Prod.fst <$>
+          cappedCacheTracedSigningQuery publicKey secretKey request initialCache initialTrace =
+        (simulateQ xmssRomImpl
+          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+            request.message)).run initialCache := by
+    unfold cappedCacheTracedSigningQuery cappedCacheTracedMappedAdversaryImpl
+    rw [QueryImpl.extendState_apply]
+    change Prod.map id Prod.fst <$>
+        ((simulateQ xmssRomImpl
+          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+            request.message)).run initialCache >>= _) = _
+    simp
+  calc
+    _ = Pr[fun result : Option Signature × QueryCache HashSpec =>
+        (SigningCacheEntry.mk request result.1 initialCache result.2)
+          |>.EncodingInputPrehit secretKey |
+        Prod.map id Prod.fst <$>
+          cappedCacheTracedSigningQuery publicKey secretKey request initialCache
+            initialTrace] := by
+      rw [probEvent_map]
+      rfl
+    _ = Pr[fun result : Option Signature × QueryCache HashSpec =>
+        (SigningCacheEntry.mk request result.1 initialCache result.2)
+          |>.EncodingInputPrehit secretKey |
+        (simulateQ xmssRomImpl
+          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+            request.message)).run initialCache] := by rw [hprojection]
+    _ ≤ _ := by
+      simpa [SigningCacheEntry.EncodingInputPrehit] using
+        Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le_cachedCount
+          publicKey secretKey request.epoch request.message initialCache
+
+theorem cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le_cachedEntries
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (request : SignRequest) (initialCache : QueryCache HashSpec)
+    (initialTrace : SigningCacheTrace) (hfinite : initialCache.toSet.Finite) :
+    Pr[fun result : Option Signature ×
+        (QueryCache HashSpec × SigningCacheTrace) =>
+      (SigningCacheEntry.mk request result.1 initialCache result.2.1)
+        |>.EncodingInputPrehit secretKey |
+      cappedCacheTracedSigningQuery publicKey secretKey request initialCache initialTrace] ≤
+      (signingAttemptLimit : ℝ≥0∞) *
+        ((cachedEncodingEntries initialCache secretKey.parameter request.epoch).card :
+          ℝ≥0∞) *
+        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
+  rw [← cachedEncodingEntryCount_eq_card_of_finite initialCache secretKey.parameter
+    request.epoch hfinite]
+  exact cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le_cachedCount
+    publicKey secretKey request initialCache initialTrace
+
 theorem cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le
     (publicKey : PublicKey) (secretKey : SecretKey)
     (request : SignRequest) (initialCache : QueryCache HashSpec)

@@ -72,7 +72,7 @@ theorem Concrete.precomputedSignBoundedAttempts_run_succ_eq
   cases result <;> simp [Concrete.precomputedSignBoundedAttemptsContinuation]
 
 set_option linter.constructorNameAsVariable false in
-theorem Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit_le
+theorem Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit_le_cachedCount
     (attempts : Nat) (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (referenceCache workingCache : QueryCache HashSpec) :
     Pr[fun result : Option Signature × QueryCache HashSpec =>
@@ -82,7 +82,8 @@ theorem Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit
       (simulateQ xmssRomImpl
         (Concrete.precomputedSignBoundedAttempts attempts secretKey epoch message)).run
           workingCache] ≤
-      (attempts : ℝ≥0∞) * QueryCache.enncard referenceCache *
+      (attempts : ℝ≥0∞) *
+        cachedEncodingEntryCount referenceCache secretKey.parameter epoch *
         ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
   induction attempts generalizing workingCache with
   | zero =>
@@ -93,7 +94,8 @@ theorem Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit
         (p := fun randomness : Randomness => ∃ output,
           referenceCache (Concrete.CacheView.encodingInput secretKey.parameter epoch
             (message, randomness)) = some output)
-        (ε := (attempts : ℝ≥0∞) * QueryCache.enncard referenceCache *
+        (ε := (attempts : ℝ≥0∞) *
+          cachedEncodingEntryCount referenceCache secretKey.parameter epoch *
           ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) ?_).trans ?_
       · intro randomness _hrandomness hmiss
         refine probEvent_bind_le_of_forall_le fun attemptResult hattempt => ?_
@@ -127,16 +129,54 @@ theorem Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit
               rw [← heq]
               exact hattempt
       · calc
-          _ ≤ QueryCache.enncard referenceCache *
+          _ ≤ cachedEncodingEntryCount referenceCache secretKey.parameter epoch *
                 ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ +
-              (attempts : ℝ≥0∞) * QueryCache.enncard referenceCache *
+              (attempts : ℝ≥0∞) *
+                cachedEncodingEntryCount referenceCache secretKey.parameter epoch *
                 ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ :=
             add_le_add
-              (uniform_signingRandomness_encodingInput_cacheHit_le
+              (uniform_signingRandomness_encodingInput_cacheHit_le_cachedEncodingEntryCount
                 secretKey.parameter epoch message referenceCache) le_rfl
           _ = _ := by
             push_cast
             ring
+
+set_option linter.constructorNameAsVariable false in
+theorem Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le_cachedEntries
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec)
+    (hfinite : cache.toSet.Finite) :
+    Pr[fun result : Option Signature × QueryCache HashSpec =>
+      ∃ signature, result.1 = some signature ∧ ∃ output,
+        cache (Concrete.CacheView.encodingInput secretKey.parameter epoch
+          (message, signature.randomness)) = some output |
+      (simulateQ xmssRomImpl
+        (Concrete.precomputedCappedSign publicKey secretKey epoch message)).run cache] ≤
+      (signingAttemptLimit : ℝ≥0∞) *
+        ((cachedEncodingEntries cache secretKey.parameter epoch).card : ℝ≥0∞) *
+        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
+  rw [Concrete.precomputedCappedSign]
+  rw [← cachedEncodingEntryCount_eq_card_of_finite cache secretKey.parameter epoch
+    hfinite]
+  exact Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit_le_cachedCount
+    signingAttemptLimit secretKey epoch message cache cache
+
+set_option linter.constructorNameAsVariable false in
+theorem Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le_cachedCount
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec) :
+    Pr[fun result : Option Signature × QueryCache HashSpec =>
+      ∃ signature, result.1 = some signature ∧ ∃ output,
+        cache (Concrete.CacheView.encodingInput secretKey.parameter epoch
+          (message, signature.randomness)) = some output |
+      (simulateQ xmssRomImpl
+        (Concrete.precomputedCappedSign publicKey secretKey epoch message)).run cache] ≤
+      (signingAttemptLimit : ℝ≥0∞) *
+        cachedEncodingEntryCount cache secretKey.parameter epoch *
+        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
+  rw [Concrete.precomputedCappedSign]
+  exact Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit_le_cachedCount
+    signingAttemptLimit secretKey epoch message cache cache
 
 set_option linter.constructorNameAsVariable false in
 theorem Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le
@@ -150,8 +190,18 @@ theorem Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le
         (Concrete.precomputedCappedSign publicKey secretKey epoch message)).run cache] ≤
       (signingAttemptLimit : ℝ≥0∞) * QueryCache.enncard cache *
         ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-  rw [Concrete.precomputedCappedSign]
-  exact Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit_le
-    signingAttemptLimit secretKey epoch message cache cache
+  classical
+  by_cases hfinite : cache.toSet.Finite
+  · refine (Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le_cachedEntries
+      publicKey secretKey epoch message cache hfinite).trans ?_
+    gcongr
+    have hsum := sum_cachedEncodingEntries_card_le_enncard cache
+      secretKey.parameter {epoch}
+    simpa using hsum
+  · have htop : QueryCache.enncard cache = ⊤ := by
+      have hinfinite : cache.toSet.Infinite := Set.not_finite.mp hfinite
+      simp [QueryCache.enncard, Set.encard_eq_top hinfinite]
+    rw [htop]
+    norm_num [signingAttemptLimit, randomnessBits]
 
 end XmssSecurity

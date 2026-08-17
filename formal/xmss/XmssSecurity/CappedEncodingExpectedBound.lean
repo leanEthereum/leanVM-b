@@ -204,6 +204,14 @@ def IsEncodingHashQuery (parameter : PublicParameter) :
   | .inr input => (encodingInputEpoch? parameter input).isSome
   | _ => False
 
+theorem IsEncodingHashQuery_inr (parameter : PublicParameter) (input : HashInput) :
+    IsEncodingHashQuery parameter (.inr input) =
+      (encodingInputEpoch? parameter input).isSome := rfl
+
+theorem IsEncodingHashQuery_inl (parameter : PublicParameter) (index : unifSpec.Domain) :
+    ¬IsEncodingHashQuery parameter (.inl index) := by
+  simp [IsEncodingHashQuery]
+
 noncomputable instance (parameter : PublicParameter) :
     DecidablePred (IsEncodingHashQuery parameter) :=
   Classical.decPred _
