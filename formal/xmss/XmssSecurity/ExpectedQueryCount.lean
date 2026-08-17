@@ -1,10 +1,56 @@
 import VCVio.OracleComp.QueryTracking.QueryBound
 import VCVio.OracleComp.ProbComp
 import VCVio.ProgramLogic.Unary.HoareTriple
+import VCVio.ProgramLogic.Relational.Basic
 
 open OracleSpec OracleComp ENNReal
 
 namespace XmssSecurity
+
+open OracleComp.ProgramLogic.Relational
+
+/-- A coupling that pointwise decreases a nonnegative cost also decreases its expectation. -/
+theorem expectedCost_le_of_relTriple
+    {ι₁ ι₂ : Type} {spec₁ : OracleSpec ι₁} {spec₂ : OracleSpec ι₂}
+    [IsUniformSpec spec₁] [IsUniformSpec spec₂]
+    (left : OracleComp spec₁ α) (right : OracleComp spec₂ β)
+    (relation : α → β → Prop) (leftCost : α → ENNReal)
+    (rightCost : β → ENNReal)
+    (hrel : RelTriple left right relation)
+    (hcost : ∀ leftResult rightResult,
+      relation leftResult rightResult →
+        rightCost rightResult ≤ leftCost leftResult) :
+    (∑' result, Pr[= result | right] * rightCost result) ≤
+      ∑' result, Pr[= result | left] * leftCost result := by
+  obtain ⟨coupling, hcoupled⟩ := (relTriple_iff_relWP).1 hrel
+  have hleft : evalDist (Prod.fst <$> coupling.1) = evalDist left :=
+    coupling.2.map_fst
+  have hright : evalDist (Prod.snd <$> coupling.1) = evalDist right :=
+    coupling.2.map_snd
+  calc
+    (∑' result, Pr[= result | right] * rightCost result) =
+        ∑' result, Pr[= result | Prod.snd <$> coupling.1] *
+          rightCost result := by
+      apply tsum_congr
+      intro result
+      rw [probOutput_def, probOutput_def, hright]
+    _ = ∑' result, Pr[= result | coupling.1] * rightCost result.2 :=
+      tsum_probOutput_map_mul coupling.1 Prod.snd rightCost
+    _ ≤ ∑' result, Pr[= result | coupling.1] * leftCost result.1 := by
+      apply ENNReal.tsum_le_tsum
+      intro result
+      by_cases hresult : result ∈ support coupling.1
+      · gcongr
+        exact hcost result.1 result.2 (hcoupled result hresult)
+      · rw [probOutput_eq_zero_of_not_mem_support hresult]
+        simp
+    _ = ∑' result, Pr[= result | Prod.fst <$> coupling.1] *
+        leftCost result :=
+      (tsum_probOutput_map_mul coupling.1 Prod.fst leftCost).symm
+    _ = ∑' result, Pr[= result | left] * leftCost result := by
+      apply tsum_congr
+      intro result
+      rw [probOutput_def, probOutput_def, hleft]
 
 /-- The expected number of matching source queries after interpreting a computation in a
 stateful probabilistic oracle implementation. -/
