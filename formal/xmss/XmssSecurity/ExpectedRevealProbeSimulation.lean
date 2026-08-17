@@ -317,4 +317,247 @@ theorem eagerExperiment_observedHit_probability_le_expectedProbeCount
       (AdaptiveRevealMonitor.State.empty : AdaptiveRevealMonitor.State Index)
       stateValid_empty fuel computation
 
+noncomputable def expectedEagerObservedProbeCount
+    (state : AdaptiveRevealMonitor.State Index)
+    (computation : OracleComp (World Index) α) : ENNReal :=
+  ∑' result, Pr[= result | do
+      let base ← eagerTableSample
+      (simulateQ (eagerTraceImpl (extendTable state base)) computation).run] *
+    observedProbeCount result.2
+
+theorem tsum_probOutput_mul_congr_evalDist
+    (left right : ProbComp α) (cost : α → ENNReal)
+    (heq : 𝒟[left] = 𝒟[right]) :
+    (∑' result, Pr[= result | left] * cost result) =
+      ∑' result, Pr[= result | right] * cost result := by
+  apply tsum_congr
+  intro result
+  rw [probOutput_def, probOutput_def, heq]
+
+theorem weighted_tsum_comm {A B : Type}
+    (leftWeight : A → ENNReal) (rightWeight : B → ENNReal)
+    (value : A → B → ENNReal) :
+    (∑' left, leftWeight left *
+      ∑' right, rightWeight right * value left right) =
+    ∑' right, rightWeight right *
+      ∑' left, leftWeight left * value left right := by
+  calc
+    _ = ∑' left, ∑' right,
+          leftWeight left * (rightWeight right * value left right) := by
+      apply tsum_congr
+      intro left
+      rw [ENNReal.tsum_mul_left]
+    _ = ∑' right, ∑' left,
+          leftWeight left * (rightWeight right * value left right) :=
+      ENNReal.tsum_comm
+    _ = _ := by
+      apply tsum_congr
+      intro right
+      rw [← ENNReal.tsum_mul_left]
+      apply tsum_congr
+      intro left
+      ac_rfl
+
+theorem tsum_probOutput_mul_add_one_le
+    (computation : ProbComp α) (cost : α → ENNReal) :
+    (∑' result, Pr[= result | computation] * (cost result + 1)) ≤
+      (∑' result, Pr[= result | computation] * cost result) + 1 := by
+  simp_rw [mul_add]
+  rw [ENNReal.tsum_add]
+  apply add_le_add_right
+  simpa only [mul_one] using (tsum_probOutput_le_one (mx := computation))
+
+theorem expectedEagerObservedProbeCount_addPending
+    (state : AdaptiveRevealMonitor.State Index)
+    (index : Index) (target : Digest)
+    (computation : OracleComp (World Index) α) :
+    expectedEagerObservedProbeCount (state.addPending index target) computation =
+      expectedEagerObservedProbeCount state computation := by
+  simp [expectedEagerObservedProbeCount, extendTable_addPending]
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem expectedEagerObservedProbeCount_le_expectedSimulatedQueryCount
+    (state : AdaptiveRevealMonitor.State Index)
+    (computation : OracleComp (World Index) α) :
+    expectedEagerObservedProbeCount state computation ≤
+      expectedSimulatedQueryCount lazyMonitorImpl IsProbeQuery computation state := by
+  induction computation using OracleComp.inductionOn generalizing state with
+  | pure result =>
+      simp [expectedEagerObservedProbeCount]
+  | query_bind input next ih =>
+      rw [expectedSimulatedQueryCount_query_bind]
+      cases input with
+      | uniform n =>
+          simp only [IsProbeQuery, if_false, zero_add]
+          rw [lazyMonitorImpl_uniform_run, tsum_probOutput_map_mul]
+          simp only [expectedEagerObservedProbeCount, simulateQ_query_bind,
+            WriterT.run_bind']
+          simp [eagerTraceImpl, eagerImpl, traceFragment,
+            QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+            tsum_probOutput_bind_mul, tsum_probOutput_map_mul]
+          classical
+          let continuationCost := fun (base : Index → Digest)
+              (output : Fin (n + 1)) =>
+            ∑' result, Pr[= result |
+                (simulateQ (eagerTraceImpl (extendTable state base))
+                  (next output)).run] * observedProbeCount result.2
+          change (∑ base, Pr[= base | eagerTableSample] *
+              ∑ output, ((n : ENNReal) + 1)⁻¹ *
+                continuationCost base output) ≤ _
+          calc
+            _ = ∑ output, ((n : ENNReal) + 1)⁻¹ *
+                ∑ base, Pr[= base | eagerTableSample] *
+                  continuationCost base output := by
+                    simp_rw [Finset.mul_sum]
+                    rw [Finset.sum_comm]
+                    apply Finset.sum_congr rfl
+                    intro output _houtput
+                    apply Finset.sum_congr rfl
+                    intro base _hbase
+                    ac_rfl
+            _ ≤ _ := by
+              apply Finset.sum_le_sum
+              intro output _houtput
+              gcongr
+              simpa [expectedEagerObservedProbeCount, eagerTraceImpl,
+                tsum_probOutput_bind_mul, continuationCost] using
+                ih output state
+      | probe index target =>
+          simp only [IsProbeQuery, if_true]
+          rw [lazyMonitorImpl_probe_run, tsum_probOutput_pure_mul]
+          simp only [expectedEagerObservedProbeCount, simulateQ_query_bind,
+            WriterT.run_bind']
+          simp [eagerTraceImpl, eagerImpl, traceFragment,
+            QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+            tsum_probOutput_bind_mul, tsum_probOutput_map_mul,
+            observedProbeCount]
+          classical
+          let continuationState :=
+            match state.revealed index with
+            | some _ => state
+            | none => state.addPending index target
+          let continuationCost := fun (base : Index → Digest) =>
+            ∑' result, Pr[= result |
+                (simulateQ (eagerTraceImpl (extendTable state base))
+                  (next ())).run] * observedProbeCount result.2
+          change (∑ base, Pr[= base | eagerTableSample] *
+              ∑' result, Pr[= result |
+                  (simulateQ (eagerTraceImpl (extendTable state base))
+                    (next ())).run] *
+                (observedProbeCount result.2 + 1)) ≤ _
+          have hcontinuation :
+              expectedEagerObservedProbeCount state (next ()) =
+                expectedEagerObservedProbeCount continuationState (next ()) := by
+            cases hrevealed : state.revealed index with
+            | some value => simp [continuationState, hrevealed]
+            | none =>
+                simpa [continuationState, hrevealed] using
+                  (expectedEagerObservedProbeCount_addPending state index
+                    target (next ())).symm
+          calc
+            _ ≤ ∑ base, Pr[= base | eagerTableSample] *
+                (continuationCost base + 1) := by
+                  apply Finset.sum_le_sum
+                  intro base _hbase
+                  gcongr
+                  exact tsum_probOutput_mul_add_one_le _ _
+            _ = (∑ base, Pr[= base | eagerTableSample] *
+                    continuationCost base) +
+                  ∑ base, Pr[= base | eagerTableSample] := by
+                    simp_rw [mul_add, mul_one]
+                    rw [Finset.sum_add_distrib]
+            _ ≤ expectedEagerObservedProbeCount state (next ()) + 1 := by
+                  apply add_le_add
+                  · simp [expectedEagerObservedProbeCount,
+                      continuationCost, eagerTraceImpl,
+                      tsum_probOutput_bind_mul]
+                  · simp [eagerTableSample]
+            _ = expectedEagerObservedProbeCount continuationState (next ()) + 1 := by
+                  rw [hcontinuation]
+            _ ≤ expectedSimulatedQueryCount lazyMonitorImpl IsProbeQuery
+                    (next ()) continuationState + 1 := by
+                  exact add_le_add_left (ih () continuationState) 1
+            _ = 1 + expectedSimulatedQueryCount lazyMonitorImpl IsProbeQuery
+                  (next ()) continuationState := by ac_rfl
+      | reveal index =>
+          simp only [IsProbeQuery, if_false, zero_add]
+          rw [lazyMonitorImpl_reveal_run]
+          cases hrevealed : state.revealed index with
+          | some value =>
+              rw [tsum_probOutput_pure_mul]
+              simp only [expectedEagerObservedProbeCount, simulateQ_query_bind,
+                WriterT.run_bind']
+              simp [eagerTraceImpl, eagerImpl, traceFragment,
+                QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+                tsum_probOutput_bind_mul, tsum_probOutput_map_mul,
+                observedProbeCount, extendTable, hrevealed]
+              simpa [expectedEagerObservedProbeCount, eagerTraceImpl,
+                tsum_probOutput_bind_mul] using
+                ih value state
+          | none =>
+              rw [tsum_probOutput_map_mul]
+              let resumeTrace := fun (table : Index → Digest) (value : Digest) =>
+                (fun result =>
+                  (result.1, .reveal index value :: result.2)) <$>
+                    (simulateQ (eagerTraceImpl table) (next value)).run
+              have hdist :
+                  𝒟[do
+                    let base ← eagerTableSample
+                    (simulateQ (eagerTraceImpl (extendTable state base))
+                      (revealQuery index >>= next)).run] =
+                  𝒟[do
+                    let value ← $ᵗ Digest
+                    let base ← eagerTableSample
+                    resumeTrace (extendTable (state.install index value) base)
+                      value] := by
+                let conditionedContinue :=
+                  fun (base : Index → Digest) (value : Digest) =>
+                    resumeTrace (extendTable state base) value
+                calc
+                  𝒟[do
+                    let base ← eagerTableSample
+                    (simulateQ (eagerTraceImpl (extendTable state base))
+                      (revealQuery index >>= next)).run] =
+                    𝒟[do
+                      let base ← eagerTableSample
+                      conditionedContinue base (base index)] := by
+                        apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+                        intro base
+                        rw [simulateQ_bind, WriterT.run_bind',
+                          simulate_eagerTrace_revealQuery]
+                        simp [conditionedContinue, resumeTrace, extendTable, hrevealed]
+                        simp only [map_eq_bind_pure_comp]
+                        apply bind_congr
+                        intro result
+                        rcases result with ⟨result, trace⟩
+                        rfl
+                  _ = 𝒟[do
+                      let value ← $ᵗ Digest
+                      let base ← eagerTableSample
+                      conditionedContinue (Function.update base index value)
+                        value] := by
+                    unfold eagerTableSample
+                    exact evalDist_uniformTable_bind_coordinate_continuation
+                      index conditionedContinue
+                  _ = _ := by
+                    apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+                    intro value
+                    apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+                    intro base
+                    simp only [conditionedContinue]
+                    rw [extendTable_update_eq_install state index value base
+                      hrevealed]
+              unfold expectedEagerObservedProbeCount
+              refine (tsum_probOutput_mul_congr_evalDist _ _ _ hdist).le.trans ?_
+              rw [tsum_probOutput_bind_mul]
+              apply ENNReal.tsum_le_tsum
+              intro value
+              gcongr
+              rw [tsum_probOutput_bind_mul]
+              simpa [resumeTrace, tsum_probOutput_map_mul, observedProbeCount,
+                expectedEagerObservedProbeCount, eagerTraceImpl,
+                tsum_probOutput_bind_mul] using
+                ih value (state.install index value)
+
 end XmssSecurity.RevealProbeOracleSimulation
