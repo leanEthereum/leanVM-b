@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-748%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 748 XMSS/s"></a>
-  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.7s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.7s"></a>
+  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-750%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 750 XMSS/s"></a>
+  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.73s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.73s"></a>
 </p>
 
 Warning: highly experimental.
@@ -80,19 +80,19 @@ BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=17 cargo test --release -p flock --t
 ```
 
 ```
-Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
-  setup (preprocessing, excluded) :   2169.8 ms
-  witness-gen                     :     60.7 ms ± 20.0%   9.2%
-  commit                          :     97.2 ms ± 4.5%   14.8%
-  zerocheck                       :    244.2 ms ± 3.7%   37.1%
-  lincheck                        :     25.1 ms ± 12.8%   3.8%
-  pcs opening                     :    231.7 ms ± 11.2%  35.2%
+Flock SHA-256 batch proving, 131,072 compressions (2^17 slots)
+  setup (preprocessing, excluded) :     18.8 ms
+  witness-gen                     :     54.3 ms ± 5.9%    9.1%
+  commit                          :     78.0 ms ± 3.7%   13.1%
+  zerocheck                       :    232.8 ms ± 8.4%   39.1%
+  lincheck                        :     19.1 ms ± 16.9%   3.2%
+  pcs opening                     :    210.5 ms ± 12.6%  35.4%
   other                           :      0.0 ms           0.0%
   ------------------------------------------
-  prove TOTAL (witness excluded)  :    598.2 ms ± 5.6%   90.8%
-  verify                          :      2.2 ms
-  throughput                      :        438,204 compressions/s ± 5.6%
-  (~3001.4 XMSS/s equivalent at 146 compressions/signature)
+  prove TOTAL (witness excluded)  :    540.4 ms ± 8.0%   90.9%
+  verify                          :      1.7 ms
+  throughput                      :        242,533 compressions/s ± 8.0%
+  (~1661.2 XMSS/s equivalent at 146 compressions/signature)
 ```
 
 ## Security
