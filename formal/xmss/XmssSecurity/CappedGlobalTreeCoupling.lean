@@ -258,4 +258,275 @@ theorem relTriple_programmedAllChainTreeValues_same_root_and_paths
       leftSecret rightSecret leftTree.2 rightTree.2 leftTree.1 hleftReplay
         (hvalues ▸ hrightReplay) epoch
 
+abbrev GlobalChainTrajectoryMaterial :=
+  (Epoch → ChainIndex → Digest) ×
+    (AllChainTrajectories × QueryCache HashSpec)
+
+noncomputable def globalChainTrajectoryMaterialTable
+    (material : GlobalChainTrajectoryMaterial) :
+    GlobalChainValueIndex → Digest :=
+  globalChainValueTableOfTrajectories material.2.1
+
+noncomputable def programmedGlobalChainTrajectoryMaterial
+    (parameter : PublicParameter) : ProbComp GlobalChainTrajectoryMaterial := do
+  let secret ← Concrete.sampleSecret
+  let trajectories ← programmedAllChainTrajectoriesFromCache parameter
+    secret ∅ allChains
+  pure (secret, trajectories)
+
+noncomputable def programmedGlobalChainTrajectoryMaterialWithBase
+    (parameter : PublicParameter) :
+    ProbComp (GlobalChainTrajectoryMaterial ×
+      (GlobalChainValueIndex → Digest)) := do
+  let base ← $ᵗ (GlobalChainValueIndex → Digest)
+  let material ← programmedGlobalChainTrajectoryMaterial parameter
+  pure (material, base)
+
+theorem programmedGlobalChainTrajectoryMaterial_support_trajectories
+    (parameter : PublicParameter) (material : GlobalChainTrajectoryMaterial)
+    (hmaterial : material ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter)) :
+    material.2 ∈ support
+      (programmedAllChainTrajectoriesFromCache parameter material.1 ∅
+        allChains) := by
+  unfold programmedGlobalChainTrajectoryMaterial at hmaterial
+  rw [mem_support_bind_iff] at hmaterial
+  obtain ⟨secret, _hsecret, htrajectories⟩ := hmaterial
+  rw [mem_support_bind_iff] at htrajectories
+  obtain ⟨trajectories, htrajectories, hpure⟩ := htrajectories
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst material
+  exact htrajectories
+
+theorem evalDist_programmedGlobalChainTrajectoryMaterial_table_eq_uniform
+    (parameter : PublicParameter) :
+    evalDist (globalChainTrajectoryMaterialTable <$>
+      programmedGlobalChainTrajectoryMaterial parameter) =
+      evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
+  unfold programmedGlobalChainTrajectoryMaterial
+    globalChainTrajectoryMaterialTable
+  simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply]
+  calc
+    _ = evalDist (Concrete.sampleSecret >>= fun secret =>
+          globalChainValueTableOfTrajectories <$>
+            (Prod.fst <$> programmedAllChainTrajectoriesFromCache parameter
+              secret ∅ allChains)) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro secret
+      simp [map_eq_bind_pure_comp, bind_assoc]
+    _ = evalDist (Concrete.sampleSecret >>= fun secret =>
+          globalChainValueTableOfTrajectories <$>
+            uniformAllChainTrajectories secret allChains) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro secret
+      rw [evalDist_map,
+        evalDist_programmedAllChainTrajectories_fst_eq_uniform parameter
+          secret allChains ∅,
+        ← evalDist_map]
+    _ = evalDist uniformGlobalChainTableFromTrajectories := rfl
+    _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest)) :=
+      evalDist_uniformGlobalChainTableFromTrajectories_eq_uniform
+
+def globalChainTrajectoryMaterialBase
+    (result : GlobalChainTrajectoryMaterial ×
+      (GlobalChainValueIndex → Digest)) :
+    GlobalChainValueIndex → Digest := result.2
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem evalDist_programmedGlobalChainTrajectoryMaterial_table_eq_base
+    (parameter : PublicParameter) :
+    evalDist (globalChainTrajectoryMaterialTable <$>
+        programmedGlobalChainTrajectoryMaterial parameter) =
+      evalDist (globalChainTrajectoryMaterialBase <$>
+        programmedGlobalChainTrajectoryMaterialWithBase parameter) := by
+  calc
+    _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest)) :=
+      evalDist_programmedGlobalChainTrajectoryMaterial_table_eq_uniform
+        parameter
+    _ = evalDist (globalChainTrajectoryMaterialBase <$>
+        programmedGlobalChainTrajectoryMaterialWithBase parameter) := by
+      unfold programmedGlobalChainTrajectoryMaterialWithBase
+        globalChainTrajectoryMaterialBase
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind]
+      symm
+      calc
+        _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest) >>= fun base =>
+              pure base) := by
+          apply evalDist_bind_congr
+          intro base _hbase
+          exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+            (programmedGlobalChainTrajectoryMaterial parameter)
+            (probFailure_eq_zero' inferInstance) (pure base)
+        _ = _ := by simp
+
+theorem relTriple_programmedGlobalChainTrajectoryMaterial_withBase_support
+    (parameter : PublicParameter) :
+    RelTriple
+      (programmedGlobalChainTrajectoryMaterial parameter)
+      (programmedGlobalChainTrajectoryMaterialWithBase parameter)
+      (fun left right =>
+        globalChainTrajectoryMaterialTable left = right.2 ∧
+          left ∈ support (programmedGlobalChainTrajectoryMaterial parameter) ∧
+          right ∈ support
+            (programmedGlobalChainTrajectoryMaterialWithBase parameter)) := by
+  exact relTriple_of_evalDist_map_eq_with_support_general
+    (programmedGlobalChainTrajectoryMaterial parameter)
+    (programmedGlobalChainTrajectoryMaterialWithBase parameter)
+    globalChainTrajectoryMaterialTable globalChainTrajectoryMaterialBase
+    (evalDist_programmedGlobalChainTrajectoryMaterial_table_eq_base parameter)
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem relTriple_programmedGlobalChainTrajectoryMaterial_withBase
+    (parameter : PublicParameter) :
+    RelTriple
+      (programmedGlobalChainTrajectoryMaterial parameter)
+      (programmedGlobalChainTrajectoryMaterialWithBase parameter)
+      (fun left right =>
+        globalChainTrajectoryMaterialTable left = right.2 ∧
+          TreeValuesFresh parameter allTreeValueIndices left.2.2 ∧
+          TreeValuesFresh parameter allTreeValueIndices right.1.2.2) := by
+  apply relTriple_post_mono
+    (relTriple_programmedGlobalChainTrajectoryMaterial_withBase_support
+      parameter)
+  intro left right hrelation
+  obtain ⟨htable, hleftSupport, hrightSupport⟩ := hrelation
+  refine ⟨htable, ?_, ?_⟩
+  · exact programmedAllChainTrajectories_treeValuesFresh parameter left.1
+      left.2
+        (programmedGlobalChainTrajectoryMaterial_support_trajectories
+          parameter left hleftSupport)
+  · unfold programmedGlobalChainTrajectoryMaterialWithBase at hrightSupport
+    rw [mem_support_bind_iff] at hrightSupport
+    obtain ⟨base, _hbase, hmaterialBind⟩ := hrightSupport
+    rw [mem_support_bind_iff] at hmaterialBind
+    obtain ⟨material, hmaterial, hpure⟩ := hmaterialBind
+    simp only [support_pure, Set.mem_singleton_iff] at hpure
+    rw [hpure]
+    unfold programmedGlobalChainTrajectoryMaterial at hmaterial
+    rw [mem_support_bind_iff] at hmaterial
+    obtain ⟨secret, _hsecret, htrajectoryBind⟩ := hmaterial
+    rw [mem_support_bind_iff] at htrajectoryBind
+    obtain ⟨trajectories, htrajectories, hmaterialPure⟩ := htrajectoryBind
+    simp only [support_pure, Set.mem_singleton_iff] at hmaterialPure
+    rw [hmaterialPure]
+    exact programmedAllChainTrajectories_treeValuesFresh parameter secret
+      trajectories htrajectories
+
+structure CoupledGlobalChainKeygenView where
+  secret : Epoch → ChainIndex → Digest
+  table : GlobalChainValueIndex → Digest
+  values : List Digest
+  cache : QueryCache HashSpec
+
+def CoupledGlobalChainKeygenView.root
+    (parameter : PublicParameter) (view : CoupledGlobalChainKeygenView) :
+    Digest :=
+  Concrete.CacheReplay.treeNode view.cache parameter view.secret
+    treeHeight Concrete.rootNode
+
+def CoupledGlobalChainKeygenView.authenticationPath
+    (parameter : PublicParameter) (view : CoupledGlobalChainKeygenView)
+    (epoch : Epoch) : MerkleLevel → Digest :=
+  Concrete.CacheReplay.authenticationPath view.cache
+    ⟨parameter, view.secret⟩ epoch
+
+noncomputable def coupledGlobalChainKeygenExperiment
+    (parameter : PublicParameter) : ProbComp CoupledGlobalChainKeygenView := do
+  let material ← programmedGlobalChainTrajectoryMaterial parameter
+  let tree ← treeValues parameter material.1 allTreeValueIndices
+    material.2.2
+  pure {
+    secret := material.1
+    table := globalChainTrajectoryMaterialTable material
+    values := tree.1
+    cache := tree.2
+  }
+
+noncomputable def coupledGlobalChainKeygenWithBase
+    (parameter : PublicParameter) :
+    ProbComp (CoupledGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) := do
+  let materialBase ←
+    programmedGlobalChainTrajectoryMaterialWithBase parameter
+  let material := materialBase.1
+  let tree ← treeValues parameter material.1 allTreeValueIndices
+    material.2.2
+  pure ({
+    secret := material.1
+    table := globalChainTrajectoryMaterialTable material
+    values := tree.1
+    cache := tree.2
+  }, materialBase.2)
+
+def CoupledGlobalChainKeygenRelation
+    (parameter : PublicParameter)
+    (left : CoupledGlobalChainKeygenView)
+    (right : CoupledGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) : Prop :=
+  left.table = right.2 ∧
+    left.root parameter = right.1.root parameter ∧
+    (∀ epoch,
+      left.authenticationPath parameter epoch =
+        right.1.authenticationPath parameter epoch) ∧
+    TreeValuesReplay parameter left.secret left.cache
+      allTreeValueIndices left.values ∧
+    TreeValuesReplay parameter right.1.secret right.1.cache
+      allTreeValueIndices right.1.values
+
+set_option maxHeartbeats 500000 in
+set_option maxRecDepth 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem relTriple_coupledGlobalChainKeygen_withBase
+    (parameter : PublicParameter) :
+    RelTriple
+      (coupledGlobalChainKeygenExperiment parameter)
+      (coupledGlobalChainKeygenWithBase parameter)
+      (CoupledGlobalChainKeygenRelation parameter) := by
+  have hmaterials :=
+    relTriple_programmedGlobalChainTrajectoryMaterial_withBase parameter
+  change RelTriple
+    (programmedGlobalChainTrajectoryMaterial parameter >>= fun material =>
+      treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
+        fun tree =>
+      pure ({
+        secret := material.1
+        table := globalChainTrajectoryMaterialTable material
+        values := tree.1
+        cache := tree.2
+      } : CoupledGlobalChainKeygenView))
+    (programmedGlobalChainTrajectoryMaterialWithBase parameter >>=
+      fun materialBase =>
+      treeValues parameter materialBase.1.1 allTreeValueIndices
+          materialBase.1.2.2 >>= fun tree =>
+      pure (({
+        secret := materialBase.1.1
+        table := globalChainTrajectoryMaterialTable materialBase.1
+        values := tree.1
+        cache := tree.2
+      } : CoupledGlobalChainKeygenView), materialBase.2))
+    (CoupledGlobalChainKeygenRelation parameter)
+  apply relTriple_bind hmaterials
+  intro leftMaterial rightMaterialBase hmaterial
+  obtain ⟨htable, hleftFresh, hrightFresh⟩ := hmaterial
+  let rightMaterial := rightMaterialBase.1
+  apply relTriple_bind
+    (relTriple_treeValues_same_values parameter parameter leftMaterial.1
+      rightMaterial.1 allTreeValueIndices leftMaterial.2.2 rightMaterial.2.2
+        allTreeValueIndices_pairwise hleftFresh hrightFresh)
+  intro leftTree rightTree htree
+  apply relTriple_pure_pure
+  unfold CoupledGlobalChainKeygenRelation
+  refine ⟨htable, ?_, ?_, htree.2.1, htree.2.2⟩
+  · exact globalTreeValuesReplay_eq_root parameter leftMaterial.1
+      rightMaterial.1 leftTree.2 rightTree.2 leftTree.1 htree.2.1
+        (htree.1 ▸ htree.2.2)
+  · intro epoch
+    exact globalTreeValuesReplay_eq_authenticationPath parameter
+      leftMaterial.1 rightMaterial.1 leftTree.2 rightTree.2 leftTree.1
+        htree.2.1 (htree.1 ▸ htree.2.2) epoch
+
 end XmssSecurity.CappedChain
