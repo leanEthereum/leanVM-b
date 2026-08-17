@@ -649,4 +649,92 @@ theorem evalDist_coupledGlobalChainKeygen_eq_programmedTrajectories :
   unfold programmedGlobalChainTrajectoryMaterial
   simp only [bind_assoc, pure_bind]
 
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem evalDist_coupledGlobalChainKeygenWithBase_eq_independentBase
+    (parameter : PublicParameter) :
+    evalDist (coupledGlobalChainKeygenWithBase parameter) =
+      evalDist (coupledGlobalChainKeygenExperiment parameter >>= fun view =>
+        ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
+        pure (view, base)) := by
+  unfold coupledGlobalChainKeygenWithBase
+    coupledGlobalChainKeygenExperiment
+    programmedGlobalChainTrajectoryMaterialWithBase
+  simp only [bind_assoc]
+  let finish : (GlobalChainValueIndex → Digest) →
+      GlobalChainTrajectoryMaterial →
+      (List Digest × QueryCache HashSpec) →
+      ProbComp (CoupledGlobalChainKeygenView ×
+        (GlobalChainValueIndex → Digest)) :=
+    fun base material tree => pure (({
+      secret := material.1
+      table := globalChainTrajectoryMaterialTable material
+      values := tree.1
+      cache := tree.2
+    } : CoupledGlobalChainKeygenView), base)
+  calc
+    _ = evalDist (programmedGlobalChainTrajectoryMaterial parameter >>=
+          fun material =>
+          ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
+          treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
+            fun tree => finish base material tree) := by
+      simpa [finish, bind_assoc] using
+        (OracleComp.DeferredSampling.evalDist_bind_comm
+          ($ᵗ (GlobalChainValueIndex → Digest))
+          (programmedGlobalChainTrajectoryMaterial parameter)
+          (fun base material =>
+            treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
+              fun tree => finish base material tree))
+    _ = evalDist (programmedGlobalChainTrajectoryMaterial parameter >>=
+          fun material =>
+          treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
+            fun tree =>
+          ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
+            finish base material tree) := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro material
+      exact OracleComp.DeferredSampling.evalDist_bind_comm
+        ($ᵗ (GlobalChainValueIndex → Digest))
+        (treeValues parameter material.1 allTreeValueIndices material.2.2)
+        (fun base tree => finish base material tree)
+    _ = _ := by
+      simp [finish, bind_assoc]
+
+noncomputable def coupledGlobalChainKeygenWithBaseFull :
+    ProbComp (ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) := do
+  let parameter ← Concrete.samplePublicParameter
+  let result ← coupledGlobalChainKeygenWithBase parameter
+  pure (result.1.toProgrammedView parameter, result.2)
+
+def ProgrammedGlobalChainKeygenRelation
+    (left : ProgrammedGlobalChainKeygenView)
+    (right : ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) : Prop :=
+  left.table = right.2 ∧
+    left.publicKey = right.1.publicKey ∧
+    (∀ epoch,
+      Concrete.CacheReplay.authenticationPath left.cache left.secretKey epoch =
+        Concrete.CacheReplay.authenticationPath right.1.cache
+          right.1.secretKey epoch)
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_coupledGlobalChainKeygenWithBaseFull :
+    RelTriple coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
+      ProgrammedGlobalChainKeygenRelation := by
+  unfold coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
+  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
+  intro leftParameter rightParameter hparameter
+  subst rightParameter
+  apply relTriple_bind
+    (relTriple_coupledGlobalChainKeygen_withBase leftParameter)
+  intro leftView rightView hview
+  apply relTriple_pure_pure
+  unfold ProgrammedGlobalChainKeygenRelation
+    CoupledGlobalChainKeygenView.toProgrammedView
+  refine ⟨hview.1, ?_, hview.2.2.1⟩
+  exact congrArg (fun root => (PublicKey.mk root leftParameter)) hview.2.1
+
 end XmssSecurity.CappedChain
