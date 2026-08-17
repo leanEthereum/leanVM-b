@@ -375,12 +375,61 @@ theorem expectedEagerObservedProbeCount_addPending
       expectedEagerObservedProbeCount state computation := by
   simp [expectedEagerObservedProbeCount, extendTable_addPending]
 
-set_option maxHeartbeats 1000000 in
-set_option maxRecDepth 100000 in
-theorem expectedEagerObservedProbeCount_le_expectedSimulatedQueryCount
+omit [Fintype Index] [DecidableEq Index] in
+theorem probFailure_simulate_eagerImpl_eq_zero
+    (table : Index → Digest)
+    (computation : OracleComp (World Index) α) :
+    Pr[⊥ | simulateQ (eagerImpl table) computation] = 0 := by
+  induction computation using OracleComp.inductionOn with
+  | pure result => simp
+  | query_bind input next ih =>
+      rw [simulateQ_query_bind]
+      cases input with
+      | uniform n => simp [eagerImpl]
+      | probe index target => simp [eagerImpl]
+      | reveal index => simp [eagerImpl]
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem probFailure_simulate_eagerTrace_eq_zero
+    (table : Index → Digest)
+    (computation : OracleComp (World Index) α) :
+    Pr[⊥ | (simulateQ (eagerTraceImpl table) computation).run] = 0 := by
+  unfold eagerTraceImpl
+  rw [QueryImpl.probFailure_run_simulateQ_withTraceAppend]
+  exact probFailure_simulate_eagerImpl_eq_zero table computation
+
+theorem expectedEagerExperiment_mass_eq_one
     (state : AdaptiveRevealMonitor.State Index)
     (computation : OracleComp (World Index) α) :
-    expectedEagerObservedProbeCount state computation ≤
+    (∑' result, Pr[= result | do
+      let base ← eagerTableSample
+      (simulateQ (eagerTraceImpl (extendTable state base)) computation).run]) = 1 := by
+  rw [tsum_probOutput_eq_one']
+  simp [eagerTableSample]
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem simulate_eagerTrace_mass_eq_one
+    (table : Index → Digest)
+    (computation : OracleComp (World Index) α) :
+    (∑' result, Pr[= result |
+      (simulateQ (eagerTraceImpl table) computation).run]) = 1 := by
+  rw [tsum_probOutput_eq_one']
+  exact probFailure_simulate_eagerTrace_eq_zero table computation
+
+theorem tsum_probOutput_mul_add_one_eq_of_mass
+    (computation : ProbComp α) (cost : α → ENNReal)
+    (hmass : (∑' result, Pr[= result | computation]) = 1) :
+    (∑' result, Pr[= result | computation] * (cost result + 1)) =
+      (∑' result, Pr[= result | computation] * cost result) + 1 := by
+  simp_rw [mul_add]
+  rw [ENNReal.tsum_add, ENNReal.tsum_mul_right, hmass, one_mul]
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem expectedEagerObservedProbeCount_eq_expectedSimulatedQueryCount
+    (state : AdaptiveRevealMonitor.State Index)
+    (computation : OracleComp (World Index) α) :
+    expectedEagerObservedProbeCount state computation =
       expectedSimulatedQueryCount lazyMonitorImpl IsProbeQuery computation state := by
   induction computation using OracleComp.inductionOn generalizing state with
   | pure result =>
@@ -404,7 +453,7 @@ theorem expectedEagerObservedProbeCount_le_expectedSimulatedQueryCount
                   (next output)).run] * observedProbeCount result.2
           change (∑ base, Pr[= base | eagerTableSample] *
               ∑ output, ((n : ENNReal) + 1)⁻¹ *
-                continuationCost base output) ≤ _
+                continuationCost base output) = _
           calc
             _ = ∑ output, ((n : ENNReal) + 1)⁻¹ *
                 ∑ base, Pr[= base | eagerTableSample] *
@@ -416,13 +465,13 @@ theorem expectedEagerObservedProbeCount_le_expectedSimulatedQueryCount
                     apply Finset.sum_congr rfl
                     intro base _hbase
                     ac_rfl
-            _ ≤ _ := by
-              apply Finset.sum_le_sum
+            _ = _ := by
+              apply Finset.sum_congr rfl
               intro output _houtput
-              gcongr
-              simpa [expectedEagerObservedProbeCount, eagerTraceImpl,
-                tsum_probOutput_bind_mul, continuationCost] using
-                ih output state
+              exact congrArg (fun value => ((n : ENNReal) + 1)⁻¹ * value)
+                (by simpa [expectedEagerObservedProbeCount, eagerTraceImpl,
+                    tsum_probOutput_bind_mul, continuationCost] using
+                  ih output state)
       | probe index target =>
           simp only [IsProbeQuery, if_true]
           rw [lazyMonitorImpl_probe_run, tsum_probOutput_pure_mul]
@@ -445,7 +494,7 @@ theorem expectedEagerObservedProbeCount_le_expectedSimulatedQueryCount
               ∑' result, Pr[= result |
                   (simulateQ (eagerTraceImpl (extendTable state base))
                     (next ())).run] *
-                (observedProbeCount result.2 + 1)) ≤ _
+                (observedProbeCount result.2 + 1)) = _
           have hcontinuation :
               expectedEagerObservedProbeCount state (next ()) =
                 expectedEagerObservedProbeCount continuationState (next ()) := by
@@ -456,28 +505,34 @@ theorem expectedEagerObservedProbeCount_le_expectedSimulatedQueryCount
                   (expectedEagerObservedProbeCount_addPending state index
                     target (next ())).symm
           calc
-            _ ≤ ∑ base, Pr[= base | eagerTableSample] *
+            _ = ∑ base, Pr[= base | eagerTableSample] *
                 (continuationCost base + 1) := by
-                  apply Finset.sum_le_sum
+                  apply Finset.sum_congr rfl
                   intro base _hbase
-                  gcongr
-                  exact tsum_probOutput_mul_add_one_le _ _
+                  congr 1
+                  exact tsum_probOutput_mul_add_one_eq_of_mass _ _
+                    (simulate_eagerTrace_mass_eq_one
+                      (extendTable state base) (next ()))
             _ = (∑ base, Pr[= base | eagerTableSample] *
                     continuationCost base) +
                   ∑ base, Pr[= base | eagerTableSample] := by
                     simp_rw [mul_add, mul_one]
                     rw [Finset.sum_add_distrib]
-            _ ≤ expectedEagerObservedProbeCount state (next ()) + 1 := by
-                  apply add_le_add
+            _ = expectedEagerObservedProbeCount state (next ()) + 1 := by
+                  congr 1
                   · simp [expectedEagerObservedProbeCount,
                       continuationCost, eagerTraceImpl,
                       tsum_probOutput_bind_mul]
                   · simp [eagerTableSample]
+                    rw [ENNReal.mul_inv_cancel]
+                    · norm_num
+                    · finiteness
             _ = expectedEagerObservedProbeCount continuationState (next ()) + 1 := by
                   rw [hcontinuation]
-            _ ≤ expectedSimulatedQueryCount lazyMonitorImpl IsProbeQuery
+            _ = expectedSimulatedQueryCount lazyMonitorImpl IsProbeQuery
                     (next ()) continuationState + 1 := by
-                  exact add_le_add_left (ih () continuationState) 1
+                  exact congrArg (fun value => value + 1)
+                    (ih () continuationState)
             _ = 1 + expectedSimulatedQueryCount lazyMonitorImpl IsProbeQuery
                   (next ()) continuationState := by ac_rfl
       | reveal index =>
@@ -549,11 +604,11 @@ theorem expectedEagerObservedProbeCount_le_expectedSimulatedQueryCount
                     rw [extendTable_update_eq_install state index value base
                       hrevealed]
               unfold expectedEagerObservedProbeCount
-              refine (tsum_probOutput_mul_congr_evalDist _ _ _ hdist).le.trans ?_
+              refine (tsum_probOutput_mul_congr_evalDist _ _ _ hdist).trans ?_
               rw [tsum_probOutput_bind_mul]
-              apply ENNReal.tsum_le_tsum
+              apply tsum_congr
               intro value
-              gcongr
+              congr 1
               rw [tsum_probOutput_bind_mul]
               simpa [resumeTrace, tsum_probOutput_map_mul, observedProbeCount,
                 expectedEagerObservedProbeCount, eagerTraceImpl,
