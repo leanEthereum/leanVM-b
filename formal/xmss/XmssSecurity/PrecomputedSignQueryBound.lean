@@ -1,4 +1,4 @@
-import XmssSecurity.PrecomputedScheme
+import XmssSecurity.PrecomputedSign
 import XmssSecurity.BoundedSignQueryBound
 
 open OracleComp OracleSpec

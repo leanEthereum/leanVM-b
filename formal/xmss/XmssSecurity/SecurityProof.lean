@@ -1,5 +1,6 @@
 import XmssSecurity.CappedGlobalChainHighBoundedPublic
-import XmssSecurity.CappedExactLossArchitecture
+import XmssSecurity.LossDecomposition
+import XmssSecurity.Statement
 
 open OracleComp OracleSpec ENNReal
 
@@ -149,8 +150,8 @@ theorem capped_xmss_forgeAdvantage_le_126_of_boundedPublicReduction
     _ ≤ _ := capped_separate_loss_budget_le_126 q
       (hashQueryBound_at_least_verificationQueries adversary q hbound)
 
-theorem xmss_cappedSigner_has_126_bits_of_classical_security :
-    HasClassicalSecurityBits Concrete.cappedScheme 126 := by
+theorem xmss_has_126_bits_of_classical_security : XmssSecurityStatement := by
+  change HasClassicalSecurityBits xmssScheme 126
   intro q _hq
   unfold forgeAtMost
   refine iSup_le fun adversary => iSup_le fun hbound => ?_
