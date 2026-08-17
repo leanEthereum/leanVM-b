@@ -66,6 +66,12 @@ def HasCappedGlobalHighBoundedPublicReductions : Prop :=
     HasHashQueryBound Concrete.cappedScheme adversary q →
       CappedChain.HasGlobalHighBoundedPublicReduction q adversary
 
+theorem hasCappedGlobalHighBoundedPublicReductions :
+    HasCappedGlobalHighBoundedPublicReductions := by
+  intro q adversary hbound
+  exact CappedChain.hasGlobalHighBoundedPublicReduction_of_hashQueryBound q
+    adversary hbound
+
 theorem xmss_has_125_bits_of_classical_security_of_boundedPublicReductions
     (hreductions : HasCappedGlobalHighBoundedPublicReductions) :
     HasClassicalSecurityBits Concrete.cappedScheme 125 := by
@@ -74,5 +80,10 @@ theorem xmss_has_125_bits_of_classical_security_of_boundedPublicReductions
   refine iSup_le fun adversary => iSup_le fun hbound => ?_
   exact capped_xmss_forgeAdvantage_le_125_of_boundedPublicReduction q adversary
     hbound (hreductions q adversary hbound)
+
+theorem xmss_cappedSigner_has_125_bits_of_classical_security :
+    HasClassicalSecurityBits Concrete.cappedScheme 125 :=
+  xmss_has_125_bits_of_classical_security_of_boundedPublicReductions
+    hasCappedGlobalHighBoundedPublicReductions
 
 end XmssSecurity
