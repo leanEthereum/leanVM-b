@@ -629,6 +629,21 @@ noncomputable def programmedGlobalChainTrajectoryTableHighView
     (globalChainTrajectoryMaterialTable materialHigh.1, materialHigh.2)) <$>
       programmedGlobalChainTrajectoryMaterialWithHigh parameter
 
+noncomputable def independentGlobalChainValueTable :
+    ProbComp (GlobalChainValueIndex → Digest) :=
+  $ᵗ (GlobalChainValueIndex → Digest)
+
+noncomputable def independentGlobalChainHigh :
+    ProbComp (GlobalChainEdgeIndex → Digest) :=
+  $ᵗ (GlobalChainEdgeIndex → Digest)
+
+noncomputable def independentGlobalChainTableHigh :
+    ProbComp ((GlobalChainValueIndex → Digest) ×
+      (GlobalChainEdgeIndex → Digest)) := do
+  let table ← independentGlobalChainValueTable
+  let high ← independentGlobalChainHigh
+  pure (table, high)
+
 set_option maxHeartbeats 3000000 in
 set_option maxRecDepth 1000000 in
 theorem evalDist_programmedAllChainTrajectoriesWithHigh_tableHigh
@@ -696,10 +711,7 @@ set_option maxRecDepth 1000000 in
 theorem evalDist_programmedGlobalChainTrajectoryTableHighView_eq_independent
     (parameter : PublicParameter) :
     evalDist (programmedGlobalChainTrajectoryTableHighView parameter) =
-    evalDist (do
-      let table ← $ᵗ (GlobalChainValueIndex → Digest)
-      let high ← $ᵗ (GlobalChainEdgeIndex → Digest)
-      pure (table, high)) := by
+    evalDist independentGlobalChainTableHigh := by
   unfold programmedGlobalChainTrajectoryTableHighView
     programmedGlobalChainTrajectoryMaterialWithHigh
   simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
@@ -719,11 +731,13 @@ theorem evalDist_programmedGlobalChainTrajectoryTableHighView_eq_independent
     _ = evalDist (uniformGlobalChainTableFromTrajectories >>= appendHigh) := by
       simp [uniformGlobalChainTableFromTrajectories, appendHigh,
         map_eq_bind_pure_comp, bind_assoc]
-    _ = evalDist (($ᵗ (GlobalChainValueIndex → Digest)) >>=
+    _ = evalDist (independentGlobalChainValueTable >>=
         appendHigh) := by
       rw [evalDist_bind,
         evalDist_uniformGlobalChainTableFromTrajectories_eq_uniform,
         ← evalDist_bind]
+      unfold independentGlobalChainValueTable
+      rfl
     _ = _ := by rfl
 
 noncomputable def programmedGlobalChainTrajectoryCacheTableHighView
@@ -740,10 +754,7 @@ set_option maxRecDepth 1000000 in
 theorem evalDist_programmedGlobalChainTrajectoryCacheTableHighView_eq_independent
     (parameter : PublicParameter) :
     evalDist (programmedGlobalChainTrajectoryCacheTableHighView parameter) =
-    evalDist (do
-      let table ← $ᵗ (GlobalChainValueIndex → Digest)
-      let high ← $ᵗ (GlobalChainEdgeIndex → Digest)
-      pure (table, high)) := by
+    evalDist independentGlobalChainTableHigh := by
   let leftView := fun material : GlobalChainTrajectoryMaterial =>
     (globalChainTrajectoryMaterialTable material,
       globalChainEdgeHighTableOfCache material.2.2 parameter
