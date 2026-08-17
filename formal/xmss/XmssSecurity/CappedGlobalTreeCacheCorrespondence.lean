@@ -778,4 +778,68 @@ theorem relTriple_globalMaterial_leafTreeValues_run
           (hrightTailLe hrightCached).symm
       · exact htailReplay index hindex
 
+theorem relTriple_globalMaterial_allLeafValues_run
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (hleft : left ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (hright : right ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter)) :
+    RelTriple
+      (treeValues parameter left.1 (treeValueIndicesAtHeight 0) left.2.2)
+      (treeValues parameter right.1 (treeValueIndicesAtHeight 0) right.2.2)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          ∃ finalLeft finalRight,
+            GlobalTreeCacheCorrespondence parameter finalLeft finalRight
+              leftResult.2 rightResult.2 ∧
+            ReplayEndpointsMatch parameter left.1 finalLeft leftResult.2 ∧
+            ReplayEndpointsMatch parameter right.1 finalRight
+              rightResult.2) := by
+  have hzero : ∀ index ∈ treeValueIndicesAtHeight 0,
+      index.1.val = 0 := by
+    intro index hindex
+    rw [treeValueIndicesAtHeight, List.mem_ofFn] at hindex
+    obtain ⟨node, rfl⟩ := hindex
+    rfl
+  have hordered : (treeValueIndicesAtHeight 0).Pairwise
+      TreeValueIndex.Precedes := by
+    simp only [treeValueIndicesAtHeight, List.pairwise_ofFn]
+    intro leftNode rightNode hlt
+    exact Or.inr ⟨rfl, hlt⟩
+  have hleftFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight 0) left.2.2 := by
+    have hall := programmedAllChainTrajectories_treeValuesFresh parameter left.1
+      left.2
+        (programmedGlobalChainTrajectoryMaterial_support_trajectories
+          parameter left hleft)
+    intro index _hindex input hinput
+    exact hall index (mem_allTreeValueIndices index) input hinput
+  have hrightFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight 0) right.2.2 := by
+    have hall := programmedAllChainTrajectories_treeValuesFresh parameter right.1
+      right.2
+        (programmedGlobalChainTrajectoryMaterial_support_trajectories
+          parameter right hright)
+    intro index _hindex input hinput
+    exact hall index (mem_allTreeValueIndices index) input hinput
+  let initialEndpoints : Epoch → ChainIndex → Digest := fun _ _ => 0
+  apply relTriple_post_mono
+    (relTriple_globalMaterial_leafTreeValues_run parameter left right hleft
+      hright (treeValueIndicesAtHeight 0) hzero hordered initialEndpoints
+        initialEndpoints left.2.2 right.2.2 hleftFresh hrightFresh
+          (programmedGlobalChainTrajectoryMaterial_initialTreeCacheCorrespondence
+            parameter left right hleft hright initialEndpoints initialEndpoints)
+          le_rfl le_rfl)
+  intro leftResult rightResult hresult
+  obtain ⟨hvalues, finalLeft, finalRight, hcache, hreplay⟩ := hresult
+  have hreplayAll := leafReplayOutputsCorrespondOn_allLeaves parameter left.1
+    right.1 leftResult.2 rightResult.2 hreplay
+  let leftReplay := fun epoch =>
+    Concrete.CacheReplay.oneTimePublicKey leftResult.2 parameter left.1 epoch
+  let rightReplay := fun epoch =>
+    Concrete.CacheReplay.oneTimePublicKey rightResult.2 parameter right.1 epoch
+  exact ⟨hvalues, leftReplay, rightReplay,
+    ⟨hcache.merkle, hreplayAll⟩, (fun _ => rfl), (fun _ => rfl)⟩
+
 end XmssSecurity.CappedChain
