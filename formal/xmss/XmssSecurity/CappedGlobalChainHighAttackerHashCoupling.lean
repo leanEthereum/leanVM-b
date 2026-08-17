@@ -85,4 +85,58 @@ theorem relTriple_programmed_globalFilteredHashQuery_fresh
     simulate_eagerTrace_globalCausalHashQuery]
   simpa [wrap, recorded] using hmapped
 
+theorem relTriple_programmed_globalFilteredHashQuery_redirect
+    (left : ProgrammedGlobalChainKeygenView)
+    (right : (ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) ×
+      (GlobalChainEdgeIndex → Digest))
+    (leftCache : QueryCache HashSpec) (rightState : GlobalCausalHashState)
+    (hstate : GlobalFilteredCausalStateRelation left right.1 leftCache
+      rightState)
+    (input : HashInput) (output : HashOutput)
+    (hbase : left.cache input = some output)
+    (hinput : ¬ GlobalSigningComparableHashInput left.secretKey.parameter input)
+    (hplan : globalFilteredCausalAttackerHashPlan right.1.1.secretKey input
+      rightState = .redirect output) :
+    RelTriple
+      ((randomOracle input).run leftCache)
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
+        ((globalCausalAttackerHashQueryFromHigh
+          (globalChainValueHighTableOfEdges right.2) right.1.1.secretKey
+            input).run rightState)).run)
+      (GlobalFilteredHashResultRelation left right.1) := by
+  have hleft : leftCache input = some output := hstate.2.2.1 hbase
+  have hagrees : HashCachesAgreeOn
+      (GlobalSigningComparableHashInput left.secretKey.parameter) leftCache
+      ((globalCausalRecordedState right.1.1.secretKey input rightState).cache
+        |>.cacheQuery input output) := by
+    intro candidate hcandidate
+    have hne : candidate ≠ input := by
+      intro heq
+      subst candidate
+      exact hinput hcandidate
+    rw [QueryCache.cacheQuery_of_ne _ _ hne,
+      globalCausalRecordedState_cache]
+    exact hstate.1 candidate hcandidate
+  have hfiltered : FilteredCacheExtensionRelation left.cache leftCache
+      ((globalCausalRecordedState right.1.1.secretKey input rightState).cache
+        |>.cacheQuery input output) := by
+    intro candidate
+    by_cases heq : candidate = input
+    · subst candidate
+      left
+      simp [hleft]
+    · rw [QueryCache.cacheQuery_of_ne _ _ heq,
+        globalCausalRecordedState_cache]
+      exact hstate.2.1 candidate
+  have hnext := hstate.recordedStateSetCache right.1.1.secretKey input
+    leftCache
+    ((globalCausalRecordedState right.1.1.secretKey input rightState).cache
+      |>.cacheQuery input output)
+    hagrees hfiltered le_rfl
+  rw [randomOracle, QueryImpl.withCaching_run_some _ hleft,
+    globalCausalAttackerHashQueryFromHigh_run, hplan, simulateQ_pure,
+    WriterT.run_pure]
+  exact relTriple_pure_pure ⟨rfl, hnext⟩
+
 end XmssSecurity.CappedChain

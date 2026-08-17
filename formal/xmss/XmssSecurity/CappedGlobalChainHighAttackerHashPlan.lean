@@ -1,4 +1,4 @@
-import XmssSecurity.CappedGlobalChainHighAttackerHashDisjointness
+import XmssSecurity.CappedGlobalChainHighLeafPlan
 
 open OracleComp OracleSpec
 
@@ -7,15 +7,9 @@ namespace XmssSecurity.CappedChain
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 2000000
 
-inductive GlobalFilteredCausalHashPlan where
-  | cached (output : HashOutput)
-  | reveal (index : GlobalChainValueIndex)
-  | probeThenFresh (index : GlobalChainValueIndex) (target : Digest)
-  | redirect (output : HashOutput)
-  | fresh
-
 noncomputable def globalFilteredCausalUncachedAttackerHashPlan
-    (_input : HashInput) (state : GlobalCausalHashState) :
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) :
     Option (GlobalChainValueIndex × Digest) → GlobalFilteredCausalHashPlan
   | some (index, target) =>
       match state.revealed index with
@@ -30,32 +24,34 @@ noncomputable def globalFilteredCausalUncachedAttackerHashPlan
           if _hnext : index.2.2.val + 1 < chainLength then
             .probeThenFresh index target
           else .fresh
-  | none => .fresh
+  | none => globalFilteredCausalLeafHashPlan secretKey input state
 
 noncomputable def globalFilteredCausalAttackerHashPlan
     (secretKey : SecretKey) (input : HashInput)
     (state : GlobalCausalHashState) : GlobalFilteredCausalHashPlan :=
   match state.cache input with
   | some output => .cached output
-  | none => globalFilteredCausalUncachedAttackerHashPlan input state
+  | none => globalFilteredCausalUncachedAttackerHashPlan secretKey input state
       (globalChainInputProbe? secretKey.parameter input)
 
 theorem globalFilteredCausalUncachedAttackerHashPlan_eq_reveal
-    (_input : HashInput) (state : GlobalCausalHashState)
+    (secretKey : SecretKey) (_input : HashInput)
+    (state : GlobalCausalHashState)
     (index : GlobalChainValueIndex) (target : Digest)
     (hvalue : state.revealed index = some target)
     (hnext : index.2.2.val + 1 < chainLength) :
-    globalFilteredCausalUncachedAttackerHashPlan _input state
+    globalFilteredCausalUncachedAttackerHashPlan secretKey _input state
         (some (index, target)) =
       .reveal (index.1, index.2.1, ⟨index.2.2.val + 1, hnext⟩) := by
   simp [globalFilteredCausalUncachedAttackerHashPlan, hvalue, hnext]
 
 theorem globalFilteredCausalUncachedAttackerHashPlan_eq_probeThenFresh
-    (_input : HashInput) (state : GlobalCausalHashState)
+    (secretKey : SecretKey) (_input : HashInput)
+    (state : GlobalCausalHashState)
     (index : GlobalChainValueIndex) (target : Digest)
     (hhidden : state.revealed index = none)
     (hnext : index.2.2.val + 1 < chainLength) :
-    globalFilteredCausalUncachedAttackerHashPlan _input state
+    globalFilteredCausalUncachedAttackerHashPlan secretKey _input state
         (some (index, target)) =
       .probeThenFresh index target := by
   simp [globalFilteredCausalUncachedAttackerHashPlan, hhidden, hnext]
@@ -73,7 +69,7 @@ theorem globalFilteredCausalAttackerHashPlan_eq_probeThenFresh
       .probeThenFresh index target := by
   rw [globalFilteredCausalAttackerHashPlan, hcache, hprobe]
   exact globalFilteredCausalUncachedAttackerHashPlan_eq_probeThenFresh
-    input state index target hhidden hnext
+    secretKey input state index target hhidden hnext
 
 @[simp]
 theorem globalChainInputProbe?_globalChainTableEdgeInput
@@ -109,6 +105,7 @@ theorem globalFilteredCausalAttackerHashPlan_eq_reveal_globalEdge
     rfl
   rw [← hnext]
   exact globalFilteredCausalUncachedAttackerHashPlan_eq_reveal
+    secretKey
     (globalChainTableEdgeInput secretKey.parameter table edge) state
     (edge.1, edge.2.1, chainStepDigit edge.2.2)
     (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) hrevealed
@@ -130,6 +127,7 @@ theorem globalFilteredCausalAttackerHashPlan_eq_probeThenFresh_globalEdge
   rw [globalFilteredCausalAttackerHashPlan, hcache]
   rw [globalChainInputProbe?_globalChainTableEdgeInput]
   exact globalFilteredCausalUncachedAttackerHashPlan_eq_probeThenFresh
+    secretKey
     (globalChainTableEdgeInput secretKey.parameter table edge) state
     (edge.1, edge.2.1, chainStepDigit edge.2.2)
     (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) hhidden
