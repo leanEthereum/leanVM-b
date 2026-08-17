@@ -1,4 +1,4 @@
-import XmssSecurity.CappedGlobalCausalSigningProjection
+import XmssSecurity.CappedGlobalCausalSigningResampling
 import XmssSecurity.CappedChain.CausalSigningKeygenCoupling
 
 open OracleComp OracleSpec
@@ -41,6 +41,32 @@ theorem globalSignatureRevealResult_authPath
   | cons chain chains ih =>
       rw [globalSignatureRevealResult]
       exact ih _ _
+
+theorem globalSignatureRevealResult_cache
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
+    (chains : List ChainIndex) (signature : Signature)
+    (state : GlobalCausalHashState) :
+    (globalSignatureRevealResult table request encoding chains signature
+      state).2.cache = state.cache := by
+  induction chains generalizing signature state with
+  | nil => rfl
+  | cons chain chains ih =>
+      rw [globalSignatureRevealResult, ih]
+      rfl
+
+theorem globalSignatureRevealResult_keygenCache
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
+    (chains : List ChainIndex) (signature : Signature)
+    (state : GlobalCausalHashState) :
+    (globalSignatureRevealResult table request encoding chains signature
+      state).2.keygenCache = state.keygenCache := by
+  induction chains generalizing signature state with
+  | nil => rfl
+  | cons chain chains ih =>
+      rw [globalSignatureRevealResult, ih]
+      rfl
 
 def ProgrammedGlobalChainKeygenView.keyResult
     (view : ProgrammedGlobalChainKeygenView) :
@@ -626,5 +652,167 @@ theorem relTriple_keygenViews_globalSign_run
   exact relTriple_keygenViews_globalSignBoundedAttempts_succ_run
     (signingAttemptLimit - 1) left right hrel hleftSupport hrightSupport
       leftCache rightCache hcacheAgreement hleftLe hrightLe request
+
+def GlobalSigningRevealsAgree
+    (table : GlobalChainValueIndex → Digest)
+    (state : GlobalCausalHashState) : Prop :=
+  ∀ index value, state.revealed index = some value → table index = value
+
+theorem GlobalSigningRevealsAgree.setCache
+    {table : GlobalChainValueIndex → Digest}
+    {state : GlobalCausalHashState}
+    (hagrees : GlobalSigningRevealsAgree table state)
+    (cache : QueryCache HashSpec) :
+    GlobalSigningRevealsAgree table { state with cache := cache } :=
+  hagrees
+
+theorem GlobalSigningRevealsAgree.recordReveal
+    {table : GlobalChainValueIndex → Digest}
+    {state : GlobalCausalHashState}
+    (hagrees : GlobalSigningRevealsAgree table state)
+    (index : GlobalChainValueIndex) :
+    GlobalSigningRevealsAgree table
+      (state.recordReveal index (table index)) := by
+  intro candidate value hvalue
+  by_cases heq : candidate = index
+  · subst candidate
+    simp [GlobalCausalHashState.recordReveal] at hvalue
+    exact hvalue
+  · simp [GlobalCausalHashState.recordReveal,
+      Function.update_of_ne heq] at hvalue
+    exact hagrees candidate value hvalue
+
+theorem GlobalSigningRevealsAgree.globalSignatureRevealResult
+    {table : GlobalChainValueIndex → Digest}
+    {state : GlobalCausalHashState}
+    (hagrees : GlobalSigningRevealsAgree table state)
+    (request : SignRequest) (encoding : ChainIndex → Digit)
+    (chains : List ChainIndex) (signature : Signature) :
+    GlobalSigningRevealsAgree table
+      (globalSignatureRevealResult table request encoding chains signature
+        state).2 := by
+  induction chains generalizing signature state with
+  | nil =>
+      change GlobalSigningRevealsAgree table state
+      exact hagrees
+  | cons chain chains ih =>
+      change GlobalSigningRevealsAgree table
+        (XmssSecurity.CappedChain.globalSignatureRevealResult table request
+          encoding chains
+          (replaceSignatureChainValue signature chain
+            (table (chain, request.epoch, encoding chain)))
+          (state.recordReveal (chain, request.epoch, encoding chain)
+            (table (chain, request.epoch, encoding chain)))).2
+      apply ih
+      exact hagrees.recordReveal (chain, request.epoch, encoding chain)
+
+def GlobalSigningQueryResultRelation
+    (parameter : PublicParameter)
+    (leftBase rightBase : QueryCache HashSpec)
+    (table : GlobalChainValueIndex → Digest)
+    (leftResult : Option Signature × QueryCache HashSpec)
+    (rightResult : (Option Signature × GlobalCausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) : Prop :=
+  leftResult.1 = rightResult.1.1 ∧
+    HashCachesAgreeOn (GlobalSigningComparableHashInput parameter)
+      leftResult.2 rightResult.1.2.cache ∧
+    leftBase ≤ leftResult.2 ∧ rightBase ≤ rightResult.1.2.cache ∧
+    rightResult.1.2.keygenCache = rightBase ∧
+    GlobalSigningRevealsAgree table rightResult.1.2
+
+set_option maxRecDepth 100000 in
+theorem relTriple_keygenViews_globalCausalSigningQuery_run
+    (left : ProgrammedGlobalChainKeygenView)
+    (right : ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest))
+    (hrel : ProgrammedGlobalChainKeygenStableRelation left right)
+    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
+    (hrightSupport : right.1 ∈ support trajectoryProgrammedGlobalChainKeygen)
+    (leftCache : QueryCache HashSpec) (rightState : GlobalCausalHashState)
+    (hcacheAgreement : HashCachesAgreeOn
+      (GlobalSigningComparableHashInput left.secretKey.parameter)
+      leftCache rightState.cache)
+    (hleftLe : left.cache ≤ leftCache)
+    (hrightLe : right.1.cache ≤ rightState.cache)
+    (hkeygenCache : rightState.keygenCache = right.1.cache)
+    (hreveals : GlobalSigningRevealsAgree right.2 rightState)
+    (request : SignRequest) :
+    RelTriple
+      ((simulateQ xmssRomImpl
+        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+          request.epoch request.message)).run leftCache)
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
+        (globalCausalSigningQueryAfterRealRom right.1.publicKey
+          right.1.secretKey request rightState)).run)
+      (GlobalSigningQueryResultRelation left.secretKey.parameter
+        left.cache right.1.cache right.2) := by
+  have hsign := relTriple_keygenViews_globalSign_run left right hrel
+    hleftSupport hrightSupport leftCache rightState.cache hcacheAgreement
+      hleftLe hrightLe request
+  rw [simulate_eagerTrace_globalCausalSigningQueryAfterRealRom]
+  rw [show
+    (simulateQ xmssRomImpl
+      (Concrete.cappedScheme.sign left.publicKey left.secretKey
+        request.epoch request.message)).run leftCache =
+      ((simulateQ xmssRomImpl
+        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+          request.epoch request.message)).run leftCache >>= pure) by simp]
+  apply relTriple_bind hsign
+  intro leftSigned rightSigned hsigned
+  rcases hsigned with ⟨randomness, decoded, hdecode, hoptions,
+    hcaches, hleftFinal, hrightFinal⟩
+  cases decoded with
+  | none =>
+      rcases hoptions with ⟨hleftNone, hrightNone⟩
+      rw [hrightNone]
+      simp only [revealGlobalSignatureOption_run, simulateQ_pure,
+        WriterT.run_pure]
+      apply relTriple_pure_pure
+      exact ⟨hleftNone, hcaches, hleftFinal, hrightFinal,
+        hkeygenCache, hreveals.setCache rightSigned.2⟩
+  | some encoding =>
+      rcases hoptions with
+        ⟨signature, hrandomness, hrightSome, hleftRevealed⟩
+      rw [hrightSome]
+      have hleftKey := trajectoryProgrammedGlobalChainKeygen_support_keyResult
+        left hleftSupport
+      have hrightKey := trajectoryProgrammedGlobalChainKeygen_support_keyResult
+        right.1 hrightSupport
+      have hparameter : left.secretKey.parameter =
+          right.1.secretKey.parameter := by
+        calc
+          left.secretKey.parameter = left.publicKey.parameter :=
+            (keygen_parameter_eq left.keyResult hleftKey).symm
+          _ = right.1.publicKey.parameter :=
+            congrArg PublicKey.parameter hrel.1.2.1
+          _ = right.1.secretKey.parameter :=
+            keygen_parameter_eq right.1.keyResult hrightKey
+      have hencodingHash :
+          Concrete.CacheView.encodingHash leftSigned.2
+              left.secretKey.parameter request.epoch
+                (request.message, randomness) =
+            Concrete.CacheView.encodingHash rightSigned.2
+              right.1.secretKey.parameter request.epoch
+                (request.message, randomness) := by
+        rw [← hparameter]
+        unfold Concrete.CacheView.encodingHash Concrete.CacheView.digestAt
+        rw [hcaches _ ⟨request.epoch, request.message, randomness, rfl⟩]
+      have hdecodeRight : TargetSum.decodeDigest
+          (Concrete.CacheView.encodingHash rightSigned.2
+            right.1.secretKey.parameter request.epoch
+              (request.message, signature.randomness)) = some encoding := by
+        rw [hrandomness, ← hencodingHash]
+        exact hdecode
+      rw [simulate_eagerTrace_revealGlobalSignatureOption_some_of_decode
+        right.2 right.1.secretKey request signature
+          { rightState with cache := rightSigned.2 } encoding hdecodeRight]
+      apply relTriple_pure_pure
+      unfold GlobalSigningQueryResultRelation
+      simp only [globalSignatureRevealResult_cache,
+        globalSignatureRevealResult_keygenCache]
+      refine ⟨hleftRevealed { rightState with cache := rightSigned.2 },
+        hcaches, hleftFinal, hrightFinal, hkeygenCache, ?_⟩
+      exact (hreveals.setCache rightSigned.2).globalSignatureRevealResult
+        request encoding allChains signature
 
 end XmssSecurity.CappedChain
