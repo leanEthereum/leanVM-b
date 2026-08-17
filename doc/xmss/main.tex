@@ -155,7 +155,12 @@ The one-time public key and its Merkle leaf are
 
 \section{Key generation}
 
-The algorithm $\Gen$ independently samples $P\getsr\bits{\lpar}$ and $\mathit{sk}_{\ep,i}\getsr\mathcal H$ for $0\leq\ep<L$ and $0\leq i<v$. For $1\leq\ell\leq h$, define
+The algorithm $\Gen$ independently samples $P\getsr\bits{\lpar}$ and $\mathit{sk}_{\ep,i}\getsr\mathcal H$ for $0\leq\ep<L$ and $0\leq i<v$. It computes and stores every chain value
+\[
+  C_{\ep,i,k}=\Chain_{\Th,i,\ep}(P,0,k,\mathit{sk}_{\ep,i}),
+  \qquad 0\leq k<2^w.
+\]
+Thus $C_{\ep,i,0}=\mathit{sk}_{\ep,i}$ and $C_{\ep,i,2^w-1}=\mathit{pk}_{\ep,i}$. For $1\leq\ell\leq h$, define
 \[
   X_{\ell,j}=\Th\!\left(P,\mathsf{tweak}_{\mathrm{merkle}}(\ell,j),X_{\ell-1,2j}\concat X_{\ell-1,2j+1}\right),
   \qquad 0\leq j<2^{h-\ell}.
@@ -164,10 +169,12 @@ Set $\rootnode=X_{h,0}$ and return
 \[
   \pk=(\rootnode,P),
   \qquad
-  \sk=\left(P,(\mathit{sk}_{\ep,i})_{0\leq\ep<L,\,0\leq i<v}\right).
+  \sk=\left(P,(C_{\ep,i,k})_{\substack{0\leq\ep<L,\,0\leq i<v,\\0\leq k<2^w}},(X_{\ell,j})_{\substack{0\leq\ell\leq h,\\0\leq j<2^{h-\ell}}}\right).
 \]
 
 The public key is serialized as $\rootnode\concat P$.
+
+This specification uses an ideal precomputed secret key. It stores the full Merkle tree and all intermediate one-time-signature chain values so that signing does not recompute them. This is a time-memory choice for the security model, not a storage prescription for implementations.
 
 \begin{remark}[seed derivation]
 The sampled secret values may instead be generated from a master secret using a pseudorandom function.
@@ -181,7 +188,7 @@ Key generation may be restricted to a smaller interval of epochs by replacing su
 
 $\Sig(\sk,\ep,m)$ returns $\bot$ if epoch $\ep$ has already been used and otherwise marks it used. It makes at most $\amax=2^{23}$ attempts. In each attempt it independently samples $\rho\getsr\bits{\lrnd}$ and computes $x=\IncEnc(P,m,\rho,\ep)$. If $x\neq\bot$, it immediately computes
 \[
-  \sigma_{\mathrm{OTS},i}=\Chain_{\Th,i,\ep}(P,0,x_i,\mathit{sk}_{\ep,i}),
+  \sigma_{\mathrm{OTS},i}=C_{\ep,i,x_i},
   \qquad 0\leq i<v,
 \]
 and the authentication path
@@ -196,6 +203,8 @@ and returns
   \mathit{path}_{\ep}=(A_0,\ldots,A_{h-1}),
 \]
 serialized as $\sigma_{\mathrm{OTS},0}\concat\cdots\concat\sigma_{\mathrm{OTS},v-1}\concat\rho\concat A_0\concat\cdots\concat A_{h-1}$. If all $\amax$ attempts produce $x=\bot$, it returns $\bot$.
+
+Consequently, signing queries the random oracle only when evaluating $\IncEnc$, once per attempt. Reading the stored chain values and authentication path makes no random-oracle query.
 
 When $\hash$ is modeled as a random oracle, a single attempt succeeds with probability approximately $2^{-14.848}$. Consequently, the probability that all $2^{23}$ attempts fail is less than $2^{-410}$.
 
