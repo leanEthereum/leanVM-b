@@ -842,4 +842,156 @@ theorem relTriple_globalMaterial_allLeafValues_run
   exact ⟨hvalues, leftReplay, rightReplay,
     ⟨hcache.merkle, hreplayAll⟩, (fun _ => rfl), (fun _ => rfl)⟩
 
+theorem relTriple_globalMaterial_merkleTreeValue_run
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial)
+    (processed : List TreeValueIndex)
+    (leftPrefix rightPrefix : List Digest × QueryCache HashSpec)
+    (hleftPrefix : leftPrefix ∈ support
+      (treeValues parameter left.1 processed left.2.2))
+    (hrightPrefix : rightPrefix ∈ support
+      (treeValues parameter right.1 processed right.2.2))
+    (hprefixValues : leftPrefix.1 = rightPrefix.1)
+    (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+    (hcache : GlobalTreeCacheCorrespondence parameter leftEndpoints
+      rightEndpoints leftPrefix.2 rightPrefix.2)
+    (hleftReplay : ReplayEndpointsMatch parameter left.1 leftEndpoints
+      leftPrefix.2)
+    (hrightReplay : ReplayEndpointsMatch parameter right.1 rightEndpoints
+      rightPrefix.2)
+    (current : TreeValueIndex) (hpositive : 0 < current.1.val)
+    (hleftChild : TreeValueIndex.ofSubtree (current.1.val - 1)
+      (Concrete.childNode current.node false) (by omega)
+      (childNode_subtreeValid (current.1.val - 1) current.node false
+        (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+        processed)
+    (hrightChild : TreeValueIndex.ofSubtree (current.1.val - 1)
+      (Concrete.childNode current.node true) (by omega)
+      (childNode_subtreeValid (current.1.val - 1) current.node true
+        (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+        processed) :
+    RelTriple
+      ((simulateQ randomOracle
+        (current.computation parameter left.1)).run leftPrefix.2)
+      ((simulateQ randomOracle
+        (current.computation parameter right.1)).run rightPrefix.2)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+            leftResult.2 rightResult.2 ∧
+          ReplayEndpointsMatch parameter left.1 leftEndpoints leftResult.2 ∧
+          ReplayEndpointsMatch parameter right.1 rightEndpoints
+            rightResult.2) := by
+  let levels := current.1.val - 1
+  have hsucc : current.1.val = levels + 1 := by
+    dsimp [levels]
+    omega
+  have hlevel : levels < treeHeight := by
+    dsimp [levels]
+    omega
+  have hparentValid : TreeSubtreeValid (levels + 1) current.node := by
+    simpa [← hsucc] using current.subtreeValid
+  let leftIndex := TreeValueIndex.ofSubtree levels
+    (Concrete.childNode current.node false) (by omega)
+      (childNode_subtreeValid levels current.node false hparentValid)
+  let rightIndex := TreeValueIndex.ofSubtree levels
+    (Concrete.childNode current.node true) (by omega)
+      (childNode_subtreeValid levels current.node true hparentValid)
+  have hleftIndex : leftIndex ∈ processed := by
+    simpa [leftIndex, levels] using hleftChild
+  have hrightIndex : rightIndex ∈ processed := by
+    simpa [rightIndex, levels] using hrightChild
+  have hleftTreeReplay := treeValues_support_replay parameter left.1 processed
+    left.2.2 leftPrefix hleftPrefix
+  have hrightTreeReplay := treeValues_support_replay parameter right.1 processed
+    right.2.2 rightPrefix hrightPrefix
+  have hleftChildEq := treeValuesReplay_eq_at_mem parameter parameter left.1
+    right.1 leftPrefix.2 rightPrefix.2 processed leftPrefix.1 hleftTreeReplay
+      (hprefixValues ▸ hrightTreeReplay) leftIndex hleftIndex
+  have hrightChildEq := treeValuesReplay_eq_at_mem parameter parameter left.1
+    right.1 leftPrefix.2 rightPrefix.2 processed leftPrefix.1 hleftTreeReplay
+      (hprefixValues ▸ hrightTreeReplay) rightIndex hrightIndex
+  let leftChild := Concrete.CacheReplay.treeNode leftPrefix.2 parameter left.1
+    levels (Concrete.childNode current.node false)
+  let rightChild := Concrete.CacheReplay.treeNode leftPrefix.2 parameter left.1
+    levels (Concrete.childNode current.node true)
+  have hleftLeft := treeValues_rerun_index_eq_pure parameter left.1 processed
+    left.2.2 leftPrefix hleftPrefix leftIndex hleftIndex
+  have hleftRight := treeValues_rerun_index_eq_pure parameter right.1 processed
+    right.2.2 rightPrefix hrightPrefix leftIndex hleftIndex
+  have hrightLeft := treeValues_rerun_index_eq_pure parameter left.1 processed
+    left.2.2 leftPrefix hleftPrefix rightIndex hrightIndex
+  have hrightRight := treeValues_rerun_index_eq_pure parameter right.1 processed
+    right.2.2 rightPrefix hrightPrefix rightIndex hrightIndex
+  have hleftChildEq' : leftChild =
+      Concrete.CacheReplay.treeNode rightPrefix.2 parameter right.1 levels
+        (Concrete.childNode current.node false) := by
+    simpa [leftIndex, leftChild] using hleftChildEq
+  have hrightChildEq' : rightChild =
+      Concrete.CacheReplay.treeNode rightPrefix.2 parameter right.1 levels
+        (Concrete.childNode current.node true) := by
+    simpa [rightIndex, rightChild] using hrightChildEq
+  have hleftLeft' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter left.1 levels
+          (Concrete.childNode current.node false) :
+          OracleComp HashSpec Digest)).run leftPrefix.2 =
+        pure (leftChild, leftPrefix.2) := by
+    change (simulateQ randomOracle
+      (Concrete.treeNode parameter left.1 levels
+        (Concrete.childNode current.node false))).run leftPrefix.2 = _
+      at hleftLeft
+    exact hleftLeft
+  have hleftRight' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter right.1 levels
+          (Concrete.childNode current.node false) :
+          OracleComp HashSpec Digest)).run rightPrefix.2 =
+        pure (leftChild, rightPrefix.2) := by
+    change (simulateQ randomOracle
+      (Concrete.treeNode parameter right.1 levels
+        (Concrete.childNode current.node false))).run rightPrefix.2 =
+      pure (Concrete.CacheReplay.treeNode rightPrefix.2 parameter right.1
+        levels (Concrete.childNode current.node false), rightPrefix.2)
+      at hleftRight
+    rw [hleftChildEq']
+    exact hleftRight
+  have hrightLeft' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter left.1 levels
+          (Concrete.childNode current.node true) :
+          OracleComp HashSpec Digest)).run leftPrefix.2 =
+        pure (rightChild, leftPrefix.2) := by
+    change (simulateQ randomOracle
+      (Concrete.treeNode parameter left.1 levels
+        (Concrete.childNode current.node true))).run leftPrefix.2 = _
+      at hrightLeft
+    exact hrightLeft
+  have hrightRight' :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter right.1 levels
+          (Concrete.childNode current.node true) :
+          OracleComp HashSpec Digest)).run rightPrefix.2 =
+        pure (rightChild, rightPrefix.2) := by
+    change (simulateQ randomOracle
+      (Concrete.treeNode parameter right.1 levels
+        (Concrete.childNode current.node true))).run rightPrefix.2 =
+      pure (Concrete.CacheReplay.treeNode rightPrefix.2 parameter right.1
+        levels (Concrete.childNode current.node true), rightPrefix.2)
+      at hrightRight
+    rw [hrightChildEq']
+    exact hrightRight
+  change RelTriple
+    ((simulateQ randomOracle
+      (Concrete.treeNode parameter left.1 current.1.val current.node)).run
+        leftPrefix.2)
+    ((simulateQ randomOracle
+      (Concrete.treeNode parameter right.1 current.1.val current.node)).run
+        rightPrefix.2) _
+  rw [hsucc]
+  exact relTriple_globalTreeNode_succ_run parameter leftEndpoints
+    rightEndpoints left.1 right.1 levels current.node hlevel leftChild
+      rightChild leftPrefix.2 rightPrefix.2 hleftLeft' hleftRight'
+        hrightLeft' hrightRight' hcache hleftReplay hrightReplay
+
 end XmssSecurity.CappedChain
