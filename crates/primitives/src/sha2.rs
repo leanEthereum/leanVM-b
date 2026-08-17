@@ -358,6 +358,13 @@ mod hw {
     /// independent ones fill it. This is what makes the extension beat the
     /// four-lane NEON transposition for the Merkle tree as well as for the
     /// serial callers, so aarch64 never takes the `Lanes32` path.
+    ///
+    /// Four is not tuned, it is where the curve is flat: measured on an M4 Max,
+    /// 2 through 6 all land in 3.2 to 3.6 GB/s at every leaf size, so the
+    /// crypto unit is throughput-bound rather than latency-bound and one extra
+    /// chain buys nothing. Fully unrolling `rounds!` over literal `k` was also
+    /// tried and is very slightly worse. About 70% of the unit's peak is what
+    /// this gets; the rest is the block loads and the big-endian decode.
     const INTERLEAVE: usize = 4;
 
     /// [`super::hash_many_dyn`] on the crypto extension. Same contract: `len` a
