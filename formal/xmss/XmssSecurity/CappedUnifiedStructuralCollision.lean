@@ -286,6 +286,24 @@ theorem winningStructuralCollision_afterKeygen_orientation
     exact globalMerkle_event_afterKeygen_orientation adversary keyResult
       hkeygen execution hafter hmerkle.2
 
+theorem winningStructuralCollision_probability_le_expectedMovedQueries
+    (adversary : Adversary Concrete.scheme) :
+    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
+      WinningStructuralCollisionOccurs execution.2 execution.1 |
+      detailedGameWithCache Concrete.scheme adversary] ≤
+      (∑' keyResult,
+        Pr[= keyResult |
+          (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
+          expectedSimulatedQueryCount xmssRomImpl
+            (Rom.IsRelevantHashQuery fun input =>
+              keygenStructuralTargetInput keyResult.1.2 keyResult.2 input ≠ input)
+            (detailedGameAfterKeygen Concrete.scheme adversary
+              keyResult.1.1 keyResult.1.2) keyResult.2) /
+        ((2 ^ digestBits : Nat) : ENNReal) := by
+  apply outcomePredicate_probability_le_expectedMovedQueries_of_afterKeygen_freshCollision
+    adversary _ (fun key cache => keygenStructuralTargetInput key.2 cache)
+  exact winningStructuralCollision_afterKeygen_orientation adversary
+
 theorem capped_winningStructuralCollision_probability_le
     (q : Nat) (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
