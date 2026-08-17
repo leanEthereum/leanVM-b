@@ -355,9 +355,10 @@ pub fn commit(message: &[F64], log_n: usize, log_batch_size: usize, log_inv_rate
     let n_positions = 1usize << k_code;
     let codeword_len = n_positions * n_lanes;
 
-    // SAFETY: `encode_interleaved_lane_major_msg` writes every codeword element:
-    // its transposing replication covers every row of every replica (asserted
-    // there), and the transform that follows is in place.
+    // SAFETY: every codeword element is written before it is read.
+    // `transpose_lane_major` covers every word of the message region (its tiles are
+    // asserted to), and `encode_interleaved_in_place` writes every other replica from
+    // it before transforming that region in place.
     let mut codeword = unsafe { zk_alloc::ArenaVec::<F64>::uninitialized(codeword_len) };
 
     // Optional phase timing (WHIR_TRACE): one env lookup per commit, no
@@ -366,7 +367,8 @@ pub fn commit(message: &[F64], log_n: usize, log_batch_size: usize, log_inv_rate
     let t_ntt = std::time::Instant::now();
     tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = n_lanes).in_scope(|| {
         let ntt = AdditiveNttF64::standard(k_code);
-        ntt.encode_interleaved_lane_major_msg(&mut codeword, message, n_lanes, log_rows, log_inv_rate);
+        ntt.transpose_lane_major(&mut codeword[..message.len()], message, n_lanes, log_rows);
+        ntt.encode_interleaved_in_place(&mut codeword, n_lanes, log_inv_rate);
     });
     let ntt_elapsed = t_ntt.elapsed();
     let t_merkle = std::time::Instant::now();
@@ -928,16 +930,24 @@ fn fold_and_msg_blocks<T: RoundWitness>(
             )
         };
         let src0 = 2 * out_blk * block + x0;
+        // Sliced, not indexed: four runs of one length let the bounds checks fall out
+        // and the pair fold vectorise, as the adjacent-pair kernel's do.
+        let (f_lo, b_lo) = (&f[src0..src0 + len], &b[src0..src0 + len]);
         if 2 * out_blk + 1 < n_in {
             let src1 = src0 + block;
-            for t in 0..len {
-                dst_f[t] = T::fold_pair(f[src0 + t], f[src1 + t], r);
-                dst_b[t] = F192::fold_pair(b[src0 + t], b[src1 + t], r);
+            let (f_hi, b_hi) = (&f[src1..src1 + len], &b[src1..src1 + len]);
+            for ((d, &x0), &x1) in dst_f.iter_mut().zip(f_lo).zip(f_hi) {
+                *d = T::fold_pair(x0, x1, r);
+            }
+            for ((d, &y0), &y1) in dst_b.iter_mut().zip(b_lo).zip(b_hi) {
+                *d = F192::fold_pair(y0, y1, r);
             }
         } else {
-            for t in 0..len {
-                dst_f[t] = T::fold_lone(f[src0 + t], r);
-                dst_b[t] = F192::fold_lone(b[src0 + t], r);
+            for (d, &x0) in dst_f.iter_mut().zip(f_lo) {
+                *d = T::fold_lone(x0, r);
+            }
+            for (d, &y0) in dst_b.iter_mut().zip(b_lo) {
+                *d = F192::fold_lone(y0, r);
             }
         }
         (dst_f, dst_b)
