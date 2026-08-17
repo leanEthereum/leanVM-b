@@ -1232,4 +1232,36 @@ theorem relTriple_globalMaterial_merkleHeight_run
     hresult.2.2.2.1, hbelow ▸ hresult.2.2.2.2.1,
       hbelow ▸ hresult.2.2.2.2.2⟩
 
+theorem globalMaterial_treeValuesBelow_fresh_at_height
+    (parameter : PublicParameter) (material : GlobalChainTrajectoryMaterial)
+    (hmaterial : material ∈ support
+      (programmedGlobalChainTrajectoryMaterial parameter))
+    (height : Fin (treeHeight + 1))
+    (result : List Digest × QueryCache HashSpec)
+    (hresult : result ∈ support
+      (treeValues parameter material.1
+        (treeValueIndicesBelow height.val) material.2.2)) :
+    TreeValuesFresh parameter (treeValueIndicesAtHeight height) result.2 := by
+  have hbefore : ∀ current ∈ treeValueIndicesBelow height.val,
+      ∀ target ∈ treeValueIndicesAtHeight height,
+        current.Precedes target := by
+    intro current hcurrent target htarget
+    have hcurrentLt := treeValueIndicesBelow_height_lt height.val
+      (by omega) current hcurrent
+    have htargetHeight :=
+      (mem_treeValueIndicesAtHeight_iff height target).1 htarget
+    left
+    simpa [congrArg Fin.val htargetHeight] using hcurrentLt
+  have hinitialFresh : TreeValuesFresh parameter
+      (treeValueIndicesAtHeight height) material.2.2 := by
+    have hall := programmedAllChainTrajectories_treeValuesFresh parameter
+      material.1 material.2
+        (programmedGlobalChainTrajectoryMaterial_support_trajectories
+          parameter material hmaterial)
+    intro index _hindex input hinput
+    exact hall index (mem_allTreeValueIndices index) input hinput
+  exact treeValues_preserves_fresh_after parameter material.1
+    (treeValueIndicesBelow height.val) (treeValueIndicesAtHeight height)
+    hbefore material.2.2 hinitialFresh result hresult
+
 end XmssSecurity.CappedChain
