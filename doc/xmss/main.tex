@@ -223,7 +223,7 @@ Let $\SIG=(\Gen,\Sig,\Ver)$ be a synchronized signature scheme whose algorithms 
 \end{enumerate}
 The adversary wins if $\Ver(\pk,\ep^*,m^*,\sigma^*)=1$ and the signer did not return $\sigma^*$ in response to a signing query for $(m^*,\ep^*)$. Thus, a valid signature on a message and epoch that were never signed wins, as does a different valid signature for a previously signed message and epoch.
 
-For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made by the adversary and by the signer, including during key generation and signing, is at most $q$. We say that $\SIG$ has $x$ bits of classical security if
+For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$. We say that $\SIG$ has $x$ bits of classical security if
 \[
   \max_{q \geq 1}\frac{\Forge_{\SIG}(q)}{q}\leq 2^{-x}.
 \]
