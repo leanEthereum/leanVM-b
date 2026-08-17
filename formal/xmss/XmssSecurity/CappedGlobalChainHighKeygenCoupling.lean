@@ -202,7 +202,8 @@ def CoupledGlobalChainKeygenBaseHighRelation
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest)) : Prop :=
   CoupledGlobalChainKeygenFullCacheRelation parameter left right.1 ∧
-    globalChainEdgeHighTableOfCache left.cache parameter left.table = right.2
+    globalChainEdgeHighTableOfCache left.cache parameter left.table = right.2 ∧
+    GlobalChainTableEdgesMatch left.cache parameter left.table
 
 set_option maxHeartbeats 3000000 in
 set_option maxRecDepth 1000000 in
@@ -258,7 +259,7 @@ theorem relTriple_coupledGlobalChainKeygen_withBaseHigh
       parameter (globalChainTrajectoryMaterialTable leftMaterial)
       hmatches hcacheLe).symm.trans hhigh
   apply relTriple_pure_pure
-  constructor
+  refine ⟨?_, ?_, ?_⟩
   · unfold CoupledGlobalChainKeygenFullCacheRelation
       CoupledGlobalChainKeygenRelation
     refine ⟨⟨htable, ?_, ?_, hvalues, hleftReplay, hrightReplay⟩,
@@ -272,5 +273,6 @@ theorem relTriple_coupledGlobalChainKeygen_withBaseHigh
         leftMaterial.1 rightMaterialBaseHigh.1.1.1 leftTree.2 rightTree.2
           leftTree.1 hleftReplay (hvalues ▸ hrightReplay) epoch
   · exact hhighFinal
+  · exact hmatches.mono hcacheLe
 
 end XmssSecurity.CappedChain
