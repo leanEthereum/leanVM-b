@@ -140,7 +140,6 @@ import XmssSecurity.CappedGlobalChainHighBoundedPublic
 import XmssSecurity.CappedUnifiedStructuralCollision
 import XmssSecurity.CappedGlobalMainTheorem
 import XmssSecurity.CappedUnifiedMainTheorem
-import XmssSecurity.Capped125MainTheorem
 import XmssSecurity.CappedUnifiedTwoLaneReduction
 import XmssSecurity.CappedUnifiedHighArchitecture
 import XmssSecurity.CappedExactLossArchitecture
@@ -149,8 +148,6 @@ import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.CappedEncodingMonitor
 import XmssSecurity.ConcreteCorrectness
 import XmssSecurity.ConcreteVerify
-import XmssSecurity.MainTheorem
-import XmssSecurity.CappedMainTheorem
 import XmssSecurity.Execution
 import XmssSecurity.DetailedExecution
 import XmssSecurity.DetailedQueryPresence

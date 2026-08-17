@@ -1,4 +1,4 @@
-import XmssSecurity.Capped125MainTheorem
+import XmssSecurity.CappedGlobalChainHighBoundedPublic
 import XmssSecurity.CappedExactLossArchitecture
 
 open OracleComp OracleSpec ENNReal
@@ -158,11 +158,5 @@ theorem xmss_cappedSigner_has_126_bits_of_classical_security :
     hbound
       (CappedChain.hasGlobalHighBoundedPublicReduction_of_hashQueryBound
         q adversary hbound)
-
-theorem xmss_cappedSigner_has_125_and_126_bits_of_classical_security :
-    HasClassicalSecurityBits Concrete.cappedScheme 125 ∧
-      HasClassicalSecurityBits Concrete.cappedScheme 126 :=
-  ⟨xmss_cappedSigner_has_125_bits_of_classical_security,
-    xmss_cappedSigner_has_126_bits_of_classical_security⟩
 
 end XmssSecurity
