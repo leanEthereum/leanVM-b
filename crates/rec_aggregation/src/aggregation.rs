@@ -66,6 +66,9 @@ const _: () = assert!(lean_vm::leaf::N_TUPLE_BITS == lean_vm::leaf::N_BYTECODE_S
 // disagree on where the padding falls.
 const _: () = assert!((2 + xmss::V * (xmss::CHAIN_LENGTH - 1) + xmss::LOG_LIFETIME).is_multiple_of(4));
 const _: () = assert!(xmss::LOG_LIFETIME.is_multiple_of(4));
+// The guest's `WOTS_PK_BLOCKS = (2 + V) / 4` truncates, so a bad `V` would drop
+// the last tips.
+const _: () = assert!((2 + xmss::V).is_multiple_of(4));
 
 /// A count as the guest carries it: in the exponent, `g^n`.
 fn count(n: usize) -> F192 {

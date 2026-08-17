@@ -136,25 +136,29 @@ impl BlockR1cs {
             .all(|((ai, bi), ci)| (*ai & *bi) == *ci)
     }
 
-    /// `sha2_eth` of the R1CS itself: the per-block matrices and the shape
-    /// parameters, explicitly WITHOUT the instance count `m`. It therefore
-    /// identifies every block-diagonal instance built from these matrices at
-    /// once, whatever the count. The full instance is `m` copies of them, so a
-    /// protocol that binds this digest and `m` separately has bound the whole
-    /// statement; embedding protocols (leanVM-b) seed their transcript with it
-    /// and announce the count.
+    /// `sha2_eth` of the R1CS itself: the per-block matrices, the shape
+    /// parameters and the constant-wire pin, explicitly WITHOUT the instance
+    /// count `m`. It therefore identifies every block-diagonal instance built
+    /// from these matrices at once, whatever the count. The full instance is `m`
+    /// copies of them, so a protocol that binds this digest and `m` separately
+    /// has bound the whole statement; embedding protocols (leanVM-b) seed their
+    /// transcript with it and announce the count.
     pub fn r1cs_digest(&self) -> [u8; 32] {
-        const LABEL: &[u8] = b"flock-r1cs-digest-v3-sha2";
+        // v4: v1 absorbed the matrices in sparse form, v2 their dense bit image
+        // (see `absorb_matrix`), v3 moved to `sha2_eth`, and this one adds the
+        // constant-wire pin.
+        const LABEL: &[u8] = b"flock-r1cs-digest-v4-sha2";
         // `sha2_eth` puts the length in its first block, so the hasher is told
         // the total up front rather than discovering it at `finalize`.
+        let pin_len = 1 + if self.const_pin.is_some() { 8 } else { 0 };
         let total = LABEL.len()
             + 17
+            + pin_len
             + [&self.a_0, &self.b_0, &self.c_0]
                 .map(matrix_digest_len)
                 .iter()
                 .sum::<usize>();
         let mut h = primitives::sha2::Hasher::new(total);
-        // v3: v2 was the same absorption under SHA-256.
         h.update(LABEL);
         h.update(&(self.k_log as u64).to_le_bytes());
         h.update(&(self.k_skip as u64).to_le_bytes());
@@ -163,6 +167,12 @@ impl BlockR1cs {
         h.update(&[match self.layout {
             WitnessLayout::RowMajor => 0u8,
         }]);
+        // So is the constant-wire pin: it enters the verifier's own equation as
+        // lincheck's `β = α³` term. `useful_bits` stays out, no verifier reads it.
+        match self.const_pin {
+            None => h.update(&[0u8]),
+            Some(col) => h.update(&[1u8]).update(&(col as u64).to_le_bytes()),
+        };
         absorb_matrix(&mut h, &self.a_0);
         absorb_matrix(&mut h, &self.b_0);
         absorb_matrix(&mut h, &self.c_0);

@@ -44,6 +44,14 @@ so a partial evaluation is again a multilinear, its values the $\eq(r,\cdot)$-we
 A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$ committed at the beginning of the proof (via \S\ref{sec:stacking}), and a \emph{table} is a group of columns, of equal height, connected by polynomial constraints. A $192$-bit \emph{value} (such as memory words) is indirectly committed by three columns, read as $V=V_0+V_1y+V_2y^{2}$.
 \end{definition}
 
+\begin{lemma}[Every element outside $\K$ is a cubic generator]\label{lem:kbasis}
+For $\alpha\in\E\setminus\K$, the set $\{1,\alpha,\alpha^{2}\}$ is a $\K$-basis of $\E$.
+\end{lemma}
+
+\begin{proof}
+Degrees multiply in the tower $\K\subseteq\K(\alpha)\subseteq\E$, so $[\E:\K(\alpha)]\,[\K(\alpha):\K]=[\E:\K]=3$. That degree is prime and $[\K(\alpha):\K]>1$ because $\alpha\notin\K$, hence $[\K(\alpha):\K]=3$ and $\K(\alpha)=\E$. The minimal polynomial of $\alpha$ over $\K$ then has degree $3$, so $1,\alpha,\alpha^{2}$ are $\K$-independent, and three independent elements of a space of $\K$-dimension $3$ are a basis.
+\end{proof}
+
 \begin{lemma}[Schwartz--Zippel]\label{lem:sz}
 A nonzero $P\in\E[X_1,\dots,X_{\kappa}]$ of total degree at most $d$ satisfies
 \[

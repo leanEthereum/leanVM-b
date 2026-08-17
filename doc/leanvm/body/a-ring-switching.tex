@@ -1,7 +1,7 @@
 % !TeX root = ../drafts/a-ring-switching.tex
 \section{Ring switching}\label{annex:rs}
 
-Turning $64$ evaluation claims over $\E$ into one opening of a commitment whose values are $64$ bits wide. This annex is the general construction; \S\ref{sec:ringswitch} instantiates it on the packed Flock witness $\qflock$.
+Ring switching was introduced in \cite{DP26}. We present a variant tailored to our use case: transforming a PCS for $K$ into a PCS for $\Ftwo$ (transforming a $K$-valued multilinear PCS, with $\nflock$ variables and opening claims in $E$, into a comitment protocol to 64 $\Ftwo$-valued multilinears, each with $\nflock$ variables and sharing opening claims in $E$). 
 
 \subsection{Setting}\label{rs:setting}
 
@@ -18,19 +18,13 @@ The commitment scheme proves statements of one shape. Given a target $T\in\E$ an
 \[
 \sum_{u\in\cube{\nflock}}W(u)\,\qflock(u)=T.
 \]
-The weight is $\E$-valued, the committed values are $\K$-valued, and the sum is taken in $\E$.
+The weight $W$ and target $T$ are $\E$-valued, the committed values are $\K$-valued.
 
-What arrives is not of that shape. It is $64$ claimed values $s_i\in\E$, one per bit polynomial, at a point $r\in\E^{\nflock}$ they all share. An honest prover sends
+What arrives is not of that shape. It is $64$ claimed values $s_i\in\E$, one per bit polynomial, at a point $r\in\E^{\nflock}$ they all share.
 \[
-s_i=\mle{Q_i}(r)=\sum_{u\in\cube{\nflock}}\eq(r,u)\,Q_i(u),\qquad 0\le i<64,
+s_i \qeq \mle{Q_i}(r)=\sum_{u\in\cube{\nflock}}\eq(r,u)\,Q_i(u),\qquad 0\le i<64,
 \]
-where $\eq$ is the equality indicator of \S\ref{sec:prelim}, here in its general form
-\[
-\eq:\E^{\nflock}\times\E^{\nflock}\to\E,
-\qquad
-\eq(a,b)=\prod_{n=1}^{\nflock}\bigl(a_nb_n+(1+a_n)(1+b_n)\bigr),
-\]
-and $\mle{Q_i}$ is the multilinear extension of $Q_i$, as the tilde marks every extension below.
+
 Ring switching~\cite{DP26} turns those $64$ claims into a single statement the opening can prove.
 
 \subsection{The reduction}\label{rs:reduction}
@@ -68,15 +62,15 @@ Expand each error in the $\F_2$-basis of $\E$, say $\delta_i=\sum_{w=0}^{191}\de
 \Delta_w:=\sum_{i=0}^{63}\delta_{i,w}x^i\in\K.
 \label{eq:transpose}
 \end{equation}
-The $x^i$ are an $\F_2$-basis of $\K$, so some $\Delta_w\neq0$. The check passes only if $\sum_{w=0}^{191}\Phi(e_w)\,\Delta_w=0$. No fixed $\Phi$ rules that out, so the draw must make it unlikely.
+The $x^i$ are an $\F_2$-basis of $\K$, so some $\Delta_w\neq0$. The cheating prover succeeds if $\sum_{w=0}^{191}\Phi(e_w)\,\Delta_w=0$. We must thus draw $\Phi$ to make this event unlikely.
 
 \paragraph{Linear maps are Frobenius sums.} Squaring is additive in characteristic $2$, so
 \[
 \Phi(a)=\sum_{k=0}^{191}c_k\,a^{2^k},\qquad a\in\E,\quad c_k\in\E,
 \]
-is $\F_2$-linear for any choice of coefficients. Every $\F_2$-linear map $\E\to\E$ arises this way, and exactly once. Distinct tuples give distinct maps: their difference would be a nonzero polynomial of degree at most $2^{191}$ with $2^{192}$ roots. There are $|\E|^{192}$ tuples and as many maps. Call $\supp=\{k:c_k\neq0\}\subseteq\{0,\dots,191\}$ the \emph{support} of $\Phi$. Substituting into the check above,
+is $\F_2$-linear for any choice of coefficients. Every $\F_2$-linear map $\E\to\E$ arises this way, and exactly once. Distinct tuples of $(c_k)$ give distinct maps: their difference would be a nonzero polynomial of degree at most $2^{191}$ with $2^{192}$ roots. There are $|\E|^{192}$ tuples and as many maps. Call $\supp=\{k:c_k\neq0\}\subseteq\{0,\dots,191\}$ the \emph{support} of $\Phi$. Substituting into the check above,
 \begin{equation}
-\sum_{w=0}^{191}\Phi(e_w)\,\Delta_w=\sum_{k\in\supp}c_k\,\pair_k,
+\sum_{w=0}^{191}\Phi(e_w)\,\Delta_w=\sum_{w=0}^{191}\sum_{k\in\supp}c_k\,e_w^{2^k}\,\Delta_w=\sum_{k\in\supp}c_k\,\pair_k,
 \qquad
 \pair_k:=\sum_{w=0}^{191}e_w^{2^k}\,\Delta_w\in\E.
 \label{eq:pairing}
@@ -85,13 +79,13 @@ The $\pair_k$ depend only on the error, the $c_k$ only on the randomness. So we 
 
 \paragraph{Sixty-four terms.} That map is $\K$-linear, since the $\Delta_w$ enter linearly and the Frobenius touches only the constants $e_w$. It sends $\K^{192}$, of $\K$-dimension $192$, into $\E^{|\supp|}$, of $\K$-dimension $3|\supp|$, so injectivity needs $|\supp|\ge64$. Take $\supp=\{0,\dots,63\}$ and suppose $\pair_k=0$ for all $k<64$. Two steps force $\Delta=0$.
 
-First, split $\pair_k$ over $\K$. Write $w=64j+i$ and $y_k:=y^{2^k}$, so that $e_w^{2^k}=x^{i2^k}y_k^{\,j}$ and
+First, split $\pair_k$ over $\K$. Write $w=64j+i$, so that $e_w^{2^k}=x^{i2^k}\,\bigl(y^{2^k}\bigr)^{j}$ and
 \[
-\pair_k=\sum_{j=0}^{2}y_k^{\,j}\,\pair_{j,k},
+\pair_k=\sum_{j=0}^{2}\bigl(y^{2^k}\bigr)^{j}\,\pair_{j,k},
 \qquad
 \pair_{j,k}:=\sum_{i=0}^{63}\Delta_{64j+i}\,x^{i2^k}\in\K,\qquad 0\le j<3.
 \]
-Now $y_k\notin\K$. Squaring is a bijection of $\K$ onto itself, so $y^{2^k}\in\K$ would force $y\in\K$, whence $\E=\K[y]=\K$. Since $[\E:\K]=3$ is prime, any element outside $\K$ generates $\E$ over $\K$, so $\{1,y_k,y_k^2\}$ is a $\K$-basis of $\E$, and $\pair_k=0$ forces $\pair_{0,k}=\pair_{1,k}=\pair_{2,k}=0$.
+Squaring is a bijection of $\K$ onto itself, so $y^{2^k}\in\K$ would force $y\in\K$, hence $\E=\K[y]=\K$. By Lemma~\ref{lem:kbasis} applied to $y^{2^k}$, the set $\bigl\{1,y^{2^k},\bigl(y^{2^k}\bigr)^{2}\bigr\}$ is a $\K$-basis of $\E$, and $\pair_k=0$ forces $\pair_{0,k}=\pair_{1,k}=\pair_{2,k}=0$.
 
 Second, read the $64$ equations $\pair_{j,k}=0$, at fixed $j$, as a single polynomial. Put
 \[
@@ -105,7 +99,7 @@ The count is tight on both sides: $64$ terms give $64$ equations $\pair_k=0$ ove
 
 \subsection{The map we draw}\label{rs:map}
 
-We need a random $\Phi$ of support $\{0,\dots,63\}$, cheap to apply. Sixty-four independent coefficients would need $64$ challenges and $64$ multiplications per application, and a false claim would then survive with probability $2^{-192}$. Six challenges are enough, at less than $2^{-160}$.
+We need a random $\Phi$ of support $\{0,\dots,63\}$, cheap to apply. Instead of drawing its $64$ coefficients independently, we derive them from six challenges.
 
 Draw $f_0,\dots,f_5\leftarrow\E$ once the $s_i$ are fixed, and compose six two-term maps: for an input $a\in\E$, put $a_0=a$ and
 \begin{equation}
@@ -131,24 +125,19 @@ is a nonzero polynomial in $f_0,\dots,f_5$. Its total degree is at most the larg
 \[
 2^{31}+2^{15}+2^7+2^3+2+1<2^{32},
 \]
-so by Schwartz--Zippel (Lemma~\ref{lem:sz}) the check passes with probability less than $2^{32}/2^{192}=2^{-160}$, before the opening's own soundness error.
+so by Schwartz--Zippel (Lemma~\ref{lem:sz}) the check passes with probability less than $2^{32}/2^{192}=2^{-160}$.
 
 \subsection{Evaluating the weight}\label{rs:weight}
 
-An opening reduces $\sum_{u\in\cube{\nflock}}W(u)\,\qflock(u)=T$ to a claim about $\qflock$ at a random point $r'\in\E^{\nflock}$, and the verifier must evaluate the multilinear extension of $W$ at $r'$, written $\mle{W}(r')$, by itself. Two facts turn that into a short formula.
+An opening reduces $\sum_{u\in\cube{\nflock}}W(u)\,\qflock(u)=T$ to a claim about $\qflock$ at a random point $r'\in\E^{\nflock}$, and the verifier must evaluate the multilinear extension of $W$ at $r'$, written $\mle{W}(r')$, by itself. One fact turns that into a short formula.
 
-\emph{Fact 1 ($\eq$ in characteristic $2$).} In each factor the two $a_nb_n$ terms cancel, identically in $a$ and $b$:
-\[
-\eq(a,b)=\prod_{n=1}^{\nflock}(1+a_n+b_n).
-\]
-
-\emph{Fact 2 (Frobenius passes through $\eq$ on the boolean hypercube).} Squaring respects sums and products and fixes bits, so for $u\in\cube{\nflock}$, by Fact~1,
+\emph{Fact (Frobenius passes through $\eq$ on the boolean hypercube).} Squaring respects sums and products and fixes bits, so for $u\in\cube{\nflock}$, by Definition~\ref{def:eq},
 \[
 \eq(r,u)^{2^k}=\prod_{n=1}^{\nflock}(1+r_n+u_n)^{2^k}=\prod_{n=1}^{\nflock}\bigl(1+r_n^{2^k}+u_n\bigr)=\eq\bigl(r^{2^k},u\bigr),
 \qquad r^{2^k}:=\bigl(r_1^{2^k},\dots,r_{\nflock}^{2^k}\bigr).
 \]
 
-Expand $W$ at $r'$ with \eqref{eq:ck} and Fact~2:
+Expand $W$ at $r'$ with \eqref{eq:ck} and this fact:
 \[
 \begin{aligned}
 \mle{W}(r')&=\sum_{u\in\cube{\nflock}}W(u)\,\eq(r',u)
@@ -156,7 +145,7 @@ Expand $W$ at $r'$ with \eqref{eq:ck} and Fact~2:
 &=\sum_{k=0}^{63}c_k\sum_{u\in\cube{\nflock}}\eq\bigl(r^{2^k},u\bigr)\,\eq(r',u).
 \end{aligned}
 \]
-The inner sum is $\eq(r^{2^k},r')$, since $\eq(u,\cdot\,)$ is its own multilinear extension for every $u$. By Fact~1 again,
+The inner sum is $\eq(r^{2^k},r')$, since $\eq(u,\cdot\,)$ is its own multilinear extension for every $u$. By Definition~\ref{def:eq} again,
 \[
 \boxed{\ \
 \mle{W}(r') \;=\; \sum_{k=0}^{63}\, c_k \prod_{n=1}^{\nflock}
