@@ -16,11 +16,22 @@ deriving DecidableEq
 structure EncodingSampleAddress where
   kind : EncodingSampleKind
   epoch : Option Epoch
+  input : HashInput
 deriving DecidableEq
 
 abbrev EncodingSampleSpec : OracleSpec EncodingSampleAddress :=
   EncodingSampleAddress →ₒ HashOutput
 abbrev EncodingSamplingWorld := unifSpec + EncodingSampleSpec
+
+@[simp]
+def IsEncodingSampleAt (kind : EncodingSampleKind) (epoch : Epoch) :
+    EncodingSamplingWorld.Domain → Prop
+  | .inr address => address.kind = kind ∧ address.epoch = some epoch
+  | _ => False
+
+noncomputable instance (kind : EncodingSampleKind) (epoch : Epoch) :
+    DecidablePred (IsEncodingSampleAt kind epoch) :=
+  Classical.decPred _
 
 noncomputable instance : IsUniformSpec EncodingSampleSpec :=
   IsUniformSpec.ofFintypeInhabited _
@@ -98,20 +109,22 @@ def encodingUniformQuery (index : unifSpec.Domain) :
     EncodingSamplingWorld
 
 def encodingSampleAddressFromEpoch
-    (kind : EncodingSampleKind) : Option Epoch → EncodingSampleAddress
-  | none => ⟨.side, none⟩
-  | some epoch => ⟨kind, some epoch⟩
+    (kind : EncodingSampleKind) (input : HashInput) :
+    Option Epoch → EncodingSampleAddress
+  | none => ⟨.side, none, input⟩
+  | some epoch => ⟨kind, some epoch, input⟩
 
 noncomputable def encodingSampleAddress
     (parameter : PublicParameter) (kind : EncodingSampleKind)
     (input : HashInput) : EncodingSampleAddress :=
-  encodingSampleAddressFromEpoch kind (encodingInputEpoch? parameter input)
+  encodingSampleAddressFromEpoch kind input
+    (encodingInputEpoch? parameter input)
 
 theorem encodingSampleAddress_eq_of_epoch
     (parameter : PublicParameter) (kind : EncodingSampleKind)
     (input : HashInput) (epoch : Epoch)
     (hepoch : encodingInputEpoch? parameter input = some epoch) :
-    encodingSampleAddress parameter kind input = ⟨kind, some epoch⟩ := by
+    encodingSampleAddress parameter kind input = ⟨kind, some epoch, input⟩ := by
   rw [encodingSampleAddress, hepoch]
   rfl
 
@@ -646,16 +659,16 @@ theorem encodingSamplingTraceImpl_support_trace
   rfl
 
 theorem encodingSampleQuery_tagged_support_trace
-    (kind : EncodingSampleKind) (epoch : Epoch)
+    (kind : EncodingSampleKind) (epoch : Epoch) (input : HashInput)
     (result : HashOutput × EncodingActionTrace)
     (hmem : result ∈ support
       (simulateQ encodingSamplingTraceImpl
-        (encodingSampleQuery ⟨kind, some epoch⟩)).run) :
+        (encodingSampleQuery ⟨kind, some epoch, input⟩)).run) :
     result.2 = match kind with
       | .query => [.query epoch result.1]
       | .sign => [.sign epoch result.1]
       | .side => [] := by
-  let address := EncodingSampleAddress.mk kind (some epoch)
+  let address := EncodingSampleAddress.mk kind (some epoch) input
   change result ∈ support
     (simulateQ encodingSamplingTraceImpl (encodingSampleQuery address)).run at hmem
   unfold encodingSampleQuery at hmem
@@ -687,20 +700,24 @@ theorem encodingSampleQuery_tagged_support_trace
   cases kind <;> simpa [address, encodingSamplingTraceFragment] using htrace
 
 theorem encodingSampleQuery_query_support_trace
-    (epoch : Epoch) (result : HashOutput × EncodingActionTrace)
+    (epoch : Epoch) (input : HashInput)
+    (result : HashOutput × EncodingActionTrace)
     (hmem : result ∈ support
       (simulateQ encodingSamplingTraceImpl
-        (encodingSampleQuery ⟨.query, some epoch⟩)).run) :
+        (encodingSampleQuery ⟨.query, some epoch, input⟩)).run) :
     result.2 = [.query epoch result.1] := by
-  simpa using encodingSampleQuery_tagged_support_trace .query epoch result hmem
+  simpa using
+    encodingSampleQuery_tagged_support_trace .query epoch input result hmem
 
 theorem encodingSampleQuery_sign_support_trace
-    (epoch : Epoch) (result : HashOutput × EncodingActionTrace)
+    (epoch : Epoch) (input : HashInput)
+    (result : HashOutput × EncodingActionTrace)
     (hmem : result ∈ support
       (simulateQ encodingSamplingTraceImpl
-        (encodingSampleQuery ⟨.sign, some epoch⟩)).run) :
+        (encodingSampleQuery ⟨.sign, some epoch, input⟩)).run) :
     result.2 = [.sign epoch result.1] := by
-  simpa using encodingSampleQuery_tagged_support_trace .sign epoch result hmem
+  simpa using
+    encodingSampleQuery_tagged_support_trace .sign epoch input result hmem
 
 theorem encodingSamplingTrace_projection
     (computation : OracleComp EncodingSamplingWorld α) :
@@ -912,7 +929,7 @@ theorem applyEncodingSampleMonitor_true_probability_le
       applyEncodingSampleMonitor address resume state] ≤
       ((fuel.succ + state.pendingCount : Nat) : ℝ≥0∞) *
         ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-  rcases address with ⟨kind, epoch⟩
+  rcases address with ⟨kind, epoch, input⟩
   cases epoch with
   | none =>
       cases kind <;> unfold applyEncodingSampleMonitor
@@ -1052,7 +1069,7 @@ theorem runTracedEncodingMonitor_probability_le_structural
             map_eq_bind_pure_comp, bind_assoc, pure_bind,
             Prod.map_apply, id_eq,
             Function.comp_apply]
-          rcases address with ⟨kind, epoch⟩
+          rcases address with ⟨kind, epoch, input⟩
           cases epoch with
           | none =>
               cases kind <;> unfold applyEncodingSampleMonitor

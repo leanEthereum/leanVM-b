@@ -555,7 +555,7 @@ theorem applyProgrammedSignAttemptMonitor_evalDist_eq
       congr 1
 
 def IsAttackerEncodingQuery : EncodingSamplingWorld.Domain → Prop
-  | .inr ⟨.query, some _⟩ => True
+  | .inr ⟨.query, some _, _⟩ => True
   | _ => False
 
 noncomputable instance : DecidablePred IsAttackerEncodingQuery :=
@@ -604,7 +604,7 @@ theorem runRawStructural_true_probability_le
             ih output state queryBound
               (by simpa [IsAttackerEncodingQuery] using hbound.2 output)
       | inr address =>
-          rcases address with ⟨kind, taggedEpoch⟩
+          rcases address with ⟨kind, taggedEpoch, input⟩
           cases kind with
           | side =>
               rw [runRawStructural, OracleComp.construct_query_bind]
@@ -990,7 +990,7 @@ theorem runTraced_probability_le_rawStructural
             encodingSamplingTraceFragment, WriterT.run_bind', WriterT.run_monadLift',
             WriterT.run_tell, WriterT.run_pure', map_eq_bind_pure_comp, bind_assoc,
             pure_bind, Prod.map_apply, id_eq, Function.comp_apply]
-          rcases address with ⟨kind, taggedEpoch⟩
+          rcases address with ⟨kind, taggedEpoch, input⟩
           cases kind with
           | side =>
               unfold applyRawSampleMonitor

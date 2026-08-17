@@ -59,7 +59,7 @@ theorem encodingSamplingTrace_sign_epoch_count_le
     (epoch : Epoch) (computation : OracleComp EncodingSamplingWorld α)
     (fuel : Nat)
     (hbound : computation.IsQueryBoundP
-      (fun input => input = Sum.inr ⟨.sign, some epoch⟩) fuel)
+      (IsEncodingSampleAt .sign epoch) fuel)
     (result : α × EncodingActionTrace)
     (hmem : result ∈ support
       (simulateQ encodingSamplingTraceImpl computation).run) :
@@ -82,14 +82,14 @@ theorem encodingSamplingTrace_sign_epoch_count_le
       change firstTrace = encodingSamplingTraceFragment input output at hfirstTrace
       have hfirstCount :
           (EncodingMonitor.observedSignEpochs firstTrace).count epoch =
-            if input = Sum.inr ⟨.sign, some epoch⟩ then 1 else 0 := by
+            if IsEncodingSampleAt .sign epoch input then 1 else 0 := by
         rw [hfirstTrace]
         cases input with
         | inl index =>
             simp [encodingSamplingTraceFragment,
               EncodingMonitor.observedSignEpochs]
         | inr address =>
-            rcases address with ⟨kind, taggedEpoch⟩
+            rcases address with ⟨kind, taggedEpoch, sampledInput⟩
             cases kind with
             | side =>
                 cases taggedEpoch <;> simp [encodingSamplingTraceFragment,
@@ -110,17 +110,17 @@ theorem encodingSamplingTrace_sign_epoch_count_le
                     · simp [encodingSamplingTraceFragment,
                         EncodingMonitor.observedSignEpochs, heq]
       have hrestCount := ih output
-        (if input = Sum.inr ⟨.sign, some epoch⟩ then fuel - 1 else fuel)
+        (if IsEncodingSampleAt .sign epoch input then fuel - 1 else fuel)
           (hbound.2 output) restResult hrest
       have htraceEq : firstTrace ++ restResult.2 = result.2 := by
         simpa using congrArg Prod.snd heq
       rw [← htraceEq, EncodingMonitor.observedSignEpochs_append,
         List.count_append, hfirstCount]
-      split <;> rename_i htarget
-      · have hpositive : 0 < fuel := hbound.1.resolve_left (by simpa using htarget)
-        simp [htarget] at hrestCount
+      by_cases htarget : IsEncodingSampleAt .sign epoch input
+      · simp only [if_pos htarget] at hrestCount ⊢
+        have hpositive : 0 < fuel := hbound.1.resolve_left (by simpa using htarget)
         omega
-      · simpa [htarget] using hrestCount
+      · simpa only [if_neg htarget, zero_add] using hrestCount
 
 theorem atHashAddress_encoding_of_encodingInputEpoch?_eq_some
     (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
@@ -137,7 +137,7 @@ theorem splitRandomOracle_sign_epochSample_bound_zero
     (cache : QueryCache HashSpec)
     (hnot : ¬ AtHashAddress parameter (.encoding epoch) input) :
     ((splitRandomOracle parameter .sign input).run cache).IsQueryBoundP
-      (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0 := by
+      (IsEncodingSampleAt .sign epoch) 0 := by
   unfold splitRandomOracle
   cases hcache : cache input with
   | some cached =>
@@ -153,10 +153,9 @@ theorem splitRandomOracle_sign_epochSample_bound_zero
           unfold encodingSampleQuery
           rw [OracleComp.liftComp_query]
           change (liftM (EncodingSamplingWorld.query
-            (Sum.inr ⟨.side, none⟩)) : OracleComp EncodingSamplingWorld _)
+            (Sum.inr ⟨.side, none, input⟩)) : OracleComp EncodingSamplingWorld _)
               |>.IsQueryBoundP
-                (fun sampleInput =>
-                  sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+                (IsEncodingSampleAt .sign epoch) 0
           rw [OracleComp.isQueryBoundP_query_iff]
           simp
       | some taggedEpoch =>
@@ -170,11 +169,10 @@ theorem splitRandomOracle_sign_epochSample_bound_zero
           unfold encodingSampleQuery
           rw [OracleComp.liftComp_query]
           change (liftM (EncodingSamplingWorld.query
-            (Sum.inr ⟨.sign, some taggedEpoch⟩)) :
+            (Sum.inr ⟨.sign, some taggedEpoch, input⟩)) :
               OracleComp EncodingSamplingWorld _)
                 |>.IsQueryBoundP
-                  (fun sampleInput =>
-                    sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+                  (IsEncodingSampleAt .sign epoch) 0
           rw [OracleComp.isQueryBoundP_query_iff]
           simpa using hne
 
@@ -182,18 +180,19 @@ theorem splitRandomOracle_sign_epochSample_bound
     (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
     (cache : QueryCache HashSpec) :
     ((splitRandomOracle parameter .sign input).run cache).IsQueryBoundP
-      (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) 1 := by
+      (IsEncodingSampleAt .sign epoch) 1 := by
   exact (splitRandomOracle_encodingSample_bound parameter .sign input cache).of_imp
     (by
       intro sampleInput hsample
-      subst sampleInput
-      simp)
+      cases sampleInput with
+      | inl index => simp at hsample
+      | inr address => simp)
 
 theorem splitRandomOracle_query_sign_epochSample_bound_zero
     (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
     (cache : QueryCache HashSpec) :
     ((splitRandomOracle parameter .query input).run cache).IsQueryBoundP
-      (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0 := by
+      (IsEncodingSampleAt .sign epoch) 0 := by
   unfold splitRandomOracle
   cases hcache : cache input with
   | some cached =>
@@ -209,10 +208,9 @@ theorem splitRandomOracle_query_sign_epochSample_bound_zero
           unfold encodingSampleQuery
           rw [OracleComp.liftComp_query]
           change (liftM (EncodingSamplingWorld.query
-            (Sum.inr ⟨.side, none⟩)) : OracleComp EncodingSamplingWorld _)
+            (Sum.inr ⟨.side, none, input⟩)) : OracleComp EncodingSamplingWorld _)
               |>.IsQueryBoundP
-                (fun sampleInput =>
-                  sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+                (IsEncodingSampleAt .sign epoch) 0
           rw [OracleComp.isQueryBoundP_query_iff]
           simp
       | some taggedEpoch =>
@@ -220,11 +218,10 @@ theorem splitRandomOracle_query_sign_epochSample_bound_zero
           unfold encodingSampleQuery
           rw [OracleComp.liftComp_query]
           change (liftM (EncodingSamplingWorld.query
-            (Sum.inr ⟨.query, some taggedEpoch⟩)) :
+            (Sum.inr ⟨.query, some taggedEpoch, input⟩)) :
               OracleComp EncodingSamplingWorld _)
                 |>.IsQueryBoundP
-                  (fun sampleInput =>
-                    sampleInput = Sum.inr ⟨.sign, some epoch⟩) 0
+                  (IsEncodingSampleAt .sign epoch) 0
           rw [OracleComp.isQueryBoundP_query_iff]
           simp
 
@@ -236,7 +233,7 @@ theorem splitRandomOracle_simulateQ_sign_epochSample_bound
     (cache : QueryCache HashSpec) :
     ((simulateQ (splitRandomOracle parameter .sign) computation).run cache)
       |>.IsQueryBoundP
-        (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) fuel := by
+        (IsEncodingSampleAt .sign epoch) fuel := by
   apply OracleComp.IsQueryBoundP.simulateQ_run_of_step hbound
   · intro input _ state
     exact splitRandomOracle_sign_epochSample_bound parameter input epoch state
@@ -251,17 +248,15 @@ theorem splitXmssRom_sign_epochSample_bound
     (cache : QueryCache HashSpec) :
     ((simulateQ (splitXmssRomImpl parameter .sign) computation).run cache)
       |>.IsQueryBoundP
-        (fun sampleInput => sampleInput = Sum.inr ⟨.sign, some epoch⟩) fuel := by
+        (IsEncodingSampleAt .sign epoch) fuel := by
   apply OracleComp.IsQueryBoundP.simulateQ_run_add_inr_of_step
     (p := IsEncodingHashQueryAt parameter epoch)
-    (q := fun sampleInput : EncodingSamplingWorld.Domain =>
-      sampleInput = Sum.inr ⟨.sign, some epoch⟩)
+    (q := IsEncodingSampleAt .sign epoch)
     (fun input => by simp [IsEncodingHashQueryAt]) hbound
   · intro input state
     exact (splitUniformOracle_encodingSample_bound input state).of_imp (by
       intro sampleInput hsample
-      subst sampleInput
-      simp)
+      cases sampleInput <;> simp_all)
   · intro input _ state
     exact splitRandomOracle_sign_epochSample_bound parameter input epoch state
   · intro input hnot state
@@ -278,7 +273,7 @@ theorem freshEncodingSampleImpl_query_support_trace_of_epoch
     result.2 = [.query epoch result.1] := by
   unfold freshEncodingSampleImpl at hmem
   rw [encodingSampleAddress_eq_of_epoch parameter .query input epoch hepoch] at hmem
-  exact encodingSampleQuery_query_support_trace epoch result hmem
+  exact encodingSampleQuery_query_support_trace epoch input result hmem
 
 theorem freshEncodingSampleImpl_sign_support_trace_of_epoch
     (parameter : PublicParameter) (input : HashInput) (epoch : Epoch)
@@ -290,7 +285,7 @@ theorem freshEncodingSampleImpl_sign_support_trace_of_epoch
     result.2 = [.sign epoch result.1] := by
   unfold freshEncodingSampleImpl at hmem
   rw [encodingSampleAddress_eq_of_epoch parameter .sign input epoch hepoch] at hmem
-  exact encodingSampleQuery_sign_support_trace epoch result hmem
+  exact encodingSampleQuery_sign_support_trace epoch input result hmem
 
 theorem freshEncodingSampleImpl_query_support_trace
     (parameter : PublicParameter) (inputPayload : Message × Randomness)
