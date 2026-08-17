@@ -7,9 +7,16 @@ namespace XmssSecurity.CappedChain
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 2000000
 
+inductive GlobalFilteredCausalHashPlan where
+  | cached (output : HashOutput)
+  | reveal (index : GlobalChainValueIndex)
+  | probeThenFresh (index : GlobalChainValueIndex) (target : Digest)
+  | redirect (output : HashOutput)
+  | fresh
+
 noncomputable def globalFilteredCausalUncachedAttackerHashPlan
     (_input : HashInput) (state : GlobalCausalHashState) :
-    Option (GlobalChainValueIndex × Digest) → GlobalCausalHashPlan
+    Option (GlobalChainValueIndex × Digest) → GlobalFilteredCausalHashPlan
   | some (index, target) =>
       match state.revealed index with
       | some value =>
@@ -19,12 +26,15 @@ noncomputable def globalFilteredCausalUncachedAttackerHashPlan
                 ⟨index.2.2.val + 1, hnext⟩)
             else .fresh
           else .fresh
-      | none => .fresh
+      | none =>
+          if _hnext : index.2.2.val + 1 < chainLength then
+            .probeThenFresh index target
+          else .fresh
   | none => .fresh
 
 noncomputable def globalFilteredCausalAttackerHashPlan
     (secretKey : SecretKey) (input : HashInput)
-    (state : GlobalCausalHashState) : GlobalCausalHashPlan :=
+    (state : GlobalCausalHashState) : GlobalFilteredCausalHashPlan :=
   match state.cache input with
   | some output => .cached output
   | none => globalFilteredCausalUncachedAttackerHashPlan input state
@@ -39,6 +49,31 @@ theorem globalFilteredCausalUncachedAttackerHashPlan_eq_reveal
         (some (index, target)) =
       .reveal (index.1, index.2.1, ⟨index.2.2.val + 1, hnext⟩) := by
   simp [globalFilteredCausalUncachedAttackerHashPlan, hvalue, hnext]
+
+theorem globalFilteredCausalUncachedAttackerHashPlan_eq_probeThenFresh
+    (_input : HashInput) (state : GlobalCausalHashState)
+    (index : GlobalChainValueIndex) (target : Digest)
+    (hhidden : state.revealed index = none)
+    (hnext : index.2.2.val + 1 < chainLength) :
+    globalFilteredCausalUncachedAttackerHashPlan _input state
+        (some (index, target)) =
+      .probeThenFresh index target := by
+  simp [globalFilteredCausalUncachedAttackerHashPlan, hhidden, hnext]
+
+theorem globalFilteredCausalAttackerHashPlan_eq_probeThenFresh
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) (index : GlobalChainValueIndex)
+    (target : Digest)
+    (hcache : state.cache input = none)
+    (hprobe : globalChainInputProbe? secretKey.parameter input =
+      some (index, target))
+    (hhidden : state.revealed index = none)
+    (hnext : index.2.2.val + 1 < chainLength) :
+    globalFilteredCausalAttackerHashPlan secretKey input state =
+      .probeThenFresh index target := by
+  rw [globalFilteredCausalAttackerHashPlan, hcache, hprobe]
+  exact globalFilteredCausalUncachedAttackerHashPlan_eq_probeThenFresh
+    input state index target hhidden hnext
 
 @[simp]
 theorem globalChainInputProbe?_globalChainTableEdgeInput
@@ -79,6 +114,27 @@ theorem globalFilteredCausalAttackerHashPlan_eq_reveal_globalEdge
     (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) hrevealed
     (chainStepNextDigit edge.2.2).isLt
 
+theorem globalFilteredCausalAttackerHashPlan_eq_probeThenFresh_globalEdge
+    (secretKey : SecretKey)
+    (table : GlobalChainValueIndex → Digest)
+    (edge : GlobalChainEdgeIndex) (state : GlobalCausalHashState)
+    (hcache : state.cache
+      (globalChainTableEdgeInput secretKey.parameter table edge) = none)
+    (hhidden : state.revealed
+      (edge.1, edge.2.1, chainStepDigit edge.2.2) = none) :
+    globalFilteredCausalAttackerHashPlan secretKey
+        (globalChainTableEdgeInput secretKey.parameter table edge) state =
+      .probeThenFresh
+        (edge.1, edge.2.1, chainStepDigit edge.2.2)
+        (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) := by
+  rw [globalFilteredCausalAttackerHashPlan, hcache]
+  rw [globalChainInputProbe?_globalChainTableEdgeInput]
+  exact globalFilteredCausalUncachedAttackerHashPlan_eq_probeThenFresh
+    (globalChainTableEdgeInput secretKey.parameter table edge) state
+    (edge.1, edge.2.1, chainStepDigit edge.2.2)
+    (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) hhidden
+    (chainStepNextDigit edge.2.2).isLt
+
 noncomputable def globalCausalAttackerHashQueryFromHigh
     (high : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (input : HashInput) :
@@ -91,6 +147,9 @@ noncomputable def globalCausalAttackerHashQueryFromHigh
   | .redirect output =>
       pure (output, { recorded with
         cache := recorded.cache.cacheQuery input output })
+  | .probeThenFresh index target => do
+      let _ ← RevealProbeOracleSimulation.probeQuery index target
+      (globalCausalHashQuery input).run recorded
   | .fresh => (globalCausalHashQuery input).run recorded
   | .reveal index =>
       globalCausalRevealHashQueryFromHigh high secretKey input state index
@@ -106,6 +165,9 @@ theorem globalCausalAttackerHashQueryFromHigh_run
        | .redirect output =>
            pure (output, { recorded with
              cache := recorded.cache.cacheQuery input output })
+       | .probeThenFresh index target => do
+           let _ ← RevealProbeOracleSimulation.probeQuery index target
+           (globalCausalHashQuery input).run recorded
        | .fresh => (globalCausalHashQuery input).run recorded
        | .reveal index =>
            globalCausalRevealHashQueryFromHigh high secretKey input state
