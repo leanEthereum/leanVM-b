@@ -164,6 +164,30 @@ theorem expectedSimulatedQueryCount_bind
       rw [id_map]
       ac_rfl
 
+theorem expectedSimulatedQueryCount_map
+    {index : Type} {spec : OracleSpec index} {α β state : Type}
+    (implementation : QueryImpl spec (StateT state ProbComp))
+    (predicate : spec.Domain → Prop) [DecidablePred predicate]
+    (project : α → β) (computation : OracleComp spec α)
+    (initialState : state) :
+    expectedSimulatedQueryCount implementation predicate
+        (project <$> computation) initialState =
+      expectedSimulatedQueryCount implementation predicate computation
+        initialState := by
+  rw [map_eq_bind_pure_comp]
+  change expectedSimulatedQueryCount implementation predicate
+      (computation >>= fun value => pure (project value)) initialState = _
+  calc
+    _ = expectedSimulatedQueryCount implementation predicate computation
+          initialState +
+        ∑' result,
+          Pr[= result | (simulateQ implementation computation).run initialState] *
+            expectedSimulatedQueryCount implementation predicate
+              (pure (project result.1)) result.2 :=
+      expectedSimulatedQueryCount_bind implementation predicate computation
+        (fun value => pure (project value)) initialState
+    _ = _ := by simp
+
 /-- Expected simulated query counts add exactly for disjoint source predicates. -/
 theorem expectedSimulatedQueryCount_or_of_disjoint
     {ι : Type} {spec : OracleSpec ι} {α state : Type}
