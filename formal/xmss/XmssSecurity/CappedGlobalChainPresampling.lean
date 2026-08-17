@@ -167,6 +167,88 @@ theorem mem_allGlobalChainEdges (edge : GlobalChainEdgeIndex) :
     edge ∈ allGlobalChainEdges := by
   simp [allGlobalChainEdges]
 
+noncomputable def globalChainEdgeTableTapeEquiv :
+    (GlobalChainEdgeIndex → Digest) ≃
+      (Fin allGlobalChainEdges.length → Digest) :=
+  (Equiv.piCongrLeft (fun _ : GlobalChainEdgeIndex => Digest)
+    (allGlobalChainEdges_nodup.getEquivOfForallMemList
+      allGlobalChainEdges mem_allGlobalChainEdges)).symm
+
+theorem listOfFn_globalChainEdgeTableTapeEquiv
+    (table : GlobalChainEdgeIndex → Digest) :
+    List.ofFn (globalChainEdgeTableTapeEquiv table) =
+      allGlobalChainEdges.map table := by
+  rw [← List.ofFn_get (allGlobalChainEdges.map table)]
+  apply List.ext_get
+  · simp
+  · intro index hleft hright
+    simp [globalChainEdgeTableTapeEquiv]
+
+noncomputable def globalChainEdgeTableOfTape
+    (targets : List Digest) : GlobalChainEdgeIndex → Digest :=
+  if hlength : targets.length = allGlobalChainEdges.length then
+    globalChainEdgeTableTapeEquiv.symm fun index =>
+      targets.get (Fin.cast hlength.symm index)
+  else
+    fun _ => 0
+
+@[simp]
+theorem globalChainEdgeTableOfTape_map
+    (table : GlobalChainEdgeIndex → Digest) :
+    globalChainEdgeTableOfTape (allGlobalChainEdges.map table) = table := by
+  unfold globalChainEdgeTableOfTape
+  split
+  · rename_i hlength
+    apply globalChainEdgeTableTapeEquiv.injective
+    rw [globalChainEdgeTableTapeEquiv.apply_symm_apply]
+    funext index
+    simp [globalChainEdgeTableTapeEquiv]
+  · rename_i hlength
+    exact (hlength (by simp)).elim
+
+theorem evalDist_uniformGlobalChainEdgeTableTape_eq_drawList :
+    evalDist ((fun table : GlobalChainEdgeIndex → Digest =>
+      allGlobalChainEdges.map table) <$>
+        ($ᵗ (GlobalChainEdgeIndex → Digest))) =
+      evalDist (OracleComp.drawList ($ᵗ Digest)
+        allGlobalChainEdges.length) := by
+  calc
+    _ = evalDist (List.ofFn <$>
+        (globalChainEdgeTableTapeEquiv <$>
+          ($ᵗ (GlobalChainEdgeIndex → Digest)))) := by
+      simp only [Functor.map_map]
+      congr 2
+      funext table
+      exact (listOfFn_globalChainEdgeTableTapeEquiv table).symm
+    _ = evalDist (List.ofFn <$>
+        ($ᵗ (Fin allGlobalChainEdges.length → Digest))) := by
+      rw [evalDist_map]
+      rw [evalDist_map_bijective_uniform_cross
+        (α := GlobalChainEdgeIndex → Digest)
+        (β := Fin allGlobalChainEdges.length → Digest)
+        globalChainEdgeTableTapeEquiv
+          globalChainEdgeTableTapeEquiv.bijective]
+      rw [← evalDist_map]
+    _ = evalDist (OracleComp.drawList ($ᵗ Digest)
+        allGlobalChainEdges.length) :=
+      evalDist_listOfFn_uniform_eq_drawList allGlobalChainEdges.length
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_globalChainEdgeTableOfTape_drawList_eq_uniform :
+    evalDist (globalChainEdgeTableOfTape <$>
+      OracleComp.drawList ($ᵗ Digest) allGlobalChainEdges.length) =
+    evalDist ($ᵗ (GlobalChainEdgeIndex → Digest)) := by
+  calc
+    _ = evalDist (globalChainEdgeTableOfTape <$>
+        ((fun table : GlobalChainEdgeIndex → Digest =>
+          allGlobalChainEdges.map table) <$>
+            ($ᵗ (GlobalChainEdgeIndex → Digest)))) := by
+      rw [evalDist_map, evalDist_map,
+        evalDist_uniformGlobalChainEdgeTableTape_eq_drawList]
+    _ = evalDist ($ᵗ (GlobalChainEdgeIndex → Digest)) := by
+      simp [Functor.map_map]
+
 noncomputable def globalChainTableEdgeInputs
     (parameter : PublicParameter) (table : GlobalChainValueIndex → Digest) :
     List HashInput :=
@@ -232,6 +314,113 @@ theorem programGlobalChainTableEdgesTrace_neverFail
         · exact ih _
         · intro rest _hrest
           infer_instance
+
+def installGlobalChainTableEdgeOutputs
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    List GlobalChainEdgeIndex → List HashOutput → QueryCache HashSpec
+  | [], _ => cache
+  | _, [] => cache
+  | edge :: edges, output :: outputs =>
+      installGlobalChainTableEdgeOutputs
+        (cache.cacheQuery
+          (globalChainTableEdgeInput parameter table edge) output)
+        parameter table edges outputs
+
+@[simp]
+theorem installGlobalChainTableEdgeOutputs_nil
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest)
+    (outputs : List HashOutput) :
+    installGlobalChainTableEdgeOutputs cache parameter table [] outputs =
+      cache := rfl
+
+@[simp]
+theorem installGlobalChainTableEdgeOutputs_cons
+    (cache : QueryCache HashSpec) (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest)
+    (edge : GlobalChainEdgeIndex) (edges : List GlobalChainEdgeIndex)
+    (output : HashOutput) (outputs : List HashOutput) :
+    installGlobalChainTableEdgeOutputs cache parameter table
+      (edge :: edges) (output :: outputs) =
+      installGlobalChainTableEdgeOutputs
+        (cache.cacheQuery
+          (globalChainTableEdgeInput parameter table edge) output)
+        parameter table edges outputs := rfl
+
+theorem evalDist_programGlobalChainTableEdgesTrace_eq_install
+    (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    ∀ (edges : List GlobalChainEdgeIndex) (cache : QueryCache HashSpec),
+      evalDist (programGlobalChainTableEdgesTrace cache parameter table edges) =
+      evalDist ((fun outputs =>
+          (outputs, installGlobalChainTableEdgeOutputs cache parameter table
+            edges outputs)) <$>
+        sampleHashOutputsWithDigests
+          (edges.map (globalChainTableEdgeTarget table))) := by
+  intro edges
+  induction edges with
+  | nil =>
+      intro cache
+      simp
+  | cons edge edges ih =>
+      intro cache
+      rw [programGlobalChainTableEdgesTrace_cons]
+      simp only [List.map_cons, sampleHashOutputsWithDigests_cons,
+        map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro output
+      conv_lhs => rw [evalDist_bind]
+      rw [ih]
+      simp [map_eq_bind_pure_comp, bind_assoc]
+
+theorem evalDist_programGlobalChainTableEdgesTrace_fst
+    (parameter : PublicParameter)
+    (table : GlobalChainValueIndex → Digest) :
+    ∀ (edges : List GlobalChainEdgeIndex) (cache : QueryCache HashSpec),
+      evalDist (Prod.fst <$>
+        programGlobalChainTableEdgesTrace cache parameter table edges) =
+      evalDist (sampleHashOutputsWithDigests
+        (edges.map (globalChainTableEdgeTarget table))) := by
+  intro edges
+  induction edges with
+  | nil =>
+      intro cache
+      simp
+  | cons edge edges ih =>
+      intro cache
+      simp only [List.map_cons]
+      rw [programGlobalChainTableEdgesTrace_cons,
+        sampleHashOutputsWithDigests_cons]
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro output
+      change evalDist ((fun rest => output :: rest.1) <$>
+          programGlobalChainTableEdgesTrace
+            (cache.cacheQuery
+              (globalChainTableEdgeInput parameter table edge) output)
+            parameter table edges) =
+        evalDist ((fun outputs => output :: outputs) <$>
+          sampleHashOutputsWithDigests
+            (edges.map (globalChainTableEdgeTarget table)))
+      calc
+        evalDist ((fun rest => output :: rest.1) <$>
+            programGlobalChainTableEdgesTrace
+              (cache.cacheQuery
+                (globalChainTableEdgeInput parameter table edge) output)
+              parameter table edges) =
+            evalDist ((fun outputs => output :: outputs) <$> (Prod.fst <$>
+              programGlobalChainTableEdgesTrace
+                (cache.cacheQuery
+                  (globalChainTableEdgeInput parameter table edge) output)
+                parameter table edges)) := by
+          simp [Functor.map_map]
+        _ = evalDist ((fun outputs => output :: outputs) <$>
+              sampleHashOutputsWithDigests
+                (edges.map (globalChainTableEdgeTarget table))) := by
+          rw [evalDist_map, ih, ← evalDist_map]
 
 theorem evalDist_programGlobalChainTableEdgesTrace_discard
     (cache : QueryCache HashSpec) (parameter : PublicParameter)
@@ -334,6 +523,151 @@ theorem globalChainTableEdgeTarget_materialEquiv_symm
       (globalChainTableMaterialEquiv.symm (seeds, edges)) = edges := by
   have hmaterial := globalChainTableMaterialEquiv.apply_symm_apply (seeds, edges)
   exact congrArg Prod.snd hmaterial
+
+noncomputable def programmedUniformGlobalChainEdgeTape
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest) :
+    ProbComp (List Digest × List HashOutput) := do
+  let edges ← $ᵗ (GlobalChainEdgeIndex → Digest)
+  let table := globalChainTableMaterialEquiv.symm (seeds, edges)
+  let outputs ← Prod.fst <$>
+    programGlobalChainTableEdgesTrace ∅ parameter table allGlobalChainEdges
+  pure (allGlobalChainEdges.map edges, outputs)
+
+noncomputable def sampledUniformGlobalChainEdgeTape
+    (seeds : Epoch → ChainIndex → Digest) :
+    ProbComp (List Digest × List HashOutput) := do
+  let edges ← $ᵗ (GlobalChainEdgeIndex → Digest)
+  let table := globalChainTableMaterialEquiv.symm (seeds, edges)
+  let outputs ← sampleHashOutputsWithDigests
+    (allGlobalChainEdges.map (globalChainTableEdgeTarget table))
+  pure (allGlobalChainEdges.map edges, outputs)
+
+noncomputable def installedGlobalChainEdgeTapeResult
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest)
+    (tape : List Digest × List HashOutput) :
+    List Digest × (List HashOutput × QueryCache HashSpec) :=
+  let edges := globalChainEdgeTableOfTape tape.1
+  let table := globalChainTableMaterialEquiv.symm (seeds, edges)
+  (tape.1, (tape.2,
+    installGlobalChainTableEdgeOutputs ∅ parameter table
+      allGlobalChainEdges tape.2))
+
+noncomputable def programmedUniformGlobalChainEdgeCache
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest) :
+    ProbComp (List Digest × (List HashOutput × QueryCache HashSpec)) := do
+  let edges ← $ᵗ (GlobalChainEdgeIndex → Digest)
+  let table := globalChainTableMaterialEquiv.symm (seeds, edges)
+  let trace ← programGlobalChainTableEdgesTrace ∅ parameter table
+    allGlobalChainEdges
+  pure (allGlobalChainEdges.map edges, trace)
+
+noncomputable def uniformInstalledGlobalChainEdgeCache
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest) :
+    ProbComp (List Digest × (List HashOutput × QueryCache HashSpec)) :=
+  installedGlobalChainEdgeTapeResult parameter seeds <$>
+    Rom.uniformHashTape allGlobalChainEdges.length
+
+theorem evalDist_programmedUniformGlobalChainEdgeTape_eq_sampled
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest) :
+    evalDist (programmedUniformGlobalChainEdgeTape parameter seeds) =
+      evalDist (sampledUniformGlobalChainEdgeTape seeds) := by
+  unfold programmedUniformGlobalChainEdgeTape
+    sampledUniformGlobalChainEdgeTape
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro edges
+  conv_lhs => rw [evalDist_bind]
+  conv_rhs => rw [evalDist_bind]
+  rw [evalDist_programGlobalChainTableEdgesTrace_fst]
+
+theorem evalDist_programmedGlobalChainEdgeCache_fixedTable_eq_installed
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest)
+    (edges : GlobalChainEdgeIndex → Digest) :
+    let table := globalChainTableMaterialEquiv.symm (seeds, edges)
+    evalDist ((fun trace => (allGlobalChainEdges.map edges, trace)) <$>
+      programGlobalChainTableEdgesTrace ∅ parameter table
+        allGlobalChainEdges) =
+    evalDist (installedGlobalChainEdgeTapeResult parameter seeds <$>
+      ((fun outputs => (allGlobalChainEdges.map edges, outputs)) <$>
+        sampleHashOutputsWithDigests
+          (allGlobalChainEdges.map
+            (globalChainTableEdgeTarget table)))) := by
+  dsimp only
+  rw [evalDist_map, evalDist_programGlobalChainTableEdgesTrace_eq_install,
+    ← evalDist_map]
+  simp [Functor.map_map, installedGlobalChainEdgeTapeResult]
+
+theorem evalDist_programmedUniformGlobalChainEdgeTape_eq_uniformHashTape
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest) :
+    evalDist (programmedUniformGlobalChainEdgeTape parameter seeds) =
+      evalDist (Rom.uniformHashTape allGlobalChainEdges.length) := by
+  calc
+    _ = evalDist (sampledUniformGlobalChainEdgeTape seeds) :=
+      evalDist_programmedUniformGlobalChainEdgeTape_eq_sampled parameter seeds
+    _ = evalDist (($ᵗ (GlobalChainEdgeIndex → Digest)) >>= fun edges =>
+          sampleHashOutputsWithDigests (allGlobalChainEdges.map edges) >>=
+            fun outputs => pure (allGlobalChainEdges.map edges, outputs)) := by
+      unfold sampledUniformGlobalChainEdgeTape
+      simp only [globalChainTableEdgeTarget_materialEquiv_symm]
+    _ = evalDist (((fun edges : GlobalChainEdgeIndex → Digest =>
+          allGlobalChainEdges.map edges) <$>
+            ($ᵗ (GlobalChainEdgeIndex → Digest))) >>= fun targets =>
+          sampleHashOutputsWithDigests targets >>= fun outputs =>
+            pure (targets, outputs)) := by
+      simp [map_eq_bind_pure_comp, bind_assoc]
+    _ = evalDist (OracleComp.drawList ($ᵗ Digest)
+          allGlobalChainEdges.length >>= fun targets =>
+        sampleHashOutputsWithDigests targets >>= fun outputs =>
+          pure (targets, outputs)) := by
+      rw [evalDist_bind,
+        evalDist_uniformGlobalChainEdgeTableTape_eq_drawList,
+        ← evalDist_bind]
+    _ = evalDist (batchProgrammedHashTape allGlobalChainEdges.length) := by
+      rfl
+    _ = evalDist (Rom.programmedHashTape allGlobalChainEdges.length) :=
+      evalDist_batchProgrammedHashTape_eq_programmedHashTape
+        allGlobalChainEdges.length
+    _ = evalDist (Rom.uniformHashTape allGlobalChainEdges.length) :=
+      Rom.evalDist_programmedHashTape_eq_uniformHashTape
+        allGlobalChainEdges.length
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 100000 in
+theorem evalDist_programmedUniformGlobalChainEdgeCache_eq_uniformInstalled
+    (parameter : PublicParameter)
+    (seeds : Epoch → ChainIndex → Digest) :
+    evalDist (programmedUniformGlobalChainEdgeCache parameter seeds) =
+      evalDist (uniformInstalledGlobalChainEdgeCache parameter seeds) := by
+  calc
+    _ = evalDist (installedGlobalChainEdgeTapeResult parameter seeds <$>
+        sampledUniformGlobalChainEdgeTape seeds) := by
+      unfold programmedUniformGlobalChainEdgeCache
+        sampledUniformGlobalChainEdgeTape
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro edges
+      simpa [map_eq_bind_pure_comp, bind_assoc] using
+        (evalDist_programmedGlobalChainEdgeCache_fixedTable_eq_installed
+          parameter seeds edges)
+    _ = evalDist (installedGlobalChainEdgeTapeResult parameter seeds <$>
+        programmedUniformGlobalChainEdgeTape parameter seeds) := by
+      conv_lhs => rw [evalDist_map]
+      conv_rhs => rw [evalDist_map]
+      rw [← evalDist_programmedUniformGlobalChainEdgeTape_eq_sampled]
+    _ = evalDist (installedGlobalChainEdgeTapeResult parameter seeds <$>
+        Rom.uniformHashTape allGlobalChainEdges.length) := by
+      rw [evalDist_map,
+        evalDist_programmedUniformGlobalChainEdgeTape_eq_uniformHashTape,
+        ← evalDist_map]
+    _ = evalDist (uniformInstalledGlobalChainEdgeCache parameter seeds) := by
+      rfl
 
 theorem globalChainTableSeedsMatch_materialEquiv_symm
     (parameter : PublicParameter) (seeds : Epoch → ChainIndex → Digest)
