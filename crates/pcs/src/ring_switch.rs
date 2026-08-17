@@ -989,7 +989,7 @@ mod tests {
             return false;
         };
         let rs_eq_ind = fold_dense(&build_eq_table_ext(&e.suffix_point), &coordinate_weights);
-        recursive_verifier_with_basis(&e.vc, &rs_eq_ind, sumcheck_claim, &e.root, &mut vs)
+        recursive_verifier_with_basis(&e.vc, 1 << e.vc.initial_k, &rs_eq_ind, sumcheck_claim, &e.root, &mut vs)
     }
 
     /// Succinct verification: no `rs_eq_ind`, the succinct whir verifier's
@@ -1003,6 +1003,7 @@ mod tests {
         recursive_verifier_with_basis_succinct(
             &e.vc,
             e.log_n,
+            1 << e.vc.initial_k,
             sumcheck_claim,
             &e.root,
             |point| eval_rs_eq(&z, point, &coordinate_weights),

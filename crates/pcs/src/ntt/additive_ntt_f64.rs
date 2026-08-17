@@ -216,6 +216,13 @@ impl AdditiveNttF64 {
     /// the interleaving width is no longer a power of two, which nothing in the
     /// transform needs it to be.
     ///
+    /// Lane `t` encodes message block `n_lanes - 1 - t`, i.e. DESCENDING. That is the
+    /// PCS's leaf-image order: a leaf reads its lanes as the top interleaving index
+    /// downwards, so the absent lanes land at the FRONT of the image, where their
+    /// hash prefix is one chaining value every leaf shares
+    /// (`merkle::merkle_tree_padded_rows`). Which block feeds which lane is free here
+    /// (each lane is an independent codeword), so the convention costs nothing.
+    ///
     /// Unlike [`Self::encode_interleaved`] this does NOT fuse the first three layers
     /// into the replication, because the replication here also transposes: lane `l`'s
     /// block starts `2^log_rows` words into the message, so a codeword row gathers
@@ -560,7 +567,8 @@ fn transpose_replicate(data: &mut [F64], msg: &[F64], n_lanes: usize, rows: usiz
         for t in lo..hi {
             let r0 = t * tile_rows;
             for lane in 0..n_lanes {
-                for (rr, &word) in msg[lane * rows + r0..][..tile_rows].iter().enumerate() {
+                let block = n_lanes - 1 - lane;
+                for (rr, &word) in msg[block * rows + r0..][..tile_rows].iter().enumerate() {
                     tile[rr * n_lanes + lane] = word;
                 }
             }
@@ -942,8 +950,10 @@ mod tests {
 
             let block_len = 1usize << log_d;
             for lane in 0..n_lanes {
+                // Lane `lane` encodes message block `n_lanes - 1 - lane`.
+                let block = n_lanes - 1 - lane;
                 let mut want = vec![F64::ZERO; block_len];
-                replicate_rows(&mut want, &msg[lane * rows..(lane + 1) * rows]);
+                replicate_rows(&mut want, &msg[block * rows..(block + 1) * rows]);
                 ntt.forward_transform_interleaved_parallel_from_layer(&mut want, 1, log_inv_rate);
                 for pos in 0..block_len {
                     assert_eq!(

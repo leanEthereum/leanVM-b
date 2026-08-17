@@ -831,8 +831,18 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx] + i)] = lam_pow
             lam_pow = lam_pow * lam
         row_eq_weights = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
+        # At level 0, slot i of a leaf image is interleaving index n-1-i: that image
+        # reads its lanes from the top down, so the lanes a padding-free commitment
+        # leaves out are its LEADING words, whose whole blocks the committer hashes
+        # once for every leaf instead of once per leaf. The flip is a compile-time
+        # index, so it costs the guest nothing and it still hashes the full image.
+        # Deeper levels commit every lane, so their images stay ascending.
         for i in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
-            row_eq_weights[GEN ** i] = eq_weight(fold_challenges * GEN ** LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl], LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl], i, 0)
+            if lvl == 0:
+                slot = LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl] - 1 - i
+            else:
+                slot = i
+            row_eq_weights[GEN ** i] = eq_weight(fold_challenges * GEN ** LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl], LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl], slot, 0)
 
         query_sum_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         query_sum_chain[GEN ** 0] = 0

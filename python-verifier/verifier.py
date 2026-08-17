@@ -1444,7 +1444,12 @@ def verify_whir(
             words = transcript.merkle(current_root, block_length, queries, lanes if level == 0 else 3 * lanes)
         except VerificationError as exc:
             raise VerificationError(f"WHIR level {level}: {exc}") from exc
-        rows: list[Sequence[K | E]] = list(words) if level == 0 else [_ext_row(row) for row in words]
+        # A level-0 leaf image reads its lanes from the top interleaving index
+        # downwards, so that the lanes a padding-free commitment leaves out are the
+        # image's LEADING words: whole blocks of those zeros are one BLAKE2s chaining
+        # value the committer shares across every leaf, and they ride the image
+        # rather than the proof. Reversing puts lane l back at index l for the fold.
+        rows: list[Sequence[K | E]] = [tuple(reversed(row)) for row in words] if level == 0 else [_ext_row(row) for row in words]
         enforced = _enforced_sum(rows, level_folds, query_weights)
 
         # Every commitment, including the last one, enters through an intro

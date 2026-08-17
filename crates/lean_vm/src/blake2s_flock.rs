@@ -536,15 +536,8 @@ mod tests {
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
             let ring = ring_switch_verify(blocks.len(), offset, &replay.claim);
-            crate::pcs::verify(
-                &mut vs,
-                points,
-                &ring,
-                stacked.shape.mu,
-                crate::pcs::LOG_INV_RATE,
-                &root,
-            )
-            .map_err(|_| "opening")?;
+            crate::pcs::verify(&mut vs, points, &ring, stacked.shape, crate::pcs::LOG_INV_RATE, &root)
+                .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")
         };
 

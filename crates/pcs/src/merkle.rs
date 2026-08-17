@@ -141,15 +141,18 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
     unsafe { zk_alloc::assume_init(tree) }
 }
 
-/// Merkle tree over an interleaved matrix of `row_words`-wide rows, hashing each
-/// row zero-extended to `leaf_words`.
+/// Merkle tree over an interleaved matrix of `row_words`-wide rows, each hashed as
+/// the leaf image `zeros(leaf_words - row_words) ‖ row`.
 ///
 /// A padding-free L0 commitment interleaves only the lanes that carry data, while
-/// the leaf image stays the full `leaf_words` the verifier expects: the lanes past
-/// `row_words` are the stacked witness's zero padding, whose codeword is zero.
-/// Staging a tile of leaves supplies those zeros without materialising them in the
-/// codeword, so the hashed image is exactly the one a `leaf_words`-wide codeword
-/// would have produced.
+/// the leaf image stays the full `leaf_words` the verifier expects, so the absent
+/// lanes contribute the zeros their codeword would have been. They are the image's
+/// LEADING words on purpose: whole 64-byte blocks of leading zeros have a chaining
+/// value every leaf shares, so the committer computes it once
+/// ([`primitives::blake2s::zero_prefix_state`]) and each leaf hashes only what
+/// follows. A zero SUFFIX could not be shared, since its compressions take
+/// whatever state the real data left, which is why the L0 leaf image is ordered
+/// with the absent lanes first.
 #[tracing::instrument(
     name = "Hashing",
     skip_all,
@@ -188,8 +191,8 @@ pub fn merkle_tree_padded_rows(data: &[F64], num_leaves: usize, row_words: usize
     unsafe { zk_alloc::assume_init(tree) }
 }
 
-/// Staging tile, in words: 16 KiB, so the transposed leaves stay L1-resident and
-/// the tile lives on the task's stack. Also bounds the leaf width, so an L0 leaf
+/// Staging tile, in words: 16 KiB, so the staged leaves stay L1-resident and the
+/// tile lives on the task's stack. Also bounds the leaf width, so an L0 leaf
 /// (`2^INITIAL_FOLDING_FACTOR` words) has to fit.
 const STAGE_TILE_WORDS: usize = 2048;
 const _: () = assert!((1usize << crate::whir_config::INITIAL_FOLDING_FACTOR) <= STAGE_TILE_WORDS);
@@ -200,37 +203,54 @@ fn hash_leaves_padded_rows_uninit(
     leaf_words: usize,
     out: &mut [std::mem::MaybeUninit<Hash>],
 ) {
-    let per_tile = STAGE_TILE_WORDS / leaf_words;
+    // Whole blocks of leading zeros are hashed once, for every leaf, into `state`;
+    // each leaf then hashes the `staged` words that follow, which are the rest of
+    // the zero padding and then its row.
+    // Sharing needs the staged remainder to be whole blocks too, which holds exactly
+    // when the leaf itself is (every real leaf width is `2^k >= 8`).
+    let zero_blocks = if leaf_words.is_multiple_of(WORDS_PER_BLOCK) {
+        (leaf_words - row_words) / WORDS_PER_BLOCK
+    } else {
+        0
+    };
+    let staged = leaf_words - zero_blocks * WORDS_PER_BLOCK;
+    let state = primitives::blake2s::zero_prefix_state(zero_blocks);
+    let t_offset = (zero_blocks * WORDS_PER_BLOCK * 8) as u64;
+    let per_tile = STAGE_TILE_WORDS / staged;
     for_each_hash_group(out, |lo, outputs| {
-        // Zeroed once per task: the lanes past `row_words` are the witness's zero
-        // padding, so the tile's tail columns are never written again.
+        // Zeroed once per task: the words before each row are the padding the image
+        // carries, so those columns of the tile are never written again.
         let mut tile = [F64::ZERO; STAGE_TILE_WORDS];
         for (t, chunk) in outputs.chunks_mut(per_tile).enumerate() {
             let base = lo + t * per_tile;
             let len = chunk.len();
-            for (i, leaf) in tile.chunks_mut(leaf_words).take(len).enumerate() {
-                leaf[..row_words].copy_from_slice(&data[(base + i) * row_words..][..row_words]);
+            for (i, leaf) in tile.chunks_mut(staged).take(len).enumerate() {
+                leaf[staged - row_words..].copy_from_slice(&data[(base + i) * row_words..][..row_words]);
             }
             // SAFETY: F64 is repr(transparent) over u64, so the tile's prefix is the
-            // little-endian byte image of `len` leaves of `leaf_words` words, which
-            // on this (LE) target is what `fiat_shamir::merkle::hash_row`
-            // serializes. Exactly `len * leaf_words` initialized elements are cast.
-            let bytes = unsafe { core::slice::from_raw_parts(tile.as_ptr().cast::<u8>(), len * leaf_words * 8) };
+            // little-endian byte image of `len` leaves of `staged` words, which on
+            // this (LE) target is what `fiat_shamir::merkle::hash_row` serializes
+            // over the same words. Exactly `len * staged` initialized elements.
+            let bytes = unsafe { core::slice::from_raw_parts(tile.as_ptr().cast::<u8>(), len * staged * 8) };
             // Hash inline: this already runs inside a pool task, so
             // `hash_leaves_batched_uninit` would dispatch a nested one.
-            if (leaf_words * 8).is_multiple_of(64) {
+            if (staged * 8).is_multiple_of(64) {
                 // SAFETY: Hash is [u8; 32] with no padding, so the output slots are
                 // `len * 32` contiguous writable bytes.
                 let out_bytes = unsafe { core::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<u8>(), len * 32) };
-                primitives::blake2s::hash_many_dyn(bytes, leaf_words * 8, out_bytes);
+                primitives::blake2s::hash_many_dyn_from_state(bytes, staged * 8, &state, t_offset, out_bytes);
             } else {
+                // Not whole blocks, so nothing was shared and `staged == leaf_words`.
                 for (i, slot) in chunk.iter_mut().enumerate() {
-                    slot.write(hash_leaf(&bytes[i * leaf_words * 8..(i + 1) * leaf_words * 8]));
+                    slot.write(hash_leaf(&bytes[i * staged * 8..(i + 1) * staged * 8]));
                 }
             }
         }
     });
 }
+
+/// Words of `F64` per BLAKE2s block.
+const WORDS_PER_BLOCK: usize = 8;
 
 fn internal_levels_uninit(tree: &mut [std::mem::MaybeUninit<Hash>], num_leaves: usize) {
     let mut read_start = 0usize;
@@ -329,9 +349,11 @@ mod leaf_hash_and_tree_tests {
         }
     }
 
-    /// The zero-extending tree must equal the tree of the full-width matrix it
-    /// stands for. Sizes cross the staging tile and the hash-group boundary, and
-    /// include row widths that are not powers of two and not multiples of the tile.
+    /// The zero-extending tree must equal the tree of the full-width matrix it stands
+    /// for, `zeros ‖ row` per leaf, however many whole blocks of those zeros the
+    /// shared chaining value absorbs. Sizes cross the staging tile and the hash-group
+    /// boundary, and include row widths that are not powers of two, leaf widths that
+    /// are not whole blocks (no sharing), and a zero prefix of every length mod 8.
     #[test]
     fn padded_rows_tree_matches_full_width() {
         for (num_leaves, row_words, leaf_words) in [
@@ -340,8 +362,12 @@ mod leaf_hash_and_tree_tests {
             (64, 1, 64),
             (1024, 8, 8),
             (32, 5, 8),
-            // 40-byte leaves: not whole blocks, so the leaf hashing takes the
-            // scalar arm rather than the batched one.
+            // Zero prefixes of 3, 4 and 5 whole blocks plus a partial one.
+            (2048, 37, 64),
+            (256, 27, 64),
+            (256, 23, 64),
+            // 40-byte leaves: not whole blocks, so nothing is shared and the leaf
+            // hashing takes the scalar arm.
             (16, 3, 5),
         ] {
             let data: Vec<F64> = (0..row_words * num_leaves)
@@ -349,8 +375,8 @@ mod leaf_hash_and_tree_tests {
                 .collect();
             let mut padded = vec![F64::ZERO; num_leaves * leaf_words];
             for pos in 0..num_leaves {
-                padded[pos * leaf_words..pos * leaf_words + row_words]
-                    .copy_from_slice(&data[pos * row_words..(pos + 1) * row_words]);
+                let end = (pos + 1) * leaf_words;
+                padded[end - row_words..end].copy_from_slice(&data[pos * row_words..(pos + 1) * row_words]);
             }
             // SAFETY: F64 is repr(transparent) over u64; on this LE target the slice
             // is the little-endian word image the leaves are hashed from.

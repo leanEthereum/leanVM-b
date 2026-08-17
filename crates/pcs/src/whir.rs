@@ -333,11 +333,14 @@ fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem
 /// (`2^log_batch_size * 8` bytes).
 ///
 /// `n_lanes` is read off the message length, and `n_lanes < 2^log_batch_size` is
-/// the padding-free case: the stacked witness's zero tail is whole lanes, so
-/// those lanes are never encoded and never read. Their codeword is zero (the
-/// encoding is linear), which is exactly what the leaf image and an opened row
-/// carry for them, so the verifier sees the same `2^log_batch_size`-wide
-/// interleaved commitment either way and never learns `n_lanes`.
+/// the padding-free case: the stacked witness's zero tail is whole lanes, so those
+/// lanes are never encoded. Their codeword is zero (the encoding is linear), so the
+/// leaf image is the one a full-width commitment would have hashed, with those
+/// zeros LEADING it: lane `t` of the codeword is message block `n_lanes-1-t`, which
+/// puts them at the front of the image where their whole blocks are one BLAKE2s
+/// chaining value every leaf shares. Only the image's tail, the committed lanes,
+/// rides the proof, so a verifier derives `n_lanes` from the announced layout to
+/// read a row and supplies the prefix itself.
 pub fn commit(message: &[F64], log_n: usize, log_batch_size: usize, log_inv_rate: usize) -> (Commitment, ProverData) {
     assert!(log_inv_rate >= 1, "log_inv_rate must be >= 1 for a non-trivial RS code");
     assert!(log_n > log_batch_size, "witness must be wider than the interleaving");
@@ -1272,12 +1275,19 @@ pub fn recursive_prover_with_basis(
 
     // L0 codeword + tree are borrowed (reused from `commit`).
     let initial_root: Hash = l0_tree[l0_tree.len() - 1];
-    // The codeword interleaves only the committed lanes, so a row is that many
-    // words; the lanes past them are the stacked witness's zero padding, whose
-    // codeword is zero, which is exactly what the leaf image hashed for them.
-    let l0_row = |q: usize| -> Vec<F64> {
+    // The codeword interleaves only the committed lanes, and its lane `t` is stack
+    // block `n_lanes-1-t`, so a row IS the tail of the leaf image: the absent lanes
+    // are the image's leading zeros (`merkle::merkle_tree_padded_rows` shares their
+    // hash prefix, and only this tail rides the proof).
+    let l0_row = |q: usize| -> Vec<F64> { l0_codeword[q * n_lanes..(q + 1) * n_lanes].to_vec() };
+    // The same row for the induce, which folds a lane-ASCENDING row against the
+    // lane eq table: reversing the image puts block `b` at index `b` and the absent
+    // lanes' zeros at the end, where they contribute nothing.
+    let l0_fold_row = |q: usize| -> Vec<F64> {
         let mut row = vec![F64::ZERO; num_interleaved_0];
-        row[..n_lanes].copy_from_slice(&l0_codeword[q * n_lanes..(q + 1) * n_lanes]);
+        for (t, &word) in l0_codeword[q * n_lanes..(q + 1) * n_lanes].iter().enumerate() {
+            row[n_lanes - 1 - t] = word;
+        }
         row
     };
     ps.observe_root(&initial_root);
@@ -1347,7 +1357,7 @@ pub fn recursive_prover_with_basis(
     let weights_0 = power_weights(lambda_0, num_queries_0);
     let _t = std::time::Instant::now();
     // Ordered (dup-possible) rows for the local induce math ...
-    let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q)).collect();
+    let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_fold_row(q)).collect();
     // ... but the stored proof carries the sorted-unique rows + one octopus over
     // the sorted-unique positions (the verifier re-fans them to ordered).
     ps.hint_merkle(PrunedMerklePaths::prune(l0_tree, block_len_0, &queries_0, l0_row));
@@ -1552,17 +1562,22 @@ pub fn recursive_prover_with_basis(
 // ===================================================================
 
 /// Pull the next Merkle phase, authenticated against `root`, and decode its
-/// leaf words into the rows the level committed. `leaf_words` announces the row
-/// width, which pins the leaf image the octopus is checked against.
+/// leaf words into the rows the level committed. `row_words` announces what the
+/// proof stores and `leaf_words` the image it hashes to, which pins what the
+/// octopus is checked against; they differ only at a padding-free L0, whose absent
+/// lanes ride the image as a zero prefix. The decoded rows are full images.
 fn recv_level_rows<T>(
     vs: &mut impl Receiver,
     root: &Hash,
     block_len: usize,
     queries: &[usize],
+    row_words: usize,
     leaf_words: usize,
     decode: impl Fn(&[F64]) -> T,
 ) -> Option<Vec<T>> {
-    let rows = vs.next_merkle_batch(root, block_len, queries, leaf_words).ok()?;
+    let rows = vs
+        .next_merkle_batch(root, block_len, queries, row_words, leaf_words)
+        .ok()?;
     Some(rows.iter().map(|row| decode(row)).collect())
 }
 
@@ -1679,6 +1694,7 @@ fn batch_level_claims(
 #[cfg(test)]
 pub fn recursive_verifier_with_basis(
     config: &VerifierConfig,
+    n_lanes: usize,
     b_initial: &[F192],
     target: F192,
     expected_initial_root: &Hash,
@@ -1753,8 +1769,15 @@ pub fn recursive_verifier_with_basis(
         expected_initial_root,
         block_len_0,
         &queries_0,
+        n_lanes,
         num_interleaved_0,
-        <[F64]>::to_vec,
+        // The image is lane-descending with the absent lanes leading; reversing it
+        // puts block `b` at index `b`, which is what the induce folds.
+        |row: &[F64]| {
+            let mut v = row.to_vec();
+            v.reverse();
+            v
+        },
     ) else {
         return false;
     };
@@ -1839,6 +1862,7 @@ pub fn recursive_verifier_with_basis(
                 &prev.root,
                 prev.block_len(),
                 &queries_last,
+                leaf_words,
                 leaf_words,
                 ext_row_from_words,
             ) else {
@@ -1950,6 +1974,7 @@ pub fn recursive_verifier_with_basis(
             prev.block_len(),
             &queries_i,
             leaf_words,
+            leaf_words,
             ext_row_from_words,
         ) else {
             return false;
@@ -2019,6 +2044,7 @@ pub fn recursive_verifier_with_basis(
 pub fn recursive_verifier_with_basis_succinct<F>(
     config: &VerifierConfig,
     log_n: usize,
+    n_lanes: usize,
     target: F192,
     expected_initial_root: &Hash,
     eval_b_at: F,
@@ -2030,6 +2056,12 @@ where
 {
     let initial_k = config.initial_k;
     let r = config.level_steps;
+    // The L0 rows the proof stores: the committed lanes, the rest of the leaf image
+    // being the zero prefix the absent ones contribute. Derived from the announced
+    // layout by the caller, so it is not the prover's to choose.
+    if n_lanes == 0 || n_lanes > 1usize << initial_k {
+        return false;
+    }
     if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return false;
     }
@@ -2094,8 +2126,15 @@ where
         expected_initial_root,
         block_len_0,
         &queries_0,
+        n_lanes,
         num_interleaved_0,
-        <[F64]>::to_vec,
+        // The image is lane-descending with the absent lanes leading; reversing it
+        // puts block `b` at index `b`, which is what the induce folds.
+        |row: &[F64]| {
+            let mut v = row.to_vec();
+            v.reverse();
+            v
+        },
     ) else {
         return false;
     };
@@ -2182,6 +2221,7 @@ where
                 &prev.root,
                 prev.block_len(),
                 &queries_last,
+                leaf_words,
                 leaf_words,
                 ext_row_from_words,
             ) else {
@@ -2301,6 +2341,7 @@ where
             &prev.root,
             prev.block_len(),
             &queries_i,
+            leaf_words,
             leaf_words,
             ext_row_from_words,
         ) else {
@@ -2439,7 +2480,14 @@ mod tests {
 
     fn verify_instance(inst: &Instance, fs: &fiat_shamir::transcript::Proof) -> bool {
         let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", fs, &[]);
-        recursive_verifier_with_basis(&inst.vc, &inst.b_initial, inst.target, &inst.root, &mut vs)
+        recursive_verifier_with_basis(
+            &inst.vc,
+            1 << inst.vc.initial_k,
+            &inst.b_initial,
+            inst.target,
+            &inst.root,
+            &mut vs,
+        )
     }
 
     /// Succinct verify with the eq weight evaluated at the terminal fold point.
@@ -2449,6 +2497,7 @@ mod tests {
         recursive_verifier_with_basis_succinct(
             &inst.vc,
             inst.log_n,
+            1 << inst.vc.initial_k,
             inst.target,
             &inst.root,
             |fold_point| eq_eval(point, fold_point),
@@ -2662,25 +2711,41 @@ mod tests {
                 let (root_trunc, fs_trunc) = prove(&witness[..used], &b_initial[..used]);
                 let (root_full, fs_full) = prove(&witness, &b_initial);
                 assert_eq!(root_trunc, root_full, "root differs at n_lanes = {n_lanes}");
-                assert_eq!(fs_trunc, fs_full, "transcript differs at n_lanes = {n_lanes}");
+                assert_eq!(
+                    fs_trunc.stream, fs_full.stream,
+                    "the protocol itself must not change at n_lanes = {n_lanes}"
+                );
+
+                // What the two proofs DO differ in, and the point of the exercise: the
+                // truncated one stores each L0 row as the committed lanes alone, which is
+                // exactly the full image with its leading padding zeros dropped.
+                let leaf_words = 1usize << pc.initial_k;
+                for (thin, full) in fs_trunc.merkle[0].leaf_data.iter().zip(&fs_full.merkle[0].leaf_data) {
+                    assert_eq!(thin.len(), n_lanes);
+                    assert_eq!(full.len(), leaf_words);
+                    assert_eq!(thin[..], full[leaf_words - n_lanes..], "stored row is the image tail");
+                    assert!(
+                        full[..leaf_words - n_lanes].iter().all(|w| *w == F64::ZERO),
+                        "the words the proof drops are the padding at n_lanes = {n_lanes}"
+                    );
+                }
 
                 let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", &fs_trunc, &[]);
                 assert!(
-                    recursive_verifier_with_basis(&pc, &b_initial, target, &root_trunc, &mut vs),
+                    recursive_verifier_with_basis(&pc, n_lanes, &b_initial, target, &root_trunc, &mut vs),
                     "dense verify failed at n_lanes = {n_lanes}"
                 );
 
-                // The lanes past `n_lanes` are hashed into the leaf image even though
-                // nothing was committed to them, which is exactly what lets the verifier
-                // stay unaware of the lane count: it folds all `2^initial_k` words of an
-                // opened row, so a flipped padding lane has to be caught like any other.
-                if n_lanes < 1usize << pc.initial_k {
+                // The image the octopus was built over is pinned by the announced widths,
+                // so a row of any other width is rejected rather than zero-extended to
+                // something that happens to hash.
+                if n_lanes < leaf_words {
                     let mut bad_fs = fs_trunc.clone();
-                    bad_fs.merkle[0].leaf_data[0][(1usize << pc.initial_k) - 1].0 ^= 1;
+                    bad_fs.merkle[0].leaf_data[0].push(F64::ZERO);
                     let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", &bad_fs, &[]);
                     assert!(
-                        !recursive_verifier_with_basis(&pc, &b_initial, target, &root_trunc, &mut vs),
-                        "a flipped padding lane was accepted at n_lanes = {n_lanes}"
+                        !recursive_verifier_with_basis(&pc, n_lanes, &b_initial, target, &root_trunc, &mut vs),
+                        "a wrong-width row was accepted at n_lanes = {n_lanes}"
                     );
                 }
             }

@@ -10,12 +10,13 @@
 //! The stacked witness is `2^μ` words, but its tail past the placed columns is
 //! zero, and the L0 interleaving makes that tail whole lanes: lane `l` is the
 //! contiguous block `q[l·2^(μ-LOG_BATCH) ..)`, so only
-//! [`crate::witness::StackShape::n_lanes`] of them are ever ENCODED, and the
-//! opening's dense weight and its first `LOG_BATCH` rounds shrink with them. The
-//! Merkle half does not: a leaf is still `2^LOG_BATCH` words, the absent lanes
-//! contributing the zeros their codeword would have been. That is what keeps this
-//! invisible to a verifier, which sees the same `2^μ`-word commitment either way
-//! and never needs the lane count.
+//! [`crate::witness::StackShape::n_lanes`] of them are ever encoded, and the
+//! opening's dense weight, its first `LOG_BATCH` rounds and the stack allocation
+//! shrink with them. A leaf image is still `2^LOG_BATCH` words, the absent lanes
+//! contributing the zeros their codeword would have been, but they LEAD the image:
+//! their whole 64-byte blocks are one chaining value every leaf shares, so the
+//! committer hashes them once rather than once per leaf, and only the image's tail
+//! rides the proof. Both sides derive the lane count from the announced layout.
 //!
 //! Security: the K configs use rate-1/2 Johnson list decoding with OOD binding
 //! and 128-bit round-by-round soundness ([`::pcs::whir::SECURITY_BITS`]).
@@ -160,12 +161,12 @@ pub fn verify(
     vs: &mut VerifierState,
     points: &[SlotClaim],
     ring: &RingSwitchVerify,
-    mu: usize,
+    shape: crate::witness::StackShape,
     log_inv_rate: usize,
     root: &[u8; 32],
 ) -> Result<(), Error> {
-    let cfg = whir_configs(mu, log_inv_rate);
-    verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, mu, root, points, ring)
+    let cfg = whir_configs(shape.mu, log_inv_rate);
+    verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, shape.mu, shape.n_lanes, root, points, ring)
         .then_some(())
         .ok_or(Error::Whir)
 }

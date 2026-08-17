@@ -124,7 +124,15 @@ fn blake2s_batch_prove_verify() {
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = ring_switch_verify(n, 0, &replay.claim);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut vs, &verifier_config, mu, &root, &[], &ring),
+            verify_opening_batch_mixed_whir_stacked(
+                &mut vs,
+                &verifier_config,
+                mu,
+                1 << INITIAL_FOLDING_FACTOR,
+                &root,
+                &[],
+                &ring
+            ),
             "stacked PCS opening verifies"
         );
         vs.finish().expect("transcript fully consumed");

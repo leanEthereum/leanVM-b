@@ -2,9 +2,9 @@
 //! Stacked batch-mixed opening for the F64-committed PCS.
 //!
 //! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
-//! [`super::whir::commit`], which only encodes the lane blocks that carry data:
-//! every claim lives inside them and the weight is zero past them), and one WHIR
-//! run discharges
+//! [`super::whir::commit`], which only encodes and only transmits the lane blocks
+//! that carry data: every claim lives inside them and the weight is zero past
+//! them), and one WHIR run discharges
 //!
 //! - **point claims** ([`StackClaim`]): plain multilinear evaluations of
 //!   aligned sub-slices of the stack (a `Point` claim's weight is
@@ -475,6 +475,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     vs: &mut impl Receiver,
     config: &VerifierConfig,
     log_n: usize,
+    n_lanes: usize,
     root: &Hash,
     point_claims: &[StackClaim],
     ring: &RingSwitchVerify,
@@ -548,7 +549,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
         acc
     };
 
-    recursive_verifier_with_basis_succinct(config, log_n, target, root, eval_b_at, vs)
+    recursive_verifier_with_basis_succinct(config, log_n, n_lanes, target, root, eval_b_at, vs)
 }
 
 // ---------------------------------------------------------------------------
@@ -695,7 +696,15 @@ mod tests {
             claims: ring_claims.to_vec(),
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
-        verify_opening_batch_mixed_whir_stacked(&mut vs, &inst.vc, inst.log_n, &inst.root, point_claims, &ring)
+        verify_opening_batch_mixed_whir_stacked(
+            &mut vs,
+            &inst.vc,
+            inst.log_n,
+            1 << inst.vc.initial_k,
+            &inst.root,
+            point_claims,
+            &ring,
+        )
     }
 
     #[test]
@@ -832,7 +841,15 @@ mod tests {
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &ring_v),
+            verify_opening_batch_mixed_whir_stacked(
+                &mut vs,
+                &vc,
+                log_n,
+                1 << vc.initial_k,
+                &cm.root,
+                &point_claims,
+                &ring_v
+            ),
             "honest crossing-regime opening rejected"
         );
 
@@ -841,7 +858,15 @@ mod tests {
         bad_ring.claims[0].s_hat_v.as_mut().unwrap()[7] += F192::ONE;
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            !verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring),
+            !verify_opening_batch_mixed_whir_stacked(
+                &mut vs,
+                &vc,
+                log_n,
+                1 << vc.initial_k,
+                &cm.root,
+                &point_claims,
+                &bad_ring
+            ),
             "tampered crossing-regime ring slice accepted"
         );
     }
