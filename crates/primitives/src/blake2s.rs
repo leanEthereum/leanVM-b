@@ -1181,8 +1181,6 @@ pub fn hash_many<const LEN: usize>(data: &[u8], out: &mut [u8]) {
     hash_many_dyn(data, LEN, out);
 }
 
-/// [`hash_many`] with the input length known only at runtime. Same contract:
-/// `len` a nonzero multiple of 64.
 /// The chaining value after absorbing `n_blocks` all-zero 64-byte blocks from the
 /// unkeyed IV.
 ///
@@ -1246,21 +1244,16 @@ pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u32; 8], t_off
     }
 }
 
+/// [`hash_many`] with the input length known only at runtime. Same contract:
+/// `len` a nonzero multiple of 64.
 pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
-    assert!(
-        len > 0 && len.is_multiple_of(BLOCK_LEN),
-        "batched inputs are whole blocks"
-    );
-    let n = out.len() / OUT_LEN;
-    assert_eq!(data.len(), n * len);
-    assert_eq!(out.len(), n * OUT_LEN);
-    // SAFETY (each arm): the asserts above pin the buffer sizes the backends
-    // require, and every backend is gated on the feature its intrinsics need.
     hash_many_dyn_from_state(data, len, &PARAM_IV, 0, out);
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// Starting from a precomputed zero-prefix state must reproduce the standard
     /// hash of the whole image, one leaf at a time and batched, at leaf counts that
     /// cross the widest backend's group width and its scalar tail.
@@ -1268,23 +1261,23 @@ mod tests {
     fn continued_from_zero_prefix_matches_whole_image() {
         for zero_blocks in [0usize, 1, 3, 7] {
             for rest_blocks in [1usize, 2, 5] {
-                let (zlen, rlen) = (zero_blocks * super::BLOCK_LEN, rest_blocks * super::BLOCK_LEN);
-                let state = super::zero_prefix_state(zero_blocks);
+                let (zlen, rlen) = (zero_blocks * BLOCK_LEN, rest_blocks * BLOCK_LEN);
+                let state = zero_prefix_state(zero_blocks);
                 for n in [1usize, 4, 17, 33] {
                     let rest: Vec<u8> = (0..n * rlen).map(|i| (i * 31 + zero_blocks) as u8).collect();
-                    let mut got = vec![0u8; n * super::OUT_LEN];
-                    super::hash_many_dyn_from_state(&rest, rlen, &state, zlen as u64, &mut got);
+                    let mut got = vec![0u8; n * OUT_LEN];
+                    hash_many_dyn_from_state(&rest, rlen, &state, zlen as u64, &mut got);
                     for i in 0..n {
                         let mut whole = vec![0u8; zlen];
                         whole.extend_from_slice(&rest[i * rlen..(i + 1) * rlen]);
-                        let want = super::hash(&whole);
+                        let want = hash(&whole);
                         assert_eq!(
-                            &got[i * super::OUT_LEN..(i + 1) * super::OUT_LEN],
+                            &got[i * OUT_LEN..(i + 1) * OUT_LEN],
                             &want[..],
                             "batched, zero_blocks={zero_blocks} rest_blocks={rest_blocks} n={n} i={i}"
                         );
                         assert_eq!(
-                            super::hash_from_state(&rest[i * rlen..(i + 1) * rlen], &state, zlen as u64),
+                            hash_from_state(&rest[i * rlen..(i + 1) * rlen], &state, zlen as u64),
                             want,
                             "scalar, zero_blocks={zero_blocks} rest_blocks={rest_blocks}"
                         );
@@ -1293,8 +1286,6 @@ mod tests {
             }
         }
     }
-
-    use super::*;
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()

@@ -55,27 +55,26 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     primitives::blake2s::hash(&buf)
 }
 
-/// The committer's leaf preimage: the row's words, little-endian, preceded by
-/// `leaf_words - row.len()` zero words.
+/// The full leaf image a stored row stands for: `leaf_words - row.len()` zero words,
+/// then the row.
 ///
 /// A padding-free L0 commitment stores only the lanes that carry data, while the
-/// image the tree was built over is the full `leaf_words`, the absent lanes leading
-/// (`pcs::merkle::merkle_tree_padded_rows` shares their hash prefix across every
-/// leaf). Every other level stores its full row, so the prefix is empty.
-fn hash_row(row: &[F64], leaf_words: usize) -> Hash {
-    let mut bytes = vec![0u8; 8 * leaf_words];
-    let start = 8 * (leaf_words - row.len());
-    for (dst, word) in bytes[start..].chunks_exact_mut(8).zip(row) {
-        dst.copy_from_slice(&word.0.to_le_bytes());
-    }
-    hash_leaf(&bytes)
-}
-
-/// The full leaf image a stored row stands for: its zero prefix, then the row.
+/// image the tree was built over is the full `leaf_words` wide, the absent lanes
+/// leading (`pcs::merkle::merkle_tree_padded_rows` shares their hash prefix across
+/// every leaf). Every other level stores its full row, so the prefix is empty.
 fn leaf_image(row: &[F64], leaf_words: usize) -> Vec<F64> {
     let mut image = vec![F64::ZERO; leaf_words];
     image[leaf_words - row.len()..].copy_from_slice(row);
     image
+}
+
+/// The committer's leaf preimage: the image's words, little-endian.
+fn hash_words(image: &[F64]) -> Hash {
+    let mut bytes = vec![0u8; 8 * image.len()];
+    for (dst, word) in bytes.chunks_exact_mut(8).zip(image) {
+        dst.copy_from_slice(&word.0.to_le_bytes());
+    }
+    hash_leaf(&bytes)
 }
 
 /// Query positions with duplicates removed, ascending: the order a phase stores
@@ -156,7 +155,7 @@ impl PrunedMerklePaths {
         let hashes = self
             .leaf_data
             .iter()
-            .map(|row| (row.len() == row_words).then(|| hash_row(row, leaf_words)))
+            .map(|row| (row.len() == row_words).then(|| hash_words(&leaf_image(row, leaf_words))))
             .collect::<Option<Vec<_>>>()?;
         Some((sorted, hashes))
     }
@@ -264,7 +263,7 @@ pub struct RawMerklePath {
 impl RawMerklePath {
     /// Recompute the root this opening claims, from its leaf and path.
     pub fn root(&self, leaf_index: usize) -> Hash {
-        let mut acc = hash_row(&self.leaf_data, self.leaf_data.len());
+        let mut acc = hash_words(&self.leaf_data);
         let mut idx = leaf_index;
         for sibling in &self.path {
             let (left, right) = if idx & 1 == 0 { (acc, *sibling) } else { (*sibling, acc) };
@@ -281,7 +280,7 @@ mod tests {
 
     /// A full binary tree over `rows`, in the flat bottom-up layout `prune` reads.
     fn tree_of(rows: &[Vec<F64>]) -> Vec<Hash> {
-        let mut tree: Vec<Hash> = rows.iter().map(|r| hash_row(r, r.len())).collect();
+        let mut tree: Vec<Hash> = rows.iter().map(|r| hash_words(r)).collect();
         let (mut start, mut len) = (0usize, rows.len());
         while len > 1 {
             for i in 0..len / 2 {

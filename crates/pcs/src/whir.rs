@@ -366,8 +366,8 @@ pub fn commit(message: &[F64], log_n: usize, log_batch_size: usize, log_inv_rate
     let trace = std::env::var_os("WHIR_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
     tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = n_lanes).in_scope(|| {
+        crate::ntt::transpose_lane_major(&mut codeword[..message.len()], message, n_lanes, log_rows);
         let ntt = AdditiveNttF64::standard(k_code);
-        ntt.transpose_lane_major(&mut codeword[..message.len()], message, n_lanes, log_rows);
         ntt.encode_interleaved_in_place(&mut codeword, n_lanes, log_inv_rate);
     });
     let ntt_elapsed = t_ntt.elapsed();
@@ -430,11 +430,10 @@ pub(crate) fn ligero_commit_ext(
 
     let codeword_len = block_len * num_interleaved;
     // Replicated up front rather than gathered by the first pass, unlike the base
-    // encode ([`AdditiveNttF64::encode_interleaved`]). Fusing it here was measured
-    // and lost, 340ms to 371ms over the six levels: this transform's fused width is
-    // radix 4 over `num_interleaved` = 8 F192 lanes, so a row is 192 bytes and the
-    // gather writes four of those at a stride, against the base encode's radix 8
-    // over 512-byte rows. The contiguous memcpy wins at that granularity.
+    // encode ([`AdditiveNttF64::encode_interleaved_in_place`]): the fused width here is
+    // radix 4 over `num_interleaved` = 8 F192 lanes, so a gather writes four 192-byte
+    // rows at a stride, against the base encode's radix 8 over 512-byte rows. A
+    // contiguous copy is the better shape at this granularity.
     let mut mat = zk_alloc::alloc_uninit(codeword_len);
     replicate_message_fill_uninit(&mut mat, poly);
     // SAFETY: the replicate fill initializes every matrix element.
@@ -1591,6 +1590,15 @@ fn recv_level_rows<T>(
     Some(rows.iter().map(|row| decode(row)).collect())
 }
 
+/// Decode for an L0 leaf image: the image is lane-DESCENDING, so that a
+/// padding-free commitment's absent lanes are its leading words, and reversing it
+/// puts stack block `b` back at index `b`, which is what the induce folds.
+fn l0_row_ascending(row: &[F64]) -> Vec<F64> {
+    let mut v = row.to_vec();
+    v.reverse();
+    v
+}
+
 /// The already-committed level whose rows the next query phase opens: its root
 /// plus the shape both verifiers re-derive the block length and leaf width from.
 struct PrevLevel {
@@ -1781,13 +1789,7 @@ pub fn recursive_verifier_with_basis(
         &queries_0,
         n_lanes,
         num_interleaved_0,
-        // The image is lane-descending with the absent lanes leading; reversing it
-        // puts block `b` at index `b`, which is what the induce folds.
-        |row: &[F64]| {
-            let mut v = row.to_vec();
-            v.reverse();
-            v
-        },
+        l0_row_ascending,
     ) else {
         return false;
     };
@@ -1822,12 +1824,12 @@ pub fn recursive_verifier_with_basis(
         ood_bases.push((build_eq_table_ext(&ood.z), initial_k, *scalar));
     }
 
-    // Basis poly tracking for the residual check. b_initial folds at ALL ris;
-    // basis_0_induced starts after the lane folds.
+    // Basis poly tracking for the residual check. Slot 0 is `b_initial`, evaluated
+    // at the whole (rotated) point; every later slot is an induced basis evaluated
+    // at a suffix of `ris`, so the two side vectors describe slots 1.. and are
+    // indexed `[k - 1]`.
     let mut basis_polys: Vec<ArenaVec<F192>> = vec![ArenaVec::from_slice(b_initial), basis_0_induced];
-    // Slot 0 is `b_initial`, which is evaluated at the whole rotated point rather
-    // than a suffix of `ris`, so its start is never read; `usize::MAX` says so.
-    let mut basis_ris_starts: Vec<usize> = vec![usize::MAX, initial_k];
+    let mut basis_ris_starts: Vec<usize> = vec![initial_k];
     let mut basis_separations: Vec<F192> = vec![query_scalar_0];
     let mut ris: Vec<F192> = r_lane_fold.clone();
 
@@ -1922,28 +1924,22 @@ pub fn recursive_verifier_with_basis(
                 }
             }
             ris.extend_from_slice(&ris_tail);
-            let mut weight = F192::ZERO;
-            for (k, basis) in basis_polys.iter().enumerate() {
-                let at = if k == 0 {
-                    // `b_initial` is indexed by witness variable, while `ris` is in
-                    // round order and the first `initial_k` rounds bound the lane
-                    // (top) variables: the same rotation the succinct path applies
-                    // before `eval_b_at`.
-                    if basis.len() != 1usize << ris.len() {
-                        return false;
-                    }
-                    let mut point = ris.clone();
-                    point.rotate_left(initial_k);
-                    mle_eval_ext(basis, &point)
-                } else {
-                    let folded = partial_eval_lsb_ext(basis, &ris[basis_ris_starts[k]..]);
-                    if folded.len() != 1 {
-                        return false;
-                    }
-                    folded[0]
-                };
-                let sep = if k == 0 { F192::ONE } else { basis_separations[k - 1] };
-                weight += sep * at;
+            // `b_initial` is indexed by witness variable, while `ris` is in round
+            // order and the first `initial_k` rounds bound the lane (top) variables:
+            // the same rotation the succinct path applies before `eval_b_at`. Its
+            // separation is 1, so it opens the sum.
+            if basis_polys[0].len() != 1usize << ris.len() {
+                return false;
+            }
+            let mut point = ris.clone();
+            point.rotate_left(initial_k);
+            let mut weight = mle_eval_ext(&basis_polys[0], &point);
+            for ((basis, &start), &sep) in basis_polys[1..].iter().zip(&basis_ris_starts).zip(&basis_separations) {
+                let folded = partial_eval_lsb_ext(basis, &ris[start..]);
+                if folded.len() != 1 {
+                    return false;
+                }
+                weight += sep * folded[0];
             }
             for (basis, start, beta) in &ood_bases {
                 let at = partial_eval_lsb_ext(basis, &ris[*start..]);
@@ -2138,13 +2134,7 @@ where
         &queries_0,
         n_lanes,
         num_interleaved_0,
-        // The image is lane-descending with the absent lanes leading; reversing it
-        // puts block `b` at index `b`, which is what the induce folds.
-        |row: &[F64]| {
-            let mut v = row.to_vec();
-            v.reverse();
-            v
-        },
+        l0_row_ascending,
     ) else {
         return false;
     };

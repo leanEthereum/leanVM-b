@@ -151,36 +151,12 @@ impl AdditiveNttF64 {
         }
     }
 
-    /// RS-encode `msg` into the codeword `data`: `data` is `2^log_inv_rate`
-    /// replicas of `msg`, transformed from layer `log_inv_rate`.
+    /// RS-encode the message already sitting in the codeword's own first replica,
+    /// `data[..data.len() >> log_inv_rate]`: `data` becomes `2^log_inv_rate`
+    /// replicas of it, transformed from layer `log_inv_rate`.
     ///
-    /// This reads `msg` ROW-major (`msg[row * num_ntts + lane]`), which the L0
-    /// commitment no longer produces: its lanes are contiguous witness blocks, so it
-    /// is what [`Self::transpose_lane_major`] produces for it; this stays as the
-    /// copying wrapper the tests drive, over the same encoder.
-    ///
-    /// The replication is fused into the first pass. Each block at layer
-    /// `log_inv_rate` IS one replica, so a block's eight participating rows are
-    /// eight message rows, and the pass can gather them itself instead of reading
-    /// back a codeword someone else just filled. That turns three sweeps of the
-    /// whole codeword (fill it, read it, write it) into one gather and one write:
-    /// at the XMSS scale, three gigabytes moved instead of seven.
-    ///
-    /// Falls back to filling `data` and transforming it when the first pass is not
-    /// the fused radix-8 group (tiny transforms, or a rate deep enough to leave
-    /// fewer than three whole-buffer layers).
-    pub fn encode_interleaved(&self, data: &mut [F64], msg: &[F64], num_ntts: usize, log_inv_rate: usize) {
-        assert_eq!(data.len(), msg.len() << log_inv_rate, "codeword is 2^rate messages");
-        data[..msg.len()].copy_from_slice(msg);
-        self.encode_interleaved_in_place(data, num_ntts, log_inv_rate);
-    }
-
-    /// [`Self::encode_interleaved`] reading its message from the codeword's own
-    /// first replica, `data[..data.len() >> log_inv_rate]`, which is where the
-    /// caller has already put it.
-    ///
-    /// This is the form the padding-free commit needs: its message is lane-major, so
-    /// [`Self::transpose_lane_major`] writes it into that region first. The transpose
+    /// The message is read ROW-major (`data[row * num_ntts + lane]`), which is what
+    /// [`transpose_lane_major`] writes there for a lane-major caller. That transpose
     /// stays a pass of its own because it wants one long contiguous run per lane
     /// while a radix-8 group wants eight row windows at once, so fusing the two would
     /// put `8 * num_ntts` message streams in flight. Separating them costs one extra
@@ -239,55 +215,6 @@ impl AdditiveNttF64 {
             }
         });
         self.forward_transform_interleaved_parallel_from_layer(data, num_ntts, log_inv_rate + 3);
-    }
-
-    /// Transpose a **lane-major message** into the interleaved order
-    /// [`Self::encode_interleaved_in_place`] reads, writing it to the codeword's own
-    /// message region: lane `l`'s block is `msg[l << log_rows ..][..1 << log_rows]`,
-    /// and codeword lane `t` takes block `n_lanes - 1 - t`.
-    ///
-    /// `n_lanes` is arbitrary, because the caller commits only the lanes that carry
-    /// data: the stacked witness's zero tail is whole lanes and is simply absent.
-    ///
-    /// The DESCENDING direction is the PCS's leaf-image order: a leaf reads its lanes
-    /// from the top interleaving index downwards, so the absent lanes land at the
-    /// FRONT of the image, where their hash prefix is one chaining value every leaf
-    /// shares (`merkle::merkle_tree_padded_rows`) and where they can be left out of
-    /// the proof. Which block feeds which lane is free here (each lane is an
-    /// independent codeword), so the convention costs nothing.
-    ///
-    /// Blocked by row tile: each lane contributes a burst of contiguous words, and
-    /// the tile is written straight into its own contiguous run of `out`, which is
-    /// L1-resident while it fills. That is what keeps an `n_lanes`-way gather at
-    /// `2^log_rows` stride near bandwidth.
-    pub fn transpose_lane_major(&self, out: &mut [F64], msg: &[F64], n_lanes: usize, log_rows: usize) {
-        let rows = 1usize << log_rows;
-        assert!(n_lanes > 0, "a commitment needs at least one lane");
-        assert_eq!(msg.len(), n_lanes * rows, "message is n_lanes contiguous lane blocks");
-        assert_eq!(out.len(), msg.len(), "the transpose is the same words, reordered");
-
-        /// Words per row tile: 32 KiB, so a tile stays in L1 while it is scattered
-        /// into, and each lane's contribution to it is a burst the prefetcher sees.
-        const TILE_WORDS: usize = 4096;
-        assert!(n_lanes <= TILE_WORDS, "a codeword row must fit the transpose tile");
-        // Largest power-of-two row count whose tile fits: both it and `rows` are then
-        // powers of two, so the tiles cover every row. They have to: this is the sole
-        // initializer of an uninitialized codeword's message region, and a truncating
-        // tile count would leave the tail reading the previous phase's plausible
-        // bytes, whose symptom is a proof that stops verifying rather than a crash.
-        let tile_rows = (1usize << (TILE_WORDS / n_lanes).ilog2()).min(rows);
-        assert_eq!(rows % tile_rows, 0, "row tiles must cover every row");
-
-        parallel::chunks_mut(out, tile_rows * n_lanes, |t, tile| {
-            let r0 = t * tile_rows;
-            for lane in 0..n_lanes {
-                let block = n_lanes - 1 - lane;
-                let src = &msg[block * rows + r0..][..tile_rows];
-                for (slot, &word) in tile[lane..].iter_mut().step_by(n_lanes).zip(src) {
-                    *slot = word;
-                }
-            }
-        });
     }
 
     /// Scalar reference for the interleaved forward NTT (test oracle).
@@ -553,8 +480,8 @@ fn butterfly_interleaved_fused_3layer(block: &mut [F64], t: &[F64; 7], eighth: u
 
 /// The twelve butterflies of one radix-8 row group: layer L pairs the rows at
 /// distance 4, L+1 at 2, L+2 at 1, with `t` holding the seven twiddles
-/// breadth-first. Shared with [`AdditiveNttF64::encode_interleaved`], whose first
-/// pass gathers its rows from the message rather than finding them in place.
+/// breadth-first. Shared with [`AdditiveNttF64::encode_interleaved_in_place`], whose
+/// first pass gathers its rows from the message rather than finding them in place.
 #[inline(always)]
 fn radix8_butterflies(rows: &mut [&mut [F64]; 8], t: &[F64; 7]) {
     let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
@@ -574,6 +501,56 @@ fn radix8_butterflies(rows: &mut [&mut [F64]; 8], t: &[F64; 7]) {
     butterfly_lanes(r2, r3, t[4]);
     butterfly_lanes(r4, r5, t[5]);
     butterfly_lanes(r6, r7, t[6]);
+}
+
+/// Transpose a **lane-major message** into the interleaved order
+/// [`AdditiveNttF64::encode_interleaved_in_place`] reads, writing it to the
+/// codeword's own message region: lane `l`'s block is
+/// `msg[l << log_rows ..][..1 << log_rows]`, and codeword lane `t` takes block
+/// `n_lanes - 1 - t`. Pure data movement, independent of the transform's domain.
+///
+/// `n_lanes` is arbitrary, because the caller commits only the lanes that carry
+/// data: the stacked witness's zero tail is whole lanes and is simply absent.
+///
+/// The DESCENDING direction is the PCS's leaf-image order: a leaf reads its lanes
+/// from the top interleaving index downwards, so the absent lanes land at the FRONT
+/// of the image, where their hash prefix is one chaining value every leaf shares
+/// ([`crate::merkle::merkle_tree_padded_rows`]) and where they can be left out of
+/// the proof. Which block feeds which lane is free here (each lane is an independent
+/// codeword), so the convention costs nothing.
+///
+/// Blocked by row tile: each lane contributes a burst of contiguous words, and the
+/// tile is written straight into its own contiguous run of `out`, which is
+/// L1-resident while it fills. That is what keeps an `n_lanes`-way gather at
+/// `2^log_rows` stride near bandwidth.
+pub fn transpose_lane_major(out: &mut [F64], msg: &[F64], n_lanes: usize, log_rows: usize) {
+    let rows = 1usize << log_rows;
+    assert!(n_lanes > 0, "a commitment needs at least one lane");
+    assert_eq!(msg.len(), n_lanes * rows, "message is n_lanes contiguous lane blocks");
+    assert_eq!(out.len(), msg.len(), "the transpose is the same words, reordered");
+
+    /// Words per row tile: 32 KiB, so a tile stays in L1 while it is scattered
+    /// into, and each lane's contribution to it is a burst the prefetcher sees.
+    const TILE_WORDS: usize = 4096;
+    assert!(n_lanes <= TILE_WORDS, "a codeword row must fit the transpose tile");
+    // Largest power-of-two row count whose tile fits: both it and `rows` are then
+    // powers of two, so the tiles cover every row. They have to: this is the sole
+    // initializer of an uninitialized codeword's message region, and a truncating
+    // tile count would leave the tail reading the previous phase's plausible bytes,
+    // whose symptom is a proof that stops verifying rather than a crash.
+    let tile_rows = (1usize << (TILE_WORDS / n_lanes).ilog2()).min(rows);
+    assert_eq!(rows % tile_rows, 0, "row tiles must cover every row");
+
+    parallel::chunks_mut(out, tile_rows * n_lanes, |t, tile| {
+        let r0 = t * tile_rows;
+        for lane in 0..n_lanes {
+            let block = n_lanes - 1 - lane;
+            let src = &msg[block * rows + r0..][..tile_rows];
+            for (slot, &word) in tile[lane..].iter_mut().step_by(n_lanes).zip(src) {
+                *slot = word;
+            }
+        }
+    });
 }
 
 /// Fill the rest of `data` with copies of its first `msg_len` elements: the un-fused
@@ -898,9 +875,9 @@ mod tests {
         }
     }
 
-    /// `encode_interleaved` fuses the replication into its first pass, so it must
-    /// land exactly where filling the codeword and transforming it does, including
-    /// on the sizes that take its fallback.
+    /// `encode_interleaved_in_place` fuses the replication into its first pass, so it
+    /// must land exactly where filling the codeword and transforming it does,
+    /// including on the sizes that take its fallback.
     #[test]
     fn fused_encode_matches_replicate_then_transform() {
         let mut rng = Rng::new(0xE0C0DE);
@@ -916,7 +893,8 @@ mod tests {
                     ntt.forward_transform_interleaved_parallel_from_layer(&mut want, lanes, log_inv_rate);
 
                     let mut got = vec![F64::ZERO; msg_len << log_inv_rate];
-                    ntt.encode_interleaved(&mut got, &msg, lanes, log_inv_rate);
+                    got[..msg_len].copy_from_slice(&msg);
+                    ntt.encode_interleaved_in_place(&mut got, lanes, log_inv_rate);
 
                     assert_eq!(
                         got, want,
@@ -949,7 +927,7 @@ mod tests {
             let msg: Vec<F64> = (0..rows * n_lanes).map(|_| F64(rng.next_u64())).collect();
 
             let mut got = vec![F64::ZERO; msg.len() << log_inv_rate];
-            ntt.transpose_lane_major(&mut got[..msg.len()], &msg, n_lanes, log_rows);
+            transpose_lane_major(&mut got[..msg.len()], &msg, n_lanes, log_rows);
             ntt.encode_interleaved_in_place(&mut got, n_lanes, log_inv_rate);
 
             let block_len = 1usize << log_d;

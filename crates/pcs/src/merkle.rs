@@ -197,6 +197,12 @@ pub fn merkle_tree_padded_rows(data: &[F64], num_leaves: usize, row_words: usize
 const STAGE_TILE_WORDS: usize = 2048;
 const _: () = assert!((1usize << crate::whir_config::INITIAL_FOLDING_FACTOR) <= STAGE_TILE_WORDS);
 
+/// Leaves the batched BLAKE2s consumes in one whole batch: the widest backend is
+/// 16-lane and pairs two of them, and 32 is a multiple of the narrower widths' own
+/// paired batches, so one number serves every target.
+const BATCH_LEAVES: usize = 32;
+const _: () = assert!(HASH_GROUP.is_multiple_of(BATCH_LEAVES));
+
 fn hash_leaves_padded_rows_uninit(
     data: &[F64],
     row_words: usize,
@@ -205,10 +211,12 @@ fn hash_leaves_padded_rows_uninit(
 ) {
     // Whole blocks of leading zeros are hashed once, for every leaf, into `state`;
     // each leaf then hashes the `staged` words that follow, which are the rest of
-    // the zero padding and then its row.
-    // Sharing needs the staged remainder to be whole blocks too, which holds exactly
-    // when the leaf itself is (every real leaf width is `2^k >= 8`).
-    let zero_blocks = if leaf_words.is_multiple_of(WORDS_PER_BLOCK) {
+    // the zero padding and then its row. Both the sharing and the batched hasher
+    // need whole blocks, so an image that is not one (only the small ring-switch
+    // shapes) shares nothing and takes the scalar arm below. Every real leaf width
+    // is `2^k >= 8`.
+    let whole_blocks = leaf_words.is_multiple_of(WORDS_PER_BLOCK);
+    let zero_blocks = if whole_blocks {
         (leaf_words - row_words) / WORDS_PER_BLOCK
     } else {
         0
@@ -216,7 +224,17 @@ fn hash_leaves_padded_rows_uninit(
     let staged = leaf_words - zero_blocks * WORDS_PER_BLOCK;
     let state = primitives::blake2s::zero_prefix_state(zero_blocks);
     let t_offset = (zero_blocks * WORDS_PER_BLOCK * 8) as u64;
+    // Leaves per tile, in whole hasher batches: the batched BLAKE2s sends its
+    // remainder below one batch through the scalar path, and a tile boundary is a
+    // remainder. `HASH_GROUP` is a multiple of `BATCH_LEAVES`, so a full task's tiles
+    // are all whole and only a short final task can leave a tail. Below one batch
+    // there is nothing to align to.
     let per_tile = STAGE_TILE_WORDS / staged;
+    let per_tile = if per_tile >= BATCH_LEAVES {
+        per_tile - per_tile % BATCH_LEAVES
+    } else {
+        per_tile
+    };
     for_each_hash_group(out, |lo, outputs| {
         // Zeroed once per task: the words before each row are the padding the image
         // carries, so those columns of the tile are never written again.
@@ -229,18 +247,19 @@ fn hash_leaves_padded_rows_uninit(
             }
             // SAFETY: F64 is repr(transparent) over u64, so the tile's prefix is the
             // little-endian byte image of `len` leaves of `staged` words, which on
-            // this (LE) target is what `fiat_shamir::merkle::hash_row` serializes
+            // this (LE) target is what `fiat_shamir::merkle::hash_words` serializes
             // over the same words. Exactly `len * staged` initialized elements.
             let bytes = unsafe { core::slice::from_raw_parts(tile.as_ptr().cast::<u8>(), len * staged * 8) };
             // Hash inline: this already runs inside a pool task, so
             // `hash_leaves_batched_uninit` would dispatch a nested one.
-            if (staged * 8).is_multiple_of(64) {
+            if whole_blocks {
                 // SAFETY: Hash is [u8; 32] with no padding, so the output slots are
                 // `len * 32` contiguous writable bytes.
                 let out_bytes = unsafe { core::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<u8>(), len * 32) };
                 primitives::blake2s::hash_many_dyn_from_state(bytes, staged * 8, &state, t_offset, out_bytes);
             } else {
-                // Not whole blocks, so nothing was shared and `staged == leaf_words`.
+                // Nothing was shared, so `staged == leaf_words` and this is the whole
+                // image.
                 for (i, slot) in chunk.iter_mut().enumerate() {
                     slot.write(hash_leaf(&bytes[i * staged * 8..(i + 1) * staged * 8]));
                 }
@@ -351,23 +370,28 @@ mod leaf_hash_and_tree_tests {
 
     /// The zero-extending tree must equal the tree of the full-width matrix it stands
     /// for, `zeros ‖ row` per leaf, however many whole blocks of those zeros the
-    /// shared chaining value absorbs. Sizes cross the staging tile and the hash-group
-    /// boundary, and include row widths that are not powers of two, leaf widths that
-    /// are not whole blocks (no sharing), and a zero prefix of every length mod 8.
+    /// shared chaining value absorbs. The cases cover every regime the prefix can
+    /// fall in, at sizes that cross the staging tile and the hash-group boundary.
     #[test]
     fn padded_rows_tree_matches_full_width() {
         for (num_leaves, row_words, leaf_words) in [
+            // Nothing to pad: the short-circuit, at both leaf widths.
             (8usize, 64usize, 64usize),
-            (2048, 37, 64),
-            (64, 1, 64),
             (1024, 8, 8),
-            (32, 5, 8),
-            // Zero prefixes of 3, 4 and 5 whole blocks plus a partial one.
+            // Zero prefixes of 3, 4, 5 and 7 whole blocks plus a partial one, at row
+            // widths that are not powers of two.
             (2048, 37, 64),
             (256, 27, 64),
             (256, 23, 64),
-            // 40-byte leaves: not whole blocks, so nothing is shared and the leaf
-            // hashing takes the scalar arm.
+            (64, 1, 64),
+            // A prefix that is whole blocks exactly, so the staged part IS the row.
+            (256, 32, 64),
+            // A prefix shorter than one block: nothing is shared, but the image still
+            // has to be staged.
+            (32, 5, 8),
+            (256, 61, 64),
+            // 40-byte leaves: not whole blocks, so the leaf hashing takes the scalar
+            // arm.
             (16, 3, 5),
         ] {
             let data: Vec<F64> = (0..row_words * num_leaves)
