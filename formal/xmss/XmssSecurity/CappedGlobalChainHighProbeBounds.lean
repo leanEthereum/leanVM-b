@@ -5,6 +5,55 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity.CappedChain
 
+def GlobalChainProbeRelevantInput
+    (secretKey : SecretKey) (input : HashInput) : Prop :=
+  globalChainInputProbe? secretKey.parameter input ≠ none ∨
+    globalLeafInputData? secretKey.parameter input ≠ none
+
+noncomputable instance (secretKey : SecretKey) :
+    DecidablePred (GlobalChainProbeRelevantInput secretKey) :=
+  Classical.decPred _
+
+theorem globalFilteredCausalAttackerHashPlan_eq_cached_or_fresh_of_irrelevant
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState)
+    (hirrelevant : ¬GlobalChainProbeRelevantInput secretKey input) :
+    (∃ output, globalFilteredCausalAttackerHashPlan secretKey input state =
+        .cached output) ∨
+      globalFilteredCausalAttackerHashPlan secretKey input state = .fresh := by
+  classical
+  rw [GlobalChainProbeRelevantInput, not_or] at hirrelevant
+  have hchain : globalChainInputProbe? secretKey.parameter input = none := by
+    by_contra hne
+    exact hirrelevant.1 hne
+  have hleaf : globalLeafInputData? secretKey.parameter input = none := by
+    by_contra hne
+    exact hirrelevant.2 hne
+  by_cases hcache : state.cache input = none
+  · right
+    rw [globalFilteredCausalAttackerHashPlan, hcache,
+      globalFilteredCausalUncachedAttackerHashPlan.eq_def, hchain,
+      globalFilteredCausalLeafHashPlan.eq_def, hleaf]
+  · left
+    obtain ⟨output, houtput⟩ := Option.ne_none_iff_exists'.mp hcache
+    exact ⟨output, by rw [globalFilteredCausalAttackerHashPlan, houtput]⟩
+
+theorem globalCausalAttackerHashQueryFromHigh_irrelevant_isProbeQueryBoundP
+    (high : GlobalChainValueIndex → Digest)
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState)
+    (hirrelevant : ¬GlobalChainProbeRelevantInput secretKey input) :
+    (globalCausalAttackerHashQueryFromHigh high secretKey input).run state
+      |>.IsQueryBoundP RevealProbeOracleSimulation.IsProbeQuery 0 := by
+  rw [globalCausalAttackerHashQueryFromHigh_run]
+  rcases globalFilteredCausalAttackerHashPlan_eq_cached_or_fresh_of_irrelevant
+      secretKey input state hirrelevant with ⟨output, hplan⟩ | hplan
+  · rw [hplan]
+    simp
+  · rw [hplan]
+    exact globalCausalHashQuery_run_isProbeQueryBoundP input
+      (globalCausalRecordedState secretKey input state)
+
 theorem globalCausalRevealHashQueryFromHigh_isProbeQueryBoundP
     (high : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (input : HashInput)

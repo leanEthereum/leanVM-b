@@ -10,6 +10,11 @@ namespace XmssSecurity.CappedChain
 set_option maxHeartbeats 2000000
 set_option maxRecDepth 2000000
 
+noncomputable def globalChainProbeActionCost
+    (secretKey : SecretKey) : (OracleWorld + SigningSpec).Domain → Nat
+  | .inl (.inr input) => if GlobalChainProbeRelevantInput secretKey input then 1 else 0
+  | _ => 0
+
 theorem globalMonitoredCausalResult_support_probeCount_growth
     (table : GlobalChainValueIndex → Digest)
     (initial : GlobalMonitoredCausalState)
@@ -88,6 +93,71 @@ theorem globalHighMonitoredMappedAdversaryImpl_support_probeCount_growth
       (globalFilteredCausalSigningQuery_isProbeQueryBoundP right.1.1 request
         state.1.causal) rawResult hrawResult
 
+theorem globalHighMonitoredMappedAdversaryImpl_support_relevantProbeCount_growth
+    (right : (ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) ×
+      (GlobalChainEdgeIndex → Digest))
+    (input : (OracleWorld + SigningSpec).Domain)
+    (state : GlobalMonitoredTracedState)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      GlobalMonitoredTracedState)
+    (hresult : result ∈ support
+      ((globalHighMonitoredMappedAdversaryImpl right input).run state)) :
+    RevealProbeOracleSimulation.observedProbeCount result.2.1.trace ≤
+      RevealProbeOracleSimulation.observedProbeCount state.1.trace +
+        globalChainProbeActionCost right.1.1.secretKey input := by
+  unfold globalHighMonitoredMappedAdversaryImpl actionTracedStateImpl at hresult
+  change result ∈ support (do
+    let baseResult ←
+      (globalHighMonitoredBaseMappedAdversaryImpl right input).run state.1
+    pure (baseResult.1,
+      (baseResult.2, state.2 ++ attackerActionFragment input baseResult.1)))
+      at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨baseResult, hbaseResult, hfinal⟩ := hresult
+  simp only [support_pure, Set.mem_singleton_iff] at hfinal
+  subst result
+  rcases input with (worldInput | request)
+  · rcases worldInput with uniformIndex | hashInput
+    · simp only [globalHighMonitoredBaseMappedAdversaryImpl] at hbaseResult
+      rw [monitorGlobalCausalTrace_run, support_map] at hbaseResult
+      obtain ⟨rawResult, hrawResult, rfl⟩ := hbaseResult
+      exact globalMonitoredCausalResult_support_probeCount_growth right.1.2
+        state.1 ((globalCausalUniformImpl uniformIndex).run state.1.causal) 0
+          (globalCausalUniformImpl_run_isProbeQueryBoundP uniformIndex
+            state.1.causal) rawResult hrawResult
+    · simp only [globalHighMonitoredBaseMappedAdversaryImpl] at hbaseResult
+      rw [monitorGlobalCausalTrace_run, support_map] at hbaseResult
+      obtain ⟨rawResult, hrawResult, rfl⟩ := hbaseResult
+      by_cases hrelevant :
+          GlobalChainProbeRelevantInput right.1.1.secretKey hashInput
+      · simpa [globalChainProbeActionCost, hrelevant] using
+          globalMonitoredCausalResult_support_probeCount_growth right.1.2
+          state.1
+            ((globalCausalAttackerHashQueryFromHigh
+              (globalChainValueHighTableOfEdges right.2)
+                right.1.1.secretKey hashInput).run state.1.causal) 1
+          (globalCausalAttackerHashQueryFromHigh_isProbeQueryBoundP
+            (globalChainValueHighTableOfEdges right.2) right.1.1.secretKey
+              hashInput state.1.causal) rawResult hrawResult
+      · simpa [globalChainProbeActionCost, hrelevant] using
+          globalMonitoredCausalResult_support_probeCount_growth right.1.2
+          state.1
+            ((globalCausalAttackerHashQueryFromHigh
+              (globalChainValueHighTableOfEdges right.2)
+                right.1.1.secretKey hashInput).run state.1.causal) 0
+          (globalCausalAttackerHashQueryFromHigh_irrelevant_isProbeQueryBoundP
+            (globalChainValueHighTableOfEdges right.2) right.1.1.secretKey
+              hashInput state.1.causal hrelevant) rawResult hrawResult
+  · simp only [globalHighMonitoredBaseMappedAdversaryImpl] at hbaseResult
+    rw [monitorGlobalCausalTrace_run, support_map] at hbaseResult
+    obtain ⟨rawResult, hrawResult, rfl⟩ := hbaseResult
+    exact globalMonitoredCausalResult_support_probeCount_growth right.1.2
+      state.1 (globalFilteredCausalSigningQuery right.1.1 request
+        state.1.causal) 0
+      (globalFilteredCausalSigningQuery_isProbeQueryBoundP right.1.1 request
+        state.1.causal) rawResult hrawResult
+
 theorem globalHighMonitoredMappedAdversaryImpl_support_actionTrace_eq
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -111,6 +181,36 @@ theorem globalHighMonitoredMappedAdversaryImpl_support_actionTrace_eq
   simp only [support_pure, Set.mem_singleton_iff] at hfinal
   subst result
   rfl
+
+noncomputable def AttackerActionTrace.globalChainProbeRelevantInputs
+    (secretKey : SecretKey) (trace : AttackerActionTrace) : List HashInput :=
+  trace.hashInputs.filter (GlobalChainProbeRelevantInput secretKey)
+
+@[simp]
+theorem AttackerActionTrace.globalChainProbeRelevantInputs_append
+    (secretKey : SecretKey) (left right : AttackerActionTrace) :
+    (left ++ right).globalChainProbeRelevantInputs secretKey =
+      left.globalChainProbeRelevantInputs secretKey ++
+        right.globalChainProbeRelevantInputs secretKey := by
+  simp [AttackerActionTrace.globalChainProbeRelevantInputs]
+
+@[simp]
+theorem attackerActionFragment_globalChainProbeRelevantInputs_length
+    (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (output : (OracleWorld + SigningSpec).Range input) :
+    (attackerActionFragment input output
+        |>.globalChainProbeRelevantInputs secretKey).length =
+      globalChainProbeActionCost secretKey input := by
+  classical
+  rcases input with (uniformOrHash | request)
+  · rcases uniformOrHash with uniformIndex | hashInput
+    · rfl
+    · by_cases hrelevant : GlobalChainProbeRelevantInput secretKey hashInput <;>
+        simp [AttackerActionTrace.globalChainProbeRelevantInputs,
+          AttackerActionTrace.hashInputs, AttackerAction.hashInput?,
+          globalChainProbeActionCost, hrelevant]
+  · rfl
 
 def GlobalMonitoredProbeCountCoveredByAttackerTrace
     (state : GlobalMonitoredTracedState) : Prop :=
@@ -158,6 +258,60 @@ theorem globalHighMonitoredAdversary_simulation_probeCountCovered
     (fun input current hcurrent output houtput =>
       globalHighMonitoredMappedAdversaryImpl_preserves_probeCountCovered right
         input current hcurrent output houtput)
+    computation state hcovered result hresult
+
+def GlobalMonitoredProbeCountCoveredByRelevantAttackerTrace
+    (secretKey : SecretKey) (state : GlobalMonitoredTracedState) : Prop :=
+  RevealProbeOracleSimulation.observedProbeCount state.1.trace ≤
+    (state.2.globalChainProbeRelevantInputs secretKey).length
+
+theorem globalHighMonitoredMappedAdversaryImpl_preserves_relevantProbeCountCovered
+    (right : (ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) ×
+      (GlobalChainEdgeIndex → Digest))
+    (input : (OracleWorld + SigningSpec).Domain)
+    (state : GlobalMonitoredTracedState)
+    (hcovered : GlobalMonitoredProbeCountCoveredByRelevantAttackerTrace
+      right.1.1.secretKey state)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      GlobalMonitoredTracedState)
+    (hresult : result ∈ support
+      ((globalHighMonitoredMappedAdversaryImpl right input).run state)) :
+    GlobalMonitoredProbeCountCoveredByRelevantAttackerTrace
+      right.1.1.secretKey result.2 := by
+  have hcount :=
+    globalHighMonitoredMappedAdversaryImpl_support_relevantProbeCount_growth
+      right input state result hresult
+  have htrace :=
+    globalHighMonitoredMappedAdversaryImpl_support_actionTrace_eq right input
+      state result hresult
+  unfold GlobalMonitoredProbeCountCoveredByRelevantAttackerTrace at hcovered ⊢
+  rw [htrace, AttackerActionTrace.globalChainProbeRelevantInputs_append,
+    List.length_append,
+    attackerActionFragment_globalChainProbeRelevantInputs_length]
+  omega
+
+theorem globalHighMonitoredAdversary_simulation_relevantProbeCountCovered
+    (right : (ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) ×
+      (GlobalChainEdgeIndex → Digest))
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (state : GlobalMonitoredTracedState)
+    (hcovered : GlobalMonitoredProbeCountCoveredByRelevantAttackerTrace
+      right.1.1.secretKey state)
+    (result : α × GlobalMonitoredTracedState)
+    (hresult : result ∈ support
+      ((simulateQ (globalHighMonitoredMappedAdversaryImpl right)
+        computation).run state)) :
+    GlobalMonitoredProbeCountCoveredByRelevantAttackerTrace
+      right.1.1.secretKey result.2 := by
+  exact OracleComp.simulateQ_run_preservesInv
+    (globalHighMonitoredMappedAdversaryImpl right)
+    (GlobalMonitoredProbeCountCoveredByRelevantAttackerTrace
+      right.1.1.secretKey)
+    (fun input current hcurrent output houtput =>
+      globalHighMonitoredMappedAdversaryImpl_preserves_relevantProbeCountCovered
+        right input current hcurrent output houtput)
     computation state hcovered result hresult
 
 theorem globalHighMonitoredVerifierImpl_support_probeCount_growth
