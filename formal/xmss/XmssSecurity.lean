@@ -134,6 +134,7 @@ import XmssSecurity.CappedUnifiedStructuralCollision
 import XmssSecurity.CappedGlobalMainTheorem
 import XmssSecurity.CappedUnifiedMainTheorem
 import XmssSecurity.CappedUnifiedTwoLaneReduction
+import XmssSecurity.CappedUnifiedHighArchitecture
 import XmssSecurity.CappedEncodingRejection
 import XmssSecurity.CappedEncodingMonitor
 import XmssSecurity.ConcreteCorrectness

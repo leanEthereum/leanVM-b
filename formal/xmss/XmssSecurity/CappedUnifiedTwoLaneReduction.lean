@@ -86,4 +86,38 @@ theorem xmss_has_127_bits_of_classical_security_of_unifiedTwoLaneReductions
   exact capped_xmss_forgeAdvantage_le_127_of_unifiedTwoLaneReduction q
     adversary (hreductions q adversary hbound)
 
+theorem HasClassicalSecurityBits.mono
+    {scheme : Scheme} {small large : Nat}
+    (hsecurity : HasClassicalSecurityBits scheme large)
+    (hbits : small ≤ large) :
+    HasClassicalSecurityBits scheme small := by
+  intro q hq
+  refine (hsecurity q hq).trans ?_
+  apply ENNReal.div_le_div_left
+  exact_mod_cast Nat.pow_le_pow_right (by omega) hbits
+
+theorem xmss_has_126_bits_of_classical_security_of_unifiedTwoLaneReductions
+    (hreductions : HasCappedUnifiedTwoLaneReductions) :
+    HasClassicalSecurityBits Concrete.cappedScheme 126 :=
+  (xmss_has_127_bits_of_classical_security_of_unifiedTwoLaneReductions
+    hreductions).mono (by omega)
+
+theorem xmss_has_125_bits_of_classical_security_of_unifiedTwoLaneReductions
+    (hreductions : HasCappedUnifiedTwoLaneReductions) :
+    HasClassicalSecurityBits Concrete.cappedScheme 125 :=
+  (xmss_has_127_bits_of_classical_security_of_unifiedTwoLaneReductions
+    hreductions).mono (by omega)
+
+theorem xmss_has_125_126_127_bits_of_classical_security_of_unifiedTwoLaneReductions
+    (hreductions : HasCappedUnifiedTwoLaneReductions) :
+    HasClassicalSecurityBits Concrete.cappedScheme 125 ∧
+      HasClassicalSecurityBits Concrete.cappedScheme 126 ∧
+      HasClassicalSecurityBits Concrete.cappedScheme 127 :=
+  ⟨xmss_has_125_bits_of_classical_security_of_unifiedTwoLaneReductions
+      hreductions,
+    xmss_has_126_bits_of_classical_security_of_unifiedTwoLaneReductions
+      hreductions,
+    xmss_has_127_bits_of_classical_security_of_unifiedTwoLaneReductions
+      hreductions⟩
+
 end XmssSecurity
