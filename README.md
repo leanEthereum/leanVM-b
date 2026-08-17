@@ -73,6 +73,28 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   verifying                   : 0.00392 s
 ```
 
+### Batch proving SHA256 compression
+
+```bash
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=17 cargo test --release -p flock --test sha2_batch -- --ignored --nocapture
+```
+
+```
+Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
+  setup (preprocessing, excluded) :   2169.8 ms
+  witness-gen                     :     60.7 ms ± 20.0%   9.2%
+  commit                          :     97.2 ms ± 4.5%   14.8%
+  zerocheck                       :    244.2 ms ± 3.7%   37.1%
+  lincheck                        :     25.1 ms ± 12.8%   3.8%
+  pcs opening                     :    231.7 ms ± 11.2%  35.2%
+  other                           :      0.0 ms           0.0%
+  ------------------------------------------
+  prove TOTAL (witness excluded)  :    598.2 ms ± 5.6%   90.8%
+  verify                          :      2.2 ms
+  throughput                      :        438,204 compressions/s ± 5.6%
+  (~3001.4 XMSS/s equivalent at 146 compressions/signature)
+```
+
 ## Security
 
 - 128-bit (LDR Johnson, no proximity gaps conjecture)
