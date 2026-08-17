@@ -242,4 +242,58 @@ theorem relTriple_keygenViews_globalSign_run_full_baseHigh
   exact ⟨⟨⟨randomness, decoded, hdecode, hoptions, hcaches,
     hleftFinal, hrightFinal⟩, hsigned.2⟩, hhighFinal⟩
 
+def GlobalSigningQueryFullBaseHighResultRelation
+    (left : ProgrammedGlobalChainKeygenView)
+    (right : (ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) ×
+      (GlobalChainEdgeIndex → Digest))
+    (leftResult : Option Signature × QueryCache HashSpec)
+    (rightResult : (Option Signature × GlobalCausalHashState) ×
+      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) : Prop :=
+  GlobalSigningQueryFullResultRelation left.secretKey.parameter
+      left.secretKey.chainStart right.1.1.secretKey.chainStart left.cache
+        right.1.1.cache right.1.2 leftResult rightResult ∧
+    globalChainEdgeHighTableOfCache leftResult.2 left.secretKey.parameter
+      left.table = right.2
+
+theorem relTriple_keygenViews_globalCausalSigningQuery_run_full_baseHigh
+    (left : ProgrammedGlobalChainKeygenView)
+    (right : (ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) ×
+      (GlobalChainEdgeIndex → Digest))
+    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
+    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
+    (hrightSupport : right.1.1 ∈ support
+      trajectoryProgrammedGlobalChainKeygen)
+    (leftCache : QueryCache HashSpec) (rightState : GlobalCausalHashState)
+    (hcacheAgreement : HashCachesAgreeOn
+      (GlobalSigningComparableHashInput left.secretKey.parameter)
+      leftCache rightState.cache)
+    (htree : GlobalTreeSigningCacheRelation left.secretKey.parameter
+      left.secretKey.chainStart right.1.1.secretKey.chainStart
+      leftCache rightState.cache)
+    (hleftLe : left.cache ≤ leftCache)
+    (hrightLe : right.1.1.cache ≤ rightState.cache)
+    (hkeygenCache : rightState.keygenCache = right.1.1.cache)
+    (hreveals : GlobalSigningRevealsAgree right.1.2 rightState)
+    (request : SignRequest) :
+    RelTriple
+      ((simulateQ xmssRomImpl
+        (Concrete.cappedScheme.sign left.publicKey left.secretKey
+          request.epoch request.message)).run leftCache)
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
+        (globalCausalSigningQueryAfterRealRom right.1.1.publicKey
+          right.1.1.secretKey request rightState)).run)
+      (GlobalSigningQueryFullBaseHighResultRelation left right) := by
+  apply relTriple_post_mono
+    (relTriple_keygenViews_globalCausalSigningQuery_run_full left right.1
+      hrel.1.toStable hleftSupport hrightSupport leftCache rightState hcacheAgreement
+        htree hleftLe hrightLe hkeygenCache hreveals request)
+  intro leftResult rightResult hsigned
+  have hhighFinal :=
+    (globalChainEdgeHighTableOfCache_mono left.cache leftResult.2
+      left.secretKey.parameter left.table hrel.2.2
+        hsigned.1.2.2.1).symm.trans hrel.2.1
+  exact ⟨hsigned, hhighFinal⟩
+
 end XmssSecurity.CappedChain
