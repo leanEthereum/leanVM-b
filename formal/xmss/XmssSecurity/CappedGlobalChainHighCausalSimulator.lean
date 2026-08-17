@@ -416,7 +416,30 @@ theorem globalChainTableEdgeInput_not_signingComparable
     (globalChainTableEdgeInput parameter table edge) hchain hencodingAddress
   simp at hdomain
 
-theorem globalCausalAttackerHashPlan_eq_reveal_globalEdge
+noncomputable def globalFilteredCausalUncachedAttackerHashPlan
+    (input : HashInput) (state : GlobalCausalHashState) :
+    Option (GlobalChainValueIndex × Digest) → GlobalCausalHashPlan
+  | some (index, target) =>
+      match state.revealed index with
+      | some value =>
+          if value = target then
+            if hnext : index.2.2.val + 1 < chainLength then
+              .reveal (index.1, index.2.1,
+                ⟨index.2.2.val + 1, hnext⟩)
+            else .fresh
+          else .fresh
+      | none => .fresh
+  | none => .fresh
+
+noncomputable def globalFilteredCausalAttackerHashPlan
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) : GlobalCausalHashPlan :=
+  match state.cache input with
+  | some output => .cached output
+  | none => globalFilteredCausalUncachedAttackerHashPlan input state
+      (globalChainInputProbe? secretKey.parameter input)
+
+theorem globalFilteredCausalAttackerHashPlan_eq_reveal_globalEdge
     (secretKey : SecretKey)
     (table : GlobalChainValueIndex → Digest)
     (edge : GlobalChainEdgeIndex) (state : GlobalCausalHashState)
@@ -425,11 +448,11 @@ theorem globalCausalAttackerHashPlan_eq_reveal_globalEdge
     (hrevealed : state.revealed
       (edge.1, edge.2.1, chainStepDigit edge.2.2) =
         some (table (edge.1, edge.2.1, chainStepDigit edge.2.2))) :
-    globalCausalAttackerHashPlan secretKey
+    globalFilteredCausalAttackerHashPlan secretKey
         (globalChainTableEdgeInput secretKey.parameter table edge) state =
       .reveal (edge.1, edge.2.1, chainStepNextDigit edge.2.2) := by
-  rw [globalCausalAttackerHashPlan, hcache]
-  unfold globalCausalUncachedAttackerHashPlan globalChainTableEdgeInput
+  rw [globalFilteredCausalAttackerHashPlan, hcache]
+  unfold globalFilteredCausalUncachedAttackerHashPlan globalChainTableEdgeInput
   rw [globalChainInputProbe?_chainInput]
   simp [hrevealed, chainStepDigit, chainStepNextDigit]
 
@@ -440,7 +463,7 @@ noncomputable def globalCausalAttackerHashQueryFromHigh
       (OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex))
       HashOutput := fun state =>
   let recorded := globalCausalRecordedState secretKey input state
-  match globalCausalAttackerHashPlan secretKey input state with
+  match globalFilteredCausalAttackerHashPlan secretKey input state with
   | .cached output => pure (output, recorded)
   | .redirect output =>
       pure (output, { recorded with
@@ -455,7 +478,7 @@ theorem globalCausalAttackerHashQueryFromHigh_run
     (state : GlobalCausalHashState) :
     (globalCausalAttackerHashQueryFromHigh high secretKey input).run state =
       (let recorded := globalCausalRecordedState secretKey input state
-       match globalCausalAttackerHashPlan secretKey input state with
+       match globalFilteredCausalAttackerHashPlan secretKey input state with
        | .cached output => pure (output, recorded)
        | .redirect output =>
            pure (output, { recorded with
@@ -484,9 +507,9 @@ theorem relTriple_programmed_globalFilteredHashQuery_cached
       (GlobalFilteredHashResultRelation left right.1) := by
   have hleft : leftCache input = some output :=
     hstate.2.1.right_le_left hright
-  have hplan : globalCausalAttackerHashPlan right.1.1.secretKey input
+  have hplan : globalFilteredCausalAttackerHashPlan right.1.1.secretKey input
       rightState = .cached output := by
-    simp [globalCausalAttackerHashPlan, hright]
+    simp [globalFilteredCausalAttackerHashPlan, hright]
   rw [randomOracle, QueryImpl.withCaching_run_some _ hleft,
     globalCausalAttackerHashQueryFromHigh_run, hplan, simulateQ_pure,
     WriterT.run_pure]
@@ -503,7 +526,7 @@ theorem relTriple_programmed_globalFilteredHashQuery_fresh
       rightState)
     (input : HashInput)
     (hbaseNone : left.cache input = none)
-    (hplan : globalCausalAttackerHashPlan right.1.1.secretKey input
+    (hplan : globalFilteredCausalAttackerHashPlan right.1.1.secretKey input
       rightState = .fresh) :
     RelTriple
       ((randomOracle input).run leftCache)
@@ -596,9 +619,9 @@ theorem relTriple_programmed_globalFilteredHashQuery_revealEdge
         edge) = none := by
     rw [← hedgeInput]
     exact hrightCache
-  have hplanCanonical := globalCausalAttackerHashPlan_eq_reveal_globalEdge
+  have hplanCanonical := globalFilteredCausalAttackerHashPlan_eq_reveal_globalEdge
     right.1.1.secretKey right.1.2 edge rightState hrightCanonical hrevealed
-  have hplan : globalCausalAttackerHashPlan right.1.1.secretKey
+  have hplan : globalFilteredCausalAttackerHashPlan right.1.1.secretKey
       (globalChainTableEdgeInput left.secretKey.parameter left.table edge)
         rightState =
       .reveal (edge.1, edge.2.1, chainStepNextDigit edge.2.2) := by
