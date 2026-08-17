@@ -1,5 +1,5 @@
 import XmssSecurity.ExpectedQueryCount
-import XmssSecurity.RevealProbeOracleSimulation
+import XmssSecurity.CausalProbeEnforcement
 
 open OracleComp OracleSpec ENNReal
 
@@ -614,5 +614,23 @@ theorem expectedEagerObservedProbeCount_eq_expectedSimulatedQueryCount
                 expectedEagerObservedProbeCount, eagerTraceImpl,
                 tsum_probOutput_bind_mul] using
                 ih value (state.install index value)
+
+theorem expectedEagerObservedProbeCount_enforceProbeBound_le
+    (state : AdaptiveRevealMonitor.State Index)
+    (fuel : Nat) (computation : OracleComp (World Index) α) :
+    expectedEagerObservedProbeCount state
+        (enforceProbeBound fuel computation) ≤
+      expectedEagerObservedProbeCount state computation := by
+  unfold expectedEagerObservedProbeCount
+  rw [tsum_probOutput_bind_mul, tsum_probOutput_bind_mul]
+  apply ENNReal.tsum_le_tsum
+  intro base
+  apply mul_le_mul_right
+  rw [simulate_eagerTrace_enforceProbeBound]
+  rw [tsum_probOutput_map_mul]
+  apply ENNReal.tsum_le_tsum
+  intro result
+  apply mul_le_mul_right
+  exact_mod_cast observedProbeCount_enforceProbeTrace_le fuel result.2
 
 end XmssSecurity.RevealProbeOracleSimulation

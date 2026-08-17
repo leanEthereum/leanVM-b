@@ -86,6 +86,28 @@ def enforceProbeTrace : Nat → ActionTrace Index → ActionTrace Index
   | fuel + 1, .probe index target :: trace =>
       .probe index target :: enforceProbeTrace fuel trace
 
+omit [Fintype Index] [DecidableEq Index] in
+theorem observedProbeCount_enforceProbeTrace_le
+    (fuel : Nat) (trace : ActionTrace Index) :
+    observedProbeCount (enforceProbeTrace fuel trace) ≤
+      observedProbeCount trace := by
+  induction trace generalizing fuel with
+  | nil => simp [enforceProbeTrace, observedProbeCount]
+  | cons action trace ih =>
+      cases action with
+      | reveal index value =>
+          simp only [enforceProbeTrace, observedProbeCount]
+          exact ih fuel
+      | probe index target =>
+          cases fuel with
+          | zero =>
+              simp only [enforceProbeTrace, observedProbeCount]
+              exact Nat.le_succ_of_le (ih 0)
+          | succ fuel =>
+              simp only [enforceProbeTrace, observedProbeCount,
+                Nat.succ_le_succ_iff]
+              exact ih fuel
+
 theorem enforceProbeTrace_eq_self_of_count_le
     (trace : ActionTrace Index) (fuel : Nat)
     (hcount : observedProbeCount trace ≤ fuel) :
