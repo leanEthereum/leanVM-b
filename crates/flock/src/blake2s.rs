@@ -111,6 +111,13 @@ pub const K: usize = 1 << K_LOG;
 /// Univariate-skip dim, must match [`crate::zerocheck::K_SKIP`].
 pub const K_SKIP: usize = 6;
 
+// A claim's `2^K_SKIP` slices are a ring-switch claim on `q_flock` only if that
+// matches the packing width; otherwise `ring_claim` fails at run time.
+const _: () = assert!(
+    K_SKIP == LOG_PACKING,
+    "the univariate skip must match the PCS packing width"
+);
+
 /// Number of BLAKE2s rounds.
 pub const N_ROUNDS: usize = primitives::blake2s::ROUNDS;
 /// Number of G calls per round (4 column + 4 diagonal).
@@ -364,8 +371,8 @@ fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
 /// digest is mirrored in `python-verifier/verifier.py`, which cannot rebuild
 /// the matrices at all.
 pub const R1CS_DIGEST: [u8; 32] = [
-    0xec, 0x91, 0xe9, 0xd8, 0xd9, 0xca, 0x4e, 0x30, 0x62, 0x05, 0x90, 0x7a, 0x0d, 0x23, 0x6e, 0x53, 0xa6, 0xcd, 0xbd,
-    0xa0, 0x38, 0x2e, 0xf6, 0xc4, 0x33, 0xef, 0x93, 0x63, 0xed, 0xfe, 0x04, 0x2e,
+    0x53, 0x7a, 0xd2, 0x07, 0x90, 0x30, 0x8f, 0x8e, 0xb8, 0xc0, 0xe8, 0xbd, 0x3e, 0x6c, 0x58, 0xee, 0x64, 0x57, 0x33,
+    0x71, 0xe3, 0xd5, 0x3c, 0x30, 0x61, 0x3d, 0xd0, 0x4d, 0x87, 0xc0, 0xb7, 0xea,
 ];
 
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE2s

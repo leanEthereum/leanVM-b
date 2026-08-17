@@ -856,7 +856,7 @@ def verify_constraints(
 
 # VM statement, layout, and AIR -----------------------------------------------
 
-R1CS_DIGEST = bytes.fromhex("ec91e9d8d9ca4e306205907a0d236e53a6cdbda0382ef6c433ef9363edfe042e")
+R1CS_DIGEST = bytes.fromhex("537ad20790308f8eb8c0e8bd3e6c58ee64573371e3d53c30613dd04d87c0b7ea")
 
 # The columns no instruction table owns (doc sec:e2e-unrolled, Commitment): the
 # memory image's three limbs, the two finalize counts, and flock's packed
@@ -867,7 +867,10 @@ MEM_0, MEM_1, MEM_2, MEM_FINAL_CNT, BYTECODE_FINAL_CNT, QFLOCK = range(len(GLOBA
 BLAKE2S_R1CS_LOG_SIZE = 14
 K_BITS = 64
 FLOCK_K_SKIP = log2_ceil(K_BITS)
-QFLOCK_SLOT_BITS = BLAKE2S_R1CS_LOG_SIZE - FLOCK_K_SKIP
+LOG_PACKING = log2_ceil(K_BITS)  # bits per committed K-element (pcs::pack::LOG_PACKING)
+
+FLOCK_NUM_LINCHECK_ROUNDS = BLAKE2S_R1CS_LOG_SIZE - FLOCK_K_SKIP
+QFLOCK_SLOT_BITS = BLAKE2S_R1CS_LOG_SIZE - LOG_PACKING
 BLAKE2S_CONSTANT_COLUMN = 512
 
 
@@ -1536,12 +1539,12 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     alpha_cu = alpha**3
     # e_row: phi8 Lagrange in the skip coordinate, eq in the slot variables.
     skip_weights = lagrange_weights(PHI[:K_BITS], zc.z_skip)
-    rho_in = zc.rho[:QFLOCK_SLOT_BITS]
+    rho_in = zc.rho[:FLOCK_NUM_LINCHECK_ROUNDS]
     e_row = [weight * value for weight in eq_kernel(rho_in) for value in skip_weights]
 
     # The 8 rounds that bind the high column coordinates, leaving 64 unfolded.
     running, round_challenges = zc.v_a + alpha * zc.v_b + alpha_sq * zc.v_c + alpha_cu, []
-    for _ in range(QFLOCK_SLOT_BITS):
+    for _ in range(FLOCK_NUM_LINCHECK_ROUNDS):
         message = transcript.round_poly(3, running)
         challenge = transcript.sample()
         running = poly_eval(message, challenge)
@@ -1560,7 +1563,7 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
         + alpha_cu * w_col[BLAKE2S_CONSTANT_COLUMN]
     )
     require(terminal == r_lc, "Flock lincheck terminal mismatch")
-    return rho_in_prime + zc.rho[QFLOCK_SLOT_BITS:], s
+    return rho_in_prime + zc.rho[FLOCK_NUM_LINCHECK_ROUNDS:], s
 
 
 def blake2s_bilinear(
