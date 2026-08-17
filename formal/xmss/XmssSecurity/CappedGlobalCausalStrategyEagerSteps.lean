@@ -71,7 +71,7 @@ theorem simulate_eagerTrace_globalCausalHashQuery
     (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
       ((globalCausalHashQuery input).run state)).run =
       (fun result : HashOutput × QueryCache HashSpec =>
-        ((result.1, { state with cache := result.2 }),
+        ((result.1, state.setCache result.2),
           ([] : RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))) <$>
         ((randomOracle input).run state.cache) := by
   rw [globalCausalHashQuery_run, simulateQ_map, WriterT.run_map',

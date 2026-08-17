@@ -170,7 +170,7 @@ theorem evalDist_installed_globalCausalAttackerHashQuery_continuation_eq_lazy
           intro base
           simp_rw [globalCausalAttackerHashQuery_run, hplan]
           rw [simulate_eagerTrace_globalCausalHashQuery]
-          simp [map_eq_bind_pure_comp]
+          simp [GlobalCausalHashState.setCache, map_eq_bind_pure_comp]
         _ = _ := by
           rw [OracleComp.DeferredSampling.evalDist_bind_comm]
           simp [bind_assoc]

@@ -61,8 +61,7 @@ theorem simulate_eagerTrace_globalCausalAttackerHashQueryFromHigh_probeThenFresh
         state)).run =
       (fun result : HashOutput × QueryCache HashSpec =>
         ((result.1,
-          { (globalCausalRecordedState secretKey input state) with
-            cache := result.2 }),
+          (globalCausalRecordedState secretKey input state).setCache result.2),
           [RevealProbeOracleSimulation.ObservedAction.probe index target])) <$>
         ((randomOracle input).run state.cache) := by
   rw [globalCausalAttackerHashQueryFromHigh_run, hplan, simulateQ_bind,
@@ -103,7 +102,7 @@ theorem relTriple_programmed_globalFilteredHashQuery_probeThenFresh_of_baseNone
   let trace : RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
     [RevealProbeOracleSimulation.ObservedAction.probe index target]
   let wrap := fun result : HashOutput × QueryCache HashSpec =>
-    ((result.1, { recorded with cache := result.2 }), trace)
+    ((result.1, recorded.setCache result.2), trace)
   have hprepared : RelTriple ((randomOracle input).run leftCache)
       ((randomOracle input).run rightState.cache)
       (fun leftResult rightResult =>
@@ -121,7 +120,7 @@ theorem relTriple_programmed_globalFilteredHashQuery_probeThenFresh_of_baseNone
   rw [simulate_eagerTrace_globalCausalAttackerHashQueryFromHigh_probeThenFresh
     right.1.2 (globalChainValueHighTableOfEdges right.2)
       right.1.1.secretKey input rightState index target hplan]
-  simpa [wrap, trace, recorded] using hmapped
+  simpa [wrap, trace, recorded, GlobalCausalHashState.setCache] using hmapped
 
 theorem relTriple_programmed_globalFilteredHashQuery_probeThenFresh_until_hit
     (left : ProgrammedGlobalChainKeygenView)

@@ -39,7 +39,7 @@ theorem globalCausalXmssRomImpl_project_cache_step
         RevealProbeOracleSimulation.liftProbComp
           ((randomOracle input).run state.cache)
       rw [globalCausalHashQuery_run]
-      simp [Functor.map_map]
+      simp [GlobalCausalHashState.setCache, Functor.map_map]
 
 theorem globalCausalXmssRomImpl_reconstruct_step
     (input : OracleWorld.Domain) (state : GlobalCausalHashState) :

@@ -84,7 +84,7 @@ theorem evalDist_uniformGlobalTable_simulate_eagerTrace_globalCausalAttackerHash
       rw [simulate_eagerTrace_globalCausalAttackerHashQuery_fresh_eq_globalCausalHashQuery
         table secretKey input state hplan,
         simulate_eagerTrace_globalCausalHashQuery]
-      simp [map_eq_bind_pure_comp]
+      simp [GlobalCausalHashState.setCache, map_eq_bind_pure_comp]
   | reveal index =>
       unfold globalCausalResampledAttackerHashStep
       rw [hplan]

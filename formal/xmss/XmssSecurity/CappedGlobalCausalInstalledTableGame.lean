@@ -39,6 +39,9 @@ theorem simulate_eagerTrace_globalCausalAttackerHashQuery_support_installedTable
           (globalCausalInstalledTable state base) secretKey input state hplan,
         simulate_eagerTrace_globalCausalHashQuery, support_map] at hresult
       obtain ⟨raw, _hraw, rfl⟩ := hresult
+      change globalCausalInstalledTable
+          { (globalCausalRecordedState secretKey input state) with
+            cache := raw.2 } base = globalCausalInstalledTable state base
       rw [globalCausalInstalledTable_setCache,
         globalCausalInstalledTable_globalCausalRecordedState]
   | reveal index =>

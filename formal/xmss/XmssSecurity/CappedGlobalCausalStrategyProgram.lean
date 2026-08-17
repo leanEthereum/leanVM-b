@@ -50,13 +50,23 @@ def GlobalCausalHashState.recordReveal
     (value : Digest) : GlobalCausalHashState :=
   { state with revealed := Function.update state.revealed index (some value) }
 
+def GlobalCausalHashState.setCache
+    (state : GlobalCausalHashState) (cache : QueryCache HashSpec) :
+    GlobalCausalHashState :=
+  { state with cache := cache }
+
+@[simp]
+theorem GlobalCausalHashState.setCache_revealed
+    (state : GlobalCausalHashState) (cache : QueryCache HashSpec) :
+    (state.setCache cache).revealed = state.revealed := rfl
+
 noncomputable def globalCausalHashQuery
     (input : HashInput) :
     StateT GlobalCausalHashState
       (OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex))
       HashOutput := fun state =>
   (fun result : HashOutput × QueryCache HashSpec =>
-    (result.1, { state with cache := result.2 })) <$>
+    (result.1, state.setCache result.2)) <$>
       RevealProbeOracleSimulation.liftProbComp
         ((randomOracle input).run state.cache)
 
@@ -64,7 +74,7 @@ theorem globalCausalHashQuery_run
     (input : HashInput) (state : GlobalCausalHashState) :
     (globalCausalHashQuery input).run state =
       (fun result : HashOutput × QueryCache HashSpec =>
-        (result.1, { state with cache := result.2 })) <$>
+        (result.1, state.setCache result.2)) <$>
           RevealProbeOracleSimulation.liftProbComp
             ((randomOracle input).run state.cache) := rfl
 

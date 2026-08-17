@@ -65,7 +65,7 @@ theorem relTriple_programmed_globalFilteredHashQuery_fresh
   let recorded :=
     globalCausalRecordedState right.1.1.secretKey input rightState
   let wrap := fun result : HashOutput × QueryCache HashSpec =>
-    ((result.1, { recorded with cache := result.2 }),
+    ((result.1, recorded.setCache result.2),
       ([] : RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
   have hprepared : RelTriple ((randomOracle input).run leftCache)
       ((randomOracle input).run rightState.cache)
@@ -83,7 +83,7 @@ theorem relTriple_programmed_globalFilteredHashQuery_fresh
     (f := id) (g := wrap) hprepared
   rw [globalCausalAttackerHashQueryFromHigh_run, hplan,
     simulate_eagerTrace_globalCausalHashQuery]
-  simpa [wrap, recorded] using hmapped
+  simpa [wrap, recorded, GlobalCausalHashState.setCache] using hmapped
 
 theorem relTriple_programmed_globalFilteredHashQuery_redirect
     (left : ProgrammedGlobalChainKeygenView)

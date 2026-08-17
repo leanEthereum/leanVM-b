@@ -133,6 +133,22 @@ theorem globalFilteredCausalAttackerHashPlan_eq_probeThenFresh_globalEdge
     (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) hhidden
     (chainStepNextDigit edge.2.2).isLt
 
+noncomputable def globalFilteredCausalRedirectResultState
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) (output : HashOutput) :
+    GlobalCausalHashState :=
+  let recorded := globalCausalRecordedState secretKey input state
+  { recorded with cache := recorded.cache.cacheQuery input output }
+
+@[simp]
+theorem globalFilteredCausalRedirectResultState_revealed
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) (output : HashOutput) :
+    (globalFilteredCausalRedirectResultState secretKey input state
+      output).revealed = state.revealed := by
+  simp [globalFilteredCausalRedirectResultState,
+    globalCausalRecordedState_revealed]
+
 noncomputable def globalCausalAttackerHashQueryFromHigh
     (high : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (input : HashInput) :
@@ -143,8 +159,8 @@ noncomputable def globalCausalAttackerHashQueryFromHigh
   match globalFilteredCausalAttackerHashPlan secretKey input state with
   | .cached output => pure (output, recorded)
   | .redirect output =>
-      pure (output, { recorded with
-        cache := recorded.cache.cacheQuery input output })
+      pure (output,
+        globalFilteredCausalRedirectResultState secretKey input state output)
   | .probeThenFresh index target => do
       let _ ← RevealProbeOracleSimulation.probeQuery index target
       (globalCausalHashQuery input).run recorded
@@ -161,8 +177,9 @@ theorem globalCausalAttackerHashQueryFromHigh_run
        match globalFilteredCausalAttackerHashPlan secretKey input state with
        | .cached output => pure (output, recorded)
        | .redirect output =>
-           pure (output, { recorded with
-             cache := recorded.cache.cacheQuery input output })
+           pure (output,
+             globalFilteredCausalRedirectResultState secretKey input state
+               output)
        | .probeThenFresh index target => do
            let _ ← RevealProbeOracleSimulation.probeQuery index target
            (globalCausalHashQuery input).run recorded

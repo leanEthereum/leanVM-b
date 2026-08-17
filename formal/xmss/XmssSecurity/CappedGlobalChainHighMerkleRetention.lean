@@ -118,8 +118,9 @@ theorem simulate_eagerTrace_globalCausalAttackerHashQueryFromHigh_merkleRetained
           rw [globalCausalAttackerHashQueryFromHigh_run, hplan, simulateQ_pure,
             WriterT.run_pure, support_pure, Set.mem_singleton_iff] at hresult
           subst result
-          simpa using (hretained.recordedState input).cacheQuery_of_none input
-            output (by simpa using hcache)
+          simpa [globalFilteredCausalRedirectResultState] using
+            (hretained.recordedState input).cacheQuery_of_none input output
+              (by simpa using hcache)
       | probeThenFresh index target =>
           rw [simulate_eagerTrace_globalCausalAttackerHashQueryFromHigh_probeThenFresh
             table high secretKey input state index target hplan, support_map]
@@ -128,8 +129,9 @@ theorem simulate_eagerTrace_globalCausalAttackerHashQueryFromHigh_merkleRetained
           rw [randomOracle, QueryImpl.withCaching_run_none _ hcache,
             support_map] at hraw
           obtain ⟨output, _houtput, rfl⟩ := hraw
-          simpa using (hretained.recordedState input).cacheQuery_of_none input
-            output (by simpa using hcache)
+          simpa [GlobalCausalHashState.setCache] using
+            (hretained.recordedState input).cacheQuery_of_none input output
+              (by simpa using hcache)
       | fresh =>
           rw [globalCausalAttackerHashQueryFromHigh_run, hplan] at hresult
           exact simulate_eagerTrace_globalCausalHashQuery_merkleRetained_of_cache_none
