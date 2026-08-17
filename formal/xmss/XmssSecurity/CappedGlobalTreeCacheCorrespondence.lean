@@ -994,4 +994,163 @@ theorem relTriple_globalMaterial_merkleTreeValue_run
       rightChild leftPrefix.2 rightPrefix.2 hleftLeft' hleftRight'
         hrightLeft' hrightRight' hcache hleftReplay hrightReplay
 
+set_option maxRecDepth 100000 in
+theorem relTriple_globalMaterial_merkleTreeValues_run
+    (parameter : PublicParameter)
+    (left right : GlobalChainTrajectoryMaterial) :
+    ∀ (indices base : List TreeValueIndex)
+      (leftBase rightBase : List Digest × QueryCache HashSpec),
+      (∀ current ∈ indices, ∃ hpositive : 0 < current.1.val,
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node false) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node false
+            (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+            base ∧
+        TreeValueIndex.ofSubtree (current.1.val - 1)
+          (Concrete.childNode current.node true) (by omega)
+          (childNode_subtreeValid (current.1.val - 1) current.node true
+            (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
+            base) →
+      indices.Pairwise TreeValueIndex.Precedes →
+      leftBase ∈ support (treeValues parameter left.1 base left.2.2) →
+      rightBase ∈ support (treeValues parameter right.1 base right.2.2) →
+      leftBase.1 = rightBase.1 →
+      TreeValuesFresh parameter indices leftBase.2 →
+      TreeValuesFresh parameter indices rightBase.2 →
+      ∀ (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest),
+      GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+        leftBase.2 rightBase.2 →
+      ReplayEndpointsMatch parameter left.1 leftEndpoints leftBase.2 →
+      ReplayEndpointsMatch parameter right.1 rightEndpoints rightBase.2 →
+      RelTriple
+        (treeValues parameter left.1 indices leftBase.2)
+        (treeValues parameter right.1 indices rightBase.2)
+        (fun leftResult rightResult =>
+          leftResult.1 = rightResult.1 ∧
+            GlobalTreeCacheCorrespondence parameter leftEndpoints
+              rightEndpoints leftResult.2 rightResult.2 ∧
+            ReplayEndpointsMatch parameter left.1 leftEndpoints leftResult.2 ∧
+            ReplayEndpointsMatch parameter right.1 rightEndpoints
+              rightResult.2 ∧
+            (leftBase.1 ++ leftResult.1, leftResult.2) ∈ support
+              (treeValues parameter left.1 (base ++ indices) left.2.2) ∧
+            (rightBase.1 ++ rightResult.1, rightResult.2) ∈ support
+              (treeValues parameter right.1 (base ++ indices) right.2.2)) := by
+  intro indices
+  induction indices with
+  | nil =>
+      intro base leftBase rightBase _hchildren _hordered hleftBase hrightBase
+        _hbaseValues _hleftFresh _hrightFresh leftEndpoints rightEndpoints
+          hcache hleftReplay hrightReplay
+      simp only [treeValues_nil]
+      apply relTriple_pure_pure
+      refine ⟨rfl, hcache, hleftReplay, hrightReplay, ?_, ?_⟩
+      · simpa using hleftBase
+      · simpa using hrightBase
+  | cons current indices ih =>
+      intro base leftBase rightBase hchildren hordered hleftBase hrightBase
+        hbaseValues hleftFresh hrightFresh leftEndpoints rightEndpoints hcache
+          hleftReplay hrightReplay
+      obtain ⟨hpositive, hleftChild, hrightChild⟩ :=
+        hchildren current (by simp)
+      have htailChildren : ∀ target ∈ indices,
+          ∃ hpositive : 0 < target.1.val,
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node false) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node false
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base ∧
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node true) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node true
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base := by
+        intro target htarget
+        exact hchildren target (by simp [htarget])
+      have hcurrentBefore : ∀ target ∈ indices,
+          current.Precedes target := (List.pairwise_cons.mp hordered).1
+      have htailOrdered : indices.Pairwise TreeValueIndex.Precedes :=
+        (List.pairwise_cons.mp hordered).2
+      have hhead := relTriple_globalMaterial_merkleTreeValue_run parameter
+        left right base leftBase rightBase hleftBase hrightBase hbaseValues
+          leftEndpoints rightEndpoints hcache hleftReplay hrightReplay current
+            hpositive hleftChild hrightChild
+      let LeftProperty := fun result : Digest × QueryCache HashSpec =>
+        TreeValuesFresh parameter indices result.2 ∧
+          (leftBase.1 ++ [result.1], result.2) ∈ support
+            (treeValues parameter left.1 (base ++ [current]) left.2.2)
+      let RightProperty := fun result : Digest × QueryCache HashSpec =>
+        TreeValuesFresh parameter indices result.2 ∧
+          (rightBase.1 ++ [result.1], result.2) ∈ support
+            (treeValues parameter right.1 (base ++ [current]) right.2.2)
+      have hleftProperty : ∀ result ∈ support
+          ((simulateQ randomOracle
+            (current.computation parameter left.1)).run leftBase.2),
+          LeftProperty result := by
+        intro result hresult
+        exact ⟨treeValue_preserves_tail_fresh parameter left.1 current
+            indices hcurrentBefore leftBase.2 hleftFresh result hresult,
+          treeValues_append_support parameter left.1 base [current] left.2.2
+            leftBase ([result.1], result.2) hleftBase
+              (treeValues_singleton_support parameter left.1 current
+                leftBase.2 result hresult)⟩
+      have hrightProperty : ∀ result ∈ support
+          ((simulateQ randomOracle
+            (current.computation parameter right.1)).run rightBase.2),
+          RightProperty result := by
+        intro result hresult
+        exact ⟨treeValue_preserves_tail_fresh parameter right.1 current
+            indices hcurrentBefore rightBase.2 hrightFresh result hresult,
+          treeValues_append_support parameter right.1 base [current] right.2.2
+            rightBase ([result.1], result.2) hrightBase
+              (treeValues_singleton_support parameter right.1 current
+                rightBase.2 result hresult)⟩
+      have hheadExtended := relTriple_strengthen_support
+        (leftProperty := LeftProperty) (rightProperty := RightProperty)
+        hhead hleftProperty hrightProperty
+      simp only [treeValues_cons]
+      apply relTriple_bind hheadExtended
+      intro leftHeadResult rightHeadResult hheadResult
+      obtain ⟨hheadRelation, hleftProperties, hrightProperties⟩ :=
+        hheadResult
+      obtain ⟨leftHead, leftHeadCache⟩ := leftHeadResult
+      obtain ⟨rightHead, rightHeadCache⟩ := rightHeadResult
+      dsimp only at hheadRelation hleftProperties hrightProperties ⊢
+      let nextLeftBase : List Digest × QueryCache HashSpec :=
+        (leftBase.1 ++ [leftHead], leftHeadCache)
+      let nextRightBase : List Digest × QueryCache HashSpec :=
+        (rightBase.1 ++ [rightHead], rightHeadCache)
+      have hnextValues : nextLeftBase.1 = nextRightBase.1 := by
+        simp [nextLeftBase, nextRightBase, hbaseValues, hheadRelation.1]
+      have hnextChildren : ∀ target ∈ indices,
+          ∃ hpositive : 0 < target.1.val,
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node false) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node false
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base ++ [current] ∧
+            TreeValueIndex.ofSubtree (target.1.val - 1)
+              (Concrete.childNode target.node true) (by omega)
+              (childNode_subtreeValid (target.1.val - 1) target.node true
+                (by simpa [Nat.sub_add_cancel hpositive] using
+                  target.subtreeValid)) ∈ base ++ [current] := by
+        intro target htarget
+        obtain ⟨hpos, hleft, hright⟩ := htailChildren target htarget
+        exact ⟨hpos, List.mem_append_left [current] hleft,
+          List.mem_append_left [current] hright⟩
+      apply relTriple_bind
+        (ih (base ++ [current]) nextLeftBase nextRightBase hnextChildren
+          htailOrdered hleftProperties.2 hrightProperties.2 hnextValues
+            hleftProperties.1 hrightProperties.1 leftEndpoints rightEndpoints
+              hheadRelation.2.1 hheadRelation.2.2.1
+                hheadRelation.2.2.2)
+      intro leftTailResult rightTailResult htailResult
+      apply relTriple_pure_pure
+      refine ⟨congrArg₂ List.cons hheadRelation.1 htailResult.1,
+        htailResult.2.1, htailResult.2.2.1, htailResult.2.2.2.1, ?_, ?_⟩
+      · simpa [nextLeftBase, List.append_assoc] using
+          htailResult.2.2.2.2.1
+      · simpa [nextRightBase, List.append_assoc] using
+          htailResult.2.2.2.2.2
+
 end XmssSecurity.CappedChain
