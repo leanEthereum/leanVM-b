@@ -189,6 +189,33 @@ theorem sourceGlobal_origin_probability_le_boundedPublicObservedHit_of_hashQuery
     sourceGlobalHighBoundedProgramRelation_origin_implies_boundedPublicHit q
       adversary left right hrel.2.1 hrel.2.2 hrel.1 horigin
 
+theorem sourceGlobal_origin_probability_le_boundedPublicObservedHit_sub_keygen
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    Pr[fun left : SourceGlobalTracedProgramResult =>
+        GlobalWinningOutcomeChainValueHasKeygenOrigin
+          (eraseGlobalChainKeygenView
+            (sourceGlobalProgramResult left)).1.1.2
+          (eraseGlobalChainKeygenView
+            (sourceGlobalProgramResult left)).1.2.2
+          (eraseGlobalChainKeygenView
+            (sourceGlobalProgramResult left)).1.1.1.2
+          (eraseGlobalChainKeygenView
+            (sourceGlobalProgramResult left)).1.2.1 |
+      sourceGlobalTracedProgram adversary] ≤
+    Pr[GlobalHighBoundedPublicObservedHit
+        (q - treeHashQueryCount treeHeight) |
+      globalHighMonitoredProgram adversary] := by
+  apply probEvent_le_of_relTriple
+    (relTriple_with_support
+      (relTriple_sourceGlobal_globalHighMonitored_program_boundedHit_sub_keygen
+        q (q - treeHashQueryCount treeHeight + numChains) adversary hbound
+          (by omega)))
+  intro left right hrel horigin
+  exact sourceGlobalHighBoundedProgramRelation_origin_implies_boundedPublicHit
+    (q - treeHashQueryCount treeHeight) adversary left right hrel.2.1
+      hrel.2.2 hrel.1 horigin
+
 theorem hasGlobalHighBoundedPublicReduction_of_monitored
     (q : Nat) (adversary : Adversary Concrete.scheme)
     (hmonitored :
@@ -342,6 +369,50 @@ theorem globalWinningChainOrigin_probability_le_boundedPublicObservedHit_of_hash
       sourceGlobal_origin_probability_le_boundedPublicObservedHit_of_hashQueryBound
         q adversary hbound
 
+theorem globalWinningChainOrigin_probability_le_boundedPublicObservedHit_sub_keygen
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    Pr[fun result =>
+        GlobalWinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+          result.1.1.2 result.2.1 |
+      detailedGameWithKeygenCache adversary] ≤
+    Pr[GlobalHighBoundedPublicObservedHit
+        (q - treeHashQueryCount treeHeight) |
+      globalHighMonitoredProgram adversary] := by
+  calc
+    _ = Pr[fun result =>
+          GlobalWinningOutcomeChainValueHasKeygenOrigin result.1.1.2
+            result.1.2.2 result.1.1.1.2 result.1.2.1 |
+        detailedGameWithKeygenCacheAndActionTrace adversary] := by
+      rw [← detailedGameWithKeygenCacheAndActionTrace_projection,
+        probEvent_map]
+      rfl
+    _ = Pr[fun left : SourceGlobalTracedProgramResult =>
+          GlobalWinningOutcomeChainValueHasKeygenOrigin
+            (eraseGlobalChainKeygenView
+              (sourceGlobalProgramResult left)).1.1.2
+            (eraseGlobalChainKeygenView
+              (sourceGlobalProgramResult left)).1.2.2
+            (eraseGlobalChainKeygenView
+              (sourceGlobalProgramResult left)).1.1.1.2
+            (eraseGlobalChainKeygenView
+              (sourceGlobalProgramResult left)).1.2.1 |
+        sourceGlobalTracedProgram adversary] := by
+      let event := fun result :
+          ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+            (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace) =>
+        GlobalWinningOutcomeChainValueHasKeygenOrigin result.1.1.2
+          result.1.2.2 result.1.1.1.2 result.1.2.1
+      let project := fun left : SourceGlobalTracedProgramResult =>
+        eraseGlobalChainKeygenView (sourceGlobalProgramResult left)
+      change Pr[event | detailedGameWithKeygenCacheAndActionTrace adversary] =
+        Pr[event ∘ project | sourceGlobalTracedProgram adversary]
+      rw [← probEvent_map]
+      exact probEvent_congr' (fun _ _ => Iff.rfl)
+        (evalDist_sourceGlobalErased_eq_originalActionTraced adversary).symm
+    _ ≤ _ := sourceGlobal_origin_probability_le_boundedPublicObservedHit_sub_keygen
+      q adversary hbound
+
 theorem hasGlobalHighBoundedPublicReduction_of_hashQueryBound
     (q : Nat) (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
@@ -349,6 +420,16 @@ theorem hasGlobalHighBoundedPublicReduction_of_hashQueryBound
   hasGlobalHighBoundedPublicReduction_of_monitored q adversary
     (globalWinningChainOrigin_probability_le_boundedPublicObservedHit_of_hashQueryBound
       q adversary hbound)
+
+theorem hasGlobalHighBoundedPublicReduction_of_hashQueryBound_sub_keygen
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    HasGlobalHighBoundedPublicReduction
+      (q - treeHashQueryCount treeHeight) adversary :=
+  hasGlobalHighBoundedPublicReduction_of_monitored
+    (q - treeHashQueryCount treeHeight) adversary
+      (globalWinningChainOrigin_probability_le_boundedPublicObservedHit_sub_keygen
+        q adversary hbound)
 
 theorem globalWinningChainOrigin_probability_le_q_add_numChains
     (q : Nat) (adversary : Adversary Concrete.scheme)
@@ -362,7 +443,21 @@ theorem globalWinningChainOrigin_probability_le_q_add_numChains
   exact hreduction.trans
     (RevealProbeOracleSimulation.eagerExperiment_observedHit_probability_le
       (q + numChains) (globalHighBoundedPublicProgram q adversary)
-        (globalHighBoundedPublicProgram_isProbeQueryBoundP q adversary))
+      (globalHighBoundedPublicProgram_isProbeQueryBoundP q adversary))
+
+theorem globalWinningChainOrigin_probability_le_sub_keygen_add_numChains
+    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
+    Pr[fun result =>
+      GlobalWinningOutcomeChainValueHasKeygenOrigin result.1.2 result.2.2
+        result.1.1.2 result.2.1 |
+      detailedGameWithKeygenCache adversary] ≤
+      ((q - treeHashQueryCount treeHeight + numChains : Nat) : ENNReal) /
+        ((2 ^ digestBits : Nat) : ENNReal) :=
+  globalWinningChainOrigin_probability_le_q_add_numChains
+    (q - treeHashQueryCount treeHeight) adversary
+      (hasGlobalHighBoundedPublicReduction_of_hashQueryBound_sub_keygen
+        q adversary hbound)
 
 theorem globalWinningChainOrigin_probability_le_two_queries
     (q : Nat) (adversary : Adversary Concrete.scheme)

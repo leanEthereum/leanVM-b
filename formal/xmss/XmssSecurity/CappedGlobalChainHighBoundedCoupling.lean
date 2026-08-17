@@ -1,6 +1,7 @@
 import XmssSecurity.CappedGlobalChainHighWholeGame
 import XmssSecurity.CappedGlobalChainHighProbeBounds
 import XmssSecurity.CappedChain.CausalEagerHighDirectReduction
+import XmssSecurity.ExactKeygenQueryCount
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -723,7 +724,11 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
     (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
     (hrightSupport : right.1.1 ∈ support
       trajectoryProgrammedGlobalChainKeygen)
-    (hbound : HasHashQueryBound Concrete.scheme adversary countLimit)
+    (hsourceBound :
+      (sourceUnloggedDetailedGameAfterKeygen adversary
+        (Concrete.materializeCachedKeyResult left.keyResult).1.1
+        (Concrete.materializeCachedKeyResult left.keyResult).1.2).IsQueryBoundP
+          (· matches .inr _) countLimit)
     (hlimits : countLimit ≤ hitLimit) :
     RelTriple
       (sourceGlobalTracedDetailedExecution adversary left)
@@ -740,17 +745,6 @@ theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
     hleftSupport hrightSupport
   have hinitialConsistent := globalMonitoredCausalState_initial_traceConsistent
     right.1.2 (globalFilteredCausalKeygenState right.1.1)
-  have hleftKeyResult := trajectoryProgrammedGlobalChainKeygen_support_keyResult
-    left hleftSupport
-  have hmaterializedKeyResult :
-      Concrete.materializeCachedKeyResult left.keyResult ∈ support
-        ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
-    exact Concrete.oldKeygen_support_materializedPrecomputedKeygen
-      left.keyResult hleftKeyResult
-  have hsourceBound := sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
-    countLimit adversary hbound
-      (Concrete.materializeCachedKeyResult left.keyResult)
-        hmaterializedKeyResult
   let finish : Forgery → OracleComp OracleWorld (Forgery × Bool) :=
     fun forgery => Prod.mk forgery <$> Concrete.scheme.verify
       left.publicKey forgery.epoch forgery.message forgery.signature
@@ -874,11 +868,62 @@ theorem relTriple_sourceGlobal_globalHighMonitored_program_boundedHit
   have hrightViewSupport :=
     coupledGlobalChainKeygenWithBaseHighFull_support_keyView right
       hrightSupport
+  have hleftKeyResult := trajectoryProgrammedGlobalChainKeygen_support_keyResult
+    left hleftSupport
+  have hmaterializedKeyResult :
+      Concrete.materializeCachedKeyResult left.keyResult ∈ support
+        ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
+    exact Concrete.oldKeygen_support_materializedPrecomputedKeygen
+      left.keyResult hleftKeyResult
+  have hsourceBound := sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
+    countLimit adversary hbound
+      (Concrete.materializeCachedKeyResult left.keyResult)
+        hmaterializedKeyResult
   apply relTriple_bind
     (relTriple_with_support
       (relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
         countLimit hitLimit adversary left right hrel hleftSupport
-          hrightViewSupport hbound hlimits))
+          hrightViewSupport hsourceBound hlimits))
+  intro leftExecution rightExecution hexecution
+  apply relTriple_pure_pure
+  exact ⟨hrel, hexecution.1,
+    globalHighMonitoredDetailedExecution_traceConsistent adversary right
+      rightExecution hexecution.2.2⟩
+
+theorem relTriple_sourceGlobal_globalHighMonitored_program_boundedHit_sub_keygen
+    (q hitLimit : Nat)
+    (adversary : Adversary Concrete.scheme)
+    (hbound : HasHashQueryBound Concrete.scheme adversary q)
+    (hlimits : q - treeHashQueryCount treeHeight ≤ hitLimit) :
+    RelTriple (sourceGlobalTracedProgram adversary)
+      (globalHighMonitoredProgram adversary)
+      (SourceGlobalHighBoundedProgramRelation
+        (q - treeHashQueryCount treeHeight) hitLimit) := by
+  unfold sourceGlobalTracedProgram globalHighMonitoredProgram
+  apply relTriple_bind
+    (relTriple_with_support
+      relTriple_trajectoryProgrammedGlobalChainKeygen_withBaseHigh_stable)
+  intro left right hkeygen
+  obtain ⟨hrel, hleftSupport, hrightSupport⟩ := hkeygen
+  have hrightViewSupport :=
+    coupledGlobalChainKeygenWithBaseHighFull_support_keyView right
+      hrightSupport
+  have hleftKeyResult := trajectoryProgrammedGlobalChainKeygen_support_keyResult
+    left hleftSupport
+  have hmaterializedKeyResult :
+      Concrete.materializeCachedKeyResult left.keyResult ∈ support
+        ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
+    exact Concrete.oldKeygen_support_materializedPrecomputedKeygen
+      left.keyResult hleftKeyResult
+  have hsourceBound :=
+    sourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen
+      q adversary hbound (Concrete.materializeCachedKeyResult left.keyResult)
+        hmaterializedKeyResult
+  apply relTriple_bind
+    (relTriple_with_support
+      (relTriple_sourceGlobal_globalHighMonitored_detailedExecution_boundedHit
+        (q - treeHashQueryCount treeHeight) hitLimit adversary left right hrel
+          hleftSupport hrightViewSupport hsourceBound hlimits))
   intro leftExecution rightExecution hexecution
   apply relTriple_pure_pure
   exact ⟨hrel, hexecution.1,
