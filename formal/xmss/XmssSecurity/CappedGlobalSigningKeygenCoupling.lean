@@ -104,6 +104,24 @@ def ProgrammedGlobalChainKeygenStableRelation
     TreeCacheStable right.1.secretKey.parameter right.1.secretKey.chainStart
       right.1.cache
 
+def ProgrammedGlobalChainKeygenFullStableRelation
+    (left : ProgrammedGlobalChainKeygenView)
+    (right : ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) : Prop :=
+  ProgrammedGlobalChainKeygenFullRelation left right ∧
+    TreeCacheStable left.secretKey.parameter left.secretKey.chainStart
+      left.cache ∧
+    TreeCacheStable right.1.secretKey.parameter right.1.secretKey.chainStart
+      right.1.cache
+
+theorem ProgrammedGlobalChainKeygenFullStableRelation.toStable
+    {left : ProgrammedGlobalChainKeygenView}
+    {right : ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)}
+    (hrel : ProgrammedGlobalChainKeygenFullStableRelation left right) :
+    ProgrammedGlobalChainKeygenStableRelation left right :=
+  ⟨hrel.1.1, hrel.2⟩
+
 set_option maxRecDepth 1000000 in
 set_option linter.constructorNameAsVariable false in
 theorem trajectoryProgrammedWithBase_support_keyViews
@@ -132,6 +150,22 @@ theorem relTriple_trajectoryProgrammedGlobalChainKeygen_withBase_stable :
   apply relTriple_post_mono
     (relTriple_with_support
       relTriple_trajectoryProgrammedGlobalChainKeygen_withBase)
+  intro left right hrel
+  refine ⟨hrel.1, ?_, ?_⟩
+  · exact trajectoryProgrammedGlobalChainKeygen_support_treeCacheStable
+      left hrel.2.1
+  · exact trajectoryProgrammedGlobalChainKeygen_support_treeCacheStable
+      right.1 (trajectoryProgrammedWithBase_support_keyViews right hrel.2.2)
+
+theorem relTriple_trajectoryProgrammedGlobalChainKeygen_withBase_fullStable :
+    RelTriple trajectoryProgrammedGlobalChainKeygen
+      (trajectoryProgrammedGlobalChainKeygen >>= fun keyView =>
+        ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
+        pure (keyView, base))
+      ProgrammedGlobalChainKeygenFullStableRelation := by
+  apply relTriple_post_mono
+    (relTriple_with_support
+      relTriple_trajectoryProgrammedGlobalChainKeygen_withBase_fullRelation)
   intro left right hrel
   refine ⟨hrel.1, ?_, ?_⟩
   · exact trajectoryProgrammedGlobalChainKeygen_support_treeCacheStable

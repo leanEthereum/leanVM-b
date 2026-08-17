@@ -480,6 +480,7 @@ def CoupledGlobalChainKeygenRelation
     (∀ epoch,
       left.authenticationPath parameter epoch =
         right.1.authenticationPath parameter epoch) ∧
+    left.values = right.1.values ∧
     TreeValuesReplay parameter left.secret left.cache
       allTreeValueIndices left.values ∧
     TreeValuesReplay parameter right.1.secret right.1.cache
@@ -528,7 +529,7 @@ theorem relTriple_coupledGlobalChainKeygen_withBase
   intro leftTree rightTree htree
   apply relTriple_pure_pure
   unfold CoupledGlobalChainKeygenRelation
-  refine ⟨htable, ?_, ?_, htree.2.1, htree.2.2⟩
+  refine ⟨htable, ?_, ?_, htree.1, htree.2.1, htree.2.2⟩
   · exact globalTreeValuesReplay_eq_root parameter leftMaterial.1
       rightMaterial.1 leftTree.2 rightTree.2 leftTree.1 htree.2.1
         (htree.1 ▸ htree.2.2)
@@ -778,6 +779,17 @@ def ProgrammedGlobalChainKeygenRelation
         Concrete.CacheReplay.authenticationPath right.1.cache
           right.1.secretKey epoch)
 
+def ProgrammedGlobalChainKeygenFullRelation
+    (left : ProgrammedGlobalChainKeygenView)
+    (right : ProgrammedGlobalChainKeygenView ×
+      (GlobalChainValueIndex → Digest)) : Prop :=
+  ProgrammedGlobalChainKeygenRelation left right ∧
+    ∃ values,
+      TreeValuesReplay left.secretKey.parameter left.secretKey.chainStart
+        left.cache allTreeValueIndices values ∧
+      TreeValuesReplay right.1.secretKey.parameter
+        right.1.secretKey.chainStart right.1.cache allTreeValueIndices values
+
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 1000000 in
 theorem relTriple_coupledGlobalChainKeygenWithBaseFull :
@@ -795,5 +807,27 @@ theorem relTriple_coupledGlobalChainKeygenWithBaseFull :
     CoupledGlobalChainKeygenView.toProgrammedView
   refine ⟨hview.1, ?_, hview.2.2.1⟩
   exact congrArg (fun root => (PublicKey.mk root leftParameter)) hview.2.1
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_coupledGlobalChainKeygenWithBaseFull_fullRelation :
+    RelTriple coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
+      ProgrammedGlobalChainKeygenFullRelation := by
+  unfold coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
+  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
+  intro leftParameter rightParameter hparameter
+  subst rightParameter
+  apply relTriple_bind
+    (relTriple_coupledGlobalChainKeygen_withBase leftParameter)
+  intro leftView rightView hview
+  apply relTriple_pure_pure
+  unfold ProgrammedGlobalChainKeygenFullRelation
+    ProgrammedGlobalChainKeygenRelation
+    CoupledGlobalChainKeygenView.toProgrammedView
+  refine ⟨⟨hview.1, ?_, hview.2.2.1⟩, leftView.values,
+    hview.2.2.2.2.1, ?_⟩
+  · exact congrArg (fun root => PublicKey.mk root leftParameter) hview.2.1
+  · rw [hview.2.2.2.1]
+    exact hview.2.2.2.2.2
 
 end XmssSecurity.CappedChain

@@ -34,6 +34,18 @@ theorem relTriple_trajectoryProgrammedGlobalChainKeygen_withBase :
     evalDist_coupledGlobalChainKeygenWithBaseFull_eq_trajectoryProgrammed
     relTriple_coupledGlobalChainKeygenWithBaseFull
 
+theorem relTriple_trajectoryProgrammedGlobalChainKeygen_withBase_fullRelation :
+    RelTriple trajectoryProgrammedGlobalChainKeygen
+      (trajectoryProgrammedGlobalChainKeygen >>= fun keyView =>
+        ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
+        pure (keyView, base))
+      ProgrammedGlobalChainKeygenFullRelation := by
+  apply relTriple_of_evalDist_eq_left
+    evalDist_coupledGlobalChainKeygen_eq_trajectoryProgrammed.symm
+  exact relTriple_of_evalDist_eq_right
+    evalDist_coupledGlobalChainKeygenWithBaseFull_eq_trajectoryProgrammed
+    relTriple_coupledGlobalChainKeygenWithBaseFull_fullRelation
+
 theorem evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed :
     evalDist actualGlobalChainKeygen =
       evalDist trajectoryProgrammedGlobalChainKeygen :=
