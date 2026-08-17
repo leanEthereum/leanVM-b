@@ -239,17 +239,19 @@ theorem cappedCacheTracedMappedAdversary_fixedEpoch_prehit_probability_le
             ((QueryCache.enncard_mono hcacheLe).trans hevent.2.1)
         · simpa [simulateQ_bind, StateT.run_bind] using hresult
 
-theorem cappedCacheTracedMappedAdversary_prehit_probability_le
+theorem cappedCacheTracedMappedAdversary_prehit_probability_le_exact
     (publicKey : PublicKey) (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (q : Nat) :
     Pr[fun result : α × (QueryCache HashSpec × SigningCacheTrace) =>
       result.2.2.epochs.Nodup ∧
         QueryCache.enncard result.2.1 ≤ (q : ℝ≥0∞) ∧
-        result.2.2.HasEncodingInputPrehit secretKey |
+      result.2.2.HasEncodingInputPrehit secretKey |
       (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
         computation).run (initialCache, [])] ≤
-      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+      (lifetime : ℝ≥0∞) *
+        ((signingAttemptLimit : ℝ≥0∞) * (q : ℝ≥0∞) *
+          ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) := by
   let run := (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
     computation).run (initialCache, [])
   let fixedEvent := fun targetEpoch (result : α ×
@@ -281,11 +283,24 @@ theorem cappedCacheTracedMappedAdversary_prehit_probability_le
           ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) := by
       rw [Finset.sum_const, nsmul_eq_mul]
       simp
-    _ ≤ (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-      simpa [div_eq_mul_inv, mul_assoc, mul_left_comm, mul_comm] using
-        signingAttemptLimit_mul_lifetime_randomness_loss_le_digest_loss q
 
-theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le
+theorem cappedCacheTracedMappedAdversary_prehit_probability_le
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (q : Nat) :
+    Pr[fun result : α × (QueryCache HashSpec × SigningCacheTrace) =>
+      result.2.2.epochs.Nodup ∧
+        QueryCache.enncard result.2.1 ≤ (q : ℝ≥0∞) ∧
+        result.2.2.HasEncodingInputPrehit secretKey |
+      (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+        computation).run (initialCache, [])] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  refine (cappedCacheTracedMappedAdversary_prehit_probability_le_exact
+    publicKey secretKey computation initialCache q).trans ?_
+  simpa [div_eq_mul_inv, mul_assoc, mul_left_comm, mul_comm] using
+    signingAttemptLimit_mul_lifetime_randomness_loss_le_digest_loss q
+
+theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le_exact
     (q : Nat) (adversary : Adversary Concrete.cappedScheme)
     (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
@@ -297,7 +312,9 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
         execution.2.2.HasEncodingInputPrehit execution.1.secretKey |
       cappedDetailedGameAfterKeygenWithSigningTrace adversary keyResult.1.1
         keyResult.1.2 keyResult.2] ≤
-      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+      (lifetime : ℝ≥0∞) *
+        ((signingAttemptLimit : ℝ≥0∞) * (q : ℝ≥0∞) *
+          ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) := by
   unfold cappedDetailedGameAfterKeygenWithSigningTrace
   refine (probEvent_bind_le_probEvent
     (p := fun result : Forgery × (QueryCache HashSpec × SigningCacheTrace) =>
@@ -344,8 +361,45 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
       simpa [SigningCacheTrace.epochs, SigningCacheTrace.toSigningLog,
         List.map_map, Function.comp_def] using hvalid
     · simpa [SigningCacheTrace.HasEncodingInputPrehit] using hevent.2
-  · exact cappedCacheTracedMappedAdversary_prehit_probability_le keyResult.1.1
-      keyResult.1.2 (adversary.main keyResult.1.1) keyResult.2 q
+  · exact cappedCacheTracedMappedAdversary_prehit_probability_le_exact
+      keyResult.1.1 keyResult.1.2 (adversary.main keyResult.1.1)
+        keyResult.2 q
+
+theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le
+    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q)
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeyResult : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.cappedScheme.keygen).run ∅)) :
+    Pr[fun execution : GameOutcome ×
+        (QueryCache HashSpec × SigningCacheTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+        execution.2.2.HasEncodingInputPrehit execution.1.secretKey |
+      cappedDetailedGameAfterKeygenWithSigningTrace adversary keyResult.1.1
+        keyResult.1.2 keyResult.2] ≤
+      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
+  refine
+    (cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le_exact
+      q adversary hbound keyResult hkeyResult).trans ?_
+  simpa [div_eq_mul_inv, mul_assoc, mul_left_comm, mul_comm] using
+    signingAttemptLimit_mul_lifetime_randomness_loss_le_digest_loss q
+
+theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_exact
+    (q : Nat) (adversary : Adversary Concrete.cappedScheme)
+    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    Pr[fun execution : GameOutcome ×
+        (QueryCache HashSpec × SigningCacheTrace) =>
+      WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
+        execution.2.2.HasEncodingInputPrehit execution.1.secretKey |
+      cappedDetailedGameWithSigningTrace adversary] ≤
+      (lifetime : ℝ≥0∞) *
+        ((signingAttemptLimit : ℝ≥0∞) * (q : ℝ≥0∞) *
+          ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) := by
+  unfold cappedDetailedGameWithSigningTrace
+  refine probEvent_bind_le_of_forall_le fun keyResult hkeyResult => ?_
+  exact
+    cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le_exact
+      q adversary hbound keyResult hkeyResult
 
 theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le
     (q : Nat) (adversary : Adversary Concrete.cappedScheme)
@@ -356,9 +410,10 @@ theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le
         execution.2.2.HasEncodingInputPrehit execution.1.secretKey |
       cappedDetailedGameWithSigningTrace adversary] ≤
       (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  unfold cappedDetailedGameWithSigningTrace
-  refine probEvent_bind_le_of_forall_le fun keyResult hkeyResult => ?_
-  exact cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le
-    q adversary hbound keyResult hkeyResult
+  refine
+    (cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_exact
+      q adversary hbound).trans ?_
+  simpa [div_eq_mul_inv, mul_assoc, mul_left_comm, mul_comm] using
+    signingAttemptLimit_mul_lifetime_randomness_loss_le_digest_loss q
 
 end XmssSecurity

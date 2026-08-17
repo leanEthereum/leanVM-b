@@ -296,10 +296,10 @@ theorem Concrete.verify_hashQueryBound_at_least_verificationWork
     ((TargetSum.decodeDigest_eq_some_iff.mp hdecode).2)] at hlower
   omega
 
-theorem hashQueryBound_at_least_numChains
+theorem hashQueryBound_at_least_verificationQueries
     (adversary : Adversary Concrete.cappedScheme) (q : Nat)
     (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
-    numChains ≤ q := by
+    verificationChainHashes + 1 ≤ q := by
   have hdetailed :=
     (hasHashQueryBound_iff_detailedGameCore Concrete.cappedScheme adversary q).mp
       hbound
@@ -317,6 +317,13 @@ theorem hashQueryBound_at_least_numChains
   have hlower := Concrete.verify_hashQueryBound_at_least_verificationWork
     key.1 adversaryResult.1.epoch adversaryResult.1.message
     adversaryResult.1.signature q hverify
+  exact hlower
+
+theorem hashQueryBound_at_least_numChains
+    (adversary : Adversary Concrete.cappedScheme) (q : Nat)
+    (hbound : HasHashQueryBound Concrete.cappedScheme adversary q) :
+    numChains ≤ q := by
+  have hlower := hashQueryBound_at_least_verificationQueries adversary q hbound
   rw [verificationChainHashes_eq] at hlower
   change 42 ≤ q
   omega
