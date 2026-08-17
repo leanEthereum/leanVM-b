@@ -74,6 +74,7 @@ import XmssSecurity.ConcreteQueryBound
 import XmssSecurity.ConcreteSign
 import XmssSecurity.ConcreteScheme
 import XmssSecurity.PrecomputedKeygen
+import XmssSecurity.PrecomputedKeygenCache
 import XmssSecurity.PrecomputedSign
 import XmssSecurity.PrecomputedScheme
 import XmssSecurity.PrecomputedSignQueryBound
