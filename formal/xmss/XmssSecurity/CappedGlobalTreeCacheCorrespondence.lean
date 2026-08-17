@@ -444,4 +444,162 @@ theorem relTriple_globalMaterial_leafAt_run
   exact ⟨hleaf.1, newLeft, newRight, hleaf.2, hleftReplay.symm,
     hrightReplay.symm⟩
 
+theorem relTriple_randomOracle_globalMerkle_with_endpoint_matches
+    (parameter : PublicParameter)
+    (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (leftCache rightCache : QueryCache HashSpec)
+    (hcache : GlobalTreeCacheCorrespondence parameter leftEndpoints
+      rightEndpoints leftCache rightCache)
+    (hleftReplay : ReplayEndpointsMatch parameter leftSecret leftEndpoints
+      leftCache)
+    (hrightReplay : ReplayEndpointsMatch parameter rightSecret rightEndpoints
+      rightCache)
+    (level : MerkleLevel) (node : MerkleNode)
+    (leftChild rightChild : Digest) :
+    RelTriple
+      ((randomOracle (Concrete.CacheView.merkleInput parameter level node
+        leftChild rightChild)).run leftCache)
+      ((randomOracle (Concrete.CacheView.merkleInput parameter level node
+        leftChild rightChild)).run rightCache)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+            leftResult.2 rightResult.2 ∧
+          ReplayEndpointsMatch parameter leftSecret leftEndpoints
+            leftResult.2 ∧
+          ReplayEndpointsMatch parameter rightSecret rightEndpoints
+            rightResult.2) := by
+  let input := Concrete.CacheView.merkleInput parameter level node
+    leftChild rightChild
+  have hinput : MerkleHashInput parameter input :=
+    ⟨level, node, by simp [input, Concrete.CacheView.merkleInput]⟩
+  cases hleft : leftCache input with
+  | none =>
+      have hright : rightCache input = none := by
+        rw [← hcache.merkle input hinput]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_none _ hleft,
+        QueryImpl.withCaching_run_none _ hright,
+        map_eq_bind_pure_comp, map_eq_bind_pure_comp]
+      apply relTriple_bind (relTriple_refl ($ᵗ HashOutput))
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      apply relTriple_pure_pure
+      exact ⟨rfl, hcache.cacheQuery_merkle parameter leftEndpoints
+          rightEndpoints leftCache rightCache level node leftChild rightChild
+            leftOutput,
+        hleftReplay.cacheQuery_merkleInput parameter leftSecret leftEndpoints
+          leftCache level node leftChild rightChild leftOutput,
+        hrightReplay.cacheQuery_merkleInput parameter rightSecret rightEndpoints
+          rightCache level node leftChild rightChild leftOutput⟩
+  | some output =>
+      have hright : rightCache input = some output := by
+        rw [← hcache.merkle input hinput]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_some _ hleft,
+        QueryImpl.withCaching_run_some _ hright]
+      exact relTriple_pure_pure ⟨rfl, hcache, hleftReplay, hrightReplay⟩
+
+theorem relTriple_globalNodeHash_run_with_endpoint_matches
+    (parameter : PublicParameter)
+    (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (leftCache rightCache : QueryCache HashSpec)
+    (hcache : GlobalTreeCacheCorrespondence parameter leftEndpoints
+      rightEndpoints leftCache rightCache)
+    (hleftReplay : ReplayEndpointsMatch parameter leftSecret leftEndpoints
+      leftCache)
+    (hrightReplay : ReplayEndpointsMatch parameter rightSecret rightEndpoints
+      rightCache)
+    (level : MerkleLevel) (node : MerkleNode)
+    (leftChild rightChild : Digest) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.nodeHash parameter level node leftChild rightChild :
+          OracleComp HashSpec Digest)).run leftCache)
+      ((simulateQ randomOracle
+        (Concrete.nodeHash parameter level node leftChild rightChild :
+          OracleComp HashSpec Digest)).run rightCache)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+            leftResult.2 rightResult.2 ∧
+          ReplayEndpointsMatch parameter leftSecret leftEndpoints
+            leftResult.2 ∧
+          ReplayEndpointsMatch parameter rightSecret rightEndpoints
+            rightResult.2) := by
+  change RelTriple
+    ((fun result : HashOutput × QueryCache HashSpec =>
+      (truncateHash result.1, result.2)) <$>
+        (randomOracle (Concrete.CacheView.merkleInput parameter level node
+          leftChild rightChild)).run leftCache)
+    ((fun result : HashOutput × QueryCache HashSpec =>
+      (truncateHash result.1, result.2)) <$>
+        (randomOracle (Concrete.CacheView.merkleInput parameter level node
+          leftChild rightChild)).run rightCache) _
+  apply relTriple_map
+  apply relTriple_post_mono
+    (relTriple_randomOracle_globalMerkle_with_endpoint_matches parameter
+      leftEndpoints rightEndpoints leftSecret rightSecret leftCache rightCache
+        hcache hleftReplay hrightReplay level node leftChild rightChild)
+  intro leftResult rightResult hresult
+  exact ⟨congrArg truncateHash hresult.1, hresult.2⟩
+
+theorem relTriple_globalTreeNode_succ_run
+    (parameter : PublicParameter)
+    (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
+    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
+    (levels : Nat) (node : MerkleNode) (hlevel : levels < treeHeight)
+    (leftChild rightChild : Digest)
+    (leftCache rightCache : QueryCache HashSpec)
+    (hleftLeft :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter leftSecret levels
+          (Concrete.childNode node false) : OracleComp HashSpec Digest)).run
+            leftCache = pure (leftChild, leftCache))
+    (hleftRight :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter rightSecret levels
+          (Concrete.childNode node false) : OracleComp HashSpec Digest)).run
+            rightCache = pure (leftChild, rightCache))
+    (hrightLeft :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter leftSecret levels
+          (Concrete.childNode node true) : OracleComp HashSpec Digest)).run
+            leftCache = pure (rightChild, leftCache))
+    (hrightRight :
+      (simulateQ randomOracle
+        (Concrete.treeNode parameter rightSecret levels
+          (Concrete.childNode node true) : OracleComp HashSpec Digest)).run
+            rightCache = pure (rightChild, rightCache))
+    (hcache : GlobalTreeCacheCorrespondence parameter leftEndpoints
+      rightEndpoints leftCache rightCache)
+    (hleftReplay : ReplayEndpointsMatch parameter leftSecret leftEndpoints
+      leftCache)
+    (hrightReplay : ReplayEndpointsMatch parameter rightSecret rightEndpoints
+      rightCache) :
+    RelTriple
+      ((simulateQ randomOracle
+        (Concrete.treeNode parameter leftSecret (levels + 1) node :
+          OracleComp HashSpec Digest)).run leftCache)
+      ((simulateQ randomOracle
+        (Concrete.treeNode parameter rightSecret (levels + 1) node :
+          OracleComp HashSpec Digest)).run rightCache)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          GlobalTreeCacheCorrespondence parameter leftEndpoints rightEndpoints
+            leftResult.2 rightResult.2 ∧
+          ReplayEndpointsMatch parameter leftSecret leftEndpoints
+            leftResult.2 ∧
+          ReplayEndpointsMatch parameter rightSecret rightEndpoints
+            rightResult.2) := by
+  simp only [Concrete.treeNode_succ_eq, simulateQ_bind, StateT.run_bind,
+    hleftLeft, hleftRight, hrightLeft, hrightRight, pure_bind,
+    hlevel, ↓reduceDIte]
+  exact relTriple_globalNodeHash_run_with_endpoint_matches parameter
+    leftEndpoints rightEndpoints leftSecret rightSecret leftCache rightCache
+      hcache hleftReplay hrightReplay ⟨levels, hlevel⟩ node leftChild
+        rightChild
+
 end XmssSecurity.CappedChain
