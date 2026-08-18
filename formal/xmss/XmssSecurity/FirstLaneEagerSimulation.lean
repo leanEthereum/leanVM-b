@@ -194,14 +194,10 @@ def CombinedHit
     RevealProbeOracleSimulation.runObserved table
       AdaptiveRevealMonitor.State.empty trace.chainActions = true
 
-noncomputable local instance eagerSampleableTable :
-    SampleableType (Index → Digest) :=
-  SampleableType.ofFintype (Index → Digest)
-
 noncomputable def eagerExperiment
     (computation : OracleComp (World Index) α) :
     ProbComp ((Index → Digest) × (α × ActionTrace Index)) := do
-  let table ← $ᵗ (Index → Digest)
+  let table ← RevealProbeOracleSimulation.eagerTableSample
   let result ← (simulateQ (eagerTraceImpl table) computation).run
   pure (table, result)
 
