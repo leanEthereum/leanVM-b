@@ -1,5 +1,6 @@
 import XmssSecurity.CappedEncodingPrehitExpectedBound
 import XmssSecurity.CappedGlobalChainExpectedAccounting
+import XmssSecurity.CappedVerifierUpperBound
 import XmssSecurity.LossDecomposition
 import XmssSecurity.Statement
 
@@ -7,10 +8,15 @@ open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
-def HasExpectedGlobalChainQueryAccounting
+def HasExpectedGlobalChainOriginBound
     (adversary : Adversary Concrete.scheme) : Prop :=
-  expectedGlobalHighDirectProbeQueries adversary ≤
-    expectedPostKeygenGlobalChainRelevantQueries adversary
+  Pr[fun result =>
+      CappedChain.GlobalWinningOutcomeChainValueHasKeygenOrigin
+        result.1.2 result.2.2 result.1.1.2 result.2.1 |
+    CappedChain.detailedGameWithKeygenCache adversary] ≤
+    (expectedPostKeygenGlobalChainRelevantQueries adversary +
+        verifierHashQueryUpperBound + numChains) /
+      ((2 ^ digestBits : Nat) : ENNReal)
 
 theorem capped_encodingPrehit_probability_le_expectedDigest
     (adversary : Adversary Concrete.scheme) :
@@ -46,13 +52,13 @@ theorem capped_winningEncodingCollision_probability_le_expected
       adversary
 
 theorem capped_globalWinningChainValueRevealed_probability_le_expected
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (haccount : HasExpectedGlobalChainQueryAccounting adversary) :
+    (adversary : Adversary Concrete.scheme)
+    (hchain : HasExpectedGlobalChainOriginBound adversary) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       GlobalWinningChainValueRevealed execution.2 execution.1 |
       detailedGameWithCache Concrete.scheme adversary] ≤
-      (expectedPostKeygenGlobalChainRelevantQueries adversary + numChains) /
+      (expectedPostKeygenGlobalChainRelevantQueries adversary +
+          verifierHashQueryUpperBound + numChains) /
         ((2 ^ digestBits : Nat) : ENNReal) := by
   calc
     _ ≤ Pr[fun result =>
@@ -66,26 +72,17 @@ theorem capped_globalWinningChainValueRevealed_probability_le_expected
             result.1.2 result.2.2 result.1.1.2 result.2.1 |
           CappedChain.detailedGameWithKeygenCache adversary] :=
       CappedChain.globalWinningKeygenValueGuess_probability_le_origin adversary
-    _ ≤ (expectedGlobalHighDirectProbeQueries adversary + numChains) /
-          ((2 ^ digestBits : Nat) : ENNReal) :=
-      CappedChain.globalWinningChainOrigin_probability_le_expectedGlobalHighDirectProbes
-        q adversary
-          (CappedChain.hasGlobalHighBoundedPublicReduction_of_hashQueryBound
-            q adversary hbound)
-    _ ≤ _ := by
-      rw [div_eq_mul_inv, div_eq_mul_inv]
-      gcongr
-      exact haccount
+    _ ≤ _ := hchain
 
 theorem capped_winningDigestBadEvent_probability_le_expected
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (haccount : HasExpectedGlobalChainQueryAccounting adversary) :
+    (adversary : Adversary Concrete.scheme)
+    (hchain : HasExpectedGlobalChainOriginBound adversary) :
     Pr[WinningDigestBadEventOccurs |
       cappedDetailedGameWithEncodingTrace adversary] ≤
       CappedEncodingMonitor.expectedPostKeygenEncodingQueries adversary /
           ((2 ^ digestBits : Nat) : ENNReal) +
-        (expectedPostKeygenGlobalChainRelevantQueries adversary + numChains) /
+        (expectedPostKeygenGlobalChainRelevantQueries adversary +
+            verifierHashQueryUpperBound + numChains) /
           ((2 ^ digestBits : Nat) : ENNReal) +
         expectedPostKeygenStructuralQueries adversary /
           ((2 ^ digestBits : Nat) : ENNReal) := by
@@ -111,7 +108,8 @@ theorem capped_winningDigestBadEvent_probability_le_expected
       exact probEvent_or_le _ _ _
     _ ≤ CappedEncodingMonitor.expectedPostKeygenEncodingQueries adversary /
           ((2 ^ digestBits : Nat) : ENNReal) +
-        ((expectedPostKeygenGlobalChainRelevantQueries adversary + numChains) /
+        ((expectedPostKeygenGlobalChainRelevantQueries adversary +
+            verifierHashQueryUpperBound + numChains) /
           ((2 ^ digestBits : Nat) : ENNReal) +
         expectedPostKeygenStructuralQueries adversary /
           ((2 ^ digestBits : Nat) : ENNReal)) := by
@@ -129,7 +127,7 @@ theorem capped_winningDigestBadEvent_probability_le_expected
                 probEvent_map]
               rfl
             _ ≤ _ := capped_globalWinningChainValueRevealed_probability_le_expected
-              q adversary hbound haccount
+              adversary hchain
         · change Pr[fun execution : CappedEncodingTraceExecution =>
             WinningStructuralCollisionOccurs execution.2.1.1 execution.1 |
             cappedDetailedGameWithEncodingTrace adversary] ≤ _
@@ -154,32 +152,46 @@ theorem capped_expected_loss_budget_le_127
       (q - treeHashQueryCount treeHeight : Nat)) :
     encoding / ((2 ^ digestBits : Nat) : ENNReal) +
         (encoding / ((2 ^ digestBits : Nat) : ENNReal) +
-          (chain + numChains) / ((2 ^ digestBits : Nat) : ENNReal) +
+          (chain + verifierHashQueryUpperBound + numChains) /
+            ((2 ^ digestBits : Nat) : ENNReal) +
           structural / ((2 ^ digestBits : Nat) : ENNReal)) ≤
       (q : ENNReal) / ((2 ^ 127 : Nat) : ENNReal) := by
   simp only [div_eq_mul_inv]
   have hnumerator :
-      encoding + (encoding + (chain + numChains) + structural) ≤
+      encoding + (encoding +
+          (chain + verifierHashQueryUpperBound + numChains) +
+            structural) ≤
         2 * (q : ENNReal) := by
     calc
-      encoding + (encoding + (chain + numChains) + structural) =
-          (encoding + chain) + (encoding + structural) + numChains := by ring
+      encoding + (encoding +
+          (chain + verifierHashQueryUpperBound + numChains) +
+            structural) =
+          (encoding + chain) + (encoding + structural) +
+            (verifierHashQueryUpperBound + numChains) := by ring
       _ ≤ ((q - treeHashQueryCount treeHeight : Nat) : ENNReal) +
-          (q - treeHashQueryCount treeHeight : Nat) + numChains := by
+          (q - treeHashQueryCount treeHeight : Nat) +
+            (verifierHashQueryUpperBound + numChains) := by
         exact add_le_add (add_le_add hencodingChain hencodingStructural) le_rfl
-      _ = 2 * (q - treeHashQueryCount treeHeight : Nat) + numChains := by ring
+      _ = 2 * (q - treeHashQueryCount treeHeight : Nat) +
+          (verifierHashQueryUpperBound + numChains) := by ring
       _ ≤ 2 * (q : ENNReal) := by
         exact_mod_cast (show
-          2 * (q - treeHashQueryCount treeHeight) + numChains ≤ 2 * q by
-            have hconstant : numChains ≤ 2 * treeHashQueryCount treeHeight := by
+          2 * (q - treeHashQueryCount treeHeight) +
+              (verifierHashQueryUpperBound + numChains) ≤ 2 * q by
+            have hconstant :
+                verifierHashQueryUpperBound + numChains ≤
+                  2 * treeHashQueryCount treeHeight := by
               decide
             omega)
   calc
     encoding * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
         (encoding * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
-          (chain + numChains) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+          (chain + verifierHashQueryUpperBound + numChains) *
+            ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
           structural * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) =
-      (encoding + (encoding + (chain + numChains) + structural)) *
+      (encoding + (encoding +
+        (chain + verifierHashQueryUpperBound + numChains) +
+          structural)) *
         ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by ring
     _ ≤ (2 * (q : ENNReal)) *
         ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by gcongr
@@ -190,17 +202,17 @@ theorem capped_expected_loss_budget_le_127
       norm_num [digestBits]
       ring
 
-theorem capped_xmss_forgeAdvantage_le_127_of_expectedGlobalChainAccounting
+theorem capped_xmss_forgeAdvantage_le_127_of_globalChainOriginBound
     (q : Nat) (adversary : Adversary Concrete.scheme)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (haccount : HasExpectedGlobalChainQueryAccounting adversary) :
+    (hchain : HasExpectedGlobalChainOriginBound adversary) :
     forgeAdvantage Concrete.scheme adversary ≤
       (q : ENNReal) / ((2 ^ 127 : Nat) : ENNReal) := by
   apply (capped_forgeAdvantage_le_encodingPrehit_add_digestBad adversary).trans
   apply (add_le_add
     (capped_encodingPrehit_probability_le_expectedDigest adversary)
-    (capped_winningDigestBadEvent_probability_le_expected q adversary hbound
-      haccount)).trans
+    (capped_winningDigestBadEvent_probability_le_expected adversary
+      hchain)).trans
   exact capped_expected_loss_budget_le_127 q
     (CappedEncodingMonitor.expectedPostKeygenEncodingQueries adversary)
     (expectedPostKeygenGlobalChainRelevantQueries adversary)
@@ -209,18 +221,18 @@ theorem capped_xmss_forgeAdvantage_le_127_of_expectedGlobalChainAccounting
     (postKeygenEncoding_add_globalChainRelevant_expected_le q adversary hbound)
     (postKeygenEncoding_add_structural_expected_le q adversary hbound)
 
-def HasExpectedGlobalChainQueryAccountings : Prop :=
+def HasExpectedGlobalChainOriginBounds : Prop :=
   ∀ adversary : Adversary Concrete.scheme,
-    HasExpectedGlobalChainQueryAccounting adversary
+    HasExpectedGlobalChainOriginBound adversary
 
-theorem xmss_has_127_bits_of_classical_security_of_expectedGlobalChainAccountings
-    (haccount : HasExpectedGlobalChainQueryAccountings) :
+theorem xmss_has_127_bits_of_classical_security_of_globalChainOriginBounds
+    (hchain : HasExpectedGlobalChainOriginBounds) :
     XmssHasClassicalSecurityBits 127 := by
   change HasClassicalSecurityBits xmssScheme 127
   intro q _hq
   unfold forgeAtMost
   refine iSup_le fun adversary => iSup_le fun hbound => ?_
-  exact capped_xmss_forgeAdvantage_le_127_of_expectedGlobalChainAccounting
-    q adversary hbound (haccount adversary)
+  exact capped_xmss_forgeAdvantage_le_127_of_globalChainOriginBound
+    q adversary hbound (hchain adversary)
 
 end XmssSecurity
