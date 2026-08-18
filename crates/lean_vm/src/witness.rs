@@ -33,13 +33,35 @@ impl Placement {
 /// The stacked witness and the per-column placements (in input order).
 #[cfg(test)]
 pub(crate) struct Stacked {
-    pub m: usize,
+    pub shape: StackShape,
     pub q: ArenaVec<F64>,
     pub placements: Vec<Placement>,
 }
 
+/// The committed stack's shape. `mu` is the log size everything public is derived
+/// from (the claims' selector coords, the PCS level ladder), while `n_lanes` counts
+/// the `2^(mu - LOG_BATCH)`-word lane blocks that actually carry data: the PCS
+/// commits `committed_len()` words and never encodes or hashes the zero tail past
+/// them. Only the prover needs `n_lanes`; the verifier's view of the commitment is
+/// the same `2^mu`-word witness either way.
+#[derive(Clone, Copy, Debug)]
+pub struct StackShape {
+    pub mu: usize,
+    pub n_lanes: usize,
+}
+
+impl StackShape {
+    /// Words actually committed: the placed columns rounded up to a whole lane.
+    pub fn committed_len(&self) -> usize {
+        // Both fields are `pub`, and in release the shift below would mask an
+        // underflowed amount into a plausible wrong length rather than panic.
+        assert!(self.mu >= crate::pcs::LOG_BATCH, "a stack is at least one lane block");
+        self.n_lanes << (self.mu - crate::pcs::LOG_BATCH)
+    }
+}
+
 /// Lay `2^kappa`-sized items end to end, largest first at aligned offsets and ties
-/// broken by index, returning the per-item offset and `⌈log2 Σ 2^kappa⌉`. A `None`
+/// broken by index, returning the per-item offset and `Σ 2^kappa`. A `None`
 /// kappa takes no space and its offset is meaningless. Depends only on the sizes, so
 /// the verifier reconstructs the same tiling.
 pub(crate) fn stack_offsets(kappas: &[Option<usize>]) -> (Vec<usize>, usize) {
@@ -53,14 +75,15 @@ pub(crate) fn stack_offsets(kappas: &[Option<usize>]) -> (Vec<usize>, usize) {
         offsets[i] = off;
         off += 1 << kappas[i].unwrap();
     }
-    (offsets, crate::log2_ceil_usize(off.max(1)))
+    (offsets, off)
 }
 
-/// Per-column placements (offset + n_vars) and stack length `2^m` from the columns'
-/// log-sizes alone, largest-first at aligned offsets. A `None` kappa marks a virtual
-/// (uncommitted) column. Depends only on lengths, so the verifier can reconstruct it.
-pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
-    let (offsets, mu) = stack_offsets(kappas);
+/// Per-column placements (offset + n_vars) and the stack's [`StackShape`] from the
+/// columns' log-sizes alone, largest-first at aligned offsets. A `None` kappa marks
+/// a virtual (uncommitted) column. Depends only on lengths, so the verifier can
+/// reconstruct it.
+pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, StackShape) {
+    let (offsets, placed) = stack_offsets(kappas);
     let placements = kappas
         .iter()
         .zip(&offsets)
@@ -71,24 +94,29 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
         .collect();
     // Floor at the PCS minimum (WHIR's level ladder needs room); tiny
     // witnesses zero-pad up. Both sides derive this identically from the kappas.
-    (placements, mu.max(crate::pcs::MIN_MU))
+    let mu = crate::log2_ceil_usize(placed.max(1)).max(crate::pcs::MIN_MU);
+    // The columns tile from 0, so the padding is the tail: round it up to a whole
+    // lane and the lanes past that are never committed at all.
+    let n_lanes = placed.div_ceil(1 << (mu - crate::pcs::LOG_BATCH)).max(1);
+    (placements, StackShape { mu, n_lanes })
 }
 
 /// Chunk width for the bulk writes below: big enough to amortize the dispatch,
 /// small enough to spread one column across cores.
 const FILL_CHUNK: usize = 1 << 16;
 
-/// The uninitialized stacked witness, `2^m` slots. Arena-backed: `q` is born and
-/// dies inside one `cpu::prove` phase.
+/// The uninitialized stacked witness: [`StackShape::committed_len`] slots, the
+/// placed columns rounded up to a whole lane rather than all the way to `2^mu`.
+/// Arena-backed: `q` is born and dies inside one `cpu::prove` phase.
 ///
 /// # Safety
 /// Every slot must be written before it is read. [`split_stack`] hands out one
 /// window per committed column and zeroes the pad tail, which together cover the
 /// whole allocation, so the obligation reduces to each column's fill writing its
 /// own window.
-pub unsafe fn alloc_stack(m: usize) -> ArenaVec<F64> {
+pub unsafe fn alloc_stack(shape: StackShape) -> ArenaVec<F64> {
     // SAFETY: forwarded to the caller by the contract above.
-    unsafe { ArenaVec::<F64>::uninitialized(1 << m) }
+    unsafe { ArenaVec::<F64>::uninitialized(shape.committed_len()) }
 }
 
 /// Carve the stack into one mutable window per committed column, in column order,
@@ -136,12 +164,54 @@ pub(crate) fn stack(cols: &[Column]) -> Stacked {
             Some(crate::log2_strict_usize(c.len()))
         })
         .collect();
-    let (placements, m) = placements_of(&kappas);
+    let (placements, shape) = placements_of(&kappas);
     // SAFETY: `split_stack` covers the whole allocation, and every window is
     // copied into below.
-    let mut q = unsafe { alloc_stack(m) };
+    let mut q = unsafe { alloc_stack(shape) };
     for (w, c) in split_stack(&mut q, &placements).into_iter().zip(cols) {
         w.copy_from_slice(c);
     }
-    Stacked { m, q, placements }
+    Stacked { shape, q, placements }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape has to cover the placed columns with as few lanes as possible: the
+    /// prover commits `committed_len()` words, so anything short of `placed` would
+    /// leave a claim outside the commitment, and any extra whole lane is work the
+    /// change exists to avoid. `mu` stays the announced `2^mu` size both sides
+    /// derive their layout from.
+    #[test]
+    fn placements_cover_the_columns_in_the_fewest_lanes() {
+        let lanes = 1usize << crate::pcs::LOG_BATCH;
+        // A power-of-two total, one word over one, one just under, a virtual column
+        // in the middle, and a stack far below the MIN_MU floor.
+        let cases: [Vec<Option<usize>>; 5] = [
+            vec![Some(20), Some(20)],
+            vec![Some(20), Some(20), Some(0)],
+            vec![Some(20), Some(19), Some(18), Some(17)],
+            vec![Some(21), None, Some(19), None, Some(15)],
+            vec![Some(3), Some(2)],
+        ];
+        for kappas in cases {
+            let placed: usize = kappas.iter().flatten().map(|k| 1usize << k).sum();
+            let (placements, shape) = placements_of(&kappas);
+            let lane_block = 1usize << (shape.mu - crate::pcs::LOG_BATCH);
+
+            assert_eq!(shape.mu, crate::log2_ceil_usize(placed).max(crate::pcs::MIN_MU));
+            assert!((1..=lanes).contains(&shape.n_lanes), "lane count out of range");
+            assert!(shape.committed_len() >= placed, "columns must fit the commitment");
+            assert!(
+                shape.committed_len() - placed < lane_block,
+                "a whole lane of the commitment carries no data"
+            );
+            assert!(shape.committed_len() <= 1usize << shape.mu);
+            // And every column really does live inside those lanes.
+            for p in placements.iter().filter(|p| !p.is_virtual()) {
+                assert!(p.offset + (1usize << p.n_vars) <= shape.committed_len());
+            }
+        }
+    }
 }

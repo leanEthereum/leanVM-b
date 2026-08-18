@@ -137,11 +137,16 @@ pub trait Transmitter: Challenger {
 pub trait Receiver: Challenger {
     /// Pull the next opening phase and authenticate it: see
     /// [`VerifierState::next_merkle_batch`].
+    /// `row_words` is what a stored row holds, `leaf_words` the image it hashes to:
+    /// they differ only for a padding-free L0 commitment, whose absent lanes ride the
+    /// image as a zero prefix rather than the proof. The rows come back as full
+    /// images, so every consumer sees one width.
     fn next_merkle_batch(
         &mut self,
         root: &Hash,
         num_leaves: usize,
         queries: &[usize],
+        row_words: usize,
         leaf_words: usize,
     ) -> Result<Vec<Vec<F64>>, Error>;
     fn next_scalar(&mut self) -> Result<F192, Error>;
@@ -304,12 +309,13 @@ impl<'a> Receiver for VerifierState<'a> {
         root: &Hash,
         num_leaves: usize,
         queries: &[usize],
+        row_words: usize,
         leaf_words: usize,
     ) -> Result<Vec<Vec<F64>>, Error> {
         let paths: &'a PrunedMerklePaths = self.merkle.get(self.phase).ok_or(Error::MissingHint)?;
         self.phase += 1;
         let openings = paths
-            .open(root, num_leaves, queries, leaf_words)
+            .open(root, num_leaves, queries, row_words, leaf_words)
             .ok_or(Error::InvalidMerkleOpening)?;
         let rows = openings.iter().map(|o| o.leaf_data.clone()).collect();
         self.raw_openings.extend(openings);

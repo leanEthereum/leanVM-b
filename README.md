@@ -103,9 +103,6 @@ Flock SHA-256 batch proving, 131,072 compressions (2^17 slots)
 
 - Binary field of 192 bits
 - PCS: [WHIR](https://eprint.iacr.org/2024/1586) (aka [Ligerito](https://eprint.iacr.org/2025/1187))
+- Proving SHA-256 by [Flock](https://github.com/succinctlabs/flock/tree/main)
+- RingSwitching, M3 arithmetisation, (and more) by [Binius](https://github.com/IrreducibleOSS/binius) / [Binius64](https://github.com/binius-zk/binius64) (see [DP23](https://eprint.iacr.org/2023/1784) and [DP24](https://eprint.iacr.org/2024/504))
 
-## Credits
-
-- [flock](https://github.com/succinctlabs/flock/tree/main)
-- [binius](https://github.com/IrreducibleOSS/binius)
-- [binius64](https://github.com/binius-zk/binius64)

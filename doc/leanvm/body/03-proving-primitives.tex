@@ -81,11 +81,11 @@ Apply Lemma~\ref{lem:sz} to $A-B$, nonzero of total degree at most $d$.
 
 
 \begin{fact}[Sumcheck~\cite{LFKN92}]\label{fact:sumcheck}
-Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$, on a $P$ of degree at most $d$ in each variable, to one evaluation $P(\rho)$ at a random $\rho\in\E^{\kappa}$. Round $j$ carries a claim $s_{j-1}$, with $s_0=s$: the prover sends the univariate
+Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$, on a $P$ of degree at most $d$ in each variable, to one evaluation $P(\fc)$ at a random $\fc\in\E^{\kappa}$. Round $j$ carries a claim $s_{j-1}$, with $s_0=s$: the prover sends the univariate
 \[
-  h_j(Y)=\sum_{x\in\cube{\kappa-j}}P(\rho_1,\dots,\rho_{j-1},Y,x)
+  h_j(Y)=\sum_{x\in\cube{\kappa-j}}P(\fc_1,\dots,\fc_{j-1},Y,x)
 \]
-of degree at most $d$, the verifier checks $h_j(0)+h_j(1)\qeq s_{j-1}$, samples $\rho_j\leftarrow\E$ and takes $s_j=h_j(\rho_j)$. It ends holding $s_{\kappa}=P(\rho)$, for the caller to settle. A false $s$ survives with probability at most $d\kappa/|\E|$.
+of degree at most $d$, the verifier checks $h_j(0)+h_j(1)\qeq s_{j-1}$, samples $\fc_j\leftarrow\E$ and takes $s_j=h_j(\fc_j)$. It ends holding $s_{\kappa}=P(\fc)$, for the caller to settle. A false $s$ survives with probability at most $d\kappa/|\E|$.
 \end{fact}
 
 \begin{definition}[Zerocheck]\label{def:zerocheck}

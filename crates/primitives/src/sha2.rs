@@ -367,21 +367,22 @@ mod hw {
     /// this gets; the rest is the block loads and the big-endian decode.
     const INTERLEAVE: usize = 4;
 
-    /// [`super::hash_many_dyn`] on the crypto extension. Same contract: `len` a
-    /// nonzero multiple of 64, one 32-byte digest per input.
-    pub(super) fn hash_many(data: &[u8], len: usize, out: &mut [u8]) {
+    /// [`super::hash_many_dyn_from_state`] on the crypto extension. Same
+    /// contract: `len` a nonzero multiple of 64, one 32-byte digest per input,
+    /// every chain starting from `iv`.
+    pub(super) fn hash_many(data: &[u8], len: usize, iv: &[u32; 8], out: &mut [u8]) {
         let n = out.len() / OUT_LEN;
-        let iv = super::iv_at(len as u64);
         let groups = n / INTERLEAVE;
         // SAFETY: `g * INTERLEAVE + j < n`, so each input's `len` bytes and
         // each digest's 32 bytes are in bounds.
         unsafe {
             for g in 0..groups {
-                compress_group(data, len, &iv, g * INTERLEAVE, out);
+                compress_group(data, len, iv, g * INTERLEAVE, out);
             }
         }
         for i in groups * INTERLEAVE..n {
-            out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&super::hash(&data[i * len..(i + 1) * len]));
+            let d = super::hash_from_state(&data[i * len..(i + 1) * len], iv);
+            out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&d);
         }
     }
 
@@ -1420,9 +1421,10 @@ unsafe fn compress_lanes<S: Lanes32>(h: &mut [S; 8], buf: *mut u32) {
 /// Hash `S::WIDTH` inputs of `len` bytes (a nonzero multiple of 64) into
 /// `S::WIDTH` consecutive 32-byte digests at `out`.
 ///
-/// `iv` is the caller's [`iv_at`] for `len`, passed in rather than recomputed:
-/// every group of one call shares it, and recomputing it here would put a
-/// portable compression on each group (see [`iv_at`]).
+/// `iv` is the chaining value every lane starts from, [`iv_at`] for `len` or a
+/// [`zero_prefix_state`], passed in rather than recomputed: every group of one
+/// call shares it, and recomputing it here would put a portable compression on
+/// each group (see [`iv_at`]).
 ///
 /// # Safety
 /// Every `inputs[l]` must be valid for `len` bytes, `out` for
@@ -1452,10 +1454,9 @@ unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, iv: &[u32; 8]
 /// nonzero multiple of 64.
 #[inline(always)]
 #[cfg_attr(all(target_arch = "aarch64", target_feature = "sha2"), allow(dead_code))]
-unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
+unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, iv: &[u32; 8], out: &mut [u8]) {
     let n = out.len() / OUT_LEN;
     let groups = n / S::WIDTH;
-    let iv = iv_at(len as u64);
     let mut ptrs = [std::ptr::null::<u8>(); 16];
     // The widest backend's expanded schedule, 64 words by 16 lanes. One buffer
     // for the whole call keeps it on the stack, so the round's message operand
@@ -1472,14 +1473,15 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
             hash_group::<S>(
                 &ptrs[..S::WIDTH],
                 len,
-                &iv,
+                iv,
                 &mut buf,
                 out.as_mut_ptr().add(base * OUT_LEN),
             );
         }
     }
     for i in groups * S::WIDTH..n {
-        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&hash(&data[i * len..(i + 1) * len]));
+        let d = hash_from_state(&data[i * len..(i + 1) * len], iv);
+        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&d);
     }
 }
 
@@ -1516,6 +1518,46 @@ pub fn hash_many<const LEN: usize>(data: &[u8], out: &mut [u8]) {
 /// [`hash_many`] with the input length known only at runtime. Same contract:
 /// `len` a nonzero multiple of 64.
 pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
+    hash_many_dyn_from_state(data, len, &iv_at(len as u64), out);
+}
+
+/// The chaining value an image of `total` bytes reaches after its first
+/// `n_blocks` blocks, all zero: `C(..C(iv_for_len(total), 0)..)`.
+///
+/// A leaf image that starts with whole zero blocks (the PCS's absent
+/// interleaving lanes) shares that prefix with every other leaf of the tree,
+/// which under the length-first ordering depends on nothing but the image's
+/// width, so the committer computes this once and starts each leaf's chain
+/// here. Nothing about the digest changes: a prefix's compressions depend on
+/// nothing after them, so the result is still the `sha2_eth` of the whole
+/// image.
+pub fn zero_prefix_state(total: usize, n_blocks: usize) -> [u32; 8] {
+    let mut h = iv_at(total as u64);
+    for _ in 0..n_blocks {
+        h = compress(h, [0u32; 16]);
+    }
+    h
+}
+
+/// [`hash`] continued from a chaining value: `data` is the rest of the image, a
+/// nonzero whole number of blocks, and `state` what the blocks before it left
+/// (see [`zero_prefix_state`]).
+pub fn hash_from_state(data: &[u8], state: &[u32; 8]) -> [u8; OUT_LEN] {
+    assert!(
+        !data.is_empty() && data.len().is_multiple_of(BLOCK_LEN),
+        "a continued image is whole blocks"
+    );
+    let mut h = *state;
+    for block in data.chunks_exact(BLOCK_LEN) {
+        h = compress(h, block_words(block.try_into().unwrap()));
+    }
+    state_bytes(&h)
+}
+
+/// [`hash_many_dyn`] continued from one chaining value shared by every input,
+/// as [`hash_from_state`] is to [`hash`]. Passing `iv_at(len)` is
+/// [`hash_many_dyn`] itself.
+pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u32; 8], out: &mut [u8]) {
     assert!(
         len > 0 && len.is_multiple_of(BLOCK_LEN),
         "batched inputs are whole blocks"
@@ -1526,12 +1568,12 @@ pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
     // On aarch64 the crypto extension beats four-lane transposition even in
     // bulk, so the `Lanes32` path is the fallback there rather than the choice.
     #[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
-    return hw::hash_many(data, len, out);
+    return hw::hash_many(data, len, state, out);
     // SAFETY (each arm): the asserts above pin the buffer sizes the backends
     // require, and every backend is gated on the feature its intrinsics need.
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
     unsafe {
-        hash_many_with::<x86::Avx512>(data, len, out)
+        hash_many_with::<x86::Avx512>(data, len, state, out)
     }
     #[cfg(all(
         target_arch = "x86_64",
@@ -1539,11 +1581,11 @@ pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
         target_feature = "avx2"
     ))]
     unsafe {
-        hash_many_with::<x86::Avx2>(data, len, out)
+        hash_many_with::<x86::Avx2>(data, len, state, out)
     }
     #[cfg(all(target_arch = "aarch64", not(target_feature = "sha2")))]
     unsafe {
-        hash_many_with::<arm::Neon>(data, len, out)
+        hash_many_with::<arm::Neon>(data, len, state, out)
     }
     // The arms are exhaustive and disjoint. The x86 fallback is written
     // against `avx2` alone rather than also naming `avx512f`, which is only
@@ -1551,7 +1593,7 @@ pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
     // expand two arms and compute the batch twice.
     #[cfg(not(any(all(target_arch = "x86_64", target_feature = "avx2"), target_arch = "aarch64")))]
     unsafe {
-        hash_many_with::<Scalar8>(data, len, out)
+        hash_many_with::<Scalar8>(data, len, state, out)
     }
 }
 
@@ -1720,7 +1762,7 @@ mod tests {
                     let data: Vec<u8> = (0..n * len).map(|i| ((i * 37 + 11) & 0xff) as u8).collect();
                     let mut got = vec![0u8; n * OUT_LEN];
                     // SAFETY: `data` holds `n * len` bytes and `got` `n * 32`.
-                    unsafe { hash_many_with::<S>(&data, len, &mut got) };
+                    unsafe { hash_many_with::<S>(&data, len, &iv_at(len as u64), &mut got) };
                     for i in 0..n {
                         assert_eq!(
                             &got[i * OUT_LEN..(i + 1) * OUT_LEN],
@@ -1761,6 +1803,39 @@ mod tests {
             check::<128>(n);
             check::<192>(n);
             check::<1024>(n);
+        }
+    }
+
+    /// Starting from a precomputed zero-prefix state must reproduce the plain
+    /// hash of the whole image, one leaf at a time and batched, at leaf counts
+    /// that cross the widest backend's group width and its scalar tail.
+    #[test]
+    fn continued_from_zero_prefix_matches_whole_image() {
+        for zero_blocks in [0usize, 1, 3, 7] {
+            for rest_blocks in [1usize, 2, 5] {
+                let (zlen, rlen) = (zero_blocks * BLOCK_LEN, rest_blocks * BLOCK_LEN);
+                let state = zero_prefix_state(zlen + rlen, zero_blocks);
+                for n in [1usize, 4, 17, 33] {
+                    let rest: Vec<u8> = (0..n * rlen).map(|i| (i * 31 + zero_blocks) as u8).collect();
+                    let mut got = vec![0u8; n * OUT_LEN];
+                    hash_many_dyn_from_state(&rest, rlen, &state, &mut got);
+                    for i in 0..n {
+                        let mut whole = vec![0u8; zlen];
+                        whole.extend_from_slice(&rest[i * rlen..(i + 1) * rlen]);
+                        let want = hash(&whole);
+                        assert_eq!(
+                            &got[i * OUT_LEN..(i + 1) * OUT_LEN],
+                            &want[..],
+                            "batched, zero_blocks={zero_blocks} rest_blocks={rest_blocks} n={n} i={i}"
+                        );
+                        assert_eq!(
+                            hash_from_state(&rest[i * rlen..(i + 1) * rlen], &state),
+                            want,
+                            "scalar, zero_blocks={zero_blocks} rest_blocks={rest_blocks}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

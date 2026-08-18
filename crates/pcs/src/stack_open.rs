@@ -2,7 +2,9 @@
 //! Stacked batch-mixed opening for the F64-committed PCS.
 //!
 //! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
-//! [`super::whir::commit`]), and one WHIR run discharges
+//! [`super::whir::commit`], which only encodes and only transmits the lane blocks
+//! that carry data: every claim lives inside them and the weight is zero past
+//! them), and one WHIR run discharges
 //!
 //! - **point claims** ([`StackClaim`]): plain multilinear evaluations of
 //!   aligned sub-slices of the stack (a `Point` claim's weight is
@@ -16,7 +18,7 @@
 //!   claim `<q_flock, rs_eq_ind> = sumcheck_claim` against the transparent
 //!   E-valued weight `rs_eq_ind`.
 //!
-//! All claims are gamma-folded into ONE combined weight `b_stack` over the
+//! All claims are lambda-folded into ONE combined weight `b_stack` over the
 //! whole stack plus one `target`, then proved by
 //! [`super::whir::recursive_prover_with_basis`]. The verifier replays
 //! the ring-switch reductions succinctly ([`super::ring_switch::verify_finish`],
@@ -30,7 +32,7 @@
 //!
 //! label -> shared linear map sampled ([`super::ring_switch`]'s own label; the
 //! claims' slices were bound by the caller, so none are sent here) -> per point
-//! claim (label + value observed) -> gamma (ONE challenge for both families) ->
+//! claim (label + value observed) -> lambda (ONE challenge for both families) ->
 //! WHIR, with domain-separated labels for every phase.
 //!
 //! ## The combined weight
@@ -40,8 +42,8 @@
 //! `qflock_vars`, LSB-first) is
 //!
 //! ```text
-//! b(x) = eq(sel, x_hi) * sum_i gamma^i * MLE(rs_eq_ind_i)(x_lo)
-//!      + sum_j gamma^(n_rs + j) * eq(claim_j, x)
+//! b(x) = eq(sel, x_hi) * sum_i lambda^i * MLE(rs_eq_ind_i)(x_lo)
+//!      + sum_j lambda^(n_rs + j) * eq(claim_j, x)
 //! ```
 //!
 //! which is exactly what the dense `b_stack` scatter produces (each claim's
@@ -50,7 +52,7 @@
 //! selector eq).
 //!
 //! Both families take DISJOINT power ranges of ONE challenge, as the table
-//! sumcheck's eta ranges do, so every claim carries a distinct power (the
+//! sumcheck's xi ranges do, so every claim carries a distinct power (the
 //! batching step of `thm:rbr`).
 
 use crate::merkle::Hash;
@@ -189,17 +191,17 @@ fn claim_write_plan(claims: &[StackClaim], qflock: (usize, usize)) -> (Vec<bool>
     (write_first, written)
 }
 
-/// Fold the gamma-weighted point claims into the stack weight `b_stack` and
+/// Fold the lambda-weighted point claims into the stack weight `b_stack` and
 /// running `target` (pure: the caller has already observed the claim values
-/// and sampled `gammas` in transcript order). A `Point` builds eq over ONLY
+/// and sampled `lambdas` in transcript order). A `Point` builds eq over ONLY
 /// its aligned slice, a `Strided` scatters the eq of its high coords at the
 /// slot's stride. Every claim but the first one on a range scatters with `+=`,
 /// so overlapping slices accumulate correctly; the OUTER loop therefore stays
 /// serial (several bus claims can land on one column region), and parallelism
-/// lives inside each claim: the gamma-seeded eq build (parallel above its level
+/// lives inside each claim: the lambda-seeded eq build (parallel above its level
 /// floor) and the strided scatter. Small slices stay fully serial (with many
 /// tiny point claims, pool dispatch would cost more than the fold itself). The
-/// gamma seeding and the serial/parallel splits are exact-field/order-preserving,
+/// lambda seeding and the serial/parallel splits are exact-field/order-preserving,
 /// so `b_stack`'s bytes (and hence the proof) are unchanged relative to the
 /// build-then-multiply form.
 ///
@@ -213,7 +215,7 @@ fn fold_stacked_point_claims(
     b_stack: &mut [F192],
     target: &mut F192,
     claims: &[StackClaim],
-    gammas: &[F192],
+    lambdas: &[F192],
     write_first: &[bool],
 ) {
     // One reusable eq scratch: half the largest accumulating Point claim (the
@@ -232,7 +234,7 @@ fn fold_stacked_point_claims(
         .max()
         .unwrap_or(0);
     let mut scratch = zk_alloc::alloc_uninit(scratch_len);
-    for ((claim, g), &first) in claims.iter().zip(gammas.iter()).zip(write_first) {
+    for ((claim, g), &first) in claims.iter().zip(lambdas.iter()).zip(write_first) {
         let g = *g;
         match claim {
             StackClaim::Point {
@@ -329,12 +331,15 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F192]) -> F192 {
 /// evaluation AND the ring-switched q_flock claims (`ring`) in ONE WHIR
 /// run, reusing the caller's [`super::whir::commit`] output as L0.
 ///
-/// `stack` is the committed message (the caller retains it; it is not stored
-/// in [`ProverData`]); `config.initial_k` / `config.log_inv_rates[0]` must
-/// match the commit's `log_batch_size` / `log_inv_rate` (enforced by shape
+/// `stack` is the committed message (the caller retains it; it is not stored in
+/// [`ProverData`]): the `2^log_n`-word stack truncated to the lane blocks that
+/// carry data, so every claim must live inside it and the padding past it is
+/// exactly the weight's zero region. `config.initial_k` / `config.log_inv_rates[0]`
+/// must match the commit's `log_batch_size` / `log_inv_rate` (enforced by shape
 /// asserts inside the WHIR prover).
 pub fn open_batch_mixed_whir_stacked(
     ps: &mut impl Transmitter,
+    log_n: usize,
     stack: &[F64],
     prover_data: &ProverData,
     config: &ProverConfig,
@@ -349,6 +354,10 @@ pub fn open_batch_mixed_whir_stacked(
     assert!(
         ring.offset + qflock_len <= stack.len(),
         "q_flock slice must fit inside the stack"
+    );
+    assert!(
+        point_claims.iter().all(|c| claim_range(c).1 <= stack.len()),
+        "every claim must live inside the committed lanes"
     );
     assert!(
         !ring.claims.is_empty(),
@@ -389,17 +398,17 @@ pub fn open_batch_mixed_whir_stacked(
     for claim in point_claims {
         ps.observe_scalar(claim.value());
     }
-    let gammas = powers(ps.sample(), ring.claims.len() + point_claims.len());
-    let (gammas_rs, gammas_pd) = gammas.split_at(ring.claims.len());
+    let lambdas = powers(ps.sample(), ring.claims.len() + point_claims.len());
+    let (lambdas_rs, lambdas_pd) = lambdas.split_at(ring.claims.len());
 
     let rs_outputs: Vec<_> = rs_states
         .into_iter()
-        .zip(gammas_rs.iter().copied())
-        .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
+        .zip(lambdas_rs.iter().copied())
+        .map(|(state, lambda)| ring_switch::prove_finish_deferred(state, &coordinate_weights, lambda))
         .collect();
     mark("ring-switch proves", &mut t);
 
-    // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
+    // 3. Combined target and lifted stack weight b_stack: the lambda-weighted
     //    rs_eq_ind sum scattered at the q_flock slice, plus the point-claim
     //    eq tensors scattered at their offsets.
     let mut target = rs_outputs
@@ -436,13 +445,14 @@ pub fn open_batch_mixed_whir_stacked(
         ring_switch::combine_deferred_into(&rs_outputs, block);
         mark("rs_eq_ind scatter", &mut t);
     }
-    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, gammas_pd, &write_first);
+    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, lambdas_pd, &write_first);
     mark("point-claim folds", &mut t);
 
     // 4. One WHIR over the full stack against the combined claim (the
     //    stack is borrowed by the prover; no copy).
     recursive_prover_with_basis(
         config,
+        log_n,
         stack,
         b_stack,
         target,
@@ -465,6 +475,7 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     vs: &mut impl Receiver,
     config: &VerifierConfig,
     log_n: usize,
+    n_lanes: usize,
     root: &Hash,
     point_claims: &[StackClaim],
     ring: &RingSwitchVerify,
@@ -481,6 +492,13 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     for claim in &ring.claims {
         assert_eq!(claim.suffix_point.len(), qflock_vars);
     }
+    // Every claim's support must lie inside the cube, or its selector coords would
+    // run off the end of the fold point (mirror of the opener's own bound).
+    assert!(ring.offset + (1usize << qflock_vars) <= 1usize << log_n);
+    assert!(
+        point_claims.iter().all(|c| claim_range(c).1 <= 1usize << log_n),
+        "every claim must live inside the committed cube"
+    );
 
     // 1. Ring-switch verify: every claim arrives with its 64 slices, bound
     //    upstream by the caller, so nothing is read here. Then sample one
@@ -501,14 +519,14 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     for claim in point_claims {
         vs.observe_scalar(claim.value());
     }
-    let gammas = powers(vs.sample(), n_rs + point_claims.len());
-    let (gammas_rs, gammas_pd) = gammas.split_at(n_rs);
+    let lambdas = powers(vs.sample(), n_rs + point_claims.len());
+    let (lambdas_rs, lambdas_pd) = lambdas.split_at(n_rs);
 
     let mut target = F192::ZERO;
-    for (s_hat_v, g) in rs_proofs.iter().zip(gammas_rs.iter()) {
+    for (s_hat_v, g) in rs_proofs.iter().zip(lambdas_rs.iter()) {
         target += *g * ring_switch::verify_finish(s_hat_v, &coordinate_weights);
     }
-    for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
+    for (claim, g) in point_claims.iter().zip(lambdas_pd.iter()) {
         target += *g * claim.value();
     }
 
@@ -521,17 +539,17 @@ pub fn verify_opening_batch_mixed_whir_stacked(
             sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
         }
         let mut rs_part = F192::ZERO;
-        for (claim, g) in ring.claims.iter().zip(gammas_rs.iter()) {
+        for (claim, g) in ring.claims.iter().zip(lambdas_rs.iter()) {
             rs_part += *g * ring_switch::eval_rs_eq(&claim.suffix_point, x_lo, &coordinate_weights);
         }
         let mut acc = rs_part * sel_eq;
-        for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
+        for (claim, g) in point_claims.iter().zip(lambdas_pd.iter()) {
             acc += *g * stack_claim_eq_at(claim, x);
         }
         acc
     };
 
-    recursive_verifier_with_basis_succinct(config, log_n, target, root, eval_b_at, vs)
+    recursive_verifier_with_basis_succinct(config, log_n, n_lanes, target, root, eval_b_at, vs)
 }
 
 // ---------------------------------------------------------------------------
@@ -651,9 +669,9 @@ mod tests {
             qflock_vars < log_n - yr_log_n,
             "test shape must keep the residual cube above q_flock (yr_log_n = {yr_log_n})"
         );
-        let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&stack, log_n, pc.initial_k, pc.log_inv_rates[0]);
         let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
-        open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
+        open_batch_mixed_whir_stacked(&mut ps, log_n, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
             vc,
@@ -678,7 +696,15 @@ mod tests {
             claims: ring_claims.to_vec(),
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
-        verify_opening_batch_mixed_whir_stacked(&mut vs, &inst.vc, inst.log_n, &inst.root, point_claims, &ring)
+        verify_opening_batch_mixed_whir_stacked(
+            &mut vs,
+            &inst.vc,
+            inst.log_n,
+            1 << inst.vc.initial_k,
+            &inst.root,
+            point_claims,
+            &ring,
+        )
     }
 
     #[test]
@@ -798,14 +824,14 @@ mod tests {
             "test shape must exercise the crossing regime (yr_log_n = {yr_log_n})"
         );
 
-        let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&stack, log_n, pc.initial_k, pc.log_inv_rates[0]);
         let ring = RingSwitchOpen {
             offset: qflock_offset,
             qflock_vars,
             claims,
         };
         let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
-        open_batch_mixed_whir_stacked(&mut ps, &stack, &pd, &pc, &point_claims, &ring);
+        open_batch_mixed_whir_stacked(&mut ps, log_n, &stack, &pd, &pc, &point_claims, &ring);
         let fs = ps.into_proof();
 
         let ring_v = RingSwitchVerify {
@@ -815,7 +841,15 @@ mod tests {
         };
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &ring_v),
+            verify_opening_batch_mixed_whir_stacked(
+                &mut vs,
+                &vc,
+                log_n,
+                1 << vc.initial_k,
+                &cm.root,
+                &point_claims,
+                &ring_v
+            ),
             "honest crossing-regime opening rejected"
         );
 
@@ -824,7 +858,15 @@ mod tests {
         bad_ring.claims[0].s_hat_v.as_mut().unwrap()[7] += F192::ONE;
         let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
         assert!(
-            !verify_opening_batch_mixed_whir_stacked(&mut vs, &vc, log_n, &cm.root, &point_claims, &bad_ring),
+            !verify_opening_batch_mixed_whir_stacked(
+                &mut vs,
+                &vc,
+                log_n,
+                1 << vc.initial_k,
+                &cm.root,
+                &point_claims,
+                &bad_ring
+            ),
             "tampered crossing-regime ring slice accepted"
         );
     }
