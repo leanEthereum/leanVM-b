@@ -1444,11 +1444,6 @@ def verify_whir(
             words = transcript.merkle(current_root, block_length, queries, lanes if level == 0 else 3 * lanes)
         except VerificationError as exc:
             raise VerificationError(f"WHIR level {level}: {exc}") from exc
-        # A level-0 leaf image reads its lanes from the top interleaving index
-        # downwards, so that the lanes a padding-free commitment leaves out are the
-        # image's LEADING words: whole blocks of those zeros are one BLAKE2s chaining
-        # value the committer shares across every leaf, and they ride the image
-        # rather than the proof. Reversing puts lane l back at index l for the fold.
         rows: list[Sequence[K | E]] = [tuple(reversed(row)) for row in words] if level == 0 else [_ext_row(row) for row in words]
         enforced = _enforced_sum(rows, level_folds, query_weights)
 
@@ -1476,16 +1471,6 @@ def verify_whir(
                     running_quad = transcript.round_poly(3, running_target)
             # Each glued claim is rebound at the terminal point: the fold
             # challenges its level fixed after it was made, then the tail.
-            #
-            # `folds + tail_folds` is the fold challenges in ROUND order, and the
-            # first INITIAL_FOLDING_FACTOR rounds are the lane fold, which binds
-            # the committed witness's TOP coords: lane l is the stack block
-            # q[l * 2^(log_n - k) ...], so the padding-free commitment can leave
-            # the witness's zero tail out entirely. Rotating by that many rounds
-            # re-indexes the point by witness coord, which is what
-            # `evaluate_basis` (eq / stride selectors, ring-switch weight) reads.
-            # The per-level claims below stay in round order: they live on the
-            # codeword's own coords, not the witness's.
             point = list(folds) + tail_folds
             lane_folds = config.folds[0]
             weight = evaluate_basis(point[lane_folds:] + point[:lane_folds])

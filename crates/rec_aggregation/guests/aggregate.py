@@ -969,30 +969,27 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # ---- the same point, indexed by committed-witness coordinate ----
     # The folds bound the coordinates in ROUND order, and level 0's folds are the
     # lane fold: they bind the committed witness's TOP k coordinates, because lane
-    # l of the commitment is the contiguous stack block q[l * 2^(mu-k) ...]. That
-    # is what makes the witness's zero padding whole lanes, which the committer
-    # then leaves out of the encode entirely. Every transparent weight downstream
-    # (the stacked point claims' eq / stride selectors, the ring-switch weight) is
-    # written in witness coordinates, so rotate the point left by k rounds here,
-    # where the level shape is still a compile-time constant. The rotated pair
-    # keeps the same split point, so coordinate c still reads point_fold[c] below
-    # lenris and point_tail[c - lenris] above it, and every closed form and
-    # overlap pin downstream is untouched. yr_log_len <= k on every candidate (the
-    # residual is at most RESIDUAL_MAX_LOG coordinates), which is what makes the
-    # third segment's length non-negative.
+    # l of the commitment is the contiguous stack block q[l * 2^(mu-k) ...], which
+    # is what makes the witness's zero padding whole lanes for the committer to
+    # leave out of the encode. Every transparent weight downstream (the stacked
+    # point claims' eq / stride selectors, the ring-switch weight) is written in
+    # witness coordinates, so rotate the point left by those k rounds here, where
+    # the level shape is still a compile-time constant: one buffer holds the whole
+    # rotated run, point_fold naming it and point_tail the window past lenris, so
+    # coordinate c still reads point_fold[c] below lenris and point_tail[c-lenris]
+    # above it, leaving every closed form and overlap pin downstream untouched.
     lane_folds = LIG_FOLDS[m_idx * LIG_MAX_LEVELS + 0]
+    yr_log_len = LIG_YR_LOG_LEN[m_idx]
     fold_head = LIG_TOTAL_FOLDS[m_idx] - lane_folds
-    point_fold = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
-    point_tail = HeapBuf(GEN ** YR_LOG_CAP)
+    point_fold = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx] + YR_LOG_CAP))
+    point_tail = point_fold * GEN ** LIG_TOTAL_FOLDS[m_idx]
     for j in unroll(0, fold_head):
         point_fold[GEN ** j] = fold_challenges[GEN ** (lane_folds + j)]
-    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+    for j in unroll(0, yr_log_len):
         point_fold[GEN ** (fold_head + j)] = tail_challenges[GEN ** j]
-    for j in unroll(0, lane_folds - LIG_YR_LOG_LEN[m_idx]):
-        point_fold[GEN ** (fold_head + LIG_YR_LOG_LEN[m_idx] + j)] = fold_challenges[GEN ** j]
-    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-        point_tail[GEN ** j] = fold_challenges[GEN ** (lane_folds - LIG_YR_LOG_LEN[m_idx] + j)]
-    for j in unroll(LIG_YR_LOG_LEN[m_idx], YR_LOG_CAP):
+    for j in unroll(0, lane_folds):
+        point_fold[GEN ** (fold_head + yr_log_len + j)] = fold_challenges[GEN ** j]
+    for j in unroll(yr_log_len, YR_LOG_CAP):
         point_tail[GEN ** j] = 0
 
     # ---- per-level induced bases at the single terminal point ----
