@@ -72,18 +72,18 @@ R_{\mathrm{zc}}=v_av_b+v_c
 \end{equation}
 is what \emph{defines} $v_c$: both sides solve it rather than transmit it. The zerocheck therefore ends leaving three claims at one point,
 \begin{equation}\label{flock:eq:zc-claims}
-\qext a(\zskip,\rho)=v_a,\qquad \qext b(\zskip,\rho)=v_b,\qquad \qext z(\zskip,\rho)=v_c,
+\qext a(\zskip,\fc)=v_a,\qquad \qext b(\zskip,\fc)=v_b,\qquad \qext z(\zskip,\fc)=v_c,
 \end{equation}
-where $\rho\in\E^{\nflock}$ is the vector of sumcheck challenges and the third claim uses $c=z$.
+where $\fc\in\E^{\nflock}$ is the vector of sumcheck challenges and the third claim uses $c=z$.
 
 \subsection{Lincheck}\label{flock:lincheck}
 
-Lincheck reduces the three zerocheck claims to claims on $z$. The block structure is what keeps it cheap: the matrices repeat one BLAKE2s circuit, so lincheck runs over a single block, not over the batch. Split $\rho=(\rho_{\mathrm{in}},\rho_{\mathrm{out}})$, where $\rho_{\mathrm{in}}\in\E^{\kblock-\kskip}$ selects the remaining within-block coordinates and $\rho_{\mathrm{out}}\in\E^{\kbatch}$ selects a batch instance.
+Lincheck reduces the three zerocheck claims to claims on $z$. The block structure is what keeps it cheap: the matrices repeat one BLAKE2s circuit, so lincheck runs over a single block, not over the batch. Split $\fc=(\fc_{\mathrm{in}},\fc_{\mathrm{out}})$, where $\fc_{\mathrm{in}}\in\E^{\kblock-\kskip}$ selects the remaining within-block coordinates and $\fc_{\mathrm{out}}\in\E^{\kbatch}$ selects a batch instance.
 
 \begin{lemma}[Block diagonality folds the batch into $z$]\label{lem:flock-block-diagonal}
-For $a=Az$ with $A=I_{2^{\kbatch}}\otimes A_0$, at every point $(\zskip,\rho_{\mathrm{in}},\rho_{\mathrm{out}})\in\E\times\E^{\kblock-\kskip}\times\E^{\kbatch}$,
+For $a=Az$ with $A=I_{2^{\kbatch}}\otimes A_0$, at every point $(\zskip,\fc_{\mathrm{in}},\fc_{\mathrm{out}})\in\E\times\E^{\kblock-\kskip}\times\E^{\kbatch}$,
 \[
-\qext a(\zskip,\rho_{\mathrm{in}},\rho_{\mathrm{out}})=\sum_{j\in\cube{\kblock}}\qext A_0(\zskip,\rho_{\mathrm{in}},j)\,\mle z(j,\rho_{\mathrm{out}}),
+\qext a(\zskip,\fc_{\mathrm{in}},\fc_{\mathrm{out}})=\sum_{j\in\cube{\kblock}}\qext A_0(\zskip,\fc_{\mathrm{in}},j)\,\mle z(j,\fc_{\mathrm{out}}),
 \]
 and likewise for $b=Bz$ with $B_0$ in place of $A_0$.
 \end{lemma}
@@ -95,16 +95,16 @@ a(k,t)=\sum_{j\in\cube{\kblock}}A_0(k,j)\,z(j,t)\qquad\text{for }k\in\cube{\kblo
 \]
 so, splitting the row as $k=(\ksk,\kin)$ with $\ksk\in\cube{\kskip}$ and $\kin\in\cube{\kblock-\kskip}$ and expanding every extension by Fact~\ref{fact:eq},
 \begin{align*}
-\qext a(\zskip,\rho_{\mathrm{in}},\rho_{\mathrm{out}})&=\sum_{\ksk\in\cube{\kskip}}\lag_{\ksk}(\zskip)\,\mle a(\ksk,\rho_{\mathrm{in}},\rho_{\mathrm{out}})\\
-&=\sum_{\ksk}\lag_{\ksk}(\zskip)\sum_{\kin}\eq(\rho_{\mathrm{in}},\kin)\sum_{t\in\cube{\kbatch}}\eq(\rho_{\mathrm{out}},t)\,a\bigl((\ksk,\kin),t\bigr)\\
-&=\sum_{\ksk,\kin}\lag_{\ksk}(\zskip)\eq(\rho_{\mathrm{in}},\kin)\sum_{j\in\cube{\kblock}}A_0((\ksk,\kin),j)\underbrace{\sum_{t\in\cube{\kbatch}}\eq(\rho_{\mathrm{out}},t)\,z(j,t)}_{=\;\mle z(j,\rho_{\mathrm{out}})}\\
-&=\sum_{j\in\cube{\kblock}}\Bigl(\underbrace{\sum_{\ksk,\kin}\lag_{\ksk}(\zskip)\,\eq(\rho_{\mathrm{in}},\kin)\,A_0((\ksk,\kin),j)}_{=\;\qext A_0(\zskip,\rho_{\mathrm{in}},j)}\Bigr)\mle z(j,\rho_{\mathrm{out}}).
+\qext a(\zskip,\fc_{\mathrm{in}},\fc_{\mathrm{out}})&=\sum_{\ksk\in\cube{\kskip}}\lag_{\ksk}(\zskip)\,\mle a(\ksk,\fc_{\mathrm{in}},\fc_{\mathrm{out}})\\
+&=\sum_{\ksk}\lag_{\ksk}(\zskip)\sum_{\kin}\eq(\fc_{\mathrm{in}},\kin)\sum_{t\in\cube{\kbatch}}\eq(\fc_{\mathrm{out}},t)\,a\bigl((\ksk,\kin),t\bigr)\\
+&=\sum_{\ksk,\kin}\lag_{\ksk}(\zskip)\eq(\fc_{\mathrm{in}},\kin)\sum_{j\in\cube{\kblock}}A_0((\ksk,\kin),j)\underbrace{\sum_{t}\eq(\fc_{\mathrm{out}},t)\,z(j,t)}_{=\;\mle z(j,\fc_{\mathrm{out}})}\\
+&=\sum_{j\in\cube{\kblock}}\Bigl(\underbrace{\sum_{\ksk,\kin}\lag_{\ksk}(\zskip)\,\eq(\fc_{\mathrm{in}},\kin)\,A_0((\ksk,\kin),j)}_{=\;\qext A_0(\zskip,\fc_{\mathrm{in}},j)}\Bigr)\mle z(j,\fc_{\mathrm{out}}).
 \end{align*}
 \end{proof}
 
 The $c$ claim has the same shape, with the column index split as $j=(\jsk,\jin) \in\cube{\kskip} \times \cube{\kblock-\kskip}$, $\jsk$ the coordinates the univariate skip replaced and $\jin$ the within-block coordinates that remain:
 \begin{equation}\label{flock:eq:c-as-column}
-\qext z(\zskip,\rho_{\mathrm{in}},\rho_{\mathrm{out}})=\sum_{j\in\cube{\kblock}}\lag_{\jsk}(\zskip)\,\eq(\rho_{\mathrm{in}},\jin)\,\mle z(j,\rho_{\mathrm{out}}),
+\qext z(\zskip,\fc_{\mathrm{in}},\fc_{\mathrm{out}})=\sum_{j\in\cube{\kblock}}\lag_{\jsk}(\zskip)\,\eq(\fc_{\mathrm{in}},\jin)\,\mle z(j,\fc_{\mathrm{out}}),
 \end{equation}
 
 \vspace{3mm}
@@ -112,23 +112,23 @@ The $c$ claim has the same shape, with the column index split as $j=(\jsk,\jin) 
 The verifier samples $\lcalpha\in\E$ and batches the zerocheck's three claims \eqref{flock:eq:zc-claims} with the constant-position check \eqref{flock:eq:const-one}:
 \begin{equation}\label{flock:eq:lincheck}
 \begin{split}
-v_a+\lcalpha v_b+\lcalpha^2v_c+\lcalpha^3\qeq\sum_{j\in\cube{\kblock}}\Bigl(&\qext A_0(\zskip,\rho_{\mathrm{in}},j)+\lcalpha\qext B_0(\zskip,\rho_{\mathrm{in}},j)\\
-&+\lcalpha^2\lag_{\jsk}(\zskip)\eq(\rho_{\mathrm{in}},\jin)+\lcalpha^3[j=512]\Bigr)\mle z(j,\rho_{\mathrm{out}}).
+v_a+\lcalpha v_b+\lcalpha^2v_c+\lcalpha^3\qeq\sum_{j\in\cube{\kblock}}\Bigl(&\qext A_0(\zskip,\fc_{\mathrm{in}},j)+\lcalpha\qext B_0(\zskip,\fc_{\mathrm{in}},j)\\
+&+\lcalpha^2\lag_{\jsk}(\zskip)\eq(\fc_{\mathrm{in}},\jin)+\lcalpha^3[j=512]\Bigr)\mle z(j,\fc_{\mathrm{out}}).
 \end{split}
 \end{equation}
 
 \vspace{2mm}
 
-The parties start by running $\kblock - \kskip = 14 - 6 = 8$ sumcheck rounds on $\eqref{flock:eq:lincheck}$, binding the $\jin$ coordinates (leaving the skip index $\jsk$ unfolded), with challenges $\rho'_{\mathrm{in}}$ in coordinate order (the reverse of their round order). Let $R_{\mathrm{lc}}\in\E$ be the resulting sumcheck claim.
+The parties start by running $\kblock - \kskip = 14 - 6 = 8$ sumcheck rounds on $\eqref{flock:eq:lincheck}$, binding the $\jin$ coordinates (leaving the skip index $\jsk$ unfolded), with challenges $\fc'_{\mathrm{in}}$ in coordinate order (the reverse of their round order). Let $R_{\mathrm{lc}}\in\E$ be the resulting sumcheck claim.
 
-The prover sends $(s_0,\ldots,s_{63})\in\E^{64}$, claiming $s_i=\mle z(i,\rho'_{\mathrm{in}},\rho_{\mathrm{out}})$. These 64 claims will later be proven by Ring-Switching.
+The prover sends $(s_0,\ldots,s_{63})\in\E^{64}$, claiming $s_i=\mle z(i,\fc'_{\mathrm{in}},\fc_{\mathrm{out}})$. These 64 claims will later be proven by Ring-Switching.
 
 The verifier finally needs to check:
 
 \begin{equation}\label{flock:eq:lincheck-terminal}
 \begin{split}
-R_{\mathrm{lc}}\qeq\sum_{i=0}^{63}\Bigl(&\qext A_0(\zskip,\rho_{\mathrm{in}},i,\rho'_{\mathrm{in}})+\lcalpha\,\qext B_0(\zskip,\rho_{\mathrm{in}},i,\rho'_{\mathrm{in}})\\
-&+\lcalpha^2\lag_i(\zskip)\,\eq(\rho_{\mathrm{in}},\rho'_{\mathrm{in}})+\lcalpha^3[i=0]\,\eq(\rho'_{\mathrm{in}},8)\Bigr)s_i.
+R_{\mathrm{lc}}\qeq\sum_{i=0}^{63}\Bigl(&\qext A_0(\zskip,\fc_{\mathrm{in}},i,\fc'_{\mathrm{in}})+\lcalpha\,\qext B_0(\zskip,\fc_{\mathrm{in}},i,\fc'_{\mathrm{in}})\\
+&+\lcalpha^2\lag_i(\zskip)\,\eq(\fc_{\mathrm{in}},\fc'_{\mathrm{in}})+\lcalpha^3[i=0]\,\eq(\fc'_{\mathrm{in}},8)\Bigr)s_i.
 \end{split}
 \end{equation}
 
@@ -137,17 +137,17 @@ R_{\mathrm{lc}}\qeq\sum_{i=0}^{63}\Bigl(&\qext A_0(\zskip,\rho_{\mathrm{in}},i,\
 
 With the row split $k=(\ksk,\kin) \in\cube{\kskip} \times \cube{\kblock-\kskip}$ of the proof above,
 \begin{equation}\label{flock:eq:erow}
-\qext A_0(\zskip,\rho_{\mathrm{in}},j)=\sum_{k\in\cube{\kblock}}e_{\mathrm{row}}(k)\,A_0(k,j),\qquad
-e_{\mathrm{row}}(\ksk,\kin)=\lag_{\ksk}(\zskip)\,\eq(\rho_{\mathrm{in}},\kin),
+\qext A_0(\zskip,\fc_{\mathrm{in}},j)=\sum_{k\in\cube{\kblock}}e_{\mathrm{row}}(k)\,A_0(k,j),\qquad
+e_{\mathrm{row}}(\ksk,\kin)=\lag_{\ksk}(\zskip)\,\eq(\fc_{\mathrm{in}},\kin),
 \end{equation}
 and likewise for $B_0$.
 
-Writing $w_{\mathrm{col}}(\jsk,\jin)=s_{\jsk}\,\eq(\rho'_{\mathrm{in}},\jin)$ with $(\jsk,\jin) \in\cube{\kskip} \times \cube{\kblock-\kskip}$, each matrix term in $\eqref{flock:eq:lincheck-terminal}$ is simplified as follows:
+Writing $w_{\mathrm{col}}(\jsk,\jin)=s_{\jsk}\,\eq(\fc'_{\mathrm{in}},\jin)$ with $(\jsk,\jin) \in\cube{\kskip} \times \cube{\kblock-\kskip}$, each matrix term in $\eqref{flock:eq:lincheck-terminal}$ is simplified as follows:
 \begin{equation}\label{flock:eq:matrix-form}
-\sum_{i=0}^{63}\qext A_0(\zskip,\rho_{\mathrm{in}},i,\rho'_{\mathrm{in}})\,s_i=\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,e_{\mathrm{row}}(k)\,w_{\mathrm{col}}(j).
+\sum_{i=0}^{63}\qext A_0(\zskip,\fc_{\mathrm{in}},i,\fc'_{\mathrm{in}})\,s_i=\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,e_{\mathrm{row}}(k)\,w_{\mathrm{col}}(j).
 \end{equation}
 
-One forward walk of the BLAKE2s circuit returns \eqref{flock:eq:matrix-form} for both matrices, in $O(\text{circuit})$ field operations, never touching the roughly $89$ million nonzero entries they hold. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\langle e_{\mathrm{row}},w_{\mathrm{col}}\rangle$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\rho_{\mathrm{in}},\rho'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
+One forward walk of the BLAKE2s circuit returns \eqref{flock:eq:matrix-form} for both matrices, in $O(\text{circuit})$ field operations, never touching the roughly $89$ million nonzero entries they hold. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\langle e_{\mathrm{row}},w_{\mathrm{col}}\rangle$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\fc_{\mathrm{in}},\fc'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
 
 \subsubsection{Concluding Lincheck for a recursive verifier}\label{flock:defer}
 
@@ -161,7 +161,7 @@ This makes it possible to cheaply verify \eqref{flock:eq:lincheck-terminal}. Ens
 
 The role of Ring-Switching is now to prove:
 \[
-s_i \qeq \mle z(i,\rho'_{\mathrm{in}},\rho_{\mathrm{out}})\qquad\text{for }i\in\cube{\kskip}.
+s_i \qeq \mle z(i,\fc'_{\mathrm{in}},\fc_{\mathrm{out}})\qquad\text{for }i\in\cube{\kskip}.
 \]
 
 
@@ -175,7 +175,7 @@ After the witness $z$ has been committed, and its size announced:
 \item The parties run $\nflock$ quadratic zerocheck rounds on \eqref{flock:eq:pskip}, which the prover ends by sending $v_a,v_b$; the terminal identity \eqref{flock:eq:zc-terminal} then fixes $v_c$.
 \item The verifier samples $\lcalpha$ and the parties run the $8$ quadratic lincheck rounds on \eqref{flock:eq:lincheck}. The prover sends $(s_0,\ldots,s_{63})$, and the verifier checks \eqref{flock:eq:lincheck-terminal}: one circuit walk natively, the hint \eqref{flock:eq:matpart} in recursion.
 \end{enumerate}
-What Flock leaves is one family of $64$ claims for Ring-Switching (\S\ref{flock:ringswitch}): $(s_i \qeq \mle z(i, \rho'_{\mathrm{in}},\rho_{\mathrm{out}}))_{0 \leq i \leq 63}$.
+What Flock leaves is one family of $64$ claims for Ring-Switching (\S\ref{flock:ringswitch}): $(s_i \qeq \mle z(i, \fc'_{\mathrm{in}},\fc_{\mathrm{out}}))_{0 \leq i \leq 63}$.
 \end{protocol}
 
 \subsection{Soundness analysis}\label{flock:soundness}
@@ -183,17 +183,17 @@ What Flock leaves is one family of $64$ claims for Ring-Switching (\S\ref{flock:
 
 The commitment determines $\qflock$, hence $z$, before any challenge is drawn, and the PCS proves the claims opened on $\qflock$. So take the one transmitted family to be true of $z$,
 \[
-s_i=\mle z(i,\rho'_{\mathrm{in}},\rho_{\mathrm{out}}),\qquad i\in\cube{\kskip},
+s_i=\mle z(i,\fc'_{\mathrm{in}},\fc_{\mathrm{out}}),\qquad i\in\cube{\kskip},
 \]
 up to the PCS error and the $2^{-160}$ of Annex~\ref{annex:rs}, and let us show a $z$ failing \eqref{flock:eq:r1cs} or \eqref{flock:eq:const-one} is rejected.
 
 Lincheck comes first, and it is the only thing that checks anything: the zerocheck's own terminal identity defines $v_c$ instead of testing it, so every lie upstream reaches lincheck as a wrong triple $(v_a,v_b,v_c)$. Its terminal check \eqref{flock:eq:lincheck-terminal} is evaluated from the true $s$ and the matrices themselves, by the walk of \S\ref{flock:native} natively and, in recursion, once \eqref{flock:eq:matpart} is discharged (\S\ref{sec:deferred-claims}), so a false \eqref{flock:eq:lincheck} survives the $8$ rounds with probability at most $16/|\E|$ (Fact~\ref{fact:sumcheck}, degree two in each round). And by Lemma~\ref{lem:flock-block-diagonal} and \eqref{flock:eq:c-as-column}, \eqref{flock:eq:lincheck} says
 \[
-\bigl(v_a+\qext a(\zskip,\rho)\bigr)+\lcalpha\bigl(v_b+\qext b(\zskip,\rho)\bigr)+\lcalpha^2\bigl(v_c+\qext z(\zskip,\rho)\bigr)+\lcalpha^3\bigl(1+\mle z(512,\rho_{\mathrm{out}})\bigr)=0,
+\bigl(v_a+\qext a(\zskip,\fc)\bigr)+\lcalpha\bigl(v_b+\qext b(\zskip,\fc)\bigr)+\lcalpha^2\bigl(v_c+\qext z(\zskip,\fc)\bigr)+\lcalpha^3\bigl(1+\mle z(512,\fc_{\mathrm{out}})\bigr)=0,
 \]
-degree three in $\lcalpha$, all four coefficients fixed before $\lcalpha$ is drawn. Acceptance therefore pins them all, except with $3/|\E|$ (Lemma~\ref{lem:sz}): $v_a$, $v_b$ and $v_c$ are the true evaluations, and $\mle z(512,\rho_{\mathrm{out}})=1$, which is \eqref{flock:eq:const-one} except with $\kbatch/|\E|$ more, $\rho_{\mathrm{out}}$ being random.
+degree three in $\lcalpha$, all four coefficients fixed before $\lcalpha$ is drawn. Acceptance therefore pins them all, except with $3/|\E|$ (Lemma~\ref{lem:sz}): $v_a$, $v_b$ and $v_c$ are the true evaluations, and $\mle z(512,\fc_{\mathrm{out}})=1$, which is \eqref{flock:eq:const-one} except with $\kbatch/|\E|$ more, $\fc_{\mathrm{out}}$ being random.
 
-With all three pinned, the zerocheck's terminal identity \eqref{flock:eq:zc-terminal} becomes a real check again: it fixes $R_{\mathrm{zc}}$ to the true value of the summand at $\rho$.
+With all three pinned, the zerocheck's terminal identity \eqref{flock:eq:zc-terminal} becomes a real check again: it fixes $R_{\mathrm{zc}}$ to the true value of the summand at $\fc$.
 
 Now let $z$ violate \eqref{flock:eq:r1cs} at $u=(i,v)$. Then $P(\fembed(i))$ is the extension at $r$ of a nonzero Boolean multilinear (Definition~\ref{def:quirky}, Fact~\ref{fact:eq}), and the seven fixed coordinates of $r$ carry $\Ftwo$-independent weights, so it stays nonzero except with $(\nflock-7)/|\E|$ (Lemma~\ref{lem:fixed-zerocheck}): the $64$ zeros the verifier assumes on $\skipdom$ are false. Let $\hat P$ interpolate those zeros together with the received coset values. It vanishes on $\skipdom$ while $P$ does not, so $\hat P\neq P$ and $v_P\neq P(\zskip)$ except with $127/|\E|$ (Corollary~\ref{cor:idtest}). The $\nflock$ zerocheck rounds then run on a false initial claim with a true terminal value, and reject except with $2\nflock/|\E|$.
 

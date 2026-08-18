@@ -714,7 +714,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
 
     alphas = transcript.samples(BUS_BITS)
     weights = eq_kernel(alphas)
-    gamma = transcript.sample()
+    beta = transcript.sample()
     product = verify_product_triple(push_layout.depth, transcript)
     push_root, pull_root, count_root = product.roots
     require(count_root != ZERO, "a bus read count is zero")
@@ -756,29 +756,29 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
 
     forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
     sides = (
-        (layout.push, push_layout, fingerprints(ONE, ONE, ONE), weights, gamma),
-        (layout.pull, pull_layout, fingerprints(framework.final_pc, memory_final, bytecode_final), weights, gamma),
-        # The count channel owns no framework block and runs at alpha = gamma = 0:
+        (layout.push, push_layout, fingerprints(ONE, ONE, ONE), weights, beta),
+        (layout.pull, pull_layout, fingerprints(framework.final_pc, memory_final, bytecode_final), weights, beta),
+        # The count channel owns no framework block and runs at alpha = beta = 0:
         # its leaf IS the read count.
         (layout.count, count_layout, (), eq_kernel((ZERO,) * BUS_BITS), ZERO),
     )
     totals = []
-    for side, (blocks, side_layout, framework_fingerprints, side_weights, side_gamma) in enumerate(sides):
+    for side, (blocks, side_layout, framework_fingerprints, side_weights, side_beta) in enumerate(sides):
         framework_selectors = selector_weights(side_layout.framework, point)
         table_selectors = selector_weights(side_layout.tables, point)
         known = sum(
-            (selector * (side_gamma + fingerprint) for selector, fingerprint in zip(framework_selectors, framework_fingerprints, strict=True)),
+            (selector * (side_beta + fingerprint) for selector, fingerprint in zip(framework_selectors, framework_fingerprints, strict=True)),
             ZERO,
         )
         # A table's blocks stay symbolic: they accumulate into the form its
         # sumcheck settles over its own columns.
-        gamma_form = _const(side_gamma)
+        beta_form = _const(side_beta)
         for selector, block in zip(table_selectors, blocks, strict=True):
             form = forms[side][block.owner]
-            form.add_scaled(gamma_form, selector)
+            form.add_scaled(beta_form, selector)
             for slot, coordinate in enumerate(block.coordinates):
                 form.add_scaled(coordinate, selector * side_weights[slot])
-        # Every occupied row holds gamma + its fingerprint; the rest of the packed
+        # Every occupied row holds beta + its fingerprint; the rest of the packed
         # leaf cube holds the product identity.
         occupied = sum(framework_selectors + table_selectors, ZERO)
         totals.append(product.values[side] + known + ONE + occupied)
@@ -1444,7 +1444,7 @@ def verify_whir(
             words = transcript.merkle(current_root, block_length, queries, lanes if level == 0 else 3 * lanes)
         except VerificationError as exc:
             raise VerificationError(f"WHIR level {level}: {exc}") from exc
-        rows: list[Sequence[K | E]] = list(words) if level == 0 else [_ext_row(row) for row in words]
+        rows: list[Sequence[K | E]] = [tuple(reversed(row)) for row in words] if level == 0 else [_ext_row(row) for row in words]
         enforced = _enforced_sum(rows, level_folds, query_weights)
 
         # Every commitment, including the last one, enters through an intro
@@ -1471,7 +1471,9 @@ def verify_whir(
                     running_quad = transcript.round_poly(3, running_target)
             # Each glued claim is rebound at the terminal point: the fold
             # challenges its level fixed after it was made, then the tail.
-            weight = evaluate_basis(list(folds) + tail_folds)
+            point = list(folds) + tail_folds
+            lane_folds = config.folds[0]
+            weight = evaluate_basis(point[lane_folds:] + point[:lane_folds])
             for claim in glued:
                 weight += claim.scalar * claim.weight_at(list(folds[claim.fold_start :]) + tail_folds)
             terminal = weight * multilinear_eval(residual, tail_folds)
@@ -1498,7 +1500,7 @@ FIXED_CHALLENGES = (
 @dataclass(frozen=True)
 class ZerocheckResult:
     z_skip: E
-    rho: MultilinearPoint
+    chi: MultilinearPoint
     v_a: E
     v_b: E
     v_c: E
@@ -1517,21 +1519,21 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
     v_p = lagrange_interpolate(PHI[: 2 * K_BITS], [ZERO] * K_BITS + list(p_coset), z_skip)
 
     # nflock quadratic rounds on P, closed by v_a, v_b.
-    running, rho = v_p, []
+    running, chi = v_p, []
     for equality in r:
         message = transcript.round_poly(3, running, equality)
         challenge = transcript.sample()
-        rho.append(challenge)
+        chi.append(challenge)
         running = poly_eval(message, challenge)
     v_a, v_b = transcript.scalars(2)
     # v_c is what the terminal identity leaves, never transmitted: nothing is
     # checked here, lincheck pins all three claims against the committed witness.
     v_c = running + v_a * v_b
-    return ZerocheckResult(z_skip, tuple(rho), v_a, v_b, v_c)
+    return ZerocheckResult(z_skip, tuple(chi), v_a, v_b, v_c)
 
 
 def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:
-    """Lincheck at the quirky point (z_skip, rho): the claim's point, then its 64 slices s."""
+    """Lincheck at the quirky point (z_skip, chi): the claim's point, then its 64 slices s."""
     # alpha batches the two matrix identities, the c claim and the
     # constant-position check in its powers.
     alpha = transcript.sample()
@@ -1539,8 +1541,8 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     alpha_cu = alpha**3
     # e_row: phi8 Lagrange in the skip coordinate, eq in the slot variables.
     skip_weights = lagrange_weights(PHI[:K_BITS], zc.z_skip)
-    rho_in = zc.rho[:FLOCK_NUM_LINCHECK_ROUNDS]
-    e_row = [weight * value for weight in eq_kernel(rho_in) for value in skip_weights]
+    chi_in = zc.chi[:FLOCK_NUM_LINCHECK_ROUNDS]
+    e_row = [weight * value for weight in eq_kernel(chi_in) for value in skip_weights]
 
     # The 8 rounds that bind the high column coordinates, leaving 64 unfolded.
     running, round_challenges = zc.v_a + alpha * zc.v_b + alpha_sq * zc.v_c + alpha_cu, []
@@ -1553,17 +1555,17 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
 
     # The residual, then the terminal identity: pin term and c term included.
     # C = I, so the c weight is e_row itself, and both sides being tensors it
-    # collapses to eq(rho_in, rho_in_prime) times a 64-term Lagrange combination.
+    # collapses to eq(chi_in, chi_in_prime) times a 64-term Lagrange combination.
     s = tuple(transcript.scalars(K_BITS))
-    rho_in_prime = tuple(reversed(round_challenges))
-    w_col = [value * weight for weight in eq_kernel(rho_in_prime) for value in s]
+    chi_in_prime = tuple(reversed(round_challenges))
+    w_col = [value * weight for weight in eq_kernel(chi_in_prime) for value in s]
     terminal = (
         blake2s_bilinear(alpha, e_row, w_col)
-        + alpha_sq * eq_eval(rho_in, rho_in_prime) * dot(skip_weights, s)
+        + alpha_sq * eq_eval(chi_in, chi_in_prime) * dot(skip_weights, s)
         + alpha_cu * w_col[BLAKE2S_CONSTANT_COLUMN]
     )
     require(terminal == r_lc, "Flock lincheck terminal mismatch")
-    return rho_in_prime + zc.rho[FLOCK_NUM_LINCHECK_ROUNDS:], s
+    return chi_in_prime + zc.chi[FLOCK_NUM_LINCHECK_ROUNDS:], s
 
 
 def blake2s_bilinear(
@@ -1840,12 +1842,12 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
 
     # 4] Rows: one back-loaded table sumcheck over all seven tables, at
     # the bus point, starting from the target the three leaf claims derive.
-    # Every table takes a disjoint range of eta powers for its constraints; the
+    # Every table takes a disjoint range of xi powers for its constraints; the
     # three bus sides share the three above them (doc sec:air).
-    eta = transcript.sample()
+    xi = transcript.sample()
     n_constraints = sum(table.n_constraints for table in TABLES)
-    eta_powers = powers(eta, n_constraints + 3)
-    constraint_powers, form_powers = eta_powers[:n_constraints], eta_powers[n_constraints:]
+    xi_powers = powers(xi, n_constraints + 3)
+    constraint_powers, form_powers = xi_powers[:n_constraints], xi_powers[n_constraints:]
     target = dot(form_powers, bus.totals)
     air_claims = verify_constraints(
         build_airs(layout, bus.forms),

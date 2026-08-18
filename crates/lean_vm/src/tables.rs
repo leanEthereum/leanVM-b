@@ -314,7 +314,7 @@ pub trait Table: Sync {
     /// bus block, and padding rows fill them with `1` (= g^0) instead of `0`.
     fn count_columns(&self) -> &'static [usize];
     /// How many identities [`eval_constraint`](Table::eval_constraint) folds.
-    /// Sizes this table's slice of the batch's disjoint `eta`-range (§constraints).
+    /// Sizes this table's slice of the batch's disjoint `xi`-range (§constraints).
     /// Defaults to none, which is every table but `JUMP`: a relation whose value
     /// rides the bus as a coordinate needs no identity to tie it (§sec:m3).
     fn n_constraints(&self) -> usize {
@@ -322,7 +322,7 @@ pub trait Table: Sync {
     }
     /// Evaluate the table's degree-2 constraint at one row, reading column values
     /// by local index from `cols` (e.g. `cols[jump::C_LO]`) and weighting identity
-    /// `i` by `pows[i]`, this table's slice of the batch's `eta`-powers. The slice is
+    /// `i` by `pows[i]`, this table's slice of the batch's `xi`-powers. The slice is
     /// is exactly [`n_constraints`](Table::n_constraints) long: an identity indexed
     /// past its end panics rather than silently reaching into the next table's
     /// range. The table sumcheck carries every committed column of a table, in

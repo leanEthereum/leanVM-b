@@ -73,7 +73,7 @@ fn pcs_throughput() {
         tracing::info_span!("Sample", sample).in_scope(|| {
             let ((cm, pd), elapsed) = tracing::info_span!("Commit").in_scope(|| {
                 let t = Instant::now();
-                let committed = commit(&witness, pc.initial_k, log_inv_rate);
+                let committed = commit(&witness, log_n, pc.initial_k, log_inv_rate);
                 (committed, t.elapsed().as_secs_f64())
             });
             commit_times.push(elapsed);
@@ -83,6 +83,7 @@ fn pcs_throughput() {
                 let t = Instant::now();
                 recursive_prover_with_basis(
                     &pc,
+                    log_n,
                     &witness,
                     zk_alloc::ArenaVec::from_slice(&b_initial),
                     target,

@@ -1,10 +1,10 @@
 //! The bus: a single shared channel balanced by a grand product (§sec:gp through §sec:leafstack). Each
 //! interaction wires a table's columns into width-`m` tuples and flushes them in a
 //! direction; the bus balances when pushed and pulled tuples form the same
-//! multiset, proven by two GKR passes over the leaf vectors `γ − π_α(σ)`. Each pass
+//! multiset, proven by two GKR passes over the leaf vectors `β − π_α(σ)`. Each pass
 //! reduces to a leaf claim `Ṽ₀(ζ)`, decomposed into evaluation claims on the
 //! committed columns. Tuple coordinates `σ_i` are `K`-valued (column entries,
-//! g-powers, separators); the fingerprint challenges `α, γ` are `E`-valued, so a
+//! g-powers, separators); the fingerprint challenges `α, β` are `E`-valued, so a
 //! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
 use crate::PAR_THRESHOLD;
@@ -104,7 +104,7 @@ pub const N_TUPLE_BITS: usize = 4;
 
 /// Conservative sum of the degree bounds for every random-challenge failure in
 /// the bus argument. A side contains at most `2^mu` leaf factors, each of total
-/// degree `N_TUPLE_BITS` in `α⃗` and one in `γ`. The second term covers all
+/// degree `N_TUPLE_BITS` in `α⃗` and one in `β`. The second term covers all
 /// radix-four GKR batching and sumcheck challenges.
 fn soundness_degree_bound(mu: usize) -> u128 {
     assert!(mu < u128::BITS as usize, "bus layout is too large to bound");
@@ -149,8 +149,11 @@ fn assert_grinding_unnecessary(
 /// Stack blocks largest-first at aligned offsets; `μ = ⌈log2 Σ 2^{κ_b}⌉`.
 pub fn layout(blocks: &[Block]) -> Layout {
     let kappas: Vec<Option<usize>> = blocks.iter().map(|b| Some(b.kappa)).collect();
-    let (offsets, mu) = crate::witness::stack_offsets(&kappas);
-    Layout { mu, offsets }
+    let (offsets, placed) = crate::witness::stack_offsets(&kappas);
+    Layout {
+        mu: crate::log2_ceil_usize(placed.max(1)),
+        offsets,
+    }
 }
 
 /// A non-constant coordinate as `(source, coefficient)`: its leaf contribution is
@@ -182,7 +185,7 @@ fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &m
     }
 }
 
-/// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i w_i c_i(z)` for
+/// Build one side's leaf vector: block `b` row `z` holds `β − Σ_i w_i c_i(z)` for
 /// the fingerprint weights `w = eq(α⃗, ·)`, followed implicitly by the identity `1`
 /// up to `2^μ`. The row-invariant weights and constant coordinates are folded once
 /// per block into `const_part`. `gpow` supplies `g^z` for [`Coord::Index`] and is
@@ -192,7 +195,7 @@ pub fn build_leaves(
     lay: &Layout,
     cols: &[&[F64]],
     w: &[F192],
-    gamma: F192,
+    beta: F192,
     gpow: &[F64],
 ) -> ArenaVec<F192> {
     let explicit = blocks
@@ -222,7 +225,7 @@ pub fn build_leaves(
         values
     };
     for (b, blk) in blocks.iter().enumerate() {
-        let mut const_part = gamma;
+        let mut const_part = beta;
         let mut terms: Vec<Term> = Vec::with_capacity(blk.coords.len());
         for (i, c) in blk.coords.iter().enumerate() {
             push_terms(c, w[i], &mut terms, &mut const_part);
@@ -261,7 +264,7 @@ pub fn build_leaves(
 
 /// One table's bus contribution on one side, as a form over that table's committed
 /// columns: `Σ_c coeffs[c]·col_c(z) + Σ (a,b,c) c·col_a(z)·col_b(z) + constant`.
-/// Every coefficient is a public function of `α`, `γ` and the block selectors at
+/// Every coefficient is a public function of `α`, `β` and the block selectors at
 /// `ζ`, because a table's bus blocks carry only `Const`/`Col`/`GCol`/`Prod`
 /// coordinates. The table sumcheck sums this against `eq(ζ[..τ], ·)` instead of
 /// opening each column at `ζ`, which is why those per-column claims no longer reach
@@ -358,7 +361,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
     lay: &Layout,
     zeta: &[F192],
     w: &[F192],
-    gamma: F192,
+    beta: F192,
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
@@ -382,7 +385,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
         // framework blocks (boundary, memory, bytecode) still open columns at ζ.
         if let Some((t, base)) = owners[b] {
             let form = &mut forms[t];
-            form.constant += eq_hi * gamma;
+            form.constant += eq_hi * beta;
             for (i, c) in blk.coords.iter().enumerate() {
                 accumulate_form(c, eq_hi * w[i], base, form);
             }
@@ -421,7 +424,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
             };
             inner += w[i] * coord_val;
         }
-        acc += eq_hi * (gamma + inner);
+        acc += eq_hi * (beta + inner);
     }
     // The padding rows (identity `1`) contribute the leftover mass `1 - Σ_b sel_b`.
     Ok(acc + (F192::ONE + sel_sum))
@@ -443,7 +446,7 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F19
 ///
 /// The fresh column MLE evaluations run in a parallel first pass: within one
 /// `decompose_formula` call no challenge is sampled between claims (`zeta`,
-/// `alpha`, `gamma` are fixed arguments and each claim's point is
+/// `alpha`, `beta` are fixed arguments and each claim's point is
 /// `zeta[..kappa]` of its block), so the values are independent of the
 /// transcript and only their `add_scalar` ORDER matters. The second pass
 /// replays them through the transcript in the original block/coord order,
@@ -454,7 +457,7 @@ fn decompose_prove(
     cols: &[&[F64]],
     zeta: &[F192],
     w: &[F192],
-    gamma: F192,
+    beta: F192,
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
@@ -485,7 +488,7 @@ fn decompose_prove(
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
     let mut fresh_iter = jobs.iter().zip(vals.iter());
-    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |col, zeta_lo| {
+    decompose_formula(blocks, lay, zeta, w, beta, owners, forms, claims, |col, zeta_lo| {
         let (&(jc, jk), &v) = fresh_iter
             .next()
             .expect("job enumeration matches decompose_formula's col_val order");
@@ -506,13 +509,13 @@ fn decompose_verify(
     lay: &Layout,
     zeta: &[F192],
     w: &[F192],
-    gamma: F192,
+    beta: F192,
     owners: &[Option<(usize, usize)>],
     forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
 ) -> Result<F192, Error> {
-    decompose_formula(blocks, lay, zeta, w, gamma, owners, forms, claims, |_, _| {
+    decompose_formula(blocks, lay, zeta, w, beta, owners, forms, claims, |_, _| {
         vs.next_scalar().map_err(|_| Error::Truncated)
     })
 }
@@ -571,18 +574,18 @@ pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
 
 /// The three bus sides in `[push, pull, count]` order with their fingerprint
 /// weights. The count channel's leaf is the count itself (a single `Col`), so it
-/// runs at `α⃗ = 0` (weight `1` on slot `0`, zero elsewhere), `γ = 0`, and its GKR
+/// runs at `α⃗ = 0` (weight `1` on slot `0`, zero elsewhere), `β = 0`, and its GKR
 /// root is the product of all counts.
 fn sides<'a>(
     blocks: [&'a [Block]; 3],
     lays: [&'a Layout; 3],
     w: &'a [F192],
     count_w: &'a [F192],
-    gamma: F192,
+    beta: F192,
 ) -> [(&'a [Block], &'a Layout, &'a [F192], F192); 3] {
     [
-        (blocks[0], lays[0], w, gamma),
-        (blocks[1], lays[1], w, gamma),
+        (blocks[0], lays[0], w, beta),
+        (blocks[1], lays[1], w, beta),
         (blocks[2], lays[2], count_w, F192::ZERO),
     ]
 }
@@ -603,7 +606,7 @@ fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192]) -> Bytecode
 }
 
 /// Prove the bus balances; returns the per-column claims to open (§sec:leafstack). `alpha`/
-/// `gamma` follow the witness commitment (the only ordering the grand product
+/// `beta` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
 /// Everything the bus hands on: the framework blocks' column claims, the reduced
 /// bytecode claim, the shared GKR point (the table sumcheck's eq point), and
@@ -643,7 +646,7 @@ pub fn prove_balance(
     // for leaf construction and the full logical layout for decomposition.
     let count_build_lay = count_lay.clone();
     count_lay.mu = push_lay.mu;
-    let gamma = ps.sample();
+    let beta = ps.sample();
     // The `g^z` table backing `Coord::Index`, built once for the three sides: push
     // and pull would otherwise build the same table twice and count, which carries
     // no `Index` coordinate, would build one it never reads.
@@ -659,8 +662,8 @@ pub fn prove_balance(
     // three-way outer split on top would only add a barrier.
     let [push_leaves, pull_leaves, count_leaves] = crate::stage!("Bus leaves", || {
         [
-            build_leaves(push, &push_lay, cols, &w, gamma, &gpow),
-            build_leaves(pull, &pull_lay, cols, &w, gamma, &gpow),
+            build_leaves(push, &push_lay, cols, &w, beta, &gpow),
+            build_leaves(pull, &pull_lay, cols, &w, beta, &gpow),
             build_leaves(count, &count_build_lay, cols, &count_w, F192::ZERO, &gpow),
         ]
     });
@@ -678,7 +681,7 @@ pub fn prove_balance(
         [&push_lay, &pull_lay, &count_lay],
         &w,
         &count_w,
-        gamma,
+        beta,
     );
     // Each table's columns at ζ[..τ], computed once and shared by the three sides
     // (a form's linear part factors through them). Nothing here travels, neither the
@@ -812,7 +815,7 @@ pub fn verify_balance(
     // The count tree is padded to the pair's depth (identity leaves), so all
     // three verify as ONE RLC-batched GKR at ONE shared point.
     count_lay.mu = push_lay.mu;
-    let gamma = vs.sample();
+    let beta = vs.sample();
     let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
     let [push_root, pull_root, count_root] = bus_gkr.roots;
     // Every read count is nonzero iff this product is (§sec:memchan); a zero would
@@ -837,7 +840,7 @@ pub fn verify_balance(
         [&push_lay, &pull_lay, &count_lay],
         &w,
         &count_w,
-        gamma,
+        beta,
     );
     let mut totals = [F192::ZERO; 3];
     for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
@@ -875,7 +878,7 @@ mod tests {
 
     /// The bound is `(N_TUPLE_BITS + 1)·2^mu` plus the GKR terms: only the bus
     /// DEPTH costs bits now, the multilinear fingerprint having fixed each factor's
-    /// degree at four in `α⃗` and one in `γ`, whatever the tuple's width.
+    /// degree at four in `α⃗` and one in `β`, whatever the tuple's width.
     #[test]
     fn bus_soundness_tracks_depth_only() {
         assert!(soundness_bits(38) >= crate::SECURITY_BITS);

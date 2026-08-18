@@ -113,33 +113,33 @@ const PAR_THRESHOLD: usize = 1 << 12;
 /// The mixed fold: bind the lowest variable of a `K`-table to an
 /// `E`-challenge, producing the `E`-table the remaining rounds fold. One
 /// `mul_base` per output entry.
-fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
+fn fold_low_k(table: &[F64], chi: F192) -> Vec<F192> {
     debug_assert_eq!(table.len() % 2, 0);
     (0..table.len() / 2)
-        .map(|i| interp_k(table[2 * i], table[2 * i + 1], rho))
+        .map(|i| interp_k(table[2 * i], table[2 * i + 1], chi))
         .collect()
 }
 
 /// [`fold_low_k`], fanned out over the pool.
-fn fold_low_k_par(table: &[F64], rho: F192) -> Vec<F192> {
-    parallel::map_collect(table.len() / 2, |i| interp_k(table[2 * i], table[2 * i + 1], rho))
+fn fold_low_k_par(table: &[F64], chi: F192) -> Vec<F192> {
+    parallel::map_collect(table.len() / 2, |i| interp_k(table[2 * i], table[2 * i + 1], chi))
 }
 
 /// Bind the highest variable of a `K`-table and lift the result into `E`.
-pub fn fold_high_k(table: &[F64], rho: F192) -> ArenaVec<F192> {
+pub fn fold_high_k(table: &[F64], chi: F192) -> ArenaVec<F192> {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
-    (0..half).map(|i| interp_k(table[i], table[i + half], rho)).collect()
+    (0..half).map(|i| interp_k(table[i], table[i + half], chi)).collect()
 }
 
-/// Bind the highest free variable of `table` to `rho` in place: `table[i] =
-/// interp(table[i], table[i + half], rho)`. Binding from the top down leaves the
+/// Bind the highest free variable of `table` to `chi` in place: `table[i] =
+/// interp(table[i], table[i + half], chi)`. Binding from the top down leaves the
 /// low variables, the ones every table of a batch shares, for last.
-pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, rho: F192) {
+pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, chi: F192) {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
     for i in 0..half {
-        table[i] = interp(table[i], table[i + half], rho);
+        table[i] = interp(table[i], table[i + half], chi);
     }
     table.shrink_to(half);
 }
@@ -273,9 +273,9 @@ pub fn mle_eval_prod(a: &[F64], b: &[F64], point: &[F192]) -> F192 {
     if point.is_empty() {
         return F192::from(a[0] * b[0]);
     }
-    let rho = point[0];
+    let chi = point[0];
     let cur = (0..a.len() / 2)
-        .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], rho))
+        .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], chi))
         .collect();
     fold_ladder(cur, &point[1..], false)
 }

@@ -55,11 +55,24 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     primitives::blake2s::hash(&buf)
 }
 
-/// The committer's leaf preimage: the row's words, little-endian.
-fn hash_row(row: &[F64]) -> Hash {
-    let mut bytes = Vec::with_capacity(8 * row.len());
-    for word in row {
-        bytes.extend_from_slice(&word.0.to_le_bytes());
+/// The full leaf image a stored row stands for: `leaf_words - row.len()` zero words,
+/// then the row.
+///
+/// A padding-free L0 commitment stores only the lanes that carry data, while the
+/// image the tree was built over is the full `leaf_words` wide, the absent lanes
+/// leading (`pcs::merkle::merkle_tree_padded_rows` shares their hash prefix across
+/// every leaf). Every other level stores its full row, so the prefix is empty.
+fn leaf_image(row: &[F64], leaf_words: usize) -> Vec<F64> {
+    let mut image = vec![F64::ZERO; leaf_words];
+    image[leaf_words - row.len()..].copy_from_slice(row);
+    image
+}
+
+/// The committer's leaf preimage: the image's words, little-endian.
+fn hash_words(image: &[F64]) -> Hash {
+    let mut bytes = vec![0u8; 8 * image.len()];
+    for (dst, word) in bytes.chunks_exact_mut(8).zip(image) {
+        dst.copy_from_slice(&word.0.to_le_bytes());
     }
     hash_leaf(&bytes)
 }
@@ -77,9 +90,12 @@ fn sorted_unique(queries: &[usize]) -> Vec<usize> {
 /// position (sorted), and one octopus authenticating all of them.
 ///
 /// Leaf data is `F64` because that is what a Merkle preimage is; an `E`-valued
-/// row of width `w` is `3w` words, packed by the opener. The phase never says
-/// how wide a row is: the caller announces that, which is what pins the leaf
-/// image the octopus is checked against.
+/// row of width `w` is `3w` words, packed by the opener. The phase never says how
+/// wide a row is: the caller announces that, which is what pins the leaf image the
+/// octopus is checked against. A row may be NARROWER than the image it hashes to,
+/// the missing words being a zero prefix the caller also announces,
+/// which is what keeps a padding-free L0 commitment's absent lanes out of the
+/// proof.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrunedMerklePaths {
     pub leaf_data: Vec<Vec<F64>>,
@@ -130,16 +146,16 @@ impl PrunedMerklePaths {
         }
     }
 
-    /// The stored rows' leaf hashes, or `None` if any row is not `leaf_words` wide.
-    fn leaf_hashes(&self, queries: &[usize], leaf_words: usize) -> Option<(Vec<usize>, Vec<Hash>)> {
+    /// The stored rows' leaf hashes, or `None` if any row is not `row_words` wide.
+    fn leaf_hashes(&self, queries: &[usize], row_words: usize, leaf_words: usize) -> Option<(Vec<usize>, Vec<Hash>)> {
         let sorted = sorted_unique(queries);
-        if sorted.len() != self.leaf_data.len() {
+        if sorted.len() != self.leaf_data.len() || row_words > leaf_words {
             return None;
         }
         let hashes = self
             .leaf_data
             .iter()
-            .map(|row| (row.len() == leaf_words).then(|| hash_row(row)))
+            .map(|row| (row.len() == row_words).then(|| hash_words(&leaf_image(row, leaf_words))))
             .collect::<Option<Vec<_>>>()?;
         Some((sorted, hashes))
     }
@@ -160,13 +176,14 @@ impl PrunedMerklePaths {
         root: &Hash,
         num_leaves: usize,
         queries: &[usize],
+        row_words: usize,
         leaf_words: usize,
     ) -> Option<Vec<RawMerklePath>> {
         if !num_leaves.is_power_of_two() || num_leaves == 0 || queries.is_empty() {
             return None;
         }
         let height = num_leaves.trailing_zeros() as usize;
-        let (sorted, leaf_hashes) = self.leaf_hashes(queries, leaf_words)?;
+        let (sorted, leaf_hashes) = self.leaf_hashes(queries, row_words, leaf_words)?;
         if sorted.last().is_some_and(|&p| p >= num_leaves) {
             return None;
         }
@@ -221,7 +238,7 @@ impl PrunedMerklePaths {
             .map(|q| {
                 let slot = sorted.binary_search(q).ok()?;
                 Some(RawMerklePath {
-                    leaf_data: self.leaf_data[slot].clone(),
+                    leaf_data: leaf_image(&self.leaf_data[slot], leaf_words),
                     path: per_distinct[slot].clone(),
                 })
             })
@@ -229,8 +246,8 @@ impl PrunedMerklePaths {
     }
 }
 
-/// One query's opening, unpruned: its leaf words and the full sibling path from
-/// that leaf up to the root.
+/// One query's opening, unpruned: the leaf's FULL image (zero prefix included) and
+/// the full sibling path from that leaf up to the root.
 ///
 /// The redundant form. Several queries of one phase repeat whatever siblings
 /// they share, which is exactly what makes it simple to consume: recomputing
@@ -246,7 +263,7 @@ pub struct RawMerklePath {
 impl RawMerklePath {
     /// Recompute the root this opening claims, from its leaf and path.
     pub fn root(&self, leaf_index: usize) -> Hash {
-        let mut acc = hash_row(&self.leaf_data);
+        let mut acc = hash_words(&self.leaf_data);
         let mut idx = leaf_index;
         for sibling in &self.path {
             let (left, right) = if idx & 1 == 0 { (acc, *sibling) } else { (*sibling, acc) };
@@ -263,7 +280,7 @@ mod tests {
 
     /// A full binary tree over `rows`, in the flat bottom-up layout `prune` reads.
     fn tree_of(rows: &[Vec<F64>]) -> Vec<Hash> {
-        let mut tree: Vec<Hash> = rows.iter().map(|r| hash_row(r)).collect();
+        let mut tree: Vec<Hash> = rows.iter().map(|r| hash_words(r)).collect();
         let (mut start, mut len) = (0usize, rows.len());
         while len > 1 {
             for i in 0..len / 2 {
@@ -292,7 +309,7 @@ mod tests {
         let paths = PrunedMerklePaths::prune(&tree, num_leaves, &queries, |q| rows[q].clone());
         assert_eq!(paths.leaf_data.len(), 3, "one row per distinct query");
 
-        let openings = paths.open(&root, num_leaves, &queries, width).expect("open");
+        let openings = paths.open(&root, num_leaves, &queries, width, width).expect("open");
         assert_eq!(openings.len(), queries.len());
         for (opening, &q) in openings.iter().zip(&queries) {
             assert_eq!(opening.leaf_data, rows[q], "row must follow query order");
@@ -313,7 +330,7 @@ mod tests {
         let root = tree[tree.len() - 1];
         let queries = [5usize, 1, 3];
         let good = PrunedMerklePaths::prune(&tree, num_leaves, &queries, |q| rows[q].clone());
-        let open = |p: &PrunedMerklePaths, qs: &[usize], w: usize, n: usize| p.open(&root, n, qs, w);
+        let open = |p: &PrunedMerklePaths, qs: &[usize], w: usize, n: usize| p.open(&root, n, qs, w, w);
         assert!(open(&good, &queries, width, num_leaves).is_some(), "honest phase");
 
         let mut extra = good.clone();
