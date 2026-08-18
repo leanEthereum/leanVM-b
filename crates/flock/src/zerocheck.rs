@@ -338,7 +338,7 @@ pub fn prove_packed_padded(
 
 /// Replay a zerocheck proof for an instance over `{0,1}^log_n`.
 ///
-/// Walks the sponge in lockstep with the prover, samples the same challenges,
+/// Walks the transcript in lockstep with the prover, samples the same challenges,
 /// and carries the running claim through the rounds. It is a REDUCTION, not a
 /// check: `ĉ` is whatever the terminal identity leaves, so no round message can
 /// fail here. The only errors are structural (shape, truncated stream). What
@@ -477,7 +477,7 @@ mod tests {
     /// without panicking, and produces output of the right shape.
     ///
     /// structural sanity here catches:
-    ///   - mismatched sponge observe/sample sequence
+    ///   - mismatched observe/sample sequence
     ///   - wrong slice lengths in the eq-challenge tail at any round
     ///   - any unreachable assert in the underlying functions
     #[test]
@@ -490,13 +490,13 @@ mod tests {
             let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-            let mut sponge = pcs::ProverState::new(b"flock-test-v0", &[]);
-            let claim = prove_packed(&a_p, &b_p, &c_p, m, &mut sponge);
+            let mut ps = pcs::ProverState::new(b"flock-test-v0", &[]);
+            let claim = prove_packed(&a_p, &b_p, &c_p, m, &mut ps);
 
             // Shape checks: the streamed proof is round1 ‖ (m − K_SKIP)
             // message pairs ‖ (final_a, final_b). C rides the sumcheck, so
             // there is no second Λ-vector and no transmitted ĉ.
-            let stream = sponge.into_proof().stream;
+            let stream = ps.into_proof().stream;
             assert_eq!(stream.len(), (1 << K_SKIP) + 2 * (m - K_SKIP) + 2, "m={m}");
             assert_eq!(claim.mlv_challenges.len(), m - K_SKIP, "m={m}");
 
@@ -709,7 +709,7 @@ mod tests {
             "tamper must preserve the product",
         );
 
-        // Replay the tampered proof to move the sponge to the same slot. Its
+        // Replay the tampered proof to move the transcript to the same slot. Its
         // claims are as consistent as the honest ones (same product, same ĉ),
         // so nothing local distinguishes them.
         let mut ch_tampered = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
@@ -733,7 +733,7 @@ mod tests {
         );
     }
 
-    /// Determinism: same witness + same sponge seed → same proof.
+    /// Determinism: same witness + same transcript seed → same proof.
     #[test]
     fn prove_deterministic() {
         let m = 14;

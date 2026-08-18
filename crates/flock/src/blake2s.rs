@@ -246,7 +246,7 @@ pub const PINNED_F0: u32 = u32::MAX;
 
 /// A convenient one-block standard hash [`Compression`] of `m`: exactly
 /// `blake2s(m)` for a 64-byte message, which is the configuration the VM's
-/// `Blake2s` opcode and `fiat_shamir::sponge::compress` use. The circuit itself
+/// `Blake2s` opcode and `fiat_shamir::compress` use. The circuit itself
 /// accepts arbitrary chaining values, counters and flags.
 pub fn pinned_compression(m: [u32; 16]) -> Compression {
     (param_iv(), m, PINNED_T, PINNED_F0, 0)

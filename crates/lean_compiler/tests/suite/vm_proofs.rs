@@ -44,7 +44,7 @@ fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
 }
 
 /// The stacked WHIR opening rides the proof's Merkle phases. Nothing there is
-/// bound by the sponge (only by the Merkle structure), so tampering an opened
+/// bound by the transcript (only by the Merkle structure), so tampering an opened
 /// row must still be rejected.
 #[test]
 fn a_tampered_opening_is_rejected() {
@@ -58,7 +58,7 @@ fn a_tampered_opening_is_rejected() {
 }
 
 /// flock's reduction sub-proof (zerocheck, lincheck, ring switch) rides the scalar
-/// stream as raw transport, but its values re-enter the sponge through the verifier's
+/// stream as raw transport, but its values re-enter the transcript through the verifier's
 /// replay, so a flipped transport word diverges the recovered flock claim.
 #[test]
 fn a_tampered_reduction_word_is_rejected() {
@@ -76,7 +76,7 @@ fn a_tampered_reduction_word_is_rejected() {
 
 /// A proof is bound to its exact program. The two programs here have the same shape,
 /// so the same layout and announced sizes, and differ in one constant; the program
-/// digest seeds the transcript, so the sponge diverges at the first squeeze. This is
+/// digest seeds the transcript, so it diverges at the first squeeze. This is
 /// the adaptive-statement forgery that the bytecode bus's single-point check does not,
 /// on its own, prevent.
 #[test]

@@ -448,7 +448,7 @@ def select_pair(flag, a, b):
 }
 
 /// An `@inline` may also alias-return a folded **g-address** among its values:
-/// `fs, x, cur = step(fs, cur)` hands back the sponge state (StackBuf), the
+/// `fs, x, cur = step(fs, cur)` hands back the Fiat-Shamir state (StackBuf), the
 /// consumed word (scalar), and the ADVANCED cursor (`cursor * GEN`) as a
 /// zero-cost folded pointer, so the caller keeps reading through it with no
 /// manual `cur *= GEN`. This is the shape `fs_next` uses to walk the stream.

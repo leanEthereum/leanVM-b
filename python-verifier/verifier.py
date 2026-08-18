@@ -520,7 +520,7 @@ class Transcript:
         """Pull one opening per query and authenticate each against `root`.
 
         Not absorbed: an opening's binding is the Merkle structure itself, which
-        is checked here rather than by the sponge. Returns the rows in query
+        is checked here rather than by the Fiat-Shamir state. Returns the rows in query
         order, so a repeated position simply re-opens the same authenticated row.
         """
         height = log2_strict(block_length)

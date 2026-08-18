@@ -293,7 +293,7 @@ pub fn r1cs_digest() -> [u8; 32] {
 /// `q_flock`, along with the regenerated packed witness (already flattened to
 /// the committed `F64` packing). The sub-proof scalars ride the shared
 /// transcript stream (`ps.add_scalar` at the protocol points); flock runs
-/// natively in the tower field on the shared sponge. Does NOT open the PCS: the
+/// natively in the tower field on the shared transcript. Does NOT open the PCS: the
 /// caller discharges the returned claim via [`crate::pcs::open`] (as
 /// [`crate::cpu`]'s prove does).
 #[cfg(test)]
@@ -485,14 +485,14 @@ mod tests {
         // Prover and verifier agree on the claim left for the PCS.
         assert_eq!(reduced, replay.claim, "reduction claim mismatch");
 
-        // A mismatched transcript domain diverges the sponge, so the recovered
+        // A mismatched transcript domain diverges the state, so the recovered
         // claims must NOT match the prover's (the reduction is transcript-bound).
         let mut vs_bad = VerifierState::new(b"different", &bundle, &[]);
         let _root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
         if let Ok(replay_b) = verify_reduction(blocks.len(), &mut vs_bad) {
             assert!(
                 replay_b.claim != replay.claim,
-                "a diverged sponge must not reproduce the prover's claim"
+                "a diverged transcript must not reproduce the prover's claim"
             );
         }
     }
@@ -543,7 +543,7 @@ mod tests {
 
         run(b"vstack", &points).expect("validity verifies");
 
-        // A mismatched transcript (different domain) diverges the shared sponge,
+        // A mismatched transcript (different domain) diverges the shared state,
         // so the stacked opening must be rejected.
         assert!(
             run(b"different-domain", &points).is_err(),

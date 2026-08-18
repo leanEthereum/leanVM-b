@@ -1276,7 +1276,7 @@ pub fn prove_padded_capture_s_hat_v(
     }
 }
 
-/// Verify a lincheck proof. Walks the sponge in lockstep with the prover,
+/// Verify a lincheck proof. Walks the transcript in lockstep with the prover,
 /// replays the α-batched product sumcheck against `v_a`, `v_b` and `v_c`, and
 /// derives the single output z-claim `w`.
 pub fn verify(

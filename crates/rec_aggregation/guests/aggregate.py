@@ -247,8 +247,8 @@ EPOCH_TAG_1 = EPOCH_TAG_1_PLACEHOLDER
 PK_IV_0 = PK_IV_0_PLACEHOLDER
 PK_IV_1 = PK_IV_1_PLACEHOLDER
 
-# Sponge domain tags: every block carries its tag in lane 3, which is exactly
-# `sponge_compress`'s `tail` argument, so a role is never smuggled through the
+# Fiat-Shamir domain tags: every block carries its tag in lane 3, which is exactly
+# `fs_compress`'s `tail` argument, so a role is never smuggled through the
 # data lanes. (DS_BYTE/DS_LEN are absorb_bytes-only, so the guest never needs
 # them: it starts from the seed state the statement carries.)
 DS_SCALAR = 1
@@ -339,7 +339,7 @@ def challenge_from_state(state):
 
 
 @inline
-def sponge_compress(state, scalar, tail, out):
+def fs_compress(state, scalar, tail, out):
     # Serialize scalar.c0, scalar.c1, scalar.c2, tail as two canonical cells.
     # Only the two LOW limbs are advice: PACK64X2 proves they are in K and makes
     # block[0] their packing lo + Y·hi, which leaves the top limb determined,
@@ -368,7 +368,7 @@ def canonical_cell(word, out_cell):
 
 
 def squeeze_step(state_0, state_1):
-    # Non-inlined sponge ratchet exposing BOTH output words (challenge and the
+    # Non-inlined Fiat-Shamir ratchet exposing BOTH output words (challenge and the
     # next state), so a query-squeeze loop can chain the state through a heap
     # buffer. Returns (challenge, next_state_0, next_state_1).
     state = [state_0, state_1]
@@ -441,10 +441,10 @@ def grind_check(state_0, state_1, nonce, nbits_g):
         assert nonce == 0  # native canonical zero-work nonce
     st = [state_0, state_1]
     base = StackBuf(2)
-    sponge_compress(st, 0, DS_POW_BASE, base)
+    fs_compress(st, 0, DS_POW_BASE, base)
     out = StackBuf(2)
-    # nonce's three F64 limbs followed by DS_POW_NONCE, exactly as the native sponge.
-    sponge_compress(base, nonce, DS_POW_NONCE, out)
+    # nonce's three F64 limbs followed by DS_POW_NONCE, exactly as the native state.
+    fs_compress(base, nonce, DS_POW_NONCE, out)
     lanes = StackBuf(2)
     hint_f192_limbs(lanes, out[0])
     pack64x2_into(lanes[0], lanes[1], out[0])  # out[0] == (lanes[0], lanes[1], 0), both in K
@@ -595,10 +595,10 @@ def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
 
 @inline
 def obs(state, x):
-    # Bind one scalar into the sponge chain: state <- compress(state, (x, SCALAR)).
+    # Bind one scalar into the Fiat-Shamir chain: state <- compress(state, (x, SCALAR)).
     # Returns the successor StackBuf; the call site aliases it (zero copies).
     nb = StackBuf(2)
-    sponge_compress(state, x, DS_SCALAR, nb)
+    fs_compress(state, x, DS_SCALAR, nb)
     return nb
 
 
@@ -606,7 +606,7 @@ def obs(state, x):
 @inline
 def fs_next(state, cursor):
     # Fetch + observe + advance, in one act: read the word under `cursor`, fold it
-    # into the sponge, and hand back the successor state, the word, AND the cursor
+    # into the state, and hand back the successor state, the word, AND the cursor
     # stepped one word on. Reading and absorbing are inseparable here, so no
     # proof-stream word can enter the computation unbound. This is the soundness invariant
     # the whole guest rests on. All three returns alias into the caller at zero
@@ -620,7 +620,7 @@ def fs_next(state, cursor):
 def absorb_nonce(state, x):
     # Full-field grinding nonce absorb: [x.c0, x.c1, x.c2, DS_POW_NONCE].
     nb = StackBuf(2)
-    sponge_compress(state, x, DS_POW_NONCE, nb)
+    fs_compress(state, x, DS_POW_NONCE, nb)
     return nb
 
 
@@ -629,7 +629,7 @@ def squeeze(state):
     # Ratchet: the canonical 128+128 digest is the new state; its first three
     # K lanes are reassembled as the F192 challenge.
     nb = StackBuf(2)
-    sponge_compress(state, 0, DS_SQ, nb)
+    fs_compress(state, 0, DS_SQ, nb)
     challenge = challenge_from_state(nb)
     return nb, challenge
 
@@ -1876,7 +1876,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for xt in mul_range(1, tau_blake2s_g):
         zv_lo[xt] = zr_hi[xt]
     # Observe every pooled point claim, then ONE batching challenge for all of
-    # them: N_CLAIMS - 1 fewer sponge compressions than a challenge per claim.
+    # them: N_CLAIMS - 1 fewer Fiat-Shamir compressions than a challenge per claim.
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, claim_pool[GEN ** j])
     fs, lam_cl = squeeze(fs)
@@ -2384,7 +2384,7 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     # the very same call, which is what forces the child to be a proof of THIS
     # bytecode against THIS message and epoch.
     #
-    # Fixed-length preimage, so a plain BLAKE2s beats the sponge, which spent a
+    # Fixed-length preimage, so a plain BLAKE2s beats the Fiat-Shamir chain, which spent a
     # compression per scalar re-injecting its state. A header value is already a
     # canonical cell and needs no check, the BLAKE2s table reading only cells
     # whose top limb is zero. A deferred cell is a full field element, so two

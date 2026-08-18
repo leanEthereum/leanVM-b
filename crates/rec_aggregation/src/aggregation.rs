@@ -29,7 +29,7 @@ use std::ops::Range;
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
-use lean_vm::transcript::Sponge;
+use lean_vm::transcript::FiatShamirState;
 use primitives::field::{F64, F192, G, g_pow};
 use primitives::multilinear::mle_eval_par;
 use xmss::{XmssPublicKey, XmssSignature};
@@ -84,7 +84,7 @@ fn f192_literal(f: F192) -> String {
     format!("f192({},{},{})", f.c0, f.c1, f.c2)
 }
 
-/// Pack the sponge's four K lanes as two canonical 128-bit VM cells.
+/// Pack the Fiat-Shamir state's four K lanes as two canonical 128-bit VM cells.
 fn pack_state(s: [F64; 4]) -> [F192; 2] {
     [F192::new(s[0].0, s[1].0, 0), F192::new(s[2].0, s[3].0, 0)]
 }
@@ -106,9 +106,9 @@ fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
 }
 
 /// A domain-separated two-cell IV, so the guest's two plain BLAKE2s chains
-/// cannot be confused with each other or with a sponge state.
+/// cannot be confused with each other or with a Fiat-Shamir state.
 fn chain_iv(label: &[u8]) -> [F192; 2] {
-    pack_state(Sponge::new(label, &[]).state())
+    pack_state(FiatShamirState::new(label, &[]).state())
 }
 
 /// A 16-byte native value as one canonical 128-bit cell.
@@ -642,7 +642,7 @@ fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
 /// both, and advance the running claim through the compressed round polynomial.
 /// Returns the challenge, which the caller folds its tables with.
 fn absorb_round(
-    h: &mut Sponge,
+    h: &mut FiatShamirState,
     msgs: &mut Vec<F192>,
     points: &mut Vec<F192>,
     run: &mut F192,
@@ -793,7 +793,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     let klog = flock::blake2s::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
-    let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
+    let mut h = FiatShamirState::new(RECURSION_AGG_LABEL, &[]);
     h.observe(count(nsub));
     for (d, c) in subs.iter().zip(carried) {
         h.observe(d.public_input[0]);
@@ -2391,10 +2391,10 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
-    let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
+    let label_state = pack_state(FiatShamirState::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    let agg_state = pack_state(Sponge::new(RECURSION_AGG_LABEL, &[]).state());
+    let agg_state = pack_state(FiatShamirState::new(RECURSION_AGG_LABEL, &[]).state());
     ps("AGG_SEED_0", u(agg_state[0]).to_string());
     ps("AGG_SEED_1", u(agg_state[1]).to_string());
     let tag = label_tag(RECURSION_STATEMENT_LABEL);
