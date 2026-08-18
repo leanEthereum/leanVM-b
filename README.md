@@ -33,10 +33,10 @@ XMSS aggregation, 900 signatures
     proven rows               : 1,967,104 = 2^20.908  (filled to powers of two)
     details                   : DEREF 2^18.988 (33.6%)  SET 2^18.416 (22.6%)  MUL 2^18.198 (19.5%)  SHA2 2^16.995 (8.4%)  XOR 2^16.96 (8.2%)  JUMP 2^16.831 (7.5%)  PACK64X2 2^9.943 (0.1%)  MEMORY 2^21.726  TOTAL_COMMITTED 2^26.718
   signers                     : 900
-  proof size                  : 353.2 KiB
-  aggregating                 : 1.203 s ± 5.1%      peak memory 24.13 GiB
-  per signature               : 748.246 XMSS/s
-  verifying                   : 0.0133 s
+  proof size                  : 333.2 KiB
+  aggregating                 : 1.169 s ± 5.2%      peak memory 22.168 GiB
+  per signature               : 769.853 XMSS/s
+  verifying                   : 0.0119 s
 ```
 
 ### Recursion
@@ -48,13 +48,13 @@ cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
 
 ```
 recursion 2→1, over leaves of 900 signatures
-  cycles (VM steps)           : 800,007 = 2^19.61
+  cycles (VM steps)           : 800,125 = 2^19.61
     proven rows               : 1,196,032 = 2^20.19  (filled to powers of two)
-    details                   : DEREF 2^18.168 (36.8%)  MUL 2^17.826 (29.0%)  XOR 2^17.383 (21.4%)  SET 2^15.581 (6.1%)  SHA2 2^14.442 (2.8%)  PACK64X2 2^14.353 (2.6%)  JUMP 2^13.27 (1.2%)  MEMORY 2^19.94  TOTAL_COMMITTED 2^25.213
+    details                   : DEREF 2^18.169 (36.8%)  MUL 2^17.826 (29.0%)  XOR 2^17.383 (21.4%)  SET 2^15.581 (6.1%)  SHA2 2^14.442 (2.8%)  PACK64X2 2^14.353 (2.6%)JUMP 2^13.27 (1.2%)  MEMORY 2^19.94  TOTAL_COMMITTED 2^25.213
   signers                     : 1,800
-  proof size                  : 226.3 KiB
-  aggregating                 : 0.736 s ± 4.2%      peak memory 28.47 GiB
-  verifying                   : 0.0127 s
+  proof size                  : 204.2 KiB
+  aggregating                 : 0.66 s ± 2.5%      peak memory 26.302 GiB
+  verifying                   : 0.0125 s
 ```
 
 ### Fibonacci
@@ -68,9 +68,9 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   cycles (VM steps)           : 2,127,881
     details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%)  JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
-  proof size                  : 331.3 KiB
-  proving                     : 0.567 s ± 4.9%   3,755,763 cycles/s      peak memory 10.016 GiB
-  verifying                   : 0.00392 s
+  proof size                  : 286.1 KiB
+  proving                     : 0.527 s ± 8.4%   4,041,167 cycles/s      peak memory 7.771 GiB
+  verifying                   : 0.00228 s
 ```
 
 ### Batch proving SHA256 compression
@@ -81,18 +81,18 @@ BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=17 cargo test --release -p flock --t
 
 ```
 Flock SHA-256 batch proving, 131,072 compressions (2^17 slots)
-  setup (preprocessing, excluded) :     18.8 ms
-  witness-gen                     :     54.3 ms ± 5.9%    9.1%
-  commit                          :     78.0 ms ± 3.7%   13.1%
-  zerocheck                       :    232.8 ms ± 8.4%   39.1%
-  lincheck                        :     19.1 ms ± 16.9%   3.2%
-  pcs opening                     :    210.5 ms ± 12.6%  35.4%
+  setup (preprocessing, excluded) :     19.2 ms
+  witness-gen                     :     44.3 ms ± 22.7%   7.5%
+  commit                          :     81.8 ms ± 7.4%   13.9%
+  zerocheck                       :    232.5 ms ± 12.2%  39.5%
+  lincheck                        :     18.9 ms ± 13.4%   3.2%
+  pcs opening                     :    211.4 ms ± 9.3%   35.9%
   other                           :      0.0 ms           0.0%
   ------------------------------------------
-  prove TOTAL (witness excluded)  :    540.4 ms ± 8.0%   90.9%
-  verify                          :      1.7 ms
-  throughput                      :        242,533 compressions/s ± 8.0%
-  (~1661.2 XMSS/s equivalent at 146 compressions/signature)
+  prove TOTAL (witness excluded)  :    544.5 ms ± 7.9%   92.5%
+  verify                          :      1.8 ms
+  throughput                      :        240,708 compressions/s ± 7.9%
+  (~1648.7 XMSS/s equivalent at 146 compressions/signature)
 ```
 
 ## Security
