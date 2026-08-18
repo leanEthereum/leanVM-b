@@ -1,7 +1,7 @@
 % !TeX root = ../drafts/b-polynomial-commitment-scheme.tex
 \section{The polynomial commitment scheme: WHIR \slash Ligerito}\label{annex:pcs}
 
-A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime. The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes described here. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, so our PCS is only list binding. The two fields are those of \S\ref{sec:vm}: we commit to a $\K$-valued multilinear, and opening claims are in $\E$.
+A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime. The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes described here. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP24}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, so our PCS is only list binding. The two fields are those of \S\ref{sec:vm}: we commit to a $\K$-valued multilinear, and opening claims are in $\E$.
 
 \paragraph{Symbols.}
 
@@ -87,7 +87,7 @@ Interactive soundness error is then at most $\sum_i \varepsilon_i$. After Fiat--
 \subsection{Reed--Solomon codes over binary fields}\label{sec:binary-rs}
 %=====================================================================
 
-For $\rexp \ge 1$ and $\kappa + \rexp \le 64$, \S\ref{app:ntt} constructs, following~\cite{LCH14} as presented in~\cite{DP26}, an $\Ftwo$-subspace $\dom \subseteq \K$ of size $\blen = 2^{\kappa+\rexp}$ and an encoder $\Enc_{\kappa,\rexp} : \E^{\cube{\kappa}} \to \E^{\dom}$ onto $\RS[\E, \dom, 2^{\kappa}]$, of rate $\rate = 2^{-\rexp}$, with the two properties the protocol uses:
+For $\rexp \ge 1$ and $\kappa + \rexp \le 64$, \S\ref{app:ntt} constructs, following~\cite{LCH14} as presented in~\cite{DP24}, an $\Ftwo$-subspace $\dom \subseteq \K$ of size $\blen = 2^{\kappa+\rexp}$ and an encoder $\Enc_{\kappa,\rexp} : \E^{\cube{\kappa}} \to \E^{\dom}$ onto $\RS[\E, \dom, 2^{\kappa}]$, of rate $\rate = 2^{-\rexp}$, with the two properties the protocol uses:
 \begin{itemize}[itemsep=2pt]
 \item \emph{fast encoding, for the prover:} $\Enc_{\kappa,\rexp}$ is computed by the additive NTT with $\tfrac12 \kappa \blen$ multiplications and fewer than $(\kappa + 1)\, \blen$ additions (Proposition~\ref{prop:ntt});
 \item \emph{MLE-friendly columns, for the verifier:} for every $x \in \dom$, the weight $W_x : \cube{\kappa} \to \K$, defined by $\Enc_{\kappa,\rexp}(g)[x] = \inner{W_x}{g}$ (the relation being valid for arbitrary $g$), admits an MLE efficiently evaluable anywhere in $\E^{\kappa}$ ($O(\kappa)$ multiplications and additions (Lemma~\ref{lem:colweight})).
@@ -272,7 +272,7 @@ At level $\nlev - 1$ the fold challenges end as above: every codeword within $\r
 \subsection{Novel polynomial basis and additive NTT}\label{app:ntt}
 %=====================================================================
 
-Fix the $\Ftwo$-basis $e_c := x^c$, $0 \le c < 64$, of $\K$, the first $64$ vectors of Annex~\ref{annex:rs}'s basis of $\E$, so that $e_0 = 1$. This appendix constructs the encoder of \S\ref{sec:binary-rs} and proves its two properties; the material follows~\cite{LCH14} as presented in~\cite{DP26}. For $u \in \cube{\nv}$ we write $\langle u \rangle := \sum_i u_i 2^i$ for the integer with bits $u$ (bit $0$ first).
+Fix the $\Ftwo$-basis $e_c := x^c$, $0 \le c < 64$, of $\K$, the first $64$ vectors of Annex~\ref{annex:rs}'s basis of $\E$, so that $e_0 = 1$. This appendix constructs the encoder of \S\ref{sec:binary-rs} and proves its two properties; the material follows~\cite{LCH14} as presented in~\cite{DP24}. For $u \in \cube{\nv}$ we write $\langle u \rangle := \sum_i u_i 2^i$ for the integer with bits $u$ (bit $0$ first).
 
 \subsubsection{Subspace polynomials, novel basis, encoder}
 
