@@ -447,11 +447,14 @@ class Proof:
 # Fiat--Shamir ---------------------------------------------------------------
 
 
+# Every block puts its tag in lane 3 and its data in lanes 0..2, so one role is
+# one constant in one place and no two roles can alias.
 DS_SCALAR = 1
 DS_BYTE = 2
 DS_LEN = 3
 DS_SQUEEZE = 4
-DS_POW = 5
+DS_POW_BASE = 5
+DS_POW_NONCE = 6
 
 
 def compress(left: Sequence[K | int], right: Sequence[K | int]) -> tuple[int, int, int, int]:
@@ -468,7 +471,7 @@ class Transcript:
         self.state = (0, 0, 0, 0)
         self.stream_offset = 0
         self.opening_offset = 0
-        self.absorb_bytes(b"leanvm-b/transcript/v3-blake2s")
+        self.absorb_bytes(b"leanvm-b/transcript/v4-blake2s")
         self.absorb_bytes(label)
         for value in statement:
             self.observe(value)
@@ -477,16 +480,14 @@ class Transcript:
         self.state = compress(self.state, (value.c0, value.c1, value.c2, DS_SCALAR))
 
     def absorb_bytes(self, data: bytes) -> None:
-        self.state = compress(self.state, (len(data), 0, DS_LEN, 0))
-        for offset in range(0, len(data), 16):
-            block = data[offset : offset + 16].ljust(16, b"\0")
-            self.state = compress(
-                self.state,
-                (int.from_bytes(block[:8], "little"), int.from_bytes(block[8:], "little"), DS_BYTE, 0),
-            )
+        self.state = compress(self.state, (len(data), 0, 0, DS_LEN))
+        for offset in range(0, len(data), 24):
+            block = data[offset : offset + 24].ljust(24, b"\0")
+            words = [int.from_bytes(block[i : i + 8], "little") for i in (0, 8, 16)]
+            self.state = compress(self.state, (*words, DS_BYTE))
 
     def sample(self) -> E:
-        self.state = compress(self.state, (0, 0, DS_SQUEEZE, 0))
+        self.state = compress(self.state, (0, 0, 0, DS_SQUEEZE))
         return E(*self.state[:3])
 
     def samples(self, count: int) -> list[E]:
@@ -509,8 +510,8 @@ class Transcript:
     def grind_check(self, bits: int) -> None:
         require(0 <= bits < 64, "invalid grinding width")
         nonce = self._next()
-        block = (nonce.c0, nonce.c1, nonce.c2, DS_POW)
-        digest = compress(compress(self.state, (0, 0, DS_POW, 0)), block)[0]
+        block = (nonce.c0, nonce.c1, nonce.c2, DS_POW_NONCE)
+        digest = compress(compress(self.state, (0, 0, 0, DS_POW_BASE)), block)[0]
         valid = nonce == ZERO if bits == 0 else digest & (2**bits - 1) == 0
         self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")

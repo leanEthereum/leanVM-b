@@ -247,9 +247,14 @@ EPOCH_TAG_1 = EPOCH_TAG_1_PLACEHOLDER
 PK_IV_0 = PK_IV_0_PLACEHOLDER
 PK_IV_1 = PK_IV_1_PLACEHOLDER
 
+# Sponge domain tags: every block carries its tag in lane 3, which is exactly
+# `sponge_compress`'s `tail` argument, so a role is never smuggled through the
+# data lanes. (DS_BYTE/DS_LEN are absorb_bytes-only, so the guest never needs
+# them: it starts from the seed state the statement carries.)
 DS_SCALAR = 1
 DS_SQ = 4
-DS_POW = 5
+DS_POW_BASE = 5
+DS_POW_NONCE = 6
 
 # Field structure: GF(2^192), represented as three GF(2^64) tower limbs.
 # Six challenges define the F2-linear map that batches the 192 transposed
@@ -422,7 +427,7 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
 
 
 def grind_check(state_0, state_1, nonce, nbits_g):
-    # WHIR fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)), whose
+    # WHIR fold/query grinding: digest = H(H(state, POW_BASE), (nonce, POW_NONCE)), whose
     # low nbits (nbits_g = g^nbits) must be zero. The PoW window of
     # transcript::pow_bits_ok is `digest.0 & ((1 << bits) - 1)`, nbits < 64, so it
     # lives entirely in the digest's FIRST 64-bit lane: one PACK64X2 pins the
@@ -436,10 +441,10 @@ def grind_check(state_0, state_1, nonce, nbits_g):
         assert nonce == 0  # native canonical zero-work nonce
     st = [state_0, state_1]
     base = StackBuf(2)
-    sponge_compress(st, f192_from_limbs(0, 0, DS_POW), 0, base)
+    sponge_compress(st, 0, DS_POW_BASE, base)
     out = StackBuf(2)
-    # nonce's three F64 limbs followed by DS_POW, exactly as the native sponge.
-    sponge_compress(base, nonce, DS_POW, out)
+    # nonce's three F64 limbs followed by DS_POW_NONCE, exactly as the native sponge.
+    sponge_compress(base, nonce, DS_POW_NONCE, out)
     lanes = StackBuf(2)
     hint_f192_limbs(lanes, out[0])
     pack64x2_into(lanes[0], lanes[1], out[0])  # out[0] == (lanes[0], lanes[1], 0), both in K
@@ -613,9 +618,9 @@ def fs_next(state, cursor):
 
 @inline
 def absorb_nonce(state, x):
-    # Full-field grinding nonce absorb: [x.c0, x.c1, x.c2, DS_POW].
+    # Full-field grinding nonce absorb: [x.c0, x.c1, x.c2, DS_POW_NONCE].
     nb = StackBuf(2)
-    sponge_compress(state, x, DS_POW, nb)
+    sponge_compress(state, x, DS_POW_NONCE, nb)
     return nb
 
 
@@ -624,7 +629,7 @@ def squeeze(state):
     # Ratchet: the canonical 128+128 digest is the new state; its first three
     # K lanes are reassembled as the F192 challenge.
     nb = StackBuf(2)
-    sponge_compress(state, f192_from_limbs(0, 0, DS_SQ), 0, nb)
+    sponge_compress(state, 0, DS_SQ, nb)
     challenge = challenge_from_state(nb)
     return nb, challenge
 
@@ -760,7 +765,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
             fold_idx = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j
             if LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
-                nonce_v = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
+                nonce_v = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW_NONCE absorb below
                 msg_cursor = msg_cursor * GEN
                 grind_check(fs[0], fs[1], nonce_v, GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
                 fs = absorb_nonce(fs, nonce_v)
@@ -799,7 +804,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 ood_c0s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_c0
                 ood_c1s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_c1
                 ood_c2s[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_c2
-        q_nonce = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
+        q_nonce = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW_NONCE absorb below
         msg_cursor = msg_cursor * GEN
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
             grind_check(fs[0], fs[1], q_nonce, GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])

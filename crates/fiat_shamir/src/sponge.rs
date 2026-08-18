@@ -8,9 +8,9 @@
 //! final-block flag set), which is why a single opcode covers the whole
 //! sponge.
 //!
-//! Scalars are `E = F192` (the tower challenge field): their three
-//! little-endian `K = F64` limbs occupy the first three compression lanes,
-//! with the scalar domain tag in the fourth.
+//! Every block has ONE shape: up to three lanes of data, and the domain tag in
+//! the fourth. A scalar is `E = F192` (the tower challenge field), so its three
+//! little-endian `K = F64` limbs fill the data lanes exactly.
 //!
 //! Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
 //! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
@@ -45,17 +45,18 @@ pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
-// Domain-separation tags. Scalar absorbs fill three data lanes and put the tag
-// in lane 3; byte/length/PoW absorbs use at most two data lanes and put the tag
-// in lane 2. No two roles can alias: the adversary never controls the tag.
-// Distinct nonzero constants suffice.
+// Domain-separation tags. EVERY block puts its tag in lane 3 and its data in
+// lanes 0..=2, so one role is one constant in one place. The tag lane is never
+// adversary-controlled, so distinct constants are all it takes to make two roles
+// unable to alias.
 const DS_SCALAR: F64 = F64(1);
 const DS_BYTE: F64 = F64(2);
 const DS_LEN: F64 = F64(3);
 const DS_SQUEEZE: F64 = F64(4);
-const DS_POW: F64 = F64(5);
+const DS_POW_BASE: F64 = F64(5);
+const DS_POW_NONCE: F64 = F64(6);
 
-/// `compress(base, (nonce.c0, nonce.c1, nonce.c2, DS_POW))` has its low `bits`
+/// `compress(base, (nonce.c0, nonce.c1, nonce.c2, DS_POW_NONCE))` has its low `bits`
 /// bits zero: the grinding predicate over the VM compression. A CONTIGUOUS
 /// low-bit window (rather than byte-wise leading zeros) so a recursive verifier
 /// re-checks it with a single loop over the bit decomposition of the digest word
@@ -63,7 +64,7 @@ const DS_POW: F64 = F64(5);
 #[inline]
 fn pow_bits_ok(base: [F64; 4], nonce: F192, bits: u32) -> bool {
     debug_assert!(bits < 64, "grinding deficit fits the digest's low word");
-    let digest = compress(base, [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW])[0];
+    let digest = compress(base, [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW_NONCE])[0];
     digest.0 & ((1u64 << bits) - 1) == 0
 }
 
@@ -83,7 +84,7 @@ impl Sponge {
     /// wrong (or forget).
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         let mut s = Self { cv: [F64::ZERO; 4] };
-        s.absorb_bytes(b"leanvm-b/transcript/v3-blake2s");
+        s.absorb_bytes(b"leanvm-b/transcript/v4-blake2s");
         s.absorb_bytes(label);
         for &x in statement {
             s.observe(x);
@@ -97,28 +98,27 @@ impl Sponge {
         self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), F64(x.c2), DS_SCALAR]);
     }
 
-    /// Absorb a byte string (a protocol label, a Merkle root): a length frame
-    /// then its 16-byte (two-word) chunks as tagged blocks (the domain tag
-    /// occupies the third lane, leaving two data words per block), so a field
+    /// Absorb a byte string (a protocol label, a Merkle root): a length frame,
+    /// then its 24-byte (three-word) chunks as `DS_BYTE` blocks, so a field
     /// element, a raw integer, and a byte string cannot alias.
     fn absorb_bytes(&mut self, bytes: &[u8]) {
-        self.cv = compress(self.cv, [F64(bytes.len() as u64), F64::ZERO, DS_LEN, F64::ZERO]);
-        for chunk in bytes.chunks(16) {
-            let mut buf = [0u8; 16];
+        self.cv = compress(self.cv, [F64(bytes.len() as u64), F64::ZERO, F64::ZERO, DS_LEN]);
+        for chunk in bytes.chunks(24) {
+            let mut buf = [0u8; 24];
             buf[..chunk.len()].copy_from_slice(chunk);
             let w = |o: usize| F64(u64::from_le_bytes(buf[o..o + 8].try_into().unwrap()));
-            self.cv = compress(self.cv, [w(0), w(8), DS_BYTE, F64::ZERO]);
+            self.cv = compress(self.cv, [w(0), w(8), w(16), DS_BYTE]);
         }
     }
 
     /// Squeeze a challenge and ratchet: the challenge's three limbs are the
-    /// first three words of `compress(cv, (0, 0, DS_SQUEEZE, 0))`, whose full output
+    /// first three words of `compress(cv, (0, 0, 0, DS_SQUEEZE))`, whose full output
     /// becomes the new state, domain-separated from absorbs, so a challenge
     /// cannot be confused with a continued absorb. In Fiat–Shamir everything is
     /// public; soundness comes from each challenge being a random-oracle image
     /// of the entire prior transcript.
     pub fn sample(&mut self) -> F192 {
-        let out = compress(self.cv, [F64::ZERO, F64::ZERO, DS_SQUEEZE, F64::ZERO]);
+        let out = compress(self.cv, [F64::ZERO, F64::ZERO, F64::ZERO, DS_SQUEEZE]);
         self.cv = out;
         F192::new(out[0].0, out[1].0, out[2].0)
     }
@@ -128,10 +128,10 @@ impl Sponge {
         (0..n).map(|_| self.sample()).collect()
     }
 
-    /// The PoW base `compress(cv, (0, 0, DS_POW, 0))`, read without mutating the
-    /// live state (the nonce is bound separately by [`Self::absorb_nonce`]).
+    /// The PoW base `compress(cv, (0, 0, 0, DS_POW_BASE))`, read without mutating
+    /// the live state (the nonce is bound separately by [`Self::absorb_nonce`]).
     fn pow_base(&self) -> [F64; 4] {
-        compress(self.cv, [F64::ZERO, F64::ZERO, DS_POW, F64::ZERO])
+        compress(self.cv, [F64::ZERO, F64::ZERO, F64::ZERO, DS_POW_BASE])
     }
 
     /// The current 256-bit chaining value.
@@ -141,7 +141,7 @@ impl Sponge {
 
     /// Bind a grinding nonce into the state (both sides, so they stay in lockstep).
     fn absorb_nonce(&mut self, nonce: F192) {
-        self.cv = compress(self.cv, [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW]);
+        self.cv = compress(self.cv, [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW_NONCE]);
     }
 
     /// Prover-side PoW grind: find the smallest `u64` nonce whose PoW hash clears
