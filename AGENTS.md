@@ -51,8 +51,8 @@ Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- -
 ## Benchmarking
 
 The benchmarks we care about:
-- `cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3`
-- `cargo run --release -- recursion --n 2 --xmss-per-leaf 890 --log-inv-rate 2 --repeat 3`
+- `cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- recursion --n 2 --xmss-per-leaf 900 --log-inv-rate 2 --repeat 3`
 
 ## The proving arena (`zk_alloc`)
 
