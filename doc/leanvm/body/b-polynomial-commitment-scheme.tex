@@ -1,7 +1,7 @@
 % !TeX root = ../drafts/b-polynomial-commitment-scheme.tex
-\section{The polynomial commitment scheme}\label{annex:pcs}
+\section{The polynomial commitment scheme: WHIR \slash Ligerito}\label{annex:pcs}
 
-A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime. The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes described here. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, so the PCS is only list binding. The two fields are those of \S\ref{sec:vm}: a commitment is to a $\K$-valued multilinear, and an opening runs over $\E$.
+A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime. The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes described here. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, so our PCS is only list binding. The two fields are those of \S\ref{sec:vm}: we commit to a $\K$-valued multilinear, and opening claims are in $\E$.
 
 \paragraph{Symbols.}
 
@@ -13,10 +13,10 @@ here & in \cite{ACFY25,NA25,BCHKS25} & meaning\\
 $\nv_i$        & $m_i$        & variables of the multilinear at level $i$\\
 $\nlev$        & $r$          & number of levels\\
 $\ell_i$       & $\ell_i$, $\nu$ & fold factor, and the interleaving exponent\\
-$\rate_i$      & $\rho_i$     & code rate (elsewhere in the document $\rho$ is a sumcheck challenge)\\
+$\rate_i$      & $\rho_i$     & code rate\\
 $\rexp_i$      & $R_i$        & rate exponent, $\rate_i=2^{-\rexp_i}$\\
-$\rad_i$       & $\gamma_i$   & proximity radius ($\gamma$ is the bus challenge, \S\ref{sec:gp})\\
-$\slack_i$     & $\eta_i$     & Johnson slack ($\eta$ batches the constraints, \S\ref{sec:air})\\
+$\rad_i$       & $\gamma_i$   & proximity radius\\
+$\slack_i$     & $\eta_i$     & Johnson slack\\
 $\mcapar$      & $\theta$     & MCA parameter (denoted $m$ in \cite{BCHKS25})\\
 $\dmin$        & $\delta$     & relative minimum distance\\
 $\lambda$      & $\lambda$, $\alpha$ & batching challenge, as in \S\ref{sec:stacking}\\
@@ -25,7 +25,7 @@ $\rc{j}$       & $\sigma_j$   & running sumcheck claim after round $j$\\
 $J_i$          & $T_i$        & number of claims, as in \S\ref{sec:e2e-unrolled}\\
 $\nq_i$        & $t_i$        & query count\\
 $\qset_i$      & $J_i$        & the sampled columns\\
-$\blen$        & $n$          & code block length ($n$ is the tallest table, \S\ref{sec:air})\\
+$\blen$        & $n$          & code block length\\
 $\dom$         & $S$          & evaluation domain\\
 $\orc^{(i)}$   & $C^{(i)}$    & oracle, an interleaved word ($C_j$ is a constraint)\\
 $\nrows$       & (none)       & rows of $\orc^{(0)}$ the prover commits, $\nrows \le 2^{\ell_0}$\\
@@ -50,10 +50,10 @@ $e_c$          & $\beta_c$    & the fixed $\Ftwo$-basis, as in Annex \ref{annex:
 
 \subsubsection{Codes, interleaving, and list decoding}\label{sec:codes}
 
-For an $\Ftwo$-subspace $\dom \subseteq \K$, $|\dom| = \blen$, and $\kdim \le \blen$, let $\RS[\E, \dom, \kdim] := \{ (p(x))_{x \in \dom} : p \in \E[X],\ \deg p < \kdim \}$, of rate $\rate := \kdim/\blen$, and let $\RS[\K, \dom, \kdim]$ be its subcode of $\K$-valued words, where a commitment lives. Proximity, lists and soundness errors are always measured in the $\E$-code, the one a fold with $\E$ challenges lands in. Message lengths are powers of two, $\kdim = 2^{\kappa}$, messages are indexed by $\cube{\kappa}$, and an \emph{encoder} is a linear injection $\Enc : \E^{\cube{\kappa}} \to \E^{\dom}$ onto the code, carrying $\K$-valued messages to $\K$-valued words (fixed concretely in \S\ref{sec:binary-rs}).
+For an $\Ftwo$-subspace $\dom \subseteq \K$, $|\dom| = \blen$, and $\kdim \le \blen$, let $\RS[\E, \dom, \kdim] := \{ (p(x))_{x \in \dom} : p \in \E[X],\ \deg p < \kdim \}$, of rate $\rate := \kdim/\blen$, and let $\RS[\K, \dom, \kdim]$ be its subcode of $\K$-valued words. Message lengths are powers of two, $\kdim = 2^{\kappa}$, messages are indexed by $\cube{\kappa}$, and an \emph{encoder} is a linear injection $\Enc : \E^{\cube{\kappa}} \to \E^{\dom}$ onto the code, carrying $\K$-valued messages to $\K$-valued words (fixed concretely in \S\ref{sec:binary-rs}).
 
 \begin{definition}[Interleaved words, lists, folds]\label{def:interleaved}
-An \emph{interleaved word} is a matrix $\orc \in \E^{\cube{\ell} \times \dom}$; it is an \emph{interleaved codeword} if every row $\orc[u, \cdot]$ is a codeword. $\orc$ \emph{agrees} with an interleaved codeword $U$ on $\aset \subseteq \dom$ if $\orc[u,x] = U[u,x]$ for all $u$ and all $x \in \aset$; it is \emph{$\rad$-close} to $U$ if they agree on some $\aset$ with $|\aset| \ge (1-\rad)\blen$; and $\lst_\rad(\orc)$ is the set of interleaved codewords $\rad$-close to $\orc$. An interleaved codeword $U$ \emph{decodes} to the multilinear $g_U : \cube{\ell + \kappa} \to \E$ with $U[u, \cdot] = \Enc(g_U(u, \cdot))$; distinct $U$ decode to distinct $g_U$, hence distinct $\mle{g_U}$. For $\fc \in \E^{j}$, $j \le \ell$, the \emph{fold} $\orc_\fc \in \E^{\cube{\ell - j} \times \dom}$ is $\orc_\fc[u, x] := \sum_{\iota \in \cube{j}} \eq(\fc, \iota)\, \orc[(\iota, u), x]$ (for $j = \ell$, a single word in $\E^{\dom}$).
+An \emph{interleaved word} is a matrix $\orc \in \E^{\cube{\ell} \times \dom}$; it is an \emph{interleaved codeword} if every row $\orc[u, \cdot]$ is a codeword $(u \in \cube{\ell})$. $\orc$ \emph{agrees} with an interleaved codeword $U$ on $\aset \subseteq \dom$ if $\orc[u,x] = U[u,x]$ for all $u \in \cube{\ell}$ and all $x \in \aset$; it is \emph{$\rad$-close} to $U$ if they agree on some $\aset$ with $|\aset| \ge (1-\rad)\blen$; and $\lst_\rad(\orc)$ is the set of interleaved codewords $\rad$-close to $\orc$. An interleaved codeword $U$ \emph{decodes} to the multilinear $g_U : \cube{\ell + \kappa} \to \E$ with $U[u, \cdot] = \Enc(g_U(u, \cdot))$; distinct $U$ decode to distinct $g_U$, hence distinct $\mle{g_U}$. For $\fc \in \E^{j}$, $j \le \ell$, the \emph{fold} $\orc_\fc \in \E^{\cube{\ell - j} \times \dom}$ is $\orc_\fc[u, x] := \sum_{\iota \in \cube{j}} \eq(\fc, \iota)\, \orc[(\iota, u), x]$ (for $j = \ell$, a single word in $\E^{\dom}$).
 \end{definition}
 
 \begin{fact}[Folding commutes with decoding]\label{fact:fold-decode}
@@ -88,7 +88,7 @@ Interactive soundness error is then at most $\sum_i \varepsilon_i$. After Fiat--
 
 For $\rexp \ge 1$ and $\kappa + \rexp \le 64$, \S\ref{app:ntt} constructs, following~\cite{LCH14} as presented in~\cite{DP26}, an $\Ftwo$-subspace $\dom \subseteq \K$ of size $\blen = 2^{\kappa+\rexp}$ and an encoder $\Enc_{\kappa,\rexp} : \E^{\cube{\kappa}} \to \E^{\dom}$ onto $\RS[\E, \dom, 2^{\kappa}]$, of rate $\rate = 2^{-\rexp}$, with the two properties the protocol uses:
 \begin{itemize}[itemsep=2pt]
-\item \emph{fast encoding, for the prover:} $\Enc_{\kappa,\rexp}$ is computed by the additive NTT with $\tfrac12 \kappa \blen$ multiplications and fewer than $(\kappa + 1)\, \blen$ additions (Proposition~\ref{prop:ntt}); its twiddles lie in $\K$, so an $\E$-valued message pays the same count in $\K \times \E$ products;
+\item \emph{fast encoding, for the prover:} $\Enc_{\kappa,\rexp}$ is computed by the additive NTT with $\tfrac12 \kappa \blen$ multiplications and fewer than $(\kappa + 1)\, \blen$ additions (Proposition~\ref{prop:ntt});
 \item \emph{MLE-friendly columns, for the verifier:} for every $x \in \dom$, the weight $W_x : \cube{\kappa} \to \K$, defined by $\Enc_{\kappa,\rexp}(g)[x] = \inner{W_x}{g}$ (the relation being valid for arbitrary $g$), admits an MLE efficiently evaluable anywhere in $\E^{\kappa}$ ($O(\kappa)$ multiplications and additions (Lemma~\ref{lem:colweight})).
 \end{itemize}
 
@@ -103,7 +103,7 @@ For $\rexp \ge 1$ and $\kappa + \rexp \le 64$, \S\ref{app:ntt} constructs, follo
 \smallskip
 \textbf{Commit}$(f : \cube{\nv} \to \K)$: $\mathbf{P}$ sends the oracle $\orc^{(0)}[u, \cdot] := \Enc_0(f(u, \cdot))$, $u \in \cube{\ell_0}$, whose entries are $\K$ elements, three times smaller than the $\E$ entries of every deeper oracle. No OOD sample is taken.
 
-\emph{Coordinate order.} Throughout the protocol a multilinear's leading arguments are the ones folded first, so at level $i$ the row index $u$ of $\orc^{(i)}$ carries the $\ell_i$ coordinates the sumcheck of step 2 binds. Which coordinates of the committed object those are is the caller's choice, and it matters: \S\ref{sec:stacking} takes them to be the TOP $\ell_0$ coordinates of the stacked witness, which is what makes the stack's zero padding whole rows of $\orc^{(0)}$.
+\emph{Coordinate order.} Throughout the protocol a multilinear's leading arguments are the ones folded first, so at level $i$ the row index $u$ of $\orc^{(i)}$ carries the $\ell_i$ coordinates the sumcheck of step 2 binds. Which coordinates of the committed object those are is the caller's choice, and it matters: \S\ref{sec:pcs-opt} takes them to be the TOP $\ell_0$ coordinates of the stacked witness of \S\ref{sec:stacking}, which is what makes that stack's zero padding whole rows of $\orc^{(0)}$.
 
 \smallskip
 \textbf{Open}$\bigl(\{(W_\tau, c_\tau)\}_{\tau = 1, \dots, J_0}\bigr)$, $J_0 \ge 1$ weighted claims about $f$: set $f^{(0)} := f$. For $i = 0, 1, \dots, \nlev - 1$:
@@ -127,7 +127,7 @@ All weights in the protocol are MLE-friendly and multilinear, so every sumcheck 
 
 Completeness is perfect: the honest prover passes every check ($h_j(0) + h_j(1) = \rc{j-1}$ by definition of $h_j$, $c_q = \Enc_i(f^{(i+1)})[x_q]$ by Fact~\ref{fact:fold-decode}, the OOD and residual claims by construction, the final checks as identities).
 
-\paragraph{Rows the prover may omit.} If $f$ vanishes on all but $\nrows$ of the $2^{\ell_0}$ row indices, the remaining rows of $\orc^{(0)}$ are zero because $\Enc_0$ is linear, so the prover need not encode them: it commits the $\nrows$ rows that carry data and supplies zeros for the others wherever step 3(c) reads a column. Nothing above changes, and in particular nothing in \S\ref{sec:soundness} does: the oracle, its list, and every bound are still the full $2^{\ell_0}$-row ones. A prover that fills the omitted rows with anything at all commits $f + \delta$ for some $\delta$ supported on them, and if every weight of the batched claim vanishes on those rows then $\inner{W}{f + \delta} = \inner{W}{f}$, so it has proved the same claims. \S\ref{sec:stacking} arranges both conditions, and that is where the saving is: the omitted rows are the stack's zero padding.
+\paragraph{Rows the prover may omit.} If $f$ vanishes on all but $\nrows$ of the $2^{\ell_0}$ row indices, the remaining rows of $\orc^{(0)}$ are zero because $\Enc_0$ is linear, so the prover need not encode them: it commits the $\nrows$ rows that carry data and supplies zeros for the others wherever step 3(c) reads a column. Nothing above changes, and in particular nothing in \S\ref{sec:soundness} does: the oracle, its list, and every bound are still the full $2^{\ell_0}$-row ones. A prover that fills the omitted rows with anything at all commits $f + \delta$ for some $\delta$ supported on them, and if every weight of the batched claim vanishes on those rows then $\inner{W}{f + \delta} = \inner{W}{f}$, so it has proved the same claims. The stacking of \S\ref{sec:stacking} arranges both conditions, which is where the saving is: its columns fill a prefix of the cube, so the omitted rows are its zero padding, and every weight it raises is an $\eq$ at a point whose high coordinates select a placed column, hence vanishes past them. An out-of-domain weight $\eq(z,\cdot)$ does not, which is one reason level $0$ takes no OOD sample.
 
 %=====================================================================
 \subsection{Round-by-round soundness}\label{sec:soundness}
@@ -377,6 +377,26 @@ For $\ell \in \cube{d}$ let $\mpoly^{(d)}_{\ell} := \sum_{j < 2^{\kappa-d}} a_{\
 \end{proof}
 
 The verifier never runs the NTT: by Lemma~\ref{lem:colweight} it touches the code only through per-column weight evaluations.
+
+%=====================================================================
+\subsection{Optimizations}\label{sec:pcs-opt}
+%=====================================================================
+
+Four prover-side savings. None of them changes the protocol of \S\ref{sec:protocol} or any bound of \S\ref{sec:soundness}.
+
+\paragraph{The padding is free.} The committed $f$ is the stack of \S\ref{sec:stacking}: $P$ placed words, then zeros up to $2^{\nv}$. Let the row index be the stack's top $\ell_0$ coordinates. A row is then a contiguous block of the stack, the padding is whole rows, and only $\nrows=\lceil P/2^{\nv-\ell_0}\rceil$ of the $2^{\ell_0}$ rows hold data. So
+\begin{itemize}[itemsep=1pt,topsep=2pt]
+\item the encoder runs on $\nrows$ rows, the others encoding to zero;
+\item a leaf ships $\nrows$ words, and the verifier fills in the zeros;
+\item taking a leaf's rows from the top down puts those zeros first, so the whole blocks among them hash to one chaining value, computed once for the tree.
+\end{itemize}
+BLAKE2s compresses with the byte counter and the final flag (\S\ref{sec:tab-blake2s}), which is why the zeros must lead: only a prefix can be shared. Each saving stops at one half, because $\nv=\lceil\log_2 P\rceil$ keeps $\nrows>2^{\ell_0-1}$. And the fold now binds the stack's top coordinates first, so a weight written in stack coordinates is evaluated at the terminal point rotated left by $\ell_0$.
+
+\paragraph{Bind the lowest row bit first.} Rows $2t$ and $2t+1$ then pair, the live rows stay a prefix, and the $\ell_0$ rounds cost a fraction $\nrows2^{-\ell_0}$ of a dense fold. The other order pairs row $t$ with $t+2^{\ell_0-1}$, and since $\nrows>2^{\ell_0-1}$ every output row holds data, so the support is full after one round and the cost is $(1+\nrows2^{-\ell_0})/2$. At $\nrows=37$ and $\ell_0=6$: $0.58$ against $0.79$.
+
+\paragraph{Touch the codeword once.} A row is contiguous in the stack and a leaf is contiguous in the oracle, so one of the two must be reordered. The message is the cheaper side, at $2^{-\rexp_0}$ of the codeword, so the prover writes it into the codeword's own first replica and encodes it there. Replication comes free with that: each block at layer $\rexp_0$ is one replica (\S\ref{sec:ntt}), so the encoder's first pass gathers the message itself. Each sumcheck round likewise emits the next round's message from its own output, before that leaves cache.
+
+\paragraph{Batch a level's query weights once.} A level's $\nq_i$ consistency claims share one product over its message coordinates; only the queried column's novel-basis chain differs. The prover builds their batch once per level rather than once per query, and the succinct verifier never builds it at all, evaluating the same weight in closed form (Lemma~\ref{lem:colweight}).
 
 %=====================================================================
 \subsection{The Johnson bound}\label{app:johnson}

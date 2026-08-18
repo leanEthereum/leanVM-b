@@ -410,7 +410,7 @@ fn fold_one_slot_ext(elem: F192, tables: &[F192]) -> F192 {
     acc
 }
 
-/// Deferred, gamma-baked ring-switch output used by the stacked opener.
+/// Deferred, lambda-baked ring-switch output used by the stacked opener.
 ///
 /// Keeping the split eq factors and the tiny byte table avoids materializing
 /// one full `rs_eq_ind` vector per claim.  The table already contains the
@@ -427,13 +427,13 @@ pub(crate) struct DeferredRingSwitchOutput {
 pub(crate) fn prove_finish_deferred(
     state: RingSwitchProveState,
     coordinate_weights: &[F192],
-    gamma: F192,
+    lambda: F192,
 ) -> DeferredRingSwitchOutput {
     let s_hat_u = transpose_s_hat(&state.s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
-    let scaled_weights: Vec<F192> = coordinate_weights.iter().map(|&x| gamma * x).collect();
+    let scaled_weights: Vec<F192> = coordinate_weights.iter().map(|&x| lambda * x).collect();
     DeferredRingSwitchOutput {
-        batched_sumcheck_claim: gamma * sumcheck_claim,
+        batched_sumcheck_claim: lambda * sumcheck_claim,
         eq_lo: state.eq_lo,
         eq_hi: state.eq_hi,
         table: build_fold_byte_table_ext(&scaled_weights),
@@ -636,7 +636,7 @@ mod tests {
         let mut rng = Rng::new(0xdec0_de01_2345_6789);
         let point = rng.ext_vec(10);
         let coordinate_weights = rng.ext_vec(DEGREE_E);
-        let gammas = [rng.ext(), rng.ext()];
+        let lambdas = [rng.ext(), rng.ext()];
         let states = (0..2)
             .map(|_| {
                 let (eq_lo, eq_hi) = build_eq_split_ext(&point);
@@ -650,18 +650,18 @@ mod tests {
 
         // Reference: one dense weight vector per claim, combined afterwards.
         let dense_basis = fold_dense(&build_eq_table_ext(&point), &coordinate_weights);
-        let expected_target = states.iter().zip(gammas).fold(F192::ZERO, |acc, (state, gamma)| {
-            acc + gamma * inner_product_base_ext(&transpose_s_hat(&state.s_hat_v), &coordinate_weights)
+        let expected_target = states.iter().zip(lambdas).fold(F192::ZERO, |acc, (state, lambda)| {
+            acc + lambda * inner_product_base_ext(&transpose_s_hat(&state.s_hat_v), &coordinate_weights)
         });
         let expected_basis = dense_basis
             .iter()
-            .map(|&w| (gammas[0] + gammas[1]) * w)
+            .map(|&w| (lambdas[0] + lambdas[1]) * w)
             .collect::<Vec<_>>();
 
         let deferred = states
             .into_iter()
-            .zip(gammas)
-            .map(|(state, gamma)| prove_finish_deferred(state, &coordinate_weights, gamma))
+            .zip(lambdas)
+            .map(|(state, lambda)| prove_finish_deferred(state, &coordinate_weights, lambda))
             .collect::<Vec<_>>();
         let deferred_target = deferred
             .iter()

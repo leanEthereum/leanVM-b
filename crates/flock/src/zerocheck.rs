@@ -113,13 +113,13 @@ pub enum VerifyError {
 /// Send one multilinear round and advance the running claim, the prover mirror
 /// of the verifier's loop. `G(0)` never rides the wire: the eq split
 /// `(1 + r_eq)·G(0) + r_eq·G(1) = claim` fixes it. All three evaluations bind.
-fn send_round(ps: &mut impl Transmitter, claim: F192, r_eq: F192, g1: F192, g_inf: F192, rhos: &mut Vec<F192>) -> F192 {
+fn send_round(ps: &mut impl Transmitter, claim: F192, r_eq: F192, g1: F192, g_inf: F192, chis: &mut Vec<F192>) -> F192 {
     let g0 = (claim + r_eq * g1) * (F192::ONE + r_eq).inv();
     ps.add_round_poly(&[g0, g0 + g1 + g_inf, g_inf], true);
-    let rho = ps.sample();
-    rhos.push(rho);
+    let chi = ps.sample();
+    chis.push(chi);
     // G(X) = G(0)·(1+X) + G(1)·X + G(inf)·X·(1+X).
-    g0 + rho * (g0 + g1 + (F192::ONE + rho) * g_inf)
+    g0 + chi * (g0 + g1 + (F192::ONE + chi) * g_inf)
 }
 
 /// THE zerocheck prover entry: proves `a·b ⊕ c = 0` over the padded cube,
@@ -219,8 +219,8 @@ pub fn prove_packed_padded(
     // of the same round-1 values at the same z). `(1+r)·G(0) + r·G(1) = claim`
     // is what lets the wire drop `G(0)`, so the prover has to know it too.
     let mut c_running = interpolate_at_z_combined(&round1, k_skip, z);
-    let mut mlv_rhos: Vec<F192> = Vec::with_capacity(n_mlv);
-    c_running = send_round(ps, c_running, r_rest[0], msg_1, msg_inf, &mut mlv_rhos);
+    let mut mlv_chis: Vec<F192> = Vec::with_capacity(n_mlv);
+    c_running = send_round(ps, c_running, r_rest[0], msg_1, msg_inf, &mut mlv_chis);
 
     // ---- Rounds 3..(n_mlv + 1) ----
     //
@@ -250,7 +250,7 @@ pub fn prove_packed_padded(
     };
 
     for i in 0..(n_mlv - 1) {
-        let rho_prev = mlv_rhos[i];
+        let chi_prev = mlv_chis[i];
         let log_n_before = a_mlv.len().trailing_zeros() as usize;
 
         // The eq weights of the variables the next round does not bind.
@@ -263,10 +263,10 @@ pub fn prove_packed_padded(
                 &b_mlv,
                 &mut a_nxt[..half],
                 &mut b_nxt[..half],
-                rho_prev,
+                chi_prev,
                 r_eq,
             );
-            let m1c = fold_and_compute_round_single_into(&c_mlv, &mut c_nxt[..half], rho_prev, r_eq);
+            let m1c = fold_and_compute_round_single_into(&c_mlv, &mut c_nxt[..half], chi_prev, r_eq);
             // Swap current <-> scratch, then shrink the new current to the
             // folded size. The old (larger) buffer becomes scratch; we only
             // ever write its leading `half` slots next round, so its stale
@@ -279,21 +279,21 @@ pub fn prove_packed_padded(
             c_mlv.truncate(half);
             (m1 + m1c, mi)
         } else {
-            fold_in_place_pair(&mut a_mlv, &mut b_mlv, rho_prev);
-            fold_in_place_single(&mut c_mlv, rho_prev);
+            fold_in_place_pair(&mut a_mlv, &mut b_mlv, chi_prev);
+            fold_in_place_single(&mut c_mlv, chi_prev);
             let (m1, mi) = round_pair_naive(&a_mlv, &b_mlv, r_eq);
             (m1 + round_single_naive(&c_mlv, r_eq), mi)
         };
 
-        c_running = send_round(ps, c_running, r_rest[i + 1], m1, mi, &mut mlv_rhos);
+        c_running = send_round(ps, c_running, r_rest[i + 1], m1, mi, &mut mlv_chis);
     }
 
     // ---- Final binding at ρ_{n_mlv} (the last challenge) ----
     //
     // Only a and b are bound: ĉ comes from the terminal identity below, so
     // `c_mlv`'s last fold would be work for a value nobody reads.
-    let rho_last = *mlv_rhos.last().expect("at least one ρ sampled");
-    fold_in_place_pair(&mut a_mlv, &mut b_mlv, rho_last);
+    let chi_last = *mlv_chis.last().expect("at least one ρ sampled");
+    fold_in_place_pair(&mut a_mlv, &mut b_mlv, chi_last);
     debug_assert_eq!(a_mlv.len(), 1);
     debug_assert_eq!(b_mlv.len(), 1);
 
@@ -328,7 +328,7 @@ pub fn prove_packed_padded(
 
     ZerocheckClaim {
         z,
-        mlv_challenges: mlv_rhos,
+        mlv_challenges: mlv_chis,
         r_rest,
         a_eval: final_a_eval,
         b_eval: final_b_eval,
@@ -393,15 +393,15 @@ pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim
     //   3. update `c_running ← G(ρ_i)`,
     //      where `G(X) = G(0)·(1+X) + G(1)·X + G(∞)·X·(X+1)` (char-2 quadratic
     //      interpolation through G(0), G(1), G(∞)).
-    let mut mlv_rhos: Vec<F192> = Vec::with_capacity(n_mlv);
+    let mut mlv_chis: Vec<F192> = Vec::with_capacity(n_mlv);
     for i in 0..n_mlv {
         let r_eq = r_rest[i];
         let g = vs
             .next_round_poly(3, c_running, Some(r_eq))
             .map_err(VerifyError::Transcript)?;
-        let rho = vs.sample();
-        mlv_rhos.push(rho);
-        c_running = primitives::multilinear::poly_eval(&g, rho);
+        let chi = vs.sample();
+        mlv_chis.push(chi);
+        c_running = primitives::multilinear::poly_eval(&g, chi);
     }
 
     // ---- Terminal identity ----
@@ -424,7 +424,7 @@ pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim
 
     Ok(ZerocheckClaim {
         z,
-        mlv_challenges: mlv_rhos,
+        mlv_challenges: mlv_chis,
         r_rest,
         a_eval: final_a_eval,
         b_eval: final_b_eval,
@@ -448,13 +448,13 @@ mod tests {
         prove_packed_padded(a_packed, b_packed, c_packed, m, &PaddingSpec::dense(m), ps)
     }
 
-    /// The quirky evaluation `f̂(z, rho)` of a Boolean witness: the φ8-Lagrange
+    /// The quirky evaluation `f̂(z, chi)` of a Boolean witness: the φ8-Lagrange
     /// combination, at `z`, of the multilinear extensions of its 2^K_SKIP bit
     /// slices. This is what the three zerocheck claims are supposed to be.
-    fn quirky_eval(bits: &[bool], z: F192, rho: &[F192]) -> F192 {
+    fn quirky_eval(bits: &[bool], z: F192, chi: &[F192]) -> F192 {
         let ell = 1usize << K_SKIP;
         let weights = primitives::multilinear::lagrange_weights_naive(K_SKIP, z);
-        let eq = primitives::multilinear::eq_table(rho);
+        let eq = primitives::multilinear::eq_table(chi);
         let mut acc = F192::ZERO;
         for (v, &e) in eq.iter().enumerate() {
             for (i, &w) in weights.iter().enumerate() {
@@ -552,10 +552,10 @@ mod tests {
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
             let claim = verify(m, &mut ch).expect("honest proof");
 
-            let rho = &claim.mlv_challenges;
-            assert_eq!(claim.a_eval, quirky_eval(&a, claim.z, rho), "â at m={m}");
-            assert_eq!(claim.b_eval, quirky_eval(&b, claim.z, rho), "b̂ at m={m}");
-            assert_eq!(claim.c_eval, quirky_eval(&c, claim.z, rho), "ĉ at m={m}");
+            let chi = &claim.mlv_challenges;
+            assert_eq!(claim.a_eval, quirky_eval(&a, claim.z, chi), "â at m={m}");
+            assert_eq!(claim.b_eval, quirky_eval(&b, claim.z, chi), "b̂ at m={m}");
+            assert_eq!(claim.c_eval, quirky_eval(&c, claim.z, chi), "ĉ at m={m}");
         }
     }
 
@@ -586,10 +586,10 @@ mod tests {
                 let proof_t = ch_prove.into_proof();
                 let mut ch = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
                 let claim = verify(m, &mut ch).expect("shape is still valid");
-                let rho = &claim.mlv_challenges;
-                let all_true = claim.a_eval == quirky_eval(&a, claim.z, rho)
-                    && claim.b_eval == quirky_eval(&b, claim.z, rho)
-                    && claim.c_eval == quirky_eval(&c, claim.z, rho);
+                let chi = &claim.mlv_challenges;
+                let all_true = claim.a_eval == quirky_eval(&a, claim.z, chi)
+                    && claim.b_eval == quirky_eval(&b, claim.z, chi)
+                    && claim.c_eval == quirky_eval(&c, claim.z, chi);
                 assert!(!all_true, "false statement (m={m}, seed={seed}) left every claim true");
             }
         }
@@ -620,10 +620,10 @@ mod tests {
             bad.stream[word].c0 ^= 1;
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
             let claim = verify(m, &mut ch).expect("shape is still valid");
-            let rho = &claim.mlv_challenges;
-            let all_true = claim.a_eval == quirky_eval(&a, claim.z, rho)
-                && claim.b_eval == quirky_eval(&b, claim.z, rho)
-                && claim.c_eval == quirky_eval(&c, claim.z, rho);
+            let chi = &claim.mlv_challenges;
+            let all_true = claim.a_eval == quirky_eval(&a, claim.z, chi)
+                && claim.b_eval == quirky_eval(&b, claim.z, chi)
+                && claim.c_eval == quirky_eval(&c, claim.z, chi);
             assert!(!all_true, "tampered proof ({label}) left every claim true");
         }
     }

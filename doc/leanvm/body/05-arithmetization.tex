@@ -17,7 +17,7 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
-The bus balances when its pushed and pulled tuples form the same multiset (\S\ref{sec:m3}). Random challenges, $\alpha_0,\dots,\alpha_3$ then $\gamma$, reduce this to a single product.
+The bus balances when its pushed and pulled tuples form the same multiset (\S\ref{sec:m3}). Random challenges, $\alpha_0,\dots,\alpha_3$ then $\beta$, reduce this to a single product.
 
 \emph{Fingerprint.} Index a tuple's coordinates by the four bits of $i$, its $m=12$ of them living in $16$ slots. The verifier samples $\alpha=(\alpha_0,\dots,\alpha_3)\in\E^{4}$ and maps each tuple $\btup$ to a single $\E$-element,
 \[
@@ -25,18 +25,18 @@ The bus balances when its pushed and pulled tuples form the same multiset (\S\re
 \]
 weighting slot $i$ by the $\eq$ of Definition~\ref{def:eq} at the bits of $i$, the absent slots contributing nothing.
 
-\emph{Product check.} Both sides carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$. The verifier samples $\gamma\in\E$, and balance becomes
+\emph{Product check.} Both sides carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$. The verifier samples $\beta\in\E$, and balance becomes
 \begin{equation}
-\prod_{\btup\ \text{pushed}}\bigl(\gamma-\pi_\alpha(\btup)\bigr)
+\prod_{\btup\ \text{pushed}}\bigl(\beta-\pi_\alpha(\btup)\bigr)
 \;\qeq\;
-\prod_{\btup\ \text{pulled}}\bigl(\gamma-\pi_\alpha(\btup)\bigr).
+\prod_{\btup\ \text{pulled}}\bigl(\beta-\pi_\alpha(\btup)\bigr).
 \label{eq:gp}
 \end{equation}
 \emph{Why this is equivalent.} For a multiset $P$ of tuples write
 \[
   \Pi_P(A,X)\;=\;\prod_{\btup\in P}\bigl(X-\pi_A(\btup)\bigr),
 \]
-a polynomial in two formal variables with coefficients in $\K$. The two sides of \eqref{eq:gp} are $\Pi_P(\alpha,\gamma)$ for $P$ the pushed multiset and the pulled one.
+a polynomial in two formal variables with coefficients in $\K$. The two sides of \eqref{eq:gp} are $\Pi_P(\alpha,\beta)$ for $P$ the pushed multiset and the pulled one.
 
 \begin{lemma}[A product identity is a multiset identity]\label{lem:gp}
 For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and only if $P=Q$.
@@ -46,11 +46,11 @@ For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and o
 Easy
 \end{proof}
 
-\emph{Completeness and soundness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\gamma$, so completeness is immediate. An unbalanced one makes $\Pi_P\neq\Pi_Q$, by the lemma, and \eqref{eq:gp} tests them at the one point $(\alpha,\gamma)$, so Corollary~\ref{cor:idtest} gives a soundness error of $5\cdot 2^{\mu}/|\E|$: each of the $2^{\mu}$ factors is of total degree four in $\alpha$ and one in $\gamma$, whatever the tuple's width. 
+\emph{Completeness and soundness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\beta$, so completeness is immediate. An unbalanced one makes $\Pi_P\neq\Pi_Q$, by the lemma, and \eqref{eq:gp} tests them at the one point $(\alpha,\beta)$, so Corollary~\ref{cor:idtest} gives a soundness error of $5\cdot 2^{\mu}/|\E|$: each of the $2^{\mu}$ factors is of total degree four in $\alpha$ and one in $\beta$, whatever the tuple's width. 
 
 \subsection{Proving the grand product (GKR)}\label{sec:gkr}
 
-Take one side of \eqref{eq:gp}. Its tuples give its $2^{\mu}$ leaves $v_k=\gamma-\pi_\alpha(\btup_k)$, the ones past the last tuple being $1$, and the side's value is their product. Multiply the leaves two by two, then multiply the results two by two, and so on: after $\mu$ layers one value is left, the root $P=\prod_kv_k$. Layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is the root. The prover announces $P$, and what has to be proven is that this one number is the product of leaves the verifier never sees. GKR proves it by walking back down the tree, turning a claim about one layer into a claim about the layer below, until it reaches the leaves and \S\ref{sec:leafstack} takes over.
+Take one side of \eqref{eq:gp}. Its tuples give its $2^{\mu}$ leaves $v_k=\beta-\pi_\alpha(\btup_k)$, the ones past the last tuple being $1$, and the side's value is their product. Multiply the leaves two by two, then multiply the results two by two, and so on: after $\mu$ layers one value is left, the root $P=\prod_kv_k$. Layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is the root. The prover announces $P$, and what has to be proven is that this one number is the product of leaves the verifier never sees. GKR proves it by walking back down the tree, turning a claim about one layer into a claim about the layer below, until it reaches the leaves and \S\ref{sec:leafstack} takes over.
 
 \subsubsection{Grand-Product argument via GKR}
 
@@ -62,7 +62,7 @@ so by Fact~\ref{fact:eq} a claim on $\widetilde V_i$ at a point $r$ is a sum ove
 \[
 \widetilde V_i(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\,\widetilde V_{i-1}(0,x)\,\widetilde V_{i-1}(1,x),
 \]
-which sumcheck (Fact~\ref{fact:sumcheck}) reduces to the two values $\widetilde V_{i-1}(0,\rho)$ and $\widetilde V_{i-1}(1,\rho)$ at one random $\rho$. The prover sends them and a fresh challenge $u$ combines them multilinearly, leaving the single claim $\widetilde V_{i-1}(u,\rho)$: the same kind of claim, one layer lower. The walk starts at the root, where the claim is the announced $P$ itself, and $\mu$ such steps end on the leaves.
+which sumcheck (Fact~\ref{fact:sumcheck}) reduces to the two values $\widetilde V_{i-1}(0,\fc)$ and $\widetilde V_{i-1}(1,\fc)$ at one random $\fc$. The prover sends them and a fresh challenge $u$ combines them multilinearly, leaving the single claim $\widetilde V_{i-1}(u,\fc)$: the same kind of claim, one layer lower. The walk starts at the root, where the claim is the announced $P$ itself, and $\mu$ such steps end on the leaves.
 
 \subsubsection{Two layers at a time}
 
@@ -70,7 +70,7 @@ Every layer costs one sumcheck and one round trip, so we contract two binary lev
 \[
 V_i(x)=\prod_{a,b\in\{0,1\}}V_{i-2}(a,b,x).
 \]
-The same sumcheck then reduces $\widetilde V_i(r)$ to the four values $\widetilde V_{i-2}(a,b,\rho)$, which the prover sends and two fresh challenges $(u_0,u_1)$ combine into one claim $\widetilde V_{i-2}(u_0,u_1,\rho)$, two layers down. Its cofactor has degree four, so a round costs four $\E$-elements (\S\ref{sec:prelim}), against three for the binary tree above.
+The same sumcheck then reduces $\widetilde V_i(r)$ to the four values $\widetilde V_{i-2}(a,b,\fc)$, which the prover sends and two fresh challenges $(u_0,u_1)$ combine into one claim $\widetilde V_{i-2}(u_0,u_1,\fc)$, two layers down. Its cofactor has degree four, so a round costs four $\E$-elements (\S\ref{sec:prelim}), against three for the binary tree above.
 
 If $\mu$ is odd, GKR first processes the root-most binary layer, which has no sumcheck rounds, and then proceeds entirely in radix four. After $\lceil\mu/2\rceil$ layers a single leaf claim $\widetilde V_0(\zeta)$ remains, which \S\ref{sec:leafstack} settles against the columns. Prover work remains $O(2^\mu)$ and the proof remains $O(\mu^2)$ $\E$-elements, with fewer layers and a smaller constant.
 
@@ -86,15 +86,15 @@ drawing a fresh $\lambda$ after every layer, which binds each tree's own tail va
 
 \subsection{Stacking the leaves}\label{sec:leafstack}
 
-The GKR grand-product argument reduces each side of \eqref{eq:gp} to a single evaluation $\widetilde V_0(\zeta)$ of its \emph{leaves}, the product's factors $\gamma-\pi_\alpha(\btup)$, one per bus tuple $\btup$.
+The GKR grand-product argument reduces each side of \eqref{eq:gp} to a single evaluation $\widetilde V_0(\zeta)$ of its \emph{leaves}, the product's factors $\beta-\pi_\alpha(\btup)$, one per bus tuple $\btup$.
 
-\paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\gamma-\sum_{i}\eq(\alpha,i)\,c_{i}(z)$, with $c_{i}(z)$ coordinate $i$ of the row's tuple. Each $c_i$ is a polynomial of degree at most $d$ in the row's columns (\S\ref{sec:m3}).
+\paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\beta-\sum_{i}\eq(\alpha,i)\,c_{i}(z)$, with $c_{i}(z)$ coordinate $i$ of the row's tuple. Each $c_i$ is a polynomial of degree at most $d$ in the row's columns (\S\ref{sec:m3}).
 
 \paragraph{Layout.} Order the blocks largest first at aligned offsets, padding to $2^{\mu}$ leaves with $1$s, which leave the product unchanged. This is the stacking of \S\ref{sec:stacking} applied to blocks: block $b$, of $2^{\kappa_b}$ leaves, occupies the subcube $\{(z,\mathsf{sel}_b):z\in\cube{\kappa_b}\}$ for a fixed selector $\mathsf{sel}_b$.
 
 \paragraph{Decomposition.} Split $\zeta=(\zeta^{b}_{\mathrm{lo}},\zeta^{b}_{\mathrm{hi}})$ at block $b$'s boundary. Each block is a subcube, so the leaf MLE splits into a public selector times the block's own MLE, plus what the padding contributes:
 \begin{equation}\label{eq:gkr_leaves}
-  \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i}\eq(\alpha,i)\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
+  \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_{i}\eq(\alpha,i)\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
 \end{equation}
 That last term is the padding's weight, for the final $\dots 1111$.
 
@@ -102,11 +102,11 @@ That last term is the padding's weight, for the final $\dots 1111$.
 
 Let $\mathcal B$ be the blocks of $T_j$'s flushes in this leaf vector, one per flush rule (\S\ref{sec:m3}). Each holds one leaf per row of $T_j$, so each is $2^{\tau_j}$ tall and all of them split $\zeta$ at the same place, $\zeta^{b}_{\mathrm{lo}}=\zeta_{<\tau_j}$ and $\zeta^{b}_{\mathrm{hi}}=\zeta_{\ge\tau_j}$, differing only through their selector. Exchanging the two sums,
 \begin{align*}
-  \sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\Bigl(\gamma-\sum_{i}\alpha^{i}c_{b,i}(x)\Bigr)
+  \sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\Bigl(\beta-\sum_{i}\alpha^{i}c_{b,i}(x)\Bigr)
   &\;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B_j(x),\\
-  B_j&\;=\;\sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_i\alpha^{i}c_{b,i}\Bigr).
+  B_j&\;=\;\sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_i\alpha^{i}c_{b,i}\Bigr).
 \end{align*}
-$B_j$ has degree at most $d$ in $T_j$'s columns, and the verifier builds its coefficients from $\alpha$, $\gamma$ and the selectors. What remains to prove is
+$B_j$ has degree at most $d$ in $T_j$'s columns, and the verifier builds its coefficients from $\alpha$, $\beta$ and the selectors. What remains to prove is
 \[
   \sum_j\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{\mathrm{side}}_j(x)\;\qeq\;R_{\mathrm{side}} .
 \]
@@ -121,29 +121,29 @@ Number the sides $s=1,\dots,T$, one per grand product (\S\ref{sec:gkr}), and wri
 \end{align*}
 the first for every constraint of every table, the second for every side. Both are $\eq$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns, which is what lets a single sumcheck carry them all.
 
-\paragraph{Constraints are $\K$-valued.} A constraint $C_{j,i}$ takes values in $\K$, like the columns it reads and like the bus coordinates (\S\ref{sec:m3}); only the $\eta$-powers and $\eq(\zeta,\cdot)$ that weight it lie in $\E$. A relation between machine words is therefore stated lane by lane, three $\K$ constraints rather than one $\E$ constraint, with the tower multiplication unrolled (\S\ref{sec:tab-mul}); the two have the same zero set, since $\{1,y,y^{2}\}$ is a $\K$-basis of $\E$. The prover gains by it: in the round a table joins the batch its columns are still $\K$-valued (below), so a $\K$ constraint is evaluated in $64$-bit arithmetic and meets $\E$ only in the mixed product against its $\eta$-power, while an $\E$ constraint would cost a full $\E$ multiplication per row.
+\paragraph{Constraints are $\K$-valued.} A constraint $C_{j,i}$ takes values in $\K$, like the columns it reads and like the bus coordinates (\S\ref{sec:m3}); only the $\xi$-powers and $\eq(\zeta,\cdot)$ that weight it lie in $\E$. A relation between machine words is therefore stated lane by lane, three $\K$ constraints rather than one $\E$ constraint, with the tower multiplication unrolled (\S\ref{sec:tab-mul}); the two have the same zero set, since $\{1,y,y^{2}\}$ is a $\K$-basis of $\E$. The prover gains by it: in the round a table joins the batch its columns are still $\K$-valued (below), so a $\K$ constraint is evaluated in $64$-bit arithmetic and meets $\E$ only in the mixed product against its $\xi$-power, while an $\E$ constraint would cost a full $\E$ multiplication per row.
 
 \paragraph{The point is already drawn.} A zerocheck tests its polynomial at a point drawn after the commitment (Definition~\ref{def:zerocheck}), and $\zeta$ is such a point: its coordinates are the challenges of the GKR pass (\S\ref{sec:gkr}), uniform in $\E$ and drawn after the witness was committed. The constraints played no part in producing them. So no fresh point is needed, and the constraints are zerochecked at $\zeta_{<\tau_j}$, where the bus forms already stand.
 
-\paragraph{One challenge.} The verifier samples $\eta\in\E$, after the totals are fixed. Each table mixes everything it owes into one polynomial in its own columns,
+\paragraph{One challenge.} The verifier samples $\xi\in\E$, after the totals are fixed. Each table mixes everything it owes into one polynomial in its own columns,
 \[
-  C_j\;=\;\sum_{i=1}^{\ncons{j}}\eta^{\,o_j+i-1}\,C_{j,i}
-  \;+\;\sum_{s=1}^{T}\eta^{\,\sigma+s-1}B^{s}_j,
+  C_j\;=\;\sum_{i=1}^{\ncons{j}}\xi^{\,o_j+i-1}\,C_{j,i}
+  \;+\;\sum_{s=1}^{T}\xi^{\,\sigma+s-1}B^{s}_j,
   \qquad
   S_j\;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,C_j(x),
 \]
 with $\sigma=\sum_j\ncons{j}$ the total number of constraints and $o_j=\ncons{1}+\dots+\ncons{j-1}$. The constraint powers are disjoint across tables, so no table's violation is cancelled by another's. The $T$ bus powers are shared by every table, which is what the bus needs, only the totals being pinned. If every constraint vanishes then
 \[
-  \sum_j S_j\;=\;\sum_{s=1}^{T}\eta^{\,\sigma+s-1}R_{s},
+  \sum_j S_j\;=\;\sum_{s=1}^{T}\xi^{\,\sigma+s-1}R_{s},
 \]
-a number the verifier formed before drawing $\eta$. Reaching it forces the $T$ bus equations at once, and a zero in every constraint slot, up to $(n+\sigma+T)/|\E|$ over $\zeta$ and $\eta$ (Corollary~\ref{cor:idtest}), writing $n=\max_j\tau_j$.
+a number the verifier formed before drawing $\xi$. Reaching it forces the $T$ bus equations at once, and a zero in every constraint slot, up to $(n+\sigma+T)/|\E|$ over $\zeta$ and $\xi$ (Corollary~\ref{cor:idtest}), writing $\taumax=\max_j\tau_j$.
 
-\paragraph{One sumcheck.} The $S_j$ are claims of different lengths. Lift each onto $\cube n$ by attaching the indicator of the all-ones assignment on the $n-\tau_j$ variables $T_j$ does not use,
+\paragraph{One sumcheck.} The $S_j$ are claims of different lengths. Lift each onto $\cube{\taumax}$ by attaching the indicator of the all-ones assignment on the $\taumax-\tau_j$ variables $T_j$ does not use,
 \[
-  f_j(X_0,\dots,X_{n-1})\;=\;\bigl(C_j\,\eq(\zeta_{<\tau_j},\cdot)\bigr)(X_0,\dots,X_{\tau_j-1})\cdot\prod_{i\ge\tau_j}X_i ,
+  f_j(X_0,\dots,X_{\taumax-1})\;=\;\bigl(C_j\,\eq(\zeta_{<\tau_j},\cdot)\bigr)(X_0,\dots,X_{\tau_j-1})\cdot\prod_{i\ge\tau_j}X_i ,
 \]
-so that $\sum_{x\in\cube n}f_j(x)=S_j$, since $\sum_x\prod_ix_i=1$. With $F=\sum_jf_j$ the whole statement is one claim, $\sum_{x\in\cube n}F(x)=\sum_jS_j$, proven in $n$ rounds.
+so that $\sum_{x\in\cube{\taumax}}f_j(x)=S_j$, since $\sum_x\prod_ix_i=1$. With $F=\sum_jf_j$ the whole statement is one claim, $\sum_{x\in\cube{\taumax}}F(x)=\sum_jS_j$, proven in $n$ rounds.
 
-The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ of them touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. A short claim waits, then joins weighted by the rounds it sat out.
+The rounds bind $X_{\taumax-1}$ first and $X_0$ last, so the first $\taumax-\tau_j$ of them touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far. Table $T_j$ enters at round $\taumax-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. A short claim waits, then joins weighted by the rounds it sat out.
 
-The batch ends with one claim per column of $T_j$, at that table's own point $\rho_{<\tau_j}$, each a prefix of the one $\rho$. Those are what the PCS opening settles (\S\ref{sec:stacking}); no column is ever opened at $\zeta$.
+The batch ends with one claim per column of $T_j$, at that table's own point $\fc_{<\tau_j}$, each a prefix of the one $\fc$. Those are what the PCS opening settles (\S\ref{sec:stacking}); no column is ever opened at $\zeta$.

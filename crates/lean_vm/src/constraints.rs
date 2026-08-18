@@ -4,7 +4,7 @@
 //! the batch is a polynomial in `η` whose coefficients are the individual sums and
 //! matching the batch's target still pins each one. The three bus forms are the
 //! exception: they SHARE their three powers across tables
-//! ([`crate::cpu::eta_form_base`]), so those coefficients are per-side totals and
+//! ([`crate::cpu::xi_form_base`]), so those coefficients are per-side totals and
 //! the target pins the total, which is all the bus needs. The identities vanish on a
 //! valid row, but a table also attaches its three bus forms, whose sums are the
 //! values the bus is owed, so the target is those rather than zero. It is the
@@ -46,7 +46,7 @@ use zk_alloc::ArenaVec;
 /// One table's involved columns' evaluations at its table-sumcheck point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claims {
-    pub rho: Vec<F192>,
+    pub chi: Vec<F192>,
     pub evals: Vec<F192>,
 }
 
@@ -71,7 +71,7 @@ pub struct Air<'a> {
 }
 
 /// Start of each table's disjoint range of `η`-powers.
-pub fn eta_offsets(n_constraints: impl Iterator<Item = usize>) -> Vec<usize> {
+pub fn xi_offsets(n_constraints: impl Iterator<Item = usize>) -> Vec<usize> {
     n_constraints
         .scan(0usize, |off, n| {
             let start = *off;
@@ -139,21 +139,21 @@ fn table_message<T: ColVal, C: std::ops::Deref<Target = [T]> + Sync>(
 pub fn prove(
     airs: &[Air<'_>],
     cols: &[Vec<&[F64]>],
-    eta: F192,
+    xi: F192,
     zeta: &[F192],
     sigma: &[F192],
     ps: &mut ProverState,
 ) -> Vec<Claims> {
     let n = airs.iter().map(|a| a.tau).max().unwrap_or(0);
     debug_assert!(zeta.len() >= n, "the eq point must cover the tallest table");
-    let offsets = eta_offsets(airs.iter().map(|a| a.n_constraints));
-    let pows = powers(eta, airs.iter().map(|a| a.n_constraints).sum());
+    let offsets = xi_offsets(airs.iter().map(|a| a.n_constraints));
+    let pows = powers(xi, airs.iter().map(|a| a.n_constraints).sum());
     // η^{offset_t}, already inside `pows`; the rounds then fold in the pre-join
     // challenges and the eq factor, so `weights` is the whole per-table state.
     let mut weights = vec![F192::ONE; airs.len()];
     // ONE eq table over the low (still free) variables serves every active table.
     let mut eqr = eq_table_arena(&zeta[..n.saturating_sub(1)]);
-    let mut rho = vec![F192::ZERO; n];
+    let mut chi = vec![F192::ZERO; n];
     // The folded tables are the batch's largest transients: one E-lifted copy of
     // every column of every still-active table. Arena-backed, so they are bumped
     // rather than mapped afresh each round.
@@ -193,7 +193,7 @@ pub fn prove(
         let h = [eq_z * p[0], eq_z * p[1] + p[0] + u, eq_z * p[2] + p[1], p[2]];
         ps.add_round_poly(&h, false);
         let rk = ps.sample();
-        rho[m] = rk;
+        chi[m] = rk;
         k *= rk;
         let eq_k = F192::ONE + zeta[m] + rk;
         for (t, air) in airs.iter().enumerate() {
@@ -228,7 +228,7 @@ pub fn prove(
             };
             ps.add_scalars(&evals);
             Claims {
-                rho: rho[..air.tau].to_vec(),
+                chi: chi[..air.tau].to_vec(),
                 evals,
             }
         })
@@ -239,7 +239,7 @@ pub fn prove(
 /// settle against the commitment.
 pub fn verify(
     airs: &[Air<'_>],
-    eta: F192,
+    xi: F192,
     zeta: &[F192],
     target: F192,
     vs: &mut VerifierState,
@@ -248,22 +248,22 @@ pub fn verify(
     if zeta.len() < n {
         return Err(Error::Truncated);
     }
-    let offsets = eta_offsets(airs.iter().map(|a| a.n_constraints));
-    let pows = powers(eta, airs.iter().map(|a| a.n_constraints).sum());
+    let offsets = xi_offsets(airs.iter().map(|a| a.n_constraints));
+    let pows = powers(xi, airs.iter().map(|a| a.n_constraints).sum());
     let mut weights = vec![F192::ONE; airs.len()];
     // An ordinary sumcheck for `target`, which the caller supplies. Each round
     // arrives as the round polynomial itself at `nd`, so the two steps are the
     // textbook ones and nothing has to be reapplied: no eq factor, no separate
     // waiting term. `ζ` and the heights enter only `weights`, never the check.
     let mut claim = target;
-    let mut rho = vec![F192::ZERO; n];
+    let mut chi = vec![F192::ZERO; n];
     for j in 0..n {
         let m = n - 1 - j;
         // `h(0)` is derived from the running claim rather than transmitted, so
         // the round-consistency check it used to enable holds by construction.
         let h = vs.next_round_poly(4, claim, None).map_err(|_| Error::Truncated)?;
         let rk = vs.sample();
-        rho[m] = rk;
+        chi[m] = rk;
         claim = poly_eval(&h, rk);
         let eq_k = F192::ONE + zeta[m] + rk;
         for (t, air) in airs.iter().enumerate() {
@@ -278,7 +278,7 @@ pub fn verify(
         let w = &pows[offsets[t]..offsets[t] + air.n_constraints];
         acc += weights[t] * (air.eval)(w, &evals);
         claims.push(Claims {
-            rho: rho[..air.tau].to_vec(),
+            chi: chi[..air.tau].to_vec(),
             evals,
         });
     }
@@ -335,25 +335,25 @@ mod tests {
     const SEED: [F192; 2] = [F192::ONE, F192::ZERO];
 
     /// The eq point and `η` are the caller's; the tests fix them.
-    fn eta_zeta(taus: &[usize]) -> (F192, Vec<F192>) {
+    fn xi_zeta(taus: &[usize]) -> (F192, Vec<F192>) {
         let n = taus.iter().copied().max().unwrap_or(0);
-        let eta = F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7);
+        let xi = F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7);
         let zeta = (0..n)
             .map(|i| F192::new(i as u64 + 3, 0x5555 * (i as u64 + 1), i as u64 + 11))
             .collect();
-        (eta, zeta)
+        (xi, zeta)
     }
 
     fn run(taus: &[usize], cols: Vec<Vec<Vec<F64>>>) -> (Proof, Result<Vec<Claims>, Error>) {
         let airs = airs_for(taus, false);
-        let (eta, zeta) = eta_zeta(taus);
+        let (xi, zeta) = xi_zeta(taus);
         let zeros = vec![F192::ZERO; taus.len()];
         let mut ps = ProverState::new(b"zc-test", &SEED);
         let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
-        let pclaims = prove(&airs, &views, eta, &zeta, &zeros, &mut ps);
+        let pclaims = prove(&airs, &views, xi, &zeta, &zeros, &mut ps);
         let proof = ps.into_proof();
         let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
-        let vclaims = verify(&airs, eta, &zeta, F192::ZERO, &mut vs);
+        let vclaims = verify(&airs, xi, &zeta, F192::ZERO, &mut vs);
         if let Ok(vc) = &vclaims {
             assert_eq!(&pclaims, vc);
         }
@@ -365,9 +365,9 @@ mod tests {
         let taus = [5usize, 3, 5, 0, 1];
         let cols = taus.iter().enumerate().map(|(i, &t)| good_table(t, i as u64)).collect();
         let claims = run(&taus, cols).1.expect("honest batch verifies");
-        let tallest = claims.iter().max_by_key(|c| c.rho.len()).unwrap().rho.clone();
+        let tallest = claims.iter().max_by_key(|c| c.chi.len()).unwrap().chi.clone();
         for (c, &tau) in claims.iter().zip(&taus) {
-            assert_eq!(c.rho, tallest[..tau]);
+            assert_eq!(c.chi, tallest[..tau]);
         }
     }
 
@@ -393,8 +393,8 @@ mod tests {
     fn attached_eval_claims_verify_and_bind() {
         let taus = [5usize, 3, 5, 0, 1];
         let cols: Vec<Vec<Vec<F64>>> = taus.iter().enumerate().map(|(i, &t)| good_table(t, i as u64)).collect();
-        let (eta, zeta) = eta_zeta(&taus);
-        let pows = powers(eta, 3 * taus.len());
+        let (xi, zeta) = xi_zeta(&taus);
+        let pows = powers(xi, 3 * taus.len());
         // σ_t = η^{offset_t + 2} · col_1(ζ[..τ_t]): the attached identity is `vals[1]`,
         // so its eq-weighted sum over the table's cube is that column's evaluation.
         let sigmas: Vec<F192> = taus
@@ -408,10 +408,10 @@ mod tests {
             let target = sig.iter().fold(F192::ZERO, |a, &b| a + b);
             let mut ps = ProverState::new(b"zc-test", &SEED);
             let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
-            let pclaims = prove(&airs, &views, eta, &zeta, sig, &mut ps);
+            let pclaims = prove(&airs, &views, xi, &zeta, sig, &mut ps);
             let proof = ps.into_proof();
             let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
-            let out = verify(&airs, eta, &zeta, target, &mut vs);
+            let out = verify(&airs, xi, &zeta, target, &mut vs);
             if let Ok(vc) = &out {
                 assert_eq!(&pclaims, vc);
             }
@@ -437,13 +437,13 @@ mod tests {
         let (proof, ok) = run(&taus, cols);
         assert!(ok.is_ok());
         let airs = airs_for(&taus, false);
-        let (eta, zeta) = eta_zeta(&taus);
+        let (xi, zeta) = xi_zeta(&taus);
         for i in 0..proof.stream.len() {
             let mut bad = proof.clone();
             bad.stream[i] += F192::ONE;
             let mut vs = VerifierState::new(b"zc-test", &bad, &SEED);
             assert!(
-                verify(&airs, eta, &zeta, F192::ZERO, &mut vs).is_err(),
+                verify(&airs, xi, &zeta, F192::ZERO, &mut vs).is_err(),
                 "tampered word {i} must be rejected"
             );
         }

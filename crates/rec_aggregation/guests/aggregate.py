@@ -86,7 +86,7 @@ BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # Table sumcheck: the batch carries EVERY committed column of a table, because its bus
 # forms read the flushed ones and its constraint the rest; TABLE_COLS_CAP caps the
-# evaluation frame. ETA_OFFSET[t] starts table t's disjoint range of eta-powers.
+# evaluation frame. ETA_OFFSET[t] starts table t's disjoint range of zc_xi-powers.
 N_TABLE_COLS = N_TABLE_COLS_PLACEHOLDER
 TABLE_COLS_CAP = TABLE_COLS_CAP_PLACEHOLDER
 # ETA_OFFSET[t] starts table t's disjoint range of identity powers; the three bus
@@ -1174,7 +1174,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     fp_w = HeapBuf(N_TUPLE_SLOTS)
     for x in unroll(0, N_TUPLE_SLOTS):
         fp_w[GEN ** x] = eq_weight(bus_alpha, N_TUPLE_BITS, x, 0)
-    fs, gamma = squeeze(fs)
+    fs, beta = squeeze(fs)
 
     # ---- ONE GKR grand product: push, pull, and count RLC-batched ----
     # Push and pull have equal depth (matched blocks) and the count tree is
@@ -1501,7 +1501,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 if s == COUNT_SIDE:
                     acc += eq_hi * inner_sum
                 else:
-                    acc += eq_hi * (gamma + inner_sum)
+                    acc += eq_hi * (beta + inner_sum)
         acc += 1 + selector_sum
         # What the tables' blocks owe this side: its GKR leaf value less the
         # framework decomposition. DERIVED, not read: a transmitted total would be a
@@ -1510,14 +1510,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     claim_idx = N_BUS_CLAIMS  # AIR/PI/pin claims pool after the deduped bus claims
 
     # ---- ONE table sumcheck for all seven tables ----
-    # Mirrors lean_vm::constraints::verify. eta ONCE, each table folding its own
+    # Mirrors lean_vm::constraints::verify. zc_xi ONCE, each table folding its own
     # identities with a DISJOINT range of its powers (ETA_OFFSET[t]); one shared
     # point zeta (the bus GKR's); n = max_t tau_t rounds. Rounds bind the HIGHEST
     # variable first, so a 2^tau table sits out the first n - tau of them and joins
     # carrying the challenges it sat out. Per table the weight is then
     #   cprod[n - tau] * peq[tau],
     # the challenges drawn before it joined times peq[tau] = eq(zeta[..tau],
-    # rho[..tau]); the eta-powers are already inside constraint_eval.
+    # chi[..tau]); the zc_xi-powers are already inside constraint_eval.
     #
     # g^n for n = max_t tau_t, the batch's round count. Hinted, then pinned
     # exactly: the product identity forces it to BE one of the certified taus, and
@@ -1536,26 +1536,26 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # kappa = tau, so it holds structurally, but zc_peq below reads zeta[..n] and
     # zeta only holds mu coords: unwritten heap there is prover-chosen.
     assert log(g_bus_mu / g_zc_n) < COUNT_BITS
-    fs, eta = squeeze(fs)
-    eta_pows = StackBuf(N_ETA_POWS)
-    eta_pows[0] = 1
+    fs, zc_xi = squeeze(fs)
+    zc_xi_pows = StackBuf(N_ETA_POWS)
+    zc_xi_pows[0] = 1
     for k in unroll(1, N_ETA_POWS):
-        eta_pows[k] = eta_pows[k - 1] * eta
+        zc_xi_pows[k] = zc_xi_pows[k - 1] * zc_xi
     # The eq point is the bus GKR's zeta, NOT a fresh one: that is what lets the
     # batch settle the bus forms alongside the constraints.
     #
     # THE tie to the bus, and the reason no target is read: what the three sides'
-    # tables owe, each in its own shared power of eta, IS the sum the batch must
-    # reach. Since eta is squeezed after those totals are fixed, hitting one number
+    # tables owe, each in its own shared power of zc_xi, IS the sum the batch must
+    # reach. Since zc_xi is squeezed after those totals are fixed, hitting one number
     # forces all three side equations.
     bus_target = 0
     for sd in unroll(0, N_GKR_SIDES):
-        bus_target += eta_pows[ETA_FORM_BASE + sd] * bus_table_total[GEN ** sd]
+        bus_target += zc_xi_pows[ETA_FORM_BASE + sd] * bus_table_total[GEN ** sd]
     # n vanilla sumcheck rounds: the round polynomial arrives whole, so a round is
     # `h(0) + h(1) == claim` and a fold, with no eq to reapply. The tables still
     # waiting ride inside h, so nothing here is indexed by height; the heights enter
     # only the per-table weights below.
-    rho = HeapBuf(g_zc_n)   # rho[i] = the challenge that bound variable i
+    chi = HeapBuf(g_zc_n)   # chi[i] = the challenge that bound variable i
     zc_round_fs0 = HeapBuf(g_zc_n * GEN)
     zc_round_fs1 = HeapBuf(g_zc_n * GEN)
     zc_round_cursor = HeapBuf(g_zc_n * GEN)
@@ -1569,7 +1569,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for xk in mul_range(1, g_zc_n):
         d = g_zc_n * INV_GEN / xk  # g^(n-1-j): the variable round j binds
         nfs0, nfs1, ncur, nclaim, rk = sumcheck_round4(zc_round_fs0[xk], zc_round_fs1[xk], zc_round_cursor[xk], zc_round_claim[xk])
-        rho[d] = rk
+        chi[d] = rk
         xkn = xk * GEN
         zc_round_fs0[xkn] = nfs0
         zc_round_fs1[xkn] = nfs1
@@ -1580,13 +1580,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     fs = [zc_round_fs0[g_zc_n], zc_round_fs1[g_zc_n]]
     cursor = zc_round_cursor[g_zc_n]
     claim = zc_round_claim[g_zc_n]
-    # peq[g^tau] = eq(zeta[..tau], rho[..tau]), as a prefix chain.
+    # peq[g^tau] = eq(zeta[..tau], chi[..tau]), as a prefix chain.
     zc_peq = HeapBuf(g_zc_n * GEN)
     zc_peq[GEN ** 0] = 1
     for xi in mul_range(1, g_zc_n):
-        zc_peq[xi * GEN] = zc_peq[xi] * (1 + zeta[xi] + rho[xi])
+        zc_peq[xi * GEN] = zc_peq[xi] * (1 + zeta[xi] + chi[xi])
     # Per table: every committed column's evaluation (pooled), its AIR constraint
-    # at its own reduced point rho[..tau_t], weighted into the batch's final claim.
+    # at its own reduced point chi[..tau_t], weighted into the batch's final claim.
     air_acc = 0
     for t in unroll(0, N_TABLES):
         tau_g = dims_g[GEN ** (t + 1)]
@@ -1618,8 +1618,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             w = col_evals[12]
             b = col_evals[13]
             b1 = b + 1
-            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (b + c * w)
-            constraint_eval += eta_pows[ETA_OFFSET[t] + 1] * (c * b1)
+            constraint_eval = zc_xi_pows[ETA_OFFSET[t] + 0] * (b + c * w)
+            constraint_eval += zc_xi_pows[ETA_OFFSET[t] + 1] * (c * b1)
         if t == TABLE_BLAKE2s:
             constraint_eval = 0
         if t == TABLE_PACK64X2:
@@ -1657,8 +1657,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                         if sd == COUNT_SIDE:
                             form += block_eq_all[GEN ** b] * inner
                         else:
-                            form += block_eq_all[GEN ** b] * (gamma + inner)
-            constraint_eval += eta_pows[ETA_FORM_BASE + sd] * form
+                            form += block_eq_all[GEN ** b] * (beta + inner)
+            constraint_eval += zc_xi_pows[ETA_FORM_BASE + sd] * form
         air_acc += zc_round_cprod[g_zc_n / tau_g] * zc_peq[tau_g] * constraint_eval  # cprod[n - tau] * peq[tau]
     assert air_acc == claim
 
@@ -1732,15 +1732,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zc_running *= s_half_product
     # multilinear rounds.
     mr1cs_rounds_g = mr1cs_g * INV_GEN ** 6  # runtime zerocheck mlv rounds: m - 6
-    zerocheck_rhos = HeapBuf(mr1cs_rounds_g)
+    zerocheck_chis = HeapBuf(mr1cs_rounds_g)
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
         fs, g_1, cursor = fs_next(fs, cursor)  # G's coefficients, bar the constant one
         fs, g_2, cursor = fs_next(fs, cursor)
         g_0 = zc_running + r_eq * (g_1 + g_2)  # the eq-weighted split fixes it
-        fs, rho_v = squeeze(fs)
-        zerocheck_rhos[GEN ** i] = rho_v
-        zc_running = g_0 + rho_v * (g_1 + rho_v * g_2)
+        fs, chi_v = squeeze(fs)
+        zerocheck_chis[GEN ** i] = chi_v
+        zc_running = g_0 + chi_v * (g_1 + chi_v * g_2)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
     nmlv_g = tau_blake2s_g * GEN ** (K_LOG - K_SKIP)
     flock_round_size = mr1cs_rounds_g * GEN ** 2
@@ -1760,9 +1760,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         round_fs, g_1, cur_i = fs_next(round_fs, cur_i)  # coefficients, bar the constant one
         round_fs, g_2, cur_i = fs_next(round_fs, cur_i)
         g_0 = round_running + r_eq * (g_1 + g_2)  # the eq-weighted split fixes it
-        round_fs, rho_v = squeeze(round_fs)
-        zerocheck_rhos[xi] = rho_v
-        round_running = g_0 + rho_v * (g_1 + rho_v * g_2)
+        round_fs, chi_v = squeeze(round_fs)
+        zerocheck_chis[xi] = chi_v
+        round_running = g_0 + chi_v * (g_1 + chi_v * g_2)
         xin = xi * GEN
         flock_round_fs0[xin] = round_fs[0]
         flock_round_fs1[xin] = round_fs[1]
@@ -1808,12 +1808,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     pin_term = lincheck_cube * eq_weight(lincheck_rs, LINCHECK_ROUNDS, PIN_COLUMN, K_LOG)
     pin_term *= z_partial[GEN ** (PIN_COLUMN % 2 ** K_SKIP)]
     # The C term. Its column weight is the row weight itself (C = I), and both
-    # sides are tensors, so it collapses to eq(rho_in, rho_in_prime) times the
+    # sides are tensors, so it collapses to eq(chi_in, chi_in_prime) times the
     # phi8 Lagrange combination of the 64 slices: no second matrix walk, no
     # second family.
     c_point_eq = GEN ** 0
     for t in unroll(0, LINCHECK_ROUNDS):
-        c_point_eq *= (1 + zerocheck_rhos[GEN ** t] + lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)])
+        c_point_eq *= (1 + zerocheck_chis[GEN ** t] + lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)])
     c_slice_value = 0
     for i in unroll(0, 2 ** K_SKIP):
         c_slice_value += claim_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
@@ -1870,23 +1870,23 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for t in unroll(0, LINCHECK_ROUNDS):
         z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
     zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
-    zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
+    zr_hi = zerocheck_chis * GEN ** LINCHECK_ROUNDS
     for xt in mul_range(1, tau_blake2s_g):
         zv_lo[xt] = zr_hi[xt]
     # Observe every pooled point claim, then ONE batching challenge for all of
     # them: N_CLAIMS - 1 fewer sponge compressions than a challenge per claim.
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, claim_pool[GEN ** j])
-    fs, gamma = squeeze(fs)
-    # Disjoint power ranges, as for the eta-powers above: the ring-switch claim
-    # takes gamma^0, the pool gamma^1 onward.
+    fs, lam_cl = squeeze(fs)
+    # Disjoint power ranges, as for the zc_xi-powers above: the ring-switch claim
+    # takes lam_cl^0, the pool lam_cl^1 onward.
     target = transposed_claims[0]
-    gamma_pool = HeapBuf(N_CLAIMS)
-    gv = gamma
+    lam_pool = HeapBuf(N_CLAIMS)
+    gv = lam_cl
     for j in unroll(0, N_CLAIMS):
-        gamma_pool[GEN ** j] = gv
+        lam_pool[GEN ** j] = gv
         target += gv * claim_pool[GEN ** j]
-        gv *= gamma
+        gv *= lam_cl
 
     # ================= the WHIR opening core (stacked, m = STACK) ========
 
@@ -2008,20 +2008,20 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zeta_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_bus_mu):
         zeta_eq_chain[xk * GEN] = zeta_eq_chain[xk] * (1 + zeta[xk] + point_fold[xk])
-    rho_eq_chain = HeapBuf(SIZE_BITS + 1)
-    rho_eq_chain[GEN ** 0] = 1
+    chi_eq_chain = HeapBuf(SIZE_BITS + 1)
+    chi_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
-        rho_eq_chain[xk * GEN] = rho_eq_chain[xk] * (1 + rho[xk] + point_fold[xk])
-    # The qflock variant reads rho against ris shifted past the slot coordinates,
+        chi_eq_chain[xk * GEN] = chi_eq_chain[xk] * (1 + chi[xk] + point_fold[xk])
+    # The qflock variant reads chi against ris shifted past the slot coordinates,
     # so it needs its own chain. There is no zeta counterpart: a virtual value
     # column is referenced only by its own table's bus blocks, which the zerocheck
     # settles, so no framework block can raise one (asserted while the placeholder
     # map is built).
     ris_slot = point_fold * GEN ** SLOT_STRIDE_LOG
-    rho_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
-    rho_slot_eq_chain[GEN ** 0] = 1
+    chi_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
+    chi_slot_eq_chain[GEN ** 0] = 1
     for xk in mul_range(1, g_zc_n):
-        rho_slot_eq_chain[xk * GEN] = rho_slot_eq_chain[xk] * (1 + rho[xk] + ris_slot[xk])
+        chi_slot_eq_chain[xk * GEN] = chi_slot_eq_chain[xk] * (1 + chi[xk] + ris_slot[xk])
     claim_weights = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
         claim_offset_bits = col_offset_bits * GEN ** (COL_BITS_STRIDE * CLAIM_COMMITTED_COL[j])
@@ -2065,7 +2065,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             low_eq = zeta_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
-            low_eq = rho_eq_chain[low_len_g]
+            low_eq = chi_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
             low_chain = HeapBuf(SIZE_BITS + 1)
             low_chain[GEN ** 0] = 1
@@ -2078,7 +2078,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for k in unroll(0, SLOT_STRIDE_LOG):
                 sb3 = CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
                 qflock_slot_eq *= (1 + sb3 + point_fold[GEN ** k])
-            low_eq = qflock_slot_eq * rho_slot_eq_chain[low_len_g]
+            low_eq = qflock_slot_eq * chi_slot_eq_chain[low_len_g]
         ris_hi = point_fold * nlow
         # Selector coordinates [nlow, lenris) are exactly the corresponding
         # certified placement-offset bits.
@@ -2088,7 +2088,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         for xk in mul_range(1, seln):
             sel_bit = selrow[xk]
             sel_chain[xk * GEN] = sel_chain[xk] * (1 + sel_bit + ris_hi[xk])
-        claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
+        claim_weights[GEN ** j] = sel_chain[seln] * lam_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
     # QFLOCK_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
@@ -2164,7 +2164,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # final message is evaluated once and multiplied into their combined weight.
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
-        overlap_ptr = rho * claim_low_len[GEN ** j]
+        overlap_ptr = chi * claim_low_len[GEN ** j]
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             overlap_ptr = zeta * claim_low_len[GEN ** j]
         # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
@@ -2218,7 +2218,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # defer_out layout, offsets after the [0..KBC) shared bytecode point
     # (SEL = LOG2_BYTECODE_COLS, LCR = LINCHECK_ROUNDS):
     #   +0..SEL bytecode_sel | +SEL bytecode_reduced | +SEL+1 alpha
-    #   | +SEL+2 z_skip | +SEL+3.. zrho | +SEL+3+LCR.. lincheck rs
+    #   | +SEL+2 z_skip | +SEL+3.. zchi | +SEL+3+LCR.. lincheck rs
     #   | +SEL+3+2*LCR.. z_partial (2^K_SKIP) | +SEL+3+2^K_SKIP+2*LCR matpart.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
@@ -2228,7 +2228,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] = lincheck_alpha
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] = zerocheck_z
     for k in unroll(0, LINCHECK_ROUNDS):
-        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] = zerocheck_rhos[GEN ** k]
+        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] = zerocheck_chis[GEN ** k]
         defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
     for k in unroll(0, 2 ** K_SKIP):
         defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
@@ -2714,7 +2714,7 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
     # ---- bytecode batching sumcheck (BYTECODE_VARS variables, 2 per child) ----
     # Fresh and carried share the bytecode layout (point, then value), so the
     # two differ only in which buffer they come from.
-    gamma_bc = HeapBuf(n_children_g * n_children_g)
+    lam_bc = HeapBuf(n_children_g * n_children_g)
     bc_fs0 = HeapBuf(n_children_g * GEN)
     bc_fs1 = HeapBuf(n_children_g * GEN)
     bc_claim = HeapBuf(n_children_g * GEN)
@@ -2726,8 +2726,8 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
         st, gf = squeeze(st)
         st, gc = squeeze(st)
         x2 = xc * xc
-        gamma_bc[x2] = gf
-        gamma_bc[x2 * GEN] = gc
+        lam_bc[x2] = gf
+        lam_bc[x2 * GEN] = gc
         xcn = xc * GEN
         bc_fs0[xcn] = st[0]
         bc_fs1[xcn] = st[1]
@@ -2757,14 +2757,14 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
             ef *= (1 + fresh[GEN ** k] + rk)
             ec *= (1 + carried[GEN ** k] + rk)
         x2 = xc * xc
-        bc_wsum[xc * GEN] = bc_wsum[xc] + gamma_bc[x2] * ef + gamma_bc[x2 * GEN] * ec
+        bc_wsum[xc * GEN] = bc_wsum[xc] + lam_bc[x2] * ef + lam_bc[x2 * GEN] * ec
     bytecode_star = bc_star_hint[0]
     assert bc_running == bytecode_star * bc_wsum[n_children_g]
 
     # ---- matrix batching sumcheck (2*K_LOG variables, 3 claims per child) ----
     # The fresh claim is one value against A0 weighted by lincheck's alpha plus
     # B0; a carried claim is one value per matrix at a shared point.
-    gamma_mat = HeapBuf(n_children_g ** 3)
+    lam_mat = HeapBuf(n_children_g ** 3)
     mat_fs0 = HeapBuf(n_children_g * GEN)
     mat_fs1 = HeapBuf(n_children_g * GEN)
     mat_claim = HeapBuf(n_children_g * GEN)
@@ -2777,9 +2777,9 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
         st, ga = squeeze(st)
         st, gb = squeeze(st)
         x3 = xc ** 3
-        gamma_mat[x3] = gf
-        gamma_mat[x3 * GEN] = ga
-        gamma_mat[x3 * GEN ** 2] = gb
+        lam_mat[x3] = gf
+        lam_mat[x3 * GEN] = ga
+        lam_mat[x3 * GEN ** 2] = gb
         xcn = xc * GEN
         mat_fs0[xcn] = st[0]
         mat_fs1[xcn] = st[1]
@@ -2800,7 +2800,7 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
         mat_running = (msg_ginf * rv + c_one) * rv + g_zero
     # Terminal weights. A fresh claim's is U_t(r*) = urow_t(r*_row) *
     # wcol_t(r*_col), with row_weight = (sum_i L_i(zz_t) eq(r*[0..6], i)) *
-    # eq(zrho_t, r*[6..K_LOG]) and col_weight = (sum_i z_partial_t[i]
+    # eq(zchi_t, r*[6..K_LOG]) and col_weight = (sum_i z_partial_t[i]
     # eq(r*[K_LOG..K_LOG+6], i)) * prod_j (1 + lrr_j + r*[2*K_LOG-1-j]) (the
     # lincheck binds column variables top-down). A carried claim's is a plain eq
     # over all 2*K_LOG coordinates.
@@ -2833,9 +2833,9 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
         for k in unroll(0, 2 * K_LOG):
             eq_carried *= (1 + carried[GEN ** (DEFER_STMT_MAT_POINT + k)] + mat_point[GEN ** k])
         x3 = xc ** 3
-        gf = gamma_mat[x3]
-        ga = gamma_mat[x3 * GEN]
-        gb = gamma_mat[x3 * GEN ** 2]
+        gf = lam_mat[x3]
+        ga = lam_mat[x3 * GEN]
+        gb = lam_mat[x3 * GEN ** 2]
         xcn = xc * GEN
         wa_sum[xcn] = wa_sum[xc] + gf * weight_u + ga * eq_carried
         wb_sum[xcn] = wb_sum[xc] + gf * fresh[GEN ** (BYTECODE_VARS + 1)] * weight_u + gb * eq_carried

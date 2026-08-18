@@ -2532,7 +2532,7 @@ mod tests {
     }
 
     /// The parallel eq builder must be byte-identical to the serial one, and
-    /// the seeded variant must equal the gamma-scaled table, at sizes on both
+    /// the seeded variant must equal the seed-scaled table, at sizes on both
     /// sides of the internal parallel level floor (2^12 halves, so n = 15
     /// exercises parallel levels; n = 6 stays fully serial).
     #[test]

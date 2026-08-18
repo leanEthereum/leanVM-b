@@ -18,7 +18,7 @@
 //!   claim `<q_flock, rs_eq_ind> = sumcheck_claim` against the transparent
 //!   E-valued weight `rs_eq_ind`.
 //!
-//! All claims are gamma-folded into ONE combined weight `b_stack` over the
+//! All claims are lambda-folded into ONE combined weight `b_stack` over the
 //! whole stack plus one `target`, then proved by
 //! [`super::whir::recursive_prover_with_basis`]. The verifier replays
 //! the ring-switch reductions succinctly ([`super::ring_switch::verify_finish`],
@@ -32,7 +32,7 @@
 //!
 //! label -> shared linear map sampled ([`super::ring_switch`]'s own label; the
 //! claims' slices were bound by the caller, so none are sent here) -> per point
-//! claim (label + value observed) -> gamma (ONE challenge for both families) ->
+//! claim (label + value observed) -> lambda (ONE challenge for both families) ->
 //! WHIR, with domain-separated labels for every phase.
 //!
 //! ## The combined weight
@@ -42,8 +42,8 @@
 //! `qflock_vars`, LSB-first) is
 //!
 //! ```text
-//! b(x) = eq(sel, x_hi) * sum_i gamma^i * MLE(rs_eq_ind_i)(x_lo)
-//!      + sum_j gamma^(n_rs + j) * eq(claim_j, x)
+//! b(x) = eq(sel, x_hi) * sum_i lambda^i * MLE(rs_eq_ind_i)(x_lo)
+//!      + sum_j lambda^(n_rs + j) * eq(claim_j, x)
 //! ```
 //!
 //! which is exactly what the dense `b_stack` scatter produces (each claim's
@@ -52,7 +52,7 @@
 //! selector eq).
 //!
 //! Both families take DISJOINT power ranges of ONE challenge, as the table
-//! sumcheck's eta ranges do, so every claim carries a distinct power (the
+//! sumcheck's xi ranges do, so every claim carries a distinct power (the
 //! batching step of `thm:rbr`).
 
 use crate::merkle::Hash;
@@ -191,17 +191,17 @@ fn claim_write_plan(claims: &[StackClaim], qflock: (usize, usize)) -> (Vec<bool>
     (write_first, written)
 }
 
-/// Fold the gamma-weighted point claims into the stack weight `b_stack` and
+/// Fold the lambda-weighted point claims into the stack weight `b_stack` and
 /// running `target` (pure: the caller has already observed the claim values
-/// and sampled `gammas` in transcript order). A `Point` builds eq over ONLY
+/// and sampled `lambdas` in transcript order). A `Point` builds eq over ONLY
 /// its aligned slice, a `Strided` scatters the eq of its high coords at the
 /// slot's stride. Every claim but the first one on a range scatters with `+=`,
 /// so overlapping slices accumulate correctly; the OUTER loop therefore stays
 /// serial (several bus claims can land on one column region), and parallelism
-/// lives inside each claim: the gamma-seeded eq build (parallel above its level
+/// lives inside each claim: the lambda-seeded eq build (parallel above its level
 /// floor) and the strided scatter. Small slices stay fully serial (with many
 /// tiny point claims, pool dispatch would cost more than the fold itself). The
-/// gamma seeding and the serial/parallel splits are exact-field/order-preserving,
+/// lambda seeding and the serial/parallel splits are exact-field/order-preserving,
 /// so `b_stack`'s bytes (and hence the proof) are unchanged relative to the
 /// build-then-multiply form.
 ///
@@ -215,7 +215,7 @@ fn fold_stacked_point_claims(
     b_stack: &mut [F192],
     target: &mut F192,
     claims: &[StackClaim],
-    gammas: &[F192],
+    lambdas: &[F192],
     write_first: &[bool],
 ) {
     // One reusable eq scratch: half the largest accumulating Point claim (the
@@ -234,7 +234,7 @@ fn fold_stacked_point_claims(
         .max()
         .unwrap_or(0);
     let mut scratch = zk_alloc::alloc_uninit(scratch_len);
-    for ((claim, g), &first) in claims.iter().zip(gammas.iter()).zip(write_first) {
+    for ((claim, g), &first) in claims.iter().zip(lambdas.iter()).zip(write_first) {
         let g = *g;
         match claim {
             StackClaim::Point {
@@ -398,17 +398,17 @@ pub fn open_batch_mixed_whir_stacked(
     for claim in point_claims {
         ps.observe_scalar(claim.value());
     }
-    let gammas = powers(ps.sample(), ring.claims.len() + point_claims.len());
-    let (gammas_rs, gammas_pd) = gammas.split_at(ring.claims.len());
+    let lambdas = powers(ps.sample(), ring.claims.len() + point_claims.len());
+    let (lambdas_rs, lambdas_pd) = lambdas.split_at(ring.claims.len());
 
     let rs_outputs: Vec<_> = rs_states
         .into_iter()
-        .zip(gammas_rs.iter().copied())
-        .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
+        .zip(lambdas_rs.iter().copied())
+        .map(|(state, lambda)| ring_switch::prove_finish_deferred(state, &coordinate_weights, lambda))
         .collect();
     mark("ring-switch proves", &mut t);
 
-    // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
+    // 3. Combined target and lifted stack weight b_stack: the lambda-weighted
     //    rs_eq_ind sum scattered at the q_flock slice, plus the point-claim
     //    eq tensors scattered at their offsets.
     let mut target = rs_outputs
@@ -445,7 +445,7 @@ pub fn open_batch_mixed_whir_stacked(
         ring_switch::combine_deferred_into(&rs_outputs, block);
         mark("rs_eq_ind scatter", &mut t);
     }
-    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, gammas_pd, &write_first);
+    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, lambdas_pd, &write_first);
     mark("point-claim folds", &mut t);
 
     // 4. One WHIR over the full stack against the combined claim (the
@@ -519,14 +519,14 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     for claim in point_claims {
         vs.observe_scalar(claim.value());
     }
-    let gammas = powers(vs.sample(), n_rs + point_claims.len());
-    let (gammas_rs, gammas_pd) = gammas.split_at(n_rs);
+    let lambdas = powers(vs.sample(), n_rs + point_claims.len());
+    let (lambdas_rs, lambdas_pd) = lambdas.split_at(n_rs);
 
     let mut target = F192::ZERO;
-    for (s_hat_v, g) in rs_proofs.iter().zip(gammas_rs.iter()) {
+    for (s_hat_v, g) in rs_proofs.iter().zip(lambdas_rs.iter()) {
         target += *g * ring_switch::verify_finish(s_hat_v, &coordinate_weights);
     }
-    for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
+    for (claim, g) in point_claims.iter().zip(lambdas_pd.iter()) {
         target += *g * claim.value();
     }
 
@@ -539,11 +539,11 @@ pub fn verify_opening_batch_mixed_whir_stacked(
             sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
         }
         let mut rs_part = F192::ZERO;
-        for (claim, g) in ring.claims.iter().zip(gammas_rs.iter()) {
+        for (claim, g) in ring.claims.iter().zip(lambdas_rs.iter()) {
             rs_part += *g * ring_switch::eval_rs_eq(&claim.suffix_point, x_lo, &coordinate_weights);
         }
         let mut acc = rs_part * sel_eq;
-        for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
+        for (claim, g) in point_claims.iter().zip(lambdas_pd.iter()) {
             acc += *g * stack_claim_eq_at(claim, x);
         }
         acc

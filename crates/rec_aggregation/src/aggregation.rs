@@ -35,7 +35,7 @@ use primitives::field::{F64, F192, G, g_pow};
 use primitives::multilinear::mle_eval_par;
 use xmss::{XmssPublicKey, XmssSignature};
 
-/// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
+/// Why the guest reads every `q_flock` slot claim's instance point off `chi`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the table sumcheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
@@ -560,10 +560,10 @@ fn fold_lsb_base(bt: &[F64], r: F192) -> Vec<F192> {
 /// `Σ_t γ_t · eq(points[t], (r_row, ·))` over the stacking slots, once the row
 /// variables are bound. A closed form, so the row rounds never have to carry the
 /// slot half of a `2^kbcv` weight table.
-fn slot_weights(points: &[Vec<F192>], gammas: &[F192], r_row: &[F192], kbc: usize) -> Vec<F192> {
+fn slot_weights(points: &[Vec<F192>], lambdas: &[F192], r_row: &[F192], kbc: usize) -> Vec<F192> {
     let slots = lean_vm::leaf::N_BYTECODE_SELECTORS;
     let mut out = vec![F192::ZERO; 1 << slots];
-    for (p, &g) in points.iter().zip(gammas) {
+    for (p, &g) in points.iter().zip(lambdas) {
         let row: F192 = (0..kbc).fold(g, |acc, k| acc * (F192::ONE + p[k] + r_row[k]));
         for (s, w) in out.iter_mut().enumerate() {
             let e = (0..slots).fold(row, |acc, b| {
@@ -608,7 +608,7 @@ fn fold_lsb(t: &mut Vec<F192>, r: F192) {
 /// (g1, g∞) with g0 recovered from the running claim.
 fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
     let (mut g1, mut gi) = (F192::ZERO, F192::ZERO);
-    for &(u, m, gamma) in pairs {
+    for &(u, m, lambda) in pairs {
         let half = u.len() / 2;
         let term = |i: usize| {
             let (u0, u1) = (u[2 * i], u[2 * i + 1]);
@@ -632,8 +632,8 @@ fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
                 (acc.0 + x, acc.1 + y)
             })
         };
-        g1 += gamma * a1;
-        gi += gamma * ai;
+        g1 += lambda * a1;
+        gi += lambda * ai;
     }
     (g1, gi)
 }
@@ -666,7 +666,7 @@ fn absorb_round(
 /// the full table is their outer product, one fused multiply-add per entry,
 /// parallel over the high index. Materializing a `2^vars` eq table per claim and
 /// summing them is the same arithmetic done twice, serially.
-fn weighted_eq_table(points: &[Vec<F192>], gammas: &[F192], vars: usize, active: Range<usize>) -> Vec<F192> {
+fn weighted_eq_table(points: &[Vec<F192>], lambdas: &[F192], vars: usize, active: Range<usize>) -> Vec<F192> {
     let lo_vars = vars / 2;
     let lo_len = 1usize << lo_vars;
     debug_assert!(active.start.is_multiple_of(lo_len) && active.end.is_multiple_of(lo_len));
@@ -674,7 +674,7 @@ fn weighted_eq_table(points: &[Vec<F192>], gammas: &[F192], vars: usize, active:
     // and entry `hi * lo_len + lo` is `eq_lo[lo] * eq_hi[hi]`.
     let halves: Vec<(Vec<F192>, Vec<F192>)> = points
         .iter()
-        .zip(gammas)
+        .zip(lambdas)
         .map(|(p, &g)| {
             let lo = pcs::whir::build_eq_table_ext(&p[..lo_vars]);
             let mut hi = pcs::whir::build_eq_table_ext(&p[lo_vars..]);
@@ -1289,7 +1289,7 @@ fn gen_verify(
     let lcrounds = flock::blake2s::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
-    let zrho = summary.zc_claim.mlv_challenges.clone();
+    let zchi = summary.zc_claim.mlv_challenges.clone();
     let lc_alpha = summary.lc_claim.alpha;
     let lc_beta = summary.lc_claim.beta;
     let lrr = summary.lc_claim.r_rounds.clone();
@@ -1330,7 +1330,7 @@ fn gen_verify(
     // The c term: eq(ρ_in, ρ'_in) times the φ8-Lagrange combination of the 64
     // slices, ρ'_in being the lincheck challenges read back in coordinate order.
     let mut c_point_eq = F192::ONE;
-    for (t, &rin) in zrho[..lcrounds].iter().enumerate() {
+    for (t, &rin) in zchi[..lcrounds].iter().enumerate() {
         c_point_eq *= F192::ONE + rin + lrr[lcrounds - 1 - t];
     }
     let c_slice_value = primitives::multilinear::lagrange_weights_naive(6, zc_z)
@@ -1452,7 +1452,7 @@ fn gen_verify(
         bytecode_value,
         matrix_a_coefficient: lc_alpha,
         skip_point: zc_z,
-        zerocheck_row_point: zrho[..lcrounds].to_vec(),
+        zerocheck_row_point: zchi[..lcrounds].to_vec(),
         lincheck_round_point: lrr.clone(),
         lincheck_terminal_values: lcz.clone(),
         matrix_claim: matpart,
@@ -1955,7 +1955,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let qflock_compact = compact_col_pm[lean_vm::cpu::QFLOCK];
     assert_ne!(qflock_compact, usize::MAX, "QFLOCK must be committed");
     let (mut cpbuf, mut cpcol, mut cpqslot): (Vec<usize>, Vec<usize>, Vec<usize>) = (vec![], vec![], vec![]);
-    // `cpbuf` codes are the guest's POINT_BUF_*: 0 zeta, 1 rho, 2 pi, 3 qflock-rho.
+    // `cpbuf` codes are the guest's POINT_BUF_*: 0 zeta, 1 chi, 2 pi, 3 qflock-chi.
     walk_claims(&l, kbc, |site| match site {
         ClaimSite::Framework { column, .. } => {
             let compact = compact_col_pm[column];
@@ -2064,15 +2064,15 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("N_CLAIMS", ncl.to_string());
     ps("N_TABLES", l.taus.len().to_string());
-    // The table sumcheck's eta layout, from the native verifier's own numbers:
+    // The table sumcheck's xi layout, from the native verifier's own numbers:
     // a disjoint range of identities per table, then THREE powers shared by every
     // table, one per bus side. Sharing is what lets the target be derived from the
-    // three leaf claims instead of trusted (lean_vm::cpu::eta_form_base).
+    // three leaf claims instead of trusted (lean_vm::cpu::xi_form_base).
     let n_id: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
-    let form_base = lean_vm::cpu::eta_form_base();
+    let form_base = lean_vm::cpu::xi_form_base();
     ps(
         "ETA_OFFSET",
-        ints(&lean_vm::constraints::eta_offsets(n_id.iter().copied())),
+        ints(&lean_vm::constraints::xi_offsets(n_id.iter().copied())),
     );
     ps("ETA_FORM_BASE", form_base.to_string());
     ps("N_ETA_POWS", (form_base + 3).to_string());

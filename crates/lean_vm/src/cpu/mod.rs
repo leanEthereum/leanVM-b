@@ -317,7 +317,7 @@ fn table_spans() -> TableSpans {
 /// The airs carry every committed column of their table, so a constraint indexes the
 /// value array directly and each table's three bus forms can be
 /// evaluated on the same values. The identities take the air's own `η`-range; the
-/// three forms take the shared powers at [`eta_form_base`], folded into the forms'
+/// three forms take the shared powers at [`xi_form_base`], folded into the forms'
 /// coefficients once rather than multiplied onto every row's form value.
 fn airs(
     taus: &[usize; tables::N_TABLES],
@@ -364,22 +364,22 @@ fn sigmas(bus: &[Vec<F192>; 3], form_pows: [F192; 3]) -> Vec<F192> {
 /// per table. That sharing is what keeps the batch tied to the bus: with a common
 /// `η^{base+s}` per side, the batch's target is `Σ_s η^{FORM_POWS+s}·R_s` for
 /// the sides' table shares `R_s`, which the verifier DERIVES from the leaf claims
-/// (`eta_form_pows`; a mismatch surfaces as [`Error::Constraint`]). Were the
+/// (`xi_form_pows`; a mismatch surfaces as [`Error::Constraint`]). Were the
 /// powers per table, the target
 /// would not factor through the `R_s` and nothing would pin the tables' share of
 /// the bus.
-pub fn eta_form_base() -> usize {
+pub fn xi_form_base() -> usize {
     tables::tables().iter().map(|t| t.n_constraints()).sum()
 }
 
 /// The three shared form powers `η^{base}, η^{base+1}, η^{base+2}`.
-fn eta_form_pows(eta: F192) -> [F192; 3] {
-    let base = eta_form_base();
-    let pows = primitives::field::powers(eta, base + 3);
+fn xi_form_pows(xi: F192) -> [F192; 3] {
+    let base = xi_form_base();
+    let pows = primitives::field::powers(xi, base + 3);
     [pows[base], pows[base + 1], pows[base + 2]]
 }
 
-/// Lift each table's zerocheck evals (at its point `rho`) to global column claims.
+/// Lift each table's zerocheck evals (at its point `chi`) to global column claims.
 /// The batch carries every committed column of a table, so eval `c` is local
 /// column `c`; these are the ONLY claims those columns raise, the bus having been
 /// settled inside the batch.
@@ -390,7 +390,7 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
         for c in 0..table.n_committed_columns() {
             v.push(ColumnClaim {
                 col: sch.base[t] + c,
-                point: table_claims[t].rho.clone(),
+                point: table_claims[t].chi.clone(),
                 value: table_claims[t].evals[c],
             });
         }
@@ -538,13 +538,13 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
                 .collect();
             // The eq point is the bus GKR's ζ, not a fresh one: that is what lets the
             // batch settle the bus forms alongside the constraints.
-            let eta = ps.sample();
-            let form_pows = eta_form_pows(eta);
+            let xi = ps.sample();
+            let form_pows = xi_form_pows(xi);
             let sigma = sigmas(&bus.sigmas, form_pows);
             constraints::prove(
                 &airs(&l.taus, &bus.forms, form_pows),
                 &table_cols,
-                eta,
+                xi,
                 &bus.point,
                 &sigma,
                 &mut ps,
@@ -672,8 +672,8 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let (owners, spans) = bus_wiring(program, &l);
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &owners, &spans, &mut vs).map_err(Error::Bus)?;
 
-    let zc_eta = vs.sample();
-    let form_pows = eta_form_pows(zc_eta);
+    let zc_xi = vs.sample();
+    let form_pows = xi_form_pows(zc_xi);
     // THE tie between the batch and the bus, and the reason the batch's target is
     // never transmitted. Each side's leaf claim less what its framework blocks
     // account for is the tables' share `R_s`, which the verifier just derived; the
@@ -684,7 +684,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let target = (0..3).fold(F192::ZERO, |a, s| a + form_pows[s] * bus.totals[s]);
     let table_claims = constraints::verify(
         &airs(&l.taus, &bus.forms, form_pows),
-        zc_eta,
+        zc_xi,
         &bus.point,
         target,
         &mut vs,
