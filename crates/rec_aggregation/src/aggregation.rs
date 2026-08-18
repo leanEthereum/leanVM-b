@@ -19,10 +19,9 @@
 //! verifications raise (`doc/leanvm/main.tex` §Deferred evaluation claims). Only
 //! the root's are discharged natively, by [`AggregateSignature::verify`].
 //!
-//! The transcript trace of a real `cpu::verify` run
-//! (`transcript::trace_start`/`trace_take`) keeps the native and guest verifiers
-//! synchronized: `gen_verify` walks it structurally, while `cpu::layout`
-//! supplies every compile-time shape.
+//! `gen_verify` derives the guest's whole witness for a child from the real
+//! `cpu::layout` of the inner program and the summary of a real `cpu::verify`
+//! run, so there is no hand-mirrored copy of the protocol to drift.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -30,7 +29,7 @@ use std::ops::Range;
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
-use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
+use lean_vm::transcript::Sponge;
 use primitives::field::{F64, F192, G, g_pow};
 use primitives::multilinear::mle_eval_par;
 use xmss::{XmssPublicKey, XmssSignature};
@@ -1232,13 +1231,12 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
 }
 
 /// Config + hints for the recursion guest (`guests/aggregate.py`), built
-/// from the REAL `cpu::layout` of the inner program and the transcript trace of
-/// a real `cpu::verify` run (zero hand-mirroring drift).
+/// from the REAL `cpu::layout` of the inner program and the summary of a real
+/// `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
     program: &Program,
     pi: [F192; 2],
     summary: &lean_vm::cpu::VerifySummary,
-    ops: &[TraceOp],
 ) -> Result<(SubHints, DeferredSubproof), AggregateError> {
     let raw = &summary.raw.stream;
     let l = lean_vm::cpu::layout(
@@ -1263,22 +1261,6 @@ fn gen_verify(
     }
 
     // ---- typed extraction: proof structs + the verifier's summary ----
-    // Drift check: replaying the recorded trace from the seed must reproduce
-    // every challenge and grind the native run produced.
-    let fs_seed = lean_vm::cpu::fs_seed(program);
-    let seed = Sponge::new(b"leanvm-b", &[fs_seed[0], fs_seed[1], pi[0], pi[1]]);
-    seed.clone().replay(ops);
-
-    // Grinding digests are the only trace-borne data (they are functions of
-    // sponge states): fold grinds carry bits > 0 and query-phase grinds carry
-    // bits = 0.
-    let pows: Vec<(F192, u32, F64)> = ops
-        .iter()
-        .filter_map(|op| match op {
-            TraceOp::Pow { nonce, bits, digest } => Some((*nonce, *bits, *digest)),
-            _ => None,
-        })
-        .collect();
     // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
     let kbc = summary.bytecode_claims[0].point.len() - lean_vm::leaf::N_BYTECODE_SELECTORS;
     let zeta: Vec<F192> = summary.bytecode_claims[0].point[..kbc].to_vec();
@@ -1296,10 +1278,7 @@ fn gen_verify(
 
     // ---- the stacked opening: config + the opening summary ----
     let stack = whir_shape(l.shape.mu, summary.log_inv_rate);
-    let (vcfg, shapes) = (&stack.config, &stack.levels);
-    let nlev = shapes.levels;
-    let klvl = &shapes.ks;
-    let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
+    let klvl = &stack.levels.ks;
 
     // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
     // scalars start: its last 64 scalars are lincheck's `z_partial` (which the
@@ -1338,25 +1317,6 @@ fn gen_verify(
         .zip(&lcz)
         .fold(F192::ZERO, |acc, (&w, &s)| acc + w * s);
     let matpart = lrun + pinw + lc_sq * c_point_eq * c_slice_value;
-
-    // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
-    // per the config schedule) then ONE query-phase
-    // grind. The nonces themselves ride the shared stream now (raw words);
-    // the trace is only cross-checked here.
-    let qbits: Vec<u32> = (0..nlev).map(|lvl| vcfg.grinding_bits[lvl] as u32).collect();
-    let mut grinds = pows.iter();
-    for lvl in 0..nlev {
-        for j in 0..klvl[lvl] {
-            let bits = (fgb(lvl) - j as i64).max(0) as u32;
-            if bits > 0 {
-                let &(_, b2, _) = grinds.next().expect("fold grind recorded");
-                assert_eq!(b2, bits);
-            }
-        }
-        let &(_, b2, _) = grinds.next().expect("query grind recorded");
-        assert_eq!(b2, qbits[lvl], "level {lvl} query grind bits");
-    }
-    assert!(grinds.next().is_none(), "every grind consumed");
 
     // ---- hints ----
     // The program's whole share of a bytecode leaf: ONE value, the stacked
@@ -1512,22 +1472,6 @@ const MU_MAX: usize = 28;
 /// outgrow the buffer the guest was compiled with.
 const MU_CAP: usize = 40;
 const STREAM_CAP: usize = 8192;
-
-/// Verify an inner proof with the transcript tracer on, which is what keeps the
-/// native and guest verifiers synchronized (`gen_verify` walks the recorded ops).
-fn traced_verify(
-    program: &Program,
-    pi: &[F192; 2],
-    proof: &lean_vm::cpu::Proof,
-) -> Result<(lean_vm::cpu::VerifySummary, Vec<TraceOp>), VerifyError> {
-    trace_start();
-    let summary = verify(program, pi, proof);
-    // Take the trace before propagating: a failed child verification would
-    // otherwise leave the thread-local recorder on, and every later sponge
-    // operation in the process would append to it.
-    let ops = trace_take();
-    Ok((summary.map_err(VerifyError::Proof)?, ops))
-}
 
 /// One entry per named hint stream, for a single sub-proof.
 type SubHints = Vec<(String, Vec<F192>)>;
@@ -1709,7 +1653,7 @@ pub(crate) fn aggregate_tampered(
     raw.dedup_by(|(a, _), (b, _)| a == b);
 
     // Verifying a child here is not a courtesy: `gen_verify` derives the guest's
-    // whole witness for it from the trace of a real verification. Its deferred
+    // whole witness for it from a real verification's summary. Its deferred
     // claim is deliberately NOT recomputed, which would cost a full pass over
     // each fixed polynomial per child: the batching sumcheck below already
     // forces every batched value to be the true evaluation, and the root
@@ -1719,8 +1663,9 @@ pub(crate) fn aggregate_tampered(
     for child in children {
         check_signer_set(&child.public_keys).map_err(AggregateError::InvalidChild)?;
         let pi = child.public_input();
-        let (summary, ops) = traced_verify(guest, &pi, &child.proof).map_err(AggregateError::InvalidChild)?;
-        verified.push((pi, summary, ops));
+        let summary =
+            verify(guest, &pi, &child.proof).map_err(|e| AggregateError::InvalidChild(VerifyError::Proof(e)))?;
+        verified.push((pi, summary));
     }
 
     drop(_span);
@@ -1777,8 +1722,8 @@ pub(crate) fn aggregate_tampered(
             hints.push("child_index", pair.iter().map(|&idx| count(idx)).collect());
         }
         hints.push("child_defer", child.defer.cells());
-        let (pi, summary, ops) = &verified[i];
-        let (sub_hints, defer) = gen_verify(guest, *pi, summary, ops)?;
+        let (pi, summary) = &verified[i];
+        let (sub_hints, defer) = gen_verify(guest, *pi, summary)?;
         for (name, entry) in sub_hints {
             hints.push(&name, entry);
         }

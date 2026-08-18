@@ -80,14 +80,13 @@ impl Sponge {
     /// Seed with the domain `label` and the PUBLIC `statement` scalars (the public
     /// input). Both sides seed identically, so the whole statement is bound before
     /// any challenge; there is no mid-protocol "observe public data" step to get
-    /// wrong (or forget). (Untraced: the seed is the replay STARTING state, not an
-    /// op of the recorded transcript.)
+    /// wrong (or forget).
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         let mut s = Self { cv: [F64::ZERO; 4] };
         s.absorb_bytes(b"leanvm-b/transcript/v3-blake2s");
         s.absorb_bytes(label);
         for &x in statement {
-            s.observe_untraced(x);
+            s.observe(x);
         }
         s
     }
@@ -95,11 +94,6 @@ impl Sponge {
     /// Absorb one 24-byte scalar (three little-endian `K` limbs):
     /// `cv ← compress(cv, (c0, c1, c2, DS_SCALAR))`.
     pub fn observe(&mut self, x: F192) {
-        self.observe_untraced(x);
-        trace(|| TraceOp::Observe(x));
-    }
-
-    fn observe_untraced(&mut self, x: F192) {
         self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), F64(x.c2), DS_SCALAR]);
     }
 
@@ -124,12 +118,6 @@ impl Sponge {
     /// public; soundness comes from each challenge being a random-oracle image
     /// of the entire prior transcript.
     pub fn sample(&mut self) -> F192 {
-        let v = self.sample_untraced();
-        trace(|| TraceOp::Sample(v));
-        v
-    }
-
-    fn sample_untraced(&mut self) -> F192 {
         let out = compress(self.cv, [F64::ZERO, F64::ZERO, DS_SQUEEZE, F64::ZERO]);
         self.cv = out;
         F192::new(out[0].0, out[1].0, out[2].0)
@@ -149,33 +137,6 @@ impl Sponge {
     /// The current 256-bit chaining value.
     pub fn state(&self) -> [F64; 4] {
         self.cv
-    }
-
-    /// The grinding digest word this state yields for `nonce` (read-only preview;
-    /// [`Self::verify_pow_field`] is the mutating check).
-    fn pow_digest(&self, nonce: F192) -> F64 {
-        compress(self.pow_base(), [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW])[0]
-    }
-
-    /// Re-run recorded verifier transcript ops through this sponge, asserting
-    /// every recorded sample (and grind) matches what this state re-derives;
-    /// any prefix of a real verify trace yields the exact state reached there.
-    /// (Untraced throughout: a replay must never re-record.)
-    pub fn replay(&mut self, ops: &[TraceOp]) {
-        for op in ops {
-            match op {
-                TraceOp::Observe(x) => self.observe_untraced(*x),
-                TraceOp::Sample(v) => {
-                    assert_eq!(self.sample_untraced(), *v, "trace replay diverged")
-                }
-                TraceOp::Pow { nonce, bits, .. } => {
-                    assert!(
-                        self.verify_pow_field_untraced(*nonce, *bits),
-                        "trace replay: grind failed"
-                    )
-                }
-            }
-        }
     }
 
     /// Bind a grinding nonce into the state (both sides, so they stay in lockstep).
@@ -227,15 +188,6 @@ impl Sponge {
     /// and succeeds with probability 2^-bits. Honest provers remain canonical
     /// and search the deterministic u64 subset in [`Self::grind_pow`].
     pub fn verify_pow_field(&mut self, nonce: F192, bits: u32) -> bool {
-        trace(|| TraceOp::Pow {
-            nonce,
-            bits,
-            digest: self.pow_digest(nonce),
-        });
-        self.verify_pow_field_untraced(nonce, bits)
-    }
-
-    fn verify_pow_field_untraced(&mut self, nonce: F192, bits: u32) -> bool {
         let base = self.pow_base();
         let ok = if bits == 0 {
             nonce == F192::ZERO
@@ -245,50 +197,6 @@ impl Sponge {
         self.absorb_nonce(nonce);
         ok
     }
-}
-
-/// One sponge operation, recorded by the (diagnostic) trace ([`trace_start`] /
-/// [`trace_take`]): the absorbs, squeezes and grind checks a verify run
-/// performs, in order. The in-circuit verifier replays exactly this sequence,
-/// so the trace of a real verify run is both the guest program's mechanical
-/// spec and its checkpoint data.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TraceOp {
-    /// An absorbed scalar (transmitted or derived: the sponge cannot tell).
-    Observe(F192),
-    Sample(F192),
-    /// A grinding check: the nonce, the required bits, and the digest word the
-    /// pre-absorb state yields for that nonce (so trace consumers never need
-    /// to track sponge state in lockstep).
-    Pow {
-        nonce: F192,
-        bits: u32,
-        digest: F64,
-    },
-}
-
-thread_local! {
-    static TRACE: std::cell::RefCell<Option<Vec<TraceOp>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Start recording transcript ops on this thread (diagnostic).
-pub fn trace_start() {
-    TRACE.with(|t| *t.borrow_mut() = Some(Vec::new()));
-}
-
-/// Stop recording and return the ops recorded since [`trace_start`].
-pub fn trace_take() -> Vec<TraceOp> {
-    TRACE.with(|t| t.borrow_mut().take().unwrap_or_default())
-}
-
-/// Record one op if a trace is active (the closure only runs then).
-#[inline]
-fn trace(op: impl FnOnce() -> TraceOp) {
-    TRACE.with(|t| {
-        if let Some(v) = t.borrow_mut().as_mut() {
-            v.push(op());
-        }
-    });
 }
 
 #[cfg(test)]

@@ -20,7 +20,7 @@
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
 //! The [`Sponge`] itself (the VM-native Merkle–Damgård chaining value, its
-//! domain tags, grinding, and the diagnostic trace) lives in [`crate::sponge`].
+//! domain tags, and grinding) lives in [`crate::sponge`].
 
 use crate::merkle::{Hash, PrunedMerklePaths, RawMerklePath, hash_to_scalars, scalars_to_hash};
 use crate::sponge::Sponge;
