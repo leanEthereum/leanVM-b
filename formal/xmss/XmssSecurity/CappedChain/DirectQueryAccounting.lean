@@ -1,5 +1,4 @@
-import XmssSecurity.CappedChain.CausalEagerHighReduction
-import XmssSecurity.CappedChain.ChainInputTrace
+import XmssSecurity.CappedChain.SourceDirectTrace
 
 open OracleComp OracleSpec
 

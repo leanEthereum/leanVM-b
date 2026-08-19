@@ -1,7 +1,7 @@
 import XmssSecurity.CappedGlobalChainHighSigningReplay
 import XmssSecurity.CappedGlobalChainHighKeygenRelation
 import XmssSecurity.CappedGlobalCausalInstalledAdversary
-import XmssSecurity.CappedChain.CausalEagerHighReduction
+import XmssSecurity.CappedChain.SourceDirectTrace
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational

@@ -1,5 +1,5 @@
 import XmssSecurity.CappedGlobalChainHighLeafUntilHit
-import XmssSecurity.CappedChain.CausalEagerHighReduction
+import XmssSecurity.CappedChain.KeygenUnaddressedCache
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
