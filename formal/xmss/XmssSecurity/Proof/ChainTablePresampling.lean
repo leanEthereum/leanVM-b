@@ -1,5 +1,7 @@
 import XmssSecurity.Proof.ChainTableUniformity
+import XmssSecurity.Proof.ChainQueryPresence
 import XmssSecurity.Proof.MixedOraclePresampling
+import XmssSecurity.Proof.SecretTableUniformity
 
 open OracleComp OracleSpec ENNReal
 

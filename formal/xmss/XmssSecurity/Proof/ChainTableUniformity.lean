@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.ChainHiddenTable
+import XmssSecurity.Proof.ChainTrajectoryComposition
 import Init.Data.Vector.OfFn
 
 open OracleComp OracleSpec ENNReal
