@@ -13,6 +13,8 @@
 
 \theoremstyle{definition}
 \newtheorem{definition}{Definition}[section]
+\theoremstyle{plain}
+\newtheorem{theorem}[definition]{Theorem}
 \theoremstyle{remark}
 \newtheorem{remark}[definition]{Remark}
 
@@ -223,7 +225,7 @@ $\Ver(\pk,\ep,m,\bot)=0$. For $\sigma\neq\bot$, $\Ver(\pk,\ep,m,\sigma)$ parses 
 
 \subsection{Classical security}
 
-\begin{definition}[$x$ bits of classical security]
+\begin{definition}[$x$ bits of classical strong unforgeability]
 Let $\SIG=(\Gen,\Sig,\Ver)$ be a synchronized signature scheme whose algorithms use a hash function $\hash:\bits{*}\to\bits{256}$. Consider the following game between a signer and an adversary $\mathcal A$, with $\hash$ sampled as a random oracle. The signer first runs $(\pk,\sk)\gets\Gen$ and gives $\pk$ to $\mathcal A$. The adversary may then adaptively take any of the following actions:
 \begin{enumerate}[leftmargin=2em]
   \item Query the random oracle on any input and receive its 256-bit output.
@@ -232,11 +234,50 @@ Let $\SIG=(\Gen,\Sig,\Ver)$ be a synchronized signature scheme whose algorithms 
 \end{enumerate}
 The adversary wins if $\Ver(\pk,\ep^*,m^*,\sigma^*)=1$ and the signer did not return $\sigma^*$ in response to a signing query for $(m^*,\ep^*)$. Thus, a valid signature on a message and epoch that were never signed wins, as does a different valid signature for a previously signed message and epoch.
 
-For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$. We say that $\SIG$ has $x$ bits of classical security if
+For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$. We say that $\SIG$ has $x$ bits of classical strong unforgeability if
 \[
   \max_{q \geq 1}\frac{\Forge_{\SIG}(q)}{q}\leq 2^{-x}.
 \]
 \end{definition}
+
+\begin{theorem}[Classical random-oracle strong unforgeability]
+The concrete scheme specified above has 127 bits of classical strong unforgeability in the random-oracle model.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+We follow the machine-checked Lean proof. The purpose of this sketch is to explain its structure; the Lean development contains the precise games, couplings, cache invariants, and probability bounds.
+
+First expose the lazy random oracle as a cache recording every queried input and output. Let $Q_{\mathrm{kg}}$ be the exact number of random-oracle queries made by key generation. A leaf costs $v(2^w-1)+1$ queries, and each internal Merkle node costs one, hence
+\[
+  Q_{\mathrm{kg}}=2^h\bigl(v(2^w-1)+2\bigr)-1=296\cdot2^{32}-1.
+\]
+Because key generation is part of the experiment, an adversary with total query bound $q$ necessarily has $q\geq Q_{\mathrm{kg}}$. Put $r=q-Q_{\mathrm{kg}}$. All adversarial, signing, and final-verification queries together then have budget at most $r$.
+
+The deterministic part of the proof classifies every successful strong forgery. Replay the honest signing computations and compare the forged verification path with the corresponding honest path. The target-sum code is an antichain: two different valid encodings cannot be coordinatewise ordered. Consequently, a different valid encoding forces some Winternitz coordinate to move backwards. Following that coordinate to the public key, and then following the authentication path to the root, shows that every forgery causes at least one of the following phenomena: an encoding anomaly, a forged chain value, a collision in a remaining chain suffix, a leaf collision, or a Merkle-node collision. This classification covers both a fresh epoch and a strong forgery at an epoch that was signed before.
+
+The proof does not apply a separate union bound to every chain step and Merkle level. Instead, it groups the classified executions into two lanes and bounds each lane as a single adaptive event.
+
+The second lane contains encoding inputs that were already present before the signer sampled them, together with the structural collision cases: an unrevealed chain case, a suffix collision, a leaf collision, or a Merkle collision. For an encoding prehit, each attempt samples a uniform 192-bit $\rho$; against a fixed cache, its collision probability is bounded by the number of cached encoding inputs divided by $2^{192}$. Multiplying by at most $2^{23}$ attempts is still no more than the expected number of relevant encoding queries divided by $2^{128}$. For a structural event, conditioned on the cache before the relevant post-keygen query, the required 128-bit digest is fresh and uniform, so deferred decisions gives the expected number of relevant structural queries divided by $2^{128}$. Encoding inputs and structural inputs have disjoint domain-separation tweaks, so these two expected query counts add without double counting. Their sum is at most the complete post-keygen budget $r$, giving
+\[
+  \Pr[\text{second lane}]\leq\frac{r}{2^{128}}.
+\]
+
+The first lane contains the remaining encoding case and the chain-origin case under adaptive signing disclosures. This is the technically difficult part. The proof presamples the complete table of Winternitz chain values, then couples the real game to an ideal reveal-and-probe experiment. The ideal simulator replays key generation, the adversary, the retrying signer, and final verification from public randomness and the values legitimately disclosed by signatures. A causal invariant says that, until the first successful probe, every undisclosed target value remains an independent uniform 128-bit string even though the adversary chooses its random-oracle and signing queries adaptively. Failed signing attempts only make encoding queries and disclose no chain value, so the same invariant handles all $2^{23}$ possible attempts without paying per attempt. Translating the final forgery into this experiment adds at most one terminal candidate for each of the $v=42$ chains. The adaptive probe bound is therefore
+\[
+  \Pr[\text{first lane}]\leq\frac{r+v}{2^{128}}.
+\]
+
+Every winning execution lies in one of the two lanes. Since $v=42\leq2Q_{\mathrm{kg}}$, their union is bounded by
+\[
+\begin{aligned}
+  \Pr[\text{forge}]
+  &\leq \frac{r+v}{2^{128}}+\frac{r}{2^{128}}\\
+  &=\frac{2(q-Q_{\mathrm{kg}})+v}{2^{128}}\\
+  &\leq\frac{2q}{2^{128}}=\frac{q}{2^{127}}.
+\end{aligned}
+\]
+Taking the supremum over all classical adaptive adversaries with query bound $q$ gives the claimed result. The last displayed union of the two lanes is where this proof loses one bit relative to the 128-bit digest length.
+\end{proof}
 
 \subsection{Quantum security}
 
@@ -249,7 +290,7 @@ This claim has two caveats:
   \frac{8(q_s+q_H)^2}{2^{n}}+\frac{3q_s}{2}\sqrt{\frac{q_H+q_s}{2^{\lrnd}}}
 \]
 to the underlying forging probability. For $q_s\leq2^{32}$ the second term stays below $2^{-32}$, but the first term falls $1.5$ bits short of 64.
-\item This specification does not use the WOTS+ encoding standardized in FIPS~205. SLH-DSA appends a Winternitz checksum to the base-$16$ message digits, whereas this specification uses a target-sum encoding. As classically, complete proof with precisely our XMSS remains to be written.
+\item This specification does not use the WOTS+ encoding standardized in FIPS~205. SLH-DSA appends a Winternitz checksum to the base-$16$ message digits, whereas this specification uses a target-sum encoding. Unlike the classical case, a complete quantum proof for precisely our XMSS remains to be written.
 \end{enumerate}
 
 \bibliographystyle{alphaurl}
