@@ -1,6 +1,6 @@
 import XmssSecurity.Proof.CappedConcreteExecution
 import XmssSecurity.Proof.PrecomputedBoundedSign
-import XmssSecurity.Proof.SigningLogReplay
+import XmssSecurity.Proof.SigningLogConsistency
 import XmssSecurity.Proof.WinningEventReduction
 
 open OracleComp OracleSpec ENNReal

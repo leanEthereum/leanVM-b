@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.CappedGlobalCollisionProbability
 import XmssSecurity.Proof.CappedLeafEventProbability
+import XmssSecurity.Proof.GlobalWinningChainValueRevealed
 
 open OracleComp OracleSpec ENNReal
 
@@ -303,19 +304,5 @@ theorem winningStructuralCollision_probability_le_expectedMovedQueries
   apply outcomePredicate_probability_le_expectedMovedQueries_of_afterKeygen_freshCollision
     adversary _ (fun key cache => keygenStructuralTargetInput key.2 cache)
   exact winningStructuralCollision_afterKeygen_orientation adversary
-
-theorem capped_winningStructuralCollision_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      WinningStructuralCollisionOccurs execution.2 execution.1 |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply capped_outcomePredicate_probability_le_of_afterKeygen_freshCollision
-    q adversary hbound _
-    (fun key cache => keygenStructuralTargetInput key.2 cache)
-  intro keyResult hkeygen execution hafter hevent
-  exact winningStructuralCollision_afterKeygen_orientation adversary
-    keyResult hkeygen execution hafter hevent
 
 end XmssSecurity
