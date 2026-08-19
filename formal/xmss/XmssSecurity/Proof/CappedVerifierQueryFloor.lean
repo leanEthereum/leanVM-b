@@ -131,6 +131,16 @@ theorem le_of_isTotalQueryBound [OracleSpec.Inhabited spec]
       have hrec := ih default (bound := bound - 1) (hbound.2 default)
       omega
 
+theorem isTotalQueryBound_self
+    {computation : OracleComp spec α} {count : Nat}
+    (hexact : ExactQueryCount computation count) :
+    computation.IsTotalQueryBound count := by
+  induction hexact with
+  | pure value => trivial
+  | query input next count hnext ih =>
+      rw [OracleComp.isTotalQueryBound_query_bind_iff]
+      exact ⟨by omega, fun output => by simpa using ih output⟩
+
 theorem liftComp_predicate
     {superIndex : Type} {superSpec : OracleSpec superIndex}
     [inclusion : spec ⊂ₒ superSpec]
@@ -172,6 +182,20 @@ namespace ExactPredicateQueryCount
 
 variable {index : Type} {spec : OracleSpec index}
 variable {predicate : spec.Domain → Prop} [DecidablePred predicate]
+
+theorem isQueryBoundP_self
+    {computation : OracleComp spec α} {count : Nat}
+    (hexact : ExactPredicateQueryCount predicate computation count) :
+    computation.IsQueryBoundP predicate count := by
+  induction hexact with
+  | pure value => trivial
+  | query input next count hnext ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff]
+      by_cases hinput : predicate input
+      · simp only [hinput, if_true, Nat.add_one]
+        exact ⟨Or.inr (by omega), fun output => by simpa using ih output⟩
+      · simp only [hinput, if_false, Nat.add_zero]
+        exact ⟨by simp, ih⟩
 
 theorem bind {computation : OracleComp spec α} {count : Nat}
     (hcomputation : ExactPredicateQueryCount predicate computation count)
@@ -333,7 +357,99 @@ theorem recoverEndpoints (parameter : PublicParameter) (epoch : Epoch)
   exact sequenceFin _ _ fun chain => recoverChain parameter epoch chain
     (encoding chain) (signature.chainValue chain)
 
+theorem authenticationNodeHash (parameter : PublicParameter) (epoch : Epoch)
+    (signature : Signature) (level : Nat) (current : Digest)
+    (hlevel : level < treeHeight) :
+    ExactQueryCount
+      (Concrete.authenticationNodeHash (m := OracleComp HashSpec) parameter epoch
+        level current (Concrete.signaturePath signature level)) 1 := by
+  unfold Concrete.authenticationNodeHash
+  simp only [hlevel, ↓reduceDIte]
+  split <;> exact tweakableHash _ _ _
+
+theorem authenticationRoot (parameter : PublicParameter) (epoch : Epoch)
+    (signature : Signature) (levels : Nat) (leaf : Digest)
+    (hlevels : levels ≤ treeHeight) :
+    ExactQueryCount
+      (Concrete.authenticationRoot (m := OracleComp HashSpec) parameter epoch
+        signature levels leaf) levels := by
+  induction levels generalizing leaf with
+  | zero => exact .pure leaf
+  | succ levels ih =>
+      rw [Concrete.authenticationRoot]
+      exact (ih leaf (by omega)).bind
+        (fun current => Concrete.authenticationNodeHash parameter epoch
+          levels current (Concrete.signaturePath signature levels)) 1
+        (fun current => ExactQueryCount.authenticationNodeHash parameter epoch signature levels
+          current (by omega))
+
+theorem verifyAfterLeaf (publicKey : PublicKey) (epoch : Epoch)
+    (signature : Signature) (leaf : Digest) :
+    ExactQueryCount
+      (Concrete.verifyAfterLeaf (m := OracleComp HashSpec) publicKey epoch
+        signature leaf) treeHeight := by
+  unfold Concrete.verifyAfterLeaf
+  exact (authenticationRoot publicKey.parameter epoch signature treeHeight leaf
+    (Nat.le_refl _)).map fun root => decide (root = publicKey.root)
+
 end ExactQueryCount
+
+theorem Concrete.verify_hashQueryBound_at_least_fullVerification
+    (publicKey : PublicKey) (epoch : Epoch) (message : Message)
+    (signature : Signature) (q : Nat)
+    (hbound : (Concrete.scheme.verify publicKey epoch message signature)
+      |>.IsQueryBoundP (· matches .inr _) q) :
+    1 + verificationChainHashes + 1 + treeHeight ≤ q := by
+  obtain ⟨digest, hdigestMem⟩ := TargetSum.validDigests_nonempty
+  have hdigestValid : TargetSum.ValidDigest digest :=
+    (TargetSum.mem_validDigests_iff digest).mp hdigestMem
+  obtain ⟨encoding, hdecode⟩ := hdigestValid
+  let output : HashOutput := Rom.hashOutputEquivDigestPair.symm (0, digest)
+  have htruncate : truncateHash output = digest := by
+    have hpair := Rom.hashOutputEquivDigestPair.apply_symm_apply (0, digest)
+    exact congrArg Prod.snd hpair
+  change (liftM (Concrete.verify publicKey epoch message signature :
+    OracleComp HashSpec Bool) : OracleComp OracleWorld Bool)
+      |>.IsQueryBoundP (· matches .inr _) q at hbound
+  have hsource :
+      (Concrete.verify publicKey epoch message signature :
+        OracleComp HashSpec Bool).IsTotalQueryBound q := by
+    have := ExactQueryCount.source_isQueryBoundP_of_liftComp
+      (sourcePredicate := fun _ : HashInput => True)
+      (fun input => by
+        change True ↔ ((Sum.inr input : OracleWorld.Domain) matches .inr _)
+        simp) hbound
+    simpa [OracleComp.IsTotalQueryBound, OracleComp.IsQueryBoundP] using this
+  let input := tweakableHashInput publicKey.parameter (.encoding epoch)
+    (Concrete.encodingPayload message signature.randomness)
+  change ((liftM (HashSpec.query input) >>= fun firstOutput =>
+    match TargetSum.decodeDigest (truncateHash firstOutput) with
+    | none => Pure.pure false
+    | some decoded => do
+        let endpoints ← Concrete.recoverEndpoints publicKey.parameter epoch decoded signature
+        let leaf ← Concrete.leafHash publicKey.parameter epoch endpoints
+        Concrete.verifyAfterLeaf publicKey epoch signature leaf) :
+      OracleComp HashSpec Bool).IsTotalQueryBound q at hsource
+  rw [OracleComp.isTotalQueryBound_query_bind_iff] at hsource
+  have hafter := hsource.2 output
+  simp only [htruncate, hdecode] at hafter
+  have hexact : ExactQueryCount
+      (do
+        let endpoints ← Concrete.recoverEndpoints (m := OracleComp HashSpec)
+          publicKey.parameter epoch encoding signature
+        let leaf ← Concrete.leafHash publicKey.parameter epoch endpoints
+        Concrete.verifyAfterLeaf publicKey epoch signature leaf)
+      (verificationChainHashes + 1 + treeHeight) := by
+    have hrecover := ExactQueryCount.recoverEndpoints publicKey.parameter epoch
+      encoding signature
+    rw [TargetSum.verificationWork_eq encoding
+      ((TargetSum.decodeDigest_eq_some_iff.mp hdecode).2)] at hrecover
+    exact hrecover.bind _ (1 + treeHeight) fun endpoints =>
+      (ExactQueryCount.tweakableHash publicKey.parameter (.leaf epoch)
+        (Concrete.leafPayload endpoints)).bind _ treeHeight fun leaf =>
+          ExactQueryCount.verifyAfterLeaf publicKey epoch signature leaf
+  have hlower := hexact.le_of_isTotalQueryBound hafter
+  omega
 
 theorem Concrete.verify_hashQueryBound_at_least_verificationWork
     (publicKey : PublicKey) (epoch : Epoch) (message : Message)

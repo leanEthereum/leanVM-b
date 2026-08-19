@@ -203,6 +203,30 @@ theorem keygen_hashQueryCount_le
     ExactQueryCount.ExactPredicateQueryCount.precomputedKeygen_hashCount
     (OracleComp.IsQueryBoundP.of_bind_left hdetailedHash)
 
+/-- Reintroducing honest key generation turns a post-keygen budget `q` into the old whole-game budget consisting of the exact key-generation cost plus `q`. -/
+theorem hasHashQueryBound_of_postKeygen
+    (adversary : Adversary Concrete.scheme) (q : Nat)
+    (hpost : HasPostKeygenHashQueryBound Concrete.scheme adversary q) :
+    HasHashQueryBound Concrete.scheme adversary
+      (treeHashQueryCount treeHeight + q) := by
+  have hpostDetailed :=
+    (hasPostKeygenHashQueryBound_iff_detailedGameAfterKeygen
+      Concrete.scheme adversary q).mp hpost
+  rw [hasHashQueryBound_iff_detailedGameCore]
+  unfold detailedGameCore
+  change (Concrete.precomputedKeygen >>= fun key =>
+    detailedGameAfterKeygen Concrete.scheme adversary key.1 key.2)
+      |>.IsQueryBoundP (· matches .inr _)
+        (treeHashQueryCount treeHeight + q)
+  apply OracleComp.isQueryBoundP_bind
+  · apply (OracleComp.isQueryBoundP_congr_pred (p' := IsHashQuery)
+      (fun input => by cases input <;> simp [IsHashQuery])).mpr
+    exact
+      ExactQueryCount.ExactPredicateQueryCount.isQueryBoundP_self
+        ExactQueryCount.ExactPredicateQueryCount.precomputedKeygen_hashCount
+  · intro key hkey
+    exact hpostDetailed key (by simpa [Concrete.scheme] using hkey)
+
 namespace CappedChain
 
 theorem sourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen

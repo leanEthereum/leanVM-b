@@ -45,7 +45,17 @@ noncomputable def detailedGameCore (scheme : Scheme) (adversary : Adversary sche
 theorem gameCore_eq_map_detailedGameCore (scheme : Scheme) (adversary : Adversary scheme) :
     gameCore scheme adversary = GameOutcome.won <$> detailedGameCore scheme adversary := by
   classical
-  simp [gameCore, detailedGameCore, detailedGameAfterKeygen, GameOutcome.won]
+  simp [gameCore, gameAfterKeygen, detailedGameCore, detailedGameAfterKeygen,
+    GameOutcome.won]
+
+theorem gameAfterKeygen_eq_map_detailedGameAfterKeygen
+    (scheme : Scheme) (adversary : Adversary scheme)
+    (publicKey : PublicKey) (secretKey : SecretKey) :
+    gameAfterKeygen scheme adversary publicKey secretKey =
+      GameOutcome.won <$>
+        detailedGameAfterKeygen scheme adversary publicKey secretKey := by
+  classical
+  simp [gameAfterKeygen, detailedGameAfterKeygen, GameOutcome.won]
 
 noncomputable def detailedGameWithCache (scheme : Scheme) (adversary : Adversary scheme) :
     ProbComp (GameOutcome × QueryCache HashSpec) :=
@@ -77,5 +87,20 @@ theorem hasHashQueryBound_iff_detailedGameCore
   unfold HasHashQueryBound
   rw [gameCore_eq_map_detailedGameCore]
   exact OracleComp.isQueryBoundP_map_iff _ _ _
+
+/-- Retaining the detailed post-keygen outcome does not change the structural hash-query bound. -/
+theorem hasPostKeygenHashQueryBound_iff_detailedGameAfterKeygen
+    (scheme : Scheme) (adversary : Adversary scheme) (q : Nat) :
+    HasPostKeygenHashQueryBound scheme adversary q ↔
+      ∀ key ∈ support scheme.keygen,
+        (detailedGameAfterKeygen scheme adversary key.1 key.2).IsQueryBoundP
+          (· matches .inr _) q := by
+  unfold HasPostKeygenHashQueryBound
+  constructor <;> intro h key hkey
+  · have hbound := h key hkey
+    rw [gameAfterKeygen_eq_map_detailedGameAfterKeygen] at hbound
+    exact (OracleComp.isQueryBoundP_map_iff _ _ _).mp hbound
+  · rw [gameAfterKeygen_eq_map_detailedGameAfterKeygen]
+    exact (OracleComp.isQueryBoundP_map_iff _ _ _).mpr (h key hkey)
 
 end XmssSecurity

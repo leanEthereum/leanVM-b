@@ -1,4 +1,5 @@
 import XmssSecurity.Statement.Spec
+import Mathlib.Tactic
 
 namespace XmssSecurity
 
@@ -17,6 +18,33 @@ def Incomparable (x y : Encoding) : Prop := ¬PointwiseLE x y ∧ ¬PointwiseLE 
 
 def verificationWork (x : Encoding) : Nat :=
   ∑ i, (chainLength - 1 - (x i).val)
+
+/-- Chains for which verification performs no Winternitz hash step. -/
+def terminalChains (x : Encoding) : Finset ChainIndex :=
+  Finset.univ.filter fun chain => (x chain).val = chainLength - 1
+
+theorem terminalChains_card_mul_le_sum (x : Encoding) :
+    (terminalChains x).card * (chainLength - 1) ≤ sum x := by
+  calc
+    (terminalChains x).card * (chainLength - 1) =
+        ∑ _chain ∈ terminalChains x, (chainLength - 1) := by
+      simp
+    _ = ∑ chain ∈ terminalChains x, (x chain).val := by
+      apply Finset.sum_congr rfl
+      intro chain hchain
+      simpa [terminalChains] using
+        (Finset.mem_filter.mp hchain).2.symm
+    _ ≤ ∑ chain ∈ (Finset.univ : Finset ChainIndex), (x chain).val :=
+      Finset.sum_le_sum_of_subset (Finset.filter_subset _ _)
+    _ = sum x := by rfl
+
+/-- A valid target-sum encoding has at most 27 chains already at their endpoint. -/
+theorem terminalChains_card_le_27 (x : Encoding) (hx : Valid x) :
+    (terminalChains x).card ≤ 27 := by
+  have h := terminalChains_card_mul_le_sum x
+  rw [hx] at h
+  norm_num [chainLength, winternitzBits, targetSum] at h ⊢
+  omega
 
 /-- The verifier's domain-separated WOTS chain positions for one encoding. -/
 abbrev SuffixPosition (x : Encoding) :=

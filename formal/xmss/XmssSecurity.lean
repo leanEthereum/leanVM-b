@@ -9,7 +9,7 @@ The main result. Its statement lives entirely in `XmssSecurity.Statement` and th
 
 /-- The concrete XMSS instance has 127 bits of classical security in the random-oracle model. -/
 theorem xmss_has_127_bits_of_classical_security :
-    HasClassicalSecurityBits Concrete.scheme 127 :=
+    HasPostKeygenClassicalSecurityBits Concrete.scheme 127 :=
   Proof.concreteScheme_has_127_bits_of_classical_security
 
 theorem xmssSecurityStatement_holds : XmssSecurityStatement :=
