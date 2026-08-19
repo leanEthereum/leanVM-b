@@ -3,6 +3,8 @@ import XmssSecurity.Proof.CappedSuffixEventProbability
 import XmssSecurity.Proof.CappedMerkleEventProbability
 import XmssSecurity.Proof.CappedChain.ChainOriginProbability
 import XmssSecurity.Proof.ExpectedAdaptiveFreshTarget
+import XmssSecurity.Proof.AdaptiveFreshCollisionAfterPrefix
+import XmssSecurity.Proof.GlobalWinningChainValueRevealed
 
 open OracleComp OracleSpec ENNReal
 
@@ -131,11 +133,6 @@ theorem capped_globalMerkle_probability_le
   intro keyResult hkeygen execution hafter hevent
   exact globalMerkle_event_afterKeygen_orientation adversary keyResult hkeygen
     execution hafter hevent
-
-def GlobalWinningChainValueRevealed
-    (cache : QueryCache HashSpec) (outcome : GameOutcome) : Prop :=
-  ∃ chain, WinningOutcomeBadEventOccurs cache outcome (.chain chain) ∧
-    CappedChain.OutcomeChainValueRevealed cache outcome chain
 
 theorem capped_globalWinningChain_probability_le_revealed_add
     (q : Nat) (adversary : Adversary Concrete.scheme)

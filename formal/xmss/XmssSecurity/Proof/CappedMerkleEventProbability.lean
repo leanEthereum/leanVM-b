@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedLeafEventProbability
-import XmssSecurity.Proof.MerkleEventProbability
+import XmssSecurity.Proof.MerkleVerificationQueryPresence
 
 open OracleComp OracleSpec ENNReal
 
@@ -918,32 +918,4 @@ theorem merkle_event_afterKeygen_orientation
     exact fresh_merkle_witness_afterKeygen_orientation adversary keyResult hkeygen execution
       hafter hevent.1 forgedEncoding hforgedDecode level hmerkle
 
-theorem merkle_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) (level : MerkleLevel) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 (.merkle level) |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme Concrete.scheme q adversary hbound
-    (.merkle level) (fun key cache => keygenMerkleTargetInput key.2 cache)
-  intro keyResult hkeygen execution hafter hevent
-  exact merkle_event_afterKeygen_orientation adversary keyResult hkeygen execution hafter
-    level hevent
-
-
 end XmssSecurity.CappedMerkle
-
-namespace XmssSecurity
-
-theorem capped_merkle_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (level : MerkleLevel) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 (.merkle level) |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
-  CappedMerkle.merkle_outcomeBadEvent_probability_le q adversary hbound level
-
-end XmssSecurity

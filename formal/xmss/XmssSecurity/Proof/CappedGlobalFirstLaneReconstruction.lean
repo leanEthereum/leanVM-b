@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.CappedGlobalFirstLaneErasure
 import XmssSecurity.Proof.CappedEncodingActionTrace
 import XmssSecurity.Proof.CappedGlobalChainHighPublicHit
+import XmssSecurity.Proof.GlobalWinningChainValueRevealed
 
 open OracleComp OracleSpec
 

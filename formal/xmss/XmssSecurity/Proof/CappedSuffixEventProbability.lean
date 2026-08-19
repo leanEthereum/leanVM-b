@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedLeafEventProbability
-import XmssSecurity.Proof.SuffixEventProbability
+import XmssSecurity.Proof.VerificationChainQuery
 
 open OracleComp OracleSpec ENNReal
 
@@ -564,33 +564,4 @@ theorem suffixCollision_event_afterKeygen_orientation
     exact fresh_suffix_witness_afterKeygen_orientation adversary keyResult hkeygen
       execution hafter forgedEncoding hevent.1 hforgedDecode position hsuffix
 
-theorem suffixCollision_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (slot : Fin verificationChainHashes) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 (.suffixCollision slot) |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme Concrete.scheme q adversary hbound
-    (.suffixCollision slot) (fun key cache => keygenChainTargetInput key.2 cache)
-  intro keyResult hkeygen execution hafter hevent
-  exact suffixCollision_event_afterKeygen_orientation adversary keyResult hkeygen
-    execution hafter slot hevent
-
-
 end XmssSecurity.CappedSuffix
-
-namespace XmssSecurity
-
-theorem capped_suffixCollision_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (slot : Fin verificationChainHashes) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 (.suffixCollision slot) |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
-  CappedSuffix.suffixCollision_outcomeBadEvent_probability_le q adversary hbound slot
-
-end XmssSecurity

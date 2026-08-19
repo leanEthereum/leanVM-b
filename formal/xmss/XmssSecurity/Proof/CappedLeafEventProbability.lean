@@ -1,6 +1,6 @@
 import XmssSecurity.Proof.CappedDetailedQueryPresence
 import XmssSecurity.Proof.CappedSigningLogReplay
-import XmssSecurity.Proof.LeafEventProbability
+import XmssSecurity.Proof.LeafTargetInput
 
 open OracleComp OracleSpec ENNReal
 
@@ -544,30 +544,4 @@ theorem leaf_event_afterKeygen_orientation
   · exact fresh_leaf_event_afterKeygen_orientation adversary keyResult hkeygen execution
       hafter hevent hfresh
 
-theorem leaf_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 .leaf |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply outcomeBadEvent_probability_le_of_afterKeygen_freshCollision_forScheme Concrete.scheme q adversary hbound .leaf
-    (fun key cache => keygenLeafTargetInput key.2 cache)
-  intro keyResult hkeygen execution hafter hevent
-  exact leaf_event_afterKeygen_orientation adversary keyResult hkeygen execution hafter hevent
-
-
 end XmssSecurity.CappedLeaf
-
-namespace XmssSecurity
-
- theorem capped_leaf_outcomeBadEvent_probability_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      OutcomeBadEventOccurs execution.2 execution.1 .leaf |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      (q : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
-  CappedLeaf.leaf_outcomeBadEvent_probability_le q adversary hbound
-
-end XmssSecurity

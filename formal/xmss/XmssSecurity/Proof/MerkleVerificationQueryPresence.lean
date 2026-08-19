@@ -1,5 +1,3 @@
-import XmssSecurity.Proof.ConcreteEventProbability
-import XmssSecurity.Proof.LeafEventProbability
 import XmssSecurity.Proof.MerkleQueryPresence
 
 open OracleComp OracleSpec ENNReal
@@ -365,4 +363,3 @@ theorem verify_true_merkle_query_cached_as_in_largerCache
   exact ⟨output, hrootLe hcached⟩
 
 end XmssSecurity.Concrete.CacheReplay
-

@@ -37,3 +37,4 @@ theorem mixed_adaptiveFreshDigestCollision_after_prefix_le {α β : Type}
     (hwin prefixResult hprefixResult)
 
 end XmssSecurity.Rom
+
