@@ -1,4 +1,3 @@
-import XmssSecurity.Proof.BoundedSignCache
 import XmssSecurity.Proof.PrecomputedBoundedSign
 import XmssSecurity.Proof.PrecomputedSignQueryBound
 

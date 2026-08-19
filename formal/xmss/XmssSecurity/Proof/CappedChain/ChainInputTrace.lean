@@ -1,6 +1,5 @@
 import XmssSecurity.Proof.CappedChain.EncodingQueryBound
 import XmssSecurity.Proof.ChainInputTrace
-import XmssSecurity.Proof.PublicRootUniformity
 import XmssSecurity.Proof.QueryBoundSupport
 
 open OracleComp OracleSpec

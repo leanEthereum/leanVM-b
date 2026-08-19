@@ -1,5 +1,5 @@
-import XmssSecurity.Proof.BoundedSignCache
 import XmssSecurity.Proof.CappedSigningLogReplay
+import XmssSecurity.Proof.CacheCardinality
 import XmssSecurity.Proof.PrecomputedBoundedSignCache
 import XmssSecurity.Proof.SigningCacheTrace
 

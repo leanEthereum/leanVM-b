@@ -1,5 +1,4 @@
 import XmssSecurity.Proof.ConcreteCorrectness
-import XmssSecurity.Proof.ConcreteScheme
 import XmssSecurity.Proof.DetailedExecution
 
 open OracleComp OracleSpec ENNReal

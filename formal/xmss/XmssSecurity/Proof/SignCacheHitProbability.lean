@@ -1,4 +1,3 @@
-import XmssSecurity.Proof.CacheCardinality
 import XmssSecurity.Proof.EncodingTargetMap
 import XmssSecurity.Proof.AdaptiveEpochCollision
 import XmssSecurity.Proof.SigningRandomnessUniformity
