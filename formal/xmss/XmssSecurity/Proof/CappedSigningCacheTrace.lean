@@ -1,5 +1,4 @@
 import XmssSecurity.Proof.CappedSigningLogReplay
-import XmssSecurity.Proof.CacheCardinality
 import XmssSecurity.Proof.PrecomputedBoundedSignCache
 import XmssSecurity.Proof.SigningCacheTrace
 
@@ -554,19 +553,6 @@ theorem cappedDetailedGameWithSigningTrace_preservesOtherValidEncodingInputs
     (cappedDetailedGameAfterKeygenWithSigningTrace_invariants adversary publicKey
       secretKey keyCache result hrest).1
   simpa [hsecretKey] using hpreserves
-
-theorem cappedDetailedGameWithSigningTrace_cache_enncard_le_of_mem_support
-    (adversary : Adversary Concrete.scheme) (q : Nat)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q)
-    (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
-    (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
-    QueryCache.enncard result.2.1 ≤ (q : ℝ≥0∞) := by
-  have hprojected : (result.1, result.2.1) ∈
-      support (detailedGameWithCache Concrete.scheme adversary) := by
-    rw [← cappedDetailedGameWithSigningTrace_cache_projection, support_map]
-    exact ⟨result, hmem, rfl⟩
-  exact Rom.detailedGame_cache_enncard_le_of_mem_support Concrete.scheme
-    adversary q hbound (result.1, result.2.1) hprojected
 
 theorem SigningCacheEntry.freshForgedEncodingCollision_finalCache_none_of_valid
     (secretKey : SecretKey) (forgery : Forgery)
