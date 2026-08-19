@@ -16,65 +16,6 @@ theorem Concrete.signingRandomness_queryBound_zero_encodingAddress
     simp [IsEncodingHashQueryAt]
   · simp
 
-theorem Concrete.signAttempt_lift_queryBound_encodingAddress
-    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) (randomness : Randomness) :
-    (liftM (Concrete.signAttempt secretKey epoch message randomness :
-      OracleComp HashSpec (Option Signature)) :
-        OracleComp OracleWorld (Option Signature)).IsQueryBoundP
-      (IsEncodingHashQueryAt secretKey.parameter targetEpoch)
-      (if epoch = targetEpoch then 1 else 0) := by
-  apply OracleComp.IsQueryBoundP.liftComp_subSpec
-    (p := AtHashAddress secretKey.parameter (.encoding targetEpoch))
-  · intro input
-    change AtHashAddress secretKey.parameter (.encoding targetEpoch) input ↔
-      IsEncodingHashQueryAt secretKey.parameter targetEpoch (Sum.inr input)
-    rfl
-  · exact Concrete.signAttempt_queryBound_encodingAddress secretKey epoch targetEpoch
-      message randomness
-
-theorem Concrete.signBoundedAttempts_queryBound_encodingAddress
-    (attempts : Nat) (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) :
-    (Concrete.signBoundedAttempts attempts secretKey epoch message).IsQueryBoundP
-      (IsEncodingHashQueryAt secretKey.parameter targetEpoch)
-      (attempts * if epoch = targetEpoch then 1 else 0) := by
-  induction attempts with
-  | zero => simp [Concrete.signBoundedAttempts]
-  | succ attempts ih =>
-      rw [Concrete.signBoundedAttempts]
-      refine (OracleComp.isQueryBoundP_bind
-        (n := 0)
-        (m := (if epoch = targetEpoch then 1 else 0) +
-          attempts * if epoch = targetEpoch then 1 else 0)
-        (Concrete.signingRandomness_queryBound_zero_encodingAddress
-          secretKey.parameter targetEpoch) ?_).mono (by
-            by_cases hepoch : epoch = targetEpoch
-            · simp [hepoch]
-              omega
-            · simp [hepoch])
-      intro randomness _
-      refine (OracleComp.isQueryBoundP_bind
-        (n := if epoch = targetEpoch then 1 else 0)
-        (m := attempts * if epoch = targetEpoch then 1 else 0)
-        (Concrete.signAttempt_lift_queryBound_encodingAddress secretKey epoch targetEpoch
-          message randomness) ?_).mono (by omega)
-      intro result _
-      cases result with
-      | none => exact ih
-      | some signature => simp
-
-theorem Concrete.cappedSign_queryBound_encodingAddress
-    (publicKey : PublicKey) (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) :
-    (Concrete.cappedSign publicKey secretKey epoch message).IsQueryBoundP
-      (IsEncodingHashQueryAt secretKey.parameter targetEpoch)
-      (signingAttemptLimit * if epoch = targetEpoch then 1 else 0) := by
-  rw [Concrete.cappedSign_eq]
-  exact Concrete.signBoundedAttempts_queryBound_encodingAddress signingAttemptLimit
-    secretKey epoch targetEpoch message
-
-/-- Union-bounding all capped signing attempts over the full lifetime still costs less than one elementary 128-bit term. -/
 theorem signingAttemptLimit_mul_lifetime_randomness_loss_le_digest_loss (q : Nat) :
     (signingAttemptLimit : ℝ≥0∞) * (lifetime : ℝ≥0∞) *
         ((q : ℝ≥0∞) / ((2 ^ randomnessBits : Nat) : ℝ≥0∞)) ≤
