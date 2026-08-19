@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CausalTreeWarmup
+import XmssSecurity.Proof.PublicRootUniformity
 import XmssSecurity.Proof.MarginalCoupling
 import XmssSecurity.Proof.StatementLemmas
 
@@ -97,6 +98,78 @@ theorem TreeValueIndex.subtreeValid (index : TreeValueIndex) :
         2 ^ (treeHeight - index.1.val) * 2 ^ index.1.val :=
       Nat.mul_le_mul_right _ hnode
     _ = 2 ^ treeHeight := hfactor
+
+theorem Concrete.leafAt_probability_from_cache
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch : Epoch) (initialCache : QueryCache HashSpec)
+    (habsent : ∀ input,
+      AtHashAddress parameter (.leaf epoch) input →
+        initialCache input = none)
+    (target : Digest) :
+    Pr[fun result : Digest × QueryCache HashSpec => result.1 = target |
+      (simulateQ randomOracle
+        (Concrete.leafAt parameter secret epoch :
+          OracleComp HashSpec Digest)).run initialCache] =
+      ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  rw [Concrete.leafAt, simulateQ_bind, StateT.run_bind,
+    probEvent_bind_eq_tsum]
+  have hconditional : ∀ endpointsResult ∈ support
+      ((simulateQ randomOracle
+        (Concrete.oneTimePublicKey parameter secret epoch)).run initialCache),
+      Pr[fun result : Digest × QueryCache HashSpec => result.1 = target |
+        (simulateQ randomOracle
+          (Concrete.leafHash parameter epoch endpointsResult.1 :
+            OracleComp HashSpec Digest)).run endpointsResult.2] =
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+    intro endpointsResult hendpoints
+    apply Concrete.tweakableHash_fresh_probability
+    apply Concrete.CacheReplay.cache_none_of_zero_query_bound
+      (Concrete.oneTimePublicKey parameter secret epoch)
+      (Concrete.CacheView.leafInput parameter epoch endpointsResult.1)
+      initialCache endpointsResult.2 endpointsResult.1
+    · apply OracleComp.IsQueryBoundP.of_imp
+        (p' := AtHashAddress parameter (.leaf epoch))
+      · intro input heq
+        subst input
+        exact (atHashAddress_tweakableHashInput_iff parameter _ _ _).2 rfl
+      · exact Concrete.oneTimePublicKey_queryBound_zero_leafAddress
+          parameter secret epoch epoch
+    · exact habsent _
+        ((atHashAddress_tweakableHashInput_iff parameter _ _ _).2 rfl)
+    · exact hendpoints
+  calc
+    ∑' endpointsResult,
+        Pr[= endpointsResult |
+          (simulateQ randomOracle
+            (Concrete.oneTimePublicKey parameter secret epoch)).run initialCache] *
+          Pr[fun result : Digest × QueryCache HashSpec => result.1 = target |
+            (simulateQ randomOracle
+              (Concrete.leafHash parameter epoch endpointsResult.1 :
+                OracleComp HashSpec Digest)).run endpointsResult.2] =
+      ∑' endpointsResult,
+        Pr[= endpointsResult |
+          (simulateQ randomOracle
+            (Concrete.oneTimePublicKey parameter secret epoch)).run initialCache] *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      apply tsum_congr
+      intro endpointsResult
+      by_cases hendpoints : endpointsResult ∈ support
+          ((simulateQ randomOracle
+            (Concrete.oneTimePublicKey parameter secret epoch)).run initialCache)
+      · rw [hconditional endpointsResult hendpoints]
+      · rw [probOutput_eq_zero_of_not_mem_support hendpoints, zero_mul, zero_mul]
+    _ = (∑' endpointsResult,
+        Pr[= endpointsResult |
+          (simulateQ randomOracle
+            (Concrete.oneTimePublicKey parameter secret epoch)).run initialCache]) *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
+      ENNReal.tsum_mul_right
+    _ = ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      rw [tsum_probOutput_eq_one']
+      · exact one_mul _
+      · exact probFailure_eq_zero'
+          (neverFail_simulateQ_randomOracle_run
+            (Concrete.oneTimePublicKey parameter secret epoch) initialCache)
 
 set_option maxHeartbeats 1600000 in
 set_option maxRecDepth 1000000 in
@@ -734,91 +807,5 @@ theorem globalTreeValuesReplay_eq_root
       treeHeight Concrete.rootNode le_rfl (by
         unfold TreeSubtreeValid Concrete.rootNode lifetime
         simp)
-
-theorem programmedWarmedTrajectory_treeValues_fresh
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex)
-    (trajectoryResult : List FullChainTrajectory × QueryCache HashSpec)
-    (htrajectory : trajectoryResult ∈ support
-      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
-        (chainLength - 1) ∅ allEpochs)) :
-    TreeValuesFresh parameter allTreeValueIndices trajectoryResult.2 := by
-  intro index _hindex input hinput
-  by_cases hzero : index.1.val = 0
-  · unfold TreeValueIndex.domain at hinput
-    rw [dif_pos hzero] at hinput
-    exact programmedFixedSeedChainTrajectories_avoids_leaf
-      parameter secret chain trajectoryResult htrajectory index.node input hinput
-  · unfold TreeValueIndex.domain at hinput
-    rw [dif_neg hzero] at hinput
-    exact programmedFixedSeedChainTrajectories_avoids_merkle
-      parameter secret chain trajectoryResult htrajectory
-        ⟨index.1.val - 1, by omega⟩ index.node input hinput
-
-set_option maxRecDepth 1000000 in
-theorem evalDist_programmedWarmedTreeValues_eq_drawList
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex)
-    (trajectoryResult : List FullChainTrajectory × QueryCache HashSpec)
-    (htrajectory : trajectoryResult ∈ support
-      (programmedFixedSeedChainTrajectoriesFromCache parameter secret chain
-        (chainLength - 1) ∅ allEpochs)) :
-    𝒟[Prod.fst <$> treeValues parameter secret allTreeValueIndices
-      trajectoryResult.2] =
-      𝒟[OracleComp.drawList ($ᵗ Digest) allTreeValueIndices.length] := by
-  exact evalDist_treeValues_values_eq_drawList parameter secret
-    allTreeValueIndices trajectoryResult.2 allTreeValueIndices_pairwise
-      (programmedWarmedTrajectory_treeValues_fresh parameter secret chain
-        trajectoryResult htrajectory)
-
-set_option maxHeartbeats 1600000 in
-set_option maxRecDepth 1000000 in
-theorem relTriple_programmedWarmedTreeValues_same_root_and_paths
-    (parameter : PublicParameter)
-    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex)
-    (leftTrajectory rightTrajectory :
-      List FullChainTrajectory × QueryCache HashSpec)
-    (hleft : leftTrajectory ∈ support
-      (programmedFixedSeedChainTrajectoriesFromCache parameter leftSecret chain
-        (chainLength - 1) ∅ allEpochs))
-    (hright : rightTrajectory ∈ support
-      (programmedFixedSeedChainTrajectoriesFromCache parameter rightSecret chain
-        (chainLength - 1) ∅ allEpochs)) :
-    RelTriple
-      (treeValues parameter leftSecret allTreeValueIndices leftTrajectory.2)
-      (treeValues parameter rightSecret allTreeValueIndices rightTrajectory.2)
-      (fun left right =>
-        left.1 = right.1 ∧
-          TreeValuesReplay parameter leftSecret left.2
-            allTreeValueIndices left.1 ∧
-          TreeValuesReplay parameter rightSecret right.2
-            allTreeValueIndices right.1 ∧
-          Concrete.CacheReplay.treeNode left.2 parameter leftSecret
-              treeHeight Concrete.rootNode =
-            Concrete.CacheReplay.treeNode right.2 parameter rightSecret
-              treeHeight Concrete.rootNode ∧
-          ∀ epoch,
-            Concrete.CacheReplay.authenticationPath left.2
-                (SecretKey.withoutPrecomputation parameter leftSecret) epoch =
-              Concrete.CacheReplay.authenticationPath right.2
-                (SecretKey.withoutPrecomputation parameter rightSecret) epoch) := by
-  apply relTriple_post_mono
-    (relTriple_treeValues_same_values parameter parameter leftSecret rightSecret
-      allTreeValueIndices leftTrajectory.2 rightTrajectory.2
-      allTreeValueIndices_pairwise
-      (programmedWarmedTrajectory_treeValues_fresh parameter leftSecret chain
-        leftTrajectory hleft)
-      (programmedWarmedTrajectory_treeValues_fresh parameter rightSecret chain
-        rightTrajectory hright))
-  intro left right hrelation
-  obtain ⟨hvalues, hleftReplay, hrightReplay⟩ := hrelation
-  refine ⟨hvalues, hleftReplay, hrightReplay, ?_, ?_⟩
-  · exact globalTreeValuesReplay_eq_root parameter leftSecret rightSecret
-      left.2 right.2 left.1 hleftReplay (hvalues ▸ hrightReplay)
-  · intro epoch
-    exact globalTreeValuesReplay_eq_authenticationPath parameter
-      leftSecret rightSecret left.2 right.2 left.1 hleftReplay
-        (hvalues ▸ hrightReplay) epoch
 
 end XmssSecurity
