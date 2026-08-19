@@ -1,11 +1,31 @@
 import XmssSecurity.Proof.CacheReplayEval
 import XmssSecurity.Statement
-import XmssSecurity.Proof.BoundedSignQueryBound
 import XmssSecurity.Proof.ConcreteQueryBound
+import VCVio.OracleComp.QueryTracking.SubSpec
 
 open OracleComp OracleSpec
 
 namespace XmssSecurity
+
+def IsEncodingHashQueryAt (parameter : PublicParameter) (epoch : Epoch) :
+    OracleWorld.Domain → Prop
+  | .inl _ => False
+  | .inr hashInput => AtHashAddress parameter (.encoding epoch) hashInput
+
+noncomputable instance (parameter : PublicParameter) (epoch : Epoch) :
+    DecidablePred (IsEncodingHashQueryAt parameter epoch) :=
+  Classical.decPred _
+
+theorem Concrete.signingRandomness_queryBound_zero_encodingAddress
+    (parameter : PublicParameter) (epoch : Epoch) :
+    (liftM Concrete.signingRandomness : OracleComp OracleWorld Randomness).IsQueryBoundP
+      (IsEncodingHashQueryAt parameter epoch) 0 := by
+  apply OracleComp.IsQueryBoundP.liftComp_subSpec
+    (p := fun _ : unifSpec.Domain => False)
+  · intro input
+    change False ↔ IsEncodingHashQueryAt parameter epoch (Sum.inl input)
+    simp [IsEncodingHashQueryAt]
+  · simp
 
 theorem Concrete.precomputedSignAttempt_queryBound_zero_at_other_encodingInput
     (secretKey : SecretKey) (epoch targetEpoch : Epoch)
