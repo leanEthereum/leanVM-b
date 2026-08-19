@@ -1,6 +1,5 @@
 import XmssSecurity.Proof.CappedExactFirstLane
 import XmssSecurity.Proof.CappedGlobalFirstLaneReconstruction
-import XmssSecurity.Proof.UntilBadSimulation
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -203,41 +202,6 @@ theorem relTriple_programmed_globalHighMonitored_signingVerifierQuery
     rfl
   rw [hleft]
   exact hlifted
-
-theorem relTriple_programmed_globalHighMonitored_signingVerifier
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
-    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
-    (hrightSupport : right.1.1 ∈ support
-      trajectoryProgrammedGlobalChainKeygen)
-    (computation : OracleComp OracleWorld α)
-    (leftState : SourceSigningTracedState)
-    (rightState : GlobalMonitoredTracedState)
-    (hstate : GlobalSigningMonitoredTracedStateRelation left right.1
-      leftState rightState) :
-    RelTriple
-      ((simulateQ sourceSigningTracedVerifierImpl computation).run leftState)
-      ((simulateQ (globalHighMonitoredVerifierImpl right) computation).run
-        rightState)
-      (fun leftResult rightResult =>
-        (leftResult.1 = rightResult.1 ∧
-          GlobalSigningMonitoredTracedStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.bad) := by
-  exact relTriple_simulateQ_run_until_bad_right
-    sourceSigningTracedVerifierImpl
-    (globalHighMonitoredVerifierImpl right)
-    (GlobalSigningMonitoredTracedStateRelation left right.1)
-    (fun state : GlobalMonitoredTracedState => state.1.bad)
-    (fun input leftState rightState hstate =>
-      relTriple_programmed_globalHighMonitored_signingVerifierQuery left right
-        hrel hleftSupport hrightSupport leftState rightState hstate input)
-    (fun input state hbad result hresult =>
-      globalHighMonitoredVerifierImpl_preserves_bad right input state hbad
-        result hresult)
-    computation leftState rightState hstate
 
 theorem globalSigningMonitoredTracedStateRelation_initial
     (left : ProgrammedGlobalChainKeygenView)

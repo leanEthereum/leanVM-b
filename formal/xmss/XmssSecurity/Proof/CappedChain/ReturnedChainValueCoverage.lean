@@ -63,19 +63,4 @@ theorem returnedChainValueCovered_iff_mem_indices
       index ∈ returnedChainValueIndices cache secretKey log chain := by
   rw [returnedChainValueCovered_iff, mem_returnedChainValueIndices_iff]
 
-theorem returnedChainValueCovered_mem_reveals
-    (keygenCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
-    (log : QueryLog SigningSpec) (chain : ChainIndex)
-    (index : ChainValueIndex)
-    (hindex : index ∈
-      ReturnedChainValueCovered finalCache secretKey log chain) :
-    index ∈ (returnedChainValueReveals keygenCache finalCache secretKey log
-      chain).map Prod.fst := by
-  change index ∈ returnedChainValueIndexList finalCache secretKey log chain at hindex
-  rw [returnedChainValueReveals, List.map_map]
-  change index ∈
-    (returnedChainValueIndexList finalCache secretKey log chain).map id
-  rw [List.mem_map]
-  exact ⟨index, hindex, rfl⟩
-
 end XmssSecurity.CappedChain

@@ -120,18 +120,6 @@ theorem globalReturnedChainValueCovered_contains_returned
   exact returnedChainValueCovered_contains_returned cache secretKey log chain
     request signature encoding hreturned hdecode
 
-theorem globalReturnedChainValueCovered_mem_reveals
-    (keygenCache finalCache : QueryCache HashSpec)
-    (secretKey : SecretKey) (log : QueryLog SigningSpec)
-    (index : GlobalChainValueIndex)
-    (hindex : index ∈
-      GlobalReturnedChainValueCovered finalCache secretKey log) :
-    index ∈ (globalReturnedChainValueReveals keygenCache finalCache
-      secretKey log).map Prod.fst := by
-  rw [mem_globalReturnedChainValueReveals_fst_iff]
-  exact returnedChainValueCovered_mem_reveals keygenCache finalCache secretKey
-    log index.1 index.2 hindex
-
 theorem globalReturnedChainValueCovered_of_comparableCaches
     (parameter : PublicParameter)
     (leftCache rightCache : QueryCache HashSpec)
