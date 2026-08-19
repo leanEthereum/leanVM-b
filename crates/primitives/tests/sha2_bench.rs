@@ -24,10 +24,10 @@ fn time(reps: usize, mut f: impl FnMut()) -> f64 {
     median(samples)
 }
 
-/// cargo test --release -p primitives --test sha2_bench multithreaded_throughput -- --ignored --nocapture
-#[test]
-#[ignore = "manual throughput measurement"]
-fn multithreaded_throughput() {
+/// Every-core throughput of 64-byte -> 32-byte hashes through `hash_64`: each
+/// pool task rehashes its own cache-resident 96 KiB buffer, so the number is
+/// pure hash compute. Returns Mhash/s.
+fn multithreaded_mhash_per_s(hash_64: impl Fn(&[u8], &mut [u8]) + Sync) -> f64 {
     const K: usize = 1 << 10; // hashes per call: 96 KiB in+out per task, cache-resident
     const ITERS: usize = 1 << 5; // rehash rounds per task per dispatch
     const TASKS: usize = 512;
@@ -38,16 +38,37 @@ fn multithreaded_throughput() {
         parallel::chunks_mut(&mut out, K * 32, |i, sub| {
             let d = &data[i * K * 64..i * K * 64 + sub.len() * 2];
             for _ in 0..ITERS {
-                primitives::sha2::hash_many::<64>(d, sub);
+                hash_64(d, sub);
                 std::hint::black_box(&mut *sub);
             }
         });
     });
+    (TASKS * K * ITERS) as f64 / s / 1e6
+}
+
+/// cargo test --release -p primitives --test sha2_bench multithreaded_throughput -- --exact --ignored --nocapture
+#[test]
+#[ignore = "manual throughput measurement"]
+fn multithreaded_throughput() {
+    let mhs = multithreaded_mhash_per_s(primitives::sha2::hash_many::<64>);
     println!(
-        "64B -> 32B, {} threads, LANES={}: {:.0} Mhash/s",
+        "64B -> 32B, {} threads, LANES={}: {mhs:.0} Mhash/s",
         parallel::num_threads(),
         primitives::sha2::LANES,
-        (TASKS * K * ITERS) as f64 / s / 1e6,
+    );
+}
+
+/// cargo test --release -p primitives --test sha2_bench multithreaded_throughput_without_hardware_acceleration -- --exact --ignored --nocapture
+#[test]
+#[ignore = "manual throughput measurement"]
+fn multithreaded_throughput_without_hardware_acceleration() {
+    let mhs = multithreaded_mhash_per_s(|d, sub| {
+        primitives::sha2::hash_many_dyn_from_state_transposed(d, 64, &primitives::sha2::IV_64, sub);
+    });
+    println!(
+        "64B -> 32B, {} threads, LANES={}, no crypto extension: {mhs:.0} Mhash/s",
+        parallel::num_threads(),
+        primitives::sha2::LANES,
     );
 }
 

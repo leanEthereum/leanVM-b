@@ -1200,8 +1200,10 @@ mod arm {
     /// backend is issue-bound rather than latency-bound, unlike the BLAKE2s one
     /// it replaces. It is also not what the library picks on any aarch64 target
     /// with the crypto extension, where the `sha256h` path is several times
-    /// faster; it stays compiled and tested as the portable fallback.
-    #[cfg_attr(target_feature = "sha2", allow(dead_code))]
+    /// faster; there it serves [`hash_many_dyn_from_state_transposed`], the
+    /// measurement surface for hashing without the extension.
+    ///
+    /// [`hash_many_dyn_from_state_transposed`]: super::hash_many_dyn_from_state_transposed
     #[derive(Clone, Copy)]
     pub(super) struct Neon(uint32x4_t);
 
@@ -1453,7 +1455,6 @@ unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, iv: &[u32; 8]
 /// `data` must hold `n * len` bytes and `out` `n * OUT_LEN`, with `len` a
 /// nonzero multiple of 64.
 #[inline(always)]
-#[cfg_attr(all(target_arch = "aarch64", target_feature = "sha2"), allow(dead_code))]
 unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, iv: &[u32; 8], out: &mut [u8]) {
     let n = out.len() / OUT_LEN;
     let groups = n / S::WIDTH;
@@ -1569,6 +1570,24 @@ pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u32; 8], out: 
     // bulk, so the `Lanes32` path is the fallback there rather than the choice.
     #[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
     return hw::hash_many(data, len, state, out);
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "sha2")))]
+    hash_many_dyn_from_state_transposed(data, len, state, out)
+}
+
+/// [`hash_many_dyn_from_state`] pinned to the transposed `Lanes32` backend, so
+/// no dedicated SHA-256 hardware is involved. On every target but
+/// aarch64-with-crypto-extension this IS the batched path (x86 transposition
+/// beats two-lane SHA-NI in bulk, so the dispatch never takes it); on aarch64
+/// the extension wins, and this survives publicly as the measurement surface
+/// for what batched hashing costs without it (`sha2_bench.rs`).
+pub fn hash_many_dyn_from_state_transposed(data: &[u8], len: usize, state: &[u32; 8], out: &mut [u8]) {
+    assert!(
+        len > 0 && len.is_multiple_of(BLOCK_LEN),
+        "batched inputs are whole blocks"
+    );
+    let n = out.len() / OUT_LEN;
+    assert_eq!(data.len(), n * len);
+    assert_eq!(out.len(), n * OUT_LEN);
     // SAFETY (each arm): the asserts above pin the buffer sizes the backends
     // require, and every backend is gated on the feature its intrinsics need.
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
@@ -1583,7 +1602,7 @@ pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u32; 8], out: 
     unsafe {
         hash_many_with::<x86::Avx2>(data, len, state, out)
     }
-    #[cfg(all(target_arch = "aarch64", not(target_feature = "sha2")))]
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         hash_many_with::<arm::Neon>(data, len, state, out)
     }
