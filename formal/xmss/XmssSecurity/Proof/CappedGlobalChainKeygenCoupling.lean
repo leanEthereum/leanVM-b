@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalChainPresampling
-import XmssSecurity.Proof.CappedChain.CausalKeygenCoupling
+import XmssSecurity.Proof.CausalKeygenCoupling
 
 open OracleComp OracleSpec
 

@@ -23,19 +23,8 @@ theorem programmedChainTrajectory_eq_root
     programmedChainTrajectory parameter epoch chain position steps value cache =
       XmssSecurity.programmedChainTrajectory parameter epoch chain position
         steps value cache := by
-  intro steps
-  induction steps with
-  | zero =>
-      intro value cache
-      rfl
-  | succ steps ih =>
-      intro value cache
-      rw [programmedChainTrajectory,
-        XmssSecurity.programmedChainTrajectory]
-      rw [ih value cache]
-      apply bind_congr
-      intro prior
-      split <;> simp only [programmedChainExtension_eq_root]
+  intros
+  rfl
 
 theorem programmedFixedSeedChainTrajectories_eq_root
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
@@ -45,16 +34,8 @@ theorem programmedFixedSeedChainTrajectories_eq_root
         cache epochs =
       XmssSecurity.programmedFixedSeedChainTrajectoriesFromCache parameter
         secret chain steps cache epochs := by
-  intro cache epochs
-  induction epochs generalizing cache with
-  | nil => rfl
-  | cons epoch epochs ih =>
-      rw [programmedFixedSeedChainTrajectoriesFromCache_cons,
-        XmssSecurity.programmedFixedSeedChainTrajectoriesFromCache_cons,
-        programmedChainTrajectory_eq_root]
-      apply bind_congr
-      intro first
-      rw [ih first.2]
+  intros
+  rfl
 
 abbrev AllChainHighRows := ChainIndex → List (ChainStep → Digest)
 
