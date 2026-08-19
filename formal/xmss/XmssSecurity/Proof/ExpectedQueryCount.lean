@@ -1,111 +1,9 @@
 import VCVio.OracleComp.QueryTracking.QueryBound
 import VCVio.OracleComp.ProbComp
-import VCVio.ProgramLogic.Unary.HoareTriple
-import VCVio.ProgramLogic.Relational.Basic
 
 open OracleSpec OracleComp ENNReal
 
 namespace XmssSecurity
-
-open OracleComp.ProgramLogic.Relational
-
-/-- A coupling that pointwise decreases a nonnegative cost also decreases its expectation. -/
-theorem expectedCost_le_of_relTriple
-    {ι₁ ι₂ : Type} {spec₁ : OracleSpec ι₁} {spec₂ : OracleSpec ι₂}
-    [IsUniformSpec spec₁] [IsUniformSpec spec₂]
-    (left : OracleComp spec₁ α) (right : OracleComp spec₂ β)
-    (relation : α → β → Prop) (leftCost : α → ENNReal)
-    (rightCost : β → ENNReal)
-    (hrel : RelTriple left right relation)
-    (hcost : ∀ leftResult rightResult,
-      relation leftResult rightResult →
-        rightCost rightResult ≤ leftCost leftResult) :
-    (∑' result, Pr[= result | right] * rightCost result) ≤
-      ∑' result, Pr[= result | left] * leftCost result := by
-  obtain ⟨coupling, hcoupled⟩ := (relTriple_iff_relWP).1 hrel
-  have hleft : evalDist (Prod.fst <$> coupling.1) = evalDist left :=
-    coupling.2.map_fst
-  have hright : evalDist (Prod.snd <$> coupling.1) = evalDist right :=
-    coupling.2.map_snd
-  calc
-    (∑' result, Pr[= result | right] * rightCost result) =
-        ∑' result, Pr[= result | Prod.snd <$> coupling.1] *
-          rightCost result := by
-      apply tsum_congr
-      intro result
-      rw [probOutput_def, probOutput_def, hright]
-    _ = ∑' result, Pr[= result | coupling.1] * rightCost result.2 :=
-      tsum_probOutput_map_mul coupling.1 Prod.snd rightCost
-    _ ≤ ∑' result, Pr[= result | coupling.1] * leftCost result.1 := by
-      apply ENNReal.tsum_le_tsum
-      intro result
-      by_cases hresult : result ∈ support coupling.1
-      · gcongr
-        exact hcost result.1 result.2 (hcoupled result hresult)
-      · rw [probOutput_eq_zero_of_not_mem_support hresult]
-        simp
-    _ = ∑' result, Pr[= result | Prod.fst <$> coupling.1] *
-        leftCost result :=
-      (tsum_probOutput_map_mul coupling.1 Prod.fst leftCost).symm
-    _ = ∑' result, Pr[= result | left] * leftCost result := by
-      apply tsum_congr
-      intro result
-      rw [probOutput_def, probOutput_def, hleft]
-
-/-- A coupling that bounds the right cost by a left cost and a right-side error cost
-also bounds its expectation by the sum of their expectations. -/
-theorem expectedCost_le_add_of_relTriple
-    {ι₁ ι₂ : Type} {spec₁ : OracleSpec ι₁} {spec₂ : OracleSpec ι₂}
-    [IsUniformSpec spec₁] [IsUniformSpec spec₂]
-    (left : OracleComp spec₁ α) (right : OracleComp spec₂ β)
-    (relation : α → β → Prop) (leftCost : α → ENNReal)
-    (rightCost rightError : β → ENNReal)
-    (hrel : RelTriple left right relation)
-    (hcost : ∀ leftResult rightResult,
-      relation leftResult rightResult →
-        rightCost rightResult ≤ leftCost leftResult + rightError rightResult) :
-    (∑' result, Pr[= result | right] * rightCost result) ≤
-      (∑' result, Pr[= result | left] * leftCost result) +
-        ∑' result, Pr[= result | right] * rightError result := by
-  obtain ⟨coupling, hcoupled⟩ := (relTriple_iff_relWP).1 hrel
-  have hleft : evalDist (Prod.fst <$> coupling.1) = evalDist left :=
-    coupling.2.map_fst
-  have hright : evalDist (Prod.snd <$> coupling.1) = evalDist right :=
-    coupling.2.map_snd
-  calc
-    (∑' result, Pr[= result | right] * rightCost result) =
-        ∑' result, Pr[= result | Prod.snd <$> coupling.1] *
-          rightCost result := by
-      apply tsum_congr
-      intro result
-      rw [probOutput_def, probOutput_def, hright]
-    _ = ∑' result, Pr[= result | coupling.1] * rightCost result.2 :=
-      tsum_probOutput_map_mul coupling.1 Prod.snd rightCost
-    _ ≤ ∑' result, Pr[= result | coupling.1] *
-        (leftCost result.1 + rightError result.2) := by
-      apply ENNReal.tsum_le_tsum
-      intro result
-      by_cases hresult : result ∈ support coupling.1
-      · gcongr
-        exact hcost result.1 result.2 (hcoupled result hresult)
-      · rw [probOutput_eq_zero_of_not_mem_support hresult]
-        simp
-    _ = (∑' result, Pr[= result | coupling.1] * leftCost result.1) +
-        ∑' result, Pr[= result | coupling.1] * rightError result.2 := by
-      simp_rw [mul_add]
-      rw [ENNReal.tsum_add]
-    _ = (∑' result, Pr[= result | Prod.fst <$> coupling.1] *
-          leftCost result) +
-        ∑' result, Pr[= result | Prod.snd <$> coupling.1] *
-          rightError result := by
-      rw [tsum_probOutput_map_mul coupling.1 Prod.fst leftCost,
-        tsum_probOutput_map_mul coupling.1 Prod.snd rightError]
-    _ = (∑' result, Pr[= result | left] * leftCost result) +
-        ∑' result, Pr[= result | right] * rightError result := by
-      congr 1 <;> apply tsum_congr <;> intro result <;>
-        rw [probOutput_def, probOutput_def]
-      · rw [hleft]
-      · rw [hright]
 
 /-- The expected number of matching source queries after interpreting a computation in a
 stateful probabilistic oracle implementation. -/
@@ -145,19 +43,6 @@ theorem expectedSimulatedQueryCount_query_bind
           expectedSimulatedQueryCount implementation predicate
             (next result.1) result.2 := by
   rfl
-
-@[simp]
-theorem expectedSimulatedQueryCount_query
-    {ι : Type} {spec : OracleSpec ι} {state : Type}
-    (implementation : QueryImpl spec (StateT state ProbComp))
-    (predicate : spec.Domain → Prop) [DecidablePred predicate]
-    (input : spec.Domain) (initialState : state) :
-    expectedSimulatedQueryCount implementation predicate
-        (liftM (spec.query input)) initialState =
-      if predicate input then 1 else 0 := by
-  rw [← bind_pure (liftM (spec.query input) : OracleComp spec _)]
-  rw [expectedSimulatedQueryCount_query_bind]
-  simp
 
 /-- A pathwise source-query bound controls the expected count in every stateful implementation. -/
 theorem expectedSimulatedQueryCount_le_of_isQueryBoundP
@@ -301,36 +186,6 @@ theorem expectedSimulatedQueryCount_map
       expectedSimulatedQueryCount_bind implementation predicate computation
         (fun value => pure (project value)) initialState
     _ = _ := by simp
-
-/-- Counting selected outer queries through a composed oracle implementation is bounded by counting all selected inner queries used to interpret the outer computation. -/
-theorem expectedSimulatedQueryCount_compose_le
-    {ι₁ ι₂ : Type} {spec₁ : OracleSpec ι₁} {spec₂ : OracleSpec ι₂}
-    {α state : Type}
-    (inner : QueryImpl spec₂ (StateT state ProbComp))
-    (middle : QueryImpl spec₁ (OracleComp spec₂))
-    (outerPredicate : spec₁.Domain → Prop) [DecidablePred outerPredicate]
-    (innerPredicate : spec₂.Domain → Prop) [DecidablePred innerPredicate]
-    (hquery : ∀ input initialState,
-      (if outerPredicate input then (1 : ENNReal) else 0) ≤
-        expectedSimulatedQueryCount inner innerPredicate
-          (middle input) initialState)
-    (computation : OracleComp spec₁ α) (initialState : state) :
-    expectedSimulatedQueryCount (inner ∘ₛ middle) outerPredicate
-        computation initialState ≤
-      expectedSimulatedQueryCount inner innerPredicate
-        (simulateQ middle computation) initialState := by
-  induction computation using OracleComp.inductionOn generalizing initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      rw [expectedSimulatedQueryCount_query_bind, simulateQ_bind,
-        simulateQ_query, expectedSimulatedQueryCount_bind]
-      simp only [OracleQuery.input_query, OracleQuery.cont_query, id_map,
-        QueryImpl.apply_compose]
-      apply add_le_add (hquery input initialState)
-      apply ENNReal.tsum_le_tsum
-      intro result
-      gcongr
-      exact ih result.1 result.2
 
 /-- A resource that grows by at most one on each matching interpreted query has expected final
 value at most its initial value plus the expected matching-query count. -/
