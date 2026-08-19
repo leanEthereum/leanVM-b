@@ -60,18 +60,6 @@ theorem trajectoryProgrammedGlobalChainKeygen_support_table
   exact (mem_support_iff_of_evalDist_eq
     evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed result).mpr hresult
 
-theorem evalDist_trajectoryProgrammedGlobalChainKeygen_table_eq_uniform :
-    evalDist (ProgrammedGlobalChainKeygenView.table <$>
-      trajectoryProgrammedGlobalChainKeygen) =
-    evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
-  unfold trajectoryProgrammedGlobalChainKeygen
-  calc
-    _ = evalDist programmedAllChainTrajectoryKeygenTableOnly := by
-      simp [programmedAllChainTrajectoryKeygenTableOnly,
-        Functor.map_map, eraseAllChainTrajectories]
-    _ = evalDist ($ᵗ (GlobalChainValueIndex → Digest)) :=
-      evalDist_programmedAllChainTrajectoryKeygenTableOnly_eq_uniform
-
 abbrev GlobalChainActionTracedResult :=
   ((ProgrammedGlobalChainKeygenView × (GameOutcome × QueryCache HashSpec)) ×
     AttackerActionTrace)

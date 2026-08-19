@@ -5,14 +5,6 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity.CappedChain
 
-noncomputable local instance globalHighSampleableEdges :
-    SampleableType (GlobalChainEdgeIndex → Digest) :=
-  SampleableType.ofFintype (GlobalChainEdgeIndex → Digest)
-
-noncomputable def globalChainEdgeHighTableOfTape
-    (outputs : List HashOutput) : GlobalChainEdgeIndex → Digest :=
-  globalChainEdgeTableOfTape (outputs.map XmssSecurity.hashOutputHigh)
-
 noncomputable def globalChainEdgeHighTableOfCache
     (cache : QueryCache HashSpec) (parameter : PublicParameter)
     (table : GlobalChainValueIndex → Digest) :
