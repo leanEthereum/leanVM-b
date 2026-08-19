@@ -1,7 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalFirstLaneErasure
 import XmssSecurity.Proof.CappedEncodingActionTrace
-import XmssSecurity.Proof.CappedGlobalChainHighPublicHit
-import XmssSecurity.Proof.GlobalWinningChainValueRevealed
 
 open OracleComp OracleSpec
 
@@ -9,237 +7,6 @@ namespace XmssSecurity.CappedChain
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 2000000
-
-def hashOutputOfDigest (digest : Digest) : HashOutput :=
-  digest.zeroExtend hashOutputBits
-
-def reconstructedHashEncodingActionFrom
-    (epoch : Option Epoch) (digest : Digest) :
-    Option EncodingMonitor.ObservedAction :=
-  epoch.map fun epoch => .query epoch (hashOutputOfDigest digest)
-
-noncomputable def reconstructedHashEncodingAction?
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (input : HashInput) : Option EncodingMonitor.ObservedAction :=
-  reconstructedHashEncodingActionFrom
-    (encodingInputEpoch? parameter input)
-    (Concrete.CacheView.digestAt cache input)
-
-noncomputable def reconstructedSignEncodingAction?
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (request : SignRequest) (signature : Signature) :
-    Option EncodingMonitor.ObservedAction :=
-  let input := Concrete.CacheView.encodingInput parameter request.epoch
-    (request.message, signature.randomness)
-  some (.sign request.epoch
-    (hashOutputOfDigest (Concrete.CacheView.digestAt cache input)))
-
-noncomputable def reconstructedAttackerEncodingAction?
-    (parameter : PublicParameter) (cache : QueryCache HashSpec) :
-    AttackerAction → Option EncodingMonitor.ObservedAction
-  | .hash input => reconstructedHashEncodingAction? parameter cache input
-  | .sign _request none => none
-  | .sign request (some signature) =>
-      reconstructedSignEncodingAction? parameter cache request signature
-
-def EncodingActionReconstructedBy
-    (parameter : PublicParameter) (cache : QueryCache HashSpec) :
-    EncodingMonitor.ObservedAction → AttackerAction → Prop
-  | .query epoch output, .hash input =>
-      encodingInputEpoch? parameter input = some epoch ∧
-        ∃ cached, cache input = some cached ∧
-          truncateHash output = truncateHash cached
-  | .sign epoch output, .sign request (some signature) =>
-      epoch = request.epoch ∧
-        ∃ cached,
-          cache (Concrete.CacheView.encodingInput parameter request.epoch
-            (request.message, signature.randomness)) = some cached ∧
-          truncateHash output = truncateHash cached
-  | _, _ => False
-
-def EncodingTraceReconstructedBy
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (encodingTrace : EncodingActionTrace)
-    (attackerTrace : AttackerActionTrace) : Prop :=
-  List.SublistForall₂ (EncodingActionReconstructedBy parameter cache)
-    encodingTrace attackerTrace
-
-theorem EncodingActionReconstructedBy.mono
-    {parameter : PublicParameter} {left right : QueryCache HashSpec}
-    (hle : left ≤ right) {encodingAction : EncodingMonitor.ObservedAction}
-    {attackerAction : AttackerAction}
-    (hrel : EncodingActionReconstructedBy parameter left encodingAction
-      attackerAction) :
-    EncodingActionReconstructedBy parameter right encodingAction
-      attackerAction := by
-  cases encodingAction with
-  | query epoch output =>
-      cases attackerAction with
-      | hash input =>
-          obtain ⟨hepoch, cached, hcached, hdigest⟩ := hrel
-          exact ⟨hepoch, cached, hle hcached, hdigest⟩
-      | sign request signature => cases hrel
-  | sign epoch output =>
-      cases attackerAction with
-      | hash input => cases hrel
-      | sign request signature =>
-          cases signature with
-          | none => cases hrel
-          | some signature =>
-              obtain ⟨hepoch, cached, hcached, hdigest⟩ := hrel
-              exact ⟨hepoch, cached, hle hcached, hdigest⟩
-
-theorem EncodingTraceReconstructedBy.mono
-    {parameter : PublicParameter} {left right : QueryCache HashSpec}
-    (hle : left ≤ right) {encodingTrace : EncodingActionTrace}
-    {attackerTrace : AttackerActionTrace}
-    (hrel : EncodingTraceReconstructedBy parameter left encodingTrace
-      attackerTrace) :
-    EncodingTraceReconstructedBy parameter right encodingTrace
-      attackerTrace := by
-  induction hrel with
-  | nil => exact List.SublistForall₂.nil
-  | cons hhead htail ih =>
-      exact List.SublistForall₂.cons (hhead.mono hle) ih
-  | cons_right htail ih =>
-      exact List.SublistForall₂.cons_right ih
-
-theorem encodingObservation?_reconstructedBy
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (initialState finalState : QueryCache HashSpec × SigningCacheTrace)
-    (output : (OracleWorld + SigningSpec).Range input)
-    (observation : EncodingMonitor.ObservedAction)
-    (hbase : (output, finalState) ∈ support
-      ((cappedCacheTracedMappedAdversaryImpl publicKey secretKey input).run
-        initialState))
-    (hobs : encodingObservation? secretKey input initialState output finalState =
-      some observation) :
-    ∃ attackerAction,
-      attackerActionFragment input output = [attackerAction] ∧
-      EncodingActionReconstructedBy secretKey.parameter finalState.1
-        observation attackerAction := by
-  cases input with
-  | inl worldInput =>
-      cases worldInput with
-      | inl uniformInput =>
-          simp [encodingObservation?] at hobs
-      | inr hashInput =>
-          cases hfresh : initialState.1 hashInput with
-          | some cached =>
-              simp [encodingObservation?, hfresh] at hobs
-          | none =>
-              cases hepoch : encodingInputEpoch? secretKey.parameter hashInput with
-              | none =>
-                  simp [encodingObservation?, hfresh, hepoch] at hobs
-              | some epoch =>
-                  have hraw :=
-                    cappedCacheTracedMappedAdversaryImpl_query_base_support
-                      publicKey secretKey (.inl (.inr hashInput)) initialState
-                        (output, finalState) hbase
-                  change (output, finalState.1) ∈ support
-                    ((randomOracle (spec := HashSpec) hashInput).run
-                      initialState.1) at hraw
-                  rw [QueryImpl.withCaching_run_none _ hfresh, support_map] at hraw
-                  obtain ⟨sampled, _hsampled, heq⟩ := hraw
-                  have houtput : sampled = output := congrArg Prod.fst heq
-                  have hcacheEq : initialState.1.cacheQuery hashInput sampled =
-                      finalState.1 := congrArg Prod.snd heq
-                  subst output
-                  simp [encodingObservation?, hfresh, hepoch] at hobs
-                  subst observation
-                  refine ⟨.hash hashInput, rfl, hepoch, sampled, ?_, rfl⟩
-                  rw [← hcacheEq]
-                  exact QueryCache.cacheQuery_self initialState.1 hashInput sampled
-  | inr request =>
-      cases output with
-      | none => simp [encodingObservation?] at hobs
-      | some signature =>
-          let signedInput := Concrete.CacheView.encodingInput
-            secretKey.parameter request.epoch
-              (request.message, signature.randomness)
-          cases hfresh : initialState.1 signedInput with
-          | some cached =>
-              simp [encodingObservation?, signedInput, hfresh] at hobs
-          | none =>
-              cases hcached : finalState.1 signedInput with
-              | none =>
-                  simp [encodingObservation?, signedInput, hfresh, hcached] at hobs
-              | some cached =>
-                  simp [encodingObservation?, signedInput, hfresh, hcached] at hobs
-                  subst observation
-                  refine ⟨.sign request (some signature), rfl, rfl, cached, ?_, rfl⟩
-                  exact hcached
-
-theorem reconstructedAttackerEncodingAction?_hash_eq_of_cachesAgreeOn
-    (parameter : PublicParameter) (left right : QueryCache HashSpec)
-    (hagrees : HashCachesAgreeOn
-      (GlobalSigningComparableHashInput parameter) left right)
-    (input : HashInput) :
-    reconstructedHashEncodingAction? parameter left input =
-      reconstructedHashEncodingAction? parameter right input := by
-  cases hepoch : encodingInputEpoch? parameter input with
-  | none =>
-      unfold reconstructedHashEncodingAction?
-      rw [hepoch]
-      rfl
-  | some epoch =>
-      obtain ⟨payload, hpayload⟩ :=
-        exists_encodingInput_of_encodingInputEpoch?_eq_some
-          parameter input epoch hepoch
-      subst input
-      have hcache :
-          left (Concrete.CacheView.encodingInput parameter epoch payload) =
-            right (Concrete.CacheView.encodingInput parameter epoch payload) :=
-        hagrees _ ⟨epoch, payload.1, payload.2, rfl⟩
-      have hdigest :
-          Concrete.CacheView.digestAt left
-              (Concrete.CacheView.encodingInput parameter epoch payload) =
-            Concrete.CacheView.digestAt right
-              (Concrete.CacheView.encodingInput parameter epoch payload) := by
-        unfold Concrete.CacheView.digestAt
-        rw [hcache]
-      unfold reconstructedHashEncodingAction?
-      rw [hepoch]
-      rw [hdigest]
-
-theorem reconstructedSignEncodingAction?_eq_of_cachesAgreeOn
-    (parameter : PublicParameter) (left right : QueryCache HashSpec)
-    (hagrees : HashCachesAgreeOn
-      (GlobalSigningComparableHashInput parameter) left right)
-    (request : SignRequest) (signature : Signature) :
-    reconstructedSignEncodingAction? parameter left request signature =
-      reconstructedSignEncodingAction? parameter right request signature := by
-  let input := Concrete.CacheView.encodingInput parameter request.epoch
-    (request.message, signature.randomness)
-  have hcache : left input = right input :=
-    hagrees input ⟨request.epoch, request.message,
-      signature.randomness, rfl⟩
-  have hdigest : Concrete.CacheView.digestAt left input =
-      Concrete.CacheView.digestAt right input := by
-    unfold Concrete.CacheView.digestAt
-    rw [hcache]
-  unfold reconstructedSignEncodingAction?
-  dsimp only
-  rw [hdigest]
-
-theorem reconstructedAttackerEncodingAction?_eq_of_cachesAgreeOn
-    (parameter : PublicParameter) (left right : QueryCache HashSpec)
-    (hagrees : HashCachesAgreeOn
-      (GlobalSigningComparableHashInput parameter) left right)
-    (action : AttackerAction) :
-    reconstructedAttackerEncodingAction? parameter left action =
-      reconstructedAttackerEncodingAction? parameter right action := by
-  cases action with
-  | hash input =>
-      exact reconstructedAttackerEncodingAction?_hash_eq_of_cachesAgreeOn
-        parameter left right hagrees input
-  | sign request signature =>
-      cases signature with
-      | none => rfl
-      | some signature =>
-          exact reconstructedSignEncodingAction?_eq_of_cachesAgreeOn
-            parameter left right hagrees request signature
 
 def appendAttackerActionTrace
     (input : (OracleWorld + SigningSpec).Domain)
@@ -419,7 +186,7 @@ theorem cappedBothTracedMappedAdversaryImpl_actionProjection
   unfold actionTracedStateImpl
   simp only [StateT.run_mk, map_bind]
   rw [← hbase']
-  simp only [bind_map_left, Functor.map_map, map_pure]
+  simp only [bind_map_left, map_pure]
   rfl
 
 abbrev CappedBothTraceExecution :=
@@ -588,7 +355,7 @@ theorem cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection
   intro keyResult
   rw [← cappedDetailedGameAfterKeygenWithBothTraces_encodingProjection
     adversary keyResult.1.1 keyResult.1.2 keyResult.2]
-  simp [Functor.map_map]
+  simp
 
 theorem cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection_eq
     (adversary : Adversary Concrete.scheme) :
