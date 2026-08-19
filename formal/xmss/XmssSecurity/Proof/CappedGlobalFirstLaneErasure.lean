@@ -16,11 +16,6 @@ noncomputable instance (input :
       input) := by
   cases input <;> infer_instance
 
-noncomputable instance globalRevealProbeWorldIsUniformSpec :
-    IsUniformSpec
-      (RevealProbeOracleSimulation.World GlobalChainValueIndex) :=
-  IsUniformSpec.ofFintypeInhabited _
-
 noncomputable def globalFirstLaneEraseImpl :
     QueryImpl GlobalFirstLaneWorld
       (OracleComp
