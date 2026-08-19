@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.FirstLaneEagerSimulation
-import XmssSecurity.Proof.CausalProbeEnforcement
+import XmssSecurity.Proof.RunObservedAppend
 
 open OracleComp OracleSpec
 
