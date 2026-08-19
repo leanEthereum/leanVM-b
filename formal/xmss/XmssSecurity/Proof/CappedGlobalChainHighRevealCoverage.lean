@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalChainHighWholeGame
+import XmssSecurity.Proof.CappedChain.ReturnedChainValueCoverage
 
 open OracleComp OracleSpec
 

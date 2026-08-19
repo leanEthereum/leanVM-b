@@ -2,6 +2,7 @@ import XmssSecurity.Proof.CappedGlobalChainHighSigningReplay
 import XmssSecurity.Proof.CappedGlobalChainHighKeygenRelation
 import XmssSecurity.Proof.CappedGlobalCausalUniformTrace
 import XmssSecurity.Proof.CappedChain.SourceDirectTrace
+import XmssSecurity.Proof.UntilBadSimulation
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational

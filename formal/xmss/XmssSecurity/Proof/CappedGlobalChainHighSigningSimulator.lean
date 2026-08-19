@@ -4,6 +4,40 @@ import XmssSecurity.Proof.StatementLemmas
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+namespace XmssSecurity
+
+theorem Concrete.keygen_signWithEncoding_eq_base
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeyResult : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+    (hstable : TreeCacheStable keyResult.1.2.parameter
+      keyResult.1.2.chainStart keyResult.2)
+    (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
+    (epoch : Epoch) (randomness : Randomness) (encoding : Encoding) :
+    Concrete.CacheReplay.signWithEncoding largerCache keyResult.1.2
+        epoch randomness encoding =
+      Concrete.CacheReplay.signWithEncoding keyResult.2 keyResult.1.2
+        epoch randomness encoding := by
+  unfold Concrete.CacheReplay.signWithEncoding
+  congr 1
+  · funext chain
+    calc
+      Concrete.CacheReplay.signedChainValues largerCache keyResult.1.2
+          epoch encoding chain =
+        keygenChainValueTable keyResult.2 keyResult.1.2 chain
+          (epoch, encoding chain) :=
+        Concrete.CacheReplay.signWithEncoding_chainValue_eq_keygenChainValueTable
+          keyResult hkeyResult largerCache hle epoch randomness encoding chain
+      _ = Concrete.CacheReplay.signedChainValues keyResult.2 keyResult.1.2
+          epoch encoding chain :=
+        (Concrete.CacheReplay.signWithEncoding_chainValue_eq_keygenChainValueTable
+          keyResult hkeyResult keyResult.2 le_rfl epoch randomness encoding
+            chain).symm
+  · exact (TreeCacheStable.authenticationPath_eq keyResult.1.2 keyResult.2
+      hstable largerCache hle epoch).symm
+
+end XmssSecurity
+
 namespace XmssSecurity.CappedChain
 
 noncomputable def globalFilteredCausalSigningAttempt

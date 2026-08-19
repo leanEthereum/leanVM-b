@@ -358,8 +358,6 @@ theorem globalSigningExactMonitoredStateRelation_initial
       hleftSupport hrightSupport
   · rfl
 
-theorem relTriple_sourceGlobalExact_globalHighExactMonitored_detailedExecution
-
 def sourceGlobalExactErasedExecution
     (result : (Forgery × Bool) × SourceExactTracedState) :
     (Forgery × Bool) × SourceTracedState :=
@@ -543,8 +541,6 @@ theorem globalHighExactErasedResult_mem_support
       support (globalHighMonitoredProgram adversary) := by
   rw [← globalHighExactMonitoredProgram_projection, support_map]
   exact ⟨right, hright, rfl⟩
-
-theorem relTriple_sourceGlobalExact_globalHighExactMonitored_program
 
 def sourceGlobalExactExecutionResult
     (keyView : ProgrammedGlobalChainKeygenView)

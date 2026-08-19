@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedEncodingOracleSimulation
-import XmssSecurity.Proof.EncodingQueryBound
+import XmssSecurity.Proof.EncodingQueryAccounting
 
 open OracleComp OracleSpec
 

@@ -1,6 +1,6 @@
 import XmssSecurity.Proof.CappedSigningCacheTrace
 import XmssSecurity.Proof.BoundedSignProbability
-import XmssSecurity.Proof.EncodingPrehitProbability
+import XmssSecurity.Proof.EncodingPrehit
 import XmssSecurity.Proof.PrecomputedBoundedSignProbability
 
 open OracleComp OracleSpec ENNReal

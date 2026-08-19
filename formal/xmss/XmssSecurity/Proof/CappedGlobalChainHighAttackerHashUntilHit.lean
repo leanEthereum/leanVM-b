@@ -1,4 +1,6 @@
+import VCVio.ProgramLogic.Relational.FromUnary
 import XmssSecurity.Proof.CappedGlobalChainHighHashRevealCoupling
+import XmssSecurity.Proof.RunObservedAppend
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -43,7 +45,7 @@ theorem globalRunObserved_probe_hit_hidden
       (RevealProbeOracleSimulation.ObservedAction.probe index target :: suffix) =
         true := by
   rw [RevealProbeOracleSimulation.runObserved, hhidden]
-  apply RevealProbeOracleSimulation.runObserved_eq_true_of_tableHits
+  apply RevealProbeOracleSimulation.runObserved_eq_true_of_initial_tableHit
   unfold RevealProbeOracleSimulation.tableHits
   simp only [decide_eq_true_eq]
   refine ⟨index, ?_⟩

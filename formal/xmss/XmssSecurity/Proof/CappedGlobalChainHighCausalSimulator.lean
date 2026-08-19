@@ -78,6 +78,90 @@ theorem globalChainInputProbe?_leafInput
     simp at hdomain
   · rfl
 
+def FilteredCacheExtensionRelation
+    (leftBase left right : QueryCache HashSpec) : Prop :=
+  ∀ input,
+    left input = right input ∨
+      (left input = leftBase input ∧ right input = none)
+
+theorem FilteredCacheExtensionRelation.right_le_left
+    {leftBase left right : QueryCache HashSpec}
+    (hrel : FilteredCacheExtensionRelation leftBase left right) :
+    right ≤ left := by
+  intro input output hright
+  rcases hrel input with hagrees | ⟨_hbase, hnone⟩
+  · rw [hagrees]
+    exact hright
+  · rw [hnone] at hright
+    simp at hright
+
+theorem FilteredCacheExtensionRelation.cacheQuery
+    {leftBase left right : QueryCache HashSpec}
+    (hrel : FilteredCacheExtensionRelation leftBase left right)
+    (input : HashInput) (output : HashOutput) :
+    FilteredCacheExtensionRelation leftBase
+      (left.cacheQuery input output) (right.cacheQuery input output) := by
+  intro candidate
+  by_cases heq : candidate = input
+  · subst candidate
+    simp
+  · rw [QueryCache.cacheQuery_of_ne left output heq,
+      QueryCache.cacheQuery_of_ne right output heq]
+    exact hrel candidate
+
+theorem relTriple_randomOracle_run_of_current_eq_filtered
+    (inputs : HashInput → Prop)
+    (leftBase left right : QueryCache HashSpec)
+    (input : HashInput) (hcurrent : left input = right input)
+    (hagrees : HashCachesAgreeOn inputs left right)
+    (hfiltered : FilteredCacheExtensionRelation leftBase left right) :
+    RelTriple
+      ((randomOracle input).run left)
+      ((randomOracle input).run right)
+      (fun leftResult rightResult =>
+        leftResult.1 = rightResult.1 ∧
+          HashCachesAgreeOn inputs leftResult.2 rightResult.2 ∧
+          left ≤ leftResult.2 ∧ right ≤ rightResult.2 ∧
+          FilteredCacheExtensionRelation leftBase
+            leftResult.2 rightResult.2) := by
+  cases hleft : left input with
+  | none =>
+      have hright : right input = none := by
+        rw [← hcurrent]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_none _ hleft,
+        QueryImpl.withCaching_run_none _ hright,
+        map_eq_bind_pure_comp, map_eq_bind_pure_comp]
+      apply relTriple_bind (relTriple_refl ($ᵗ HashOutput))
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      exact relTriple_pure_pure ⟨rfl,
+        HashCachesAgreeOn.cacheQuery inputs left right hagrees
+          input leftOutput,
+        QueryCache.le_cacheQuery left hleft,
+        QueryCache.le_cacheQuery right hright,
+        hfiltered.cacheQuery input leftOutput⟩
+  | some output =>
+      have hright : right input = some output := by
+        rw [← hcurrent]
+        exact hleft
+      rw [randomOracle, QueryImpl.withCaching_run_some _ hleft,
+        QueryImpl.withCaching_run_some _ hright]
+      exact relTriple_pure_pure ⟨rfl, hagrees, le_rfl, le_rfl, hfiltered⟩
+
+theorem simulate_eagerTrace_globalCausalHashQuery
+    (table : GlobalChainValueIndex → Digest) (input : HashInput)
+    (state : GlobalCausalHashState) :
+    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+      ((globalCausalHashQuery input).run state)).run =
+      (fun result : HashOutput × QueryCache HashSpec =>
+        ((result.1, state.setCache result.2),
+          ([] : RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))) <$>
+        ((randomOracle input).run state.cache) := by
+  rw [globalCausalHashQuery_run, simulateQ_map, WriterT.run_map',
+    RevealProbeOracleSimulation.simulate_eagerTrace_liftProbComp]
+  simp [Functor.map_map]
+
 def GlobalFilteredCausalStateRelation
     (left : ProgrammedGlobalChainKeygenView)
     (right : ProgrammedGlobalChainKeygenView ×
