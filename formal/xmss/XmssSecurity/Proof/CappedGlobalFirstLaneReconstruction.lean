@@ -13,65 +13,6 @@ set_option maxHeartbeats 2000000
 def hashOutputOfDigest (digest : Digest) : HashOutput :=
   digest.zeroExtend hashOutputBits
 
-@[simp]
-theorem truncateHash_hashOutputOfDigest (digest : Digest) :
-    truncateHash (hashOutputOfDigest digest) = digest := by
-  apply BitVec.eq_of_getLsbD_eq
-  intro index
-  by_cases hi : index < digestBits
-  · have hwide : index < digestBits + digestBits :=
-      lt_of_lt_of_le hi (Nat.le_add_right digestBits digestBits)
-    simp [hashOutputOfDigest, truncateHash, splitHashOutput, hwide,
-      BitVec.getLsbD, hi]
-  · simp [hashOutputOfDigest, truncateHash, splitHashOutput,
-      BitVec.getLsbD, hi]
-
-def normalizedEncodingAction : EncodingMonitor.ObservedAction →
-    EncodingMonitor.ObservedAction
-  | .query epoch output =>
-      .query epoch (hashOutputOfDigest (truncateHash output))
-  | .sign epoch output =>
-      .sign epoch (hashOutputOfDigest (truncateHash output))
-
-def normalizedEncodingTrace (trace : EncodingActionTrace) :
-    EncodingActionTrace :=
-  trace.map normalizedEncodingAction
-
-theorem cappedEncodingApplyObserved_normalizedEncodingAction
-    (state : EncodingMonitor.State)
-    (action : EncodingMonitor.ObservedAction) :
-    CappedEncodingMonitor.State.applyObserved state
-        (normalizedEncodingAction action) =
-      CappedEncodingMonitor.State.applyObserved state action := by
-  cases action with
-  | query epoch output =>
-      simp only [normalizedEncodingAction,
-        CappedEncodingMonitor.State.applyObserved,
-        truncateHash_hashOutputOfDigest]
-  | sign epoch output =>
-      simp only [normalizedEncodingAction,
-        CappedEncodingMonitor.State.applyObserved,
-        truncateHash_hashOutputOfDigest]
-
-theorem cappedEncodingRunObserved_normalizedEncodingTrace
-    (state : EncodingMonitor.State) (trace : EncodingActionTrace) :
-    CappedEncodingMonitor.runObserved state (normalizedEncodingTrace trace) =
-      CappedEncodingMonitor.runObserved state trace := by
-  induction trace generalizing state with
-  | nil => rfl
-  | cons action trace ih =>
-      rw [normalizedEncodingTrace, List.map_cons]
-      simp only [CappedEncodingMonitor.runObserved]
-      rw [cappedEncodingApplyObserved_normalizedEncodingAction]
-      cases happly : CappedEncodingMonitor.State.applyObserved state action with
-      | none => rfl
-      | some result =>
-          rcases result with ⟨nextState, hit⟩
-          simp only
-          change (hit || CappedEncodingMonitor.runObserved nextState
-              (normalizedEncodingTrace trace)) = _
-          rw [ih]
-
 def reconstructedHashEncodingActionFrom
     (epoch : Option Epoch) (digest : Digest) :
     Option EncodingMonitor.ObservedAction :=
@@ -100,11 +41,6 @@ noncomputable def reconstructedAttackerEncodingAction?
   | .sign _request none => none
   | .sign request (some signature) =>
       reconstructedSignEncodingAction? parameter cache request signature
-
-noncomputable def reconstructedAttackerEncodingTrace
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (trace : AttackerActionTrace) : EncodingActionTrace :=
-  trace.filterMap (reconstructedAttackerEncodingAction? parameter cache)
 
 def EncodingActionReconstructedBy
     (parameter : PublicParameter) (cache : QueryCache HashSpec) :
@@ -167,101 +103,6 @@ theorem EncodingTraceReconstructedBy.mono
       exact List.SublistForall₂.cons (hhead.mono hle) ih
   | cons_right htail ih =>
       exact List.SublistForall₂.cons_right ih
-
-theorem EncodingTraceReconstructedBy.append_right
-    {parameter : PublicParameter} {cache : QueryCache HashSpec}
-    {encodingTrace : EncodingActionTrace}
-    {attackerTrace : AttackerActionTrace}
-    (hrel : EncodingTraceReconstructedBy parameter cache encodingTrace
-      attackerTrace) (suffix : AttackerActionTrace) :
-    EncodingTraceReconstructedBy parameter cache encodingTrace
-      (attackerTrace ++ suffix) := by
-  rw [EncodingTraceReconstructedBy, List.sublistForall₂_iff] at hrel ⊢
-  obtain ⟨witness, hfor, hsub⟩ := hrel
-  exact ⟨witness, hfor,
-    hsub.trans (List.sublist_append_left attackerTrace suffix)⟩
-
-theorem EncodingTraceReconstructedBy.snoc
-    {parameter : PublicParameter} {cache : QueryCache HashSpec}
-    {encodingTrace : EncodingActionTrace}
-    {attackerTrace : AttackerActionTrace}
-    (hrel : EncodingTraceReconstructedBy parameter cache encodingTrace
-      attackerTrace)
-    {encodingAction : EncodingMonitor.ObservedAction}
-    {attackerAction : AttackerAction}
-    (haction : EncodingActionReconstructedBy parameter cache encodingAction
-      attackerAction) :
-    EncodingTraceReconstructedBy parameter cache
-      (encodingTrace ++ [encodingAction])
-      (attackerTrace ++ [attackerAction]) := by
-  rw [EncodingTraceReconstructedBy, List.sublistForall₂_iff] at hrel ⊢
-  obtain ⟨witness, hfor, hsub⟩ := hrel
-  refine ⟨witness ++ [attackerAction],
-    List.rel_append hfor (List.Forall₂.cons haction List.Forall₂.nil), ?_⟩
-  exact hsub.append (List.Sublist.refl [attackerAction])
-
-theorem EncodingActionReconstructedBy.reconstructed_eq
-    {parameter : PublicParameter} {cache : QueryCache HashSpec}
-    {encodingAction : EncodingMonitor.ObservedAction}
-    {attackerAction : AttackerAction}
-    (hrel : EncodingActionReconstructedBy parameter cache encodingAction
-      attackerAction) :
-    reconstructedAttackerEncodingAction? parameter cache attackerAction =
-      some (normalizedEncodingAction encodingAction) := by
-  cases encodingAction with
-  | query epoch output =>
-      cases attackerAction with
-      | hash input =>
-          obtain ⟨hepoch, cached, hcached, hdigest⟩ := hrel
-          have hview : Concrete.CacheView.digestAt cache input =
-              truncateHash cached :=
-            Concrete.CacheView.digestAt_eq_of_cache_eq_some hcached
-          simp only [reconstructedAttackerEncodingAction?,
-            reconstructedHashEncodingAction?, hepoch,
-            reconstructedHashEncodingActionFrom, Option.map_some,
-            normalizedEncodingAction, Option.some.injEq]
-          rw [hview, hdigest]
-      | sign request signature => cases hrel
-  | sign epoch output =>
-      cases attackerAction with
-      | hash input => cases hrel
-      | sign request signature =>
-          cases signature with
-          | none => cases hrel
-          | some signature =>
-              obtain ⟨hepoch, cached, hcached, hdigest⟩ := hrel
-              subst epoch
-              have hview : Concrete.CacheView.digestAt cache
-                    (Concrete.CacheView.encodingInput parameter request.epoch
-                      (request.message, signature.randomness)) =
-                  truncateHash cached :=
-                Concrete.CacheView.digestAt_eq_of_cache_eq_some hcached
-              simp only [reconstructedAttackerEncodingAction?,
-                reconstructedSignEncodingAction?, normalizedEncodingAction,
-                Option.some.injEq]
-              rw [hview, hdigest]
-
-theorem EncodingTraceReconstructedBy.normalized_sublist
-    {parameter : PublicParameter} {cache : QueryCache HashSpec}
-    {encodingTrace : EncodingActionTrace}
-    {attackerTrace : AttackerActionTrace}
-    (hrel : EncodingTraceReconstructedBy parameter cache encodingTrace
-      attackerTrace) :
-    (normalizedEncodingTrace encodingTrace).Sublist
-      (reconstructedAttackerEncodingTrace parameter cache attackerTrace) := by
-  induction hrel with
-  | nil => exact List.nil_sublist _
-  | @cons encodingAction attackerAction encodingTrace attackerTrace
-      hhead htail ih =>
-      unfold normalizedEncodingTrace reconstructedAttackerEncodingTrace
-      simp only [List.map_cons, List.filterMap_cons, hhead.reconstructed_eq]
-      exact ih.cons_cons _
-  | @cons_right attackerAction encodingTrace attackerTrace htail ih =>
-      unfold reconstructedAttackerEncodingTrace
-      simp only [List.filterMap_cons]
-      cases reconstructedAttackerEncodingAction? parameter cache attackerAction with
-      | none => exact ih
-      | some action => exact ih.cons action
 
 theorem encodingObservation?_reconstructedBy
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -329,224 +170,6 @@ theorem encodingObservation?_reconstructedBy
                   subst observation
                   refine ⟨.sign request (some signature), rfl, rfl, cached, ?_, rfl⟩
                   exact hcached
-
-theorem cappedEncodingTracedMappedAdversaryImpl_query_reconstructedBy
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (initialState : (QueryCache HashSpec × SigningCacheTrace) ×
-      EncodingActionTrace)
-    (attackerTrace : AttackerActionTrace)
-    (result : (OracleWorld + SigningSpec).Range input ×
-      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
-    (hrel : EncodingTraceReconstructedBy secretKey.parameter
-      initialState.1.1 initialState.2 attackerTrace)
-    (hmem : result ∈ support
-      ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
-        initialState)) :
-    EncodingTraceReconstructedBy secretKey.parameter result.2.1.1
-      result.2.2 (attackerTrace ++ attackerActionFragment input result.1) := by
-  rw [cappedEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
-    mem_support_bind_iff] at hmem
-  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  have hbaseSupport :=
-    cappedCacheTracedMappedAdversaryImpl_query_base_support publicKey secretKey
-      input initialState.1 (output, finalState) hbase
-  have hle := cappedUnloggedMappedAdversaryImpl_cache_le publicKey secretKey
-    input initialState.1.1 (output, finalState.1) hbaseSupport
-  have hrel' := hrel.mono hle
-  cases hobs : encodingObservation? secretKey input initialState.1 output
-      finalState with
-  | none =>
-      have htrace : encodingActionTraceUpdate secretKey input initialState.1
-          output finalState initialState.2 = initialState.2 := by
-        simp [encodingActionTraceUpdate, hobs]
-      rw [htrace]
-      exact hrel'.append_right (attackerActionFragment input output)
-  | some observation =>
-      have htrace : encodingActionTraceUpdate secretKey input initialState.1
-          output finalState initialState.2 =
-            initialState.2 ++ [observation] := by
-        simp [encodingActionTraceUpdate, hobs]
-      obtain ⟨attackerAction, hfragment, haction⟩ :=
-        encodingObservation?_reconstructedBy publicKey secretKey input
-          initialState.1 finalState output observation hbase hobs
-      rw [htrace, hfragment]
-      exact hrel'.snoc haction
-
-noncomputable def reconstructedForgeryEncodingTrace
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (forgery : Forgery) : EncodingActionTrace :=
-  let input := Concrete.CacheView.encodingInput parameter forgery.epoch
-    (forgery.message, forgery.signature.randomness)
-  [.query forgery.epoch
-    (hashOutputOfDigest (Concrete.CacheView.digestAt cache input))]
-
-noncomputable def reconstructedEncodingTrace
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (trace : AttackerActionTrace) (forgery : Forgery) :
-    EncodingActionTrace :=
-  reconstructedAttackerEncodingTrace parameter cache trace ++
-    reconstructedForgeryEncodingTrace parameter cache forgery
-
-theorem normalized_appendVerificationEncodingObservation_sublist_reconstructed
-    (secretKey : SecretKey) (forgery : Forgery)
-    (initialCache finalCache : QueryCache HashSpec)
-    (encodingTrace : EncodingActionTrace)
-    (attackerTrace : AttackerActionTrace)
-    (hrel : EncodingTraceReconstructedBy secretKey.parameter initialCache
-      encodingTrace attackerTrace)
-    (hle : initialCache ≤ finalCache) :
-    (normalizedEncodingTrace
-      (appendVerificationEncodingObservation secretKey forgery initialCache
-        finalCache encodingTrace)).Sublist
-      (reconstructedEncodingTrace secretKey.parameter finalCache attackerTrace
-        forgery) := by
-  have hsub := (hrel.mono hle).normalized_sublist
-  let input := Concrete.CacheView.encodingInput secretKey.parameter forgery.epoch
-    (forgery.message, forgery.signature.randomness)
-  unfold appendVerificationEncodingObservation
-  change (normalizedEncodingTrace
-      (if initialCache input = none then
-        match finalCache input with
-        | none => encodingTrace
-        | some output =>
-            encodingTrace ++ [.query forgery.epoch output]
-      else encodingTrace)).Sublist _
-  cases hinitial : initialCache input with
-  | some output =>
-      rw [if_neg (Option.some_ne_none output)]
-      unfold reconstructedEncodingTrace reconstructedForgeryEncodingTrace
-      exact hsub.trans (List.sublist_append_left _ _)
-  | none =>
-      rw [if_pos rfl]
-      cases hfinal : finalCache input with
-      | none =>
-          unfold reconstructedEncodingTrace reconstructedForgeryEncodingTrace
-          exact hsub.trans (List.sublist_append_left _ _)
-      | some output =>
-          have hview : Concrete.CacheView.digestAt finalCache input =
-              truncateHash output :=
-            Concrete.CacheView.digestAt_eq_of_cache_eq_some hfinal
-          unfold reconstructedEncodingTrace reconstructedForgeryEncodingTrace
-          rw [normalizedEncodingTrace, List.map_append, List.map_singleton,
-            normalizedEncodingAction]
-          dsimp only
-          rw [hview]
-          exact hsub.append (List.Sublist.refl _)
-
-noncomputable def sourceGlobalReconstructedEncodingTrace
-    (result : SourceGlobalTracedProgramResult) : EncodingActionTrace :=
-  reconstructedEncodingTrace result.1.secretKey.parameter result.2.2.1
-    result.2.2.2 result.2.1.1
-
-noncomputable def globalHighReconstructedEncodingTrace
-    (result : GlobalHighMonitoredProgramResult) : EncodingActionTrace :=
-  reconstructedEncodingTrace result.1.1.1.secretKey.parameter
-    result.2.2.1.causal.cache result.2.2.2 result.2.1.1
-
-@[simp]
-theorem reconstructedAttackerEncodingTrace_nil
-    (parameter : PublicParameter) (cache : QueryCache HashSpec) :
-    reconstructedAttackerEncodingTrace parameter cache [] = [] := rfl
-
-@[simp]
-theorem reconstructedAttackerEncodingTrace_append
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (left right : AttackerActionTrace) :
-    reconstructedAttackerEncodingTrace parameter cache (left ++ right) =
-      reconstructedAttackerEncodingTrace parameter cache left ++
-        reconstructedAttackerEncodingTrace parameter cache right := by
-  simp [reconstructedAttackerEncodingTrace]
-
-theorem observedSignEpochs_sublist_of_sublist
-    {left right : EncodingActionTrace} (hsub : left.Sublist right) :
-    (EncodingMonitor.observedSignEpochs left).Sublist
-      (EncodingMonitor.observedSignEpochs right) := by
-  induction hsub with
-  | slnil => exact List.Sublist.refl _
-  | cons action hsub ih =>
-      cases action with
-      | query epoch output => exact ih
-      | sign epoch output => exact ih.cons epoch
-  | cons_cons action hsub ih =>
-      cases action with
-      | query epoch output => exact ih
-      | sign epoch output => exact ih.cons_cons epoch
-
-theorem validObservedSignEpochs_sublist
-    (trace : EncodingActionTrace) :
-    (CappedEncodingMonitor.validObservedSignEpochs trace).Sublist
-      (EncodingMonitor.observedSignEpochs trace) := by
-  exact observedSignEpochs_sublist_of_sublist
-    (CappedEncodingMonitor.validActions_sublist trace)
-
-theorem reconstructedAttackerEncodingTrace_signEpochs_sublist
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (trace : AttackerActionTrace) :
-    (EncodingMonitor.observedSignEpochs
-      (reconstructedAttackerEncodingTrace parameter cache trace)).Sublist
-      (trace.toSigningLog.map fun entry => entry.1.epoch) := by
-  induction trace with
-  | nil => exact List.Sublist.refl []
-  | cons action trace ih =>
-      cases action with
-      | hash input =>
-          cases haction : reconstructedHashEncodingAction? parameter cache input with
-          | none =>
-              simpa [reconstructedAttackerEncodingTrace,
-                reconstructedAttackerEncodingAction?, haction,
-                AttackerActionTrace.toSigningLog,
-                AttackerAction.signingEntry?,
-                EncodingMonitor.observedSignEpochs] using ih
-          | some observed =>
-              have hquery : ∃ epoch output,
-                  observed = EncodingMonitor.ObservedAction.query epoch output := by
-                unfold reconstructedHashEncodingAction? at haction
-                unfold reconstructedHashEncodingActionFrom at haction
-                cases hepoch : encodingInputEpoch? parameter input with
-                | none => simp [hepoch] at haction
-                | some epoch =>
-                    simp [hepoch] at haction
-                    exact ⟨epoch, hashOutputOfDigest
-                      (Concrete.CacheView.digestAt cache input), haction.symm⟩
-              obtain ⟨epoch, output, rfl⟩ := hquery
-              simpa [reconstructedAttackerEncodingTrace,
-                reconstructedAttackerEncodingAction?, haction,
-                AttackerActionTrace.toSigningLog,
-                AttackerAction.signingEntry?,
-                EncodingMonitor.observedSignEpochs] using ih
-      | sign request signature =>
-          cases signature with
-          | none =>
-              simpa [reconstructedAttackerEncodingTrace,
-                reconstructedAttackerEncodingAction?,
-                AttackerActionTrace.toSigningLog,
-                AttackerAction.signingEntry?,
-                EncodingMonitor.observedSignEpochs] using ih.cons request.epoch
-          | some signature =>
-              simpa [reconstructedAttackerEncodingTrace,
-                reconstructedAttackerEncodingAction?,
-                reconstructedSignEncodingAction?,
-                AttackerActionTrace.toSigningLog,
-                AttackerAction.signingEntry?,
-                EncodingMonitor.observedSignEpochs] using
-                  ih.cons_cons request.epoch
-
-theorem reconstructedEncodingTrace_validSignEpochs_nodup
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (trace : AttackerActionTrace) (forgery : Forgery)
-    (hnodup : (trace.toSigningLog.map fun entry => entry.1.epoch).Nodup) :
-    (CappedEncodingMonitor.validObservedSignEpochs
-      (reconstructedEncodingTrace parameter cache trace forgery)).Nodup := by
-  apply List.Nodup.sublist ?_ hnodup
-  apply (validObservedSignEpochs_sublist
-    (reconstructedEncodingTrace parameter cache trace forgery)).trans
-  unfold reconstructedEncodingTrace reconstructedForgeryEncodingTrace
-  rw [EncodingMonitor.observedSignEpochs_append]
-  simpa [EncodingMonitor.observedSignEpochs] using
-    reconstructedAttackerEncodingTrace_signEpochs_sublist parameter cache trace
 
 theorem reconstructedAttackerEncodingAction?_hash_eq_of_cachesAgreeOn
     (parameter : PublicParameter) (left right : QueryCache HashSpec)
@@ -617,87 +240,6 @@ theorem reconstructedAttackerEncodingAction?_eq_of_cachesAgreeOn
       | some signature =>
           exact reconstructedSignEncodingAction?_eq_of_cachesAgreeOn
             parameter left right hagrees request signature
-
-theorem reconstructedAttackerEncodingTrace_eq_of_cachesAgreeOn
-    (parameter : PublicParameter) (left right : QueryCache HashSpec)
-    (hagrees : HashCachesAgreeOn
-      (GlobalSigningComparableHashInput parameter) left right)
-    (trace : AttackerActionTrace) :
-    reconstructedAttackerEncodingTrace parameter left trace =
-      reconstructedAttackerEncodingTrace parameter right trace := by
-  unfold reconstructedAttackerEncodingTrace
-  apply List.filterMap_congr
-  intro action _haction
-  exact reconstructedAttackerEncodingAction?_eq_of_cachesAgreeOn
-    parameter left right hagrees action
-
-theorem reconstructedForgeryEncodingTrace_eq_of_cachesAgreeOn
-    (parameter : PublicParameter) (left right : QueryCache HashSpec)
-    (hagrees : HashCachesAgreeOn
-      (GlobalSigningComparableHashInput parameter) left right)
-    (forgery : Forgery) :
-    reconstructedForgeryEncodingTrace parameter left forgery =
-      reconstructedForgeryEncodingTrace parameter right forgery := by
-  let input := Concrete.CacheView.encodingInput parameter forgery.epoch
-    (forgery.message, forgery.signature.randomness)
-  have hcache : left input = right input :=
-    hagrees input ⟨forgery.epoch, forgery.message,
-      forgery.signature.randomness, rfl⟩
-  have hdigest : Concrete.CacheView.digestAt left input =
-      Concrete.CacheView.digestAt right input := by
-    unfold Concrete.CacheView.digestAt
-    rw [hcache]
-  unfold reconstructedForgeryEncodingTrace
-  dsimp only
-  rw [hdigest]
-
-theorem reconstructedEncodingTrace_eq_of_cachesAgreeOn
-    (parameter : PublicParameter) (left right : QueryCache HashSpec)
-    (hagrees : HashCachesAgreeOn
-      (GlobalSigningComparableHashInput parameter) left right)
-    (trace : AttackerActionTrace) (forgery : Forgery) :
-    reconstructedEncodingTrace parameter left trace forgery =
-      reconstructedEncodingTrace parameter right trace forgery := by
-  unfold reconstructedEncodingTrace
-  rw [reconstructedAttackerEncodingTrace_eq_of_cachesAgreeOn
-      parameter left right hagrees trace,
-    reconstructedForgeryEncodingTrace_eq_of_cachesAgreeOn
-      parameter left right hagrees forgery]
-
-theorem sourceGlobalReconstructedEncodingTrace_eq_globalHigh_of_good
-    (adversary : Adversary Concrete.scheme)
-    (left : SourceGlobalTracedProgramResult)
-    (right : GlobalHighMonitoredProgramResult)
-    (hleftSupport : left ∈ support (sourceGlobalTracedProgram adversary))
-    (hrightSupport : right ∈ support (globalHighMonitoredProgram adversary))
-    (hkey : ProgrammedGlobalChainKeygenBaseHighStableRelation left.1 right.1)
-    (hgood : left.2.1 = right.2.1 ∧
-      GlobalMonitoredTracedStateRelation left.1 right.1.1 left.2.2
-        right.2.2) :
-    sourceGlobalReconstructedEncodingTrace left =
-      globalHighReconstructedEncodingTrace right := by
-  have hleftKeySupport :=
-    sourceGlobalTracedProgram_support_keyView adversary left hleftSupport
-  have hrightKeySupport :=
-    (globalHighMonitoredProgram_support_info adversary right hrightSupport).1
-  have hparameter : left.1.secretKey.parameter =
-      right.1.1.1.secretKey.parameter :=
-    (programmedGlobal_secretKey_parameter_eq left.1 right.1 hkey
-      hleftKeySupport hrightKeySupport).symm
-  obtain ⟨_monitor, _hmonitor, _hagrees, _hrevealed, hcausal,
-    _hretained⟩ := hgood.2.1
-  have hcache : HashCachesAgreeOn
-      (GlobalSigningComparableHashInput left.1.secretKey.parameter)
-      left.2.2.1 right.2.2.1.causal.cache := hcausal.1
-  have htrace : left.2.2.2 = right.2.2.2 := hgood.2.2
-  have hforgery : left.2.1.1 = right.2.1.1 :=
-    congrArg Prod.fst hgood.1
-  unfold sourceGlobalReconstructedEncodingTrace
-    globalHighReconstructedEncodingTrace
-  rw [← hparameter, ← htrace, ← hforgery]
-  exact reconstructedEncodingTrace_eq_of_cachesAgreeOn
-    left.1.secretKey.parameter left.2.2.1 right.2.2.1.causal.cache
-      hcache left.2.2.2 left.2.1.1
 
 def appendAttackerActionTrace
     (input : (OracleWorld + SigningSpec).Domain)
@@ -778,30 +320,6 @@ theorem cappedBothTracedMappedAdversaryImpl_eq_actionTracedStateImpl
     QueryImpl.extendState actionTracedStateImpl
   rfl
 
-theorem cappedBothTracedMappedAdversaryImpl_query_reconstructedBy
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (initialState : ((QueryCache HashSpec × SigningCacheTrace) ×
-      EncodingActionTrace) × AttackerActionTrace)
-    (result : (OracleWorld + SigningSpec).Range input ×
-      (((QueryCache HashSpec × SigningCacheTrace) ×
-        EncodingActionTrace) × AttackerActionTrace))
-    (hrel : EncodingTraceReconstructedBy secretKey.parameter
-      initialState.1.1.1 initialState.1.2 initialState.2)
-    (hmem : result ∈ support
-      ((cappedBothTracedMappedAdversaryImpl publicKey secretKey input).run
-        initialState)) :
-    EncodingTraceReconstructedBy secretKey.parameter result.2.1.1.1
-      result.2.1.2 result.2.2 := by
-  rw [cappedBothTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
-    mem_support_bind_iff] at hmem
-  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  exact cappedEncodingTracedMappedAdversaryImpl_query_reconstructedBy
-    publicKey secretKey input initialState.1 initialState.2
-      (output, finalState) hrel hbase
-
 theorem cappedBothTracedMappedAdversaryImpl_query_logs_eq
     (publicKey : PublicKey) (secretKey : SecretKey)
     (input : (OracleWorld + SigningSpec).Domain)
@@ -844,30 +362,6 @@ theorem cappedBothTracedMappedAdversaryImpl_query_logs_eq
   rw [htraceEq', signingCacheTraceUpdate_toSigningLog,
     signingLogUpdate, AttackerActionTrace.toSigningLog_append,
     attackerActionFragment_toSigningLog, hlogs]
-
-theorem cappedBothTracedMappedAdversaryImpl_reconstructedBy
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : ((QueryCache HashSpec × SigningCacheTrace) ×
-      EncodingActionTrace) × AttackerActionTrace)
-    (result : α × (((QueryCache HashSpec × SigningCacheTrace) ×
-      EncodingActionTrace) × AttackerActionTrace))
-    (hrel : EncodingTraceReconstructedBy secretKey.parameter
-      initialState.1.1.1 initialState.1.2 initialState.2)
-    (hmem : result ∈ support
-      ((simulateQ (cappedBothTracedMappedAdversaryImpl publicKey secretKey)
-        computation).run initialState)) :
-    EncodingTraceReconstructedBy secretKey.parameter result.2.1.1.1
-      result.2.1.2 result.2.2 := by
-  exact OracleComp.simulateQ_run_preservesInv
-    (cappedBothTracedMappedAdversaryImpl publicKey secretKey)
-    (fun state => EncodingTraceReconstructedBy secretKey.parameter
-      state.1.1.1 state.1.2 state.2)
-    (by
-      intro input state hstate result hresult
-      exact cappedBothTracedMappedAdversaryImpl_query_reconstructedBy
-        publicKey secretKey input state result hstate hresult)
-    computation initialState hrel result hmem
 
 theorem cappedBothTracedMappedAdversaryImpl_logs_eq
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -936,47 +430,6 @@ abbrev CappedEncodingTraceExecution :=
   GameOutcome × ((QueryCache HashSpec × SigningCacheTrace) ×
     EncodingActionTrace)
 
-noncomputable def sourceDirectTracedDetailedExecutionFrom
-    (adversary : Adversary Concrete.scheme)
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (initialCache : QueryCache HashSpec) :
-    ProbComp ((Forgery × Bool) × SourceTracedState) := do
-  let handled ← (simulateQ
-    (sourceDirectTracedMappedAdversaryImpl publicKey secretKey)
-      (adversary.main publicKey)).run (initialCache, [])
-  let verified ← (simulateQ sourceDirectTracedVerifierImpl
-    (Concrete.scheme.verify publicKey handled.1.epoch
-      handled.1.message handled.1.signature)).run handled.2
-  pure ((handled.1, verified.1), verified.2)
-
-def sourceDirectExecutionResultFrom
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (execution : (Forgery × Bool) × SourceTracedState) :
-    (GameOutcome × QueryCache HashSpec) × AttackerActionTrace :=
-  ((actionTraceOutcome publicKey secretKey
-    (execution.1, execution.2.2), execution.2.1), execution.2.2)
-
-theorem sourceDirectTracedDetailedExecutionFrom_eq_actionTraced
-    (adversary : Adversary Concrete.scheme)
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (initialCache : QueryCache HashSpec) :
-    sourceDirectExecutionResultFrom publicKey secretKey <$>
-        sourceDirectTracedDetailedExecutionFrom adversary publicKey secretKey
-          initialCache =
-      detailedGameAfterKeygenWithActionTrace adversary publicKey secretKey
-        initialCache := by
-  unfold sourceDirectTracedDetailedExecutionFrom
-    detailedGameAfterKeygenWithActionTrace
-    sourceActionTracedDetailedGameAfterKeygen
-  rw [sourceDirectTracedMappedAdversaryImpl_run_eq]
-  simp only [List.nil_append, map_eq_bind_pure_comp, bind_assoc, pure_bind,
-    simulateQ_bind, StateT.run_bind]
-  apply bind_congr
-  intro handled
-  simp only [Function.comp_apply, pure_bind]
-  rw [sourceDirectTracedVerifierImpl_run_eq]
-  simp [sourceDirectExecutionResultFrom, map_eq_bind_pure_comp]
-
 noncomputable def cappedDetailedGameAfterKeygenWithBothTraces
     (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -995,45 +448,6 @@ noncomputable def cappedDetailedGameAfterKeygenWithBothTraces
   pure (⟨publicKey, secretKey, forgery, state.1.1.2.toSigningLog,
       verified.1⟩,
     (((verified.2, state.1.1.2), finalEncodingTrace), state.2))
-
-noncomputable def cappedDetailedGameWithBothTraces
-    (adversary : Adversary Concrete.scheme) :
-    ProbComp CappedBothTraceExecution := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
-  cappedDetailedGameAfterKeygenWithBothTraces adversary keyResult.1.1
-    keyResult.1.2 keyResult.2
-
-theorem cappedDetailedGameAfterKeygenWithBothTraces_normalized_sublist
-    (adversary : Adversary Concrete.scheme)
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (initialCache : QueryCache HashSpec)
-    (result : CappedBothTraceExecution)
-    (hresult : result ∈ support
-      (cappedDetailedGameAfterKeygenWithBothTraces adversary publicKey
-        secretKey initialCache)) :
-    (normalizedEncodingTrace result.2.1.2).Sublist
-      (reconstructedEncodingTrace secretKey.parameter result.2.1.1.1
-        result.2.2 result.1.forgery) := by
-  unfold cappedDetailedGameAfterKeygenWithBothTraces at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨⟨forgery, adversaryState⟩, hadversary, hverifyRest⟩ := hresult
-  rw [mem_support_bind_iff] at hverifyRest
-  obtain ⟨⟨verified, finalCache⟩, hverify, hfinal⟩ := hverifyRest
-  simp only [support_pure, Set.mem_singleton_iff] at hfinal
-  subst result
-  have hreconstructed :=
-    cappedBothTracedMappedAdversaryImpl_reconstructedBy publicKey secretKey
-      (adversary.main publicKey) ((((initialCache, []), []), []))
-      (forgery, adversaryState)
-      List.SublistForall₂.nil hadversary
-  have hle : adversaryState.1.1.1 ≤ finalCache :=
-    xmssRom_cache_le
-      (Concrete.scheme.verify publicKey forgery.epoch forgery.message
-        forgery.signature) adversaryState.1.1.1
-      (verified, finalCache) hverify
-  exact normalized_appendVerificationEncodingObservation_sublist_reconstructed
-    secretKey forgery adversaryState.1.1.1 finalCache adversaryState.1.2
-      adversaryState.2 hreconstructed hle
 
 theorem cappedDetailedGameAfterKeygenWithBothTraces_logs_eq
     (adversary : Adversary Concrete.scheme)
@@ -1080,41 +494,6 @@ theorem cappedDetailedGameAfterKeygenWithBothTraces_outcome_eq_actionTraceOutcom
     simpa using hlogs
   rw [hlogs']
 
-theorem cappedDetailedGameAfterKeygenWithBothTraces_encodingHit_implies_reconstructedHit
-    (adversary : Adversary Concrete.scheme)
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (initialCache : QueryCache HashSpec)
-    (result : CappedBothTraceExecution)
-    (hresult : result ∈ support
-      (cappedDetailedGameAfterKeygenWithBothTraces adversary publicKey
-        secretKey initialCache))
-    (hwinning : WinningOutcomeBadEventOccurs result.2.1.1.1 result.1
-      .encoding)
-    (hhit : CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
-      result.2.1.2 = true) :
-    CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
-      (reconstructedEncodingTrace secretKey.parameter result.2.1.1.1
-        result.2.2 result.1.forgery) = true := by
-  have hsub := cappedDetailedGameAfterKeygenWithBothTraces_normalized_sublist
-    adversary publicKey secretKey initialCache result hresult
-  have hnormalized : CappedEncodingMonitor.runObserved
-      EncodingMonitor.State.empty
-      (normalizedEncodingTrace result.2.1.2) = true := by
-    rw [cappedEncodingRunObserved_normalizedEncodingTrace]
-    exact hhit
-  have hlogs := cappedDetailedGameAfterKeygenWithBothTraces_logs_eq
-    adversary publicKey secretKey initialCache result hresult
-  have hlogNodup :
-      (result.2.2.toSigningLog.map fun entry => entry.1.epoch).Nodup := by
-    have hvalid := hwinning.signingTranscript_valid
-    rw [hlogs] at hvalid
-    exact hvalid
-  have hnodup := reconstructedEncodingTrace_validSignEpochs_nodup
-    secretKey.parameter result.2.1.1.1 result.2.2 result.1.forgery
-      hlogNodup
-  exact CappedEncodingMonitor.runObserved_empty_eq_true_mono_sublist
-    hsub hnodup hnormalized
-
 theorem cappedDetailedGameAfterKeygenWithBothTraces_encodingProjection
     (adversary : Adversary Concrete.scheme)
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -1140,50 +519,6 @@ theorem cappedDetailedGameAfterKeygenWithBothTraces_encodingProjection
   simpa [cappedDetailedGameAfterKeygenWithBothTraces,
     cappedDetailedGameAfterKeygenWithEncodingTrace, finish, map_bind,
     bind_map_left, bind_assoc, Prod.map] using hbound
-
-theorem cappedDetailedGameAfterKeygenWithBothTraces_actionProjection
-    (adversary : Adversary Concrete.scheme)
-    (publicKey : PublicKey) (secretKey : SecretKey)
-    (initialCache : QueryCache HashSpec) :
-    (fun result : CappedBothTraceExecution =>
-        ((actionTraceOutcome publicKey secretKey
-            ((result.1.forgery, result.1.verified), result.2.2),
-          result.2.1.1.1), result.2.2)) <$>
-        cappedDetailedGameAfterKeygenWithBothTraces adversary publicKey
-          secretKey initialCache =
-      detailedGameAfterKeygenWithActionTrace adversary publicKey secretKey
-        initialCache := by
-  let finish : Forgery × SourceTracedState →
-      ProbComp ((GameOutcome × QueryCache HashSpec) ×
-        AttackerActionTrace) := fun handled => do
-    let verified ← (simulateQ sourceDirectTracedVerifierImpl
-      (Concrete.scheme.verify publicKey handled.1.epoch handled.1.message
-        handled.1.signature)).run handled.2
-    pure (sourceDirectExecutionResultFrom publicKey secretKey
-      ((handled.1, verified.1), verified.2))
-  have hprojection := cappedBothTracedMappedAdversaryImpl_actionProjection
-    publicKey secretKey (adversary.main publicKey) (((initialCache, []), [])) []
-  have hbound := congrArg (fun computation => computation >>= finish) hprojection
-  rw [← sourceDirectTracedDetailedExecutionFrom_eq_actionTraced adversary
-    publicKey secretKey initialCache]
-  simpa [cappedDetailedGameAfterKeygenWithBothTraces,
-    sourceDirectTracedDetailedExecutionFrom, finish, map_bind,
-    bind_map_left, bind_assoc, sourceDirectTracedVerifierImpl_run_eq,
-    sourceDirectExecutionResultFrom, Prod.map] using hbound
-
-
-theorem cappedDetailedGameWithBothTraces_encodingProjection
-    (adversary : Adversary Concrete.scheme) :
-    (fun result : CappedBothTraceExecution => (result.1, result.2.1)) <$>
-        cappedDetailedGameWithBothTraces adversary =
-      cappedDetailedGameWithEncodingTrace adversary := by
-  unfold cappedDetailedGameWithBothTraces
-    cappedDetailedGameWithEncodingTrace
-  rw [map_bind]
-  apply bind_congr
-  intro keyResult
-  exact cappedDetailedGameAfterKeygenWithBothTraces_encodingProjection
-    adversary keyResult.1.1 keyResult.1.2 keyResult.2
 
 abbrev CappedBothTraceGameResult :=
   ((PublicKey × SecretKey) × QueryCache HashSpec) ×
@@ -1240,24 +575,6 @@ theorem cappedDetailedGameWithKeygenCacheAndBothTraces_outcome_eq
       (cappedDetailedGameWithKeygenCacheAndBothTraces_support_execution
         adversary result hresult)
 
-theorem cappedDetailedGameWithKeygenCacheAndBothTraces_normalized_sublist
-    (adversary : Adversary Concrete.scheme)
-    (result : CappedBothTraceGameResult)
-    (hresult : result ∈ support
-      (cappedDetailedGameWithKeygenCacheAndBothTraces adversary)) :
-    (normalizedEncodingTrace result.2.2.1.2).Sublist
-      (reconstructedEncodingTrace result.1.1.2.parameter result.2.2.1.1.1
-        result.2.2.2 result.2.1.forgery) := by
-  unfold cappedDetailedGameWithKeygenCacheAndBothTraces at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨keyResult, _hkeyResult, hrest⟩ := hresult
-  rw [mem_support_bind_iff] at hrest
-  obtain ⟨execution, hexecution, hfinal⟩ := hrest
-  simp only [support_pure, Set.mem_singleton_iff] at hfinal
-  subst result
-  exact cappedDetailedGameAfterKeygenWithBothTraces_normalized_sublist
-    adversary keyResult.1.1 keyResult.1.2 keyResult.2 execution hexecution
-
 theorem cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection
     (adversary : Adversary Concrete.scheme) :
     (fun result : CappedBothTraceGameResult =>
@@ -1279,89 +596,5 @@ theorem cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection_eq
         cappedDetailedGameWithKeygenCacheAndBothTraces adversary =
       cappedDetailedGameWithEncodingTrace adversary :=
   cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection adversary
-
-theorem cappedDetailedGameWithKeygenCacheAndBothTraces_actionProjection
-    (adversary : Adversary Concrete.scheme) :
-    (fun result : CappedBothTraceGameResult =>
-        ((result.1,
-          (actionTraceOutcome result.1.1.1 result.1.1.2
-            ((result.2.1.forgery, result.2.1.verified), result.2.2.2),
-            result.2.2.1.1.1)), result.2.2.2)) <$>
-        cappedDetailedGameWithKeygenCacheAndBothTraces adversary =
-      detailedGameWithKeygenCacheAndActionTrace adversary := by
-  unfold cappedDetailedGameWithKeygenCacheAndBothTraces
-    detailedGameWithKeygenCacheAndActionTrace
-  simp only [map_bind]
-  apply bind_congr
-  intro keyResult
-  rw [← cappedDetailedGameAfterKeygenWithBothTraces_actionProjection
-    adversary keyResult.1.1 keyResult.1.2 keyResult.2]
-  simp [Functor.map_map]
-
-theorem cappedDetailedGameWithKeygenCacheAndBothTraces_actionProjection_eq
-    (adversary : Adversary Concrete.scheme) :
-    cappedBothActionProjection <$>
-        cappedDetailedGameWithKeygenCacheAndBothTraces adversary =
-      detailedGameWithKeygenCacheAndActionTrace adversary :=
-  cappedDetailedGameWithKeygenCacheAndBothTraces_actionProjection adversary
-
-def ActionReconstructedFirstLaneEvent
-    (result : CappedActionTraceGameResult) : Prop :=
-  (WinningOutcomeBadEventOccurs result.1.2.2 result.1.2.1 .encoding ∧
-      CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
-        (reconstructedEncodingTrace result.1.2.1.secretKey.parameter
-          result.1.2.2 result.2 result.1.2.1.forgery) = true) ∨
-    GlobalWinningChainValueRevealed result.1.2.2 result.1.2.1
-
-theorem cappedBoth_firstLane_implies_actionReconstructedFirstLane
-    (adversary : Adversary Concrete.scheme)
-    (result : CappedBothTraceGameResult)
-    (hresult : result ∈ support
-      (cappedDetailedGameWithKeygenCacheAndBothTraces adversary))
-    (hfirst :
-      (WinningOutcomeBadEventOccurs
-          (cappedBothEncodingProjection result).2.1.1
-          (cappedBothEncodingProjection result).1 .encoding ∧
-        CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
-          (cappedBothEncodingProjection result).2.2 = true) ∨
-      GlobalWinningChainValueRevealed
-        (cappedBothEncodingProjection result).2.1.1
-        (cappedBothEncodingProjection result).1) :
-    ActionReconstructedFirstLaneEvent (cappedBothActionProjection result) := by
-  have hexecution :=
-    cappedDetailedGameWithKeygenCacheAndBothTraces_support_execution
-      adversary result hresult
-  have houtcome := cappedDetailedGameWithKeygenCacheAndBothTraces_outcome_eq
-    adversary result hresult
-  have houtcome' : result.2.1 =
-      actionTraceOutcome result.1.1.1 result.1.1.2
-        ((result.2.1.forgery, result.2.1.verified), result.2.2.2) := by
-    simpa [cappedBothActionProjection] using houtcome
-  unfold cappedBothEncodingProjection at hfirst
-  change
-    (WinningOutcomeBadEventOccurs result.2.2.1.1.1
-          (actionTraceOutcome result.1.1.1 result.1.1.2
-            ((result.2.1.forgery, result.2.1.verified), result.2.2.2))
-          .encoding ∧
-        CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
-          (reconstructedEncodingTrace result.1.1.2.parameter
-            result.2.2.1.1.1 result.2.2.2 result.2.1.forgery) = true) ∨
-      GlobalWinningChainValueRevealed result.2.2.1.1.1
-        (actionTraceOutcome result.1.1.1 result.1.1.2
-          ((result.2.1.forgery, result.2.1.verified), result.2.2.2))
-  rcases hfirst with hencoding | hchain
-  · apply Or.inl
-    constructor
-    · rw [← houtcome']
-      exact hencoding.1
-    · have hhit :=
-        cappedDetailedGameAfterKeygenWithBothTraces_encodingHit_implies_reconstructedHit
-          adversary result.1.1.1 result.1.1.2 result.1.2 result.2
-            hexecution hencoding.1 hencoding.2
-      exact hhit
-  · apply Or.inr
-    rw [← houtcome']
-    exact hchain
-
 
 end XmssSecurity.CappedChain
