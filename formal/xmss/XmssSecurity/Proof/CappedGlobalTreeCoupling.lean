@@ -6,14 +6,6 @@ open OracleComp.ProgramLogic.Relational
 
 namespace XmssSecurity.CappedChain
 
-theorem evalDist_map_first_independent
-    (left : ProbComp α) (right : ProbComp β) (f : α → γ) :
-    evalDist ((fun result : α × β => (f result.1, result.2)) <$>
-      (left >>= fun a => right >>= fun b => pure (a, b))) =
-    evalDist ((f <$> left) >>= fun c => right >>= fun b => pure (c, b)) := by
-  congr 1
-  simp [map_bind, Functor.map_map, bind_map_left]
-
 theorem Concrete.fixedSeedChainTrajectoriesFromCache_avoids_leaf
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
     (chain : ChainIndex) (steps : Nat) (targetEpoch : Epoch)
@@ -299,61 +291,6 @@ theorem evalDist_programmedGlobalChainTrajectoryMaterial_table_eq_base
             (probFailure_eq_zero' inferInstance) (pure base)
         _ = _ := by simp
 
-theorem relTriple_programmedGlobalChainTrajectoryMaterial_withBase_support
-    (parameter : PublicParameter) :
-    RelTriple
-      (programmedGlobalChainTrajectoryMaterial parameter)
-      (programmedGlobalChainTrajectoryMaterialWithBase parameter)
-      (fun left right =>
-        globalChainTrajectoryMaterialTable left = right.2 ∧
-          left ∈ support (programmedGlobalChainTrajectoryMaterial parameter) ∧
-          right ∈ support
-            (programmedGlobalChainTrajectoryMaterialWithBase parameter)) := by
-  exact relTriple_of_evalDist_map_eq_with_support_general
-    (programmedGlobalChainTrajectoryMaterial parameter)
-    (programmedGlobalChainTrajectoryMaterialWithBase parameter)
-    globalChainTrajectoryMaterialTable globalChainTrajectoryMaterialBase
-    (evalDist_programmedGlobalChainTrajectoryMaterial_table_eq_base parameter)
-
-set_option maxHeartbeats 2000000 in
-set_option maxRecDepth 1000000 in
-set_option linter.constructorNameAsVariable false in
-theorem relTriple_programmedGlobalChainTrajectoryMaterial_withBase
-    (parameter : PublicParameter) :
-    RelTriple
-      (programmedGlobalChainTrajectoryMaterial parameter)
-      (programmedGlobalChainTrajectoryMaterialWithBase parameter)
-      (fun left right =>
-        globalChainTrajectoryMaterialTable left = right.2 ∧
-          TreeValuesFresh parameter allTreeValueIndices left.2.2 ∧
-          TreeValuesFresh parameter allTreeValueIndices right.1.2.2) := by
-  apply relTriple_post_mono
-    (relTriple_programmedGlobalChainTrajectoryMaterial_withBase_support
-      parameter)
-  intro left right hrelation
-  obtain ⟨htable, hleftSupport, hrightSupport⟩ := hrelation
-  refine ⟨htable, ?_, ?_⟩
-  · exact programmedAllChainTrajectories_treeValuesFresh parameter left.1
-      left.2
-        (programmedGlobalChainTrajectoryMaterial_support_trajectories
-          parameter left hleftSupport)
-  · unfold programmedGlobalChainTrajectoryMaterialWithBase at hrightSupport
-    rw [mem_support_bind_iff] at hrightSupport
-    obtain ⟨base, _hbase, hmaterialBind⟩ := hrightSupport
-    rw [mem_support_bind_iff] at hmaterialBind
-    obtain ⟨material, hmaterial, hpure⟩ := hmaterialBind
-    simp only [support_pure, Set.mem_singleton_iff] at hpure
-    rw [hpure]
-    unfold programmedGlobalChainTrajectoryMaterial at hmaterial
-    rw [mem_support_bind_iff] at hmaterial
-    obtain ⟨secret, _hsecret, htrajectoryBind⟩ := hmaterial
-    rw [mem_support_bind_iff] at htrajectoryBind
-    obtain ⟨trajectories, htrajectories, hmaterialPure⟩ := htrajectoryBind
-    simp only [support_pure, Set.mem_singleton_iff] at hmaterialPure
-    rw [hmaterialPure]
-    exact programmedAllChainTrajectories_treeValuesFresh parameter secret
-      trajectories htrajectories
-
 structure CoupledGlobalChainKeygenView where
   secret : Epoch → ChainIndex → Digest
   table : GlobalChainValueIndex → Digest
@@ -384,22 +321,6 @@ noncomputable def coupledGlobalChainKeygenExperiment
     cache := tree.2
   }
 
-noncomputable def coupledGlobalChainKeygenWithBase
-    (parameter : PublicParameter) :
-    ProbComp (CoupledGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) := do
-  let materialBase ←
-    programmedGlobalChainTrajectoryMaterialWithBase parameter
-  let material := materialBase.1
-  let tree ← treeValues parameter material.1 allTreeValueIndices
-    material.2.2
-  pure ({
-    secret := material.1
-    table := globalChainTrajectoryMaterialTable material
-    values := tree.1
-    cache := tree.2
-  }, materialBase.2)
-
 def CoupledGlobalChainKeygenRelation
     (parameter : PublicParameter)
     (left : CoupledGlobalChainKeygenView)
@@ -415,58 +336,6 @@ def CoupledGlobalChainKeygenRelation
       allTreeValueIndices left.values ∧
     TreeValuesReplay parameter right.1.secret right.1.cache
       allTreeValueIndices right.1.values
-
-set_option maxHeartbeats 500000 in
-set_option maxRecDepth 1000000 in
-set_option linter.constructorNameAsVariable false in
-theorem relTriple_coupledGlobalChainKeygen_withBase
-    (parameter : PublicParameter) :
-    RelTriple
-      (coupledGlobalChainKeygenExperiment parameter)
-      (coupledGlobalChainKeygenWithBase parameter)
-      (CoupledGlobalChainKeygenRelation parameter) := by
-  have hmaterials :=
-    relTriple_programmedGlobalChainTrajectoryMaterial_withBase parameter
-  change RelTriple
-    (programmedGlobalChainTrajectoryMaterial parameter >>= fun material =>
-      treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
-        fun tree =>
-      pure ({
-        secret := material.1
-        table := globalChainTrajectoryMaterialTable material
-        values := tree.1
-        cache := tree.2
-      } : CoupledGlobalChainKeygenView))
-    (programmedGlobalChainTrajectoryMaterialWithBase parameter >>=
-      fun materialBase =>
-      treeValues parameter materialBase.1.1 allTreeValueIndices
-          materialBase.1.2.2 >>= fun tree =>
-      pure (({
-        secret := materialBase.1.1
-        table := globalChainTrajectoryMaterialTable materialBase.1
-        values := tree.1
-        cache := tree.2
-      } : CoupledGlobalChainKeygenView), materialBase.2))
-    (CoupledGlobalChainKeygenRelation parameter)
-  apply relTriple_bind hmaterials
-  intro leftMaterial rightMaterialBase hmaterial
-  obtain ⟨htable, hleftFresh, hrightFresh⟩ := hmaterial
-  let rightMaterial := rightMaterialBase.1
-  apply relTriple_bind
-    (relTriple_treeValues_same_values parameter parameter leftMaterial.1
-      rightMaterial.1 allTreeValueIndices leftMaterial.2.2 rightMaterial.2.2
-        allTreeValueIndices_pairwise hleftFresh hrightFresh)
-  intro leftTree rightTree htree
-  apply relTriple_pure_pure
-  unfold CoupledGlobalChainKeygenRelation
-  refine ⟨htable, ?_, ?_, htree.1, htree.2.1, htree.2.2⟩
-  · exact globalTreeValuesReplay_eq_root parameter leftMaterial.1
-      rightMaterial.1 leftTree.2 rightTree.2 leftTree.1 htree.2.1
-        (htree.1 ▸ htree.2.2)
-  · intro epoch
-    exact globalTreeValuesReplay_eq_authenticationPath parameter
-      leftMaterial.1 rightMaterial.1 leftTree.2 rightTree.2 leftTree.1
-        htree.2.1 (htree.1 ▸ htree.2.2) epoch
 
 theorem programmedGlobalChainTrajectoryMaterial_table_eq_keygenTable
     (parameter : PublicParameter) (material : GlobalChainTrajectoryMaterial)
@@ -589,116 +458,6 @@ theorem evalDist_coupledGlobalChainKeygen_eq_programmedTrajectories :
   unfold programmedGlobalChainTrajectoryMaterial
   simp only [bind_assoc, pure_bind]
 
-set_option maxHeartbeats 2000000 in
-set_option maxRecDepth 1000000 in
-set_option linter.constructorNameAsVariable false in
-theorem evalDist_coupledGlobalChainKeygenWithBase_eq_independentBase
-    (parameter : PublicParameter) :
-    evalDist (coupledGlobalChainKeygenWithBase parameter) =
-      evalDist (coupledGlobalChainKeygenExperiment parameter >>= fun view =>
-        ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
-        pure (view, base)) := by
-  unfold coupledGlobalChainKeygenWithBase
-    coupledGlobalChainKeygenExperiment
-    programmedGlobalChainTrajectoryMaterialWithBase
-  simp only [bind_assoc]
-  let finish : (GlobalChainValueIndex → Digest) →
-      GlobalChainTrajectoryMaterial →
-      (List Digest × QueryCache HashSpec) →
-      ProbComp (CoupledGlobalChainKeygenView ×
-        (GlobalChainValueIndex → Digest)) :=
-    fun base material tree => pure (({
-      secret := material.1
-      table := globalChainTrajectoryMaterialTable material
-      values := tree.1
-      cache := tree.2
-    } : CoupledGlobalChainKeygenView), base)
-  calc
-    _ = evalDist (programmedGlobalChainTrajectoryMaterial parameter >>=
-          fun material =>
-          ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
-          treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
-            fun tree => finish base material tree) := by
-      simpa [finish, bind_assoc] using
-        (OracleComp.DeferredSampling.evalDist_bind_comm
-          ($ᵗ (GlobalChainValueIndex → Digest))
-          (programmedGlobalChainTrajectoryMaterial parameter)
-          (fun base material =>
-            treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
-              fun tree => finish base material tree))
-    _ = evalDist (programmedGlobalChainTrajectoryMaterial parameter >>=
-          fun material =>
-          treeValues parameter material.1 allTreeValueIndices material.2.2 >>=
-            fun tree =>
-          ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
-            finish base material tree) := by
-      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-      intro material
-      exact OracleComp.DeferredSampling.evalDist_bind_comm
-        ($ᵗ (GlobalChainValueIndex → Digest))
-        (treeValues parameter material.1 allTreeValueIndices material.2.2)
-        (fun base tree => finish base material tree)
-    _ = _ := by
-      simp [finish, bind_assoc]
-
-set_option maxHeartbeats 2000000 in
-set_option maxRecDepth 1000000 in
-theorem evalDist_map_coupledGlobalChainKeygenWithBase_eq_independent
-    (parameter : PublicParameter) :
-    evalDist ((fun result : CoupledGlobalChainKeygenView ×
-        (GlobalChainValueIndex → Digest) =>
-        (result.1.toProgrammedView parameter, result.2)) <$>
-      coupledGlobalChainKeygenWithBase parameter) =
-    evalDist ((CoupledGlobalChainKeygenView.toProgrammedView parameter <$>
-        coupledGlobalChainKeygenExperiment parameter) >>= fun keyView =>
-      ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
-      pure (keyView, base)) := by
-  calc
-    _ = evalDist ((fun result : CoupledGlobalChainKeygenView ×
-          (GlobalChainValueIndex → Digest) =>
-          (result.1.toProgrammedView parameter, result.2)) <$>
-        (coupledGlobalChainKeygenExperiment parameter >>= fun view =>
-          ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
-          pure (view, base))) := by
-      rw [evalDist_map,
-        evalDist_coupledGlobalChainKeygenWithBase_eq_independentBase parameter,
-        ← evalDist_map]
-    _ = _ := evalDist_map_first_independent
-      (coupledGlobalChainKeygenExperiment parameter)
-      ($ᵗ (GlobalChainValueIndex → Digest))
-      (CoupledGlobalChainKeygenView.toProgrammedView parameter)
-
-noncomputable def coupledGlobalChainKeygenWithBaseFull :
-    ProbComp (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) := do
-  let parameter ← Concrete.samplePublicParameter
-  let result ← coupledGlobalChainKeygenWithBase parameter
-  pure (result.1.toProgrammedView parameter, result.2)
-
-set_option maxHeartbeats 2000000 in
-set_option maxRecDepth 1000000 in
-theorem evalDist_coupledGlobalChainKeygenWithBaseFull_eq_programmed :
-    evalDist coupledGlobalChainKeygenWithBaseFull =
-    evalDist ((eraseAllChainTrajectories <$>
-        programmedAllChainTrajectoryKeygen) >>= fun keyView =>
-      ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
-      pure (keyView, base)) := by
-  calc
-    _ = evalDist (coupledGlobalChainKeygen >>= fun keyView =>
-          ($ᵗ (GlobalChainValueIndex → Digest)) >>= fun base =>
-          pure (keyView, base)) := by
-      unfold coupledGlobalChainKeygenWithBaseFull coupledGlobalChainKeygen
-      simp only [bind_assoc, pure_bind]
-      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-      intro parameter
-      simpa only [map_eq_bind_pure_comp, Function.comp_def, bind_assoc,
-        pure_bind] using
-        evalDist_map_coupledGlobalChainKeygenWithBase_eq_independent parameter
-    _ = _ := by
-      rw [evalDist_bind,
-        evalDist_coupledGlobalChainKeygen_eq_programmedTrajectories,
-        ← evalDist_bind]
-
 def ProgrammedGlobalChainKeygenRelation
     (left : ProgrammedGlobalChainKeygenView)
     (right : ProgrammedGlobalChainKeygenView ×
@@ -720,45 +479,5 @@ def ProgrammedGlobalChainKeygenFullRelation
         left.cache allTreeValueIndices values ∧
       TreeValuesReplay right.1.secretKey.parameter
         right.1.secretKey.chainStart right.1.cache allTreeValueIndices values
-
-set_option maxHeartbeats 2000000 in
-set_option maxRecDepth 1000000 in
-theorem relTriple_coupledGlobalChainKeygenWithBaseFull :
-    RelTriple coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
-      ProgrammedGlobalChainKeygenRelation := by
-  unfold coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
-  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
-  intro leftParameter rightParameter hparameter
-  subst rightParameter
-  apply relTriple_bind
-    (relTriple_coupledGlobalChainKeygen_withBase leftParameter)
-  intro leftView rightView hview
-  apply relTriple_pure_pure
-  unfold ProgrammedGlobalChainKeygenRelation
-    CoupledGlobalChainKeygenView.toProgrammedView
-  refine ⟨hview.1, ?_, hview.2.2.1⟩
-  exact congrArg (fun root => (PublicKey.mk root leftParameter)) hview.2.1
-
-set_option maxHeartbeats 2000000 in
-set_option maxRecDepth 1000000 in
-theorem relTriple_coupledGlobalChainKeygenWithBaseFull_fullRelation :
-    RelTriple coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
-      ProgrammedGlobalChainKeygenFullRelation := by
-  unfold coupledGlobalChainKeygen coupledGlobalChainKeygenWithBaseFull
-  apply relTriple_bind (relTriple_refl Concrete.samplePublicParameter)
-  intro leftParameter rightParameter hparameter
-  subst rightParameter
-  apply relTriple_bind
-    (relTriple_coupledGlobalChainKeygen_withBase leftParameter)
-  intro leftView rightView hview
-  apply relTriple_pure_pure
-  unfold ProgrammedGlobalChainKeygenFullRelation
-    ProgrammedGlobalChainKeygenRelation
-    CoupledGlobalChainKeygenView.toProgrammedView
-  refine ⟨⟨hview.1, ?_, hview.2.2.1⟩, leftView.values,
-    hview.2.2.2.2.1, ?_⟩
-  · exact congrArg (fun root => PublicKey.mk root leftParameter) hview.2.1
-  · rw [hview.2.2.2.1]
-    exact hview.2.2.2.2.2
 
 end XmssSecurity.CappedChain

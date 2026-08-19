@@ -1,5 +1,4 @@
 import XmssSecurity.Proof.CappedGlobalFirstLaneProgram
-import XmssSecurity.Proof.CappedGlobalChainHighPublicExperiment
 
 open OracleComp OracleSpec
 
@@ -22,16 +21,6 @@ noncomputable instance globalRevealProbeWorldIsUniformSpec :
       (RevealProbeOracleSimulation.World GlobalChainValueIndex) :=
   IsUniformSpec.ofFintypeInhabited _
 
-theorem evalDist_globalRevealProbeLiftProbComp
-    (computation : ProbComp α) :
-    evalDist (RevealProbeOracleSimulation.liftProbComp
-      (Index := GlobalChainValueIndex) computation) = evalDist computation := by
-  unfold RevealProbeOracleSimulation.liftProbComp
-  apply OracleComp.evalDist_simulateQ_eq_evalDist
-  intro n
-  simp [RevealProbeOracleSimulation.uniformForwardImpl,
-    RevealProbeOracleSimulation.uniformQuery]
-
 noncomputable def globalFirstLaneEraseImpl :
     QueryImpl GlobalFirstLaneWorld
       (OracleComp
@@ -49,35 +38,6 @@ noncomputable def globalFirstLaneErase
     (computation : OracleComp GlobalFirstLaneWorld α) :
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex) α :=
   simulateQ globalFirstLaneEraseImpl computation
-
-theorem evalDist_globalFirstLaneErase
-    (computation : OracleComp GlobalFirstLaneWorld α) :
-    evalDist (globalFirstLaneErase computation) = evalDist computation := by
-  unfold globalFirstLaneErase
-  apply OracleComp.evalDist_simulateQ_eq_evalDist
-  intro input
-  cases input with
-  | uniform n =>
-      simp [globalFirstLaneEraseImpl,
-        RevealProbeOracleSimulation.uniformQuery]
-  | encodingQuery epoch =>
-      rw [globalFirstLaneEraseImpl,
-        evalDist_globalRevealProbeLiftProbComp]
-      apply SPMF.ext
-      intro output
-      simp [uniformHashOutput]
-  | encodingSignAttempt epoch =>
-      rw [globalFirstLaneEraseImpl,
-        evalDist_globalRevealProbeLiftProbComp]
-      apply SPMF.ext
-      intro output
-      simp [uniformHashOutput]
-  | probe index target =>
-      simp [globalFirstLaneEraseImpl,
-        RevealProbeOracleSimulation.probeQuery]
-  | reveal index =>
-      simp [globalFirstLaneEraseImpl,
-        RevealProbeOracleSimulation.revealQuery]
 
 structure GlobalFirstLaneErases
     (source : OracleComp GlobalFirstLaneWorld α)
@@ -697,67 +657,6 @@ theorem globalFirstLaneErase_signingImpl
       (globalFilteredCausalSigningQuery keyView request state) := by
   exact globalFirstLaneErase_signingQuery keyView request state
 
-@[irreducible]
-noncomputable def globalFirstLaneAdversaryExecution
-    (adversary : Adversary Concrete.scheme)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (state : GlobalCausalHashState) :
-    OracleComp GlobalFirstLaneWorld (Forgery × GlobalCausalHashState) :=
-  (simulateQ (globalFirstLaneBaseMappedAdversaryImpl keyView edgeHigh)
-    (adversary.main keyView.publicKey)).run state
-
-@[irreducible]
-noncomputable def globalHighDirectAdversaryExecution
-    (adversary : Adversary Concrete.scheme)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (state : GlobalCausalHashState) :
-    OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
-      (Forgery × GlobalCausalHashState) :=
-  (simulateQ (globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh)
-    (adversary.main keyView.publicKey)).run state
-
-@[irreducible]
-noncomputable def globalFirstLaneBaseMappedQueryExecution
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalCausalHashState) : OracleComp GlobalFirstLaneWorld
-      ((OracleWorld + SigningSpec).Range input × GlobalCausalHashState) :=
-  (globalFirstLaneBaseMappedAdversaryImpl keyView edgeHigh input).run state
-
-@[irreducible]
-noncomputable def globalHighDirectBaseMappedQueryExecution
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalCausalHashState) :
-    OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
-      ((OracleWorld + SigningSpec).Range input × GlobalCausalHashState) :=
-  (globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh input).run state
-
-theorem globalFirstLaneBaseMappedAdversaryImpl_hash
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (input : HashInput) :
-    globalFirstLaneBaseMappedAdversaryImpl keyView edgeHigh
-        (.inl (.inr input)) =
-      globalFirstLaneHashImpl keyView edgeHigh input := by
-  unfold globalFirstLaneBaseMappedAdversaryImpl
-  rfl
-
-theorem globalHighDirectBaseMappedAdversaryImpl_hash
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (input : HashInput) :
-    globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh
-        (.inl (.inr input)) =
-      globalCausalAttackerHashQueryFromHigh
-        (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey input := by
-  unfold globalHighDirectBaseMappedAdversaryImpl
-  rfl
-
 theorem globalFirstLaneErase_directUniformImpl
     (n : Nat) (state : GlobalCausalHashState) :
     GlobalFirstLaneErases
@@ -798,97 +697,6 @@ theorem globalFirstLaneOracleErasure
         (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey hashInput
           state
 
-structure GlobalFirstLaneBaseMappedErasure
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop where
-  erase : ∀ input state, GlobalFirstLaneErases
-    ((globalFirstLaneBaseMappedAdversaryImpl keyView edgeHigh input).run state)
-    ((globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh input).run state)
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneBaseMappedErasure
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    GlobalFirstLaneBaseMappedErasure keyView edgeHigh := by
-  refine ⟨?_⟩
-  unfold globalFirstLaneBaseMappedAdversaryImpl
-  unfold globalHighDirectBaseMappedAdversaryImpl
-  exact globalFirstLaneErases_add
-    (sourceLeft := globalFirstLaneOracleImpl keyView edgeHigh)
-    (sourceRight := globalFirstLaneSigningImpl keyView)
-    (targetLeft := globalHighDirectOracleImpl keyView edgeHigh)
-    (targetRight := globalHighDirectSigningImpl keyView)
-    (hleft := (globalFirstLaneOracleErasure keyView edgeHigh).erase)
-    (hright := globalFirstLaneErase_directSigningImpl keyView)
-
-theorem globalFirstLaneErase_baseMappedUniformQueryExecution
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (n : Nat) (state : GlobalCausalHashState) :
-    GlobalFirstLaneErases
-      (globalFirstLaneBaseMappedQueryExecution keyView edgeHigh
-        (.inl (.inl n)) state)
-      (globalHighDirectBaseMappedQueryExecution keyView edgeHigh
-        (.inl (.inl n)) state) := by
-  unfold globalFirstLaneBaseMappedQueryExecution
-  unfold globalHighDirectBaseMappedQueryExecution
-  unfold globalFirstLaneBaseMappedAdversaryImpl
-  unfold globalHighDirectBaseMappedAdversaryImpl
-  exact globalFirstLaneErase_uniformImpl n state
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneErase_baseMappedSigningQueryExecution
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (request : SignRequest) (state : GlobalCausalHashState) :
-    GlobalFirstLaneErases
-      (globalFirstLaneBaseMappedQueryExecution keyView edgeHigh
-        (.inr request) state)
-      (globalHighDirectBaseMappedQueryExecution keyView edgeHigh
-        (.inr request) state) := by
-  unfold globalFirstLaneBaseMappedQueryExecution
-  unfold globalHighDirectBaseMappedQueryExecution
-  unfold globalFirstLaneBaseMappedAdversaryImpl
-  unfold globalHighDirectBaseMappedAdversaryImpl
-  exact globalFirstLaneErase_signingImpl keyView request state
-
-def GlobalFirstLaneAdversaryErases
-    (adversary : Adversary Concrete.scheme)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (state : GlobalCausalHashState) : Prop :=
-  GlobalFirstLaneErases
-    (globalFirstLaneAdversaryExecution adversary keyView edgeHigh state)
-    (globalHighDirectAdversaryExecution adversary keyView edgeHigh state)
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneErase_adversaryMain
-    (adversary : Adversary Concrete.scheme)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (state : GlobalCausalHashState) :
-    GlobalFirstLaneErases
-      (globalFirstLaneAdversaryExecution adversary keyView edgeHigh state)
-      (globalHighDirectAdversaryExecution adversary keyView edgeHigh state) := by
-  unfold globalFirstLaneAdversaryExecution
-  unfold globalHighDirectAdversaryExecution
-  exact globalFirstLaneErases_simulateQ_run _ _
-    (globalFirstLaneBaseMappedErasure keyView edgeHigh).erase
-    (adversary.main keyView.publicKey) state
-
-theorem globalFirstLaneErase_verifierUniformQuery
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (n : Nat) (state : GlobalCausalHashState) :
-    GlobalFirstLaneErases
-      ((globalFirstLaneVerifierImpl keyView edgeHigh (.inl n)).run state)
-      ((globalHighDirectVerifierImpl keyView edgeHigh (.inl n)).run state) := by
-  unfold globalFirstLaneVerifierImpl globalHighDirectVerifierImpl
-  unfold globalFirstLaneOracleImpl globalHighDirectOracleImpl
-    globalFirstLaneOracleExecution globalHighDirectOracleExecution
-    globalHighDirectUniformImpl
-  exact globalFirstLaneErase_uniformImpl n state
-
 theorem globalFirstLaneVerifierImpl_hash
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
@@ -898,119 +706,5 @@ theorem globalFirstLaneVerifierImpl_hash
   unfold globalFirstLaneVerifierImpl globalFirstLaneOracleImpl
     globalFirstLaneOracleExecution
   rfl
-
-theorem globalHighDirectVerifierImpl_hash
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (input : HashInput) :
-    globalHighDirectVerifierImpl keyView edgeHigh (.inr input) =
-      globalCausalAttackerHashQueryFromHigh
-        (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey input := by
-  unfold globalHighDirectVerifierImpl globalHighDirectOracleImpl
-    globalHighDirectOracleExecution
-  rfl
-
-def GlobalFirstLaneVerificationErases
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (forgery : Forgery) (state : GlobalCausalHashState) : Prop :=
-  GlobalFirstLaneErases
-    ((simulateQ (globalFirstLaneVerifierImpl keyView edgeHigh)
-      (Concrete.scheme.verify keyView.publicKey forgery.epoch
-        forgery.message forgery.signature)).run state)
-    ((simulateQ (globalHighDirectVerifierImpl keyView edgeHigh)
-      (Concrete.scheme.verify keyView.publicKey forgery.epoch
-        forgery.message forgery.signature)).run state)
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneErase_verification
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (forgery : Forgery) (state : GlobalCausalHashState) :
-    GlobalFirstLaneVerificationErases keyView edgeHigh forgery state := by
-  unfold GlobalFirstLaneVerificationErases
-  apply globalFirstLaneErases_simulateQ_run
-  intro input queryState
-  unfold globalFirstLaneVerifierImpl globalHighDirectVerifierImpl
-  exact (globalFirstLaneBaseMappedErasure keyView edgeHigh).erase (.inl input)
-    queryState
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneErase_detailedExecution
-    (adversary : Adversary Concrete.scheme)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (state : GlobalCausalHashState) :
-    GlobalFirstLaneErases
-      ((globalFirstLaneDetailedExecution adversary keyView edgeHigh).run state)
-      ((globalHighDirectDetailedExecution adversary keyView edgeHigh).run
-        state) := by
-  unfold globalFirstLaneDetailedExecution
-  unfold globalHighDirectDetailedExecution
-  have hadversary := globalFirstLaneErase_adversaryMain adversary keyView
-    edgeHigh state
-  unfold globalFirstLaneAdversaryExecution at hadversary
-  unfold globalHighDirectAdversaryExecution at hadversary
-  apply hadversary.bind
-  intro handled
-  have hverification := globalFirstLaneErase_verification keyView edgeHigh
-    handled.1 handled.2
-  unfold GlobalFirstLaneVerificationErases at hverification
-  apply hverification.bind
-  exact fun verified => GlobalFirstLaneErases.pure _
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneErase_program
-    (adversary : Adversary Concrete.scheme) :
-    GlobalFirstLaneErases
-      (globalFirstLaneProgram adversary)
-      (globalHighDirectProgram adversary) := by
-  unfold globalFirstLaneProgram
-  unfold globalHighDirectProgram
-  apply (globalFirstLaneErases_liftProbComp globalHighDirectKeygen).bind
-  intro keyResult
-  apply (globalFirstLaneErase_detailedExecution adversary keyResult.1
-    keyResult.2 (globalFilteredCausalKeygenState keyResult.1)).bind
-  exact fun execution => GlobalFirstLaneErases.pure _
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneErase_publicProgram
-    (adversary : Adversary Concrete.scheme) :
-    GlobalFirstLaneErases
-      (globalFirstLanePublicProgram adversary)
-      (globalHighDirectPublicProgram adversary) := by
-  unfold globalFirstLanePublicProgram
-  unfold globalHighDirectPublicProgram
-  apply (globalFirstLaneErase_program adversary).bind
-  intro result
-  exact globalFirstLaneErases_liftRevealProbe
-    (RevealProbeOracleSimulation.emitObservedTrace
-      (globalHighDirectForgeryPrimaryProbeTrace result))
-
-theorem evalDist_globalFirstLaneProgram_eq_globalHighDirectProgram
-    (adversary : Adversary Concrete.scheme) :
-    evalDist (globalFirstLaneProgram adversary) =
-      evalDist (globalHighDirectProgram adversary) := by
-  calc
-    evalDist (globalFirstLaneProgram adversary) =
-        evalDist (globalFirstLaneErase
-          (globalFirstLaneProgram adversary)) :=
-      (evalDist_globalFirstLaneErase
-        (globalFirstLaneProgram adversary)).symm
-    _ = evalDist (globalHighDirectProgram adversary) := by
-      rw [(globalFirstLaneErase_program adversary).eq]
-
-theorem evalDist_globalFirstLanePublicProgram_eq_globalHighDirectPublicProgram
-    (adversary : Adversary Concrete.scheme) :
-    evalDist (globalFirstLanePublicProgram adversary) =
-      evalDist (globalHighDirectPublicProgram adversary) := by
-  calc
-    evalDist (globalFirstLanePublicProgram adversary) =
-        evalDist (globalFirstLaneErase
-          (globalFirstLanePublicProgram adversary)) :=
-      (evalDist_globalFirstLaneErase
-        (globalFirstLanePublicProgram adversary)).symm
-    _ = evalDist (globalHighDirectPublicProgram adversary) := by
-      rw [(globalFirstLaneErase_publicProgram adversary).eq]
 
 end XmssSecurity.CappedChain
