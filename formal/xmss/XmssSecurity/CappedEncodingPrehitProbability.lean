@@ -1,4 +1,4 @@
-import XmssSecurity.CappedEncodingTraceBridge
+import XmssSecurity.CappedSigningCacheTrace
 import XmssSecurity.BoundedSignProbability
 import XmssSecurity.EncodingPrehitProbability
 import XmssSecurity.PrecomputedBoundedSignProbability

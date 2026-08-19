@@ -1,5 +1,4 @@
 import XmssSecurity.CappedExactFirstLaneSourceTrace
-import XmssSecurity.CappedGlobalFirstLaneActionTrace
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational

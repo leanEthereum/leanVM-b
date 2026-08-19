@@ -132,33 +132,5 @@ theorem cappedWinning_encoding_prehit_probability_le
     _ ≤ _ := cappedDetailedGameWithSigningTrace_winning_prehit_probability_le
       q adversary hbound
 
-theorem cappedWinning_encoding_event_probability_le_two_terms
-    (q : Nat) (adversary : Adversary Concrete.scheme)
-    (hbound : HasHashQueryBound Concrete.scheme adversary q) :
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-      WinningOutcomeBadEventOccurs execution.2 execution.1 .encoding |
-      detailedGameWithCache Concrete.scheme adversary] ≤
-      2 * ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
-  calc
-    _ ≤
-        Pr[fun execution : GameOutcome ×
-            ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
-          WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
-            ∃ entry ∈ execution.2.1.2,
-              entry.EncodingInputPrehit execution.1.secretKey |
-          cappedDetailedGameWithEncodingTrace adversary] +
-        Pr[fun execution : GameOutcome ×
-            ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) =>
-          WinningOutcomeBadEventOccurs execution.2.1.1 execution.1 .encoding ∧
-            CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
-              execution.2.2 = true |
-          cappedDetailedGameWithEncodingTrace adversary] :=
-      cappedWinning_encoding_event_probability_le_prehit_add_monitorHit adversary
-    _ ≤ (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) +
-        (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) :=
-      add_le_add (cappedWinning_encoding_prehit_probability_le q adversary hbound)
-        (cappedWinning_encoding_monitorHit_probability_le q adversary hbound)
-    _ = 2 * ((q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞)) := by
-      rw [two_mul]
 
 end XmssSecurity

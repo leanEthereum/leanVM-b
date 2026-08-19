@@ -1,4 +1,3 @@
-import XmssSecurity.CappedGlobalChainHighBoundedPublic
 import XmssSecurity.CappedEncodingPrehitExpectedBound
 import XmssSecurity.CappedUnifiedExpectedDigest
 import XmssSecurity.LossDecomposition

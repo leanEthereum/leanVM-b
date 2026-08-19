@@ -1,5 +1,5 @@
 import XmssSecurity.CappedExactFirstLaneTransport
-import XmssSecurity.CappedGlobalChainHighPublicExperiment
+import XmssSecurity.CappedGlobalChainHighActionTrace
 
 open OracleComp OracleSpec
 

@@ -1,5 +1,6 @@
 import XmssSecurity.CappedExactFirstLaneCoupling
 import XmssSecurity.CappedGlobalFirstLaneBounds
+import XmssSecurity.CappedGlobalFirstLaneTrace
 
 open OracleComp OracleSpec
 

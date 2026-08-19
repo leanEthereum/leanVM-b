@@ -1,4 +1,5 @@
 import XmssSecurity.CappedExactFirstLaneAccounting
+import XmssSecurity.CappedGlobalChainHighActionTrace
 import XmssSecurity.CappedExactFirstLaneEager
 import XmssSecurity.FirstLaneEagerBound
 import XmssSecurity.MarginalCoupling

@@ -1,6 +1,5 @@
 import XmssSecurity.CappedEncodingExpectedBound
 import XmssSecurity.CappedUnifiedStructuralCollision
-import XmssSecurity.CappedGlobalChainHighBoundedPublic
 import XmssSecurity.ExactKeygenQueryCount
 import XmssSecurity.LossDecomposition
 

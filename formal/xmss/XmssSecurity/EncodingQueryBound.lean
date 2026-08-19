@@ -1,4 +1,6 @@
-import XmssSecurity.EncodingTraceBridge
+import XmssSecurity.EncodingOracleSimulation
+import XmssSecurity.EncodingAddressQueryBound
+import VCVio.OracleComp.QueryTracking.SubSpec
 
 open OracleComp OracleSpec
 

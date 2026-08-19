@@ -22,6 +22,41 @@ noncomputable def globalHighDirectForgeryPrimaryProbeTrace
     RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
   globalForgeryPrimaryProbeTrace (globalHighDirectErasedResult result)
 
+theorem observedProbeCount_globalForgeryPrimaryProbeTrace
+    (result : ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+      (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace)) :
+    RevealProbeOracleSimulation.observedProbeCount
+      (globalForgeryPrimaryProbeTrace result) = numChains := by
+  have hcount : ∀ trace : RevealProbeOracleSimulation.ActionTrace
+      GlobalChainValueIndex,
+      (∀ action ∈ trace, ∃ index target, action = .probe index target) →
+      RevealProbeOracleSimulation.observedProbeCount trace = trace.length := by
+    intro trace hprobes
+    induction trace with
+    | nil => rfl
+    | cons action rest ih =>
+        obtain ⟨index, target, rfl⟩ := hprobes action (by simp)
+        simp only [RevealProbeOracleSimulation.observedProbeCount,
+          List.length_cons, Nat.succ.injEq]
+        apply ih
+        intro candidate hcandidate
+        exact hprobes candidate (by simp [hcandidate])
+  rw [hcount]
+  · unfold globalForgeryPrimaryProbeTrace
+    simp [numChains]
+  · intro action haction
+    unfold globalForgeryPrimaryProbeTrace at haction
+    simp only [List.mem_ofFn] at haction
+    obtain ⟨chain, rfl⟩ := haction
+    exact ⟨_, _, rfl⟩
+
+theorem observedProbeCount_globalHighDirectForgeryPrimaryProbeTrace
+    (result : GlobalHighDirectResult) :
+    RevealProbeOracleSimulation.observedProbeCount
+        (globalHighDirectForgeryPrimaryProbeTrace result) = numChains := by
+  unfold globalHighDirectForgeryPrimaryProbeTrace
+  exact observedProbeCount_globalForgeryPrimaryProbeTrace _
+
 noncomputable def appendGlobalHighDirectPublicTrace
     (result : (GlobalChainValueIndex → Digest) ×
       (GlobalHighDirectResult ×
