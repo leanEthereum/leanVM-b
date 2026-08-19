@@ -261,49 +261,6 @@ theorem relTriple_programmed_globalHighExactMonitored_action
     globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
   exact hlifted
 
-theorem relTriple_programmed_globalHighExactMonitored_adversary
-    (adversary : Adversary Concrete.scheme)
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
-    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
-    (hrightSupport : right.1.1 ∈ support
-      trajectoryProgrammedGlobalChainKeygen)
-    (leftState : SourceExactTracedState)
-    (rightState : GlobalHighExactMonitoredState)
-    (hstate : GlobalSigningExactMonitoredStateRelation left right.1
-      leftState rightState) :
-    RelTriple
-      ((simulateQ
-        (cappedBothTracedMappedAdversaryImpl left.publicKey
-          (Concrete.materializePrecomputation left.cache left.secretKey))
-          (adversary.main left.publicKey)).run leftState)
-      ((simulateQ (globalHighExactMonitoredMappedAdversaryImpl right)
-        (adversary.main left.publicKey)).run rightState)
-      (fun leftResult rightResult =>
-        (leftResult.1 = rightResult.1 ∧
-          GlobalSigningExactMonitoredStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.1.bad) := by
-  exact relTriple_simulateQ_run_until_bad_right
-    (cappedBothTracedMappedAdversaryImpl left.publicKey
-      (Concrete.materializePrecomputation left.cache left.secretKey))
-    (globalHighExactMonitoredMappedAdversaryImpl right)
-    (GlobalSigningExactMonitoredStateRelation left right.1)
-    (fun state : GlobalHighExactMonitoredState => state.1.1.bad)
-    (fun input leftState rightState hstate =>
-      relTriple_programmed_globalHighExactMonitored_action left right hrel
-        hleftSupport hrightSupport leftState rightState hstate input)
-    (fun input state hbad result hresult => by
-      unfold globalHighExactMonitoredMappedAdversaryImpl at hresult
-      rw [StateT.run_mk, mem_support_bind_iff] at hresult
-      obtain ⟨baseResult, hbase, hpure⟩ := hresult
-      simp only [support_pure, Set.mem_singleton_iff] at hpure
-      subst result
-      exact globalHighMonitoredMappedAdversaryImpl_preserves_bad right input
-        state.1 hbad baseResult hbase)
-    (adversary.main left.publicKey) leftState rightState hstate
 
 theorem appendVerificationEncodingObservation_eq_of_globalSigningCachesAgree
     (leftSecret rightSecret : SecretKey)
@@ -402,93 +359,6 @@ theorem globalSigningExactMonitoredStateRelation_initial
   · rfl
 
 theorem relTriple_sourceGlobalExact_globalHighExactMonitored_detailedExecution
-    (adversary : Adversary Concrete.scheme)
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
-    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
-    (hrightSupport : right.1.1 ∈ support
-      trajectoryProgrammedGlobalChainKeygen) :
-    RelTriple (sourceGlobalExactTracedDetailedExecution adversary left)
-      (globalHighExactMonitoredDetailedExecution adversary right)
-      (fun leftResult rightResult =>
-        (leftResult.1 = rightResult.1 ∧
-          GlobalSigningExactMonitoredStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.1.bad) := by
-  have hinitial := globalSigningExactMonitoredStateRelation_initial left right
-    hrel hleftSupport hrightSupport
-  have hpublicKey : left.publicKey = right.1.1.publicKey :=
-    hrel.1.toStable.1.2.1
-  unfold sourceGlobalExactTracedDetailedExecution
-    globalHighExactMonitoredDetailedExecution
-  simp only
-  rw [← hpublicKey]
-  apply relTriple_bind
-    (relTriple_programmed_globalHighExactMonitored_adversary adversary left
-      right hrel hleftSupport hrightSupport ((((left.cache, []), []), []))
-      (((⟨globalFilteredCausalKeygenState right.1.1,
-        some AdaptiveRevealMonitor.State.empty, []⟩, []), [])) hinitial)
-  intro leftHandled rightHandled hhandled
-  rcases hhandled with hgood | hbad
-  · obtain ⟨hforgery, hstates⟩ := hgood
-    rw [← hforgery]
-    apply relTriple_bind
-      (relTriple_programmed_globalHighMonitored_signingVerifier left right hrel
-        hleftSupport hrightSupport
-        (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
-          leftHandled.1.message leftHandled.1.signature)
-        (sourceExactSigningProjection leftHandled.2) rightHandled.2.1
-          hstates.1)
-    intro leftVerified rightVerified hvertified
-    apply relTriple_pure_pure
-    rcases hvertified with hverifiedGood | hverifiedBad
-    · apply Or.inl
-      refine ⟨congrArg (Prod.mk leftHandled.1) hverifiedGood.1,
-        hverifiedGood.2, ?_⟩
-      obtain ⟨_monitorInitial, _hmonitorInitial, _hagreesInitial,
-        _hrevealedInitial, hinitialCausal, _hretainedInitial⟩ :=
-          hstates.1.1
-      obtain ⟨_monitorFinal, _hmonitorFinal, _hagreesFinal,
-        _hrevealedFinal, hfinalCausal, _hretainedFinal⟩ :=
-          hverifiedGood.2.1
-      have hinitialCaches := hinitialCausal.1
-      have hfinalCaches := hfinalCausal.1
-      let leftSecret :=
-        Concrete.materializePrecomputation left.cache left.secretKey
-      have hparameter := programmedGlobal_secretKey_parameter_eq left right
-        hrel hleftSupport hrightSupport
-      have happend :=
-        appendVerificationEncodingObservation_eq_of_globalSigningCachesAgree
-          leftSecret right.1.1.secretKey
-          (by simpa [leftSecret, Concrete.materializePrecomputation,
-            Concrete.precomputedSecretKey] using hparameter.symm)
-          leftHandled.1 leftHandled.2.1.1.1
-          rightHandled.2.1.1.causal.cache leftVerified.2.1.1
-          rightVerified.2.1.causal.cache
-          (by simpa [leftSecret, Concrete.materializePrecomputation,
-            Concrete.precomputedSecretKey, sourceSigningTracedStateProjection,
-            sourceExactSigningProjection] using hinitialCaches)
-          (by simpa [leftSecret, Concrete.materializePrecomputation,
-            Concrete.precomputedSecretKey, sourceSigningTracedStateProjection,
-            sourceExactSigningProjection] using hfinalCaches)
-          leftHandled.2.1.2
-      simpa [hstates.2] using happend
-    · exact Or.inr hverifiedBad
-  · apply relTriple_bind
-      (relTriple_prod (fun _result _hresult => True.intro)
-        (fun rightResult hrightResult =>
-          OracleComp.simulateQ_run_preservesInv
-            (globalHighMonitoredVerifierImpl right)
-            (fun state : GlobalMonitoredTracedState => state.1.bad)
-            (globalHighMonitoredVerifierImpl_preserves_bad right)
-            (Concrete.scheme.verify left.publicKey rightHandled.1.epoch
-              rightHandled.1.message rightHandled.1.signature)
-            rightHandled.2.1 hbad rightResult hrightResult))
-    intro leftVerified rightVerified hvertified
-    apply relTriple_pure_pure
-    exact Or.inr hvertified.2
 
 def sourceGlobalExactErasedExecution
     (result : (Forgery × Bool) × SourceExactTracedState) :
@@ -675,33 +545,6 @@ theorem globalHighExactErasedResult_mem_support
   exact ⟨right, hright, rfl⟩
 
 theorem relTriple_sourceGlobalExact_globalHighExactMonitored_program
-    (adversary : Adversary Concrete.scheme) :
-    RelTriple (sourceGlobalExactTracedProgram adversary)
-      (globalHighExactMonitoredProgram adversary)
-      SourceGlobalExactHighMonitoredProgramRelation := by
-  unfold sourceGlobalExactTracedProgram globalHighExactMonitoredProgram
-  apply relTriple_bind
-    (relTriple_with_support
-      relTriple_trajectoryProgrammedGlobalChainKeygen_withBaseHigh_stable)
-  intro left right hkeygen
-  obtain ⟨hrel, hleftSupport, hrightSupport⟩ := hkeygen
-  have hrightViewSupport :=
-    coupledGlobalChainKeygenWithBaseHighFull_support_keyView right
-      hrightSupport
-  apply relTriple_bind
-    (relTriple_with_support
-      (relTriple_sourceGlobalExact_globalHighExactMonitored_detailedExecution
-        adversary left right hrel hleftSupport hrightViewSupport))
-  intro leftExecution rightExecution hexecution
-  apply relTriple_pure_pure
-  have hrightExecution : (rightExecution.1, rightExecution.2.1) ∈
-      support (globalHighMonitoredDetailedExecution adversary right) := by
-    rw [← globalHighExactMonitoredDetailedExecution_projection,
-      support_map]
-    exact ⟨rightExecution, hexecution.2.2, rfl⟩
-  exact ⟨hrel, hexecution.1,
-    globalHighMonitoredDetailedExecution_traceConsistent adversary right
-      (rightExecution.1, rightExecution.2.1) hrightExecution⟩
 
 def sourceGlobalExactExecutionResult
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -1007,17 +850,5 @@ theorem sourceWinningExactFirstLane_implies_globalHighExact
     exact sourceGlobal_origin_implies_right_publicObservedHit adversary
       leftOld rightOld hleftOld hrightOld hrelOld horiginOld
 
-theorem sourceWinningExactFirstLane_probability_le_globalHighExact
-    (adversary : Adversary Concrete.scheme) :
-    Pr[SourceWinningExactFirstLaneEvent |
-        sourceGlobalExactTracedProgram adversary] ≤
-      Pr[GlobalHighExactFirstLaneEvent |
-        globalHighExactMonitoredProgram adversary] := by
-  apply probEvent_le_of_relTriple
-    (relTriple_with_support
-      (relTriple_sourceGlobalExact_globalHighExactMonitored_program adversary))
-  intro left right hrel hevent
-  exact sourceWinningExactFirstLane_implies_globalHighExact adversary
-    left right hrel.2.1 hrel.2.2 hrel.1 hevent
 
 end XmssSecurity.CappedChain
