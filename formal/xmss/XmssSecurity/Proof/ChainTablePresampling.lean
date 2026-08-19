@@ -3296,43 +3296,4 @@ theorem evalDist_keygen_eq_presample_chainTableTrace
   exact evalDist_samplePublicParameter_then_xmssRom_eq_presample_chainTableTrace
     Concrete.keygenAfterParameter chain table
 
-noncomputable def Concrete.detailedGameAfterParameter
-    (adversary : Adversary Concrete.singleAttemptScheme) (parameter : PublicParameter) :
-    OracleComp OracleWorld GameOutcome := do
-  let keys ← Concrete.keygenAfterParameter parameter
-  detailedGameAfterKeygen Concrete.singleAttemptScheme adversary keys.1 keys.2
-
-theorem Concrete.detailedGameCore_eq_samplePublicParameter_bind
-    (adversary : Adversary Concrete.singleAttemptScheme) :
-    detailedGameCore Concrete.singleAttemptScheme adversary =
-      (liftM Concrete.samplePublicParameter >>=
-        Concrete.detailedGameAfterParameter adversary) := by
-  unfold detailedGameCore Concrete.detailedGameAfterParameter
-  change (Concrete.keygen >>= fun keys =>
-    detailedGameAfterKeygen Concrete.singleAttemptScheme adversary keys.1 keys.2) = _
-  rw [Concrete.keygen_eq_samplePublicParameter_bind]
-  simp only [bind_assoc]
-
-/-- The full detailed game admits candidate fixed-chain presampling after the real public parameter is sampled. -/
-theorem evalDist_detailedGame_eq_presample_chainTableTrace
-    (adversary : Adversary Concrete.singleAttemptScheme)
-    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
-    𝒟[(simulateQ xmssRomImpl
-      (detailedGameCore Concrete.singleAttemptScheme adversary)).run' ∅] =
-      𝒟[Concrete.samplePublicParameter >>= fun parameter => do
-        let trace ← OracleComp.presampleCacheEntriesTrace ∅
-          (chainTableEdgeInputs parameter chain table)
-        (simulateQ xmssRomImpl
-          (Concrete.detailedGameAfterParameter adversary parameter)).run' trace.2] := by
-  rw [Concrete.detailedGameCore_eq_samplePublicParameter_bind, simulateQ_bind]
-  change 𝒟[(simulateQ
-    (unifFwdImpl HashSpec +
-      (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
-    (liftM Concrete.samplePublicParameter) >>= fun parameter =>
-      simulateQ xmssRomImpl
-        (Concrete.detailedGameAfterParameter adversary parameter)).run' ∅] = _
-  rw [roSim.run'_liftM_bind]
-  exact evalDist_samplePublicParameter_then_xmssRom_eq_presample_chainTableTrace
-    (Concrete.detailedGameAfterParameter adversary) chain table
-
 end XmssSecurity
