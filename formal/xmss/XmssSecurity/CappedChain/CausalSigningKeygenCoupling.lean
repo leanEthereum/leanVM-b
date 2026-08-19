@@ -1,5 +1,4 @@
 import XmssSecurity.CausalKeygenCacheCoupling
-import XmssSecurity.CausalCacheInvariant
 import XmssSecurity.BoundedSignProbability
 import XmssSecurity.PrecomputedBoundedSignProbability
 import XmssSecurity.CappedChain.CausalSigningProjection

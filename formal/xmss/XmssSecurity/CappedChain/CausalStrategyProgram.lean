@@ -1,5 +1,4 @@
 import XmssSecurity.CappedChain.CausalStrategyCoupling
-import XmssSecurity.CausalStrategyProgram
 
 open OracleComp OracleSpec ENNReal
 

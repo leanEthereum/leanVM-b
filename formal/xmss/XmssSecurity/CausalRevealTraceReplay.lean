@@ -41,6 +41,24 @@ theorem ReplaysCausalReveals.append
       exact .reveal initial final index value (trace ++ right) changed hchange
         (ih hright)
 
+theorem ReplaysCausalReveals.initial_none_of_final_none
+    {Index : Type} [DecidableEq Index]
+    {initial final : Index → Option Digest}
+    {trace : RevealProbeOracleSimulation.ActionTrace Index}
+    (hreplay : ReplaysCausalReveals initial trace final)
+    (index : Index) (hfinal : final index = none) :
+    initial index = none := by
+  induction hreplay with
+  | nil => exact hfinal
+  | probe initial final _ _ _ _ ih => exact ih hfinal
+  | reveal initial final changedIndex value trace changed hchange _ ih =>
+      have hchanged : changed index = none := ih hfinal
+      by_cases heq : index = changedIndex
+      · subst index
+        simp [hchange.1] at hchanged
+      · rw [hchange.2 index heq] at hchanged
+        exact hchanged
+
 @[simp]
 theorem causalRevealResultState_revealed
     (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
@@ -59,7 +77,7 @@ theorem causalRevealResultState_transition
       (causalRevealResultState secretKey chain input state index value
         output).revealed := by
   constructor
-  · simp [causalRevealResultState_revealed]
+  · simp
   · intro candidate hne
     simp [causalRevealResultState_revealed, Function.update_of_ne hne]
 

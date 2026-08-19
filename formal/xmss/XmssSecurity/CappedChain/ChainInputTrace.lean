@@ -1,5 +1,4 @@
 import XmssSecurity.CappedChain.EncodingQueryBound
-import XmssSecurity.ChainInputTrace
 import XmssSecurity.PublicRootUniformity
 import XmssSecurity.QueryBoundSupport
 

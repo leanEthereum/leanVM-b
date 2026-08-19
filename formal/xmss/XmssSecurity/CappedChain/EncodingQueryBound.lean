@@ -1,5 +1,4 @@
 import XmssSecurity.CappedEncodingTraceBridge
-import XmssSecurity.EncodingQueryBound
 
 open OracleComp OracleSpec
 

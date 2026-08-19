@@ -1,5 +1,4 @@
 import XmssSecurity.CappedChain.CausalEagerHighProjection
-import XmssSecurity.CausalEagerHighTraceCoverage
 
 open OracleComp OracleSpec
 
@@ -26,24 +25,6 @@ theorem AttackerActionTrace.chainInputProbes_append
       left.chainInputProbes parameter selected ++
         right.chainInputProbes parameter selected := by
   simp [AttackerActionTrace.chainInputProbes]
-
-theorem ReplaysCausalReveals.initial_none_of_final_none
-    {Index : Type} [DecidableEq Index]
-    {initial final : Index → Option Digest}
-    {trace : RevealProbeOracleSimulation.ActionTrace Index}
-    (hreplay : ReplaysCausalReveals initial trace final)
-    (index : Index) (hfinal : final index = none) :
-    initial index = none := by
-  induction hreplay with
-  | nil => exact hfinal
-  | probe initial final _ _ _ _ ih => exact ih hfinal
-  | reveal initial final changedIndex value trace changed hchange _ ih =>
-      have hchanged : changed index = none := ih hfinal
-      by_cases heq : index = changedIndex
-      · subst index
-        exact False.elim (by simpa [hchange.1] using hchanged)
-      · rw [hchange.2 index heq] at hchanged
-        exact hchanged
 
 def RevealsMonotone
     (initial final : ChainValueIndex → Option Digest) : Prop :=

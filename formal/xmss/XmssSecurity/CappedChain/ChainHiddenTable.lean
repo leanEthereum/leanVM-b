@@ -2,7 +2,6 @@ import XmssSecurity.CappedChain.ChainInputTrace
 import XmssSecurity.CappedChain.ChainOriginProbability
 import XmssSecurity.CappedLeafEventProbability
 import XmssSecurity.ChainTrajectoryComposition
-import XmssSecurity.ChainHiddenTable
 
 open OracleSpec
 
