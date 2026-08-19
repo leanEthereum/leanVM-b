@@ -1,6 +1,6 @@
 import XmssSecurity.Proof.CappedGlobalChainEdgeHighUniformity
 import XmssSecurity.Proof.CappedGlobalTreeCoupling
-import XmssSecurity.Proof.CausalWarmedHighIndependence
+import XmssSecurity.Proof.ChainTrajectoryHighIndependence
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational

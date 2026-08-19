@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.CausalInstalledAdversary
+import XmssSecurity.Proof.RevealProbeOracleSimulation
 
 open OracleComp OracleSpec ENNReal
 
@@ -59,26 +59,5 @@ theorem ReplaysCausalReveals.initial_none_of_final_none
       · rw [hchange.2 index heq] at hchanged
         exact hchanged
 
-@[simp]
-theorem causalRevealResultState_revealed
-    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
-    (state : CausalHashState) (index : ChainValueIndex) (value : Digest)
-    (output : HashOutput) :
-    (causalRevealResultState secretKey chain input state index value output).revealed =
-      Function.update state.revealed index (some value) := by
-  unfold causalRevealResultState CausalHashState.recordReveal
-  rw [causalRecordedState_revealed]
-
-theorem causalRevealResultState_transition
-    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
-    (state : CausalHashState) (index : ChainValueIndex) (value : Digest)
-    (output : HashOutput) :
-    CausalRevealTransition state.revealed index value
-      (causalRevealResultState secretKey chain input state index value
-        output).revealed := by
-  constructor
-  · simp
-  · intro candidate hne
-    simp [causalRevealResultState_revealed, Function.update_of_ne hne]
-
 end XmssSecurity
+

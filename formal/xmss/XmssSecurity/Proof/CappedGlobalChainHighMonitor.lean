@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalChainHighSigningMerkleRetention
-import XmssSecurity.Proof.CausalObservedMonitor
+import XmssSecurity.Proof.ObservedTraceMonitor
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
