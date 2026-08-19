@@ -163,7 +163,7 @@ An `@inline` function may also **return a `StackBuf`**: the caller's binding ali
 
 ```python
 @inline
-def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
+def obs(cb, x):          # Fiat-Shamir absorb: cb <- compress(cb, (x, SCALAR))
     tg = [x, DS_SCALAR]  # a list literal: an initialized StackBuf(2)
     nb = StackBuf(2)
     sha2(cb, tg, nb)
@@ -378,7 +378,7 @@ challenge = lo[0] + lo[1] * f192(0, 1, 0) + hi[0] * f192(0, 0, 1)
 
 The two in-place `PACK64X2` instructions prove through write-once memory that `s0 = (d0,d1,0)` and `s1 = (d2,d3,0)`. Consequently all four digest lanes are really in GF(2^64); the challenge is `d0 + d1·Y + d2·Y²`, while `d3` is checked but deliberately discarded. `challenge_from_state` is not a compiler intrinsic: this is the complete `@inline` helper used by the recursion guest.
 
-Likewise, the recursion guest's `sponge_compress(state, scalar, tail, out)` is ordinary straight-line zkDSL:
+Likewise, the recursion guest's `fs_compress(state, scalar, tail, out)` is ordinary straight-line zkDSL:
 
 ```python
 limbs = StackBuf(3)
@@ -408,7 +408,7 @@ sha2(block0[0:2], block0[2:4], cv, msg_bytes=80)
 sha2(tail[0:2], tail[2:4], out, cv=cv)
 ```
 
-The three positional arguments form a **statement**: one SHA-256 compression `C(cv, a || b)` consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes `sha2_eth(a || b)`, the hash of exactly 64 bytes, which is the form every sponge step and Merkle node uses.
+The three positional arguments form a **statement**: one SHA-256 compression `C(cv, a || b)` consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes `sha2_eth(a || b)`, the hash of exactly 64 bytes, which is the form every Fiat-Shamir step and Merkle node uses.
 
 Every compression also has a 256-bit chaining value, and that is the only other thing it takes. `sha2_eth` puts the message length in its FIRST block (see `primitives::sha2`), so a block carries no byte counter and no final flag, and the length block itself is a compile-time constant rather than an instruction. The two optional keywords pick the chaining value and are mutually exclusive:
 

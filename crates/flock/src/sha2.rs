@@ -238,7 +238,7 @@ pub type Compression = ([u32; 8], [u32; 16]);
 pub use primitives::sha2::compress;
 
 /// The chaining value a 64-byte `sha2_eth` starts from, which is what the VM's
-/// `Sha2` opcode and `fiat_shamir::sponge::compress` use.
+/// `Sha2` opcode and `fiat_shamir::compress` use.
 pub const fn iv_64() -> [u32; 8] {
     primitives::sha2::IV_64
 }
@@ -1094,7 +1094,7 @@ mod tests {
         }
     }
 
-    /// The 64-byte hash the sponge and the Merkle parent run is one instance of
+    /// The 64-byte hash the Fiat-Shamir chain and the Merkle parent run is one instance of
     /// this circuit, so the padding block is a real `sha2_eth`.
     #[test]
     fn pinned_block_is_a_64_byte_hash() {

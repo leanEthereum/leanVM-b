@@ -9,6 +9,6 @@
 
 /// `sha2_eth` of exactly 64 bytes (two 256-bit halves laid out little-endian),
 /// which is the `Sha2` opcode's default chaining value and also the PCS Merkle
-/// parent. Lives in [`fiat_shamir::sponge`] (the shared Fiat-Shamir sponge is
-/// built on it).
-pub use fiat_shamir::sponge::compress;
+/// parent. Lives in [`fiat_shamir`] (the shared
+/// [`fiat_shamir::FiatShamirState`] state is built on it).
+pub use fiat_shamir::compress;

@@ -2162,8 +2162,8 @@ impl FnLower<'_> {
     /// Two mutually exclusive keyword arguments pick the chaining value, and
     /// between them they cover every `sha2_eth` of a compile-time-known length:
     ///
-    /// - none: the 64-byte hash, `cv = iv_for_len(64)`. The sponge step, the
-    ///   Merkle parent, and anything else hashing exactly one block.
+    /// - none: the 64-byte hash, `cv = iv_for_len(64)`. The Fiat-Shamir step,
+    ///   the Merkle parent, and anything else hashing exactly one block.
     /// - `msg_bytes=N`: the FIRST block of an `N`-byte message, so
     ///   `cv = iv_for_len(N)`, a compile-time constant.
     /// - `cv=run`: a CONTINUATION block, chaining from a previous compression's

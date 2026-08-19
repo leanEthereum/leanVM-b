@@ -188,10 +188,10 @@ def sha2(
     was already written, this asserts it equals the result).
 
     With no keywords this is `sha2_eth(a || b)`, the hash of exactly 64 bytes,
-    which is the form every sponge step and Merkle node uses. `sha2_eth` puts
-    the message length in its FIRST block, so that block depends on nothing but
-    the length and folds into a compile-time chaining value; there is no byte
-    counter and no final flag to carry.
+    which is the form every Fiat-Shamir step and Merkle node uses. `sha2_eth`
+    puts the message length in its FIRST block, so that block depends on nothing
+    but the length and folds into a compile-time chaining value; there is no
+    byte counter and no final flag to carry.
 
     Longer messages drive their own blocks, and the two keywords are mutually
     exclusive:

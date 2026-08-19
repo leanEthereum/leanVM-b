@@ -27,7 +27,7 @@
 //!
 //! Prefix-freeness is a statement about [`hash`]. [`compress`] and the VM's
 //! `Sha2` opcode expose a raw chain from a caller-chosen chaining value, and
-//! anything built on those (the sponge, the Merkle tree) needs its own
+//! anything built on those (the Fiat-Shamir chain, the Merkle tree) needs its own
 //! argument.
 //!
 //! ## Why the length goes first: free hashing at known sizes
@@ -40,7 +40,7 @@
 //!
 //! depends on nothing but `n`. Every call site in leanVM-b knows its length at
 //! compile time, so that compression is a constant: [`IV_64`] for the 64-byte
-//! hash the sponge and the Merkle parent use, [`iv_for_len`] for the rest. An
+//! hash the Fiat-Shamir chain and the Merkle parent use, [`iv_for_len`] for the rest. An
 //! `n`-byte hash is then exactly `ceil(n / 64)` compressions, the same count
 //! BLAKE2s cost, and **the VM proves exactly those**.
 //!
@@ -272,7 +272,7 @@ const fn state_bytes(h: &[u32; 8]) -> [u8; OUT_LEN] {
 //
 // A block is then ~50 instructions against the portable path's ~1,800
 // operations, which is why this is worth having for the serial callers (the
-// Fiat-Shamir sponge, the VM's execution trace, XMSS) even where the batched
+// Fiat-Shamir chain, the VM's execution trace, XMSS) even where the batched
 // path already gets its speed from lane transposition.
 // ---------------------------------------------------------------------------
 
@@ -569,7 +569,7 @@ pub const fn iv_for_len(n_bytes: u64) -> [u32; 8] {
     compress_portable(IV_ETH, len_block((n_bytes as u128) * 8))
 }
 
-/// [`iv_for_len`] at 64 bytes: the Fiat-Shamir sponge step, the Merkle parent,
+/// [`iv_for_len`] at 64 bytes: the Fiat-Shamir step, the Merkle parent,
 /// and the `Sha2` opcode's default chaining value all hash exactly one block.
 pub const IV_64: [u32; 8] = iv_for_len(64);
 
@@ -581,7 +581,7 @@ const BLOCK_LEN_U64: u64 = BLOCK_LEN as u64;
 /// A `const fn` called with a runtime argument is just a function, so
 /// [`iv_for_len`] would otherwise run a full **portable** compression on every
 /// hash: measured at 137 ns against 14 ns for the compression the caller
-/// actually wanted, an 11x tax on the Fiat-Shamir sponge and on PoW grinding.
+/// actually wanted, an 11x tax on the Fiat-Shamir chain and on PoW grinding.
 /// So take the constant at the one length the protocol hashes in bulk, and the
 /// hardware compression otherwise.
 #[inline]
@@ -595,7 +595,7 @@ fn iv_at(n_bytes: u64) -> [u32; 8] {
 /// `sha2_eth` of exactly 64 bytes: ONE compression from the constant [`IV_64`],
 /// and nothing else.
 ///
-/// The sponge step, the Merkle parent and the `Sha2` opcode are all this shape,
+/// The Fiat-Shamir step, the Merkle parent and the `Sha2` opcode are all this shape,
 /// and between them they are most of the hashing a proof does, so they get a
 /// path on which the length cannot be anything but a constant.
 pub fn hash_block(block: &[u8; BLOCK_LEN]) -> [u8; OUT_LEN] {
@@ -1648,8 +1648,8 @@ mod tests {
     }
 
     /// The chaining values the whole protocol is built on. `IV_64` in
-    /// particular is the `Sha2` opcode's default and the sponge's starting
-    /// state, so it is baked into bytecode and into three verifiers.
+    /// particular is the `Sha2` opcode's default and the Fiat-Shamir chain's
+    /// starting state, so it is baked into bytecode and into three verifiers.
     #[test]
     fn precomputed_initial_states() {
         let hexed = |h: [u32; 8]| hex(&state_bytes(&h));
@@ -1696,8 +1696,9 @@ mod tests {
     }
 
     /// `hash_block` is a shortcut, not a second hash: it must agree with the
-    /// general path on every 64-byte input. It exists only so the sponge and
-    /// the Merkle parent reach `IV_64` as a constant instead of deriving it, so
+    /// general path on every 64-byte input. It exists only so the Fiat-Shamir
+    /// chain and the Merkle parent reach `IV_64` as a constant instead of
+    /// deriving it, so
     /// the thing to guard is that the shortcut stayed a shortcut.
     #[test]
     fn hash_block_is_hash_at_64_bytes() {

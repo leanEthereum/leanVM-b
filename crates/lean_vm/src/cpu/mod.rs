@@ -92,7 +92,7 @@ fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
 }
 
 /// Announce the prover's sizes (`log_mem`, every table's log height, the PCS rate)
-/// by writing them onto the scalar stream, which binds them into the sponge and lets
+/// by writing them onto the scalar stream, which binds them into the state and lets
 /// the verifier reconstruct the layout. The public statement (program + input) is not
 /// announced here; it seeds the transcript at construction (see [`transcript_seed`]).
 /// The boundary states are derived from the program, so they need no binding.
