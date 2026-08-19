@@ -56,25 +56,6 @@ noncomputable def controller
       | .reveal index => pure (.reveal index next))
     computation
 
-omit [Fintype Index] [DecidableEq Index] in
-@[simp]
-theorem controller_pure (result : α) :
-    controller (pure result : OracleComp (World Index) α) = pure .stop := rfl
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem controller_probe_bind
-    (index : Index) (target : Digest)
-    (next : Unit → OracleComp (World Index) α) :
-    controller (probeQuery index target >>= next) =
-      pure (.probe index target (fun _ => next ())) := by
-  rw [probeQuery, controller, OracleComp.construct_query_bind]
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem controller_reveal_bind
-    (index : Index) (next : Digest → OracleComp (World Index) α) :
-    controller (revealQuery index >>= next) = pure (.reveal index next) := by
-  rw [revealQuery, controller, OracleComp.construct_query_bind]
-
 def IsSpecialQuery : (World Index).Domain → Prop
   | .uniform _ => False
   | .probe _ _ => True
@@ -96,23 +77,6 @@ noncomputable instance : DecidablePred (IsProbeQuery (Index := Index)) :=
   | .uniform _ => isFalse (by simp [IsProbeQuery])
   | .probe _ _ => isTrue (by simp [IsProbeQuery])
   | .reveal _ => isFalse (by simp [IsProbeQuery])
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem liftProbComp_isQueryBoundP
-    (computation : ProbComp α) (steps : Nat) :
-    (liftProbComp (Index := Index) computation).IsQueryBoundP
-      IsSpecialQuery steps := by
-  induction computation using OracleComp.inductionOn with
-  | pure result => trivial
-  | query_bind n next ih =>
-      rw [liftProbComp, simulateQ_query_bind]
-      change (uniformQuery n >>= fun output =>
-        liftProbComp (next output)).IsQueryBoundP IsSpecialQuery steps
-      rw [uniformQuery, OracleComp.isQueryBoundP_query_bind_iff]
-      constructor
-      · simp [IsSpecialQuery]
-      · intro output
-        simpa [IsSpecialQuery] using ih output
 
 omit [Fintype Index] [DecidableEq Index] in
 theorem liftProbComp_isProbeQueryBoundP
@@ -159,19 +123,6 @@ noncomputable def eagerImpl (table : Index → Digest) :
   | .reveal index => pure (table index)
 
 omit [Fintype Index] [DecidableEq Index] in
-theorem simulate_eagerImpl_liftProbComp
-    (table : Index → Digest) (computation : ProbComp α) :
-    simulateQ (eagerImpl table)
-      (liftProbComp (Index := Index) computation) = computation := by
-  induction computation using OracleComp.inductionOn with
-  | pure result => rfl
-  | query_bind n next ih =>
-      rw [liftProbComp, simulateQ_query_bind, simulateQ_bind]
-      simp only [uniformForwardImpl, uniformQuery]
-      apply bind_congr
-      exact ih
-
-omit [Fintype Index] [DecidableEq Index] in
 @[simp]
 theorem simulate_eagerImpl_revealQuery
     (table : Index → Digest) (index : Index) :
@@ -208,116 +159,6 @@ theorem simulate_eagerTrace_revealQuery
   simp [revealQuery, eagerTraceImpl, eagerImpl, traceFragment,
     QueryImpl.withTraceAppend_apply, WriterT.run_tell]
 
-def traceHitsAux (table : Index → Digest) (revealed : Finset Index) :
-    ActionTrace Index → Bool
-  | [] => false
-  | .probe index target :: rest =>
-      if index ∈ revealed then traceHitsAux table revealed rest
-      else decide (table index = target) || traceHitsAux table revealed rest
-  | .reveal index _ :: rest => traceHitsAux table (insert index revealed) rest
-
-def traceHits (table : Index → Digest) (trace : ActionTrace Index) : Bool :=
-  traceHitsAux table ∅ trace
-
-inductive HasHit (table : Index → Digest) :
-    Finset Index → ActionTrace Index → Prop where
-  | probe_here {revealed index target rest}
-      (hhidden : index ∉ revealed) (hhit : table index = target) :
-      HasHit table revealed (.probe index target :: rest)
-  | probe_later {revealed index target rest}
-      (hlater : HasHit table revealed rest) :
-      HasHit table revealed (.probe index target :: rest)
-  | reveal_later {revealed index value rest}
-      (hlater : HasHit table (insert index revealed) rest) :
-      HasHit table revealed (.reveal index value :: rest)
-
-omit [Fintype Index] in
-theorem traceHitsAux_eq_true_iff_hasHit
-    (table : Index → Digest) (revealed : Finset Index)
-    (trace : ActionTrace Index) :
-    traceHitsAux table revealed trace = true ↔ HasHit table revealed trace := by
-  induction trace generalizing revealed with
-  | nil =>
-      constructor
-      · simp [traceHitsAux]
-      · intro hhit
-        cases hhit
-  | cons action rest ih =>
-      cases action with
-      | probe index target =>
-          by_cases hrevealed : index ∈ revealed
-          · simp only [traceHitsAux, hrevealed, ↓reduceIte, ih]
-            constructor
-            · exact HasHit.probe_later
-            · intro hhit
-              cases hhit with
-              | probe_here hhidden _ => exact False.elim (hhidden hrevealed)
-              | probe_later hlater => exact hlater
-          · simp only [traceHitsAux, hrevealed, ↓reduceIte, Bool.or_eq_true,
-              decide_eq_true_eq, ih]
-            constructor
-            · rintro (hhit | hlater)
-              · exact HasHit.probe_here hrevealed hhit
-              · exact HasHit.probe_later hlater
-            · intro hhit
-              cases hhit with
-              | probe_here _ hvalue => exact Or.inl hvalue
-              | probe_later hlater => exact Or.inr hlater
-      | reveal index value =>
-          simp only [traceHitsAux, ih]
-          constructor
-          · exact HasHit.reveal_later
-          · intro hhit
-            cases hhit with
-            | reveal_later hlater => exact hlater
-
-omit [Fintype Index] in
-theorem traceHits_eq_true_iff_hasHit
-    (table : Index → Digest) (trace : ActionTrace Index) :
-    traceHits table trace = true ↔ HasHit table ∅ trace := by
-  exact traceHitsAux_eq_true_iff_hasHit table ∅ trace
-
-omit [Fintype Index] in
-theorem HasHit.of_mem_probe_of_no_reveal
-    (table : Index → Digest) (trace : ActionTrace Index)
-    (index : Index) (target : Digest)
-    (hprobe : ObservedAction.probe index target ∈ trace)
-    (hnoReveal : ∀ value, ObservedAction.reveal index value ∉ trace)
-    (hhit : table index = target) :
-    HasHit table ∅ trace := by
-  have hgeneral : ∀ (revealed : Finset Index), index ∉ revealed →
-      HasHit table revealed trace := by
-    intro revealed hhidden
-    induction trace generalizing revealed with
-    | nil => simp at hprobe
-    | cons action rest ih =>
-        cases action with
-        | probe candidate candidateTarget =>
-            rw [List.mem_cons] at hprobe
-            rcases hprobe with heq | hlater
-            · cases heq
-              exact HasHit.probe_here hhidden hhit
-            · apply HasHit.probe_later
-              apply ih hlater
-              · intro value hvalue
-                exact hnoReveal value (by simp [hvalue])
-              · exact hhidden
-        | reveal candidate value =>
-            have hlater : ObservedAction.probe index target ∈ rest := by
-              simpa using hprobe
-            have hne : candidate ≠ index := by
-              intro heq
-              subst candidate
-              exact hnoReveal value (by simp)
-            apply HasHit.reveal_later
-            apply ih hlater
-            · intro candidateValue hvalue
-              exact hnoReveal candidateValue (by simp [hvalue])
-            · intro hmem
-              rw [Finset.mem_insert] at hmem
-              exact hmem.elim (fun heq => hne heq.symm) hhidden
-  exact hgeneral ∅ (by simp)
-
 noncomputable local instance sampleableTable :
     SampleableType (Index → Digest) :=
   SampleableType.ofFintype (Index → Digest)
@@ -331,9 +172,6 @@ noncomputable def eagerExperiment
   let table ← eagerTableSample
   let result ← (simulateQ (eagerTraceImpl table) computation).run
   return (table, result)
-
-def EagerHit (result : (Index → Digest) × (α × ActionTrace Index)) : Prop :=
-  traceHits result.1 result.2.2 = true
 
 def StateValid
     (state : AdaptiveRevealMonitor.State Index) : Prop :=
@@ -411,20 +249,6 @@ def extendTable
     (state : AdaptiveRevealMonitor.State Index)
     (base : Index → Digest) : Index → Digest :=
   fun index => (state.revealed index).getD (base index)
-
-omit [Fintype Index] [DecidableEq Index] in
-@[simp]
-theorem extendTable_empty (base : Index → Digest) :
-    extendTable (AdaptiveRevealMonitor.State.empty :
-      AdaptiveRevealMonitor.State Index) base = base := by
-  funext index
-  rfl
-
-omit [Fintype Index] in
-theorem extendTable_addPending
-    (state : AdaptiveRevealMonitor.State Index)
-    (index : Index) (target : Digest) (base : Index → Digest) :
-    extendTable (state.addPending index target) base = extendTable state base := rfl
 
 omit [Fintype Index] in
 theorem extendTable_update_eq_install
@@ -673,105 +497,6 @@ theorem evalDist_uniformTable_eq_bind_update
       rw [evalDist_bind, evalDist_bind, evalDist_uniformSample_bind_update index]
     _ = _ := by simp [bind_assoc]
 
-/-- A revealed coordinate of a uniform table can be sampled first and installed into an otherwise
-uniform base table. This continuation form supports adaptive computations after the reveal. -/
-theorem evalDist_uniformTable_bind_coordinate_continuation
-    (index : Index)
-    (continuation : (Index → Digest) → Digest → ProbComp α) :
-    𝒟[do
-      let table ← $ᵗ (Index → Digest)
-      continuation table (table index)] =
-    𝒟[do
-      let value ← $ᵗ Digest
-      let base ← $ᵗ (Index → Digest)
-      continuation (Function.update base index value) value] := by
-  calc
-    𝒟[do
-      let table ← $ᵗ (Index → Digest)
-      continuation table (table index)] =
-        𝒟[do
-          let value ← $ᵗ Digest
-          let base ← $ᵗ (Index → Digest)
-          let table := Function.update base index value
-          continuation table (table index)] :=
-      evalDist_uniformTable_eq_bind_update index fun table =>
-        continuation table (table index)
-    _ = _ := by simp only [Function.update_self]
-
-/-- Revealing one coordinate of a uniform table and programming a hash output with that digest is
-equivalent to drawing an ordinary uniform hash output and installing its truncation at that
-coordinate. The continuation sees the updated table, its revealed coordinate, and the hash output. -/
-theorem evalDist_uniformTable_bind_programmedCoordinate_continuation
-    (index : Index)
-    (continuation : (Index → Digest) → Digest → HashOutput → ProbComp α) :
-    𝒟[do
-      let table ← $ᵗ (Index → Digest)
-      let output ← Rom.sampleHashOutputWithDigest (table index)
-      continuation table (table index) output] =
-    𝒟[do
-      let output ← $ᵗ HashOutput
-      let base ← $ᵗ (Index → Digest)
-      let table := Function.update base index (truncateHash output)
-      continuation table (truncateHash output) output] := by
-  calc
-    𝒟[do
-      let table ← $ᵗ (Index → Digest)
-      let output ← Rom.sampleHashOutputWithDigest (table index)
-      continuation table (table index) output] =
-        𝒟[do
-          let value ← $ᵗ Digest
-          let base ← $ᵗ (Index → Digest)
-          let table := Function.update base index value
-          let output ← Rom.sampleHashOutputWithDigest (table index)
-          continuation table (table index) output] :=
-      evalDist_uniformTable_eq_bind_update index fun table => do
-        let output ← Rom.sampleHashOutputWithDigest (table index)
-        continuation table (table index) output
-    _ = 𝒟[do
-          let value ← $ᵗ Digest
-          let output ← Rom.sampleHashOutputWithDigest value
-          let base ← $ᵗ (Index → Digest)
-          continuation (Function.update base index value) value output] := by
-      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-      intro value
-      calc
-        𝒟[do
-          let base ← $ᵗ (Index → Digest)
-          let table := Function.update base index value
-          let output ← Rom.sampleHashOutputWithDigest (table index)
-          continuation table (table index) output] =
-            𝒟[do
-              let base ← $ᵗ (Index → Digest)
-              let output ← Rom.sampleHashOutputWithDigest value
-              continuation (Function.update base index value) value output] := by
-                simp only [Function.update_self]
-        _ = _ := OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
-    _ = 𝒟[Rom.sampledHashOutputWithDigest >>= fun programmed =>
-          $ᵗ (Index → Digest) >>= fun base =>
-            continuation (Function.update base index programmed.1)
-              programmed.1 programmed.2] := by
-      simp [Rom.sampledHashOutputWithDigest, bind_assoc]
-    _ = _ := Rom.evalDist_sampledHashOutputWithDigest_bind_eq_uniform_bind
-      (fun programmed =>
-        $ᵗ (Index → Digest) >>= fun base =>
-          continuation (Function.update base index programmed.1)
-            programmed.1 programmed.2)
-
-theorem evalDist_uniformTable_bind_programmedCoordinate
-    (index : Index)
-    (finish : (Index → Digest) → Digest → HashOutput → α) :
-    𝒟[do
-      let table ← $ᵗ (Index → Digest)
-      let output ← Rom.sampleHashOutputWithDigest (table index)
-      pure (finish table (table index) output)] =
-    𝒟[do
-      let output ← $ᵗ HashOutput
-      let base ← $ᵗ (Index → Digest)
-      let table := Function.update base index (truncateHash output)
-      pure (finish table (truncateHash output) output)] := by
-  exact evalDist_uniformTable_bind_programmedCoordinate_continuation index
-    (fun table value output => pure (finish table value output))
-
 set_option maxRecDepth 100000 in
 theorem eagerController_true_probability_le {Control : Type}
     (controller : Control → ProbComp
@@ -955,20 +680,6 @@ theorem eagerController_empty_true_probability_le {Control : Type}
   simpa [div_eq_mul_inv] using eagerController_true_probability_le controller
     (AdaptiveRevealMonitor.State.empty : AdaptiveRevealMonitor.State Index)
     stateValid_empty steps fuel control
-
-noncomputable def eagerProgramExperiment
-    (steps probes : Nat) (computation : OracleComp (World Index) α) :
-    ProbComp Bool :=
-  eagerControllerExperiment controller AdaptiveRevealMonitor.State.empty
-    steps probes computation
-
-theorem eagerProgram_true_probability_le
-    (steps probes : Nat) (computation : OracleComp (World Index) α) :
-    Pr[(fun hit : Bool => hit = true) |
-      eagerProgramExperiment steps probes computation] ≤
-      (probes : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  exact eagerController_empty_true_probability_le controller
-    steps probes computation
 
 set_option maxRecDepth 100000 in
 theorem structuralExperiment_true_probability_le
@@ -1294,43 +1005,10 @@ theorem eagerExperiment_observedHit_probability_le
       fuel computation hbound).trans
         (structuralExperiment_empty_true_probability_le fuel computation hbound)
 
-def emitProbes : List (Index × Digest) → OracleComp (World Index) Unit
-  | [] => pure ()
-  | probe :: probes => do
-      probeQuery probe.1 probe.2
-      emitProbes probes
-
-def emitReveals : List Index → OracleComp (World Index) Unit
-  | [] => pure ()
-  | index :: indices => do
-      let _value ← revealQuery index
-      emitReveals indices
-
-def emitTranscript
-    (probes : List (Index × Digest)) (reveals : List Index) :
-    OracleComp (World Index) Unit := do
-  emitProbes probes
-  emitReveals reveals
-
 def observedProbeCount : ActionTrace Index → Nat
   | [] => 0
   | .probe _ _ :: rest => (observedProbeCount rest).succ
   | .reveal _ _ :: rest => observedProbeCount rest
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem observedProbeCount_append
-    (left right : ActionTrace Index) :
-    observedProbeCount (left ++ right) =
-      observedProbeCount left + observedProbeCount right := by
-  induction left with
-  | nil => simp [observedProbeCount]
-  | cons action rest ih =>
-      cases action with
-      | probe index target =>
-          simp only [List.cons_append, observedProbeCount, ih]
-          omega
-      | reveal index value =>
-          simp only [List.cons_append, observedProbeCount, ih]
 
 def emitObservedTrace : ActionTrace Index → OracleComp (World Index) Unit
   | [] => pure ()
@@ -1341,73 +1019,10 @@ def emitObservedTrace : ActionTrace Index → OracleComp (World Index) Unit
       let _actualValue ← revealQuery index
       emitObservedTrace rest
 
-omit [Fintype Index] [DecidableEq Index] in
-theorem emitObservedTrace_isProbeQueryBoundP
-    (trace : ActionTrace Index) :
-    (emitObservedTrace trace).IsQueryBoundP IsProbeQuery
-      (observedProbeCount trace) := by
-  induction trace with
-  | nil => trivial
-  | cons action rest ih =>
-      cases action with
-      | probe index target =>
-          rw [emitObservedTrace, probeQuery,
-            OracleComp.isQueryBoundP_query_bind_iff]
-          constructor
-          · simp [IsProbeQuery, observedProbeCount]
-          · intro output
-            simpa [IsProbeQuery, observedProbeCount] using ih
-      | reveal index value =>
-          rw [emitObservedTrace, revealQuery,
-            OracleComp.isQueryBoundP_query_bind_iff]
-          constructor
-          · simp [IsProbeQuery, observedProbeCount]
-          · intro output
-            simpa [IsProbeQuery, observedProbeCount] using ih
-
 def TraceAgrees (table : Index → Digest) : ActionTrace Index → Prop
   | [] => True
   | .probe _ _ :: rest => TraceAgrees table rest
   | .reveal index value :: rest => table index = value ∧ TraceAgrees table rest
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem traceAgrees_append
-    (table : Index → Digest) (left right : ActionTrace Index) :
-    TraceAgrees table (left ++ right) ↔
-      TraceAgrees table left ∧ TraceAgrees table right := by
-  induction left with
-  | nil => simp [TraceAgrees]
-  | cons action rest ih =>
-      cases action <;> simp [TraceAgrees, ih, and_assoc]
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem simulate_eagerTrace_emitObservedTrace
-    (table : Index → Digest) (trace : ActionTrace Index)
-    (hagrees : TraceAgrees table trace) :
-    (simulateQ (eagerTraceImpl table) (emitObservedTrace trace)).run =
-      pure ((), trace) := by
-  induction trace with
-  | nil => simp [emitObservedTrace]
-  | cons action rest ih =>
-      cases action with
-      | probe index target =>
-          simp only [TraceAgrees] at hagrees
-          simp [emitObservedTrace, probeQuery, simulateQ_bind,
-            eagerTraceImpl, eagerImpl, traceFragment,
-            QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-          change (fun x => (x.1, .probe index target :: x.2)) <$>
-              (simulateQ (eagerTraceImpl table) (emitObservedTrace rest)).run = _
-          rw [ih hagrees]
-          simp
-      | reveal index value =>
-          obtain ⟨hvalue, hrest⟩ := hagrees
-          simp [emitObservedTrace, revealQuery, simulateQ_bind,
-            eagerTraceImpl, eagerImpl, traceFragment,
-            QueryImpl.withTraceAppend_apply, WriterT.run_tell, hvalue]
-          change (fun x => (x.1, .reveal index value :: x.2)) <$>
-              (simulateQ (eagerTraceImpl table) (emitObservedTrace rest)).run = _
-          rw [ih hrest]
-          simp
 
 omit [Fintype Index] [DecidableEq Index] in
 theorem simulate_eagerTrace_liftProbComp
@@ -1427,362 +1042,6 @@ theorem simulate_eagerTrace_liftProbComp
       change (simulateQ (eagerTraceImpl table)
         (liftProbComp (next output))).run = _
       exact ih output
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem simulate_eagerTrace_reveal_then_liftProbComp
-    (table : Index → Digest) (index : Index)
-    (computation : Digest → ProbComp α) (finish : Digest → α → β) :
-    (simulateQ (eagerTraceImpl table) (do
-      let value ← revealQuery index
-      let output ← liftProbComp (computation value)
-      pure (finish value output))).run =
-      (fun output =>
-        (finish (table index) output, [.reveal index (table index)])) <$>
-          computation (table index) := by
-  rw [simulateQ_bind, WriterT.run_bind', simulate_eagerTrace_revealQuery]
-  simp only [pure_bind]
-  rw [simulateQ_bind, WriterT.run_bind',
-    simulate_eagerTrace_liftProbComp]
-  simp [map_eq_bind_pure_comp, bind_assoc]
-
-theorem evalDist_uniformTable_simulate_eagerTrace_reveal_continuation
-    (index : Index)
-    (continuation : (Index → Digest) →
-      (Digest × ActionTrace Index) → ProbComp α) :
-    𝒟[do
-      let table ← $ᵗ (Index → Digest)
-      let result ← (simulateQ (eagerTraceImpl table) (revealQuery index)).run
-      continuation table result] =
-    𝒟[do
-      let value ← $ᵗ Digest
-      let base ← $ᵗ (Index → Digest)
-      let table := Function.update base index value
-      continuation table (value, [.reveal index value])] := by
-  calc
-    𝒟[do
-      let table ← $ᵗ (Index → Digest)
-      let result ← (simulateQ (eagerTraceImpl table) (revealQuery index)).run
-      continuation table result] =
-        𝒟[do
-          let table ← $ᵗ (Index → Digest)
-          continuation table (table index, [.reveal index (table index)])] := by
-      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-      intro table
-      rw [simulate_eagerTrace_revealQuery]
-      simp
-    _ = _ := evalDist_uniformTable_bind_coordinate_continuation index
-      (fun table value => continuation table (value, [.reveal index value]))
-
-theorem evalDist_bind_congr_of_support
-    (head : ProbComp α) (left right : α → ProbComp β)
-    (heq : ∀ result ∈ support head, 𝒟[left result] = 𝒟[right result]) :
-    𝒟[head >>= left] = 𝒟[head >>= right] := by
-  refine evalDist_ext fun output => ?_
-  refine probOutput_bind_congr fun result hresult => ?_
-  rw [probOutput_def, probOutput_def, heq result hresult]
-
-theorem eagerExperiment_emitObservedTrace_eq
-    (traceGenerator : ProbComp (ActionTrace Index))
-    (hagrees : ∀ table trace,
-      (table, trace) ∈ support
-        (Prod.mk <$> ($ᵗ (Index → Digest)) <*> traceGenerator) →
-      TraceAgrees table trace) :
-    𝒟[eagerExperiment
-      (do
-        let trace ← liftProbComp (Index := Index) traceGenerator
-        emitObservedTrace trace)] =
-      𝒟[do
-        let table ← $ᵗ (Index → Digest)
-        let trace ← traceGenerator
-        pure (table, ((), trace))] := by
-  unfold eagerExperiment
-  simp only [simulateQ_bind]
-  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-  intro table
-  rw [WriterT.run_bind']
-  rw [simulate_eagerTrace_liftProbComp table traceGenerator]
-  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
-    Function.comp_apply, List.nil_append]
-  change 𝒟[traceGenerator >>= fun trace =>
-      (simulateQ (eagerTraceImpl table) (emitObservedTrace trace)).run >>= fun result =>
-        pure (table, result)] =
-    𝒟[traceGenerator >>= fun trace => pure (table, ((), trace))]
-  apply evalDist_bind_congr_of_support
-  intro trace htrace
-  rw [simulate_eagerTrace_emitObservedTrace table trace]
-  · simp
-  · apply hagrees table trace
-    rw [support_seq_map_prod_mk]
-    exact ⟨by simp, htrace⟩
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem emitProbes_isProbeQueryBoundP
-    (probes : List (Index × Digest)) :
-    (emitProbes probes).IsQueryBoundP IsProbeQuery probes.length := by
-  induction probes with
-  | nil => trivial
-  | cons probe probes ih =>
-      rw [emitProbes, probeQuery, OracleComp.isQueryBoundP_query_bind_iff]
-      constructor
-      · simp [IsProbeQuery]
-      · intro output
-        simpa [IsProbeQuery] using ih
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem emitReveals_isProbeQueryBoundP
-    (reveals : List Index) (fuel : Nat) :
-    (emitReveals reveals).IsQueryBoundP IsProbeQuery fuel := by
-  induction reveals with
-  | nil => trivial
-  | cons index reveals ih =>
-      rw [emitReveals, revealQuery, OracleComp.isQueryBoundP_query_bind_iff]
-      constructor
-      · simp [IsProbeQuery]
-      · intro value
-        simpa [IsProbeQuery] using ih
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem emitTranscript_isProbeQueryBoundP
-    (probes : List (Index × Digest)) (reveals : List Index) :
-    (emitTranscript probes reveals).IsQueryBoundP IsProbeQuery probes.length := by
-  unfold emitTranscript
-  simpa using OracleComp.isQueryBoundP_bind (m := 0)
-    (emitProbes_isProbeQueryBoundP probes)
-    (fun _result _hresult => emitReveals_isProbeQueryBoundP reveals 0)
-
-def installProbe
-    (state : AdaptiveRevealMonitor.State Index)
-    (probe : Index × Digest) : AdaptiveRevealMonitor.State Index :=
-  state.addPending probe.1 probe.2
-
-def installProbes
-    (state : AdaptiveRevealMonitor.State Index)
-    (probes : List (Index × Digest)) : AdaptiveRevealMonitor.State Index :=
-  probes.foldl installProbe state
-
-omit [Fintype Index] in
-theorem installProbes_revealed
-    (state : AdaptiveRevealMonitor.State Index)
-    (probes : List (Index × Digest)) :
-    (installProbes state probes).revealed = state.revealed := by
-  induction probes generalizing state with
-  | nil => rfl
-  | cons probe probes ih =>
-      simpa [installProbes, List.foldl_cons, installProbe,
-        AdaptiveRevealMonitor.State.addPending] using
-        ih (state.addPending probe.1 probe.2)
-
-omit [Fintype Index] in
-theorem pending_installProbes_mono
-    (state : AdaptiveRevealMonitor.State Index)
-    (probes : List (Index × Digest)) (index : Index) :
-    state.pending index ⊆ (installProbes state probes).pending index := by
-  induction probes generalizing state with
-  | nil => exact fun _value hvalue => hvalue
-  | cons probe probes ih =>
-      apply Finset.Subset.trans _ (ih (installProbe state probe))
-      intro value hvalue
-      by_cases heq : probe.1 = index
-      · subst index
-        simpa [installProbe, AdaptiveRevealMonitor.State.addPending] using
-          Finset.mem_insert_of_mem hvalue
-      · simpa [installProbe, AdaptiveRevealMonitor.State.addPending,
-          Function.update_of_ne (Ne.symm heq)] using hvalue
-
-omit [Fintype Index] in
-theorem mem_pending_installProbes_of_mem
-    (state : AdaptiveRevealMonitor.State Index)
-    (probes : List (Index × Digest)) (probe : Index × Digest)
-    (hprobe : probe ∈ probes) :
-    probe.2 ∈ (installProbes state probes).pending probe.1 := by
-  induction probes generalizing state with
-  | nil => simp at hprobe
-  | cons first probes ih =>
-      rw [List.mem_cons] at hprobe
-      rcases hprobe with heq | htail
-      · subst first
-        apply pending_installProbes_mono (installProbe state probe) probes
-        simp [installProbe, AdaptiveRevealMonitor.State.addPending]
-      · simpa [installProbes, List.foldl_cons] using
-          ih (installProbe state first) htail
-
-theorem runObserved_probeTrace
-    (table : Index → Digest) (state : AdaptiveRevealMonitor.State Index)
-    (probes : List (Index × Digest))
-    (hhidden : ∀ probe ∈ probes, state.revealed probe.1 = none) :
-    runObserved table state (probes.map fun probe =>
-      ObservedAction.probe probe.1 probe.2) =
-      tableHits (installProbes state probes) table := by
-  induction probes generalizing state with
-  | nil => rfl
-  | cons probe probes ih =>
-      simp only [List.map_cons, runObserved]
-      rw [hhidden probe (by simp)]
-      apply ih (state.addPending probe.1 probe.2)
-      intro candidate hcandidate
-      have hcandidateHidden := hhidden candidate (by simp [hcandidate])
-      simpa [AdaptiveRevealMonitor.State.addPending] using hcandidateHidden
-
-theorem runObserved_probeTrace_eq_true_of_mem
-    (table : Index → Digest) (probes : List (Index × Digest))
-    (probe : Index × Digest) (hprobe : probe ∈ probes)
-    (hhit : table probe.1 = probe.2) :
-    runObserved table AdaptiveRevealMonitor.State.empty
-      (probes.map fun candidate =>
-        ObservedAction.probe candidate.1 candidate.2) = true := by
-  rw [runObserved_probeTrace table AdaptiveRevealMonitor.State.empty probes
-    (by simp [AdaptiveRevealMonitor.State.empty])]
-  simp only [tableHits, decide_eq_true_eq]
-  refine ⟨probe.1, ?_⟩
-  rw [hhit]
-  exact mem_pending_installProbes_of_mem AdaptiveRevealMonitor.State.empty
-    probes probe hprobe
-
-def strategyProbes
-    (queries : Nat) (strategy : List Bool → Index × Digest) :
-    List (Index × Digest) :=
-  (List.range queries).map fun round =>
-    strategy (List.replicate round false)
-
-omit [Fintype Index] [DecidableEq Index] in
-@[simp]
-theorem strategyProbes_length
-    (queries : Nat) (strategy : List Bool → Index × Digest) :
-    (strategyProbes queries strategy).length = queries := by
-  simp [strategyProbes]
-
-theorem runObserved_strategyProbes_eq_true_of_readMany
-    (table : Index → Digest) (queries : Nat)
-    (strategy : List Bool → Index × Digest)
-    (hhit : IndexedHiddenValue.readMany table queries strategy = true) :
-    runObserved table AdaptiveRevealMonitor.State.empty
-      ((strategyProbes queries strategy).map fun probe =>
-        ObservedAction.probe probe.1 probe.2) = true := by
-  rw [IndexedHiddenValue.readMany_true_iff] at hhit
-  obtain ⟨round, hround, hhit⟩ := hhit
-  apply runObserved_probeTrace_eq_true_of_mem table
-    (strategyProbes queries strategy)
-    (strategy (List.replicate round false))
-  · exact List.mem_map.mpr ⟨round, List.mem_range.mpr hround, rfl⟩
-  · exact hhit
-
-def compileStrategyProbes
-    (queries : Nat)
-    (transcriptProgram : OracleComp (World Index)
-      (List Bool → Index × Digest)) :
-    OracleComp (World Index) (List Bool → Index × Digest) := do
-  let strategy ← transcriptProgram
-  emitProbes (strategyProbes queries strategy)
-  pure strategy
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem compileStrategyProbes_isProbeQueryBoundP
-    (queries : Nat)
-    (transcriptProgram : OracleComp (World Index)
-      (List Bool → Index × Digest))
-    (htranscript : transcriptProgram.IsQueryBoundP IsProbeQuery 0) :
-    (compileStrategyProbes queries transcriptProgram).IsQueryBoundP
-      IsProbeQuery queries := by
-  unfold compileStrategyProbes
-  have hcontinuation (strategy : List Bool → Index × Digest) :
-      (do
-        emitProbes (strategyProbes queries strategy)
-        pure strategy).IsQueryBoundP IsProbeQuery queries := by
-    have hemit := emitProbes_isProbeQueryBoundP
-      (strategyProbes queries strategy)
-    rw [strategyProbes_length] at hemit
-    simpa using OracleComp.isQueryBoundP_bind (m := 0) hemit
-      (fun _unit _hunit => OracleComp.isQueryBoundP_pure
-        (p := IsProbeQuery) strategy 0)
-  simpa using OracleComp.isQueryBoundP_bind (n := 0) (m := queries)
-    htranscript (fun strategy _hstrategy => hcontinuation strategy)
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem probeQuery_isQueryBoundP
-    (index : Index) (target : Digest) :
-    (probeQuery index target).IsQueryBoundP IsSpecialQuery 1 := by
-  rw [probeQuery, OracleComp.isQueryBoundP_query_iff]
-  simp [IsSpecialQuery]
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem revealQuery_isQueryBoundP (index : Index) :
-    (revealQuery index).IsQueryBoundP IsSpecialQuery 1 := by
-  rw [revealQuery, OracleComp.isQueryBoundP_query_iff]
-  simp [IsSpecialQuery]
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem uniformQuery_isQueryBoundP (n steps : Nat) :
-    (uniformQuery (Index := Index) n).IsQueryBoundP IsSpecialQuery steps := by
-  rw [uniformQuery, OracleComp.isQueryBoundP_query_iff]
-  simp [IsSpecialQuery]
-
-def ContinuationBound (steps : Nat) :
-    AdaptiveRevealMonitor.ControllerAction
-      (OracleComp (World Index) α) Index → Prop
-  | .stop => True
-  | .skip next => next.IsQueryBoundP IsSpecialQuery steps
-  | .probe _ _ next =>
-      ∀ answer, (next answer).IsQueryBoundP IsSpecialQuery steps
-  | .reveal _ next =>
-      ∀ value, (next value).IsQueryBoundP IsSpecialQuery steps
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem controller_continuationBound
-    (computation : OracleComp (World Index) α) (steps : Nat)
-    (hbound : computation.IsQueryBoundP IsSpecialQuery steps.succ)
-    (action : AdaptiveRevealMonitor.ControllerAction
-      (OracleComp (World Index) α) Index)
-    (hmem : action ∈ support (controller computation)) :
-    ContinuationBound steps action := by
-  induction computation using OracleComp.inductionOn with
-  | pure result =>
-      simp [controller] at hmem
-      subst action
-      trivial
-  | query_bind input next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
-      simp only [controller, OracleComp.construct_query_bind] at hmem
-      cases input with
-      | uniform n =>
-          rw [mem_support_bind_iff] at hmem
-          obtain ⟨output, _houtput, hcontinue⟩ := hmem
-          exact ih output (by simpa [IsSpecialQuery] using hbound.2 output) hcontinue
-      | probe index target =>
-          simp only [support_pure, Set.mem_singleton_iff] at hmem
-          subst action
-          intro answer
-          simpa [ContinuationBound, IsSpecialQuery] using hbound.2 ()
-      | reveal index =>
-          simp only [support_pure, Set.mem_singleton_iff] at hmem
-          subst action
-          intro value
-          simpa [ContinuationBound, IsSpecialQuery] using hbound.2 value
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem controller_eq_stop_of_zero_bound
-    (computation : OracleComp (World Index) α)
-    (hbound : computation.IsQueryBoundP IsSpecialQuery 0)
-    (action : AdaptiveRevealMonitor.ControllerAction
-      (OracleComp (World Index) α) Index)
-    (hmem : action ∈ support (controller computation)) :
-    action = .stop := by
-  induction computation using OracleComp.inductionOn with
-  | pure result =>
-      simpa [controller] using hmem
-  | query_bind input next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
-      simp only [controller, OracleComp.construct_query_bind] at hmem
-      cases input with
-      | uniform n =>
-          rw [mem_support_bind_iff] at hmem
-          obtain ⟨output, _houtput, hcontinue⟩ := hmem
-          exact ih output (by simpa [IsSpecialQuery] using hbound.2 output) hcontinue
-      | probe index target =>
-          exfalso
-          simpa [IsSpecialQuery] using hbound.1
-      | reveal index =>
-          exfalso
-          simpa [IsSpecialQuery] using hbound.1
 
 noncomputable def run
     (steps probes : Nat) (computation : OracleComp (World Index) α) :
