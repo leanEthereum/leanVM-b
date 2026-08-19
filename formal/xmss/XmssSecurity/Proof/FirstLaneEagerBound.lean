@@ -1459,18 +1459,4 @@ theorem eagerExperiment_enforced_combinedHit_probability_le
     (enforceHazardBound fuel computation)
     (enforceHazardBound_isHazardQueryBoundP fuel computation)
 
-theorem eagerExperiment_combinedHit_probability_le_of_support_count
-    (fuel : Nat) (computation : OracleComp (World Index) α)
-    (hcount : ∀ result ∈ support (eagerExperiment computation),
-      hazardCount result.2.2 ≤ fuel) :
-    Pr[ExperimentHit | eagerExperiment computation] ≤
-      (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  have henforced :=
-    eagerExperiment_enforced_combinedHit_probability_le fuel computation
-  rw [eagerExperiment_enforceHazardBound_eq_map, probEvent_map] at henforced
-  refine (probEvent_congr' (fun result hresult => ?_) rfl).le.trans henforced
-  change ExperimentHit result ↔ ExperimentHit (enforceEagerResult fuel result)
-  rw [enforceEagerResult_eq_self_of_count_le fuel result
-    (hcount result hresult)]
-
 end XmssSecurity.FirstLaneOracleSimulation
