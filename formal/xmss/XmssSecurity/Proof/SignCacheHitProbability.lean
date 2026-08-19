@@ -9,40 +9,6 @@ namespace XmssSecurity
 noncomputable local instance : SampleableType Randomness :=
   SampleableType.ofFintype Randomness
 
-/-- Every successful fixed-randomness signing attempt returns the randomness supplied to that attempt. -/
-theorem Concrete.signAttempt_support_randomness
-    (secretKey : SecretKey) (epoch : Epoch) (message : Message)
-    (randomness : Randomness) (initialCache finalCache : QueryCache HashSpec)
-    (signature : Signature)
-    (hmem : (some signature, finalCache) ∈ support
-      ((simulateQ randomOracle
-        (Concrete.signAttempt secretKey epoch message randomness :
-          OracleComp HashSpec (Option Signature))).run initialCache)) :
-    signature.randomness = randomness := by
-  have heval := Concrete.CacheReplay.eval_answerFn_finalCache_eq_of_mem_support
-    (Concrete.signAttempt secretKey epoch message randomness :
-      OracleComp HashSpec (Option Signature)) initialCache finalCache
-      (some signature) hmem
-  rw [Concrete.CacheReplay.eval_signAttempt] at heval
-  unfold Concrete.CacheReplay.signAttempt at heval
-  split at heval
-  · simp at heval
-  · rename_i _ encoding hdecode
-    simp only [Option.some.injEq] at heval
-    simpa only [Concrete.CacheReplay.signWithEncoding] using
-      congrArg Signature.randomness heval.symm
-
-/-- Cache entries whose serialized input belongs to one encoding epoch. -/
-noncomputable def cachedEncodingEntries (cache : QueryCache HashSpec)
-    (parameter : PublicParameter) (epoch : Epoch) :
-    Finset ((t : HashSpec.Domain) × HashSpec.Range t) := by
-  classical
-  exact if hfinite : cache.toSet.Finite then
-    hfinite.toFinset.filter fun entry =>
-      encodingInputEpoch? parameter entry.1 = some epoch
-  else
-    ∅
-
 noncomputable def cachedEncodingEntryCount (cache : QueryCache HashSpec)
     (parameter : PublicParameter) (epoch : Epoch) : ℝ≥0∞ :=
   (({entry ∈ cache.toSet |
@@ -171,63 +137,6 @@ theorem cachedEncodingInputCount_cacheQuery_le
     have hcast := ENat.toENNReal_mono hencard
     simpa [hepoch] using hcast
 
-theorem cachedEncodingEntryCount_eq_card_of_finite
-    (cache : QueryCache HashSpec) (parameter : PublicParameter) (epoch : Epoch)
-    (hfinite : cache.toSet.Finite) :
-    cachedEncodingEntryCount cache parameter epoch =
-      (cachedEncodingEntries cache parameter epoch).card := by
-  classical
-  let fiber := {entry ∈ cache.toSet |
-    encodingInputEpoch? parameter entry.1 = some epoch}
-  have hfiber : fiber.Finite := hfinite.subset (by
-    intro entry hentry
-    exact hentry.1)
-  unfold cachedEncodingEntryCount cachedEncodingEntries
-  rw [dif_pos hfinite]
-  change ((fiber.encard : ENat) : ℝ≥0∞) = _
-  rw [hfiber.encard_eq_coe_toFinset_card, ENat.toENNReal_coe]
-  norm_cast
-  apply congrArg Finset.card
-  ext entry
-  simp [fiber]
-
-set_option maxRecDepth 10000 in
-set_option linter.constructorNameAsVariable false in
-theorem uniform_signingRandomness_encodingInput_cacheHit_le_cachedEncodingEntries
-    (parameter : PublicParameter) (epoch : Epoch) (message : Message)
-    (cache : QueryCache HashSpec) (hfinite : cache.toSet.Finite) :
-    Pr[fun randomness : Randomness => ∃ output,
-      cache (Concrete.CacheView.encodingInput parameter epoch (message, randomness)) =
-        some output |
-      $ᵗ Randomness] ≤
-      ((cachedEncodingEntries cache parameter epoch).card : ℝ≥0∞) *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-  classical
-  let entries := cachedEncodingEntries cache parameter epoch
-  let targets := entries.image fun entry => entry.1
-  calc
-    _ ≤ Pr[fun randomness : Randomness => ∃ input ∈ targets,
-        Concrete.CacheView.encodingInput parameter epoch (message, randomness) = input |
-        $ᵗ Randomness] := by
-      apply probEvent_mono
-      intro randomness _hrandomness
-      rintro ⟨output, hcache⟩
-      let input := Concrete.CacheView.encodingInput parameter epoch (message, randomness)
-      have hentry : (⟨input, output⟩ : (t : HashSpec.Domain) × HashSpec.Range t) ∈
-          entries := by
-        unfold entries cachedEncodingEntries
-        rw [dif_pos hfinite, Finset.mem_filter]
-        exact ⟨by simpa [input] using hcache, by simp [input]⟩
-      exact ⟨input, Finset.mem_image.mpr ⟨⟨input, output⟩, hentry, rfl⟩, rfl⟩
-    _ ≤ (targets.card : ℝ≥0∞) *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ :=
-      uniform_signingRandomness_encodingInput_hits_finset_le
-        parameter epoch message targets
-    _ ≤ (entries.card : ℝ≥0∞) *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-      gcongr
-      exact_mod_cast Finset.card_image_le
-
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
 theorem uniform_signingRandomness_encodingInput_cacheHit_le_cachedEncodingEntryCount
@@ -263,40 +172,6 @@ theorem uniform_signingRandomness_encodingInput_cacheHit_le_cachedEncodingEntryC
   change (targets.card : ℝ≥0∞) *
       ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ ≤ _
   exact mul_le_mul' hcard le_rfl
-
-theorem sum_cachedEncodingEntries_card_le_enncard
-    (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (epochs : Finset Epoch) :
-    ((∑ epoch ∈ epochs,
-        (cachedEncodingEntries cache parameter epoch).card : Nat) : ℝ≥0∞) ≤
-      QueryCache.enncard cache := by
-  classical
-  unfold cachedEncodingEntries
-  split <;> rename_i hfinite
-  · let entries := hfinite.toFinset
-    let taggedEpochs := epochs.image some
-    have hsum := Finset.sum_card_fiberwise_eq_card_filter entries taggedEpochs
-      (fun entry => encodingInputEpoch? parameter entry.1)
-    have himage :
-        (∑ epoch ∈ epochs,
-            (entries.filter fun entry =>
-              encodingInputEpoch? parameter entry.1 = some epoch).card) =
-          ∑ tag ∈ taggedEpochs,
-            (entries.filter fun entry =>
-              encodingInputEpoch? parameter entry.1 = tag).card := by
-      rw [Finset.sum_image]
-      intro left _ right _ heq
-      exact Option.some.inj heq
-    rw [himage, hsum]
-    calc
-      (((entries.filter fun entry =>
-          encodingInputEpoch? parameter entry.1 ∈ taggedEpochs).card : Nat) : ℝ≥0∞) ≤
-          (entries.card : ℝ≥0∞) := by
-        exact_mod_cast Finset.card_filter_le entries _
-      _ = QueryCache.enncard cache := by
-        simp only [entries, QueryCache.enncard,
-          hfinite.encard_eq_coe_toFinset_card, ENat.toENNReal_coe]
-  · simp
 
 theorem cachedEncodingEntryCount_mono
     (initialCache finalCache : QueryCache HashSpec)
