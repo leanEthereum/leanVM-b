@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalChainTable
-import XmssSecurity.Proof.CappedChain.ChainTablePresampling
+import XmssSecurity.Proof.ChainTablePresampling
 
 open OracleComp OracleSpec ENNReal
 
@@ -155,74 +155,6 @@ theorem allChains_nodup : allChains.Nodup := by
 
 theorem mem_allChains (chain : ChainIndex) : chain ∈ allChains := by
   simp [allChains]
-
-noncomputable def Concrete.warmAllChains
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest) :
-    List ChainIndex → OracleComp HashSpec Unit
-  | [] => pure ()
-  | chain :: chains => do
-      let _ ← Concrete.warmFixedChainEpochs parameter secret chain allEpochs
-      Concrete.warmAllChains parameter secret chains
-
-@[simp]
-theorem Concrete.warmAllChains_nil
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest) :
-    Concrete.warmAllChains parameter secret [] = pure () := rfl
-
-theorem Concrete.warmAllChains_cons
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (chains : List ChainIndex) :
-    Concrete.warmAllChains parameter secret (chain :: chains) = (do
-      let _ ← Concrete.warmFixedChainEpochs parameter secret chain allEpochs
-      Concrete.warmAllChains parameter secret chains) := rfl
-
-theorem evalDist_rootTree_run_eq_warmAllChains_then_rootTree
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chains : List ChainIndex) (initialCache : QueryCache HashSpec) :
-    𝒟[(simulateQ randomOracle
-      (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-        OracleComp HashSpec Digest)).run initialCache] =
-      𝒟[(simulateQ randomOracle
-        (Concrete.warmAllChains parameter secret chains)).run initialCache >>=
-          fun warmResult =>
-            (simulateQ randomOracle
-              (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-                OracleComp HashSpec Digest)).run warmResult.2] := by
-  induction chains generalizing initialCache with
-  | nil => simp
-  | cons chain chains ih =>
-      calc
-        𝒟[(simulateQ randomOracle
-            (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-              OracleComp HashSpec Digest)).run initialCache] =
-          𝒟[(simulateQ randomOracle
-            (Concrete.warmFixedChainEpochs parameter secret chain allEpochs)).run
-              initialCache >>= fun firstResult =>
-                (simulateQ randomOracle
-                  (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-                    OracleComp HashSpec Digest)).run firstResult.2] :=
-          evalDist_rootTree_run_eq_warmFixedChainEpochs_then_rootTree
-            parameter secret chain allEpochs initialCache
-        _ = 𝒟[(simulateQ randomOracle
-            (Concrete.warmFixedChainEpochs parameter secret chain allEpochs)).run
-              initialCache >>= fun firstResult =>
-                (simulateQ randomOracle
-                  (Concrete.warmAllChains parameter secret chains)).run
-                    firstResult.2 >>= fun restResult =>
-                (simulateQ randomOracle
-                  (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-                    OracleComp HashSpec Digest)).run restResult.2] := by
-          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-          intro firstResult
-          exact ih firstResult.2
-        _ = 𝒟[(simulateQ randomOracle
-            (Concrete.warmAllChains parameter secret (chain :: chains))).run
-              initialCache >>= fun warmResult =>
-                (simulateQ randomOracle
-                  (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-                    OracleComp HashSpec Digest)).run warmResult.2] := by
-          rw [Concrete.warmAllChains_cons, simulateQ_bind, StateT.run_bind]
-          simp only [bind_assoc]
 
 noncomputable def actualGlobalChainKeygen :
     ProbComp ProgrammedGlobalChainKeygenView := do

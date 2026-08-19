@@ -1,6 +1,6 @@
 import XmssSecurity.Proof.CausalPairedKeygen
 import XmssSecurity.Proof.TreeValueTraversal
-import XmssSecurity.Proof.CappedChain.ChainTablePresampling
+import XmssSecurity.Proof.ChainTablePresampling
 
 open OracleComp OracleSpec
 

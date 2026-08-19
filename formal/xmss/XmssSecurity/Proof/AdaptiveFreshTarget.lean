@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.HashInputLemmas
-import XmssSecurity.Proof.MixedOracle
+import XmssSecurity.Proof.Execution
 import XmssSecurity.Proof.RandomOracle
 
 open OracleComp ENNReal

@@ -1,7 +1,7 @@
 import XmssSecurity.Proof.ChainTableUniformity
 import XmssSecurity.Proof.ChainQueryPresence
 import XmssSecurity.Proof.AdaptiveFreshTarget
-import XmssSecurity.Proof.MixedOraclePresampling
+import XmssSecurity.Proof.RandomOraclePresampling
 import XmssSecurity.Proof.SecretTableUniformity
 
 open OracleComp OracleSpec ENNReal
@@ -375,34 +375,6 @@ theorem extractFixedChainSeeds_support_info
             rw [htargetEpoch] at htarget
             exact htarget
 
-theorem chainTableEdgeInput_injective
-    (parameter : PublicParameter) (chain : ChainIndex)
-    (table : ChainValueIndex → Digest) :
-    Function.Injective (chainTableEdgeInput parameter chain table) := by
-  rintro ⟨leftEpoch, leftStep⟩ ⟨rightEpoch, rightStep⟩ heq
-  have hparts := (Concrete.CacheView.chainInput_eq_iff parameter
-    leftEpoch rightEpoch chain chain leftStep rightStep
-    (table (leftEpoch, chainStepDigit leftStep))
-    (table (rightEpoch, chainStepDigit rightStep))).mp heq
-  exact Prod.ext hparts.1 hparts.2.2.1
-
-noncomputable def allChainEdges : List ChainEdgeIndex :=
-  Finset.univ.toList
-
-theorem allChainEdges_nodup : allChainEdges.Nodup :=
-  Finset.nodup_toList _
-
-noncomputable def chainTableEdgeInputs
-    (parameter : PublicParameter) (chain : ChainIndex)
-    (table : ChainValueIndex → Digest) : List HashInput :=
-  allChainEdges.map (chainTableEdgeInput parameter chain table)
-
-theorem chainTableEdgeInputs_nodup
-    (parameter : PublicParameter) (chain : ChainIndex)
-    (table : ChainValueIndex → Digest) :
-    (chainTableEdgeInputs parameter chain table).Nodup :=
-  allChainEdges_nodup.map (chainTableEdgeInput_injective parameter chain table)
-
 theorem evalDist_map_truncate_drawList (count : Nat) :
     𝒟[List.map truncateHash <$>
       OracleComp.drawList ($ᵗ HashOutput) count] =
@@ -436,29 +408,6 @@ theorem evalDist_map_truncate_drawList (count : Nat) :
           conv_lhs => rw [evalDist_bind]
           conv_rhs => rw [evalDist_bind]
           rw [ih]
-
-/-- The truncated values recorded by finite random-oracle presampling form an i.i.d. uniform digest tape. -/
-theorem evalDist_presampleCacheEntriesTrace_truncate
-    (cache : QueryCache HashSpec) (inputs : List HashInput) :
-    𝒟[(fun result : List HashOutput × QueryCache HashSpec =>
-        result.1.map truncateHash) <$>
-      OracleComp.presampleCacheEntriesTrace cache inputs] =
-      𝒟[OracleComp.drawList ($ᵗ Digest) inputs.length] := by
-  calc
-    𝒟[(fun result : List HashOutput × QueryCache HashSpec =>
-          result.1.map truncateHash) <$>
-        OracleComp.presampleCacheEntriesTrace cache inputs] =
-        𝒟[List.map truncateHash <$>
-          (Prod.fst <$>
-            OracleComp.presampleCacheEntriesTrace cache inputs)] := by
-      simp [Functor.map_map]
-    _ = 𝒟[List.map truncateHash <$>
-          OracleComp.drawList ($ᵗ HashOutput) inputs.length] := by
-      rw [evalDist_map,
-        OracleComp.evalDist_presampleCacheEntriesTrace_fst_eq_drawList,
-        ← evalDist_map]
-    _ = 𝒟[OracleComp.drawList ($ᵗ Digest) inputs.length] :=
-      evalDist_map_truncate_drawList inputs.length
 
 set_option maxHeartbeats 1600000 in
 set_option maxRecDepth 1000000 in
@@ -1482,203 +1431,5 @@ theorem evalDist_actualFixedChainKeygen_eq_chronologicallyWarmed
       evalDist (chronologicallyWarmedExtractedFixedChainKeygen chain) :=
   (evalDist_actualFixedChainKeygen_eq_extracted chain).trans
     (evalDist_extractedFixedChainKeygen_eq_chronologicallyWarmed chain)
-
-theorem chronologicallyWarmedExtractedFixedChainKeygen_support_table
-    (chain : ChainIndex) (result : ProgrammedFixedChainKeygenView)
-    (hresult : result ∈ support
-      (chronologicallyWarmedExtractedFixedChainKeygen chain)) :
-    ∃ trajectories : List FullChainTrajectory,
-      result.table = chainValueTableOfList trajectories ∧
-        trajectories.length = lifetime := by
-  unfold chronologicallyWarmedExtractedFixedChainKeygen at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨parameter, _hparameter, hsecretView⟩ := hresult
-  rw [mem_support_bind_iff] at hsecretView
-  obtain ⟨secretView, _hsecretView, htrajectory⟩ := hsecretView
-  rw [mem_support_bind_iff] at htrajectory
-  obtain ⟨rootResult, hrootComputation, hpure⟩ := htrajectory
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  rw [mem_support_bind_iff] at hrootComputation
-  obtain ⟨trajectoryResult, htrajectoryResult, hrootResult⟩ := hrootComputation
-  refine ⟨trajectoryResult.1, ?_, ?_⟩
-  · symm
-    apply Concrete.fixedSeedChainTrajectoriesFromCache_table_eq_in_largerCache
-      parameter (unflattenSecret secretView.2) chain trajectoryResult
-        rootResult.2 htrajectoryResult
-    exact Concrete.CacheReplay.randomOracle_cache_le
-      (Concrete.treeNode parameter (unflattenSecret secretView.2) treeHeight
-        Concrete.rootNode : OracleComp HashSpec Digest)
-      trajectoryResult.2 rootResult hrootResult
-  · have hinfo := Concrete.fixedSeedChainTrajectoriesFromCache_support_info
-      parameter (unflattenSecret secretView.2) chain (chainLength - 1)
-        allEpochs ∅ trajectoryResult htrajectoryResult
-    simpa [allEpochs_length] using hinfo.2.1
-
-def Concrete.warmFixedChainEpochs
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) : List Epoch → OracleComp HashSpec Unit
-  | [] => pure ()
-  | epoch :: epochs => do
-      let _endpoint ← Concrete.chainWalk parameter epoch chain 0
-        (chainLength - 1) (secret epoch chain)
-      Concrete.warmFixedChainEpochs parameter secret chain epochs
-
-@[simp]
-theorem Concrete.warmFixedChainEpochs_nil
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) :
-    Concrete.warmFixedChainEpochs parameter secret chain [] = pure () := rfl
-
-theorem Concrete.warmFixedChainEpochs_cons
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (epoch : Epoch) (epochs : List Epoch) :
-    Concrete.warmFixedChainEpochs parameter secret chain (epoch :: epochs) = (do
-      let _endpoint ← Concrete.chainWalk parameter epoch chain 0
-        (chainLength - 1) (secret epoch chain)
-      Concrete.warmFixedChainEpochs parameter secret chain epochs) := rfl
-
-theorem evalDist_rootTree_run_eq_warmFixedChainEpochs_then_rootTree
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (epochs : List Epoch)
-    (initialCache : QueryCache HashSpec) :
-    evalDist ((simulateQ randomOracle
-      (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-        OracleComp HashSpec Digest)).run initialCache) =
-      evalDist ((simulateQ randomOracle
-        (Concrete.warmFixedChainEpochs parameter secret chain epochs)).run
-          initialCache >>= fun warmResult =>
-        (simulateQ randomOracle
-          (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-            OracleComp HashSpec Digest)).run warmResult.2) := by
-  induction epochs generalizing initialCache with
-  | nil =>
-      simp
-  | cons epoch epochs ih =>
-      calc
-        evalDist ((simulateQ randomOracle
-            (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-              OracleComp HashSpec Digest)).run initialCache) =
-            evalDist ((simulateQ randomOracle
-              (Concrete.chainWalk parameter epoch chain 0 (chainLength - 1)
-                (secret epoch chain) : OracleComp HashSpec Digest)).run
-                  initialCache >>= fun chainResult =>
-              (simulateQ randomOracle
-                (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-                  OracleComp HashSpec Digest)).run chainResult.2) :=
-          evalDist_rootTree_run_eq_chainWalk_then_rootTree parameter secret
-            epoch chain (chainLength - 1) le_rfl initialCache
-        _ = evalDist ((simulateQ randomOracle
-              (Concrete.chainWalk parameter epoch chain 0 (chainLength - 1)
-                (secret epoch chain) : OracleComp HashSpec Digest)).run
-                  initialCache >>= fun chainResult =>
-              (simulateQ randomOracle
-                (Concrete.warmFixedChainEpochs parameter secret chain epochs)).run
-                  chainResult.2 >>= fun warmResult =>
-              (simulateQ randomOracle
-                (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-                  OracleComp HashSpec Digest)).run warmResult.2) := by
-          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-          intro chainResult
-          exact ih chainResult.2
-        _ = evalDist ((simulateQ randomOracle
-              (Concrete.warmFixedChainEpochs parameter secret chain
-                (epoch :: epochs))).run initialCache >>= fun warmResult =>
-              (simulateQ randomOracle
-                (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-                  OracleComp HashSpec Digest)).run warmResult.2) := by
-          rw [Concrete.warmFixedChainEpochs_cons, simulateQ_bind,
-            StateT.run_bind]
-          simp only [bind_assoc]
-
-/-- All random-oracle entries that would advance a candidate fixed-chain table may be sampled before an arbitrary computation. -/
-theorem evalDist_randomOracle_run'_eq_presample_chainTable
-    {α : Type} (computation : OracleComp HashSpec α)
-    (parameter : PublicParameter) (chain : ChainIndex)
-    (table : ChainValueIndex → Digest) :
-    𝒟[(simulateQ randomOracle computation).run' ∅] =
-      𝒟[do
-        let sampledCache ← OracleComp.presampleCacheEntries ∅
-          (chainTableEdgeInputs parameter chain table)
-        (simulateQ randomOracle computation).run' sampledCache] := by
-  apply OracleComp.evalDist_randomOracle_run'_eq_presampleList
-  · exact chainTableEdgeInputs_nodup parameter chain table
-  · simp
-
-/-- The candidate fixed-chain edge entries may also be sampled before an arbitrary computation over the full XMSS oracle. -/
-theorem evalDist_xmssRom_run'_eq_presample_chainTable
-    {α : Type} (computation : OracleComp OracleWorld α)
-    (parameter : PublicParameter) (chain : ChainIndex)
-    (table : ChainValueIndex → Digest) :
-    𝒟[(simulateQ xmssRomImpl computation).run' ∅] =
-      𝒟[do
-        let sampledCache ← OracleComp.presampleCacheEntries ∅
-          (chainTableEdgeInputs parameter chain table)
-        (simulateQ xmssRomImpl computation).run' sampledCache] := by
-  apply evalDist_xmssRom_run'_eq_presampleList
-  · exact chainTableEdgeInputs_nodup parameter chain table
-  · simp
-
-/-- Traced form of fixed-chain presampling for the full XMSS oracle. -/
-theorem evalDist_xmssRom_run'_eq_presample_chainTableTrace
-    {α : Type} (computation : OracleComp OracleWorld α)
-    (parameter : PublicParameter) (chain : ChainIndex)
-    (table : ChainValueIndex → Digest) :
-    𝒟[(simulateQ xmssRomImpl computation).run' ∅] =
-      𝒟[do
-        let trace ← OracleComp.presampleCacheEntriesTrace ∅
-          (chainTableEdgeInputs parameter chain table)
-        (simulateQ xmssRomImpl computation).run' trace.2] := by
-  apply evalDist_xmssRom_run'_eq_presampleTrace
-  · exact chainTableEdgeInputs_nodup parameter chain table
-  · simp
-
-/-- Candidate chain edges may be presampled conditionally after the public parameter is drawn. -/
-theorem evalDist_samplePublicParameter_then_xmssRom_eq_presample_chainTableTrace
-    {α : Type} (computation : PublicParameter → OracleComp OracleWorld α)
-    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
-    𝒟[Concrete.samplePublicParameter >>= fun parameter =>
-        (simulateQ xmssRomImpl (computation parameter)).run' ∅] =
-      𝒟[Concrete.samplePublicParameter >>= fun parameter => do
-        let trace ← OracleComp.presampleCacheEntriesTrace ∅
-          (chainTableEdgeInputs parameter chain table)
-        (simulateQ xmssRomImpl (computation parameter)).run' trace.2] := by
-  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-  intro parameter
-  exact evalDist_xmssRom_run'_eq_presample_chainTableTrace
-    (computation parameter) parameter chain table
-
-noncomputable def Concrete.keygenAfterParameter
-    (parameter : PublicParameter) :
-    OracleComp OracleWorld (PublicKey × SecretKey) := do
-  let secret ← liftM Concrete.sampleSecret
-  let root ← liftM
-    (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
-      OracleComp HashSpec Digest)
-  return (⟨root, parameter⟩, (SecretKey.withoutPrecomputation parameter secret))
-
-theorem Concrete.keygen_eq_samplePublicParameter_bind :
-    Concrete.keygen =
-      (liftM Concrete.samplePublicParameter >>= Concrete.keygenAfterParameter) := by
-  unfold Concrete.keygen Concrete.keygenAfterParameter
-  rfl
-
-/-- After separating the public-parameter draw, every candidate fixed-chain edge can be front-loaded before the remainder of key generation. -/
-theorem evalDist_keygen_eq_presample_chainTableTrace
-    (chain : ChainIndex) (table : ChainValueIndex → Digest) :
-    𝒟[(simulateQ xmssRomImpl Concrete.keygen).run' ∅] =
-      𝒟[Concrete.samplePublicParameter >>= fun parameter => do
-        let trace ← OracleComp.presampleCacheEntriesTrace ∅
-          (chainTableEdgeInputs parameter chain table)
-        (simulateQ xmssRomImpl (Concrete.keygenAfterParameter parameter)).run' trace.2] := by
-  rw [Concrete.keygen_eq_samplePublicParameter_bind, simulateQ_bind]
-  change 𝒟[(simulateQ
-    (unifFwdImpl HashSpec +
-      (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
-    (liftM Concrete.samplePublicParameter) >>= fun parameter =>
-      simulateQ xmssRomImpl (Concrete.keygenAfterParameter parameter)).run' ∅] = _
-  rw [roSim.run'_liftM_bind]
-  exact evalDist_samplePublicParameter_then_xmssRom_eq_presample_chainTableTrace
-    Concrete.keygenAfterParameter chain table
 
 end XmssSecurity
