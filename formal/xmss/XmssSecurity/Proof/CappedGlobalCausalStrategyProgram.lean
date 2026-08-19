@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalChainKeygenGameCoupling
-import XmssSecurity.Proof.CappedChain.CausalStrategyCoupling
+import XmssSecurity.Proof.CappedChain.SignatureChainValue
 
 open OracleComp OracleSpec
 
@@ -432,6 +432,10 @@ noncomputable def globalCausalDetailedGameAfterKeygen
     (Concrete.scheme.verify publicKey result.1.epoch result.1.message
       result.1.signature)
   pure ((result.1, verified), result.2)
+
+abbrev DetailedActionTracedResult :=
+  ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
+    (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace)
 
 def globalCausalDetailedResult
     (keyResult : (PublicKey × SecretKey) × GlobalCausalHashState)
