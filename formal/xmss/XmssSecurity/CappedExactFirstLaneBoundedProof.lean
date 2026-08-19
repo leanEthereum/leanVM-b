@@ -688,12 +688,3 @@ theorem hasExactFirstLaneBounds : HasExactFirstLaneBounds := by
   exact hasExactFirstLaneBound_of_hashQueryBound q adversary hbound
 
 end XmssSecurity.CappedChain
-
-namespace XmssSecurity
-
-theorem xmss_has_127_bits_of_classical_security :
-    XmssHasClassicalSecurityBits 127 :=
-  xmss_has_127_bits_of_classical_security_of_exactFirstLaneBounds
-    CappedChain.hasExactFirstLaneBounds
-
-end XmssSecurity

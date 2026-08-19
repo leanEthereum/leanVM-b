@@ -1,7 +1,6 @@
 import XmssSecurity.CappedEncodingPrehitExpectedBound
 import XmssSecurity.CappedUnifiedExpectedDigest
 import XmssSecurity.LossDecomposition
-import XmssSecurity.Statement
 
 open OracleComp OracleSpec ENNReal
 
@@ -207,8 +206,7 @@ def HasFirstLaneBounds : Prop :=
 
 theorem xmss_has_127_bits_of_classical_security_of_firstLaneBounds
     (hfirst : HasFirstLaneBounds) :
-    XmssHasClassicalSecurityBits 127 := by
-  change HasClassicalSecurityBits xmssScheme 127
+    HasClassicalSecurityBits Concrete.scheme 127 := by
   intro q _hq
   unfold forgeAtMost
   refine iSup_le fun adversary => iSup_le fun hbound => ?_
