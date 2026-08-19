@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CausalTreeWarmup
-import XmssSecurity.Proof.PublicRootUniformity
+import XmssSecurity.Proof.TreeNodeFreshProbability
 import XmssSecurity.Proof.MarginalCoupling
 import XmssSecurity.Proof.StatementLemmas
 
