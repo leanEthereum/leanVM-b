@@ -1,5 +1,8 @@
 import XmssSecurity.Proof.CappedGlobalChainKeygenGameCoupling
+import XmssSecurity.Proof.CappedGlobalChainOrigin
+import XmssSecurity.Proof.CappedChain.ChainRevealFiltering
 import XmssSecurity.Proof.CappedChain.SignatureChainValue
+import XmssSecurity.Proof.RevealProbeOracleSimulation
 
 open OracleComp OracleSpec
 
@@ -437,6 +440,26 @@ abbrev DetailedActionTracedResult :=
   ((((PublicKey × SecretKey) × QueryCache HashSpec) ×
     (GameOutcome × QueryCache HashSpec)) × AttackerActionTrace)
 
+noncomputable def globalActionTracedStrategy
+    (result : DetailedActionTracedResult) :
+    List Bool → GlobalChainValueIndex × Digest := by
+  classical
+  let chain : ChainIndex := by
+    if h : GlobalWinningOutcomeChainValueHasKeygenOrigin
+        result.1.1.2 result.1.2.2 result.1.1.1.2 result.1.2.1 then
+      exact h.choose
+    else
+      exact ⟨0, by simp [numChains]⟩
+  let encoding := actionTracedForgeryEncoding result
+  let probe : ChainValueIndex × Digest :=
+    ((result.1.2.1.forgery.epoch, encoding chain),
+      result.1.2.1.forgery.signature.chainValue chain)
+  let probes := unrevealedChainValueProbes result.1.2.2 result.1.1.1.2
+    result.1.2.1.signingLog chain result.2 result.1.2.1.forgery encoding
+  exact fun history =>
+    let localProbe := IndexedHiddenValue.listStrategy probe probes history
+    ((chain, localProbe.1), localProbe.2)
+
 def globalCausalDetailedResult
     (keyResult : (PublicKey × SecretKey) × GlobalCausalHashState)
     (execution :
@@ -454,8 +477,8 @@ noncomputable def globalCausalStrategyProgram
     GlobalCausalHashState.empty
   let execution ← (globalCausalDetailedGameAfterKeygen adversary
     keyResult.1.1 keyResult.1.2).run keyResult.2.finishKeygen
-  pure (globalActionTracedRevealProbeView
-    (globalCausalDetailedResult keyResult execution)).strategy
+  pure (globalActionTracedStrategy
+    (globalCausalDetailedResult keyResult execution))
 
 theorem globalCausalHashQuery_run_isProbeQueryBoundP
     (input : HashInput) (state : GlobalCausalHashState) :
@@ -705,8 +728,8 @@ theorem globalCausalStrategyProgram_isProbeQueryBoundP
     (n := 0) (m := 0) hexecution fun execution _hexecution =>
       OracleComp.isQueryBoundP_pure
         (p := RevealProbeOracleSimulation.IsProbeQuery)
-        (globalActionTracedRevealProbeView
-          (globalCausalDetailedResult keyResult execution)).strategy 0
+        (globalActionTracedStrategy
+          (globalCausalDetailedResult keyResult execution)) 0
   simpa using hbind
 
 end XmssSecurity.CappedChain

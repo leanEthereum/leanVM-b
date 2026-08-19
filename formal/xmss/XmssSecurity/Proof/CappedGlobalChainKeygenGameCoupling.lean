@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalTreeCoupling
-import XmssSecurity.Proof.CappedGlobalChainTracedGame
+import XmssSecurity.Proof.CappedChain.ChainTracedGame
 import XmssSecurity.Proof.PrecomputedKeygenCache
 
 open OracleComp OracleSpec
@@ -134,70 +134,5 @@ theorem evalDist_originalActionTracedGame_eq_erase_globalProgrammed
   rw [evalDist_map,
     evalDist_detailedGameWithGlobalChainKeygenView_eq_programmed,
     ← evalDist_map]
-
-theorem trajectoryProgrammedGlobalChainDetailedGame_support_keyView
-    (adversary : Adversary Concrete.scheme)
-    (result : GlobalChainActionTracedResult)
-    (hresult : result ∈ support
-      (trajectoryProgrammedGlobalChainDetailedGame adversary)) :
-    result.1.1 ∈ support trajectoryProgrammedGlobalChainKeygen := by
-  unfold trajectoryProgrammedGlobalChainDetailedGame at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨keyView, hkeyView, hcontinuation⟩ := hresult
-  rw [mem_support_bind_iff] at hcontinuation
-  obtain ⟨execution, _hexecution, hpure⟩ := hcontinuation
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  exact hkeyView
-
-theorem trajectoryProgrammedGlobalChainDetailedGame_support_table
-    (adversary : Adversary Concrete.scheme)
-    (result : GlobalChainActionTracedResult)
-    (hresult : result ∈ support
-      (trajectoryProgrammedGlobalChainDetailedGame adversary)) :
-    globalKeygenChainValueTable result.1.1.cache result.1.1.secretKey =
-      result.1.1.table := by
-  apply trajectoryProgrammedGlobalChainKeygen_support_table result.1.1
-  exact trajectoryProgrammedGlobalChainDetailedGame_support_keyView
-    adversary result hresult
-
-theorem trajectoryProgrammedGlobalRevealProbeView_table_eq_keyView
-    (adversary : Adversary Concrete.scheme)
-    (result : GlobalChainActionTracedResult)
-    (hresult : result ∈ support
-      (trajectoryProgrammedGlobalChainDetailedGame adversary)) :
-    (globalActionTracedRevealProbeView
-      (eraseGlobalChainKeygenView result)).table = result.1.1.table := by
-  change globalKeygenChainValueTable result.1.1.cache result.1.1.secretKey =
-    result.1.1.table
-  exact trajectoryProgrammedGlobalChainDetailedGame_support_table
-    adversary result hresult
-
-noncomputable def trajectoryProgrammedGlobalRevealProbeViewExperiment
-    (adversary : Adversary Concrete.scheme) :
-    ProbComp (IndexedHiddenValue.RevealProbeView GlobalChainValueIndex) :=
-  (fun result => globalActionTracedRevealProbeView
-    (eraseGlobalChainKeygenView result)) <$>
-      trajectoryProgrammedGlobalChainDetailedGame adversary
-
-theorem evalDist_globalActionTracedRevealProbeView_eq_programmed
-    (adversary : Adversary Concrete.scheme) :
-    evalDist (globalActionTracedRevealProbeView <$>
-      detailedGameWithKeygenCacheAndActionTrace adversary) =
-    evalDist (trajectoryProgrammedGlobalRevealProbeViewExperiment adversary) := by
-  unfold trajectoryProgrammedGlobalRevealProbeViewExperiment
-  calc
-    evalDist (globalActionTracedRevealProbeView <$>
-        detailedGameWithKeygenCacheAndActionTrace adversary) =
-      evalDist (globalActionTracedRevealProbeView <$>
-        (eraseGlobalChainKeygenView <$>
-          trajectoryProgrammedGlobalChainDetailedGame adversary)) := by
-      rw [evalDist_map,
-        evalDist_originalActionTracedGame_eq_erase_globalProgrammed adversary,
-        ← evalDist_map]
-    _ = evalDist ((fun result => globalActionTracedRevealProbeView
-          (eraseGlobalChainKeygenView result)) <$>
-        trajectoryProgrammedGlobalChainDetailedGame adversary) := by
-      simp [Functor.map_map]
 
 end XmssSecurity.CappedChain
