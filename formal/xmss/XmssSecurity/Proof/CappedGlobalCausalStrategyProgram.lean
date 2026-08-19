@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CappedGlobalChainKeygenGameCoupling
-import XmssSecurity.Proof.CappedChain.CausalStrategyProgram
+import XmssSecurity.Proof.CappedChain.CausalStrategyCoupling
 
 open OracleComp OracleSpec
 
