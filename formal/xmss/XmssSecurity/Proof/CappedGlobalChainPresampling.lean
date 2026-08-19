@@ -685,7 +685,7 @@ theorem globalChainTableSeedsMatch_local
     (secretKey : SecretKey) (table : GlobalChainValueIndex → Digest)
     (hmatches : GlobalChainTableSeedsMatch secretKey table)
     (chain : ChainIndex) :
-    XmssSecurity.CappedChain.ChainTableSeedsMatch secretKey chain
+    XmssSecurity.ChainTableSeedsMatch secretKey chain
       (fun index => table (chain, index)) := by
   intro epoch
   exact hmatches epoch chain
@@ -695,7 +695,7 @@ theorem globalChainTableEdgesMatch_local
     (table : GlobalChainValueIndex → Digest)
     (hmatches : GlobalChainTableEdgesMatch cache parameter table)
     (chain : ChainIndex) :
-    XmssSecurity.CappedChain.ChainTableEdgesMatch cache parameter chain
+    XmssSecurity.ChainTableEdgesMatch cache parameter chain
       (fun index => table (chain, index)) := by
   intro edge
   obtain ⟨output, hcached, htarget⟩ := hmatches (chain, edge)
@@ -708,7 +708,7 @@ theorem globalChainTableEdgesMatch_local
     rw [hdigit] at hcached
     exact hcached
   · simpa [globalChainTableEdgeTarget,
-      XmssSecurity.CappedChain.chainTableEdgeTarget] using htarget
+      XmssSecurity.chainTableEdgeTarget] using htarget
 
 theorem globalKeygenChainValueTable_eq_of_matches
     (cache : QueryCache HashSpec) (secretKey : SecretKey)
@@ -717,7 +717,7 @@ theorem globalKeygenChainValueTable_eq_of_matches
     (hedges : GlobalChainTableEdgesMatch cache secretKey.parameter table) :
     globalKeygenChainValueTable cache secretKey = table := by
   funext index
-  have hlocal := XmssSecurity.CappedChain.keygenChainValueTable_eq_of_matches
+  have hlocal := XmssSecurity.keygenChainValueTable_eq_of_matches
     cache secretKey index.1
     (fun coordinate => table (index.1, coordinate))
     (globalChainTableSeedsMatch_local secretKey table hseeds index.1)

@@ -26,7 +26,7 @@ theorem keygen_support_treeCacheStable
     table := keygenChainValueTable keyResult.2 keyResult.1.2 chain
   }
   apply CappedChain.actualFixedChainKeygen_support_treeCacheStable chain view
-  unfold CappedChain.actualFixedChainKeygen
+  unfold actualFixedChainKeygen
   rw [mem_support_bind_iff]
   exact ⟨keyResult, hkeyResult, by simp [view]⟩
 
