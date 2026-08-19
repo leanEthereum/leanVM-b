@@ -36,26 +36,6 @@ def liftProbComp (computation : ProbComp α) :
     OracleComp (World Index) α :=
   simulateQ uniformForwardImpl computation
 
-noncomputable def controller
-    (computation : OracleComp (World Index) α) :
-    ProbComp
-      (AdaptiveRevealMonitor.ControllerAction
-        (OracleComp (World Index) α) Index) :=
-  OracleComp.construct
-    (C := fun _ => ProbComp
-      (AdaptiveRevealMonitor.ControllerAction
-        (OracleComp (World Index) α) Index))
-    (fun _ => pure .stop)
-    (fun input next recursivelyContinue =>
-      match input with
-      | .uniform n => do
-          let output ← (liftM (unifSpec.query n) : ProbComp (Fin (n + 1)))
-          recursivelyContinue output
-      | .probe index target =>
-          pure (.probe index target (fun _ => next ()))
-      | .reveal index => pure (.reveal index next))
-    computation
-
 def IsSpecialQuery : (World Index).Domain → Prop
   | .uniform _ => False
   | .probe _ _ => True
@@ -1042,18 +1022,5 @@ theorem simulate_eagerTrace_liftProbComp
       change (simulateQ (eagerTraceImpl table)
         (liftProbComp (next output))).run = _
       exact ih output
-
-noncomputable def run
-    (steps probes : Nat) (computation : OracleComp (World Index) α) :
-    ProbComp Bool :=
-  AdaptiveRevealMonitor.run controller AdaptiveRevealMonitor.State.empty
-    steps probes computation
-
-theorem run_true_probability_le
-    (steps probes : Nat) (computation : OracleComp (World Index) α) :
-    Pr[(fun hit : Bool => hit = true) | run steps probes computation] ≤
-      (probes : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  exact AdaptiveRevealMonitor.run_empty_true_probability_le controller
-    steps probes computation
 
 end XmssSecurity.RevealProbeOracleSimulation

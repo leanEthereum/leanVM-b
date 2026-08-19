@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.FirstLaneOracleSimulation
 import XmssSecurity.Proof.EncodingOracleSimulation
 import XmssSecurity.Proof.RevealProbeOracleSimulation
+import XmssSecurity.Proof.CappedEncodingMonitor
 
 open OracleComp OracleSpec
 

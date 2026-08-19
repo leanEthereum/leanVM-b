@@ -94,17 +94,4 @@ noncomputable def controller
       | .reveal index => pure (.reveal index next))
     computation
 
-noncomputable def monitorExperiment
-    (steps fuel : Nat) (computation : OracleComp (World Index) α) :
-    ProbComp Bool :=
-  FirstLaneMonitor.run controller EncodingMonitor.State.empty
-    AdaptiveRevealMonitor.State.empty steps fuel computation
-
-theorem monitorExperiment_true_probability_le
-    (steps fuel : Nat) (computation : OracleComp (World Index) α) :
-    Pr[(· = true) | monitorExperiment steps fuel computation] ≤
-      (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  exact FirstLaneMonitor.run_empty_true_probability_le controller steps fuel
-    computation
-
 end XmssSecurity.FirstLaneOracleSimulation
