@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.ChainEdgeHighUniformity
+import XmssSecurity.Proof.HashOutputHigh
 import XmssSecurity.Proof.ChainEdgeHighTable
 import XmssSecurity.Proof.CausalKeygenCoupling
 import XmssSecurity.Proof.MarginalCoupling
@@ -1128,4 +1128,3 @@ theorem evalDist_chainEdgeHighTableOfRows_sample_eq_uniform :
 
 
 end XmssSecurity
-

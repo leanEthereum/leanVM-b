@@ -1,4 +1,5 @@
-import XmssSecurity.Proof.ChainEdgeHighUniformity
+import XmssSecurity.Proof.HashOutputHigh
+import XmssSecurity.Proof.ChainTablePresampling
 
 open OracleComp OracleSpec
 
