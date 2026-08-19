@@ -1,4 +1,7 @@
-import XmssSecurity.Proof
+import XmssSecurity.Statement.ConcreteVerify
+import XmssSecurity.Statement.PrecomputedSign
+import VCVio.OracleComp.QueryTracking.LoggingOracle
+import VCVio.OracleComp.QueryTracking.QueryBound
 
 open OracleComp OracleSpec ENNReal
 
@@ -7,7 +10,7 @@ namespace XmssSecurity
 /-!
 # Classical random-oracle security of the concrete XMSS instance
 
-This is the reviewer-facing statement of the formalization. The proof is kept in the modules imported above. Nothing below describes a reduction or an intermediate game. The cryptographic implementation types and algorithms are imported, but every interface and security notion used by the theorem is defined here.
+This is the reviewer-facing statement of the formalization. This module and the `XmssSecurity/Statement/` directory it imports contain everything the statement depends on: the cryptographic implementation types and algorithms, and every interface and security notion used by the theorem. Nothing here imports proof machinery, and nothing below describes a reduction or an intermediate game. The theorem itself is stated and proved in the root module `XmssSecurity`.
 
 The concrete instance has 32-byte messages, 32-bit epochs, 128-bit digests, a 256-bit random-oracle output truncated to 128 bits, 42 Winternitz chains of length 8, and a Merkle tree of height 32. A signing attempt samples 192 fresh bits and queries the random oracle once to encode the message. The signer retries at most `2^23` times and returns `none` if every attempt fails.
 
@@ -107,25 +110,5 @@ noncomputable def XmssHasClassicalSecurityBits (bits : Nat) : Prop :=
 /-- The complete public security claim. -/
 abbrev XmssSecurityStatement : Prop :=
   XmssHasClassicalSecurityBits 127
-
-/-- The concrete XMSS instance has 127 bits of classical security in the random-oracle model. -/
-theorem xmss_has_127_bits_of_classical_security :
-    ∀ q, 1 ≤ q → xmssForgeAtMost q ≤
-      (q : ENNReal) / ((2 ^ 127 : Nat) : ENNReal) := by
-  intro q hq
-  unfold xmssForgeAtMost
-  refine iSup_le fun adversary => iSup_le fun hbound => ?_
-  let internalAdversary : Adversary Concrete.scheme := ⟨adversary.main⟩
-  have internalBound :
-      HasHashQueryBound Concrete.scheme internalAdversary q := by
-    exact hbound
-  calc
-    xmssForgeAdvantage adversary =
-        forgeAdvantage Concrete.scheme internalAdversary := rfl
-    _ ≤ forgeAtMost Concrete.scheme q :=
-      le_iSup_of_le internalAdversary
-        (le_iSup_of_le internalBound le_rfl)
-    _ ≤ (q : ENNReal) / ((2 ^ 127 : Nat) : ENNReal) :=
-      Proof.concreteScheme_has_127_bits_of_classical_security q hq
 
 end XmssSecurity

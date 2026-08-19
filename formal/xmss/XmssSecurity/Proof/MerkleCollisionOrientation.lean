@@ -1,0 +1,306 @@
+import XmssSecurity.Proof.ConcreteEventProbability
+import XmssSecurity.Proof.LeafEventProbability
+import XmssSecurity.Proof.MerkleVerificationQueryPresence
+
+open OracleComp OracleSpec ENNReal
+
+namespace XmssSecurity
+
+theorem detailed_execution_verified_merkle_query_cached_as
+    (adversary : Adversary Concrete.singleAttemptScheme)
+    (execution : GameOutcome × QueryCache HashSpec)
+    (hmem : execution ∈ support (detailedGameWithCache Concrete.singleAttemptScheme adversary))
+    (encoding : Encoding) (hverified : execution.1.verified = true)
+    (hdecode : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
+        execution.1.forgery.epoch
+        (execution.1.forgery.message, execution.1.forgery.signature.randomness)) =
+        some encoding)
+    (level : MerkleLevel) :
+    ∃ output, execution.2
+      (Concrete.CacheView.nodeInput execution.1.secretKey.parameter
+        execution.1.forgery.epoch level
+        (Merkle.ascend
+          (Concrete.CacheView.nodeHash execution.2 execution.1.secretKey.parameter
+            execution.1.forgery.epoch)
+          (Concrete.signaturePath execution.1.forgery.signature) 0 level.val
+          (Concrete.CacheView.leafHash execution.2 execution.1.secretKey.parameter
+            execution.1.forgery.epoch
+            (recoveredEndpoints
+              (fun chain => Concrete.CacheView.chainStep execution.2
+                execution.1.secretKey.parameter execution.1.forgery.epoch chain)
+              encoding execution.1.forgery.signature.chainValue)))
+        (Concrete.signaturePath execution.1.forgery.signature level.val)) = some output := by
+  have hparameter :=
+    (detailed_execution_key_components_consistent adversary execution hmem).1
+  unfold detailedGameWithCache detailedGameCore at hmem
+  rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
+  obtain ⟨⟨⟨publicKey, secretKey⟩, keyCache⟩, _hkeygen, hrest⟩ := hmem
+  unfold detailedGameAfterKeygen at hrest
+  simp only at hrest
+  rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hrest
+  obtain ⟨⟨⟨forgery, signingLog⟩, adversaryCache⟩, _hadversary, hverifyRest⟩ := hrest
+  rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hverifyRest
+  obtain ⟨⟨verified, finalCache⟩, hverify, hfinal⟩ := hverifyRest
+  simp only [simulateQ_pure, StateT.run_pure, support_pure,
+    Set.mem_singleton_iff] at hfinal
+  cases hfinal
+  simp only at hparameter hverified hdecode ⊢
+  subst verified
+  have hroute :
+      simulateQ xmssRomImpl
+          (Concrete.singleAttemptScheme.verify publicKey forgery.epoch forgery.message forgery.signature) =
+        simulateQ (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
+          (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
+            OracleComp HashSpec Bool) := by
+    simp only [Concrete.singleAttemptScheme, xmssRomImpl]
+    change simulateQ (unifFwdImpl HashSpec +
+      (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
+      (liftM (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
+        OracleComp HashSpec Bool)) = _
+    exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
+      (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
+      (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
+        OracleComp HashSpec Bool)
+  rw [hroute] at hverify
+  have hdecodePublic : TargetSum.decodeDigest
+      (Concrete.CacheView.encodingHash finalCache publicKey.parameter forgery.epoch
+        (forgery.message, forgery.signature.randomness)) = some encoding := by
+    rw [hparameter]
+    exact hdecode
+  rw [← hparameter]
+  exact Concrete.CacheReplay.verify_true_merkle_query_cached_as_in_largerCache publicKey
+    forgery.epoch forgery.message forgery.signature encoding level adversaryCache finalCache
+    finalCache hverify hdecodePublic le_rfl
+
+def orderedNodePair (epoch : Epoch) (level : Nat) (current sibling : Digest) : Digest × Digest :=
+  if epoch.val.testBit level then (sibling, current) else (current, sibling)
+
+@[simp]
+theorem nodeInput_eq_merkleInput_ordered (parameter : PublicParameter) (epoch : Epoch)
+    (level : MerkleLevel) (current sibling : Digest) :
+    Concrete.CacheView.nodeInput parameter epoch level current sibling =
+      Concrete.CacheView.merkleInput parameter level
+        (Concrete.CacheView.nodeIndex epoch level.val)
+        (orderedNodePair epoch level.val current sibling).1
+        (orderedNodePair epoch level.val current sibling).2 := by
+  by_cases hbit : epoch.val.testBit level.val = true
+  · simp [Concrete.CacheView.nodeInput, Concrete.CacheView.merkleInput,
+      Concrete.CacheView.authenticationNodePayload, orderedNodePair, hbit]
+  · have hbitFalse := Bool.eq_false_of_not_eq_true hbit
+    simp [Concrete.CacheView.nodeInput, Concrete.CacheView.merkleInput,
+      Concrete.CacheView.authenticationNodePayload, orderedNodePair, hbitFalse]
+
+theorem orderedNodePair_injective (epoch : Epoch) (level : Nat) :
+    Function.Injective fun pair : Digest × Digest =>
+      orderedNodePair epoch level pair.1 pair.2 := by
+  intro left right heq
+  by_cases hbit : epoch.val.testBit level = true
+  · simp [orderedNodePair, hbit] at heq
+    exact Prod.ext heq.2 heq.1
+  · have hbitFalse := Bool.eq_false_of_not_eq_true hbit
+    simpa [orderedNodePair, hbitFalse] using heq
+
+theorem nodeIndex_valid_at_level (epoch : Epoch) (level : MerkleLevel) :
+    (Concrete.CacheView.nodeIndex epoch level.val).val <
+      2 ^ (treeHeight - (level.val + 1)) := by
+  have hsum : (treeHeight - (level.val + 1)) + (level.val + 1) = treeHeight := by
+    omega
+  apply (Nat.div_lt_iff_lt_mul (by positivity : 0 < 2 ^ (level.val + 1))).2
+  calc
+    epoch.val < 2 ^ treeHeight := epoch.isLt
+    _ = 2 ^ (treeHeight - (level.val + 1)) * 2 ^ (level.val + 1) := by
+      rw [← Nat.pow_add, hsum]
+
+noncomputable def keygenMerkleTargetInput (secretKey : SecretKey)
+    (cache : QueryCache HashSpec) (input : HashInput) : HashInput :=
+  if h : ∃ address : MerkleLevel × MerkleNode, ∃ left right,
+      input = Concrete.CacheView.merkleInput secretKey.parameter address.1 address.2
+        left right then
+    let address := h.choose
+    Concrete.CacheView.merkleInput secretKey.parameter address.1 address.2
+      (Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+        address.1.val (Concrete.childNode address.2 false))
+      (Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+        address.1.val (Concrete.childNode address.2 true))
+  else input
+
+@[simp]
+theorem keygenMerkleTargetInput_merkleInput (secretKey : SecretKey)
+    (cache : QueryCache HashSpec) (level : MerkleLevel) (node : MerkleNode)
+    (left right : Digest) :
+    keygenMerkleTargetInput secretKey cache
+      (Concrete.CacheView.merkleInput secretKey.parameter level node left right) =
+      Concrete.CacheView.merkleInput secretKey.parameter level node
+        (Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+          level.val (Concrete.childNode node false))
+        (Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+          level.val (Concrete.childNode node true)) := by
+  unfold keygenMerkleTargetInput
+  split
+  · rename_i h
+    obtain ⟨chosenLeft, chosenRight, hinput⟩ := h.choose_spec
+    have hdomain := domain_eq_of_tweakableHashInput_eq secretKey.parameter
+      (hinput.trans rfl)
+    simp only [HashDomain.merkle.injEq] at hdomain
+    rcases hdomain with ⟨hlevel, hnode⟩
+    dsimp only
+    rw [← hlevel, ← hnode]
+  · rename_i h
+    exfalso
+    exact h ⟨(level, node), left, right, rfl⟩
+
+attribute [irreducible] keygenMerkleTargetInput
+
+theorem ordered_honestNodePair_eq_children
+    (cache : QueryCache HashSpec) (secretKey : SecretKey) (epoch : Epoch)
+    (level : MerkleLevel) :
+    orderedNodePair epoch level.val
+        (Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+          level.val (Concrete.CacheReplay.pathNode epoch level.val))
+        (Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+          level.val (Concrete.authenticationPathNode epoch level)) =
+      (Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+          level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) false),
+        Concrete.CacheReplay.treeNode cache secretKey.parameter secretKey.chainStart
+          level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) true)) := by
+  rw [Concrete.CacheReplay.nodeIndex_eq_pathNode_succ]
+  have hchildren := Concrete.CacheReplay.pathNode_children epoch level.val level.isLt
+  by_cases hbit : epoch.val.testBit level.val = true
+  · simp only [hbit, ↓reduceIte] at hchildren
+    rcases hchildren with ⟨hleft, hright⟩
+    simp [orderedNodePair, hbit, hleft, hright]
+  · have hbitFalse := Bool.eq_false_of_not_eq_true hbit
+    simp only [hbitFalse, Bool.false_eq_true, ↓reduceIte] at hchildren
+    rcases hchildren with ⟨hleft, hright⟩
+    simp [orderedNodePair, hbitFalse, hleft, hright]
+
+theorem adaptiveFreshDigestCollisionWith_of_merkleCollision
+    (secretKey : SecretKey) (initialCache finalCache : QueryCache HashSpec)
+    (epoch : Epoch) (level : MerkleLevel)
+    (forgedCurrent forgedSibling honestCurrent honestSibling : Digest)
+    (forgedOutput honestOutput : HashOutput)
+    (hforgedFinal : finalCache
+      (Concrete.CacheView.nodeInput secretKey.parameter epoch level
+        forgedCurrent forgedSibling) = some forgedOutput)
+    (hforgedInitial : initialCache
+      (Concrete.CacheView.nodeInput secretKey.parameter epoch level
+        forgedCurrent forgedSibling) = none)
+    (hhonestInitial : initialCache
+      (Concrete.CacheView.nodeInput secretKey.parameter epoch level
+        honestCurrent honestSibling) = some honestOutput)
+    (hcollision : Concrete.CacheView.digestAt finalCache
+        (Concrete.CacheView.nodeInput secretKey.parameter epoch level
+          forgedCurrent forgedSibling) =
+      Concrete.CacheView.digestAt finalCache
+        (Concrete.CacheView.nodeInput secretKey.parameter epoch level
+          honestCurrent honestSibling))
+    (hhonest : orderedNodePair epoch level.val honestCurrent honestSibling =
+      (Concrete.CacheReplay.treeNode initialCache secretKey.parameter secretKey.chainStart
+          level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) false),
+        Concrete.CacheReplay.treeNode initialCache secretKey.parameter secretKey.chainStart
+          level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) true))) :
+    Rom.AdaptiveFreshDigestCollisionWith initialCache finalCache
+      (keygenMerkleTargetInput secretKey initialCache) := by
+  let forgedInput := Concrete.CacheView.nodeInput secretKey.parameter epoch level
+    forgedCurrent forgedSibling
+  have hhonestLeft := congrArg Prod.fst hhonest
+  have hhonestRight := congrArg Prod.snd hhonest
+  simp only at hhonestLeft hhonestRight
+  have hhonestInitial' := hhonestInitial
+  rw [nodeInput_eq_merkleInput_ordered] at hhonestInitial'
+  have hcollision' := hcollision
+  rw [nodeInput_eq_merkleInput_ordered, nodeInput_eq_merkleInput_ordered] at hcollision'
+  refine ⟨forgedInput, forgedOutput, honestOutput, hforgedFinal, hforgedInitial, ?_, ?_⟩
+  · rw [show forgedInput = Concrete.CacheView.nodeInput secretKey.parameter epoch level
+      forgedCurrent forgedSibling by rfl]
+    rw [nodeInput_eq_merkleInput_ordered, keygenMerkleTargetInput_merkleInput,
+      ← hhonestLeft, ← hhonestRight]
+    exact hhonestInitial'
+  · rw [show forgedInput = Concrete.CacheView.nodeInput secretKey.parameter epoch level
+      forgedCurrent forgedSibling by rfl]
+    rw [nodeInput_eq_merkleInput_ordered, keygenMerkleTargetInput_merkleInput,
+      ← hhonestLeft, ← hhonestRight]
+    exact hcollision'
+
+theorem merkleCollision_afterKeygen_orientation
+    (adversary : Adversary Concrete.singleAttemptScheme)
+    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
+    (hkeygen : keyResult ∈ support
+      ((simulateQ xmssRomImpl Concrete.singleAttemptScheme.keygen).run ∅))
+    (execution : GameOutcome × QueryCache HashSpec)
+    (hafter : execution ∈ support
+      ((simulateQ xmssRomImpl
+        (detailedGameAfterKeygen Concrete.singleAttemptScheme adversary keyResult.1.1 keyResult.1.2)).run
+          keyResult.2))
+    (secretKey : SecretKey) (hsecret : secretKey = keyResult.1.2)
+    (epoch : Epoch) (level : MerkleLevel)
+    (forgedCurrent forgedSibling honestCurrent honestSibling : Digest)
+    (forgedOutput : HashOutput)
+    (hforgedCached : execution.2
+      (Concrete.CacheView.nodeInput secretKey.parameter epoch level
+        forgedCurrent forgedSibling) = some forgedOutput)
+    (hne : (forgedCurrent, forgedSibling) ≠ (honestCurrent, honestSibling))
+    (heq : Concrete.CacheView.nodeHash execution.2 secretKey.parameter epoch level.val
+        forgedCurrent forgedSibling =
+      Concrete.CacheView.nodeHash execution.2 secretKey.parameter epoch level.val
+        honestCurrent honestSibling)
+    (hhonest : orderedNodePair epoch level.val honestCurrent honestSibling =
+      (Concrete.CacheReplay.treeNode execution.2 secretKey.parameter secretKey.chainStart
+          level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) false),
+        Concrete.CacheReplay.treeNode execution.2 secretKey.parameter secretKey.chainStart
+          level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) true))) :
+    Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
+      (keygenMerkleTargetInput keyResult.1.2 keyResult.2) := by
+  subst secretKey
+  have hafterCacheLe := xmssRom_cache_le
+    (detailedGameAfterKeygen Concrete.singleAttemptScheme adversary keyResult.1.1 keyResult.1.2)
+    keyResult.2 execution hafter
+  let node := Concrete.CacheView.nodeIndex epoch level.val
+  have horderedNe : orderedNodePair epoch level.val forgedCurrent forgedSibling ≠
+      orderedNodePair epoch level.val honestCurrent honestSibling := by
+    intro hordered
+    exact hne (orderedNodePair_injective epoch level.val hordered)
+  have hforgedInitial :=
+    Concrete.keygen_cache_merkleInput_eq_none_of_ne_in_largerCache keyResult hkeygen
+      execution.2 hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
+      (orderedNodePair epoch level.val forgedCurrent forgedSibling).1
+      (orderedNodePair epoch level.val forgedCurrent forgedSibling).2 (by
+        rw [← hhonest]
+        exact horderedNe)
+  rw [← nodeInput_eq_merkleInput_ordered] at hforgedInitial
+  obtain ⟨honestOutput, hhonestCached⟩ :=
+    Concrete.keygen_cache_has_merkleInput_in_largerCache keyResult hkeygen execution.2
+      hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
+  dsimp only [node] at hhonestCached
+  have hhonestLeft := congrArg Prod.fst hhonest
+  have hhonestRight := congrArg Prod.snd hhonest
+  simp only at hhonestLeft hhonestRight
+  rw [← hhonestLeft, ← hhonestRight, ← nodeInput_eq_merkleInput_ordered] at hhonestCached
+  have hcollision := heq
+  rw [Concrete.CacheView.nodeHash_eq _ _ _ _ _ _ level.isLt,
+    Concrete.CacheView.nodeHash_eq _ _ _ _ _ _ level.isLt] at hcollision
+  have hstable := Concrete.keygen_merkleChildren_eq_of_cache_le keyResult hkeygen
+    execution.2 hafterCacheLe level node (nodeIndex_valid_at_level epoch level)
+  have hhonestInitial : orderedNodePair epoch level.val honestCurrent honestSibling =
+      (Concrete.CacheReplay.treeNode keyResult.2 keyResult.1.2.parameter
+          keyResult.1.2.chainStart level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) false),
+        Concrete.CacheReplay.treeNode keyResult.2 keyResult.1.2.parameter
+          keyResult.1.2.chainStart level.val
+          (Concrete.childNode (Concrete.CacheView.nodeIndex epoch level.val) true)) := by
+    dsimp only [node] at hstable
+    exact hhonest.trans hstable.symm
+  exact adaptiveFreshDigestCollisionWith_of_merkleCollision keyResult.1.2 keyResult.2
+    execution.2 epoch level forgedCurrent forgedSibling honestCurrent honestSibling
+    forgedOutput honestOutput hforgedCached hforgedInitial hhonestCached hcollision
+    hhonestInitial
+
+
+end XmssSecurity

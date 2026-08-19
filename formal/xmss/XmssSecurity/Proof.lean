@@ -1,4 +1,4 @@
-import XmssSecurity.CappedExactFirstLaneBoundedProof
+import XmssSecurity.Proof.CappedExactFirstLaneBoundedProof
 
 namespace XmssSecurity.Proof
 
