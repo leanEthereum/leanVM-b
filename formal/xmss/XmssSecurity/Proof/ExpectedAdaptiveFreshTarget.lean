@@ -353,26 +353,6 @@ theorem mixed_adaptiveFreshDigestCollisionWith_le_expected_moved
     _ ≤ _ := mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expected
       computation (fun input => targetInput input ≠ input) target cache
 
-/-- An adaptive fresh-target collision is charged to the expected number of hash queries. -/
-theorem mixed_adaptiveFreshDigestCollisionWith_le_expected
-    {α : Type} (computation : OracleComp OracleWorld α)
-    (cache : QueryCache HashSpec) (targetInput : HashInput → HashInput)
-    (win : α × QueryCache HashSpec → Prop)
-    (hwin : ∀ result ∈ support ((simulateQ xmssRomImpl computation).run cache),
-      win result → AdaptiveFreshDigestCollisionWith cache result.2 targetInput) :
-    Pr[win | (simulateQ xmssRomImpl computation).run cache] ≤
-      expectedSimulatedQueryCount xmssRomImpl (· matches .inr _)
-        computation cache / ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply (mixed_adaptiveFreshDigestCollisionWith_le_expected_moved computation cache
-    targetInput win hwin).trans
-  gcongr
-  apply expectedSimulatedQueryCount_mono
-  intro input hinput
-  rcases input with uniformIndex | hashInput
-  · change False at hinput
-    exact hinput.elim
-  · trivial
-
 /-- A randomized prefix may choose the initial cache and target map. The collision is charged
 only to continuation queries at inputs moved by the chosen map. -/
 theorem mixed_adaptiveFreshDigestCollision_after_prefix_le_expectedMovedContinuation
@@ -423,76 +403,5 @@ theorem mixed_adaptiveFreshDigestCollision_after_prefix_le_expectedMovedContinua
       apply tsum_congr
       intro prefixResult
       rw [div_eq_mul_inv, mul_assoc]
-
-/-- A randomized prefix may choose the initial cache and target map. Only the expected hash
-queries in the continuation are charged. -/
-theorem mixed_adaptiveFreshDigestCollision_after_prefix_le_expectedContinuation
-    {α β : Type}
-    (head : OracleComp OracleWorld β)
-    (continuation : β → OracleComp OracleWorld α)
-    (initialCache : QueryCache HashSpec)
-    (targetInput : β → QueryCache HashSpec → HashInput → HashInput)
-    (win : α × QueryCache HashSpec → Prop)
-    (hwin : ∀ prefixResult ∈ support ((simulateQ xmssRomImpl head).run initialCache),
-      ∀ result ∈ support
-        ((simulateQ xmssRomImpl (continuation prefixResult.1)).run prefixResult.2),
-        win result → AdaptiveFreshDigestCollisionWith prefixResult.2 result.2
-          (targetInput prefixResult.1 prefixResult.2)) :
-    Pr[win | (simulateQ xmssRomImpl (head >>= continuation)).run initialCache] ≤
-      (∑' prefixResult,
-        Pr[= prefixResult | (simulateQ xmssRomImpl head).run initialCache] *
-          expectedSimulatedQueryCount xmssRomImpl (· matches .inr _)
-            (continuation prefixResult.1) prefixResult.2) /
-        ((2 ^ digestBits : Nat) : ENNReal) := by
-  rw [simulateQ_bind, StateT.run_bind, probEvent_bind_eq_tsum]
-  calc
-    ∑' prefixResult,
-        Pr[= prefixResult | (simulateQ xmssRomImpl head).run initialCache] *
-          Pr[win | (simulateQ xmssRomImpl
-            (continuation prefixResult.1)).run prefixResult.2] ≤
-      ∑' prefixResult,
-        Pr[= prefixResult | (simulateQ xmssRomImpl head).run initialCache] *
-          (expectedSimulatedQueryCount xmssRomImpl (· matches .inr _)
-            (continuation prefixResult.1) prefixResult.2 /
-              ((2 ^ digestBits : Nat) : ENNReal)) := by
-      apply ENNReal.tsum_le_tsum
-      intro prefixResult
-      by_cases hprefix : prefixResult ∈
-          support ((simulateQ xmssRomImpl head).run initialCache)
-      · gcongr
-        exact mixed_adaptiveFreshDigestCollisionWith_le_expected
-          (continuation prefixResult.1) prefixResult.2
-          (targetInput prefixResult.1 prefixResult.2) win
-          (hwin prefixResult hprefix)
-      · rw [probOutput_eq_zero_of_not_mem_support hprefix, zero_mul, zero_mul]
-    _ = _ := by
-      rw [div_eq_mul_inv, ← ENNReal.tsum_mul_right]
-      apply tsum_congr
-      intro prefixResult
-      rw [div_eq_mul_inv, mul_assoc]
-
-/-- The same prefixed collision loss is bounded by the expected hash queries of the whole
-experiment. -/
-theorem mixed_adaptiveFreshDigestCollision_after_prefix_le_expected
-    {α β : Type}
-    (head : OracleComp OracleWorld β)
-    (continuation : β → OracleComp OracleWorld α)
-    (initialCache : QueryCache HashSpec)
-    (targetInput : β → QueryCache HashSpec → HashInput → HashInput)
-    (win : α × QueryCache HashSpec → Prop)
-    (hwin : ∀ prefixResult ∈ support ((simulateQ xmssRomImpl head).run initialCache),
-      ∀ result ∈ support
-        ((simulateQ xmssRomImpl (continuation prefixResult.1)).run prefixResult.2),
-        win result → AdaptiveFreshDigestCollisionWith prefixResult.2 result.2
-          (targetInput prefixResult.1 prefixResult.2)) :
-    Pr[win | (simulateQ xmssRomImpl (head >>= continuation)).run initialCache] ≤
-      expectedSimulatedQueryCount xmssRomImpl (· matches .inr _)
-          (head >>= continuation) initialCache /
-        ((2 ^ digestBits : Nat) : ENNReal) := by
-  apply (mixed_adaptiveFreshDigestCollision_after_prefix_le_expectedContinuation
-    head continuation initialCache targetInput win hwin).trans
-  rw [expectedSimulatedQueryCount_bind]
-  gcongr
-  exact le_add_left le_rfl
 
 end XmssSecurity.Rom
