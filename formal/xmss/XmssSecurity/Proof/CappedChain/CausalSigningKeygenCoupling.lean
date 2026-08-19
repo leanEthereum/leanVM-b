@@ -1,4 +1,5 @@
-import XmssSecurity.Proof.CausalKeygenCacheCoupling
+import XmssSecurity.Proof.CacheAgreement
+import XmssSecurity.Proof.ChainWalkCache
 import XmssSecurity.Proof.BoundedSignProbability
 import XmssSecurity.Proof.PrecomputedBoundedSignProbability
 import XmssSecurity.Proof.CappedChain.TreeCacheStability
