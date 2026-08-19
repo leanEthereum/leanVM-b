@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.CappedGlobalCausalSigningResampling
+import XmssSecurity.Proof.CappedGlobalCausalSigningTrace
 import XmssSecurity.Proof.CappedChain.CausalSigningKeygenCoupling
 import XmssSecurity.Proof.StatementLemmas
 
