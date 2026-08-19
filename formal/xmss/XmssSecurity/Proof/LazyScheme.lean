@@ -1,4 +1,5 @@
-import XmssSecurity.Statement.PrecomputedSign
+import XmssSecurity.Statement
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 

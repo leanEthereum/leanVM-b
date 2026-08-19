@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.CausalTreeWarmup
 import XmssSecurity.Proof.MarginalCoupling
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational

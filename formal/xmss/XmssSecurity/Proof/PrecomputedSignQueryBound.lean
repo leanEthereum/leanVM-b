@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.CacheReplayEval
-import XmssSecurity.Statement.PrecomputedSign
+import XmssSecurity.Statement
 import XmssSecurity.Proof.BoundedSignQueryBound
 
 open OracleComp OracleSpec

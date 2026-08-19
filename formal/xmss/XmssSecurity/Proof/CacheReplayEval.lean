@@ -2,6 +2,7 @@ import XmssSecurity.Proof.CacheVerify
 import XmssSecurity.Proof.LazyScheme
 import VCVio.OracleComp.QueryTracking.CachingOracle
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 

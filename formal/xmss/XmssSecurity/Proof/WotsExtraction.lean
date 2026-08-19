@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.Wots
+import XmssSecurity.Statement.Spec
 import XmssSecurity.Proof.EncodingLemmas
 
 namespace XmssSecurity.Wots

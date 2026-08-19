@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.TreeQueryBound
+import XmssSecurity.Proof.StatementLemmas
 
 namespace XmssSecurity
 

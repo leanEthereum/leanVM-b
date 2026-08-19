@@ -1,114 +1,116 @@
-import XmssSecurity.Statement.ConcreteVerify
-import XmssSecurity.Statement.PrecomputedSign
-import VCVio.OracleComp.QueryTracking.LoggingOracle
+import XmssSecurity.Statement.Algorithms
 import VCVio.OracleComp.QueryTracking.QueryBound
+import VCVio.OracleComp.SimSemantics.StateT.BundledSemantics
+
+/-!
+# Classical random-oracle security of the concrete XMSS instance
+
+This is the reviewer-facing statement of the formalization. This module and the two definitional modules it imports, `Statement.Spec` and `Statement.Algorithms`, contain everything the statement depends on: the concrete parameters and algorithms, the strong-unforgeability experiment, and the security claim `XmssSecurityStatement`. Nothing here imports proof machinery, and nothing below describes a reduction or an intermediate game. The theorem itself is stated and proved in the root module `XmssSecurity`.
+
+The concrete instance has 32-byte messages, 32-bit epochs, 128-bit digests, a 256-bit random-oracle output truncated to 128 bits, 42 Winternitz chains of length 8, and a Merkle tree of height 32.
+-/
 
 open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity
 
-/-!
-# Classical random-oracle security of the concrete XMSS instance
+namespace Rom
 
-This is the reviewer-facing statement of the formalization. This module and the `XmssSecurity/Statement/` directory it imports contain everything the statement depends on: the cryptographic implementation types and algorithms, and every interface and security notion used by the theorem. Nothing here imports proof machinery, and nothing below describes a reduction or an intermediate game. The theorem itself is stated and proved in the root module `XmssSecurity`.
+/-- The random-oracle semantics: hash queries are answered lazily and consistently by uniform sampling, starting from the empty cache. -/
+noncomputable def runtime : ProbCompRuntime (OracleComp OracleWorld) where
+  toSPMFSemantics := SPMFSemantics.withStateOracle
+    (hashImpl := (randomOracle : QueryImpl HashSpec (StateT HashSpec.QueryCache ProbComp))) ∅
+  toProbCompLift := ProbCompLift.ofMonadLift _
 
-The concrete instance has 32-byte messages, 32-bit epochs, 128-bit digests, a 256-bit random-oracle output truncated to 128 bits, 42 Winternitz chains of length 8, and a Merkle tree of height 32. A signing attempt samples 192 fresh bits and queries the random oracle once to encode the message. The signer retries at most `2^23` times and returns `none` if every attempt fails.
+end Rom
 
-The secret key is the ideal precomputed key from the specification: it contains every Winternitz chain value and every Merkle node. Key generation obtains those values through the random oracle. Reading them while signing is local computation and therefore does not count as a random-oracle query.
--/
+/-- A signing request contains a 32-bit epoch and a 32-byte message. -/
+structure SignRequest where
+  epoch : Epoch
+  message : Message
+deriving DecidableEq
 
-/-- A hash query takes an arbitrary byte string and returns 32 bytes. -/
-abbrev XmssHashSpec := HashInput →ₒ HashOutput
+/-- A claimed forgery: an epoch, a message, and a signature. -/
+structure Forgery where
+  epoch : Epoch
+  message : Message
+  signature : Signature
+deriving DecidableEq
 
-/-- The experiment may sample uniform values or query the shared random oracle. Uniform sampling is kept separate because it is not charged as a hash query. -/
-abbrev XmssOracleWorld := unifSpec + XmssHashSpec
-
-/-- A signing request contains a 32-bit epoch and a 32-byte message. The response is either a signature or `none` if all `2^23` encoding attempts fail. -/
-abbrev XmssSigningSpec := SignRequest →ₒ Option Signature
+def Forgery.request (forgery : Forgery) : SignRequest :=
+  ⟨forgery.epoch, forgery.message⟩
 
 /-- The interface of a synchronized signature scheme in the random-oracle experiment. -/
-structure XmssScheme where
-  keygen : OracleComp XmssOracleWorld (PublicKey × SecretKey)
-  sign : PublicKey → SecretKey → Epoch → Message →
-    OracleComp XmssOracleWorld (Option Signature)
-  verify : PublicKey → Epoch → Message → Signature →
-    OracleComp XmssOracleWorld Bool
+structure Scheme where
+  keygen : OracleComp OracleWorld (PublicKey × SecretKey)
+  sign : PublicKey → SecretKey → Epoch → Message → OracleComp OracleWorld (Option Signature)
+  verify : PublicKey → Epoch → Message → Signature → OracleComp OracleWorld Bool
 
-/-- The concrete XMSS scheme. Key generation constructs the precomputed secret key, signing performs at most `2^23` encoding attempts, and verification is the ordinary XMSS verifier. -/
-noncomputable def xmssScheme : XmssScheme where
-  keygen := Concrete.precomputedKeygen
-  sign := Concrete.precomputedCappedSign
-  verify := fun publicKey epoch message signature =>
-    liftM (Concrete.verify publicKey epoch message signature :
-      OracleComp HashSpec Bool)
+/-- The signing oracle answers a request with either a signature or `none` if the signer fails. -/
+abbrev SigningSpec := SignRequest →ₒ Option Signature
 
-/-- A classical adaptive adversary. After receiving the public key, it may query the shared random oracle, request signatures, and finally return a claimed forgery containing an epoch, message, and signature. -/
-structure XmssAdversary (_scheme : XmssScheme) where
-  main : PublicKey →
-    OracleComp (XmssOracleWorld + XmssSigningSpec) Forgery
+/-- A classical adaptive adversary. After receiving the public key, it may query the shared random oracle, request signatures, and finally return a claimed forgery. -/
+structure Adversary (_scheme : Scheme) where
+  main : PublicKey → OracleComp (OracleWorld + SigningSpec) Forgery
+
+namespace SigningTranscript
 
 /-- A signing transcript is valid exactly when no epoch occurs twice. Thus the adversary may make adaptive signing requests, but may not request two signatures at the same epoch. -/
-def XmssSigningTranscriptValid (log : QueryLog XmssSigningSpec) : Prop :=
+def Valid (log : QueryLog SigningSpec) : Prop :=
   (log.map fun entry => entry.1.epoch).Nodup
 
 /-- The signer returned the claimed forgery exactly when the transcript contains the same epoch, message, and signature. A different signature for a signed message is therefore a valid strong forgery. -/
-def XmssForgeryWasReturned
-    (log : QueryLog XmssSigningSpec) (forgery : Forgery) : Prop :=
-  ∃ entry ∈ log,
-    entry.1 = forgery.request ∧ entry.2 = some forgery.signature
+def Contains (log : QueryLog SigningSpec) (forgery : Forgery) : Prop :=
+  ∃ entry ∈ log, entry.1 = forgery.request ∧ entry.2 = some forgery.signature
 
-/-- The signing oracle used in the game. It records every request and response while forwarding the request to the concrete signer. -/
-noncomputable def xmssSigningOracle
-    (publicKey : PublicKey) (secretKey : SecretKey) :
-    QueryImpl XmssSigningSpec
-      (WriterT (QueryLog XmssSigningSpec) (OracleComp XmssOracleWorld)) :=
-  QueryImpl.withLogging fun request =>
-    xmssScheme.sign publicKey secretKey request.epoch request.message
+end SigningTranscript
+
+/-- The signing oracle used in the game. It records every request and response while forwarding the request to the scheme's signer. -/
+def signingOracle (scheme : Scheme) (pk : PublicKey) (sk : SecretKey) :
+    QueryImpl SigningSpec (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
+  QueryImpl.withLogging fun request => scheme.sign pk sk request.epoch request.message
 
 /-- The complete strong-unforgeability experiment.
 
 The random oracle is sampled lazily by the semantics of `OracleWorld`. Key generation, the adversary, the signing oracle, and final verification all share the same oracle. The game returns `true` precisely when the signing transcript uses every epoch at most once, the claimed forgery is not an exact replay, and the signature verifies. -/
-noncomputable def xmssGame (adversary : XmssAdversary xmssScheme) :
-    OracleComp XmssOracleWorld Bool := by
+noncomputable def gameCore (scheme : Scheme) (adversary : Adversary scheme) :
+    OracleComp OracleWorld Bool := by
   classical
   exact do
-    let (publicKey, secretKey) ← xmssScheme.keygen
-    let forward : QueryImpl XmssOracleWorld
-        (WriterT (QueryLog XmssSigningSpec)
-          (OracleComp XmssOracleWorld)) :=
-      (HasQuery.toQueryImpl (spec := XmssOracleWorld)
-        (m := OracleComp XmssOracleWorld)).liftTarget _
-    let ((forgery, log) : Forgery × QueryLog XmssSigningSpec) ←
-      (simulateQ (forward + xmssSigningOracle publicKey secretKey)
-        (adversary.main publicKey)).run
-    let verified ← xmssScheme.verify publicKey forgery.epoch
-      forgery.message forgery.signature
-    return decide (XmssSigningTranscriptValid log ∧
-      ¬XmssForgeryWasReturned log forgery) && verified
+    let (pk, sk) ← scheme.keygen
+    let forward : QueryImpl OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
+      (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
+    let ((forgery, log) : Forgery × QueryLog SigningSpec) ←
+      (simulateQ (forward + signingOracle scheme pk sk) (adversary.main pk)).run
+    let verified ← scheme.verify pk forgery.epoch forgery.message forgery.signature
+    return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
 
 /-- The probability that the adversary wins, over key generation, signer randomness, and the random oracle. -/
-noncomputable def xmssForgeAdvantage
-    (adversary : XmssAdversary xmssScheme) : ENNReal :=
-  Pr[= true | Rom.runtime.evalDist (xmssGame adversary)]
+noncomputable def forgeAdvantage (scheme : Scheme) (adversary : Adversary scheme) : ℝ≥0∞ :=
+  Pr[= true | Rom.runtime.evalDist (gameCore scheme adversary)]
 
 /-- The whole experiment makes at most `q` random-oracle queries on every execution path. The count includes queries during key generation, adversarial hashing, signing, and final verification. Uniform sampling operations are not hash queries. -/
-def XmssHasHashQueryBound
-    (adversary : XmssAdversary xmssScheme) (q : Nat) : Prop :=
-  (xmssGame adversary).IsQueryBoundP (· matches .inr _) q
+def HasHashQueryBound (scheme : Scheme) (adversary : Adversary scheme) (q : Nat) : Prop :=
+  (gameCore scheme adversary).IsQueryBoundP (· matches .inr _) q
 
 /-- The best forgery probability among all classical adaptive adversaries whose complete experiment has hash-query bound `q`. -/
-noncomputable def xmssForgeAtMost (q : Nat) : ENNReal :=
-  ⨆ (adversary : XmssAdversary xmssScheme),
-    ⨆ (_ : XmssHasHashQueryBound adversary q),
-      xmssForgeAdvantage adversary
+noncomputable def forgeAtMost (scheme : Scheme) (q : Nat) : ℝ≥0∞ :=
+  ⨆ (adversary : Adversary scheme), ⨆ (_ : HasHashQueryBound scheme adversary q),
+    forgeAdvantage scheme adversary
 
 /-- Having `bits` bits of classical security means that, for every nonzero query budget `q`, the optimal forgery probability is at most `q / 2^bits`. -/
-noncomputable def XmssHasClassicalSecurityBits (bits : Nat) : Prop :=
-  ∀ q, 1 ≤ q → xmssForgeAtMost q ≤
-    (q : ENNReal) / ((2 ^ bits : Nat) : ENNReal)
+noncomputable def HasClassicalSecurityBits (scheme : Scheme) (bits : Nat) : Prop :=
+  ∀ q, 1 ≤ q → forgeAtMost scheme q ≤ q / ((2 ^ bits : Nat) : ℝ≥0∞)
+
+/-- The concrete XMSS scheme: the precomputed key generation, the capped retry signer, and the ordinary verifier from `Statement.Algorithms`. -/
+noncomputable def Concrete.scheme : Scheme where
+  keygen := Concrete.precomputedKeygen
+  sign := Concrete.precomputedCappedSign
+  verify := fun publicKey epoch message signature =>
+    liftM (Concrete.verify publicKey epoch message signature : OracleComp HashSpec Bool)
 
 /-- The complete public security claim. -/
 abbrev XmssSecurityStatement : Prop :=
-  XmssHasClassicalSecurityBits 127
+  HasClassicalSecurityBits Concrete.scheme 127
 
 end XmssSecurity

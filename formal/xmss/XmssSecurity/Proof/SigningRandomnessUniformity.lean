@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.ConcreteSign
+import XmssSecurity.Statement
 import VCVio.OracleComp.Constructions.SampleableType
 import XmssSecurity.Proof.HashInputLemmas
 import XmssSecurity.Proof.LazyScheme

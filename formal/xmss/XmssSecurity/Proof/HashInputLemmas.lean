@@ -1,10 +1,16 @@
-import XmssSecurity.Statement.CacheView
+import XmssSecurity.Statement
 import XmssSecurity.Proof.EncodingLemmas
 import Mathlib.Tactic.NormNum
 
 open OracleSpec
 
 namespace XmssSecurity
+
+def hashDomainTag : HashDomain → Nat
+  | .chain .. => 0
+  | .leaf .. => 1
+  | .merkle .. => 2
+  | .encoding .. => 3
 
 @[simp]
 theorem encodeTweak_extract_tag (fields : TweakFields) :

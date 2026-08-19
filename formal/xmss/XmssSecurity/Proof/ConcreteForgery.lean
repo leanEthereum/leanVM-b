@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.ConcreteVerify
+import XmssSecurity.Statement
 import XmssSecurity.Proof.ForgeryCases
 
 open OracleSpec

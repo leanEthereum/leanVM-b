@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.CausalSubtreeIndependence
 import XmssSecurity.Proof.ConcreteCorrectness
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec ENNReal
 

@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CausalKeygenTableIndependence
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec ENNReal
 

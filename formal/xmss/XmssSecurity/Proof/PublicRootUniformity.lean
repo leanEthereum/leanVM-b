@@ -2,6 +2,7 @@ import XmssSecurity.Proof.ChainValueUniformity
 import XmssSecurity.Proof.MerkleQueryBound
 import XmssSecurity.Proof.SecretTableUniformity
 import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec ENNReal
 

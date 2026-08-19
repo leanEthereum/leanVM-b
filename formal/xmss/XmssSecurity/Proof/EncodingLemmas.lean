@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.Encoding
+import XmssSecurity.Statement.Spec
 
 namespace XmssSecurity
 

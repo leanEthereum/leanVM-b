@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.Scheme
+import XmssSecurity.Statement
 import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
 import VCVio.OracleComp.QueryTracking.Unpredictability
 

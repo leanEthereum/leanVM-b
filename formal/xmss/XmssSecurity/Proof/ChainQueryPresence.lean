@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.QueryPresence
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 

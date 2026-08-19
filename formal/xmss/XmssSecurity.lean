@@ -1,33 +1,16 @@
 import XmssSecurity.Statement
 import XmssSecurity.Proof
 
-open OracleComp OracleSpec ENNReal
-
 namespace XmssSecurity
 
 /-!
-The main result. Its statement lives entirely in `XmssSecurity.Statement` and the `XmssSecurity/Statement/` directory; the modules under `XmssSecurity/Proof/` only contribute to the proof.
+The main result. Its statement lives entirely in `XmssSecurity.Statement` and the two modules under `XmssSecurity/Statement/`; the modules under `XmssSecurity/Proof/` only contribute to the proof.
 -/
 
 /-- The concrete XMSS instance has 127 bits of classical security in the random-oracle model. -/
 theorem xmss_has_127_bits_of_classical_security :
-    ∀ q, 1 ≤ q → xmssForgeAtMost q ≤
-      (q : ENNReal) / ((2 ^ 127 : Nat) : ENNReal) := by
-  intro q hq
-  unfold xmssForgeAtMost
-  refine iSup_le fun adversary => iSup_le fun hbound => ?_
-  let internalAdversary : Adversary Concrete.scheme := ⟨adversary.main⟩
-  have internalBound :
-      HasHashQueryBound Concrete.scheme internalAdversary q := by
-    exact hbound
-  calc
-    xmssForgeAdvantage adversary =
-        forgeAdvantage Concrete.scheme internalAdversary := rfl
-    _ ≤ forgeAtMost Concrete.scheme q :=
-      le_iSup_of_le internalAdversary
-        (le_iSup_of_le internalBound le_rfl)
-    _ ≤ (q : ENNReal) / ((2 ^ 127 : Nat) : ENNReal) :=
-      Proof.concreteScheme_has_127_bits_of_classical_security q hq
+    HasClassicalSecurityBits Concrete.scheme 127 :=
+  Proof.concreteScheme_has_127_bits_of_classical_security
 
 theorem xmssSecurityStatement_holds : XmssSecurityStatement :=
   xmss_has_127_bits_of_classical_security

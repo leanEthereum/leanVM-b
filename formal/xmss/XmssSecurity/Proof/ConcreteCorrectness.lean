@@ -135,13 +135,13 @@ theorem authentication_step_eq_treeNode (cache : QueryCache HashSpec)
     rcases hchildren with ⟨hleft, hright⟩
     simp [CacheView.nodeHash, hlevel, CacheView.nodeInput,
       CacheView.authenticationNodePayload, CacheView.merkleHash,
-      CacheView.merkleInput, treeNode, hbit, hnode, hleft, hright]
+      CacheView.merkleInput, treeNode_succ_eq, hbit, hnode, hleft, hright]
   · have hbitFalse : epoch.val.testBit level = false := Bool.eq_false_of_not_eq_true hbit
     simp only [hbitFalse, Bool.false_eq_true, ↓reduceIte] at hchildren
     rcases hchildren with ⟨hleft, hright⟩
     simp [CacheView.nodeHash, hlevel, CacheView.nodeInput,
       CacheView.authenticationNodePayload, CacheView.merkleHash,
-      CacheView.merkleInput, treeNode, hbitFalse, hnode, hleft, hright]
+      CacheView.merkleInput, treeNode_succ_eq, hbitFalse, hnode, hleft, hright]
 
 theorem recover_signedChainValues (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (epoch : Epoch) (encoding : Encoding) :

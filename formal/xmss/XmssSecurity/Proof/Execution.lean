@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.SecurityGame
+import XmssSecurity.Statement
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 
 open OracleComp OracleSpec ENNReal

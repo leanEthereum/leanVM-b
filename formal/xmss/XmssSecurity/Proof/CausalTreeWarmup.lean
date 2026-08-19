@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.CausalAuthenticationPathIndependence
 import XmssSecurity.Proof.MerkleQueryPresence
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 

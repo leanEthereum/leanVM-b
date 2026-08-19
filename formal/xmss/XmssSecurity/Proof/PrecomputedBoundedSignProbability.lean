@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.PrecomputedBoundedSignCache
 import XmssSecurity.Proof.SignCacheHitProbability
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec ENNReal
 

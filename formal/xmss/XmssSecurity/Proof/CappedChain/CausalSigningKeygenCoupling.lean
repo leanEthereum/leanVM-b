@@ -4,6 +4,7 @@ import XmssSecurity.Proof.PrecomputedBoundedSignProbability
 import XmssSecurity.Proof.CappedChain.CausalSigningProjection
 import XmssSecurity.Proof.CappedChain.CausalStrategyCoupling
 import XmssSecurity.Proof.KeygenCache
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational

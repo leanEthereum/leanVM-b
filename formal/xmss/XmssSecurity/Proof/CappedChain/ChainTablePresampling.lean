@@ -2,7 +2,7 @@ import XmssSecurity.Proof.ChainTableUniformity
 import XmssSecurity.Proof.ChainTablePresampling
 import XmssSecurity.Proof.MixedOraclePresampling
 import XmssSecurity.Proof.CacheReplayEval
-import XmssSecurity.Statement.PrecomputedKeygen
+import XmssSecurity.Statement
 
 open OracleComp OracleSpec ENNReal
 

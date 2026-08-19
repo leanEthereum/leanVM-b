@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.CacheView
+import XmssSecurity.Statement
 import XmssSecurity.Proof.MixedOracle
 import XmssSecurity.Proof.HashInputLemmas
 

@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.ConcreteKeygen
+import XmssSecurity.Statement
 import XmssSecurity.Proof.IndexedHiddenValue
 import VCVio.OracleComp.Constructions.SampleableType
 

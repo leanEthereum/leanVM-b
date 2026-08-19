@@ -3,6 +3,7 @@ import XmssSecurity.Proof.CausalCacheInvariant
 import XmssSecurity.Proof.CausalSigningProjection
 import XmssSecurity.Proof.CausalStrategyCoupling
 import XmssSecurity.Proof.KeygenCache
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational

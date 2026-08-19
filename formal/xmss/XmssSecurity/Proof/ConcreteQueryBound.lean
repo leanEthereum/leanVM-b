@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.HashAddress
-import XmssSecurity.Statement.ConcreteSign
+import XmssSecurity.Statement
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 

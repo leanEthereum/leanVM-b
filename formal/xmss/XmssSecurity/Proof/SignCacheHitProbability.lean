@@ -6,6 +6,7 @@ import XmssSecurity.Proof.SigningRandomnessUniformity
 import XmssSecurity.Proof.AdaptiveFreshTarget
 import XmssSecurity.Proof.QueryPresence
 import Mathlib.Data.Set.Card.Arithmetic
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec ENNReal
 

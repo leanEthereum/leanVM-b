@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.CappedVerifierQueryFloor
 import XmssSecurity.Proof.CacheReplayEval
-import XmssSecurity.Statement.PrecomputedKeygen
+import XmssSecurity.Statement
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 open scoped BigOperators

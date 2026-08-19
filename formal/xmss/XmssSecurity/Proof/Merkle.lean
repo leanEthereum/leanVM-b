@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.Parameters
+import XmssSecurity.Statement
 
 namespace XmssSecurity.Merkle
 

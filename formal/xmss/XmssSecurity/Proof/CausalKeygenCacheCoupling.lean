@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CausalPairedKeygen
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational

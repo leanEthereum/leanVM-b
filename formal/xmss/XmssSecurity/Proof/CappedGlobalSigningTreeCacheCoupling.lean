@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.CappedGlobalTreeKeygenCacheCoupling
 import XmssSecurity.Proof.CappedGlobalSigningKeygenCoupling
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
