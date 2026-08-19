@@ -1,6 +1,6 @@
 import XmssSecurity.CappedGlobalChainHighWholeGame
 import XmssSecurity.CappedGlobalChainHighProbeBounds
-import XmssSecurity.CappedChain.CausalEagerHighDirectReduction
+import XmssSecurity.CappedChain.DirectQueryAccounting
 import XmssSecurity.ExactKeygenQueryCount
 
 open OracleComp OracleSpec

@@ -1,5 +1,5 @@
 import XmssSecurity.CappedGlobalChainHighRevealCoverage
-import XmssSecurity.CappedChain.CausalEagerHighRevealCoverage
+import XmssSecurity.EncodingHashCacheReplay
 
 open OracleComp OracleSpec
 
@@ -105,7 +105,7 @@ theorem simulate_eagerTrace_globalFilteredCausalSigningAttempt_support_covered_o
       have hstable : Concrete.CacheView.encodingHash finalCache
           keyView.secretKey.parameter request.epoch
           (request.message, randomness) = encoded.1 := by
-        apply encodingHash_eq_of_run_support_of_cache_le
+        apply Concrete.CacheReplay.encodingHash_eq_of_run_support_of_cache_le
           keyView.secretKey.parameter state.cache encoded.2 finalCache
             request.epoch request.message randomness encoded.1 hencoded
         simpa [Prod.map, returned, encodedState,
