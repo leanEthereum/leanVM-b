@@ -2,7 +2,6 @@ import XmssSecurity.Proof.CappedGlobalChainHighSigningReplay
 import XmssSecurity.Proof.CappedGlobalChainHighKeygenRelation
 import XmssSecurity.Proof.CappedGlobalCausalUniformTrace
 import XmssSecurity.Proof.CappedChain.SourceDirectTrace
-import XmssSecurity.Proof.UntilBadSimulation
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -239,31 +238,6 @@ theorem globalHighMonitoredBaseMappedAdversaryImpl_preserves_bad
       result (by simpa [globalHighMonitoredBaseMappedAdversaryImpl] using
         hresult)
 
-theorem globalHighMonitoredMappedAdversaryImpl_preserves_bad
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalMonitoredTracedState) (hbad : state.1.bad)
-    (result : (OracleWorld + SigningSpec).Range input ×
-      GlobalMonitoredTracedState)
-    (hresult : result ∈ support
-      ((globalHighMonitoredMappedAdversaryImpl right input).run state)) :
-    result.2.1.bad := by
-  unfold globalHighMonitoredMappedAdversaryImpl actionTracedStateImpl at hresult
-  change result ∈ support (do
-    let baseResult ←
-      (globalHighMonitoredBaseMappedAdversaryImpl right input).run state.1
-    pure (baseResult.1,
-      (baseResult.2, state.2 ++ attackerActionFragment input baseResult.1)))
-      at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨baseResult, hbaseResult, hfinal⟩ := hresult
-  simp only [support_pure, Set.mem_singleton_iff] at hfinal
-  subst result
-  exact globalHighMonitoredBaseMappedAdversaryImpl_preserves_bad right input
-    state.1 hbad baseResult hbaseResult
-
 theorem globalHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -309,45 +283,6 @@ theorem globalHighMonitoredMappedAdversaryImpl_preserves_traceConsistent
   subst result
   exact globalHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
     right input state.1 hconsistent baseResult hbaseResult
-
-theorem relTriple_programmed_globalHighMonitored_adversary
-    (adversary : Adversary Concrete.scheme)
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
-    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
-    (hrightSupport : right.1.1 ∈ support
-      trajectoryProgrammedGlobalChainKeygen)
-    (leftState : SourceTracedState)
-    (rightState : GlobalMonitoredTracedState)
-    (hstate : GlobalMonitoredTracedStateRelation left right.1 leftState
-      rightState) :
-    RelTriple
-      ((simulateQ
-        (sourceDirectTracedMappedAdversaryImpl left.publicKey
-          (Concrete.materializePrecomputation left.cache left.secretKey))
-          (adversary.main left.publicKey)).run leftState)
-      ((simulateQ (globalHighMonitoredMappedAdversaryImpl right)
-        (adversary.main left.publicKey)).run rightState)
-      (fun leftResult rightResult =>
-        (leftResult.1 = rightResult.1 ∧
-          GlobalMonitoredTracedStateRelation left right.1 leftResult.2
-            rightResult.2) ∨ rightResult.2.1.bad) := by
-  exact relTriple_simulateQ_run_until_bad_right
-    (sourceDirectTracedMappedAdversaryImpl left.publicKey
-      (Concrete.materializePrecomputation left.cache left.secretKey))
-    (globalHighMonitoredMappedAdversaryImpl right)
-    (GlobalMonitoredTracedStateRelation left right.1)
-    (fun state : GlobalMonitoredTracedState => state.1.bad)
-    (fun input leftState rightState hstate =>
-      relTriple_programmed_globalHighMonitored_action left right hrel
-        hleftSupport hrightSupport leftState rightState hstate input)
-    (fun input state hbad result hresult =>
-      globalHighMonitoredMappedAdversaryImpl_preserves_bad right input state
-        hbad result hresult)
-    (adversary.main left.publicKey) leftState rightState hstate
 
 noncomputable def globalHighMonitoredVerifierImpl
     (right : (ProgrammedGlobalChainKeygenView ×
@@ -468,40 +403,6 @@ theorem globalHighMonitoredVerifierImpl_preserves_traceConsistent
   exact globalHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
     right (.inl input) state.1 hconsistent baseResult hbaseResult
 
-theorem relTriple_programmed_globalHighMonitored_verifier
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
-    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
-    (hrightSupport : right.1.1 ∈ support
-      trajectoryProgrammedGlobalChainKeygen)
-    (computation : OracleComp OracleWorld α)
-    (leftState : SourceTracedState)
-    (rightState : GlobalMonitoredTracedState)
-    (hstate : GlobalMonitoredTracedStateRelation left right.1 leftState
-      rightState) :
-    RelTriple
-      ((simulateQ sourceDirectTracedVerifierImpl computation).run leftState)
-      ((simulateQ (globalHighMonitoredVerifierImpl right) computation).run
-        rightState)
-      (fun leftResult rightResult =>
-        (leftResult.1 = rightResult.1 ∧
-          GlobalMonitoredTracedStateRelation left right.1 leftResult.2
-            rightResult.2) ∨ rightResult.2.1.bad) := by
-  exact relTriple_simulateQ_run_until_bad_right sourceDirectTracedVerifierImpl
-    (globalHighMonitoredVerifierImpl right)
-    (GlobalMonitoredTracedStateRelation left right.1)
-    (fun state : GlobalMonitoredTracedState => state.1.bad)
-    (fun input leftState rightState hstate =>
-      relTriple_programmed_globalHighMonitored_verifier_query left right hrel
-        hleftSupport hrightSupport leftState rightState hstate input)
-    (fun input state hbad result hresult =>
-      globalHighMonitoredVerifierImpl_preserves_bad right input state hbad
-        result hresult)
-    computation leftState rightState hstate
-
 theorem globalMonitoredTracedStateRelation_initial
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
@@ -551,64 +452,6 @@ noncomputable def globalHighMonitoredDetailedExecution
       handled.1.message handled.1.signature)).run handled.2
   pure ((handled.1, verified.1), verified.2)
 
-theorem relTriple_sourceGlobal_globalHighMonitored_detailedExecution
-    (adversary : Adversary Concrete.scheme)
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
-    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
-    (hrightSupport : right.1.1 ∈ support
-      trajectoryProgrammedGlobalChainKeygen) :
-    RelTriple (sourceGlobalTracedDetailedExecution adversary left)
-      (globalHighMonitoredDetailedExecution adversary right)
-      (fun leftResult rightResult =>
-        (leftResult.1 = rightResult.1 ∧
-          GlobalMonitoredTracedStateRelation left right.1 leftResult.2
-            rightResult.2) ∨ rightResult.2.1.bad) := by
-  have hinitial := globalMonitoredTracedStateRelation_initial left right hrel
-    hleftSupport hrightSupport
-  have hpublicKey : left.publicKey = right.1.1.publicKey :=
-    hrel.1.toStable.1.2.1
-  unfold sourceGlobalTracedDetailedExecution
-    globalHighMonitoredDetailedExecution
-  rw [← hpublicKey]
-  apply relTriple_bind
-    (relTriple_programmed_globalHighMonitored_adversary adversary left right
-      hrel hleftSupport hrightSupport (left.cache, [])
-        (⟨globalFilteredCausalKeygenState right.1.1,
-          some AdaptiveRevealMonitor.State.empty, []⟩, []) hinitial)
-  intro leftHandled rightHandled hhandled
-  rcases hhandled with hgood | hbad
-  · obtain ⟨hforgery, hstates⟩ := hgood
-    rw [← hforgery]
-    apply relTriple_bind
-      (relTriple_programmed_globalHighMonitored_verifier left right hrel
-        hleftSupport hrightSupport
-        (Concrete.scheme.verify left.publicKey leftHandled.1.epoch
-          leftHandled.1.message leftHandled.1.signature)
-        leftHandled.2 rightHandled.2 hstates)
-    intro leftVerified rightVerified hvertified
-    apply relTriple_pure_pure
-    rcases hvertified with hverifiedGood | hverifiedBad
-    · exact Or.inl ⟨congrArg (Prod.mk leftHandled.1) hverifiedGood.1,
-        hverifiedGood.2⟩
-    · exact Or.inr hverifiedBad
-  · apply relTriple_bind
-      (relTriple_prod (fun _result _hresult => True.intro)
-        (fun rightResult hrightResult =>
-          OracleComp.simulateQ_run_preservesInv
-            (globalHighMonitoredVerifierImpl right)
-            (fun state : GlobalMonitoredTracedState => state.1.bad)
-            (globalHighMonitoredVerifierImpl_preserves_bad right)
-            (Concrete.scheme.verify left.publicKey rightHandled.1.epoch
-              rightHandled.1.message rightHandled.1.signature)
-            rightHandled.2 hbad rightResult hrightResult))
-    intro leftVerified rightVerified _hverified
-    apply relTriple_pure_pure
-    exact Or.inr _hverified.2
-
 theorem globalHighMonitoredDetailedExecution_traceConsistent
     (adversary : Adversary Concrete.scheme)
     (right : (ProgrammedGlobalChainKeygenView ×
@@ -652,26 +495,6 @@ def sourceGlobalExecutionResult
     (Concrete.materializePrecomputation keyView.cache keyView.secretKey)
     (execution.1, execution.2.2), execution.2.1), execution.2.2)
 
-theorem sourceGlobalTracedDetailedExecution_eq_actionTraced
-    (adversary : Adversary Concrete.scheme)
-    (keyView : ProgrammedGlobalChainKeygenView) :
-    sourceGlobalExecutionResult keyView <$>
-        sourceGlobalTracedDetailedExecution adversary keyView =
-      detailedGameAfterKeygenWithActionTrace adversary keyView.publicKey
-        (Concrete.materializePrecomputation keyView.cache keyView.secretKey)
-          keyView.cache := by
-  unfold sourceGlobalTracedDetailedExecution
-    detailedGameAfterKeygenWithActionTrace
-    sourceActionTracedDetailedGameAfterKeygen
-  rw [sourceDirectTracedMappedAdversaryImpl_run_eq]
-  simp only [List.nil_append, map_eq_bind_pure_comp, bind_assoc, pure_bind,
-    simulateQ_bind, StateT.run_bind]
-  apply bind_congr
-  intro handled
-  simp only [Function.comp_apply, pure_bind]
-  rw [sourceDirectTracedVerifierImpl_run_eq]
-  simp [sourceGlobalExecutionResult, map_eq_bind_pure_comp]
-
 abbrev SourceGlobalTracedProgramResult :=
   ProgrammedGlobalChainKeygenView ×
     ((Forgery × Bool) × SourceTracedState)
@@ -695,18 +518,6 @@ def sourceGlobalProgramResult
   let execution := sourceGlobalExecutionResult result.1 result.2
   ((result.1, execution.1), execution.2)
 
-theorem sourceGlobalTracedProgram_eq_trajectoryProgrammedDetailedGame
-    (adversary : Adversary Concrete.scheme) :
-    sourceGlobalProgramResult <$> sourceGlobalTracedProgram adversary =
-      trajectoryProgrammedGlobalChainDetailedGame adversary := by
-  unfold sourceGlobalTracedProgram
-    trajectoryProgrammedGlobalChainDetailedGame
-  simp only [map_eq_bind_pure_comp, bind_assoc]
-  apply bind_congr
-  intro keyView
-  rw [← sourceGlobalTracedDetailedExecution_eq_actionTraced]
-  simp [sourceGlobalProgramResult, map_eq_bind_pure_comp]
-
 noncomputable def globalHighMonitoredProgram
     (adversary : Adversary Concrete.scheme) :
     ProbComp GlobalHighMonitoredProgramResult := do
@@ -722,29 +533,5 @@ def SourceGlobalHighMonitoredProgramRelation
       GlobalMonitoredTracedStateRelation left.1 right.1.1 left.2.2
         right.2.2) ∨ right.2.2.1.bad) ∧
     right.2.2.1.TraceConsistent right.1.1.2
-
-theorem relTriple_sourceGlobal_globalHighMonitored_program
-    (adversary : Adversary Concrete.scheme) :
-    RelTriple (sourceGlobalTracedProgram adversary)
-      (globalHighMonitoredProgram adversary)
-      SourceGlobalHighMonitoredProgramRelation := by
-  unfold sourceGlobalTracedProgram globalHighMonitoredProgram
-  apply relTriple_bind
-    (relTriple_with_support
-      relTriple_trajectoryProgrammedGlobalChainKeygen_withBaseHigh_stable)
-  intro left right hkeygen
-  obtain ⟨hrel, hleftSupport, hrightSupport⟩ := hkeygen
-  have hrightViewSupport :=
-    coupledGlobalChainKeygenWithBaseHighFull_support_keyView right
-      hrightSupport
-  apply relTriple_bind
-    (relTriple_with_support
-      (relTriple_sourceGlobal_globalHighMonitored_detailedExecution adversary
-        left right hrel hleftSupport hrightViewSupport))
-  intro leftExecution rightExecution hexecution
-  apply relTriple_pure_pure
-  exact ⟨hrel, hexecution.1,
-    globalHighMonitoredDetailedExecution_traceConsistent adversary right
-      rightExecution hexecution.2.2⟩
 
 end XmssSecurity.CappedChain

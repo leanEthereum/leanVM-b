@@ -30,10 +30,6 @@ def ChainTableSeedsMatch
     (table : ChainValueIndex → Digest) : Prop :=
   ∀ epoch, secretKey.chainStart epoch chain = table (epoch, ⟨0, by simp [chainLength]⟩)
 
-def chainTableSeedTargets
-    (table : ChainValueIndex → Digest) : Epoch → Digest :=
-  fun epoch => table (epoch, ⟨0, by simp [chainLength]⟩)
-
 def ChainTableEdgesMatch
     (cache : QueryCache HashSpec) (parameter : PublicParameter)
     (chain : ChainIndex) (table : ChainValueIndex → Digest) : Prop :=
@@ -51,102 +47,9 @@ theorem ChainTableEdgesMatch.mono
   obtain ⟨output, hcached, htarget⟩ := hmatch edge
   exact ⟨output, hle hcached, htarget⟩
 
-noncomputable local instance presamplingSampleableChainTable :
-    SampleableType (ChainValueIndex → Digest) :=
-  SampleableType.ofFintype (ChainValueIndex → Digest)
-
-noncomputable local instance presamplingSampleableChainSeeds :
-    SampleableType (Epoch → Digest) :=
-  SampleableType.ofFintype (Epoch → Digest)
-
 noncomputable local instance presamplingSampleableChainEdges :
     SampleableType (ChainEdgeIndex → Digest) :=
   SampleableType.ofFintype (ChainEdgeIndex → Digest)
-
-noncomputable local instance presamplingSampleableChainCoordinates :
-    SampleableType ((Epoch → Digest) × (ChainEdgeIndex → Digest)) :=
-  SampleableType.ofFintype ((Epoch → Digest) × (ChainEdgeIndex → Digest))
-
-/-- A chain table is equivalently its epoch seeds and the target value of every positive edge. -/
-def chainTableMaterialEquiv :
-    (ChainValueIndex → Digest) ≃
-      ((Epoch → Digest) × (ChainEdgeIndex → Digest)) where
-  toFun table :=
-    (chainTableSeedTargets table, chainTableEdgeTarget table)
-  invFun material index :=
-    if hzero : index.2.val = 0 then
-      material.1 index.1
-    else
-      material.2
-        (index.1, ⟨index.2.val - 1, by
-          have hdigit := index.2.isLt
-          omega⟩)
-  left_inv table := by
-    funext index
-    by_cases hzero : index.2.val = 0
-    · simp only [hzero, ↓reduceDIte, chainTableSeedTargets]
-      congr 2
-      exact Fin.ext hzero.symm
-    · simp only [hzero, ↓reduceDIte, chainTableEdgeTarget]
-      congr 2
-      apply Fin.ext
-      simp [chainStepNextDigit]
-      omega
-  right_inv material := by
-    apply Prod.ext
-    · funext epoch
-      simp [chainTableSeedTargets]
-    · funext edge
-      simp only [chainTableEdgeTarget]
-      have hpositive : (chainStepNextDigit edge.2).val ≠ 0 := by
-        simp [chainStepNextDigit]
-      simp only [hpositive, ↓reduceDIte]
-      congr 2
-
-noncomputable def independentChainTableMaterial :
-    ProbComp ((Epoch → Digest) × (ChainEdgeIndex → Digest)) :=
-  Prod.mk <$> ($ᵗ (Epoch → Digest)) <*>
-    ($ᵗ (ChainEdgeIndex → Digest))
-
-/-- Splitting a uniform chain table gives independent uniform seed and positive-edge coordinate tables. -/
-theorem evalDist_split_uniformChainTable_eq_independent :
-    𝒟[chainTableMaterialEquiv <$> ($ᵗ (ChainValueIndex → Digest))] =
-      𝒟[independentChainTableMaterial] := by
-  apply SPMF.ext
-  intro target
-  change Pr[= target |
-      chainTableMaterialEquiv <$> ($ᵗ (ChainValueIndex → Digest))] =
-    Pr[= target | independentChainTableMaterial]
-  rw [probOutput_map_bijective_uniform_cross
-    (α := ChainValueIndex → Digest)
-    (β := (Epoch → Digest) × (ChainEdgeIndex → Digest))
-    chainTableMaterialEquiv chainTableMaterialEquiv.bijective]
-  calc
-    Pr[= target | $ᵗ ((Epoch → Digest) × (ChainEdgeIndex → Digest))] =
-        Pr[= target.1 | $ᵗ (Epoch → Digest)] *
-          Pr[= target.2 | $ᵗ (ChainEdgeIndex → Digest)] := by
-      rw [probOutput_uniformSample, probOutput_uniformSample,
-        probOutput_uniformSample, Fintype.card_prod, Nat.cast_mul,
-        ENNReal.mul_inv]
-      · exact Or.inr (ENNReal.natCast_ne_top _)
-      · exact Or.inl (ENNReal.natCast_ne_top _)
-    _ = Pr[= target | independentChainTableMaterial] := by
-      symm
-      rw [independentChainTableMaterial]
-      rw [probOutput_seq_map_prod_mk_eq_mul]
-
-def secretWithFixedChainSeeds
-    (other : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (seeds : Epoch → Digest) :
-    Epoch → ChainIndex → Digest := fun epoch candidate =>
-  if candidate = chain then seeds epoch else other epoch candidate
-
-@[simp]
-theorem secretWithFixedChainSeeds_fixedChain
-    (other : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (seeds : Epoch → Digest) (epoch : Epoch) :
-    secretWithFixedChainSeeds other chain seeds epoch chain = seeds epoch := by
-  simp [secretWithFixedChainSeeds]
 
 abbrev FlatSecret := Epoch × ChainIndex → Digest
 
@@ -160,16 +63,6 @@ noncomputable local instance presamplingSampleableSecret :
 
 def unflattenSecret (table : FlatSecret) :
     Epoch → ChainIndex → Digest := fun epoch chain => table (epoch, chain)
-
-theorem secretWithOwnFixedChainSeeds
-    (table : FlatSecret) (chain : ChainIndex) :
-    secretWithFixedChainSeeds (unflattenSecret table) chain
-      (fun epoch => table (epoch, chain)) = unflattenSecret table := by
-  funext epoch candidate
-  by_cases heq : candidate = chain
-  · subst candidate
-    simp [secretWithFixedChainSeeds, unflattenSecret]
-  · simp [secretWithFixedChainSeeds, heq, unflattenSecret]
 
 def flatSecretEquiv :
     (Epoch → ChainIndex → Digest) ≃ FlatSecret where
@@ -277,103 +170,6 @@ theorem evalDist_extractFixedChainSeeds_eq_uniform
           OracleComp.evalDist_uniformSample_bind_update_map
             (R := Digest) (epoch, chain)
             (fixedChainSeedView chain (epoch :: epochs))
-
-theorem evalDist_extractFixedChainSeeds_fst_eq_drawList
-    (chain : ChainIndex) (epochs : List Epoch) :
-    evalDist (Prod.fst <$> extractFixedChainSeeds chain epochs) =
-      evalDist (OracleComp.drawList ($ᵗ Digest) epochs.length) := by
-  induction epochs with
-  | nil =>
-      simp only [extractFixedChainSeeds_nil, map_eq_bind_pure_comp,
-        bind_assoc, pure_bind, Function.comp_apply, List.length_nil,
-        OracleComp.drawList]
-      exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-        ($ᵗ FlatSecret) (probFailure_uniformSample FlatSecret) (pure [])
-  | cons epoch epochs ih =>
-      rw [extractFixedChainSeeds_cons]
-      simp only [List.length_cons]
-      rw [OracleComp.drawList]
-      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
-        Function.comp_apply]
-      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-      intro value
-      calc
-        evalDist (extractFixedChainSeeds chain epochs >>= fun rest =>
-            pure (value :: rest.1)) =
-            evalDist (List.cons value <$>
-              (Prod.fst <$> extractFixedChainSeeds chain epochs)) := by
-          simp [map_eq_bind_pure_comp, bind_assoc]
-        _ = evalDist (List.cons value <$>
-              OracleComp.drawList ($ᵗ Digest) epochs.length) := by
-          rw [evalDist_map, ih, ← evalDist_map]
-        _ = evalDist (OracleComp.drawList ($ᵗ Digest) epochs.length >>=
-              fun rest => pure (value :: rest)) := by
-          simp [map_eq_bind_pure_comp]
-
-theorem forall₂_imp_of_forall_mem_left
-    {Left Right : Type} {relation nextRelation : Left → Right → Prop} :
-    ∀ {lefts : List Left} {rights : List Right},
-      List.Forall₂ relation lefts rights →
-      (∀ left ∈ lefts, ∀ right, relation left right →
-        nextRelation left right) →
-      List.Forall₂ nextRelation lefts rights := by
-  intro lefts rights hpairs
-  induction hpairs with
-  | nil => simp
-  | cons hfirst hrest ih =>
-      intro himp
-      apply List.Forall₂.cons
-      · exact himp _ (by simp) _ hfirst
-      · apply ih
-        intro left hleft
-        exact himp left (by simp [hleft])
-
-set_option maxHeartbeats 1600000 in
-set_option maxRecDepth 1000000 in
-set_option linter.constructorNameAsVariable false in
-theorem extractFixedChainSeeds_support_info
-    (chain : ChainIndex) :
-    ∀ (epochs : List Epoch), epochs.Nodup →
-      ∀ result ∈ support (extractFixedChainSeeds chain epochs),
-        result.1.length = epochs.length ∧
-          List.Forall₂
-            (fun epoch value => result.2 (epoch, chain) = value)
-            epochs result.1 := by
-  intro epochs
-  induction epochs with
-  | nil =>
-      intro _hnodup result hresult
-      simp only [extractFixedChainSeeds_nil, mem_support_bind_iff] at hresult
-      obtain ⟨table, _htable, hpure⟩ := hresult
-      simp only [support_pure, Set.mem_singleton_iff] at hpure
-      rw [hpure]
-      exact ⟨rfl, List.Forall₂.nil⟩
-  | cons epoch epochs ih =>
-      intro hnodup result hresult
-      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
-      rw [extractFixedChainSeeds_cons, mem_support_bind_iff] at hresult
-      obtain ⟨value, _hvalue, hrest⟩ := hresult
-      rw [mem_support_bind_iff] at hrest
-      obtain ⟨rest, hrest, hpure⟩ := hrest
-      simp only [support_pure, Set.mem_singleton_iff] at hpure
-      subst result
-      obtain ⟨hlength, hpairs⟩ := ih htailNodup rest hrest
-      constructor
-      · simp [hlength]
-      · apply List.Forall₂.cons
-        · simp
-        · apply forall₂_imp_of_forall_mem_left hpairs
-          intro target htarget targetValue hvalue
-          change Function.update rest.2 (epoch, chain) value
-            (target, chain) = targetValue
-          rw [Function.update_of_ne]
-          · exact hvalue
-          · intro heq
-            have htargetEpoch := congrArg Prod.fst heq
-            change target = epoch at htargetEpoch
-            apply hnotMem
-            rw [htargetEpoch] at htarget
-            exact htarget
 
 theorem evalDist_map_truncate_drawList (count : Nat) :
     𝒟[List.map truncateHash <$>
@@ -1030,64 +826,6 @@ theorem Concrete.fixedSeedChainTrajectoriesFromCache_cons
           parameter secret chain steps first.2 epochs
         return (first.1 :: rest.1, rest.2)) := rfl
 
-noncomputable def Concrete.fixedChainTrajectoriesFromTape
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat) :
-    QueryCache HashSpec → List Epoch → List Digest →
-      ProbComp (List (Vector Digest (steps + 1)) × QueryCache HashSpec)
-  | cache, [], _ => pure ([], cache)
-  | cache, _ :: _, [] => pure ([], cache)
-  | cache, epoch :: epochs, seed :: seeds => do
-      let first ← (simulateQ randomOracle
-        (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run cache
-      let rest ← Concrete.fixedChainTrajectoriesFromTape
-        parameter chain steps first.2 epochs seeds
-      return (first.1 :: rest.1, rest.2)
-
-@[simp]
-theorem Concrete.fixedChainTrajectoriesFromTape_nil_epochs
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
-    (cache : QueryCache HashSpec) (seeds : List Digest) :
-    Concrete.fixedChainTrajectoriesFromTape parameter chain steps cache [] seeds =
-      pure ([], cache) := rfl
-
-@[simp]
-theorem Concrete.fixedChainTrajectoriesFromTape_nil_seeds
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
-    (cache : QueryCache HashSpec) (epoch : Epoch) (epochs : List Epoch) :
-    Concrete.fixedChainTrajectoriesFromTape parameter chain steps cache
-      (epoch :: epochs) [] = pure ([], cache) := rfl
-
-theorem Concrete.fixedChainTrajectoriesFromTape_cons
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
-    (cache : QueryCache HashSpec) (epoch : Epoch) (epochs : List Epoch)
-    (seed : Digest) (seeds : List Digest) :
-    Concrete.fixedChainTrajectoriesFromTape parameter chain steps cache
-      (epoch :: epochs) (seed :: seeds) = (do
-        let first ← (simulateQ randomOracle
-          (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run cache
-        let rest ← Concrete.fixedChainTrajectoriesFromTape
-          parameter chain steps first.2 epochs seeds
-        return (first.1 :: rest.1, rest.2)) := rfl
-
-theorem Concrete.fixedSeedChainTrajectories_eq_fromTape_of_forall₂
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (steps : Nat)
-    {epochs : List Epoch} {seeds : List Digest}
-    (hpairs : List.Forall₂ (fun epoch seed => secret epoch chain = seed)
-      epochs seeds) (cache : QueryCache HashSpec) :
-    Concrete.fixedSeedChainTrajectoriesFromCache parameter secret chain steps
-      cache epochs =
-      Concrete.fixedChainTrajectoriesFromTape parameter chain steps
-        cache epochs seeds := by
-  induction hpairs generalizing cache with
-  | nil => simp
-  | cons heq _hpairs ih =>
-      rw [Concrete.fixedSeedChainTrajectoriesFromCache_cons,
-        Concrete.fixedChainTrajectoriesFromTape_cons, heq]
-      apply bind_congr
-      intro first
-      rw [ih]
-
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
 theorem Concrete.fixedSeedChainTrajectoriesFromCache_support_info
@@ -1136,40 +874,6 @@ theorem Concrete.fixedSeedChainTrajectoriesFromCache_support_info
                 (secret epoch chain)) cache first.2 rest.2 first.1 hfirst
                 hfirstCacheLe
           · exact hpairs
-
-theorem Concrete.fixedSeedChainTrajectoriesFromCache_table_eq
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex)
-    (result : List FullChainTrajectory × QueryCache HashSpec)
-    (hresult : result ∈ support
-      (Concrete.fixedSeedChainTrajectoriesFromCache parameter secret chain
-        (chainLength - 1) ∅ allEpochs)) :
-    chainValueTableOfList result.1 =
-      keygenChainValueTable result.2 (SecretKey.withoutPrecomputation parameter secret) chain := by
-  obtain ⟨_hcache, hlength, hpairs⟩ :=
-    Concrete.fixedSeedChainTrajectoriesFromCache_support_info parameter secret
-      chain (chainLength - 1) allEpochs ∅ result hresult
-  funext index
-  unfold chainValueTableOfList
-  split
-  · rename_i htableLength
-    let position := epochPosition index.1
-    have hresultPosition : position.val < result.1.length := by
-      rw [← htableLength]
-      exact position.isLt
-    have hpair := hpairs.get position.isLt hresultPosition
-    have hepoch : allEpochs.get position = index.1 := by
-      exact allEpochs_get_epochPosition index.1
-    rw [hepoch] at hpair
-    have hvalue := congrArg
-      (fun trajectory : FullChainTrajectory =>
-        trajectory[index.2.val]'(by
-          have hdigit := index.2.isLt
-          omega)) hpair
-    rw [Concrete.chainTrajectory_getElem] at hvalue
-    exact hvalue.symm
-  · rename_i htableLength
-    exact (htableLength hlength.symm).elim
 
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
@@ -1254,77 +958,6 @@ theorem Concrete.fixedSeedChainTrajectoriesFromCache_table_eq_in_largerCache
     exact hvalue.symm
   · rename_i htableLength
     exact (htableLength hinfo.2.1.symm).elim
-
-noncomputable def Concrete.extractedFixedChainTrajectoriesFromCache
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
-    (cache : QueryCache HashSpec) (epochs : List Epoch) :
-    ProbComp (List (Vector Digest (steps + 1)) × QueryCache HashSpec) := do
-  let secretView ← extractFixedChainSeeds chain epochs
-  Concrete.fixedSeedChainTrajectoriesFromCache parameter
-    (unflattenSecret secretView.2) chain steps cache epochs
-
-noncomputable def Concrete.tapedFixedChainTrajectoriesFromCache
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
-    (cache : QueryCache HashSpec) (epochs : List Epoch) :
-    ProbComp (List (Vector Digest (steps + 1)) × QueryCache HashSpec) := do
-  let seeds ← OracleComp.drawList ($ᵗ Digest) epochs.length
-  Concrete.fixedChainTrajectoriesFromTape parameter chain steps cache
-    epochs seeds
-
-theorem Concrete.evalDist_extractedFixedChainTrajectories_eq_taped
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
-    (cache : QueryCache HashSpec) (epochs : List Epoch)
-    (hnodup : epochs.Nodup) :
-    evalDist (Concrete.extractedFixedChainTrajectoriesFromCache parameter
-      chain steps cache epochs) =
-      evalDist (Concrete.tapedFixedChainTrajectoriesFromCache parameter
-        chain steps cache epochs) := by
-  unfold Concrete.extractedFixedChainTrajectoriesFromCache
-    Concrete.tapedFixedChainTrajectoriesFromCache
-  calc
-    evalDist (extractFixedChainSeeds chain epochs >>= fun secretView =>
-        Concrete.fixedSeedChainTrajectoriesFromCache parameter
-          (unflattenSecret secretView.2) chain steps cache epochs) =
-        evalDist (extractFixedChainSeeds chain epochs >>= fun secretView =>
-          Concrete.fixedChainTrajectoriesFromTape parameter chain steps cache
-            epochs secretView.1) := by
-      apply evalDist_bind_congr
-      intro secretView hsecretView
-      rw [Concrete.fixedSeedChainTrajectories_eq_fromTape_of_forall₂]
-      exact (extractFixedChainSeeds_support_info chain epochs hnodup
-        secretView hsecretView).2
-    _ = evalDist ((Prod.fst <$> extractFixedChainSeeds chain epochs) >>=
-          fun seeds => Concrete.fixedChainTrajectoriesFromTape parameter chain
-            steps cache epochs seeds) := by
-      simp [map_eq_bind_pure_comp, bind_assoc]
-    _ = evalDist (OracleComp.drawList ($ᵗ Digest) epochs.length >>= fun seeds =>
-          Concrete.fixedChainTrajectoriesFromTape parameter chain steps cache
-            epochs seeds) := by
-      conv_lhs => rw [evalDist_bind]
-      conv_rhs => rw [evalDist_bind]
-      rw [evalDist_extractFixedChainSeeds_fst_eq_drawList]
-
-set_option maxHeartbeats 1600000 in
-set_option maxRecDepth 1000000 in
-theorem Concrete.evalDist_tapedFixedChainTrajectories_cons
-    (parameter : PublicParameter) (chain : ChainIndex) (steps : Nat)
-    (cache : QueryCache HashSpec) (epoch : Epoch) (epochs : List Epoch) :
-    evalDist (Concrete.tapedFixedChainTrajectoriesFromCache parameter
-      chain steps cache (epoch :: epochs)) =
-      evalDist (($ᵗ Digest) >>= fun seed =>
-        (simulateQ randomOracle
-          (Concrete.chainTrajectory parameter epoch chain 0 steps seed)).run
-            cache >>= fun first =>
-        Concrete.tapedFixedChainTrajectoriesFromCache parameter chain steps
-          first.2 epochs >>= fun rest =>
-        pure (first.1 :: rest.1, rest.2)) := by
-  unfold Concrete.tapedFixedChainTrajectoriesFromCache
-  rw [List.length_cons, OracleComp.drawList]
-  simp only [bind_assoc, pure_bind,
-    Concrete.fixedChainTrajectoriesFromTape_cons]
-  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-  intro seed
-  exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
 
 theorem evalDist_rootTree_run_eq_fixedSeedTrajectories_then_rootTree
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
