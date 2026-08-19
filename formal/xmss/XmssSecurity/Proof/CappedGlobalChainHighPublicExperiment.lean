@@ -43,27 +43,6 @@ theorem globalHighDirectForgeryPrimaryProbeTrace_agrees
   exact globalHighDirectForgeryPrimaryProbeTrace_all_probes result action
     haction
 
-theorem simulate_eagerTrace_bind_emitObservedTrace
-    (table : Index → Digest)
-    (computation : OracleComp (RevealProbeOracleSimulation.World Index) α)
-    (suffix : α → RevealProbeOracleSimulation.ActionTrace Index)
-    (hagrees : ∀ result, RevealProbeOracleSimulation.TraceAgrees table
-      (suffix result)) :
-    (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table) (do
-      let result ← computation
-      RevealProbeOracleSimulation.emitObservedTrace (suffix result))).run =
-    (fun result => ((), result.2 ++ suffix result.1)) <$>
-      (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-        computation).run := by
-  rw [simulateQ_bind, WriterT.run_bind']
-  apply bind_congr
-  intro result
-  rcases result with ⟨result, trace⟩
-  simp only [Function.comp_apply]
-  rw [RevealProbeOracleSimulation.simulate_eagerTrace_emitObservedTrace]
-  · rfl
-  · exact hagrees result
-
 noncomputable def globalHighDirectPublicProgram
     (adversary : Adversary Concrete.scheme) :
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
@@ -71,32 +50,5 @@ noncomputable def globalHighDirectPublicProgram
   let result ← globalHighDirectProgram adversary
   RevealProbeOracleSimulation.emitObservedTrace
     (globalHighDirectForgeryPrimaryProbeTrace result)
-
-theorem eagerExperiment_globalHighDirectPublicProgram_eq_append
-    (adversary : Adversary Concrete.scheme) :
-    RevealProbeOracleSimulation.eagerExperiment
-      (globalHighDirectPublicProgram adversary) =
-    appendGlobalHighDirectPublicTrace <$>
-      globalHighDirectEagerExperiment adversary := by
-  unfold globalHighDirectPublicProgram globalHighDirectEagerExperiment
-    RevealProbeOracleSimulation.eagerExperiment
-  simp only [map_bind]
-  apply bind_congr
-  intro table
-  rw [simulate_eagerTrace_bind_emitObservedTrace table
-    (globalHighDirectProgram adversary)
-    globalHighDirectForgeryPrimaryProbeTrace
-    (globalHighDirectForgeryPrimaryProbeTrace_agrees table)]
-  simp [appendGlobalHighDirectPublicTrace, map_eq_bind_pure_comp,
-    bind_assoc]
-
-theorem evalDist_globalHighMonitoredPublicProjection_eq_publicExperiment
-    (adversary : Adversary Concrete.scheme) :
-    evalDist (globalHighMonitoredPublicProjection <$>
-      globalHighMonitoredProgram adversary) =
-    evalDist (RevealProbeOracleSimulation.eagerExperiment
-      (globalHighDirectPublicProgram adversary)) := by
-  rw [evalDist_globalHighMonitoredPublicProjection_eq_append_direct]
-  rw [eagerExperiment_globalHighDirectPublicProgram_eq_append]
 
 end XmssSecurity.CappedChain

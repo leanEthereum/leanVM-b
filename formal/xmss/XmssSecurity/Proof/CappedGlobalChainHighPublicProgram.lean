@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.CappedGlobalChainHighDirectDistribution
+import XmssSecurity.Proof.CappedGlobalChainHighDirectReduction
 
 open OracleComp OracleSpec
 
@@ -101,33 +101,5 @@ theorem evalDist_map_congr_of_evalDist_eq
     (hdist : evalDist left = evalDist right) :
     evalDist (project <$> left) = evalDist (project <$> right) := by
   rw [evalDist_map, evalDist_map, hdist]
-
-theorem evalDist_map_factor_of_evalDist_eq
-    (project : α → γ) (outer : β → γ) (inner : α → β)
-    (left : ProbComp α) (right : ProbComp β)
-    (hproject : project = outer ∘ inner)
-    (hdist : evalDist (inner <$> left) = evalDist right) :
-    evalDist (project <$> left) = evalDist (outer <$> right) := by
-  subst project
-  simpa [Functor.map_map, Function.comp_def] using
-    (evalDist_map_congr_of_evalDist_eq outer (inner <$> left) right hdist)
-
-theorem evalDist_globalHighMonitoredPublicProjection_eq_append_direct
-    (adversary : Adversary Concrete.scheme) :
-    evalDist (globalHighMonitoredPublicProjection <$>
-      globalHighMonitoredProgram adversary) =
-    evalDist (appendGlobalHighDirectPublicTrace <$>
-      globalHighDirectEagerExperiment adversary) := by
-  have hprojection : globalHighMonitoredPublicProjection =
-      appendGlobalHighDirectPublicTrace ∘
-        globalHighMonitoredDirectProjection := by
-    funext result
-    exact globalHighMonitoredPublicProjection_eq_append_direct result
-  exact evalDist_map_factor_of_evalDist_eq
-    globalHighMonitoredPublicProjection appendGlobalHighDirectPublicTrace
-      globalHighMonitoredDirectProjection (globalHighMonitoredProgram adversary)
-        (globalHighDirectEagerExperiment adversary) hprojection
-          (evalDist_globalHighMonitoredDirectProjection_eq_eagerExperiment
-            adversary)
 
 end XmssSecurity.CappedChain
