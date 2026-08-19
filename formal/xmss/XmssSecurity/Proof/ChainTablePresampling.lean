@@ -2,7 +2,7 @@ import XmssSecurity.Proof.ChainTableUniformity
 import XmssSecurity.Proof.ChainQueryPresence
 import XmssSecurity.Proof.AdaptiveFreshTarget
 import XmssSecurity.Proof.RandomOraclePresampling
-import XmssSecurity.Proof.SecretTableUniformity
+import XmssSecurity.Proof.HiddenValue
 
 open OracleComp OracleSpec ENNReal
 
