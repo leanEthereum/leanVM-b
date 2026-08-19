@@ -1,2 +1,2 @@
 import XmssSecurity.Statement
-import XmssSecurity.SecurityProof
+import XmssSecurity.CappedExactFirstLaneBoundedProof

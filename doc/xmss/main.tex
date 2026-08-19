@@ -53,7 +53,7 @@
 \begin{abstract}
 As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS, the signature scheme used by Ethereum validators. Aggregating XMSS requires a post-quantum snark. This technical note specifies an optimized XMSS instance with the following properties:
 \begin{itemize}
-  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, when the hash function is modelled as a (resp. quantum) random oracle.\footnote{The classical random-oracle claim is machine checked in Lean at 126 bits. The quantum claim is not formalized.}
+  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, when the hash function is modelled as a (resp. quantum) random oracle.\footnote{The classical random-oracle claim is machine checked in Lean at 127 bits. The quantum claim is not formalized.}
   \item \textbf{public key: 32 bytes}.
   \item \textbf{signature: 1208 bytes} (smaller than the 1280-byte minimum IPv6 MTU~\cite{RFC8200}).
   \item snark-friendly encoding, optimized for aggregation via leanVM-b~\cite{leanVMb}, requiring 15 bits of grinding on average.

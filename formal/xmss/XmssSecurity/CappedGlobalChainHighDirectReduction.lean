@@ -8,6 +8,62 @@ namespace XmssSecurity.CappedChain
 set_option maxHeartbeats 2000000
 set_option maxRecDepth 1000000
 
+noncomputable def globalHighDirectUniformImpl :
+    QueryImpl unifSpec
+      (StateT GlobalCausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
+  globalCausalUniformImpl
+
+noncomputable abbrev globalHighDirectHashFromHighImpl
+    (high : GlobalChainValueIndex → Digest)
+    (secretKey : SecretKey) :
+    QueryImpl HashSpec
+      (StateT GlobalCausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
+  globalCausalAttackerHashQueryFromHigh high secretKey
+
+noncomputable abbrev globalHighDirectHashImpl
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (edgeHigh : GlobalChainEdgeIndex → Digest) :
+    QueryImpl HashSpec
+      (StateT GlobalCausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
+  globalHighDirectHashFromHighImpl
+    (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey
+
+noncomputable def globalHighDirectOracleExecution
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (edgeHigh : GlobalChainEdgeIndex → Digest)
+    (input : OracleWorld.Domain) (state : GlobalCausalHashState) :
+    OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex)
+      (OracleWorld.Range input × GlobalCausalHashState) :=
+  match input with
+  | .inl n => (globalHighDirectUniformImpl n).run state
+  | .inr hashInput =>
+      (globalCausalAttackerHashQueryFromHigh
+        (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey
+          hashInput).run state
+
+noncomputable def globalHighDirectOracleImpl
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (edgeHigh : GlobalChainEdgeIndex → Digest) :
+    QueryImpl OracleWorld
+      (StateT GlobalCausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
+  fun input state => globalHighDirectOracleExecution keyView edgeHigh input state
+
+noncomputable def globalHighDirectSigningImpl
+    (keyView : ProgrammedGlobalChainKeygenView) :
+    QueryImpl SigningSpec
+      (StateT GlobalCausalHashState
+        (OracleComp
+          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
+  fun request state => globalFilteredCausalSigningQuery keyView request state
+
 noncomputable def globalHighDirectBaseMappedAdversaryImpl
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
@@ -15,14 +71,8 @@ noncomputable def globalHighDirectBaseMappedAdversaryImpl
       (StateT GlobalCausalHashState
         (OracleComp
           (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
-  fun input =>
-    match input with
-    | .inl (.inl n) => globalCausalUniformImpl n
-    | .inl (.inr hashInput) =>
-        globalCausalAttackerHashQueryFromHigh
-          (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey hashInput
-    | .inr request => fun state =>
-        globalFilteredCausalSigningQuery keyView request state
+  globalHighDirectOracleImpl keyView edgeHigh +
+    globalHighDirectSigningImpl keyView
 
 noncomputable def globalHighDirectMappedAdversaryImpl
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -42,7 +92,7 @@ noncomputable def globalHighDirectVerifierImpl
       (StateT GlobalCausalHashState
         (OracleComp
           (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
-  fun input => globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh (.inl input)
+  globalHighDirectOracleImpl keyView edgeHigh
 
 noncomputable def globalHighDirectDetailedExecution
     (adversary : Adversary Concrete.scheme)
@@ -410,7 +460,7 @@ theorem map_simulate_globalHighMonitored_verifier_erased_projection
   unfold globalHighMonitoredVerifierImpl globalHighDirectVerifierImpl
   simp only [StateT.run_mk, Functor.map_map]
   unfold globalHighMonitoredBaseMappedAdversaryImpl
-    globalHighDirectBaseMappedAdversaryImpl
+    globalHighDirectOracleImpl globalHighDirectOracleExecution
   rcases input with n | hashInput
   · exact map_monitorGlobalCausalTrace_projection base _ current
   · exact map_monitorGlobalCausalTrace_projection base _ current

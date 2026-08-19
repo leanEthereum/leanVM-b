@@ -34,6 +34,6 @@ noncomputable abbrev XmssHasClassicalSecurityBits (bits : Nat) : Prop :=
     (q : ENNReal) / ((2 ^ bits : Nat) : ENNReal)
 
 /-- The machine-checked security claim exported by this development. -/
-abbrev XmssSecurityStatement : Prop := XmssHasClassicalSecurityBits 126
+abbrev XmssSecurityStatement : Prop := XmssHasClassicalSecurityBits 127
 
 end XmssSecurity

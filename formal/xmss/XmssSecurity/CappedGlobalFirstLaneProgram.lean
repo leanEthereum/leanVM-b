@@ -32,21 +32,79 @@ noncomputable def globalFirstLaneFreshEncodingQuery
     | .side => FirstLaneOracleSimulation.liftProbComp uniformHashOutput
   pure (output, state.setCache (state.cache.cacheQuery input output))
 
+@[irreducible]
+noncomputable def globalFirstLaneAttackerHashQueryAtEpoch
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) (epoch : Epoch) :
+    OracleComp GlobalFirstLaneWorld (HashOutput × GlobalCausalHashState) :=
+  let recorded := globalCausalRecordedState secretKey input state
+  match state.cache input with
+  | some output => pure (output, recorded)
+  | none => globalFirstLaneFreshEncodingQuery .query epoch input recorded
+
+@[irreducible]
+noncomputable def globalFirstLaneAttackerHashQueryByEpoch
+    (high : GlobalChainValueIndex → Digest)
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) : Option Epoch →
+      OracleComp GlobalFirstLaneWorld (HashOutput × GlobalCausalHashState)
+  | some epoch => globalFirstLaneAttackerHashQueryAtEpoch secretKey input state epoch
+  | none =>
+      globalFirstLaneLiftRevealProbe
+        ((globalCausalAttackerHashQueryFromHigh high secretKey input).run state)
+
+@[irreducible]
 noncomputable def globalFirstLaneAttackerHashQueryFromHighRun
     (high : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (input : HashInput) :
     GlobalCausalHashState →
       OracleComp GlobalFirstLaneWorld (HashOutput × GlobalCausalHashState) :=
-  fun state =>
-  match encodingInputEpoch? secretKey.parameter input with
-  | some epoch =>
-      let recorded := globalCausalRecordedState secretKey input state
-      match state.cache input with
-      | some output => pure (output, recorded)
-      | none => globalFirstLaneFreshEncodingQuery .query epoch input recorded
-  | none =>
+  fun state => globalFirstLaneAttackerHashQueryByEpoch high secretKey input state
+    (encodingInputEpoch? secretKey.parameter input)
+
+theorem globalFirstLaneAttackerHashQueryFromHighRun_eq_some
+    (high : GlobalChainValueIndex → Digest)
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) (epoch : Epoch)
+    (hepoch : encodingInputEpoch? secretKey.parameter input = some epoch) :
+    globalFirstLaneAttackerHashQueryFromHighRun high secretKey input state =
+      globalFirstLaneAttackerHashQueryAtEpoch secretKey input state epoch := by
+  unfold globalFirstLaneAttackerHashQueryFromHighRun
+  rw [hepoch]
+  unfold globalFirstLaneAttackerHashQueryByEpoch
+  rfl
+
+theorem globalFirstLaneAttackerHashQueryFromHighRun_eq_none
+    (high : GlobalChainValueIndex → Digest)
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState)
+    (hepoch : encodingInputEpoch? secretKey.parameter input = none) :
+    globalFirstLaneAttackerHashQueryFromHighRun high secretKey input state =
       globalFirstLaneLiftRevealProbe
-        ((globalCausalAttackerHashQueryFromHigh high secretKey input).run state)
+        ((globalCausalAttackerHashQueryFromHigh high secretKey input).run state) := by
+  unfold globalFirstLaneAttackerHashQueryFromHighRun
+  rw [hepoch]
+  unfold globalFirstLaneAttackerHashQueryByEpoch
+  rfl
+
+theorem globalFirstLaneAttackerHashQueryAtEpoch_eq_cached
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) (epoch : Epoch) (output : HashOutput)
+    (hcache : state.cache input = some output) :
+    globalFirstLaneAttackerHashQueryAtEpoch secretKey input state epoch =
+      pure (output, globalCausalRecordedState secretKey input state) := by
+  unfold globalFirstLaneAttackerHashQueryAtEpoch
+  rw [hcache]
+
+theorem globalFirstLaneAttackerHashQueryAtEpoch_eq_fresh
+    (secretKey : SecretKey) (input : HashInput)
+    (state : GlobalCausalHashState) (epoch : Epoch)
+    (hcache : state.cache input = none) :
+    globalFirstLaneAttackerHashQueryAtEpoch secretKey input state epoch =
+      globalFirstLaneFreshEncodingQuery .query epoch input
+        (globalCausalRecordedState secretKey input state) := by
+  unfold globalFirstLaneAttackerHashQueryAtEpoch
+  rw [hcache]
 
 noncomputable def globalFirstLaneAttackerHashQueryFromHigh
     (high : GlobalChainValueIndex → Digest)
@@ -109,14 +167,36 @@ def globalFirstLaneUniformImpl :
   let output ← FirstLaneOracleSimulation.uniformQuery n
   pure (output, state)
 
-noncomputable def globalFirstLaneHashImpl
+noncomputable abbrev globalFirstLaneHashFromHighImpl
+    (high : GlobalChainValueIndex → Digest)
+    (secretKey : SecretKey) :
+    QueryImpl HashSpec
+      (StateT GlobalCausalHashState
+        (OracleComp GlobalFirstLaneWorld)) :=
+  fun input state =>
+    globalFirstLaneAttackerHashQueryFromHighRun high secretKey input state
+
+noncomputable abbrev globalFirstLaneHashImpl
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     QueryImpl HashSpec
       (StateT GlobalCausalHashState
         (OracleComp GlobalFirstLaneWorld)) :=
-  globalFirstLaneAttackerHashQueryFromHigh
+  globalFirstLaneHashFromHighImpl
     (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey
+
+noncomputable def globalFirstLaneOracleExecution
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (edgeHigh : GlobalChainEdgeIndex → Digest)
+    (input : OracleWorld.Domain) (state : GlobalCausalHashState) :
+    OracleComp GlobalFirstLaneWorld
+      (OracleWorld.Range input × GlobalCausalHashState) :=
+  match input with
+  | .inl n => (globalFirstLaneUniformImpl n).run state
+  | .inr hashInput =>
+      globalFirstLaneAttackerHashQueryFromHighRun
+        (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey hashInput
+          state
 
 noncomputable def globalFirstLaneOracleImpl
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -124,7 +204,7 @@ noncomputable def globalFirstLaneOracleImpl
     QueryImpl OracleWorld
       (StateT GlobalCausalHashState
         (OracleComp GlobalFirstLaneWorld)) :=
-  globalFirstLaneUniformImpl + globalFirstLaneHashImpl keyView edgeHigh
+  fun input state => globalFirstLaneOracleExecution keyView edgeHigh input state
 
 noncomputable def globalFirstLaneSigningImpl
     (keyView : ProgrammedGlobalChainKeygenView) :

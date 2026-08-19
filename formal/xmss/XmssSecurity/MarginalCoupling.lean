@@ -711,6 +711,106 @@ theorem relTriple_of_evalDist_map_eq_with_support_general
   exact ⟨generalMarginalCoupling_support_eq oa ob f g hmap pair hpair,
     generalMarginalCoupling_support_marginals oa ob f g hmap pair hpair⟩
 
+theorem relTriple_trans_exists
+    {ι₃ : Type} {spec₃ : OracleSpec ι₃} [IsUniformSpec spec₃]
+    {δ : Type} {oc : OracleComp spec₃ δ}
+    {oa : OracleComp spec₁ α} {ob : OracleComp spec₂ β}
+    {R : α → β → Prop} {S : β → δ → Prop}
+    (hab : RelTriple oa ob R) (hbc : RelTriple ob oc S) :
+    RelTriple oa oc (fun a c => ∃ b, R a b ∧ S b c) := by
+  classical
+  letI : DecidableEq β := Classical.decEq β
+  rw [relTriple_iff_relWP] at hab hbc ⊢
+  obtain ⟨cab, hR⟩ := hab
+  obtain ⟨cbc, hS⟩ := hbc
+  have hcabFail : cab.1.toPMF none = 0 := by
+    have hmap := cab.2.map_fst
+    rw [SPMF.fmap_eq_map] at hmap
+    change PMF.map (Option.map Prod.fst) cab.1.toPMF =
+      (evalDist oa).toPMF at hmap
+    have h := congrArg (fun p : PMF (Option α) => p none) hmap
+    rw [PMF.map_apply] at h
+    simpa using h.trans (probFailure_eq_zero (mx := oa))
+  have hcbcFail : cbc.1.toPMF none = 0 := by
+    have hmap := cbc.2.map_fst
+    rw [SPMF.fmap_eq_map] at hmap
+    change PMF.map (Option.map Prod.fst) cbc.1.toPMF =
+      (evalDist ob).toPMF at hmap
+    have h := congrArg (fun p : PMF (Option β) => p none) hmap
+    rw [PMF.map_apply] at h
+    simpa using h.trans (probFailure_eq_zero (mx := ob))
+  let p := generalSuccessPMF cab.1 hcabFail
+  let q := generalSuccessPMF cbc.1 hcbcFail
+  have hmiddle : p.map Prod.snd = q.map Prod.fst := by
+    apply generalSuccessPMF_map_eq_of_spmf_map_eq
+    exact cab.2.map_snd.trans cbc.2.map_fst.symm
+  let d := generalFiberCoupling p q Prod.snd Prod.fst hmiddle
+  let project : (α × β) × (β × δ) → α × δ :=
+    fun pair => (pair.1.1, pair.2.2)
+  let c : SPMF (α × δ) := liftM (d.map project)
+  have hd : PMF.IsCoupling d p q := by
+    simpa [d] using generalFiberCoupling_isCoupling p q Prod.snd Prod.fst hmiddle
+  refine ⟨⟨c, ?_, ?_⟩, ?_⟩
+  · dsimp only [c]
+    rw [← liftM_map]
+    change liftM ((d.map project).map Prod.fst) = _
+    rw [PMF.map_comp]
+    change liftM (d.map (Prod.fst ∘ Prod.fst)) = _
+    rw [← PMF.map_comp, hd.map_fst]
+    change liftM ((generalSuccessPMF cab.1 hcabFail).map Prod.fst) = _
+    calc
+      liftM ((generalSuccessPMF cab.1 hcabFail).map Prod.fst) =
+          Prod.fst <$> (liftM (generalSuccessPMF cab.1 hcabFail) : SPMF (α × β)) :=
+        liftM_map Prod.fst (generalSuccessPMF cab.1 hcabFail)
+      _ = Prod.fst <$> cab.1 := by rw [liftM_generalSuccessPMF_eq]
+      _ = evalDist oa := cab.2.map_fst
+  · dsimp only [c]
+    rw [← liftM_map]
+    change liftM ((d.map project).map Prod.snd) = _
+    rw [PMF.map_comp]
+    change liftM (d.map (Prod.snd ∘ Prod.snd)) = _
+    rw [← PMF.map_comp, hd.map_snd]
+    change liftM ((generalSuccessPMF cbc.1 hcbcFail).map Prod.snd) = _
+    calc
+      liftM ((generalSuccessPMF cbc.1 hcbcFail).map Prod.snd) =
+          Prod.snd <$> (liftM (generalSuccessPMF cbc.1 hcbcFail) : SPMF (β × δ)) :=
+        liftM_map Prod.snd (generalSuccessPMF cbc.1 hcbcFail)
+      _ = Prod.snd <$> cbc.1 := by rw [liftM_generalSuccessPMF_eq]
+      _ = evalDist oc := cbc.2.map_snd
+  · intro pair hpair
+    change pair ∈ support (liftM (d.map project) : SPMF (α × δ)) at hpair
+    change pair ∈ (liftM (d.map project) : SPMF (α × δ)).support at hpair
+    rw [SPMF.support_liftM, PMF.mem_support_map_iff] at hpair
+    obtain ⟨z, hz, hproject⟩ := hpair
+    have hweight : generalFiberCouplingWeight p q Prod.snd Prod.fst z ≠ 0 := by
+      simpa [d, generalFiberCoupling_apply] using
+        (PMF.mem_support_iff d z).1 hz
+    have heq : z.1.2 = z.2.1 := by
+      unfold generalFiberCouplingWeight at hweight
+      split at hweight
+      · assumption
+      · exact (hweight rfl).elim
+    have hp : p z.1 ≠ 0 := by
+      intro hpzero
+      apply hweight
+      simp [generalFiberCouplingWeight, heq, hpzero]
+    have hq : q z.2 ≠ 0 := by
+      intro hqzero
+      apply hweight
+      simp [generalFiberCouplingWeight, heq, hqzero]
+    have hzLeft : z.1 ∈ support cab.1 := by
+      change z.1 ∈ SPMF.support cab.1
+      apply (SPMF.mem_support_iff cab.1 z.1).2
+      simpa [p] using hp
+    have hzRight : z.2 ∈ support cbc.1 := by
+      change z.2 ∈ SPMF.support cbc.1
+      apply (SPMF.mem_support_iff cbc.1 z.2).2
+      simpa [q] using hq
+    have hleft := hR z.1 hzLeft
+    have hright := hS z.2 hzRight
+    obtain ⟨rfl, rfl⟩ := hproject
+    exact ⟨z.1.2, hleft, heq ▸ hright⟩
+
 end GeneralRelTriple
 
 section RelTriple

@@ -1,4 +1,5 @@
 import XmssSecurity.FirstLaneEagerSimulation
+import XmssSecurity.CausalProbeEnforcement
 
 open OracleComp OracleSpec
 
@@ -185,6 +186,79 @@ theorem enforceHazardTrace_eq_self_of_count_le
                   simp only [hazardCount, Nat.succ_le_succ_iff] at hcount
                   simp only [enforceHazardTrace, List.cons.injEq, true_and]
                   exact ih fuel hcount
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem enforceHazardTrace_append
+    (fuel : Nat) (left right : ActionTrace Index) :
+    enforceHazardTrace fuel (left ++ right) =
+      enforceHazardTrace fuel left ++
+        enforceHazardTrace (fuel - hazardCount left) right := by
+  induction left generalizing fuel with
+  | nil => simp [hazardCount, enforceHazardTrace]
+  | cons action left ih =>
+      cases action with
+      | encoding action =>
+          cases action with
+          | sign epoch output =>
+              simp [hazardCount, enforceHazardTrace, ih]
+          | query epoch output =>
+              cases fuel with
+              | zero => simp [hazardCount, enforceHazardTrace, ih]
+              | succ fuel => simp [hazardCount, enforceHazardTrace, ih]
+      | chain action =>
+          cases action with
+          | reveal index value =>
+              simp [hazardCount, enforceHazardTrace, ih]
+          | probe index target =>
+              cases fuel with
+              | zero => simp [hazardCount, enforceHazardTrace, ih]
+              | succ fuel => simp [hazardCount, enforceHazardTrace, ih]
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem CappedEncodingMonitor.runObserved_append_eq_true_of_prefix
+    (state : EncodingMonitor.State) (left right : EncodingActionTrace)
+    (hhit : CappedEncodingMonitor.runObserved state left = true) :
+    CappedEncodingMonitor.runObserved state (left ++ right) = true := by
+  induction left generalizing state with
+  | nil => simp [CappedEncodingMonitor.runObserved] at hhit
+  | cons action left ih =>
+      cases happly : CappedEncodingMonitor.State.applyObserved state action with
+      | none => simp [CappedEncodingMonitor.runObserved, happly] at hhit
+      | some result =>
+          rcases result with ⟨nextState, hit⟩
+          cases hit with
+          | false =>
+              simp only [List.cons_append,
+                CappedEncodingMonitor.runObserved, happly,
+                Bool.false_or] at hhit ⊢
+              exact ih nextState hhit
+          | true =>
+              simp [List.cons_append, CappedEncodingMonitor.runObserved,
+                happly]
+
+theorem CombinedHit.append_of_prefix
+    (table : Index → Digest) (left right : ActionTrace Index)
+    (hhit : CombinedHit table left) : CombinedHit table (left ++ right) := by
+  rcases hhit with hencoding | hchain
+  · apply Or.inl
+    rw [ActionTrace.encodingActions_append]
+    exact CappedEncodingMonitor.runObserved_append_eq_true_of_prefix
+      EncodingMonitor.State.empty left.encodingActions right.encodingActions
+        hencoding
+  · apply Or.inr
+    rw [ActionTrace.chainActions_append]
+    exact RevealProbeOracleSimulation.runObserved_append_eq_true_of_prefix
+      table AdaptiveRevealMonitor.State.empty left.chainActions
+        right.chainActions hchain
+
+theorem CombinedHit.enforce_append_of_prefix
+    (table : Index → Digest) (fuel : Nat)
+    (left right : ActionTrace Index)
+    (hhit : CombinedHit table (enforceHazardTrace fuel left)) :
+    CombinedHit table (enforceHazardTrace fuel (left ++ right)) := by
+  rw [enforceHazardTrace_append]
+  exact CombinedHit.append_of_prefix table (enforceHazardTrace fuel left)
+    (enforceHazardTrace (fuel - hazardCount left) right) hhit
 
 omit [Fintype Index] [DecidableEq Index] in
 theorem simulate_eagerTrace_hazardEnforcementImpl_run
