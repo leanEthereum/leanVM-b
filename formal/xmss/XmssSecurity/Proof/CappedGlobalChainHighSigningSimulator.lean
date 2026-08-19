@@ -4,7 +4,7 @@ import XmssSecurity.Proof.StatementLemmas
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
-namespace XmssSecurity
+namespace XmssSecurity.CappedChain
 
 theorem Concrete.keygen_signWithEncoding_eq_base
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
@@ -35,10 +35,6 @@ theorem Concrete.keygen_signWithEncoding_eq_base
             chain).symm
   · exact (TreeCacheStable.authenticationPath_eq keyResult.1.2 keyResult.2
       hstable largerCache hle epoch).symm
-
-end XmssSecurity
-
-namespace XmssSecurity.CappedChain
 
 noncomputable def globalFilteredCausalSigningAttempt
     (keyView : ProgrammedGlobalChainKeygenView)

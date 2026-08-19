@@ -4,7 +4,11 @@ open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity.CappedChain
 
-abbrev CausalHashState := XmssSecurity.CausalHashState
+structure CausalHashState where
+  cache : QueryCache HashSpec
+  keygenCache : QueryCache HashSpec
+  revealed : ChainValueIndex → Option Digest
+  probes : List (ChainValueIndex × Digest)
 
 def CausalHashState.empty : CausalHashState :=
   ⟨∅, ∅, fun _ => none, []⟩
@@ -63,7 +67,11 @@ theorem causalHashQuery_run (input : HashInput) (state : CausalHashState) :
           RevealProbeOracleSimulation.liftProbComp
             ((randomOracle input).run state.cache) := rfl
 
-abbrev CausalHashPlan := XmssSecurity.CausalHashPlan
+inductive CausalHashPlan where
+  | cached (output : HashOutput)
+  | reveal (index : ChainValueIndex)
+  | redirect (output : HashOutput)
+  | fresh
 
 noncomputable def causalLeafHashPlan
     (secretKey : SecretKey) (input : HashInput) (state : CausalHashState) :
@@ -128,24 +136,6 @@ theorem causalRecordedState_revealed
   rw [causalRecordedState]
   exact CausalHashState.recordProbe_revealed state _
 
-theorem causalHashState_recordProbe_eq_original
-    (state : CausalHashState)
-    (probe : Option (ChainValueIndex × Digest)) :
-    CausalHashState.recordProbe state probe =
-      XmssSecurity.CausalHashState.recordProbe state probe := by
-  rfl
-
-theorem causalRecordedState_eq_original
-    (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
-    (state : CausalHashState) :
-    causalRecordedState secretKey chain input state =
-      XmssSecurity.causalRecordedState secretKey chain input state := by
-  rw [causalRecordedState, XmssSecurity.causalRecordedState]
-  have hprobe : chainInputProbe? secretKey.parameter chain input =
-      XmssSecurity.chainInputProbe? secretKey.parameter chain input := by rfl
-  rw [hprobe]
-  exact causalHashState_recordProbe_eq_original state _
-
 noncomputable def causalRevealResultState
     (secretKey : SecretKey) (chain : ChainIndex) (input : HashInput)
     (state : CausalHashState) (index : ChainValueIndex) (value : Digest)
@@ -197,6 +187,13 @@ noncomputable def causalHashImpl :
       (StateT CausalHashState
         (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))) :=
   causalHashQuery
+
+def causalUniformImpl :
+    QueryImpl unifSpec
+      (StateT CausalHashState
+        (OracleComp (RevealProbeOracleSimulation.World ChainValueIndex))) :=
+  fun n => liftM (RevealProbeOracleSimulation.uniformQuery
+    (Index := ChainValueIndex) n)
 
 noncomputable def causalXmssRomImpl :
     QueryImpl OracleWorld

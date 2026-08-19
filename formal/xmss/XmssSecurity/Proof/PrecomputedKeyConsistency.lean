@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.CausalSigningKeygenCoupling
+import XmssSecurity.Proof.CappedChain.TreeCacheStability
 import XmssSecurity.Proof.PrecomputedKeygenCache
 
 open OracleComp OracleSpec
@@ -16,7 +16,7 @@ theorem keygen_support_treeCacheStable
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.keygen).run ∅)) :
-    TreeCacheStable keyResult.1.2.parameter keyResult.1.2.chainStart
+    CappedChain.TreeCacheStable keyResult.1.2.parameter keyResult.1.2.chainStart
       keyResult.2 := by
   let chain : ChainIndex := ⟨0, by norm_num [numChains]⟩
   let view : ProgrammedFixedChainKeygenView := {
@@ -25,8 +25,8 @@ theorem keygen_support_treeCacheStable
     cache := keyResult.2
     table := keygenChainValueTable keyResult.2 keyResult.1.2 chain
   }
-  apply actualFixedChainKeygen_support_treeCacheStable chain view
-  unfold actualFixedChainKeygen
+  apply CappedChain.actualFixedChainKeygen_support_treeCacheStable chain view
+  unfold CappedChain.actualFixedChainKeygen
   rw [mem_support_bind_iff]
   exact ⟨keyResult, hkeyResult, by simp [view]⟩
 
@@ -119,7 +119,7 @@ theorem Concrete.precomputedKeygen_support_consistent
           (Concrete.precomputedSecretKey parameter secret keyResult.2)), keyResult.2)
       hold largerCache hle epoch chain (encoding chain).val
         (Nat.le_pred_of_lt (encoding chain).isLt)
-  · exact TreeCacheStable.authenticationPath_eq
+  · exact CappedChain.TreeCacheStable.authenticationPath_eq
       (Concrete.precomputedSecretKey parameter secret keyResult.2) keyResult.2
       hstable largerCache hle epoch
 
