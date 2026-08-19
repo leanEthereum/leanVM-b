@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.CacheReplayEval
 import XmssSecurity.Statement
 import XmssSecurity.Proof.BoundedSignQueryBound
+import XmssSecurity.Proof.ConcreteQueryBound
 
 open OracleComp OracleSpec
 

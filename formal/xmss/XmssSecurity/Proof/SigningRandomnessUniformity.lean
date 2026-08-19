@@ -1,7 +1,5 @@
-import XmssSecurity.Statement
 import VCVio.OracleComp.Constructions.SampleableType
 import XmssSecurity.Proof.HashInputLemmas
-import XmssSecurity.Proof.LazyScheme
 
 open OracleComp OracleSpec ENNReal
 
@@ -12,11 +10,6 @@ noncomputable local instance : SampleableType Randomness :=
 
 theorem card_randomness : Fintype.card Randomness = 2 ^ randomnessBits := by
   simp
-
-theorem uniform_randomness_point_probability (target : Randomness) :
-    Pr[= target | $ᵗ Randomness] =
-      ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-  rw [probOutput_uniformSample, card_randomness]
 
 /-- For fixed public data and message, a serialized encoding input generated with uniform signing randomness hits any chosen input with probability at most `2^-192`. -/
 theorem uniform_signingRandomness_encodingInput_probability_le
@@ -66,24 +59,6 @@ theorem uniform_signingRandomness_encodingInput_hits_finset_le
     _ = (targets.card : ℝ≥0∞) *
         ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
       rw [Finset.sum_const, nsmul_eq_mul]
-
-theorem uniform_signingRandomness_encodingInput_hits_bounded_finset_le
-    (parameter : PublicParameter) (epoch : Epoch) (message : Message)
-    (targets : Finset HashInput) (q : Nat) (hcard : targets.card ≤ q) :
-    Pr[fun randomness : Randomness => ∃ input ∈ targets,
-      Concrete.CacheView.encodingInput parameter epoch (message, randomness) = input |
-      $ᵗ Randomness] ≤
-      (q : ℝ≥0∞) / ((2 ^ digestBits : Nat) : ℝ≥0∞) := by
-  refine (uniform_signingRandomness_encodingInput_hits_finset_le
-    parameter epoch message targets).trans ?_
-  rw [div_eq_mul_inv]
-  apply mul_le_mul
-  · exact_mod_cast hcard
-  · exact ENNReal.inv_le_inv.mpr (by
-      exact_mod_cast (by
-        norm_num [digestBits, randomnessBits] : 2 ^ digestBits ≤ 2 ^ randomnessBits))
-  · exact zero_le
-  · exact zero_le
 
 /-- Uniform signing randomness hits an input already present in a random-oracle cache with probability controlled by the number of live cache entries. -/
 theorem uniform_signingRandomness_encodingInput_cacheHit_le

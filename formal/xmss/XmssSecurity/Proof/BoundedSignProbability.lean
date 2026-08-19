@@ -1,4 +1,3 @@
-import XmssSecurity.Proof.BoundedSign
 import XmssSecurity.Proof.SignCacheHitProbability
 import XmssSecurity.Proof.StatementLemmas
 
