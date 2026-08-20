@@ -2,6 +2,7 @@ import XmssSecurity.Proof.CacheVerify
 import XmssSecurity.Proof.LazyScheme
 import VCVio.OracleComp.QueryTracking.CachingOracle
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
+import VCVio.OracleComp.SimSemantics.StateT.PreservesInv
 import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
@@ -233,19 +234,14 @@ theorem randomOracle_cache_le {α : Type} (computation : OracleComp HashSpec α)
     (initialCache : QueryCache HashSpec) (result : α × QueryCache HashSpec)
     (hmem : result ∈ support ((simulateQ randomOracle computation).run initialCache)) :
     initialCache ≤ result.2 := by
-  induction computation using OracleComp.inductionOn generalizing initialCache result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact le_rfl
-  | query_bind input next ih =>
-      rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind,
-        mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleCache⟩, hquery, hrest⟩ := hmem
-      exact (QueryImpl.withCaching_cache_le uniformSampleImpl input initialCache
-        (output, middleCache) hquery).trans
-          (ih output middleCache result hrest)
+  exact OracleComp.simulateQ_run_preservesInv randomOracle
+    (fun cache => initialCache ≤ cache)
+    (by
+      intro input cache hcache queryResult hquery
+      exact hcache.trans
+        (QueryImpl.withCaching_cache_le uniformSampleImpl input cache
+          queryResult hquery))
+    computation initialCache le_rfl result hmem
 
 /-- Rerunning a lazy random-oracle computation against any extension of a cache produced by a
 successful first run is deterministic and leaves the larger cache unchanged. -/

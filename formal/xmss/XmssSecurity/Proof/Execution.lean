@@ -1,5 +1,6 @@
 import XmssSecurity.Statement
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
+import VCVio.OracleComp.SimSemantics.StateT.PreservesInv
 
 open OracleComp OracleSpec ENNReal
 
@@ -25,46 +26,43 @@ theorem xmssRom_lift_probComp_cache_eq {α : Type} (computation : ProbComp α)
   obtain ⟨output, _houtput, heq⟩ := hmem
   exact (congrArg Prod.snd heq).symm
 
+theorem xmssRomImpl_query_cache_le
+    (input : OracleWorld.Domain) (initialCache : QueryCache HashSpec)
+    (result : OracleWorld.Range input × QueryCache HashSpec)
+    (hmem : result ∈ support ((xmssRomImpl input).run initialCache)) :
+    initialCache ≤ result.2 := by
+  cases input with
+  | inl uniformInput =>
+      obtain ⟨output, finalCache⟩ := result
+      change unifSpec.Range uniformInput at output
+      have hrun :
+          (unifFwdImpl HashSpec uniformInput).run initialCache =
+            (fun sample => (sample, initialCache)) <$>
+              (liftM (unifSpec.query uniformInput) : ProbComp _) := by
+        simpa [simulateQ_query] using
+          (unifFwdImpl.simulateQ_run
+            (hashSpec := HashSpec)
+            (liftM (unifSpec.query uniformInput) : ProbComp _) initialCache)
+      simp only [xmssRomImpl, QueryImpl.add_apply] at hmem
+      have hmem' : (output, finalCache) ∈ support
+          ((unifFwdImpl HashSpec uniformInput).run initialCache) := hmem
+      rw [hrun, support_map] at hmem'
+      obtain ⟨sample, _hsample, heq⟩ := hmem'
+      exact le_of_eq (congrArg Prod.snd heq)
+  | inr hashInput =>
+      exact QueryImpl.withCaching_cache_le uniformSampleImpl hashInput initialCache
+        result hmem
+
 theorem xmssRom_cache_le {α : Type} (computation : OracleComp OracleWorld α)
     (initialCache : QueryCache HashSpec) (result : α × QueryCache HashSpec)
     (hmem : result ∈ support ((simulateQ xmssRomImpl computation).run initialCache)) :
     initialCache ≤ result.2 := by
-  induction computation using OracleComp.inductionOn generalizing initialCache result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact le_rfl
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleCache⟩, hquery, hrest⟩ := hmem
-      have hmiddle : initialCache ≤ middleCache := by
-        cases input with
-        | inl uniformInput =>
-            change unifSpec.Range uniformInput at output
-            have hrun :
-                (unifFwdImpl HashSpec uniformInput).run initialCache =
-                  (fun sample => (sample, initialCache)) <$>
-                    (liftM (unifSpec.query uniformInput) : ProbComp _) := by
-              simpa [simulateQ_query] using
-                (unifFwdImpl.simulateQ_run
-                  (hashSpec := HashSpec)
-                  (liftM (unifSpec.query uniformInput) : ProbComp _) initialCache)
-            simp only [simulateQ_spec_query, xmssRomImpl, QueryImpl.add_apply] at hquery
-            have hquery' : (output, middleCache) ∈
-                support ((unifFwdImpl HashSpec uniformInput).run initialCache) := hquery
-            rw [hrun, support_map] at hquery'
-            obtain ⟨sample, _hsample, heq⟩ := hquery'
-            exact le_of_eq (congrArg Prod.snd heq)
-        | inr hashInput =>
-            rw [show simulateQ xmssRomImpl
-                (liftM (OracleWorld.query (Sum.inr hashInput))) =
-                (randomOracle : QueryImpl HashSpec
-                  (StateT (QueryCache HashSpec) ProbComp)) hashInput by
-              simp [xmssRomImpl]] at hquery
-            exact QueryImpl.withCaching_cache_le uniformSampleImpl hashInput initialCache
-              (output, middleCache) hquery
-      exact hmiddle.trans (ih output middleCache result (by simpa using hrest))
+  exact OracleComp.simulateQ_run_preservesInv xmssRomImpl
+    (fun cache => initialCache ≤ cache)
+    (by
+      intro input cache hcache queryResult hquery
+      exact hcache.trans (xmssRomImpl_query_cache_le input cache queryResult hquery))
+    computation initialCache le_rfl result hmem
 
 /-- The full security game with the final lazy random-oracle cache kept in its output. -/
 noncomputable def gameWithCache (scheme : Scheme) (adversary : Adversary scheme) :

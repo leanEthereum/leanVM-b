@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CappedEncodingGameTrace
+import VCVio.OracleComp.SimSemantics.StateT.PreservesInv
 
 open OracleComp OracleSpec
 
@@ -581,22 +582,15 @@ theorem cappedEncodingTracedMappedAdversaryImpl_signEpochs_sublist
         computation).run initialState)) :
     List.Sublist (EncodingMonitor.observedSignEpochs result.2.2)
       result.2.1.2.epochs := by
-  induction computation using OracleComp.inductionOn generalizing initialState result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact hsublist
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
-      have hquery' : (output, middleState) ∈ support
-          ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
-            initialState) := by
-        simpa [simulateQ_query] using hquery
-      exact ih output middleState result
-        (cappedEncodingTracedMappedAdversaryImpl_query_signEpochs_sublist publicKey secretKey
-          input initialState (output, middleState) hsublist hquery') hrest
+  exact OracleComp.simulateQ_run_preservesInv
+    (cappedEncodingTracedMappedAdversaryImpl publicKey secretKey)
+    (fun state => List.Sublist (EncodingMonitor.observedSignEpochs state.2)
+      state.1.2.epochs)
+    (by
+      intro input state hstate queryResult hquery
+      exact cappedEncodingTracedMappedAdversaryImpl_query_signEpochs_sublist
+        publicKey secretKey input state queryResult hstate hquery)
+    computation initialState hsublist result hmem
 
 theorem cappedEncodingTracedMappedAdversaryImpl_validEncodingCollisionInvariants
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -617,28 +611,23 @@ theorem cappedEncodingTracedMappedAdversaryImpl_validEncodingCollisionInvariants
     UnsignedEncodingEntriesRepresented secretKey.parameter baseCache result.2.1.1
         result.2.1.2 result.2.2 ∧
       ValidFreshSigningCollisionsRepresented secretKey result.2.1.2 result.2.2 := by
-  induction computation using OracleComp.inductionOn generalizing initialState result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact ⟨hunsigned, hcollisions⟩
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
-      have hquery' : (output, middleState) ∈ support
-          ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
-            initialState) := by
-        simpa [simulateQ_query] using hquery
-      have hmiddleUnsigned :=
-        cappedEncodingTracedMappedAdversaryImpl_query_unsignedEncodingEntriesRepresented
-          publicKey secretKey baseCache input initialState (output, middleState)
-          hunsigned hquery'
-      have hmiddleCollisions :=
-        cappedEncodingTracedMappedAdversaryImpl_query_validFreshSigningCollisionsRepresented
-          publicKey secretKey baseCache hbaseEncodingFree input initialState
-          (output, middleState) hunsigned hcollisions hquery'
-      exact ih output middleState result hmiddleUnsigned hmiddleCollisions hrest
+  exact OracleComp.simulateQ_run_preservesInv
+    (cappedEncodingTracedMappedAdversaryImpl publicKey secretKey)
+    (fun state =>
+      UnsignedEncodingEntriesRepresented secretKey.parameter baseCache
+          state.1.1 state.1.2 state.2 ∧
+        ValidFreshSigningCollisionsRepresented secretKey state.1.2 state.2)
+    (by
+      intro input state hstate queryResult hquery
+      constructor
+      · exact
+          cappedEncodingTracedMappedAdversaryImpl_query_unsignedEncodingEntriesRepresented
+            publicKey secretKey baseCache input state queryResult hstate.1 hquery
+      · exact
+          cappedEncodingTracedMappedAdversaryImpl_query_validFreshSigningCollisionsRepresented
+            publicKey secretKey baseCache hbaseEncodingFree input state queryResult
+            hstate.1 hstate.2 hquery)
+    computation initialState ⟨hunsigned, hcollisions⟩ result hmem
 
 
 theorem cappedEncodingTracedMappedAdversaryImpl_postSigningInvariants
@@ -657,28 +646,19 @@ theorem cappedEncodingTracedMappedAdversaryImpl_postSigningInvariants
     FreshSigningActionsRepresented secretKey result.2.1.2 result.2.2 ∧
       PostSigningQueriesRepresented secretKey result.2.1.2 result.2.1.1
         result.2.2 := by
-  induction computation using OracleComp.inductionOn generalizing initialState result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact ⟨hsignActions, hpostSigning⟩
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
-      have hquery' : (output, middleState) ∈ support
-          ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
-            initialState) := by
-        simpa [simulateQ_query] using hquery
-      have hmiddleSignActions :=
-        cappedEncodingTracedMappedAdversaryImpl_query_freshSigningActionsRepresented
-          publicKey secretKey input initialState (output, middleState) hsignActions
-          hquery'
-      have hmiddlePostSigning :=
-        cappedEncodingTracedMappedAdversaryImpl_query_postSigningQueriesRepresented
-          publicKey secretKey input initialState (output, middleState) hsignActions
-          hpostSigning hquery'
-      exact ih output middleState result hmiddleSignActions hmiddlePostSigning hrest
+  exact OracleComp.simulateQ_run_preservesInv
+    (cappedEncodingTracedMappedAdversaryImpl publicKey secretKey)
+    (fun state =>
+      FreshSigningActionsRepresented secretKey state.1.2 state.2 ∧
+        PostSigningQueriesRepresented secretKey state.1.2 state.1.1 state.2)
+    (by
+      intro input state hstate queryResult hquery
+      constructor
+      · exact cappedEncodingTracedMappedAdversaryImpl_query_freshSigningActionsRepresented
+          publicKey secretKey input state queryResult hstate.1 hquery
+      · exact cappedEncodingTracedMappedAdversaryImpl_query_postSigningQueriesRepresented
+          publicKey secretKey input state queryResult hstate.1 hstate.2 hquery)
+    computation initialState ⟨hsignActions, hpostSigning⟩ result hmem
 
 
 theorem cappedDetailedGameAfterKeygenWithEncodingTrace_signEpochs_sublist

@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.CappedSigningLogReplay
 import XmssSecurity.Proof.PrecomputedBoundedSignCache
 import XmssSecurity.Proof.SigningCacheTrace
+import VCVio.OracleComp.SimSemantics.StateT.PreservesInv
 
 open OracleComp OracleSpec ENNReal
 
@@ -77,6 +78,24 @@ theorem cappedUnloggedMappedAdversaryImpl_cache_le
       exact xmssRom_cache_le
         (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
         initialCache result hmem
+
+theorem cappedCacheTracedMappedAdversaryImpl_query_cache_le
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialState : QueryCache HashSpec × SigningCacheTrace)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      (QueryCache HashSpec × SigningCacheTrace))
+    (hmem : result ∈ support
+      ((cappedCacheTracedMappedAdversaryImpl publicKey secretKey input).run
+        initialState)) :
+    initialState.1 ≤ result.2.1 := by
+  rw [cappedCacheTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    mem_support_bind_iff] at hmem
+  obtain ⟨baseResult, hbase, hpure⟩ := hmem
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  exact cappedUnloggedMappedAdversaryImpl_cache_le publicKey secretKey input
+    initialState.1 baseResult hbase
 
 theorem cappedCacheTracedMappedAdversaryImpl_query_cachesLe
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -183,23 +202,14 @@ theorem cappedCacheTracedMappedAdversaryImpl_cachesLe
       ((simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
         computation).run (initialCache, initialTrace))) :
     result.2.2.CachesLe result.2.1 := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialCache initialTrace result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact htrace
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
-      have hquery' : (output, middleState) ∈ support
-          ((cappedCacheTracedMappedAdversaryImpl publicKey secretKey input).run
-            (initialCache, initialTrace)) := by
-        simpa [simulateQ_query] using hquery
-      exact ih output middleState.1 middleState.2 result
-        (cappedCacheTracedMappedAdversaryImpl_query_cachesLe publicKey secretKey input
-          initialCache initialTrace (output, middleState) htrace hquery') hrest
+  exact OracleComp.simulateQ_run_preservesInv
+    (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+    (fun state => state.2.CachesLe state.1)
+    (by
+      intro input state hstate queryResult hquery
+      exact cappedCacheTracedMappedAdversaryImpl_query_cachesLe
+        publicKey secretKey input state.1 state.2 queryResult hstate hquery)
+    computation (initialCache, initialTrace) htrace result hmem
 
 theorem cappedCacheTracedMappedAdversaryImpl_successfulEncodingsCached
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -211,24 +221,14 @@ theorem cappedCacheTracedMappedAdversaryImpl_successfulEncodingsCached
       ((simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
         computation).run (initialCache, initialTrace))) :
     result.2.2.SuccessfulEncodingsCached secretKey := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialCache initialTrace result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact htrace
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
-      have hquery' : (output, middleState) ∈ support
-          ((cappedCacheTracedMappedAdversaryImpl publicKey secretKey input).run
-            (initialCache, initialTrace)) := by
-        simpa [simulateQ_query] using hquery
-      exact ih output middleState.1 middleState.2 result
-        (cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
-          publicKey secretKey input initialCache initialTrace (output, middleState)
-          htrace hquery') hrest
+  exact OracleComp.simulateQ_run_preservesInv
+    (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+    (fun state => state.2.SuccessfulEncodingsCached secretKey)
+    (by
+      intro input state hstate queryResult hquery
+      exact cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
+        publicKey secretKey input state.1 state.2 queryResult hstate hquery)
+    computation (initialCache, initialTrace) htrace result hmem
 
 theorem cappedCacheTracedMappedAdversaryImpl_preservesOtherValidEncodingInputs
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -240,24 +240,15 @@ theorem cappedCacheTracedMappedAdversaryImpl_preservesOtherValidEncodingInputs
       ((simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
         computation).run (initialCache, initialTrace))) :
     result.2.2.PreservesOtherValidEncodingInputs secretKey := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialCache initialTrace result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, support_pure,
-        Set.mem_singleton_iff] at hmem
-      subst result
-      exact htrace
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
-      obtain ⟨⟨output, middleState⟩, hquery, hrest⟩ := hmem
-      have hquery' : (output, middleState) ∈ support
-          ((cappedCacheTracedMappedAdversaryImpl publicKey secretKey input).run
-            (initialCache, initialTrace)) := by
-        simpa [simulateQ_query] using hquery
-      exact ih output middleState.1 middleState.2 result
-        (cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingInputs
-          publicKey secretKey input initialCache initialTrace (output, middleState)
-          htrace hquery') hrest
+  exact OracleComp.simulateQ_run_preservesInv
+    (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
+    (fun state => state.2.PreservesOtherValidEncodingInputs secretKey)
+    (by
+      intro input state hstate queryResult hquery
+      exact
+        cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingInputs
+          publicKey secretKey input state.1 state.2 queryResult hstate hquery)
+    computation (initialCache, initialTrace) htrace result hmem
 
 noncomputable def cappedSelectivelyLoggedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
