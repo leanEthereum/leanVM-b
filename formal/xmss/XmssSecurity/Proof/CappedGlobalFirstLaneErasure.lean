@@ -119,8 +119,7 @@ theorem globalFirstLaneErase_liftProbComp (computation : ProbComp α) :
         FirstLaneOracleSimulation.uniformQuery,
         RevealProbeOracleSimulation.liftProbComp,
         RevealProbeOracleSimulation.uniformForwardImpl,
-        RevealProbeOracleSimulation.uniformQuery, globalFirstLaneEraseImpl,
-        ih]
+        RevealProbeOracleSimulation.uniformQuery, globalFirstLaneEraseImpl]
       apply bind_congr
       exact ih
 
@@ -157,7 +156,7 @@ theorem globalFirstLaneErase_liftRevealProbe
             globalFirstLaneRevealProbeImpl,
             FirstLaneOracleSimulation.uniformQuery,
             RevealProbeOracleSimulation.uniformQuery,
-            globalFirstLaneEraseImpl, ih]
+            globalFirstLaneEraseImpl]
           apply bind_congr
           exact ih
       | probe index target =>
@@ -165,7 +164,7 @@ theorem globalFirstLaneErase_liftRevealProbe
             globalFirstLaneRevealProbeImpl,
             FirstLaneOracleSimulation.probeQuery,
             RevealProbeOracleSimulation.probeQuery,
-            globalFirstLaneEraseImpl, ih]
+            globalFirstLaneEraseImpl]
           apply bind_congr
           exact ih
       | reveal index =>
@@ -173,7 +172,7 @@ theorem globalFirstLaneErase_liftRevealProbe
             globalFirstLaneRevealProbeImpl,
             FirstLaneOracleSimulation.revealQuery,
             RevealProbeOracleSimulation.revealQuery,
-            globalFirstLaneEraseImpl, ih]
+            globalFirstLaneEraseImpl]
           apply bind_congr
           exact ih
 
@@ -218,7 +217,7 @@ theorem globalFirstLaneErase_freshEncodingQuery
       change globalFirstLaneErase
           (FirstLaneOracleSimulation.liftProbComp uniformHashOutput) >>= _ = _
       rw [globalFirstLaneErase_liftProbComp]
-      simp [globalFirstLaneErase]
+      simp
   | query =>
       simp [globalFirstLaneErase, globalFirstLaneEraseImpl,
         FirstLaneOracleSimulation.encodingQuery]
@@ -301,7 +300,7 @@ theorem globalCausalHashQuery_eq_globalFirstLaneErasedFreshQuery
     randomOracle_run_none_eq_uniformHashOutput _ _ hcache]
   unfold globalFirstLaneErasedFreshQuery
   simp [RevealProbeOracleSimulation.liftProbComp, simulateQ_map,
-    Functor.map_map, Function.comp_def]
+    Functor.map_map]
 
 theorem globalCausalAttackerHashQueryFromHigh_fresh_eq_hashQuery
     (high : GlobalChainValueIndex → Digest)
@@ -425,15 +424,15 @@ theorem globalFirstLaneErase_encodingHashQuery
         (message, randomness)) with
   | some output =>
       simp [hcache, randomOracle, globalFirstLaneErase,
-        RevealProbeOracleSimulation.liftProbComp, simulateQ_map,
-        Functor.map_map, Function.comp_def, GlobalCausalHashState.setCache]
+        RevealProbeOracleSimulation.liftProbComp,
+        GlobalCausalHashState.setCache]
   | none =>
       simp only
       rw [globalFirstLaneErase_freshEncodingQuery]
       unfold globalFirstLaneErasedFreshQuery
       rw [randomOracle_run_none_eq_uniformHashOutput _ _ hcache]
       simp [RevealProbeOracleSimulation.liftProbComp, simulateQ_map,
-        Functor.map_map, Function.comp_def, GlobalCausalHashState.setCache]
+        Functor.map_map, GlobalCausalHashState.setCache]
 
 noncomputable def globalFirstLaneErasedEncodingDigestQuery
     (secretKey : SecretKey) (epoch : Epoch) (message : Message)
@@ -466,7 +465,7 @@ theorem globalFirstLaneErasedEncodingDigestQuery_eq_original
     globalFirstLaneErasedEncodingHashQuery,
     globalFirstLaneOriginalEncodingDigestQuery, Concrete.encodingHash,
     Concrete.tweakableHash, Concrete.oracleHash, Concrete.CacheView.encodingInput,
-    RevealProbeOracleSimulation.liftProbComp, simulateQ_map,
+    RevealProbeOracleSimulation.liftProbComp,
     map_eq_bind_pure_comp, GlobalCausalHashState.setCache]
 
 theorem globalFirstLaneOriginalEncodingDigestQuery_bind
@@ -481,7 +480,7 @@ theorem globalFirstLaneOriginalEncodingDigestQuery_bind
             (Concrete.encodingHash secretKey.parameter epoch message
               randomness)).run state.cache) >>= fun encoded =>
         next (encoded.1, state.setCache encoded.2) := by
-  simp [globalFirstLaneOriginalEncodingDigestQuery, bind_assoc]
+  simp [globalFirstLaneOriginalEncodingDigestQuery]
 
 noncomputable def globalFirstLaneErasedSigningAttemptRaw
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -547,7 +546,7 @@ theorem globalFirstLaneErasedSigningAttemptRaw_eq
       globalFirstLaneErasedSigningAttempt keyView request state := by
   simp [globalFirstLaneErasedSigningAttemptRaw,
     globalFirstLaneErasedSigningAttempt,
-    globalFirstLaneErasedEncodingDigestQuery, bind_assoc]
+    globalFirstLaneErasedEncodingDigestQuery]
 
 theorem globalFirstLaneErasedSigningAttempt_eq_original
     (keyView : ProgrammedGlobalChainKeygenView)

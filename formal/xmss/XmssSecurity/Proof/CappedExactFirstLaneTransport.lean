@@ -352,7 +352,7 @@ theorem encodingActionTraceUpdate_sign_some
     request.epoch (request.message, signature.randomness)
   by_cases hinitial : initialCache input = none
   · rw [if_pos hinitial]
-    cases hfinal : finalCache input <;> simp [hinitial, hfinal, input]
+    cases hfinal : finalCache input <;> simp [hinitial, input]
   · simp [hinitial, input]
 
 theorem globalFirstLaneEncodingHashQuery_validTrace
@@ -626,7 +626,7 @@ theorem globalFirstLaneSigningAttempt_freshTarget_mem_trace
       simp only [hdecode] at htail
       rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
       obtain ⟨revealedHead, hrevealed, hpure⟩ := htail
-      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      simp only at hpure
       subst tailResult
       let revealComputation :=
         (revealGlobalSignatureChains request encoding allChains
@@ -705,7 +705,7 @@ theorem globalFirstLaneSigningAttempt_cache_le
       simp only [hdecode] at htail
       rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
       obtain ⟨revealedHead, hrevealed, hpure⟩ := htail
-      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      simp only at hpure
       subst tailResult
       let revealComputation :=
         (revealGlobalSignatureChains request encoding allChains
@@ -869,7 +869,7 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_trace
       simp only [simulateQ_pure, WriterT.run_pure', support_pure,
         Set.mem_singleton_iff] at hresult
       subst result
-      simp [FirstLaneOracleSimulation.ActionTrace.encodingActions, hcache]
+      simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
   | none =>
       rw [globalFirstLaneAttackerHashQueryAtEpoch_eq_fresh _ _ _ _ hcache]
         at hresult
@@ -880,7 +880,7 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_trace
         FirstLaneOracleSimulation.traceFragment,
         QueryImpl.withTraceAppend_apply, WriterT.run_tell] at hresult
       obtain ⟨output, _houtput, rfl⟩ := hresult
-      simp [FirstLaneOracleSimulation.ActionTrace.encodingActions, hcache]
+      simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
 
 theorem globalFirstLaneAttackerHashQueryAtEpoch_cache_le
     (table : GlobalChainValueIndex → Digest)
@@ -1015,14 +1015,13 @@ theorem globalFirstLaneSigningAttempt_validTrace
           (Concrete.CacheView.encodingInput keyView.secretKey.parameter
             request.epoch (request.message, randomness)) = none
       · simp [hcache, CappedEncodingMonitor.validActions,
-          CappedEncodingMonitor.ActionValid, hinvalidDigest,
-          encodingActionTraceUpdate, encodingObservation?]
-      · simp [hcache, encodingActionTraceUpdate, encodingObservation?]
+          CappedEncodingMonitor.ActionValid, hinvalidDigest]
+      · simp [hcache]
   | some encoding =>
       simp only [hdecode] at htail
       rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
       obtain ⟨revealedHead, hrevealed, hpure⟩ := htail
-      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      simp only at hpure
       subst tailResult
       have hrevealTrace :
           revealedHead.2.encodingActions = [] := by
@@ -1211,8 +1210,7 @@ theorem globalFirstLaneUniformQuery_trace_sublist
         (.inl (.inl n) : (OracleWorld + SigningSpec).Domain) (state.cache, [])
           result.1.1 (result.1.2.cache, []) initialTrace)
       (initialTrace ++ result.2.encodingActions) := by
-  simpa [encodingActionTraceUpdate, encodingObservation?] using
-    (List.sublist_append_left initialTrace result.2.encodingActions)
+  simp [encodingActionTraceUpdate, encodingObservation?]
 
 theorem globalFirstLaneHashQuery_trace_sublist
     (table : GlobalChainValueIndex → Digest)
@@ -1426,8 +1424,7 @@ theorem simulateQ_eagerTrace_state_trace_sublist
       dsimp only [Prod.fst, Prod.snd]
       rw [show (∅ : FirstLaneOracleSimulation.ActionTrace
         GlobalChainValueIndex) = [] by rfl]
-      simpa [FirstLaneOracleSimulation.ActionTrace.encodingActions] using
-        (List.Sublist.refl (stateTrace initialState))
+      simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
   | query_bind input next ih =>
       rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
         WriterT.run_bind', mem_support_bind_iff] at hresult
@@ -1781,8 +1778,7 @@ theorem globalFirstLaneVerifier_support_decompose_raw
         head hhead
   refine ⟨queryHead, tail, hquery, ?_, ?_⟩
   · simpa using htail
-  · simp only [Prod.map_apply, id_eq]
-    cases tail
+  · cases tail
     rfl
 
 theorem globalFirstLaneVerifier_support_decompose
@@ -1833,9 +1829,7 @@ theorem globalFirstLaneVerifier_support_decompose
   unfold globalFirstLaneVerifierHashExecution at hquery
   have hepoch : encodingInputEpoch? keyView.secretKey.parameter targetInput =
       some forgery.epoch := by
-    simpa [targetInput] using
-      (encodingInputEpoch?_encodingInput keyView.secretKey.parameter
-        forgery.epoch (forgery.message, forgery.signature.randomness))
+    simp [targetInput]
   rw [globalFirstLaneAttackerHashQueryFromHighRun_eq_some _ _ _ _
     forgery.epoch hepoch] at hquery
   refine ⟨queryHead, tail, ?_, htail, hresultEq⟩
@@ -2147,7 +2141,7 @@ theorem globalFirstLaneSigningAttempt_validSignEpochs_sublist_singleton
   rw [hvalid]
   cases houtput : result.1.1 with
   | none =>
-      simp [encodingActionTraceUpdate, encodingObservation?, houtput,
+      simp [encodingActionTraceUpdate, encodingObservation?,
         CappedEncodingMonitor.validActions,
         EncodingMonitor.observedSignEpochs]
   | some signature =>
@@ -2156,19 +2150,19 @@ theorem globalFirstLaneSigningAttempt_validSignEpochs_sublist_singleton
       by_cases hfresh : state.cache input = none
       · cases hfinal : result.1.2.cache input with
         | none =>
-            simp [encodingActionTraceUpdate, encodingObservation?, houtput,
+            simp [encodingActionTraceUpdate, encodingObservation?,
               input, hfresh, hfinal, CappedEncodingMonitor.validActions,
               EncodingMonitor.observedSignEpochs]
         | some output =>
             by_cases hvalidOutput : CappedEncodingMonitor.ActionValid
               (.sign request.epoch output)
-            · simp [encodingActionTraceUpdate, encodingObservation?, houtput,
+            · simp [encodingActionTraceUpdate, encodingObservation?,
                 input, hfresh, hfinal, CappedEncodingMonitor.validActions,
                 EncodingMonitor.observedSignEpochs, hvalidOutput]
-            · simp [encodingActionTraceUpdate, encodingObservation?, houtput,
+            · simp [encodingActionTraceUpdate, encodingObservation?,
                 input, hfresh, hfinal, CappedEncodingMonitor.validActions,
                 EncodingMonitor.observedSignEpochs, hvalidOutput]
-      · simp [encodingActionTraceUpdate, encodingObservation?, houtput,
+      · simp [encodingActionTraceUpdate, encodingObservation?,
           input, hfresh, CappedEncodingMonitor.validActions,
           EncodingMonitor.observedSignEpochs]
 

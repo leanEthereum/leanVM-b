@@ -38,7 +38,7 @@ theorem globalHighDirectExactTracedLift_eq_map
           base.run initialState.causalState) := by
   unfold globalHighDirectExactTracedLift globalHighDirectExactQueryResult
     globalExactTracedNextState
-  simp [StateT.run_mk, Functor.map_map, Function.comp_def]
+  simp [StateT.run_mk, Functor.map_map]
 
 theorem globalHighDirectTracedMappedAdversaryImpl_run_eq_map
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -322,7 +322,7 @@ theorem globalHighDirectExactTracedVerifierImpl_run_eq_map_traced
             (initialState.causalState, initialState.attackerTrace) := by
   rw [globalHighDirectExactTracedVerifierImpl_run_eq,
     globalHighDirectTracedVerifierImpl_run_eq]
-  simp [Functor.map_map, Function.comp_def]
+  simp [Functor.map_map]
 
 theorem map_simulate_globalHighExactMonitored_verifier_full_projection
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -439,7 +439,7 @@ theorem map_globalHighExactMonitoredDetailedExecution_full_projection
   rw [hhead, bind_map_left]
   apply bind_congr
   intro head
-  simp [tail, Functor.map_map]
+  simp [tail]
 
 def globalHighExactMonitoredFullProjection
     (result : GlobalHighExactMonitoredProgramResult) :

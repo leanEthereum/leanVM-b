@@ -417,7 +417,7 @@ theorem globalHighExactMonitoredMappedAdversaryImpl_run_projection
       simp only [id_map]
       simp_rw [ih]
       rw [globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
-      simp [globalHighExactQueryResult, Functor.map_map]
+      simp [globalHighExactQueryResult]
 
 theorem globalHighExactMonitoredDetailedExecution_projection
     (adversary : Adversary Concrete.scheme)
@@ -572,7 +572,7 @@ theorem sourceGlobalExactTracedDetailedExecution_eq_bothTraces
   intro handled
   rw [sourceSigningTracedVerifierImpl_run_eq]
   simp [sourceGlobalExactExecutionResult, sourceExactSigningProjection,
-    Functor.map_map, map_eq_bind_pure_comp]
+    map_eq_bind_pure_comp]
 
 theorem sourceGlobalExactTracedProgram_eq_trajectoryBothTraces
     (adversary : Adversary Concrete.scheme) :
