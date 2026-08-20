@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CappedChain.ChainHiddenTable
+import XmssSecurity.Proof.CappedChain.ChainInputTrace
 
 namespace XmssSecurity.CappedChain
 
