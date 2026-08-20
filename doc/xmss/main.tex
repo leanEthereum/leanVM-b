@@ -250,7 +250,7 @@ For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any
 The XMSS specified above has 127 bits of classical strong unforgeability in the ROM.
 \end{theorem}
 
-A formal Lean4 proof of this theorem, using the VCVio framework \cite{VCVio}, can be found in \texttt{./formal/xmss/XmssSecurity/Statement.lean}. The theorem depends only on Lean's three standard axioms: propositional extensionality (\texttt{propext}: $(a\leftrightarrow b)\rightarrow a=b$), choice (\texttt{Classical.choice}: $\mathsf{Nonempty}\ \alpha\rightarrow\alpha$), and quotient soundness (\texttt{Quot.sound}: $r\ a\ b\rightarrow\mathsf{Quot.mk}\ r\ a=\mathsf{Quot.mk}\ r\ b$).
+A formal Lean4 proof of this theorem, using the VCVio framework \cite{VCVio}, can be found in \texttt{./formal/xmss/XmssSecurity/Statement.lean}. The theorem depends only on Lean's three standard axioms.
 
 \begin{proof}[Proof sketch]
 TODO
