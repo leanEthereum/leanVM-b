@@ -950,87 +950,65 @@ theorem globalFirstLaneSigningAttempt_validTrace
     simpa [firstLaneValidEncodingActions] using hencodedTrace
   rcases hcases with hreject | haccept
   · obtain ⟨hdecode, hresultEq⟩ := hreject
-    rw [hresultEq]
-    ·
-      have hinvalid : ¬CappedEncodingMonitor.ActionValid
-          (.sign request.epoch encodedHead.1.1) := by
-        intro hvalid
-        obtain ⟨encoding, hencoding⟩ := hvalid
-        rw [hdecode] at hencoding
-        contradiction
-      have hinvalidDigest :
-          ¬TargetSum.ValidDigest (truncateHash encodedHead.1.1) := by
-        simpa [CappedEncodingMonitor.ActionValid] using hinvalid
-      dsimp only [firstLaneValidEncodingActions]
-      change CappedEncodingMonitor.validActions
-          encodedHead.2.encodingActions =
-        CappedEncodingMonitor.validActions []
-      rw [hencodedTrace']
-      by_cases hcache : state.cache
-          (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-            request.epoch (request.message, randomness)) = none
-      · simp [hcache, CappedEncodingMonitor.validActions,
-          CappedEncodingMonitor.ActionValid, hinvalidDigest]
-      · simp [hcache]
+    subst result
+    have hinvalidDigest :
+        ¬TargetSum.ValidDigest (truncateHash encodedHead.1.1) := by
+      intro ⟨encoding, hencoding⟩
+      rw [hdecode] at hencoding
+      contradiction
+    dsimp only [firstLaneValidEncodingActions]
+    change CappedEncodingMonitor.validActions
+        encodedHead.2.encodingActions =
+      CappedEncodingMonitor.validActions []
+    rw [hencodedTrace']
+    by_cases hcache : state.cache
+        (Concrete.CacheView.encodingInput keyView.secretKey.parameter
+          request.epoch (request.message, randomness)) = none
+    · simp [hcache, CappedEncodingMonitor.validActions,
+        CappedEncodingMonitor.ActionValid, hinvalidDigest]
+    · simp [hcache]
   · obtain ⟨encoding, revealedHead, hdecode, hrevealed,
       hrevealedResult, hresultEq⟩ := haccept
-    rw [hresultEq]
-    ·
-      have hrevealTrace :
-          revealedHead.2.encodingActions = [] := by
-        exact globalFirstLaneLiftRevealProbe_encodingActions_eq_nil table _ _
-          hrevealed
-      have hrandomness : revealedHead.1.1.randomness = randomness := by
-        rw [hrevealedResult, globalSignatureRevealResult_randomness]
-        rfl
-      have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
-        rw [hrevealedResult, globalSignatureRevealResult_cache]
-      have hencodedCache := globalFirstLaneEncodingHashQuery_cache_eq_some
-        table keyView.secretKey request.epoch request.message randomness state
-          encodedHead hencoded
-      have hfinalLookup : revealedHead.1.2.cache
-          (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-            request.epoch (request.message, randomness)) =
-            some encodedHead.1.1 := by
-        rw [hfinalCache]
-        exact hencodedCache
-      have hvalid : CappedEncodingMonitor.ActionValid
-          (.sign request.epoch encodedHead.1.1) := ⟨encoding, hdecode⟩
-      dsimp only [firstLaneValidEncodingActions]
-      change CappedEncodingMonitor.validActions
-          (encodedHead.2 ++ revealedHead.2).encodingActions =
-        CappedEncodingMonitor.validActions
-          (encodingActionTraceUpdate keyView.secretKey
-            (.inr request : (OracleWorld + SigningSpec).Domain)
-            (state.cache, []) (some revealedHead.1.1)
-            (revealedHead.1.2.cache, []) [])
-      rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-        hrevealTrace, List.append_nil, hencodedTrace']
-      have hupdate := encodingActionTraceUpdate_sign_some keyView.secretKey
-        request revealedHead.1.1 state.cache revealedHead.1.2.cache []
-      dsimp only at hupdate
-      rw [hrandomness] at hupdate
-      have hvalidDigest :
-          TargetSum.ValidDigest (truncateHash encodedHead.1.1) := by
-        simpa [CappedEncodingMonitor.ActionValid] using hvalid
-      by_cases hcache : state.cache
-          (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-            request.epoch (request.message, randomness)) = none
-      · rw [if_pos hcache]
-        have hupdate' : encodingActionTraceUpdate keyView.secretKey
-            (.inr request : (OracleWorld + SigningSpec).Domain)
-            (state.cache, []) (some revealedHead.1.1)
-            (revealedHead.1.2.cache, []) [] =
-              [.sign request.epoch encodedHead.1.1] := by
-          simpa [hcache, hfinalLookup] using hupdate
-        rw [hupdate']
-      · rw [if_neg hcache]
-        have hupdate' : encodingActionTraceUpdate keyView.secretKey
-            (.inr request : (OracleWorld + SigningSpec).Domain)
-            (state.cache, []) (some revealedHead.1.1)
-            (revealedHead.1.2.cache, []) [] = [] := by
-          simpa [hcache] using hupdate
-        rw [hupdate']
+    subst result
+    have hrevealTrace :
+        revealedHead.2.encodingActions = [] := by
+      exact globalFirstLaneLiftRevealProbe_encodingActions_eq_nil table _ _
+        hrevealed
+    have hrandomness : revealedHead.1.1.randomness = randomness := by
+      rw [hrevealedResult, globalSignatureRevealResult_randomness]
+      rfl
+    have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
+      rw [hrevealedResult, globalSignatureRevealResult_cache]
+    have hencodedCache := globalFirstLaneEncodingHashQuery_cache_eq_some
+      table keyView.secretKey request.epoch request.message randomness state
+        encodedHead hencoded
+    have hfinalLookup : revealedHead.1.2.cache
+        (Concrete.CacheView.encodingInput keyView.secretKey.parameter
+          request.epoch (request.message, randomness)) =
+          some encodedHead.1.1 := by
+      rw [hfinalCache]
+      exact hencodedCache
+    dsimp only [firstLaneValidEncodingActions]
+    change CappedEncodingMonitor.validActions
+        (encodedHead.2 ++ revealedHead.2).encodingActions =
+      CappedEncodingMonitor.validActions
+        (encodingActionTraceUpdate keyView.secretKey
+          (.inr request : (OracleWorld + SigningSpec).Domain)
+          (state.cache, []) (some revealedHead.1.1)
+          (revealedHead.1.2.cache, []) [])
+    rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
+      hrevealTrace, List.append_nil, hencodedTrace']
+    have hupdate := encodingActionTraceUpdate_sign_some keyView.secretKey
+      request revealedHead.1.1 state.cache revealedHead.1.2.cache []
+    dsimp only at hupdate
+    rw [hrandomness] at hupdate
+    by_cases hcache : state.cache
+        (Concrete.CacheView.encodingInput keyView.secretKey.parameter
+          request.epoch (request.message, randomness)) = none
+    · simpa [hcache, hfinalLookup] using congrArg
+        CappedEncodingMonitor.validActions hupdate.symm
+    · simpa [hcache] using congrArg
+        CappedEncodingMonitor.validActions hupdate.symm
 
 theorem encodingActionTraceUpdate_sublist_of_observation_mem
     (secretKey : SecretKey)
