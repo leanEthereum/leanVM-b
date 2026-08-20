@@ -68,6 +68,49 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_base_support
   subst result
   exact hbase
 
+theorem cappedEncodingTracedMappedAdversaryImpl_query_support_info
+    (publicKey : PublicKey) (secretKey : SecretKey)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialState : (QueryCache HashSpec × SigningCacheTrace) ×
+      EncodingActionTrace)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace))
+    (hmem : result ∈ support
+      ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run
+        initialState)) :
+    ∃ output finalState suffix,
+      result = (output, (finalState,
+        encodingActionTraceUpdate secretKey input initialState.1 output
+          finalState initialState.2)) ∧
+      (output, finalState.1) ∈ support
+        ((cappedUnloggedMappedAdversaryImpl publicKey secretKey input).run
+          initialState.1.1) ∧
+      finalState.2 = signingCacheTraceUpdate input initialState.1.1 output
+        finalState.1 initialState.1.2 ∧
+      initialState.1.1 ≤ finalState.1 ∧
+      encodingActionTraceUpdate secretKey input initialState.1 output finalState
+        initialState.2 = initialState.2 ++ suffix := by
+  rw [cappedEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
+    mem_support_bind_iff] at hmem
+  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  have hbaseSupport := cappedCacheTracedMappedAdversaryImpl_query_base_support
+    publicKey secretKey input initialState.1 (output, finalState) hbase
+  have htraceEq := cappedCacheTracedMappedAdversaryImpl_query_signingTrace_eq
+    publicKey secretKey input initialState.1 (output, finalState) hbase
+  obtain ⟨suffix, hsuffix⟩ : ∃ suffix : EncodingActionTrace,
+      encodingActionTraceUpdate secretKey input initialState.1 output finalState
+          initialState.2 = initialState.2 ++ suffix := by
+    rcases encodingActionTraceUpdate_eq_or_append secretKey input initialState.1
+      output finalState initialState.2 with hsame | ⟨observation, happend⟩
+    · exact ⟨[], by simpa using hsame⟩
+    · exact ⟨[observation], happend⟩
+  exact ⟨output, finalState, suffix, rfl, hbaseSupport, htraceEq,
+    cappedUnloggedMappedAdversaryImpl_cache_le publicKey secretKey input
+      initialState.1.1 (output, finalState.1) hbaseSupport,
+    hsuffix⟩
+
 theorem cappedUnloggedMappedAdversaryImpl_directHash_fresh_cache_eq
     (publicKey : PublicKey) (secretKey : SecretKey)
     (queriedInput targetInput : HashInput)
@@ -137,15 +180,13 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_signEpochs_sublist
       ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run initialState)) :
     List.Sublist (EncodingMonitor.observedSignEpochs result.2.2)
       result.2.1.2.epochs := by
-  rw [cappedEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
-    mem_support_bind_iff] at hmem
-  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  obtain ⟨output, finalState, _suffix, hresult, _hbase, htraceEq,
+    _hcacheLe, _hsuffix⟩ :=
+    cappedEncodingTracedMappedAdversaryImpl_query_support_info publicKey
+      secretKey input initialState result hmem
   subst result
   exact encodingActionTraceUpdate_signEpochs_sublist secretKey input initialState.1
-    output finalState initialState.2
-    (cappedCacheTracedMappedAdversaryImpl_query_signingTrace_eq publicKey secretKey input
-      initialState.1 (output, finalState) hbase) hsublist
+    output finalState initialState.2 htraceEq hsublist
 
 theorem cappedEncodingTracedMappedAdversaryImpl_query_freshSigningActionsRepresented
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -158,20 +199,11 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_freshSigningActionsReprese
     (hmem : result ∈ support
       ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run initialState)) :
     FreshSigningActionsRepresented secretKey result.2.1.2 result.2.2 := by
-  rw [cappedEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
-    mem_support_bind_iff] at hmem
-  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  obtain ⟨output, finalState, suffix, hresult, hbaseSupport, htraceEq,
+    _hcacheLe, hsuffix⟩ :=
+    cappedEncodingTracedMappedAdversaryImpl_query_support_info publicKey
+      secretKey input initialState result hmem
   subst result
-  have htraceEq := cappedCacheTracedMappedAdversaryImpl_query_signingTrace_eq
-    publicKey secretKey input initialState.1 (output, finalState) hbase
-  obtain ⟨suffix, hsuffix⟩ : ∃ suffix : EncodingActionTrace,
-      encodingActionTraceUpdate secretKey input initialState.1 output finalState
-          initialState.2 = initialState.2 ++ suffix := by
-    rcases encodingActionTraceUpdate_eq_or_append secretKey input initialState.1
-      output finalState initialState.2 with hsame | ⟨observation, happend⟩
-    · exact ⟨[], by simpa using hsame⟩
-    · exact ⟨[observation], happend⟩
   cases input with
   | inl worldInput =>
       rw [signingCacheTraceUpdate] at htraceEq
@@ -200,15 +232,12 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_freshSigningActionsReprese
                   (Concrete.precomputedCappedSign publicKey secretKey request.epoch
                     request.message)).run
                     initialState.1.1) := by
-              have hraw := cappedCacheTracedMappedAdversaryImpl_query_base_support
-                publicKey secretKey (.inr request) initialState.1
-                (some signature, finalState) hbase
               change (some signature, finalState.1) ∈ support
                 ((simulateQ xmssRomImpl
                   (Concrete.precomputedCappedSign publicKey secretKey request.epoch
                     request.message)).run
-                    initialState.1.1) at hraw
-              exact hraw
+                    initialState.1.1) at hbaseSupport
+              exact hbaseSupport
             obtain ⟨hashOutput, houtput⟩ :=
               Concrete.precomputedCappedSign_success_encodingInput_cached publicKey secretKey
                 request initialState.1.1 finalState.1 signature hsignSupport
@@ -228,29 +257,15 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_unsignedEncodingEntriesRep
       ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run initialState)) :
     UnsignedEncodingEntriesRepresented secretKey.parameter baseCache
       result.2.1.1 result.2.1.2 result.2.2 := by
-  rw [cappedEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
-    mem_support_bind_iff] at hmem
-  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  obtain ⟨output, finalState, suffix, hresult, hbaseSupport, htraceEq,
+    hcacheLe, hsuffix⟩ :=
+    cappedEncodingTracedMappedAdversaryImpl_query_support_info publicKey
+      secretKey input initialState result hmem
   subst result
   change UnsignedEncodingEntriesRepresented secretKey.parameter baseCache finalState.1
     finalState.2
       (encodingActionTraceUpdate secretKey input initialState.1 output finalState
         initialState.2)
-  have htraceEq := cappedCacheTracedMappedAdversaryImpl_query_signingTrace_eq
-    publicKey secretKey input initialState.1 (output, finalState) hbase
-  have hbaseSupport := cappedCacheTracedMappedAdversaryImpl_query_base_support
-    publicKey secretKey input initialState.1 (output, finalState) hbase
-  have hcacheLe := cappedUnloggedMappedAdversaryImpl_cache_le publicKey secretKey input
-    initialState.1.1 (output, finalState.1) hbaseSupport
-  change initialState.1.1 ≤ finalState.1 at hcacheLe
-  obtain ⟨suffix, hsuffix⟩ : ∃ suffix : EncodingActionTrace,
-      encodingActionTraceUpdate secretKey input initialState.1 output finalState
-          initialState.2 = initialState.2 ++ suffix := by
-    rcases encodingActionTraceUpdate_eq_or_append secretKey input initialState.1
-      output finalState initialState.2 with hsame | ⟨observation, happend⟩
-    · exact ⟨[], by simpa using hsame⟩
-    · exact ⟨[observation], happend⟩
   cases input with
   | inl worldInput =>
       rw [signingCacheTraceUpdate] at htraceEq
@@ -348,23 +363,14 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_validFreshSigningCollision
     (hmem : result ∈ support
       ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run initialState)) :
     ValidFreshSigningCollisionsRepresented secretKey result.2.1.2 result.2.2 := by
-  rw [cappedEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
-    mem_support_bind_iff] at hmem
-  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  obtain ⟨output, finalState, suffix, hresult, hbaseSupport, htraceEq,
+    _hcacheLe, hsuffix⟩ :=
+    cappedEncodingTracedMappedAdversaryImpl_query_support_info publicKey
+      secretKey input initialState result hmem
   subst result
   change ValidFreshSigningCollisionsRepresented secretKey finalState.2
     (encodingActionTraceUpdate secretKey input initialState.1 output finalState
       initialState.2)
-  have htraceEq := cappedCacheTracedMappedAdversaryImpl_query_signingTrace_eq
-    publicKey secretKey input initialState.1 (output, finalState) hbase
-  obtain ⟨suffix, hsuffix⟩ : ∃ suffix : EncodingActionTrace,
-      encodingActionTraceUpdate secretKey input initialState.1 output finalState
-          initialState.2 = initialState.2 ++ suffix := by
-    rcases encodingActionTraceUpdate_eq_or_append secretKey input initialState.1
-      output finalState initialState.2 with hsame | ⟨observation, happend⟩
-    · exact ⟨[], by simpa using hsame⟩
-    · exact ⟨[observation], happend⟩
   cases input with
   | inl worldInput =>
       rw [signingCacheTraceUpdate] at htraceEq
@@ -402,14 +408,11 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_validFreshSigningCollision
                 ((simulateQ xmssRomImpl
                   (Concrete.precomputedCappedSign publicKey secretKey request.epoch
                     request.message)).run initialState.1.1) := by
-              have hraw := cappedCacheTracedMappedAdversaryImpl_query_base_support
-                publicKey secretKey (.inr request) initialState.1
-                (some signature, finalState) hbase
               change (some signature, finalState.1) ∈ support
                 ((simulateQ xmssRomImpl
                   (Concrete.precomputedCappedSign publicKey secretKey request.epoch
-                    request.message)).run initialState.1.1) at hraw
-              exact hraw
+                    request.message)).run initialState.1.1) at hbaseSupport
+              exact hbaseSupport
             obtain ⟨encoding, hdecode⟩ :=
               Concrete.precomputedCappedSign_success_decode publicKey secretKey request
                 initialState.1.1 finalState.1 signature hsignSupport
@@ -453,28 +456,14 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_postSigningQueriesRepresen
       ((cappedEncodingTracedMappedAdversaryImpl publicKey secretKey input).run initialState)) :
     PostSigningQueriesRepresented secretKey result.2.1.2 result.2.1.1
       result.2.2 := by
-  rw [cappedEncodingTracedMappedAdversaryImpl, QueryImpl.extendState_apply,
-    mem_support_bind_iff] at hmem
-  obtain ⟨⟨output, finalState⟩, hbase, hpure⟩ := hmem
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  obtain ⟨output, finalState, suffix, hresult, hbaseSupport, htraceEq,
+    hcacheLe, hsuffix⟩ :=
+    cappedEncodingTracedMappedAdversaryImpl_query_support_info publicKey
+      secretKey input initialState result hmem
   subst result
   change PostSigningQueriesRepresented secretKey finalState.2 finalState.1
     (encodingActionTraceUpdate secretKey input initialState.1 output finalState
       initialState.2)
-  have htraceEq := cappedCacheTracedMappedAdversaryImpl_query_signingTrace_eq
-    publicKey secretKey input initialState.1 (output, finalState) hbase
-  have hbaseSupport := cappedCacheTracedMappedAdversaryImpl_query_base_support
-    publicKey secretKey input initialState.1 (output, finalState) hbase
-  have hcacheLe := cappedUnloggedMappedAdversaryImpl_cache_le publicKey secretKey input
-    initialState.1.1 (output, finalState.1) hbaseSupport
-  change initialState.1.1 ≤ finalState.1 at hcacheLe
-  obtain ⟨suffix, hsuffix⟩ : ∃ suffix : EncodingActionTrace,
-      encodingActionTraceUpdate secretKey input initialState.1 output finalState
-          initialState.2 = initialState.2 ++ suffix := by
-    rcases encodingActionTraceUpdate_eq_or_append secretKey input initialState.1
-      output finalState initialState.2 with hsame | ⟨observation, happend⟩
-    · exact ⟨[], by simpa using hsame⟩
-    · exact ⟨[observation], happend⟩
   cases input with
   | inl worldInput =>
       rw [signingCacheTraceUpdate] at htraceEq
