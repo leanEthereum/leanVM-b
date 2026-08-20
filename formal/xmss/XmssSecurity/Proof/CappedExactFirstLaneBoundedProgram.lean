@@ -11,7 +11,7 @@ abbrev GlobalFirstLaneExactCoupledProgramResult :=
   (((ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest)) ×
-    (((Forgery × Bool) × GlobalFirstLaneExactTracedState) ×
+    (((Forgery × Bool) × GlobalExactTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex))
 
 noncomputable def globalFirstLaneExactCoupledProgram

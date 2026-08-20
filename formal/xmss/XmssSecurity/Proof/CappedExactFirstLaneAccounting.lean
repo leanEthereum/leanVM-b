@@ -13,7 +13,7 @@ theorem globalFirstLaneExactTracedLift_hazardBound
     (base : StateT GlobalCausalHashState
       (OracleComp GlobalFirstLaneWorld)
       ((OracleWorld + SigningSpec).Range input))
-    (state : GlobalFirstLaneExactTracedState)
+    (state : GlobalExactTracedState)
     (fuel : Nat)
     (hbase : (base.run state.causalState).IsQueryBoundP
       FirstLaneOracleSimulation.IsHazardQuery fuel) :
@@ -31,7 +31,7 @@ theorem globalFirstLaneExactTracedOracleImpl_hazardBound
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : OracleWorld.Domain)
-    (state : GlobalFirstLaneExactTracedState) :
+    (state : GlobalExactTracedState) :
     ((globalFirstLaneExactTracedOracleImpl keyView edgeHigh input).run state)
       |>.IsQueryBoundP FirstLaneOracleSimulation.IsHazardQuery
         (if input matches .inr _ then 1 else 0) := by
@@ -43,7 +43,7 @@ theorem globalFirstLaneExactTracedOracleImpl_hazardBound
 theorem globalFirstLaneExactTracedSigningImpl_hazardBound
     (keyView : ProgrammedGlobalChainKeygenView)
     (request : SignRequest)
-    (state : GlobalFirstLaneExactTracedState) :
+    (state : GlobalExactTracedState) :
     ((globalFirstLaneExactTracedSigningImpl keyView request).run state)
       |>.IsQueryBoundP FirstLaneOracleSimulation.IsHazardQuery 0 := by
   unfold globalFirstLaneExactTracedSigningImpl
@@ -55,7 +55,7 @@ theorem globalFirstLaneExactTracedMappedAdversaryImpl_hazardBound
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalFirstLaneExactTracedState) :
+    (state : GlobalExactTracedState) :
     ((globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh input).run
       state).IsQueryBoundP FirstLaneOracleSimulation.IsHazardQuery
         (directHashActionCost input) := by
@@ -77,7 +77,7 @@ theorem globalFirstLaneExactTracedVerifierImpl_hazardBound
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : OracleWorld.Domain)
-    (state : GlobalFirstLaneExactTracedState) :
+    (state : GlobalExactTracedState) :
     ((globalFirstLaneExactTracedVerifierImpl keyView edgeHigh input).run state)
       |>.IsQueryBoundP FirstLaneOracleSimulation.IsHazardQuery
         (if input matches .inr _ then 1 else 0) := by

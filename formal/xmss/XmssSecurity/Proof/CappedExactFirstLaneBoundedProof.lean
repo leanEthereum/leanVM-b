@@ -273,9 +273,9 @@ theorem globalFirstLaneExactCoupled_run_mem_support
     exact ⟨(result.1.1.1, result.1.2), hdirectKey, rfl⟩
   · simp only [List.nil_append]
     have hmap : Prod.map id (fun x => x) =
-        (id : GlobalFirstLaneExactTracedResult ×
+        (id : GlobalExactTracedResult ×
           FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex →
-            GlobalFirstLaneExactTracedResult ×
+            GlobalExactTracedResult ×
               FirstLaneOracleSimulation.ActionTrace
                 GlobalChainValueIndex) := by
       funext candidate
@@ -472,7 +472,7 @@ theorem sourceWinningExactFirstLane_good_implies_public_combinedHit
       htargetEvent
 
 theorem observedProbeCount_exactForgeryPrimaryProbeTrace
-    (result : GlobalHighDirectExactTracedResult) :
+    (result : GlobalExactTracedResult) :
     RevealProbeOracleSimulation.observedProbeCount
       (globalHighDirectExactForgeryPrimaryProbeTrace result) = numChains := by
   unfold globalHighDirectExactForgeryPrimaryProbeTrace
