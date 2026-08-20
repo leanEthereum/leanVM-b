@@ -997,17 +997,13 @@ theorem eagerController_true_probability_le {Control : Type}
                           epoch continuation state |>.symm
                   refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
                   simpa [potential, encodingPendingRisk, Nat.succ_add,
-                    show (Fintype.card Digest : ENNReal) =
-                      ((2 ^ digestBits : Nat) : ENNReal) by
-                        norm_num [digestBits]] using
+                    HiddenValue.card_digest] using
                     CappedEncodingMonitor.applyProgrammedQueryMonitor_true_probability_le
                       epoch continuation state
                         (remaining + chainState.pendingCount)
                         (fun output nextState => by
                           simpa [continuation, potential, encodingPendingRisk,
-                            show (Fintype.card Digest : ENNReal) =
-                              ((2 ^ digestBits : Nat) : ENNReal) by
-                                norm_num [digestBits]] using
+                            HiddenValue.card_digest] using
                             ih (some nextState) chainState hvalid remaining
                               (next output))
       | encodingSignAttempt epoch next =>
@@ -1141,17 +1137,13 @@ theorem eagerController_true_probability_le {Control : Type}
                           epoch continuation state |>.symm
                   refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
                   simpa [potential, encodingPendingRisk,
-                    show (Fintype.card Digest : ENNReal) =
-                      ((2 ^ digestBits : Nat) : ENNReal) by
-                        norm_num [digestBits]] using
+                    HiddenValue.card_digest] using
                     CappedEncodingMonitor.applyProgrammedSignAttemptMonitor_true_probability_le
                       epoch continuation state
                         (fuel + chainState.pendingCount)
                         (fun output nextState => by
                           simpa [continuation, potential, encodingPendingRisk,
-                            show (Fintype.card Digest : ENNReal) =
-                              ((2 ^ digestBits : Nat) : ENNReal) by
-                                norm_num [digestBits]] using
+                            HiddenValue.card_digest] using
                             ih (some nextState) chainState hvalid fuel
                               (next output))
       | probe index target next =>

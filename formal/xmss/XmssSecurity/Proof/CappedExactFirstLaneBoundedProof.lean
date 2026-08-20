@@ -308,9 +308,9 @@ theorem exists_globalHighExactMonitored_of_coupled_support
     rw [support_map]
     exact ⟨result.2, hexecution, rfl⟩
   rw [simulate_globalFirstLaneEagerTrace_chainProjection] at hmapped
-  rw [(globalFirstLaneErase_exactTracedDetailedExecution adversary
+  rw [globalFirstLaneErase_exactTracedDetailedExecution adversary
     result.1.1.1 result.1.2 (GlobalExactTracedState.mk
-      (globalFilteredCausalKeygenState result.1.1.1) [] [])).eq] at hmapped
+      (globalFilteredCausalKeygenState result.1.1.1) [] [])] at hmapped
   rw [← map_globalHighExactMonitoredDetailedExecution_full_projection]
     at hmapped
   rw [support_map] at hmapped

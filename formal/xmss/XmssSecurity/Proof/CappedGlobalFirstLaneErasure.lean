@@ -34,27 +34,27 @@ noncomputable def globalFirstLaneErase
     OracleComp (RevealProbeOracleSimulation.World GlobalChainValueIndex) α :=
   simulateQ globalFirstLaneEraseImpl computation
 
-structure GlobalFirstLaneErases
+abbrev GlobalFirstLaneErases
     (source : OracleComp GlobalFirstLaneWorld α)
     (target : OracleComp
-      (RevealProbeOracleSimulation.World GlobalChainValueIndex) α) : Prop where
-  eq : globalFirstLaneErase source = target
+      (RevealProbeOracleSimulation.World GlobalChainValueIndex) α) : Prop :=
+  globalFirstLaneErase source = target
 
 theorem GlobalFirstLaneErases.bind
     (hsource : GlobalFirstLaneErases source target)
     (hnext : ∀ result, GlobalFirstLaneErases (nextSource result)
       (nextTarget result)) :
     GlobalFirstLaneErases (source >>= nextSource) (target >>= nextTarget) := by
-  constructor
+  change globalFirstLaneErase (source >>= nextSource) = target >>= nextTarget
   rw [globalFirstLaneErase, simulateQ_bind]
   change globalFirstLaneErase source >>= _ = _
-  rw [hsource.eq]
+  rw [hsource]
   apply bind_congr
-  exact fun result => (hnext result).eq
+  exact hnext
 
 theorem GlobalFirstLaneErases.pure (result : α) :
     GlobalFirstLaneErases (pure result) (pure result) := by
-  constructor
+  unfold GlobalFirstLaneErases
   simp [globalFirstLaneErase]
 
 theorem globalFirstLaneErases_simulateQ_run
@@ -128,7 +128,7 @@ theorem globalFirstLaneErases_liftProbComp (computation : ProbComp α) :
       (FirstLaneOracleSimulation.liftProbComp
         (Index := GlobalChainValueIndex) computation)
       (RevealProbeOracleSimulation.liftProbComp computation) :=
-  ⟨globalFirstLaneErase_liftProbComp computation⟩
+  globalFirstLaneErase_liftProbComp computation
 
 theorem globalFirstLaneErases_uniformQuery (n : Nat) :
     GlobalFirstLaneErases
@@ -136,7 +136,7 @@ theorem globalFirstLaneErases_uniformQuery (n : Nat) :
         (Index := GlobalChainValueIndex) n)
       (RevealProbeOracleSimulation.uniformQuery
         (Index := GlobalChainValueIndex) n) := by
-  constructor
+  unfold GlobalFirstLaneErases
   simp [globalFirstLaneErase, globalFirstLaneEraseImpl,
     FirstLaneOracleSimulation.uniformQuery,
     RevealProbeOracleSimulation.uniformQuery]
@@ -181,7 +181,7 @@ theorem globalFirstLaneErases_liftRevealProbe
       (RevealProbeOracleSimulation.World GlobalChainValueIndex) α) :
     GlobalFirstLaneErases (globalFirstLaneLiftRevealProbe computation)
       computation :=
-  ⟨globalFirstLaneErase_liftRevealProbe computation⟩
+  globalFirstLaneErase_liftRevealProbe computation
 
 theorem GlobalFirstLaneErases.of_eq_liftRevealProbe
     (source : OracleComp GlobalFirstLaneWorld α)
@@ -386,7 +386,7 @@ theorem globalFirstLaneErase_attackerHashQueryFromHigh_encoding
       ((globalCausalAttackerHashQueryFromHigh high secretKey
         (Concrete.CacheView.encodingInput secretKey.parameter epoch payload)
           ).run state) := by
-  constructor
+  unfold GlobalFirstLaneErases
   cases hcache : state.cache
       (Concrete.CacheView.encodingInput secretKey.parameter epoch payload) with
   | some output =>
@@ -415,7 +415,7 @@ theorem globalFirstLaneErase_encodingHashQuery
       (globalFirstLaneEncodingHashQuery secretKey epoch message randomness state)
       (globalFirstLaneErasedEncodingHashQuery secretKey epoch message randomness
         state) := by
-  constructor
+  unfold GlobalFirstLaneErases
   unfold globalFirstLaneEncodingHashQuery
   unfold globalFirstLaneErasedEncodingHashQuery
   dsimp only
@@ -567,8 +567,8 @@ theorem globalFirstLaneErase_signingAttempt
     GlobalFirstLaneErases
       (globalFirstLaneSigningAttempt keyView request state)
       (globalFilteredCausalSigningAttempt keyView request state) := by
-  constructor
-  rw [(globalFirstLaneErase_signingAttempt_raw keyView request state).eq,
+  unfold GlobalFirstLaneErases
+  rw [globalFirstLaneErase_signingAttempt_raw keyView request state,
     globalFirstLaneErasedSigningAttemptRaw_eq,
     globalFirstLaneErasedSigningAttempt_eq_original]
 

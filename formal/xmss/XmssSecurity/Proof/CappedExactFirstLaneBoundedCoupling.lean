@@ -54,7 +54,7 @@ theorem map_globalHighExactMonitored_action_eq_firstLane
       (globalHighExactStateProjection highState))
   have herase := globalFirstLaneErase_exactTracedMappedAdversaryImpl keyView
     edgeHigh input (globalHighExactStateProjection highState)
-  rw [herase.eq] at htarget
+  rw [herase] at htarget
   have htarget' := congrArg
     (fun computation =>
       (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
@@ -700,7 +700,7 @@ theorem map_globalHighExactMonitored_verifier_action_eq_firstLane
       (globalHighExactStateProjection highState))
   have herase := globalFirstLaneErase_exactTracedVerifierImpl keyView edgeHigh
     input (globalHighExactStateProjection highState)
-  rw [herase.eq] at htarget
+  rw [herase] at htarget
   have htarget' := congrArg
     (fun computation =>
       (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
