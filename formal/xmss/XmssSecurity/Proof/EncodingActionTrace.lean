@@ -90,35 +90,6 @@ theorem FreshSigningActionsRepresented.append_actions
   rw [hactions]
   simp [List.append_assoc]
 
-theorem FreshSigningCollisionsRepresented.append_actions
-    {secretKey : SecretKey}
-    {signingTrace : SigningCacheTrace} {actions : EncodingActionTrace}
-    (hrepresented : FreshSigningCollisionsRepresented secretKey signingTrace actions)
-    (suffix : EncodingActionTrace) :
-    FreshSigningCollisionsRepresented secretKey signingTrace (actions ++ suffix) := by
-  intro hnodup entry hentry hcollision
-  obtain ⟨signedOutput, oldOutput, before, middle, after, hdigest, hactions⟩ :=
-    hrepresented hnodup entry hentry hcollision
-  refine ⟨signedOutput, oldOutput, before, middle, after ++ suffix, hdigest, ?_⟩
-  rw [hactions]
-  simp [List.append_assoc]
-
-theorem PostSigningQueriesRepresented.append_actions
-    {secretKey : SecretKey} {signingTrace : SigningCacheTrace}
-    {currentCache : QueryCache HashSpec} {actions : EncodingActionTrace}
-    (hrepresented : PostSigningQueriesRepresented secretKey signingTrace currentCache
-      actions) (suffix : EncodingActionTrace) :
-    PostSigningQueriesRepresented secretKey signingTrace currentCache
-      (actions ++ suffix) := by
-  intro hnodup entry hentry signature signedOutput targetInput targetOutput
-    hsignature hfresh hsigned hencoding hentryFresh hcurrent
-  obtain ⟨before, middle, after, hactions⟩ := hrepresented hnodup entry hentry
-    signature signedOutput targetInput targetOutput hsignature hfresh hsigned hencoding
-    hentryFresh hcurrent
-  refine ⟨before, middle, after ++ suffix, ?_⟩
-  rw [hactions]
-  simp [List.append_assoc]
-
 noncomputable def encodingObservation?
     (secretKey : SecretKey)
     (input : (OracleWorld + SigningSpec).Domain)
