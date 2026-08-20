@@ -198,38 +198,6 @@ theorem chainCollision_afterKeygen_orientation
     execution.2 epoch chain step forgedValue forgedOutput honestOutput hforgedCached
     hforgedInitial hhonestCached hcollision
 
-theorem chainCollision_afterKeygen_orientation_eq_epoch
-    (adversary : Adversary Concrete.scheme)
-    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
-    (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
-    (execution : GameOutcome × QueryCache HashSpec)
-    (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
-          keyResult.2))
-    (secretKey : SecretKey) (hsecret : secretKey = keyResult.1.2)
-    (epoch : Epoch) (hepoch : epoch = execution.1.forgery.epoch)
-    (chain : ChainIndex) (step : ChainStep) (forgedValue : Epoch → Digest)
-    (forgedOutput : HashOutput)
-    (hforgedCached : execution.2
-      (Concrete.CacheView.chainInput secretKey.parameter execution.1.forgery.epoch chain step
-        (forgedValue execution.1.forgery.epoch)) = some forgedOutput)
-    (hne : forgedValue epoch ≠ Wots.walk
-      (Concrete.CacheView.chainStep execution.2 secretKey.parameter epoch chain)
-      0 step.val (secretKey.chainStart epoch chain))
-    (hstepCollision : Concrete.CacheView.chainStep execution.2 secretKey.parameter epoch chain
-        step.val (forgedValue epoch) =
-      Concrete.CacheView.chainStep execution.2 secretKey.parameter epoch chain step.val
-        (Wots.walk (Concrete.CacheView.chainStep execution.2 secretKey.parameter epoch chain)
-          0 step.val (secretKey.chainStart epoch chain))) :
-    Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
-      (keygenChainTargetInput keyResult.1.2 keyResult.2) := by
-  subst epoch
-  exact chainCollision_afterKeygen_orientation adversary keyResult hkeygen execution hafter
-    secretKey hsecret execution.1.forgery.epoch chain step
-    (forgedValue execution.1.forgery.epoch) forgedOutput hforgedCached hne hstepCollision
-
 theorem same_suffix_collision_facts
     (cache : QueryCache HashSpec) (secretKey : SecretKey) (request : SignRequest)
     (signature forgedSignature : Signature) (signedEncoding forgedEncoding : Encoding)
@@ -338,34 +306,28 @@ theorem fresh_suffix_collision_facts
           (Wots.walk
             (Concrete.CacheView.chainStep cache secretKey.parameter epoch chain)
             0 targetStep.val (secretKey.chainStart epoch chain)) := by
-  dsimp only [Wots.IsSuffixCollisionAt] at hsuffix
-  let chain := position.1
-  let suffixOffset := position.2.val
-  have hne := hsuffix.2.1
-  have heq := hsuffix.2.2
-  let step := Concrete.CacheView.chainStep cache secretKey.parameter epoch chain
-  change Wots.walk step (encoding chain).val suffixOffset
-      (Wots.walk step (encoding chain).val
-        ((encoding chain).val - (encoding chain).val)
-        (forgedSignature.chainValue chain)) ≠
-    Wots.walk step (encoding chain).val suffixOffset
-      (Wots.signChain step (encoding chain) (secretKey.chainStart epoch chain)) at hne
-  change step ((encoding chain).val + suffixOffset)
-      (Wots.walk step (encoding chain).val suffixOffset
-        (Wots.walk step (encoding chain).val
-          ((encoding chain).val - (encoding chain).val)
-          (forgedSignature.chainValue chain))) =
-    step ((encoding chain).val + suffixOffset)
-      (Wots.walk step (encoding chain).val suffixOffset
-        (Wots.signChain step (encoding chain) (secretKey.chainStart epoch chain))) at heq
-  simp only [Nat.sub_self, Wots.walk_zero] at hne heq
-  have hhonestWalk := Wots.walk_signChain_eq_honest step (encoding chain)
-    suffixOffset (secretKey.chainStart epoch chain)
-  change _ ∧ _ ∧ _
-  constructor
-  · simpa only [chain, suffixOffset] using position.2.isLt
-  · rw [← hhonestWalk]
-    exact ⟨hne, heq⟩
+  let request : SignRequest := ⟨epoch, 0⟩
+  let signedSignature := Concrete.CacheReplay.signWithEncoding cache secretKey
+    epoch forgedSignature.randomness encoding
+  have hsignature : signedSignature =
+      Concrete.CacheReplay.signWithEncoding cache secretKey request.epoch
+        signedSignature.randomness encoding := by
+    rfl
+  have hsuffix' : Wots.IsSuffixCollisionAt
+      (fun chain => Concrete.CacheView.chainStep cache secretKey.parameter
+        request.epoch chain)
+      encoding encoding signedSignature.chainValue forgedSignature.chainValue
+      position := by
+    have hsignedValues : signedSignature.chainValue = fun chain => Wots.signChain
+        (Concrete.CacheView.chainStep cache secretKey.parameter epoch chain)
+        (encoding chain) (secretKey.chainStart epoch chain) := by
+      funext chain
+      rfl
+    rw [hsignedValues]
+    simpa [request] using hsuffix
+  simpa [request, signedSignature] using
+    same_suffix_collision_facts cache secretKey request signedSignature
+      forgedSignature encoding encoding position hsignature hsuffix'
 
 theorem fresh_suffix_witness_afterKeygen_orientation
     (adversary : Adversary Concrete.scheme)
@@ -510,9 +472,10 @@ theorem same_suffix_witness_afterKeygen_orientation
     apply Fin.ext
     exact hstepValueEq
   rw [hstepEq] at hforgedCached
-  apply chainCollision_afterKeygen_orientation_eq_epoch adversary keyResult hkeygen
-    execution hafter execution.1.secretKey hkeys.2 request.epoch hepoch chain targetStep
-    forgedValue forgedOutput
+  rw [hepoch] at hne hstepCollision
+  apply chainCollision_afterKeygen_orientation adversary keyResult hkeygen execution
+    hafter execution.1.secretKey hkeys.2 execution.1.forgery.epoch chain
+      targetStep (forgedValue execution.1.forgery.epoch) forgedOutput
   · simpa [chain, recoveryOffset, targetStep, forgedValue] using hforgedCached
   · simpa [chain, suffixOffset, recoveryOffset, targetStep, forgedValue] using hne
   · simpa [chain, suffixOffset, recoveryOffset, targetStep, forgedValue] using
