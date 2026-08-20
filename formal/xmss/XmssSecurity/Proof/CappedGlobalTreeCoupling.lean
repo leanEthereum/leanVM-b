@@ -235,7 +235,7 @@ theorem evalDist_programmedGlobalChainTrajectoryMaterial_table_eq_uniform
       evalDist ($ᵗ (GlobalChainValueIndex → Digest)) := by
   unfold programmedGlobalChainTrajectoryMaterial
     globalChainTrajectoryMaterialTable
-  simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply]
+  simp only [map_eq_bind_pure_comp, bind_assoc]
   calc
     _ = evalDist (Concrete.sampleSecret >>= fun secret =>
           globalChainValueTableOfTrajectories <$>

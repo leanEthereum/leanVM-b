@@ -14,13 +14,6 @@ structure GlobalCausalHashState where
   revealed : GlobalChainValueIndex → Option Digest
   probes : List (GlobalChainValueIndex × Digest)
 
-def GlobalCausalHashState.empty : GlobalCausalHashState :=
-  ⟨∅, ∅, fun _ => none, []⟩
-
-def GlobalCausalHashState.finishKeygen
-    (state : GlobalCausalHashState) : GlobalCausalHashState :=
-  { state with keygenCache := state.cache }
-
 def GlobalCausalHashState.recordProbe
     (state : GlobalCausalHashState)
     (probe : Option (GlobalChainValueIndex × Digest)) :
@@ -80,12 +73,6 @@ theorem globalCausalHashQuery_run
         (result.1, state.setCache result.2)) <$>
           RevealProbeOracleSimulation.liftProbComp
             ((randomOracle input).run state.cache) := rfl
-
-inductive GlobalCausalHashPlan where
-  | cached (output : HashOutput)
-  | reveal (index : GlobalChainValueIndex)
-  | redirect (output : HashOutput)
-  | fresh
 
 noncomputable def globalCausalRecordedState
     (secretKey : SecretKey) (input : HashInput)
@@ -165,31 +152,6 @@ def globalSignatureRevealTrace
         (chain, request.epoch, encoding chain)
       .reveal index (table index) ::
         globalSignatureRevealTrace table request encoding chains
-
-theorem simulate_eagerImpl_revealGlobalSignatureChains
-    (table : GlobalChainValueIndex → Digest)
-    (request : SignRequest) (encoding : ChainIndex → Digit)
-    (chains : List ChainIndex) (signature : Signature)
-    (state : GlobalCausalHashState) :
-    simulateQ (RevealProbeOracleSimulation.eagerImpl table)
-        ((revealGlobalSignatureChains request encoding chains signature).run
-          state) =
-      pure (globalSignatureRevealResult table request encoding chains
-        signature state) := by
-  induction chains generalizing signature state with
-  | nil => simp [revealGlobalSignatureChains, globalSignatureRevealResult]
-  | cons chain chains ih =>
-      rw [revealGlobalSignatureChains]
-      change simulateQ (RevealProbeOracleSimulation.eagerImpl table) (do
-          let value ← RevealProbeOracleSimulation.revealQuery
-            (chain, request.epoch, encoding chain)
-          (revealGlobalSignatureChains request encoding chains
-            (replaceSignatureChainValue signature chain value)).run
-              (state.recordReveal
-                (chain, request.epoch, encoding chain) value)) = _
-      simp only [simulateQ_bind,
-        RevealProbeOracleSimulation.simulate_eagerImpl_revealQuery, pure_bind]
-      exact ih _ _
 
 theorem simulate_eagerTrace_revealGlobalSignatureChains
     (table : GlobalChainValueIndex → Digest)

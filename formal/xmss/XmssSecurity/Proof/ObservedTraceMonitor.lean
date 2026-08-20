@@ -91,18 +91,6 @@ theorem advanceObserved_eq_none_iff_runObserved_eq_true
               · simp [hhit]
               · simp [hhit, ih]
 
-theorem advanceObserved_eq_some_implies_runObserved_eq_false
-    (table : Index → Digest) (state final : AdaptiveRevealMonitor.State Index)
-    (trace : ActionTrace Index)
-    (hadvance : advanceObserved table state trace = some final) :
-    runObserved table state trace = false := by
-  cases hrun : runObserved table state trace
-  · rfl
-  · have := (advanceObserved_eq_none_iff_runObserved_eq_true
-      table state trace).2 hrun
-    rw [hadvance] at this
-    cases this
-
 theorem advanceObserved_eq_none_append
     (table : Index → Digest) (state : AdaptiveRevealMonitor.State Index)
     (left right : ActionTrace Index)
