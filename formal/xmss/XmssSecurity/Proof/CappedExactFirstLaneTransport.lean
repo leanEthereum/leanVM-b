@@ -2,6 +2,7 @@ import XmssSecurity.Proof.CappedExactFirstLaneCoupling
 import XmssSecurity.Proof.CappedGlobalFirstLaneBounds
 import XmssSecurity.Proof.CappedGlobalFirstLaneTrace
 import XmssSecurity.Proof.StateLens
+import XmssSecurity.Proof.EagerTraceInvariant
 
 open OracleComp OracleSpec
 
@@ -1337,37 +1338,17 @@ theorem simulateQ_eagerTrace_state_trace_sublist
         ((simulateQ impl computation).run initialState)).run)) :
     List.Sublist (stateTrace result.1.2)
       (stateTrace initialState ++ result.2.encodingActions) := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
-        support_pure, Set.mem_singleton_iff] at hresult
-      subst result
-      dsimp only [Prod.fst, Prod.snd]
-      rw [show (∅ : FirstLaneOracleSimulation.ActionTrace
-        GlobalChainValueIndex) = [] by rfl]
-      simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
-        WriterT.run_bind', mem_support_bind_iff] at hresult
-      obtain ⟨⟨⟨output, middleState⟩, firstTrace⟩, hfirst,
-        hrestMapped⟩ := hresult
-      rw [support_map] at hrestMapped
-      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
-      rw [simulateQ_spec_query] at hfirst
-      have hfirstSub := hstep input initialState
-        ((output, middleState), firstTrace) hfirst
-      have hrestSub := ih output middleState restResult hrest
-      have hcombined := hrestSub.trans
-        (hfirstSub.append (List.Sublist.refl restResult.2.encodingActions))
-      have hstateEq : stateTrace restResult.1.2 =
-          stateTrace result.1.2 := by
-        simpa using congrArg (fun value => stateTrace value.1.2) heq
-      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
-        simpa using congrArg Prod.snd heq
-      rw [← hstateEq, ← htraceEq,
-        FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
-      simpa [List.append_assoc] using hcombined
+  apply simulateQ_eagerTrace_support_invariant table impl
+    (fun initial trace final => List.Sublist (stateTrace final)
+      (stateTrace initial ++ trace.encodingActions))
+  · intro state
+    simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
+  · intro initial middle final headTrace tailTrace hhead htail
+    rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+    simpa [List.append_assoc] using htail.trans
+      (hhead.append (List.Sublist.refl tailTrace.encodingActions))
+  · exact hstep
+  · exact hresult
 
 theorem globalFirstLaneExactTracedMappedAdversary_simulateQ_trace_sublist
     (table : GlobalChainValueIndex → Digest)
@@ -1486,29 +1467,15 @@ theorem simulateQ_eagerTrace_state_cache_le
         ((simulateQ (fun input => StateT.mk (implRun input)) computation).run
           initialState)).run)) :
     stateCache initialState ≤ stateCache result.1.2 := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
-        support_pure, Set.mem_singleton_iff] at hresult
-      subst result
-      exact le_rfl
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
-        WriterT.run_bind', mem_support_bind_iff] at hresult
-      obtain ⟨⟨⟨output, middleState⟩, firstTrace⟩, hfirst,
-        hrestMapped⟩ := hresult
-      rw [support_map] at hrestMapped
-      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
-      rw [simulateQ_spec_query] at hfirst
-      have hfirstLe := hstep input initialState
-        ((output, middleState), firstTrace) hfirst
-      have hrestLe := ih output middleState restResult hrest
-      have hfinalState : stateCache restResult.1.2 =
-          stateCache result.1.2 := by
-        simpa using congrArg (fun value => stateCache value.1.2) heq
-      rw [← hfinalState]
-      exact le_trans hfirstLe hrestLe
+  apply simulateQ_eagerTrace_support_invariant table
+    (fun input => StateT.mk (implRun input))
+    (fun initial _trace final => stateCache initial ≤ stateCache final)
+  · intro state
+    exact le_rfl
+  · intro initial middle final headTrace tailTrace hhead htail
+    exact hhead.trans htail
+  · exact hstep
+  · exact hresult
 
 theorem globalFirstLaneVerifierHashExecution_simulateQ_cache_le
     (table : GlobalChainValueIndex → Digest)
@@ -2529,66 +2496,42 @@ theorem globalFirstLaneExactTracedMappedAdversary_validSignEpochs_sublist_of_has
           result.2.encodingActions)
       (result.1.2.attackerTrace.toSigningLog.map
         fun entry => entry.1.epoch) := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
-        support_pure, Set.mem_singleton_iff] at hresult
-      subst result
-      simp [CappedEncodingMonitor.validObservedSignEpochs,
-        FirstLaneOracleSimulation.ActionTrace.encodingActions,
-        CappedEncodingMonitor.validActions,
-        EncodingMonitor.observedSignEpochs]
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
-        WriterT.run_bind', mem_support_bind_iff] at hresult
-      obtain ⟨⟨⟨output, middleState⟩, firstTrace⟩, hfirst,
-        hrestMapped⟩ := hresult
-      rw [support_map] at hrestMapped
-      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
-      rw [simulateQ_spec_query] at hfirst
-      have hrestSub := ih output middleState restResult hrest
-      have hfirstSub : List.Sublist
-          ((initialState.attackerTrace.toSigningLog.map
-              fun entry => entry.1.epoch) ++
-            CappedEncodingMonitor.validObservedSignEpochs
-              firstTrace.encodingActions)
-          (middleState.attackerTrace.toSigningLog.map
-            fun entry => entry.1.epoch) := by
-        cases input with
-        | inl worldInput =>
-            cases worldInput with
-            | inl n =>
-                exact
-                  globalFirstLaneExactTracedMappedAdversaryImpl_uniform_validSignEpochs_step
-                    table keyView edgeHigh n initialState
-                      ((output, middleState), firstTrace) hfirst
-            | inr hashInput =>
-                rw [hhashEq] at hfirst
-                apply globalExactTracedHash_validSignEpochs_step
-                  table keyView hashInput (StateT.mk (hashRun hashInput))
-                    initialState ((output, middleState), firstTrace) hfirst
-                intro baseResult hbase
-                exact hhashNil hashInput initialState.causalState baseResult
-                  hbase
-        | inr request =>
+  apply simulateQ_eagerTrace_support_invariant table
+    (globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh)
+    (fun initial trace final => List.Sublist
+      ((initial.attackerTrace.toSigningLog.map fun entry => entry.1.epoch) ++
+        CappedEncodingMonitor.validObservedSignEpochs trace.encodingActions)
+      (final.attackerTrace.toSigningLog.map fun entry => entry.1.epoch))
+  · intro state
+    simp [CappedEncodingMonitor.validObservedSignEpochs,
+      FirstLaneOracleSimulation.ActionTrace.encodingActions,
+      CappedEncodingMonitor.validActions, EncodingMonitor.observedSignEpochs]
+  · intro initial middle final headTrace tailTrace hhead htail
+    rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
+      CappedEncodingMonitor.validObservedSignEpochs_append]
+    simpa [List.append_assoc] using
+      (hhead.append (List.Sublist.refl
+        (CappedEncodingMonitor.validObservedSignEpochs
+          tailTrace.encodingActions))).trans htail
+  · intro input state stepResult hstep
+    cases input with
+    | inl worldInput =>
+        cases worldInput with
+        | inl n =>
             exact
-              globalFirstLaneExactTracedMappedAdversaryImpl_signing_validSignEpochs_step
-                table keyView edgeHigh request initialState
-                  ((output, middleState), firstTrace) hfirst
-      have hcombined :=
-        (hfirstSub.append (List.Sublist.refl
-          (CappedEncodingMonitor.validObservedSignEpochs
-            restResult.2.encodingActions))).trans hrestSub
-      have hstateEq : restResult.1.2.attackerTrace =
-          result.1.2.attackerTrace := by
-        simpa using congrArg (fun candidate => candidate.1.2.attackerTrace) heq
-      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
-        simpa using congrArg Prod.snd heq
-      rw [← hstateEq, ← htraceEq,
-        FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-        CappedEncodingMonitor.validObservedSignEpochs_append]
-      simpa [List.append_assoc] using hcombined
+              globalFirstLaneExactTracedMappedAdversaryImpl_uniform_validSignEpochs_step
+                table keyView edgeHigh n state stepResult hstep
+        | inr hashInput =>
+            rw [hhashEq] at hstep
+            apply globalExactTracedHash_validSignEpochs_step table keyView
+              hashInput (StateT.mk (hashRun hashInput)) state stepResult hstep
+            intro baseResult hbase
+            exact hhashNil hashInput state.causalState baseResult hbase
+    | inr request =>
+        exact
+          globalFirstLaneExactTracedMappedAdversaryImpl_signing_validSignEpochs_step
+            table keyView edgeHigh request state stepResult hstep
+  · exact hresult
 
 theorem globalFirstLaneExactTracedMappedAdversary_validSignEpochs_sublist
     (table : GlobalChainValueIndex → Digest)
@@ -2654,42 +2597,29 @@ theorem globalFirstLaneVerifier_validSignEpochs_eq_nil_of_hashRun
           computation).run state)).run)) :
     CappedEncodingMonitor.validObservedSignEpochs
       result.2.encodingActions = [] := by
-  induction computation using OracleComp.inductionOn generalizing state result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure',
-        support_pure, Set.mem_singleton_iff] at hresult
-      subst result
-      simp [CappedEncodingMonitor.validObservedSignEpochs,
-        FirstLaneOracleSimulation.ActionTrace.encodingActions,
-        CappedEncodingMonitor.validActions,
-        EncodingMonitor.observedSignEpochs]
-  | query_bind input next ih =>
-      rw [simulateQ_bind, StateT.run_bind, simulateQ_bind,
-        WriterT.run_bind', mem_support_bind_iff] at hresult
-      obtain ⟨⟨⟨output, middleState⟩, firstTrace⟩, hfirst,
-        hrestMapped⟩ := hresult
-      rw [support_map] at hrestMapped
-      obtain ⟨restResult, hrest, heq⟩ := hrestMapped
-      rw [simulateQ_spec_query] at hfirst
-      have hfirstNil : CappedEncodingMonitor.validObservedSignEpochs
-          firstTrace.encodingActions = [] := by
-        cases input with
-        | inl n =>
-            unfold globalFirstLaneVerifierImpl globalFirstLaneOracleImpl
-              globalFirstLaneOracleExecution at hfirst
-            exact globalFirstLaneUniformImpl_validSignEpochs_eq_nil table n
-              state ((output, middleState), firstTrace) hfirst
-        | inr input =>
-            rw [hhashEq] at hfirst
-            exact hhashNil input state ((output, middleState), firstTrace)
-              hfirst
-      have hrestNil := ih output middleState restResult hrest
-      have htraceEq : firstTrace ++ restResult.2 = result.2 := by
-        simpa using congrArg Prod.snd heq
-      rw [← htraceEq,
-        FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-        CappedEncodingMonitor.validObservedSignEpochs_append, hfirstNil,
-        hrestNil, List.append_nil]
+  apply simulateQ_eagerTrace_support_invariant table
+    (globalFirstLaneVerifierImpl keyView edgeHigh)
+    (fun _initial trace _final =>
+      CappedEncodingMonitor.validObservedSignEpochs
+        trace.encodingActions = [])
+  · intro state
+    simp [CappedEncodingMonitor.validObservedSignEpochs,
+      FirstLaneOracleSimulation.ActionTrace.encodingActions,
+      CappedEncodingMonitor.validActions, EncodingMonitor.observedSignEpochs]
+  · intro initial middle final headTrace tailTrace hhead htail
+    simp [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
+      CappedEncodingMonitor.validObservedSignEpochs_append, hhead, htail]
+  · intro input state stepResult hstep
+    cases input with
+    | inl n =>
+        unfold globalFirstLaneVerifierImpl globalFirstLaneOracleImpl
+          globalFirstLaneOracleExecution at hstep
+        exact globalFirstLaneUniformImpl_validSignEpochs_eq_nil table n state
+          stepResult hstep
+    | inr input =>
+        rw [hhashEq] at hstep
+        exact hhashNil input state stepResult hstep
+  · exact hresult
 
 theorem globalFirstLaneVerifier_validSignEpochs_eq_nil
     (table : GlobalChainValueIndex → Digest)
