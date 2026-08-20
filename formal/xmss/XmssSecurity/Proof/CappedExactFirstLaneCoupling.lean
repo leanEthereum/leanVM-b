@@ -96,12 +96,9 @@ noncomputable def globalHighExactMonitoredMappedAdversaryImpl
       (GlobalChainEdgeIndex → Digest)) :
     QueryImpl (OracleWorld + SigningSpec)
       (StateT GlobalHighExactMonitoredState ProbComp) :=
-  fun input => StateT.mk fun state => do
-    let result ← (globalHighMonitoredMappedAdversaryImpl right input).run state.1
-    let nextTrace := encodingActionTraceUpdate right.1.1.secretKey input
-      (state.1.1.causal.cache, []) result.1
-      (result.2.1.causal.cache, []) state.2
-    pure (result.1, (result.2, nextTrace))
+  fun input => encodingTracedLift right.1.1.secretKey input
+    (fun state : GlobalMonitoredTracedState => state.1.causal.cache)
+    (globalHighMonitoredMappedAdversaryImpl right input)
 
 noncomputable def sourceExactQueryResult
     (secretKey : SecretKey)
@@ -160,7 +157,7 @@ theorem globalHighExactMonitoredMappedAdversaryImpl_query_eq_map
           initialState.1 := by
   unfold globalHighExactMonitoredMappedAdversaryImpl
     globalHighExactQueryResult
-  simp [StateT.run_mk, map_eq_bind_pure_comp]
+  simp [map_eq_bind_pure_comp]
 
 theorem encodingActionTraceUpdate_eq_of_parameter_eq
     (leftSecret rightSecret : SecretKey)
@@ -465,7 +462,8 @@ theorem sourceGlobalExactTracedDetailedExecution_projection
   simpa [secretKey, finish, sourceGlobalExactErasedExecution, map_bind,
     bind_map_left, bind_assoc, sourceSigningTracedVerifierImpl_run_eq,
     sourceDirectTracedVerifierImpl_run_eq, sourceExactSigningProjection,
-    Prod.map] using hbound
+    Prod.map]
+    using hbound
 
 theorem sourceGlobalExactTracedProgram_projection
     (adversary : Adversary) :
