@@ -246,17 +246,4 @@ theorem verifyFromCache_signWithEncoding (cache : QueryCache HashSpec)
   rw [leafHash_recovered_signWithEncoding]
   exact authenticationPath_ascends_to_root cache secretKey epoch randomness encoding
 
-theorem verifyFromCache_of_signAttempt_eq_some (cache : QueryCache HashSpec)
-    (secretKey : SecretKey) (epoch : Epoch) (message : Message)
-    (randomness : Randomness) (signature : Signature)
-    (hsign : signAttempt cache secretKey epoch message randomness = some signature) :
-    Concrete.verifyFromCache cache (publicKeyFromCache cache secretKey) epoch message
-      signature = true := by
-  unfold signAttempt at hsign
-  split at hsign <;> rename_i hdecode
-  · simp at hsign
-  · simp only [Option.some.injEq] at hsign
-    subst signature
-    exact verifyFromCache_signWithEncoding cache secretKey epoch message randomness _ hdecode
-
 end XmssSecurity.Concrete.CacheReplay

@@ -157,64 +157,15 @@ def signedChainValues (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (CacheView.chainStep cache secretKey.parameter epoch chain) 0
     (encoding chain).val (secretKey.chainStart epoch chain)
 
-@[simp]
-theorem eval_signedChainValues (cache : QueryCache HashSpec)
-    (secretKey : SecretKey) (epoch : Epoch) (encoding : Encoding) :
-    evalWithAnswerFn (answerFn cache)
-      (Concrete.signedChainValues secretKey epoch encoding :
-        OracleComp HashSpec (ChainIndex → Digest)) =
-      signedChainValues cache secretKey epoch encoding := by
-  funext chain
-  simp [Concrete.signedChainValues, signedChainValues]
-
 def authenticationPath (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (epoch : Epoch) : Fin treeHeight → Digest :=
   fun level => treeNode cache secretKey.parameter secretKey.chainStart level.val
     (Concrete.authenticationPathNode epoch level)
 
-@[simp]
-theorem eval_authenticationPath (cache : QueryCache HashSpec)
-    (secretKey : SecretKey) (epoch : Epoch) :
-    evalWithAnswerFn (answerFn cache)
-      (Concrete.authenticationPath secretKey epoch :
-        OracleComp HashSpec (Fin treeHeight → Digest)) =
-      authenticationPath cache secretKey epoch := by
-  funext level
-  simp [Concrete.authenticationPath, authenticationPath]
-
 def signWithEncoding (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (epoch : Epoch) (randomness : Randomness) (encoding : Encoding) : Signature :=
   ⟨randomness, signedChainValues cache secretKey epoch encoding,
     authenticationPath cache secretKey epoch⟩
-
-@[simp]
-theorem eval_signWithEncoding (cache : QueryCache HashSpec)
-    (secretKey : SecretKey) (epoch : Epoch) (randomness : Randomness)
-    (encoding : Encoding) :
-    evalWithAnswerFn (answerFn cache)
-      (Concrete.signWithEncoding secretKey epoch randomness encoding :
-        OracleComp HashSpec Signature) =
-      signWithEncoding cache secretKey epoch randomness encoding := by
-  simp [Concrete.signWithEncoding, signWithEncoding]
-
-noncomputable def signAttempt (cache : QueryCache HashSpec) (secretKey : SecretKey)
-    (epoch : Epoch) (message : Message) (randomness : Randomness) : Option Signature :=
-  match TargetSum.decodeDigest
-    (CacheView.encodingHash cache secretKey.parameter epoch (message, randomness)) with
-  | none => none
-  | some encoding => some (signWithEncoding cache secretKey epoch randomness encoding)
-
-@[simp]
-theorem eval_signAttempt (cache : QueryCache HashSpec)
-    (secretKey : SecretKey) (epoch : Epoch) (message : Message)
-    (randomness : Randomness) :
-    evalWithAnswerFn (answerFn cache)
-      (Concrete.signAttempt secretKey epoch message randomness :
-        OracleComp HashSpec (Option Signature)) =
-      signAttempt cache secretKey epoch message randomness := by
-  unfold Concrete.signAttempt signAttempt
-  simp only [evalWithAnswerFn_bind, eval_encodingHash]
-  split <;> simp_all
 
 @[simp]
 theorem eval_authenticationRoot (cache : QueryCache HashSpec)
@@ -328,18 +279,6 @@ theorem randomOracle_rerun_largerCache_eq_pure_of_mem_support {α : Type}
       simp only [pure_bind]
       exact ih output middleCache resultCache largerCache result hrest hle
 
-/-- Rerunning a lazy random-oracle computation against a cache produced by a successful first
-run is deterministic and leaves that cache unchanged. -/
-theorem randomOracle_rerun_eq_pure_of_mem_support {α : Type}
-    (computation : OracleComp HashSpec α)
-    (initialCache finalCache : QueryCache HashSpec) (result : α)
-    (hmem : (result, finalCache) ∈
-      support ((simulateQ randomOracle computation).run initialCache)) :
-    (simulateQ randomOracle computation).run finalCache =
-      pure (result, finalCache) :=
-  randomOracle_rerun_largerCache_eq_pure_of_mem_support computation
-    initialCache finalCache finalCache result hmem le_rfl
-
 /-- Replaying a lazy-oracle execution against its final cache reproduces its result. -/
 theorem eval_answerFn_finalCache_eq_of_mem_support {α : Type}
     (computation : OracleComp HashSpec α) (initialCache finalCache : QueryCache HashSpec)
@@ -417,47 +356,3 @@ theorem verifyFromCache_eq_of_mem_support
     initialCache finalCache result hmem
 
 end XmssSecurity.Concrete.CacheReplay
-
-namespace XmssSecurity.Concrete
-
-@[simp]
-theorem precomputedSignedChainValues_precomputedSecretKey
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (cache : QueryCache HashSpec) (epoch : Epoch) (encoding : Encoding) :
-    precomputedSignedChainValues
-        (precomputedSecretKey parameter secret cache) epoch encoding =
-      CacheReplay.signedChainValues cache
-        (precomputedSecretKey parameter secret cache) epoch encoding := rfl
-
-@[simp]
-theorem precomputedAuthenticationPath_precomputedSecretKey
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (cache : QueryCache HashSpec) (epoch : Epoch) :
-    precomputedAuthenticationPath
-        (precomputedSecretKey parameter secret cache) epoch =
-      CacheReplay.authenticationPath cache
-        (precomputedSecretKey parameter secret cache) epoch := rfl
-
-@[simp]
-theorem precomputedSignWithEncoding_precomputedSecretKey
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (cache : QueryCache HashSpec) (epoch : Epoch) (randomness : Randomness)
-    (encoding : Encoding) :
-    precomputedSignWithEncoding
-        (precomputedSecretKey parameter secret cache) epoch randomness encoding =
-      CacheReplay.signWithEncoding cache
-        (precomputedSecretKey parameter secret cache) epoch randomness encoding := rfl
-
-theorem eval_signWithEncoding_eq_precomputed
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (cache : QueryCache HashSpec) (epoch : Epoch) (randomness : Randomness)
-    (encoding : Encoding) :
-    evalWithAnswerFn (CacheReplay.answerFn cache)
-        (signWithEncoding (precomputedSecretKey parameter secret cache) epoch
-          randomness encoding : OracleComp HashSpec Signature) =
-      precomputedSignWithEncoding
-        (precomputedSecretKey parameter secret cache) epoch randomness encoding := by
-  rw [CacheReplay.eval_signWithEncoding,
-    precomputedSignWithEncoding_precomputedSecretKey]
-
-end XmssSecurity.Concrete
