@@ -45,10 +45,6 @@ theorem validDigests_nonempty : validDigests.Nonempty := by
 theorem validDigests_card_pos : 0 < validDigests.card :=
   Finset.card_pos.mpr validDigests_nonempty
 
-theorem mem_validDigests_iff (digest : Digest) :
-    digest ∈ validDigests ↔ ValidDigest digest := by
-  simp [validDigests]
-
 end TargetSum
 
 end XmssSecurity

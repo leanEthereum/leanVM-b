@@ -42,16 +42,6 @@ def UnsignedEncodingEntriesRepresented
     ∃ before after,
       actions = before ++ [.query epoch output] ++ after
 
-def FreshSigningCollisionsRepresented
-    (secretKey : SecretKey) (signingTrace : SigningCacheTrace)
-    (actions : EncodingActionTrace) : Prop :=
-  signingTrace.epochs.Nodup →
-    ∀ entry ∈ signingTrace, entry.FreshSigningEncodingCollision secretKey →
-      ∃ signedOutput oldOutput before middle after,
-          truncateHash signedOutput = truncateHash oldOutput ∧
-          actions = before ++ [.query entry.request.epoch oldOutput] ++ middle ++
-            [.sign entry.request.epoch signedOutput] ++ after
-
 def PostSigningQueriesRepresented
     (secretKey : SecretKey) (signingTrace : SigningCacheTrace)
     (currentCache : QueryCache HashSpec) (actions : EncodingActionTrace) : Prop :=

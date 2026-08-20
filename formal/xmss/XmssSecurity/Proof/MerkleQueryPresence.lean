@@ -186,41 +186,6 @@ theorem Concrete.keygen_cache_has_merkleInput
   Concrete.keygen_cache_has_merkleInput_in_largerCache keyResult hmem keyResult.2 le_rfl
     level node hnode
 
-theorem Concrete.keygen_cache_merkleInput_eq_none_of_ne
-    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
-    (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
-    (level : MerkleLevel) (node : MerkleNode)
-    (hnode : node.val < 2 ^ (treeHeight - (level.val + 1)))
-    (left right : Digest)
-    (hne : (left, right) ≠
-      (Concrete.CacheReplay.treeNode keyResult.2 keyResult.1.2.parameter
-          keyResult.1.2.chainStart level.val (Concrete.childNode node false),
-        Concrete.CacheReplay.treeNode keyResult.2 keyResult.1.2.parameter
-          keyResult.1.2.chainStart level.val (Concrete.childNode node true))) :
-    keyResult.2 (Concrete.CacheView.merkleInput keyResult.1.2.parameter level node left right) =
-      none := by
-  obtain ⟨honestOutput, hhonest⟩ :=
-    Concrete.keygen_cache_has_merkleInput keyResult hmem level node hnode
-  cases hforged : keyResult.2
-      (Concrete.CacheView.merkleInput keyResult.1.2.parameter level node left right) with
-  | none => rfl
-  | some forgedOutput =>
-      exfalso
-      apply hne
-      apply Concrete.nodePayload_injective
-      exact payload_eq_of_tweakableHashInput_eq keyResult.1.2.parameter
-        (.merkle level node)
-        (Concrete.keygen_cache_unique_merkleAddress keyResult hmem level node
-          (Concrete.CacheView.merkleInput keyResult.1.2.parameter level node left right)
-          (Concrete.CacheView.merkleInput keyResult.1.2.parameter level node
-            (Concrete.CacheReplay.treeNode keyResult.2 keyResult.1.2.parameter
-              keyResult.1.2.chainStart level.val (Concrete.childNode node false))
-            (Concrete.CacheReplay.treeNode keyResult.2 keyResult.1.2.parameter
-              keyResult.1.2.chainStart level.val (Concrete.childNode node true)))
-          forgedOutput honestOutput (by simp [Concrete.CacheView.merkleInput])
-          (by simp [Concrete.CacheView.merkleInput]) hforged hhonest)
-
 theorem Concrete.keygen_cache_merkleInput_eq_none_of_ne_in_largerCache
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
