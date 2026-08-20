@@ -1,10 +1,67 @@
-import XmssSecurity.Proof.FirstLaneHazardEnforcement
+import XmssSecurity.Proof.FirstLaneEagerSimulation
 
 open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity.FirstLaneOracleSimulation
 
 variable {Index : Type} [Fintype Index] [DecidableEq Index]
+
+inductive EncodingRequest where
+  | query (epoch : Epoch)
+  | sign (epoch : Epoch)
+
+def EncodingRequest.observed
+    (request : EncodingRequest) (output : HashOutput) :
+    EncodingMonitor.ObservedAction :=
+  match request with
+  | .query epoch => .query epoch output
+  | .sign epoch => .sign epoch output
+
+def EncodingRequest.cost : EncodingRequest → Nat
+  | .query _ => 1
+  | .sign _ => 0
+
+noncomputable def applyEncodingRequest
+    (request : EncodingRequest)
+    (resume : HashOutput → Option EncodingMonitor.State → ProbComp Bool) :
+    Option EncodingMonitor.State → ProbComp Bool
+  | none => uniformHashOutput >>= fun output => resume output none
+  | some state => uniformHashOutput >>= fun output =>
+      match CappedEncodingMonitor.State.applyObserved state
+        (request.observed output) with
+      | none => resume output none
+      | some (nextState, hit) =>
+          if hit then pure true else resume output (some nextState)
+
+theorem evalDist_sample_applyEncodingRequest
+    (sample : ProbComp β) (hmass : Pr[⊥ | sample] = 0)
+    (request : EncodingRequest)
+    (resume : β → HashOutput → Option EncodingMonitor.State → ProbComp Bool)
+    (state : Option EncodingMonitor.State) :
+    evalDist (sample >>= fun seed =>
+      applyEncodingRequest request (resume seed) state) =
+      evalDist (applyEncodingRequest request
+        (fun output nextState => sample >>= fun seed =>
+          resume seed output nextState) state) := by
+  cases state with
+  | none =>
+      unfold applyEncodingRequest
+      exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
+  | some state =>
+      unfold applyEncodingRequest
+      rw [OracleComp.DeferredSampling.evalDist_bind_comm]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro output
+      cases happly : CappedEncodingMonitor.State.applyObserved state
+        (request.observed output) with
+      | none => rfl
+      | some result =>
+          rcases result with ⟨nextState, hit⟩
+          cases hit with
+          | false => rfl
+          | true =>
+              exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+                sample hmass (pure true)
 
 noncomputable def runEagerQuery
     (table : Index → Digest)
@@ -21,28 +78,15 @@ noncomputable def runEagerQuery
   | .encodingQuery epoch =>
       match fuel with
       | 0 => pure (RevealProbeOracleSimulation.tableHits chainState table)
-      | remaining + 1 => do
-          let output ← uniformHashOutput
-          match encodingState with
-          | none => resume output none chainState remaining
-          | some state =>
-              match CappedEncodingMonitor.State.applyObserved state
-                (.query epoch output) with
-              | none => resume output none chainState remaining
-              | some (nextState, hit) =>
-                  if hit then pure true
-                  else resume output (some nextState) chainState remaining
-  | .encodingSignAttempt epoch => do
-      let output ← uniformHashOutput
-      match encodingState with
-      | none => resume output none chainState fuel
-      | some state =>
-          match CappedEncodingMonitor.State.applyObserved state
-            (.sign epoch output) with
-          | none => resume output none chainState fuel
-          | some (nextState, hit) =>
-              if hit then pure true
-              else resume output (some nextState) chainState fuel
+      | remaining + 1 =>
+          applyEncodingRequest (.query epoch)
+            (fun output nextState =>
+              resume output nextState chainState remaining)
+            encodingState
+  | .encodingSignAttempt epoch =>
+      applyEncodingRequest (.sign epoch)
+        (fun output nextState => resume output nextState chainState fuel)
+        encodingState
   | .probe index target =>
       match fuel with
       | 0 => pure (RevealProbeOracleSimulation.tableHits chainState table)
@@ -59,64 +103,6 @@ noncomputable def runEagerQuery
           if value ∈ chainState.pending index then pure true
           else resume value encodingState (chainState.install index value) fuel
 
-noncomputable def runEagerAction {Control : Type}
-    (resume : Option EncodingMonitor.State →
-      AdaptiveRevealMonitor.State Index → Nat → Control → ProbComp Bool)
-    (table : Index → Digest)
-    (encodingState : Option EncodingMonitor.State)
-    (chainState : AdaptiveRevealMonitor.State Index)
-    (fuel : Nat)
-    (action : FirstLaneMonitor.ControllerAction Control Index) :
-    ProbComp Bool :=
-  match action with
-  | .stop => pure (RevealProbeOracleSimulation.tableHits chainState table)
-  | .skip next =>
-      resume encodingState chainState fuel next
-  | .encodingQuery epoch next =>
-      runEagerQuery table encodingState chainState fuel (.encodingQuery epoch)
-        fun output nextEncoding nextChain nextFuel =>
-          resume nextEncoding nextChain nextFuel (next output)
-  | .encodingSignAttempt epoch next =>
-      runEagerQuery table encodingState chainState fuel
-        (.encodingSignAttempt epoch)
-        fun output nextEncoding nextChain nextFuel =>
-          resume nextEncoding nextChain nextFuel (next output)
-  | .probe index target next =>
-      runEagerQuery table encodingState chainState fuel (.probe index target)
-        fun _ nextEncoding nextChain nextFuel =>
-          resume nextEncoding nextChain nextFuel (next false)
-  | .reveal index next =>
-      runEagerQuery table encodingState chainState fuel (.reveal index)
-        fun output nextEncoding nextChain nextFuel =>
-          resume nextEncoding nextChain nextFuel (next output)
-
-noncomputable def runEager {Control : Type}
-    (controller : Control → ProbComp
-      (FirstLaneMonitor.ControllerAction Control Index))
-    (table : Index → Digest)
-    (encodingState : Option EncodingMonitor.State)
-    (chainState : AdaptiveRevealMonitor.State Index)
-    (steps fuel : Nat) (control : Control) : ProbComp Bool :=
-  match steps with
-  | 0 => pure (RevealProbeOracleSimulation.tableHits chainState table)
-  | steps + 1 => do
-      let action ← controller control
-      runEagerAction
-        (fun nextEncoding nextChain nextFuel next =>
-          runEager controller table nextEncoding nextChain steps nextFuel next)
-        table encodingState chainState fuel action
-
-noncomputable def eagerControllerExperiment {Control : Type}
-    (controller : Control → ProbComp
-      (FirstLaneMonitor.ControllerAction Control Index))
-    (encodingState : Option EncodingMonitor.State)
-    (chainState : AdaptiveRevealMonitor.State Index)
-    (steps fuel : Nat) (control : Control) : ProbComp Bool := do
-  let base ← RevealProbeOracleSimulation.eagerTableSample
-  runEager controller
-    (RevealProbeOracleSimulation.extendTable chainState base)
-    encodingState chainState steps fuel control
-
 noncomputable def encodingPendingRisk : Option EncodingMonitor.State → ENNReal
   | none => 0
   | some state => CappedEncodingMonitor.State.pendingRisk state
@@ -128,49 +114,236 @@ noncomputable def potential
       ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
     encodingPendingRisk encodingState
 
-theorem evalDist_eagerTableSample_applyObserved {Control : Type}
-    (controller : Control → ProbComp
-      (FirstLaneMonitor.ControllerAction Control Index))
+theorem applyEncodingRequest_true_probability_le
+    (request : EncodingRequest)
+    (resume : HashOutput → Option EncodingMonitor.State → ProbComp Bool)
+    (state : Option EncodingMonitor.State) (fuel : Nat)
+    (hresume : ∀ output nextState,
+      Pr[(· = true) | resume output nextState] ≤
+        (fuel : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+          encodingPendingRisk nextState) :
+    Pr[(· = true) | applyEncodingRequest request resume state] ≤
+      ((fuel + request.cost : Nat) : ENNReal) *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+        encodingPendingRisk state := by
+  cases request with
+  | query epoch =>
+      cases state with
+      | none =>
+          unfold applyEncodingRequest EncodingRequest.cost encodingPendingRisk
+          refine (probEvent_bind_le_of_forall_le fun output _ =>
+            hresume output none).trans ?_
+          simp only [encodingPendingRisk, add_zero]
+          rw [Nat.cast_add, Nat.cast_one, add_mul, one_mul]
+          exact le_add_right le_rfl
+      | some state =>
+          let activeResume := fun output nextState =>
+            resume output (some nextState)
+          have hdirect :
+              applyEncodingRequest (.query epoch) resume (some state) =
+                CappedEncodingMonitor.applyHashOutputQueryMonitor epoch
+                  activeResume state := by
+            rw [CappedEncodingMonitor.applyHashOutputQueryMonitor_eq_observed]
+            unfold applyEncodingRequest EncodingRequest.observed activeResume
+            apply bind_congr
+            intro output
+            cases hsigned : state.signed epoch with
+            | none =>
+                by_cases hvalid :
+                    TargetSum.ValidDigest (truncateHash output) <;>
+                  simp [CappedEncodingMonitor.State.applyObserved, hsigned,
+                    hvalid]
+            | some target =>
+                simp [CappedEncodingMonitor.State.applyObserved, hsigned]
+          have hdist :
+              evalDist (applyEncodingRequest (.query epoch) resume (some state)) =
+                evalDist (CappedEncodingMonitor.applyProgrammedQueryMonitor epoch
+                  activeResume state) := by
+            rw [hdirect]
+            exact
+              CappedEncodingMonitor.applyProgrammedQueryMonitor_evalDist_eq
+                epoch activeResume state |>.symm
+          refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
+          simpa [EncodingRequest.cost, encodingPendingRisk, Nat.cast_add,
+            HiddenValue.card_digest] using
+            CappedEncodingMonitor.applyProgrammedQueryMonitor_true_probability_le
+              epoch activeResume state fuel fun output nextState => by
+                simpa [activeResume, encodingPendingRisk,
+                  HiddenValue.card_digest] using
+                  hresume output (some nextState)
+  | sign epoch =>
+      cases state with
+      | none =>
+          unfold applyEncodingRequest EncodingRequest.cost encodingPendingRisk
+          exact probEvent_bind_le_of_forall_le fun output _ =>
+            hresume output none
+      | some state =>
+          cases hsigned : state.signed epoch with
+          | none =>
+              let activeResume := fun output nextState =>
+                resume output (some nextState)
+              have hdirect :
+                  applyEncodingRequest (.sign epoch) resume (some state) =
+                    CappedEncodingMonitor.applyHashOutputSignAttemptMonitor epoch
+                      activeResume state := by
+                rw [CappedEncodingMonitor.applyHashOutputSignAttemptMonitor_eq_observed]
+                unfold applyEncodingRequest EncodingRequest.observed activeResume
+                apply bind_congr
+                intro output
+                by_cases hvalid :
+                    TargetSum.ValidDigest (truncateHash output) <;>
+                  simp [CappedEncodingMonitor.State.applyObserved, hsigned,
+                    hvalid]
+              have hdist :
+                  evalDist
+                      (applyEncodingRequest (.sign epoch) resume (some state)) =
+                    evalDist
+                      (CappedEncodingMonitor.applyProgrammedSignAttemptMonitor
+                        epoch activeResume state) := by
+                rw [hdirect]
+                exact
+                  CappedEncodingMonitor.applyProgrammedSignAttemptMonitor_evalDist_eq
+                    epoch activeResume state |>.symm
+              refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
+              simpa [EncodingRequest.cost, encodingPendingRisk,
+                HiddenValue.card_digest] using
+                CappedEncodingMonitor.applyProgrammedSignAttemptMonitor_true_probability_le
+                  epoch activeResume state fuel fun output nextState => by
+                    simpa [activeResume, encodingPendingRisk,
+                      HiddenValue.card_digest] using
+                      hresume output (some nextState)
+          | some target =>
+              unfold applyEncodingRequest EncodingRequest.observed
+              refine (probEvent_bind_le_of_forall_le
+                (ε := (fuel : ENNReal) *
+                    ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+                  encodingPendingRisk (some state))
+                fun output _ => ?_).trans ?_
+              · by_cases hvalid : TargetSum.ValidDigest (truncateHash output)
+                · rw [show CappedEncodingMonitor.State.applyObserved state
+                      (.sign epoch output) = none by
+                    simp [CappedEncodingMonitor.State.applyObserved, hsigned,
+                      hvalid]]
+                  exact (hresume output none).trans (by simp [encodingPendingRisk])
+                · rw [show CappedEncodingMonitor.State.applyObserved state
+                      (.sign epoch output) =
+                        some (state, false) by
+                    simp [CappedEncodingMonitor.State.applyObserved, hvalid]]
+                  simp only [Bool.false_eq_true, ↓reduceIte]
+                  exact hresume output (some state)
+              · simp [EncodingRequest.cost]
+
+noncomputable def applyRevealRequest
+    (state : AdaptiveRevealMonitor.State Index) (index : Index)
+    (resume : Digest → AdaptiveRevealMonitor.State Index → ProbComp Bool) :
+    ProbComp Bool := do
+  let value ← $ᵗ Digest
+  if value ∈ state.pending index then pure true
+  else resume value (state.install index value)
+
+theorem applyRevealRequest_true_probability_le
+    (state : AdaptiveRevealMonitor.State Index) (index : Index)
+    (resume : Digest → AdaptiveRevealMonitor.State Index → ProbComp Bool)
+    (fuel : Nat) (offset : ENNReal)
+    (hresume : ∀ value,
+      Pr[(· = true) | resume value (state.install index value)] ≤
+        ((fuel + (state.install index value).pendingCount : Nat) : ENNReal) *
+            ((2 ^ digestBits : Nat) : ENNReal)⁻¹ + offset) :
+    Pr[(· = true) | applyRevealRequest state index resume] ≤
+      ((fuel + state.pendingCount : Nat) : ENNReal) *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ + offset := by
+  let installedCount := (state.install index 0).pendingCount
+  refine (probEvent_bind_le_probEvent_add
+    (mx := ($ᵗ Digest))
+    (my := fun value =>
+      if value ∈ state.pending index then pure true
+      else resume value (state.install index value))
+    (q := fun hit : Bool => hit = true)
+    (p := fun value : Digest => value ∈ state.pending index)
+    (ε := ((fuel + installedCount : Nat) : ENNReal) *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ + offset) ?_).trans ?_
+  · intro value _hvalue hmiss
+    simp only [hmiss, ↓reduceIte]
+    have hcount :
+        (state.install index value).pendingCount = installedCount := rfl
+    simpa [hcount] using hresume value
+  · refine add_le_add
+      (RevealProbeOracleSimulation.uniformDigest_mem_finset_le
+        (state.pending index)) le_rfl |>.trans ?_
+    have hconserve := state.pendingCount_install_add index 0
+    calc
+      ((state.pending index).card : ENNReal) *
+            ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+          (((fuel + installedCount : Nat) : ENNReal) *
+              ((2 ^ digestBits : Nat) : ENNReal)⁻¹ + offset) =
+        ((((state.pending index).card + fuel + installedCount : Nat) :
+              ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+            offset) := by
+          push_cast
+          ring
+      _ = ((fuel + state.pendingCount : Nat) : ENNReal) *
+              ((2 ^ digestBits : Nat) : ENNReal)⁻¹ + offset := by
+            rw [show
+              (state.pending index).card + fuel + installedCount =
+                fuel + state.pendingCount by omega]
+      _ ≤ ((fuel + state.pendingCount : Nat) : ENNReal) *
+              ((2 ^ digestBits : Nat) : ENNReal)⁻¹ + offset := le_rfl
+
+theorem evalDist_eagerTableSample_applyRevealRequest
     (chainState : AdaptiveRevealMonitor.State Index)
-    (steps fuel : Nat) (next : HashOutput → Control)
-    (applyObserved : HashOutput → Option (EncodingMonitor.State × Bool)) :
+    (index : Index) (hrevealed : chainState.revealed index = none)
+    (resume : (Index → Digest) → Digest →
+      AdaptiveRevealMonitor.State Index → ProbComp Bool) :
     evalDist (RevealProbeOracleSimulation.eagerTableSample >>= fun base =>
-      uniformHashOutput >>= fun output =>
-        match applyObserved output with
-        | none =>
-            runEager controller
-              (RevealProbeOracleSimulation.extendTable chainState base)
-              none chainState steps fuel (next output)
-        | some (nextState, hit) =>
-            if hit then pure true else
-              runEager controller
-                (RevealProbeOracleSimulation.extendTable chainState base)
-                (some nextState) chainState steps fuel (next output)) =
-      evalDist (uniformHashOutput >>= fun output =>
-        match applyObserved output with
-        | none =>
-            eagerControllerExperiment controller none chainState steps fuel
-              (next output)
-        | some (nextState, hit) =>
-            if hit then pure true else
-              eagerControllerExperiment controller (some nextState) chainState
-                steps fuel (next output)) := by
-  rw [OracleComp.DeferredSampling.evalDist_bind_comm]
-  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-  intro output
-  cases happly : applyObserved output with
-  | none => rfl
-  | some result =>
-      rcases result with ⟨nextState, hit⟩
-      cases hit with
-      | false => rfl
-      | true =>
-          change evalDist
-              (RevealProbeOracleSimulation.eagerTableSample >>= fun _ =>
-                pure true) = evalDist (pure true)
-          exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-            RevealProbeOracleSimulation.eagerTableSample
-            (by simp [RevealProbeOracleSimulation.eagerTableSample]) (pure true)
+      let table := RevealProbeOracleSimulation.extendTable chainState base
+      let value := table index
+      if value ∈ chainState.pending index then pure true
+      else resume table value (chainState.install index value)) =
+      evalDist (applyRevealRequest chainState index fun value nextState =>
+        RevealProbeOracleSimulation.eagerTableSample >>= fun base =>
+          resume (RevealProbeOracleSimulation.extendTable nextState base)
+            value nextState) := by
+  let continuation := fun (base : Index → Digest) =>
+    let table := RevealProbeOracleSimulation.extendTable chainState base
+    let value := table index
+    if value ∈ chainState.pending index then pure true
+    else resume table value (chainState.install index value)
+  calc
+    _ = evalDist (do
+          let value ← $ᵗ Digest
+          let base ← RevealProbeOracleSimulation.eagerTableSample
+          if value ∈ chainState.pending index then pure true
+          else
+            resume
+              (RevealProbeOracleSimulation.extendTable
+                (chainState.install index value) base)
+              value (chainState.install index value)) := by
+        unfold RevealProbeOracleSimulation.eagerTableSample
+        rw [RevealProbeOracleSimulation.evalDist_uniformTable_eq_bind_update
+          index continuation]
+        apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+        intro value
+        apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+        intro base
+        simp only [continuation]
+        rw [RevealProbeOracleSimulation.extendTable_update_eq_install
+          chainState index value base hrevealed]
+        have hinstalled :
+            RevealProbeOracleSimulation.extendTable
+              (chainState.install index value) base index = value := by
+          simp [RevealProbeOracleSimulation.extendTable,
+            AdaptiveRevealMonitor.State.install]
+        rw [hinstalled]
+    _ = _ := by
+      unfold applyRevealRequest
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro value
+      by_cases hhit : value ∈ chainState.pending index
+      · simp only [hhit, ↓reduceIte]
+        exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+          RevealProbeOracleSimulation.eagerTableSample
+          (by simp [RevealProbeOracleSimulation.eagerTableSample]) (pure true)
+      · simp [hhit]
 
 noncomputable def runObserved
     (table : Index → Digest) :
@@ -294,6 +467,21 @@ noncomputable def runStructural
       runEagerQuery table encodingState chainState fuel input recursivelyRun)
     computation encodingState chainState fuel
 
+theorem runStructural_query_bind
+    (table : Index → Digest)
+    (encodingState : Option EncodingMonitor.State)
+    (chainState : AdaptiveRevealMonitor.State Index)
+    (fuel : Nat) (input : (World Index).Domain)
+    (next : (World Index).Range input → OracleComp (World Index) α) :
+    runStructural table encodingState chainState fuel
+        ((liftM (OracleSpec.query input) :
+          OracleComp (World Index) ((World Index).Range input)) >>= next) =
+      runEagerQuery table encodingState chainState fuel input fun output
+        nextEncoding nextChain nextFuel =>
+          runStructural table nextEncoding nextChain nextFuel (next output) := by
+  rw [runStructural, OracleComp.construct_query_bind]
+  rfl
+
 noncomputable def structuralExperiment
     (encodingState : Option EncodingMonitor.State)
     (chainState : AdaptiveRevealMonitor.State Index)
@@ -302,232 +490,27 @@ noncomputable def structuralExperiment
   runStructural (RevealProbeOracleSimulation.extendTable chainState base)
     encodingState chainState fuel computation
 
-
-omit [Fintype Index] [DecidableEq Index] in
-theorem exists_isSpecialQueryBoundP
-    (computation : OracleComp (World Index) α) :
-    ∃ steps, computation.IsQueryBoundP IsSpecialQuery steps := by
-  classical
-  induction computation using OracleComp.inductionOn with
-  | pure result => exact ⟨0, trivial⟩
-  | query_bind input next ih =>
-      choose bounds hb using ih
-      let total := ∑ output, bounds output
-      let steps := total + if IsSpecialQuery input then 1 else 0
-      refine ⟨steps, ?_⟩
-      rw [OracleComp.isQueryBoundP_query_bind_iff]
-      constructor
-      · by_cases hspecial : IsSpecialQuery input <;>
-          simp [steps, hspecial]
-      · intro output
-        apply (hb output).mono
-        have hle : bounds output ≤ total := by
-          exact Finset.single_le_sum (fun _ _ => Nat.zero_le _) (by simp)
-        by_cases hspecial : IsSpecialQuery input <;>
-          simp [steps, hspecial, hle]
-
-theorem evalDist_runEager_controller_eq_runStructural
-    (table : Index → Digest)
+theorem structuralExperiment_query_bind
     (encodingState : Option EncodingMonitor.State)
     (chainState : AdaptiveRevealMonitor.State Index)
-    (steps fuel : Nat) (computation : OracleComp (World Index) α)
-    (hsteps : computation.IsQueryBoundP IsSpecialQuery steps) :
-    evalDist (runEager controller table encodingState chainState
-      steps fuel computation) =
-    evalDist (runStructural table encodingState chainState fuel computation) := by
-  induction computation using OracleComp.inductionOn generalizing
-      encodingState chainState steps fuel with
-  | pure result =>
-      cases steps <;>
-        simp [runEager, runEagerAction, runEagerQuery, controller,
-          runStructural]
-  | query_bind input next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hsteps
-      cases input with
-      | uniform n =>
-          cases steps with
-          | zero =>
-              simp only [runEager]
-              change evalDist
-                  (pure (RevealProbeOracleSimulation.tableHits chainState table)) =
-                evalDist ((liftM (unifSpec.query n) : ProbComp _) >>= fun output =>
-                  runStructural table encodingState chainState fuel
-                    (next output))
-              symm
-              calc
-                _ = evalDist ((liftM (unifSpec.query n) : ProbComp _) >>=
-                    fun _ => pure
-                      (RevealProbeOracleSimulation.tableHits chainState table)) := by
-                  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-                  intro output
-                  exact (ih output encodingState chainState 0 fuel
-                    (by simpa [IsSpecialQuery] using hsteps.2 output)).symm
-                _ = _ :=
-                  OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-                    (liftM (unifSpec.query n) : ProbComp _)
-                    (by simp) (pure
-                      (RevealProbeOracleSimulation.tableHits chainState table))
-          | succ steps =>
-              simp only [runEager, runEagerAction]
-              change evalDist ((liftM (unifSpec.query n) : ProbComp _) >>=
-                  fun output => runEager controller table encodingState
-                    chainState (steps + 1) fuel (next output)) =
-                evalDist ((liftM (unifSpec.query n) : ProbComp _) >>= fun output =>
-                  runStructural table encodingState chainState fuel
-                    (next output))
-              apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-              intro output
-              exact ih output encodingState chainState (steps + 1) fuel
-                (by simpa [IsSpecialQuery] using hsteps.2 output)
-      | encodingQuery epoch =>
-          cases steps with
-          | zero => simp [IsSpecialQuery] at hsteps
-          | succ steps =>
-              simp only [runEager, runEagerAction]
-              cases fuel with
-              | zero => simp [controller, runStructural, runEagerQuery]
-              | succ remaining =>
-                  simp only [controller, runStructural, runEagerQuery,
-                    OracleComp.construct_query_bind,
-                    pure_bind]
-                  change evalDist (uniformHashOutput >>= fun output =>
-                      match encodingState with
-                      | none => runEager controller table none chainState steps
-                          remaining (next output)
-                      | some state =>
-                          match CappedEncodingMonitor.State.applyObserved state
-                            (.query epoch output) with
-                          | none => runEager controller table none chainState
-                              steps remaining (next output)
-                          | some (nextState, hit) =>
-                              if hit then pure true else runEager controller table
-                                (some nextState) chainState steps remaining
-                                  (next output)) = _
-                  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-                  intro output
-                  cases encodingState with
-                  | none =>
-                      exact ih output none chainState steps remaining
-                        (by simpa [IsSpecialQuery] using hsteps.2 output)
-                  | some state =>
-                      cases happly :
-                        CappedEncodingMonitor.State.applyObserved state
-                          (.query epoch output) with
-                      | none =>
-                          simp only [happly]
-                          change evalDist (runEager controller table none
-                              chainState steps remaining (next output)) =
-                            evalDist (runStructural table none chainState
-                              remaining (next output))
-                          exact ih output none chainState steps remaining
-                            (by simpa [IsSpecialQuery] using hsteps.2 output)
-                      | some result =>
-                          rcases result with ⟨nextState, hit⟩
-                          cases hit with
-                          | false =>
-                              simp only [happly]
-                              change evalDist (runEager controller table
-                                  (some nextState) chainState steps remaining
-                                    (next output)) =
-                                evalDist (runStructural table (some nextState)
-                                  chainState remaining (next output))
-                              exact ih output (some nextState) chainState steps
-                                remaining
-                                (by simpa [IsSpecialQuery] using hsteps.2 output)
-                          | true => simp [happly]
-      | encodingSignAttempt epoch =>
-          cases steps with
-          | zero => simp [IsSpecialQuery] at hsteps
-          | succ steps =>
-              simp only [runEager, runEagerAction, runEagerQuery, controller,
-                runStructural,
-                OracleComp.construct_query_bind, pure_bind]
-              change evalDist (uniformHashOutput >>= fun output =>
-                  match encodingState with
-                  | none => runEager controller table none chainState steps fuel
-                      (next output)
-                  | some state =>
-                      match CappedEncodingMonitor.State.applyObserved state
-                        (.sign epoch output) with
-                      | none => runEager controller table none chainState steps
-                          fuel (next output)
-                      | some (nextState, hit) =>
-                          if hit then pure true else runEager controller table
-                            (some nextState) chainState steps fuel
-                              (next output)) = _
-              apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-              intro output
-              cases encodingState with
-              | none =>
-                  exact ih output none chainState steps fuel
-                    (by simpa [IsSpecialQuery] using hsteps.2 output)
-              | some state =>
-                  cases happly : CappedEncodingMonitor.State.applyObserved state
-                    (.sign epoch output) with
-                  | none =>
-                      simp only [happly]
-                      change evalDist (runEager controller table none chainState
-                          steps fuel (next output)) =
-                        evalDist (runStructural table none chainState fuel
-                          (next output))
-                      exact ih output none chainState steps fuel
-                        (by simpa [IsSpecialQuery] using hsteps.2 output)
-                  | some result =>
-                      rcases result with ⟨nextState, hit⟩
-                      cases hit with
-                      | false =>
-                          simp only [happly]
-                          change evalDist (runEager controller table
-                              (some nextState) chainState steps fuel
-                                (next output)) =
-                            evalDist (runStructural table (some nextState)
-                              chainState fuel (next output))
-                          exact ih output (some nextState) chainState steps fuel
-                            (by simpa [IsSpecialQuery] using hsteps.2 output)
-                      | true => simp [happly]
-      | probe index target =>
-          cases steps with
-          | zero => simp [IsSpecialQuery] at hsteps
-          | succ steps =>
-              simp only [runEager, runEagerAction, runEagerQuery, controller,
-                runStructural,
-                OracleComp.construct_query_bind, pure_bind]
-              cases fuel with
-              | zero => rfl
-              | succ remaining =>
-                  cases hrevealed : chainState.revealed index with
-                  | some value =>
-                      exact ih () encodingState chainState steps remaining
-                        (by simpa [IsSpecialQuery] using hsteps.2 ())
-                  | none =>
-                      exact ih () encodingState
-                        (chainState.addPending index target) steps remaining
-                          (by simpa [IsSpecialQuery] using hsteps.2 ())
-      | reveal index =>
-          cases steps with
-          | zero => simp [IsSpecialQuery] at hsteps
-          | succ steps =>
-              simp only [runEager, runEagerAction, runEagerQuery, controller,
-                runStructural,
-                OracleComp.construct_query_bind, pure_bind]
-              cases hrevealed : chainState.revealed index with
-              | some value =>
-                  exact ih value encodingState chainState steps fuel
-                    (by simpa [IsSpecialQuery] using hsteps.2 value)
-              | none =>
-                  by_cases hhit : table index ∈ chainState.pending index
-                  · simp [hhit]
-                  · simp only [hhit, ↓reduceIte]
-                    change evalDist (runEager controller table encodingState
-                        (chainState.install index (table index)) steps fuel
-                          (next (table index))) =
-                      evalDist (runStructural table encodingState
-                        (chainState.install index (table index)) fuel
-                          (next (table index)))
-                    exact ih (table index) encodingState
-                      (chainState.install index (table index)) steps fuel
-                        (by simpa [IsSpecialQuery] using
-                          hsteps.2 (table index))
+    (fuel : Nat) (input : (World Index).Domain)
+    (next : (World Index).Range input → OracleComp (World Index) α) :
+    structuralExperiment encodingState chainState fuel
+        ((liftM (OracleSpec.query input) :
+          OracleComp (World Index) ((World Index).Range input)) >>= next) =
+      RevealProbeOracleSimulation.eagerTableSample >>= fun base =>
+        runEagerQuery
+          (RevealProbeOracleSimulation.extendTable chainState base)
+          encodingState chainState fuel input fun output nextEncoding nextChain
+            nextFuel =>
+              runStructural
+                (RevealProbeOracleSimulation.extendTable chainState base)
+                nextEncoding nextChain nextFuel (next output) := by
+  unfold structuralExperiment
+  apply bind_congr
+  intro base
+  exact runStructural_query_bind _ _ _ _ _ _
+
 
 theorem eagerFinalize_true_probability_le
     (encodingState : Option EncodingMonitor.State)
@@ -548,341 +531,150 @@ theorem eagerFinalize_true_probability_le
   omega
 
 set_option maxRecDepth 100000 in
-theorem eagerController_true_probability_le {Control : Type}
-    (controller : Control → ProbComp
-      (FirstLaneMonitor.ControllerAction Control Index))
+theorem structuralExperiment_true_probability_le
     (encodingState : Option EncodingMonitor.State)
     (chainState : AdaptiveRevealMonitor.State Index)
     (hvalid : RevealProbeOracleSimulation.StateValid chainState)
-    (steps fuel : Nat) (control : Control) :
+    (fuel : Nat) (computation : OracleComp (World Index) α) :
     Pr[(fun hit : Bool => hit = true) |
-      eagerControllerExperiment controller encodingState chainState
-        steps fuel control] ≤
+      structuralExperiment encodingState chainState fuel computation] ≤
       potential fuel encodingState chainState := by
-  induction steps generalizing encodingState chainState fuel control with
-  | zero =>
+  induction computation using OracleComp.inductionOn generalizing
+      encodingState chainState fuel with
+  | pure result =>
       change Pr[(fun hit : Bool => hit = true) |
         (fun base : Index → Digest =>
           RevealProbeOracleSimulation.tableHits chainState
             (RevealProbeOracleSimulation.extendTable chainState base)) <$>
           RevealProbeOracleSimulation.eagerTableSample] ≤ _
       exact eagerFinalize_true_probability_le encodingState chainState hvalid fuel
-  | succ steps ih =>
-      have hswap :
-          evalDist (eagerControllerExperiment controller encodingState
-            chainState (steps + 1) fuel control) =
-          evalDist (controller control >>= fun action =>
-            RevealProbeOracleSimulation.eagerTableSample >>= fun base =>
-              let table := RevealProbeOracleSimulation.extendTable chainState base
-              runEagerAction
-                (fun nextEncoding nextChain nextFuel next =>
-                  runEager controller table nextEncoding nextChain steps
-                    nextFuel next)
-                table encodingState chainState fuel action) := by
-        change evalDist
-            (RevealProbeOracleSimulation.eagerTableSample >>= fun base =>
-              controller control >>= fun action =>
-                let table :=
-                  RevealProbeOracleSimulation.extendTable chainState base
-                runEagerAction
-                  (fun nextEncoding nextChain nextFuel next =>
-                    runEager controller table nextEncoding nextChain steps
-                      nextFuel next)
-                  table encodingState chainState fuel action) = _
-        exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
-      refine (probEvent_congr' (fun _ _ => Iff.rfl) hswap).le.trans ?_
-      refine probEvent_bind_le_of_forall_le fun action _haction => ?_
-      cases action with
-      | stop =>
-          change Pr[(fun hit : Bool => hit = true) |
-            (fun base : Index → Digest =>
-              RevealProbeOracleSimulation.tableHits chainState
-                (RevealProbeOracleSimulation.extendTable chainState base)) <$>
-              RevealProbeOracleSimulation.eagerTableSample] ≤ _
-          exact eagerFinalize_true_probability_le encodingState chainState
-            hvalid fuel
-      | skip next =>
-          change Pr[(fun hit : Bool => hit = true) |
-            eagerControllerExperiment controller encodingState chainState
-              steps fuel next] ≤ _
-          exact ih encodingState chainState hvalid fuel next
-      | encodingQuery epoch next =>
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          have hdist :
+              evalDist (structuralExperiment encodingState chainState fuel
+                ((liftM (OracleSpec.query (spec := World Index) (.uniform n)) :
+                  OracleComp (World Index) _) >>= next)) =
+                evalDist ((liftM (unifSpec.query n) : ProbComp _) >>= fun output =>
+                  structuralExperiment encodingState chainState fuel
+                    (next output)) := by
+            rw [structuralExperiment_query_bind]
+            simp only [runEagerQuery]
+            exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
+          refine (probEvent_congr'
+            (oa' := (liftM (unifSpec.query n) : ProbComp _) >>= fun output =>
+              structuralExperiment encodingState chainState fuel (next output))
+            (fun _ _ => Iff.rfl) hdist).le.trans ?_
+          exact probEvent_bind_le_of_forall_le fun output _ =>
+            ih output encodingState chainState hvalid fuel
+      | encodingQuery epoch =>
           cases fuel with
           | zero =>
-              simp only [runEagerAction, runEagerQuery]
+              rw [structuralExperiment_query_bind]
+              simp only [runEagerQuery]
               exact eagerFinalize_true_probability_le encodingState chainState
                 hvalid 0
           | succ remaining =>
-              simp only [runEagerAction, runEagerQuery]
-              cases encodingState with
-              | none =>
-                  let continuation := fun output : HashOutput =>
-                    eagerControllerExperiment controller none chainState steps
-                      remaining (next output)
-                  have hdist :
-                      evalDist (RevealProbeOracleSimulation.eagerTableSample >>=
-                        fun base => uniformHashOutput >>= fun output =>
-                          runEager controller
-                            (RevealProbeOracleSimulation.extendTable chainState base)
-                            none chainState steps remaining (next output)) =
-                      evalDist (uniformHashOutput >>= continuation) := by
-                    simpa [continuation] using
-                      evalDist_eagerTableSample_applyObserved controller
-                        chainState steps remaining next fun _ => none
-                  refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
-                  refine probEvent_bind_le_of_forall_le fun output _ => ?_
-                  refine (ih none chainState hvalid remaining
-                    (next output)).trans ?_
-                  unfold potential encodingPendingRisk
-                  gcongr
-                  omega
-              | some state =>
-                  let continuation := fun output nextState =>
-                    eagerControllerExperiment controller (some nextState)
-                      chainState steps remaining (next output)
-                  let observed := fun output : HashOutput =>
-                    match CappedEncodingMonitor.State.applyObserved state
-                      (.query epoch output) with
-                    | none =>
-                        eagerControllerExperiment controller none chainState
-                          steps remaining (next output)
-                    | some (nextState, hit) =>
-                        if hit then pure true else continuation output nextState
-                  have hobserved :
-                      (uniformHashOutput >>= observed) =
-                        CappedEncodingMonitor.applyHashOutputQueryMonitor epoch
-                          continuation state := by
-                    rw [CappedEncodingMonitor.applyHashOutputQueryMonitor_eq_observed]
-                    apply bind_congr
-                    intro output
-                    cases hsigned : state.signed epoch with
-                    | none =>
-                        by_cases hdigest :
-                            TargetSum.ValidDigest (truncateHash output) <;>
-                          simp [observed, continuation,
-                            CappedEncodingMonitor.State.applyObserved,
-                            hsigned, hdigest]
-                    | some target =>
-                        by_cases heq : truncateHash output = target <;>
-                          simp [observed, continuation,
-                            CappedEncodingMonitor.State.applyObserved,
-                            hsigned, heq]
-                  have hdist :
-                      evalDist (RevealProbeOracleSimulation.eagerTableSample >>=
-                        fun base => uniformHashOutput >>= fun output =>
-                          match CappedEncodingMonitor.State.applyObserved state
-                            (.query epoch output) with
-                          | none =>
-                              runEager controller
-                                (RevealProbeOracleSimulation.extendTable
-                                  chainState base) none chainState steps remaining
-                                    (next output)
-                          | some (nextState, hit) =>
-                              if hit then pure true
-                              else runEager controller
-                                (RevealProbeOracleSimulation.extendTable
-                                  chainState base) (some nextState) chainState
-                                    steps remaining (next output)) =
-                      evalDist
-                        (CappedEncodingMonitor.applyProgrammedQueryMonitor epoch
-                          continuation state) := by
-                    calc
-                      _ = evalDist (uniformHashOutput >>= observed) := by
-                        simpa [observed, continuation] using
-                          evalDist_eagerTableSample_applyObserved controller
-                            chainState steps remaining next fun output =>
-                              CappedEncodingMonitor.State.applyObserved state
-                                (.query epoch output)
-                      _ = evalDist
-                          (CappedEncodingMonitor.applyHashOutputQueryMonitor epoch
-                            continuation state) := congrArg evalDist hobserved
-                      _ = _ :=
-                        CappedEncodingMonitor.applyProgrammedQueryMonitor_evalDist_eq
-                          epoch continuation state |>.symm
-                  refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
-                  simpa [potential, encodingPendingRisk, Nat.succ_add,
-                    HiddenValue.card_digest] using
-                    CappedEncodingMonitor.applyProgrammedQueryMonitor_true_probability_le
-                      epoch continuation state
-                        (remaining + chainState.pendingCount)
-                        (fun output nextState => by
-                          simpa [continuation, potential, encodingPendingRisk,
-                            HiddenValue.card_digest] using
-                            ih (some nextState) chainState hvalid remaining
-                              (next output))
-      | encodingSignAttempt epoch next =>
-          simp only [runEagerAction, runEagerQuery]
-          cases encodingState with
-          | none =>
-              let continuation := fun output : HashOutput =>
-                eagerControllerExperiment controller none chainState steps fuel
-                  (next output)
+              let resume := fun output nextState =>
+                structuralExperiment nextState chainState remaining (next output)
               have hdist :
-                  evalDist (RevealProbeOracleSimulation.eagerTableSample >>=
-                    fun base => uniformHashOutput >>= fun output =>
-                      runEager controller
+                  evalDist (structuralExperiment encodingState chainState
+                    (remaining + 1)
+                    ((liftM (OracleSpec.query (spec := World Index)
+                      (.encodingQuery epoch)) :
+                      OracleComp (World Index) _) >>= next)) =
+                    evalDist
+                      (applyEncodingRequest (.query epoch) resume encodingState) := by
+                rw [structuralExperiment_query_bind]
+                simp only [runEagerQuery]
+                simpa [resume, structuralExperiment] using
+                  evalDist_sample_applyEncodingRequest
+                    RevealProbeOracleSimulation.eagerTableSample
+                    (by simp [RevealProbeOracleSimulation.eagerTableSample])
+                    (.query epoch)
+                    (fun base output nextState =>
+                      runStructural
                         (RevealProbeOracleSimulation.extendTable chainState base)
-                        none chainState steps fuel (next output)) =
-                  evalDist (uniformHashOutput >>= continuation) := by
-                simpa [continuation] using
-                  evalDist_eagerTableSample_applyObserved controller
-                    chainState steps fuel next fun _ => none
-              refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
-              exact probEvent_bind_le_of_forall_le fun output _ =>
-                ih none chainState hvalid fuel (next output)
-          | some state =>
-              cases hsigned : state.signed epoch with
-              | some target =>
-                  let continuation := fun output : HashOutput =>
-                    match CappedEncodingMonitor.State.applyObserved state
-                      (.sign epoch output) with
-                    | none =>
-                        eagerControllerExperiment controller none chainState
-                          steps fuel (next output)
-                    | some (nextState, hit) =>
-                        if hit then pure true
-                        else eagerControllerExperiment controller
-                          (some nextState) chainState steps fuel (next output)
-                  have hdist :
-                      evalDist (RevealProbeOracleSimulation.eagerTableSample >>=
-                        fun base => uniformHashOutput >>= fun output =>
-                          match CappedEncodingMonitor.State.applyObserved state
-                            (.sign epoch output) with
-                          | none =>
-                              runEager controller
-                                (RevealProbeOracleSimulation.extendTable
-                                  chainState base) none chainState steps fuel
-                                    (next output)
-                          | some (nextState, hit) =>
-                              if hit then pure true else
-                                runEager controller
-                                  (RevealProbeOracleSimulation.extendTable
-                                    chainState base) (some nextState) chainState
-                                      steps fuel (next output)) =
-                      evalDist (uniformHashOutput >>= continuation) := by
-                    simpa [continuation] using
-                      evalDist_eagerTableSample_applyObserved controller
-                        chainState steps fuel next fun output =>
-                          CappedEncodingMonitor.State.applyObserved state
-                            (.sign epoch output)
-                  refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
-                  refine probEvent_bind_le_of_forall_le fun output _ => ?_
-                  simp [continuation,
-                    CappedEncodingMonitor.State.applyObserved, hsigned]
-                  by_cases hvalidDigest :
-                      TargetSum.ValidDigest (truncateHash output)
-                  · simp [hvalidDigest]
-                    rw [← probEvent_eq_eq_probOutput]
-                    refine (ih none chainState hvalid fuel
-                      (next output)).trans ?_
-                    simp [potential, encodingPendingRisk]
-                  · simp [hvalidDigest]
-                    rw [← probEvent_eq_eq_probOutput]
-                    exact ih (some state) chainState hvalid fuel (next output)
-              | none =>
-                  let continuation := fun output nextState =>
-                    eagerControllerExperiment controller (some nextState)
-                      chainState steps fuel (next output)
-                  let observed := fun output : HashOutput =>
-                    match CappedEncodingMonitor.State.applyObserved state
-                      (.sign epoch output) with
-                    | none =>
-                        eagerControllerExperiment controller none chainState
-                          steps fuel (next output)
-                    | some (nextState, hit) =>
-                        if hit then pure true else continuation output nextState
-                  have hobserved :
-                      (uniformHashOutput >>= observed) =
-                        CappedEncodingMonitor.applyHashOutputSignAttemptMonitor
-                          epoch continuation state := by
-                    rw [CappedEncodingMonitor.applyHashOutputSignAttemptMonitor_eq_observed]
-                    apply bind_congr
-                    intro output
-                    by_cases hdigest :
-                        TargetSum.ValidDigest (truncateHash output)
-                    · by_cases hmem :
-                          truncateHash output ∈ state.pending epoch <;>
-                        simp [observed, continuation,
-                          CappedEncodingMonitor.State.applyObserved, hsigned,
-                          hdigest, hmem]
-                    · simp [observed, continuation,
-                        CappedEncodingMonitor.State.applyObserved, hsigned,
-                        hdigest]
-                  have hdist :
-                      evalDist (RevealProbeOracleSimulation.eagerTableSample >>=
-                        fun base => uniformHashOutput >>= fun output =>
-                          match CappedEncodingMonitor.State.applyObserved state
-                            (.sign epoch output) with
-                          | none =>
-                              runEager controller
-                                (RevealProbeOracleSimulation.extendTable
-                                  chainState base) none chainState steps fuel
-                                    (next output)
-                          | some (nextState, hit) =>
-                              if hit then pure true else runEager controller
-                                (RevealProbeOracleSimulation.extendTable
-                                  chainState base) (some nextState) chainState
-                                    steps fuel (next output)) =
-                      evalDist
-                        (CappedEncodingMonitor.applyProgrammedSignAttemptMonitor
-                          epoch continuation state) := by
-                    calc
-                      _ = evalDist (uniformHashOutput >>= observed) := by
-                        simpa [observed, continuation] using
-                          evalDist_eagerTableSample_applyObserved controller
-                            chainState steps fuel next fun output =>
-                              CappedEncodingMonitor.State.applyObserved state
-                                (.sign epoch output)
-                      _ = evalDist
-                          (CappedEncodingMonitor.applyHashOutputSignAttemptMonitor
-                            epoch continuation state) := congrArg evalDist hobserved
-                      _ = _ :=
-                        CappedEncodingMonitor.applyProgrammedSignAttemptMonitor_evalDist_eq
-                          epoch continuation state |>.symm
-                  refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
-                  simpa [potential, encodingPendingRisk,
-                    HiddenValue.card_digest] using
-                    CappedEncodingMonitor.applyProgrammedSignAttemptMonitor_true_probability_le
-                      epoch continuation state
-                        (fuel + chainState.pendingCount)
-                        (fun output nextState => by
-                          simpa [continuation, potential, encodingPendingRisk,
-                            HiddenValue.card_digest] using
-                            ih (some nextState) chainState hvalid fuel
-                              (next output))
-      | probe index target next =>
+                        nextState chainState remaining (next output))
+                    encodingState
+              refine (probEvent_congr'
+                (oa' := applyEncodingRequest (.query epoch) resume encodingState)
+                (fun _ _ => Iff.rfl) hdist).le.trans ?_
+              simpa [resume, potential, EncodingRequest.cost,
+                HiddenValue.card_digest, Nat.add_assoc, Nat.add_comm,
+                Nat.add_left_comm] using
+                applyEncodingRequest_true_probability_le (.query epoch) resume
+                  encodingState (remaining + chainState.pendingCount)
+                  (fun output nextState => by
+                    simpa [resume, potential, HiddenValue.card_digest] using
+                      ih output nextState chainState hvalid remaining)
+      | encodingSignAttempt epoch =>
+          let resume := fun output nextState =>
+            structuralExperiment nextState chainState fuel (next output)
+          have hdist :
+              evalDist (structuralExperiment encodingState chainState fuel
+                ((liftM (OracleSpec.query (spec := World Index)
+                  (.encodingSignAttempt epoch)) :
+                  OracleComp (World Index) _) >>= next)) =
+                evalDist
+                  (applyEncodingRequest (.sign epoch) resume encodingState) := by
+            rw [structuralExperiment_query_bind]
+            simp only [runEagerQuery]
+            simpa [resume, structuralExperiment] using
+              evalDist_sample_applyEncodingRequest
+                RevealProbeOracleSimulation.eagerTableSample
+                (by simp [RevealProbeOracleSimulation.eagerTableSample])
+                (.sign epoch)
+                (fun base output nextState =>
+                  runStructural
+                    (RevealProbeOracleSimulation.extendTable chainState base)
+                    nextState chainState fuel (next output))
+                encodingState
+          refine (probEvent_congr'
+            (oa' := applyEncodingRequest (.sign epoch) resume encodingState)
+            (fun _ _ => Iff.rfl) hdist).le.trans ?_
+          simpa [resume, potential, EncodingRequest.cost,
+            HiddenValue.card_digest] using
+            applyEncodingRequest_true_probability_le (.sign epoch) resume
+              encodingState (fuel + chainState.pendingCount)
+              (fun output nextState => by
+                simpa [resume, potential, HiddenValue.card_digest] using
+                  ih output nextState chainState hvalid fuel)
+      | probe index target =>
           cases fuel with
           | zero =>
-              simp only [runEagerAction, runEagerQuery]
+              rw [structuralExperiment_query_bind]
+              simp only [runEagerQuery]
               exact eagerFinalize_true_probability_le encodingState chainState
                 hvalid 0
           | succ remaining =>
               cases hrevealed : chainState.revealed index with
               | some value =>
-                  simp only [runEagerAction, runEagerQuery, hrevealed]
+                  rw [structuralExperiment_query_bind]
+                  simp only [runEagerQuery, hrevealed]
                   change Pr[(fun hit : Bool => hit = true) |
-                    eagerControllerExperiment controller encodingState chainState
-                      steps remaining (next false)] ≤ _
-                  refine (ih encodingState chainState hvalid remaining
-                    (next false)).trans ?_
+                    structuralExperiment encodingState chainState remaining
+                      (next ())] ≤ _
+                  refine (ih () encodingState chainState hvalid remaining).trans ?_
                   unfold potential
                   gcongr
                   omega
               | none =>
-                  simp only [runEagerAction, runEagerQuery, hrevealed]
+                  rw [structuralExperiment_query_bind]
+                  simp only [runEagerQuery, hrevealed]
                   change Pr[(fun hit : Bool => hit = true) |
-                    eagerControllerExperiment controller encodingState
-                      (chainState.addPending index target) steps remaining
-                        (next false)] ≤ _
-                  refine (ih encodingState
+                    structuralExperiment encodingState
+                      (chainState.addPending index target) remaining
+                        (next ())] ≤ _
+                  refine (ih () encodingState
                     (chainState.addPending index target)
-                    (hvalid.addPending index target hrevealed) remaining
-                      (next false)).trans ?_
+                    (hvalid.addPending index target hrevealed) remaining).trans ?_
                   unfold potential
-                  have hadd := chainState.pendingCount_addPending_le index target
                   have hnat : remaining +
                       (chainState.addPending index target).pendingCount ≤
-                    remaining + 1 + chainState.pendingCount := by omega
+                    remaining + 1 + chainState.pendingCount := by
+                      have := chainState.pendingCount_addPending_le index target
+                      omega
                   exact add_le_add
                     (mul_le_mul_left
                       (by exact_mod_cast hnat :
@@ -892,142 +684,40 @@ theorem eagerController_true_probability_le {Control : Type}
                           ((remaining + 1 + chainState.pendingCount : Nat) :
                             ENNReal)) _)
                     le_rfl
-      | reveal index next =>
+      | reveal index =>
           cases hrevealed : chainState.revealed index with
           | some value =>
-              simp only [runEagerAction, runEagerQuery, hrevealed]
+              rw [structuralExperiment_query_bind]
+              simp only [runEagerQuery, hrevealed]
               change Pr[(fun hit : Bool => hit = true) |
-                eagerControllerExperiment controller encodingState chainState
-                  steps fuel (next value)] ≤ _
-              exact ih encodingState chainState hvalid fuel (next value)
+                structuralExperiment encodingState chainState fuel
+                  (next value)] ≤ _
+              exact ih value encodingState chainState hvalid fuel
           | none =>
-              simp only [runEagerAction, runEagerQuery, hrevealed]
-              let continuation := fun (base : Index → Digest) =>
-                let table :=
-                  RevealProbeOracleSimulation.extendTable chainState base
-                let value := table index
-                if value ∈ chainState.pending index then pure true
-                else runEager controller table encodingState
-                  (chainState.install index value) steps fuel (next value)
-              have hrevealDist :
-                  evalDist
-                      (RevealProbeOracleSimulation.eagerTableSample >>=
-                        continuation) =
-                    evalDist (do
-                      let value ← $ᵗ Digest
-                      let base ← RevealProbeOracleSimulation.eagerTableSample
-                      if value ∈ chainState.pending index then pure true
-                      else
-                        runEager controller
-                          (RevealProbeOracleSimulation.extendTable
-                            (chainState.install index value) base)
-                          encodingState (chainState.install index value) steps fuel
-                            (next value)) := by
-                unfold RevealProbeOracleSimulation.eagerTableSample
-                rw [RevealProbeOracleSimulation.evalDist_uniformTable_eq_bind_update
-                  index continuation]
-                apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-                intro value
-                apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-                intro base
-                simp only [continuation]
-                have htable :=
-                  RevealProbeOracleSimulation.extendTable_update_eq_install
-                    chainState index value base hrevealed
-                rw [htable]
-                have hinstalled :
-                    RevealProbeOracleSimulation.extendTable
-                      (chainState.install index value) base index = value := by
-                  simp [RevealProbeOracleSimulation.extendTable,
-                    AdaptiveRevealMonitor.State.install]
-                rw [hinstalled]
-              change Pr[(fun hit : Bool => hit = true) |
-                RevealProbeOracleSimulation.eagerTableSample >>=
-                  continuation] ≤ _
-              refine (probEvent_congr' (fun _ _ => Iff.rfl)
-                hrevealDist).le.trans ?_
-              refine (probEvent_bind_le_probEvent_add
-                (mx := ($ᵗ Digest))
-                (my := fun value => do
-                  let base ← RevealProbeOracleSimulation.eagerTableSample
-                  if value ∈ chainState.pending index then pure true
-                  else
-                    runEager controller
-                      (RevealProbeOracleSimulation.extendTable
-                        (chainState.install index value) base)
-                      encodingState (chainState.install index value) steps fuel
-                        (next value))
-                (q := fun hit : Bool => hit = true)
-                (p := fun value : Digest => value ∈ chainState.pending index)
-                (ε := potential fuel encodingState
-                  (chainState.install index 0)) ?_).trans ?_
-              · intro value _hvalue hmiss
-                simp only [hmiss, ↓reduceIte]
-                have hcount :
-                    (chainState.install index value).pendingCount =
-                      (chainState.install index 0).pendingCount := rfl
-                change Pr[(fun hit : Bool => hit = true) |
-                  eagerControllerExperiment controller encodingState
-                    (chainState.install index value) steps fuel
-                      (next value)] ≤ _
-                simpa [potential, hcount] using
-                  ih encodingState (chainState.install index value)
-                    (hvalid.install index value) fuel (next value)
-              · refine add_le_add
-                  (RevealProbeOracleSimulation.uniformDigest_mem_finset_le
-                    (chainState.pending index)) le_rfl |>.trans ?_
-                have hconserve :=
-                  chainState.pendingCount_install_add index 0
-                unfold potential
-                calc
-                  ((chainState.pending index).card : ENNReal) *
-                        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
-                      (((fuel +
-                          (chainState.install index 0).pendingCount : Nat) :
-                            ENNReal) *
-                          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
-                        encodingPendingRisk encodingState) =
-                    ((((chainState.pending index).card +
-                        (fuel +
-                          (chainState.install index 0).pendingCount) : Nat) :
-                          ENNReal) *
-                        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
-                      encodingPendingRisk encodingState) := by
-                        push_cast
-                        ring
-                  _ ≤ ((fuel + chainState.pendingCount : Nat) : ENNReal) *
-                        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
-                      encodingPendingRisk encodingState := by
-                    have hnat :
-                      (chainState.pending index).card +
-                          (fuel +
-                            (chainState.install index 0).pendingCount) ≤
-                        fuel + chainState.pendingCount := by omega
-                    have hcast :
-                        (((chainState.pending index).card +
-                          (fuel +
-                            (chainState.install index 0).pendingCount) : Nat) :
-                          ENNReal) ≤
-                        ((fuel + chainState.pendingCount : Nat) : ENNReal) := by
-                      exact_mod_cast hnat
-                    exact add_le_add (mul_le_mul_left hcast _) le_rfl
-
-theorem eagerController_empty_true_probability_le {Control : Type}
-    (controller : Control → ProbComp
-      (FirstLaneMonitor.ControllerAction Control Index))
-    (steps fuel : Nat) (control : Control) :
-    Pr[(fun hit : Bool => hit = true) |
-      eagerControllerExperiment controller (some EncodingMonitor.State.empty)
-        AdaptiveRevealMonitor.State.empty steps fuel control] ≤
-      (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  simpa [potential, encodingPendingRisk,
-    AdaptiveRevealMonitor.State.pendingCount_empty,
-    CappedEncodingMonitor.State.pendingRisk_empty, div_eq_mul_inv] using
-      eagerController_true_probability_le controller
-        (some EncodingMonitor.State.empty)
-        (AdaptiveRevealMonitor.State.empty :
-          AdaptiveRevealMonitor.State Index)
-        RevealProbeOracleSimulation.stateValid_empty steps fuel control
+              let resume := fun value nextState =>
+                structuralExperiment encodingState nextState fuel (next value)
+              have hdist :
+                  evalDist (structuralExperiment encodingState chainState fuel
+                    ((liftM (OracleSpec.query (spec := World Index)
+                      (.reveal index)) :
+                      OracleComp (World Index) _) >>= next)) =
+                    evalDist (applyRevealRequest chainState index resume) := by
+                rw [structuralExperiment_query_bind]
+                simp only [runEagerQuery, hrevealed]
+                simpa [resume, structuralExperiment] using
+                  evalDist_eagerTableSample_applyRevealRequest chainState index
+                    hrevealed fun table value nextState =>
+                      runStructural table encodingState nextState fuel
+                        (next value)
+              refine (probEvent_congr'
+                (oa' := applyRevealRequest chainState index resume)
+                (fun _ _ => Iff.rfl) hdist).le.trans ?_
+              simpa [resume, potential] using
+                applyRevealRequest_true_probability_le chainState index resume
+                  fuel (encodingPendingRisk encodingState) fun value => by
+                    exact ih value encodingState
+                      (chainState.install index value)
+                      (hvalid.install index value) fuel
 
 theorem structuralExperiment_empty_true_probability_le
     (fuel : Nat) (computation : OracleComp (World Index) α) :
@@ -1035,25 +725,13 @@ theorem structuralExperiment_empty_true_probability_le
       structuralExperiment (some EncodingMonitor.State.empty)
         AdaptiveRevealMonitor.State.empty fuel computation] ≤
       (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  obtain ⟨steps, hsteps⟩ := exists_isSpecialQueryBoundP computation
-  have hdist :
-      evalDist
-          (structuralExperiment (some EncodingMonitor.State.empty)
-            AdaptiveRevealMonitor.State.empty fuel computation) =
-        evalDist
-          (eagerControllerExperiment controller
-            (some EncodingMonitor.State.empty)
-            AdaptiveRevealMonitor.State.empty steps fuel computation) := by
-    unfold structuralExperiment eagerControllerExperiment
-    apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-    intro base
-    exact (evalDist_runEager_controller_eq_runStructural
-      (RevealProbeOracleSimulation.extendTable
-        AdaptiveRevealMonitor.State.empty base)
-      (some EncodingMonitor.State.empty)
-      AdaptiveRevealMonitor.State.empty steps fuel computation hsteps).symm
-  exact (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans
-    (eagerController_empty_true_probability_le controller steps fuel
-      computation)
+  simpa [potential, encodingPendingRisk,
+    AdaptiveRevealMonitor.State.pendingCount_empty,
+    CappedEncodingMonitor.State.pendingRisk_empty, div_eq_mul_inv] using
+      structuralExperiment_true_probability_le
+        (some EncodingMonitor.State.empty)
+        (AdaptiveRevealMonitor.State.empty :
+          AdaptiveRevealMonitor.State Index)
+        RevealProbeOracleSimulation.stateValid_empty fuel computation
 
 end XmssSecurity.FirstLaneOracleSimulation

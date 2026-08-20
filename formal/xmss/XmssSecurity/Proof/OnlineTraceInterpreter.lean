@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.FirstLaneOnlineMonitor
+import XmssSecurity.Proof.FirstLaneHazardEnforcement
 import XmssSecurity.Proof.MarginalCoupling
 import XmssSecurity.Proof.CacheAgreement
 import VCVio.ProgramLogic.Relational.Quantitative

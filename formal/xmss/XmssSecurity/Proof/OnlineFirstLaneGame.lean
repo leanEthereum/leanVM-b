@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.CappedGlobalFirstLaneBounds
 import XmssSecurity.Proof.CappedGlobalChainHighActionTrace
 import XmssSecurity.Proof.FirstLaneOnlineMonitor
+import XmssSecurity.Proof.FirstLaneHazardEnforcement
 
 open OracleComp OracleSpec ENNReal
 

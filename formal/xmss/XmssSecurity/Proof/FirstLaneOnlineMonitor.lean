@@ -224,13 +224,15 @@ theorem online_eq_runStructural
                   rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind]
                   simp only [ExceptT.run_bind, map_bind]
                   rw [onlineImpl_encodingQuery_succ_none_run]
-                  simp [runStructural, runEagerQuery, ih]
+                  simp [runStructural, runEagerQuery, applyEncodingRequest,
+                    EncodingRequest.observed, ih]
               | some state =>
                   rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind]
                   simp only [ExceptT.run_bind, map_bind]
                   rw [onlineImpl_encodingQuery_succ_some_run]
                   simp only [bind_assoc, pure_bind, runStructural, runEagerQuery,
-                    OracleComp.construct_query_bind]
+                    OracleComp.construct_query_bind, applyEncodingRequest,
+                    EncodingRequest.observed]
                   apply bind_congr
                   intro output
                   cases happly : CappedEncodingMonitor.State.applyObserved state
@@ -247,13 +249,15 @@ theorem online_eq_runStructural
               rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind]
               simp only [ExceptT.run_bind, map_bind]
               rw [onlineImpl_encodingSignAttempt_none_run]
-              simp [runStructural, runEagerQuery, ih]
+              simp [runStructural, runEagerQuery, applyEncodingRequest,
+                EncodingRequest.observed, ih]
           | some state =>
               rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind]
               simp only [ExceptT.run_bind, map_bind]
               rw [onlineImpl_encodingSignAttempt_some_run]
               simp only [bind_assoc, pure_bind, runStructural, runEagerQuery,
-                OracleComp.construct_query_bind]
+                OracleComp.construct_query_bind, applyEncodingRequest,
+                EncodingRequest.observed]
               apply bind_congr
               intro output
               cases happly : CappedEncodingMonitor.State.applyObserved state
