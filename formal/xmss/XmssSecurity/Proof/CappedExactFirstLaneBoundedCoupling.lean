@@ -4,6 +4,7 @@ import XmssSecurity.Proof.CappedExactFirstLaneEager
 import XmssSecurity.Proof.FirstLaneEagerBound
 import XmssSecurity.Proof.MarginalCoupling
 import XmssSecurity.Proof.StateLens
+import XmssSecurity.Proof.BoundedFirstLaneCoupling
 import VCVio.OracleComp.SimSemantics.StateT.StateProjection
 
 open OracleComp OracleSpec
@@ -290,8 +291,7 @@ theorem relTriple_sourceExact_firstLane_action
     (trace : FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hstate : SourceFirstLaneExactGoodStateRelation left right.1 leftState
       firstLaneState trace)
-    (hcount : FirstLaneOracleSimulation.hazardCount trace ≤ used)
-    (hused : leftState.2.hashInputs.length = used) :
+    (hcount : FirstLaneOracleSimulation.hazardCount trace ≤ used) :
     RelTriple
       ((cappedBothTracedMappedAdversaryImpl left.publicKey
         (Concrete.materializePrecomputation left.cache left.secretKey)
@@ -307,7 +307,7 @@ theorem relTriple_sourceExact_firstLane_action
               (trace ++ firstLaneResult.2) ≤
             used + directHashActionCost input ∧
           leftResult.2.2.hashInputs.length =
-            used + directHashActionCost input) ∨
+            leftState.2.hashInputs.length + directHashActionCost input) ∨
         (FirstLaneOracleSimulation.CombinedHit right.1.2
             (trace ++ firstLaneResult.2) ∧
           FirstLaneOracleSimulation.hazardCount
@@ -359,7 +359,7 @@ theorem relTriple_sourceExact_firstLane_action
       have hfinalTrace : leftResult.2.2 = highResult.2.1.2 := hgood.2.1.2
       rw [hfinalTrace, hhighActionTrace, ← hinitialTrace,
         AttackerActionTrace.hashInputs_append, List.length_append,
-        attackerActionFragment_hashInputs_length, hused]
+        attackerActionFragment_hashInputs_length]
   · apply Or.inr
     have hchainProjection : highResult.2.1.1.trace =
         highState.1.1.trace ++ firstLaneResult.2.chainActions := by
@@ -423,137 +423,59 @@ theorem relTriple_sourceExact_firstLane_adversary_boundedHit
         FirstLaneOracleSimulation.CombinedHit right.1.2
           (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
             (trace ++ firstLaneResult.2))) := by
-  induction computation using OracleComp.inductionOn generalizing leftState
-      firstLaneState trace used fuel finish with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure']
-      apply relTriple_pure_pure
-      apply Or.inl
-      refine ⟨rfl, ?_, ?_, ?_⟩
-      · simpa [FirstLaneOracleSimulation.ActionTrace.chainActions] using hstate
-      · simpa [FirstLaneOracleSimulation.hazardCount, hused] using hcount
-      · have : used ≤ countLimit := by omega
-        simpa [hused] using this
-  | query_bind input next ih =>
-      rw [simulateQ_query_bind, bind_assoc] at hbound
-      simp only [StateT.run_bind, simulateQ_bind,
-        WriterT.run_bind', simulateQ_spec_query]
-      apply relTriple_bind (relTriple_with_support
-        (relTriple_sourceExact_firstLane_action used left right hrel
-          hleftSupport hrightSupport input leftState firstLaneState trace
-            hstate hcount hused))
-      intro headLeft headFirstLane hhead
+  let secretKey :=
+    Concrete.materializePrecomputation left.cache left.secretKey
+  let Budget := fun
+    (rest : OracleComp (OracleWorld + SigningSpec) α) (remaining : Nat) =>
+      (simulateQ
+        (sourceUnloggedMappedAdversaryImpl left.publicKey secretKey) rest >>=
+          finish).IsQueryBoundP (· matches .inr _) remaining
+  have hgeneric := relTriple_simulateQ_bounded_firstLane right.1.2
+    (cappedBothTracedMappedAdversaryImpl left.publicKey secretKey)
+    (globalFirstLaneExactTracedMappedAdversaryImpl right.1.1 right.2)
+    directHashActionCost
+    (SourceFirstLaneExactGoodStateRelation left right.1)
+    (fun state spent => state.2.hashInputs.length = spent) Budget
+    (by
+      intro input next remaining state result hrest hresult
+      unfold Budget at hrest ⊢
+      rw [simulateQ_query_bind, bind_assoc] at hrest
       have houtput :=
         cappedBothTracedMappedAdversaryImpl_support_unlogged_output
-          left.publicKey
-          (Concrete.materializePrecomputation left.cache left.secretKey)
-          input leftState headLeft hhead.2.1
+          left.publicKey secretKey input state result hresult
       let continuation := fun response =>
         simulateQ
-          (sourceUnloggedMappedAdversaryImpl left.publicKey
-            (Concrete.materializePrecomputation left.cache left.secretKey))
-            (next ((OracleSpec.query input).cont response)) >>= finish
-      have hstepBound :
-          (liftM (sourceUnloggedMappedAdversaryImpl left.publicKey
-            (Concrete.materializePrecomputation left.cache left.secretKey)
-              input) >>= continuation).IsQueryBoundP
-              (· matches .inr _) fuel := by
-        exact hbound
-      have hrestBound :=
+          (sourceUnloggedMappedAdversaryImpl left.publicKey secretKey)
+          (next ((OracleSpec.query input).cont response)) >>= finish
+      have hstep :
+          (liftM (sourceUnloggedMappedAdversaryImpl left.publicKey secretKey
+            input) >>= continuation).IsQueryBoundP
+              (· matches .inr _) remaining := hrest
+      have hnext :=
         sourceUnloggedMappedAdversaryImpl_continuation_hashQueryBound
-          left.publicKey
-            (Concrete.materializePrecomputation left.cache left.secretKey)
-              input continuation fuel hstepBound headLeft.1 houtput
-      rw [attackerActionFragment_hashInputs_length] at hrestBound
-      rcases hhead.1 with hgood | hhit
-      · obtain ⟨hvalue, hnextState, hnextCount, hnextUsed⟩ := hgood
-        have hrestBoundFirstLane :
-            (continuation headFirstLane.1.1).IsQueryBoundP
-              (· matches .inr _)
-                (fuel - directHashActionCost input) := by
-          rw [← hvalue]
-          exact hrestBound.2
-        let appendTrace := fun result :
-            ((α × GlobalExactTracedState) ×
-              FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-          Prod.map id (fun tail => headFirstLane.2 ++ tail) result
-        have hrec := ih headFirstLane.1.1
-          (used + directHashActionCost input)
-            (fuel - directHashActionCost input) finish hrestBoundFirstLane
-            headLeft.2 headFirstLane.1.2 (trace ++ headFirstLane.2)
-              hnextState hnextCount hnextUsed (by omega)
-        change RelTriple _ _ _ at hrec
-        have hlifted : RelTriple
-            (id <$> (simulateQ
-              (cappedBothTracedMappedAdversaryImpl left.publicKey
-                (Concrete.materializePrecomputation left.cache left.secretKey))
-                (next headFirstLane.1.1)).run headLeft.2)
-            (appendTrace <$>
-              (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
-                ((simulateQ
-                  (globalFirstLaneExactTracedMappedAdversaryImpl right.1.1
-                    right.2) (next headFirstLane.1.1)).run
-                      headFirstLane.1.2)).run)
-            (fun leftResult firstLaneResult =>
-              (leftResult.1 = firstLaneResult.1.1 ∧
-                SourceFirstLaneExactGoodStateRelation left right.1
-                  leftResult.2 firstLaneResult.1.2
-                    (trace ++ firstLaneResult.2) ∧
-                FirstLaneOracleSimulation.hazardCount
-                  (trace ++ firstLaneResult.2) ≤
-                    leftResult.2.2.hashInputs.length ∧
-                leftResult.2.2.hashInputs.length ≤ countLimit) ∨
-              FirstLaneOracleSimulation.CombinedHit right.1.2
-                (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-                  (trace ++ firstLaneResult.2))) := by
-          apply relTriple_map
-          apply relTriple_post_mono hrec
-          intro leftResult firstLaneResult hresult
-          simpa [appendTrace, Prod.map, List.append_assoc] using hresult
-        rw [hvalue]
-        change RelTriple _ (appendTrace <$> _) _
-        simpa only [id_map] using hlifted
-      · obtain ⟨hhit, hnextCount⟩ := hhit
-        have hnextLimit : FirstLaneOracleSimulation.hazardCount
-            (trace ++ headFirstLane.2) ≤ hitLimit :=
-          hnextCount.trans (by omega)
-        have henforced : FirstLaneOracleSimulation.CombinedHit right.1.2
-            (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-              (trace ++ headFirstLane.2)) := by
-          rw [FirstLaneOracleSimulation.enforceHazardTrace_eq_self_of_count_le
-            (trace ++ headFirstLane.2) hitLimit hnextLimit]
-          exact hhit
-        let appendTrace := fun result :
-            ((α × GlobalExactTracedState) ×
-              FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-          Prod.map id (fun tail => headFirstLane.2 ++ tail) result
-        have hlifted : RelTriple
-            (id <$> (simulateQ
-              (cappedBothTracedMappedAdversaryImpl left.publicKey
-                (Concrete.materializePrecomputation left.cache left.secretKey))
-                (next headLeft.1)).run headLeft.2)
-            (appendTrace <$>
-              (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
-                ((simulateQ
-                  (globalFirstLaneExactTracedMappedAdversaryImpl right.1.1
-                    right.2) (next headFirstLane.1.1)).run
-                      headFirstLane.1.2)).run)
-            (fun _leftResult firstLaneResult =>
-              FirstLaneOracleSimulation.CombinedHit right.1.2
-                (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-                  (trace ++ firstLaneResult.2))) := by
-          apply relTriple_map
-          apply relTriple_post_mono
-            (relTriple_prod (fun _ _ => True.intro) (fun _ _ => True.intro))
-          intro _leftResult firstLaneResult _hresults
-          simpa [appendTrace, Prod.map, List.append_assoc] using
-            FirstLaneOracleSimulation.CombinedHit.enforce_append_of_prefix
-              right.1.2 hitLimit (trace ++ headFirstLane.2)
-                firstLaneResult.2 henforced
-        change RelTriple _ (appendTrace <$> _) _
-        apply relTriple_post_mono (by simpa only [id_map] using hlifted)
-        intro _leftResult _firstLaneResult hresult
-        exact Or.inr hresult
+          left.publicKey secretKey input continuation remaining hstep result.1
+            houtput
+      rwa [attackerActionFragment_hashInputs_length] at hnext)
+    (by
+      intro spent input state firstState history hstates hprefix hacct
+      apply relTriple_post_mono
+        (relTriple_sourceExact_firstLane_action spent left right hrel
+          hleftSupport hrightSupport input state firstState history hstates
+            hprefix)
+      intro leftResult firstResult hresult
+      rcases hresult with hgood | hhit
+      · exact Or.inl ⟨hgood.1, hgood.2.1, hgood.2.2.1, by
+          rw [hgood.2.2.2, hacct]⟩
+      · exact Or.inr hhit)
+    countLimit hitLimit used fuel computation hbound leftState firstLaneState
+      trace hstate hcount hused htotal hlimits
+  apply relTriple_post_mono hgeneric
+  intro leftResult firstResult hresult
+  rcases hresult with hgood | hhit
+  · obtain ⟨spent, hvalue, hstates, htarget, hsource, hlimit⟩ := hgood
+    exact Or.inl ⟨hvalue, hstates, by simpa [hsource] using htarget,
+      by simpa [hsource] using hlimit⟩
+  · exact Or.inr hhit
 
 def sourceExactVerifierResult
     (initialState : SourceExactTracedState)
@@ -849,112 +771,42 @@ theorem relTriple_sourceExact_firstLane_verifier_boundedHit
         FirstLaneOracleSimulation.CombinedHit right.1.2
           (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
             (trace ++ firstLaneResult.2))) := by
-  induction computation using OracleComp.inductionOn generalizing leftState
-      firstLaneState trace used fuel with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure']
-      apply relTriple_pure_pure
-      apply Or.inl
-      refine ⟨rfl, ?_, ?_⟩
-      · simpa [FirstLaneOracleSimulation.ActionTrace.chainActions] using hstate
-      · simpa [FirstLaneOracleSimulation.hazardCount] using
-          hcount.trans (by omega)
-  | query_bind input next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
-      have hcostLe : verifierHashQueryCost input ≤ fuel := by
-        rcases input with n | hashInput
-        · simp [verifierHashQueryCost]
-        · simp only [verifierHashQueryCost]
-          exact Nat.succ_le_iff.2 (hbound.1.resolve_left (by simp))
-      have hnextBound : ∀ output,
-          (next output).IsQueryBoundP (· matches .inr _)
-            (fuel - verifierHashQueryCost input) := by
-        intro output
-        rcases input with n | hashInput
-        · simpa [verifierHashQueryCost] using hbound.2 output
-        · simpa [verifierHashQueryCost] using hbound.2 output
-      simp only [StateT.run_bind, simulateQ_bind,
-        WriterT.run_bind', simulateQ_spec_query]
-      apply relTriple_bind (relTriple_with_support
-        (relTriple_sourceExact_firstLane_verifier_action used left right hrel
-          hleftSupport hrightSupport input leftState firstLaneState trace
-            hstate hcount))
-      intro headLeft headFirstLane hhead
-      rcases hhead.1 with hgood | hhit
-      · obtain ⟨hvalue, hnextState, hnextCount⟩ := hgood
-        let appendTrace := fun result :
-            ((α × GlobalExactTracedState) ×
-              FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-          Prod.map id (fun tail => headFirstLane.2 ++ tail) result
-        have hrec := ih headFirstLane.1.1
-          (used + verifierHashQueryCost input)
-          (fuel - verifierHashQueryCost input)
-          (hnextBound headFirstLane.1.1) headLeft.2 headFirstLane.1.2
-            (trace ++ headFirstLane.2) hnextState hnextCount (by omega)
-        change RelTriple _ _ _ at hrec
-        have hlifted : RelTriple
-            (id <$> (simulateQ sourceExactTracedVerifierImpl
-              (next headFirstLane.1.1)).run headLeft.2)
-            (appendTrace <$>
-              (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
-                ((simulateQ
-                  (globalFirstLaneExactTracedVerifierImpl right.1.1 right.2)
-                  (next headFirstLane.1.1)).run headFirstLane.1.2)).run)
-            (fun leftResult firstLaneResult =>
-              (leftResult.1 = firstLaneResult.1.1 ∧
-                SourceFirstLaneExactGoodStateRelation left right.1
-                  leftResult.2 firstLaneResult.1.2
-                    (trace ++ firstLaneResult.2) ∧
-                FirstLaneOracleSimulation.hazardCount
-                  (trace ++ firstLaneResult.2) ≤ countLimit) ∨
-              FirstLaneOracleSimulation.CombinedHit right.1.2
-                (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-                  (trace ++ firstLaneResult.2))) := by
-          apply relTriple_map
-          apply relTriple_post_mono hrec
-          intro leftResult firstLaneResult hresult
-          simpa [appendTrace, Prod.map, List.append_assoc] using hresult
-        rw [hvalue]
-        change RelTriple _ (appendTrace <$> _) _
-        simpa only [id_map] using hlifted
-      · obtain ⟨hhit, hnextCount⟩ := hhit
-        have hnextLimit : FirstLaneOracleSimulation.hazardCount
-            (trace ++ headFirstLane.2) ≤ hitLimit :=
-          hnextCount.trans (by omega)
-        have henforced : FirstLaneOracleSimulation.CombinedHit right.1.2
-            (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-              (trace ++ headFirstLane.2)) := by
-          rw [FirstLaneOracleSimulation.enforceHazardTrace_eq_self_of_count_le
-            (trace ++ headFirstLane.2) hitLimit hnextLimit]
-          exact hhit
-        let appendTrace := fun result :
-            ((α × GlobalExactTracedState) ×
-              FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-          Prod.map id (fun tail => headFirstLane.2 ++ tail) result
-        have hlifted : RelTriple
-            (id <$> (simulateQ sourceExactTracedVerifierImpl
-              (next headLeft.1)).run headLeft.2)
-            (appendTrace <$>
-              (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
-                ((simulateQ
-                  (globalFirstLaneExactTracedVerifierImpl right.1.1 right.2)
-                  (next headFirstLane.1.1)).run headFirstLane.1.2)).run)
-            (fun _leftResult firstLaneResult =>
-              FirstLaneOracleSimulation.CombinedHit right.1.2
-                (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-                  (trace ++ firstLaneResult.2))) := by
-          apply relTriple_map
-          apply relTriple_post_mono
-            (relTriple_prod (fun _ _ => True.intro) (fun _ _ => True.intro))
-          intro _leftResult firstLaneResult _hresults
-          simpa [appendTrace, Prod.map, List.append_assoc] using
-            FirstLaneOracleSimulation.CombinedHit.enforce_append_of_prefix
-              right.1.2 hitLimit (trace ++ headFirstLane.2)
-                firstLaneResult.2 henforced
-        change RelTriple _ (appendTrace <$> _) _
-        apply relTriple_post_mono (by simpa only [id_map] using hlifted)
-        intro _leftResult _firstLaneResult hresult
-        exact Or.inr hresult
+  have hgeneric := relTriple_simulateQ_bounded_firstLane right.1.2
+    sourceExactTracedVerifierImpl
+    (globalFirstLaneExactTracedVerifierImpl right.1.1 right.2)
+    verifierHashQueryCost
+    (SourceFirstLaneExactGoodStateRelation left right.1)
+    (fun _state _spent => True)
+    (fun rest remaining =>
+      rest.IsQueryBoundP (· matches .inr _) remaining)
+    (by
+      intro input next remaining _state _result hrest _hresult
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hrest
+      rcases input with uniformInput | hashInput
+      · exact ⟨by simp [verifierHashQueryCost], by
+          simpa [verifierHashQueryCost] using hrest.2 _result.1⟩
+      · exact ⟨by
+          simp only [verifierHashQueryCost]
+          exact Nat.succ_le_iff.2 (hrest.1.resolve_left (by simp)), by
+          simpa [verifierHashQueryCost] using hrest.2 _result.1⟩)
+    (by
+      intro spent input state firstState history hstates hprefix _haccounted
+      apply relTriple_post_mono
+        (relTriple_sourceExact_firstLane_verifier_action spent left right hrel
+          hleftSupport hrightSupport input state firstState history hstates
+            hprefix)
+      intro leftResult firstResult hresult
+      rcases hresult with hgood | hhit
+      · exact Or.inl ⟨hgood.1, hgood.2.1, hgood.2.2, True.intro⟩
+      · exact Or.inr hhit)
+    countLimit hitLimit used fuel computation hbound leftState firstLaneState
+      trace hstate hcount True.intro htotal hlimits
+  apply relTriple_post_mono hgeneric
+  intro leftResult firstResult hresult
+  rcases hresult with hgood | hhit
+  · obtain ⟨spent, hvalue, hstates, htarget, _haccounted, hlimit⟩ := hgood
+    exact Or.inl ⟨hvalue, hstates, htarget.trans hlimit⟩
+  · exact Or.inr hhit
 
 def sourceAppendVerificationState
     (secretKey : SecretKey) (forgery : Forgery)
