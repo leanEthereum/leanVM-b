@@ -72,7 +72,10 @@ structure Signature where
   authPath : Fin treeHeight → Digest
 deriving DecidableEq
 
-abbrev Tweak := BitVec 128
+/-- Serialize a bit vector into a fixed number of bytes, least significant byte first. -/
+def bytesLE (byteCount : Nat) (value : BitVec (8 * byteCount)) : List UInt8 :=
+  List.ofFn fun index : Fin byteCount =>
+    UInt8.ofBitVec (value.extractLsb' (8 * index.val) 8)
 
 structure TweakFields where
   tag : BitVec 8
@@ -80,9 +83,10 @@ structure TweakFields where
   epoch : BitVec 32
 deriving DecidableEq
 
-/-- The specification's 16-byte tweak `tag || position || epoch || 0^56`. -/
-def encodeTweak (fields : TweakFields) : Tweak :=
-  (((0#56) ++ fields.epoch) ++ fields.position) ++ fields.tag
+/-- The specification's 16 tweak bytes `tag || position || epoch || 0^7`, each field serialized least significant byte first. -/
+def fieldBytes (fields : TweakFields) : List UInt8 :=
+  bytesLE 1 fields.tag ++ bytesLE 4 fields.position ++ bytesLE 4 fields.epoch ++
+    List.replicate 7 0
 
 abbrev ChainStep := Fin (chainLength - 1)
 abbrev MerkleLevel := Fin treeHeight
@@ -104,17 +108,9 @@ def hashDomainFields : HashDomain → TweakFields
       ⟨2#8, BitVec.ofNat 32 (level.val + 1), BitVec.ofNat 32 node.val⟩
   | .encoding epoch => ⟨3#8, 0#32, BitVec.ofNat 32 epoch.val⟩
 
-def hashDomainTweak (domain : HashDomain) : Tweak :=
-  encodeTweak (hashDomainFields domain)
-
-/-- Serialize a bit vector into a fixed number of bytes, least significant byte first. -/
-def bytesLE (byteCount : Nat) (value : BitVec (8 * byteCount)) : List UInt8 :=
-  List.ofFn fun index : Fin byteCount =>
-    UInt8.ofBitVec (value.extractLsb' (8 * index.val) 8)
-
 /-- The exact 16 bytes supplied by the specification as a hash tweak. -/
 def tweakBytes (domain : HashDomain) : List UInt8 :=
-  bytesLE 16 (hashDomainTweak domain)
+  fieldBytes (hashDomainFields domain)
 
 /-- The random-oracle input `tweak || parameter || message` used by every tweakable hash call. -/
 def tweakableHashInput (parameter : PublicParameter) (domain : HashDomain)

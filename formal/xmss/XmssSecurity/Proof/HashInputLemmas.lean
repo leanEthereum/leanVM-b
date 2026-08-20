@@ -14,32 +14,39 @@ def hashDomainTag : HashDomain → Nat
   | .encoding .. => 3
 
 @[simp]
-theorem encodeTweak_extract_tag (fields : TweakFields) :
-    (encodeTweak fields).extractLsb' 0 8 = fields.tag := by
-  rw [encodeTweak]
-  exact BitVec.extractLsb'_append_eq_right
+theorem length_bytesLE (byteCount : Nat) (value : BitVec (8 * byteCount)) :
+    (bytesLE byteCount value).length = byteCount := by
+  simp [bytesLE]
 
-@[simp]
-theorem encodeTweak_extract_position (fields : TweakFields) :
-    (encodeTweak fields).extractLsb' 8 32 = fields.position := by
-  rw [encodeTweak, BitVec.extractLsb'_append_eq_of_le (by omega)]
-  exact BitVec.extractLsb'_append_eq_right
-
-@[simp]
-theorem encodeTweak_extract_epoch (fields : TweakFields) :
-    (encodeTweak fields).extractLsb' 40 32 = fields.epoch := by
-  rw [encodeTweak, BitVec.extractLsb'_append_eq_of_le (by omega)]
-  rw [BitVec.extractLsb'_append_eq_of_le (by omega)]
-  exact BitVec.extractLsb'_append_eq_right
-
-theorem encodeTweak_injective : Function.Injective encodeTweak := by
+theorem bytesLE_injective (byteCount : Nat) : Function.Injective (bytesLE byteCount) := by
   intro left right heq
-  have htag : left.tag = right.tag := by
-    simpa using congrArg (BitVec.extractLsb' 0 8) heq
-  have hposition : left.position = right.position := by
-    simpa using congrArg (BitVec.extractLsb' 8 32) heq
-  have hepoch : left.epoch = right.epoch := by
-    simpa using congrArg (BitVec.extractLsb' 40 32) heq
+  have hbytes :
+      (fun index : Fin byteCount => UInt8.ofBitVec (left.extractLsb' (8 * index.val) 8)) =
+        (fun index : Fin byteCount => UInt8.ofBitVec (right.extractLsb' (8 * index.val) 8)) :=
+    List.ofFn_injective heq
+  apply BitVec.eq_of_getLsbD_eq
+  intro bit hbit
+  let byte : Fin byteCount := ⟨bit / 8, by omega⟩
+  have hbyte := congrFun hbytes byte
+  have hbyteBits := congrArg UInt8.toBitVec hbyte
+  have hlocal := congrArg (fun value => value.getLsbD (bit % 8)) hbyteBits
+  have hmod : bit % 8 < 8 := Nat.mod_lt bit (by omega)
+  have hposition : 8 * (bit / 8) + bit % 8 = bit := by
+    omega
+  simpa [byte, BitVec.getLsbD_extractLsb', hmod, hposition] using hlocal
+
+@[simp]
+theorem length_fieldBytes (fields : TweakFields) : (fieldBytes fields).length = 16 := by
+  simp [fieldBytes]
+
+theorem fieldBytes_injective : Function.Injective fieldBytes := by
+  intro left right heq
+  have hfields := List.append_left_injective (List.replicate 7 0) heq
+  obtain ⟨hfront, hepochBytes⟩ := List.append_inj hfields (by simp)
+  obtain ⟨htagBytes, hpositionBytes⟩ := List.append_inj hfront (by simp)
+  have htag : left.tag = right.tag := bytesLE_injective 1 htagBytes
+  have hposition : left.position = right.position := bytesLE_injective 4 hpositionBytes
+  have hepoch : left.epoch = right.epoch := bytesLE_injective 4 hepochBytes
   cases left
   cases right
   simp_all
@@ -128,33 +135,8 @@ theorem hashDomainFields_injective : Function.Injective hashDomainFields := by
     exact congrArg HashDomain.encoding
       (Fin.ext (ofNat32_eq_of_lt (epoch_lt_32 leftEpoch) (epoch_lt_32 rightEpoch) hepoch))
 
-theorem hashDomainTweak_injective : Function.Injective hashDomainTweak :=
-  encodeTweak_injective.comp hashDomainFields_injective
-
-@[simp]
-theorem length_bytesLE (byteCount : Nat) (value : BitVec (8 * byteCount)) :
-    (bytesLE byteCount value).length = byteCount := by
-  simp [bytesLE]
-
-theorem bytesLE_injective (byteCount : Nat) : Function.Injective (bytesLE byteCount) := by
-  intro left right heq
-  have hbytes :
-      (fun index : Fin byteCount => UInt8.ofBitVec (left.extractLsb' (8 * index.val) 8)) =
-        (fun index : Fin byteCount => UInt8.ofBitVec (right.extractLsb' (8 * index.val) 8)) :=
-    List.ofFn_injective heq
-  apply BitVec.eq_of_getLsbD_eq
-  intro bit hbit
-  let byte : Fin byteCount := ⟨bit / 8, by omega⟩
-  have hbyte := congrFun hbytes byte
-  have hbyteBits := congrArg UInt8.toBitVec hbyte
-  have hlocal := congrArg (fun value => value.getLsbD (bit % 8)) hbyteBits
-  have hmod : bit % 8 < 8 := Nat.mod_lt bit (by omega)
-  have hposition : 8 * (bit / 8) + bit % 8 = bit := by
-    omega
-  simpa [byte, BitVec.getLsbD_extractLsb', hmod, hposition] using hlocal
-
 theorem tweakBytes_injective : Function.Injective tweakBytes :=
-  (bytesLE_injective 16).comp hashDomainTweak_injective
+  fieldBytes_injective.comp hashDomainFields_injective
 
 theorem domain_eq_of_tweakableHashInput_eq (parameter : PublicParameter)
     {leftDomain rightDomain : HashDomain} {leftMessage rightMessage : HashInput}
@@ -162,8 +144,11 @@ theorem domain_eq_of_tweakableHashInput_eq (parameter : PublicParameter)
       tweakableHashInput parameter rightDomain rightMessage) :
     leftDomain = rightDomain := by
   apply tweakBytes_injective
-  have hpref := congrArg (List.take 16) heq
-  simpa [tweakableHashInput, tweakBytes] using hpref
+  have heq' :
+      tweakBytes leftDomain ++ (bytesLE 16 parameter ++ leftMessage) =
+        tweakBytes rightDomain ++ (bytesLE 16 parameter ++ rightMessage) := by
+    simpa [tweakableHashInput, List.append_assoc] using heq
+  exact (List.append_inj heq' (by simp [tweakBytes])).1
 
 theorem payload_eq_of_tweakableHashInput_eq (parameter : PublicParameter)
     (domain : HashDomain) {left right : HashInput}
