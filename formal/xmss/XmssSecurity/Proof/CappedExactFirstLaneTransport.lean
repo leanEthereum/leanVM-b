@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.CappedExactFirstLaneCoupling
 import XmssSecurity.Proof.CappedGlobalFirstLaneBounds
 import XmssSecurity.Proof.CappedGlobalFirstLaneTrace
+import XmssSecurity.Proof.StateLens
 
 open OracleComp OracleSpec
 
@@ -13,6 +14,15 @@ structure GlobalExactTracedState where
   causalState : GlobalCausalHashState
   attackerTrace : AttackerActionTrace
   encodingTrace : EncodingActionTrace
+
+def globalExactTracedCausalLens :
+    StateLens GlobalExactTracedState GlobalCausalHashState where
+  get := GlobalExactTracedState.causalState
+  set state nextCausal := GlobalExactTracedState.mk nextCausal
+    state.attackerTrace state.encodingTrace
+  set_get state := by cases state; rfl
+  get_set state nextCausal := by cases state; rfl
+  set_set state left right := by cases state; rfl
 
 @[irreducible]
 noncomputable def globalExactTracedNextState
@@ -1823,18 +1833,11 @@ theorem globalFirstLaneExactTracedVerifier_simulateQ_run_eq_map
         state.attackerTrace state.encodingTrace)) <$>
         (simulateQ (globalFirstLaneVerifierImpl keyView edgeHigh)
           computation).run state.causalState := by
-  induction computation using OracleComp.inductionOn generalizing state with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind, id_map]
-      rw [globalFirstLaneExactTracedVerifierImpl_run_eq_map]
-      rw [bind_map_left]
-      apply bind_congr
-      intro queryResult
-      exact ih queryResult.1
-        (GlobalExactTracedState.mk queryResult.2 state.attackerTrace
-          state.encodingTrace)
+  exact globalExactTracedCausalLens.simulateQ_run_eq
+    (globalFirstLaneExactTracedVerifierImpl keyView edgeHigh)
+    (globalFirstLaneVerifierImpl keyView edgeHigh)
+    (globalFirstLaneExactTracedVerifierImpl_run_eq_map keyView edgeHigh)
+    computation state
 
 theorem globalFirstLaneExactTracedVerifier_eager_support_decompose
     (table : GlobalChainValueIndex → Digest)

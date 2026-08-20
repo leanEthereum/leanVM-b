@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CappedChain.ChainInputTrace
+import XmssSecurity.Proof.StateLens
 
 open OracleComp OracleSpec
 
@@ -112,15 +113,9 @@ theorem sourceDirectTracedVerifierImpl_run_eq
     (simulateQ sourceDirectTracedVerifierImpl computation).run (cache, trace) =
       (fun result => (result.1, (result.2, trace))) <$>
         (simulateQ xmssRomImpl computation).run cache := by
-  induction computation using OracleComp.inductionOn generalizing cache with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [StateT.run_bind, simulateQ_bind, simulateQ_spec_query,
-        map_bind]
-      rw [sourceDirectTracedVerifierImpl_query_run_eq]
-      simp only [bind_map_left]
-      apply bind_congr
-      intro head
-      exact ih head.1 head.2
+  exact (StateLens.fst : StateLens SourceTracedState (QueryCache HashSpec)
+    ).simulateQ_run_eq sourceDirectTracedVerifierImpl xmssRomImpl
+    (fun input state => sourceDirectTracedVerifierImpl_query_run_eq
+      input state.1 state.2) computation (cache, trace)
 
 end XmssSecurity.CappedChain

@@ -3,6 +3,8 @@ import XmssSecurity.Proof.CappedGlobalChainHighActionTrace
 import XmssSecurity.Proof.CappedExactFirstLaneEager
 import XmssSecurity.Proof.FirstLaneEagerBound
 import XmssSecurity.Proof.MarginalCoupling
+import XmssSecurity.Proof.StateLens
+import VCVio.OracleComp.SimSemantics.StateT.StateProjection
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -201,16 +203,11 @@ theorem cappedBothTracedMappedAdversaryImpl_run_signingProjection
       (simulateQ
         (sourceSigningTracedMappedAdversaryImpl publicKey secretKey)
         computation).run (sourceExactSigningProjection initialState) := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      simp only [id_map]
-      simp_rw [ih]
-      rw [cappedBothTracedMappedAdversaryImpl_query_eq_sourceExactMap]
-      simp [sourceExactQueryResult, sourceExactSigningProjection]
+  apply OracleComp.map_run_simulateQ_eq_of_query_map_eq
+  intro input state
+  rw [cappedBothTracedMappedAdversaryImpl_query_eq_sourceExactMap]
+  simp [Functor.map_map, sourceExactQueryResult,
+    sourceExactSigningProjection]
 
 theorem sourceSigningTracedMappedAdversaryImpl_run_projection
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -224,25 +221,9 @@ theorem sourceSigningTracedMappedAdversaryImpl_run_projection
       (simulateQ
         (sourceDirectTracedMappedAdversaryImpl publicKey secretKey)
         computation).run (sourceSigningTracedStateProjection initialState) := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      simp only [id_map]
-      simp_rw [ih]
-      calc
-        _ = (do
-            let head ← (fun result => (result.1,
-              sourceSigningTracedStateProjection result.2)) <$>
-                (sourceSigningTracedMappedAdversaryImpl publicKey secretKey
-                  input).run initialState
-            (simulateQ
-              (sourceDirectTracedMappedAdversaryImpl publicKey secretKey)
-              (next head.1)).run head.2) := by rw [bind_map_left]
-        _ = _ := by
-          rw [sourceSigningTracedMappedAdversaryImpl_query_projection]
+  apply OracleComp.map_run_simulateQ_eq_of_query_map_eq
+  exact sourceSigningTracedMappedAdversaryImpl_query_projection publicKey
+    secretKey
 
 theorem cappedBothTracedMappedAdversaryImpl_run_directProjection
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -599,20 +580,18 @@ theorem sourceExactTracedVerifierImpl_run_eq
         (result.1, ((result.2.1, initialState.1.2), result.2.2))) <$>
         (simulateQ sourceSigningTracedVerifierImpl computation).run
           (sourceExactSigningProjection initialState) := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp [sourceExactSigningProjection]
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      unfold sourceExactTracedVerifierImpl
-      simp only [id_map, StateT.run_mk, bind_map_left]
-      apply bind_congr
-      intro head
-      change (simulateQ sourceExactTracedVerifierImpl
-          (next head.1)).run ((head.2.1, initialState.1.2), head.2.2) = _
-      rw [ih]
-      simp [sourceExactSigningProjection]
+  let lens : StateLens SourceExactTracedState SourceSigningTracedState :=
+    ⟨sourceExactSigningProjection,
+      fun state nextSigning => ((nextSigning.1, state.1.2), nextSigning.2),
+      by
+        intro state
+        rcases state with ⟨⟨⟨cache, signingTrace⟩, encodingTrace⟩, actionTrace⟩
+        rfl,
+      by simp [sourceExactSigningProjection],
+      by simp⟩
+  apply lens.simulateQ_run_eq
+  intro input state
+  rfl
 
 def globalHighExactVerifierResult
     (initialState : GlobalHighExactMonitoredState)

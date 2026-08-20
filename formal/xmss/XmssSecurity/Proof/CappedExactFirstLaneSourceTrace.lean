@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.CappedExactFirstLane
 import XmssSecurity.Proof.CappedGlobalFirstLaneReconstruction
+import XmssSecurity.Proof.StateLens
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -144,18 +145,13 @@ theorem sourceSigningTracedVerifierImpl_run_eq
       (fun result =>
         (result.1, ((result.2, initialState.1.2), initialState.2))) <$>
         (simulateQ xmssRomImpl computation).run initialState.1.1 := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      simp only [id_map]
-      rw [sourceSigningTracedVerifierImpl_query_run_eq]
-      simp only [bind_map_left]
-      apply bind_congr
-      intro head
-      simpa using ih head.1 ((head.2, initialState.1.2), initialState.2)
+  let lens : StateLens SourceSigningTracedState (QueryCache HashSpec) :=
+    ⟨fun state => state.1.1,
+      fun state nextCache => ((nextCache, state.1.2), state.2),
+      by intro state; rcases state with ⟨⟨cache, signingTrace⟩, actionTrace⟩; rfl,
+      by simp, by simp⟩
+  exact lens.simulateQ_run_eq sourceSigningTracedVerifierImpl xmssRomImpl
+    sourceSigningTracedVerifierImpl_query_run_eq computation initialState
 
 theorem relTriple_programmed_globalHighMonitored_signingVerifierQuery
     (left : ProgrammedGlobalChainKeygenView)

@@ -1,5 +1,6 @@
 import XmssSecurity.Proof.CappedGlobalChainHighWholeGame
 import XmssSecurity.Proof.CappedGlobalChainHighDirectReduction
+import XmssSecurity.Proof.StateLens
 
 open OracleComp OracleSpec
 
@@ -126,22 +127,10 @@ theorem globalHighDirectTracedVerifierImpl_run_eq
       (fun result => (result.1, (result.2, initialState.2))) <$>
         (simulateQ (globalHighDirectVerifierImpl keyView edgeHigh)
           computation).run initialState.1 := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      simp only [id_map]
-      unfold globalHighDirectTracedVerifierImpl
-      rw [StateT.run_mk]
-      simp only [bind_map_left]
-      apply bind_congr
-      intro head
-      change (simulateQ
-        (globalHighDirectTracedVerifierImpl keyView edgeHigh)
-        (next head.1)).run (head.2, initialState.2) = _
-      exact ih head.1 (head.2, initialState.2)
+  apply (StateLens.fst : StateLens GlobalHighDirectTracedState
+    GlobalCausalHashState).simulateQ_run_eq
+  intro input state
+  rfl
 
 noncomputable def globalHighMonitoredVerifierBaseImpl
     (right : (ProgrammedGlobalChainKeygenView ×
@@ -161,21 +150,10 @@ theorem globalHighMonitoredVerifierImpl_run_eq
       (fun result => (result.1, (result.2, initialState.2))) <$>
         (simulateQ (globalHighMonitoredVerifierBaseImpl right)
           computation).run initialState.1 := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      simp only [id_map]
-      unfold globalHighMonitoredVerifierImpl
-      rw [StateT.run_mk]
-      simp only [bind_map_left]
-      apply bind_congr
-      intro head
-      change (simulateQ (globalHighMonitoredVerifierImpl right)
-        (next head.1)).run (head.2, initialState.2) = _
-      exact ih head.1 (head.2, initialState.2)
+  apply (StateLens.fst : StateLens GlobalMonitoredTracedState
+    GlobalMonitoredCausalState).simulateQ_run_eq
+  intro input state
+  rfl
 
 theorem map_simulate_globalHighMonitored_verifier_full_projection
     (keyView : ProgrammedGlobalChainKeygenView)

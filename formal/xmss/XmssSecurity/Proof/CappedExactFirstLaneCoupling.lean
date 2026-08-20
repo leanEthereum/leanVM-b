@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CappedExactFirstLaneSourceTrace
+import VCVio.OracleComp.SimSemantics.StateT.StateProjection
 
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
@@ -408,16 +409,10 @@ theorem globalHighExactMonitoredMappedAdversaryImpl_run_projection
           computation).run initialState =
       (simulateQ (globalHighMonitoredMappedAdversaryImpl right)
         computation).run initialState.1 := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      simp only [id_map]
-      simp_rw [ih]
-      rw [globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
-      simp [globalHighExactQueryResult]
+  apply OracleComp.map_run_simulateQ_eq_of_query_map_eq
+  intro input state
+  rw [globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
+  simp [Functor.map_map, globalHighExactQueryResult]
 
 theorem globalHighExactMonitoredDetailedExecution_projection
     (adversary : Adversary Concrete.scheme)

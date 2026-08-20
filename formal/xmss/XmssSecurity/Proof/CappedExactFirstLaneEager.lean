@@ -1,6 +1,7 @@
 import XmssSecurity.Proof.CappedExactFirstLaneTransport
 import XmssSecurity.Proof.CappedGlobalChainHighPublicProgram
 import XmssSecurity.Proof.CappedGlobalChainHighActionTrace
+import XmssSecurity.Proof.StateLens
 
 open OracleComp OracleSpec
 
@@ -286,24 +287,9 @@ theorem globalHighDirectExactTracedVerifierImpl_run_eq
         initialState.attackerTrace initialState.encodingTrace)) <$>
         (simulateQ (globalHighDirectVerifierImpl keyView edgeHigh)
           computation).run initialState.causalState := by
-  induction computation using OracleComp.inductionOn generalizing
-      initialState with
-  | pure value => simp
-  | query_bind input next ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-        OracleQuery.cont_query, StateT.run_bind, map_bind]
-      simp only [id_map]
-      unfold globalHighDirectExactTracedVerifierImpl
-      rw [StateT.run_mk]
-      simp only [bind_map_left]
-      apply bind_congr
-      intro head
-      change (simulateQ
-        (globalHighDirectExactTracedVerifierImpl keyView edgeHigh)
-        (next head.1)).run (GlobalExactTracedState.mk head.2
-          initialState.attackerTrace initialState.encodingTrace) = _
-      exact ih head.1 (GlobalExactTracedState.mk head.2
-        initialState.attackerTrace initialState.encodingTrace)
+  apply globalExactTracedCausalLens.simulateQ_run_eq
+  intro input state
+  rfl
 
 theorem globalHighDirectExactTracedVerifierImpl_run_eq_map_traced
     (keyView : ProgrammedGlobalChainKeygenView)
