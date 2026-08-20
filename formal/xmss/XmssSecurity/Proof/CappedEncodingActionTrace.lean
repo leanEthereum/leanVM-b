@@ -230,17 +230,17 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_freshSigningActionsReprese
                 (request.message, signature.randomness)) = none at hfresh
             have hsignSupport : (some signature, finalState.1) ∈ support
                 ((simulateQ romImpl
-                  (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                  (Concrete.precomputedCappedSign secretKey request.epoch
                     request.message)).run
                     initialState.1.1) := by
               change (some signature, finalState.1) ∈ support
                 ((simulateQ romImpl
-                  (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                  (Concrete.precomputedCappedSign secretKey request.epoch
                     request.message)).run
                     initialState.1.1) at hbaseSupport
               exact hbaseSupport
             obtain ⟨hashOutput, houtput⟩ :=
-              Concrete.precomputedCappedSign_success_encodingInput_cached publicKey secretKey
+              Concrete.precomputedCappedSign_success_encodingInput_cached secretKey
                 request initialState.1.1 finalState.1 signature hsignSupport
             refine ⟨hashOutput, initialState.2, [], houtput, ?_⟩
             simp [encodingActionTraceUpdate, encodingObservation?, hfresh, houtput]
@@ -328,12 +328,12 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_unsignedEncodingEntriesRep
       | none =>
           have hsignSupport : (output, finalState.1) ∈ support
               ((simulateQ romImpl
-                (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                (Concrete.precomputedCappedSign secretKey request.epoch
                   request.message)).run
                   initialState.1.1) := by
             change (output, finalState.1) ∈ support
               ((simulateQ romImpl
-                (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                (Concrete.precomputedCappedSign secretKey request.epoch
                   request.message)).run
                   initialState.1.1) at hbaseSupport
             exact hbaseSupport
@@ -341,7 +341,7 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_unsignedEncodingEntriesRep
             exists_encodingInput_of_encodingInputEpoch?_eq_some secretKey.parameter
               targetInput epoch hencoding
           have hnone :=
-            Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput publicKey
+            Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput
               secretKey request.epoch epoch request.message targetPair initialState.1.1
               finalState.1 output hsignSupport hotherEpoch
             (by rw [htargetPair]; exact hinitial)
@@ -407,15 +407,15 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_validFreshSigningCollision
             subst returnedSignature
             have hsignSupport : (some signature, finalState.1) ∈ support
                 ((simulateQ romImpl
-                  (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                  (Concrete.precomputedCappedSign secretKey request.epoch
                     request.message)).run initialState.1.1) := by
               change (some signature, finalState.1) ∈ support
                 ((simulateQ romImpl
-                  (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                  (Concrete.precomputedCappedSign secretKey request.epoch
                     request.message)).run initialState.1.1) at hbaseSupport
               exact hbaseSupport
             obtain ⟨encoding, hdecode⟩ :=
-              Concrete.precomputedCappedSign_success_decode publicKey secretKey request
+              Concrete.precomputedCappedSign_success_decode secretKey request
                 initialState.1.1 finalState.1 signature hsignSupport
             have hsignedValid : TargetSum.ValidDigest (truncateHash signedOutput) := by
               refine ⟨encoding, ?_⟩
@@ -544,12 +544,12 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_postSigningQueriesRepresen
         | none =>
             have hsignSupport : (output, finalState.1) ∈ support
                 ((simulateQ romImpl
-                  (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                  (Concrete.precomputedCappedSign secretKey request.epoch
                     request.message)).run
                     initialState.1.1) := by
               change (output, finalState.1) ∈ support
                 ((simulateQ romImpl
-                  (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                  (Concrete.precomputedCappedSign secretKey request.epoch
                     request.message)).run
                     initialState.1.1) at hbaseSupport
               exact hbaseSupport
@@ -557,7 +557,7 @@ theorem cappedEncodingTracedMappedAdversaryImpl_query_postSigningQueriesRepresen
               exists_encodingInput_of_encodingInputEpoch?_eq_some secretKey.parameter
                 targetInput entry.request.epoch hencoding
             have hnone :=
-              Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput publicKey
+              Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput
                 secretKey request.epoch entry.request.epoch request.message targetPair
                 initialState.1.1 finalState.1 output hsignSupport hotherEpoch
               (by rw [htargetPair]; exact hinitial)

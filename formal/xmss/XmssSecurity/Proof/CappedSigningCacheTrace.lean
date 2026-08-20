@@ -27,7 +27,7 @@ def SigningCacheTrace.PreservesOtherValidEncodingInputs
   ∀ entry ∈ trace, entry.PreservesOtherValidEncodingInputs secretKey
 
 noncomputable def cappedUnloggedMappedAdversaryImpl
-    (publicKey : PublicKey) (secretKey : SecretKey) :
+    (_publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec)
       (StateT (QueryCache HashSpec) ProbComp) := by
   intro input
@@ -35,7 +35,7 @@ noncomputable def cappedUnloggedMappedAdversaryImpl
   | inl worldInput => exact romImpl worldInput
   | inr request =>
       exact simulateQ romImpl
-        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign secretKey request.epoch request.message)
 
 noncomputable def cappedCacheTracedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
@@ -76,7 +76,7 @@ theorem cappedUnloggedMappedAdversaryImpl_cache_le
             result hmem
   | inr request =>
       exact xmssRom_cache_le
-        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign secretKey request.epoch request.message)
         initialCache result hmem
 
 theorem cappedCacheTracedMappedAdversaryImpl_query_cache_le
@@ -146,7 +146,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_successfulEncodingsCached
         intro signature hsignature
         change output = some signature at hsignature
         subst output
-        exact Concrete.precomputedCappedSign_success_encodingInput_cached publicKey secretKey request
+        exact Concrete.precomputedCappedSign_success_encodingInput_cached secretKey request
           initialCache finalCache signature hbase
 
 theorem cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingInputs
@@ -180,7 +180,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingIn
         subst output
         by_cases hepoch : request.epoch = targetEpoch
         · exact Concrete.precomputedCappedSign_preserves_later_valid_other_encodingInput
-            publicKey secretKey request.epoch targetEpoch request.message targetInput
+            secretKey request.epoch targetEpoch request.message targetInput
             initialCache finalCache finalCache (some signature) hbase le_rfl encoding hdecode
             (by
               intro candidate hcand
@@ -189,7 +189,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_query_preservesOtherValidEncodingIn
               exact hother)
             hnone
         · exact Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput
-            publicKey secretKey request.epoch targetEpoch request.message targetInput
+            secretKey request.epoch targetEpoch request.message targetInput
             initialCache finalCache (some signature) hbase hepoch hnone
 
 theorem cappedCacheTracedMappedAdversaryImpl_cachesLe
@@ -269,7 +269,7 @@ theorem cappedSelectivelyLoggedMappedAdversaryImpl_apply_inr
     cappedSelectivelyLoggedMappedAdversaryImpl publicKey secretKey (.inr request) =
       QueryImpl.withLogging
         (fun request => simulateQ romImpl
-          (Concrete.scheme.sign publicKey secretKey
+          (Concrete.scheme.sign secretKey
             request.epoch request.message)) request := by
   rfl
 
@@ -278,11 +278,11 @@ theorem cappedMappedAdversaryImpl_apply_inr
     cappedMappedAdversaryImpl publicKey secretKey (.inr request) =
       QueryImpl.withLogging
         (fun request => simulateQ romImpl
-          (Concrete.scheme.sign publicKey secretKey
+          (Concrete.scheme.sign secretKey
             request.epoch request.message)) request := by
   change WriterT.mk (simulateQ romImpl
       ((QueryImpl.withLogging (spec := SigningSpec)
-        (fun request => Concrete.scheme.sign publicKey secretKey
+        (fun request => Concrete.scheme.sign secretKey
           request.epoch request.message) request).run)) = _
   apply WriterT.ext
   rw [WriterT.run_mk, QueryImpl.run_withLogging_apply,

@@ -145,7 +145,7 @@ theorem relTriple_programmed_monitoredGlobalSigningQuery
     (request : SignRequest) :
     RelTriple
       ((simulateQ romImpl
-        (Concrete.scheme.sign left.publicKey
+        (Concrete.scheme.sign
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((monitorGlobalCausalTrace right.1.2 fun causalState =>

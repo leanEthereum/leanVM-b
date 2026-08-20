@@ -26,7 +26,7 @@ theorem GameOutcome.won_eq_true_iff (outcome : GameOutcome) :
 noncomputable def detailedGameAfterKeygen (scheme : Scheme) (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey) : OracleComp OracleWorld GameOutcome := do
   let ((forgery, signingLog) : Forgery × QueryLog SigningSpec) ←
-    (simulateQ (forwardOracles + signingOracle scheme publicKey secretKey)
+    (simulateQ (forwardOracles + signingOracle scheme secretKey)
       (adversary.main publicKey)).run
   let verified ← scheme.verify publicKey forgery.epoch forgery.message forgery.signature
   return ⟨publicKey, secretKey, forgery, signingLog, verified⟩

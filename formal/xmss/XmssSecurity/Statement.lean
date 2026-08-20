@@ -1,12 +1,3 @@
-import Mathlib.Data.BitVec
-import Mathlib.Data.List.OfFn
-import Mathlib.Algebra.Order.BigOperators.Group.Finset
-import Mathlib.Data.Fintype.BigOperators
-import VCVio.OracleComp.Constructions.BitVec
-import VCVio.OracleComp.Constructions.SampleableType
-import VCVio.OracleComp.ProbCompLift
-import VCVio.OracleComp.QueryTracking.RandomOracle.Basic
-import VCVio.OracleComp.QueryTracking.CachingOracle
 import VCVio.OracleComp.QueryTracking.LoggingOracle
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 import VCVio.OracleComp.QueryTracking.QueryBound
@@ -118,8 +109,6 @@ def tweakableHashInput (parameter : PublicParameter) (domain : HashDomain)
   tweakBytes domain ++ bytesLE 16 parameter ++ message
 
 namespace TargetSum
-
-open scoped BigOperators
 
 def sum (x : Encoding) : Nat := ∑ i, (x i).val
 
@@ -429,8 +418,8 @@ noncomputable def precomputedSignBoundedAttempts :
       | some signature => pure (some signature)
       | none => precomputedSignBoundedAttempts attempts secretKey epoch message
 
-noncomputable def precomputedCappedSign (_publicKey : PublicKey)
-    (secretKey : SecretKey) (epoch : Epoch) (message : Message) :
+noncomputable def precomputedCappedSign (secretKey : SecretKey)
+    (epoch : Epoch) (message : Message) :
     OracleComp OracleWorld (Option Signature) :=
   precomputedSignBoundedAttempts signingAttemptLimit secretKey epoch message
 
@@ -464,7 +453,7 @@ def Forgery.request (forgery : Forgery) : SignRequest :=
 /-- The interface of a synchronized signature scheme in the random-oracle experiment. -/
 structure Scheme where
   keygen : OracleComp OracleWorld (PublicKey × SecretKey)
-  sign : PublicKey → SecretKey → Epoch → Message → OracleComp OracleWorld (Option Signature)
+  sign : SecretKey → Epoch → Message → OracleComp OracleWorld (Option Signature)
   verify : PublicKey → Epoch → Message → Signature → OracleComp OracleWorld Bool
 
 /-- The signing oracle answers a request with either a signature or `none` if the signer fails. -/
@@ -494,9 +483,9 @@ instance (log : QueryLog SigningSpec) (forgery : Forgery) : Decidable (Contains 
 end SigningTranscript
 
 /-- The signing oracle used in the game. It records every request and response while forwarding the request to the scheme's signer. -/
-def signingOracle (scheme : Scheme) (pk : PublicKey) (sk : SecretKey) :
+def signingOracle (scheme : Scheme) (sk : SecretKey) :
     QueryImpl SigningSpec (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
-  QueryImpl.withLogging fun request => scheme.sign pk sk request.epoch request.message
+  QueryImpl.withLogging fun request => scheme.sign sk request.epoch request.message
 
 /-- Forward the shared random oracle and uniform sampling to the adversary unchanged, alongside the logged signing oracle. -/
 def forwardOracles :
@@ -510,7 +499,7 @@ noncomputable def gameCore (scheme : Scheme) (adversary : Adversary) :
     OracleComp OracleWorld Bool := do
   let (pk, sk) ← scheme.keygen
   let ((forgery, log) : Forgery × QueryLog SigningSpec) ←
-    (simulateQ (forwardOracles + signingOracle scheme pk sk) (adversary.main pk)).run
+    (simulateQ (forwardOracles + signingOracle scheme sk) (adversary.main pk)).run
   let verified ← scheme.verify pk forgery.epoch forgery.message forgery.signature
   return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
 

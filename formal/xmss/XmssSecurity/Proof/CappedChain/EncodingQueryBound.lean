@@ -6,7 +6,7 @@ open OracleComp OracleSpec
 namespace XmssSecurity.CappedChain
 
 noncomputable def unloggedMappedAdversaryImpl
-    (publicKey : PublicKey) (secretKey : SecretKey) :
+    (_publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec)
       (StateT (QueryCache HashSpec) ProbComp) := by
   classical
@@ -16,7 +16,7 @@ noncomputable def unloggedMappedAdversaryImpl
       exact romImpl worldInput
   | inr request =>
       exact simulateQ romImpl
-        (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
+        (Concrete.scheme.sign secretKey request.epoch request.message)
 
 theorem unloggedMappedAdversaryImpl_apply_inl
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -30,24 +30,24 @@ theorem unloggedMappedAdversaryImpl_apply_inr
     (request : SignRequest) :
     unloggedMappedAdversaryImpl publicKey secretKey (.inr request) =
       (simulateQ romImpl
-        (Concrete.scheme.sign publicKey secretKey request.epoch request.message) :
+        (Concrete.scheme.sign secretKey request.epoch request.message) :
           StateT (QueryCache HashSpec) ProbComp (Option Signature)) := by
   rfl
 
 noncomputable def sourceUnloggedMappedAdversaryImpl
-    (publicKey : PublicKey) (secretKey : SecretKey) :
+    (_publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec) (OracleComp OracleWorld) := by
   intro input
   cases input with
   | inl worldInput => exact liftM (OracleWorld.query worldInput)
   | inr request =>
-      exact Concrete.scheme.sign publicKey secretKey request.epoch request.message
+      exact Concrete.scheme.sign secretKey request.epoch request.message
 
 theorem sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
     (publicKey : PublicKey) (secretKey : SecretKey) :
     (sourceUnloggedMappedAdversaryImpl publicKey secretKey).withTraceAppend
         signingLogFragment =
-      (forwardOracles + signingOracle Concrete.scheme publicKey secretKey) := by
+      (forwardOracles + signingOracle Concrete.scheme secretKey) := by
   funext input
   cases input with
   | inl worldInput =>

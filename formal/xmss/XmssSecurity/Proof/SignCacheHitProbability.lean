@@ -186,10 +186,10 @@ theorem cachedEncodingEntryCount_mono
 
 /-- Running one signing query samples its 192-bit randomness first, without changing the random-oracle cache, and then performs the fixed-randomness signing attempt. -/
 theorem Concrete.sign_run_eq
-    (publicKey : PublicKey) (secretKey : SecretKey)
+    (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec) :
     (simulateQ romImpl
-      (Concrete.sign publicKey secretKey epoch message)).run cache =
+      (Concrete.sign secretKey epoch message)).run cache =
       (($ᵗ Randomness) >>= fun randomness =>
         (simulateQ randomOracle
           (Concrete.signAttempt secretKey epoch message randomness :

@@ -60,15 +60,15 @@ noncomputable def signAttempt {m : Type → Type} [Monad m] [HasQuery HashSpec m
   | none => pure none
   | some encoding => some <$> signWithEncoding secretKey epoch randomness encoding
 
-noncomputable def sign (_publicKey : PublicKey) (secretKey : SecretKey)
+noncomputable def sign (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) : OracleComp OracleWorld (Option Signature) := do
   let randomness ← liftM signingRandomness
   liftM (signAttempt secretKey epoch message randomness :
     OracleComp HashSpec (Option Signature))
 
-theorem sign_eq (publicKey : PublicKey) (secretKey : SecretKey)
+theorem sign_eq (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) :
-    sign publicKey secretKey epoch message = (do
+    sign secretKey epoch message = (do
       let randomness ← liftM signingRandomness
       liftM (signAttempt secretKey epoch message randomness :
         OracleComp HashSpec (Option Signature))) := rfl
@@ -86,13 +86,13 @@ noncomputable def signBoundedAttempts : Nat → SecretKey → Epoch → Message 
       | some signature => pure (some signature)
       | none => signBoundedAttempts attempts secretKey epoch message
 
-noncomputable def cappedSign (_publicKey : PublicKey) (secretKey : SecretKey)
+noncomputable def cappedSign (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) : OracleComp OracleWorld (Option Signature) :=
   signBoundedAttempts signingAttemptLimit secretKey epoch message
 
-theorem cappedSign_eq (publicKey : PublicKey) (secretKey : SecretKey)
+theorem cappedSign_eq (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) :
-    cappedSign publicKey secretKey epoch message =
+    cappedSign secretKey epoch message =
       signBoundedAttempts signingAttemptLimit secretKey epoch message := rfl
 
 attribute [irreducible] cappedSign

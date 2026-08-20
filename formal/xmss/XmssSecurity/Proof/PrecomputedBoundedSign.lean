@@ -97,14 +97,14 @@ theorem Concrete.precomputedSignBoundedAttempts_success_replay
       exact hconsistent largerCache hkeygenLe request.epoch randomness encoding
 
 theorem Concrete.precomputedCappedSign_success_replay
-    (publicKey : PublicKey) (secretKey : SecretKey) (request : SignRequest)
+    (secretKey : SecretKey) (request : SignRequest)
     (keygenCache initialCache resultCache largerCache : QueryCache HashSpec)
     (signature : Signature)
     (hconsistent : PrecomputedKeyConsistent keygenCache secretKey)
     (hkeygenLe : keygenCache ≤ largerCache)
     (hmem : (some signature, resultCache) ∈ support
       ((simulateQ romImpl
-        (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+        (Concrete.precomputedCappedSign secretKey request.epoch
           request.message)).run initialCache))
     (hle : resultCache ≤ largerCache) :
     ∃ encoding,

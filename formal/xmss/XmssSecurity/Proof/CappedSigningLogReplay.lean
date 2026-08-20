@@ -9,11 +9,11 @@ open scoped BigOperators
 namespace XmssSecurity
 
 noncomputable def cappedMappedAdversaryImpl
-    (publicKey : PublicKey) (secretKey : SecretKey) :
+    (_publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec)
       (WriterT (QueryLog SigningSpec) (StateT (QueryCache HashSpec) ProbComp)) :=
   romImpl.writerTMapBase
-    (forwardOracles + signingOracle Concrete.scheme publicKey secretKey)
+    (forwardOracles + signingOracle Concrete.scheme secretKey)
 
 theorem cappedMappedAdversary_cache_le
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -25,7 +25,7 @@ theorem cappedMappedAdversary_cache_le
         initialCache)) :
     initialCache ≤ result.2 := by
   apply xmssRom_cache_le
-    ((simulateQ (forwardOracles + signingOracle Concrete.scheme publicKey secretKey)
+    ((simulateQ (forwardOracles + signingOracle Concrete.scheme secretKey)
       computation).run) initialCache result
   rw [QueryImpl.simulateQ_writerTMapBase_run]
   exact hmem
@@ -93,9 +93,9 @@ theorem cappedMappedAdversary_signingLog_consistent
             rw [hsignature] at hsign
             change (some signature, signCache) ∈ support
               ((simulateQ romImpl
-                (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+                (Concrete.precomputedCappedSign secretKey request.epoch
                   request.message)).run initialCache) at hsign
-            apply Concrete.precomputedCappedSign_success_replay publicKey secretKey request
+            apply Concrete.precomputedCappedSign_success_replay secretKey request
               keygenCache initialCache signCache largerCache signature hconsistent hkeygenLe
             · exact hsign
             · exact hmiddleFinal.trans hle

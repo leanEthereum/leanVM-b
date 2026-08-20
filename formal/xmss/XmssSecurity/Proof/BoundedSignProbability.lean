@@ -71,12 +71,12 @@ theorem Concrete.signBoundedAttempts_run_succ_eq
   cases result <;> simp [Concrete.signBoundedAttemptsContinuation]
 
 theorem Concrete.signBoundedAttempts_run_succ_eq_sign_bind
-    (attempts : Nat) (publicKey : PublicKey) (secretKey : SecretKey)
+    (attempts : Nat) (_publicKey : PublicKey) (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec) :
     (simulateQ romImpl
       (Concrete.signBoundedAttempts (attempts + 1) secretKey epoch message)).run cache =
       (simulateQ romImpl
-        (Concrete.sign publicKey secretKey epoch message)).run cache >>=
+        (Concrete.sign secretKey epoch message)).run cache >>=
           Concrete.signBoundedAttemptsContinuation attempts secretKey epoch
             message := by
   rw [Concrete.signBoundedAttempts_run_succ_eq, Concrete.sign_run_eq,

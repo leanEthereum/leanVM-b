@@ -150,7 +150,7 @@ theorem relTriple_programmed_globalFilteredCausalSigningAttempt
     (request : SignRequest) :
     RelTriple
       ((simulateQ romImpl
-        (Concrete.sign left.publicKey left.secretKey
+        (Concrete.sign left.secretKey
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
         (globalFilteredCausalSigningAttempt right.1.1 request
@@ -340,7 +340,7 @@ theorem relTriple_programmed_globalFilteredCausalSigningQuery
     (request : SignRequest) :
     RelTriple
       ((simulateQ romImpl
-        (Concrete.scheme.sign left.publicKey
+        (Concrete.scheme.sign
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)

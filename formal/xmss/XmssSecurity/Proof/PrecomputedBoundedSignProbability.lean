@@ -144,14 +144,14 @@ theorem Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit
 
 set_option linter.constructorNameAsVariable false in
 theorem Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le_cachedCount
-    (publicKey : PublicKey) (secretKey : SecretKey)
+    (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec) :
     Pr[fun result : Option Signature × QueryCache HashSpec =>
       ∃ signature, result.1 = some signature ∧ ∃ output,
         cache (Concrete.CacheView.encodingInput secretKey.parameter epoch
           (message, signature.randomness)) = some output |
       (simulateQ romImpl
-        (Concrete.precomputedCappedSign publicKey secretKey epoch message)).run cache] ≤
+        (Concrete.precomputedCappedSign secretKey epoch message)).run cache] ≤
       (signingAttemptLimit : ℝ≥0∞) *
         cachedEncodingEntryCount cache secretKey.parameter epoch *
         ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by

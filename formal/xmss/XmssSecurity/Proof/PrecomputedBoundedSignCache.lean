@@ -186,13 +186,13 @@ theorem Concrete.precomputedSignBoundedAttempts_preserves_later_valid_other_enco
             attemptCache signature hattempt (hother signature hsignature) hnone
 
 theorem Concrete.precomputedCappedSign_preserves_later_valid_other_encodingInput
-    (publicKey : PublicKey) (secretKey : SecretKey) (epoch targetEpoch : Epoch)
+    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
     (message : Message) (targetInput : Message × Randomness)
     (initialCache resultCache largerCache : QueryCache HashSpec)
     (result : Option Signature)
     (hmem : (result, resultCache) ∈ support
       ((simulateQ romImpl
-        (Concrete.precomputedCappedSign publicKey secretKey epoch message)).run initialCache))
+        (Concrete.precomputedCappedSign secretKey epoch message)).run initialCache))
     (hle : resultCache ≤ largerCache) (encoding : Encoding)
     (hdecode : TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash largerCache secretKey.parameter targetEpoch
@@ -279,12 +279,12 @@ theorem Concrete.precomputedSignBoundedAttempts_preserves_other_epoch_encodingIn
           exact hattemptNone
 
 theorem Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput
-    (publicKey : PublicKey) (secretKey : SecretKey) (epoch targetEpoch : Epoch)
+    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
     (message : Message) (targetInput : Message × Randomness)
     (initialCache finalCache : QueryCache HashSpec) (result : Option Signature)
     (hmem : (result, finalCache) ∈ support
       ((simulateQ romImpl
-        (Concrete.precomputedCappedSign publicKey secretKey epoch message)).run initialCache))
+        (Concrete.precomputedCappedSign secretKey epoch message)).run initialCache))
     (hne : epoch ≠ targetEpoch)
     (hnone : initialCache
       (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) = none) :
@@ -296,11 +296,11 @@ theorem Concrete.precomputedCappedSign_preserves_other_epoch_encodingInput
     result hmem hne hnone
 
 theorem Concrete.precomputedCappedSign_success_decode
-    (publicKey : PublicKey) (secretKey : SecretKey) (request : SignRequest)
+    (secretKey : SecretKey) (request : SignRequest)
     (initialCache finalCache : QueryCache HashSpec) (signature : Signature)
     (hmem : (some signature, finalCache) ∈ support
       ((simulateQ romImpl
-        (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+        (Concrete.precomputedCappedSign secretKey request.epoch
           request.message)).run initialCache)) :
     ∃ encoding, TargetSum.decodeDigest
       (Concrete.CacheView.encodingHash finalCache secretKey.parameter request.epoch
@@ -326,18 +326,18 @@ theorem Concrete.precomputedCappedSign_success_decode
     exact ⟨encoding, by simpa only [hrandomness] using hdecode⟩
 
 theorem Concrete.precomputedCappedSign_success_encodingInput_cached
-    (publicKey : PublicKey) (secretKey : SecretKey)
+    (secretKey : SecretKey)
     (request : SignRequest) (initialCache finalCache : QueryCache HashSpec)
     (signature : Signature)
     (hmem : (some signature, finalCache) ∈ support
       ((simulateQ romImpl
-        (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+        (Concrete.precomputedCappedSign secretKey request.epoch
           request.message)).run initialCache)) :
     ∃ output, finalCache
       (Concrete.CacheView.encodingInput secretKey.parameter request.epoch
         (request.message, signature.randomness)) = some output := by
   obtain ⟨encoding, hdecode⟩ :=
-    Concrete.precomputedCappedSign_success_decode publicKey secretKey request
+    Concrete.precomputedCappedSign_success_decode secretKey request
       initialCache finalCache signature hmem
   exact Concrete.CacheView.encodingInput_cached_of_decode_some finalCache
     secretKey.parameter request.epoch request.message signature.randomness encoding hdecode

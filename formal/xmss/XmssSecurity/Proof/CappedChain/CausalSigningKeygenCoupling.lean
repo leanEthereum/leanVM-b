@@ -253,11 +253,11 @@ theorem Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) (message : Message) :
     evalDist ((simulateQ romImpl
-      (Concrete.precomputedCappedSign keyResult.1.1
+      (Concrete.precomputedCappedSign
         (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
           epoch message)).run largerCache) =
       evalDist ((simulateQ romImpl
-        (Concrete.cappedSign keyResult.1.1 keyResult.1.2 epoch message)).run
+        (Concrete.cappedSign keyResult.1.2 epoch message)).run
           largerCache) := by
   rw [Concrete.precomputedCappedSign, Concrete.cappedSign_eq]
   exact Concrete.evalDist_precomputedSignBoundedAttempts_materialized_eq

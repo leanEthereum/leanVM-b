@@ -96,13 +96,13 @@ theorem cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le_cachedC
       Prod.map id Prod.fst <$>
           cappedCacheTracedSigningQuery publicKey secretKey request initialCache initialTrace =
         (simulateQ romImpl
-          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+          (Concrete.precomputedCappedSign secretKey request.epoch
             request.message)).run initialCache := by
     unfold cappedCacheTracedSigningQuery cappedCacheTracedMappedAdversaryImpl
     rw [QueryImpl.extendState_apply]
     change Prod.map id Prod.fst <$>
         ((simulateQ romImpl
-          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+          (Concrete.precomputedCappedSign secretKey request.epoch
             request.message)).run initialCache >>= _) = _
     simp
   calc
@@ -118,11 +118,11 @@ theorem cappedCacheTracedSigningQuery_encodingInputPrehit_probability_le_cachedC
         (SigningCacheEntry.mk request result.1 initialCache result.2)
           |>.EncodingInputPrehit secretKey |
         (simulateQ romImpl
-          (Concrete.precomputedCappedSign publicKey secretKey request.epoch
+          (Concrete.precomputedCappedSign secretKey request.epoch
             request.message)).run initialCache] := by rw [hprojection]
     _ ≤ _ := by
       simpa [SigningCacheEntry.EncodingInputPrehit] using
         Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le_cachedCount
-          publicKey secretKey request.epoch request.message initialCache
+          secretKey request.epoch request.message initialCache
 
 end XmssSecurity

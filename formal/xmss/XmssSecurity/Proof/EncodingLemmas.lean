@@ -1,4 +1,5 @@
 import XmssSecurity.Statement
+import Mathlib.Data.BitVec
 
 namespace XmssSecurity
 
