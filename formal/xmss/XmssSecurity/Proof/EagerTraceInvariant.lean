@@ -4,6 +4,42 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity
 
+def CacheGrowthRepresented
+    (target : Key → HashInput) (observe : Key → HashOutput → Action)
+    (initial final : QueryCache HashSpec) (trace : List Action) : Prop :=
+  initial ≤ final ∧
+    ∀ key output, initial (target key) = none →
+      final (target key) = some output → observe key output ∈ trace
+
+theorem CacheGrowthRepresented.refl
+    (target : Key → HashInput) (observe : Key → HashOutput → Action)
+    (cache : QueryCache HashSpec) :
+    CacheGrowthRepresented target observe cache cache [] := by
+  constructor
+  · exact le_rfl
+  · intro key output hfresh hfinal
+    rw [hfresh] at hfinal
+    contradiction
+
+theorem CacheGrowthRepresented.trans
+    {target : Key → HashInput} {observe : Key → HashOutput → Action}
+    {initial middle final : QueryCache HashSpec} {head tail : List Action}
+    (hhead : CacheGrowthRepresented target observe initial middle head)
+    (htail : CacheGrowthRepresented target observe middle final tail) :
+    CacheGrowthRepresented target observe initial final (head ++ tail) := by
+  constructor
+  · exact hhead.1.trans htail.1
+  · intro key output hfresh hfinal
+    cases hmiddle : middle (target key) with
+    | none => exact List.mem_append_right head (htail.2 key output hmiddle hfinal)
+    | some middleOutput =>
+        have hmiddleFinal : final (target key) = some middleOutput :=
+          htail.1 hmiddle
+        have : middleOutput = output :=
+          Option.some.inj (hmiddleFinal.symm.trans hfinal)
+        subst middleOutput
+        exact List.mem_append_left tail (hhead.2 key output hfresh hmiddle)
+
 theorem simulateQ_eagerTrace_support_invariant
     {spec : OracleSpec ι} {State : Type}
     [Fintype Index] [DecidableEq Index]

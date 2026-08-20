@@ -11,9 +11,29 @@ namespace XmssSecurity.CappedChain
 set_option maxRecDepth 1000000
 set_option linter.constructorNameAsVariable false
 
-structure GlobalExactTracedState where
-  causalState : GlobalCausalHashState
-  attackerTrace : AttackerActionTrace
+abbrev GlobalExactTracedState := GlobalCausalHashState × AttackerActionTrace
+
+namespace GlobalExactTracedState
+
+abbrev mk (causalState : GlobalCausalHashState)
+    (attackerTrace : AttackerActionTrace) : GlobalExactTracedState :=
+  (causalState, attackerTrace)
+
+abbrev causalState (state : GlobalExactTracedState) :
+    GlobalCausalHashState := state.1
+
+abbrev attackerTrace (state : GlobalExactTracedState) :
+    AttackerActionTrace := state.2
+
+@[simp] theorem causalState_mk
+    (causal : GlobalCausalHashState) (trace : AttackerActionTrace) :
+    causalState (mk causal trace) = causal := rfl
+
+@[simp] theorem attackerTrace_mk
+    (causal : GlobalCausalHashState) (trace : AttackerActionTrace) :
+    attackerTrace (mk causal trace) = trace := rfl
+
+end GlobalExactTracedState
 
 @[simp] def GlobalExactTracedState.initial (causalState : GlobalCausalHashState) :
     GlobalExactTracedState :=
@@ -21,7 +41,7 @@ structure GlobalExactTracedState where
 
 @[simp] def GlobalExactTracedState.withCausalState (state : GlobalExactTracedState)
     (causalState : GlobalCausalHashState) : GlobalExactTracedState :=
-  { state with causalState }
+  (causalState, state.2)
 
 def globalHighExactStateProjection
     (state : GlobalHighExactMonitoredState) : GlobalExactTracedState :=
@@ -351,7 +371,7 @@ theorem globalFirstLaneEncodingHashQuery_validTrace
       obtain ⟨output, _houtput, rfl⟩ := hresult
       rfl
 
-theorem globalFirstLaneEncodingHashQuery_cache_eq_some
+theorem globalFirstLaneEncodingHashQuery_cacheGrowth
     (table : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (randomness : Randomness) (state : GlobalCausalHashState)
@@ -361,88 +381,22 @@ theorem globalFirstLaneEncodingHashQuery_cache_eq_some
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneEncodingHashQuery secretKey epoch message randomness
           state)).run)) :
-    result.1.2.cache (Concrete.CacheView.encodingInput secretKey.parameter
-      epoch (message, randomness)) = some result.1.1 := by
-  unfold globalFirstLaneEncodingHashQuery at hresult
-  cases hcache : state.cache
+    CacheGrowthRepresented
+      (fun payload => Concrete.CacheView.encodingInput secretKey.parameter
+        epoch payload)
+      (fun _ output => EncodingMonitor.ObservedAction.sign epoch output)
+      state.cache result.1.2.cache result.2.encodingActions ∧
+    result.1.2.cache
       (Concrete.CacheView.encodingInput secretKey.parameter epoch
-        (message, randomness)) with
-  | some output =>
-      simp [hcache] at hresult
-      subst result
-      exact hcache
-  | none =>
-      dsimp only at hresult
-      simp only [hcache] at hresult
-      unfold globalFirstLaneFreshEncodingQuery at hresult
-      simp [FirstLaneOracleSimulation.encodingSignAttemptQuery,
-        FirstLaneOracleSimulation.eagerTraceImpl,
-        FirstLaneOracleSimulation.eagerImpl,
-        FirstLaneOracleSimulation.traceFragment,
-        QueryImpl.withTraceAppend_apply, WriterT.run_tell] at hresult
-      obtain ⟨output, _houtput, rfl⟩ := hresult
-      exact QueryCache.cacheQuery_self _ _ _
-
-theorem globalFirstLaneEncodingHashQuery_cache_le
-    (table : GlobalChainValueIndex → Digest)
-    (secretKey : SecretKey) (epoch : Epoch) (message : Message)
-    (randomness : Randomness) (state : GlobalCausalHashState)
-    (result : (HashOutput × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneEncodingHashQuery secretKey epoch message randomness
-          state)).run)) :
-    state.cache ≤ result.1.2.cache := by
-  unfold globalFirstLaneEncodingHashQuery at hresult
-  cases hcache : state.cache
-      (Concrete.CacheView.encodingInput secretKey.parameter epoch
-        (message, randomness)) with
-  | some output =>
-      simp [hcache] at hresult
-      subst result
-      exact le_rfl
-  | none =>
-      dsimp only at hresult
-      simp only [hcache] at hresult
-      unfold globalFirstLaneFreshEncodingQuery at hresult
-      simp [FirstLaneOracleSimulation.encodingSignAttemptQuery,
-        FirstLaneOracleSimulation.eagerTraceImpl,
-        FirstLaneOracleSimulation.eagerImpl,
-        FirstLaneOracleSimulation.traceFragment,
-        QueryImpl.withTraceAppend_apply, WriterT.run_tell] at hresult
-      obtain ⟨output, _houtput, rfl⟩ := hresult
-      exact QueryCache.le_cacheQuery state.cache hcache
-
-theorem globalFirstLaneEncodingHashQuery_freshTarget_mem_trace
-    (table : GlobalChainValueIndex → Digest)
-    (secretKey : SecretKey) (epoch : Epoch) (message : Message)
-    (randomness : Randomness) (state : GlobalCausalHashState)
-    (targetPayload : Message × Randomness) (targetOutput : HashOutput)
-    (result : (HashOutput × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (htargetInitial : state.cache
-      (Concrete.CacheView.encodingInput secretKey.parameter epoch
-        targetPayload) = none)
-    (htargetFinal : result.1.2.cache
-      (Concrete.CacheView.encodingInput secretKey.parameter epoch
-        targetPayload) = some targetOutput)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneEncodingHashQuery secretKey epoch message randomness
-          state)).run)) :
-    .sign epoch targetOutput ∈ result.2.encodingActions := by
+        (message, randomness)) = some result.1.1 := by
   let sampledInput := Concrete.CacheView.encodingInput secretKey.parameter
     epoch (message, randomness)
-  let targetInput := Concrete.CacheView.encodingInput secretKey.parameter
-    epoch targetPayload
   unfold globalFirstLaneEncodingHashQuery at hresult
   cases hcache : state.cache sampledInput with
   | some output =>
       simp [sampledInput, hcache] at hresult
       subst result
-      exact (Option.some_ne_none targetOutput
-        (htargetFinal.symm.trans htargetInitial)).elim
+      exact ⟨CacheGrowthRepresented.refl _ _ _, hcache⟩
   | none =>
       dsimp only at hresult
       simp only [sampledInput] at hcache
@@ -454,26 +408,24 @@ theorem globalFirstLaneEncodingHashQuery_freshTarget_mem_trace
         FirstLaneOracleSimulation.traceFragment,
         QueryImpl.withTraceAppend_apply, WriterT.run_tell] at hresult
       obtain ⟨output, _houtput, rfl⟩ := hresult
-      dsimp only [GlobalCausalHashState.setCache] at htargetFinal
-      change state.cache targetInput = none at htargetInitial
-      change (state.cache.cacheQuery sampledInput output) targetInput =
-        some targetOutput at htargetFinal
-      by_cases heq : sampledInput = targetInput
-      · rw [← heq, QueryCache.cacheQuery_self] at htargetFinal
-        have houtput : output = targetOutput := by
-          exact Option.some.inj htargetFinal
-        subst targetOutput
-        simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
-      · have hstillNone :
-            (state.cache.cacheQuery sampledInput output) targetInput = none := by
-          rw [QueryCache.cacheQuery_of_ne _ _ (Ne.symm heq)]
-          exact htargetInitial
-        have hstillNone' : state.cache.cacheQuery sampledInput output
-            (Concrete.CacheView.encodingInput secretKey.parameter epoch
-              targetPayload) = none := by
-          simpa [targetInput] using hstillNone
-        rw [hstillNone'] at htargetFinal
-        contradiction
+      constructor
+      · constructor
+        · exact QueryCache.le_cacheQuery state.cache hcache
+        · intro payload targetOutput hfresh hfinal
+          let targetInput := Concrete.CacheView.encodingInput
+            secretKey.parameter epoch payload
+          change state.cache targetInput = none at hfresh
+          change (state.cache.cacheQuery sampledInput output) targetInput =
+            some targetOutput at hfinal
+          by_cases heq : sampledInput = targetInput
+          · rw [← heq, QueryCache.cacheQuery_self] at hfinal
+            have : output = targetOutput := Option.some.inj hfinal
+            subst targetOutput
+            simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
+          · rw [QueryCache.cacheQuery_of_ne _ _ (Ne.symm heq), hfresh]
+              at hfinal
+            contradiction
+      · exact QueryCache.cacheQuery_self _ _ _
 
 theorem globalFirstLaneLiftRevealProbe_encodingActions_eq_nil
     (table : GlobalChainValueIndex → Digest)
@@ -628,48 +580,7 @@ theorem globalFirstLaneSigningAttempt_support_decompose
         ⟨encoding, revealedHead, rfl, hrevealed, hrevealedResult, ?_⟩
       simp [Prod.map]
 
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneSigningAttempt_freshTarget_mem_trace
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (targetPayload : Message × Randomness) (targetOutput : HashOutput)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (htargetInitial : state.cache
-      (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-        request.epoch targetPayload) = none)
-    (htargetFinal : result.1.2.cache
-      (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-        request.epoch targetPayload) = some targetOutput)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSigningAttempt keyView request state)).run)) :
-    .sign request.epoch targetOutput ∈ result.2.encodingActions := by
-  obtain ⟨randomness, encodedHead, hencoded, hcases⟩ :=
-    globalFirstLaneSigningAttempt_support_decompose table keyView request state
-      result hresult
-  rcases hcases with hreject | haccept
-  · rw [hreject.2] at htargetFinal ⊢
-    exact globalFirstLaneEncodingHashQuery_freshTarget_mem_trace table
-      keyView.secretKey request.epoch request.message randomness state
-        targetPayload targetOutput encodedHead htargetInitial htargetFinal hencoded
-  · obtain ⟨encoding, revealedHead, _hdecode, hrevealed,
-      hrevealedResult, hresultEq⟩ := haccept
-    have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
-      rw [hrevealedResult, globalSignatureRevealResult_cache]
-    rw [hresultEq] at htargetFinal ⊢
-    rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
-    apply List.mem_append_left
-    apply globalFirstLaneEncodingHashQuery_freshTarget_mem_trace table
-      keyView.secretKey request.epoch request.message randomness state
-        targetPayload targetOutput encodedHead htargetInitial
-    · rw [← hfinalCache]
-      exact htargetFinal
-    · exact hencoded
-
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneSigningAttempt_cache_le
+theorem globalFirstLaneSigningAttempt_cacheGrowth
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView)
     (request : SignRequest) (state : GlobalCausalHashState)
@@ -678,24 +589,40 @@ theorem globalFirstLaneSigningAttempt_cache_le
     (hresult : result ∈ support
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneSigningAttempt keyView request state)).run)) :
-    state.cache ≤ result.1.2.cache := by
+    CacheGrowthRepresented
+      (fun payload => Concrete.CacheView.encodingInput
+        keyView.secretKey.parameter request.epoch payload)
+      (fun _ output => EncodingMonitor.ObservedAction.sign
+        request.epoch output)
+      state.cache result.1.2.cache result.2.encodingActions := by
   obtain ⟨randomness, encodedHead, hencoded, hcases⟩ :=
     globalFirstLaneSigningAttempt_support_decompose table keyView request state
       result hresult
-  have hencodedLe := globalFirstLaneEncodingHashQuery_cache_le table
+  have hencodedGrowth := globalFirstLaneEncodingHashQuery_cacheGrowth table
     keyView.secretKey request.epoch request.message randomness state
       encodedHead hencoded
   rcases hcases with hreject | haccept
   · rw [hreject.2]
-    exact hencodedLe
+    constructor
+    · exact hencodedGrowth.1.1
+    · intro payload output hfresh hfinal
+      exact hencodedGrowth.1.2 payload output hfresh hfinal
   · obtain ⟨encoding, revealedHead, _hdecode, _hrevealed,
       hrevealedResult, hresultEq⟩ := haccept
     have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
       rw [hrevealedResult, globalSignatureRevealResult_cache]
-    rw [hresultEq, hfinalCache]
-    exact hencodedLe
+    rw [hresultEq]
+    constructor
+    · rw [hfinalCache]
+      exact hencodedGrowth.1.1
+    · intro payload output hfresh hfinal
+      rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+      apply List.mem_append_left
+      apply hencodedGrowth.1.2 payload output hfresh
+      · rw [← hfinalCache]
+        exact hfinal
 
-theorem globalFirstLaneSignBoundedAttempts_cache_le
+theorem globalFirstLaneSignBoundedAttempts_cacheGrowth
     (attempts : Nat)
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -706,113 +633,53 @@ theorem globalFirstLaneSignBoundedAttempts_cache_le
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneSignBoundedAttempts attempts keyView request state)
         ).run)) :
-    state.cache ≤ result.1.2.cache := by
+    CacheGrowthRepresented
+      (fun payload => Concrete.CacheView.encodingInput
+        keyView.secretKey.parameter request.epoch payload)
+      (fun _ output => EncodingMonitor.ObservedAction.sign
+        request.epoch output)
+      state.cache result.1.2.cache result.2.encodingActions := by
   induction attempts generalizing state result with
   | zero =>
       simp [globalFirstLaneSignBoundedAttempts] at hresult
       subst result
-      exact le_rfl
+      exact CacheGrowthRepresented.refl _ _ _
   | succ attempts ih =>
       rw [globalFirstLaneSignBoundedAttempts, simulateQ_bind,
         WriterT.run_bind', mem_support_bind_iff] at hresult
       obtain ⟨attemptHead, hattempt, hcontinuation⟩ := hresult
-      have hattemptLe := globalFirstLaneSigningAttempt_cache_le table keyView
+      rw [support_map] at hcontinuation
+      obtain ⟨tailResult, htail, rfl⟩ := hcontinuation
+      have hhead := globalFirstLaneSigningAttempt_cacheGrowth table keyView
         request state attemptHead hattempt
-      rw [support_map] at hcontinuation
-      obtain ⟨tailResult, htail, rfl⟩ := hcontinuation
       cases hoption : attemptHead.1.1 with
       | some signature =>
           simp [hoption] at htail
           subst tailResult
-          exact hattemptLe
+          simpa using hhead
       | none =>
           simp only [hoption] at htail
-          exact le_trans hattemptLe
-            (ih attemptHead.1.2 tailResult htail)
+          have htailGrowth := ih attemptHead.1.2 tailResult htail
+          simpa [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+            using hhead.trans htailGrowth
 
-theorem globalFirstLaneSignBoundedAttempts_freshTarget_mem_trace
-    (attempts : Nat)
+theorem globalFirstLaneSigningQuery_cacheGrowth
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView)
     (request : SignRequest) (state : GlobalCausalHashState)
-    (targetPayload : Message × Randomness) (targetOutput : HashOutput)
     (result : (Option Signature × GlobalCausalHashState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (htargetInitial : state.cache
-      (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-        request.epoch targetPayload) = none)
-    (htargetFinal : result.1.2.cache
-      (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-        request.epoch targetPayload) = some targetOutput)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSignBoundedAttempts attempts keyView request state)
-        ).run)) :
-    .sign request.epoch targetOutput ∈ result.2.encodingActions := by
-  induction attempts generalizing state result with
-  | zero =>
-      simp [globalFirstLaneSignBoundedAttempts] at hresult
-      subst result
-      exact (Option.some_ne_none targetOutput
-        (htargetFinal.symm.trans htargetInitial)).elim
-  | succ attempts ih =>
-      rw [globalFirstLaneSignBoundedAttempts, simulateQ_bind,
-        WriterT.run_bind', mem_support_bind_iff] at hresult
-      obtain ⟨attemptHead, hattempt, hcontinuation⟩ := hresult
-      rw [support_map] at hcontinuation
-      obtain ⟨tailResult, htail, rfl⟩ := hcontinuation
-      cases hoption : attemptHead.1.1 with
-      | some signature =>
-          simp [hoption] at htail
-          subst tailResult
-          dsimp only [Prod.map]
-          rw [List.append_nil]
-          exact globalFirstLaneSigningAttempt_freshTarget_mem_trace table
-            keyView request state targetPayload targetOutput attemptHead
-              htargetInitial htargetFinal hattempt
-      | none =>
-          simp only [hoption] at htail
-          dsimp only [Prod.map]
-          rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
-          let targetInput := Concrete.CacheView.encodingInput
-            keyView.secretKey.parameter request.epoch targetPayload
-          cases hmid : attemptHead.1.2.cache targetInput with
-          | none =>
-              apply List.mem_append_right
-              exact ih attemptHead.1.2 tailResult hmid htargetFinal htail
-          | some middleOutput =>
-              have htailLe := globalFirstLaneSignBoundedAttempts_cache_le
-                attempts table keyView request attemptHead.1.2 tailResult htail
-              have hmiddleFinal : tailResult.1.2.cache targetInput =
-                  some middleOutput := htailLe hmid
-              have houtputs : middleOutput = targetOutput := by
-                exact Option.some.inj (hmiddleFinal.symm.trans htargetFinal)
-              subst middleOutput
-              apply List.mem_append_left
-              exact globalFirstLaneSigningAttempt_freshTarget_mem_trace table
-                keyView request state targetPayload targetOutput attemptHead
-                  htargetInitial hmid hattempt
-
-theorem globalFirstLaneSigningQuery_freshTarget_mem_trace
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (targetPayload : Message × Randomness) (targetOutput : HashOutput)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (htargetInitial : state.cache
-      (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-        request.epoch targetPayload) = none)
-    (htargetFinal : result.1.2.cache
-      (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-        request.epoch targetPayload) = some targetOutput)
     (hresult : result ∈ support
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneSigningQuery keyView request state)).run)) :
-    .sign request.epoch targetOutput ∈ result.2.encodingActions := by
-  exact globalFirstLaneSignBoundedAttempts_freshTarget_mem_trace
-    signingAttemptLimit table keyView request state targetPayload targetOutput
-      result htargetInitial htargetFinal hresult
+    CacheGrowthRepresented
+      (fun payload => Concrete.CacheView.encodingInput
+        keyView.secretKey.parameter request.epoch payload)
+      (fun _ output => EncodingMonitor.ObservedAction.sign
+        request.epoch output)
+      state.cache result.1.2.cache result.2.encodingActions := by
+  exact globalFirstLaneSignBoundedAttempts_cacheGrowth signingAttemptLimit
+    table keyView request state result hresult
 
 theorem globalFirstLaneAttackerHashQueryAtEpoch_trace
     (table : GlobalChainValueIndex → Digest)
@@ -846,7 +713,7 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_trace
       obtain ⟨output, _houtput, rfl⟩ := hresult
       simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
 
-theorem globalFirstLaneAttackerHashQueryAtEpoch_cache_le
+theorem globalFirstLaneAttackerHashQueryAtEpoch_cacheGrowth
     (table : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (input : HashInput)
     (state : GlobalCausalHashState) (epoch : Epoch)
@@ -856,38 +723,10 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_cache_le
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneAttackerHashQueryAtEpoch secretKey input state epoch)
         ).run)) :
-    state.cache ≤ result.1.2.cache := by
-  cases hcache : state.cache input with
-  | some output =>
-      rw [globalFirstLaneAttackerHashQueryAtEpoch_eq_cached _ _ _ _ _ hcache]
-        at hresult
-      simp at hresult
-      subst result
-      simpa only [globalCausalRecordedState_cache] using
-        (le_refl state.cache)
-  | none =>
-      rw [globalFirstLaneAttackerHashQueryAtEpoch_eq_fresh _ _ _ _ hcache]
-        at hresult
-      unfold globalFirstLaneFreshEncodingQuery at hresult
-      simp [FirstLaneOracleSimulation.encodingQuery,
-        FirstLaneOracleSimulation.eagerTraceImpl,
-        FirstLaneOracleSimulation.eagerImpl,
-        FirstLaneOracleSimulation.traceFragment,
-        QueryImpl.withTraceAppend_apply, WriterT.run_tell] at hresult
-      obtain ⟨output, _houtput, rfl⟩ := hresult
-      simpa [GlobalCausalHashState.setCache, globalCausalRecordedState_cache]
-        using QueryCache.le_cacheQuery state.cache hcache
-
-theorem globalFirstLaneAttackerHashQueryAtEpoch_cache_eq_some
-    (table : GlobalChainValueIndex → Digest)
-    (secretKey : SecretKey) (input : HashInput)
-    (state : GlobalCausalHashState) (epoch : Epoch)
-    (result : (HashOutput × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneAttackerHashQueryAtEpoch secretKey input state epoch)
-        ).run)) :
+    CacheGrowthRepresented
+      (fun _ : Unit => input)
+      (fun _ output => EncodingMonitor.ObservedAction.query epoch output)
+      state.cache result.1.2.cache result.2.encodingActions ∧
     result.1.2.cache input = some result.1.1 := by
   cases hcache : state.cache input with
   | some output =>
@@ -896,7 +735,14 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_cache_eq_some
       simp only [simulateQ_pure, WriterT.run_pure', support_pure,
         Set.mem_singleton_iff] at hresult
       subst result
-      simpa only [globalCausalRecordedState_cache] using hcache
+      constructor
+      · simpa [globalCausalRecordedState_cache,
+          FirstLaneOracleSimulation.ActionTrace.encodingActions] using
+          (CacheGrowthRepresented.refl
+            (fun _ : Unit => input)
+            (fun _ output => EncodingMonitor.ObservedAction.query epoch output)
+            state.cache)
+      · simpa only [globalCausalRecordedState_cache] using hcache
   | none =>
       rw [globalFirstLaneAttackerHashQueryAtEpoch_eq_fresh _ _ _ _ hcache]
         at hresult
@@ -907,7 +753,19 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_cache_eq_some
         FirstLaneOracleSimulation.traceFragment,
         QueryImpl.withTraceAppend_apply, WriterT.run_tell] at hresult
       obtain ⟨output, _houtput, rfl⟩ := hresult
-      exact QueryCache.cacheQuery_self _ _ _
+      constructor
+      · constructor
+        · simpa [GlobalCausalHashState.setCache,
+            globalCausalRecordedState_cache] using
+            QueryCache.le_cacheQuery state.cache hcache
+        · intro _ targetOutput _hfresh hfinal
+          change (state.cache.cacheQuery input output) input =
+            some targetOutput at hfinal
+          rw [QueryCache.cacheQuery_self] at hfinal
+          have : output = targetOutput := Option.some.inj hfinal
+          subst targetOutput
+          simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
+      · exact QueryCache.cacheQuery_self _ _ _
 
 set_option maxRecDepth 1000000 in
 theorem globalFirstLaneSigningAttempt_validTrace
@@ -970,9 +828,9 @@ theorem globalFirstLaneSigningAttempt_validTrace
       rfl
     have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
       rw [hrevealedResult, globalSignatureRevealResult_cache]
-    have hencodedCache := globalFirstLaneEncodingHashQuery_cache_eq_some
-      table keyView.secretKey request.epoch request.message randomness state
-        encodedHead hencoded
+    have hencodedCache :=
+      (globalFirstLaneEncodingHashQuery_cacheGrowth table keyView.secretKey
+        request.epoch request.message randomness state encodedHead hencoded).2
     have hfinalLookup : revealedHead.1.2.cache
         (Concrete.CacheView.encodingInput keyView.secretKey.parameter
           request.epoch (request.message, randomness)) =
@@ -1086,11 +944,12 @@ theorem globalFirstLaneSigningQuery_observation_mem
             simp [encodingObservation?, signedInput, hfresh, hfinal, houtput]
               at hobservation
         | some hashOutput =>
-            have haction := globalFirstLaneSigningQuery_freshTarget_mem_trace
-              table keyView request state
-                (request.message, signature.randomness) hashOutput result
-                  (by simpa [signedInput] using hfresh)
-                  (by simpa [signedInput] using hfinal) hresult
+            have hgrowth := globalFirstLaneSigningQuery_cacheGrowth table
+              keyView request state result hresult
+            have haction := hgrowth.2
+              (request.message, signature.randomness) hashOutput
+              (by simpa [signedInput] using hfresh)
+              (by simpa [signedInput] using hfinal)
             have hobservation' : EncodingMonitor.ObservedAction.sign
                 request.epoch hashOutput = observation := by
               exact Option.some.inj (by simpa [encodingObservation?, signedInput,
@@ -1336,8 +1195,8 @@ theorem globalFirstLaneHashQuery_cache_le
   | some epoch =>
       rw [globalFirstLaneAttackerHashQueryFromHighRun_eq_some _ _ _ _ epoch
         hepoch] at hresult
-      exact globalFirstLaneAttackerHashQueryAtEpoch_cache_le table
-        keyView.secretKey hashInput state epoch result hresult
+      exact (globalFirstLaneAttackerHashQueryAtEpoch_cacheGrowth table
+        keyView.secretKey hashInput state epoch result hresult).1.1
   | none =>
       rw [globalFirstLaneAttackerHashQueryFromHighRun_eq_none _ _ _ _ hepoch]
         at hresult
@@ -1682,35 +1541,30 @@ theorem globalFirstLaneVerifier_freshEncoding_mem_trace
   let targetInput := Concrete.CacheView.encodingInput
     keyView.secretKey.parameter forgery.epoch
       (forgery.message, forgery.signature.randomness)
-  have hcached := globalFirstLaneAttackerHashQueryAtEpoch_cache_eq_some
-    table keyView.secretKey targetInput initialState forgery.epoch queryHead
-      hquery
-  have hqueryTrace := globalFirstLaneAttackerHashQueryAtEpoch_trace table
+  have hhead := globalFirstLaneAttackerHashQueryAtEpoch_cacheGrowth table
     keyView.secretKey targetInput initialState forgery.epoch queryHead hquery
-  have hfresh' : initialState.cache targetInput = none := by
-    simpa [targetInput] using hfresh
-  have haction : EncodingMonitor.ObservedAction.query forgery.epoch
-      queryHead.1.1 ∈ queryHead.2.encodingActions := by
-    rw [hqueryTrace, if_pos hfresh']
-    simp
   have htailLe := globalFirstLaneVerifierHashExecution_simulateQ_cache_le
     table keyView edgeHigh
       (concreteVerificationAfterDigest keyView.publicKey forgery.epoch
         forgery.signature (truncateHash queryHead.1.1))
       queryHead.1.2 tail htail
-  have hfinal' : tail.1.2.cache targetInput = some targetOutput := by
-    simpa [targetInput] using hfinal
-  have hqueryFinal : tail.1.2.cache targetInput =
-      some queryHead.1.1 := htailLe hcached
-  have houtput : queryHead.1.1 = targetOutput :=
-    Option.some.inj (hqueryFinal.symm.trans hfinal')
-  rw [houtput] at haction
-  have hfull : EncodingMonitor.ObservedAction.query forgery.epoch
-      targetOutput ∈
-        queryHead.2.encodingActions ++ tail.2.encodingActions :=
-    List.mem_append_left tail.2.encodingActions haction
+  have htailGrowth : CacheGrowthRepresented
+      (fun _ : Unit => targetInput)
+      (fun _ output => EncodingMonitor.ObservedAction.query forgery.epoch output)
+      queryHead.1.2.cache tail.1.2.cache tail.2.encodingActions := by
+    constructor
+    · exact htailLe
+    · intro _ output hfreshMiddle _hfinal
+      have hcached := (globalFirstLaneAttackerHashQueryAtEpoch_cacheGrowth
+        table keyView.secretKey targetInput initialState forgery.epoch
+          queryHead hquery).2
+      rw [hcached] at hfreshMiddle
+      contradiction
+  have hgrowth := hhead.1.trans htailGrowth
   simpa [FirstLaneOracleSimulation.ActionTrace.encodingActions_append] using
-    hfull
+    hgrowth.2 () targetOutput
+      (by simpa [targetInput] using hfresh)
+      (by simpa [targetInput] using hfinal)
 
 theorem globalFirstLaneExactTracedVerifierImpl_run_eq_map
     (keyView : ProgrammedGlobalChainKeygenView)

@@ -193,8 +193,9 @@ theorem globalHighState_eq_of_projection_trace_consistent
     leftAttacker⟩
   rcases right with ⟨⟨⟨rightCausal, rightMonitor, rightTrace⟩,
     rightAttacker⟩, rightEncoding⟩
-  simp only [globalHighExactStateProjection, GlobalExactTracedState.mk.injEq]
+  change (leftCausal, leftAttacker) = (rightCausal, rightAttacker)
     at hprojection
+  simp only [Prod.mk.injEq] at hprojection
   change leftTrace = rightTrace at htrace
   simp only [GlobalMonitoredCausalState.TraceConsistent] at hleft hright
   obtain ⟨hcausal, hattacker⟩ := hprojection
