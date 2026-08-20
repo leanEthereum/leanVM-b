@@ -118,38 +118,6 @@ theorem relTriple_programmedChainExtension_exposes_independent_high
   exact programmedChainExtensionWithHigh_support_info
     parameter epoch chain step values cache right hrelation.2.2
 
-noncomputable def programmedSingleChainEdgeHalvesView
-    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (position : Nat) (hvalid : position < chainLength - 1)
-    (value : Digest) (cache : QueryCache HashSpec) :
-    ProbComp (Digest × Digest) :=
-  (fun result =>
-    (result.1.back,
-      cachedHashOutputHigh result.2
-        (Concrete.CacheView.chainInput parameter epoch chain
-          ⟨position, hvalid⟩ value))) <$>
-    programmedSingleChainEdge parameter epoch chain position hvalid value cache
-
-theorem evalDist_programmedSingleChainEdge_halves_independent
-    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (position : Nat) (hvalid : position < chainLength - 1)
-    (value : Digest) (cache : QueryCache HashSpec) :
-    evalDist (programmedSingleChainEdgeHalvesView parameter epoch chain
-      position hvalid value cache) =
-    evalDist (do
-      let low ← $ᵗ Digest
-      let high ← $ᵗ Digest
-      pure (low, high)) := by
-  unfold programmedSingleChainEdgeHalvesView programmedSingleChainEdge
-    Rom.sampledHashOutputWithDigest Rom.sampleHashOutputWithDigest
-  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
-    Function.comp_apply]
-  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-  intro low
-  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-  intro high
-  simp [cachedHashOutputHigh, hashOutputHigh]
-
 noncomputable def programmedChainTrajectoryWithHigh :
     (parameter : PublicParameter) → (epoch : Epoch) → (chain : ChainIndex) →
     (position : Nat) → (steps : Nat) → Digest → QueryCache HashSpec →

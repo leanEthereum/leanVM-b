@@ -173,13 +173,6 @@ noncomputable def programmedFixedSeedChainTrajectoriesFromCache
         chain steps first.2 epochs
       pure (first.1 :: rest.1, rest.2)
 
-@[simp]
-theorem programmedFixedSeedChainTrajectoriesFromCache_nil
-    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (steps : Nat) (cache : QueryCache HashSpec) :
-    programmedFixedSeedChainTrajectoriesFromCache parameter secret chain steps
-      cache [] = pure ([], cache) := rfl
-
 theorem programmedFixedSeedChainTrajectoriesFromCache_cons
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
     (chain : ChainIndex) (steps : Nat) (cache : QueryCache HashSpec)
@@ -191,33 +184,6 @@ theorem programmedFixedSeedChainTrajectoriesFromCache_cons
         let rest ← programmedFixedSeedChainTrajectoriesFromCache parameter secret
           chain steps first.2 epochs
         pure (first.1 :: rest.1, rest.2)) := rfl
-
-theorem programmedFixedSeedChainTrajectoriesFromCache_congr_secret
-    (parameter : PublicParameter) (leftSecret rightSecret :
-      Epoch → ChainIndex → Digest)
-    (chain : ChainIndex) (steps : Nat) :
-    ∀ (epochs : List Epoch) (cache : QueryCache HashSpec),
-      (∀ epoch ∈ epochs,
-        leftSecret epoch chain = rightSecret epoch chain) →
-      programmedFixedSeedChainTrajectoriesFromCache parameter leftSecret
-          chain steps cache epochs =
-        programmedFixedSeedChainTrajectoriesFromCache parameter rightSecret
-          chain steps cache epochs := by
-  intro epochs
-  induction epochs with
-  | nil =>
-      intro cache _hagrees
-      rfl
-  | cons epoch epochs ih =>
-      intro cache hagrees
-      rw [programmedFixedSeedChainTrajectoriesFromCache_cons,
-        programmedFixedSeedChainTrajectoriesFromCache_cons,
-        hagrees epoch (by simp)]
-      apply bind_congr
-      intro first
-      rw [ih first.2]
-      intro later hlater
-      exact hagrees later (by simp [hlater])
 
 set_option maxHeartbeats 2400000 in
 set_option maxRecDepth 100000 in
@@ -238,7 +204,7 @@ theorem evalDist_fixedSeedChainTrajectories_eq_programmed
   induction epochs with
   | nil =>
       intro cache _hnodup _habsent
-      simp
+      rfl
   | cons epoch epochs ih =>
       intro cache hnodup habsent
       have hnotMem : epoch ∉ epochs := (List.nodup_cons.mp hnodup).1
@@ -424,92 +390,5 @@ theorem evalDist_actualFixedChainKeygen_eq_programmedWarmed
       evalDist (programmedWarmedFixedChainKeygen chain) :=
   (evalDist_actualFixedChainKeygen_eq_chronologicallyWarmed chain).trans
     (evalDist_chronologicallyWarmedFixedChainKeygen_eq_programmed chain)
-
-theorem programmedWarmedFixedChainKeygen_support_table
-    (chain : ChainIndex) (result : ProgrammedFixedChainKeygenView)
-    (hresult : result ∈ support (programmedWarmedFixedChainKeygen chain)) :
-    keygenChainValueTable result.cache result.secretKey chain = result.table := by
-  apply actualFixedChainKeygen_support_table chain result
-  exact (mem_support_iff_of_evalDist_eq
-    (evalDist_actualFixedChainKeygen_eq_programmedWarmed chain) result).mpr
-      hresult
-
-noncomputable def programmedWarmedFixedChainKeygenTableOnly
-    (chain : ChainIndex) : ProbComp (ChainValueIndex → Digest) :=
-  ProgrammedFixedChainKeygenView.table <$>
-    programmedWarmedFixedChainKeygen chain
-
-/-- Projecting the explicit programmed key-generation experiment to its table agrees with the actual experiment. -/
-theorem evalDist_programmedWarmedFixedChainKeygenTableOnly_eq_actual
-    (chain : ChainIndex) :
-    evalDist (programmedWarmedFixedChainKeygenTableOnly chain) =
-      evalDist (ProgrammedFixedChainKeygenView.table <$>
-        actualFixedChainKeygen chain) := by
-  unfold programmedWarmedFixedChainKeygenTableOnly
-  calc
-    evalDist (ProgrammedFixedChainKeygenView.table <$>
-        programmedWarmedFixedChainKeygen chain) =
-        ProgrammedFixedChainKeygenView.table <$>
-          evalDist (programmedWarmedFixedChainKeygen chain) :=
-      evalDist_map _ _
-    _ = ProgrammedFixedChainKeygenView.table <$>
-          evalDist (actualFixedChainKeygen chain) := by
-      exact congrArg (Functor.map ProgrammedFixedChainKeygenView.table)
-        (evalDist_actualFixedChainKeygen_eq_programmedWarmed chain).symm
-    _ = evalDist (ProgrammedFixedChainKeygenView.table <$>
-          actualFixedChainKeygen chain) :=
-      (evalDist_map _ _).symm
-
-noncomputable def programmedSingleChainEdge
-    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (position : Nat) (hvalid : position < chainLength - 1)
-    (value : Digest) (cache : QueryCache HashSpec) :
-    ProbComp (Vector Digest 2 × QueryCache HashSpec) := do
-  let sampled ← Rom.sampledHashOutputWithDigest
-  pure ((Vector.ofFn fun _ : Fin 1 => value).push sampled.1,
-    cache.cacheQuery
-      (Concrete.CacheView.chainInput parameter epoch chain
-        ⟨position, hvalid⟩ value)
-      sampled.2)
-
-set_option maxRecDepth 100000 in
-theorem evalDist_singleChainEdge_eq_programmed
-    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (position : Nat) (hvalid : position < chainLength - 1)
-    (value : Digest) (cache : QueryCache HashSpec)
-    (habsent : cache
-      (Concrete.CacheView.chainInput parameter epoch chain
-        ⟨position, hvalid⟩ value) = none) :
-    evalDist ((simulateQ randomOracle
-      (Concrete.chainTrajectory parameter epoch chain position 1 value)).run
-        cache) =
-    evalDist (programmedSingleChainEdge parameter epoch chain position hvalid
-      value cache) := by
-  rw [Concrete.chainTrajectory_succ, Concrete.chainTrajectory_zero,
-    simulateQ_bind, StateT.run_bind]
-  simp only [simulateQ_pure, StateT.run_pure, pure_bind,
-    Nat.add_zero, hvalid, ↓reduceDIte]
-  have hback : (Vector.ofFn fun _ : Fin 1 => value).back = value := by
-    rfl
-  rw [hback]
-  rw [simulateQ_bind, StateT.run_bind,
-    simulate_chainHash_run_of_fresh parameter epoch chain
-    ⟨position, hvalid⟩ value cache habsent]
-  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
-    Function.comp_apply, simulateQ_pure, StateT.run_pure]
-  let initial : Vector Digest 1 := Vector.ofFn fun _ => value
-  let input := Concrete.CacheView.chainInput parameter epoch chain
-    ⟨position, hvalid⟩ value
-  unfold programmedSingleChainEdge
-  change evalDist (uniformHashOutput >>= fun output =>
-      pure (initial.push (truncateHash output),
-        cache.cacheQuery input output)) =
-    evalDist (Rom.sampledHashOutputWithDigest >>= fun sampled =>
-      pure (initial.push sampled.1,
-        cache.cacheQuery input sampled.2))
-  symm
-  exact Rom.evalDist_sampledHashOutputWithDigest_bind_eq_uniform_bind
-    (fun sampled => pure
-      (initial.push sampled.1, cache.cacheQuery input sampled.2))
 
 end XmssSecurity

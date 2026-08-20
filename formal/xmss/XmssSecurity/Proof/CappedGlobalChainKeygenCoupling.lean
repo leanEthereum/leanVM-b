@@ -650,7 +650,7 @@ theorem evalDist_programmedFixedChainTrajectories_fst_eq_uniform
   induction epochs with
   | nil =>
       intro cache
-      simp
+      rfl
   | cons epoch epochs ih =>
       intro cache
       rw [programmedFixedSeedChainTrajectoriesFromCache_cons,
