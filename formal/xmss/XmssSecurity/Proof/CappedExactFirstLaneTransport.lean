@@ -1316,63 +1316,6 @@ theorem globalFirstLaneExactTracedMappedAdversaryImpl_query_trace_sublist
       exact globalFirstLaneExactTracedSigningImpl_trace_sublist table keyView
         request state result hresult
 
-theorem simulateQ_eagerTrace_state_trace_sublist
-    {spec : OracleSpec ι} {State : Type}
-    (table : GlobalChainValueIndex → Digest)
-    (impl : QueryImpl spec
-      (StateT State (OracleComp GlobalFirstLaneWorld)))
-    (stateTrace : State → EncodingActionTrace)
-    (hstep : ∀ (input : spec.Domain) (state : State)
-      (result : (spec.Range input × State) ×
-        FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex),
-      result ∈ support
-        ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-          ((impl input).run state)).run) →
-      List.Sublist (stateTrace result.1.2)
-        (stateTrace state ++ result.2.encodingActions))
-    (computation : OracleComp spec α) (initialState : State)
-    (result : (α × State) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        ((simulateQ impl computation).run initialState)).run)) :
-    List.Sublist (stateTrace result.1.2)
-      (stateTrace initialState ++ result.2.encodingActions) := by
-  apply simulateQ_eagerTrace_support_invariant table impl
-    (fun initial trace final => List.Sublist (stateTrace final)
-      (stateTrace initial ++ trace.encodingActions))
-  · intro state
-    simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
-  · intro initial middle final headTrace tailTrace hhead htail
-    rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
-    simpa [List.append_assoc] using htail.trans
-      (hhead.append (List.Sublist.refl tailTrace.encodingActions))
-  · exact hstep
-  · exact hresult
-
-theorem globalFirstLaneExactTracedMappedAdversary_simulateQ_trace_sublist
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : GlobalExactTracedState)
-    (result : (α × GlobalExactTracedState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        ((simulateQ
-          (globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh)
-            computation).run initialState)).run)) :
-    List.Sublist result.1.2.encodingTrace
-      (initialState.encodingTrace ++ result.2.encodingActions) := by
-  apply simulateQ_eagerTrace_state_trace_sublist table
-    (globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh)
-    (fun state : GlobalExactTracedState => state.encodingTrace) _ computation
-      initialState result hresult
-  intro input state stepResult hstep
-  exact globalFirstLaneExactTracedMappedAdversaryImpl_query_trace_sublist table
-    keyView edgeHigh input state stepResult hstep
-
 theorem globalFirstLaneLiftRevealProbe_mem_eagerTrace_support
     (table : GlobalChainValueIndex → Digest)
     (computation : OracleComp
@@ -1836,152 +1779,50 @@ theorem globalFirstLaneExactTracedVerifier_eager_support_decompose
   obtain ⟨baseResult, hbase, heq⟩ := hresult
   exact ⟨baseResult, hbase, heq.symm⟩
 
-theorem globalFirstLaneExactTracedDetailedExecution_trace_sublist
+theorem globalFirstLaneExactTracedVerifier_append_trace_sublist
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
+    (forgery : Forgery)
     (state : GlobalExactTracedState)
     (hparameter : keyView.publicKey.parameter = keyView.secretKey.parameter)
-    (result : ((Forgery × Bool) × GlobalExactTracedState) ×
+    (result : (Bool × GlobalExactTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hresult : result ∈ support
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        ((globalFirstLaneExactTracedDetailedExecution adversary keyView
-          edgeHigh).run state)).run)) :
-    List.Sublist result.1.2.encodingTrace
+        ((simulateQ (globalFirstLaneExactTracedVerifierImpl keyView edgeHigh)
+          (Concrete.scheme.verify keyView.publicKey forgery.epoch
+            forgery.message forgery.signature)).run state)).run)) :
+    List.Sublist
+      (appendVerificationEncodingObservation keyView.secretKey forgery
+        state.causalState.cache result.1.2.causalState.cache
+          result.1.2.encodingTrace)
       (state.encodingTrace ++ result.2.encodingActions) := by
-  unfold globalFirstLaneExactTracedDetailedExecution at hresult
-  rw [StateT.run_mk, simulateQ_bind, WriterT.run_bind',
-    mem_support_bind_iff] at hresult
-  obtain ⟨handled, hadversary, hrestMapped⟩ := hresult
-  rw [support_map] at hrestMapped
-  obtain ⟨verificationResult, hverificationBlock, hresultEq⟩ := hrestMapped
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff]
-    at hverificationBlock
-  obtain ⟨verified, hverify, hfinalMapped⟩ := hverificationBlock
-  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
-    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinalMapped
-  cases hfinalMapped
-  cases hresultEq
-  obtain ⟨baseVerified, hbaseVerify, hverifiedEq⟩ :=
+  obtain ⟨baseResult, hbase, heq⟩ :=
     globalFirstLaneExactTracedVerifier_eager_support_decompose table keyView
       edgeHigh
-      (Concrete.scheme.verify keyView.publicKey handled.1.1.epoch
-        handled.1.1.message handled.1.1.signature)
-      handled.1.2 verified hverify
-  subst verified
-  have hadversarySub :=
-    globalFirstLaneExactTracedMappedAdversary_simulateQ_trace_sublist table
-      keyView edgeHigh (adversary.main keyView.publicKey) state handled
-        hadversary
-  simp only [Prod.map_apply, id_eq]
-  rw [show (∅ : FirstLaneOracleSimulation.ActionTrace
-    GlobalChainValueIndex) = [] by rfl, List.append_nil]
-  change List.Sublist
-    (appendVerificationEncodingObservation keyView.secretKey handled.1.1
-      handled.1.2.causalState.cache baseVerified.1.2.cache
-        handled.1.2.encodingTrace)
-    (state.encodingTrace ++
-      (handled.2 ++ baseVerified.2).encodingActions)
-  rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+      (Concrete.scheme.verify keyView.publicKey forgery.epoch
+        forgery.message forgery.signature)
+      state result hresult
+  subst result
   let forgedInput := Concrete.CacheView.encodingInput
-    keyView.secretKey.parameter handled.1.1.epoch
-      (handled.1.1.message, handled.1.1.signature.randomness)
-  by_cases hfresh : handled.1.2.causalState.cache forgedInput = none
-  · cases houtput : baseVerified.1.2.cache forgedInput with
+    keyView.secretKey.parameter forgery.epoch
+      (forgery.message, forgery.signature.randomness)
+  by_cases hfresh : state.causalState.cache forgedInput = none
+  · cases houtput : baseResult.1.2.cache forgedInput with
     | none =>
-        have hsub := hadversarySub.trans
-          (List.sublist_append_left
-            (state.encodingTrace ++ handled.2.encodingActions)
-            baseVerified.2.encodingActions)
-        simpa [appendVerificationEncodingObservation, forgedInput, hfresh,
-          houtput, List.append_assoc] using hsub
+        simp [appendVerificationEncodingObservation, forgedInput, hfresh,
+          houtput]
     | some output =>
         have haction := globalFirstLaneVerifier_freshEncoding_mem_trace table
-          keyView edgeHigh handled.1.1 handled.1.2.causalState hparameter
-            baseVerified output (by simpa [forgedInput] using hfresh)
-              (by simpa [forgedInput] using houtput) hbaseVerify
-        have hsub := hadversarySub.append
-          (List.singleton_sublist.mpr haction)
+          keyView edgeHigh forgery state.causalState hparameter baseResult
+            output (by simpa [forgedInput] using hfresh)
+              (by simpa [forgedInput] using houtput) hbase
         simpa [appendVerificationEncodingObservation, forgedInput, hfresh,
-          houtput, List.append_assoc] using hsub
-  · have hsub := hadversarySub.trans
-      (List.sublist_append_left
-        (state.encodingTrace ++ handled.2.encodingActions)
-        baseVerified.2.encodingActions)
-    simpa [appendVerificationEncodingObservation, forgedInput, hfresh,
-      List.append_assoc] using hsub
-
-theorem CoupledGlobalChainKeygenView.toProgrammedView_parameter_eq
-    (parameter : PublicParameter) (view : CoupledGlobalChainKeygenView) :
-    (view.toProgrammedView parameter).publicKey.parameter =
-      (view.toProgrammedView parameter).secretKey.parameter := by
-  rfl
-
-set_option maxHeartbeats 2000000 in
-theorem globalHighDirectKeygen_support_parameter_eq
-    (keyResult : GlobalHighDirectKeyResult)
-    (hresult : keyResult ∈ support globalHighDirectKeygen) :
-    keyResult.1.publicKey.parameter = keyResult.1.secretKey.parameter := by
-  unfold globalHighDirectKeygen at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨parameter, _hparameter, hafterParameter⟩ := hresult
-  unfold globalHighDirectKeygenAfterParameter at hafterParameter
-  rw [mem_support_bind_iff] at hafterParameter
-  obtain ⟨material, _hmaterial, hafterMaterial⟩ := hafterParameter
-  rw [mem_support_bind_iff] at hafterMaterial
-  obtain ⟨edgeHigh, _hedgeHigh, hkeygen⟩ := hafterMaterial
-  unfold globalHighDirectKeygenAfterMaterial at hkeygen
-  rw [mem_support_bind_iff] at hkeygen
-  obtain ⟨tree, _htree, hpure⟩ := hkeygen
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  let view : CoupledGlobalChainKeygenView := {
-    secret := material.1
-    table := globalChainTrajectoryMaterialTable material
-    values := tree.1
-    cache := tree.2
-  }
-  have hconstructed : (view.toProgrammedView parameter, edgeHigh) =
-      keyResult := by
-    simpa [view] using hpure.symm
-  have hview : view.toProgrammedView parameter = keyResult.1 :=
-    congrArg Prod.fst hconstructed
-  exact Eq.mp (congrArg (fun candidate : ProgrammedGlobalChainKeygenView =>
-    candidate.publicKey.parameter = candidate.secretKey.parameter) hview)
-      (CoupledGlobalChainKeygenView.toProgrammedView_parameter_eq parameter view)
-
-theorem globalFirstLaneExactTracedProgram_trace_sublist
-    (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary)
-    (result : GlobalExactTracedResult ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneExactTracedProgram adversary)).run)) :
-    List.Sublist result.1.2.2.encodingTrace result.2.encodingActions := by
-  unfold globalFirstLaneExactTracedProgram at hresult
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hresult
-  obtain ⟨keyHead, hkeyHead, hrest⟩ := hresult
-  rw [FirstLaneOracleSimulation.simulate_eagerTrace_liftProbComp] at hkeyHead
-  rw [support_map] at hkeyHead
-  obtain ⟨keyResult, hkeyResult, hkeyHeadEq⟩ := hkeyHead
-  subst keyHead
-  simp only [List.nil_append] at hrest
-  rw [support_map] at hrest
-  obtain ⟨execution, hexecution, hresultEq⟩ := hrest
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hexecution
-  obtain ⟨detail, hdetail, hfinal⟩ := hexecution
-  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
-    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinal
-  subst execution
-  subst result
-  simpa using globalFirstLaneExactTracedDetailedExecution_trace_sublist table
-    adversary keyResult.1 keyResult.2
-      (GlobalExactTracedState.initial
-        (globalFilteredCausalKeygenState keyResult.1))
-      (globalHighDirectKeygen_support_parameter_eq keyResult hkeyResult)
-      detail hdetail
+          houtput] using
+            (List.Sublist.refl state.encodingTrace).append
+              (List.singleton_sublist.mpr haction)
+  · simp [appendVerificationEncodingObservation, forgedInput, hfresh]
 
 theorem globalFirstLaneSigningAttempt_none_validSignEpochs_eq_nil
     (table : GlobalChainValueIndex → Digest)
@@ -2668,97 +2509,5 @@ theorem globalFirstLaneExactTracedVerifier_validSignEpochs_eq_nil
   exact htraceEq.trans
     (globalFirstLaneVerifier_validSignEpochs_eq_nil table keyView edgeHigh
       computation state.causalState baseResult hbase)
-
-theorem globalFirstLaneExactTracedDetailedExecution_validSignEpochs_sublist
-    (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (state : GlobalExactTracedState)
-    (result : ((Forgery × Bool) × GlobalExactTracedState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        ((globalFirstLaneExactTracedDetailedExecution adversary keyView
-          edgeHigh).run state)).run)) :
-    List.Sublist
-      ((state.attackerTrace.toSigningLog.map
-          fun entry => entry.1.epoch) ++
-        CappedEncodingMonitor.validObservedSignEpochs
-          result.2.encodingActions)
-      (result.1.2.attackerTrace.toSigningLog.map
-        fun entry => entry.1.epoch) := by
-  unfold globalFirstLaneExactTracedDetailedExecution at hresult
-  rw [StateT.run_mk, simulateQ_bind, WriterT.run_bind',
-    mem_support_bind_iff] at hresult
-  obtain ⟨handled, hadversary, hrestMapped⟩ := hresult
-  rw [support_map] at hrestMapped
-  obtain ⟨verificationResult, hverificationBlock, hresultEq⟩ := hrestMapped
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff]
-    at hverificationBlock
-  obtain ⟨verified, hverify, hfinalMapped⟩ := hverificationBlock
-  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
-    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinalMapped
-  cases hfinalMapped
-  cases hresultEq
-  have hadversarySub :=
-    globalFirstLaneExactTracedMappedAdversary_validSignEpochs_sublist table
-      keyView edgeHigh (adversary.main keyView.publicKey) state handled
-        hadversary
-  have hverifierNil :=
-    globalFirstLaneExactTracedVerifier_validSignEpochs_eq_nil table keyView
-      edgeHigh
-      (Concrete.scheme.verify keyView.publicKey handled.1.1.epoch
-        handled.1.1.message handled.1.1.signature)
-      handled.1.2 verified hverify
-  obtain ⟨_baseVerified, _hbaseVerify, hverifiedEq⟩ :=
-    globalFirstLaneExactTracedVerifier_eager_support_decompose table keyView
-      edgeHigh
-      (Concrete.scheme.verify keyView.publicKey handled.1.1.epoch
-        handled.1.1.message handled.1.1.signature)
-      handled.1.2 verified hverify
-  have hstate : verified.1.2.attackerTrace =
-      handled.1.2.attackerTrace := by
-    have hstateEq := congrArg (fun candidate =>
-      candidate.1.2.attackerTrace) hverifiedEq
-    simpa using hstateEq
-  simpa [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-    CappedEncodingMonitor.validObservedSignEpochs_append, hverifierNil,
-    hstate, List.append_nil] using hadversarySub
-
-theorem globalFirstLaneExactTracedProgram_validSignEpochs_sublist
-    (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary)
-    (result : GlobalExactTracedResult ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneExactTracedProgram adversary)).run)) :
-    List.Sublist
-      (CappedEncodingMonitor.validObservedSignEpochs
-        result.2.encodingActions)
-      (result.1.2.2.attackerTrace.toSigningLog.map
-        fun entry => entry.1.epoch) := by
-  unfold globalFirstLaneExactTracedProgram at hresult
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hresult
-  obtain ⟨keyHead, hkeyHead, hrest⟩ := hresult
-  rw [FirstLaneOracleSimulation.simulate_eagerTrace_liftProbComp] at hkeyHead
-  rw [support_map] at hkeyHead
-  obtain ⟨keyResult, _hkeyResult, hkeyHeadEq⟩ := hkeyHead
-  subst keyHead
-  simp only [List.nil_append] at hrest
-  rw [support_map] at hrest
-  obtain ⟨execution, hexecution, hresultEq⟩ := hrest
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hexecution
-  obtain ⟨detail, hdetail, hfinal⟩ := hexecution
-  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
-    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinal
-  subst execution
-  subst result
-  simpa [AttackerActionTrace.toSigningLog] using
-    globalFirstLaneExactTracedDetailedExecution_validSignEpochs_sublist table
-      adversary keyResult.1 keyResult.2
-        (GlobalExactTracedState.initial
-          (globalFilteredCausalKeygenState keyResult.1)) detail hdetail
 
 end XmssSecurity.CappedChain

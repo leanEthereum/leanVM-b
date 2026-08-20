@@ -470,61 +470,6 @@ theorem globalHighDirectExactForgeryPrimaryProbeTrace_agrees
   exact globalHighDirectForgeryPrimaryProbeTrace_agrees table _
 
 
-theorem globalFirstLaneBindLiftRevealProbe_support_baseTrace
-    (table : GlobalChainValueIndex → Digest)
-    (computation : OracleComp GlobalFirstLaneWorld α)
-    (suffix : α → OracleComp
-      (RevealProbeOracleSimulation.World GlobalChainValueIndex) Unit)
-    (result : α ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (do
-          let value ← computation
-          let _ ← globalFirstLaneLiftRevealProbe (suffix value)
-          pure value)).run)) :
-    ∃ baseTrace : FirstLaneOracleSimulation.ActionTrace
-        GlobalChainValueIndex,
-      (result.1, baseTrace) ∈ support
-        ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-          computation).run) ∧
-      result.2.encodingActions = baseTrace.encodingActions := by
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hresult
-  obtain ⟨head, hhead, hrest⟩ := hresult
-  rw [support_map] at hrest
-  obtain ⟨tail, htail, hresultEq⟩ := hrest
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
-  obtain ⟨suffixResult, hsuffix, hfinal⟩ := htail
-  simp only [simulateQ_pure, WriterT.run_pure', map_pure, support_pure,
-    Set.mem_singleton_iff, Prod.map_apply, id_eq] at hfinal
-  subst tail
-  subst result
-  refine ⟨head.2, hhead, ?_⟩
-  have hsuffixNil := globalFirstLaneLiftRevealProbe_encodingActions_eq_nil
-    table (suffix head.1) suffixResult hsuffix
-  simp [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-    hsuffixNil]
-
-theorem globalFirstLaneExactTracedPublicProgram_support_baseTrace
-    (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary)
-    (result : GlobalExactTracedResult ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneExactTracedPublicProgram adversary)).run)) :
-    ∃ baseTrace : FirstLaneOracleSimulation.ActionTrace
-        GlobalChainValueIndex,
-      (result.1, baseTrace) ∈ support
-        ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-          (globalFirstLaneExactTracedProgram adversary)).run) ∧
-      result.2.encodingActions = baseTrace.encodingActions := by
-  unfold globalFirstLaneExactTracedPublicProgram at hresult
-  exact globalFirstLaneBindLiftRevealProbe_support_baseTrace table
-    (globalFirstLaneExactTracedProgram adversary)
-    (fun result => RevealProbeOracleSimulation.emitObservedTrace
-      (globalHighDirectExactForgeryPrimaryProbeTrace result)) result hresult
-
 abbrev GlobalHighExactPublicResult :=
   (GlobalChainValueIndex → Digest) ×
     (GlobalExactTracedResult ×
@@ -563,44 +508,28 @@ theorem globalHighExactFirstLaneEvent_implies_projected
     rw [← hprojection] at hchain
     exact hchain
 
-theorem globalHighExactProjectedFirstLaneEvent_implies_combinedHit_of_run
-    (adversary : Adversary)
+theorem globalHighExactProjectedFirstLaneEvent_implies_combinedHit
     (table : GlobalChainValueIndex → Digest)
     (runResult : GlobalExactTracedResult ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hrun : runResult ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneExactTracedPublicProgram adversary)).run))
+    (hencodingSub : List.Sublist runResult.1.2.2.encodingTrace
+      runResult.2.encodingActions)
+    (hvalidSub : List.Sublist
+      (CappedEncodingMonitor.validObservedSignEpochs
+        runResult.2.encodingActions)
+      (runResult.1.2.2.attackerTrace.toSigningLog.map
+        fun entry => entry.1.epoch))
     (hevent : GlobalHighExactProjectedFirstLaneEvent
       (table, (runResult.1, runResult.2.chainActions))) :
     FirstLaneOracleSimulation.CombinedHit table runResult.2 := by
   rcases hevent with hencoding | hchain
   · apply Or.inl
-    obtain ⟨baseTrace, hbase, hencodingActions⟩ :=
-      globalFirstLaneExactTracedPublicProgram_support_baseTrace table
-        adversary runResult hrun
-    have htraceSub := globalFirstLaneExactTracedProgram_trace_sublist table
-      adversary (runResult.1, baseTrace) hbase
-    have hvalidSub :=
-      globalFirstLaneExactTracedProgram_validSignEpochs_sublist table
-        adversary (runResult.1, baseTrace) hbase
-    have htraceSub' : List.Sublist
-        runResult.1.2.2.encodingTrace runResult.2.encodingActions := by
-      rw [hencodingActions]
-      exact htraceSub
-    have hvalidSub' : List.Sublist
-        (CappedEncodingMonitor.validObservedSignEpochs
-          runResult.2.encodingActions)
-        (runResult.1.2.2.attackerTrace.toSigningLog.map
-          fun entry => entry.1.epoch) := by
-      rw [hencodingActions]
-      exact hvalidSub
     have hnodup :
         (CappedEncodingMonitor.validObservedSignEpochs
           runResult.2.encodingActions).Nodup := by
-      exact hvalidSub'.nodup hencoding.1
+      exact hvalidSub.nodup hencoding.1
     exact CappedEncodingMonitor.runObserved_empty_eq_true_mono_sublist
-      htraceSub' hnodup hencoding.2
+      hencodingSub hnodup hencoding.2
   · exact Or.inr hchain
 
 abbrev GlobalFirstLaneExactPublicEagerResult :=

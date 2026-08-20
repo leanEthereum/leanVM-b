@@ -348,7 +348,7 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
     exists_globalHighExactMonitored_of_coupled_support adversary right
       hrightSupport
   obtain ⟨witness, hwitnessRelation, hfirstState, hwitnessTrace,
-    hwitnessConsistent⟩ := hgood.2
+    hwitnessConsistent, _hwitnessEncoding, _hwitnessValidEpochs⟩ := hgood.2
   have hhighConsistent :=
     globalHighExactMonitoredProgram_traceConsistent adversary highResult
       hhighSupport
@@ -457,14 +457,30 @@ theorem sourceWinningExactFirstLane_good_implies_public_combinedHit
       globalFirstLaneExactCoupledProjection,
       FirstLaneOracleSimulation.ActionTrace.chainActions_append] using
         hprojected
-  exact globalHighExactProjectedFirstLaneEvent_implies_combinedHit_of_run
-    adversary
-      (appendGlobalFirstLaneExactPublicTrace
-        (globalFirstLaneExactCoupledProjection right)).1
+  exact globalHighExactProjectedFirstLaneEvent_implies_combinedHit
+    (appendGlobalFirstLaneExactPublicTrace
+      (globalFirstLaneExactCoupledProjection right)).1
       (appendGlobalFirstLaneExactPublicTrace
         (globalFirstLaneExactCoupledProjection right)).2
-      (globalFirstLaneExactCoupledPublic_run_mem_support adversary right
-        hrightSupport)
+      (by
+        have hsub :=
+          SourceFirstLaneExactGoodStateRelation.firstLaneEncodingTrace_sublist
+            hgood.2
+        simpa [appendGlobalFirstLaneExactPublicTrace,
+          globalFirstLaneExactCoupledProjection,
+          liftGlobalChainTrace,
+          FirstLaneOracleSimulation.ActionTrace.encodingActions,
+          FirstLaneOracleSimulation.ActionTrace.encodingActions_append] using
+            hsub)
+      (by
+        have hsub :=
+          SourceFirstLaneExactGoodStateRelation.validSignEpochs_sublist
+            hgood.2
+        simpa [appendGlobalFirstLaneExactPublicTrace,
+          globalFirstLaneExactCoupledProjection, liftGlobalChainTrace,
+          FirstLaneOracleSimulation.ActionTrace.encodingActions,
+          FirstLaneOracleSimulation.ActionTrace.encodingActions_append] using
+            hsub)
       htargetEvent
 
 theorem observedProbeCount_exactForgeryPrimaryProbeTrace
