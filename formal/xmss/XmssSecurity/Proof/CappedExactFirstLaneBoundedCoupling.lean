@@ -13,11 +13,6 @@ namespace XmssSecurity.CappedChain
 
 set_option maxRecDepth 1000000
 
-def globalHighExactStateProjection
-    (state : GlobalHighExactMonitoredState) :
-    GlobalExactTracedState :=
-  GlobalExactTracedState.mk state.1.1.causal state.1.2 state.2
-
 theorem verifierHashQueryCost_eq_if (input : OracleWorld.Domain) :
     verifierHashQueryCost input =
       (if input matches .inr _ then 1 else 0) := by
@@ -1065,8 +1060,8 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
       (sourceGlobalExactTracedDetailedExecution adversary left)
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
         ((globalFirstLaneExactTracedDetailedExecution adversary right.1.1
-          right.2).run (GlobalExactTracedState.mk
-            (globalFilteredCausalKeygenState right.1.1) [] []))).run)
+          right.2).run (GlobalExactTracedState.initial
+            (globalFilteredCausalKeygenState right.1.1)))).run)
       (fun leftResult firstLaneResult =>
         ((leftResult.1 = firstLaneResult.1.1 ∧
           SourceFirstLaneExactGoodStateRelation left right.1 leftResult.2
@@ -1082,8 +1077,8 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
     (((⟨globalFilteredCausalKeygenState right.1.1,
       some AdaptiveRevealMonitor.State.empty, []⟩, []), []))
   let firstLaneInitial : GlobalExactTracedState :=
-    GlobalExactTracedState.mk
-      (globalFilteredCausalKeygenState right.1.1) [] []
+    GlobalExactTracedState.initial
+      (globalFilteredCausalKeygenState right.1.1)
   have hinitialSourceHigh : GlobalSigningExactMonitoredStateRelation left
       right.1 sourceInitial highInitial := by
     simpa [sourceInitial, highInitial] using

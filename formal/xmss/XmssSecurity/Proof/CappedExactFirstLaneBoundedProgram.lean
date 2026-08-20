@@ -21,8 +21,8 @@ noncomputable def globalFirstLaneExactCoupledProgram
   let execution ← (simulateQ
     (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
     ((globalFirstLaneExactTracedDetailedExecution adversary right.1.1
-      right.2).run (GlobalExactTracedState.mk
-        (globalFilteredCausalKeygenState right.1.1) [] []))).run
+      right.2).run (GlobalExactTracedState.initial
+        (globalFilteredCausalKeygenState right.1.1)))).run
   pure (right, execution)
 
 def SourceFirstLaneExactBoundedProgramRelation
@@ -89,8 +89,8 @@ noncomputable def globalFirstLaneExactCoupledContinuation
   let execution ← (simulateQ
     (FirstLaneOracleSimulation.eagerTraceImpl base)
     ((globalFirstLaneExactTracedDetailedExecution adversary keyResult.1
-      keyResult.2).run (GlobalExactTracedState.mk
-        (globalFilteredCausalKeygenState keyResult.1) [] []))).run
+      keyResult.2).run (GlobalExactTracedState.initial
+        (globalFilteredCausalKeygenState keyResult.1)))).run
   pure (base, ((keyResult, execution.1), execution.2))
 
 theorem globalFirstLaneExactCoupledProgram_projection_eq_parameterFirst
@@ -144,8 +144,8 @@ theorem globalFirstLaneExactCoupledContinuation_eq_eagerAfterBase
         globalHighDirectKeygenAfterParameter parameter)
       (fun keyResult =>
         (globalFirstLaneExactTracedDetailedExecution adversary keyResult.1
-          keyResult.2).run (GlobalExactTracedState.mk
-            (globalFilteredCausalKeygenState keyResult.1) [] [])))
+          keyResult.2).run (GlobalExactTracedState.initial
+            (globalFilteredCausalKeygenState keyResult.1))))
 
 theorem evalDist_globalFirstLaneExactCoupledProjection_eq_eagerExperiment
     (adversary : Adversary Concrete.scheme) :

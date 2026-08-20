@@ -216,8 +216,8 @@ theorem globalFirstLaneExactCoupledProgram_support_info
       ((simulateQ
         (FirstLaneOracleSimulation.eagerTraceImpl result.1.1.2)
         ((globalFirstLaneExactTracedDetailedExecution adversary result.1.1.1
-          result.1.2).run (GlobalExactTracedState.mk
-            (globalFilteredCausalKeygenState result.1.1.1) [] []))).run) := by
+          result.1.2).run (GlobalExactTracedState.initial
+            (globalFilteredCausalKeygenState result.1.1.1)))).run) := by
   unfold globalFirstLaneExactCoupledProgram at hresult
   rw [mem_support_bind_iff] at hresult
   obtain ⟨right, hright, htail⟩ := hresult
@@ -303,14 +303,14 @@ theorem exists_globalHighExactMonitored_of_coupled_support
         (simulateQ
           (FirstLaneOracleSimulation.eagerTraceImpl result.1.1.2)
           ((globalFirstLaneExactTracedDetailedExecution adversary
-            result.1.1.1 result.1.2).run (GlobalExactTracedState.mk
-              (globalFilteredCausalKeygenState result.1.1.1) [] []))).run) := by
+            result.1.1.1 result.1.2).run (GlobalExactTracedState.initial
+              (globalFilteredCausalKeygenState result.1.1.1)))).run) := by
     rw [support_map]
     exact ⟨result.2, hexecution, rfl⟩
   rw [simulate_globalFirstLaneEagerTrace_chainProjection] at hmapped
   rw [globalFirstLaneErase_exactTracedDetailedExecution adversary
-    result.1.1.1 result.1.2 (GlobalExactTracedState.mk
-      (globalFilteredCausalKeygenState result.1.1.1) [] [])] at hmapped
+    result.1.1.1 result.1.2 (GlobalExactTracedState.initial
+      (globalFilteredCausalKeygenState result.1.1.1))] at hmapped
   rw [← map_globalHighExactMonitoredDetailedExecution_full_projection]
     at hmapped
   rw [support_map] at hmapped

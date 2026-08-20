@@ -15,11 +15,22 @@ structure GlobalExactTracedState where
   attackerTrace : AttackerActionTrace
   encodingTrace : EncodingActionTrace
 
+@[simp] def GlobalExactTracedState.initial (causalState : GlobalCausalHashState) :
+    GlobalExactTracedState :=
+  ⟨causalState, [], []⟩
+
+@[simp] def GlobalExactTracedState.withCausalState (state : GlobalExactTracedState)
+    (causalState : GlobalCausalHashState) : GlobalExactTracedState :=
+  { state with causalState }
+
+def globalHighExactStateProjection
+    (state : GlobalHighExactMonitoredState) : GlobalExactTracedState :=
+  ⟨state.1.1.causal, state.1.2, state.2⟩
+
 def globalExactTracedCausalLens :
     StateLens GlobalExactTracedState GlobalCausalHashState where
   get := GlobalExactTracedState.causalState
-  set state nextCausal := GlobalExactTracedState.mk nextCausal
-    state.attackerTrace state.encodingTrace
+  set := GlobalExactTracedState.withCausalState
   set_get state := by cases state; rfl
   get_set state nextCausal := by cases state; rfl
   set_set state left right := by cases state; rfl
@@ -126,8 +137,7 @@ noncomputable def globalHighDirectExactTracedVerifierImpl
         (OracleComp
           (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
   fun input => StateT.mk fun state =>
-    (fun result => (result.1, GlobalExactTracedState.mk result.2
-      state.attackerTrace state.encodingTrace)) <$>
+    (fun result => (result.1, state.withCausalState result.2)) <$>
       (globalHighDirectVerifierImpl keyView edgeHigh input).run
         state.causalState
 
@@ -138,8 +148,7 @@ noncomputable def globalFirstLaneExactTracedVerifierImpl
       (StateT GlobalExactTracedState
         (OracleComp GlobalFirstLaneWorld)) :=
   fun input => StateT.mk fun state =>
-    (fun result => (result.1, GlobalExactTracedState.mk result.2
-      state.attackerTrace state.encodingTrace)) <$>
+    (fun result => (result.1, state.withCausalState result.2)) <$>
       (globalFirstLaneVerifierImpl keyView edgeHigh input).run
         state.causalState
 
@@ -195,8 +204,8 @@ noncomputable def globalFirstLaneExactTracedProgram
     globalHighDirectKeygen
   let execution ← (globalFirstLaneExactTracedDetailedExecution adversary
     keyResult.1 keyResult.2).run
-      (GlobalExactTracedState.mk
-        (globalFilteredCausalKeygenState keyResult.1) [] [])
+      (GlobalExactTracedState.initial
+        (globalFilteredCausalKeygenState keyResult.1))
   pure (keyResult, execution)
 
 theorem globalFirstLaneErase_exactTracedLift
@@ -1815,8 +1824,7 @@ theorem globalFirstLaneExactTracedVerifierImpl_run_eq_map
     (input : OracleWorld.Domain)
     (state : GlobalExactTracedState) :
     (globalFirstLaneExactTracedVerifierImpl keyView edgeHigh input).run state =
-      (fun result => (result.1, GlobalExactTracedState.mk result.2
-        state.attackerTrace state.encodingTrace)) <$>
+      (fun result => (result.1, state.withCausalState result.2)) <$>
         (globalFirstLaneVerifierImpl keyView edgeHigh input).run
           state.causalState := by
   unfold globalFirstLaneExactTracedVerifierImpl
@@ -1829,8 +1837,7 @@ theorem globalFirstLaneExactTracedVerifier_simulateQ_run_eq_map
     (state : GlobalExactTracedState) :
     (simulateQ (globalFirstLaneExactTracedVerifierImpl keyView edgeHigh)
         computation).run state =
-      (fun result => (result.1, GlobalExactTracedState.mk result.2
-        state.attackerTrace state.encodingTrace)) <$>
+      (fun result => (result.1, state.withCausalState result.2)) <$>
         (simulateQ (globalFirstLaneVerifierImpl keyView edgeHigh)
           computation).run state.causalState := by
   exact globalExactTracedCausalLens.simulateQ_run_eq
@@ -1858,8 +1865,8 @@ theorem globalFirstLaneExactTracedVerifier_eager_support_decompose
         ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
           ((simulateQ (globalFirstLaneVerifierImpl keyView edgeHigh)
             computation).run state.causalState)).run) ∧
-      result = ((baseResult.1.1, GlobalExactTracedState.mk baseResult.1.2
-        state.attackerTrace state.encodingTrace), baseResult.2) := by
+      result = ((baseResult.1.1, state.withCausalState baseResult.1.2),
+        baseResult.2) := by
   rw [globalFirstLaneExactTracedVerifier_simulateQ_run_eq_map] at hresult
   rw [simulateQ_map, WriterT.run_map', support_map] at hresult
   obtain ⟨baseResult, hbase, heq⟩ := hresult
@@ -2007,8 +2014,8 @@ theorem globalFirstLaneExactTracedProgram_trace_sublist
   subst result
   simpa using globalFirstLaneExactTracedDetailedExecution_trace_sublist table
     adversary keyResult.1 keyResult.2
-      (GlobalExactTracedState.mk
-        (globalFilteredCausalKeygenState keyResult.1) [] [])
+      (GlobalExactTracedState.initial
+        (globalFilteredCausalKeygenState keyResult.1))
       (globalHighDirectKeygen_support_parameter_eq keyResult hkeyResult)
       detail hdetail
 
@@ -2824,7 +2831,7 @@ theorem globalFirstLaneExactTracedProgram_validSignEpochs_sublist
   simpa [AttackerActionTrace.toSigningLog] using
     globalFirstLaneExactTracedDetailedExecution_validSignEpochs_sublist table
       adversary keyResult.1 keyResult.2
-        (GlobalExactTracedState.mk
-          (globalFilteredCausalKeygenState keyResult.1) [] []) detail hdetail
+        (GlobalExactTracedState.initial
+          (globalFilteredCausalKeygenState keyResult.1)) detail hdetail
 
 end XmssSecurity.CappedChain
