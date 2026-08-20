@@ -280,7 +280,7 @@ theorem globalFirstLaneErase_exactTracedMappedAdversaryImpl
       (StateT.mk fun state =>
         globalHighDirectOracleExecution keyView edgeHigh worldInput state)
       worldState
-        ((globalFirstLaneOracleErasure keyView edgeHigh).erase worldInput
+        (globalFirstLaneOracleErasure keyView edgeHigh worldInput
           worldState.causalState)
   · exact globalFirstLaneErase_exactTracedSigningImpl keyView
 
@@ -297,7 +297,7 @@ theorem globalFirstLaneErase_exactTracedVerifierImpl
   unfold globalFirstLaneExactTracedVerifierImpl
     globalHighDirectExactTracedVerifierImpl
   simp only [StateT.run_mk]
-  apply ((globalFirstLaneOracleErasure keyView edgeHigh).erase input
+  apply (globalFirstLaneOracleErasure keyView edgeHigh input
     state.causalState).bind
   intro result
   exact GlobalFirstLaneErases.pure _
@@ -1288,11 +1288,11 @@ theorem globalFirstLaneExactTracedLift_trace_sublist
   rw [globalExactTracedNextState_encodingTrace]
   exact hbaseSub baseResult hbase
 
-structure GlobalFirstLaneOracleTraceSublist
+abbrev GlobalFirstLaneOracleTraceSublist
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop where
-  trace_sublist : ∀ (input : OracleWorld.Domain)
+    (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop :=
+  ∀ (input : OracleWorld.Domain)
     (state : GlobalCausalHashState) (encodingTrace : EncodingActionTrace)
     (result : (OracleWorld.Range input × GlobalCausalHashState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex),
@@ -1309,7 +1309,6 @@ theorem globalFirstLaneOracleTraceSublist_holds
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     GlobalFirstLaneOracleTraceSublist table keyView edgeHigh := by
-  constructor
   intro input state encodingTrace result hresult
   cases input with
   | inl n =>
@@ -1319,11 +1318,11 @@ theorem globalFirstLaneOracleTraceSublist_holds
       exact globalFirstLaneHashQuery_trace_sublist table keyView edgeHigh
         hashInput state encodingTrace result hresult
 
-structure GlobalFirstLaneExactTracedOracleTraceSublist
+abbrev GlobalFirstLaneExactTracedOracleTraceSublist
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop where
-  trace_sublist : ∀ (input : OracleWorld.Domain)
+    (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop :=
+  ∀ (input : OracleWorld.Domain)
     (state : GlobalFirstLaneExactTracedState)
     (result : (OracleWorld.Range input × GlobalFirstLaneExactTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex),
@@ -1339,7 +1338,6 @@ theorem globalFirstLaneExactTracedOracleTraceSublist_holds
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     GlobalFirstLaneExactTracedOracleTraceSublist table keyView edgeHigh := by
-  constructor
   intro input state result hresult
   unfold globalFirstLaneExactTracedOracleImpl at hresult
   apply globalFirstLaneExactTracedLift_trace_sublist table keyView
@@ -1347,8 +1345,8 @@ theorem globalFirstLaneExactTracedOracleTraceSublist_holds
     (StateT.mk fun causalState =>
       globalFirstLaneOracleExecution keyView edgeHigh input causalState)
     state result hresult
-  exact (globalFirstLaneOracleTraceSublist_holds table keyView edgeHigh
-    ).trace_sublist input state.causalState state.encodingTrace
+  exact globalFirstLaneOracleTraceSublist_holds table keyView edgeHigh
+    input state.causalState state.encodingTrace
 
 theorem globalFirstLaneExactTracedSigningImpl_trace_sublist
     (table : GlobalChainValueIndex → Digest)
@@ -1387,8 +1385,8 @@ theorem globalFirstLaneExactTracedMappedAdversaryImpl_query_trace_sublist
       (state.encodingTrace ++ result.2.encodingActions) := by
   cases input with
   | inl worldInput =>
-      exact (globalFirstLaneExactTracedOracleTraceSublist_holds table keyView
-        edgeHigh).trace_sublist worldInput state result hresult
+      exact globalFirstLaneExactTracedOracleTraceSublist_holds table keyView
+        edgeHigh worldInput state result hresult
   | inr request =>
       exact globalFirstLaneExactTracedSigningImpl_trace_sublist table keyView
         request state result hresult

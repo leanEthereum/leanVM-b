@@ -668,10 +668,10 @@ theorem globalFirstLaneErase_directSigningImpl
   unfold globalHighDirectSigningImpl
   exact globalFirstLaneErase_signingImpl keyView request state
 
-structure GlobalFirstLaneOracleErasure
+abbrev GlobalFirstLaneOracleErasure
     (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop where
-  erase : ∀ input state, GlobalFirstLaneErases
+    (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop :=
+  ∀ input state, GlobalFirstLaneErases
     (globalFirstLaneOracleExecution keyView edgeHigh input state)
     (globalHighDirectOracleExecution keyView edgeHigh input state)
 
@@ -679,7 +679,6 @@ theorem globalFirstLaneOracleErasure
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     GlobalFirstLaneOracleErasure keyView edgeHigh := by
-  constructor
   intro input state
   cases input with
   | inl n =>
