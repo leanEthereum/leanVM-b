@@ -1105,25 +1105,9 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
         (FirstLaneOracleSimulation.enforceHazardTrace hitLimit firstTrace) := by
       simpa using hhit
     apply relTriple_post_mono
-      (relTriple_with_support
-        (relTriple_prod (fun _ _ => True.intro) (fun _ _ => True.intro)))
-    intro _leftResult firstLaneResult hresults
-    apply Or.inr
-    have htargetSupport := hresults.2.2
-    change firstLaneResult ∈ support
-      ((Prod.map id (fun tail => firstTrace ++ tail)) <$>
-        (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
-          (do
-            let verified ← (simulateQ
-              (globalFirstLaneExactTracedVerifierImpl right.1.1 right.2)
-              (Concrete.scheme.verify left.publicKey firstForgery.epoch
-                firstForgery.message firstForgery.signature)).run firstState
-            pure ((firstForgery, verified.1),
-              firstLaneAppendVerificationState right.1.1.secretKey
-                firstForgery firstState verified.2))).run) at htargetSupport
-    rw [support_map] at htargetSupport
-    obtain ⟨rawResult, _hrawResult, rfl⟩ := htargetSupport
-    exact FirstLaneOracleSimulation.CombinedHit.enforce_append_of_prefix
-      right.1.2 hitLimit firstTrace rawResult.2 hhit'
+      (relTriple_enforcedHit_append right.1.2 hitLimit [] firstTrace hhit'
+        _ _)
+    intro _leftResult _firstLaneResult hresult
+    exact Or.inr (by simpa using hresult)
 
 end XmssSecurity.CappedChain

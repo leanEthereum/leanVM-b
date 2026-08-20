@@ -10,6 +10,36 @@ namespace XmssSecurity
 
 set_option maxHeartbeats 2000000
 
+theorem relTriple_enforcedHit_append
+    [Fintype Index] [DecidableEq Index]
+    (table : Index → Digest) (limit : Nat)
+    (history fragment : FirstLaneOracleSimulation.ActionTrace Index)
+    (hhit : FirstLaneOracleSimulation.CombinedHit table
+      (FirstLaneOracleSimulation.enforceHazardTrace limit
+        (history ++ fragment)))
+    (left : ProbComp α)
+    (right : ProbComp
+      (β × FirstLaneOracleSimulation.ActionTrace Index)) :
+    RelTriple left
+      (Prod.map id (fun suffix => fragment ++ suffix) <$> right)
+      (fun _ result => FirstLaneOracleSimulation.CombinedHit table
+        (FirstLaneOracleSimulation.enforceHazardTrace limit
+          (history ++ result.2))) := by
+  have hmapped : RelTriple
+      (id <$> left)
+      (Prod.map id (fun suffix => fragment ++ suffix) <$> right)
+      (fun _ result => FirstLaneOracleSimulation.CombinedHit table
+        (FirstLaneOracleSimulation.enforceHazardTrace limit
+          (history ++ result.2))) := by
+    apply relTriple_map
+    apply relTriple_post_mono
+      (relTriple_prod (fun _ _ => True.intro) (fun _ _ => True.intro))
+    intro _ result _hresults
+    simpa [Prod.map, List.append_assoc] using
+      FirstLaneOracleSimulation.CombinedHit.enforce_append_of_prefix
+        table limit (history ++ fragment) result.2 hhit
+  simpa only [id_map] using hmapped
+
 theorem relTriple_simulateQ_bounded_firstLane
     {spec : OracleSpec ι}
     [Fintype Index] [DecidableEq Index]
@@ -137,29 +167,14 @@ theorem relTriple_simulateQ_bounded_firstLane
           rw [FirstLaneOracleSimulation.enforceHazardTrace_eq_self_of_count_le
             (trace ++ headRight.2) hitLimit hnextLimit]
           exact hhit
-        let appendTrace := fun result :
-            ((α × σ₂) × FirstLaneOracleSimulation.ActionTrace Index) =>
-          Prod.map id (fun tail => headRight.2 ++ tail) result
-        have hlifted : RelTriple
-            (id <$> (simulateQ leftImpl (next headLeft.1)).run headLeft.2)
-            (appendTrace <$>
-              (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-                ((simulateQ rightImpl (next headRight.1.1)).run
-                  headRight.1.2)).run)
-            (fun _leftResult rightResult =>
-              FirstLaneOracleSimulation.CombinedHit table
-                (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-                  (trace ++ rightResult.2))) := by
-          apply relTriple_map
-          apply relTriple_post_mono
-            (relTriple_prod (fun _ _ => True.intro) (fun _ _ => True.intro))
-          intro _leftResult rightResult _hresults
-          simpa [appendTrace, Prod.map, List.append_assoc] using
-            FirstLaneOracleSimulation.CombinedHit.enforce_append_of_prefix
-              table hitLimit (trace ++ headRight.2) rightResult.2 henforced
-        change RelTriple _ (appendTrace <$> _) _
-        apply relTriple_post_mono (by simpa only [id_map] using hlifted)
+        apply relTriple_post_mono
+          (relTriple_enforcedHit_append table hitLimit
+            trace headRight.2 henforced
+            ((simulateQ leftImpl (next headLeft.1)).run headLeft.2)
+            ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+              ((simulateQ rightImpl (next headRight.1.1)).run
+                headRight.1.2)).run))
         intro _leftResult _rightResult hresult
-        exact Or.inr hresult
+        exact Or.inr (by simpa [List.append_assoc] using hresult)
 
 end XmssSecurity
