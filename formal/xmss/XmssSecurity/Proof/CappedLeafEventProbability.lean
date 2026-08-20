@@ -215,101 +215,6 @@ theorem detailed_execution_verified_leaf_cached_as
   exact ⟨output, hcached⟩
 
 /-- A supported fresh leaf witness supplies both the verifier query and its concrete leaf collision. -/
-theorem detailed_execution_fresh_leaf_cached_collision
-    (adversary : Adversary Concrete.scheme)
-    (execution : GameOutcome × QueryCache HashSpec)
-    (hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
-    (forgedEncoding : Encoding) (hforgedValid : TargetSum.Valid forgedEncoding)
-    (hverified : execution.1.verified = true)
-    (hforgedDecode : TargetSum.decodeDigest
-      (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
-        execution.1.forgery.epoch
-        (execution.1.forgery.message, execution.1.forgery.signature.randomness)) =
-        some forgedEncoding)
-    (hleafEvent : Concrete.FreshEpochBadEventOccurs execution.2
-      execution.1.secretKey.parameter execution.1.forgery.epoch forgedEncoding
-      execution.1.forgery.signature
-      (execution.1.secretKey.chainStart execution.1.forgery.epoch)
-      (Concrete.signaturePath
-        (Concrete.CacheReplay.signWithEncoding execution.2 execution.1.secretKey
-          execution.1.forgery.epoch execution.1.forgery.signature.randomness forgedEncoding))
-      hforgedValid .leaf) :
-    ∃ forgedOutput,
-      execution.2
-        (Concrete.CacheView.leafInput execution.1.secretKey.parameter
-          execution.1.forgery.epoch
-          (recoveredEndpoints
-            (fun chain => Concrete.CacheView.chainStep execution.2
-              execution.1.secretKey.parameter execution.1.forgery.epoch chain)
-            forgedEncoding execution.1.forgery.signature.chainValue)) = some forgedOutput ∧
-      Wots.HasLeafCollision
-        (Concrete.CacheView.leafHash execution.2 execution.1.secretKey.parameter
-          execution.1.forgery.epoch)
-        (recoveredEndpoints
-          (fun chain => Concrete.CacheView.chainStep execution.2
-            execution.1.secretKey.parameter execution.1.forgery.epoch chain)
-          forgedEncoding execution.1.forgery.signature.chainValue)
-      (Concrete.CacheReplay.oneTimePublicKey execution.2
-          execution.1.secretKey.parameter execution.1.secretKey.chainStart
-          execution.1.forgery.epoch) := by
-  obtain ⟨forgedOutput, hforgedCached⟩ :=
-    detailed_execution_verified_leaf_cached_as adversary execution hgame forgedEncoding
-      hverified hforgedDecode
-  exact ⟨forgedOutput, hforgedCached,
-    fresh_leaf_badEvent_is_collision execution.2 execution.1.secretKey
-      execution.1.forgery.epoch forgedEncoding execution.1.forgery.signature
-      (Concrete.signaturePath
-        (Concrete.CacheReplay.signWithEncoding execution.2 execution.1.secretKey
-          execution.1.forgery.epoch execution.1.forgery.signature.randomness forgedEncoding))
-      hforgedValid hleafEvent⟩
-
-/-- One decoded fresh-epoch leaf witness is oriented against the leaf fixed by key generation. -/
-theorem fresh_leaf_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
-    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
-    (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
-    (execution : GameOutcome × QueryCache HashSpec)
-    (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
-          keyResult.2))
-    (forgedEncoding : Encoding) (hforgedValid : TargetSum.Valid forgedEncoding)
-    (hverified : execution.1.verified = true)
-    (hforgedDecode : TargetSum.decodeDigest
-      (Concrete.CacheView.encodingHash execution.2 execution.1.secretKey.parameter
-        execution.1.forgery.epoch
-        (execution.1.forgery.message, execution.1.forgery.signature.randomness)) =
-        some forgedEncoding)
-    (hleafEvent : Concrete.FreshEpochBadEventOccurs execution.2
-      execution.1.secretKey.parameter execution.1.forgery.epoch forgedEncoding
-      execution.1.forgery.signature
-      (execution.1.secretKey.chainStart execution.1.forgery.epoch)
-      (Concrete.signaturePath
-        (Concrete.CacheReplay.signWithEncoding execution.2 execution.1.secretKey
-          execution.1.forgery.epoch execution.1.forgery.signature.randomness forgedEncoding))
-      hforgedValid .leaf) :
-    Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
-      (keygenLeafTargetInput keyResult.1.2 keyResult.2) := by
-  have hkeys := detailedGameAfterKeygen_keys_eq adversary keyResult.1.1 keyResult.1.2
-    keyResult.2 execution hafter
-  have hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary) := by
-    unfold detailedGameWithCache detailedGameCore
-    rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff]
-    exact ⟨keyResult, hkeygen, hafter⟩
-  obtain ⟨forgedOutput, hforgedCached, hleafEvent'⟩ :=
-    detailed_execution_fresh_leaf_cached_collision adversary execution hgame forgedEncoding
-      hforgedValid hverified hforgedDecode hleafEvent
-  let forgedEndpoints := recoveredEndpoints
-    (fun chain => Concrete.CacheView.chainStep execution.2 execution.1.secretKey.parameter
-      execution.1.forgery.epoch chain)
-    forgedEncoding execution.1.forgery.signature.chainValue
-  apply leafCollision_afterKeygen_orientation adversary keyResult hkeygen execution hafter
-    execution.1.secretKey hkeys.2 execution.1.forgery.epoch forgedEndpoints forgedOutput
-  · simpa [forgedEndpoints] using hforgedCached
-  · exact hleafEvent'
-
-/-- A fresh-epoch leaf event is a collision against the honest leaf fixed at key generation. -/
 theorem fresh_leaf_event_afterKeygen_orientation
     (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
@@ -341,8 +246,30 @@ theorem fresh_leaf_event_afterKeygen_orientation
     Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
       (keygenLeafTargetInput keyResult.1.2 keyResult.2) := by
   obtain ⟨forgedEncoding, hforgedValid, _hunsigned, hforgedDecode, hleafEvent⟩ := hfresh
-  exact fresh_leaf_witness_afterKeygen_orientation adversary keyResult hkeygen execution
-    hafter forgedEncoding hforgedValid hevent.1 hforgedDecode hleafEvent
+  have hkeys := detailedGameAfterKeygen_keys_eq adversary keyResult.1.1
+    keyResult.1.2 keyResult.2 execution hafter
+  have hgame : execution ∈ support
+      (detailedGameWithCache Concrete.scheme adversary) := by
+    unfold detailedGameWithCache detailedGameCore
+    rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff]
+    exact ⟨keyResult, hkeygen, hafter⟩
+  obtain ⟨forgedOutput, hforgedCached⟩ :=
+    detailed_execution_verified_leaf_cached_as adversary execution hgame
+      forgedEncoding hevent.1 hforgedDecode
+  let forgedEndpoints := recoveredEndpoints
+    (fun chain => Concrete.CacheView.chainStep execution.2
+      execution.1.secretKey.parameter execution.1.forgery.epoch chain)
+    forgedEncoding execution.1.forgery.signature.chainValue
+  apply leafCollision_afterKeygen_orientation adversary keyResult hkeygen execution
+    hafter execution.1.secretKey hkeys.2 execution.1.forgery.epoch
+      forgedEndpoints forgedOutput
+  · simpa [forgedEndpoints] using hforgedCached
+  · exact fresh_leaf_badEvent_is_collision execution.2 execution.1.secretKey
+      execution.1.forgery.epoch forgedEncoding execution.1.forgery.signature
+      (Concrete.signaturePath
+        (Concrete.CacheReplay.signWithEncoding execution.2 execution.1.secretKey
+          execution.1.forgery.epoch execution.1.forgery.signature.randomness
+          forgedEncoding)) hforgedValid hleafEvent
 
 
 theorem signed_recoveredEndpoints_eq_oneTimePublicKey
@@ -430,43 +357,6 @@ theorem afterKeygen_execution_mem_detailedGame
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff]
   exact ⟨keyResult, hkeygen, hafter⟩
 
-theorem sameLeafCollision_afterKeygen_orientation_eq_epoch
-    (adversary : Adversary Concrete.scheme)
-    (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
-    (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
-    (execution : GameOutcome × QueryCache HashSpec)
-    (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
-        (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
-          keyResult.2))
-    (secretKey : SecretKey) (hsecret : secretKey = keyResult.1.2)
-    (epoch : Epoch) (hepoch : epoch = execution.1.forgery.epoch)
-    (forgedEncoding : Encoding) (forgedOutput : HashOutput)
-    (hforgedCached : execution.2
-      (Concrete.CacheView.leafInput secretKey.parameter execution.1.forgery.epoch
-        (recoveredEndpoints
-          (fun chain => Concrete.CacheView.chainStep execution.2 secretKey.parameter
-            execution.1.forgery.epoch chain)
-          forgedEncoding execution.1.forgery.signature.chainValue)) = some forgedOutput)
-    (hleafCollision : Wots.HasLeafCollision
-      (Concrete.CacheView.leafHash execution.2 secretKey.parameter epoch)
-      (recoveredEndpoints
-        (fun chain => Concrete.CacheView.chainStep execution.2 secretKey.parameter epoch chain)
-        forgedEncoding execution.1.forgery.signature.chainValue)
-      (Concrete.CacheReplay.oneTimePublicKey execution.2 secretKey.parameter
-        secretKey.chainStart epoch)) :
-    Rom.AdaptiveFreshDigestCollisionWith keyResult.2 execution.2
-      (keygenLeafTargetInput keyResult.1.2 keyResult.2) := by
-  subst epoch
-  apply leafCollision_afterKeygen_orientation adversary keyResult hkeygen execution hafter
-    secretKey hsecret execution.1.forgery.epoch
-    (recoveredEndpoints
-      (fun chain => Concrete.CacheView.chainStep execution.2 secretKey.parameter
-        execution.1.forgery.epoch chain)
-      forgedEncoding execution.1.forgery.signature.chainValue)
-    forgedOutput hforgedCached hleafCollision
-
 theorem same_leaf_witness_afterKeygen_orientation
     (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
@@ -518,9 +408,14 @@ theorem same_leaf_witness_afterKeygen_orientation
     execution.1.secretKey request signature execution.1.forgery.signature
     execution.1.forgery.message signedEncoding forgedEncoding
     (TargetSum.decodeDigest_eq_some_iff.mp hsignedDecode).2 hsignature hleafEvent
-  exact sameLeafCollision_afterKeygen_orientation_eq_epoch adversary keyResult hkeygen
-    execution hafter execution.1.secretKey hkeys.2 request.epoch hepoch forgedEncoding
-    forgedOutput hforgedCached hleafCollision
+  rw [hepoch] at hleafCollision
+  exact leafCollision_afterKeygen_orientation adversary keyResult hkeygen execution
+    hafter execution.1.secretKey hkeys.2 execution.1.forgery.epoch
+      (recoveredEndpoints
+        (fun chain => Concrete.CacheView.chainStep execution.2
+          execution.1.secretKey.parameter execution.1.forgery.epoch chain)
+        forgedEncoding execution.1.forgery.signature.chainValue)
+      forgedOutput hforgedCached hleafCollision
 
 theorem leaf_event_afterKeygen_orientation
     (adversary : Adversary Concrete.scheme)
