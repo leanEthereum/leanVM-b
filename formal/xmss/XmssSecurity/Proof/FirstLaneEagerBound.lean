@@ -103,6 +103,50 @@ noncomputable def potential
       ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
     encodingPendingRisk encodingState
 
+theorem evalDist_eagerTableSample_applyObserved {Control : Type}
+    (controller : Control → ProbComp
+      (FirstLaneMonitor.ControllerAction Control Index))
+    (chainState : AdaptiveRevealMonitor.State Index)
+    (steps fuel : Nat) (next : HashOutput → Control)
+    (applyObserved : HashOutput → Option (EncodingMonitor.State × Bool)) :
+    evalDist (RevealProbeOracleSimulation.eagerTableSample >>= fun base =>
+      uniformHashOutput >>= fun output =>
+        match applyObserved output with
+        | none =>
+            runEager controller
+              (RevealProbeOracleSimulation.extendTable chainState base)
+              none chainState steps fuel (next output)
+        | some (nextState, hit) =>
+            if hit then pure true else
+              runEager controller
+                (RevealProbeOracleSimulation.extendTable chainState base)
+                (some nextState) chainState steps fuel (next output)) =
+      evalDist (uniformHashOutput >>= fun output =>
+        match applyObserved output with
+        | none =>
+            eagerControllerExperiment controller none chainState steps fuel
+              (next output)
+        | some (nextState, hit) =>
+            if hit then pure true else
+              eagerControllerExperiment controller (some nextState) chainState
+                steps fuel (next output)) := by
+  rw [OracleComp.DeferredSampling.evalDist_bind_comm]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro output
+  cases happly : applyObserved output with
+  | none => rfl
+  | some result =>
+      rcases result with ⟨nextState, hit⟩
+      cases hit with
+      | false => rfl
+      | true =>
+          change evalDist
+              (RevealProbeOracleSimulation.eagerTableSample >>= fun _ =>
+                pure true) = evalDist (pure true)
+          exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+            RevealProbeOracleSimulation.eagerTableSample
+            (by simp [RevealProbeOracleSimulation.eagerTableSample]) (pure true)
+
 noncomputable def runObserved
     (table : Index → Digest) :
     Option EncodingMonitor.State → AdaptiveRevealMonitor.State Index →
@@ -878,16 +922,9 @@ theorem eagerController_true_probability_le {Control : Type}
                             (RevealProbeOracleSimulation.extendTable chainState base)
                             none chainState steps remaining (next output)) =
                       evalDist (uniformHashOutput >>= continuation) := by
-                    calc
-                      _ = evalDist (uniformHashOutput >>= fun output =>
-                          RevealProbeOracleSimulation.eagerTableSample >>=
-                            fun base =>
-                              runEager controller
-                                (RevealProbeOracleSimulation.extendTable
-                                  chainState base) none chainState steps remaining
-                                    (next output)) :=
-                        OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
-                      _ = _ := by rfl
+                    simpa [continuation] using
+                      evalDist_eagerTableSample_applyObserved controller
+                        chainState steps remaining next fun _ => none
                   refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
                   refine probEvent_bind_le_of_forall_le fun output _ => ?_
                   refine (ih none chainState hvalid remaining
@@ -947,31 +984,11 @@ theorem eagerController_true_probability_le {Control : Type}
                           continuation state) := by
                     calc
                       _ = evalDist (uniformHashOutput >>= observed) := by
-                        rw [OracleComp.DeferredSampling.evalDist_bind_comm]
-                        apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-                        intro output
-                        cases happly :
-                          CappedEncodingMonitor.State.applyObserved state
-                            (.query epoch output) with
-                        | none =>
-                            simp [observed, continuation,
-                              eagerControllerExperiment, happly]
-                        | some result =>
-                            rcases result with ⟨nextState, hit⟩
-                            cases hit with
-                            | false =>
-                                simp [observed, continuation,
-                                  eagerControllerExperiment, happly]
-                            | true =>
-                                simp only [observed, happly, ↓reduceIte]
-                                change evalDist
-                                    (RevealProbeOracleSimulation.eagerTableSample >>=
-                                      fun _ => pure true) = evalDist (pure true)
-                                exact
-                                  OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-                                    RevealProbeOracleSimulation.eagerTableSample
-                                    (by simp [RevealProbeOracleSimulation.eagerTableSample])
-                                    (pure true)
+                        simpa [observed, continuation] using
+                          evalDist_eagerTableSample_applyObserved controller
+                            chainState steps remaining next fun output =>
+                              CappedEncodingMonitor.State.applyObserved state
+                                (.query epoch output)
                       _ = evalDist
                           (CappedEncodingMonitor.applyHashOutputQueryMonitor epoch
                             continuation state) := congrArg evalDist hobserved
@@ -1007,14 +1024,9 @@ theorem eagerController_true_probability_le {Control : Type}
                         (RevealProbeOracleSimulation.extendTable chainState base)
                         none chainState steps fuel (next output)) =
                   evalDist (uniformHashOutput >>= continuation) := by
-                calc
-                  _ = evalDist (uniformHashOutput >>= fun output =>
-                      RevealProbeOracleSimulation.eagerTableSample >>= fun base =>
-                        runEager controller
-                          (RevealProbeOracleSimulation.extendTable chainState base)
-                          none chainState steps fuel (next output)) :=
-                    OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
-                  _ = _ := by rfl
+                simpa [continuation] using
+                  evalDist_eagerTableSample_applyObserved controller
+                    chainState steps fuel next fun _ => none
               refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
               exact probEvent_bind_le_of_forall_le fun output _ =>
                 ih none chainState hvalid fuel (next output)
@@ -1048,49 +1060,11 @@ theorem eagerController_true_probability_le {Control : Type}
                                     chainState base) (some nextState) chainState
                                       steps fuel (next output)) =
                       evalDist (uniformHashOutput >>= continuation) := by
-                    calc
-                      _ = evalDist (uniformHashOutput >>= fun output =>
-                          RevealProbeOracleSimulation.eagerTableSample >>=
-                            fun base =>
-                              match CappedEncodingMonitor.State.applyObserved state
-                                (.sign epoch output) with
-                              | none =>
-                                  runEager controller
-                                    (RevealProbeOracleSimulation.extendTable
-                                      chainState base) none chainState steps fuel
-                                        (next output)
-                              | some (nextState, hit) =>
-                                  if hit then pure true else
-                                    runEager controller
-                                      (RevealProbeOracleSimulation.extendTable
-                                        chainState base) (some nextState)
-                                          chainState steps fuel (next output)) :=
-                        OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
-                      _ = _ := by
-                        apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-                        intro output
-                        cases happly :
+                    simpa [continuation] using
+                      evalDist_eagerTableSample_applyObserved controller
+                        chainState steps fuel next fun output =>
                           CappedEncodingMonitor.State.applyObserved state
-                            (.sign epoch output) with
-                        | none =>
-                            simp [continuation, eagerControllerExperiment,
-                              happly]
-                        | some result =>
-                            rcases result with ⟨nextState, hit⟩
-                            cases hit with
-                            | false =>
-                                simp [continuation, eagerControllerExperiment,
-                                  happly]
-                            | true =>
-                                simp only [continuation, happly, ↓reduceIte]
-                                change evalDist
-                                    (RevealProbeOracleSimulation.eagerTableSample >>=
-                                      fun _ => pure true) = evalDist (pure true)
-                                exact
-                                  OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-                                    RevealProbeOracleSimulation.eagerTableSample
-                                    (by simp [RevealProbeOracleSimulation.eagerTableSample])
-                                    (pure true)
+                            (.sign epoch output)
                   refine (probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
                   refine probEvent_bind_le_of_forall_le fun output _ => ?_
                   simp [continuation,
@@ -1154,31 +1128,11 @@ theorem eagerController_true_probability_le {Control : Type}
                           epoch continuation state) := by
                     calc
                       _ = evalDist (uniformHashOutput >>= observed) := by
-                        rw [OracleComp.DeferredSampling.evalDist_bind_comm]
-                        apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-                        intro output
-                        cases happly :
-                          CappedEncodingMonitor.State.applyObserved state
-                            (.sign epoch output) with
-                        | none =>
-                            simp [observed, continuation,
-                              eagerControllerExperiment, happly]
-                        | some result =>
-                            rcases result with ⟨nextState, hit⟩
-                            cases hit with
-                            | false =>
-                                simp [observed, continuation,
-                                  eagerControllerExperiment, happly]
-                            | true =>
-                                simp only [observed, happly, ↓reduceIte]
-                                change evalDist
-                                    (RevealProbeOracleSimulation.eagerTableSample >>=
-                                      fun _ => pure true) = evalDist (pure true)
-                                exact
-                                  OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-                                    RevealProbeOracleSimulation.eagerTableSample
-                                    (by simp [RevealProbeOracleSimulation.eagerTableSample])
-                                    (pure true)
+                        simpa [observed, continuation] using
+                          evalDist_eagerTableSample_applyObserved controller
+                            chainState steps fuel next fun output =>
+                              CappedEncodingMonitor.State.applyObserved state
+                                (.sign epoch output)
                       _ = evalDist
                           (CappedEncodingMonitor.applyHashOutputSignAttemptMonitor
                             epoch continuation state) := congrArg evalDist hobserved
