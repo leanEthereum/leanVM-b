@@ -97,18 +97,12 @@ theorem simulate_eagerTrace_liftProbComp
     (simulateQ (eagerTraceImpl table)
       (liftProbComp (Index := Index) computation)).run =
         (fun result => (result, ([] : ActionTrace Index))) <$> computation := by
-  induction computation using OracleComp.inductionOn with
-  | pure result => simp [liftProbComp]
-  | query_bind n next ih =>
-      rw [liftProbComp, simulateQ_query_bind, simulateQ_bind]
-      simp only [uniformForwardImpl, uniformQuery]
-      simp [eagerTraceImpl, eagerImpl, traceFragment,
-        QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-      apply bind_congr
-      intro output
-      change (simulateQ (eagerTraceImpl table)
-        (liftProbComp (next output))).run = _
-      exact ih output
+  unfold liftProbComp
+  rw [← QueryImpl.simulateQ_compose]
+  change (simulateQ ((QueryImpl.id' unifSpec).withTraceAppend
+    (fun _ _ => ([] : ActionTrace Index))) computation).run = _
+  simpa using QueryImpl.run_simulateQ_withTraceAppend_const_empty
+    (Log := ActionTrace Index) (QueryImpl.id' unifSpec) computation
 
 omit [Fintype Index] [DecidableEq Index] in
 theorem simulate_eagerTrace_support_hazardCount_le
