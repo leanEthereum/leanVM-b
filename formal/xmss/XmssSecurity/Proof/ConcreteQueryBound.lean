@@ -289,16 +289,6 @@ theorem Concrete.chainWalk_queryBound_zero_encodingAddress
   apply Concrete.chainWalk_queryBound_zero_of_avoids
   simp
 
-theorem Concrete.signedChainValues_queryBound_zero_encodingAddress
-    (secretKey : SecretKey) (epoch targetEpoch : Epoch) (encoding : Encoding) :
-    (Concrete.signedChainValues secretKey epoch encoding :
-      OracleComp HashSpec (ChainIndex → Digest)).IsQueryBoundP
-        (AtHashAddress secretKey.parameter (.encoding targetEpoch)) 0 := by
-  rw [Concrete.signedChainValues]
-  exact Concrete.sequenceFin_queryBound_zero _ _ fun chain =>
-    Concrete.chainWalk_queryBound_zero_encodingAddress secretKey.parameter epoch
-      targetEpoch chain 0 (encoding chain).val (secretKey.chainStart epoch chain)
-
 theorem Concrete.oneTimePublicKey_queryBound_zero_encodingAddress
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
     (epoch targetEpoch : Epoch) :
@@ -345,34 +335,6 @@ theorem Concrete.treeNode_queryBound_zero_encodingAddress
           (Concrete.nodePayload left right) (by simp)
       · simp
 
-theorem Concrete.authenticationPath_queryBound_zero_encodingAddress
-    (secretKey : SecretKey) (epoch targetEpoch : Epoch) :
-    (Concrete.authenticationPath secretKey epoch :
-      OracleComp HashSpec (Fin treeHeight → Digest)).IsQueryBoundP
-        (AtHashAddress secretKey.parameter (.encoding targetEpoch)) 0 := by
-  rw [Concrete.authenticationPath]
-  exact Concrete.sequenceFin_queryBound_zero _ _ fun level =>
-    Concrete.treeNode_queryBound_zero_encodingAddress secretKey.parameter
-      secretKey.chainStart targetEpoch level.val
-      (Concrete.authenticationPathNode epoch level)
-
-theorem Concrete.signWithEncoding_queryBound_zero_encodingAddress
-    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (randomness : Randomness) (encoding : Encoding) :
-    (Concrete.signWithEncoding secretKey epoch randomness encoding :
-      OracleComp HashSpec Signature).IsQueryBoundP
-        (AtHashAddress secretKey.parameter (.encoding targetEpoch)) 0 := by
-  rw [Concrete.signWithEncoding]
-  refine OracleComp.isQueryBoundP_bind (m := 0)
-    (Concrete.signedChainValues_queryBound_zero_encodingAddress secretKey epoch
-      targetEpoch encoding) ?_
-  intro chainValues _
-  refine OracleComp.isQueryBoundP_bind (m := 0)
-    (Concrete.authenticationPath_queryBound_zero_encodingAddress secretKey epoch
-      targetEpoch) ?_
-  intro authenticationPath _
-  simp
-
 theorem Concrete.encodingHash_queryBound_zero_at_other_input
     (parameter : PublicParameter) (epoch : Epoch)
     (message : Message) (randomness : Randomness) (target : HashInput)
@@ -384,31 +346,5 @@ theorem Concrete.encodingHash_queryBound_zero_at_other_input
     show ¬tweakableHashInput parameter (.encoding epoch)
       (Concrete.encodingPayload message randomness) = target by
         simpa only [Concrete.CacheView.encodingInput] using hne]
-
-theorem Concrete.signAttempt_queryBound_zero_at_other_encodingInput
-    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) (randomness : Randomness) (targetInput : Message × Randomness)
-    (hne : Concrete.CacheView.encodingInput secretKey.parameter epoch
-        (message, randomness) ≠
-      Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) :
-    (Concrete.signAttempt secretKey epoch message randomness :
-      OracleComp HashSpec (Option Signature)).IsQueryBoundP
-        (· = Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) 0 := by
-  rw [Concrete.signAttempt]
-  refine OracleComp.isQueryBoundP_bind (m := 0)
-    (Concrete.encodingHash_queryBound_zero_at_other_input secretKey.parameter epoch
-      message randomness
-      (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) hne) ?_
-  intro digest _
-  split
-  · simp
-  · apply (OracleComp.isQueryBoundP_map_iff _ (fun signature => some signature) 0).2
-    exact (Concrete.signWithEncoding_queryBound_zero_encodingAddress secretKey epoch
-      targetEpoch randomness _).of_imp (by
-        intro input hinput
-        subst input
-        rw [Concrete.CacheView.encodingInput]
-        exact atHashAddress_tweakableHashInput_iff secretKey.parameter
-          (.encoding targetEpoch) (.encoding targetEpoch) _ |>.2 rfl)
 
 end XmssSecurity

@@ -215,29 +215,6 @@ theorem relTriple_programmed_globalHighMonitored_action
       (relTriple_programmed_monitoredGlobalSigningQuery left right hrel
         hleftSupport hrightSupport leftState.1 rightState.1 hstate.1 request)
 
-theorem globalHighMonitoredBaseMappedAdversaryImpl_preserves_bad
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalMonitoredCausalState) (hbad : state.bad)
-    (result : (OracleWorld + SigningSpec).Range input ×
-      GlobalMonitoredCausalState)
-    (hresult : result ∈ support
-      ((globalHighMonitoredBaseMappedAdversaryImpl right input).run state)) :
-    result.2.bad := by
-  rcases input with (worldInput | request)
-  · rcases worldInput with n | hashInput
-    · exact monitorGlobalCausalTrace_preserves_bad right.1.2 _ state hbad
-        result (by simpa [globalHighMonitoredBaseMappedAdversaryImpl] using
-          hresult)
-    · exact monitorGlobalCausalTrace_preserves_bad right.1.2 _ state hbad
-        result (by simpa [globalHighMonitoredBaseMappedAdversaryImpl] using
-          hresult)
-  · exact monitorGlobalCausalTrace_preserves_bad right.1.2 _ state hbad
-      result (by simpa [globalHighMonitoredBaseMappedAdversaryImpl] using
-        hresult)
-
 theorem globalHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -373,20 +350,6 @@ theorem relTriple_programmed_globalHighMonitored_verifier_query
       (relTriple_programmed_monitoredGlobalAttackerHashQuery_until_hit left
         right hrel hleftSupport hrightSupport leftState.1 rightState.1 hstate.1
           hashInput)
-
-theorem globalHighMonitoredVerifierImpl_preserves_bad
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest)) :
-    QueryImpl.PreservesInv (globalHighMonitoredVerifierImpl right)
-      (fun state : GlobalMonitoredTracedState => state.1.bad) := by
-  intro input state hbad result hresult
-  unfold globalHighMonitoredVerifierImpl at hresult
-  simp only [StateT.run_mk] at hresult
-  rw [support_map] at hresult
-  obtain ⟨baseResult, hbaseResult, rfl⟩ := hresult
-  exact globalHighMonitoredBaseMappedAdversaryImpl_preserves_bad right
-    (.inl input) state.1 hbad baseResult hbaseResult
 
 theorem globalHighMonitoredVerifierImpl_preserves_traceConsistent
     (right : (ProgrammedGlobalChainKeygenView ×

@@ -8,25 +8,6 @@ namespace XmssSecurity.CappedChain
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 2000000
 
-noncomputable def globalOutsideChainsOnly
-    (parameter : PublicParameter) (cache : QueryCache HashSpec) :
-    QueryCache HashSpec := fun input =>
-  if globalChainInputProbe? parameter input = none then cache input else none
-
-theorem globalOutsideChainsOnly_of_no_probe
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (input : HashInput)
-    (hprobe : globalChainInputProbe? parameter input = none) :
-    globalOutsideChainsOnly parameter cache input = cache input := by
-  simp [globalOutsideChainsOnly, hprobe]
-
-theorem globalOutsideChainsOnly_of_probe
-    (parameter : PublicParameter) (cache : QueryCache HashSpec)
-    (input : HashInput) (probe : GlobalChainValueIndex × Digest)
-    (hprobe : globalChainInputProbe? parameter input = some probe) :
-    globalOutsideChainsOnly parameter cache input = none := by
-  simp [globalOutsideChainsOnly, hprobe]
-
 noncomputable def globalFilteredCausalKeygenState
     (view : ProgrammedGlobalChainKeygenView) : GlobalCausalHashState := by
   classical
