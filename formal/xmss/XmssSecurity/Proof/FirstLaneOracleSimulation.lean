@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.FirstLaneMonitor
+import XmssSecurity.Statement
 
 open OracleComp OracleSpec ENNReal
 
@@ -72,26 +72,5 @@ noncomputable instance : DecidablePred (IsHazardQuery (Index := Index)) :=
 
 noncomputable instance : IsUniformSpec (World Index) :=
   IsUniformSpec.ofFintypeInhabited _
-
-noncomputable def controller
-    (computation : OracleComp (World Index) α) :
-    ProbComp
-      (FirstLaneMonitor.ControllerAction
-        (OracleComp (World Index) α) Index) :=
-  OracleComp.construct
-    (C := fun _ => ProbComp
-      (FirstLaneMonitor.ControllerAction
-        (OracleComp (World Index) α) Index))
-    (fun _ => pure .stop)
-    (fun input next recursivelyContinue =>
-      match input with
-      | .uniform n => do
-          let output ← (liftM (unifSpec.query n) : ProbComp (Fin (n + 1)))
-          recursivelyContinue output
-      | .encodingQuery epoch => pure (.encodingQuery epoch next)
-      | .encodingSignAttempt epoch => pure (.encodingSignAttempt epoch next)
-      | .probe index target => pure (.probe index target (fun _ => next ()))
-      | .reveal index => pure (.reveal index next))
-    computation
 
 end XmssSecurity.FirstLaneOracleSimulation
