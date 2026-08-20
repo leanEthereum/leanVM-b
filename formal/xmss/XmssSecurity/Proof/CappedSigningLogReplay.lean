@@ -12,7 +12,7 @@ noncomputable def cappedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec)
       (WriterT (QueryLog SigningSpec) (StateT (QueryCache HashSpec) ProbComp)) :=
-  xmssRomImpl.writerTMapBase
+  romImpl.writerTMapBase
     (forwardOracles + signingOracle Concrete.scheme publicKey secretKey)
 
 theorem cappedMappedAdversary_cache_le
@@ -67,7 +67,6 @@ theorem cappedMappedAdversary_signingLog_consistent
         | inl worldInput =>
             simp only [simulateQ_spec_query, cappedMappedAdversaryImpl,
               QueryImpl.writerTMapBase, QueryImpl.add_apply_inl, forwardOracles,
-              QueryImpl.liftTarget_apply, HasQuery.toQueryImpl_apply,
               WriterT.run_mk] at hquery
             erw [WriterT.run_liftM] at hquery
             rw [simulateQ_map, StateT.run_map, support_map] at hquery
@@ -93,7 +92,7 @@ theorem cappedMappedAdversary_signingLog_consistent
             rw [hrequest] at hsign
             rw [hsignature] at hsign
             change (some signature, signCache) ∈ support
-              ((simulateQ xmssRomImpl
+              ((simulateQ romImpl
                 (Concrete.precomputedCappedSign publicKey secretKey request.epoch
                   request.message)).run initialCache) at hsign
             apply Concrete.precomputedCappedSign_success_replay publicKey secretKey request
@@ -132,7 +131,7 @@ theorem capped_detailed_execution_signingLog_consistent
   have hcacheLe : adversaryCache ≤ finalCache :=
     xmssRom_cache_le _ adversaryCache (verified, finalCache) hverify
   have hkeygen' : ((publicKey, secretKey), keyCache) ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅) := by
     simpa only [Concrete.scheme] using hkeygen
   have hconsistent :=
     Concrete.precomputedKeygen_support_consistent

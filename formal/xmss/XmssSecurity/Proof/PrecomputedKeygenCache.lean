@@ -96,7 +96,7 @@ def materializeCachedKeyResult
 theorem precomputedKeygen_support_secretKey_uses_finalCache
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl precomputedKeygen).run ∅)) :
+      ((simulateQ romImpl precomputedKeygen).run ∅)) :
     keyResult.1.2 = materializePrecomputation keyResult.2 keyResult.1.2 := by
   unfold precomputedKeygen at hmem
   rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
@@ -118,13 +118,13 @@ theorem precomputedKeygen_support_secretKey_uses_finalCache
           (secret, secretCache) hsecret
       _ = ∅ := hparameterCache
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (treeNode parameter secret treeHeight rootNode :
             OracleComp HashSpec Digest).withQueryLog) =
         simulateQ randomOracle
           (treeNode parameter secret treeHeight rootNode :
             OracleComp HashSpec Digest).withQueryLog := by
-    simp only [xmssRomImpl]
+    simp only [romImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (treeNode parameter secret treeHeight rootNode :
@@ -138,13 +138,13 @@ theorem precomputedKeygen_support_secretKey_uses_finalCache
 
 theorem evalDist_materialized_keygen_eq_precomputedKeygen :
     evalDist (materializeCachedKeyResult <$>
-      (simulateQ xmssRomImpl keygen).run ∅) =
-      evalDist ((simulateQ xmssRomImpl precomputedKeygen).run ∅) := by
+      (simulateQ romImpl keygen).run ∅) =
+      evalDist ((simulateQ romImpl precomputedKeygen).run ∅) := by
   rw [← erasePrecomputedKeygen_eq_keygen, simulateQ_map, StateT.run_map]
   simp only [Functor.map_map]
   rw [map_eq_bind_pure_comp]
   conv_rhs => rw [← bind_pure
-    ((simulateQ xmssRomImpl precomputedKeygen).run ∅)]
+    ((simulateQ romImpl precomputedKeygen).run ∅)]
   apply evalDist_bind_congr
   intro keyResult hmem
   apply congrArg evalDist

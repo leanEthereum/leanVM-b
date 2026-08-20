@@ -16,7 +16,7 @@ noncomputable def Concrete.signBoundedAttemptsContinuation
     ProbComp (Option Signature × QueryCache HashSpec) :=
   match result.1 with
   | some signature => pure (some signature, result.2)
-  | none => (simulateQ xmssRomImpl
+  | none => (simulateQ romImpl
       (Concrete.signBoundedAttempts attempts secretKey epoch message)).run result.2
 
 attribute [irreducible] Concrete.signBoundedAttemptsContinuation
@@ -24,7 +24,7 @@ attribute [irreducible] Concrete.signBoundedAttemptsContinuation
 theorem Concrete.signBoundedAttempts_run_succ_eq
     (attempts : Nat) (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (cache : QueryCache HashSpec) :
-    (simulateQ xmssRomImpl
+    (simulateQ romImpl
       (Concrete.signBoundedAttempts (attempts + 1) secretKey epoch message)).run cache =
       (($ᵗ Randomness) >>= fun randomness =>
         (simulateQ randomOracle
@@ -34,7 +34,7 @@ theorem Concrete.signBoundedAttempts_run_succ_eq
             message) := by
   rw [Concrete.signBoundedAttempts, simulateQ_bind, StateT.run_bind]
   have hsampleRun :
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (liftM Concrete.signingRandomness)).run cache =
         (fun randomness => (randomness, cache)) <$> Concrete.signingRandomness := by
     change (simulateQ (unifFwdImpl HashSpec +
@@ -51,7 +51,7 @@ theorem Concrete.signBoundedAttempts_run_succ_eq
   intro randomness
   rw [simulateQ_bind, StateT.run_bind]
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (Concrete.signAttempt secretKey epoch message randomness :
             OracleComp HashSpec (Option Signature))) =
         simulateQ randomOracle
@@ -73,9 +73,9 @@ theorem Concrete.signBoundedAttempts_run_succ_eq
 theorem Concrete.signBoundedAttempts_run_succ_eq_sign_bind
     (attempts : Nat) (publicKey : PublicKey) (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec) :
-    (simulateQ xmssRomImpl
+    (simulateQ romImpl
       (Concrete.signBoundedAttempts (attempts + 1) secretKey epoch message)).run cache =
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (Concrete.sign publicKey secretKey epoch message)).run cache >>=
           Concrete.signBoundedAttemptsContinuation attempts secretKey epoch
             message := by

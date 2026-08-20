@@ -43,7 +43,7 @@ theorem gameCore_eq_map_detailedGameCore (scheme : Scheme) (adversary : Adversar
 
 noncomputable def detailedGameWithCache (scheme : Scheme) (adversary : Adversary) :
     ProbComp (GameOutcome × QueryCache HashSpec) :=
-  (simulateQ xmssRomImpl (detailedGameCore scheme adversary)).run ∅
+  (simulateQ romImpl (detailedGameCore scheme adversary)).run ∅
 
 theorem gameWithCache_eq_map_detailedGameWithCache
     (scheme : Scheme) (adversary : Adversary) :

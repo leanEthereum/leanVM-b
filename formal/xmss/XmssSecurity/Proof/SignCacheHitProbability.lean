@@ -188,7 +188,7 @@ theorem cachedEncodingEntryCount_mono
 theorem Concrete.sign_run_eq
     (publicKey : PublicKey) (secretKey : SecretKey)
     (epoch : Epoch) (message : Message) (cache : QueryCache HashSpec) :
-    (simulateQ xmssRomImpl
+    (simulateQ romImpl
       (Concrete.sign publicKey secretKey epoch message)).run cache =
       (($ᵗ Randomness) >>= fun randomness =>
         (simulateQ randomOracle
@@ -196,7 +196,7 @@ theorem Concrete.sign_run_eq
             OracleComp HashSpec (Option Signature))).run cache) := by
   rw [Concrete.sign_eq, simulateQ_bind, StateT.run_bind]
   have hsampleRun :
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (liftM Concrete.signingRandomness)).run cache =
         (fun randomness => (randomness, cache)) <$>
           Concrete.signingRandomness := by
@@ -214,7 +214,7 @@ theorem Concrete.sign_run_eq
   apply bind_congr
   intro randomness
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (Concrete.signAttempt secretKey epoch message randomness :
             OracleComp HashSpec (Option Signature))) =
         simulateQ randomOracle

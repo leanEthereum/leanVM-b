@@ -259,10 +259,10 @@ theorem winningStructuralCollision_afterKeygen_orientation
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary
           keyResult.1.1 keyResult.1.2)).run keyResult.2))
     (hevent : WinningStructuralCollisionOccurs execution.2 execution.1) :
@@ -294,8 +294,8 @@ theorem winningStructuralCollision_probability_le_expectedMovedQueries
       detailedGameWithCache Concrete.scheme adversary] ≤
       (∑' keyResult,
         Pr[= keyResult |
-          (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
-          expectedSimulatedQueryCount xmssRomImpl
+          (simulateQ romImpl Concrete.scheme.keygen).run ∅] *
+          expectedSimulatedQueryCount romImpl
             (Rom.IsRelevantHashQuery fun input =>
               keygenStructuralTargetInput keyResult.1.2 keyResult.2 input ≠ input)
             (detailedGameAfterKeygen Concrete.scheme adversary

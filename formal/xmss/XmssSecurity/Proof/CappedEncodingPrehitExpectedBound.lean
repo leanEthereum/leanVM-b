@@ -297,11 +297,11 @@ theorem sum_expectedFinalEpochPrehitRisk_eq
   intro epoch _hepoch
   ac_rfl
 
-theorem cachedEncodingInputCount_xmssRomImpl_step_le
+theorem cachedEncodingInputCount_romImpl_step_le
     (parameter : PublicParameter) (input : OracleWorld.Domain)
     (initialCache : QueryCache HashSpec)
     (result : OracleWorld.Range input × QueryCache HashSpec)
-    (hresult : result ∈ support ((xmssRomImpl input).run initialCache)) :
+    (hresult : result ∈ support ((romImpl input).run initialCache)) :
     cachedEncodingInputCount result.2 parameter ≤
       cachedEncodingInputCount initialCache parameter +
         if CappedEncodingMonitor.IsEncodingHashQuery parameter input then 1 else 0 := by
@@ -357,21 +357,21 @@ theorem expectedFinalEncodingInputCount_le_initial_add_expectedQueries
     (parameter : PublicParameter) (computation : OracleComp OracleWorld α)
     (initialCache : QueryCache HashSpec) :
     (∑' result,
-      Pr[= result | (simulateQ xmssRomImpl computation).run initialCache] *
+      Pr[= result | (simulateQ romImpl computation).run initialCache] *
         cachedEncodingInputCount result.2 parameter) ≤
       cachedEncodingInputCount initialCache parameter +
-        expectedSimulatedQueryCount xmssRomImpl
+        expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery parameter) computation initialCache := by
   exact expectedResource_le_initial_add_expectedSimulatedQueryCount
-    xmssRomImpl (CappedEncodingMonitor.IsEncodingHashQuery parameter)
+    romImpl (CappedEncodingMonitor.IsEncodingHashQuery parameter)
       (fun cache => cachedEncodingInputCount cache parameter)
-      (cachedEncodingInputCount_xmssRomImpl_step_le parameter)
+      (cachedEncodingInputCount_romImpl_step_le parameter)
       computation initialCache
 
 theorem Concrete.keygen_cachedEncodingInputCount_eq_zero
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅)) :
     cachedEncodingInputCount keyResult.2 keyResult.1.2.parameter = 0 := by
   unfold cachedEncodingInputCount
   have hempty : cachedEncodingInputSet keyResult.2 keyResult.1.2.parameter = ∅ := by
@@ -388,7 +388,7 @@ theorem Concrete.keygen_cachedEncodingInputCount_eq_zero
           exists_encodingInput_of_encodingInputEpoch?_eq_some
             keyResult.1.2.parameter entry.1 epoch hepoch
         have hmem' : keyResult ∈ support
-            ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+            ((simulateQ romImpl Concrete.precomputedKeygen).run ∅) := by
           simpa [Concrete.scheme] using hmem
         have hnone := Concrete.precomputedKeygen_cache_none_encodingInput
           keyResult hmem' epoch payload
@@ -402,10 +402,10 @@ theorem expectedFinalEncodingEntryCount_afterKeygen_le_sourceQueries
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅)) :
     expectedFinalEncodingEntryCount keyResult.1.1 keyResult.1.2
         (adversary.main keyResult.1.1) keyResult.2 ≤
-      expectedSimulatedQueryCount xmssRomImpl
+      expectedSimulatedQueryCount romImpl
         (CappedEncodingMonitor.IsEncodingHashQuery keyResult.1.2.parameter)
         (cappedSourceUnloggedDetailedGameAfterKeygen adversary
           keyResult.1.1 keyResult.1.2) keyResult.2 := by
@@ -432,16 +432,16 @@ theorem expectedFinalEncodingEntryCount_afterKeygen_le_sourceQueries
       cappedCacheTracedMappedAdversaryImpl_cache_projection publicKey secretKey
         (adversary.main publicKey) initialCache []
   have hunlogged : unloggedRun =
-      (simulateQ xmssRomImpl sourceHead).run initialCache := by
+      (simulateQ romImpl sourceHead).run initialCache := by
     simpa [unloggedRun, sourceHead] using
       CappedEncodingMonitor.cappedUnloggedMappedAdversary_simulateQ_run_eq_source
         publicKey secretKey
         (adversary.main publicKey) initialCache
   have hheadResource :
-      (∑' result, Pr[= result | (simulateQ xmssRomImpl sourceHead).run initialCache] *
+      (∑' result, Pr[= result | (simulateQ romImpl sourceHead).run initialCache] *
         cachedEncodingInputCount result.2 secretKey.parameter) ≤
       cachedEncodingInputCount initialCache secretKey.parameter +
-        expectedSimulatedQueryCount xmssRomImpl
+        expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery secretKey.parameter)
           sourceHead initialCache :=
     expectedFinalEncodingInputCount_le_initial_add_expectedQueries
@@ -449,10 +449,10 @@ theorem expectedFinalEncodingEntryCount_afterKeygen_le_sourceQueries
   have hinitial : cachedEncodingInputCount initialCache secretKey.parameter = 0 := by
     exact Concrete.keygen_cachedEncodingInputCount_eq_zero keyResult hkeyResult
   have hheadLeFull :
-      expectedSimulatedQueryCount xmssRomImpl
+      expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery secretKey.parameter)
           sourceHead initialCache ≤
-        expectedSimulatedQueryCount xmssRomImpl
+        expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery secretKey.parameter)
           (sourceHead >>= sourceFinish) initialCache := by
     rw [expectedSimulatedQueryCount_bind]
@@ -470,19 +470,19 @@ theorem expectedFinalEncodingEntryCount_afterKeygen_le_sourceQueries
     _ = ∑' result, Pr[= result | unloggedRun] *
         cachedEncodingInputCount result.2 secretKey.parameter := by rw [hprojection]
     _ = ∑' result, Pr[= result |
-          (simulateQ xmssRomImpl sourceHead).run initialCache] *
+          (simulateQ romImpl sourceHead).run initialCache] *
         cachedEncodingInputCount result.2 secretKey.parameter := by rw [hunlogged]
     _ ≤ cachedEncodingInputCount initialCache secretKey.parameter +
-        expectedSimulatedQueryCount xmssRomImpl
+        expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery secretKey.parameter)
           sourceHead initialCache := hheadResource
-    _ = expectedSimulatedQueryCount xmssRomImpl
+    _ = expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery secretKey.parameter)
           sourceHead initialCache := by rw [hinitial, zero_add]
-    _ ≤ expectedSimulatedQueryCount xmssRomImpl
+    _ ≤ expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery secretKey.parameter)
           (sourceHead >>= sourceFinish) initialCache := hheadLeFull
-    _ = expectedSimulatedQueryCount xmssRomImpl
+    _ = expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery keyResult.1.2.parameter)
           (cappedSourceUnloggedDetailedGameAfterKeygen adversary
             keyResult.1.1 keyResult.1.2) keyResult.2 := by
@@ -492,7 +492,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅)) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
@@ -500,7 +500,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
       cappedDetailedGameAfterKeygenWithSigningTrace adversary keyResult.1.1
         keyResult.1.2 keyResult.2] ≤
       (signingAttemptLimit : ℝ≥0∞) *
-        expectedSimulatedQueryCount xmssRomImpl
+        expectedSimulatedQueryCount romImpl
           (CappedEncodingMonitor.IsEncodingHashQuery keyResult.1.2.parameter)
           (cappedSourceUnloggedDetailedGameAfterKeygen adversary
             keyResult.1.1 keyResult.1.2) keyResult.2 *
@@ -538,7 +538,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability
         sum_expectedFinalEpochPrehitRisk_eq keyResult.1.1 keyResult.1.2
           (adversary.main keyResult.1.1) keyResult.2
       _ ≤ (signingAttemptLimit : ℝ≥0∞) *
-          expectedSimulatedQueryCount xmssRomImpl
+          expectedSimulatedQueryCount romImpl
             (CappedEncodingMonitor.IsEncodingHashQuery keyResult.1.2.parameter)
             (cappedSourceUnloggedDetailedGameAfterKeygen adversary
               keyResult.1.1 keyResult.1.2) keyResult.2 *
@@ -571,9 +571,9 @@ theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_expecte
   rw [probEvent_bind_eq_tsum]
   calc
     _ ≤ ∑' keyResult,
-        Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
+        Pr[= keyResult | (simulateQ romImpl Concrete.scheme.keygen).run ∅] *
           ((signingAttemptLimit : ℝ≥0∞) *
-            expectedSimulatedQueryCount xmssRomImpl
+            expectedSimulatedQueryCount romImpl
               (CappedEncodingMonitor.IsEncodingHashQuery keyResult.1.2.parameter)
               (cappedSourceUnloggedDetailedGameAfterKeygen adversary
                 keyResult.1.1 keyResult.1.2) keyResult.2 *
@@ -581,7 +581,7 @@ theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_expecte
       apply ENNReal.tsum_le_tsum
       intro keyResult
       by_cases hkeyResult : keyResult ∈ support
-          ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)
+          ((simulateQ romImpl Concrete.scheme.keygen).run ∅)
       · exact mul_le_mul_right
           (cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le_expected
             adversary keyResult hkeyResult) _
@@ -589,8 +589,8 @@ theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_expecte
         simp
     _ = (signingAttemptLimit : ℝ≥0∞) *
         (∑' keyResult,
-          Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
-            expectedSimulatedQueryCount xmssRomImpl
+          Pr[= keyResult | (simulateQ romImpl Concrete.scheme.keygen).run ∅] *
+            expectedSimulatedQueryCount romImpl
               (CappedEncodingMonitor.IsEncodingHashQuery keyResult.1.2.parameter)
               (cappedSourceUnloggedDetailedGameAfterKeygen adversary
                 keyResult.1.1 keyResult.1.2) keyResult.2) *

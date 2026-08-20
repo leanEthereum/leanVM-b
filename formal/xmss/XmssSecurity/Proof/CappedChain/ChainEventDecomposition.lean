@@ -63,10 +63,10 @@ theorem chainValueRevealed_afterKeygen_has_origin
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (chain : ChainIndex)
@@ -80,7 +80,7 @@ theorem chainValueRevealed_afterKeygen_has_origin
     (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
   have hkeygen' : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅) := by
     simpa only [Concrete.scheme] using hkeygen
   have hwalk := Concrete.precomputedKeygen_chainWalk_eq_of_cache_le keyResult hkeygen'
     execution.2
@@ -115,10 +115,10 @@ theorem chain_event_afterKeygen_revealed_or_collision
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (chain : ChainIndex)

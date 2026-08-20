@@ -15,7 +15,7 @@ def PrecomputedKeyConsistent (keygenCache : QueryCache HashSpec)
 theorem keygen_support_treeCacheStable
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.keygen).run ∅)) :
     CappedChain.TreeCacheStable keyResult.1.2.parameter keyResult.1.2.chainStart
       keyResult.2 := by
   let chain : ChainIndex := ⟨0, by norm_num [numChains]⟩
@@ -33,11 +33,11 @@ theorem keygen_support_treeCacheStable
 theorem Concrete.precomputedKeygen_support_oldKeygen
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅)) :
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅)) :
     ((keyResult.1.1, Concrete.erasePrecomputation keyResult.1.2), keyResult.2) ∈
-      support ((simulateQ xmssRomImpl Concrete.keygen).run ∅) := by
+      support ((simulateQ romImpl Concrete.keygen).run ∅) := by
   have hmapped : ((Concrete.erasePrecomputedKeyResult keyResult.1, keyResult.2)) ∈
-      support ((simulateQ xmssRomImpl
+      support ((simulateQ romImpl
         (Concrete.erasePrecomputedKeyResult <$> Concrete.precomputedKeygen)).run ∅) := by
     rw [simulateQ_map, StateT.run_map, support_map]
     exact ⟨keyResult, hmem, rfl⟩
@@ -47,9 +47,9 @@ theorem Concrete.precomputedKeygen_support_oldKeygen
 theorem Concrete.oldKeygen_support_materializedPrecomputedKeygen
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.keygen).run ∅)) :
     Concrete.materializeCachedKeyResult keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅) := by
   apply (mem_support_iff_of_evalDist_eq
     Concrete.evalDist_materialized_keygen_eq_precomputedKeygen _).mp
   rw [support_map]
@@ -58,7 +58,7 @@ theorem Concrete.oldKeygen_support_materializedPrecomputedKeygen
 theorem Concrete.precomputedKeygen_support_secretKey_components
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅)) :
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅)) :
     ∃ parameter secret,
       keyResult.1.2 = Concrete.precomputedSecretKey parameter secret keyResult.2 := by
   unfold Concrete.precomputedKeygen at hmem
@@ -81,13 +81,13 @@ theorem Concrete.precomputedKeygen_support_secretKey_components
           (secret, secretCache) hsecret
       _ = ∅ := hparameterCache
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
             OracleComp HashSpec Digest).withQueryLog) =
         simulateQ randomOracle
           (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
             OracleComp HashSpec Digest).withQueryLog := by
-    simp only [xmssRomImpl]
+    simp only [romImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
@@ -101,7 +101,7 @@ theorem Concrete.precomputedKeygen_support_secretKey_components
 theorem Concrete.precomputedKeygen_support_consistent
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅)) :
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅)) :
     PrecomputedKeyConsistent keyResult.2 keyResult.1.2 := by
   obtain ⟨parameter, secret, hsecretKey⟩ :=
     Concrete.precomputedKeygen_support_secretKey_components keyResult hmem
@@ -128,7 +128,7 @@ theorem Concrete.precomputedKeygen_support_consistent
 theorem Concrete.precomputedKeygen_cache_none_encodingInput
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (targetEpoch : Epoch) (targetInput : Message × Randomness) :
     keyResult.2
       (Concrete.CacheView.encodingInput keyResult.1.2.parameter targetEpoch targetInput) =
@@ -141,7 +141,7 @@ theorem Concrete.precomputedKeygen_cache_none_encodingInput
 theorem Concrete.precomputedKeygen_chainWalk_eq_of_cache_le
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) (chain : ChainIndex) (steps : Nat)
     (hsteps : steps ≤ chainLength - 1) :
@@ -160,7 +160,7 @@ theorem Concrete.precomputedKeygen_chainWalk_eq_of_cache_le
 theorem Concrete.precomputedKeygen_cache_has_chainInput
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (epoch : Epoch) (chain : ChainIndex) (step : ChainStep) :
     ∃ output, keyResult.2
       (Concrete.CacheView.chainInput keyResult.1.2.parameter epoch chain step
@@ -175,7 +175,7 @@ theorem Concrete.precomputedKeygen_cache_has_chainInput
 theorem Concrete.precomputedKeygen_cache_chainInput_eq_none_of_ne
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (epoch : Epoch) (chain : ChainIndex) (step : ChainStep) (value : Digest)
     (hne : value ≠ Wots.walk
       (Concrete.CacheView.chainStep keyResult.2 keyResult.1.2.parameter epoch chain)
@@ -191,7 +191,7 @@ theorem Concrete.precomputedKeygen_cache_chainInput_eq_none_of_ne
 theorem Concrete.precomputedKeygen_cache_has_chainValue_preimage
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (epoch : Epoch) (chain : ChainIndex) (digit : Digit)
     (hpositive : 0 < digit.val) :
     ∃ previous : ChainStep, ∃ output,
@@ -214,7 +214,7 @@ theorem Concrete.precomputedKeygen_cache_has_chainValue_preimage
 theorem Concrete.precomputedKeygen_cache_has_merkleInput_in_largerCache
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (level : MerkleLevel) (node : MerkleNode)
     (hnode : node.val < 2 ^ (treeHeight - (level.val + 1))) :
@@ -233,7 +233,7 @@ theorem Concrete.precomputedKeygen_cache_has_merkleInput_in_largerCache
 theorem Concrete.precomputedKeygen_cache_merkleInput_eq_none_of_ne_in_largerCache
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (level : MerkleLevel) (node : MerkleNode)
     (hnode : node.val < 2 ^ (treeHeight - (level.val + 1)))
@@ -254,7 +254,7 @@ theorem Concrete.precomputedKeygen_cache_merkleInput_eq_none_of_ne_in_largerCach
 theorem Concrete.precomputedKeygen_merkleChildren_eq_of_cache_le
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅))
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (level : MerkleLevel) (node : MerkleNode)
     (hnode : node.val < 2 ^ (treeHeight - (level.val + 1))) :

@@ -25,13 +25,13 @@ theorem capped_detailed_execution_verification_consistent
   subst execution
   simp only
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (Concrete.scheme.verify publicKey forgery.epoch forgery.message
             forgery.signature) =
         simulateQ randomOracle
           (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
             OracleComp HashSpec Bool) := by
-    simp only [Concrete.scheme, xmssRomImpl]
+    simp only [Concrete.scheme, romImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (Concrete.verify publicKey forgery.epoch forgery.message forgery.signature :
@@ -75,13 +75,13 @@ theorem capped_detailed_execution_key_components_consistent
   cases hfinal
   simp only
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
             OracleComp HashSpec Digest).withQueryLog) =
         simulateQ randomOracle
           (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
             OracleComp HashSpec Digest).withQueryLog := by
-    simp only [xmssRomImpl]
+    simp only [romImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :

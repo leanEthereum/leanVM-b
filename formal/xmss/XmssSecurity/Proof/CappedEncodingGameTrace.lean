@@ -38,7 +38,7 @@ noncomputable def cappedDetailedGameAfterKeygenWithEncodingTrace
     (simulateQ (cappedEncodingTracedMappedAdversaryImpl publicKey secretKey)
       (adversary.main publicKey)).run ((initialCache, []), [])
   let (verified, finalCache) ←
-    (simulateQ xmssRomImpl
+    (simulateQ romImpl
       (Concrete.scheme.verify publicKey forgery.epoch forgery.message
         forgery.signature)).run adversaryState.1
   let finalEncodingTrace := appendVerificationEncodingObservation secretKey forgery
@@ -60,7 +60,7 @@ theorem cappedDetailedGameAfterKeygenWithEncodingTrace_projection
       ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) :=
     fun result => do
       let (verified, finalCache) ←
-        (simulateQ xmssRomImpl
+        (simulateQ romImpl
           (Concrete.scheme.verify publicKey result.1.epoch result.1.message
             result.1.signature)).run result.2.1.1
       pure (⟨publicKey, secretKey, result.1, result.2.1.2.toSigningLog, verified⟩,
@@ -69,7 +69,7 @@ theorem cappedDetailedGameAfterKeygenWithEncodingTrace_projection
       ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) :=
     fun result => do
       let (verified, finalCache) ←
-        (simulateQ xmssRomImpl
+        (simulateQ romImpl
           (Concrete.scheme.verify publicKey result.1.epoch result.1.message
             result.1.signature)).run result.2.1
       pure (⟨publicKey, secretKey, result.1, result.2.2.toSigningLog, verified⟩,
@@ -85,7 +85,7 @@ noncomputable def cappedDetailedGameWithEncodingTrace
     (adversary : Adversary) :
     ProbComp (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
+  let keyResult ← (simulateQ romImpl Concrete.scheme.keygen).run ∅
   cappedDetailedGameAfterKeygenWithEncodingTrace adversary keyResult.1.1
     keyResult.1.2 keyResult.2
 

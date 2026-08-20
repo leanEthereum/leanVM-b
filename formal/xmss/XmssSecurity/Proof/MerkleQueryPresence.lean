@@ -155,7 +155,7 @@ namespace XmssSecurity
 theorem Concrete.keygen_cache_has_merkleInput_in_largerCache
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (level : MerkleLevel) (node : MerkleNode)
     (hnode : node.val < 2 ^ (treeHeight - (level.val + 1))) :
@@ -174,7 +174,7 @@ theorem Concrete.keygen_cache_has_merkleInput_in_largerCache
 theorem Concrete.keygen_cache_has_merkleInput
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (level : MerkleLevel) (node : MerkleNode)
     (hnode : node.val < 2 ^ (treeHeight - (level.val + 1))) :
     ∃ output, keyResult.2
@@ -189,7 +189,7 @@ theorem Concrete.keygen_cache_has_merkleInput
 theorem Concrete.keygen_cache_merkleInput_eq_none_of_ne_in_largerCache
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (level : MerkleLevel) (node : MerkleNode)
     (hnode : node.val < 2 ^ (treeHeight - (level.val + 1)))
@@ -226,7 +226,7 @@ theorem Concrete.keygen_cache_merkleInput_eq_none_of_ne_in_largerCache
 theorem Concrete.keygen_merkleChildren_eq_of_cache_le
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (level : MerkleLevel) (node : MerkleNode)
     (hnode : node.val < 2 ^ (treeHeight - (level.val + 1))) :

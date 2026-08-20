@@ -226,7 +226,7 @@ namespace XmssSecurity
 theorem Concrete.keygen_cache_has_chainInput
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (epoch : Epoch) (chain : ChainIndex) (step : ChainStep) :
     ∃ output, keyResult.2
       (Concrete.CacheView.chainInput keyResult.1.2.parameter epoch chain step
@@ -242,7 +242,7 @@ theorem Concrete.keygen_cache_has_chainInput
 theorem Concrete.keygen_cache_chainInput_eq_none_of_ne
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (epoch : Epoch) (chain : ChainIndex) (step : ChainStep) (value : Digest)
     (hne : value ≠ Wots.walk
       (Concrete.CacheView.chainStep keyResult.2 keyResult.1.2.parameter epoch chain)
@@ -274,7 +274,7 @@ theorem Concrete.keygen_cache_chainInput_eq_none_of_ne
 theorem Concrete.keygen_cache_has_chainValue_preimage
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (epoch : Epoch) (chain : ChainIndex) (digit : Digit)
     (hpositive : 0 < digit.val) :
     ∃ previous : ChainStep, ∃ output,
@@ -314,7 +314,7 @@ theorem Concrete.keygen_cache_has_chainValue_preimage
 theorem Concrete.keygen_chainWalk_eq_of_cache_le
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) (chain : ChainIndex) (steps : Nat)
     (hsteps : steps ≤ chainLength - 1) :

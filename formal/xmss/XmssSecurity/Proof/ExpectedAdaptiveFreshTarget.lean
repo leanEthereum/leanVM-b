@@ -28,8 +28,8 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
     Pr[fun result => ∃ input output,
         result.2 input = some output ∧ cache input = none ∧ relevant input ∧
           truncateHash output = target input |
-      (simulateQ xmssRomImpl computation).run cache] ≤
-      expectedSimulatedQueryCount xmssRomImpl (IsRelevantHashQuery relevant)
+      (simulateQ romImpl computation).run cache] ≤
+      expectedSimulatedQueryCount romImpl (IsRelevantHashQuery relevant)
         computation cache / ((2 ^ digestBits : Nat) : ENNReal) := by
   classical
   let digestCard : ENNReal := ((2 ^ digestBits : Nat) : ENNReal)
@@ -47,24 +47,24 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
       rcases query with uniformIndex | hashInput
       · change Fin (uniformIndex + 1) → OracleComp OracleWorld α at next
         have hrun :
-            (simulateQ xmssRomImpl
+            (simulateQ romImpl
               (liftM (OracleWorld.query (.inl uniformIndex)) >>= next)).run cache =
             ((unifSpec.query uniformIndex : ProbComp _) >>= fun sampled =>
-              (simulateQ xmssRomImpl (next sampled)).run cache) := by
-          simp [StateT.run_bind, xmssRomImpl, unifFwdImpl,
+              (simulateQ romImpl (next sampled)).run cache) := by
+          simp [StateT.run_bind, romImpl, unifFwdImpl,
             QueryImpl.liftTarget_apply, HasQuery.toQueryImpl_apply]
         have hcount :
-            expectedSimulatedQueryCount xmssRomImpl (IsRelevantHashQuery relevant)
+            expectedSimulatedQueryCount romImpl (IsRelevantHashQuery relevant)
                 (liftM (OracleWorld.query (.inl uniformIndex)) >>= next) cache =
               ∑' sampled, Pr[= sampled | (unifSpec.query uniformIndex : ProbComp _)] *
-                expectedSimulatedQueryCount xmssRomImpl (IsRelevantHashQuery relevant)
+                expectedSimulatedQueryCount romImpl (IsRelevantHashQuery relevant)
                   (next sampled) cache := by
           rw [expectedSimulatedQueryCount_query_bind]
           simp only [IsRelevantHashQuery, ↓reduceIte, zero_add]
           change (∑' result, Pr[= result |
               (fun sampled => (sampled, cache)) <$>
                 (unifSpec.query uniformIndex : ProbComp _)] *
-                expectedSimulatedQueryCount xmssRomImpl (IsRelevantHashQuery relevant)
+                expectedSimulatedQueryCount romImpl (IsRelevantHashQuery relevant)
                   (next result.1) result.2) = _
           rw [tsum_probOutput_map_mul]
         rw [hrun, probEvent_bind_eq_tsum, hcount, div_eq_mul_inv,
@@ -78,27 +78,27 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
         by_cases hcached : ∃ output, cache hashInput = some output
         · obtain ⟨output, houtput⟩ := hcached
           have hquery :
-              (simulateQ xmssRomImpl
+              (simulateQ romImpl
                 (liftM (OracleWorld.query (.inr hashInput)))).run cache =
               pure ((show OracleWorld.Range (.inr hashInput) from output), cache) := by
             rw [simulateQ_spec_query]
             change (randomOracle (spec := HashSpec) hashInput).run cache = pure (output, cache)
             rw [QueryImpl.withCaching_run_some _ houtput]
           have hrun :
-              (simulateQ xmssRomImpl
+              (simulateQ romImpl
                 (liftM (OracleWorld.query (.inr hashInput)) >>= next)).run cache =
-              (simulateQ xmssRomImpl (next output)).run cache := by
+              (simulateQ romImpl (next output)).run cache := by
             rw [simulateQ_bind, StateT.run_bind, hquery, pure_bind]
           have hcount :
-              expectedSimulatedQueryCount xmssRomImpl (IsRelevantHashQuery relevant)
+              expectedSimulatedQueryCount romImpl (IsRelevantHashQuery relevant)
                   (liftM (OracleWorld.query (.inr hashInput)) >>= next) cache =
                 (if relevant hashInput then 1 else 0) +
-                  expectedSimulatedQueryCount xmssRomImpl
+                  expectedSimulatedQueryCount romImpl
                     (IsRelevantHashQuery relevant) (next output) cache := by
             rw [expectedSimulatedQueryCount_query_bind]
             simp only [IsRelevantHashQuery]
             have hhandler :
-                (xmssRomImpl (.inr hashInput)).run cache =
+                (romImpl (.inr hashInput)).run cache =
                   pure ((show OracleWorld.Range (.inr hashInput) from output), cache) := by
               change (randomOracle (spec := HashSpec) hashInput).run cache = _
               rw [QueryImpl.withCaching_run_some _ houtput]
@@ -113,7 +113,7 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
         · push Not at hcached
           have hnone : cache hashInput = none := Option.eq_none_iff_forall_ne_some.mpr hcached
           have hquery :
-              (simulateQ xmssRomImpl
+              (simulateQ romImpl
                 (liftM (OracleWorld.query (.inr hashInput)))).run cache =
               (($ᵗ HashOutput) >>= fun output =>
                 pure (output, cache.cacheQuery hashInput output) : ProbComp _) := by
@@ -122,24 +122,24 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
             rw [QueryImpl.withCaching_run_none _ hnone]
             simp [uniformSampleImpl, map_eq_bind_pure_comp]
           have hrun :
-              (simulateQ xmssRomImpl
+              (simulateQ romImpl
                 (liftM (OracleWorld.query (.inr hashInput)) >>= next)).run cache =
               (($ᵗ HashOutput) >>= fun output =>
-                (simulateQ xmssRomImpl (next output)).run
+                (simulateQ romImpl (next output)).run
                   (cache.cacheQuery hashInput output)) := by
             rw [simulateQ_bind, StateT.run_bind, hquery]
             simp [monad_norm]
           have hcount :
-              expectedSimulatedQueryCount xmssRomImpl (IsRelevantHashQuery relevant)
+              expectedSimulatedQueryCount romImpl (IsRelevantHashQuery relevant)
                   (liftM (OracleWorld.query (.inr hashInput)) >>= next) cache =
                 (if relevant hashInput then 1 else 0) +
                   ∑' output, Pr[= output | $ᵗ HashOutput] *
-                    expectedSimulatedQueryCount xmssRomImpl
+                    expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output) := by
             rw [expectedSimulatedQueryCount_query_bind]
             simp only [IsRelevantHashQuery]
-            have hhandler : (xmssRomImpl (.inr hashInput)).run cache =
+            have hhandler : (romImpl (.inr hashInput)).run cache =
                 (fun output : HashOutput =>
                   ((show OracleWorld.Range (.inr hashInput) from output),
                     cache.cacheQuery hashInput output)) <$>
@@ -156,9 +156,9 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                 Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧ cache input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                  (simulateQ xmssRomImpl (next output)).run
+                  (simulateQ romImpl (next output)).run
                     (cache.cacheQuery hashInput output)] ≤
-                  expectedSimulatedQueryCount xmssRomImpl
+                  expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output) / digestCard := by
               intro output hmiss
@@ -166,13 +166,13 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                 Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧ cache input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                    (simulateQ xmssRomImpl (next output)).run
+                    (simulateQ romImpl (next output)).run
                       (cache.cacheQuery hashInput output)] ≤
                   Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧
                         (cache.cacheQuery hashInput output) input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                    (simulateQ xmssRomImpl (next output)).run
+                    (simulateQ romImpl (next output)).run
                       (cache.cacheQuery hashInput output)] := by
                     apply probEvent_mono
                     intro result hresult
@@ -196,12 +196,12 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                   Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧ cache input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                    (simulateQ xmssRomImpl (next output)).run
+                    (simulateQ romImpl (next output)).run
                       (cache.cacheQuery hashInput output)] ≤
                 ∑' output, ((if truncateHash output = target hashInput then
                     Pr[= output | ($ᵗ HashOutput)] else 0) +
                   Pr[= output | ($ᵗ HashOutput)] *
-                    (expectedSimulatedQueryCount xmssRomImpl
+                    (expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output) / digestCard)) := by
                   apply ENNReal.tsum_le_tsum
@@ -220,7 +220,7 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                     if truncateHash output = target hashInput then
                       Pr[= output | ($ᵗ HashOutput)] else 0) +
                   (∑' output, Pr[= output | ($ᵗ HashOutput)] *
-                    expectedSimulatedQueryCount xmssRomImpl
+                    expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output)) / digestCard := by
                 rw [ENNReal.tsum_add]
@@ -231,18 +231,18 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                 rw [div_eq_mul_inv, mul_assoc]
               _ ≤ digestCard⁻¹ +
                   (∑' output, Pr[= output | ($ᵗ HashOutput)] *
-                    expectedSimulatedQueryCount xmssRomImpl
+                    expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output)) / digestCard := by
                 gcongr
                 rw [← probEvent_eq_tsum_ite]
                 exact (uniform_truncate_probability (target hashInput)).le
               _ = (1 + ∑' output, Pr[= output | ($ᵗ HashOutput)] *
-                    expectedSimulatedQueryCount xmssRomImpl
+                    expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output)) / digestCard := by
                 simp [div_eq_mul_inv, add_mul]
-              _ = expectedSimulatedQueryCount xmssRomImpl
+              _ = expectedSimulatedQueryCount romImpl
                     (IsRelevantHashQuery relevant)
                     (liftM (OracleWorld.query (.inr hashInput)) >>= next) cache /
                   ((2 ^ digestBits : Nat) : ENNReal) := by
@@ -251,9 +251,9 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                 Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧ cache input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                  (simulateQ xmssRomImpl (next output)).run
+                  (simulateQ romImpl (next output)).run
                     (cache.cacheQuery hashInput output)] ≤
-                  expectedSimulatedQueryCount xmssRomImpl
+                  expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output) / digestCard := by
               intro output
@@ -261,13 +261,13 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                 Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧ cache input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                    (simulateQ xmssRomImpl (next output)).run
+                    (simulateQ romImpl (next output)).run
                       (cache.cacheQuery hashInput output)] ≤
                   Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧
                         (cache.cacheQuery hashInput output) input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                    (simulateQ xmssRomImpl (next output)).run
+                    (simulateQ romImpl (next output)).run
                       (cache.cacheQuery hashInput output)] := by
                     apply probEvent_mono
                     intro result _hresult
@@ -286,24 +286,24 @@ theorem mixed_adaptive_truncated_output_fresh_relevant_hit_from_cache_le_expecte
                   Pr[fun result => ∃ input candidateOutput,
                       result.2 input = some candidateOutput ∧ cache input = none ∧
                         relevant input ∧ truncateHash candidateOutput = target input |
-                    (simulateQ xmssRomImpl (next output)).run
+                    (simulateQ romImpl (next output)).run
                       (cache.cacheQuery hashInput output)] ≤
                 ∑' output, Pr[= output | ($ᵗ HashOutput)] *
-                  (expectedSimulatedQueryCount xmssRomImpl
+                  (expectedSimulatedQueryCount romImpl
                     (IsRelevantHashQuery relevant) (next output)
                       (cache.cacheQuery hashInput output) / digestCard) := by
                     apply ENNReal.tsum_le_tsum
                     intro output
                     exact mul_le_mul' le_rfl (hcontinue output)
               _ = (∑' output, Pr[= output | ($ᵗ HashOutput)] *
-                    expectedSimulatedQueryCount xmssRomImpl
+                    expectedSimulatedQueryCount romImpl
                       (IsRelevantHashQuery relevant) (next output)
                         (cache.cacheQuery hashInput output)) / digestCard := by
                 rw [div_eq_mul_inv, ← ENNReal.tsum_mul_right]
                 apply tsum_congr
                 intro output
                 rw [div_eq_mul_inv, mul_assoc]
-              _ = expectedSimulatedQueryCount xmssRomImpl
+              _ = expectedSimulatedQueryCount romImpl
                     (IsRelevantHashQuery relevant)
                     (liftM (OracleWorld.query (.inr hashInput)) >>= next) cache /
                   ((2 ^ digestBits : Nat) : ENNReal) := by
@@ -315,13 +315,13 @@ theorem mixed_adaptiveFreshDigestCollisionWith_le_expected_moved
     {α : Type} (computation : OracleComp OracleWorld α)
     (cache : QueryCache HashSpec) (targetInput : HashInput → HashInput)
     (win : α × QueryCache HashSpec → Prop)
-    (hwin : ∀ result ∈ support ((simulateQ xmssRomImpl computation).run cache),
+    (hwin : ∀ result ∈ support ((simulateQ romImpl computation).run cache),
       win result → AdaptiveFreshDigestCollisionWith cache result.2 targetInput) :
-    Pr[win | (simulateQ xmssRomImpl computation).run cache] ≤
-      expectedSimulatedQueryCount xmssRomImpl
+    Pr[win | (simulateQ romImpl computation).run cache] ≤
+      expectedSimulatedQueryCount romImpl
           (IsRelevantHashQuery fun input => targetInput input ≠ input)
         computation cache / ((2 ^ digestBits : Nat) : ENNReal) := by
-  let experiment := (simulateQ xmssRomImpl computation).run cache
+  let experiment := (simulateQ romImpl computation).run cache
   let target : HashInput → Digest := fun input =>
     Concrete.CacheView.digestAt cache (targetInput input)
   calc
@@ -363,15 +363,15 @@ theorem mixed_adaptiveFreshDigestCollision_after_prefix_le_expectedMovedContinua
     (initialCache : QueryCache HashSpec)
     (targetInput : β → QueryCache HashSpec → HashInput → HashInput)
     (win : α × QueryCache HashSpec → Prop)
-    (hwin : ∀ prefixResult ∈ support ((simulateQ xmssRomImpl head).run initialCache),
+    (hwin : ∀ prefixResult ∈ support ((simulateQ romImpl head).run initialCache),
       ∀ result ∈ support
-        ((simulateQ xmssRomImpl (continuation prefixResult.1)).run prefixResult.2),
+        ((simulateQ romImpl (continuation prefixResult.1)).run prefixResult.2),
         win result → AdaptiveFreshDigestCollisionWith prefixResult.2 result.2
           (targetInput prefixResult.1 prefixResult.2)) :
-    Pr[win | (simulateQ xmssRomImpl (head >>= continuation)).run initialCache] ≤
+    Pr[win | (simulateQ romImpl (head >>= continuation)).run initialCache] ≤
       (∑' prefixResult,
-        Pr[= prefixResult | (simulateQ xmssRomImpl head).run initialCache] *
-          expectedSimulatedQueryCount xmssRomImpl
+        Pr[= prefixResult | (simulateQ romImpl head).run initialCache] *
+          expectedSimulatedQueryCount romImpl
             (IsRelevantHashQuery fun input =>
               targetInput prefixResult.1 prefixResult.2 input ≠ input)
             (continuation prefixResult.1) prefixResult.2) /
@@ -379,12 +379,12 @@ theorem mixed_adaptiveFreshDigestCollision_after_prefix_le_expectedMovedContinua
   rw [simulateQ_bind, StateT.run_bind, probEvent_bind_eq_tsum]
   calc
     ∑' prefixResult,
-        Pr[= prefixResult | (simulateQ xmssRomImpl head).run initialCache] *
-          Pr[win | (simulateQ xmssRomImpl
+        Pr[= prefixResult | (simulateQ romImpl head).run initialCache] *
+          Pr[win | (simulateQ romImpl
             (continuation prefixResult.1)).run prefixResult.2] ≤
       ∑' prefixResult,
-        Pr[= prefixResult | (simulateQ xmssRomImpl head).run initialCache] *
-          (expectedSimulatedQueryCount xmssRomImpl
+        Pr[= prefixResult | (simulateQ romImpl head).run initialCache] *
+          (expectedSimulatedQueryCount romImpl
             (IsRelevantHashQuery fun input =>
               targetInput prefixResult.1 prefixResult.2 input ≠ input)
             (continuation prefixResult.1) prefixResult.2 /
@@ -392,7 +392,7 @@ theorem mixed_adaptiveFreshDigestCollision_after_prefix_le_expectedMovedContinua
       apply ENNReal.tsum_le_tsum
       intro prefixResult
       by_cases hprefix : prefixResult ∈
-          support ((simulateQ xmssRomImpl head).run initialCache)
+          support ((simulateQ romImpl head).run initialCache)
       · gcongr
         exact mixed_adaptiveFreshDigestCollisionWith_le_expected_moved
           (continuation prefixResult.1) prefixResult.2

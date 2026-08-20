@@ -27,7 +27,7 @@ theorem replaceSignatureChainValue_other
 theorem Concrete.CacheReplay.signWithEncoding_chainValue_eq_keygenChainValueTable
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) (randomness : Randomness) (encoding : Encoding)
     (chain : ChainIndex) :

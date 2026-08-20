@@ -32,9 +32,9 @@ noncomputable def cappedUnloggedMappedAdversaryImpl
       (StateT (QueryCache HashSpec) ProbComp) := by
   intro input
   cases input with
-  | inl worldInput => exact xmssRomImpl worldInput
+  | inl worldInput => exact romImpl worldInput
   | inr request =>
-      exact simulateQ xmssRomImpl
+      exact simulateQ romImpl
         (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
 
 noncomputable def cappedCacheTracedMappedAdversaryImpl
@@ -268,7 +268,7 @@ theorem cappedSelectivelyLoggedMappedAdversaryImpl_apply_inr
     (publicKey : PublicKey) (secretKey : SecretKey) (request : SignRequest) :
     cappedSelectivelyLoggedMappedAdversaryImpl publicKey secretKey (.inr request) =
       QueryImpl.withLogging
-        (fun request => simulateQ xmssRomImpl
+        (fun request => simulateQ romImpl
           (Concrete.scheme.sign publicKey secretKey
             request.epoch request.message)) request := by
   rfl
@@ -277,10 +277,10 @@ theorem cappedMappedAdversaryImpl_apply_inr
     (publicKey : PublicKey) (secretKey : SecretKey) (request : SignRequest) :
     cappedMappedAdversaryImpl publicKey secretKey (.inr request) =
       QueryImpl.withLogging
-        (fun request => simulateQ xmssRomImpl
+        (fun request => simulateQ romImpl
           (Concrete.scheme.sign publicKey secretKey
             request.epoch request.message)) request := by
-  change WriterT.mk (simulateQ xmssRomImpl
+  change WriterT.mk (simulateQ romImpl
       ((QueryImpl.withLogging (spec := SigningSpec)
         (fun request => Concrete.scheme.sign publicKey secretKey
           request.epoch request.message) request).run)) = _
@@ -297,11 +297,11 @@ theorem cappedSelectivelyLoggedMappedAdversaryImpl_eq_mapped
   cases input with
   | inl worldInput =>
       change (do
-          let output ← liftM (xmssRomImpl worldInput)
+          let output ← liftM (romImpl worldInput)
           tell ([] : QueryLog SigningSpec)
           pure output) =
         WriterT.mk ((fun output => (output, ([] : QueryLog SigningSpec))) <$>
-          xmssRomImpl worldInput)
+          romImpl worldInput)
       apply WriterT.ext
       simp
   | inr request =>
@@ -412,7 +412,7 @@ noncomputable def cappedDetailedGameAfterKeygenWithSigningTrace
     (simulateQ (cappedCacheTracedMappedAdversaryImpl publicKey secretKey)
       (adversary.main publicKey)).run (initialCache, [])
   let (verified, finalCache) ←
-    (simulateQ xmssRomImpl
+    (simulateQ romImpl
       (Concrete.scheme.verify publicKey forgery.epoch forgery.message
         forgery.signature)).run adversaryCache
   pure (⟨publicKey, secretKey, forgery, trace.toSigningLog, verified⟩,
@@ -425,13 +425,13 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection
     Prod.map id Prod.fst <$>
         cappedDetailedGameAfterKeygenWithSigningTrace adversary publicKey secretKey
           initialCache =
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey)).run
           initialCache := by
   let finish : Forgery × (QueryCache HashSpec × QueryLog SigningSpec) →
       ProbComp (GameOutcome × QueryCache HashSpec) := fun result => do
     let (verified, finalCache) ←
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (Concrete.scheme.verify publicKey result.1.epoch result.1.message
           result.1.signature)).run result.2.1
     pure (⟨publicKey, secretKey, result.1, result.2.2, verified⟩, finalCache)
@@ -445,7 +445,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection
 noncomputable def cappedDetailedGameWithSigningTrace
     (adversary : Adversary) :
     ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
+  let keyResult ← (simulateQ romImpl Concrete.scheme.keygen).run ∅
   cappedDetailedGameAfterKeygenWithSigningTrace adversary keyResult.1.1 keyResult.1.2
     keyResult.2
 

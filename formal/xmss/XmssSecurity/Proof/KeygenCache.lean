@@ -9,7 +9,7 @@ namespace XmssSecurity
 theorem Concrete.keygen_support_rootTree
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.keygen).run ∅)) :
     ∃ parameter secret root,
       keyResult.1 = (⟨root, parameter⟩,
         SecretKey.withoutPrecomputation parameter secret) ∧
@@ -37,13 +37,13 @@ theorem Concrete.keygen_support_rootTree
           (secret, secretCache) hsecret
       _ = ∅ := hparameterCache
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
             OracleComp HashSpec Digest)) =
         simulateQ (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
           (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
             OracleComp HashSpec Digest) := by
-    simp only [xmssRomImpl]
+    simp only [romImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
@@ -54,7 +54,7 @@ theorem Concrete.keygen_support_rootTree
 theorem Concrete.keygen_cache_unique_leafAddress
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (targetEpoch : Epoch) (left right : HashInput)
     (leftOutput rightOutput : HashOutput)
     (hleftP : AtHashAddress keyResult.1.2.parameter (.leaf targetEpoch) left)
@@ -72,7 +72,7 @@ theorem Concrete.keygen_cache_unique_leafAddress
 theorem Concrete.keygen_cache_unique_chainAddress
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (targetEpoch : Epoch) (targetChain : ChainIndex) (targetStep : ChainStep)
     (left right : HashInput) (leftOutput rightOutput : HashOutput)
     (hleftP : AtHashAddress keyResult.1.2.parameter
@@ -92,7 +92,7 @@ theorem Concrete.keygen_cache_unique_chainAddress
 theorem Concrete.keygen_cache_unique_merkleAddress
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (targetLevel : MerkleLevel) (targetNode : MerkleNode)
     (left right : HashInput) (leftOutput rightOutput : HashOutput)
     (hleftP : AtHashAddress keyResult.1.2.parameter
@@ -113,7 +113,7 @@ theorem Concrete.keygen_cache_unique_merkleAddress
 theorem Concrete.keygen_cache_none_encodingInput
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (targetEpoch : Epoch) (targetInput : Message × Randomness) :
     keyResult.2
       (Concrete.CacheView.encodingInput keyResult.1.2.parameter targetEpoch targetInput) =

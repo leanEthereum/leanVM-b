@@ -133,7 +133,7 @@ theorem sourceSigningTracedVerifierImpl_query_run_eq
     (sourceSigningTracedVerifierImpl input).run initialState =
       (fun result =>
         (result.1, ((result.2, initialState.1.2), initialState.2))) <$>
-        (xmssRomImpl input).run initialState.1.1 := by
+        (romImpl input).run initialState.1.1 := by
   unfold sourceSigningTracedVerifierImpl
   rw [StateT.run_mk, sourceDirectTracedVerifierImpl_query_run_eq]
   simp [Functor.map_map, sourceSigningTracedStateProjection]
@@ -144,13 +144,13 @@ theorem sourceSigningTracedVerifierImpl_run_eq
     (simulateQ sourceSigningTracedVerifierImpl computation).run initialState =
       (fun result =>
         (result.1, ((result.2, initialState.1.2), initialState.2))) <$>
-        (simulateQ xmssRomImpl computation).run initialState.1.1 := by
+        (simulateQ romImpl computation).run initialState.1.1 := by
   let lens : StateLens SourceSigningTracedState (QueryCache HashSpec) :=
     ⟨fun state => state.1.1,
       fun state nextCache => ((nextCache, state.1.2), state.2),
       by intro state; rcases state with ⟨⟨cache, signingTrace⟩, actionTrace⟩; rfl,
       by simp, by simp⟩
-  exact lens.simulateQ_run_eq sourceSigningTracedVerifierImpl xmssRomImpl
+  exact lens.simulateQ_run_eq sourceSigningTracedVerifierImpl romImpl
     sourceSigningTracedVerifierImpl_query_run_eq computation initialState
 
 theorem relTriple_programmed_globalHighMonitored_signingVerifierQuery
@@ -220,7 +220,7 @@ theorem evalDist_materializedTrajectoryGlobalChainKeygen_eq_cappedKeygen :
         ((fun view : ProgrammedGlobalChainKeygenView =>
           Concrete.materializeCachedKeyResult view.keyResult) <$>
             trajectoryProgrammedGlobalChainKeygen) =
-      evalDist ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
+      evalDist ((simulateQ romImpl Concrete.scheme.keygen).run ∅) := by
   calc
     _ = evalDist
         ((fun view : ProgrammedGlobalChainKeygenView =>
@@ -230,12 +230,12 @@ theorem evalDist_materializedTrajectoryGlobalChainKeygen_eq_cappedKeygen :
       exact evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed.symm
     _ = evalDist
         (Concrete.materializeCachedKeyResult <$>
-          (simulateQ xmssRomImpl Concrete.keygen).run ∅) := by
+          (simulateQ romImpl Concrete.keygen).run ∅) := by
       unfold actualGlobalChainKeygen
       simp [ProgrammedGlobalChainKeygenView.keyResult,
         map_eq_bind_pure_comp]
     _ = evalDist
-        ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) :=
+        ((simulateQ romImpl Concrete.precomputedKeygen).run ∅) :=
       Concrete.evalDist_materialized_keygen_eq_precomputedKeygen
     _ = _ := by rfl
 

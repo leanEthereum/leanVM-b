@@ -9,7 +9,7 @@ namespace XmssSecurity.CappedChain
 theorem Concrete.keygen_signWithEncoding_eq_base
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (hstable : TreeCacheStable keyResult.1.2.parameter
       keyResult.1.2.chainStart keyResult.2)
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
@@ -149,7 +149,7 @@ theorem relTriple_programmed_globalFilteredCausalSigningAttempt
       rightState)
     (request : SignRequest) :
     RelTriple
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (Concrete.sign left.publicKey left.secretKey
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
@@ -283,7 +283,7 @@ theorem relTriple_programmed_globalFilteredCausalSignBoundedAttempts
       rightState)
     (request : SignRequest) :
     RelTriple
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (Concrete.signBoundedAttempts attempts left.secretKey
           request.epoch request.message)).run leftCache)
       ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
@@ -339,7 +339,7 @@ theorem relTriple_programmed_globalFilteredCausalSigningQuery
       rightState)
     (request : SignRequest) :
     RelTriple
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (Concrete.scheme.sign left.publicKey
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)

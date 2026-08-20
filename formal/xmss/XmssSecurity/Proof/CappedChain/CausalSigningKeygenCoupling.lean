@@ -39,7 +39,7 @@ theorem simulate_sequenceFin_run_eq_pure
 theorem Concrete.keygen_signedChainValues_run_eq_pure
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) (encoding : Encoding) :
     (simulateQ randomOracle
@@ -108,7 +108,7 @@ theorem TreeCacheStable.authenticationPath_run_eq_pure
 theorem Concrete.keygen_signWithEncoding_run_eq_pure
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (hstable : TreeCacheStable keyResult.1.2.parameter
       keyResult.1.2.chainStart keyResult.2)
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
@@ -131,7 +131,7 @@ theorem Concrete.keygen_signWithEncoding_run_eq_pure
 theorem Concrete.precomputedSignAttempt_materialized_run_eq_signAttempt
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (hstable : TreeCacheStable keyResult.1.2.parameter
       keyResult.1.2.chainStart keyResult.2)
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
@@ -186,16 +186,16 @@ theorem Concrete.evalDist_precomputedSignBoundedAttempts_materialized_eq
     (attempts : Nat)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (hstable : TreeCacheStable keyResult.1.2.parameter
       keyResult.1.2.chainStart keyResult.2)
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) (message : Message) :
-    evalDist ((simulateQ xmssRomImpl
+    evalDist ((simulateQ romImpl
       (Concrete.precomputedSignBoundedAttempts attempts
         (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
           epoch message)).run largerCache) =
-      evalDist ((simulateQ xmssRomImpl
+      evalDist ((simulateQ romImpl
         (Concrete.signBoundedAttempts attempts keyResult.1.2 epoch message)).run
           largerCache) := by
   induction attempts generalizing largerCache with
@@ -247,16 +247,16 @@ theorem Concrete.evalDist_precomputedSignBoundedAttempts_materialized_eq
 theorem Concrete.evalDist_precomputedCappedSign_materialized_eq_cappedSign
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (hstable : TreeCacheStable keyResult.1.2.parameter
       keyResult.1.2.chainStart keyResult.2)
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) (message : Message) :
-    evalDist ((simulateQ xmssRomImpl
+    evalDist ((simulateQ romImpl
       (Concrete.precomputedCappedSign keyResult.1.1
         (Concrete.materializePrecomputation keyResult.2 keyResult.1.2)
           epoch message)).run largerCache) =
-      evalDist ((simulateQ xmssRomImpl
+      evalDist ((simulateQ romImpl
         (Concrete.cappedSign keyResult.1.1 keyResult.1.2 epoch message)).run
           largerCache) := by
   rw [Concrete.precomputedCappedSign, Concrete.cappedSign_eq]

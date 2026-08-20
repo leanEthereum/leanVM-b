@@ -91,12 +91,12 @@ theorem cappedSourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅)) :
     (cappedSourceUnloggedDetailedGameAfterKeygen adversary keyResult.1.1
       keyResult.1.2).IsQueryBoundP IsHashQuery
         (q - treeHashQueryCount treeHeight) := by
   have hkeySupport : keyResult.1 ∈ support Concrete.scheme.keygen := by
-    apply support_simulateQ_run'_subset xmssRomImpl Concrete.scheme.keygen ∅
+    apply support_simulateQ_run'_subset romImpl Concrete.scheme.keygen ∅
     rw [StateT.run'_eq, support_map]
     exact ⟨keyResult, hkeyResult, rfl⟩
   have hkeyPrecomputed : keyResult.1 ∈ support Concrete.precomputedKeygen := by
@@ -114,8 +114,8 @@ theorem cappedSourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen
 noncomputable def expectedPostKeygenStructuralQueries
     (adversary : Adversary) : ENNReal :=
   ∑' keyResult,
-    Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
-      expectedSimulatedQueryCount xmssRomImpl
+    Pr[= keyResult | (simulateQ romImpl Concrete.scheme.keygen).run ∅] *
+      expectedSimulatedQueryCount romImpl
         (Rom.IsRelevantHashQuery fun input =>
           keygenStructuralTargetInput keyResult.1.2 keyResult.2 input ≠ input)
         (cappedSourceUnloggedDetailedGameAfterKeygen adversary
@@ -124,18 +124,18 @@ noncomputable def expectedPostKeygenStructuralQueries
 theorem expectedStructuralQueries_detailed_eq_source
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
-    expectedSimulatedQueryCount xmssRomImpl
+    expectedSimulatedQueryCount romImpl
         (Rom.IsRelevantHashQuery fun input =>
           keygenStructuralTargetInput keyResult.1.2 keyResult.2 input ≠ input)
         (detailedGameAfterKeygen Concrete.scheme adversary
           keyResult.1.1 keyResult.1.2) keyResult.2 =
-      expectedSimulatedQueryCount xmssRomImpl
+      expectedSimulatedQueryCount romImpl
         (Rom.IsRelevantHashQuery fun input =>
           keygenStructuralTargetInput keyResult.1.2 keyResult.2 input ≠ input)
         (cappedSourceUnloggedDetailedGameAfterKeygen adversary
           keyResult.1.1 keyResult.1.2) keyResult.2 := by
   have hprojection := congrArg
-    (fun computation => expectedSimulatedQueryCount xmssRomImpl
+    (fun computation => expectedSimulatedQueryCount romImpl
       (Rom.IsRelevantHashQuery fun input =>
         keygenStructuralTargetInput keyResult.1.2 keyResult.2 input ≠ input)
       computation keyResult.2)
@@ -173,12 +173,12 @@ theorem postKeygenEncoding_add_structural_expected_le
   calc
     _ ≤ ∑' keyResult,
         Pr[= keyResult |
-          (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
+          (simulateQ romImpl Concrete.scheme.keygen).run ∅] *
           (q - treeHashQueryCount treeHeight : Nat) := by
       apply ENNReal.tsum_le_tsum
       intro keyResult
       by_cases hkeyResult : keyResult ∈ support
-          ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)
+          ((simulateQ romImpl Concrete.scheme.keygen).run ∅)
       · apply mul_le_mul_right
         let encodingPredicate :=
           CappedEncodingMonitor.IsEncodingHashQuery keyResult.1.2.parameter
@@ -187,18 +187,18 @@ theorem postKeygenEncoding_add_structural_expected_le
         let source := cappedSourceUnloggedDetailedGameAfterKeygen adversary
           keyResult.1.1 keyResult.1.2
         calc
-          expectedSimulatedQueryCount xmssRomImpl encodingPredicate source keyResult.2 +
-              expectedSimulatedQueryCount xmssRomImpl structuralPredicate source
+          expectedSimulatedQueryCount romImpl encodingPredicate source keyResult.2 +
+              expectedSimulatedQueryCount romImpl structuralPredicate source
                 keyResult.2 =
-            expectedSimulatedQueryCount xmssRomImpl
+            expectedSimulatedQueryCount romImpl
               (fun input => encodingPredicate input ∨ structuralPredicate input)
               source keyResult.2 := by
                 symm
-                exact expectedSimulatedQueryCount_or_of_disjoint xmssRomImpl
+                exact expectedSimulatedQueryCount_or_of_disjoint romImpl
                   encodingPredicate structuralPredicate
                   (encodingHashQuery_structuralQuery_disjoint
                     keyResult.1.2 keyResult.2) source keyResult.2
-          _ ≤ expectedSimulatedQueryCount xmssRomImpl IsHashQuery source
+          _ ≤ expectedSimulatedQueryCount romImpl IsHashQuery source
               keyResult.2 := by
             apply expectedSimulatedQueryCount_mono
             intro input hinput
@@ -217,7 +217,7 @@ theorem postKeygenEncoding_add_structural_expected_le
         exact zero_le
     _ = (∑' keyResult,
           Pr[= keyResult |
-            (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅]) *
+            (simulateQ romImpl Concrete.scheme.keygen).run ∅]) *
         (q - treeHashQueryCount treeHeight : Nat) := by
       rw [ENNReal.tsum_mul_right]
     _ ≤ 1 * (q - treeHashQueryCount treeHeight : Nat) := by

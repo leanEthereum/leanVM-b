@@ -232,7 +232,7 @@ theorem precomputedAuthenticationPath_eq (parameter : PublicParameter)
       authenticationPath cache (Concrete.precomputedSecretKey parameter secret cache)
         epoch := by
   funext level
-  exact precomputedSecretKey_treeValue parameter secret cache ⟨level.val, by omega⟩
+  exact precomputedSecretKey_treeValue parameter secret cache level.castSucc
     (Concrete.authenticationPathNode epoch level)
 
 @[simp]

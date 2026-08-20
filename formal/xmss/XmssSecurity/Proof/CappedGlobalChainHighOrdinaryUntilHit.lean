@@ -12,7 +12,7 @@ set_option maxHeartbeats 2000000
 theorem Concrete.keygen_cache_none_at_global_chainAddress_of_probe_none
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (input : HashInput) (epoch : Epoch) (chain : ChainIndex)
     (step : ChainStep)
     (haddress : AtHashAddress keyResult.1.2.parameter
@@ -39,7 +39,7 @@ theorem Concrete.keygen_cache_none_at_global_chainAddress_of_probe_none
 theorem Concrete.keygen_cache_none_at_global_leafAddress_of_probe_none
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (input : HashInput) (epoch : Epoch)
     (haddress : AtHashAddress keyResult.1.2.parameter (.leaf epoch) input)
     (hprobe : globalLeafInputData? keyResult.1.2.parameter input = none) :
@@ -62,7 +62,7 @@ theorem Concrete.keygen_cache_none_at_global_leafAddress_of_probe_none
 theorem Concrete.keygen_cache_none_of_global_probes_none_not_merkle
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (input : HashInput)
     (hchain : globalChainInputProbe? keyResult.1.2.parameter input = none)
     (hleaf : globalLeafInputData? keyResult.1.2.parameter input = none)

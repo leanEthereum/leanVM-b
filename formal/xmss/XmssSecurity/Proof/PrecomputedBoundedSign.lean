@@ -8,7 +8,7 @@ theorem Concrete.precomputedSignBoundedAttempts_success_origin
     (attempts : Nat) (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (initialCache finalCache : QueryCache HashSpec) (signature : Signature)
     (hmem : (some signature, finalCache) ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (Concrete.precomputedSignBoundedAttempts attempts secretKey epoch message)).run
           initialCache)) :
     ∃ randomness attemptCache resultCache,
@@ -31,7 +31,7 @@ theorem Concrete.precomputedSignBoundedAttempts_success_origin
       rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hrest
       obtain ⟨⟨result, resultCache⟩, hattempt, hcontinue⟩ := hrest
       have hroute :
-          simulateQ xmssRomImpl
+          simulateQ romImpl
               (liftM (Concrete.precomputedSignAttempt secretKey epoch message randomness :
                 OracleComp HashSpec (Option Signature))) =
             simulateQ randomOracle
@@ -64,7 +64,7 @@ theorem Concrete.precomputedSignBoundedAttempts_success_replay
     (hconsistent : PrecomputedKeyConsistent keygenCache secretKey)
     (hkeygenLe : keygenCache ≤ largerCache)
     (hmem : (some signature, resultCache) ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (Concrete.precomputedSignBoundedAttempts attempts secretKey request.epoch
           request.message)).run initialCache))
     (hle : resultCache ≤ largerCache) :
@@ -103,7 +103,7 @@ theorem Concrete.precomputedCappedSign_success_replay
     (hconsistent : PrecomputedKeyConsistent keygenCache secretKey)
     (hkeygenLe : keygenCache ≤ largerCache)
     (hmem : (some signature, resultCache) ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (Concrete.precomputedCappedSign publicKey secretKey request.epoch
           request.message)).run initialCache))
     (hle : resultCache ≤ largerCache) :

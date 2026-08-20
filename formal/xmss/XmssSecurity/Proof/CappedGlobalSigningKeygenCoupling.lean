@@ -78,7 +78,7 @@ theorem actualGlobalChainKeygen_support_keyResult
     (view : ProgrammedGlobalChainKeygenView)
     (hview : view ∈ support actualGlobalChainKeygen) :
     view.keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅) := by
+      ((simulateQ romImpl Concrete.keygen).run ∅) := by
   unfold actualGlobalChainKeygen at hview
   rw [mem_support_bind_iff] at hview
   obtain ⟨keyResult, hkeyResult, hpure⟩ := hview
@@ -90,7 +90,7 @@ theorem trajectoryProgrammedGlobalChainKeygen_support_keyResult
     (view : ProgrammedGlobalChainKeygenView)
     (hview : view ∈ support trajectoryProgrammedGlobalChainKeygen) :
     view.keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅) := by
+      ((simulateQ romImpl Concrete.keygen).run ∅) := by
   apply actualGlobalChainKeygen_support_keyResult view
   exact (mem_support_iff_of_evalDist_eq
     evalDist_actualGlobalChainKeygen_eq_trajectoryProgrammed view).mpr hview
@@ -98,7 +98,7 @@ theorem trajectoryProgrammedGlobalChainKeygen_support_keyResult
 theorem keygen_support_treeCacheStable
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.keygen).run ∅)) :
     TreeCacheStable keyResult.1.2.parameter keyResult.1.2.chainStart
       keyResult.2 := by
   let chain : ChainIndex := ⟨0, by norm_num [numChains]⟩
@@ -134,7 +134,7 @@ def ProgrammedGlobalChainKeygenStableRelation
 theorem keygen_parameter_eq
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.keygen).run ∅)) :
     keyResult.1.1.parameter = keyResult.1.2.parameter := by
   obtain ⟨parameter, secret, root, hkey, _hroot⟩ :=
     Concrete.keygen_support_rootTree keyResult hkeyResult

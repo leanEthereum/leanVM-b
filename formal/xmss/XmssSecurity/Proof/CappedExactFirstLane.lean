@@ -89,9 +89,7 @@ def HasExactFirstLaneBounds : Prop :=
 theorem xmss_has_127_bits_of_classical_security_of_exactFirstLaneBounds
     (hfirst : HasExactFirstLaneBounds) :
     HasClassicalSecurityBits Concrete.scheme 127 := by
-  intro q _hq
-  unfold forgeAtMost
-  refine iSup_le fun adversary => iSup_le fun hbound => ?_
+  intro q _hq adversary hbound
   exact capped_xmss_forgeAdvantage_le_127_of_exactTwoLaneBounds
     q adversary hbound (hfirst q adversary hbound)
       (hasSecondLaneBound_of_hashQueryBound q adversary hbound)

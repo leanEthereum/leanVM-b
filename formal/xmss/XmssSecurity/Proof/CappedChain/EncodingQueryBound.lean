@@ -13,23 +13,23 @@ noncomputable def unloggedMappedAdversaryImpl
   intro input
   cases input with
   | inl worldInput =>
-      exact xmssRomImpl worldInput
+      exact romImpl worldInput
   | inr request =>
-      exact simulateQ xmssRomImpl
+      exact simulateQ romImpl
         (Concrete.scheme.sign publicKey secretKey request.epoch request.message)
 
 theorem unloggedMappedAdversaryImpl_apply_inl
     (publicKey : PublicKey) (secretKey : SecretKey)
     (worldInput : OracleWorld.Domain) :
     unloggedMappedAdversaryImpl publicKey secretKey (.inl worldInput) =
-      xmssRomImpl worldInput := by
+      romImpl worldInput := by
   rfl
 
 theorem unloggedMappedAdversaryImpl_apply_inr
     (publicKey : PublicKey) (secretKey : SecretKey)
     (request : SignRequest) :
     unloggedMappedAdversaryImpl publicKey secretKey (.inr request) =
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (Concrete.scheme.sign publicKey secretKey request.epoch request.message) :
           StateT (QueryCache HashSpec) ProbComp (Option Signature)) := by
   rfl
@@ -52,8 +52,8 @@ theorem sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
   cases input with
   | inl worldInput =>
       apply WriterT.ext
-      simp [sourceUnloggedMappedAdversaryImpl, signingLogFragment,
-        forwardOracles, HasQuery.toQueryImpl]
+      simp [sourceUnloggedMappedAdversaryImpl, signingLogFragment, forwardOracles]
+      rfl
   | inr request =>
       simp [sourceUnloggedMappedAdversaryImpl, signingLogFragment, signingOracle]
 
@@ -107,13 +107,13 @@ theorem sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅)) :
     (sourceUnloggedDetailedGameAfterKeygen adversary keyResult.1.1 keyResult.1.2)
       |>.IsQueryBoundP (· matches .inr _) q := by
   have hdetailed :=
     (hasHashQueryBound_iff_detailedGameCore Concrete.scheme adversary q).mp hbound
   have hkeySupport : keyResult.1 ∈ support Concrete.scheme.keygen := by
-    apply support_simulateQ_run'_subset xmssRomImpl Concrete.scheme.keygen ∅
+    apply support_simulateQ_run'_subset romImpl Concrete.scheme.keygen ∅
     rw [StateT.run'_eq, support_map]
     exact ⟨keyResult, hkeyResult, rfl⟩
   have hcontinuation :

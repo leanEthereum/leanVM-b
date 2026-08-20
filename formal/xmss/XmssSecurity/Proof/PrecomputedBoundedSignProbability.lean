@@ -17,7 +17,7 @@ noncomputable def Concrete.precomputedSignBoundedAttemptsContinuation
     ProbComp (Option Signature × QueryCache HashSpec) :=
   match result.1 with
   | some signature => pure (some signature, result.2)
-  | none => (simulateQ xmssRomImpl
+  | none => (simulateQ romImpl
       (Concrete.precomputedSignBoundedAttempts attempts secretKey epoch message)).run result.2
 
 attribute [irreducible] Concrete.precomputedSignBoundedAttemptsContinuation
@@ -25,7 +25,7 @@ attribute [irreducible] Concrete.precomputedSignBoundedAttemptsContinuation
 theorem Concrete.precomputedSignBoundedAttempts_run_succ_eq
     (attempts : Nat) (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (cache : QueryCache HashSpec) :
-    (simulateQ xmssRomImpl
+    (simulateQ romImpl
       (Concrete.precomputedSignBoundedAttempts (attempts + 1) secretKey epoch message)).run
         cache =
       (($ᵗ Randomness) >>= fun randomness =>
@@ -36,7 +36,7 @@ theorem Concrete.precomputedSignBoundedAttempts_run_succ_eq
             message) := by
   rw [Concrete.precomputedSignBoundedAttempts, simulateQ_bind, StateT.run_bind]
   have hsampleRun :
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (liftM Concrete.signingRandomness)).run cache =
         (fun randomness => (randomness, cache)) <$> Concrete.signingRandomness := by
     change (simulateQ (unifFwdImpl HashSpec +
@@ -53,7 +53,7 @@ theorem Concrete.precomputedSignBoundedAttempts_run_succ_eq
   intro randomness
   rw [simulateQ_bind, StateT.run_bind]
   have hroute :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (Concrete.precomputedSignAttempt secretKey epoch message randomness :
             OracleComp HashSpec (Option Signature))) =
         simulateQ randomOracle
@@ -80,7 +80,7 @@ theorem Concrete.precomputedSignBoundedAttempts_encodingInput_referenceCache_hit
       ∃ signature, result.1 = some signature ∧ ∃ output,
         referenceCache (Concrete.CacheView.encodingInput secretKey.parameter epoch
           (message, signature.randomness)) = some output |
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (Concrete.precomputedSignBoundedAttempts attempts secretKey epoch message)).run
           workingCache] ≤
       (attempts : ℝ≥0∞) *
@@ -150,7 +150,7 @@ theorem Concrete.precomputedCappedSign_encodingInput_initialCache_hit_le_cachedC
       ∃ signature, result.1 = some signature ∧ ∃ output,
         cache (Concrete.CacheView.encodingInput secretKey.parameter epoch
           (message, signature.randomness)) = some output |
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (Concrete.precomputedCappedSign publicKey secretKey epoch message)).run cache] ≤
       (signingAttemptLimit : ℝ≥0∞) *
         cachedEncodingEntryCount cache secretKey.parameter epoch *

@@ -45,7 +45,7 @@ theorem detailedGameAfterKeygen_keys_eq
     (adversary : Adversary) (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey)).run
           initialCache)) :
     execution.1.publicKey = publicKey ∧ execution.1.secretKey = secretKey := by
@@ -110,10 +110,10 @@ theorem leafCollision_afterKeygen_orientation
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (secretKey : SecretKey) (hsecret : secretKey = keyResult.1.2)
@@ -133,12 +133,12 @@ theorem leafCollision_afterKeygen_orientation
     (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)
     keyResult.2 execution hafter
   have hkeygen' : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.precomputedKeygen).run ∅) := by
+      ((simulateQ romImpl Concrete.precomputedKeygen).run ∅) := by
     simpa only [Concrete.scheme] using hkeygen
   let oldKeyResult : (PublicKey × SecretKey) × QueryCache HashSpec :=
     ((keyResult.1.1, Concrete.erasePrecomputation keyResult.1.2), keyResult.2)
   have holdKeygen : oldKeyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅) :=
+      ((simulateQ romImpl Concrete.keygen).run ∅) :=
     Concrete.precomputedKeygen_support_oldKeygen keyResult hkeygen'
   have honeTimeStable := (Concrete.keygen_oneTimePublicKey_eq_of_cache_le oldKeyResult
     holdKeygen execution.2 hafterCacheLe epoch).symm
@@ -219,10 +219,10 @@ theorem fresh_leaf_event_afterKeygen_orientation
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hevent : OutcomeBadEventOccurs execution.2 execution.1 .leaf)
@@ -346,10 +346,10 @@ theorem afterKeygen_execution_mem_detailedGame
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2)) :
     execution ∈ support (detailedGameWithCache Concrete.scheme adversary) := by
@@ -361,10 +361,10 @@ theorem same_leaf_witness_afterKeygen_orientation
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hverified : execution.1.verified = true)
@@ -421,10 +421,10 @@ theorem leaf_event_afterKeygen_orientation
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary keyResult.1.1 keyResult.1.2)).run
           keyResult.2))
     (hevent : OutcomeBadEventOccurs execution.2 execution.1 .leaf) :

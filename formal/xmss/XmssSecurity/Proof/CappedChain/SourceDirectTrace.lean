@@ -14,13 +14,13 @@ noncomputable def sourceDirectMappedAdversaryImpl
 theorem sourceDirectMappedAdversaryImpl_eq_compose
     (publicKey : PublicKey) (secretKey : SecretKey) :
     sourceDirectMappedAdversaryImpl publicKey secretKey =
-      xmssRomImpl ∘ₛ sourceUnloggedMappedAdversaryImpl publicKey secretKey := by
+      romImpl ∘ₛ sourceUnloggedMappedAdversaryImpl publicKey secretKey := by
   funext input
   rcases input with worldInput | request
   · rcases worldInput with n | hashInput
     · rfl
     · simp [sourceDirectMappedAdversaryImpl, unloggedMappedAdversaryImpl,
-        sourceUnloggedMappedAdversaryImpl, QueryImpl.apply_compose, xmssRomImpl]
+        sourceUnloggedMappedAdversaryImpl, QueryImpl.apply_compose, romImpl]
   · rfl
 
 abbrev SourceTracedState := QueryCache HashSpec × AttackerActionTrace
@@ -51,7 +51,7 @@ theorem sourceDirectTracedMappedAdversaryImpl_query_run_eq
         (cache, trace) =
       (fun result =>
         (result.1.1, (result.2, trace ++ result.1.2))) <$>
-        (simulateQ xmssRomImpl
+        (simulateQ romImpl
           (sourceActionTracedMappedAdversaryImpl publicKey secretKey input).run
             ).run cache := by
   unfold sourceDirectTracedMappedAdversaryImpl actionTracedStateImpl
@@ -69,7 +69,7 @@ theorem sourceDirectTracedMappedAdversaryImpl_run_eq
         computation).run (cache, trace) =
       (fun result =>
         (result.1.1, (result.2, trace ++ result.1.2))) <$>
-        (simulateQ xmssRomImpl
+        (simulateQ romImpl
           (simulateQ (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
             computation).run).run cache := by
   induction computation using OracleComp.inductionOn generalizing cache trace with
@@ -96,7 +96,7 @@ noncomputable def sourceDirectTracedVerifierImpl :
     match input with
     | .inl n => StateT.mk fun state =>
         (fun result => (result.1, (result.2, state.2))) <$>
-          (xmssRomImpl (.inl n)).run state.1
+          (romImpl (.inl n)).run state.1
     | .inr hashInput => sourceDirectTracedHashVerifierImpl hashInput
 
 theorem sourceDirectTracedVerifierImpl_query_run_eq
@@ -104,7 +104,7 @@ theorem sourceDirectTracedVerifierImpl_query_run_eq
     (cache : QueryCache HashSpec) (trace : AttackerActionTrace) :
     (sourceDirectTracedVerifierImpl input).run (cache, trace) =
       (fun result => (result.1, (result.2, trace))) <$>
-        (xmssRomImpl input).run cache := by
+        (romImpl input).run cache := by
   rcases input with n | hashInput <;> rfl
 
 theorem sourceDirectTracedVerifierImpl_run_eq
@@ -112,9 +112,9 @@ theorem sourceDirectTracedVerifierImpl_run_eq
     (cache : QueryCache HashSpec) (trace : AttackerActionTrace) :
     (simulateQ sourceDirectTracedVerifierImpl computation).run (cache, trace) =
       (fun result => (result.1, (result.2, trace))) <$>
-        (simulateQ xmssRomImpl computation).run cache := by
+        (simulateQ romImpl computation).run cache := by
   exact (StateLens.fst : StateLens SourceTracedState (QueryCache HashSpec)
-    ).simulateQ_run_eq sourceDirectTracedVerifierImpl xmssRomImpl
+    ).simulateQ_run_eq sourceDirectTracedVerifierImpl romImpl
     (fun input state => sourceDirectTracedVerifierImpl_query_run_eq
       input state.1 state.2) computation (cache, trace)
 

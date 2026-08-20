@@ -272,7 +272,7 @@ namespace XmssSecurity
 theorem Concrete.keygen_oneTimePublicKey_eq_of_cache_le
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (largerCache : QueryCache HashSpec) (hle : keyResult.2 ≤ largerCache)
     (epoch : Epoch) :
     Concrete.CacheReplay.oneTimePublicKey keyResult.2 keyResult.1.2.parameter
@@ -293,7 +293,7 @@ namespace XmssSecurity
 theorem Concrete.keygen_cache_has_leafInput
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (epoch : Epoch) :
     ∃ output,
       keyResult.2 (Concrete.CacheView.leafInput keyResult.1.2.parameter epoch
@@ -309,7 +309,7 @@ theorem Concrete.keygen_cache_has_leafInput
 theorem Concrete.keygen_cache_leafInput_eq_none_of_ne
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (epoch : Epoch) (endpoints : ChainIndex → Digest)
     (hne : endpoints ≠ Concrete.CacheReplay.oneTimePublicKey keyResult.2
       keyResult.1.2.parameter keyResult.1.2.chainStart epoch) :

@@ -197,14 +197,14 @@ theorem relTriple_programmed_globalHighMonitored_action
     · apply liftBase
       simpa [sourceDirectMappedAdversaryImpl,
         unloggedMappedAdversaryImpl_apply_inl,
-        globalHighMonitoredBaseMappedAdversaryImpl, xmssRomImpl, unifFwdImpl,
+        globalHighMonitoredBaseMappedAdversaryImpl, romImpl, unifFwdImpl,
         OracleComp.liftM_run_StateT] using
         (relTriple_programmed_monitoredGlobalUniformQuery left right.1
           leftState.1 rightState.1 hstate.1 n)
     · apply liftBase
       simpa [sourceDirectMappedAdversaryImpl,
         unloggedMappedAdversaryImpl_apply_inl,
-        globalHighMonitoredBaseMappedAdversaryImpl, xmssRomImpl] using
+        globalHighMonitoredBaseMappedAdversaryImpl, romImpl] using
         (relTriple_programmed_monitoredGlobalAttackerHashQuery_until_hit left
           right hrel hleftSupport hrightSupport leftState.1 rightState.1
             hstate.1 hashInput)
@@ -340,13 +340,13 @@ theorem relTriple_programmed_globalHighMonitored_verifier_query
   rcases input with n | hashInput
   · simpa [sourceDirectTracedVerifierImpl,
       globalHighMonitoredVerifierImpl,
-      globalHighMonitoredBaseMappedAdversaryImpl, xmssRomImpl, unifFwdImpl,
+      globalHighMonitoredBaseMappedAdversaryImpl, romImpl, unifFwdImpl,
       OracleComp.liftM_run_StateT] using
       (relTriple_programmed_monitoredGlobalUniformQuery left right.1
         leftState.1 rightState.1 hstate.1 n)
   · simpa [sourceDirectTracedVerifierImpl,
       globalHighMonitoredVerifierImpl,
-      globalHighMonitoredBaseMappedAdversaryImpl, xmssRomImpl] using
+      globalHighMonitoredBaseMappedAdversaryImpl, romImpl] using
       (relTriple_programmed_monitoredGlobalAttackerHashQuery_until_hit left
         right hrel hleftSupport hrightSupport leftState.1 rightState.1 hstate.1
           hashInput)

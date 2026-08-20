@@ -21,7 +21,7 @@ noncomputable instance (parameter : PublicParameter) :
 theorem cappedUnloggedMappedAdversaryImpl_eq_source_compose
     (publicKey : PublicKey) (secretKey : SecretKey) :
     cappedUnloggedMappedAdversaryImpl publicKey secretKey =
-      xmssRomImpl ∘ₛ
+      romImpl ∘ₛ
         cappedSourceUnloggedMappedAdversaryImpl publicKey secretKey := by
   funext input
   cases input with
@@ -36,7 +36,7 @@ theorem cappedUnloggedMappedAdversary_simulateQ_run_eq_source
     (cache : QueryCache HashSpec) :
     (simulateQ (cappedUnloggedMappedAdversaryImpl publicKey secretKey)
         computation).run cache =
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (simulateQ (cappedSourceUnloggedMappedAdversaryImpl publicKey secretKey)
           computation)).run cache := by
   rw [cappedUnloggedMappedAdversaryImpl_eq_source_compose,
@@ -45,8 +45,8 @@ theorem cappedUnloggedMappedAdversary_simulateQ_run_eq_source
 noncomputable def expectedPostKeygenEncodingQueries
     (adversary : Adversary) : ENNReal :=
   ∑' keyResult,
-    Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
-      expectedSimulatedQueryCount xmssRomImpl
+    Pr[= keyResult | (simulateQ romImpl Concrete.scheme.keygen).run ∅] *
+      expectedSimulatedQueryCount romImpl
         (IsEncodingHashQuery keyResult.1.2.parameter)
         (cappedSourceUnloggedDetailedGameAfterKeygen adversary
           keyResult.1.1 keyResult.1.2) keyResult.2

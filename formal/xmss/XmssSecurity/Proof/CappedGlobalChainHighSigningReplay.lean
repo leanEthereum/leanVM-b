@@ -144,7 +144,7 @@ theorem relTriple_programmed_monitoredGlobalSigningQuery
       rightState)
     (request : SignRequest) :
     RelTriple
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (Concrete.scheme.sign left.publicKey
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)

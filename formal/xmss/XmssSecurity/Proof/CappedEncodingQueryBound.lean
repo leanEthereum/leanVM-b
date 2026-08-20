@@ -22,8 +22,8 @@ theorem cappedSourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
   cases input with
   | inl worldInput =>
       apply WriterT.ext
-      simp [cappedSourceUnloggedMappedAdversaryImpl, signingLogFragment,
-        forwardOracles, HasQuery.toQueryImpl]
+      simp [cappedSourceUnloggedMappedAdversaryImpl, signingLogFragment, forwardOracles]
+      rfl
   | inr request =>
       simp [cappedSourceUnloggedMappedAdversaryImpl, signingLogFragment, signingOracle]
 

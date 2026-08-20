@@ -606,7 +606,7 @@ theorem evalDist_sourceGlobalExact_eq_cappedBothTraces
       rw [evalDist_map, map_eq_bind_pure_comp, bind_assoc]
       simp [project, ProgrammedGlobalChainKeygenView.keyResult,
         Concrete.materializeCachedKeyResult]
-    _ = evalDist ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) >>=
+    _ = evalDist ((simulateQ romImpl Concrete.scheme.keygen).run ∅) >>=
         fun keyResult => evalDist
           ((fun execution => (keyResult, execution)) <$>
             cappedDetailedGameAfterKeygenWithBothTraces adversary
@@ -673,7 +673,7 @@ theorem cappedBothTraceGameResult_keyResult_mem_support
     (hresult : result ∈ support
       (cappedDetailedGameWithKeygenCacheAndBothTraces adversary)) :
     result.1 ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅) := by
   unfold cappedDetailedGameWithKeygenCacheAndBothTraces at hresult
   rw [mem_support_bind_iff] at hresult
   obtain ⟨keyResult, hkeyResult, hrest⟩ := hresult
@@ -689,7 +689,7 @@ theorem cappedBothTraceGameResult_cacheExecution_mem_support
     (hresult : result ∈ support
       (cappedDetailedGameWithKeygenCacheAndBothTraces adversary)) :
     (result.2.1, result.2.2.1.1.1) ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary result.1.1.1
           result.1.1.2)).run result.1.2) := by
   have hboth :=

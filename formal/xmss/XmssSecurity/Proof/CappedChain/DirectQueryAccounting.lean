@@ -53,7 +53,7 @@ theorem sourceDirectTracedMappedAdversaryImpl_support_info
   have hsource : baseResult.1 ∈ support
       (sourceUnloggedMappedAdversaryImpl publicKey secretKey input) := by
     rw [sourceDirectMappedAdversaryImpl_eq_compose] at hprojected
-    exact OracleComp.support_simulateQ_run'_subset xmssRomImpl
+    exact OracleComp.support_simulateQ_run'_subset romImpl
       (sourceUnloggedMappedAdversaryImpl publicKey secretKey input) state.1
         hprojected
   exact ⟨hsource, rfl⟩
@@ -79,7 +79,7 @@ theorem sourceDirectTracedMappedAdversary_residual_hashQueryBound
   rw [support_map] at hresult
   obtain ⟨rawResult, hrawResult, heq⟩ := hresult
   have hprojected : rawResult.1 ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         ((simulateQ
           (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
             computation).run)).run' cache) := by
@@ -89,7 +89,7 @@ theorem sourceDirectTracedMappedAdversary_residual_hashQueryBound
       ((simulateQ
         (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
           computation).run) :=
-    OracleComp.support_simulateQ_run'_subset xmssRomImpl
+    OracleComp.support_simulateQ_run'_subset romImpl
       ((simulateQ
         (sourceActionTracedMappedAdversaryImpl publicKey secretKey)
           computation).run) cache hprojected

@@ -8,8 +8,8 @@ import VCVio.OracleComp.ProbCompLift
 import VCVio.OracleComp.QueryTracking.RandomOracle.Basic
 import VCVio.OracleComp.QueryTracking.CachingOracle
 import VCVio.OracleComp.QueryTracking.LoggingOracle
+import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 import VCVio.OracleComp.QueryTracking.QueryBound
-import VCVio.OracleComp.SimSemantics.StateT.BundledSemantics
 
 /-!
 # Classical random-oracle security of the concrete XMSS instance
@@ -152,13 +152,24 @@ end TargetSum
 
 The three algorithms of the scheme, exactly as run in the security experiment: key generation, signing, and verification, together with the oracle hash calls they make.
 
-The secret key is the ideal precomputed key from the specification: it contains every Winternitz chain value and every Merkle node. `Concrete.precomputedKeygen` obtains those values through the random oracle by computing the Merkle root, then stores them as the pure replay of its own query log: each stored table entry is the same oracle computation evaluated again, with every hash query answered from the recorded cache (`replayHash`). Reading them while signing is local computation and therefore does not count as a random-oracle query. `Concrete.precomputedCappedSign` performs at most `2^23` encoding attempts, each sampling 192 fresh bits and querying the random oracle once; `Concrete.verify` is the ordinary XMSS verifier. -/
+The secret key is the ideal precomputed key from the specification: it contains every Winternitz chain value and every Merkle node. `Concrete.precomputedKeygen` obtains those values through the random oracle by computing the Merkle root, then stores them as the pure replay of its own query log: each stored table entry is the same oracle computation evaluated again, with every hash query answered from the recorded cache (`replayHash`). Reading them while signing is local computation and therefore does not count as a random-oracle query. `Concrete.precomputedCappedSign` performs at most `2^23` encoding attempts, each sampling 192 fresh bits and querying the random oracle once; `Concrete.verify` is the ordinary XMSS verifier.
+
+The `irreducible` attributes in this section only seal definitions against accidental unfolding in proofs; they change no definition. Lean restricts global reducibility attributes to the defining module, so they must appear here. -/
 
 /-- A hash query takes an arbitrary byte string and returns 32 bytes. -/
 abbrev HashSpec := HashInput →ₒ HashOutput
 
 /-- `unifSpec` for uniform sampling, `HashSpec` for the random oracle (hash). A query is `.inl` to sample or `.inr` to hash, so `HasHashQueryBound` counts only the hash side. -/
 abbrev OracleWorld := unifSpec + HashSpec
+
+def extendHashCacheWithLog (initialCache : QueryCache HashSpec) :
+    QueryLog HashSpec → QueryCache HashSpec
+  | [] => initialCache
+  | ⟨input, output⟩ :: tail =>
+      extendHashCacheWithLog (initialCache.cacheQuery input output) tail
+
+def hashCacheOfLog (log : QueryLog HashSpec) : QueryCache HashSpec :=
+  extendHashCacheWithLog ∅ log
 
 namespace Concrete
 
@@ -344,19 +355,6 @@ noncomputable def sampleSecret : ProbComp (Epoch → ChainIndex → Digest) :=
 
 attribute [irreducible] samplePublicParameter sampleSecret
 
-end Concrete
-
-def extendHashCacheWithLog (initialCache : QueryCache HashSpec) :
-    QueryLog HashSpec → QueryCache HashSpec
-  | [] => initialCache
-  | ⟨input, output⟩ :: tail =>
-      extendHashCacheWithLog (initialCache.cacheQuery input output) tail
-
-def hashCacheOfLog (log : QueryLog HashSpec) : QueryCache HashSpec :=
-  extendHashCacheWithLog ∅ log
-
-namespace Concrete
-
 /-- Answer a hash query from a recorded query cache, and by 0 for an unrecorded input. -/
 def replayHash (cache : QueryCache HashSpec) : QueryImpl HashSpec Id :=
   fun input => (cache input).getD 0
@@ -406,8 +404,7 @@ def precomputedSignedChainValues (secretKey : SecretKey) (epoch : Epoch)
 
 def precomputedAuthenticationPath (secretKey : SecretKey) (epoch : Epoch) :
     Fin treeHeight → Digest :=
-  fun level => secretKey.treeValue ⟨level.val, by omega⟩
-    (authenticationPathNode epoch level)
+  fun level => secretKey.treeValue level.castSucc (authenticationPathNode epoch level)
 
 def precomputedSignWithEncoding (secretKey : SecretKey) (epoch : Epoch)
     (randomness : Randomness) (encoding : Encoding) : Signature :=
@@ -447,15 +444,10 @@ end Concrete
 
 /-! ## The security experiment -/
 
-namespace Rom
-
-/-- The random-oracle semantics: hash queries are answered lazily and consistently by uniform sampling, starting from the empty cache. -/
-noncomputable def runtime : ProbCompRuntime (OracleComp OracleWorld) where
-  toSPMFSemantics := SPMFSemantics.withStateOracle
-    (hashImpl := (randomOracle : QueryImpl HashSpec (StateT HashSpec.QueryCache ProbComp))) ∅
-  toProbCompLift := ProbCompLift.ofMonadLift _
-
-end Rom
+/-- The random-oracle semantics: hash queries are answered lazily and consistently by uniform sampling and cached; uniform-sampling queries are forwarded unchanged. -/
+noncomputable def romImpl : QueryImpl OracleWorld (StateT (QueryCache HashSpec) ProbComp) :=
+  unifFwdImpl HashSpec +
+    (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
 
 /-- A signing request contains a 32-bit epoch and a 32-byte message. -/
 structure SignRequest where
@@ -513,7 +505,7 @@ def signingOracle (scheme : Scheme) (pk : PublicKey) (sk : SecretKey) :
 /-- Forward the shared random oracle and uniform sampling to the adversary unchanged, alongside the logged signing oracle. -/
 def forwardOracles :
     QueryImpl OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
-  (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
+  fun input => liftM (OracleWorld.query input)
 
 /-- The complete strong-unforgeability experiment.
 
@@ -526,22 +518,18 @@ noncomputable def gameCore (scheme : Scheme) (adversary : Adversary) :
   let verified ← scheme.verify pk forgery.epoch forgery.message forgery.signature
   return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
 
-/-- The probability that the adversary wins, over key generation, signer randomness, and the random oracle. -/
+/-- The probability that the adversary wins, over key generation, signer randomness, and the random oracle, which starts from the empty cache. The final cache is discarded. -/
 noncomputable def forgeAdvantage (scheme : Scheme) (adversary : Adversary) : ℝ≥0∞ :=
-  Pr[= true | Rom.runtime.evalDist (gameCore scheme adversary)]
+  Pr[= true | (simulateQ romImpl (gameCore scheme adversary)).run' ∅]
 
 /-- The whole experiment makes at most `q` random-oracle queries on every execution path. The count includes queries during key generation, adversarial hashing, signing, and final verification. Uniform sampling operations are not hash queries. -/
 def HasHashQueryBound (scheme : Scheme) (adversary : Adversary) (q : Nat) : Prop :=
   (gameCore scheme adversary).IsQueryBoundP (· matches .inr _) q
 
-/-- The best forgery probability among all classical adaptive adversaries whose complete experiment has hash-query bound `q`. -/
-noncomputable def forgeAtMost (scheme : Scheme) (q : Nat) : ℝ≥0∞ :=
-  ⨆ (adversary : Adversary), ⨆ (_ : HasHashQueryBound scheme adversary q),
-    forgeAdvantage scheme adversary
-
-/-- Having `bits` bits of classical security means that, for every nonzero query budget `q`, the optimal forgery probability is at most `q / 2^bits`. -/
-noncomputable def HasClassicalSecurityBits (scheme : Scheme) (bits : Nat) : Prop :=
-  ∀ q, 1 ≤ q → forgeAtMost scheme q ≤ q / ((2 ^ bits : Nat) : ℝ≥0∞)
+/-- Having `bits` bits of classical security means that every classical adaptive adversary whose complete experiment stays within a nonzero hash-query budget `q` forges with probability at most `q / 2^bits`. -/
+def HasClassicalSecurityBits (scheme : Scheme) (bits : Nat) : Prop :=
+  ∀ q, 1 ≤ q → ∀ adversary, HasHashQueryBound scheme adversary q →
+    forgeAdvantage scheme adversary ≤ q / ((2 ^ bits : Nat) : ℝ≥0∞)
 
 /-- The concrete XMSS scheme: the precomputed key generation, the capped retry signer, and the ordinary verifier defined above. -/
 noncomputable def Concrete.scheme : Scheme where

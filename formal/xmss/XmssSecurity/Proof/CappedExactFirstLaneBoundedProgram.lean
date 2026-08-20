@@ -59,7 +59,7 @@ theorem relTriple_sourceGlobalExact_firstLane_program_boundedHit_sub_keygen
     trajectoryProgrammedGlobalChainKeygen_support_keyResult left hleftSupport
   have hmaterializedKeyResult :
       Concrete.materializeCachedKeyResult left.keyResult ∈ support
-        ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅) := by
+        ((simulateQ romImpl Concrete.scheme.keygen).run ∅) := by
     exact Concrete.oldKeygen_support_materializedPrecomputedKeygen
       left.keyResult hleftKeyResult
   have hsourceBound :=

@@ -208,12 +208,12 @@ theorem sourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅)) :
     (sourceUnloggedDetailedGameAfterKeygen adversary keyResult.1.1 keyResult.1.2)
       |>.IsQueryBoundP (· matches .inr _)
         (q - treeHashQueryCount treeHeight) := by
   have hkeySupport : keyResult.1 ∈ support Concrete.scheme.keygen := by
-    apply support_simulateQ_run'_subset xmssRomImpl Concrete.scheme.keygen ∅
+    apply support_simulateQ_run'_subset romImpl Concrete.scheme.keygen ∅
     rw [StateT.run'_eq, support_map]
     exact ⟨keyResult, hkeyResult, rfl⟩
   have hkeyPrecomputed : keyResult.1 ∈ support Concrete.precomputedKeygen := by

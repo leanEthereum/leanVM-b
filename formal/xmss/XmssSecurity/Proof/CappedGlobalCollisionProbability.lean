@@ -13,9 +13,9 @@ theorem outcomePredicate_probability_le_expectedMovedQueries_of_afterKeygen_fres
     (targetInput :
       (PublicKey × SecretKey) → QueryCache HashSpec → HashInput → HashInput)
     (horient : ∀ keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅),
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅),
       ∀ execution ∈ support
-        ((simulateQ xmssRomImpl
+        ((simulateQ romImpl
           (detailedGameAfterKeygen Concrete.scheme adversary
             keyResult.1.1 keyResult.1.2)).run keyResult.2),
         event execution →
@@ -24,8 +24,8 @@ theorem outcomePredicate_probability_le_expectedMovedQueries_of_afterKeygen_fres
     Pr[event | detailedGameWithCache Concrete.scheme adversary] ≤
       (∑' keyResult,
         Pr[= keyResult |
-          (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
-          expectedSimulatedQueryCount xmssRomImpl
+          (simulateQ romImpl Concrete.scheme.keygen).run ∅] *
+          expectedSimulatedQueryCount romImpl
             (Rom.IsRelevantHashQuery fun input =>
               targetInput keyResult.1 keyResult.2 input ≠ input)
             (detailedGameAfterKeygen Concrete.scheme adversary
@@ -42,10 +42,10 @@ theorem globalSuffixCollision_event_afterKeygen_orientation
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary
           keyResult.1.1 keyResult.1.2)).run keyResult.2))
     (hevent : GlobalOutcomeBadEventOccurs execution.2 execution.1
@@ -60,10 +60,10 @@ theorem globalMerkle_event_afterKeygen_orientation
     (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
+      ((simulateQ romImpl Concrete.scheme.keygen).run ∅))
     (execution : GameOutcome × QueryCache HashSpec)
     (hafter : execution ∈ support
-      ((simulateQ xmssRomImpl
+      ((simulateQ romImpl
         (detailedGameAfterKeygen Concrete.scheme adversary
           keyResult.1.1 keyResult.1.2)).run keyResult.2))
     (hevent : GlobalOutcomeBadEventOccurs execution.2 execution.1 .merkle) :

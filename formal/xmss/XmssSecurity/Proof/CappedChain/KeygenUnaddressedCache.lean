@@ -87,7 +87,7 @@ theorem Concrete.treeNode_queryBound_zero_unaddressed
 theorem Concrete.keygen_cache_none_unaddressed
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (input : HashInput)
     (hinput : ¬ KeygenAddressedHashInput keyResult.1.2.parameter input) :
     keyResult.2 input = none := by
@@ -108,7 +108,7 @@ theorem Concrete.keygen_cache_none_unaddressed
 theorem Concrete.keygen_cache_none_at_encodingAddress
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hmem : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (epoch : Epoch) (input : HashInput)
     (hinput : AtHashAddress keyResult.1.2.parameter (.encoding epoch) input) :
     keyResult.2 input = none := by

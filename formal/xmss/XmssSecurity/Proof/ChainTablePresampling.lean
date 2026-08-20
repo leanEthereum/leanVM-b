@@ -347,7 +347,7 @@ structure ProgrammedFixedChainKeygenView where
 
 noncomputable def actualFixedChainKeygen
     (chain : ChainIndex) : ProbComp ProgrammedFixedChainKeygenView := do
-  let keyResult ← (simulateQ xmssRomImpl Concrete.keygen).run ∅
+  let keyResult ← (simulateQ romImpl Concrete.keygen).run ∅
   return {
     publicKey := keyResult.1.1
     secretKey := keyResult.1.2
@@ -384,11 +384,11 @@ theorem evalDist_actualFixedChainKeygen_eq_explicit
   simp only [simulateQ_bind, StateT.run_bind, simulateQ_pure,
     StateT.run_pure, bind_assoc, pure_bind]
   have hparameter :
-      (simulateQ xmssRomImpl
+      (simulateQ romImpl
         (liftM Concrete.samplePublicParameter)).run ∅ =
         (fun parameter => (parameter, ∅)) <$>
           Concrete.samplePublicParameter := by
-    simpa only [xmssRomImpl] using
+    simpa only [romImpl] using
       (roSim.run_liftM
         (randomOracle : QueryImpl HashSpec
           (StateT (QueryCache HashSpec) ProbComp))
@@ -398,9 +398,9 @@ theorem evalDist_actualFixedChainKeygen_eq_explicit
   apply OracleComp.DeferredSampling.evalDist_bind_congr_left
   intro parameter
   have hsecret :
-      (simulateQ xmssRomImpl (liftM Concrete.sampleSecret)).run ∅ =
+      (simulateQ romImpl (liftM Concrete.sampleSecret)).run ∅ =
         (fun secret => (secret, ∅)) <$> Concrete.sampleSecret := by
-    simpa only [xmssRomImpl] using
+    simpa only [romImpl] using
       (roSim.run_liftM
         (randomOracle : QueryImpl HashSpec
           (StateT (QueryCache HashSpec) ProbComp))
@@ -410,7 +410,7 @@ theorem evalDist_actualFixedChainKeygen_eq_explicit
   apply OracleComp.DeferredSampling.evalDist_bind_congr_left
   intro secret
   have htree :
-      simulateQ xmssRomImpl
+      simulateQ romImpl
           (liftM (Concrete.treeNode parameter secret treeHeight
             Concrete.rootNode : OracleComp HashSpec Digest)) =
         simulateQ
@@ -418,7 +418,7 @@ theorem evalDist_actualFixedChainKeygen_eq_explicit
             (StateT (QueryCache HashSpec) ProbComp))
           (Concrete.treeNode parameter secret treeHeight Concrete.rootNode :
             OracleComp HashSpec Digest) := by
-    simp only [xmssRomImpl]
+    simp only [romImpl]
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec
         (StateT (QueryCache HashSpec) ProbComp))
@@ -513,7 +513,7 @@ set_option maxRecDepth 10000 in
 theorem Concrete.keygenChainValueTable_edgesMatch
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
-      ((simulateQ xmssRomImpl Concrete.keygen).run ∅))
+      ((simulateQ romImpl Concrete.keygen).run ∅))
     (chain : ChainIndex) :
     ChainTableEdgesMatch keyResult.2 keyResult.1.2.parameter chain
       (keygenChainValueTable keyResult.2 keyResult.1.2 chain) := by
