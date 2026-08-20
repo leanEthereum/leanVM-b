@@ -109,19 +109,10 @@ theorem globalFirstLaneErase_liftProbComp (computation : ProbComp α) :
       (FirstLaneOracleSimulation.liftProbComp
         (Index := GlobalChainValueIndex) computation) =
     RevealProbeOracleSimulation.liftProbComp computation := by
-  induction computation using OracleComp.inductionOn with
-  | pure result =>
-      simp [globalFirstLaneErase, FirstLaneOracleSimulation.liftProbComp,
-        RevealProbeOracleSimulation.liftProbComp]
-  | query_bind n next ih =>
-      simp [globalFirstLaneErase, FirstLaneOracleSimulation.liftProbComp,
-        FirstLaneOracleSimulation.uniformForwardImpl,
-        FirstLaneOracleSimulation.uniformQuery,
-        RevealProbeOracleSimulation.liftProbComp,
-        RevealProbeOracleSimulation.uniformForwardImpl,
-        RevealProbeOracleSimulation.uniformQuery, globalFirstLaneEraseImpl]
-      apply bind_congr
-      exact ih
+  unfold globalFirstLaneErase FirstLaneOracleSimulation.liftProbComp
+    RevealProbeOracleSimulation.liftProbComp
+  rw [← QueryImpl.simulateQ_compose]
+  congr 1
 
 theorem globalFirstLaneErases_liftProbComp (computation : ProbComp α) :
     GlobalFirstLaneErases
@@ -146,35 +137,22 @@ theorem globalFirstLaneErase_liftRevealProbe
       (RevealProbeOracleSimulation.World GlobalChainValueIndex) α) :
     globalFirstLaneErase (globalFirstLaneLiftRevealProbe computation) =
       computation := by
-  induction computation using OracleComp.inductionOn with
-  | pure result =>
-      simp [globalFirstLaneErase, globalFirstLaneLiftRevealProbe]
-  | query_bind input next ih =>
-      cases input with
-      | uniform n =>
-          simp [globalFirstLaneErase, globalFirstLaneLiftRevealProbe,
-            globalFirstLaneRevealProbeImpl,
-            FirstLaneOracleSimulation.uniformQuery,
-            RevealProbeOracleSimulation.uniformQuery,
-            globalFirstLaneEraseImpl]
-          apply bind_congr
-          exact ih
-      | probe index target =>
-          simp [globalFirstLaneErase, globalFirstLaneLiftRevealProbe,
-            globalFirstLaneRevealProbeImpl,
-            FirstLaneOracleSimulation.probeQuery,
-            RevealProbeOracleSimulation.probeQuery,
-            globalFirstLaneEraseImpl]
-          apply bind_congr
-          exact ih
-      | reveal index =>
-          simp [globalFirstLaneErase, globalFirstLaneLiftRevealProbe,
-            globalFirstLaneRevealProbeImpl,
-            FirstLaneOracleSimulation.revealQuery,
-            RevealProbeOracleSimulation.revealQuery,
-            globalFirstLaneEraseImpl]
-          apply bind_congr
-          exact ih
+  unfold globalFirstLaneErase globalFirstLaneLiftRevealProbe
+  rw [← QueryImpl.simulateQ_compose]
+  have himpl : globalFirstLaneEraseImpl ∘ₛ globalFirstLaneRevealProbeImpl =
+      QueryImpl.id'
+        (RevealProbeOracleSimulation.World GlobalChainValueIndex) := by
+    funext input
+    cases input <;>
+      simp [globalFirstLaneEraseImpl, globalFirstLaneRevealProbeImpl,
+        FirstLaneOracleSimulation.uniformQuery,
+        RevealProbeOracleSimulation.uniformQuery,
+        FirstLaneOracleSimulation.probeQuery,
+        RevealProbeOracleSimulation.probeQuery,
+        FirstLaneOracleSimulation.revealQuery,
+        RevealProbeOracleSimulation.revealQuery, QueryImpl.id']
+  rw [himpl]
+  simp
 
 theorem globalFirstLaneErases_liftRevealProbe
     (computation : OracleComp
