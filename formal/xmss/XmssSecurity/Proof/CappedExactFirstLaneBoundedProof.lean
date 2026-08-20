@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.CappedExactFirstLaneBoundedProgram
+import XmssSecurity.Proof.FirstLaneOnlineMonitor
 
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
@@ -636,12 +637,12 @@ theorem public_eager_enforcedHit_probability_le
     Pr[GlobalFirstLaneExactPublicEnforcedHit fuel |
         globalFirstLaneExactPublicEagerExperiment adversary] ≤
       (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
-  have hbound :=
-    FirstLaneOracleSimulation.eagerExperiment_enforced_combinedHit_probability_le
-      fuel (globalFirstLaneExactTracedPublicProgram adversary)
-  rw [FirstLaneOracleSimulation.eagerExperiment_enforceHazardBound_eq_map,
-    probEvent_map] at hbound
-  exact hbound
+  unfold GlobalFirstLaneExactPublicEnforcedHit
+    globalFirstLaneExactPublicEagerExperiment
+  rw [FirstLaneOracleSimulation.enforced_combinedHit_probability_eq_onlineExperiment]
+  exact FirstLaneOracleSimulation.onlineExperiment_true_probability_le
+    fuel (FirstLaneOracleSimulation.enforceHazardBound fuel
+      (globalFirstLaneExactTracedPublicProgram adversary))
 
 theorem sourceWinningExactFirstLane_probability_le
     (q : Nat)
