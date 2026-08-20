@@ -53,15 +53,17 @@
 \maketitle
 
 \begin{abstract}
-As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS, the signature scheme used by Ethereum validators. Aggregating XMSS requires a post-quantum snark. This technical note specifies an optimized XMSS instance with the following properties:
+As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS \cite{BLS}, the signature scheme used by Ethereum validators. The lack of native aggregation can be mitigated with a post-quantum snark. This technical note specifies an XMSS instance with the following properties:
 \begin{itemize}
-  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, in the Random Oracle model, ROM (resp. Quantum Random Oracle model, QROM).\footnote{We provide a Lean4 security proof at 127 bits of classical security. The quantum claim is not formalized (yet).}
+  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, in the Random Oracle model, ROM (resp. Quantum Random Oracle model, QROM).\footnote{The quantum claim is not fully formalized (yet).}
   \item \textbf{public key: 32 bytes}.
   \item \textbf{signature: 1208 bytes} (smaller than the 1280-byte minimum IPv6 MTU~\cite{RFC8200}).
   \item snark-friendly encoding, optimized for aggregation via leanVM-b~\cite{leanVMb}, requiring 15 bits of grinding on average.
   \item 133 hashes per verification.
 \end{itemize}
 \end{abstract}
+
+The key difference with \cite{DKKW25} is the use of short hash digests, of 16 bytes, following SLH-DSA~\cite{FIPS205} at level 1. The consequence is that the security proof takes place in the ROM, while \cite{DKKW25} is secure in the Standard Model (as a cost of bigger hash digests, close to 32 bytes).
 
 \section{Definitions and notation}
 
@@ -248,39 +250,10 @@ For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any
 The XMSS specified above has 127 bits of classical strong unforgeability in the ROM.
 \end{theorem}
 
+A formal (Lean4) proof of this this theorem can be found in \textit{./formal/xmss}.
+
 \begin{proof}[Proof sketch]
-We follow the machine-checked Lean proof. The purpose of this sketch is to explain its structure; the Lean development contains the precise games, couplings, cache invariants, and probability bounds.
-
-First expose the lazy random oracle as a cache recording every queried input and output. Let $Q_{\mathrm{kg}}$ be the exact number of random-oracle queries made by key generation. A leaf costs $v(2^w-1)+1$ queries, and each internal Merkle node costs one, hence
-\[
-  Q_{\mathrm{kg}}=2^h\bigl(v(2^w-1)+2\bigr)-1=296\cdot2^{32}-1.
-\]
-Because key generation is part of the experiment, an adversary with total query bound $q$ necessarily has $q\geq Q_{\mathrm{kg}}$. Put $r=q-Q_{\mathrm{kg}}$. All adversarial, signing, and final-verification queries together then have budget at most $r$.
-
-The deterministic part of the proof classifies every successful strong forgery. Replay the honest signing computations and compare the forged verification path with the corresponding honest path. The target-sum code is an antichain: two different valid encodings cannot be coordinatewise ordered. Consequently, a different valid encoding forces some Winternitz coordinate to move backwards. Following that coordinate to the public key, and then following the authentication path to the root, shows that every forgery causes at least one of the following phenomena: an encoding anomaly, a forged chain value, a collision in a remaining chain suffix, a leaf collision, or a Merkle-node collision. This classification covers both a fresh epoch and a strong forgery at an epoch that was signed before.
-
-The proof does not apply a separate union bound to every chain step and Merkle level. Instead, it groups the classified executions into two lanes and bounds each lane as a single adaptive event.
-
-The second lane contains encoding inputs that were already present before the signer sampled them, together with the structural collision cases: an unrevealed chain case, a suffix collision, a leaf collision, or a Merkle collision. For an encoding prehit, each attempt samples a uniform 192-bit $\rho$; against a fixed cache, its collision probability is bounded by the number of cached encoding inputs divided by $2^{192}$. Multiplying by at most $2^{23}$ attempts is still no more than the expected number of relevant encoding queries divided by $2^{128}$. For a structural event, conditioned on the cache before the relevant post-keygen query, the required 128-bit digest is fresh and uniform, so deferred decisions gives the expected number of relevant structural queries divided by $2^{128}$. Encoding inputs and structural inputs have disjoint domain-separation tweaks, so these two expected query counts add without double counting. Their sum is at most the complete post-keygen budget $r$, giving
-\[
-  \Pr[\text{second lane}]\leq\frac{r}{2^{128}}.
-\]
-
-The first lane contains the remaining encoding case and the chain-origin case under adaptive signing disclosures. This is the technically difficult part. The proof presamples the complete table of Winternitz chain values, then couples the real game to an ideal reveal-and-probe experiment. The ideal simulator replays key generation, the adversary, the retrying signer, and final verification from public randomness and the values legitimately disclosed by signatures. A causal invariant says that, until the first successful probe, every undisclosed target value remains an independent uniform 128-bit string even though the adversary chooses its random-oracle and signing queries adaptively. Failed signing attempts only make encoding queries and disclose no chain value, so the same invariant handles all $2^{23}$ possible attempts without paying per attempt. Translating the final forgery into this experiment adds at most one terminal candidate for each of the $v=42$ chains. The adaptive probe bound is therefore
-\[
-  \Pr[\text{first lane}]\leq\frac{r+v}{2^{128}}.
-\]
-
-Every winning execution lies in one of the two lanes. Since $v=42\leq2Q_{\mathrm{kg}}$, their union is bounded by
-\[
-\begin{aligned}
-  \Pr[\text{forge}]
-  &\leq \frac{r+v}{2^{128}}+\frac{r}{2^{128}}\\
-  &=\frac{2(q-Q_{\mathrm{kg}})+v}{2^{128}}\\
-  &\leq\frac{2q}{2^{128}}=\frac{q}{2^{127}}.
-\end{aligned}
-\]
-Taking the supremum over all classical adaptive adversaries with query bound $q$ gives the claimed result. The last displayed union of the two lanes is where this proof loses one bit relative to the 128-bit digest length.
+TODO
 \end{proof}
 
 \subsection{Quantum security}
