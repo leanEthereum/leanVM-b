@@ -15,13 +15,6 @@ def liftGlobalChainTrace
   trace.map FirstLaneOracleSimulation.ObservedAction.chain
 
 @[simp]
-theorem liftGlobalChainTrace_encodingActions
-    (trace : RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) :
-    (liftGlobalChainTrace trace).encodingActions = [] := by
-  simp [liftGlobalChainTrace,
-    FirstLaneOracleSimulation.ActionTrace.encodingActions]
-
-@[simp]
 theorem liftGlobalChainTrace_chainActions
     (trace : RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) :
     (liftGlobalChainTrace trace).chainActions = trace := by

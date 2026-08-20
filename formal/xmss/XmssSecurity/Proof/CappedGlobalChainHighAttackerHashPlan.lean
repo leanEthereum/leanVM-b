@@ -111,28 +111,6 @@ theorem globalFilteredCausalAttackerHashPlan_eq_reveal_globalEdge
     (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) hrevealed
     (chainStepNextDigit edge.2.2).isLt
 
-theorem globalFilteredCausalAttackerHashPlan_eq_probeThenFresh_globalEdge
-    (secretKey : SecretKey)
-    (table : GlobalChainValueIndex → Digest)
-    (edge : GlobalChainEdgeIndex) (state : GlobalCausalHashState)
-    (hcache : state.cache
-      (globalChainTableEdgeInput secretKey.parameter table edge) = none)
-    (hhidden : state.revealed
-      (edge.1, edge.2.1, chainStepDigit edge.2.2) = none) :
-    globalFilteredCausalAttackerHashPlan secretKey
-        (globalChainTableEdgeInput secretKey.parameter table edge) state =
-      .probeThenFresh
-        (edge.1, edge.2.1, chainStepDigit edge.2.2)
-        (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) := by
-  rw [globalFilteredCausalAttackerHashPlan, hcache]
-  rw [globalChainInputProbe?_globalChainTableEdgeInput]
-  exact globalFilteredCausalUncachedAttackerHashPlan_eq_probeThenFresh
-    secretKey
-    (globalChainTableEdgeInput secretKey.parameter table edge) state
-    (edge.1, edge.2.1, chainStepDigit edge.2.2)
-    (table (edge.1, edge.2.1, chainStepDigit edge.2.2)) hhidden
-    (chainStepNextDigit edge.2.2).isLt
-
 noncomputable def globalFilteredCausalRedirectResultState
     (secretKey : SecretKey) (input : HashInput)
     (state : GlobalCausalHashState) (output : HashOutput) :

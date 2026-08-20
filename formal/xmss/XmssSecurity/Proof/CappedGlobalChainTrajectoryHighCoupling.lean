@@ -7,25 +7,6 @@ open OracleComp.ProgramLogic.Relational
 
 namespace XmssSecurity.CappedChain
 
-theorem programmedChainExtension_eq_root
-    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (step : ChainStep) (values : Vector Digest (n + 1))
-    (cache : QueryCache HashSpec) :
-    programmedChainExtension parameter epoch chain step values cache =
-      XmssSecurity.programmedChainExtension parameter epoch chain step values
-        cache := by
-  rfl
-
-theorem programmedChainTrajectory_eq_root
-    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (position : Nat) : ∀ (steps : Nat) (value : Digest)
-      (cache : QueryCache HashSpec),
-    programmedChainTrajectory parameter epoch chain position steps value cache =
-      XmssSecurity.programmedChainTrajectory parameter epoch chain position
-        steps value cache := by
-  intros
-  rfl
-
 theorem programmedFixedSeedChainTrajectories_eq_root
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
     (chain : ChainIndex) (steps : Nat) : ∀

@@ -4,9 +4,6 @@ namespace XmssSecurity
 
 def verificationChainHashes : Nat := numChains * (chainLength - 1) - targetSum
 
-theorem verificationChainHashes_eq : verificationChainHashes = 99 := by
-  decide
-
 namespace TargetSum
 
 open scoped BigOperators
@@ -41,23 +38,6 @@ theorem card_suffixPosition (x : Encoding) (hx : Valid x) :
 noncomputable def enumerateSuffixPositions (x : Encoding) (hx : Valid x) :
     SuffixPosition x ≃ Fin verificationChainHashes :=
   Fintype.equivFinOfCardEq (card_suffixPosition x hx)
-
-theorem digitsPerHalf_eq : digitsPerHalf = 21 := by
-  decide
-
-theorem digitOffset_boundaries :
-    digitOffset ⟨0, by decide⟩ = 0 ∧
-    digitOffset ⟨20, by decide⟩ = 60 ∧
-    digitOffset ⟨21, by decide⟩ = 64 ∧
-    digitOffset ⟨41, by decide⟩ = 124 := by
-  decide
-
-theorem digestPadding_eq_zero_iff {digest : Digest} :
-    digestPadding digest = 0 ↔
-      digest.getLsbD 63 = false ∧ digest.getLsbD 127 = false := by
-  generalize hlow : digest.getLsbD 63 = low
-  generalize hhigh : digest.getLsbD 127 = high
-  cases low <;> cases high <;> simp [digestPadding, hlow, hhigh]
 
 theorem digestPadding_eq_iff {left right : Digest} :
     digestPadding left = digestPadding right ↔

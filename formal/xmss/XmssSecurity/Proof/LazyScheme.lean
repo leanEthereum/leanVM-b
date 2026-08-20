@@ -5,11 +5,6 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity
 
-theorem signingAttemptLimit_eq : signingAttemptLimit = 2 ^ 23 := rfl
-
-theorem signingAttemptLimit_pos : 0 < signingAttemptLimit := by
-  decide
-
 def SecretKey.withoutPrecomputation
     (parameter : PublicParameter) (chainStart : Epoch → ChainIndex → Digest) :
     SecretKey :=

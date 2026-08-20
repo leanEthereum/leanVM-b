@@ -96,12 +96,6 @@ theorem treeHashQueryCount_base_le (levels : Nat) :
       simp only [treeHashQueryCount]
       omega
 
-theorem treeHashQueryCount_at_least_numChains :
-    numChains ≤ treeHashQueryCount treeHeight := by
-  exact (by norm_num [numChains, chainLength, winternitzBits] :
-    numChains ≤ numChains * (chainLength - 1) + 1) |>.trans
-      (treeHashQueryCount_base_le treeHeight)
-
 def IsHashQuery : OracleWorld.Domain → Prop := fun input => input matches .inr _
 
 instance : DecidablePred IsHashQuery := by

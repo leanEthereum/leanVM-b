@@ -90,22 +90,6 @@ theorem monitorGlobalCausalTrace_run
       globalMonitoredCausalResult table state <$> computation state.causal :=
   rfl
 
-theorem monitorGlobalCausalTrace_preserves_bad
-    (table : GlobalChainValueIndex → Digest)
-    (computation : GlobalCausalHashState → ProbComp
-      ((α × GlobalCausalHashState) ×
-        RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
-    (state : GlobalMonitoredCausalState) (hbad : state.bad)
-    (result : α × GlobalMonitoredCausalState)
-    (hresult : result ∈ support
-      ((monitorGlobalCausalTrace table computation).run state)) :
-    result.2.bad := by
-  rw [monitorGlobalCausalTrace_run, support_map] at hresult
-  obtain ⟨raw, _hraw, rfl⟩ := hresult
-  change state.monitor.bind _ = none
-  rw [hbad]
-  rfl
-
 theorem monitorGlobalCausalTrace_preserves_traceConsistent
     (table : GlobalChainValueIndex → Digest)
     (computation : GlobalCausalHashState → ProbComp
