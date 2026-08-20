@@ -14,11 +14,10 @@ set_option linter.constructorNameAsVariable false
 structure GlobalExactTracedState where
   causalState : GlobalCausalHashState
   attackerTrace : AttackerActionTrace
-  encodingTrace : EncodingActionTrace
 
 @[simp] def GlobalExactTracedState.initial (causalState : GlobalCausalHashState) :
     GlobalExactTracedState :=
-  ⟨causalState, [], []⟩
+  ⟨causalState, []⟩
 
 @[simp] def GlobalExactTracedState.withCausalState (state : GlobalExactTracedState)
     (causalState : GlobalCausalHashState) : GlobalExactTracedState :=
@@ -26,7 +25,7 @@ structure GlobalExactTracedState where
 
 def globalHighExactStateProjection
     (state : GlobalHighExactMonitoredState) : GlobalExactTracedState :=
-  ⟨state.1.1.causal, state.1.2, state.2⟩
+  ⟨state.1.1.causal, state.1.2⟩
 
 def globalExactTracedCausalLens :
     StateLens GlobalExactTracedState GlobalCausalHashState where
@@ -38,30 +37,13 @@ def globalExactTracedCausalLens :
 
 @[irreducible]
 noncomputable def globalExactTracedNextState
-    (keyView : ProgrammedGlobalChainKeygenView)
+    (_keyView : ProgrammedGlobalChainKeygenView)
     (input : (OracleWorld + SigningSpec).Domain)
     (state : GlobalExactTracedState)
     (output : (OracleWorld + SigningSpec).Range input)
     (causalState : GlobalCausalHashState) : GlobalExactTracedState :=
   GlobalExactTracedState.mk causalState
     (state.attackerTrace ++ attackerActionFragment input output)
-    (encodingActionTraceUpdate keyView.secretKey input
-      (state.causalState.cache, []) output (causalState.cache, [])
-        state.encodingTrace)
-
-theorem globalExactTracedNextState_encodingTrace
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalExactTracedState)
-    (output : (OracleWorld + SigningSpec).Range input)
-    (causalState : GlobalCausalHashState) :
-    (globalExactTracedNextState keyView input state output causalState
-      ).encodingTrace =
-      encodingActionTraceUpdate keyView.secretKey input
-        (state.causalState.cache, []) output (causalState.cache, [])
-          state.encodingTrace := by
-  unfold globalExactTracedNextState
-  rfl
 
 noncomputable def globalExactTracedLift {ι : Type} {world : OracleSpec ι}
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -168,11 +150,7 @@ noncomputable def globalHighDirectExactTracedDetailedExecution
     (globalHighDirectExactTracedVerifierImpl keyView edgeHigh)
       (Concrete.scheme.verify keyView.publicKey handled.1.epoch
         handled.1.message handled.1.signature)).run handled.2
-  let finalTrace := appendVerificationEncodingObservation keyView.secretKey
-    handled.1 handled.2.causalState.cache verified.2.causalState.cache
-      verified.2.encodingTrace
-  pure ((handled.1, verified.1),
-    { verified.2 with encodingTrace := finalTrace })
+  pure ((handled.1, verified.1), verified.2)
 
 noncomputable def globalFirstLaneExactTracedDetailedExecution
     (adversary : Adversary)
@@ -188,11 +166,7 @@ noncomputable def globalFirstLaneExactTracedDetailedExecution
       (globalFirstLaneExactTracedVerifierImpl keyView edgeHigh)
         (Concrete.scheme.verify keyView.publicKey handled.1.epoch
           handled.1.message handled.1.signature)).run handled.2
-    let finalTrace := appendVerificationEncodingObservation keyView.secretKey
-      handled.1 handled.2.causalState.cache verified.2.causalState.cache
-        verified.2.encodingTrace
-    pure ((handled.1, verified.1),
-      { verified.2 with encodingTrace := finalTrace })
+    pure ((handled.1, verified.1), verified.2)
 
 abbrev GlobalExactTracedResult :=
   GlobalHighDirectKeyResult ×
@@ -1186,6 +1160,7 @@ theorem globalExactTracedLift_trace_sublist
     (base : StateT GlobalCausalHashState (OracleComp GlobalFirstLaneWorld)
       ((OracleWorld + SigningSpec).Range input))
     (state : GlobalExactTracedState)
+    (initialTrace : EncodingActionTrace)
     (result : ((OracleWorld + SigningSpec).Range input ×
       GlobalExactTracedState) ×
         FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
@@ -1199,19 +1174,19 @@ theorem globalExactTracedLift_trace_sublist
       List.Sublist
         (encodingActionTraceUpdate keyView.secretKey input
           (state.causalState.cache, []) baseResult.1.1
-            (baseResult.1.2.cache, []) state.encodingTrace)
-        (state.encodingTrace ++ baseResult.2.encodingActions)) :
-    List.Sublist result.1.2.encodingTrace
-      (state.encodingTrace ++ result.2.encodingActions) := by
+            (baseResult.1.2.cache, []) initialTrace)
+        (initialTrace ++ baseResult.2.encodingActions)) :
+    List.Sublist
+      (encodingActionTraceUpdate keyView.secretKey input
+        (state.causalState.cache, []) result.1.1
+          (result.1.2.causalState.cache, []) initialTrace)
+      (initialTrace ++ result.2.encodingActions) := by
   unfold globalExactTracedLift at hresult
   rw [StateT.run_mk, simulateQ_map, WriterT.run_map', support_map] at hresult
   obtain ⟨baseResult, hbase, heq⟩ := hresult
-  have htrace := congrArg (fun value => value.1.2.encodingTrace) heq
-  have hactions := congrArg (fun value => value.2.encodingActions) heq
-  dsimp only [Prod.map, id] at htrace hactions
-  rw [← htrace, ← hactions]
-  rw [globalExactTracedNextState_encodingTrace]
-  exact hbaseSub baseResult hbase
+  subst result
+  unfold globalExactTracedNextState
+  simpa using hbaseSub baseResult hbase
 
 abbrev GlobalFirstLaneOracleTraceSublist
     (table : GlobalChainValueIndex → Digest)
@@ -1249,49 +1224,57 @@ abbrev GlobalFirstLaneExactTracedOracleTraceSublist
     (edgeHigh : GlobalChainEdgeIndex → Digest) : Prop :=
   ∀ (input : OracleWorld.Domain)
     (state : GlobalExactTracedState)
+    (initialTrace : EncodingActionTrace)
     (result : (OracleWorld.Range input × GlobalExactTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex),
     result ∈ support
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         ((globalFirstLaneExactTracedOracleImpl keyView edgeHigh input).run
           state)).run) →
-    List.Sublist result.1.2.encodingTrace
-      (state.encodingTrace ++ result.2.encodingActions)
+    List.Sublist
+      (encodingActionTraceUpdate keyView.secretKey (.inl input)
+        (state.causalState.cache, []) result.1.1
+          (result.1.2.causalState.cache, []) initialTrace)
+      (initialTrace ++ result.2.encodingActions)
 
 theorem globalFirstLaneExactTracedOracleTraceSublist_holds
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     GlobalFirstLaneExactTracedOracleTraceSublist table keyView edgeHigh := by
-  intro input state result hresult
+  intro input state initialTrace result hresult
   unfold globalFirstLaneExactTracedOracleImpl at hresult
   apply globalExactTracedLift_trace_sublist table keyView
     (.inl input)
     (StateT.mk fun causalState =>
       globalFirstLaneOracleExecution keyView edgeHigh input causalState)
-    state result hresult
+    state initialTrace result hresult
   exact globalFirstLaneOracleTraceSublist_holds table keyView edgeHigh
-    input state.causalState state.encodingTrace
+    input state.causalState initialTrace
 
 theorem globalFirstLaneExactTracedSigningImpl_trace_sublist
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView) (request : SignRequest)
     (state : GlobalExactTracedState)
+    (initialTrace : EncodingActionTrace)
     (result : (SigningSpec.Range request × GlobalExactTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hresult : result ∈ support
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         ((globalFirstLaneExactTracedSigningImpl keyView request).run state)
           ).run)) :
-    List.Sublist result.1.2.encodingTrace
-      (state.encodingTrace ++ result.2.encodingActions) := by
+    List.Sublist
+      (encodingActionTraceUpdate keyView.secretKey (.inr request)
+        (state.causalState.cache, []) result.1.1
+          (result.1.2.causalState.cache, []) initialTrace)
+      (initialTrace ++ result.2.encodingActions) := by
   unfold globalFirstLaneExactTracedSigningImpl at hresult
   apply globalExactTracedLift_trace_sublist table keyView
-    (.inr request) (globalFirstLaneSigningImpl keyView request) state result
-      hresult
+    (.inr request) (globalFirstLaneSigningImpl keyView request) state
+      initialTrace result hresult
   intro baseResult hbase
   exact globalFirstLaneSigningQuery_trace_sublist table keyView request
-    state.causalState state.encodingTrace baseResult hbase
+    state.causalState initialTrace baseResult hbase
 
 theorem globalFirstLaneExactTracedMappedAdversaryImpl_query_trace_sublist
     (table : GlobalChainValueIndex → Digest)
@@ -1299,6 +1282,7 @@ theorem globalFirstLaneExactTracedMappedAdversaryImpl_query_trace_sublist
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : (OracleWorld + SigningSpec).Domain)
     (state : GlobalExactTracedState)
+    (initialTrace : EncodingActionTrace)
     (result : ((OracleWorld + SigningSpec).Range input ×
       GlobalExactTracedState) ×
         FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
@@ -1306,15 +1290,18 @@ theorem globalFirstLaneExactTracedMappedAdversaryImpl_query_trace_sublist
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         ((globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh input
           ).run state)).run)) :
-    List.Sublist result.1.2.encodingTrace
-      (state.encodingTrace ++ result.2.encodingActions) := by
+    List.Sublist
+      (encodingActionTraceUpdate keyView.secretKey input
+        (state.causalState.cache, []) result.1.1
+          (result.1.2.causalState.cache, []) initialTrace)
+      (initialTrace ++ result.2.encodingActions) := by
   cases input with
   | inl worldInput =>
       exact globalFirstLaneExactTracedOracleTraceSublist_holds table keyView
-        edgeHigh worldInput state result hresult
+        edgeHigh worldInput state initialTrace result hresult
   | inr request =>
       exact globalFirstLaneExactTracedSigningImpl_trace_sublist table keyView
-        request state result hresult
+        request state initialTrace result hresult
 
 theorem globalFirstLaneLiftRevealProbe_mem_eagerTrace_support
     (table : GlobalChainValueIndex → Digest)
@@ -1785,6 +1772,7 @@ theorem globalFirstLaneExactTracedVerifier_append_trace_sublist
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (forgery : Forgery)
     (state : GlobalExactTracedState)
+    (initialTrace : EncodingActionTrace)
     (hparameter : keyView.publicKey.parameter = keyView.secretKey.parameter)
     (result : (Bool × GlobalExactTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
@@ -1796,8 +1784,8 @@ theorem globalFirstLaneExactTracedVerifier_append_trace_sublist
     List.Sublist
       (appendVerificationEncodingObservation keyView.secretKey forgery
         state.causalState.cache result.1.2.causalState.cache
-          result.1.2.encodingTrace)
-      (state.encodingTrace ++ result.2.encodingActions) := by
+          initialTrace)
+      (initialTrace ++ result.2.encodingActions) := by
   obtain ⟨baseResult, hbase, heq⟩ :=
     globalFirstLaneExactTracedVerifier_eager_support_decompose table keyView
       edgeHigh
@@ -1820,7 +1808,7 @@ theorem globalFirstLaneExactTracedVerifier_append_trace_sublist
               (by simpa [forgedInput] using houtput) hbase
         simpa [appendVerificationEncodingObservation, forgedInput, hfresh,
           houtput] using
-            (List.Sublist.refl state.encodingTrace).append
+            (List.Sublist.refl initialTrace).append
               (List.singleton_sublist.mpr haction)
   · simp [appendVerificationEncodingObservation, forgedInput, hfresh]
 
@@ -2240,7 +2228,8 @@ theorem globalExactTracedLift_signing_validSignEpochs_step
   have happended := (List.Sublist.refl
     (initialState.attackerTrace.toSigningLog.map
       fun entry => entry.1.epoch)).append htraceSub
-  simpa [hstate, AttackerActionTrace.toSigningLog_append,
+  rw [hstate]
+  simpa [AttackerActionTrace.toSigningLog_append,
     attackerActionFragment, AttackerActionTrace.toSigningLog,
     AttackerAction.signingEntry?] using happended
 

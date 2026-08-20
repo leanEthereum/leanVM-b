@@ -11,17 +11,14 @@ set_option maxRecDepth 1000000
 set_option linter.constructorNameAsVariable false
 
 noncomputable def globalHighDirectExactQueryResult
-    (keyView : ProgrammedGlobalChainKeygenView)
+    (_keyView : ProgrammedGlobalChainKeygenView)
     (input : (OracleWorld + SigningSpec).Domain)
-    (initialState : GlobalExactTracedState)
+    (_initialState : GlobalExactTracedState)
     (result : (OracleWorld + SigningSpec).Range input ×
       GlobalHighDirectTracedState) :
     (OracleWorld + SigningSpec).Range input ×
       GlobalExactTracedState :=
-  (result.1, GlobalExactTracedState.mk result.2.1 result.2.2
-    (encodingActionTraceUpdate keyView.secretKey input
-      (initialState.causalState.cache, []) result.1
-      (result.2.1.cache, []) initialState.encodingTrace))
+  (result.1, GlobalExactTracedState.mk result.2.1 result.2.2)
 
 theorem globalExactTracedLift_eq_map
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -177,10 +174,8 @@ theorem map_globalHighExactMonitored_adversary_full_query
       (((OracleWorld + SigningSpec).Range input ×
         GlobalHighDirectTracedState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2
-      (encodingActionTraceUpdate keyView.secretKey input
-        (state.1.1.causal.cache, []) result.1.1
-        (result.1.2.1.cache, []) state.2)), result.2)
+    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2),
+      result.2)
   have hold := map_globalHighMonitored_adversary_full_query keyView base
     edgeHigh input state.1.1 state.1.2
   have hlifted := congrArg (fun candidate => augment <$> candidate) hold
@@ -294,7 +289,7 @@ theorem globalHighDirectExactTracedVerifierImpl_run_eq_map_traced
     (simulateQ (globalHighDirectExactTracedVerifierImpl keyView edgeHigh)
         computation).run initialState =
       (fun result => (result.1, GlobalExactTracedState.mk result.2.1
-        result.2.2 initialState.encodingTrace)) <$>
+        result.2.2)) <$>
         (simulateQ (globalHighDirectTracedVerifierImpl keyView edgeHigh)
           computation).run
             (initialState.causalState, initialState.attackerTrace) := by
@@ -310,7 +305,7 @@ theorem map_simulate_globalHighExactMonitored_verifier_full_projection
     (state : GlobalHighExactMonitoredState) :
     (fun result : α × GlobalMonitoredTracedState =>
       ((result.1, GlobalExactTracedState.mk result.2.1.causal
-        result.2.2 state.2), result.2.1.trace)) <$>
+        result.2.2), result.2.1.trace)) <$>
         (simulateQ (globalHighMonitoredVerifierImpl
           ((keyView, base), edgeHigh)) computation).run state.1 =
       (fun result : ((α × GlobalExactTracedState) ×
@@ -322,8 +317,8 @@ theorem map_simulate_globalHighExactMonitored_verifier_full_projection
             computation).run (globalHighExactStateProjection state))).run := by
   let augment := fun result : ((α × GlobalHighDirectTracedState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2
-      state.2), result.2)
+    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2),
+      result.2)
   have hold := map_simulate_globalHighMonitored_verifier_full_projection
     keyView base edgeHigh computation state.1.1 state.1.2
   have hlifted := congrArg (fun candidate => augment <$> candidate) hold
@@ -355,12 +350,7 @@ theorem map_globalHighExactMonitoredDetailedExecution_full_projection
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
     (fun result : ((Bool × GlobalExactTracedState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-      let finalTrace := appendVerificationEncodingObservation
-        keyView.secretKey head.1.1 head.1.2.causalState.cache
-          result.1.2.causalState.cache result.1.2.encodingTrace
-      (((head.1.1, result.1.1),
-        { result.1.2 with encodingTrace := finalTrace }),
-        head.2 ++ result.2)) <$>
+      (((head.1.1, result.1.1), result.1.2), head.2 ++ result.2)) <$>
       (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
         ((simulateQ (globalHighDirectExactTracedVerifierImpl keyView edgeHigh)
           (Concrete.scheme.verify keyView.publicKey head.1.1.epoch
@@ -371,12 +361,9 @@ theorem map_globalHighExactMonitoredDetailedExecution_full_projection
           ((keyView, base), edgeHigh))
           (Concrete.scheme.verify keyView.publicKey handled.1.epoch
             handled.1.message handled.1.signature)).run handled.2.1
-        let finalTrace := appendVerificationEncodingObservation
-          keyView.secretKey handled.1 handled.2.1.1.causal.cache
-            verified.2.1.causal.cache handled.2.2
         pure (((handled.1, verified.1),
-          GlobalExactTracedState.mk verified.2.1.causal verified.2.2
-            finalTrace), verified.2.1.trace)) = tail (project handled) := by
+          GlobalExactTracedState.mk verified.2.1.causal verified.2.2),
+            verified.2.1.trace)) = tail (project handled) := by
     have hvertifier :=
       map_simulate_globalHighExactMonitored_verifier_full_projection keyView
         base edgeHigh
@@ -387,11 +374,7 @@ theorem map_globalHighExactMonitoredDetailedExecution_full_projection
       (fun candidate =>
         (fun result : ((Bool × GlobalExactTracedState) ×
             RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-          let finalTrace := appendVerificationEncodingObservation
-            keyView.secretKey handled.1 handled.2.1.1.causal.cache
-              result.1.2.causalState.cache result.1.2.encodingTrace
-          (((handled.1, result.1.1),
-            { result.1.2 with encodingTrace := finalTrace }), result.2)) <$>
+          (((handled.1, result.1.1), result.1.2), result.2)) <$>
           candidate)
         hvertifier
   unfold globalHighExactMonitoredDetailedExecution
@@ -475,15 +458,6 @@ abbrev GlobalHighExactPublicResult :=
     (GlobalExactTracedResult ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)
 
-def GlobalHighExactProjectedFirstLaneEvent
-    (result : GlobalHighExactPublicResult) : Prop :=
-  (SigningTranscript.Valid
-      result.2.1.2.2.attackerTrace.toSigningLog ∧
-    CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
-      result.2.1.2.2.encodingTrace = true) ∨
-    RevealProbeOracleSimulation.runObserved result.1
-      AdaptiveRevealMonitor.State.empty result.2.2 = true
-
 theorem globalHighExactMonitored_publicProjection_eq
     (result : GlobalHighExactMonitoredProgramResult) :
     let projected := appendGlobalHighDirectExactPublicTrace
@@ -494,43 +468,28 @@ theorem globalHighExactMonitored_publicProjection_eq
   rw [globalHighMonitoredPublicProjection_eq_append_direct]
   rfl
 
-theorem globalHighExactFirstLaneEvent_implies_projected
-    (result : GlobalHighExactMonitoredProgramResult)
-    (hevent : GlobalHighExactFirstLaneEvent result) :
-    GlobalHighExactProjectedFirstLaneEvent
-      (appendGlobalHighDirectExactPublicTrace
-        (globalHighExactMonitoredFullProjection result)) := by
-  rcases hevent with hencoding | hchain
-  · exact Or.inl hencoding
-  · apply Or.inr
-    unfold RevealProbeOracleSimulation.ObservedHit at hchain
-    have hprojection := globalHighExactMonitored_publicProjection_eq result
-    rw [← hprojection] at hchain
-    exact hchain
-
-theorem globalHighExactProjectedFirstLaneEvent_implies_combinedHit
+theorem globalHighExactEncodingEvent_implies_combinedHit
     (table : GlobalChainValueIndex → Digest)
-    (runResult : GlobalExactTracedResult ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hencodingSub : List.Sublist runResult.1.2.2.encodingTrace
-      runResult.2.encodingActions)
+    (encodingTrace : EncodingActionTrace)
+    (attackerTrace : AttackerActionTrace)
+    (trace : FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
+    (hencodingSub : List.Sublist encodingTrace trace.encodingActions)
     (hvalidSub : List.Sublist
       (CappedEncodingMonitor.validObservedSignEpochs
-        runResult.2.encodingActions)
-      (runResult.1.2.2.attackerTrace.toSigningLog.map
+        trace.encodingActions)
+      (attackerTrace.toSigningLog.map
         fun entry => entry.1.epoch))
-    (hevent : GlobalHighExactProjectedFirstLaneEvent
-      (table, (runResult.1, runResult.2.chainActions))) :
-    FirstLaneOracleSimulation.CombinedHit table runResult.2 := by
-  rcases hevent with hencoding | hchain
-  · apply Or.inl
-    have hnodup :
-        (CappedEncodingMonitor.validObservedSignEpochs
-          runResult.2.encodingActions).Nodup := by
-      exact hvalidSub.nodup hencoding.1
-    exact CappedEncodingMonitor.runObserved_empty_eq_true_mono_sublist
-      hencodingSub hnodup hencoding.2
-  · exact Or.inr hchain
+    (hvalid : SigningTranscript.Valid attackerTrace.toSigningLog)
+    (hhit : CappedEncodingMonitor.runObserved EncodingMonitor.State.empty
+      encodingTrace = true) :
+    FirstLaneOracleSimulation.CombinedHit table trace := by
+  apply Or.inl
+  have hnodup :
+      (CappedEncodingMonitor.validObservedSignEpochs
+        trace.encodingActions).Nodup := by
+    exact hvalidSub.nodup hvalid
+  exact CappedEncodingMonitor.runObserved_empty_eq_true_mono_sublist
+    hencodingSub hnodup hhit
 
 abbrev GlobalFirstLaneExactPublicEagerResult :=
   (GlobalChainValueIndex → Digest) ×
