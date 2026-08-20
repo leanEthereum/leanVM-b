@@ -1,7 +1,11 @@
-import XmssSecurity.Proof.CappedVerifierQueryFloor
+import XmssSecurity.Proof.ExactQueryCount
 import XmssSecurity.Proof.CacheReplayEval
+import XmssSecurity.Proof.DetailedExecution
+import XmssSecurity.Proof.CappedChain.EncodingQueryBound
+import XmssSecurity.Proof.QueryBoundSupport
 import XmssSecurity.Statement
 import XmssSecurity.Proof.StatementLemmas
+import VCVio.OracleComp.QueryTracking.SubSpec
 
 open OracleComp OracleSpec
 open scoped BigOperators
