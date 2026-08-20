@@ -318,26 +318,6 @@ noncomputable def sourceGlobalExactTracedDetailedExecution
   pure ((handled.1, verified.1),
     ((verified.2.1, finalEncodingTrace), verified.2.2))
 
-noncomputable def globalHighExactMonitoredDetailedExecution
-    (adversary : Adversary)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest)) :
-    ProbComp ((Forgery × Bool) × GlobalHighExactMonitoredState) := do
-  let initial : GlobalHighExactMonitoredState :=
-    ((⟨globalFilteredCausalKeygenState right.1.1,
-      some AdaptiveRevealMonitor.State.empty, []⟩, []), [])
-  let handled ← (simulateQ
-    (globalHighExactMonitoredMappedAdversaryImpl right)
-      (adversary.main right.1.1.publicKey)).run initial
-  let verified ← (simulateQ (globalHighMonitoredVerifierImpl right)
-    (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
-      handled.1.message handled.1.signature)).run handled.2.1
-  let finalEncodingTrace := appendVerificationEncodingObservation
-    right.1.1.secretKey handled.1 handled.2.1.1.causal.cache
-      verified.2.1.causal.cache handled.2.2
-  pure ((handled.1, verified.1), (verified.2, finalEncodingTrace))
-
 theorem globalSigningExactMonitoredStateRelation_initial
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
@@ -372,71 +352,10 @@ noncomputable def sourceGlobalExactTracedProgram
   let execution ← sourceGlobalExactTracedDetailedExecution adversary keyView
   pure (keyView, execution)
 
-abbrev GlobalHighExactMonitoredProgramResult :=
-  (((ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest)) ×
-    ((Forgery × Bool) × GlobalHighExactMonitoredState))
-
 def sourceGlobalExactErasedResult
     (result : SourceGlobalExactTracedProgramResult) :
     SourceGlobalTracedProgramResult :=
   (result.1, sourceGlobalExactErasedExecution result.2)
-
-def globalHighExactErasedResult
-    (result : GlobalHighExactMonitoredProgramResult) :
-    GlobalHighMonitoredProgramResult :=
-  (result.1, (result.2.1, result.2.2.1))
-
-noncomputable def globalHighExactMonitoredProgram
-    (adversary : Adversary) :
-    ProbComp GlobalHighExactMonitoredProgramResult := do
-  let keyResult ← coupledGlobalChainKeygenWithBaseHighFull
-  let execution ← globalHighExactMonitoredDetailedExecution adversary keyResult
-  pure (keyResult, execution)
-
-theorem globalHighExactMonitoredMappedAdversaryImpl_run_projection
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : GlobalHighExactMonitoredState) :
-    (fun result => (result.1, result.2.1)) <$>
-        (simulateQ (globalHighExactMonitoredMappedAdversaryImpl right)
-          computation).run initialState =
-      (simulateQ (globalHighMonitoredMappedAdversaryImpl right)
-        computation).run initialState.1 := by
-  apply OracleComp.map_run_simulateQ_eq_of_query_map_eq
-  intro input state
-  rw [globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
-  simp [Functor.map_map, globalHighExactQueryResult]
-
-theorem globalHighExactMonitoredDetailedExecution_projection
-    (adversary : Adversary)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest)) :
-    (fun result => (result.1, result.2.1)) <$>
-        globalHighExactMonitoredDetailedExecution adversary right =
-      globalHighMonitoredDetailedExecution adversary right := by
-  unfold globalHighExactMonitoredDetailedExecution
-    globalHighMonitoredDetailedExecution
-  simp only [map_bind, map_pure]
-  let initial : GlobalHighExactMonitoredState :=
-    ((⟨globalFilteredCausalKeygenState right.1.1,
-      some AdaptiveRevealMonitor.State.empty, []⟩, []), [])
-  let tail := fun handled : Forgery × GlobalMonitoredTracedState => do
-    let verified ← (simulateQ (globalHighMonitoredVerifierImpl right)
-      (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
-        handled.1.message handled.1.signature)).run handled.2
-    pure ((handled.1, verified.1), verified.2)
-  change (do
-    let handled ← (simulateQ
-      (globalHighExactMonitoredMappedAdversaryImpl right)
-      (adversary.main right.1.1.publicKey)).run initial
-    tail (handled.1, handled.2.1)) = _
-  rw [← bind_map_left,
-    globalHighExactMonitoredMappedAdversaryImpl_run_projection]
 
 theorem sourceGlobalExactTracedDetailedExecution_projection
     (adversary : Adversary)
@@ -477,18 +396,6 @@ theorem sourceGlobalExactTracedProgram_projection
   rw [← sourceGlobalExactTracedDetailedExecution_projection]
   simp [sourceGlobalExactErasedResult, map_eq_bind_pure_comp]
 
-theorem globalHighExactMonitoredProgram_projection
-    (adversary : Adversary) :
-    globalHighExactErasedResult <$>
-        globalHighExactMonitoredProgram adversary =
-      globalHighMonitoredProgram adversary := by
-  unfold globalHighExactMonitoredProgram globalHighMonitoredProgram
-  simp only [map_eq_bind_pure_comp, bind_assoc]
-  apply bind_congr
-  intro right
-  rw [← globalHighExactMonitoredDetailedExecution_projection]
-  simp [globalHighExactErasedResult, map_eq_bind_pure_comp]
-
 theorem sourceGlobalExactErasedResult_mem_support
     (adversary : Adversary)
     {left : SourceGlobalExactTracedProgramResult}
@@ -497,15 +404,6 @@ theorem sourceGlobalExactErasedResult_mem_support
       support (sourceGlobalTracedProgram adversary) := by
   rw [← sourceGlobalExactTracedProgram_projection, support_map]
   exact ⟨left, hleft, rfl⟩
-
-theorem globalHighExactErasedResult_mem_support
-    (adversary : Adversary)
-    {right : GlobalHighExactMonitoredProgramResult}
-    (hright : right ∈ support (globalHighExactMonitoredProgram adversary)) :
-    globalHighExactErasedResult right ∈
-      support (globalHighMonitoredProgram adversary) := by
-  rw [← globalHighExactMonitoredProgram_projection, support_map]
-  exact ⟨right, hright, rfl⟩
 
 def sourceGlobalExactExecutionResult
     (keyView : ProgrammedGlobalChainKeygenView)
