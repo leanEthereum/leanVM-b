@@ -327,47 +327,4 @@ theorem onlineExperiment_true_probability_le
   rw [onlineExperiment_eq_structuralExperiment]
   exact structuralExperiment_empty_true_probability_le fuel computation
 
-theorem enforced_combinedHit_probability_eq_onlineExperiment
-    (fuel : Nat) (computation : OracleComp (World Index) α) :
-    Pr[fun result : (Index → Digest) × (α × ActionTrace Index) =>
-        CombinedHit result.1
-        (enforceHazardTrace fuel result.2.2) |
-      eagerExperiment computation] =
-    Pr[(fun hit : Bool => hit = true) |
-      onlineExperiment fuel (enforceHazardBound fuel computation)] := by
-  rw [onlineExperiment_eq_structuralExperiment]
-  calc
-    _ = Pr[ExperimentHit |
-        enforceEagerResult fuel <$> eagerExperiment computation] := by
-      rw [probEvent_map]
-      rfl
-    _ = Pr[ExperimentHit |
-        eagerExperiment (enforceHazardBound fuel computation)] := by
-      rw [eagerExperiment_enforceHazardBound_eq_map]
-    _ = Pr[(fun hit : Bool => hit = true) |
-        tracedTableExperiment (enforceHazardBound fuel computation)] := by
-      refine (probEvent_congr' (fun result _ =>
-        (runObserved_empty_eq_combinedHit result.1 result.2.2).symm)
-        rfl).trans ?_
-      change Pr[((fun hit : Bool => hit = true) ∘ fun result =>
-        runObserved result.1 (some EncodingMonitor.State.empty)
-          AdaptiveRevealMonitor.State.empty result.2.2) |
-            eagerExperiment (enforceHazardBound fuel computation)] = _
-      rw [← probEvent_map,
-        map_eagerExperiment_runObserved_eq_tracedTableExperiment]
-    _ = Pr[(fun hit : Bool => hit = true) |
-        structuralExperiment (some EncodingMonitor.State.empty)
-          AdaptiveRevealMonitor.State.empty fuel
-            (enforceHazardBound fuel computation)] := by
-      apply probEvent_congr' (fun _ _ => Iff.rfl)
-      unfold tracedTableExperiment structuralExperiment
-      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
-      intro table
-      exact runTracedObserved_eq_runStructural table
-        (some EncodingMonitor.State.empty)
-        AdaptiveRevealMonitor.State.empty
-        (RevealProbeOracleSimulation.stateAgrees_empty table)
-        fuel (enforceHazardBound fuel computation)
-        (enforceHazardBound_isHazardQueryBoundP fuel computation)
-
 end XmssSecurity.FirstLaneOracleSimulation

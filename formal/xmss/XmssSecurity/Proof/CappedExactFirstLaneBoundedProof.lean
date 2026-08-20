@@ -1,6 +1,6 @@
 import XmssSecurity.Proof.CappedExactFirstLaneBoundedProgram
 import XmssSecurity.Proof.OnlineFirstLaneProjection
-import XmssSecurity.Proof.FirstLaneOnlineMonitor
+import XmssSecurity.Proof.OnlineTraceInterpreter
 
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
@@ -643,7 +643,7 @@ theorem public_eager_enforcedHit_probability_le
         enforcedOnlineFirstLaneExperiment fuel adversary] := by
       unfold GlobalFirstLaneExactPublicEnforcedHit
         globalFirstLaneExactPublicEagerExperiment
-      rw [FirstLaneOracleSimulation.enforced_combinedHit_probability_eq_onlineExperiment]
+      rw [FirstLaneOracleSimulation.enforced_combinedHit_probability_eq_onlineExperiment_direct]
       rw [enforcedOnlineFirstLaneExperiment_eq_exact]
     _ ≤ _ := enforcedOnlineFirstLaneExperiment_true_probability_le fuel
       adversary
