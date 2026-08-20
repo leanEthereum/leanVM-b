@@ -1,31 +1,8 @@
-import XmssSecurity.Proof.CacheReplayEval
-import XmssSecurity.Statement
 import XmssSecurity.Proof.ConcreteQueryBound
-import VCVio.OracleComp.QueryTracking.SubSpec
 
 open OracleComp OracleSpec
 
 namespace XmssSecurity
-
-def IsEncodingHashQueryAt (parameter : PublicParameter) (epoch : Epoch) :
-    OracleWorld.Domain → Prop
-  | .inl _ => False
-  | .inr hashInput => AtHashAddress parameter (.encoding epoch) hashInput
-
-noncomputable instance (parameter : PublicParameter) (epoch : Epoch) :
-    DecidablePred (IsEncodingHashQueryAt parameter epoch) :=
-  Classical.decPred _
-
-theorem Concrete.signingRandomness_queryBound_zero_encodingAddress
-    (parameter : PublicParameter) (epoch : Epoch) :
-    (liftM Concrete.signingRandomness : OracleComp OracleWorld Randomness).IsQueryBoundP
-      (IsEncodingHashQueryAt parameter epoch) 0 := by
-  apply OracleComp.IsQueryBoundP.liftComp_subSpec
-    (p := fun _ : unifSpec.Domain => False)
-  · intro input
-    change False ↔ IsEncodingHashQueryAt parameter epoch (Sum.inl input)
-    simp [IsEncodingHashQueryAt]
-  · simp
 
 theorem Concrete.precomputedSignAttempt_queryBound_zero_at_other_encodingInput
     (secretKey : SecretKey) (epoch targetEpoch : Epoch)
@@ -43,90 +20,5 @@ theorem Concrete.precomputedSignAttempt_queryBound_zero_at_other_encodingInput
       (Concrete.CacheView.encodingInput secretKey.parameter targetEpoch targetInput) hne) ?_
   intro digest _
   split <;> simp
-
-theorem Concrete.precomputedSignAttempt_queryBound_encodingAddress
-    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) (randomness : Randomness) :
-    (Concrete.precomputedSignAttempt secretKey epoch message randomness :
-      OracleComp HashSpec (Option Signature)).IsQueryBoundP
-        (AtHashAddress secretKey.parameter (.encoding targetEpoch))
-        (if epoch = targetEpoch then 1 else 0) := by
-  rw [Concrete.precomputedSignAttempt]
-  by_cases hepoch : epoch = targetEpoch
-  · subst targetEpoch
-    rw [if_pos rfl]
-    refine OracleComp.isQueryBoundP_bind (m := 0) ?_ ?_
-    · simpa [Concrete.encodingHash] using
-        Concrete.tweakableHash_queryBound_atAddress secretKey.parameter
-          (.encoding epoch) (Concrete.encodingPayload message randomness)
-    · intro digest _
-      split <;> simp
-  · rw [if_neg hepoch]
-    refine OracleComp.isQueryBoundP_bind (m := 0) ?_ ?_
-    · simpa [Concrete.encodingHash] using
-        Concrete.tweakableHash_queryBound_atOtherAddress secretKey.parameter
-          (.encoding targetEpoch) (.encoding epoch)
-            (Concrete.encodingPayload message randomness) (by
-              simpa only [HashDomain.encoding.injEq, ne_eq] using hepoch)
-    · intro digest _
-      split <;> simp
-
-theorem Concrete.precomputedSignAttempt_lift_queryBound_encodingAddress
-    (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) (randomness : Randomness) :
-    (liftM (Concrete.precomputedSignAttempt secretKey epoch message randomness :
-      OracleComp HashSpec (Option Signature)) :
-        OracleComp OracleWorld (Option Signature)).IsQueryBoundP
-      (IsEncodingHashQueryAt secretKey.parameter targetEpoch)
-      (if epoch = targetEpoch then 1 else 0) := by
-  apply OracleComp.IsQueryBoundP.liftComp_subSpec
-    (p := AtHashAddress secretKey.parameter (.encoding targetEpoch))
-  · intro input
-    change AtHashAddress secretKey.parameter (.encoding targetEpoch) input ↔
-      IsEncodingHashQueryAt secretKey.parameter targetEpoch (Sum.inr input)
-    rfl
-  · exact Concrete.precomputedSignAttempt_queryBound_encodingAddress
-      secretKey epoch targetEpoch message randomness
-
-theorem Concrete.precomputedSignBoundedAttempts_queryBound_encodingAddress
-    (attempts : Nat) (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) :
-    (Concrete.precomputedSignBoundedAttempts attempts secretKey epoch message).IsQueryBoundP
-      (IsEncodingHashQueryAt secretKey.parameter targetEpoch)
-      (attempts * if epoch = targetEpoch then 1 else 0) := by
-  induction attempts with
-  | zero => simp [Concrete.precomputedSignBoundedAttempts]
-  | succ attempts ih =>
-      rw [Concrete.precomputedSignBoundedAttempts]
-      refine (OracleComp.isQueryBoundP_bind
-        (n := 0)
-        (m := (if epoch = targetEpoch then 1 else 0) +
-          attempts * if epoch = targetEpoch then 1 else 0)
-        (Concrete.signingRandomness_queryBound_zero_encodingAddress
-          secretKey.parameter targetEpoch) ?_).mono (by
-            by_cases hepoch : epoch = targetEpoch
-            · simp [hepoch]
-              omega
-            · simp [hepoch])
-      intro randomness _
-      refine (OracleComp.isQueryBoundP_bind
-        (n := if epoch = targetEpoch then 1 else 0)
-        (m := attempts * if epoch = targetEpoch then 1 else 0)
-        (Concrete.precomputedSignAttempt_lift_queryBound_encodingAddress
-          secretKey epoch targetEpoch message randomness) ?_).mono (by omega)
-      intro result _
-      cases result with
-      | none => exact ih
-      | some signature => simp
-
-theorem Concrete.precomputedCappedSign_queryBound_encodingAddress
-    (publicKey : PublicKey) (secretKey : SecretKey) (epoch targetEpoch : Epoch)
-    (message : Message) :
-    (Concrete.precomputedCappedSign publicKey secretKey epoch message).IsQueryBoundP
-      (IsEncodingHashQueryAt secretKey.parameter targetEpoch)
-      (signingAttemptLimit * if epoch = targetEpoch then 1 else 0) := by
-  unfold Concrete.precomputedCappedSign
-  exact Concrete.precomputedSignBoundedAttempts_queryBound_encodingAddress
-    signingAttemptLimit secretKey epoch targetEpoch message
 
 end XmssSecurity
