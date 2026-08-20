@@ -30,6 +30,32 @@ def globalFirstLaneExactFullProjection {α : Type}
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
   (result.1, chainPrefix ++ result.2.chainActions)
 
+theorem map_eagerTrace_erasure_eq {α : Type}
+    (base : GlobalChainValueIndex → Digest)
+    (chainPrefix : RevealProbeOracleSimulation.ActionTrace
+      GlobalChainValueIndex)
+    (firstLane : OracleComp GlobalFirstLaneWorld
+      (α × GlobalExactTracedState))
+    (direct : OracleComp
+      (RevealProbeOracleSimulation.World GlobalChainValueIndex)
+      (α × GlobalExactTracedState))
+    (herase : GlobalFirstLaneErases firstLane direct) :
+    (fun result => (result.1, chainPrefix ++ result.2)) <$>
+        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
+          direct).run =
+      globalFirstLaneExactFullProjection chainPrefix <$>
+        (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl base)
+          firstLane).run := by
+  have htarget :=
+    simulate_globalFirstLaneEagerTrace_chainProjection base firstLane
+  rw [herase] at htarget
+  have htarget' := congrArg
+    (fun computation =>
+      (fun result => (result.1, chainPrefix ++ result.2)) <$> computation)
+    htarget
+  unfold globalFirstLaneExactFullProjection
+  simpa [Functor.map_map, Function.comp_def] using htarget'.symm
+
 theorem map_globalHighExactMonitored_action_eq_firstLane
     (keyView : ProgrammedGlobalChainKeygenView)
     (base : GlobalChainValueIndex → Digest)
@@ -46,28 +72,10 @@ theorem map_globalHighExactMonitored_action_eq_firstLane
   classical
   have hhigh := map_globalHighExactMonitored_adversary_full_query keyView
     base edgeHigh input highState
-  have htarget := simulate_globalFirstLaneEagerTrace_chainProjection base
-    ((globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh input).run
-      (globalHighExactStateProjection highState))
   have herase := globalFirstLaneErase_exactTracedMappedAdversaryImpl keyView
     edgeHigh input (globalHighExactStateProjection highState)
-  rw [herase] at htarget
-  have htarget' := congrArg
-    (fun computation =>
-      (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
-        computation) htarget
   rw [hhigh]
-  change
-    (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
-        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-          ((globalHighDirectExactTracedMappedAdversaryImpl keyView edgeHigh
-            input).run (globalHighExactStateProjection highState))).run =
-      (fun result => (result.1,
-        highState.1.1.trace ++ result.2.chainActions)) <$>
-        (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl base)
-          ((globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh
-            input).run (globalHighExactStateProjection highState))).run
-  simpa [Functor.map_map, Function.comp_def] using htarget'.symm
+  exact map_eagerTrace_erasure_eq base highState.1.1.trace _ _ herase
 
 theorem relTriple_globalHighExactMonitored_firstLane_action
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -673,16 +681,8 @@ theorem map_globalHighExactMonitored_verifier_action_eq_firstLane
     map_simulate_globalHighExactMonitored_verifier_full_projection keyView
       base edgeHigh (liftM (OracleWorld.query input)) highState
   simp only [simulateQ_spec_query] at hhigh
-  have htarget := simulate_globalFirstLaneEagerTrace_chainProjection base
-    ((globalFirstLaneExactTracedVerifierImpl keyView edgeHigh input).run
-      (globalHighExactStateProjection highState))
   have herase := globalFirstLaneErase_exactTracedVerifierImpl keyView edgeHigh
     input (globalHighExactStateProjection highState)
-  rw [herase] at htarget
-  have htarget' := congrArg
-    (fun computation =>
-      (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
-        computation) htarget
   have hhigh' : globalHighExactFullProjection <$>
         (globalHighExactMonitoredVerifierImpl
           ((keyView, base), edgeHigh) input).run highState =
@@ -696,17 +696,7 @@ theorem map_globalHighExactMonitored_verifier_action_eq_firstLane
       globalHighExactVerifierResult, globalHighExactStateProjection,
       Function.comp_def] using hhigh
   rw [hhigh']
-  change
-    (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
-        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-          ((globalHighDirectExactTracedVerifierImpl keyView edgeHigh input).run
-            (globalHighExactStateProjection highState))).run =
-      (fun result => (result.1,
-        highState.1.1.trace ++ result.2.chainActions)) <$>
-        (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl base)
-          ((globalFirstLaneExactTracedVerifierImpl keyView edgeHigh input).run
-            (globalHighExactStateProjection highState))).run
-  simpa [Functor.map_map, Function.comp_def] using htarget'.symm
+  exact map_eagerTrace_erasure_eq base highState.1.1.trace _ _ herase
 
 theorem relTriple_globalHighExactMonitored_firstLane_verifier_action
     (keyView : ProgrammedGlobalChainKeygenView)
