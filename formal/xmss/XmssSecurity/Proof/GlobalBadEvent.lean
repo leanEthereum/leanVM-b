@@ -50,33 +50,4 @@ theorem winning_outcome_has_globalBadEvent
     outcomeBadEventOccurs_implies_global hevent
   exact ⟨globalEvent, hwin, hglobal⟩
 
-theorem capped_forgeAdvantage_le_winningGlobalBadEvent_sum
-    (adversary : Adversary Concrete.scheme) :
-    forgeAdvantage Concrete.scheme adversary ≤
-      ∑ event, Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-        WinningGlobalBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
-  rw [forgeAdvantage_eq_detailedGameWithCache]
-  calc
-    Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-        execution.1.won = true |
-        detailedGameWithCache Concrete.scheme adversary] ≤
-      Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-        ∃ event : GlobalBadEvent,
-          WinningGlobalBadEventOccurs execution.2 execution.1 event |
-        detailedGameWithCache Concrete.scheme adversary] := by
-      apply probEvent_mono
-      intro execution hmem hwin
-      exact winning_outcome_has_globalBadEvent execution.2 execution.1
-        (capped_detailed_execution_consistent adversary execution hmem) hwin
-    _ ≤ ∑ event : GlobalBadEvent,
-        Pr[fun execution : GameOutcome × QueryCache HashSpec =>
-          WinningGlobalBadEventOccurs execution.2 execution.1 event |
-          detailedGameWithCache Concrete.scheme adversary] := by
-      simpa only [Finset.mem_univ, true_and] using
-        probEvent_exists_finset_le_sum (Finset.univ : Finset GlobalBadEvent)
-          (detailedGameWithCache Concrete.scheme adversary)
-          (fun event execution =>
-            WinningGlobalBadEventOccurs execution.2 execution.1 event)
-
 end XmssSecurity
