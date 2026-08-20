@@ -623,13 +623,10 @@ theorem globalFirstLaneSigningAttempt_support_decompose
     support_map] at hrandom
   obtain ⟨randomness, _hrandomness, rfl⟩ := hrandom
   simp only [List.nil_append] at hrest
-  have hmap : Prod.map id (fun x => x) =
-      (id : ((Option Signature × GlobalCausalHashState) ×
-        FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) → _) := by
-    funext candidate
-    cases candidate
-    rfl
-  rw [hmap, id_map, simulateQ_bind, WriterT.run_bind',
+  rw [show Prod.map id (fun x => x) =
+    (id : ((Option Signature × GlobalCausalHashState) ×
+      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) → _)
+    from Prod.map_id, id_map, simulateQ_bind, WriterT.run_bind',
     mem_support_bind_iff] at hrest
   obtain ⟨encodedHead, hencoded, htail⟩ := hrest
   rw [support_map] at htail

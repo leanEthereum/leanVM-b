@@ -7,6 +7,10 @@ namespace XmssSecurity.FirstLaneOracleSimulation
 
 variable {Index : Type} [Fintype Index] [DecidableEq Index]
 
+theorem prodMap_id {Left Right : Type} :
+    Prod.map (id : Left → Left) (fun right : Right => right) = id :=
+  Prod.map_id
+
 noncomputable def hazardEnforcementImpl :
     QueryImpl (World Index) (StateT Nat (OracleComp (World Index))) :=
   fun input fuel =>
@@ -290,13 +294,7 @@ theorem simulate_eagerTrace_hazardEnforcementImpl_run
             QueryImpl.withTraceAppend_apply, WriterT.run_tell]
           apply bind_congr
           intro output
-          have hmap :
-              Prod.map (id : (α × Nat) → α × Nat)
-                  (fun trace : ActionTrace Index => trace) = id := by
-            funext result
-            cases result
-            rfl
-          rw [hmap, id_map]
+          rw [prodMap_id, id_map]
           exact ih output fuel
       | encodingQuery epoch =>
           cases fuel with
@@ -319,13 +317,7 @@ theorem simulate_eagerTrace_hazardEnforcementImpl_run
                 QueryImpl.withTraceAppend_apply, WriterT.run_tell]
               apply bind_congr
               intro output
-              have hmap :
-                  Prod.map (id : (α × Nat) → α × Nat)
-                      (fun trace : ActionTrace Index => trace) = id := by
-                funext result
-                cases result
-                rfl
-              rw [hmap]
+              rw [prodMap_id]
               simp only [Function.comp_id, bind_pure]
               simp only [enforceHazardTrace]
               change

@@ -272,16 +272,10 @@ theorem globalFirstLaneExactCoupled_run_mem_support
       support_map]
     exact ⟨(result.1.1.1, result.1.2), hdirectKey, rfl⟩
   · simp only [List.nil_append]
-    have hmap : Prod.map id (fun x => x) =
-        (id : GlobalExactTracedResult ×
-          FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex →
-            GlobalExactTracedResult ×
-              FirstLaneOracleSimulation.ActionTrace
-                GlobalChainValueIndex) := by
-      funext candidate
-      cases candidate
-      rfl
-    rw [hmap, id_map, simulateQ_bind, WriterT.run_bind',
+    rw [show Prod.map id (fun x => x) =
+      (id : GlobalExactTracedResult × FirstLaneOracleSimulation.ActionTrace
+        GlobalChainValueIndex → _) from Prod.map_id,
+      id_map, simulateQ_bind, WriterT.run_bind',
       mem_support_bind_iff]
     refine ⟨result.2, hexecution, ?_⟩
     simp

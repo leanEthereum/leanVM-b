@@ -23,12 +23,7 @@ theorem simulate_globalFirstLaneEagerTrace_chainProjection
         WriterT.run_bind']
       have hmap : Prod.map id (fun x => x) =
           (id : α × RevealProbeOracleSimulation.ActionTrace
-            GlobalChainValueIndex →
-            α × RevealProbeOracleSimulation.ActionTrace
-              GlobalChainValueIndex) := by
-        funext result
-        cases result
-        rfl
+            GlobalChainValueIndex → _) := Prod.map_id
       cases input with
       | uniform n =>
           simp [globalFirstLaneEraseImpl,
