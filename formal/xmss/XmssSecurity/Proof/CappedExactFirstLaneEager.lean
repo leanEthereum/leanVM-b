@@ -150,12 +150,9 @@ theorem globalHighDirectExactTracedMappedAdversaryImpl_query_eq_map
   · exact globalHighDirectExactTracedMappedAdversaryImpl_sign_eq_map
       keyView edgeHigh request initialState
 
-def globalHighExactFullQueryProjection
-    {input : (OracleWorld + SigningSpec).Domain}
-    (result : (OracleWorld + SigningSpec).Range input ×
-      GlobalHighExactMonitoredState) :
-    ((OracleWorld + SigningSpec).Range input ×
-      GlobalExactTracedState) ×
+def globalHighExactFullProjection {α : Type}
+    (result : α × GlobalHighExactMonitoredState) :
+    (α × GlobalExactTracedState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
   ((result.1, GlobalExactTracedState.mk result.2.1.1.causal
     result.2.1.2 result.2.2), result.2.1.1.trace)
@@ -166,7 +163,7 @@ theorem map_globalHighExactMonitored_adversary_full_query
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : (OracleWorld + SigningSpec).Domain)
     (state : GlobalHighExactMonitoredState) :
-    globalHighExactFullQueryProjection <$>
+    globalHighExactFullProjection <$>
         (globalHighExactMonitoredMappedAdversaryImpl
           ((keyView, base), edgeHigh) input).run state =
       (fun result : (((OracleWorld + SigningSpec).Range input ×
@@ -190,7 +187,7 @@ theorem map_globalHighExactMonitored_adversary_full_query
   have hlifted := congrArg (fun candidate => augment <$> candidate) hold
   rw [globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
   rw [globalHighDirectExactTracedMappedAdversaryImpl_query_eq_map]
-  simpa [globalHighExactFullQueryProjection, globalHighExactQueryResult,
+  simpa [globalHighExactFullProjection, globalHighExactQueryResult,
     globalHighDirectExactQueryResult, augment, Functor.map_map,
     Function.comp_def, simulateQ_map, bind_map_left] using hlifted
 

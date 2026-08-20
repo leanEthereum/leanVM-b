@@ -21,15 +21,12 @@ theorem verifierHashQueryCost_eq_if (input : OracleWorld.Domain) :
       (if input matches .inr _ then 1 else 0) := by
   rcases input with n | hashInput <;> rfl
 
-def globalFirstLaneExactFullQueryProjection
-    {input : (OracleWorld + SigningSpec).Domain}
+def globalFirstLaneExactFullProjection {α : Type}
     (chainPrefix : RevealProbeOracleSimulation.ActionTrace
       GlobalChainValueIndex)
-    (result : ((OracleWorld + SigningSpec).Range input ×
-      GlobalExactTracedState) ×
+    (result : (α × GlobalExactTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) :
-    ((OracleWorld + SigningSpec).Range input ×
-      GlobalExactTracedState) ×
+    (α × GlobalExactTracedState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
   (result.1, chainPrefix ++ result.2.chainActions)
 
@@ -39,10 +36,10 @@ theorem map_globalHighExactMonitored_action_eq_firstLane
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : (OracleWorld + SigningSpec).Domain)
     (highState : GlobalHighExactMonitoredState) :
-    globalHighExactFullQueryProjection <$>
+    globalHighExactFullProjection <$>
         (globalHighExactMonitoredMappedAdversaryImpl
           ((keyView, base), edgeHigh) input).run highState =
-      globalFirstLaneExactFullQueryProjection highState.1.1.trace <$>
+      globalFirstLaneExactFullProjection highState.1.1.trace <$>
         (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl base)
           ((globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh
             input).run (globalHighExactStateProjection highState))).run := by
@@ -85,8 +82,8 @@ theorem relTriple_globalHighExactMonitored_firstLane_action
         ((globalFirstLaneExactTracedMappedAdversaryImpl keyView edgeHigh
           input).run (globalHighExactStateProjection highState))).run)
       (fun highResult firstLaneResult =>
-        globalHighExactFullQueryProjection highResult =
-          globalFirstLaneExactFullQueryProjection highState.1.1.trace
+        globalHighExactFullProjection highResult =
+          globalFirstLaneExactFullProjection highState.1.1.trace
             firstLaneResult ∧
         highResult ∈ support
           ((globalHighExactMonitoredMappedAdversaryImpl
@@ -382,8 +379,8 @@ theorem relTriple_sourceExact_firstLane_action
   · apply Or.inr
     have hchainProjection : highResult.2.1.1.trace =
         highState.1.1.trace ++ firstLaneResult.2.chainActions := by
-      simpa [globalHighExactFullQueryProjection,
-        globalFirstLaneExactFullQueryProjection] using
+      simpa [globalHighExactFullProjection,
+        globalFirstLaneExactFullProjection] using
           congrArg Prod.snd hprojection
     have hchainHit : RevealProbeOracleSimulation.runObserved right.1.2
         AdaptiveRevealMonitor.State.empty
@@ -658,35 +655,16 @@ theorem relTriple_programmed_globalHighExactMonitored_verifier_action
   · exact Or.inl ⟨hgood.1, hgood.2, hstate.2⟩
   · exact Or.inr hbad
 
-def globalHighExactFullVerifierProjection
-    {input : OracleWorld.Domain}
-    (result : OracleWorld.Range input × GlobalHighExactMonitoredState) :
-    (OracleWorld.Range input × GlobalExactTracedState) ×
-      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
-  ((result.1, globalHighExactStateProjection result.2),
-    result.2.1.1.trace)
-
-def globalFirstLaneExactFullVerifierProjection
-    {input : OracleWorld.Domain}
-    (chainPrefix : RevealProbeOracleSimulation.ActionTrace
-      GlobalChainValueIndex)
-    (result : (OracleWorld.Range input ×
-      GlobalExactTracedState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) :
-    (OracleWorld.Range input × GlobalExactTracedState) ×
-      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
-  (result.1, chainPrefix ++ result.2.chainActions)
-
 theorem map_globalHighExactMonitored_verifier_action_eq_firstLane
     (keyView : ProgrammedGlobalChainKeygenView)
     (base : GlobalChainValueIndex → Digest)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : OracleWorld.Domain)
     (highState : GlobalHighExactMonitoredState) :
-    globalHighExactFullVerifierProjection <$>
+    globalHighExactFullProjection <$>
         (globalHighExactMonitoredVerifierImpl
           ((keyView, base), edgeHigh) input).run highState =
-      globalFirstLaneExactFullVerifierProjection highState.1.1.trace <$>
+      globalFirstLaneExactFullProjection highState.1.1.trace <$>
         (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl base)
           ((globalFirstLaneExactTracedVerifierImpl keyView edgeHigh input).run
             (globalHighExactStateProjection highState))).run := by
@@ -705,7 +683,7 @@ theorem map_globalHighExactMonitored_verifier_action_eq_firstLane
     (fun computation =>
       (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
         computation) htarget
-  have hhigh' : globalHighExactFullVerifierProjection <$>
+  have hhigh' : globalHighExactFullProjection <$>
         (globalHighExactMonitoredVerifierImpl
           ((keyView, base), edgeHigh) input).run highState =
       (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
@@ -714,7 +692,7 @@ theorem map_globalHighExactMonitored_verifier_action_eq_firstLane
             (globalHighExactStateProjection highState))).run := by
     unfold globalHighExactMonitoredVerifierImpl
     simp only [StateT.run_mk, Functor.map_map]
-    simpa [globalHighExactFullVerifierProjection,
+    simpa [globalHighExactFullProjection,
       globalHighExactVerifierResult, globalHighExactStateProjection,
       Function.comp_def] using hhigh
   rw [hhigh']
@@ -743,8 +721,8 @@ theorem relTriple_globalHighExactMonitored_firstLane_verifier_action
         ((globalFirstLaneExactTracedVerifierImpl keyView edgeHigh input).run
           (globalHighExactStateProjection highState))).run)
       (fun highResult firstLaneResult =>
-        globalHighExactFullVerifierProjection highResult =
-          globalFirstLaneExactFullVerifierProjection highState.1.1.trace
+        globalHighExactFullProjection highResult =
+          globalFirstLaneExactFullProjection highState.1.1.trace
             firstLaneResult ∧
         highResult ∈ support
           ((globalHighExactMonitoredVerifierImpl
@@ -860,8 +838,8 @@ theorem relTriple_sourceExact_firstLane_verifier_action
   · apply Or.inr
     have hchainProjection : highResult.2.1.1.trace =
         highState.1.1.trace ++ firstLaneResult.2.chainActions := by
-      simpa [globalHighExactFullVerifierProjection,
-        globalFirstLaneExactFullVerifierProjection] using
+      simpa [globalHighExactFullProjection,
+        globalFirstLaneExactFullProjection] using
           congrArg Prod.snd hprojection
     have hchainHit : RevealProbeOracleSimulation.runObserved right.1.2
         AdaptiveRevealMonitor.State.empty
