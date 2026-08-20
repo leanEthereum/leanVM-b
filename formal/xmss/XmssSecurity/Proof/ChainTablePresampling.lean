@@ -355,17 +355,6 @@ noncomputable def actualFixedChainKeygen
     table := keygenChainValueTable keyResult.2 keyResult.1.2 chain
   }
 
-theorem actualFixedChainKeygen_support_table
-    (chain : ChainIndex) (result : ProgrammedFixedChainKeygenView)
-    (hresult : result ∈ support (actualFixedChainKeygen chain)) :
-    keygenChainValueTable result.cache result.secretKey chain = result.table := by
-  unfold actualFixedChainKeygen at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨keyResult, _hkeyResult, hpure⟩ := hresult
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  rfl
-
 noncomputable def explicitFixedChainKeygenFromSecret
     (parameter : PublicParameter) (chain : ChainIndex)
     (secret : Epoch → ChainIndex → Digest) :

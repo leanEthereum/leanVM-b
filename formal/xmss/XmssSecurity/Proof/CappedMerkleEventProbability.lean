@@ -569,15 +569,6 @@ theorem afterKeygen_verified_forgedMerkleQuery_cached
       encoding hverified hdecode level
   exact ⟨output, hcached⟩
 
-theorem forgedMerkleQueryInput_eq_of_epoch
-    (execution : GameOutcome × QueryCache HashSpec)
-    (epoch : Epoch) (hepoch : epoch = execution.1.forgery.epoch)
-    (encoding : Encoding) (level : MerkleLevel) :
-    forgedMerkleQueryInput execution epoch encoding level =
-      forgedMerkleQueryInput execution execution.1.forgery.epoch encoding level := by
-  subst epoch
-  rfl
-
 theorem afterKeygen_verified_forgedMerkleQuery_cached_at
     (adversary : Adversary Concrete.scheme)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)

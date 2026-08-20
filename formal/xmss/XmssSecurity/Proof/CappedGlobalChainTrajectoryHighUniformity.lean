@@ -317,11 +317,6 @@ theorem patchAllChainHighTable_cons
         XmssSecurity.presamplingSampleableChainEdges
       pure (updateChainHighTable rest chain high)) := rfl
 
-theorem globalChainEdgeHighTableOfRows_eq_uncurry
-    (rows : AllChainHighRows) :
-    globalChainEdgeHighTableOfRows rows =
-      uncurryGlobalChainEdgeTable (allChainHighTableOfRows rows) := rfl
-
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 1000000 in
 theorem evalDist_sampleAllChainHighRows_table_eq_patch :

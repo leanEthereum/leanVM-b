@@ -92,14 +92,6 @@ noncomputable def eagerTraceImpl (table : Index → Digest) :
   (eagerImpl table).withTraceAppend traceFragment
 
 omit [Fintype Index] [DecidableEq Index] in
-theorem eagerTrace_projection
-    (table : Index → Digest) (computation : OracleComp (World Index) α) :
-    Prod.fst <$> (simulateQ (eagerTraceImpl table) computation).run =
-      simulateQ (eagerImpl table) computation := by
-  exact QueryImpl.fst_map_run_withTraceAppend
-    (eagerImpl table) traceFragment computation
-
-omit [Fintype Index] [DecidableEq Index] in
 theorem simulate_eagerTrace_liftProbComp
     (table : Index → Digest) (computation : ProbComp α) :
     (simulateQ (eagerTraceImpl table)
