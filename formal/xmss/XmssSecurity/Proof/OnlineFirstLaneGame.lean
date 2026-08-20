@@ -40,7 +40,7 @@ noncomputable def onlineFirstLaneVerifierImpl
       (globalFirstLaneVerifierImpl keyView edgeHigh input).run state.1
 
 noncomputable def onlineFirstLaneDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     StateT GlobalHighDirectTracedState (OracleComp GlobalFirstLaneWorld)
@@ -69,7 +69,7 @@ noncomputable def onlineFirstLaneForgeryProbes
     (onlineFirstLaneDirectResult result)
 
 noncomputable def onlineFirstLaneCoreProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     OracleComp GlobalFirstLaneWorld OnlineFirstLaneResult := do
   let keyResult ← FirstLaneOracleSimulation.liftProbComp globalHighDirectKeygen
   let execution ← (onlineFirstLaneDetailedExecution adversary keyResult.1
@@ -78,7 +78,7 @@ noncomputable def onlineFirstLaneCoreProgram
   pure (keyResult, execution)
 
 noncomputable def onlineFirstLaneProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     OracleComp GlobalFirstLaneWorld OnlineFirstLaneResult := do
   let result ← onlineFirstLaneCoreProgram adversary
   let _ ← globalFirstLaneLiftRevealProbe
@@ -87,18 +87,18 @@ noncomputable def onlineFirstLaneProgram
   pure result
 
 noncomputable def onlineFirstLaneExperiment
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) : ProbComp Bool :=
+    (fuel : Nat) (adversary : Adversary) : ProbComp Bool :=
   FirstLaneOracleSimulation.onlineExperiment fuel
     (onlineFirstLaneProgram adversary)
 
 noncomputable def enforcedOnlineFirstLaneExperiment
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) : ProbComp Bool :=
+    (fuel : Nat) (adversary : Adversary) : ProbComp Bool :=
   FirstLaneOracleSimulation.onlineExperiment fuel
     (FirstLaneOracleSimulation.enforceHazardBound fuel
       (onlineFirstLaneProgram adversary))
 
 theorem onlineFirstLaneExperiment_true_probability_le
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) :
+    (fuel : Nat) (adversary : Adversary) :
     Pr[(fun hit : Bool => hit = true) |
         onlineFirstLaneExperiment fuel adversary] ≤
       (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=
@@ -106,7 +106,7 @@ theorem onlineFirstLaneExperiment_true_probability_le
     (onlineFirstLaneProgram adversary)
 
 theorem enforcedOnlineFirstLaneExperiment_true_probability_le
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) :
+    (fuel : Nat) (adversary : Adversary) :
     Pr[(fun hit : Bool => hit = true) |
         enforcedOnlineFirstLaneExperiment fuel adversary] ≤
       (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) :=

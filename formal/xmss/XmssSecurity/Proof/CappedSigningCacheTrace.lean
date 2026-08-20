@@ -404,7 +404,7 @@ theorem cappedCacheTracedMappedAdversaryImpl_log_projection_eq_mapped
   rfl
 
 noncomputable def cappedDetailedGameAfterKeygenWithSigningTrace
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) := do
@@ -419,7 +419,7 @@ noncomputable def cappedDetailedGameAfterKeygenWithSigningTrace
     (finalCache, trace))
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     Prod.map id Prod.fst <$>
@@ -443,14 +443,14 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_cache_projection
     Prod.map, QueryImpl.simulateQ_writerTMapBase_run] using hbridge
 
 noncomputable def cappedDetailedGameWithSigningTrace
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp (GameOutcome × (QueryCache HashSpec × SigningCacheTrace)) := do
   let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
   cappedDetailedGameAfterKeygenWithSigningTrace adversary keyResult.1.1 keyResult.1.2
     keyResult.2
 
 theorem cappedDetailedGameWithSigningTrace_cache_projection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     Prod.map id Prod.fst <$> cappedDetailedGameWithSigningTrace adversary =
       detailedGameWithCache Concrete.scheme adversary := by
   unfold cappedDetailedGameWithSigningTrace detailedGameWithCache detailedGameCore
@@ -462,7 +462,7 @@ theorem cappedDetailedGameWithSigningTrace_cache_projection
     keyResult.1.1 keyResult.1.2 keyResult.2
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_invariants
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
@@ -494,7 +494,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_invariants
       (by simp [SigningCacheTrace.SuccessfulEncodingsCached]) hadversary
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_preservesOtherValidEncodingInputs
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
@@ -515,7 +515,7 @@ theorem cappedDetailedGameAfterKeygenWithSigningTrace_preservesOtherValidEncodin
     (by simp [SigningCacheTrace.PreservesOtherValidEncodingInputs]) hadversary
 
 theorem cappedDetailedGameWithSigningTrace_invariants
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
     result.2.2.toSigningLog = result.1.signingLog ∧
@@ -530,7 +530,7 @@ theorem cappedDetailedGameWithSigningTrace_invariants
   exact ⟨hlog, hcaches, by simpa [hsecretKey] using hcached⟩
 
 theorem cappedDetailedGameWithSigningTrace_preservesOtherValidEncodingInputs
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : result ∈ support (cappedDetailedGameWithSigningTrace adversary)) :
     result.2.2.PreservesOtherValidEncodingInputs result.1.secretKey := by

@@ -1041,7 +1041,7 @@ theorem SourceFirstLaneExactGoodStateRelation.appendVerification
 
 theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
     (countLimit hitLimit : Nat)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×

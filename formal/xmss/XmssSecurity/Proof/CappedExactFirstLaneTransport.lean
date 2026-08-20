@@ -153,7 +153,7 @@ noncomputable def globalFirstLaneExactTracedVerifierImpl
         state.causalState
 
 noncomputable def globalHighDirectExactTracedDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     StateT GlobalExactTracedState
@@ -174,7 +174,7 @@ noncomputable def globalHighDirectExactTracedDetailedExecution
     { verified.2 with encodingTrace := finalTrace })
 
 noncomputable def globalFirstLaneExactTracedDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     StateT GlobalExactTracedState
@@ -198,7 +198,7 @@ abbrev GlobalExactTracedResult :=
     ((Forgery × Bool) × GlobalExactTracedState)
 
 noncomputable def globalFirstLaneExactTracedProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     OracleComp GlobalFirstLaneWorld GlobalExactTracedResult := do
   let keyResult ← FirstLaneOracleSimulation.liftProbComp
     globalHighDirectKeygen
@@ -287,7 +287,7 @@ theorem globalFirstLaneErase_exactTracedVerifierImpl
   exact GlobalFirstLaneErases.pure _
 
 theorem globalFirstLaneErase_exactTracedDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (state : GlobalExactTracedState) :
@@ -1871,7 +1871,7 @@ theorem globalFirstLaneExactTracedVerifier_eager_support_decompose
 
 theorem globalFirstLaneExactTracedDetailedExecution_trace_sublist
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (state : GlobalExactTracedState)
@@ -1986,7 +1986,7 @@ theorem globalHighDirectKeygen_support_parameter_eq
 
 theorem globalFirstLaneExactTracedProgram_trace_sublist
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalExactTracedResult ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hresult : result ∈ support
@@ -2741,7 +2741,7 @@ theorem globalFirstLaneExactTracedVerifier_validSignEpochs_eq_nil
 
 theorem globalFirstLaneExactTracedDetailedExecution_validSignEpochs_sublist
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (state : GlobalExactTracedState)
@@ -2798,7 +2798,7 @@ theorem globalFirstLaneExactTracedDetailedExecution_validSignEpochs_sublist
 
 theorem globalFirstLaneExactTracedProgram_validSignEpochs_sublist
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalExactTracedResult ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hresult : result ∈ support

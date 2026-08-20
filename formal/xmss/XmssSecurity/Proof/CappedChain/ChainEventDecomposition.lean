@@ -60,7 +60,7 @@ noncomputable def OutcomeChainValueHasKeygenOrigin (keygenCache finalCache : Que
           truncateHash output = outcome.forgery.signature.chainValue chain)
 
 theorem chainValueRevealed_afterKeygen_has_origin
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -112,7 +112,7 @@ theorem chainValueRevealed_afterKeygen_has_origin
         _ = execution.1.forgery.signature.chainValue chain := hvalue.symm
 
 theorem chain_event_afterKeygen_revealed_or_collision
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))

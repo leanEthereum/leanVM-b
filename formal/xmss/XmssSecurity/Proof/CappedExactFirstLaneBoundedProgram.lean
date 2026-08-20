@@ -15,7 +15,7 @@ abbrev GlobalFirstLaneExactCoupledProgramResult :=
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex))
 
 noncomputable def globalFirstLaneExactCoupledProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp GlobalFirstLaneExactCoupledProgramResult := do
   let right ← coupledGlobalChainKeygenWithBaseHighFull
   let execution ← (simulateQ
@@ -39,7 +39,7 @@ def SourceFirstLaneExactBoundedProgramRelation
 
 theorem relTriple_sourceGlobalExact_firstLane_program_boundedHit_sub_keygen
     (q hitLimit : Nat)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (hlimits : q - treeHashQueryCount treeHeight ≤ hitLimit) :
     RelTriple (sourceGlobalExactTracedProgram adversary)
@@ -81,7 +81,7 @@ def globalFirstLaneExactCoupledProjection
     (((result.1.1.1, result.1.2), result.2.1), result.2.2))
 
 noncomputable def globalFirstLaneExactCoupledContinuation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (parameter : PublicParameter)
     (base : GlobalChainValueIndex → Digest) :
     ProbComp GlobalFirstLaneExactPublicEagerResult := do
@@ -94,7 +94,7 @@ noncomputable def globalFirstLaneExactCoupledContinuation
   pure (base, ((keyResult, execution.1), execution.2))
 
 theorem globalFirstLaneExactCoupledProgram_projection_eq_parameterFirst
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     globalFirstLaneExactCoupledProjection <$>
       globalFirstLaneExactCoupledProgram adversary = (do
         let parameter ← Concrete.samplePublicParameter
@@ -126,7 +126,7 @@ theorem firstLane_eagerTrace_liftProbComp_then_bind
   simp [simulateQ_pure, WriterT.run_pure]
 
 theorem globalFirstLaneExactCoupledContinuation_eq_eagerAfterBase
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (base : GlobalChainValueIndex → Digest) :
     (do
       let parameter ← Concrete.samplePublicParameter
@@ -148,7 +148,7 @@ theorem globalFirstLaneExactCoupledContinuation_eq_eagerAfterBase
             (globalFilteredCausalKeygenState keyResult.1))))
 
 theorem evalDist_globalFirstLaneExactCoupledProjection_eq_eagerExperiment
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     evalDist (globalFirstLaneExactCoupledProjection <$>
       globalFirstLaneExactCoupledProgram adversary) =
     evalDist (FirstLaneOracleSimulation.eagerExperiment

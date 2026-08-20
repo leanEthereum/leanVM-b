@@ -304,7 +304,7 @@ theorem appendVerificationEncodingObservation_eq_of_globalSigningCachesAgree
   rw [← hinput, hinitialCache, hfinalCache]
 
 noncomputable def sourceGlobalExactTracedDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView) :
     ProbComp ((Forgery × Bool) × SourceExactTracedState) := do
   let handled ← (simulateQ
@@ -322,7 +322,7 @@ noncomputable def sourceGlobalExactTracedDetailedExecution
     ((verified.2.1, finalEncodingTrace), verified.2.2))
 
 noncomputable def globalHighExactMonitoredDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest)) :
@@ -369,7 +369,7 @@ abbrev SourceGlobalExactTracedProgramResult :=
     ((Forgery × Bool) × SourceExactTracedState)
 
 noncomputable def sourceGlobalExactTracedProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp SourceGlobalExactTracedProgramResult := do
   let keyView ← trajectoryProgrammedGlobalChainKeygen
   let execution ← sourceGlobalExactTracedDetailedExecution adversary keyView
@@ -392,7 +392,7 @@ def globalHighExactErasedResult
   (result.1, (result.2.1, result.2.2.1))
 
 noncomputable def globalHighExactMonitoredProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp GlobalHighExactMonitoredProgramResult := do
   let keyResult ← coupledGlobalChainKeygenWithBaseHighFull
   let execution ← globalHighExactMonitoredDetailedExecution adversary keyResult
@@ -415,7 +415,7 @@ theorem globalHighExactMonitoredMappedAdversaryImpl_run_projection
   simp [Functor.map_map, globalHighExactQueryResult]
 
 theorem globalHighExactMonitoredDetailedExecution_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest)) :
@@ -442,7 +442,7 @@ theorem globalHighExactMonitoredDetailedExecution_projection
     globalHighExactMonitoredMappedAdversaryImpl_run_projection]
 
 theorem sourceGlobalExactTracedDetailedExecution_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView) :
     sourceGlobalExactErasedExecution <$>
         sourceGlobalExactTracedDetailedExecution adversary keyView =
@@ -468,7 +468,7 @@ theorem sourceGlobalExactTracedDetailedExecution_projection
     Prod.map] using hbound
 
 theorem sourceGlobalExactTracedProgram_projection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     sourceGlobalExactErasedResult <$>
         sourceGlobalExactTracedProgram adversary =
       sourceGlobalTracedProgram adversary := by
@@ -480,7 +480,7 @@ theorem sourceGlobalExactTracedProgram_projection
   simp [sourceGlobalExactErasedResult, map_eq_bind_pure_comp]
 
 theorem globalHighExactMonitoredProgram_projection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     globalHighExactErasedResult <$>
         globalHighExactMonitoredProgram adversary =
       globalHighMonitoredProgram adversary := by
@@ -520,7 +520,7 @@ theorem sourceGlobalExactHighMonitoredProgramRelation_projection
   · exact Or.inr hbad
 
 theorem sourceGlobalExactErasedResult_mem_support
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     {left : SourceGlobalExactTracedProgramResult}
     (hleft : left ∈ support (sourceGlobalExactTracedProgram adversary)) :
     sourceGlobalExactErasedResult left ∈
@@ -529,7 +529,7 @@ theorem sourceGlobalExactErasedResult_mem_support
   exact ⟨left, hleft, rfl⟩
 
 theorem globalHighExactErasedResult_mem_support
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     {right : GlobalHighExactMonitoredProgramResult}
     (hright : right ∈ support (globalHighExactMonitoredProgram adversary)) :
     globalHighExactErasedResult right ∈
@@ -553,7 +553,7 @@ def sourceGlobalExactProgramResult
     sourceGlobalExactExecutionResult result.1 result.2)
 
 theorem sourceGlobalExactTracedDetailedExecution_eq_bothTraces
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView) :
     sourceGlobalExactExecutionResult keyView <$>
         sourceGlobalExactTracedDetailedExecution adversary keyView =
@@ -570,7 +570,7 @@ theorem sourceGlobalExactTracedDetailedExecution_eq_bothTraces
     map_eq_bind_pure_comp]
 
 theorem sourceGlobalExactTracedProgram_eq_trajectoryBothTraces
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     sourceGlobalExactProgramResult <$>
         sourceGlobalExactTracedProgram adversary = (do
       let keyView ← trajectoryProgrammedGlobalChainKeygen
@@ -588,7 +588,7 @@ theorem sourceGlobalExactTracedProgram_eq_trajectoryBothTraces
   simp [sourceGlobalExactProgramResult, map_eq_bind_pure_comp]
 
 theorem evalDist_sourceGlobalExact_eq_cappedBothTraces
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     evalDist (sourceGlobalExactProgramResult <$>
         sourceGlobalExactTracedProgram adversary) =
       evalDist (cappedDetailedGameWithKeygenCacheAndBothTraces adversary) := by
@@ -620,7 +620,7 @@ def SourceWinningExactFirstLaneEvent
     (cappedBothEncodingProjection (sourceGlobalExactProgramResult result))
 
 theorem cappedExactFirstLane_probability_eq_sourceGlobalExact
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     Pr[WinningExactFirstLaneBadEventOccurs |
         cappedDetailedGameWithEncodingTrace adversary] =
       Pr[SourceWinningExactFirstLaneEvent |
@@ -643,7 +643,7 @@ theorem cappedExactFirstLane_probability_eq_sourceGlobalExact
       rfl
 
 theorem cappedExactEncodingBranch_implies_monitorHit
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : CappedEncodingTraceExecution)
     (hmem : execution ∈ support
       (cappedDetailedGameWithEncodingTrace adversary))
@@ -668,7 +668,7 @@ theorem cappedExactEncodingBranch_implies_monitorHit
           ⟨entry, hentry, hpostSigning⟩
 
 theorem cappedBothTraceGameResult_keyResult_mem_support
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : CappedBothTraceGameResult)
     (hresult : result ∈ support
       (cappedDetailedGameWithKeygenCacheAndBothTraces adversary)) :
@@ -684,7 +684,7 @@ theorem cappedBothTraceGameResult_keyResult_mem_support
   exact hkeyResult
 
 theorem cappedBothTraceGameResult_cacheExecution_mem_support
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : CappedBothTraceGameResult)
     (hresult : result ∈ support
       (cappedDetailedGameWithKeygenCacheAndBothTraces adversary)) :
@@ -722,7 +722,7 @@ def GlobalHighExactFirstLaneEvent
 
 set_option maxRecDepth 1000000 in
 theorem sourceWinningExactFirstLane_implies_globalHighExact
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (left : SourceGlobalExactTracedProgramResult)
     (right : GlobalHighExactMonitoredProgramResult)
     (hleftSupport : left ∈ support

@@ -87,7 +87,7 @@ theorem encodingHashQuery_structuralQuery_disjoint
             (keygenStructuralTargetInput_encodingInput secretKey cache epoch payload)
 
 theorem cappedSourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
@@ -112,7 +112,7 @@ theorem cappedSourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen
       keyResult.1.2)).mp hstandard
 
 noncomputable def expectedPostKeygenStructuralQueries
-    (adversary : Adversary Concrete.scheme) : ENNReal :=
+    (adversary : Adversary) : ENNReal :=
   ∑' keyResult,
     Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
       expectedSimulatedQueryCount xmssRomImpl
@@ -122,7 +122,7 @@ noncomputable def expectedPostKeygenStructuralQueries
           keyResult.1.1 keyResult.1.2) keyResult.2
 
 theorem expectedStructuralQueries_detailed_eq_source
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec) :
     expectedSimulatedQueryCount xmssRomImpl
         (Rom.IsRelevantHashQuery fun input =>
@@ -145,7 +145,7 @@ theorem expectedStructuralQueries_detailed_eq_source
   exact hprojection
 
 theorem winningStructuralCollision_probability_le_expectedPostKeygenStructuralQueries
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningStructuralCollisionOccurs execution.2 execution.1 |
       detailedGameWithCache Concrete.scheme adversary] ≤
@@ -161,7 +161,7 @@ theorem winningStructuralCollision_probability_le_expectedPostKeygenStructuralQu
   exact expectedStructuralQueries_detailed_eq_source adversary keyResult
 
 theorem postKeygenEncoding_add_structural_expected_le
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     CappedEncodingMonitor.expectedPostKeygenEncodingQueries adversary +
         expectedPostKeygenStructuralQueries adversary ≤

@@ -472,7 +472,7 @@ theorem simulate_globalHighMonitoredVerifier_support_attacker_trace_eq
 set_option maxHeartbeats 3000000 in
 set_option maxRecDepth 2000000 in
 theorem globalHighMonitoredDetailedExecution_support_returnedCovered
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest))

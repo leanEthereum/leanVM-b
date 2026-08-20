@@ -6,7 +6,7 @@ open OracleComp OracleSpec
 namespace XmssSecurity
 
 theorem capped_detailed_execution_verification_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       (detailedGameWithCache Concrete.scheme adversary)) :
@@ -42,7 +42,7 @@ theorem capped_detailed_execution_verification_consistent
 
 set_option linter.constructorNameAsVariable false in
 theorem capped_detailed_execution_key_components_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       (detailedGameWithCache Concrete.scheme adversary)) :
@@ -102,7 +102,7 @@ theorem capped_detailed_execution_key_components_consistent
   exact ⟨rfl, heval.symm⟩
 
 theorem capped_detailed_execution_key_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       (detailedGameWithCache Concrete.scheme adversary)) :
@@ -120,7 +120,7 @@ theorem capped_detailed_execution_key_consistent
             ⟨secretParameter, chainStart, chainValue, treeValue⟩ root hroot
 
 theorem capped_detailed_execution_consistent_of_signing
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       (detailedGameWithCache Concrete.scheme adversary))

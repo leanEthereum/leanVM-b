@@ -7,7 +7,7 @@ namespace XmssSecurity.CappedSuffix
 
 
 theorem detailed_execution_verified_chain_query_cached_as
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (encoding : Encoding) (hverified : execution.1.verified = true)
@@ -148,7 +148,7 @@ theorem adaptiveFreshDigestCollisionWith_of_chainCollision
     exact hcollision
 
 theorem chainCollision_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -330,7 +330,7 @@ theorem fresh_suffix_collision_facts
       forgedSignature encoding encoding position hsignature hsuffix'
 
 theorem fresh_suffix_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -389,7 +389,7 @@ theorem fresh_suffix_witness_afterKeygen_orientation
   · simpa [chain, suffixOffset, targetStep, forgedValue] using hstepCollision
 
 theorem same_suffix_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -482,7 +482,7 @@ theorem same_suffix_witness_afterKeygen_orientation
       hstepCollision
 
 theorem suffixCollision_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))

@@ -5,8 +5,6 @@ import Mathlib.Data.Fintype.BigOperators
 
 /-!
 # The XMSS instance, oracle-free part
-
-Everything deterministic in the specification: the concrete parameters, the key and signature types, the tweak and byte layout of every hash input, the target-sum message encoding, and the hash-chain walk.
 -/
 
 namespace XmssSecurity
@@ -37,15 +35,9 @@ abbrev MerkleNode := Fin lifetime
 abbrev Encoding := ChainIndex → Digit
 abbrev HashInput := List UInt8
 
-theorem hashOutputBits_eq : hashOutputBits = digestBits + digestBits := by
-  decide
-
-def splitHashOutput (output : HashOutput) : BitVec (digestBits + digestBits) :=
-  output.cast hashOutputBits_eq
-
 /-- Keep the first 128 output bits, represented as the low bits of the little-endian bit vector. -/
 def truncateHash (output : HashOutput) : Digest :=
-  (splitHashOutput output).extractLsb' 0 digestBits
+  output.extractLsb' 0 digestBits
 
 structure PublicKey where
   root : Digest
@@ -87,7 +79,7 @@ inductive HashDomain where
   | encoding (epoch : Epoch)
 deriving DecidableEq
 
-/-- Serialize a typed hash domain into the three nonzero fields of an XMSS tweak. -/
+/-- Serialize a typed hash domain into the fields of an XMSS tweak. -/
 def hashDomainFields : HashDomain → TweakFields
   | .chain epoch chain step =>
       ⟨0#8, BitVec.ofNat 32 (chainLength * chain.val + step.val), BitVec.ofNat 32 epoch.val⟩
@@ -121,8 +113,8 @@ def sum (x : Encoding) : Nat := ∑ i, (x i).val
 
 def Valid (x : Encoding) : Prop := sum x = targetSum
 
-/-- The two unused digest bits accompany the 42 three-bit digits. -/
-abbrev EncodingView := Encoding × Fin 4
+instance : DecidablePred Valid :=
+  fun x => inferInstanceAs (Decidable (sum x = targetSum))
 
 def digitsPerHalf : Nat := numChains / 2
 
@@ -133,34 +125,11 @@ def digitOffset (i : ChainIndex) : Nat :=
 def digestEncoding (digest : Digest) : Encoding :=
   fun i => (digest.extractLsb' (digitOffset i) winternitzBits).toFin
 
-def digestPadding (digest : Digest) : Fin 4 :=
-  ⟨(if digest.getLsbD 63 then 1 else 0) +
-    (if digest.getLsbD 127 then 2 else 0), by
-      cases digest.getLsbD 63 <;> cases digest.getLsbD 127 <;> simp⟩
-
-/-- The concrete little-endian layout used by `IncEnc`: 21 digits, one padding bit, 21 digits, and one padding bit. -/
-def digestView (digest : Digest) : EncodingView :=
-  (digestEncoding digest, digestPadding digest)
-
-def ValidView (view : EncodingView) : Prop :=
-  view.2 = 0 ∧ Valid view.1
-
-noncomputable def decodeView (view : EncodingView) : Option Encoding := by
-  classical
-  exact if ValidView view then some view.1 else none
-
-noncomputable def decodeDigest (digest : Digest) : Option Encoding :=
-  decodeView (digestView digest)
+/-- Decode the concrete little-endian layout used by `IncEnc`: 21 three-bit digits, padding bit 63, 21 digits, and padding bit 127. A digest decodes exactly when both padding bits are clear and the digits reach the target sum. -/
+def decodeDigest (digest : Digest) : Option Encoding :=
+  if digest.getLsbD 63 = false ∧ digest.getLsbD 127 = false ∧ Valid (digestEncoding digest)
+  then some (digestEncoding digest) else none
 
 end TargetSum
-
-namespace Wots
-
-/-- Walk `steps` edges of a domain-separated hash chain starting at `position`. -/
-def walk {α : Type} (step : Nat → α → α) : Nat → Nat → α → α
-  | _, 0, value => value
-  | position, steps + 1, value => step (position + steps) (walk step position steps value)
-
-end Wots
 
 end XmssSecurity

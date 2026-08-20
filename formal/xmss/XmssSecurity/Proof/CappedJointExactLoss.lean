@@ -12,14 +12,14 @@ def WinningSecondLaneBadEventOccurs
     WinningStructuralCollisionOccurs execution.2.1.1 execution.1
 
 def HasSecondLaneBound
-    (q : Nat) (adversary : Adversary Concrete.scheme) : Prop :=
+    (q : Nat) (adversary : Adversary) : Prop :=
   Pr[WinningSecondLaneBadEventOccurs |
       cappedDetailedGameWithEncodingTrace adversary] ≤
     (q - treeHashQueryCount treeHeight : Nat) /
       ((2 ^ digestBits : Nat) : ENNReal)
 
 theorem capped_encodingPrehit_probability_le_expectedDigest_for_lane
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     Pr[WinningEncodingPrehitOccurs |
       cappedDetailedGameWithEncodingTrace adversary] ≤
       CappedEncodingMonitor.expectedPostKeygenEncodingQueries adversary /
@@ -37,7 +37,7 @@ theorem capped_encodingPrehit_probability_le_expectedDigest_for_lane
         adversary
 
 theorem hasSecondLaneBound_of_hashQueryBound
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     HasSecondLaneBound q adversary := by
   let encoding := CappedEncodingMonitor.expectedPostKeygenEncodingQueries adversary

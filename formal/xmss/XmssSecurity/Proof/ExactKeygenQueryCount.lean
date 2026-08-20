@@ -164,7 +164,7 @@ theorem precomputedKeygen_hashCount :
 end ExactQueryCount.ExactPredicateQueryCount
 
 theorem detailedGameAfterKeygen_hashQueryBound_sub_keygen
-    (adversary : Adversary Concrete.scheme) (q : Nat)
+    (adversary : Adversary) (q : Nat)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (key : PublicKey × SecretKey) (hkey : key ∈ support Concrete.precomputedKeygen) :
     (detailedGameAfterKeygen Concrete.scheme adversary key.1 key.2).IsQueryBoundP
@@ -184,7 +184,7 @@ theorem detailedGameAfterKeygen_hashQueryBound_sub_keygen
     hdetailedHash key hkey).2
 
 theorem keygen_hashQueryCount_le
-    (adversary : Adversary Concrete.scheme) (q : Nat)
+    (adversary : Adversary) (q : Nat)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     treeHashQueryCount treeHeight ≤ q := by
   have hdetailed :=
@@ -204,7 +204,7 @@ theorem keygen_hashQueryCount_le
 namespace CappedChain
 
 theorem sourceUnloggedDetailedGameAfterKeygen_hashQueryBound_sub_keygen
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support

@@ -47,21 +47,18 @@ theorem sourceUnloggedMappedAdversaryImpl_withTraceAppend_eq
     (publicKey : PublicKey) (secretKey : SecretKey) :
     (sourceUnloggedMappedAdversaryImpl publicKey secretKey).withTraceAppend
         signingLogFragment =
-      ((HasQuery.toQueryImpl
-          (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget
-            (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) +
-        signingOracle Concrete.scheme publicKey secretKey) := by
+      (forwardOracles + signingOracle Concrete.scheme publicKey secretKey) := by
   funext input
   cases input with
   | inl worldInput =>
       apply WriterT.ext
       simp [sourceUnloggedMappedAdversaryImpl, signingLogFragment,
-        HasQuery.toQueryImpl]
+        forwardOracles, HasQuery.toQueryImpl]
   | inr request =>
       simp [sourceUnloggedMappedAdversaryImpl, signingLogFragment, signingOracle]
 
 noncomputable def sourceUnloggedDetailedGameAfterKeygen
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     OracleComp OracleWorld (Forgery × Bool) := do
   let forgery ← simulateQ
@@ -72,7 +69,7 @@ noncomputable def sourceUnloggedDetailedGameAfterKeygen
   pure (forgery, verified)
 
 theorem detailedGameAfterKeygen_unlogged_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey) :
     (fun outcome : GameOutcome => (outcome.forgery, outcome.verified)) <$>
         detailedGameAfterKeygen Concrete.scheme adversary publicKey secretKey =
@@ -106,7 +103,7 @@ theorem detailedGameAfterKeygen_unlogged_projection
   rw [← bind_map_left, hprojection]
 
 theorem sourceUnloggedDetailedGameAfterKeygen_hashQueryBound
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support

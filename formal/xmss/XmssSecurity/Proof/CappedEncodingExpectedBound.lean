@@ -43,7 +43,7 @@ theorem cappedUnloggedMappedAdversary_simulateQ_run_eq_source
     QueryImpl.simulateQ_compose]
 
 noncomputable def expectedPostKeygenEncodingQueries
-    (adversary : Adversary Concrete.scheme) : ENNReal :=
+    (adversary : Adversary) : ENNReal :=
   ∑' keyResult,
     Pr[= keyResult | (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅] *
       expectedSimulatedQueryCount xmssRomImpl

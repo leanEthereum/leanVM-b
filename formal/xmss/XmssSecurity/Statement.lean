@@ -50,7 +50,7 @@ structure Scheme where
 abbrev SigningSpec := SignRequest →ₒ Option Signature
 
 /-- A classical adaptive adversary. After receiving the public key, it may query the shared random oracle, request signatures, and finally return a claimed forgery. -/
-structure Adversary (_scheme : Scheme) where
+structure Adversary where
   main : PublicKey → OracleComp (OracleWorld + SigningSpec) Forgery
 
 namespace SigningTranscript
@@ -59,9 +59,16 @@ namespace SigningTranscript
 def Valid (log : QueryLog SigningSpec) : Prop :=
   (log.map fun entry => entry.1.epoch).Nodup
 
+instance (log : QueryLog SigningSpec) : Decidable (Valid log) :=
+  inferInstanceAs (Decidable ((log.map fun entry => entry.1.epoch).Nodup))
+
 /-- The signer returned the claimed forgery exactly when the transcript contains the same epoch, message, and signature. A different signature for a signed message is therefore a valid strong forgery. -/
 def Contains (log : QueryLog SigningSpec) (forgery : Forgery) : Prop :=
   ∃ entry ∈ log, entry.1 = forgery.request ∧ entry.2 = some forgery.signature
+
+instance (log : QueryLog SigningSpec) (forgery : Forgery) : Decidable (Contains log forgery) :=
+  inferInstanceAs
+    (Decidable (∃ entry ∈ log, entry.1 = forgery.request ∧ entry.2 = some forgery.signature))
 
 end SigningTranscript
 
@@ -70,32 +77,33 @@ def signingOracle (scheme : Scheme) (pk : PublicKey) (sk : SecretKey) :
     QueryImpl SigningSpec (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
   QueryImpl.withLogging fun request => scheme.sign pk sk request.epoch request.message
 
+/-- Forward the shared random oracle and uniform sampling to the adversary unchanged, alongside the logged signing oracle. -/
+def forwardOracles :
+    QueryImpl OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
+  (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
+
 /-- The complete strong-unforgeability experiment.
 
 The random oracle is sampled lazily by the semantics of `OracleWorld`. Key generation, the adversary, the signing oracle, and final verification all share the same oracle. The game returns `true` precisely when the signing transcript uses every epoch at most once, the claimed forgery is not an exact replay, and the signature verifies. -/
-noncomputable def gameCore (scheme : Scheme) (adversary : Adversary scheme) :
-    OracleComp OracleWorld Bool := by
-  classical
-  exact do
-    let (pk, sk) ← scheme.keygen
-    let forward : QueryImpl OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
-      (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
-    let ((forgery, log) : Forgery × QueryLog SigningSpec) ←
-      (simulateQ (forward + signingOracle scheme pk sk) (adversary.main pk)).run
-    let verified ← scheme.verify pk forgery.epoch forgery.message forgery.signature
-    return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
+noncomputable def gameCore (scheme : Scheme) (adversary : Adversary) :
+    OracleComp OracleWorld Bool := do
+  let (pk, sk) ← scheme.keygen
+  let ((forgery, log) : Forgery × QueryLog SigningSpec) ←
+    (simulateQ (forwardOracles + signingOracle scheme pk sk) (adversary.main pk)).run
+  let verified ← scheme.verify pk forgery.epoch forgery.message forgery.signature
+  return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
 
 /-- The probability that the adversary wins, over key generation, signer randomness, and the random oracle. -/
-noncomputable def forgeAdvantage (scheme : Scheme) (adversary : Adversary scheme) : ℝ≥0∞ :=
+noncomputable def forgeAdvantage (scheme : Scheme) (adversary : Adversary) : ℝ≥0∞ :=
   Pr[= true | Rom.runtime.evalDist (gameCore scheme adversary)]
 
 /-- The whole experiment makes at most `q` random-oracle queries on every execution path. The count includes queries during key generation, adversarial hashing, signing, and final verification. Uniform sampling operations are not hash queries. -/
-def HasHashQueryBound (scheme : Scheme) (adversary : Adversary scheme) (q : Nat) : Prop :=
+def HasHashQueryBound (scheme : Scheme) (adversary : Adversary) (q : Nat) : Prop :=
   (gameCore scheme adversary).IsQueryBoundP (· matches .inr _) q
 
 /-- The best forgery probability among all classical adaptive adversaries whose complete experiment has hash-query bound `q`. -/
 noncomputable def forgeAtMost (scheme : Scheme) (q : Nat) : ℝ≥0∞ :=
-  ⨆ (adversary : Adversary scheme), ⨆ (_ : HasHashQueryBound scheme adversary q),
+  ⨆ (adversary : Adversary), ⨆ (_ : HasHashQueryBound scheme adversary q),
     forgeAdvantage scheme adversary
 
 /-- Having `bits` bits of classical security means that, for every nonzero query budget `q`, the optimal forgery probability is at most `q / 2^bits`. -/

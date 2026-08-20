@@ -54,7 +54,7 @@ private theorem odd_parts (value : Nat) (hbit : value.testBit 0 = true) :
 theorem nodeIndex_eq_pathNode_succ (epoch : Epoch) (level : Nat) :
     CacheView.nodeIndex epoch level = pathNode epoch (level + 1) := by
   apply Fin.ext
-  simp only [CacheView.nodeIndex, pathNode, Concrete.merkleNodeOfNat]
+  simp only [CacheView.nodeIndex, Concrete.nodeIndex, pathNode, Concrete.merkleNodeOfNat]
   exact (Nat.mod_eq_of_lt
     ((Nat.div_le_self epoch.val _).trans_lt epoch.isLt)).symm
 

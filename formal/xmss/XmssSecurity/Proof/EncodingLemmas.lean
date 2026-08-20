@@ -39,6 +39,40 @@ noncomputable def enumerateSuffixPositions (x : Encoding) (hx : Valid x) :
     SuffixPosition x ≃ Fin verificationChainHashes :=
   Fintype.equivFinOfCardEq (card_suffixPosition x hx)
 
+/-! The encoding-view decomposition of a digest: the 42 three-bit digits together with the two padding bits 63 and 127, packed as a `Fin 4`. The statement's `decodeDigest` tests the padding bits directly; `decodeDigest_eq_decodeView` below restates it through this view. -/
+
+/-- The two unused digest bits accompany the 42 three-bit digits. -/
+abbrev EncodingView := Encoding × Fin 4
+
+def digestPadding (digest : Digest) : Fin 4 :=
+  ⟨(if digest.getLsbD 63 then 1 else 0) +
+    (if digest.getLsbD 127 then 2 else 0), by
+      cases digest.getLsbD 63 <;> cases digest.getLsbD 127 <;> simp⟩
+
+/-- The concrete little-endian layout used by `IncEnc`: 21 digits, one padding bit, 21 digits, and one padding bit. -/
+def digestView (digest : Digest) : EncodingView :=
+  (digestEncoding digest, digestPadding digest)
+
+def ValidView (view : EncodingView) : Prop :=
+  view.2 = 0 ∧ Valid view.1
+
+noncomputable def decodeView (view : EncodingView) : Option Encoding := by
+  classical
+  exact if ValidView view then some view.1 else none
+
+theorem digestPadding_eq_zero_iff {digest : Digest} :
+    digestPadding digest = 0 ↔
+      digest.getLsbD 63 = false ∧ digest.getLsbD 127 = false := by
+  cases h63 : digest.getLsbD 63 <;> cases h127 : digest.getLsbD 127 <;>
+    simp [digestPadding, h63, h127, Fin.ext_iff]
+
+theorem decodeDigest_eq_decodeView (digest : Digest) :
+    decodeDigest digest = decodeView (digestView digest) := by
+  classical
+  unfold decodeDigest decodeView
+  refine if_congr ?_ rfl rfl
+  simp only [ValidView, digestView, digestPadding_eq_zero_iff, and_assoc]
+
 theorem digestPadding_eq_iff {left right : Digest} :
     digestPadding left = digestPadding right ↔
       left.getLsbD 63 = right.getLsbD 63 ∧
@@ -132,6 +166,7 @@ theorem decodeView_eq_some_iff {view : EncodingView} {x : Encoding} :
 
 theorem decodeDigest_eq_some_iff {digest : Digest} {x : Encoding} :
     decodeDigest digest = some x ↔ digestView digest = (x, 0) ∧ Valid x := by
+  rw [decodeDigest_eq_decodeView]
   exact decodeView_eq_some_iff
 
 theorem decodeDigest_zero_eq_none : decodeDigest (0 : Digest) = none := by

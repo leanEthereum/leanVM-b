@@ -112,7 +112,7 @@ theorem globalForgeryPrimaryProbeTrace_mem
   simp [globalForgeryPrimaryProbeTrace]
 
 theorem sourceGlobalTracedProgram_support_keyView
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : SourceGlobalTracedProgramResult)
     (hresult : result ∈ support (sourceGlobalTracedProgram adversary)) :
     result.1 ∈ support trajectoryProgrammedGlobalChainKeygen := by
@@ -126,7 +126,7 @@ theorem sourceGlobalTracedProgram_support_keyView
   exact hkeyView
 
 theorem globalHighMonitoredProgram_support_info
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalHighMonitoredProgramResult)
     (hresult : result ∈ support (globalHighMonitoredProgram adversary)) :
     result.1.1.1 ∈ support trajectoryProgrammedGlobalChainKeygen ∧
@@ -144,7 +144,7 @@ theorem globalHighMonitoredProgram_support_info
 
 set_option maxRecDepth 1000000 in
 theorem sourceGlobal_origin_implies_right_publicObservedHit
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (left : SourceGlobalTracedProgramResult)
     (right : GlobalHighMonitoredProgramResult)
     (hleftSupport : left ∈ support (sourceGlobalTracedProgram adversary))

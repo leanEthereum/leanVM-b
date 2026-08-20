@@ -21,7 +21,7 @@ def WinningDigestBadEventOccurs
       WinningStructuralCollisionOccurs execution.2.1.1 execution.1
 
 theorem capped_winning_implies_encodingPrehit_or_digestBad
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : CappedEncodingTraceExecution)
     (hmem : execution ∈ support
       (cappedDetailedGameWithEncodingTrace adversary))

@@ -387,7 +387,7 @@ theorem globalMonitoredTracedStateRelation_initial
     simp [globalFilteredCausalKeygenState]
 
 noncomputable def sourceGlobalTracedDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView) :
     ProbComp ((Forgery × Bool) × SourceTracedState) := do
   let handled ← (simulateQ
@@ -400,7 +400,7 @@ noncomputable def sourceGlobalTracedDetailedExecution
   pure ((handled.1, verified.1), verified.2)
 
 noncomputable def globalHighMonitoredDetailedExecution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest)) :
@@ -416,7 +416,7 @@ noncomputable def globalHighMonitoredDetailedExecution
   pure ((handled.1, verified.1), verified.2)
 
 theorem globalHighMonitoredDetailedExecution_traceConsistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest))
@@ -469,7 +469,7 @@ abbrev GlobalHighMonitoredProgramResult :=
       ((Forgery × Bool) × GlobalMonitoredTracedState)
 
 noncomputable def sourceGlobalTracedProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp SourceGlobalTracedProgramResult := do
   let keyView ← trajectoryProgrammedGlobalChainKeygen
   let execution ← sourceGlobalTracedDetailedExecution adversary keyView
@@ -482,7 +482,7 @@ def sourceGlobalProgramResult
   ((result.1, execution.1), execution.2)
 
 noncomputable def globalHighMonitoredProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp GlobalHighMonitoredProgramResult := do
   let right ← coupledGlobalChainKeygenWithBaseHighFull
   let execution ← globalHighMonitoredDetailedExecution adversary right

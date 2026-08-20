@@ -12,11 +12,8 @@ noncomputable def cappedMappedAdversaryImpl
     (publicKey : PublicKey) (secretKey : SecretKey) :
     QueryImpl (OracleWorld + SigningSpec)
       (WriterT (QueryLog SigningSpec) (StateT (QueryCache HashSpec) ProbComp)) :=
-  let forward : QueryImpl OracleWorld
-      (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
-    (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
   xmssRomImpl.writerTMapBase
-    (forward + signingOracle Concrete.scheme publicKey secretKey)
+    (forwardOracles + signingOracle Concrete.scheme publicKey secretKey)
 
 theorem cappedMappedAdversary_cache_le
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -27,11 +24,8 @@ theorem cappedMappedAdversary_cache_le
       (((simulateQ (cappedMappedAdversaryImpl publicKey secretKey) computation).run).run
         initialCache)) :
     initialCache ≤ result.2 := by
-  let forward : QueryImpl OracleWorld
-      (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
-    (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
   apply xmssRom_cache_le
-    ((simulateQ (forward + signingOracle Concrete.scheme publicKey secretKey)
+    ((simulateQ (forwardOracles + signingOracle Concrete.scheme publicKey secretKey)
       computation).run) initialCache result
   rw [QueryImpl.simulateQ_writerTMapBase_run]
   exact hmem
@@ -72,7 +66,7 @@ theorem cappedMappedAdversary_signingLog_consistent
       · cases input with
         | inl worldInput =>
             simp only [simulateQ_spec_query, cappedMappedAdversaryImpl,
-              QueryImpl.writerTMapBase, QueryImpl.add_apply_inl,
+              QueryImpl.writerTMapBase, QueryImpl.add_apply_inl, forwardOracles,
               QueryImpl.liftTarget_apply, HasQuery.toQueryImpl_apply,
               WriterT.run_mk] at hquery
             erw [WriterT.run_liftM] at hquery
@@ -110,7 +104,7 @@ theorem cappedMappedAdversary_signingLog_consistent
         exact ⟨entry, hlater, hrequest, hsignature⟩
 
 theorem capped_detailed_execution_signingLog_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       (detailedGameWithCache Concrete.scheme adversary)) :
@@ -132,9 +126,6 @@ theorem capped_detailed_execution_signingLog_consistent
   have hadversary' : ((forgery, signingLog), adversaryCache) ∈ support
       (((simulateQ (cappedMappedAdversaryImpl publicKey secretKey)
         (adversary.main publicKey)).run).run keyCache) := by
-    let forward : QueryImpl OracleWorld
-        (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
-      (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
     rw [cappedMappedAdversaryImpl]
     rw [← QueryImpl.simulateQ_writerTMapBase_run]
     exact hadversary
@@ -155,7 +146,7 @@ theorem capped_detailed_execution_signingLog_consistent
       (hkeygenLeAdversary.trans hcacheLe) hcacheLe
 
 theorem capped_detailed_execution_consistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       (detailedGameWithCache Concrete.scheme adversary)) :

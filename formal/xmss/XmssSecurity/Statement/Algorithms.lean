@@ -11,7 +11,7 @@ import VCVio.OracleComp.QueryTracking.LoggingOracle
 
 The three algorithms of the scheme, exactly as run in the security experiment: key generation, signing, and verification, together with the oracle hash calls they make.
 
-The secret key is the ideal precomputed key from the specification: it contains every Winternitz chain value and every Merkle node. `Concrete.precomputedKeygen` obtains those values through the random oracle by computing the Merkle root, then stores them as the pure replay of its own query log (`CacheView`, `CacheReplay`). Reading them while signing is local computation and therefore does not count as a random-oracle query. `Concrete.precomputedCappedSign` performs at most `2^23` encoding attempts, each sampling 192 fresh bits and querying the random oracle once; `Concrete.verify` is the ordinary XMSS verifier.
+The secret key is the ideal precomputed key from the specification: it contains every Winternitz chain value and every Merkle node. `Concrete.precomputedKeygen` obtains those values through the random oracle by computing the Merkle root, then stores them as the pure replay of its own query log: each stored table entry is the same oracle computation evaluated again, with every hash query answered from the recorded cache (`replayHash`). Reading them while signing is local computation and therefore does not count as a random-oracle query. `Concrete.precomputedCappedSign` performs at most `2^23` encoding attempts, each sampling 192 fresh bits and querying the random oracle once; `Concrete.verify` is the ordinary XMSS verifier.
 -/
 
 open OracleComp OracleSpec
@@ -21,7 +21,7 @@ namespace XmssSecurity
 /-- A hash query takes an arbitrary byte string and returns 32 bytes. -/
 abbrev HashSpec := HashInput →ₒ HashOutput
 
-/-- The algorithms may sample uniform values or query the shared random oracle. Uniform sampling is kept separate because it is not charged as a hash query. -/
+/-- `unifSpec` for uniform sampling, `HashSpec` for the random oracle (hash). A query is `.inl` to sample or `.inr` to hash, so `HasHashQueryBound` counts only the hash side. -/
 abbrev OracleWorld := unifSpec + HashSpec
 
 namespace Concrete
@@ -73,84 +73,6 @@ def nodeHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     (left right : Digest) : m Digest :=
   tweakableHash parameter (.merkle level node) (nodePayload left right)
 
-/-! Pure recomputation of the same hash calls from a query cache. Key generation uses this below to define the stored tables as the replay of its own oracle queries. -/
-
-namespace CacheView
-
-def digestAt (cache : QueryCache HashSpec) (input : HashInput) : Digest :=
-  match cache input with
-  | some output => truncateHash output
-  | none => 0
-
-def tweakableHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (domain : HashDomain) (payload : HashInput) : Digest :=
-  digestAt cache (XmssSecurity.tweakableHashInput parameter domain payload)
-
-def encodingInput (parameter : PublicParameter) (epoch : Epoch)
-    (input : Message × Randomness) : HashInput :=
-  XmssSecurity.tweakableHashInput parameter (.encoding epoch)
-    (Concrete.encodingPayload input.1 input.2)
-
-def chainInput (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
-    (position : ChainStep) (value : Digest) : HashInput :=
-  XmssSecurity.tweakableHashInput parameter (.chain epoch chain position)
-    (Concrete.digestBytes value)
-
-def leafInput (parameter : PublicParameter) (epoch : Epoch)
-    (endpoints : ChainIndex → Digest) : HashInput :=
-  XmssSecurity.tweakableHashInput parameter (.leaf epoch)
-    (Concrete.leafPayload endpoints)
-
-def merkleInput (parameter : PublicParameter) (level : MerkleLevel)
-    (node : MerkleNode) (left right : Digest) : HashInput :=
-  XmssSecurity.tweakableHashInput parameter (.merkle level node)
-    (Concrete.nodePayload left right)
-
-def encodingHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (epoch : Epoch) (input : Message × Randomness) : Digest :=
-  digestAt cache (encodingInput parameter epoch input)
-
-def chainStep (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (epoch : Epoch) (chain : ChainIndex) (position : Nat) (value : Digest) : Digest :=
-  if hposition : position < chainLength - 1 then
-    digestAt cache (chainInput parameter epoch chain ⟨position, hposition⟩ value)
-  else
-    0
-
-def leafHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (epoch : Epoch) (endpoints : ChainIndex → Digest) : Digest :=
-  digestAt cache (leafInput parameter epoch endpoints)
-
-def merkleHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (level : MerkleLevel) (node : MerkleNode) (left right : Digest) : Digest :=
-  digestAt cache (merkleInput parameter level node left right)
-
-def nodeIndex (epoch : Epoch) (level : Nat) : MerkleNode :=
-  ⟨epoch.val / 2 ^ (level + 1), by
-    have hle := Nat.div_le_self epoch.val (2 ^ (level + 1))
-    exact hle.trans_lt epoch.isLt⟩
-
-def authenticationNodePayload (epoch : Epoch) (level : Nat)
-    (current sibling : Digest) : HashInput :=
-  if epoch.val.testBit level then
-    Concrete.nodePayload sibling current
-  else
-    Concrete.nodePayload current sibling
-
-def nodeInput (parameter : PublicParameter) (epoch : Epoch) (level : MerkleLevel)
-    (current sibling : Digest) : HashInput :=
-  XmssSecurity.tweakableHashInput parameter (.merkle level (nodeIndex epoch level.val))
-    (authenticationNodePayload epoch level.val current sibling)
-
-def nodeHash (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (epoch : Epoch) (level : Nat) (left right : Digest) : Digest :=
-  if hlevel : level < treeHeight then
-    digestAt cache (nodeInput parameter epoch ⟨level, hlevel⟩ left right)
-  else
-    0
-
-end CacheView
-
 /-! Verification. -/
 
 def signaturePath (signature : Signature) (level : Nat) : Digest :=
@@ -191,14 +113,20 @@ def recoverEndpoints {m : Type → Type} [Monad m] [HasQuery HashSpec m]
   sequenceFin fun chain =>
     recoverChain parameter epoch chain (encoding chain) (signature.chainValue chain)
 
+/-- The index of the Merkle node on the path of `epoch` one level above `level`. -/
+def nodeIndex (epoch : Epoch) (level : Nat) : MerkleNode :=
+  ⟨epoch.val / 2 ^ (level + 1), by
+    have hle := Nat.div_le_self epoch.val (2 ^ (level + 1))
+    exact hle.trans_lt epoch.isLt⟩
+
 def authenticationNodeHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     (parameter : PublicParameter) (epoch : Epoch)
     (level : Nat) (current sibling : Digest) : m Digest :=
   if hlevel : level < treeHeight then
     if epoch.val.testBit level then
-      nodeHash parameter ⟨level, hlevel⟩ (CacheView.nodeIndex epoch level) sibling current
+      nodeHash parameter ⟨level, hlevel⟩ (nodeIndex epoch level) sibling current
     else
-      nodeHash parameter ⟨level, hlevel⟩ (CacheView.nodeIndex epoch level) current sibling
+      nodeHash parameter ⟨level, hlevel⟩ (nodeIndex epoch level) current sibling
   else
     pure 0
 
@@ -217,7 +145,7 @@ def verifyAfterLeaf {m : Type → Type} [Monad m] [HasQuery HashSpec m]
 
 attribute [irreducible] verifyAfterLeaf
 
-noncomputable def verify {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+def verify {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     (publicKey : PublicKey) (epoch : Epoch)
     (message : Message) (signature : Signature) : m Bool := do
   let digest ← encodingHash publicKey.parameter epoch message signature.randomness
@@ -280,33 +208,6 @@ noncomputable def sampleSecret : ProbComp (Epoch → ChainIndex → Digest) :=
 
 attribute [irreducible] samplePublicParameter sampleSecret
 
-namespace CacheReplay
-
-def oneTimePublicKey (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (secret : Epoch → ChainIndex → Digest) (epoch : Epoch) : ChainIndex → Digest :=
-  fun chain => Wots.walk (CacheView.chainStep cache parameter epoch chain) 0
-    (chainLength - 1) (secret epoch chain)
-
-def leafAt (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (secret : Epoch → ChainIndex → Digest) (epoch : Epoch) : Digest :=
-  CacheView.leafHash cache parameter epoch
-    (oneTimePublicKey cache parameter secret epoch)
-
-def treeNode (cache : QueryCache HashSpec) (parameter : PublicParameter)
-    (secret : Epoch → ChainIndex → Digest) : Nat → MerkleNode → Digest
-  | 0, node => leafAt cache parameter secret node
-  | levels + 1, node =>
-      if hlevel : levels < treeHeight then
-        CacheView.merkleHash cache parameter ⟨levels, hlevel⟩ node
-          (treeNode cache parameter secret levels (Concrete.childNode node false))
-          (treeNode cache parameter secret levels (Concrete.childNode node true))
-      else
-        0
-
-attribute [irreducible] treeNode
-
-end CacheReplay
-
 end Concrete
 
 def extendHashCacheWithLog (initialCache : QueryCache HashSpec) :
@@ -320,16 +221,23 @@ def hashCacheOfLog (log : QueryLog HashSpec) : QueryCache HashSpec :=
 
 namespace Concrete
 
+/-- Answer a hash query from a recorded query cache, and by 0 for an unrecorded input. -/
+def replayHash (cache : QueryCache HashSpec) : QueryImpl HashSpec Id :=
+  fun input => (cache input).getD 0
+
+/-- The ideal precomputed secret key. Every stored table entry is the corresponding oracle computation from this module, replayed against the recorded key-generation cache. -/
 def precomputedSecretKey (parameter : PublicParameter)
     (secret : Epoch → ChainIndex → Digest) (cache : QueryCache HashSpec) :
     SecretKey where
   parameter := parameter
   chainStart := secret
   chainValue := fun epoch chain digit =>
-    Wots.walk (CacheView.chainStep cache parameter epoch chain) 0 digit.val
-      (secret epoch chain)
+    evalWithAnswerFn (replayHash cache)
+      (chainWalk parameter epoch chain 0 digit.val (secret epoch chain) :
+        OracleComp HashSpec Digest)
   treeValue := fun height node =>
-    CacheReplay.treeNode cache parameter secret height.val node
+    evalWithAnswerFn (replayHash cache)
+      (treeNode parameter secret height.val node : OracleComp HashSpec Digest)
 
 noncomputable def precomputedKeygen :
     OracleComp OracleWorld (PublicKey × SecretKey) := do
@@ -370,7 +278,7 @@ def precomputedSignWithEncoding (secretKey : SecretKey) (epoch : Epoch)
   ⟨randomness, precomputedSignedChainValues secretKey epoch encoding,
     precomputedAuthenticationPath secretKey epoch⟩
 
-noncomputable def precomputedSignAttempt {m : Type → Type} [Monad m]
+def precomputedSignAttempt {m : Type → Type} [Monad m]
     [HasQuery HashSpec m] (secretKey : SecretKey) (epoch : Epoch)
     (message : Message) (randomness : Randomness) : m (Option Signature) := do
   let digest ← encodingHash secretKey.parameter epoch message randomness

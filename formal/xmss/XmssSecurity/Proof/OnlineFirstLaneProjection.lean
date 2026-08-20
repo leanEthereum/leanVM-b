@@ -110,7 +110,7 @@ theorem onlineFirstLaneVerifierImpl_projects
     Functor.map_map]
 
 theorem onlineFirstLane_adversary_projects
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (state : GlobalExactTracedState) :
@@ -187,7 +187,7 @@ theorem onlineFirstLaneVerification_projects
     onlineFirstLaneStateOfExact]
 
 theorem onlineFirstLaneDetailedExecution_projects
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (state : GlobalExactTracedState) :
@@ -233,7 +233,7 @@ def onlineFirstLaneResultOfExact
   (result.1, Prod.map id onlineFirstLaneStateOfExact result.2)
 
 theorem onlineFirstLaneCoreProgram_projects
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     onlineFirstLaneResultOfExact <$>
         globalFirstLaneExactTracedProgram adversary =
       onlineFirstLaneCoreProgram adversary := by
@@ -257,7 +257,7 @@ theorem onlineFirstLaneForgeryProbes_projection
   rfl
 
 theorem onlineFirstLaneProgram_projects
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     onlineFirstLaneResultOfExact <$>
         globalFirstLaneExactTracedPublicProgram adversary =
       onlineFirstLaneProgram adversary := by
@@ -303,7 +303,7 @@ theorem FirstLaneOracleSimulation.enforceHazardBound_map
   simp [StateT.run_map, Functor.map_map]
 
 theorem onlineFirstLaneExperiment_eq_exact
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) :
+    (fuel : Nat) (adversary : Adversary) :
     onlineFirstLaneExperiment fuel adversary =
       FirstLaneOracleSimulation.onlineExperiment fuel
         (globalFirstLaneExactTracedPublicProgram adversary) := by
@@ -314,7 +314,7 @@ theorem onlineFirstLaneExperiment_eq_exact
       (globalFirstLaneExactTracedPublicProgram adversary)
 
 theorem enforcedOnlineFirstLaneExperiment_eq_exact
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) :
+    (fuel : Nat) (adversary : Adversary) :
     enforcedOnlineFirstLaneExperiment fuel adversary =
       FirstLaneOracleSimulation.onlineExperiment fuel
         (FirstLaneOracleSimulation.enforceHazardBound fuel

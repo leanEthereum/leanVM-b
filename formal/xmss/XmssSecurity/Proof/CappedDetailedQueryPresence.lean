@@ -6,7 +6,7 @@ open OracleComp OracleSpec
 namespace XmssSecurity
 
 theorem capped_detailed_execution_verified_leaf_cached
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (hverified : execution.1.verified = true) :
@@ -61,7 +61,7 @@ theorem capped_detailed_execution_verified_leaf_cached
     hverify le_rfl
 
 theorem capped_detailed_execution_verified_leaf_cached_as
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hgame : execution ∈ support
       (detailedGameWithCache Concrete.scheme adversary))

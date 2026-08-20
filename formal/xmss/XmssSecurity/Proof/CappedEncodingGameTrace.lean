@@ -29,7 +29,7 @@ theorem cappedEncodingTracedMappedAdversaryImpl_projection
     (encodingActionTraceUpdate secretKey) computation initialState initialTrace
 
 noncomputable def cappedDetailedGameAfterKeygenWithEncodingTrace
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     ProbComp (GameOutcome ×
@@ -47,7 +47,7 @@ noncomputable def cappedDetailedGameAfterKeygenWithEncodingTrace
     ((finalCache, adversaryState.2), finalEncodingTrace))
 
 theorem cappedDetailedGameAfterKeygenWithEncodingTrace_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     (fun result => (result.1, result.2.1)) <$>
@@ -82,7 +82,7 @@ theorem cappedDetailedGameAfterKeygenWithEncodingTrace_projection
     bind_map_left, map_bind, bind_assoc, Prod.map] using hbridge
 
 noncomputable def cappedDetailedGameWithEncodingTrace
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp (GameOutcome ×
       ((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace)) := do
   let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
@@ -90,7 +90,7 @@ noncomputable def cappedDetailedGameWithEncodingTrace
     keyResult.1.2 keyResult.2
 
 theorem cappedDetailedGameWithEncodingTrace_projection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     (fun result => (result.1, result.2.1)) <$>
         cappedDetailedGameWithEncodingTrace adversary =
       cappedDetailedGameWithSigningTrace adversary := by
@@ -102,7 +102,7 @@ theorem cappedDetailedGameWithEncodingTrace_projection
     keyResult.1.1 keyResult.1.2 keyResult.2
 
 theorem cappedDetailedGameWithEncodingTrace_cache_projection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     (fun result => (result.1, result.2.1.1)) <$>
         cappedDetailedGameWithEncodingTrace adversary =
       detailedGameWithCache Concrete.scheme adversary := by

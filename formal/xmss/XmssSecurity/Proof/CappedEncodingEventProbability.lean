@@ -7,7 +7,7 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity
 
 theorem cappedWinning_encoding_event_trace_postSigning_decomposition
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × (QueryCache HashSpec × SigningCacheTrace))
     (hmem : execution ∈ support (cappedDetailedGameWithSigningTrace adversary))
     (hevent : WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding) :

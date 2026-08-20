@@ -112,14 +112,16 @@ theorem Concrete.precomputedKeygen_support_consistent
   rw [hsecretKey] at hold hstable ⊢
   unfold Concrete.precomputedSignWithEncoding Concrete.CacheReplay.signWithEncoding
   congr 1
-  · funext chain
+  · rw [Concrete.CacheReplay.precomputedSignedChainValues_eq]
+    funext chain
     exact Concrete.keygen_chainWalk_eq_of_cache_le
       ((keyResult.1.1,
         Concrete.erasePrecomputation
           (Concrete.precomputedSecretKey parameter secret keyResult.2)), keyResult.2)
       hold largerCache hle epoch chain (encoding chain).val
         (Nat.le_pred_of_lt (encoding chain).isLt)
-  · exact CappedChain.TreeCacheStable.authenticationPath_eq
+  · rw [Concrete.CacheReplay.precomputedAuthenticationPath_eq]
+    exact CappedChain.TreeCacheStable.authenticationPath_eq
       (Concrete.precomputedSecretKey parameter secret keyResult.2) keyResult.2
       hstable largerCache hle epoch
 

@@ -42,7 +42,7 @@ theorem keygenLeafTargetInput_leafInput (secretKey : SecretKey)
 attribute [irreducible] keygenLeafTargetInput
 
 theorem detailedGameAfterKeygen_keys_eq
-    (adversary : Adversary Concrete.scheme) (publicKey : PublicKey) (secretKey : SecretKey)
+    (adversary : Adversary) (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support
       ((simulateQ xmssRomImpl
@@ -107,7 +107,7 @@ theorem adaptiveFreshDigestCollisionWith_of_leafCollision
 
 /-- A final-cache leaf collision against the honest WOTS public key is fresh after key generation. -/
 theorem leafCollision_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -191,7 +191,7 @@ theorem fresh_leaf_badEvent_is_collision
 
 /-- A successful detailed execution caches the forged leaf for its uniquely decoded encoding. -/
 theorem detailed_execution_verified_leaf_cached_as
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (encoding : Encoding) (hverified : execution.1.verified = true)
@@ -216,7 +216,7 @@ theorem detailed_execution_verified_leaf_cached_as
 
 /-- A supported fresh leaf witness supplies both the verifier query and its concrete leaf collision. -/
 theorem fresh_leaf_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -324,7 +324,7 @@ theorem same_leaf_badEvent_is_collision
   exact hevent
 
 theorem detailed_execution_returned_signature_eq
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hgame : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (request : SignRequest) (signature : Signature) (encoding : Encoding)
@@ -343,7 +343,7 @@ theorem detailed_execution_returned_signature_eq
   exact hsignature
 
 theorem afterKeygen_execution_mem_detailedGame
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -358,7 +358,7 @@ theorem afterKeygen_execution_mem_detailedGame
   exact ⟨keyResult, hkeygen, hafter⟩
 
 theorem same_leaf_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -418,7 +418,7 @@ theorem same_leaf_witness_afterKeygen_orientation
       forgedOutput hforgedCached hleafCollision
 
 theorem leaf_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))

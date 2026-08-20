@@ -11,9 +11,8 @@ structure GameOutcome where
   signingLog : QueryLog SigningSpec
   verified : Bool
 
-noncomputable def GameOutcome.won (outcome : GameOutcome) : Bool := by
-  classical
-  exact decide (SigningTranscript.Valid outcome.signingLog ∧
+def GameOutcome.won (outcome : GameOutcome) : Bool :=
+  decide (SigningTranscript.Valid outcome.signingLog ∧
     ¬SigningTranscript.Contains outcome.signingLog outcome.forgery) && outcome.verified
 
 theorem GameOutcome.won_eq_true_iff (outcome : GameOutcome) :
@@ -24,35 +23,30 @@ theorem GameOutcome.won_eq_true_iff (outcome : GameOutcome) :
   classical
   simp [GameOutcome.won, and_assoc]
 
-noncomputable def detailedGameAfterKeygen (scheme : Scheme) (adversary : Adversary scheme)
-    (publicKey : PublicKey) (secretKey : SecretKey) : OracleComp OracleWorld GameOutcome := by
-  classical
-  exact do
-    let forward :
-        QueryImpl OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
-      (HasQuery.toQueryImpl (spec := OracleWorld) (m := OracleComp OracleWorld)).liftTarget _
-    let ((forgery, signingLog) : Forgery × QueryLog SigningSpec) ←
-      (simulateQ (forward + signingOracle scheme publicKey secretKey)
-        (adversary.main publicKey)).run
-    let verified ← scheme.verify publicKey forgery.epoch forgery.message forgery.signature
-    return ⟨publicKey, secretKey, forgery, signingLog, verified⟩
+noncomputable def detailedGameAfterKeygen (scheme : Scheme) (adversary : Adversary)
+    (publicKey : PublicKey) (secretKey : SecretKey) : OracleComp OracleWorld GameOutcome := do
+  let ((forgery, signingLog) : Forgery × QueryLog SigningSpec) ←
+    (simulateQ (forwardOracles + signingOracle scheme publicKey secretKey)
+      (adversary.main publicKey)).run
+  let verified ← scheme.verify publicKey forgery.epoch forgery.message forgery.signature
+  return ⟨publicKey, secretKey, forgery, signingLog, verified⟩
 
-noncomputable def detailedGameCore (scheme : Scheme) (adversary : Adversary scheme) :
+noncomputable def detailedGameCore (scheme : Scheme) (adversary : Adversary) :
     OracleComp OracleWorld GameOutcome := do
   let (publicKey, secretKey) ← scheme.keygen
   detailedGameAfterKeygen scheme adversary publicKey secretKey
 
-theorem gameCore_eq_map_detailedGameCore (scheme : Scheme) (adversary : Adversary scheme) :
+theorem gameCore_eq_map_detailedGameCore (scheme : Scheme) (adversary : Adversary) :
     gameCore scheme adversary = GameOutcome.won <$> detailedGameCore scheme adversary := by
   classical
   simp [gameCore, detailedGameCore, detailedGameAfterKeygen, GameOutcome.won]
 
-noncomputable def detailedGameWithCache (scheme : Scheme) (adversary : Adversary scheme) :
+noncomputable def detailedGameWithCache (scheme : Scheme) (adversary : Adversary) :
     ProbComp (GameOutcome × QueryCache HashSpec) :=
   (simulateQ xmssRomImpl (detailedGameCore scheme adversary)).run ∅
 
 theorem gameWithCache_eq_map_detailedGameWithCache
-    (scheme : Scheme) (adversary : Adversary scheme) :
+    (scheme : Scheme) (adversary : Adversary) :
     gameWithCache scheme adversary =
       (fun outcome : GameOutcome × QueryCache HashSpec =>
         (outcome.1.won, outcome.2)) <$> detailedGameWithCache scheme adversary := by
@@ -61,7 +55,7 @@ theorem gameWithCache_eq_map_detailedGameWithCache
   rfl
 
 theorem forgeAdvantage_eq_detailedGameWithCache
-    (scheme : Scheme) (adversary : Adversary scheme) :
+    (scheme : Scheme) (adversary : Adversary) :
     forgeAdvantage scheme adversary =
       Pr[fun outcome : GameOutcome × QueryCache HashSpec => outcome.1.won = true |
         detailedGameWithCache scheme adversary] := by
@@ -71,7 +65,7 @@ theorem forgeAdvantage_eq_detailedGameWithCache
 
 /-- Retaining the detailed outcome does not change the structural hash-query bound. -/
 theorem hasHashQueryBound_iff_detailedGameCore
-    (scheme : Scheme) (adversary : Adversary scheme) (q : Nat) :
+    (scheme : Scheme) (adversary : Adversary) (q : Nat) :
     HasHashQueryBound scheme adversary q ↔
       (detailedGameCore scheme adversary).IsQueryBoundP (· matches .inr _) q := by
   unfold HasHashQueryBound

@@ -7,7 +7,7 @@ namespace XmssSecurity.CappedMerkle
 
 
 theorem detailed_execution_verified_merkle_query_cached_as
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : GameOutcome × QueryCache HashSpec)
     (hmem : execution ∈ support (detailedGameWithCache Concrete.scheme adversary))
     (encoding : Encoding) (hverified : execution.1.verified = true)
@@ -228,7 +228,7 @@ theorem adaptiveFreshDigestCollisionWith_of_merkleCollision
     exact hcollision'
 
 theorem merkleCollision_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -306,7 +306,7 @@ theorem merkleCollision_afterKeygen_orientation
     hhonestInitial
 
 theorem merkle_path_collision_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -405,7 +405,7 @@ theorem merkle_path_collision_afterKeygen_orientation
     hforgedCached hne heq hhonest
 
 theorem same_merkle_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -480,7 +480,7 @@ theorem same_merkle_witness_afterKeygen_orientation
       Concrete.CacheReplay.authenticationPath, level.isLt]
 
 theorem fresh_merkle_witness_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -552,7 +552,7 @@ theorem fresh_merkle_witness_afterKeygen_orientation
       level.isLt]
 
 theorem merkle_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))

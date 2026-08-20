@@ -11,14 +11,14 @@ def WinningExactFirstLaneBadEventOccurs
     GlobalWinningChainValueRevealed execution.2.1.1 execution.1)
 
 def HasExactFirstLaneBound
-    (q : Nat) (adversary : Adversary Concrete.scheme) : Prop :=
+    (q : Nat) (adversary : Adversary) : Prop :=
   Pr[WinningExactFirstLaneBadEventOccurs |
       cappedDetailedGameWithEncodingTrace adversary] ≤
     ((q - treeHashQueryCount treeHeight : Nat) + numChains : Nat) /
       ((2 ^ digestBits : Nat) : ENNReal)
 
 theorem capped_winning_implies_exactFirstLane_or_secondLane
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (execution : CappedEncodingTraceExecution)
     (hmem : execution ∈ support
       (cappedDetailedGameWithEncodingTrace adversary))
@@ -36,7 +36,7 @@ theorem capped_winning_implies_exactFirstLane_or_secondLane
       · exact Or.inr (Or.inr hstructural)
 
 theorem capped_forgeAdvantage_le_exactFirstLane_add_secondLane
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     forgeAdvantage Concrete.scheme adversary ≤
       Pr[WinningExactFirstLaneBadEventOccurs |
         cappedDetailedGameWithEncodingTrace adversary] +
@@ -61,7 +61,7 @@ theorem capped_forgeAdvantage_le_exactFirstLane_add_secondLane
     _ ≤ _ := probEvent_or_le _ _ _
 
 theorem capped_xmss_forgeAdvantage_le_127_of_exactTwoLaneBounds
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (hfirst : HasExactFirstLaneBound q adversary)
     (hsecond : HasSecondLaneBound q adversary) :
@@ -82,7 +82,7 @@ theorem capped_xmss_forgeAdvantage_le_127_of_exactTwoLaneBounds
       (keygen_hashQueryCount_le adversary q hbound)
 
 def HasExactFirstLaneBounds : Prop :=
-  ∀ (q : Nat) (adversary : Adversary Concrete.scheme),
+  ∀ (q : Nat) (adversary : Adversary),
     HasHashQueryBound Concrete.scheme adversary q →
       HasExactFirstLaneBound q adversary
 

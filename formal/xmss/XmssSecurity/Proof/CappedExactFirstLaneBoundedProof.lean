@@ -145,7 +145,7 @@ theorem simulate_eagerTrace_bind_lift_emitObservedTrace_keep
   rw [List.append_nil]
 
 theorem eagerExperiment_globalFirstLaneExactTracedPublicProgram_eq_append
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     FirstLaneOracleSimulation.eagerExperiment
       (globalFirstLaneExactTracedPublicProgram adversary) =
     appendGlobalFirstLaneExactPublicTrace <$>
@@ -164,7 +164,7 @@ theorem eagerExperiment_globalFirstLaneExactTracedPublicProgram_eq_append
     bind_assoc]
 
 theorem globalHighExactMonitoredProgram_traceConsistent
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalHighExactMonitoredProgramResult)
     (hresult : result ∈ support
       (globalHighExactMonitoredProgram adversary)) :
@@ -209,7 +209,7 @@ theorem globalHighExactState_eq_of_projection_trace_consistent
   rw [hleft, hright]
 
 theorem globalFirstLaneExactCoupledProgram_support_info
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalFirstLaneExactCoupledProgramResult)
     (hresult : result ∈ support
       (globalFirstLaneExactCoupledProgram adversary)) :
@@ -254,7 +254,7 @@ theorem coupledGlobalChainKeygenWithBaseHighFull_support_directKeyResult
   exact hkeyGlobal
 
 theorem globalFirstLaneExactCoupled_run_mem_support
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalFirstLaneExactCoupledProgramResult)
     (hresult : result ∈ support
       (globalFirstLaneExactCoupledProgram adversary)) :
@@ -283,7 +283,7 @@ theorem globalFirstLaneExactCoupled_run_mem_support
     simp
 
 theorem exists_globalHighExactMonitored_of_coupled_support
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalFirstLaneExactCoupledProgramResult)
     (hresult : result ∈ support
       (globalFirstLaneExactCoupledProgram adversary)) :
@@ -328,7 +328,7 @@ theorem exists_globalHighExactMonitored_of_coupled_support
       hprojection
 
 theorem sourceFirstLaneExactGood_to_globalHighRelation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (left : SourceGlobalExactTracedProgramResult)
     (right : GlobalFirstLaneExactCoupledProgramResult)
     (hrightSupport : right ∈ support
@@ -397,7 +397,7 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
       exact hwitnessRelation
 
 theorem globalFirstLaneExactCoupledPublic_run_mem_support
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalFirstLaneExactCoupledProgramResult)
     (hresult : result ∈ support
       (globalFirstLaneExactCoupledProgram adversary)) :
@@ -419,7 +419,7 @@ theorem globalFirstLaneExactCoupledPublic_run_mem_support
       globalFirstLaneExactCoupledProjection]⟩
 
 theorem sourceWinningExactFirstLane_good_implies_public_combinedHit
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (left : SourceGlobalExactTracedProgramResult)
     (right : GlobalFirstLaneExactCoupledProgramResult)
     (hleftSupport : left ∈ support
@@ -498,7 +498,7 @@ def GlobalFirstLaneExactCoupledEnforcedHit
 
 theorem sourceWinningExactFirstLane_good_implies_public_enforcedHit
     (countLimit fuel : Nat)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (left : SourceGlobalExactTracedProgramResult)
     (right : GlobalFirstLaneExactCoupledProgramResult)
     (hleftSupport : left ∈ support
@@ -546,7 +546,7 @@ theorem sourceWinningExactFirstLane_hit_implies_public_enforcedHit
 
 theorem sourceWinningExactFirstLane_implies_coupled_enforcedHit
     (countLimit fuel : Nat)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (left : SourceGlobalExactTracedProgramResult)
     (right : GlobalFirstLaneExactCoupledProgramResult)
     (hleftSupport : left ∈ support
@@ -566,7 +566,7 @@ theorem sourceWinningExactFirstLane_implies_coupled_enforcedHit
       fuel right hhit
 
 theorem evalDist_globalFirstLaneExactCoupledPublicProjection_eq_eager
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     evalDist (globalFirstLaneExactCoupledPublicProjection <$>
       globalFirstLaneExactCoupledProgram adversary) =
     evalDist (globalFirstLaneExactPublicEagerExperiment adversary) := by
@@ -601,7 +601,7 @@ def GlobalFirstLaneExactPublicEnforcedHit
 
 theorem sourceWinningExactFirstLane_probability_le_coupled_enforcedHit
     (q fuel : Nat)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q)
     (hfuel : q - treeHashQueryCount treeHeight + numChains ≤ fuel) :
     Pr[SourceWinningExactFirstLaneEvent |
@@ -618,7 +618,7 @@ theorem sourceWinningExactFirstLane_probability_le_coupled_enforcedHit
       hrelation.2.1 hrelation.2.2 hrelation.1 hfuel hevent
 
 theorem coupled_enforcedHit_probability_eq_public_eager
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) :
+    (fuel : Nat) (adversary : Adversary) :
     Pr[GlobalFirstLaneExactCoupledEnforcedHit fuel |
         globalFirstLaneExactCoupledProgram adversary] =
       Pr[GlobalFirstLaneExactPublicEnforcedHit fuel |
@@ -634,7 +634,7 @@ theorem coupled_enforcedHit_probability_eq_public_eager
         adversary)
 
 theorem public_eager_enforcedHit_probability_le
-    (fuel : Nat) (adversary : Adversary Concrete.scheme) :
+    (fuel : Nat) (adversary : Adversary) :
     Pr[GlobalFirstLaneExactPublicEnforcedHit fuel |
         globalFirstLaneExactPublicEagerExperiment adversary] ≤
       (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
@@ -650,7 +650,7 @@ theorem public_eager_enforcedHit_probability_le
 
 theorem sourceWinningExactFirstLane_probability_le
     (q : Nat)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     Pr[SourceWinningExactFirstLaneEvent |
         sourceGlobalExactTracedProgram adversary] ≤
@@ -668,7 +668,7 @@ theorem sourceWinningExactFirstLane_probability_le
     _ ≤ _ := public_eager_enforcedHit_probability_le fuel adversary
 
 theorem hasExactFirstLaneBound_of_hashQueryBound
-    (q : Nat) (adversary : Adversary Concrete.scheme)
+    (q : Nat) (adversary : Adversary)
     (hbound : HasHashQueryBound Concrete.scheme adversary q) :
     HasExactFirstLaneBound q adversary := by
   unfold HasExactFirstLaneBound

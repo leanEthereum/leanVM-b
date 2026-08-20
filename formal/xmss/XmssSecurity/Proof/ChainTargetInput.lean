@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.HashInputLemmas
+import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 

@@ -198,7 +198,7 @@ abbrev CappedEncodingTraceExecution :=
     EncodingActionTrace)
 
 noncomputable def cappedDetailedGameAfterKeygenWithBothTraces
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     ProbComp CappedBothTraceExecution := do
@@ -217,7 +217,7 @@ noncomputable def cappedDetailedGameAfterKeygenWithBothTraces
     (((verified.2, state.1.1.2), finalEncodingTrace), state.2))
 
 theorem cappedDetailedGameAfterKeygenWithBothTraces_logs_eq
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : CappedBothTraceExecution)
@@ -237,7 +237,7 @@ theorem cappedDetailedGameAfterKeygenWithBothTraces_logs_eq
       (forgery, adversaryState) rfl hadversary
 
 theorem cappedDetailedGameAfterKeygenWithBothTraces_outcome_eq_actionTraceOutcome
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec)
     (result : CappedBothTraceExecution)
@@ -262,7 +262,7 @@ theorem cappedDetailedGameAfterKeygenWithBothTraces_outcome_eq_actionTraceOutcom
   rw [hlogs']
 
 theorem cappedDetailedGameAfterKeygenWithBothTraces_encodingProjection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey)
     (initialCache : QueryCache HashSpec) :
     (fun result : CappedBothTraceExecution => (result.1, result.2.1)) <$>
@@ -307,7 +307,7 @@ def cappedBothActionProjection
       result.2.2.1.1.1)), result.2.2.2)
 
 noncomputable def cappedDetailedGameWithKeygenCacheAndBothTraces
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp CappedBothTraceGameResult := do
   let keyResult ← (simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅
   let execution ← cappedDetailedGameAfterKeygenWithBothTraces adversary
@@ -315,7 +315,7 @@ noncomputable def cappedDetailedGameWithKeygenCacheAndBothTraces
   pure (keyResult, execution)
 
 theorem cappedDetailedGameWithKeygenCacheAndBothTraces_support_execution
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : CappedBothTraceGameResult)
     (hresult : result ∈ support
       (cappedDetailedGameWithKeygenCacheAndBothTraces adversary)) :
@@ -332,7 +332,7 @@ theorem cappedDetailedGameWithKeygenCacheAndBothTraces_support_execution
   exact hexecution
 
 theorem cappedDetailedGameWithKeygenCacheAndBothTraces_outcome_eq
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : CappedBothTraceGameResult)
     (hresult : result ∈ support
       (cappedDetailedGameWithKeygenCacheAndBothTraces adversary)) :
@@ -343,7 +343,7 @@ theorem cappedDetailedGameWithKeygenCacheAndBothTraces_outcome_eq
         adversary result hresult)
 
 theorem cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     (fun result : CappedBothTraceGameResult =>
         (result.2.1, result.2.2.1)) <$>
         cappedDetailedGameWithKeygenCacheAndBothTraces adversary =
@@ -358,7 +358,7 @@ theorem cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection
   simp
 
 theorem cappedDetailedGameWithKeygenCacheAndBothTraces_encodingProjection_eq
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     cappedBothEncodingProjection <$>
         cappedDetailedGameWithKeygenCacheAndBothTraces adversary =
       cappedDetailedGameWithEncodingTrace adversary :=

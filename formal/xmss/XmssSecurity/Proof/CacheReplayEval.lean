@@ -18,7 +18,11 @@ def answerFn (cache : QueryCache HashSpec) : QueryImpl HashSpec Id :=
 @[simp]
 theorem truncateHash_answer (cache : QueryCache HashSpec) (input : HashInput) :
     truncateHash (answer cache input) = CacheView.digestAt cache input := by
-  cases hcache : cache input <;> simp [answer, CacheView.digestAt, hcache, truncateHash, splitHashOutput]
+  cases hcache : cache input with
+  | none =>
+      simp only [answer, CacheView.digestAt, hcache, Option.getD_none]
+      exact truncateHash_zero
+  | some output => simp [answer, CacheView.digestAt, hcache]
 
 @[simp]
 theorem eval_oracleHash (cache : QueryCache HashSpec) (input : HashInput) :
@@ -152,6 +156,49 @@ theorem eval_treeNode (cache : QueryCache HashSpec)
       simp only [evalWithAnswerFn_bind, ih, treeNode_succ_eq]
       split <;> simp_all
 
+/-! The statement stores the precomputed secret key as `evalWithAnswerFn (replayHash cache)` runs of its own oracle algorithms; `answerFn` is the same answer function, so the `eval_*` lemmas above give the first-order `CacheView`/`CacheReplay` forms of the stored tables. -/
+
+theorem answerFn_eq_replayHash (cache : QueryCache HashSpec) :
+    answerFn cache = Concrete.replayHash cache := rfl
+
+@[simp]
+theorem eval_replayHash_chainWalk (cache : QueryCache HashSpec)
+    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
+    (position steps : Nat) (value : Digest) :
+    evalWithAnswerFn (Concrete.replayHash cache)
+      (Concrete.chainWalk parameter epoch chain position steps value :
+        OracleComp HashSpec Digest) =
+      Wots.walk (CacheView.chainStep cache parameter epoch chain) position steps value := by
+  rw [← answerFn_eq_replayHash]
+  exact eval_chainWalk cache parameter epoch chain position steps value
+
+@[simp]
+theorem eval_replayHash_treeNode (cache : QueryCache HashSpec)
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (levels : Nat) (node : MerkleNode) :
+    evalWithAnswerFn (Concrete.replayHash cache)
+      (Concrete.treeNode parameter secret levels node : OracleComp HashSpec Digest) =
+      treeNode cache parameter secret levels node := by
+  rw [← answerFn_eq_replayHash]
+  exact eval_treeNode cache parameter secret levels node
+
+@[simp]
+theorem precomputedSecretKey_chainValue (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (cache : QueryCache HashSpec)
+    (epoch : Epoch) (chain : ChainIndex) (digit : Digit) :
+    (Concrete.precomputedSecretKey parameter secret cache).chainValue epoch chain digit =
+      Wots.walk (CacheView.chainStep cache parameter epoch chain) 0 digit.val
+        (secret epoch chain) :=
+  eval_replayHash_chainWalk cache parameter epoch chain 0 digit.val (secret epoch chain)
+
+@[simp]
+theorem precomputedSecretKey_treeValue (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (cache : QueryCache HashSpec)
+    (height : MerkleHeight) (node : MerkleNode) :
+    (Concrete.precomputedSecretKey parameter secret cache).treeValue height node =
+      treeNode cache parameter secret height.val node :=
+  eval_replayHash_treeNode cache parameter secret height.val node
+
 def signedChainValues (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (epoch : Epoch) (encoding : Encoding) : ChainIndex → Digest :=
   fun chain => Wots.walk
@@ -167,6 +214,26 @@ def signWithEncoding (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (epoch : Epoch) (randomness : Randomness) (encoding : Encoding) : Signature :=
   ⟨randomness, signedChainValues cache secretKey epoch encoding,
     authenticationPath cache secretKey epoch⟩
+
+theorem precomputedSignedChainValues_eq (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (cache : QueryCache HashSpec)
+    (epoch : Epoch) (encoding : Encoding) :
+    Concrete.precomputedSignedChainValues
+        (Concrete.precomputedSecretKey parameter secret cache) epoch encoding =
+      signedChainValues cache (Concrete.precomputedSecretKey parameter secret cache)
+        epoch encoding := by
+  funext chain
+  exact precomputedSecretKey_chainValue parameter secret cache epoch chain (encoding chain)
+
+theorem precomputedAuthenticationPath_eq (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest) (cache : QueryCache HashSpec) (epoch : Epoch) :
+    Concrete.precomputedAuthenticationPath
+        (Concrete.precomputedSecretKey parameter secret cache) epoch =
+      authenticationPath cache (Concrete.precomputedSecretKey parameter secret cache)
+        epoch := by
+  funext level
+  exact precomputedSecretKey_treeValue parameter secret cache ⟨level.val, by omega⟩
+    (Concrete.authenticationPathNode epoch level)
 
 @[simp]
 theorem eval_authenticationRoot (cache : QueryCache HashSpec)

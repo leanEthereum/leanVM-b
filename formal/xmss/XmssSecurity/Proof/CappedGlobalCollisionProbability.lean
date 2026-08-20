@@ -8,7 +8,7 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity
 
 theorem outcomePredicate_probability_le_expectedMovedQueries_of_afterKeygen_freshCollision
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (event : GameOutcome × QueryCache HashSpec → Prop)
     (targetInput :
       (PublicKey × SecretKey) → QueryCache HashSpec → HashInput → HashInput)
@@ -39,7 +39,7 @@ theorem outcomePredicate_probability_le_expectedMovedQueries_of_afterKeygen_fres
   exact horient
 
 theorem globalSuffixCollision_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -57,7 +57,7 @@ theorem globalSuffixCollision_event_afterKeygen_orientation
     keyResult hkeygen execution hafter slot hslot
 
 theorem globalMerkle_event_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))

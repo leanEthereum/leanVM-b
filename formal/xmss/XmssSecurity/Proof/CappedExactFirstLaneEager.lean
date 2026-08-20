@@ -333,7 +333,7 @@ theorem map_simulate_globalHighExactMonitored_verifier_full_projection
 
 set_option maxHeartbeats 3000000 in
 theorem map_globalHighExactMonitoredDetailedExecution_full_projection
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyView : ProgrammedGlobalChainKeygenView)
     (base : GlobalChainValueIndex → Digest)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
@@ -452,7 +452,7 @@ noncomputable def appendGlobalHighDirectExactPublicTrace
 
 
 noncomputable def globalFirstLaneExactTracedPublicProgram
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     OracleComp GlobalFirstLaneWorld GlobalExactTracedResult := do
   let result ← globalFirstLaneExactTracedProgram adversary
   let _ ← globalFirstLaneLiftRevealProbe
@@ -507,7 +507,7 @@ theorem globalFirstLaneBindLiftRevealProbe_support_baseTrace
 
 theorem globalFirstLaneExactTracedPublicProgram_support_baseTrace
     (table : GlobalChainValueIndex → Digest)
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (result : GlobalExactTracedResult ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hresult : result ∈ support
@@ -564,7 +564,7 @@ theorem globalHighExactFirstLaneEvent_implies_projected
     exact hchain
 
 theorem globalHighExactProjectedFirstLaneEvent_implies_combinedHit_of_run
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (table : GlobalChainValueIndex → Digest)
     (runResult : GlobalExactTracedResult ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
@@ -610,7 +610,7 @@ abbrev GlobalFirstLaneExactPublicEagerResult :=
 
 
 noncomputable def globalFirstLaneExactPublicEagerExperiment
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     ProbComp GlobalFirstLaneExactPublicEagerResult :=
   FirstLaneOracleSimulation.eagerExperiment
     (globalFirstLaneExactTracedPublicProgram adversary)

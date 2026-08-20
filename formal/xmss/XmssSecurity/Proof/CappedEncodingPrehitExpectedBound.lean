@@ -399,7 +399,7 @@ theorem Concrete.keygen_cachedEncodingInputCount_eq_zero
   simp
 
 theorem expectedFinalEncodingEntryCount_afterKeygen_le_sourceQueries
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
@@ -489,7 +489,7 @@ theorem expectedFinalEncodingEntryCount_afterKeygen_le_sourceQueries
       rfl
 
 theorem cappedDetailedGameAfterKeygenWithSigningTrace_winning_prehit_probability_le_expected
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeyResult : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅)) :
@@ -558,7 +558,7 @@ theorem tsum_probability_mul_scaledCost
   ac_rfl
 
 theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_expected
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧
@@ -621,7 +621,7 @@ theorem signingAttemptLimit_mul_randomness_loss_le_digest_loss
     _ = _ := rfl
 
 theorem cappedDetailedGameWithSigningTrace_winning_prehit_probability_le_expectedDigest
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     Pr[fun execution : GameOutcome ×
         (QueryCache HashSpec × SigningCacheTrace) =>
       WinningOutcomeBadEventOccurs execution.2.1 execution.1 .encoding ∧

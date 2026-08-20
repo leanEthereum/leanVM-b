@@ -1,4 +1,5 @@
 import XmssSecurity.Statement
+import XmssSecurity.Proof.StatementLemmas
 import XmssSecurity.Proof.ForgeryCases
 
 open OracleSpec

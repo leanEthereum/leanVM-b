@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.AdaptiveFreshTarget
+import XmssSecurity.Proof.StatementLemmas
 import XmssSecurity.Proof.ExpectedQueryCount
 
 open OracleComp ENNReal

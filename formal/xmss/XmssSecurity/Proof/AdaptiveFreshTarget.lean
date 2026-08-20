@@ -1,4 +1,5 @@
 import XmssSecurity.Proof.HashInputLemmas
+import XmssSecurity.Proof.StatementLemmas
 import XmssSecurity.Proof.Execution
 import XmssSecurity.Proof.RandomOracle
 

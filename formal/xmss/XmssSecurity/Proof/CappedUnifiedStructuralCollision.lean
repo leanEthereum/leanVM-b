@@ -256,7 +256,7 @@ def WinningStructuralCollisionOccurs
     WinningGlobalBadEventOccurs cache outcome .merkle
 
 theorem winningStructuralCollision_afterKeygen_orientation
-    (adversary : Adversary Concrete.scheme)
+    (adversary : Adversary)
     (keyResult : (PublicKey × SecretKey) × QueryCache HashSpec)
     (hkeygen : keyResult ∈ support
       ((simulateQ xmssRomImpl Concrete.scheme.keygen).run ∅))
@@ -288,7 +288,7 @@ theorem winningStructuralCollision_afterKeygen_orientation
       hkeygen execution hafter hmerkle.2
 
 theorem winningStructuralCollision_probability_le_expectedMovedQueries
-    (adversary : Adversary Concrete.scheme) :
+    (adversary : Adversary) :
     Pr[fun execution : GameOutcome × QueryCache HashSpec =>
       WinningStructuralCollisionOccurs execution.2 execution.1 |
       detailedGameWithCache Concrete.scheme adversary] ≤
