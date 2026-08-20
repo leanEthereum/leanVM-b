@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.Spec
+import XmssSecurity.Statement
 import VCVio.OracleComp.Constructions.SampleableType
 
 open OracleComp ENNReal

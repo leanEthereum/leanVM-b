@@ -1,4 +1,4 @@
-import XmssSecurity.Statement.Spec
+import XmssSecurity.Statement
 import XmssSecurity.Proof.Wots
 import XmssSecurity.Proof.EncodingLemmas
 
@@ -42,7 +42,8 @@ theorem eq_or_hasStepCollision {α : Type} (step : Nat → α → α) (position 
       left
       simpa using hend
   | succ steps ih =>
-      by_cases hmid : walk step position steps left = walk step position steps right
+      rcases Classical.em
+        (walk step position steps left = walk step position steps right) with hmid | hmid
       · rcases ih hmid with hstart | hcollision
         · exact Or.inl hstart
         · exact Or.inr <| by
@@ -236,7 +237,8 @@ theorem freshChainValue_or_suffixCollision {α : Type}
       HasSuffixCollisionWitness step encoding encoding
         (fun i => signChain (step i) (encoding i) (secret i)) forgedValue := by
   classical
-  by_cases hall : ∀ i, forgedValue i = signChain (step i) (encoding i) (secret i)
+  rcases Classical.em
+    (∀ i, forgedValue i = signChain (step i) (encoding i) (secret i)) with hall | hall
   · left
     exact ⟨⟨0, by decide⟩, hall _⟩
   · right
@@ -262,7 +264,7 @@ def HasLeafCollision {α β : Type} (leafHash : (ChainIndex → α) → β)
 theorem eq_or_hasLeafCollision {α β : Type} (leafHash : (ChainIndex → α) → β)
     (left right : ChainIndex → α) (hleaf : leafHash left = leafHash right) :
     left = right ∨ HasLeafCollision leafHash left right := by
-  by_cases heq : left = right
+  rcases Classical.em (left = right) with heq | heq
   · exact Or.inl heq
   · exact Or.inr ⟨heq, hleaf⟩
 

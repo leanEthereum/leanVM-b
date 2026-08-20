@@ -4,7 +4,7 @@ import XmssSecurity.Proof
 namespace XmssSecurity
 
 /-!
-The main result. Its statement lives entirely in `XmssSecurity.Statement` and the two modules under `XmssSecurity/Statement/`; the modules under `XmssSecurity/Proof/` only contribute to the proof.
+The main result. Its statement lives entirely in the single module `XmssSecurity.Statement`; the modules under `XmssSecurity/Proof/` only contribute to the proof.
 -/
 
 /-- The concrete XMSS instance has 127 bits of classical security in the random-oracle model. -/
