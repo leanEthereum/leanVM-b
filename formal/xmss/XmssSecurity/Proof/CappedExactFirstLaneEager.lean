@@ -22,7 +22,7 @@ noncomputable def globalHighDirectExactQueryResult
       (initialState.causalState.cache, []) result.1
       (result.2.1.cache, []) initialState.encodingTrace))
 
-theorem globalHighDirectExactTracedLift_eq_map
+theorem globalExactTracedLift_eq_map
     (keyView : ProgrammedGlobalChainKeygenView)
     (input : (OracleWorld + SigningSpec).Domain)
     (base : StateT GlobalCausalHashState
@@ -30,13 +30,13 @@ theorem globalHighDirectExactTracedLift_eq_map
         (RevealProbeOracleSimulation.World GlobalChainValueIndex))
       ((OracleWorld + SigningSpec).Range input))
     (initialState : GlobalExactTracedState) :
-    (globalHighDirectExactTracedLift keyView input base).run initialState =
+    (globalExactTracedLift keyView input base).run initialState =
       globalHighDirectExactQueryResult keyView input initialState <$>
         ((fun result => (result.1,
           (result.2, initialState.attackerTrace ++
             attackerActionFragment input result.1))) <$>
           base.run initialState.causalState) := by
-  unfold globalHighDirectExactTracedLift globalHighDirectExactQueryResult
+  unfold globalExactTracedLift globalHighDirectExactQueryResult
     globalExactTracedNextState
   simp [StateT.run_mk, Functor.map_map]
 
@@ -81,14 +81,14 @@ theorem globalHighDirectExactTracedMappedAdversaryImpl_uniform_eq_map
         (globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh
           (.inl (.inl n))).run
             (initialState.causalState, initialState.attackerTrace) := by
-  change (globalHighDirectExactTracedLift keyView (.inl (.inl n))
+  change (globalExactTracedLift keyView (.inl (.inl n))
     (globalHighDirectUniformImpl n)).run initialState = _
   change _ = globalHighDirectExactQueryResult keyView (.inl (.inl n))
     initialState <$> ((fun result => (result.1,
       (result.2, initialState.attackerTrace ++
         attackerActionFragment (.inl (.inl n)) result.1))) <$>
           (globalHighDirectUniformImpl n).run initialState.causalState)
-  exact globalHighDirectExactTracedLift_eq_map keyView (.inl (.inl n))
+  exact globalExactTracedLift_eq_map keyView (.inl (.inl n))
     (globalHighDirectUniformImpl n) initialState
 
 theorem globalHighDirectExactTracedMappedAdversaryImpl_hash_eq_map
@@ -104,14 +104,14 @@ theorem globalHighDirectExactTracedMappedAdversaryImpl_hash_eq_map
             (initialState.causalState, initialState.attackerTrace) := by
   let base := globalCausalAttackerHashQueryFromHigh
     (globalChainValueHighTableOfEdges edgeHigh) keyView.secretKey hashInput
-  change (globalHighDirectExactTracedLift keyView (.inl (.inr hashInput))
+  change (globalExactTracedLift keyView (.inl (.inr hashInput))
     base).run initialState = _
   change _ = globalHighDirectExactQueryResult keyView (.inl (.inr hashInput))
     initialState <$> ((fun result => (result.1,
       (result.2, initialState.attackerTrace ++
         attackerActionFragment (.inl (.inr hashInput)) result.1))) <$>
           base.run initialState.causalState)
-  exact globalHighDirectExactTracedLift_eq_map keyView
+  exact globalExactTracedLift_eq_map keyView
     (.inl (.inr hashInput)) base initialState
 
 theorem globalHighDirectExactTracedMappedAdversaryImpl_sign_eq_map
@@ -128,7 +128,7 @@ theorem globalHighDirectExactTracedMappedAdversaryImpl_sign_eq_map
   unfold globalHighDirectExactTracedSigningImpl
   rw [globalHighDirectTracedMappedAdversaryImpl_run_eq_map,
     globalHighDirectBaseMappedAdversaryImpl_sign]
-  exact globalHighDirectExactTracedLift_eq_map keyView (.inr request)
+  exact globalExactTracedLift_eq_map keyView (.inr request)
     (globalHighDirectSigningImpl keyView request) initialState
 
 theorem globalHighDirectExactTracedMappedAdversaryImpl_query_eq_map

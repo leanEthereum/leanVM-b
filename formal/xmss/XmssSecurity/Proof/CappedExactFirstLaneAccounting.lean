@@ -7,7 +7,7 @@ namespace XmssSecurity.CappedChain
 
 set_option maxRecDepth 1000000
 
-theorem globalFirstLaneExactTracedLift_hazardBound
+theorem globalExactTracedLift_hazardBound
     (keyView : ProgrammedGlobalChainKeygenView)
     (input : (OracleWorld + SigningSpec).Domain)
     (base : StateT GlobalCausalHashState
@@ -17,9 +17,9 @@ theorem globalFirstLaneExactTracedLift_hazardBound
     (fuel : Nat)
     (hbase : (base.run state.causalState).IsQueryBoundP
       FirstLaneOracleSimulation.IsHazardQuery fuel) :
-    ((globalFirstLaneExactTracedLift keyView input base).run state)
+    ((globalExactTracedLift keyView input base).run state)
       |>.IsQueryBoundP FirstLaneOracleSimulation.IsHazardQuery fuel := by
-  unfold globalFirstLaneExactTracedLift
+  unfold globalExactTracedLift
   simp only [StateT.run_mk]
   rw [map_eq_bind_pure_comp]
   apply OracleComp.isQueryBoundP_bind (n := fuel) (m := 0) hbase
@@ -36,7 +36,7 @@ theorem globalFirstLaneExactTracedOracleImpl_hazardBound
       |>.IsQueryBoundP FirstLaneOracleSimulation.IsHazardQuery
         (if input matches .inr _ then 1 else 0) := by
   unfold globalFirstLaneExactTracedOracleImpl
-  apply globalFirstLaneExactTracedLift_hazardBound
+  apply globalExactTracedLift_hazardBound
   exact globalFirstLaneOracleExecution_hazardBound keyView edgeHigh input
     state.causalState
 
@@ -47,7 +47,7 @@ theorem globalFirstLaneExactTracedSigningImpl_hazardBound
     ((globalFirstLaneExactTracedSigningImpl keyView request).run state)
       |>.IsQueryBoundP FirstLaneOracleSimulation.IsHazardQuery 0 := by
   unfold globalFirstLaneExactTracedSigningImpl
-  apply globalFirstLaneExactTracedLift_hazardBound
+  apply globalExactTracedLift_hazardBound
   exact globalFirstLaneSigningImpl_hazardBound keyView request
     state.causalState
 
