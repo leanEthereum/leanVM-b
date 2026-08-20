@@ -106,13 +106,6 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_eq_fresh
   unfold globalFirstLaneAttackerHashQueryAtEpoch
   rw [hcache]
 
-noncomputable def globalFirstLaneAttackerHashQueryFromHigh
-    (high : GlobalChainValueIndex → Digest)
-    (secretKey : SecretKey) (input : HashInput) :
-    StateT GlobalCausalHashState (OracleComp GlobalFirstLaneWorld)
-      HashOutput :=
-  globalFirstLaneAttackerHashQueryFromHighRun high secretKey input
-
 noncomputable def globalFirstLaneEncodingHashQuery
     (secretKey : SecretKey) (epoch : Epoch) (message : Message)
     (randomness : Randomness) (state : GlobalCausalHashState) :
@@ -213,15 +206,6 @@ noncomputable def globalFirstLaneSigningImpl
         (OracleComp GlobalFirstLaneWorld)) :=
   globalFirstLaneSigningQuery keyView
 
-noncomputable def globalFirstLaneBaseMappedAdversaryImpl
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    QueryImpl (OracleWorld + SigningSpec)
-      (StateT GlobalCausalHashState
-        (OracleComp GlobalFirstLaneWorld)) :=
-  globalFirstLaneOracleImpl keyView edgeHigh +
-    globalFirstLaneSigningImpl keyView
-
 noncomputable def globalFirstLaneVerifierImpl
     (keyView : ProgrammedGlobalChainKeygenView)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
@@ -229,39 +213,5 @@ noncomputable def globalFirstLaneVerifierImpl
       (StateT GlobalCausalHashState
         (OracleComp GlobalFirstLaneWorld)) :=
   globalFirstLaneOracleImpl keyView edgeHigh
-
-noncomputable def globalFirstLaneDetailedExecution
-    (adversary : Adversary Concrete.scheme)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    StateT GlobalCausalHashState (OracleComp GlobalFirstLaneWorld)
-      (Forgery × Bool) := do
-  let handled ← simulateQ
-    (globalFirstLaneBaseMappedAdversaryImpl keyView edgeHigh)
-      (adversary.main keyView.publicKey)
-  let verified ← simulateQ (globalFirstLaneVerifierImpl keyView edgeHigh)
-    (Concrete.scheme.verify keyView.publicKey handled.epoch
-      handled.message handled.signature)
-  pure (handled, verified)
-
-abbrev GlobalFirstLaneResult :=
-  GlobalHighDirectKeyResult × ((Forgery × Bool) × GlobalCausalHashState)
-
-noncomputable def globalFirstLaneProgram
-    (adversary : Adversary Concrete.scheme) :
-    OracleComp GlobalFirstLaneWorld GlobalFirstLaneResult := do
-  let keyResult ← FirstLaneOracleSimulation.liftProbComp
-    globalHighDirectKeygen
-  let execution ← (globalFirstLaneDetailedExecution adversary keyResult.1
-    keyResult.2).run (globalFilteredCausalKeygenState keyResult.1)
-  pure (keyResult, execution)
-
-noncomputable def globalFirstLanePublicProgram
-    (adversary : Adversary Concrete.scheme) :
-    OracleComp GlobalFirstLaneWorld Unit := do
-  let result ← globalFirstLaneProgram adversary
-  globalFirstLaneLiftRevealProbe
-    (RevealProbeOracleSimulation.emitObservedTrace
-      (globalHighDirectForgeryPrimaryProbeTrace result))
 
 end XmssSecurity.CappedChain

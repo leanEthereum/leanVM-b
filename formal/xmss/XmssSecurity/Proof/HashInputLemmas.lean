@@ -43,10 +43,6 @@ theorem encodeTweak_injective : Function.Injective encodeTweak := by
   cases right
   simp_all
 
-theorem encodeTweak_eq_iff {left right : TweakFields} :
-    encodeTweak left = encodeTweak right ↔ left = right :=
-  encodeTweak_injective.eq_iff
-
 @[simp]
 theorem hashDomainFields_tag (domain : HashDomain) :
     (hashDomainFields domain).tag = BitVec.ofNat 8 (hashDomainTag domain) := by
@@ -134,10 +130,6 @@ theorem hashDomainFields_injective : Function.Injective hashDomainFields := by
 theorem hashDomainTweak_injective : Function.Injective hashDomainTweak :=
   encodeTweak_injective.comp hashDomainFields_injective
 
-theorem hashDomainTweak_eq_iff {left right : HashDomain} :
-    hashDomainTweak left = hashDomainTweak right ↔ left = right :=
-  hashDomainTweak_injective.eq_iff
-
 @[simp]
 theorem length_bytesLE (byteCount : Nat) (value : BitVec (8 * byteCount)) :
     (bytesLE byteCount value).length = byteCount := by
@@ -162,17 +154,6 @@ theorem bytesLE_injective (byteCount : Nat) : Function.Injective (bytesLE byteCo
 
 theorem tweakBytes_injective : Function.Injective tweakBytes :=
   (bytesLE_injective 16).comp hashDomainTweak_injective
-
-theorem tweakBytes_eq_iff {left right : HashDomain} :
-    tweakBytes left = tweakBytes right ↔ left = right :=
-  tweakBytes_injective.eq_iff
-
-theorem tweakableHashInput_domain_injective (parameter : PublicParameter) (message : HashInput) :
-    Function.Injective (fun domain => tweakableHashInput parameter domain message) := by
-  intro left right heq
-  apply tweakBytes_injective
-  exact List.append_left_injective (bytesLE 16 parameter)
-    (List.append_left_injective message heq)
 
 theorem domain_eq_of_tweakableHashInput_eq (parameter : PublicParameter)
     {leftDomain rightDomain : HashDomain} {leftMessage rightMessage : HashInput}
@@ -322,29 +303,6 @@ theorem leafInput_injective (parameter : PublicParameter) (epoch : Epoch) :
   intro left right heq
   apply Concrete.leafPayload_injective
   exact payload_eq_of_tweakableHashInput_eq parameter (.leaf epoch) heq
-
-theorem authenticationNodePayload_injective (epoch : Epoch) (level : Nat) :
-    Function.Injective fun input : Digest × Digest =>
-      authenticationNodePayload epoch level input.1 input.2 := by
-  intro left right heq
-  cases hbit : epoch.val.testBit level with
-  | false =>
-    simp only [authenticationNodePayload, hbit, Bool.false_eq_true, ↓reduceIte] at heq
-    exact Concrete.nodePayload_injective heq
-  | true =>
-    simp only [authenticationNodePayload, hbit, ↓reduceIte] at heq
-    have hswap : (left.2, left.1) = (right.2, right.1) :=
-      Concrete.nodePayload_injective heq
-    exact Prod.ext (congrArg Prod.snd hswap) (congrArg Prod.fst hswap)
-
-theorem nodeInput_injective (parameter : PublicParameter) (epoch : Epoch)
-    (level : MerkleLevel) :
-    Function.Injective fun input : Digest × Digest =>
-      nodeInput parameter epoch level input.1 input.2 := by
-  intro left right heq
-  apply authenticationNodePayload_injective epoch level.val
-  exact payload_eq_of_tweakableHashInput_eq parameter
-    (.merkle level (nodeIndex epoch level.val)) heq
 
 end CacheView
 
