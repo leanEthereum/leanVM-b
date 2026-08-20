@@ -1,6 +1,6 @@
 import XmssSecurity.Proof.CappedExactFirstLaneBoundedProgram
-import XmssSecurity.Proof.OnlineFirstLaneProjection
-import XmssSecurity.Proof.OnlineTraceInterpreter
+import XmssSecurity.Proof.FirstLaneEagerBound
+import XmssSecurity.Proof.FirstLaneHazardEnforcement
 
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
@@ -639,14 +639,33 @@ theorem public_eager_enforcedHit_probability_le
         globalFirstLaneExactPublicEagerExperiment adversary] ≤
       (fuel : ENNReal) / ((2 ^ digestBits : Nat) : ENNReal) := by
   calc
-    _ = Pr[(fun hit : Bool => hit = true) |
-        enforcedOnlineFirstLaneExperiment fuel adversary] := by
+    _ = Pr[FirstLaneOracleSimulation.ExperimentHit |
+        FirstLaneOracleSimulation.enforceEagerResult fuel <$>
+          FirstLaneOracleSimulation.eagerExperiment
+            (globalFirstLaneExactTracedPublicProgram adversary)] := by
       unfold GlobalFirstLaneExactPublicEnforcedHit
         globalFirstLaneExactPublicEagerExperiment
-      rw [FirstLaneOracleSimulation.enforced_combinedHit_probability_eq_onlineExperiment_direct]
-      rw [enforcedOnlineFirstLaneExperiment_eq_exact]
-    _ ≤ _ := enforcedOnlineFirstLaneExperiment_true_probability_le fuel
-      adversary
+      rw [probEvent_map]
+      rfl
+    _ = Pr[FirstLaneOracleSimulation.ExperimentHit |
+        FirstLaneOracleSimulation.eagerExperiment
+          (FirstLaneOracleSimulation.enforceHazardBound fuel
+            (globalFirstLaneExactTracedPublicProgram adversary))] := by
+      rw [FirstLaneOracleSimulation.eagerExperiment_enforceHazardBound_eq_map]
+    _ = Pr[(fun hit : Bool => hit = true) |
+        FirstLaneOracleSimulation.structuralExperiment
+          (some EncodingMonitor.State.empty)
+          AdaptiveRevealMonitor.State.empty fuel
+          (FirstLaneOracleSimulation.enforceHazardBound fuel
+            (globalFirstLaneExactTracedPublicProgram adversary))] := by
+      exact FirstLaneOracleSimulation.combinedHit_probability_eq_structuralExperiment
+        fuel (FirstLaneOracleSimulation.enforceHazardBound fuel
+          (globalFirstLaneExactTracedPublicProgram adversary))
+          (FirstLaneOracleSimulation.enforceHazardBound_isHazardQueryBoundP
+            fuel (globalFirstLaneExactTracedPublicProgram adversary))
+    _ ≤ _ := FirstLaneOracleSimulation.structuralExperiment_empty_true_probability_le
+      fuel (FirstLaneOracleSimulation.enforceHazardBound fuel
+        (globalFirstLaneExactTracedPublicProgram adversary))
 
 theorem sourceWinningExactFirstLane_probability_le
     (q : Nat)

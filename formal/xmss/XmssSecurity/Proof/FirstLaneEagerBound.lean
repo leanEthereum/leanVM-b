@@ -1,10 +1,38 @@
 import XmssSecurity.Proof.FirstLaneEagerSimulation
+import VCVio.ProgramLogic.Relational.Quantitative
 
 open OracleComp OracleSpec ENNReal
 
 namespace XmssSecurity.FirstLaneOracleSimulation
 
 variable {Index : Type} [Fintype Index] [DecidableEq Index]
+
+omit [Fintype Index] [DecidableEq Index] in
+@[simp] theorem eagerTraceImpl_run
+    (table : Index → Digest) (input : (World Index).Domain) :
+    (eagerTraceImpl table input).run =
+      (fun output => (output, traceFragment input output)) <$>
+        eagerImpl table input := by
+  simp [eagerTraceImpl, QueryImpl.withTraceAppend_apply]
+
+omit [Fintype Index] [DecidableEq Index] in
+theorem eagerTrace_query_bind_run
+    (table : Index → Digest) (input : (World Index).Domain)
+    (next : (World Index).Range input → OracleComp (World Index) α) :
+    (simulateQ (eagerTraceImpl table)
+      ((liftM (OracleSpec.query input) :
+        OracleComp (World Index) ((World Index).Range input)) >>= next)).run = (do
+      let output ← eagerImpl table input
+      let tail ← (simulateQ (eagerTraceImpl table) (next output)).run
+      pure (tail.1, traceFragment input output ++ tail.2)) := by
+  rw [simulateQ_bind, simulateQ_spec_query, WriterT.run_bind']
+  simp only [eagerTraceImpl_run]
+  simp [map_eq_bind_pure_comp, bind_assoc]
+  apply bind_congr
+  intro output
+  apply bind_congr
+  intro tail
+  rfl
 
 inductive EncodingRequest where
   | query (epoch : Epoch)
@@ -482,6 +510,135 @@ theorem runStructural_query_bind
   rw [runStructural, OracleComp.construct_query_bind]
   rfl
 
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 1000000 in
+theorem evalDist_runObserved_eagerTrace_eq_runStructural
+    (table : Index → Digest)
+    (encodingState : Option EncodingMonitor.State)
+    (chainState : AdaptiveRevealMonitor.State Index)
+    (fuel : Nat) (computation : OracleComp (World Index) α)
+    (hagrees : RevealProbeOracleSimulation.StateAgrees table chainState)
+    (hbound : computation.IsQueryBoundP IsHazardQuery fuel) :
+    evalDist ((fun result => runObserved table encodingState chainState result.2) <$>
+      (simulateQ (eagerTraceImpl table) computation).run) =
+    evalDist (runStructural table encodingState chainState fuel computation) := by
+  induction computation using OracleComp.inductionOn generalizing
+      encodingState chainState fuel with
+  | pure result =>
+      simp [eagerTraceImpl, runObserved, runStructural]
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [eagerTrace_query_bind_run, runStructural_query_bind]
+          simp only [eagerImpl, traceFragment, map_bind, runEagerQuery]
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro output
+          simpa [runObserved] using
+            ih output encodingState chainState fuel hagrees
+              (by simpa [IsHazardQuery] using hbound.2 output)
+      | encodingQuery epoch =>
+          cases fuel with
+          | zero => simp [IsHazardQuery] at hbound
+          | succ remaining =>
+              rw [eagerTrace_query_bind_run, runStructural_query_bind]
+              simp only [eagerImpl, traceFragment, map_bind, runEagerQuery,
+                applyEncodingRequest, EncodingRequest.observed]
+              cases encodingState with
+              | none =>
+                  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+                  intro output
+                  simpa [runObserved] using
+                    ih output none chainState remaining hagrees
+                      (by simpa [IsHazardQuery] using hbound.2 output)
+              | some state =>
+                  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+                  intro output
+                  cases happly : CappedEncodingMonitor.State.applyObserved state
+                    (.query epoch output) with
+                  | none =>
+                      simpa [runObserved, happly] using
+                        ih output none chainState remaining hagrees
+                          (by simpa [IsHazardQuery] using hbound.2 output)
+                  | some result =>
+                      rcases result with ⟨nextState, hit⟩
+                      cases hit with
+                      | false =>
+                          simpa [runObserved, happly] using
+                            ih output (some nextState) chainState remaining
+                              hagrees
+                              (by simpa [IsHazardQuery] using hbound.2 output)
+                      | true =>
+                          simp [runObserved, happly]
+                          apply OracleComp.ProgramLogic.Relational.spmf_map_const_of_no_failure
+                          exact probFailure_of_liftM_PMF _
+      | encodingSignAttempt epoch =>
+          rw [eagerTrace_query_bind_run, runStructural_query_bind]
+          simp only [eagerImpl, traceFragment, map_bind, runEagerQuery,
+            applyEncodingRequest, EncodingRequest.observed]
+          cases encodingState with
+          | none =>
+              apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+              intro output
+              simpa [runObserved] using
+                ih output none chainState fuel hagrees
+                  (by simpa [IsHazardQuery] using hbound.2 output)
+          | some state =>
+              apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+              intro output
+              cases happly : CappedEncodingMonitor.State.applyObserved state
+                (.sign epoch output) with
+              | none =>
+                  simpa [runObserved, happly] using
+                    ih output none chainState fuel hagrees
+                      (by simpa [IsHazardQuery] using hbound.2 output)
+              | some result =>
+                  rcases result with ⟨nextState, hit⟩
+                  cases hit with
+                  | false =>
+                      simpa [runObserved, happly] using
+                        ih output (some nextState) chainState fuel hagrees
+                          (by simpa [IsHazardQuery] using hbound.2 output)
+                  | true =>
+                      simp [runObserved, happly]
+                      apply OracleComp.ProgramLogic.Relational.spmf_map_const_of_no_failure
+                      exact probFailure_of_liftM_PMF _
+      | probe index target =>
+          cases fuel with
+          | zero => simp [IsHazardQuery] at hbound
+          | succ remaining =>
+              rw [eagerTrace_query_bind_run, runStructural_query_bind]
+              simp only [eagerImpl, traceFragment, map_bind, runEagerQuery]
+              cases hrevealed : chainState.revealed index with
+              | none =>
+                  simpa [runObserved, hrevealed] using
+                    ih () encodingState (chainState.addPending index target)
+                      remaining (hagrees.addPending index target)
+                      (by simpa [IsHazardQuery] using hbound.2 ())
+              | some value =>
+                  simpa [runObserved, hrevealed] using
+                    ih () encodingState chainState remaining hagrees
+                      (by simpa [IsHazardQuery] using hbound.2 ())
+      | reveal index =>
+          rw [eagerTrace_query_bind_run, runStructural_query_bind]
+          simp only [eagerImpl, traceFragment, map_bind, runEagerQuery]
+          cases hrevealed : chainState.revealed index with
+          | some value =>
+              have hvalue := hagrees index value hrevealed
+              simpa [runObserved, hrevealed, hvalue] using
+                ih (table index) encodingState chainState fuel hagrees
+                  (by simpa [hvalue, IsHazardQuery] using hbound.2 value)
+          | none =>
+              by_cases hhit : table index ∈ chainState.pending index
+              · simp [runObserved, hrevealed, hhit]
+                apply OracleComp.ProgramLogic.Relational.spmf_map_const_of_no_failure
+                exact probFailure_of_liftM_PMF _
+              · simpa [runObserved, hrevealed, hhit] using
+                  ih (table index) encodingState
+                    (chainState.install index (table index)) fuel
+                    (hagrees.install index)
+                    (by simpa [IsHazardQuery] using hbound.2 (table index))
+
 noncomputable def structuralExperiment
     (encodingState : Option EncodingMonitor.State)
     (chainState : AdaptiveRevealMonitor.State Index)
@@ -718,6 +875,47 @@ theorem structuralExperiment_true_probability_le
                     exact ih value encodingState
                       (chainState.install index value)
                       (hvalid.install index value) fuel
+
+theorem combinedHit_probability_eq_structuralExperiment
+    (fuel : Nat) (computation : OracleComp (World Index) α)
+    (hbound : computation.IsQueryBoundP IsHazardQuery fuel) :
+    Pr[fun result : (Index → Digest) × (α × ActionTrace Index) =>
+        CombinedHit result.1 result.2.2 |
+      eagerExperiment computation] =
+    Pr[(fun hit : Bool => hit = true) |
+      structuralExperiment (some EncodingMonitor.State.empty)
+        AdaptiveRevealMonitor.State.empty fuel computation] := by
+  unfold eagerExperiment structuralExperiment
+  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+  apply tsum_congr
+  intro table
+  congr 1
+  rw [show (do
+      let result ← (simulateQ (eagerTraceImpl table) computation).run
+      pure (table, result)) =
+    Prod.mk table <$> (simulateQ (eagerTraceImpl table) computation).run by rfl]
+  rw [probEvent_map]
+  change Pr[(fun result => CombinedHit table result.2) |
+      (simulateQ (eagerTraceImpl table) computation).run] =
+    Pr[(fun hit : Bool => hit = true) |
+      runStructural table (some EncodingMonitor.State.empty)
+        AdaptiveRevealMonitor.State.empty fuel computation]
+  calc
+    _ = Pr[(fun hit : Bool => hit = true) |
+        (runObserved table (some EncodingMonitor.State.empty)
+          AdaptiveRevealMonitor.State.empty ∘ Prod.snd) <$>
+            (simulateQ (eagerTraceImpl table) computation).run] := by
+      rw [probEvent_map]
+      apply probEvent_congr' (oa' :=
+        (simulateQ (eagerTraceImpl table) computation).run)
+      · intro result _
+        exact (runObserved_empty_eq_combinedHit table result.2).symm
+      · rfl
+    _ = _ := probEvent_congr' (fun _ _ => Iff.rfl)
+      (evalDist_runObserved_eagerTrace_eq_runStructural table
+        (some EncodingMonitor.State.empty)
+        AdaptiveRevealMonitor.State.empty fuel computation
+        (RevealProbeOracleSimulation.stateAgrees_empty table) hbound)
 
 theorem structuralExperiment_empty_true_probability_le
     (fuel : Nat) (computation : OracleComp (World Index) α) :
