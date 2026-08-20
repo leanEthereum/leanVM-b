@@ -538,6 +538,105 @@ theorem globalFirstLaneLiftRevealProbe_encodingActions_eq_nil
           simpa [FirstLaneOracleSimulation.ActionTrace.encodingActions] using
             ih (table index) tail htail
 
+theorem globalFirstLaneSignatureReveal_result_eq
+    (table : GlobalChainValueIndex → Digest)
+    (request : SignRequest) (encoding : Encoding)
+    (signature : Signature) (state : GlobalCausalHashState)
+    (result : (Signature × GlobalCausalHashState) ×
+      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+        (globalFirstLaneLiftRevealProbe
+          ((revealGlobalSignatureChains request encoding allChains signature).run
+            state))).run)) :
+    result.1 = globalSignatureRevealResult table request encoding allChains
+      signature state := by
+  have hprojected : (result.1, result.2.chainActions) ∈ support
+      ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
+        (globalFirstLaneErase
+          (globalFirstLaneLiftRevealProbe
+            ((revealGlobalSignatureChains request encoding allChains
+              signature).run state)))).run) := by
+    rw [← simulate_globalFirstLaneEagerTrace_chainProjection, support_map]
+    exact ⟨result, hresult, rfl⟩
+  rw [globalFirstLaneErase_liftRevealProbe,
+    simulate_eagerTrace_revealGlobalSignatureChains] at hprojected
+  simp only [support_pure, Set.mem_singleton_iff] at hprojected
+  exact congrArg Prod.fst hprojected
+
+theorem globalFirstLaneSigningAttempt_support_decompose
+    (table : GlobalChainValueIndex → Digest)
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (request : SignRequest) (state : GlobalCausalHashState)
+    (result : (Option Signature × GlobalCausalHashState) ×
+      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+        (globalFirstLaneSigningAttempt keyView request state)).run)) :
+    ∃ randomness encodedHead,
+      encodedHead ∈ support
+        ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+          (globalFirstLaneEncodingHashQuery keyView.secretKey request.epoch
+            request.message randomness state)).run) ∧
+      ((TargetSum.decodeDigest (truncateHash encodedHead.1.1) = none ∧
+          result = ((none, encodedHead.1.2), encodedHead.2)) ∨
+        ∃ encoding revealedHead,
+          TargetSum.decodeDigest (truncateHash encodedHead.1.1) =
+              some encoding ∧
+            revealedHead ∈ support
+              ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+                (globalFirstLaneLiftRevealProbe
+                  ((revealGlobalSignatureChains request encoding allChains
+                    (Concrete.CacheReplay.signWithEncoding keyView.cache
+                      keyView.secretKey request.epoch randomness encoding)).run
+                        encodedHead.1.2))).run) ∧
+            revealedHead.1 =
+              globalSignatureRevealResult table request encoding allChains
+                (Concrete.CacheReplay.signWithEncoding keyView.cache
+                  keyView.secretKey request.epoch randomness encoding)
+                encodedHead.1.2 ∧
+            result = ((some revealedHead.1.1, revealedHead.1.2),
+              encodedHead.2 ++ revealedHead.2)) := by
+  unfold globalFirstLaneSigningAttempt at hresult
+  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hresult
+  obtain ⟨randomHead, hrandom, hrest⟩ := hresult
+  rw [FirstLaneOracleSimulation.simulate_eagerTrace_liftProbComp,
+    support_map] at hrandom
+  obtain ⟨randomness, _hrandomness, rfl⟩ := hrandom
+  simp only [List.nil_append] at hrest
+  have hmap : Prod.map id (fun x => x) =
+      (id : ((Option Signature × GlobalCausalHashState) ×
+        FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) → _) := by
+    funext candidate
+    cases candidate
+    rfl
+  rw [hmap, id_map, simulateQ_bind, WriterT.run_bind',
+    mem_support_bind_iff] at hrest
+  obtain ⟨encodedHead, hencoded, htail⟩ := hrest
+  rw [support_map] at htail
+  obtain ⟨tailResult, htail, rfl⟩ := htail
+  refine ⟨randomness, encodedHead, hencoded, ?_⟩
+  cases hdecode : TargetSum.decodeDigest (truncateHash encodedHead.1.1) with
+  | none =>
+      simp [hdecode] at htail
+      subst tailResult
+      refine Or.inl ⟨rfl, ?_⟩
+      simp [Prod.map]
+  | some encoding =>
+      simp only [hdecode] at htail
+      rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
+      obtain ⟨revealedHead, hrevealed, hpure⟩ := htail
+      simp only at hpure
+      subst tailResult
+      have hrevealedResult := globalFirstLaneSignatureReveal_result_eq table
+        request encoding
+          (Concrete.CacheReplay.signWithEncoding keyView.cache keyView.secretKey
+            request.epoch randomness encoding)
+          encodedHead.1.2 revealedHead hrevealed
+      refine Or.inr
+        ⟨encoding, revealedHead, rfl, hrevealed, hrevealedResult, ?_⟩
+      simp [Prod.map]
+
 set_option maxRecDepth 1000000 in
 theorem globalFirstLaneSigningAttempt_freshTarget_mem_trace
     (table : GlobalChainValueIndex → Digest)
@@ -556,76 +655,27 @@ theorem globalFirstLaneSigningAttempt_freshTarget_mem_trace
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneSigningAttempt keyView request state)).run)) :
     .sign request.epoch targetOutput ∈ result.2.encodingActions := by
-  unfold globalFirstLaneSigningAttempt at hresult
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hresult
-  obtain ⟨randomHead, hrandom, hrest⟩ := hresult
-  rw [FirstLaneOracleSimulation.simulate_eagerTrace_liftProbComp] at hrandom
-  rw [support_map] at hrandom
-  obtain ⟨randomness, _hrandomness, hrandom⟩ := hrandom
-  subst randomHead
-  simp only [List.nil_append] at hrest
-  have hmap : Prod.map id (fun x => x) =
-      (id : ((Option Signature × GlobalCausalHashState) ×
-        FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) → _) := by
-    funext candidate
-    cases candidate
-    rfl
-  rw [hmap, id_map] at hrest
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hrest
-  obtain ⟨encodedHead, hencoded, htail⟩ := hrest
-  rw [support_map] at htail
-  obtain ⟨tailResult, htail, hresultEq⟩ := htail
-  subst result
-  cases hdecode : TargetSum.decodeDigest (truncateHash encodedHead.1.1) with
-  | none =>
-      simp [hdecode] at htail
-      subst tailResult
-      dsimp only [Prod.map]
-      rw [List.append_nil]
-      apply globalFirstLaneEncodingHashQuery_freshTarget_mem_trace table
-        keyView.secretKey request.epoch request.message randomness state
-          targetPayload targetOutput encodedHead htargetInitial
-      · exact htargetFinal
-      · exact hencoded
-  | some encoding =>
-      simp only [hdecode] at htail
-      rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
-      obtain ⟨revealedHead, hrevealed, hpure⟩ := htail
-      simp only at hpure
-      subst tailResult
-      let revealComputation :=
-        (revealGlobalSignatureChains request encoding allChains
-          (Concrete.CacheReplay.signWithEncoding keyView.cache
-            keyView.secretKey request.epoch randomness encoding)).run
-            encodedHead.1.2
-      have hprojected :
-          (revealedHead.1, revealedHead.2.chainActions) ∈ support
-            ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-              (globalFirstLaneErase
-                (globalFirstLaneLiftRevealProbe revealComputation))).run) := by
-        rw [← simulate_globalFirstLaneEagerTrace_chainProjection, support_map]
-        exact ⟨revealedHead, hrevealed, rfl⟩
-      rw [globalFirstLaneErase_liftRevealProbe,
-        simulate_eagerTrace_revealGlobalSignatureChains] at hprojected
-      simp only [support_pure, Set.mem_singleton_iff] at hprojected
-      have hrevealedResult : revealedHead.1 =
-          globalSignatureRevealResult table request encoding allChains
-            (Concrete.CacheReplay.signWithEncoding keyView.cache
-              keyView.secretKey request.epoch randomness encoding)
-            encodedHead.1.2 := congrArg Prod.fst hprojected
-      have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
-        rw [hrevealedResult, globalSignatureRevealResult_cache]
-      dsimp only [Prod.map]
-      rw [show (∅ : FirstLaneOracleSimulation.ActionTrace
-        GlobalChainValueIndex) = [] by rfl, List.append_nil,
-        FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
-      apply List.mem_append_left
-      apply globalFirstLaneEncodingHashQuery_freshTarget_mem_trace table
-        keyView.secretKey request.epoch request.message randomness state
-          targetPayload targetOutput encodedHead htargetInitial
-      · rw [← hfinalCache]
-        exact htargetFinal
-      · exact hencoded
+  obtain ⟨randomness, encodedHead, hencoded, hcases⟩ :=
+    globalFirstLaneSigningAttempt_support_decompose table keyView request state
+      result hresult
+  rcases hcases with hreject | haccept
+  · rw [hreject.2] at htargetFinal ⊢
+    exact globalFirstLaneEncodingHashQuery_freshTarget_mem_trace table
+      keyView.secretKey request.epoch request.message randomness state
+        targetPayload targetOutput encodedHead htargetInitial htargetFinal hencoded
+  · obtain ⟨encoding, revealedHead, _hdecode, hrevealed,
+      hrevealedResult, hresultEq⟩ := haccept
+    have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
+      rw [hrevealedResult, globalSignatureRevealResult_cache]
+    rw [hresultEq] at htargetFinal ⊢
+    rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+    apply List.mem_append_left
+    apply globalFirstLaneEncodingHashQuery_freshTarget_mem_trace table
+      keyView.secretKey request.epoch request.message randomness state
+        targetPayload targetOutput encodedHead htargetInitial
+    · rw [← hfinalCache]
+      exact htargetFinal
+    · exact hencoded
 
 set_option maxRecDepth 1000000 in
 theorem globalFirstLaneSigningAttempt_cache_le
@@ -638,63 +688,21 @@ theorem globalFirstLaneSigningAttempt_cache_le
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneSigningAttempt keyView request state)).run)) :
     state.cache ≤ result.1.2.cache := by
-  unfold globalFirstLaneSigningAttempt at hresult
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hresult
-  obtain ⟨randomHead, hrandom, hrest⟩ := hresult
-  rw [FirstLaneOracleSimulation.simulate_eagerTrace_liftProbComp] at hrandom
-  rw [support_map] at hrandom
-  obtain ⟨randomness, _hrandomness, hrandom⟩ := hrandom
-  subst randomHead
-  simp only [List.nil_append] at hrest
-  have hmap : Prod.map id (fun x => x) =
-      (id : ((Option Signature × GlobalCausalHashState) ×
-        FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) → _) := by
-    funext candidate
-    cases candidate
-    rfl
-  rw [hmap, id_map] at hrest
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hrest
-  obtain ⟨encodedHead, hencoded, htail⟩ := hrest
-  rw [support_map] at htail
-  obtain ⟨tailResult, htail, hresultEq⟩ := htail
-  subst result
+  obtain ⟨randomness, encodedHead, hencoded, hcases⟩ :=
+    globalFirstLaneSigningAttempt_support_decompose table keyView request state
+      result hresult
   have hencodedLe := globalFirstLaneEncodingHashQuery_cache_le table
     keyView.secretKey request.epoch request.message randomness state
       encodedHead hencoded
-  cases hdecode : TargetSum.decodeDigest (truncateHash encodedHead.1.1) with
-  | none =>
-      simp [hdecode] at htail
-      subst tailResult
-      exact hencodedLe
-  | some encoding =>
-      simp only [hdecode] at htail
-      rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
-      obtain ⟨revealedHead, hrevealed, hpure⟩ := htail
-      simp only at hpure
-      subst tailResult
-      let revealComputation :=
-        (revealGlobalSignatureChains request encoding allChains
-          (Concrete.CacheReplay.signWithEncoding keyView.cache
-            keyView.secretKey request.epoch randomness encoding)).run
-            encodedHead.1.2
-      have hprojected :
-          (revealedHead.1, revealedHead.2.chainActions) ∈ support
-            ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-              (globalFirstLaneErase
-                (globalFirstLaneLiftRevealProbe revealComputation))).run) := by
-        rw [← simulate_globalFirstLaneEagerTrace_chainProjection, support_map]
-        exact ⟨revealedHead, hrevealed, rfl⟩
-      rw [globalFirstLaneErase_liftRevealProbe,
-        simulate_eagerTrace_revealGlobalSignatureChains] at hprojected
-      simp only [support_pure, Set.mem_singleton_iff] at hprojected
-      have hrevealedResult : revealedHead.1 =
-          globalSignatureRevealResult table request encoding allChains
-            (Concrete.CacheReplay.signWithEncoding keyView.cache
-              keyView.secretKey request.epoch randomness encoding)
-            encodedHead.1.2 := congrArg Prod.fst hprojected
-      have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
-        rw [hrevealedResult, globalSignatureRevealResult_cache]
-      simpa [Prod.map, hfinalCache] using hencodedLe
+  rcases hcases with hreject | haccept
+  · rw [hreject.2]
+    exact hencodedLe
+  · obtain ⟨encoding, revealedHead, _hdecode, _hrevealed,
+      hrevealedResult, hresultEq⟩ := haccept
+    have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
+      rw [hrevealedResult, globalSignatureRevealResult_cache]
+    rw [hresultEq, hfinalCache]
+    exact hencodedLe
 
 theorem globalFirstLaneSignBoundedAttempts_cache_le
     (attempts : Nat)
@@ -925,26 +933,9 @@ theorem globalFirstLaneSigningAttempt_validTrace
         (encodingActionTraceUpdate keyView.secretKey
           (.inr request : (OracleWorld + SigningSpec).Domain)
           (state.cache, []) result.1.1 (result.1.2.cache, []) []) := by
-  unfold globalFirstLaneSigningAttempt at hresult
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hresult
-  obtain ⟨randomHead, hrandom, hrest⟩ := hresult
-  rw [FirstLaneOracleSimulation.simulate_eagerTrace_liftProbComp] at hrandom
-  rw [support_map] at hrandom
-  obtain ⟨randomness, hrandomness, hrandom⟩ := hrandom
-  subst randomHead
-  simp only [List.nil_append] at hrest
-  have hmap : Prod.map id (fun x => x) =
-      (id : ((Option Signature × GlobalCausalHashState) ×
-        FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) → _) := by
-    funext candidate
-    cases candidate
-    rfl
-  rw [hmap, id_map] at hrest
-  rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at hrest
-  obtain ⟨encodedHead, hencoded, htail⟩ := hrest
-  rw [support_map] at htail
-  obtain ⟨tailResult, htail, hresultEq⟩ := htail
-  subst result
+  obtain ⟨randomness, encodedHead, hencoded, hcases⟩ :=
+    globalFirstLaneSigningAttempt_support_decompose table keyView request state
+      result hresult
   have hencodedTrace := globalFirstLaneEncodingHashQuery_validTrace table
     keyView.secretKey request.epoch request.message randomness state
       encodedHead hencoded
@@ -957,10 +948,10 @@ theorem globalFirstLaneSigningAttempt_validTrace
             [.sign request.epoch encodedHead.1.1]
           else []) := by
     simpa [firstLaneValidEncodingActions] using hencodedTrace
-  cases hdecode : TargetSum.decodeDigest (truncateHash encodedHead.1.1) with
-  | none =>
-      simp [hdecode] at htail
-      subst tailResult
+  rcases hcases with hreject | haccept
+  · obtain ⟨hdecode, hresultEq⟩ := hreject
+    rw [hresultEq]
+    ·
       have hinvalid : ¬CappedEncodingMonitor.ActionValid
           (.sign request.epoch encodedHead.1.1) := by
         intro hvalid
@@ -970,8 +961,7 @@ theorem globalFirstLaneSigningAttempt_validTrace
       have hinvalidDigest :
           ¬TargetSum.ValidDigest (truncateHash encodedHead.1.1) := by
         simpa [CappedEncodingMonitor.ActionValid] using hinvalid
-      dsimp only [Prod.map, firstLaneValidEncodingActions]
-      rw [List.append_nil]
+      dsimp only [firstLaneValidEncodingActions]
       change CappedEncodingMonitor.validActions
           encodedHead.2.encodingActions =
         CappedEncodingMonitor.validActions []
@@ -982,36 +972,14 @@ theorem globalFirstLaneSigningAttempt_validTrace
       · simp [hcache, CappedEncodingMonitor.validActions,
           CappedEncodingMonitor.ActionValid, hinvalidDigest]
       · simp [hcache]
-  | some encoding =>
-      simp only [hdecode] at htail
-      rw [simulateQ_bind, WriterT.run_bind', mem_support_bind_iff] at htail
-      obtain ⟨revealedHead, hrevealed, hpure⟩ := htail
-      simp only at hpure
-      subst tailResult
+  · obtain ⟨encoding, revealedHead, hdecode, hrevealed,
+      hrevealedResult, hresultEq⟩ := haccept
+    rw [hresultEq]
+    ·
       have hrevealTrace :
           revealedHead.2.encodingActions = [] := by
         exact globalFirstLaneLiftRevealProbe_encodingActions_eq_nil table _ _
           hrevealed
-      let revealComputation :=
-        (revealGlobalSignatureChains request encoding allChains
-          (Concrete.CacheReplay.signWithEncoding keyView.cache
-            keyView.secretKey request.epoch randomness encoding)).run
-            encodedHead.1.2
-      have hprojected :
-          (revealedHead.1, revealedHead.2.chainActions) ∈ support
-            ((simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
-              (globalFirstLaneErase
-                (globalFirstLaneLiftRevealProbe revealComputation))).run) := by
-        rw [← simulate_globalFirstLaneEagerTrace_chainProjection, support_map]
-        exact ⟨revealedHead, hrevealed, rfl⟩
-      rw [globalFirstLaneErase_liftRevealProbe,
-        simulate_eagerTrace_revealGlobalSignatureChains] at hprojected
-      simp only [support_pure, Set.mem_singleton_iff] at hprojected
-      have hrevealedResult : revealedHead.1 =
-          globalSignatureRevealResult table request encoding allChains
-            (Concrete.CacheReplay.signWithEncoding keyView.cache
-              keyView.secretKey request.epoch randomness encoding)
-            encodedHead.1.2 := congrArg Prod.fst hprojected
       have hrandomness : revealedHead.1.1.randomness = randomness := by
         rw [hrevealedResult, globalSignatureRevealResult_randomness]
         rfl
@@ -1028,10 +996,7 @@ theorem globalFirstLaneSigningAttempt_validTrace
         exact hencodedCache
       have hvalid : CappedEncodingMonitor.ActionValid
           (.sign request.epoch encodedHead.1.1) := ⟨encoding, hdecode⟩
-      dsimp only [Prod.map, firstLaneValidEncodingActions]
-      simp only [id_eq]
-      rw [show (∅ : FirstLaneOracleSimulation.ActionTrace
-        GlobalChainValueIndex) = [] by rfl, List.append_nil]
+      dsimp only [firstLaneValidEncodingActions]
       change CappedEncodingMonitor.validActions
           (encodedHead.2 ++ revealedHead.2).encodingActions =
         CappedEncodingMonitor.validActions
