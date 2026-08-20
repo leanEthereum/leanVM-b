@@ -40,13 +40,16 @@ theorem relTriple_enforcedHit_append
         table limit (history ++ fragment) result.2 hhit
   simpa only [id_map] using hmapped
 
-theorem relTriple_simulateQ_bounded_firstLane
+theorem relTriple_simulateQ_bind_bounded_firstLane
     {spec : OracleSpec ι}
     [Fintype Index] [DecidableEq Index]
     (table : Index → Digest)
     (leftImpl : QueryImpl spec (StateT σ₁ ProbComp))
     (rightImpl : QueryImpl spec
       (StateT σ₂ (OracleComp (FirstLaneOracleSimulation.World Index))))
+    (leftFinish : α → σ₁ → ProbComp (β × σ₁))
+    (rightFinish : α → σ₂ →
+      OracleComp (FirstLaneOracleSimulation.World Index) (β × σ₂))
     (cost : spec.Domain → Nat)
     (stateRel : σ₁ → σ₂ →
       FirstLaneOracleSimulation.ActionTrace Index → Prop)
@@ -64,8 +67,7 @@ theorem relTriple_simulateQ_bounded_firstLane
       stateRel leftState rightState trace →
       FirstLaneOracleSimulation.hazardCount trace ≤ used →
       accounted leftState used →
-      RelTriple
-        ((leftImpl input).run leftState)
+      RelTriple ((leftImpl input).run leftState)
         ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
           ((rightImpl input).run rightState)).run)
         (fun leftResult rightResult =>
@@ -79,7 +81,28 @@ theorem relTriple_simulateQ_bounded_firstLane
               (trace ++ rightResult.2) ∧
             FirstLaneOracleSimulation.hazardCount
                 (trace ++ rightResult.2) ≤ used + cost input)))
-    (countLimit hitLimit used fuel : Nat)
+    (countLimit hitLimit : Nat)
+    (terminalCoupling : ∀ (value : α) (used fuel : Nat)
+      (leftState : σ₁) (rightState : σ₂)
+      (trace : FirstLaneOracleSimulation.ActionTrace Index),
+      Budget (pure value) fuel →
+      stateRel leftState rightState trace →
+      FirstLaneOracleSimulation.hazardCount trace ≤ used →
+      accounted leftState used →
+      used + fuel ≤ countLimit →
+      RelTriple (leftFinish value leftState)
+        ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+          (rightFinish value rightState)).run)
+        (fun leftResult rightResult =>
+          (leftResult.1 = rightResult.1.1 ∧
+            stateRel leftResult.2 rightResult.1.2
+              (trace ++ rightResult.2) ∧
+            FirstLaneOracleSimulation.hazardCount
+                (trace ++ rightResult.2) ≤ countLimit) ∨
+          FirstLaneOracleSimulation.CombinedHit table
+            (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
+              (trace ++ rightResult.2))))
+    (used fuel : Nat)
     (computation : OracleComp spec α)
     (hbudget : Budget computation fuel)
     (leftState : σ₁) (rightState : σ₂)
@@ -90,31 +113,29 @@ theorem relTriple_simulateQ_bounded_firstLane
     (htotal : used + fuel ≤ countLimit)
     (hlimits : countLimit ≤ hitLimit) :
     RelTriple
-      ((simulateQ leftImpl computation).run leftState)
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        ((simulateQ rightImpl computation).run rightState)).run)
+      ((simulateQ leftImpl computation).run leftState >>= fun result =>
+        leftFinish result.1 result.2)
+      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table) (do
+        let result ← (simulateQ rightImpl computation).run rightState
+        rightFinish result.1 result.2)).run)
       (fun leftResult rightResult =>
-        ((∃ spent, leftResult.1 = rightResult.1.1 ∧
+        (leftResult.1 = rightResult.1.1 ∧
           stateRel leftResult.2 rightResult.1.2
             (trace ++ rightResult.2) ∧
           FirstLaneOracleSimulation.hazardCount
-              (trace ++ rightResult.2) ≤ spent ∧
-          accounted leftResult.2 spent ∧ spent ≤ countLimit) ∨
+              (trace ++ rightResult.2) ≤ countLimit) ∨
         FirstLaneOracleSimulation.CombinedHit table
           (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-            (trace ++ rightResult.2)))) := by
+            (trace ++ rightResult.2))) := by
   induction computation using OracleComp.inductionOn generalizing leftState
       rightState trace used fuel with
   | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, WriterT.run_pure']
-      apply relTriple_pure_pure
-      exact Or.inl ⟨used, rfl, by
-        simpa [FirstLaneOracleSimulation.ActionTrace.chainActions] using hstate,
-        by simpa [FirstLaneOracleSimulation.hazardCount] using hcount,
-        haccounted, by omega⟩
+      simp only [simulateQ_pure, StateT.run_pure, pure_bind]
+      exact terminalCoupling value used fuel leftState rightState trace hbudget
+        hstate hcount haccounted htotal
   | query_bind input next ih =>
-      simp only [StateT.run_bind, simulateQ_bind,
-        WriterT.run_bind', simulateQ_spec_query]
+      simp only [StateT.run_bind, simulateQ_bind, WriterT.run_bind',
+        simulateQ_spec_query, bind_assoc]
       apply relTriple_bind (relTriple_with_support
         (stepCoupling used input leftState rightState trace hstate hcount
           haccounted))
@@ -128,29 +149,36 @@ theorem relTriple_simulateQ_bounded_firstLane
           rw [← hvalue]
           exact hnextBudget.2
         let appendTrace := fun result :
-            ((α × σ₂) × FirstLaneOracleSimulation.ActionTrace Index) =>
+            ((β × σ₂) × FirstLaneOracleSimulation.ActionTrace Index) =>
           Prod.map id (fun tail => headRight.2 ++ tail) result
         have hrec := ih headRight.1.1 (used + cost input)
           (fuel - cost input) hnextBudget' headLeft.2 headRight.1.2
             (trace ++ headRight.2) hnextState hnextCount hnextAccounted
               (by omega)
+        rw [simulateQ_bind, WriterT.run_bind'] at hrec
         change RelTriple _ _ _ at hrec
         have hlifted : RelTriple
-            (id <$> (simulateQ leftImpl (next headRight.1.1)).run headLeft.2)
+            (id <$> ((simulateQ leftImpl (next headRight.1.1)).run headLeft.2 >>=
+              fun result => leftFinish result.1 result.2))
             (appendTrace <$>
-              (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-                ((simulateQ rightImpl (next headRight.1.1)).run
-                  headRight.1.2)).run)
+              (do
+                let handled ←
+                  (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+                    ((simulateQ rightImpl
+                      (next headRight.1.1)).run headRight.1.2)).run
+                Prod.map id (fun tail => handled.2 ++ tail) <$>
+                  (simulateQ
+                    (FirstLaneOracleSimulation.eagerTraceImpl table)
+                    (rightFinish handled.1.1 handled.1.2)).run))
             (fun leftResult rightResult =>
-              ((∃ spent, leftResult.1 = rightResult.1.1 ∧
+              (leftResult.1 = rightResult.1.1 ∧
                 stateRel leftResult.2 rightResult.1.2
                   (trace ++ rightResult.2) ∧
                 FirstLaneOracleSimulation.hazardCount
-                    (trace ++ rightResult.2) ≤ spent ∧
-                accounted leftResult.2 spent ∧ spent ≤ countLimit) ∨
+                    (trace ++ rightResult.2) ≤ countLimit) ∨
               FirstLaneOracleSimulation.CombinedHit table
                 (FirstLaneOracleSimulation.enforceHazardTrace hitLimit
-                  (trace ++ rightResult.2)))) := by
+                  (trace ++ rightResult.2))) := by
           apply relTriple_map
           apply relTriple_post_mono hrec
           intro leftResult rightResult hresult
@@ -168,12 +196,18 @@ theorem relTriple_simulateQ_bounded_firstLane
             (trace ++ headRight.2) hitLimit hnextLimit]
           exact hhit
         apply relTriple_post_mono
-          (relTriple_enforcedHit_append table hitLimit
-            trace headRight.2 henforced
-            ((simulateQ leftImpl (next headLeft.1)).run headLeft.2)
-            ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-              ((simulateQ rightImpl (next headRight.1.1)).run
-                headRight.1.2)).run))
+          (relTriple_enforcedHit_append table hitLimit trace headRight.2
+            henforced
+            ((simulateQ leftImpl (next headLeft.1)).run headLeft.2 >>=
+              fun result => leftFinish result.1 result.2)
+            (do
+              let handled ←
+                (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+                  ((simulateQ rightImpl
+                    (next headRight.1.1)).run headRight.1.2)).run
+              Prod.map id (fun tail => handled.2 ++ tail) <$>
+                (simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+                  (rightFinish handled.1.1 handled.1.2)).run))
         intro _leftResult _rightResult hresult
         exact Or.inr (by simpa [List.append_assoc] using hresult)
 
