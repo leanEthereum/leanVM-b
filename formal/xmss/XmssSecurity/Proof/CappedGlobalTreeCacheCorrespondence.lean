@@ -861,16 +861,8 @@ theorem relTriple_globalMaterial_merkleTreeValue_run
     (hrightReplay : ReplayEndpointsMatch parameter right.1 rightEndpoints
       rightPrefix.2)
     (current : TreeValueIndex) (hpositive : 0 < current.1.val)
-    (hleftChild : TreeValueIndex.ofSubtree (current.1.val - 1)
-      (Concrete.childNode current.node false) (by omega)
-      (childNode_subtreeValid (current.1.val - 1) current.node false
-        (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
-        processed)
-    (hrightChild : TreeValueIndex.ofSubtree (current.1.val - 1)
-      (Concrete.childNode current.node true) (by omega)
-      (childNode_subtreeValid (current.1.val - 1) current.node true
-        (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
-        processed) :
+    (hleftChild : current.child hpositive false ∈ processed)
+    (hrightChild : current.child hpositive true ∈ processed) :
     RelTriple
       ((simulateQ randomOracle
         (current.computation parameter left.1)).run leftPrefix.2)
@@ -890,18 +882,10 @@ theorem relTriple_globalMaterial_merkleTreeValue_run
   have hlevel : levels < treeHeight := by
     dsimp [levels]
     omega
-  have hparentValid : TreeSubtreeValid (levels + 1) current.node := by
-    simpa [← hsucc] using current.subtreeValid
-  let leftIndex := TreeValueIndex.ofSubtree levels
-    (Concrete.childNode current.node false) (by omega)
-      (childNode_subtreeValid levels current.node false hparentValid)
-  let rightIndex := TreeValueIndex.ofSubtree levels
-    (Concrete.childNode current.node true) (by omega)
-      (childNode_subtreeValid levels current.node true hparentValid)
-  have hleftIndex : leftIndex ∈ processed := by
-    simpa [leftIndex, levels] using hleftChild
-  have hrightIndex : rightIndex ∈ processed := by
-    simpa [rightIndex, levels] using hrightChild
+  let leftIndex := current.child hpositive false
+  let rightIndex := current.child hpositive true
+  have hleftIndex : leftIndex ∈ processed := hleftChild
+  have hrightIndex : rightIndex ∈ processed := hrightChild
   have hleftTreeReplay := treeValues_support_replay parameter left.1 processed
     left.2.2 leftPrefix hleftPrefix
   have hrightTreeReplay := treeValues_support_replay parameter right.1 processed
@@ -927,11 +911,13 @@ theorem relTriple_globalMaterial_merkleTreeValue_run
   have hleftChildEq' : leftChild =
       Concrete.CacheReplay.treeNode rightPrefix.2 parameter right.1 levels
         (Concrete.childNode current.node false) := by
-    simpa [leftIndex, leftChild] using hleftChildEq
+    simpa [leftIndex, leftChild, TreeValueIndex.child, levels] using
+      hleftChildEq
   have hrightChildEq' : rightChild =
       Concrete.CacheReplay.treeNode rightPrefix.2 parameter right.1 levels
         (Concrete.childNode current.node true) := by
-    simpa [rightIndex, rightChild] using hrightChildEq
+    simpa [rightIndex, rightChild, TreeValueIndex.child, levels] using
+      hrightChildEq
   have hleftLeft' :
       (simulateQ randomOracle
         (Concrete.treeNode parameter left.1 levels
@@ -1002,16 +988,8 @@ theorem relTriple_globalMaterial_merkleTreeValues_run
     ∀ (indices base : List TreeValueIndex)
       (leftBase rightBase : List Digest × QueryCache HashSpec),
       (∀ current ∈ indices, ∃ hpositive : 0 < current.1.val,
-        TreeValueIndex.ofSubtree (current.1.val - 1)
-          (Concrete.childNode current.node false) (by omega)
-          (childNode_subtreeValid (current.1.val - 1) current.node false
-            (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
-            base ∧
-        TreeValueIndex.ofSubtree (current.1.val - 1)
-          (Concrete.childNode current.node true) (by omega)
-          (childNode_subtreeValid (current.1.val - 1) current.node true
-            (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
-            base) →
+        current.child hpositive false ∈ base ∧
+          current.child hpositive true ∈ base) →
       indices.Pairwise TreeValueIndex.Precedes →
       leftBase ∈ support (treeValues parameter left.1 base left.2.2) →
       rightBase ∈ support (treeValues parameter right.1 base right.2.2) →
@@ -1056,16 +1034,8 @@ theorem relTriple_globalMaterial_merkleTreeValues_run
         hchildren current (by simp)
       have htailChildren : ∀ target ∈ indices,
           ∃ hpositive : 0 < target.1.val,
-            TreeValueIndex.ofSubtree (target.1.val - 1)
-              (Concrete.childNode target.node false) (by omega)
-              (childNode_subtreeValid (target.1.val - 1) target.node false
-                (by simpa [Nat.sub_add_cancel hpositive] using
-                  target.subtreeValid)) ∈ base ∧
-            TreeValueIndex.ofSubtree (target.1.val - 1)
-              (Concrete.childNode target.node true) (by omega)
-              (childNode_subtreeValid (target.1.val - 1) target.node true
-                (by simpa [Nat.sub_add_cancel hpositive] using
-                  target.subtreeValid)) ∈ base := by
+            target.child hpositive false ∈ base ∧
+              target.child hpositive true ∈ base := by
         intro target htarget
         exact hchildren target (by simp [htarget])
       have hcurrentBefore : ∀ target ∈ indices,
@@ -1125,16 +1095,8 @@ theorem relTriple_globalMaterial_merkleTreeValues_run
         simp [nextLeftBase, nextRightBase, hbaseValues, hheadRelation.1]
       have hnextChildren : ∀ target ∈ indices,
           ∃ hpositive : 0 < target.1.val,
-            TreeValueIndex.ofSubtree (target.1.val - 1)
-              (Concrete.childNode target.node false) (by omega)
-              (childNode_subtreeValid (target.1.val - 1) target.node false
-                (by simpa [Nat.sub_add_cancel hpositive] using
-                  target.subtreeValid)) ∈ base ++ [current] ∧
-            TreeValueIndex.ofSubtree (target.1.val - 1)
-              (Concrete.childNode target.node true) (by omega)
-              (childNode_subtreeValid (target.1.val - 1) target.node true
-                (by simpa [Nat.sub_add_cancel hpositive] using
-                  target.subtreeValid)) ∈ base ++ [current] := by
+            target.child hpositive false ∈ base ++ [current] ∧
+              target.child hpositive true ∈ base ++ [current] := by
         intro target htarget
         obtain ⟨hpos, hleft, hright⟩ := htailChildren target htarget
         exact ⟨hpos, List.mem_append_left [current] hleft,
@@ -1197,16 +1159,10 @@ theorem relTriple_globalMaterial_merkleHeight_run
               (treeValueIndicesBelow (height.val + 1)) right.2.2)) := by
   have hchildren : ∀ current ∈ treeValueIndicesAtHeight height,
       ∃ hcurrentPositive : 0 < current.1.val,
-        TreeValueIndex.ofSubtree (current.1.val - 1)
-          (Concrete.childNode current.node false) (by omega)
-          (childNode_subtreeValid (current.1.val - 1) current.node false
-            (by simpa [Nat.sub_add_cancel hcurrentPositive] using
-              current.subtreeValid)) ∈ treeValueIndicesBelow height.val ∧
-        TreeValueIndex.ofSubtree (current.1.val - 1)
-          (Concrete.childNode current.node true) (by omega)
-          (childNode_subtreeValid (current.1.val - 1) current.node true
-            (by simpa [Nat.sub_add_cancel hcurrentPositive] using
-              current.subtreeValid)) ∈ treeValueIndicesBelow height.val := by
+        current.child hcurrentPositive false ∈
+            treeValueIndicesBelow height.val ∧
+          current.child hcurrentPositive true ∈
+            treeValueIndicesBelow height.val := by
     intro current hcurrent
     have hheight := (mem_treeValueIndicesAtHeight_iff height current).1 hcurrent
     have hvalue : current.1.val = height.val := congrArg Fin.val hheight

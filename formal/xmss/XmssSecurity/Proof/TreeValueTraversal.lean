@@ -82,18 +82,19 @@ theorem mem_treeValueIndicesAtHeight_iff
         rw [treeValueIndicesAtHeight, List.mem_ofFn]
         exact ⟨node, rfl⟩
 
-theorem childTreeValueIndex_mem_below
-    (current : TreeValueIndex) (hpositive : 0 < current.1.val)
-    (right : Bool) :
-    TreeValueIndex.ofSubtree (current.1.val - 1)
-      (Concrete.childNode current.node right) (by omega)
-      (childNode_subtreeValid (current.1.val - 1) current.node right
-        (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid)) ∈
-      treeValueIndicesBelow current.1.val := by
-  let child := TreeValueIndex.ofSubtree (current.1.val - 1)
+def TreeValueIndex.child (current : TreeValueIndex)
+    (hpositive : 0 < current.1.val) (right : Bool) : TreeValueIndex :=
+  TreeValueIndex.ofSubtree (current.1.val - 1)
     (Concrete.childNode current.node right) (by omega)
     (childNode_subtreeValid (current.1.val - 1) current.node right
       (by simpa [Nat.sub_add_cancel hpositive] using current.subtreeValid))
+
+theorem childTreeValueIndex_mem_below
+    (current : TreeValueIndex) (hpositive : 0 < current.1.val)
+    (right : Bool) :
+    current.child hpositive right ∈
+      treeValueIndicesBelow current.1.val := by
+  let child := current.child hpositive right
   have hbound : current.1.val - 1 < treeHeight + 1 := by omega
   have hdecompose : current.1.val = (current.1.val - 1) + 1 := by omega
   have hbelow := congrArg treeValueIndicesBelow hdecompose
@@ -103,7 +104,7 @@ theorem childTreeValueIndex_mem_below
   apply (mem_treeValueIndicesAtHeight_iff
     ⟨current.1.val - 1, hbound⟩ child).2
   apply Fin.ext
-  simp [child]
+  simp [child, TreeValueIndex.child]
 
 theorem treeValues_preserves_fresh_after
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest) :
