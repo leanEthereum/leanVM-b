@@ -138,16 +138,6 @@ def signingLogFragment
   | .inl _ => []
   | .inr request => [⟨request, output⟩]
 
-@[simp]
-theorem signingLogFragment_inl
-    (input : OracleWorld.Domain) (output : OracleWorld.Range input) :
-    signingLogFragment (.inl input) output = [] := rfl
-
-@[simp]
-theorem signingLogFragment_inr
-    (request : SignRequest) (output : Option Signature) :
-    signingLogFragment (.inr request) output = [⟨request, output⟩] := rfl
-
 def signingCacheTraceUpdate
     (input : (OracleWorld + SigningSpec).Domain)
     (initialCache : QueryCache HashSpec)

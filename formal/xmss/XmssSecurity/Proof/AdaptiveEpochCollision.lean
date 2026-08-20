@@ -136,9 +136,6 @@ def runObserved : State → List ObservedAction → Bool
       | some (nextState, hit) => hit || runObserved nextState actions
 
 @[simp]
-theorem runObserved_nil (state : State) : runObserved state [] = false := rfl
-
-@[simp]
 theorem runObserved_cons (state : State) (action : ObservedAction)
     (actions : List ObservedAction) :
     runObserved state (action :: actions) =
@@ -170,10 +167,6 @@ def replayObserved : State → List ObservedAction → ReplayResult
       let head := state.applyObservedTotal action
       let tail := replayObserved head.state actions
       ⟨tail.state, head.hit || tail.hit, head.valid && tail.valid⟩
-
-@[simp]
-theorem replayObserved_nil (state : State) :
-    replayObserved state [] = ⟨state, false, true⟩ := rfl
 
 @[simp]
 theorem replayObserved_cons (state : State) (action : ObservedAction)
@@ -714,7 +707,7 @@ theorem replayObserved_hit_eq_true_hasCollisionPair
     (hhit : (replayObserved state tail).hit = true) :
     HasCollisionPair (actionsBefore ++ tail) := by
   induction tail generalizing state actionsBefore with
-  | nil => simp at hhit
+  | nil => simp [replayObserved] at hhit
   | cons action tail ih =>
       rw [replayObserved_cons] at hhit
       let head := state.applyObservedTotal action

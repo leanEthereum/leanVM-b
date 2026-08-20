@@ -82,10 +82,4 @@ omit [DecidableEq Index] in
 theorem State.pendingCount_empty : (State.empty : State Index).pendingCount = 0 := by
   simp [State.empty, State.pendingCount]
 
-inductive ControllerAction (σ Index : Type) where
-  | stop
-  | skip (next : σ)
-  | probe (index : Index) (target : Digest) (next : Bool → σ)
-  | reveal (index : Index) (next : Digest → σ)
-
 end XmssSecurity.AdaptiveRevealMonitor

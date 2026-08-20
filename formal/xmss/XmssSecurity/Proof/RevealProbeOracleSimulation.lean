@@ -102,13 +102,6 @@ noncomputable def eagerImpl (table : Index → Digest) :
   | .probe _ _ => pure ()
   | .reveal index => pure (table index)
 
-omit [Fintype Index] [DecidableEq Index] in
-@[simp]
-theorem simulate_eagerImpl_revealQuery
-    (table : Index → Digest) (index : Index) :
-    simulateQ (eagerImpl table) (revealQuery index) = pure (table index) := by
-  simp [revealQuery, eagerImpl]
-
 def traceFragment
     (input : (World Index).Domain) (output : (World Index).Range input) :
     ActionTrace Index :=
