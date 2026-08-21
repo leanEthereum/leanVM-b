@@ -115,7 +115,6 @@
 //!   `byte_idx` and apply it across all `i_inner` with one lookup + one XOR
 //!   per byte.
 
-use crate::r1cs::SparseBinaryMatrix;
 use fiat_shamir::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use pcs::ring_switch::inner_product_ext;
 use primitives::field::F192;
@@ -135,11 +134,11 @@ use zk_alloc::ArenaVec;
 // marginal of base matrix `M ∈ {A_0, B_0}`, at cost ∝ NNZ.
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
-// `&dyn LincheckCircuit` instead of a pair of matrices. Two live impls:
-// [`CscCircuit`] (the cached column-major transpose of BLAKE2s's `(A_0, B_0)`,
-// see `BlockR1cs::csc_lincheck_circuit`), the prover's marginal fold, and
-// `blake2s::WalkLincheckCircuit`, whose `bilinear_form` lets the verifier skip
-// the marginal entirely via the circuit walk (flock.tex §Circuit walking).
+// `&dyn LincheckCircuit` instead of a pair of matrices. The one live impl is
+// `blake2s::WalkLincheckCircuit`, which walks the circuit in both directions
+// (forwards for the verifier's `bilinear_form`, backwards for the prover's
+// marginal) and never touches a matrix entry. See doc/leanvm, Annex C
+// "Evaluating the matrix forms".
 
 /// Per-block linear structure consumed by lincheck. Implementations produce
 /// the α-batched column marginal `comb_vec[c] = ξ_A(c) + α · ξ_B(c)` either
@@ -148,22 +147,20 @@ pub trait LincheckCircuit: Sync {
     /// Number of columns in the per-block matrices A_0, B_0 (= k = 2^k_log).
     fn n_cols(&self) -> usize;
 
-    /// Compute `comb_vec[c] = α · (eq^T · A_0)[c] + (eq^T · B_0)[c]` over
+    /// Compute `comb_vec[c] = (eq^T · A_0)[c] + α · (eq^T · B_0)[c]` over
     /// `c ∈ [0, n_cols())`. `eq_inner.len() == n_cols()`.
     fn fold_alpha_batched(&self, alpha: F192, eq_inner: &[F192]) -> Vec<F192>;
 
-    /// Column index of a constant-one wire to pin, or `None` if the circuit has
-    /// no such wire. When `Some(col)`, lincheck folds one extra `β = α²`-term into
-    /// the comb so the sumcheck also proves that the committed constant column is
-    /// the all-ones vector (whose MLE is the constant `1`), closing the all-zero
-    /// witness soundness gap. This REQUIRES the witness to set that wire to `1`
-    /// in *every* batched instance, padding included. The term rides a power of
-    /// `α`, so it costs no transcript message; `None` omits it.
-    fn const_pin_col(&self) -> Option<usize> {
-        None
-    }
+    /// Column index of the constant-one wire. Lincheck folds one extra
+    /// `β = α³`-term into the comb at this column so the sumcheck also proves
+    /// that the committed constant column is the all-ones vector (whose MLE is
+    /// the constant `1`), closing the all-zero witness soundness gap. This
+    /// REQUIRES the witness to set that wire to `1` in *every* batched instance,
+    /// padding included. The term rides a power of `α`, so it costs no
+    /// transcript message.
+    fn const_pin_col(&self) -> usize;
 
-    /// Optional verifier-side fast path (flock.tex §Circuit walking): the
+    /// Optional verifier-side fast path (doc/leanvm, Annex C): the
     /// α-batched bilinear form
     ///
     ///   `(uᵀ A_0 w) + α·(uᵀ B_0 w)`
@@ -177,115 +174,6 @@ pub trait LincheckCircuit: Sync {
     /// falls back to `fold_alpha_batched`.
     fn bilinear_form(&self, _alpha: F192, _u: &[F192], _w: &[F192]) -> Option<F192> {
         None
-    }
-}
-
-/// Column-major (CSC) `LincheckCircuit`: `(A_0, B_0)` transposed once into
-/// flat `col_ptr`/`row_idx` arrays. `fold_alpha_batched` becomes a gather:
-/// each column reads its own row list and sums `eq_inner[r]`, so columns are
-/// independent (parallel with no per-thread accumulator copies and no write
-/// scatter) and the α-mul amortizes to one per column:
-///
-///   `comb[c] = Σ_{r ∈ colA(c)} eq_inner[r] + α · Σ_{r ∈ colB(c)} eq_inner[r]`
-///
-/// On BLAKE2s's matrices (k = 2^14, ~16.7M nonzeros) this measures ~1.7× faster
-/// than the row-scatter fold. Construction costs one pass over the nonzeros
-/// (~40 ms), so do it once at setup, e.g. via
-/// [`crate::r1cs::BlockR1cs::csc_lincheck_circuit`].
-#[derive(Clone)]
-pub struct CscCircuit {
-    n_cols: usize,
-    a_col_ptr: Vec<u32>,
-    a_rows: Vec<u32>,
-    b_col_ptr: Vec<u32>,
-    b_rows: Vec<u32>,
-    /// Constant-wire pin column (see [`LincheckCircuit::const_pin_col`]).
-    const_pin: Option<usize>,
-}
-
-/// Flatten one sparse matrix into CSC arrays: rows with a 1 in column `c` are
-/// `rows_flat[col_ptr[c] as usize .. col_ptr[c+1] as usize]`.
-fn csc_from_rows(m: &SparseBinaryMatrix) -> (Vec<u32>, Vec<u32>) {
-    assert!(m.num_rows <= u32::MAX as usize);
-    assert!(m.num_cols <= u32::MAX as usize);
-    let mut col_ptr = vec![0u32; m.num_cols + 1];
-    for row in &m.rows {
-        for &c in row {
-            col_ptr[c + 1] += 1;
-        }
-    }
-    for c in 0..m.num_cols {
-        col_ptr[c + 1] += col_ptr[c];
-    }
-    let mut next = col_ptr.clone();
-    let mut rows_flat = vec![0u32; *col_ptr.last().unwrap() as usize];
-    for (r, row) in m.rows.iter().enumerate() {
-        for &c in row {
-            rows_flat[next[c] as usize] = r as u32;
-            next[c] += 1;
-        }
-    }
-    (col_ptr, rows_flat)
-}
-
-// Compact Debug: the row arrays run to millions of entries.
-impl std::fmt::Debug for CscCircuit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CscCircuit")
-            .field("n_cols", &self.n_cols)
-            .field("nnz_a", &self.a_rows.len())
-            .field("nnz_b", &self.b_rows.len())
-            .finish()
-    }
-}
-
-impl CscCircuit {
-    pub fn from_matrices(a_0: &SparseBinaryMatrix, b_0: &SparseBinaryMatrix) -> Self {
-        assert_eq!(a_0.num_rows, b_0.num_rows);
-        assert_eq!(a_0.num_cols, b_0.num_cols);
-        let (a_col_ptr, a_rows) = csc_from_rows(a_0);
-        let (b_col_ptr, b_rows) = csc_from_rows(b_0);
-        Self {
-            n_cols: a_0.num_cols,
-            a_col_ptr,
-            a_rows,
-            b_col_ptr,
-            b_rows,
-            const_pin: None,
-        }
-    }
-
-    /// Set the constant-wire pin column (see [`LincheckCircuit::const_pin_col`]).
-    pub fn with_const_pin(mut self, const_pin: Option<usize>) -> Self {
-        self.const_pin = const_pin;
-        self
-    }
-}
-
-impl LincheckCircuit for CscCircuit {
-    fn n_cols(&self) -> usize {
-        self.n_cols
-    }
-    fn const_pin_col(&self) -> Option<usize> {
-        self.const_pin
-    }
-    fn fold_alpha_batched(&self, alpha: F192, eq_inner: &[F192]) -> Vec<F192> {
-        assert_eq!(eq_inner.len(), self.n_cols);
-        let one_col = |c: usize| {
-            let mut sa = F192::ZERO;
-            for &r in &self.a_rows[self.a_col_ptr[c] as usize..self.a_col_ptr[c + 1] as usize] {
-                sa += eq_inner[r as usize];
-            }
-            let mut sb = F192::ZERO;
-            for &r in &self.b_rows[self.b_col_ptr[c] as usize..self.b_col_ptr[c + 1] as usize] {
-                sb += eq_inner[r as usize];
-            }
-            sa + alpha * sb
-        };
-        if self.n_cols < SUMCHECK_PAR_THRESHOLD {
-            return (0..self.n_cols).map(one_col).collect();
-        }
-        parallel::map_collect(self.n_cols, one_col)
     }
 }
 
@@ -1204,11 +1092,8 @@ pub fn prove_padded_capture_s_hat_v(
     //    same sumcheck also proves z_vec[j*] = 1 (the all-ones constant
     //    column). Since j* is a boolean index, eq(j*, ·) is the one-hot vector
     //    and this is a single entry update. See `LincheckCircuit::const_pin_col`.
-    let mut beta = F192::ZERO;
-    if let Some(col) = circuit.const_pin_col() {
-        beta = alpha_sq * alpha;
-        comb_vec[col] += beta;
-    }
+    let beta = alpha_sq * alpha;
+    comb_vec[circuit.const_pin_col()] += beta;
 
     // 5. Partial fold of z at the shared outer half (length-k F192 vector).
     let t = std::time::Instant::now();
@@ -1342,12 +1227,9 @@ pub fn verify(
     // The zerocheck's c-claim at α² (mirror of prove step 3): `C = I`, so it
     // enters the comb as `α²·eq_inner` and the target as `α²·v_c`.
     let alpha_sq = alpha.square();
-    let mut target = v_a + alpha * v_b + alpha_sq * v_c;
-    let mut beta = F192::ZERO;
-    if circuit.const_pin_col().is_some() {
-        beta = alpha_sq * alpha;
-        target += beta;
-    }
+    let beta = alpha_sq * alpha;
+    // The pin's target gains +β·1, the honest all-ones constant column folding to 1.
+    let target = v_a + alpha * v_b + alpha_sq * v_c + beta;
     let mut running = target;
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
     for _ in 0..inner_rest_len {
@@ -1385,9 +1267,7 @@ pub fn verify(
         Some(v) => v,
         None => inner_product_ext(&circuit.fold_alpha_batched(alpha, &eq_inner), &w_col),
     };
-    if let Some(col) = circuit.const_pin_col() {
-        final_sum += beta * w_col[col];
-    }
+    final_sum += beta * w_col[circuit.const_pin_col()];
     // The c term's `⟨eq_inner, w_col⟩`, by the tensor structure of both sides:
     // `eq_inner = eq(x_inner_rest) ⊗ λ(z_skip)` and `w_col = eq(r_inner_rest) ⊗
     // z_partial`, so it is 8 eq factors times a 64-term Lagrange combination
@@ -1424,7 +1304,6 @@ pub fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::r1cs::apply_block_diag;
     use primitives::test_rng::Rng;
 
     /// Test shim for the old dense-prove entry: the capture variant with a
@@ -1453,6 +1332,78 @@ mod tests {
 
     /// Reference fold `M_0^T · eq` (the row-MLE at all boolean column indices),
     /// used to locate meaningful mutation targets and as a dense oracle.
+    /// The constant-one column the protocol tests pin. Any column works; the
+    /// witness just has to carry a `1` there in every block, which is exactly
+    /// what a real circuit's constant wire does.
+    const PIN_COL: usize = 0;
+
+    /// `rng.bits(n)` with the pin honoured in every block.
+    fn pinned_bits(rng: &mut Rng, n: usize, k_log: usize) -> Vec<bool> {
+        let mut z = rng.bits(n);
+        for block in z.chunks_exact_mut(1 << k_log) {
+            block[PIN_COL] = true;
+        }
+        z
+    }
+
+    /// Sparse boolean matrix, test-only: the protocol tests below drive lincheck
+    /// with random R1CS instances, which is the one place a matrix still exists.
+    /// Nothing on a prove or verify path builds one (see `blake2s`'s walks).
+    #[derive(Clone)]
+    struct SparseBinaryMatrix {
+        num_rows: usize,
+        num_cols: usize,
+        rows: Vec<Vec<usize>>,
+    }
+
+    /// `A = I_{2^n_log} ⊗ A_0` applied to a boolean witness.
+    fn apply_block_diag(m_0: &SparseBinaryMatrix, z: &[bool], k_log: usize) -> Vec<bool> {
+        let k = 1usize << k_log;
+        assert_eq!(m_0.num_rows, k);
+        assert_eq!(m_0.num_cols, k);
+        assert_eq!(z.len() % k, 0);
+        let mut out = Vec::with_capacity(z.len());
+        for z_block in z.chunks_exact(k) {
+            out.extend(
+                m_0.rows
+                    .iter()
+                    .map(|row| row.iter().fold(false, |acc, &col| acc ^ z_block[col])),
+            );
+        }
+        out
+    }
+
+    /// A [`LincheckCircuit`] over materialized matrices, by the naive row
+    /// scatter. Test-only, and no longer performance-critical, so there is no
+    /// reason for it to be anything cleverer.
+    struct SparseCircuit {
+        a_0: SparseBinaryMatrix,
+        b_0: SparseBinaryMatrix,
+        pin: usize,
+    }
+
+    impl LincheckCircuit for SparseCircuit {
+        fn n_cols(&self) -> usize {
+            self.a_0.num_cols
+        }
+        fn const_pin_col(&self) -> usize {
+            self.pin
+        }
+        fn fold_alpha_batched(&self, alpha: F192, eq_inner: &[F192]) -> Vec<F192> {
+            let scatter = |m: &SparseBinaryMatrix| {
+                let mut out = vec![F192::ZERO; m.num_cols];
+                for (i, row) in m.rows.iter().enumerate() {
+                    for &j in row {
+                        out[j] += eq_inner[i];
+                    }
+                }
+                out
+            };
+            let (a, b) = (scatter(&self.a_0), scatter(&self.b_0));
+            a.iter().zip(&b).map(|(&x, &y)| x + alpha * y).collect()
+        }
+    }
+
     fn sparse_row_fold(matrix: &SparseBinaryMatrix, eq_table: &[F192]) -> Vec<F192> {
         assert_eq!(eq_table.len(), matrix.num_rows);
         let mut out = vec![F192::ZERO; matrix.num_cols];
@@ -1730,7 +1681,7 @@ mod tests {
             let b_0 = random_sparse_matrix(k, nnz_per_mat, &mut rng);
 
             // Random witness z, then a = A·z, b = B·z.
-            let z = rng.bits(1 << m);
+            let z = pinned_bits(&mut rng, 1 << m, k_log);
             let a = apply_block_diag(&a_0, &z, k_log);
             let b = apply_block_diag(&b_0, &z, k_log);
             let z_packed = pack_z_lincheck(&z, m, k_log);
@@ -1746,7 +1697,11 @@ mod tests {
             let v_c = mle_eval_bool_quirky(&z, m, k_log, k_skip, &x_ab);
 
             // Prove and verify with matched challengers.
-            let circuit = CscCircuit::from_matrices(&a_0, &b_0);
+            let circuit = SparseCircuit {
+                a_0: a_0.clone(),
+                b_0: b_0.clone(),
+                pin: PIN_COL,
+            };
             let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
             let claim_p = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
@@ -1798,7 +1753,7 @@ mod tests {
         let mut rng = Rng::new(66);
         let a_0 = random_sparse_matrix(k, k * 5, &mut rng);
         let b_0 = random_sparse_matrix(k, k * 5, &mut rng);
-        let z = rng.bits(1 << m);
+        let z = pinned_bits(&mut rng, 1 << m, k_log);
         let a = apply_block_diag(&a_0, &z, k_log);
         let b = apply_block_diag(&b_0, &z, k_log);
         let z_packed = pack_z_lincheck(&z, m, k_log);
@@ -1807,7 +1762,11 @@ mod tests {
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
         let v_c = mle_eval_bool_quirky(&z, m, k_log, k_skip, &x_ab);
 
-        let circuit = CscCircuit::from_matrices(&a_0, &b_0);
+        let circuit = SparseCircuit {
+            a_0: a_0.clone(),
+            b_0: b_0.clone(),
+            pin: PIN_COL,
+        };
         let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
         let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();
@@ -1856,7 +1815,7 @@ mod tests {
         let mut rng = Rng::new(77);
         let a_0 = random_sparse_matrix(k, k, &mut rng);
         let b_0 = random_sparse_matrix(k, k, &mut rng);
-        let z = rng.bits(1 << m);
+        let z = pinned_bits(&mut rng, 1 << m, k_log);
         let a = apply_block_diag(&a_0, &z, k_log);
         let b = apply_block_diag(&b_0, &z, k_log);
         let z_packed = pack_z_lincheck(&z, m, k_log);
@@ -1865,7 +1824,11 @@ mod tests {
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
         let v_c = mle_eval_bool_quirky(&z, m, k_log, k_skip, &x_ab);
 
-        let circuit = CscCircuit::from_matrices(&a_0, &b_0);
+        let circuit = SparseCircuit {
+            a_0: a_0.clone(),
+            b_0: b_0.clone(),
+            pin: PIN_COL,
+        };
         let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
         let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();

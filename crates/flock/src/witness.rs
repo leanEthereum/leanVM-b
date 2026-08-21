@@ -2,7 +2,6 @@
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
 //! (only `blake2s` in this vendored subset).
 
-use crate::r1cs::SparseBinaryMatrix;
 use primitives::bits::transpose_8_u64s_to_64_bytes;
 use zk_alloc::ArenaVec;
 
@@ -130,15 +129,6 @@ pub(crate) fn packed_bytes(words: &[u64]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
 }
 
-/// K × K identity sparse matrix.
-pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
-    SparseBinaryMatrix {
-        num_rows: k,
-        num_cols: k,
-        rows: (0..k).map(|i| vec![i]).collect(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Generic witness packing driver.
 // ---------------------------------------------------------------------------
@@ -250,14 +240,4 @@ where
     });
 
     (z, a, b, z_lincheck)
-}
-
-/// Sort `v` and remove pairs of duplicates (GF(2) cancellation). Keeps R1CS
-/// rows in canonical (sorted, square-free) form.
-pub(crate) fn xor_dedup(mut v: Vec<usize>) -> Vec<usize> {
-    v.sort_unstable();
-    v.chunk_by(|a, b| a == b)
-        .filter(|run| run.len() % 2 == 1)
-        .map(|run| run[0])
-        .collect()
 }

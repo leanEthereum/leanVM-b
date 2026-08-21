@@ -62,22 +62,25 @@ const MAX_LOG_ROWS: usize = 32;
 /// `2^32` instructions.
 const MAX_LOG_BYTECODE: usize = 32;
 
-/// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
-/// to everything fixed about the proving environment: the flock BLAKE2s R1CS
-/// (its per-block matrices, [`crate::blake2s_flock::r1cs_digest`])
-/// and the bytecode, via the hash cached on `Program`: BLAKE2s over the stacked
-/// multilinear ([`layout::bytecode_table`]) rather than over an assembler
-/// digest, so a verifier holding only that polynomial reproduces the seed. That
-/// inner hash is cached on the program, so the table is walked once per program
-/// rather than once per proof.
-/// It leads every transcript, so all
-/// challenges depend on the circuit version and the program before anything
-/// else; a recursion guest carries the INNER program's seed in its public
-/// input, pinning both with one word pair.
+/// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing to
+/// everything fixed about the proving environment.
+///
+/// Two things go in. [`flock::blake2s::R1CS_DIGEST`] names the flock BLAKE2s
+/// circuit, independent of the instance count: the full instance is
+/// block-diagonal and the count is announced and absorbed with the other sizes,
+/// so one constant covers every shape. And the bytecode enters through the hash
+/// cached on `Program`, BLAKE2s over the stacked multilinear
+/// ([`layout::bytecode_table`]) rather than over an assembler digest, so a
+/// verifier holding only that polynomial reproduces the seed; that inner hash is
+/// cached, so the table is walked once per program rather than once per proof.
+///
+/// The seed leads every transcript, so all challenges depend on the circuit
+/// version and the program before anything else; a recursion guest carries the
+/// INNER program's seed in its public input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
     let mut h = primitives::blake2s::Hasher::new();
     h.update(b"leanvm-b-fs-seed-v2-blake2s");
-    h.update(&crate::blake2s_flock::r1cs_digest());
+    h.update(&flock::blake2s::R1CS_DIGEST);
     h.update(&program.bytecode_hash);
     let d = h.finalize();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());

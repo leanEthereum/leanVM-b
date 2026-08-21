@@ -9,7 +9,7 @@
 //! generic in the claims and covered end to end by `blake2s_batch`.
 
 use crate::blake2s::{
-    Compression, K_LOG, WalkLincheckCircuit, build_block_r1cs, generate_witness_with_ab_packed_and_lincheck,
+    Compression, K_LOG, K_SKIP, USEFUL_BITS, WalkLincheckCircuit, generate_witness_with_ab_packed_and_lincheck,
     min_n_blocks_log, param_iv,
 };
 use crate::lincheck::QuirkyPoint;
@@ -53,10 +53,9 @@ fn blocks_for(n: usize, seed: u64) -> Vec<Compression> {
 
 /// Prove. `tamper` may corrupt the packed witness first, in which case the
 /// transcript this returns must not verify.
-fn prove(n: usize, tamper: Option<usize>) -> (crate::r1cs::BlockR1cs, fiat_shamir::transcript::Proof) {
+fn prove(n: usize, tamper: Option<usize>) -> (usize, fiat_shamir::transcript::Proof) {
     let n_log = min_n_blocks_log(n);
-    let r1cs = build_block_r1cs(n_log);
-    let m = r1cs.m;
+    let m = K_LOG + n_log;
     let blocks = blocks_for(n, 0xB2_5E_ED ^ n as u64);
 
     let (mut z, a, b, mut z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
@@ -68,10 +67,10 @@ fn prove(n: usize, tamper: Option<usize>) -> (crate::r1cs::BlockR1cs, fiat_shami
     }
 
     let padding = PaddingSpec {
-        k_log: r1cs.k_log,
-        useful_bits_per_block: r1cs.useful_bits,
+        k_log: K_LOG,
+        useful_bits_per_block: USEFUL_BITS,
     };
-    let inner_rest_len = r1cs.k_log - r1cs.k_skip;
+    let inner_rest_len = K_LOG - K_SKIP;
 
     let mut ps = ProverState::new(LABEL, &[]);
     let zc = crate::zerocheck::prove_packed_padded(
@@ -86,30 +85,29 @@ fn prove(n: usize, tamper: Option<usize>) -> (crate::r1cs::BlockR1cs, fiat_shami
     let _lc = crate::lincheck::prove_padded_capture_s_hat_v(
         &z_lincheck,
         m,
-        r1cs.k_log,
-        r1cs.k_skip,
-        r1cs.useful_bits,
-        r1cs.csc_lincheck_circuit(),
+        K_LOG,
+        K_SKIP,
+        USEFUL_BITS,
+        &WalkLincheckCircuit,
         &x_ab,
         &mut ps,
     );
-    (r1cs, ps.into_proof())
+    (m, ps.into_proof())
 }
 
 /// Replay a transcript through the reduction verifier.
-fn verify(r1cs: &crate::r1cs::BlockR1cs, transcript: &fiat_shamir::transcript::Proof) -> bool {
-    let m = r1cs.m;
-    let inner_rest_len = r1cs.k_log - r1cs.k_skip;
+fn verify(m: usize, transcript: &fiat_shamir::transcript::Proof) -> bool {
+    let inner_rest_len = K_LOG - K_SKIP;
     let mut vs = VerifierState::new(LABEL, transcript, &[]);
     let Ok(zc_v) = crate::zerocheck::verify(m, &mut vs) else {
         return false;
     };
     let x_ab_v = x_ab_of(&zc_v, inner_rest_len);
-    let circuit = WalkLincheckCircuit::new(r1cs);
+    let circuit = WalkLincheckCircuit;
     if crate::lincheck::verify(
         m,
-        r1cs.k_log,
-        r1cs.k_skip,
+        K_LOG,
+        K_SKIP,
         &circuit,
         &x_ab_v,
         zc_v.a_eval,
@@ -126,8 +124,8 @@ fn verify(r1cs: &crate::r1cs::BlockR1cs, transcript: &fiat_shamir::transcript::P
 
 /// Prove, then verify.
 fn run(n: usize, tamper: Option<usize>) -> bool {
-    let (r1cs, transcript) = prove(n, tamper);
-    verify(&r1cs, &transcript)
+    let (m, transcript) = prove(n, tamper);
+    verify(m, &transcript)
 }
 
 /// Ten rounds of BLAKE2s inside a 2^14 block, proved and verified through the
@@ -162,13 +160,13 @@ fn blake2s_reduction_rejects_tampering() {
 #[test]
 fn blake2s_reduction_rejects_proof_mutations() {
     let n = 8;
-    let (r1cs, transcript) = prove(n, None);
-    assert!(verify(&r1cs, &transcript), "honest transcript must verify");
+    let (m, transcript) = prove(n, None);
+    assert!(verify(m, &transcript), "honest transcript must verify");
 
-    let ell = 1usize << r1cs.k_skip;
-    let n_mlv = r1cs.m - r1cs.k_skip;
+    let ell = 1usize << K_SKIP;
+    let n_mlv = m - K_SKIP;
     let zc_len = ell + 2 * n_mlv + 2;
-    let lc_rounds = r1cs.k_log - r1cs.k_skip;
+    let lc_rounds = K_LOG - K_SKIP;
     let regions: [(&str, usize); 7] = [
         ("zerocheck round1[0]", 0),
         ("zerocheck round1[last]", ell - 1),
@@ -181,6 +179,6 @@ fn blake2s_reduction_rejects_proof_mutations() {
     for (label, word) in regions {
         let mut bad = transcript.clone();
         bad.stream[word].c0 ^= 1;
-        assert!(!verify(&r1cs, &bad), "flipping {label} must make the reduction reject");
+        assert!(!verify(m, &bad), "flipping {label} must make the reduction reject");
     }
 }

@@ -208,26 +208,20 @@ impl DeferredClaim {
         if bytecode_point.len() != bytecode_vars() || matrix_point.len() != 2 * klog {
             return Err(VerifyError::MalformedClaim);
         }
-        // Every leaf defers the all-zeros point, where each polynomial is just
-        // its table's first entry. Worth special-casing: the general path is two
-        // full passes, one over 2^23 bytecode entries and one over 89M matrix
-        // nonzeros, and a leaf is the aggregate people verify most.
-        if bytecode_point.iter().chain(&matrix_point).all(|x| *x == F192::ZERO) {
-            let (ma, mb) = flock::blake2s::matrices();
-            let first = |m: &flock::r1cs::SparseBinaryMatrix| {
-                if m.rows[0].contains(&0) { F192::ONE } else { F192::ZERO }
-            };
-            return Ok(Self {
-                bytecode_point,
-                bytecode_value: F192::from(stacked_bytecode()[0]),
-                matrix_point,
-                matrix_a_value: first(ma),
-                matrix_b_value: first(mb),
-            });
-        }
-        let sp = tracing::info_span!("bytecode mle").entered();
-        let bytecode_value = mle_eval_par(stacked_bytecode(), &bytecode_point);
-        drop(sp);
+        // Every leaf defers the all-zeros point, where the bytecode polynomial is
+        // just its table's first entry. Still worth special-casing that half: the
+        // general path is a pass over 2^23 entries, and a leaf is the aggregate
+        // people verify most. The matrix half needs no special case, its walk
+        // being O(circuit) either way.
+        let zero_point = bytecode_point.iter().chain(&matrix_point).all(|x| *x == F192::ZERO);
+        let bytecode_value = if zero_point {
+            F192::from(stacked_bytecode()[0])
+        } else {
+            let sp = tracing::info_span!("bytecode mle").entered();
+            let v = mle_eval_par(stacked_bytecode(), &bytecode_point);
+            drop(sp);
+            v
+        };
         let sp = tracing::info_span!("matrix walk").entered();
         let eq_r = pcs::whir::build_eq_table_ext(&matrix_point[..klog]);
         let eq_c = pcs::whir::build_eq_table_ext(&matrix_point[klog..]);
@@ -694,89 +688,6 @@ fn weighted_eq_table(points: &[Vec<F192>], lambdas: &[F192], vars: usize, active
     out
 }
 
-/// The BLAKE2s R1CS matrices in CSR form with 16-bit column indices.
-///
-/// The matrices are fixed, so this is preprocessing paid once per process, and
-/// the contractions below are bound by the index array rather than by their
-/// arithmetic: `Vec<Vec<usize>>` is 8 bytes per nonzero across `K` separate
-/// allocations, this is 2 (columns are below `2^K_LOG`) in one run.
-struct Csr {
-    starts: Vec<u32>,
-    cols: Vec<u16>,
-}
-
-impl Csr {
-    fn of(m: &flock::r1cs::SparseBinaryMatrix) -> Self {
-        assert!(m.num_cols <= 1 << 16, "a column index must fit in u16");
-        let mut starts = Vec::with_capacity(m.rows.len() + 1);
-        let mut cols = Vec::with_capacity(m.rows.iter().map(Vec::len).sum());
-        for row in &m.rows {
-            starts.push(cols.len() as u32);
-            cols.extend(row.iter().map(|&j| j as u16));
-        }
-        starts.push(cols.len() as u32);
-        Self { starts, cols }
-    }
-
-    fn row(&self, i: usize) -> &[u16] {
-        &self.cols[self.starts[i] as usize..self.starts[i + 1] as usize]
-    }
-
-    fn n_rows(&self) -> usize {
-        self.starts.len() - 1
-    }
-}
-
-fn matrices_csr() -> &'static (Csr, Csr) {
-    static CSR: std::sync::OnceLock<(Csr, Csr)> = std::sync::OnceLock::new();
-    CSR.get_or_init(|| {
-        let (a, b) = flock::blake2s::matrices();
-        (Csr::of(a), Csr::of(b))
-    })
-}
-
-/// Contract every claim's column weights against one matrix: `out[i * n + t]`
-/// sums claim `t`'s weight over row `i`'s nonzeros.
-///
-/// One pass over the nonzeros for ALL claims rather than one pass each, since
-/// the index array is tens of millions of entries and dwarfs the arithmetic.
-/// `wflat` is interleaved by claim for the same reason: a nonzero then costs one
-/// random fetch of `n` adjacent weights instead of `n` fetches into `n` separate
-/// tables, each its own cache miss.
-fn contract_cols(m: &Csr, wflat: &[F192], n: usize) -> Vec<F192> {
-    let mut out = vec![F192::ZERO; m.n_rows() * n];
-    parallel::chunks_mut(&mut out, n, |i, acc| {
-        for &j in m.row(i) {
-            for (a, w) in acc.iter_mut().zip(&wflat[j as usize * n..][..n]) {
-                *a += *w;
-            }
-        }
-    });
-    out
-}
-
-/// Contract one matrix along its rows at the point phase one fixed: a scatter,
-/// so each worker accumulates into its own column vector and the dispatcher
-/// adds them.
-fn contract_rows(m: &Csr, n_cols: usize, eq_rstar: &[F192]) -> Vec<F192> {
-    parallel::fold_reduce(
-        m.n_rows(),
-        || vec![F192::ZERO; n_cols],
-        |acc, i| {
-            let e = eq_rstar[i];
-            for &j in m.row(i) {
-                acc[j as usize] += e;
-            }
-        },
-        |mut a, b| {
-            for (x, y) in a.iter_mut().zip(b) {
-                *x += y;
-            }
-            a
-        },
-    )
-}
-
 /// Mirror the guest's `aggregate_claims` transcript and prove the two batching
 /// sumchecks: dense for the bytecode, two-phase sparse for the matrices.
 ///
@@ -931,24 +842,17 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         gb.push(cgb);
         mrun += gf * d.matrix_claim + cga * c.matrix_a_value + cgb * c.matrix_b_value;
     }
-    let (ma, mb) = matrices_csr();
-    let (n_claims, n_rows) = (ws.len(), ma.n_rows());
-    assert_eq!(n_rows, mb.n_rows(), "the two matrices share their row space");
-    let mut wflat = vec![F192::ZERO; (1 << klog) * n_claims];
-    for (t, w) in ws.iter().enumerate() {
-        for (j, &v) in w.iter().enumerate() {
-            wflat[j * n_claims + t] = v;
-        }
-    }
     let _cols = tracing::info_span!("Contract columns").entered();
-    let (ca, cb) = (contract_cols(ma, &wflat, n_claims), contract_cols(mb, &wflat, n_claims));
-    drop(_cols);
-    // Back to one table per claim, A before B, which is the order `ga`/`gb` index.
-    let mut ms: Vec<Vec<F192>> = Vec::with_capacity(2 * n_claims);
-    for t in 0..n_claims {
-        ms.push((0..n_rows).map(|i| ca[i * n_claims + t]).collect());
-        ms.push((0..n_rows).map(|i| cb[i * n_claims + t]).collect());
+    // One forward walk of the circuit per claim yields that claim's two row
+    // tables `(A_0 w, B_0 w)` directly, in O(circuit): no matrix, and no pass
+    // over the ~89M nonzeros. A before B, the order `ga`/`gb` index.
+    let mut ms: Vec<Vec<F192>> = Vec::with_capacity(2 * ws.len());
+    for w in &ws {
+        let (ra, rb) = flock::blake2s::row_values_walk(w);
+        ms.push(ra);
+        ms.push(rb);
     }
+    drop(_cols);
     // sanity: every claim really is the bilinear form over the matrices.
     #[cfg(debug_assertions)]
     for t in 0..2 * nsub {
@@ -996,8 +900,9 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     drop(_rounds);
     let eq_rstar = pcs::whir::build_eq_table_ext(&r_row);
     let _rows = tracing::info_span!("Contract rows").entered();
-    let mut acol = contract_rows(ma, 1 << klog, &eq_rstar);
-    let mut bcol = contract_rows(mb, 1 << klog, &eq_rstar);
+    // `A_0ᵀ eq` and `B_0ᵀ eq` are the column marginals, which the circuit walks
+    // backwards (`gf2`'s `back_*`) in O(circuit).
+    let (mut acol, mut bcol) = flock::blake2s::marginal_walk_pair(&eq_rstar);
     drop(_rows);
     let mut wa = vec![F192::ZERO; 1 << klog];
     let mut wb = vec![F192::ZERO; 1 << klog];
@@ -2479,6 +2384,7 @@ fn compile_guest(kbc: usize) -> Program {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::signers_cache::{EPOCH, get_signers, message};
 

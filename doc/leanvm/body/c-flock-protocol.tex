@@ -25,7 +25,7 @@ We also enforce the position $512$ of every block to be $1$ (preventing the all-
 z(0,0,0,0,0,0,0,0,0,1,0,0,0,0,\,t)=1\qquad\text{for every }t\in\cube{\kbatch}
 \end{equation}
 
-This second condition is enforced by lincheck (\S\ref{flock:lincheck}).
+This second condition is enforced by lincheck (\S\ref{flock:lincheck}), and position $512=\jconst$ is where every circuit below puts its constant wire. Since it is asked of every block, the prover pads the batch out to $2^{\kbatch}$ with copies of a genuine witness block rather than with zeros.
 
 Set $\kskip=6$ and $\nflock=\kbool-\kskip$. The prover commits to $z$ by packing its low $\kskip$ coordinates, $64$ bits, to a $\K$-element, following Ring-Switching (Annex~\ref{annex:rs}). The resulting multilinear $\qflock:\cube{\nflock}\to\K$ is committed as one region of the stack (\S\ref{sec:stacking}).
 
@@ -147,7 +147,7 @@ Writing $w_{\mathrm{col}}(\jsk,\jin)=s_{\jsk}\,\eq(\fc'_{\mathrm{in}},\jin)$ wit
 \sum_{i=0}^{63}\qext A_0(\zskip,\fc_{\mathrm{in}},i,\fc'_{\mathrm{in}})\,s_i=\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,e_{\mathrm{row}}(k)\,w_{\mathrm{col}}(j).
 \end{equation}
 
-One forward walk of the BLAKE2s circuit returns \eqref{flock:eq:matrix-form} for both matrices, in $O(\text{circuit})$ field operations, never touching the roughly $89$ million nonzero entries they hold. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\langle e_{\mathrm{row}},w_{\mathrm{col}}\rangle$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\fc_{\mathrm{in}},\fc'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
+One forward walk of the BLAKE2s circuit returns \eqref{flock:eq:matrix-form} for both matrices (\S\ref{flock:matrices}), never touching the roughly $89$ million nonzero entries they hold. Its wires are $896$ free inputs, the constant, $256$ committed $\oplus$ wires carrying the output chaining value, and $14{,}720$ $\wedge$ wires, one per product bit of the $320$ modular additions of the ten rounds; at one multiplication per committed wire on the $A$ side and one per $\wedge$ wire on the $B$ side, that is $30{,}594$ field multiplications. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\inner{e_{\mathrm{row}}}{w_{\mathrm{col}}}$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\fc_{\mathrm{in}},\fc'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
 
 \subsubsection{Concluding Lincheck for a recursive verifier}\label{flock:defer}
 
@@ -177,6 +177,44 @@ After the witness $z$ has been committed, and its size announced:
 \end{enumerate}
 What Flock leaves is one family of $64$ claims for Ring-Switching (\S\ref{flock:ringswitch}): $(s_i \qeq \mle z(i, \fc'_{\mathrm{in}},\fc_{\mathrm{out}}))_{0 \leq i \leq 63}$.
 \end{protocol}
+
+\subsection{Evaluating the matrix forms}\label{flock:matrices}
+
+$A_0$ and $B_0$ are the R1CS of a Boolean circuit, and one walk of that circuit evaluates \eqref{flock:eq:matrix-form} for both without reading a single entry. This section reads the matrices off the circuit, then walks it; the prover's own use of the entries, once per proof, closes it.
+
+\begin{definition}[Circuit]\label{def:circuit}
+A \emph{circuit} is a sequence of \emph{wires} $w_1,\dots,w_N$, each a \emph{source}, a $\oplus$ \emph{wire} with a set $S_w$ of earlier wires, or a $\wedge$ \emph{wire} with two earlier wires $u_w,u'_w$. A set of \emph{committed} wires, containing every source and every $\wedge$ wire, is injected into the block's positions by $w\mapsto\posof{w}$; one source is the \emph{constant}, at the position $\jconst$ that \eqref{flock:eq:const-one} fixes to $1$, and the other sources are the \emph{free inputs}. A $\oplus$ wire is committed when something outside the circuit reads it at a fixed position, an output say, and uncommitted otherwise.
+\end{definition}
+
+Each wire expands into a \emph{row} $\lform{w}$ over the positions,
+\begin{equation}\label{flock:eq:wire-row}
+\lform{w}=[\,\cdot=\posof{w}\,]\ \text{ if $w$ is committed},\qquad \lform{w}=\sum_{u\in S_w}\lform{u}\ \text{ otherwise},
+\end{equation}
+summed over $\Ftwo$, so $\lform{w}$ marks the positions joined to $w$ by an odd number of paths through uncommitted wires alone. Extend a weight $W:\cube{\kblock}\to\E$ from positions to wires by the same recursion,
+\begin{equation}\label{flock:eq:wire-val}
+W(w):=W(\posof{w})\ \text{ if $w$ is committed},\qquad W(w):=\sum_{u\in S_w}W(u)\ \text{ otherwise},
+\end{equation}
+and comparing the two gives $\inner{\lform{w}}{W}=W(w)$. So one pass over the wires pairs every row with $W$, at one addition per $\oplus$ input.
+
+Since $C_0=I$, constraint $k$ of a block reads
+\begin{equation}\label{flock:eq:row-shape}
+\inner{A_0(k,\cdot)}{z}\cdot\inner{B_0(k,\cdot)}{z}=z(k),\qquad k\in\cube{\kblock},
+\end{equation}
+for $z$ one block $z(\cdot,t)$ of the witness, which $\Ftwo\subseteq\E$ lets \eqref{flock:eq:wire-val} extend as well. Only $\wedge$ wires need the product: at $w=u_w\wedge u'_w$ take $A_0(\posof{w},\cdot)=\lform{u_w}$ and $B_0(\posof{w},\cdot)=\lform{u'_w}$, making the constraint $z(\posof{w})=z(u_w)\,z(u'_w)$. At every other position holding a wire take $B_0(k,\cdot)=[\,\cdot=\jconst\,]$, which with $z(\jconst)=1$ leaves the linear $z(k)=\inner{A_0(k,\cdot)}{z}$, and let the $A$ row say what the position holds: $\sum_{u\in S_w}\lform{u}$, which is not $\lform{w}$, at a committed $\oplus$ wire, forcing $z(\posof{w})=\sum_{u\in S_w}z(u)$; and $[\,\cdot=\posof{w}\,]$ at a source, which says nothing. Where no wire sits both rows are $0$, forcing $z(k)=0$. Source rows aside, every right side reads only earlier wires, so the free inputs and $z(\jconst)=1$ determine $z$, and it is the circuit's evaluation.
+
+Now \eqref{flock:eq:matrix-form}, at $W=w_{\mathrm{col}}$: group its double sum by rows, then drop the positions holding no wire, whose two rows are $0$, and index the rest by the wire they hold, $\posof{}$ being a bijection onto them,
+\begin{align}
+\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,e_{\mathrm{row}}(k)\,w_{\mathrm{col}}(j)
+&=\sum_{k}e_{\mathrm{row}}(k)\,\inner{A_0(k,\cdot)}{w_{\mathrm{col}}}\notag\\
+&=\sum_{w\ \mathrm{committed}}e_{\mathrm{row}}(\posof{w})\,\inner{A_0(\posof{w},\cdot)}{w_{\mathrm{col}}}.\label{flock:eq:walk}
+\end{align}
+Each $A$ row is an $\lform{u}$ or a sum of them, so its bracket is $w_{\mathrm{col}}(u_w)$ at a $\wedge$ wire, $w_{\mathrm{col}}(\posof{w})$ at a source, and one further sum $\sum_{u\in S_w}w_{\mathrm{col}}(u)$ at a committed $\oplus$ wire, over values the pass has produced; on the $B$ side the bracket is $w_{\mathrm{col}}(u'_w)$ at a $\wedge$ wire and $w_{\mathrm{col}}(\jconst)$ at every other. One walk therefore accumulates both sums, at one multiplication per committed wire on the $A$ side and one per $\wedge$ wire on the $B$ side, the remaining $B$ rows sharing the single factor $w_{\mathrm{col}}(\jconst)$. Keeping the brackets instead of contracting them costs nothing extra and gives $A_0w$ and $B_0w$ themselves, which is what the deferred-claim sumcheck of \S\ref{sec:deferred-claims} needs. The prover generates the witness by the same walk at $W=z$: a $\wedge$ wire's position is computed as $z(u_w)\,z(u'_w)$ rather than read, and the two brackets, emitted at every committed position, are the entries of $a=Az$ and $b=Bz$.
+
+The prover needs more than a contraction: all $2^{\kblock}$ entries of the \emph{column marginal}
+\[
+\colmar(j)=\qext A_0(\zskip,\fc_{\mathrm{in}},j)+\lcalpha\,\qext B_0(\zskip,\fc_{\mathrm{in}},j)=\bigl((A_0+\lcalpha B_0)^{\!\top}e_{\mathrm{row}}\bigr)(j)
+\]
+of \eqref{flock:eq:erow}, before its $8$ rounds start, where the two walks give only $\inner{\colmar}{w_{\mathrm{col}}}$, the hint \eqref{flock:eq:matpart}. But $\colmar$ is the gradient of \eqref{flock:eq:walk} in $w_{\mathrm{col}}$, so it is that same walk transposed~\cite{Flock26}: carry an adjoint per wire and visit the wires in reverse. Each row deposits its weight, $e_{\mathrm{row}}(k)$ from the $A$ side and $\lcalpha\,e_{\mathrm{row}}(k)$ from the $B$ side, onto the wires that row reads; then each wire hands its accumulated adjoint to its inputs if it is uncommitted, and to $\colmar$ at its own position if it is committed. That is $O(\text{circuit})$ again, so between the two walks no step of a proof ever reads a matrix entry and $A_0$, $B_0$ need never be built.
 
 \subsection{Soundness analysis}\label{flock:soundness}
 
