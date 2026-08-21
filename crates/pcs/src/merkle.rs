@@ -197,10 +197,11 @@ pub fn merkle_tree_padded_rows(data: &[F64], num_leaves: usize, row_words: usize
 const STAGE_TILE_WORDS: usize = 2048;
 const _: () = assert!((1usize << crate::whir_config::INITIAL_FOLDING_FACTOR) <= STAGE_TILE_WORDS);
 
-/// Leaves the batched BLAKE2s consumes in one whole batch: the widest backend is
-/// 16-lane and pairs two of them, and 32 is a multiple of the narrower widths' own
-/// paired batches, so one number serves every target.
-const BATCH_LEAVES: usize = 32;
+/// Leaves the batched BLAKE2s consumes in one whole batch: the backend's lane
+/// count times the groups it interleaves, which is what it actually consumes
+/// without a scalar tail. Rounding the staging tile to a larger multiple than
+/// that only wastes tile capacity and makes more calls of it.
+const BATCH_LEAVES: usize = primitives::blake2s::LANES * 2;
 const _: () = assert!(HASH_GROUP.is_multiple_of(BATCH_LEAVES));
 
 fn hash_leaves_padded_rows_uninit(
