@@ -222,7 +222,7 @@ impl MulAssign for F192 {
 // everything else falls back to the products themselves.
 
 /// Two independent products.
-#[inline]
+#[inline(always)]
 pub fn mul2(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
     // SAFETY: both features are enabled at compile time.
@@ -232,7 +232,7 @@ pub fn mul2(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
 }
 
 /// Four independent products.
-#[inline]
+#[inline(always)]
 pub fn mul4(a: [F192; 4], b: [F192; 4]) -> [F192; 4] {
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     // SAFETY: both features are enabled at compile time.
@@ -246,7 +246,7 @@ pub fn mul4(a: [F192; 4], b: [F192; 4]) -> [F192; 4] {
 }
 
 /// [`mul4`] without the reduction, for a caller XOR-accumulating many products.
-#[inline]
+#[inline(always)]
 pub fn mul_unreduced4(a: [F192; 4], b: [F192; 4]) -> [F192Unreduced; 4] {
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     // SAFETY: both features are enabled at compile time.

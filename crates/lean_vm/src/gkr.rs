@@ -10,6 +10,7 @@ use crate::PAR_THRESHOLD;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F192, F192Unreduced, mul_unreduced4, mul2, mul4};
 use primitives::multilinear::{eq_table, interp, shrink_eq_low};
+#[cfg(target_arch = "x86_64")]
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
@@ -22,8 +23,8 @@ pub enum GkrError {
 /// Rows per parallel window: enough tasks to keep every thread fed, but not so few
 /// rows per task that dispatch dominates.
 fn window_rows(total: usize) -> usize {
-    let tasks = parallel::num_threads() * 4;
-    total.div_ceil(tasks).clamp(32, 1 << 12)
+    let tasks = parallel::num_threads() * 16;
+    total.div_ceil(tasks).clamp(64, 1 << 10)
 }
 
 /// Build only the levels consumed by radix four: `0,2,4,…`, plus a final
@@ -74,7 +75,7 @@ fn build_layers(leaves: ArenaVec<F192>, mu: usize) -> Vec<ArenaVec<F192>> {
     layers
 }
 
-#[inline]
+#[inline(always)]
 fn quartic_summand(lines: [[F192; 2]; 4], equality: F192) -> [F192Unreduced; 4] {
     let [left0, left2, right0, right2] = mul4(
         [lines[0][0], lines[0][1], lines[2][0], lines[2][1]],
@@ -171,17 +172,18 @@ impl QuaternaryLayerState {
         self.next.truncate(4 * rows);
         let (values, next) = (&self.values, &mut self.next);
         let fold_row = |row: usize| -> [F192; 4] {
-            let lo = 8 * row;
-            let hi = lo + 4;
-            let folds = mul4(
-                [0, 1, 2, 3].map(|child| values[lo + child] + values[hi + child]),
-                [challenge; 4],
-            );
-            std::array::from_fn(|child| values[lo + child] + folds[child])
+            // One slice, not eight indexes: the bounds checks and the
+            // index-by-24 multiplies fall out.
+            let v = &values[8 * row..8 * row + 8];
+            let folds = mul4(std::array::from_fn(|child| v[child] + v[4 + child]), [challenge; 4]);
+            std::array::from_fn(|child| v[child] + folds[child])
         };
-        // Two rows are eight elements, 192 bytes, three whole cache lines. The
-        // next round is what reads them, and a layer this size is long evicted
-        // by then, so they publish with streaming stores.
+        // The next round is what reads the output, and a layer this size is long
+        // evicted by then, so where an ordinary store fetches the line it
+        // overwrites the pair is staged and published with streaming stores.
+        // Where it does not, the stage buys nothing and costs a real call, the
+        // `slot.len()` being one the compiler cannot fold away.
+        #[cfg(target_arch = "x86_64")]
         let window = |base: usize, destination: &mut [F192]| {
             let stream = Stream::new();
             for (pair, slot) in destination.chunks_mut(8).enumerate() {
@@ -191,6 +193,15 @@ impl QuaternaryLayerState {
                     both[4..].copy_from_slice(&fold_row(base + 2 * pair + 1));
                 }
                 stream.copy(slot, &both[..slot.len()]);
+            }
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let window = |base: usize, destination: &mut [F192]| {
+            for (pair, slot) in destination.chunks_mut(8).enumerate() {
+                slot[..4].copy_from_slice(&fold_row(base + 2 * pair));
+                if slot.len() == 8 {
+                    slot[4..].copy_from_slice(&fold_row(base + 2 * pair + 1));
+                }
             }
         };
         if full_rows >= PAR_THRESHOLD {
