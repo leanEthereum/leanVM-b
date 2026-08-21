@@ -10,6 +10,7 @@ use crate::PAR_THRESHOLD;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F192, F192Unreduced, mul_unreduced4, mul2, mul4};
 use primitives::multilinear::{eq_table, interp, shrink_eq_low};
+use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,20 +170,27 @@ impl QuaternaryLayerState {
         let rows = stored_rows.div_ceil(2);
         self.next.truncate(4 * rows);
         let (values, next) = (&self.values, &mut self.next);
-        let fold_row = |row: usize, destination: &mut [F192]| {
+        let fold_row = |row: usize| -> [F192; 4] {
             let lo = 8 * row;
             let hi = lo + 4;
             let folds = mul4(
                 [0, 1, 2, 3].map(|child| values[lo + child] + values[hi + child]),
                 [challenge; 4],
             );
-            for child in 0..4 {
-                destination[child] = values[lo + child] + folds[child];
-            }
+            std::array::from_fn(|child| values[lo + child] + folds[child])
         };
+        // Two rows are eight elements, 192 bytes, three whole cache lines. The
+        // next round is what reads them, and a layer this size is long evicted
+        // by then, so they publish with streaming stores.
         let window = |base: usize, destination: &mut [F192]| {
-            for (row, slot) in destination.chunks_exact_mut(4).enumerate() {
-                fold_row(base + row, slot);
+            let stream = Stream::new();
+            for (pair, slot) in destination.chunks_mut(8).enumerate() {
+                let mut both = [F192::ZERO; 8];
+                both[..4].copy_from_slice(&fold_row(base + 2 * pair));
+                if slot.len() == 8 {
+                    both[4..].copy_from_slice(&fold_row(base + 2 * pair + 1));
+                }
+                stream.copy(slot, &both[..slot.len()]);
             }
         };
         if full_rows >= PAR_THRESHOLD {
