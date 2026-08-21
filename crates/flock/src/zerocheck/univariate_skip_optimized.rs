@@ -125,27 +125,35 @@ fn d_inv() -> F192 {
 // 16 × 256 × 24 bytes = 96 KB. Computed once, cached via OnceLock.
 // ---------------------------------------------------------------------------
 
-const CONVERT_TABLE_SIZE: usize = 16 * 256;
+const N_MEDIUM_VALUES: usize = 16;
 
-static CONVERT_TABLE_CACHE: OnceLock<Vec<F192>> = OnceLock::new();
+/// The convert table as its shape rather than as a flat run: a `u8` cannot index
+/// a 256-entry row out of bounds and the row index is bounded by the loop, so
+/// the fold's two lookups carry no bounds check and the row stride folds into
+/// the address. Flat, each lookup costs a check, a branch and a multiply by the
+/// 24-byte element stride, and the branches keep the constant-trip loop around
+/// them from unrolling.
+type ConvertTable = [[F192; 256]; N_MEDIUM_VALUES];
 
-fn build_convert_table() -> Vec<F192> {
+static CONVERT_TABLE_CACHE: OnceLock<Box<ConvertTable>> = OnceLock::new();
+
+fn build_convert_table() -> Box<ConvertTable> {
     let mut gamma_pow = [F192::ZERO; 16];
     gamma_pow[0] = F192::ONE;
     for b in 1..16 {
         gamma_pow[b] = gamma_pow[b - 1] * medium_generator();
     }
-    let mut table = vec![F192::ZERO; CONVERT_TABLE_SIZE];
-    for b in 0..16 {
+    let mut table: Box<ConvertTable> = Box::new([[F192::ZERO; 256]; N_MEDIUM_VALUES]);
+    for b in 0..N_MEDIUM_VALUES {
         let g_b = gamma_pow[b];
         for v in 0..256 {
-            table[b * 256 + v] = g_b * PHI_8_TABLE[v];
+            table[b][v] = g_b * PHI_8_TABLE[v];
         }
     }
     table
 }
 
-fn convert_table() -> &'static [F192] {
+fn convert_table() -> &'static ConvertTable {
     CONVERT_TABLE_CACHE.get_or_init(build_convert_table)
 }
 
@@ -634,7 +642,7 @@ fn accumulate_x_outer<const FULL: bool>(
     b_packed: &[u8],
     c_packed: &[u8],
     inv_table: &InvNttTableByteSingleGf8,
-    convert: &[F192],
+    convert: &ConvertTable,
     state: &mut WorkerState,
 ) {
     let n_b_med = if FULL { 1 << N_MEDIUM } else { n_b_med };
@@ -655,14 +663,15 @@ fn accumulate_x_outer<const FULL: bool>(
         bit_transpose_64bytes(c_in, &mut state.chunk_c_bytes[b_med]);
     }
 
+    // Bounded so the trip count is the constant the protocol size gives it.
+    let n_b_med = n_b_med.min(N_MEDIUM_VALUES);
     for lane in 0..ELL {
         let mut cf_ab = F192::ZERO;
         let mut cf_c = F192::ZERO;
         for b_med in 0..n_b_med {
-            let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
-            let v_c = state.chunk_c_bytes[b_med][lane] as usize;
-            cf_ab += convert[b_med * 256 + v_ab];
-            cf_c += convert[b_med * 256 + v_c];
+            let row = &convert[b_med];
+            cf_ab += row[state.chunk_ab_bytes[b_med][lane] as usize];
+            cf_c += row[state.chunk_c_bytes[b_med][lane] as usize];
         }
         state.partial_ab[lane] += cf_ab * eq_lo_val;
         state.partial_c[lane] += cf_c * eq_lo_val;
@@ -683,7 +692,7 @@ fn process_one_x_hi(
     inv_table: &InvNttTableByteSingleGf8,
     eq_lo_scaled: &[F192],
     eq_hi_val: F192,
-    convert: &[F192],
+    convert: &ConvertTable,
     state: &mut WorkerState,
 ) {
     state.partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
@@ -1148,7 +1157,7 @@ mod tests {
         for b in 0..16 {
             for &v in &[0u8, 1, 0x57, 0xFF] {
                 let expected = g_pow * PHI_8_TABLE[v as usize];
-                assert_eq!(t[b * 256 + v as usize], expected, "b={b}, v={v}");
+                assert_eq!(t[b][v as usize], expected, "b={b}, v={v}");
             }
             g_pow *= medium_generator();
         }
