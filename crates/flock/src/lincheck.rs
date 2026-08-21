@@ -138,7 +138,7 @@ use zk_alloc::ArenaVec;
 // `blake2s::WalkLincheckCircuit`, which walks the circuit in both directions
 // (forwards for the verifier's `bilinear_form`, backwards for the prover's
 // marginal) and never touches a matrix entry. See doc/leanvm, Annex C
-// "Evaluating the matrix forms".
+// "Evaluating the matrices".
 
 /// Per-block linear structure consumed by lincheck. Implementations produce
 /// the α-batched column marginal `comb_vec[c] = ξ_A(c) + α · ξ_B(c)` either

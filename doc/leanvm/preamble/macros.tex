@@ -48,7 +48,10 @@
 \newcommand{\jin}{j_{\mathrm{in}}}              % column index, the within-block half
 \newcommand{\jconst}{j_{\mathbf{1}}}            % position of the circuit's constant-one wire
 \newcommand{\posof}[1]{k(#1)}                 % position, equivalently R1CS row, of a committed wire
-\newcommand{\lform}[1]{\mathcal{F}_{#1}}        % the row a wire expands to, over the block's positions
+\newcommand{\lform}[1]{\mathcal{F}_{#1}}        % a wire's expansion, over the block's positions
+\newcommand{\erow}{e_{\mathrm{row}}}                % lincheck's row weight, the quirky eq table
+\newcommand{\wcol}{w_{\mathrm{col}}}                % lincheck's column weight
+\newcommand{\chg}[1]{\Gamma_{#1}}                 % a wire's coefficient in the backward walk
 \newcommand{\colmar}{M_{\mathrm{col}}}           % alpha-batched column marginal of (A_0, B_0)
 
 % ---------- VM ----------

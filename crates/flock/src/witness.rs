@@ -85,7 +85,7 @@ pub(crate) fn add_carry_parts(x: u32, y: u32) -> (u32, u32, u32, u32) {
 }
 
 /// One fused three-operand ADD's witness parts (see
-/// `blake2s::write_add3_fused_rows` for the row algebra): the sum, then each
+/// `gf2::walk_add3_fused` for the row algebra): the sum, then each
 /// layer's `(left, right, product)` triple.
 ///
 /// The majority triple is masked to bits 0..=30. The ripple triple is masked

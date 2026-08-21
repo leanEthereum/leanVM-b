@@ -37,7 +37,7 @@
 //! forwards (also [`row_values_walk`], the same pass keeping its per-row values)
 //! and [`marginal_walk`] backwards. Density is therefore free, which is what
 //! makes the slot-minimal encoding above the right trade. See doc/leanvm,
-//! Annex C "Evaluating the matrix forms".
+//! Annex C "Evaluating the matrices".
 //!
 //! ## Witness layout per compression block (`k_log = 14`, `k = 16,384`)
 //!
@@ -289,15 +289,15 @@ pub fn min_n_blocks_log(n_blocks: usize) -> usize {
 
 // ---------------------------------------------------------------------------
 // Circuit-walk evaluation: `(uᵀ A_0 w, uᵀ B_0 w)` in O(circuit) field ops,
-// over the exact matrices `build_matrices` emits, never materialized. See
-// the `gf2` module for why this exists and what it mirrors.
+// over matrices that are never materialized. The row assignment these walks
+// encode is specified in doc/leanvm, Annex C "Evaluating the matrices".
 // ---------------------------------------------------------------------------
 
 /// One forward pass of the circuit against column weights `w`, reporting every
 /// row's operand pair to `sink`. [`bilinear_walk_pair`] contracts those pairs,
 /// [`row_values_walk`] keeps them; the traversal is written once here.
 fn forward_walk<S: crate::gf2::RowSink>(sink: &mut S, w: &[F192]) {
-    sink.const_row(Z_CONST_POS);
+    sink.bconst(Z_CONST_POS, w[Z_CONST_POS]);
     // Free-input rows: A = [slot], B = [Z_CONST].
     for (base, len) in [
         (H_BASE, 8 * WORD_BITS),
@@ -370,8 +370,9 @@ pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
 /// The matrix-vector products `(A_0 w, B_0 w)`, i.e. every row's inner product
 /// with `w`, by ONE FORWARD WALK: the same traversal as [`bilinear_walk_pair`],
 /// keeping the per-row values instead of contracting them. O(circuit) additions
-/// against one pass over ~89M nonzeros, and no matrix is materialized.
-/// `row_values_walk_matches_matrices` pins it to the built matrices.
+/// against one pass over ~89M nonzeros, and no matrix is materialized. Pinned
+/// by `reduction_tests`, whose prover folds these row values while its verifier
+/// re-derives the same claim through [`bilinear_walk_pair`].
 pub fn row_values_walk(w: &[F192]) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(w.len(), K);
     let mut sink = crate::gf2::RowValues::new(K, w[Z_CONST_POS]);
@@ -395,8 +396,10 @@ pub fn bilinear_walk(alpha: F192, u: &[F192], w: &[F192]) -> F192 {
 /// by ONE BACKWARD WALK of the circuit: the transpose of [`bilinear_walk_pair`]
 /// (see the `gf2` module for why the transpose computes the marginal). Cost is
 /// O(circuit), against the sparse gather's O(NNZ) over ~89M nonzeros, and no
-/// matrix is materialized at all. `marginal_walk_matches_csc_fold` pins it to
-/// `CscCircuit::fold_alpha_batched`, which computes the same vector.
+/// matrix is materialized at all. Pinned by `reduction_tests`: the prover's
+/// lincheck table comes from here and the verifier's terminal check from the
+/// separately written [`bilinear_walk_pair`], so a disagreement at any column
+/// fails the roundtrip.
 pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
     assert_eq!(u.len(), K);
     let mut m = vec![F192::ZERO; K];
@@ -566,8 +569,8 @@ impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit {
 
 // ---------------------------------------------------------------------------
 // Witness generation: emits the R1CS row-witnesses directly from the BLAKE2s
-// computation, as bit-packed u64 words. Row-witness semantics match
-// `build_matrices`, and are the same shapes `blake2s` documents.
+// computation, as bit-packed u64 words. Row-witness semantics match the row
+// assignment of doc/leanvm, Annex C, the same one the walks above encode.
 // ---------------------------------------------------------------------------
 
 // Record-relative positions, mirroring the `G_*` sub-block offsets.

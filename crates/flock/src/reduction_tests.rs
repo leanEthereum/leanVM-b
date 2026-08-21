@@ -131,7 +131,7 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
 /// Ten rounds of BLAKE2s inside a 2^14 block, proved and verified through the
 /// unmodified zerocheck and lincheck. The lincheck verifier here answers via
 /// [`flock::blake2s::bilinear_walk`], so this also exercises the circuit walk
-/// against the same transcript the CSC-fold prover produced.
+/// against the same transcript the walk-driven prover produced.
 #[test]
 fn blake2s_reduction_roundtrip() {
     for n in [8usize, 16] {

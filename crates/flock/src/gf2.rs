@@ -80,10 +80,9 @@ pub(crate) fn wire_rotr(x: &WireWord, n: usize) -> WireWord {
 pub(crate) trait RowSink {
     /// A product row: both sides are walked wire values.
     fn product(&mut self, k: usize, a: F192, b: F192);
-    /// A row whose B side is the lone constant wire: free inputs, lin-id words.
+    /// A row whose B side is the lone constant wire: free inputs, lin-id words,
+    /// and the constant row itself, whose A side is that same entry.
     fn bconst(&mut self, k: usize, a: F192);
-    /// The constant row, `A = B = [const_pos]`.
-    fn const_row(&mut self, k: usize);
 }
 
 /// Contracting sink: accumulates `uᵀ A_0 w` and `uᵀ B_0 w`. Rows whose B side is
@@ -126,12 +125,6 @@ impl RowSink for WalkAcc<'_> {
         self.a += self.u[k] * a;
         self.u_bconst += self.u[k];
     }
-    #[inline]
-    fn const_row(&mut self, k: usize) {
-        let ui = self.u[k];
-        self.a += ui * self.wc;
-        self.b += ui * self.wc;
-    }
 }
 
 /// Storing sink: keeps every row's operand pair, so the walk returns the
@@ -164,15 +157,10 @@ impl RowSink for RowValues {
         self.a[k] = a;
         self.b[k] = self.wc;
     }
-    #[inline]
-    fn const_row(&mut self, k: usize) {
-        self.a[k] = self.wc;
-        self.b[k] = self.wc;
-    }
 }
 
-/// Walk one 32-bit ADD (mirror of [`write_add_carry_rows`]): accumulate the 31
-/// carry rows into `acc` and return the sum-bit wires.
+/// Walk one 32-bit ADD: report the 31
+/// carry rows to `sink` and return the sum-bit wires.
 ///
 ///   carry row cb+i:  A = X[i] ⊕ cin[i],  B = Y[i] ⊕ cin[i]
 ///   sum[i]         = X[i] ⊕ Y[i] ⊕ cin[i]
@@ -199,8 +187,8 @@ pub(crate) fn walk_add<S: RowSink>(
     out
 }
 
-/// Walk one fused three-operand ADD (mirror of [`write_add3_fused_rows`]):
-/// accumulate the 31 majority rows and the 30 ripple rows into `acc` and
+/// Walk one fused three-operand ADD:
+/// report the 31 majority rows and the 30 ripple rows to `sink` and
 /// return the sum-bit wires.
 pub(crate) fn walk_add3_fused<S: RowSink>(
     sink: &mut S,
@@ -257,7 +245,7 @@ pub(crate) fn wire_rotl(x: &WireWord, n: usize) -> WireWord {
     std::array::from_fn(|i| x[(i + WORD_BITS - n) % WORD_BITS])
 }
 
-/// Transpose of [`walk_add`]. `adj` is the adjoint of the sum word; deposits the
+/// Transpose of [`walk_add`], whose rows it must mirror exactly. `adj` is the adjoint of the sum word; deposits the
 /// marginal entries of the 31 carry_aux slots into `m` and returns the adjoints
 /// of `x` and `y`.
 ///

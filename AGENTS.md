@@ -36,7 +36,7 @@ Dependency order, leaves first:
 
 - `.cargo/config.toml` pins `-C target-cpu=native` and `-D warnings` for rustdoc
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
-- **One test binary per crate, not one per file:** each one rebuilds flock's BLAKE2s matrices from scratch. New `lean_compiler` integration tests go in `tests/suite/main.rs`. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary, phases being process-global (`rec_aggregation/tests/arena_prove.rs`).
+- **One test binary per crate, not one per file:** new `lean_compiler` integration tests go in `tests/suite/main.rs`, one linked executable instead of seventeen. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary. Phases are process-global, so two in one process reclaim each other's `ArenaVec`s and the symptom is a proof that stops verifying, never a crash (`rec_aggregation/tests/arena_prove.rs`).
 
 ```bash
 cargo testall                     # whole suite in seconds

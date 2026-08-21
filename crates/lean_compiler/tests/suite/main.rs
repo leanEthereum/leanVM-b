@@ -1,9 +1,12 @@
 //! Every lean_compiler integration test, in ONE binary.
 //!
 //! Each file under `suite/` used to be its own test binary, and each one paid
-//! `flock::blake2s::build_matrices` again: ~1.9 s of sequential symbolic circuit
-//! building, cached per process, so thirteen processes meant thirteen builds.
-//! As modules of a single binary they build it once. None of these tests engages
+//! the BLAKE2s R1CS again: ~1.9 s of sequential symbolic circuit building,
+//! cached per process, so thirteen processes meant thirteen builds. Those
+//! matrices are no longer built at all (the walks of doc/leanvm Annex C
+//! replaced them), so the original reason is gone; one binary still saves
+//! thirteen process startups and thirteen guest compilations. None of these
+//! tests engages
 //! the proving arena (`lean_vm::init_prover`), so sharing a process is safe;
 //! a test that does open a phase must not (see `rec_aggregation`'s `arena_prove`).
 
