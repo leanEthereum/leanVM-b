@@ -142,7 +142,7 @@ pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, chi: F192) {
         // Split once rather than index twice: indexing reloads the data pointer
         // and length through the container every iteration, since nothing proves
         // they do not alias the elements, and pays a bounds check for it.
-        let (lo, hi) = (&mut **table).split_at_mut(half);
+        let (lo, hi) = (**table).split_at_mut(half);
         for (l, h) in lo.iter_mut().zip(&*hi) {
             *l = interp(*l, *h, chi);
         }
@@ -159,7 +159,7 @@ pub fn shrink_eq_low<B: Shrink<F192>>(table: &mut B) {
         // Sliced, as in `fold_high_inplace`: reading the pair and writing the
         // sum through one slice drops the per-iteration reload and its bounds
         // check. The write index trails the read, so the in-place walk is sound.
-        let t = &mut **table;
+        let t: &mut [F192] = table;
         for i in 0..half {
             let (a, b) = (t[2 * i], t[2 * i + 1]);
             t[i] = a + b;
@@ -174,7 +174,7 @@ pub fn shrink_eq_high<B: Shrink<F192>>(table: &mut B) {
     let half = table.len() / 2;
     {
         // Sliced, as in `fold_high_inplace`.
-        let (lo, hi) = (&mut **table).split_at_mut(half);
+        let (lo, hi) = (**table).split_at_mut(half);
         for (l, h) in lo.iter_mut().zip(&*hi) {
             *l += *h;
         }
