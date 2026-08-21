@@ -457,7 +457,12 @@ fn shift_reduce_inner_ab(
     {
         shift_reduce_inner_ab_fused_neon(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out);
     }
-    #[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni", target_feature = "avx512bw"))]
+    {
+        // SAFETY: gfni and avx512bw are statically enabled at compile time.
+        unsafe { shift_reduce_inner_ab_gfni_512(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out) };
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni", not(target_feature = "avx512bw")))]
     {
         // SAFETY: gfni is statically enabled at compile time.
         unsafe { shift_reduce_inner_ab_gfni(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out) };
@@ -465,6 +470,73 @@ fn shift_reduce_inner_ab(
     #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "gfni"))))]
     {
         shift_reduce_inner_ab_scalar(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out);
+    }
+}
+
+/// The GFNI kernel one register wide: `ELL` is 64, so the whole column is one
+/// ZMM and the combine issues a quarter of the instructions the 128-bit arm
+/// does. Byte unpacking and `packus` both work within 128-bit lanes and are
+/// exact inverses there, so the widened accumulators may sit in a different
+/// order than the narrow arm's and still narrow back to the same bytes.
+///
+/// # Safety
+/// Requires the `gfni` and `avx512bw` target features.
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni", target_feature = "avx512bw"))]
+#[target_feature(enable = "gfni", enable = "avx512f", enable = "avx512bw")]
+unsafe fn shift_reduce_inner_ab_gfni_512(
+    a_packed: &[u8],
+    b_packed: &[u8],
+    inv_table: &InvNttTableByteSingleGf8,
+    chunk_byte_base: usize,
+    b_med: usize,
+    out: &mut [u8; 64],
+) {
+    use core::arch::x86_64::*;
+
+    let byte_base_b = chunk_byte_base + b_med * N_CHUNKS * 8;
+    // `inv_table.apply` overwrites every lane, so these need no re-zeroing per K.
+    let mut a_col = [F8::ZERO; ELL];
+    let mut b_col = [F8::ZERO; ELL];
+
+    // SAFETY: the target features are carried by the function; the loads and
+    // stores stay within a_col/b_col/out, each exactly `ELL` bytes.
+    unsafe {
+        let (mut acc_lo, mut acc_hi) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let zero = _mm512_setzero_si512();
+
+        for k in 0..8 {
+            let chunk_off = byte_base_b + k * N_CHUNKS;
+            inv_table.apply(&a_packed[chunk_off..chunk_off + N_CHUNKS], &mut a_col);
+            inv_table.apply(&b_packed[chunk_off..chunk_off + N_CHUNKS], &mut b_col);
+            let y = _mm512_gf2p8mul_epi8(
+                _mm512_loadu_si512(a_col.as_ptr().cast()),
+                _mm512_loadu_si512(b_col.as_ptr().cast()),
+            );
+            let shift = _mm_cvtsi32_si128(k as i32);
+            acc_lo = _mm512_xor_si512(acc_lo, _mm512_sll_epi16(_mm512_unpacklo_epi8(y, zero), shift));
+            acc_hi = _mm512_xor_si512(acc_hi, _mm512_sll_epi16(_mm512_unpackhi_epi8(y, zero), shift));
+        }
+
+        // Vectorized gf8_reduce over u16 lanes: two-step fold of the high byte
+        // h with h ^ (h<<1) ^ (h<<3) ^ (h<<4)  (x^8 = x^4+x^3+x+1).
+        let mask_ff = _mm512_set1_epi16(0xff);
+        let fold = |p: __m512i| -> __m512i {
+            let h = _mm512_srli_epi16::<8>(p);
+            _mm512_xor_si512(
+                _mm512_and_si512(p, mask_ff),
+                _mm512_xor_si512(
+                    _mm512_xor_si512(h, _mm512_slli_epi16::<1>(h)),
+                    _mm512_xor_si512(_mm512_slli_epi16::<3>(h), _mm512_slli_epi16::<4>(h)),
+                ),
+            )
+        };
+        // Two folds bring 15-bit accumulators down to 8 bits; the second fold's
+        // high byte is at most 0x0f, so lanes stay below 256 for `packus`.
+        let reduce = |p: __m512i| _mm512_and_si512(fold(fold(p)), mask_ff);
+        _mm512_storeu_si512(
+            out.as_mut_ptr().cast(),
+            _mm512_packus_epi16(reduce(acc_lo), reduce(acc_hi)),
+        );
     }
 }
 
@@ -481,7 +553,7 @@ fn shift_reduce_inner_ab(
 ///
 /// # Safety
 /// Requires the `gfni` target feature (plus SSE2, baseline on x86_64).
-#[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "gfni", enable = "sse2")]
 unsafe fn shift_reduce_inner_ab_gfni(
     a_packed: &[u8],
@@ -872,8 +944,7 @@ mod tests {
             let mut out_scalar = [0u8; 64];
             shift_reduce_inner_ab_scalar(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_scalar);
             let mut out_gfni = [0u8; 64];
-            // SAFETY: cfg-gated on gfni.
-            unsafe { shift_reduce_inner_ab_gfni(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni) };
+            shift_reduce_inner_ab(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni);
             assert_eq!(out_scalar, out_gfni);
         }
     }
