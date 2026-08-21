@@ -6,6 +6,7 @@ pub mod bits;
 pub mod blake2s;
 pub mod field;
 pub mod multilinear;
+pub mod stream;
 
 #[cfg(feature = "test-util")]
 pub mod test_rng;

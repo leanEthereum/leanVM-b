@@ -40,6 +40,7 @@ use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
     multilinear::eq_eval,
     pretty_integer,
+    stream::Stream,
 };
 use zk_alloc::ArenaVec;
 
@@ -315,12 +316,15 @@ fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem
     parallel::for_each(n_chunks, |c| {
         let start = c * COPY_CHUNK;
         let len = COPY_CHUNK.min(msg_len - start);
+        // Nothing reads a replica until the transform's first pass, by which
+        // time a codeword this size is long evicted.
+        let stream = Stream::new();
         for r in 0..replicas {
             // SAFETY: chunk `c` owns `[r * msg_len + start, + len)` of the
             // codeword for every `r`; those ranges are in bounds, disjoint across
             // `c`, and disjoint from `msg`.
             unsafe {
-                std::ptr::copy_nonoverlapping(msg.as_ptr().add(start), dst.add(r * msg_len + start).cast(), len);
+                stream.copy_uninit(dst.add(r * msg_len + start).cast(), &msg[start..start + len]);
             }
         }
     });

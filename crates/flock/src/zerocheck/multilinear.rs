@@ -38,6 +38,7 @@ use crate::zerocheck::PaddingSpec;
 use crate::zerocheck::univariate_skip::pack_bits;
 use crate::zerocheck::univariate_skip::{SplitEq, build_eq};
 use primitives::field::{F192, F192Unreduced, PHI_8_TABLE_192 as PHI_8_TABLE};
+use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
 /// Returns `(pair_in_block_mask, useful_pairs_inclusive)` for the round-2
@@ -672,6 +673,10 @@ pub fn fold_and_compute_round_pair_into(
 
             let mut p1_acc = F192Unreduced::ZERO;
             let mut pinf_acc = F192Unreduced::ZERO;
+            // The message is built from the folded values while they are still
+            // in registers, so nothing reads `a_out`/`b_out` until the next
+            // round, by which time a buffer this size is long evicted.
+            let stream = Stream::new();
 
             // Unroll 4 x_lo's per iteration when lo_size % 4 == 0 (the common
             // case for the fused path; falls back to 2-wide for lo_size==2 at
@@ -741,26 +746,17 @@ pub fn fold_and_compute_round_pair_into(
                     let b0_d = bb0_d + r_fold * (bb1_d + bb0_d);
                     let b1_d = bb2_d + r_fold * (bb3_d + bb2_d);
 
-                    let oi_a = 2 * x_lo_a;
-                    let oi_b = 2 * x_lo_b;
-                    let oi_c = 2 * x_lo_c;
-                    let oi_d = 2 * x_lo_d;
-                    a_out[oi_a] = a0_a;
-                    a_out[oi_a + 1] = a1_a;
-                    b_out[oi_a] = b0_a;
-                    b_out[oi_a + 1] = b1_a;
-                    a_out[oi_b] = a0_b;
-                    a_out[oi_b + 1] = a1_b;
-                    b_out[oi_b] = b0_b;
-                    b_out[oi_b + 1] = b1_b;
-                    a_out[oi_c] = a0_c;
-                    a_out[oi_c + 1] = a1_c;
-                    b_out[oi_c] = b0_c;
-                    b_out[oi_c + 1] = b1_c;
-                    a_out[oi_d] = a0_d;
-                    a_out[oi_d + 1] = a1_d;
-                    b_out[oi_d] = b0_d;
-                    b_out[oi_d + 1] = b1_d;
+                    // Eight consecutive outputs are 192 bytes, three whole cache
+                    // lines: the unrolled group is exactly a streaming publish.
+                    let oi = 2 * x_lo_a;
+                    stream.copy(
+                        &mut a_out[oi..oi + 8],
+                        &[a0_a, a1_a, a0_b, a1_b, a0_c, a1_c, a0_d, a1_d],
+                    );
+                    stream.copy(
+                        &mut b_out[oi..oi + 8],
+                        &[b0_a, b1_a, b0_b, b1_b, b0_c, b1_c, b0_d, b1_d],
+                    );
 
                     // 8 independent msg muls.
                     let eq_l_a = eq_lo[x_lo_a];
