@@ -302,15 +302,20 @@ impl BusForm {
         }
     }
 
-    /// The form at one point: `evals` are the columns' values there. This is what the
-    /// zerocheck evaluates, per row while a table is unfolded and at the sumcheck
-    /// point after.
+    /// The form at one point, unreduced: `evals` are the columns' values there.
+    /// This is what the zerocheck evaluates, per row while a table is unfolded and
+    /// at the sumcheck point after, so a table's several forms share one reduction
+    /// rather than paying one per term.
+    pub fn eval_unreduced<T: ColVal>(&self, evals: &[T]) -> T::Unreduced {
+        self.prods.iter().fold(
+            T::dot_unreduced(&self.coeffs, evals) ^ T::lift(self.constant),
+            |acc, &(a, b, c)| acc ^ (evals[a] * evals[b]).mul_e_unreduced(c),
+        )
+    }
+
+    /// [`eval_unreduced`](Self::eval_unreduced) on its own.
     pub fn eval<T: ColVal>(&self, evals: &[T]) -> F192 {
-        self.prods
-            .iter()
-            .fold(T::dot(&self.coeffs, evals, self.constant), |acc, &(a, b, c)| {
-                acc + (evals[a] * evals[b]).mul_e(c)
-            })
+        T::reduce(self.eval_unreduced(evals))
     }
 
     /// What the form sums to over the table's rows against `eq(ζ, ·)`, the target the
