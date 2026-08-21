@@ -923,54 +923,70 @@ fn fold_and_msg_blocks<T: RoundWitness>(
     let nb_base = parallel::SendPtr(nb.as_mut_ptr());
 
     let per = block.div_ceil(ROUND_CHUNK);
-    let fold_block = |out_blk: usize, x0: usize, len: usize| -> (&mut [F192], &mut [F192]) {
-        // SAFETY: distinct (out_blk, x0) name disjoint in-bounds windows of `nf`
-        // and `nb`, which stay borrowed for the whole dispatch.
-        let (dst_f, dst_b) = unsafe {
-            (
-                nf_base.slice(out_blk * block + x0, len),
-                nb_base.slice(out_blk * block + x0, len),
-            )
-        };
+    // Fold into an L1-resident stage rather than straight into `nf`/`nb`. The
+    // message reads the folded values back, and reading them here instead of out
+    // of the destination is what lets the destination be published with
+    // streaming stores: nothing else touches it until the next round, by which
+    // time a buffer this size is long evicted, so the fetch an ordinary store
+    // would make of every line it overwrites is pure waste.
+    const STAGE: usize = 128;
+    let fold_block = |stage: &mut [F192], stage_b: &mut [F192], out_blk: usize, x0: usize, stream: &Stream| {
+        let len = stage.len();
         let src0 = 2 * out_blk * block + x0;
-        // Sliced, not indexed: four runs of one length let the bounds checks fall out
+        // Sliced, not indexed: runs of one length let the bounds checks fall out
         // and the pair fold vectorise, as the adjacent-pair kernel's do.
         let (f_lo, b_lo) = (&f[src0..src0 + len], &b[src0..src0 + len]);
         if 2 * out_blk + 1 < n_in {
             let src1 = src0 + block;
             let (f_hi, b_hi) = (&f[src1..src1 + len], &b[src1..src1 + len]);
-            for ((d, &x0), &x1) in dst_f.iter_mut().zip(f_lo).zip(f_hi) {
+            for ((d, &x0), &x1) in stage.iter_mut().zip(f_lo).zip(f_hi) {
                 *d = T::fold_pair(x0, x1, r);
             }
-            for ((d, &y0), &y1) in dst_b.iter_mut().zip(b_lo).zip(b_hi) {
+            for ((d, &y0), &y1) in stage_b.iter_mut().zip(b_lo).zip(b_hi) {
                 *d = F192::fold_pair(y0, y1, r);
             }
         } else {
-            for (d, &x0) in dst_f.iter_mut().zip(f_lo) {
+            for (d, &x0) in stage.iter_mut().zip(f_lo) {
                 *d = T::fold_lone(x0, r);
             }
-            for (d, &y0) in dst_b.iter_mut().zip(b_lo) {
+            for (d, &y0) in stage_b.iter_mut().zip(b_lo) {
                 *d = F192::fold_lone(y0, r);
             }
         }
-        (dst_f, dst_b)
+        // SAFETY: distinct (out_blk, x0) name disjoint in-bounds windows of `nf`
+        // and `nb`, which stay borrowed for the whole dispatch.
+        unsafe {
+            stream.copy(nf_base.slice(out_blk * block + x0, len), stage);
+            stream.copy(nb_base.slice(out_blk * block + x0, len), stage_b);
+        }
     };
 
     let task = |t: usize| -> (F192Unreduced, F192Unreduced) {
         let (i, c) = (t / per, t % per);
         let x0 = c * ROUND_CHUNK;
         let len = ROUND_CHUNK.min(block - x0);
-        let (f_lo, b_lo) = fold_block(2 * i, x0, len);
-        if 2 * i + 1 < n_out {
-            let (f_hi, b_hi) = fold_block(2 * i + 1, x0, len);
-            msg_terms_pair(f_lo, f_hi, b_lo, b_hi)
-        } else if last {
-            // `ROUND_CHUNK` and `block` are powers of two, so every chunk has even
-            // length and starts even: no message pair straddles a task.
-            fold_msg_terms(f_lo, b_lo)
-        } else {
-            msg_terms_lone(f_lo, b_lo)
+        let stream = Stream::new();
+        let mut stage = [[F192::ZERO; STAGE]; 4];
+        let mut acc = (F192Unreduced::ZERO, F192Unreduced::ZERO);
+        for s in (0..len).step_by(STAGE) {
+            let n = STAGE.min(len - s);
+            let [lo_f, lo_b, hi_f, hi_b] = &mut stage;
+            fold_block(&mut lo_f[..n], &mut lo_b[..n], 2 * i, x0 + s, &stream);
+            let (u_0, u_2) = if 2 * i + 1 < n_out {
+                fold_block(&mut hi_f[..n], &mut hi_b[..n], 2 * i + 1, x0 + s, &stream);
+                msg_terms_pair(&lo_f[..n], &hi_f[..n], &lo_b[..n], &hi_b[..n])
+            } else if last {
+                // `ROUND_CHUNK`, `STAGE` and `block` are powers of two, so every
+                // slice has even length and starts even: no message pair
+                // straddles one.
+                fold_msg_terms(&lo_f[..n], &lo_b[..n])
+            } else {
+                msg_terms_lone(&lo_f[..n], &lo_b[..n])
+            };
+            acc.0 ^= u_0;
+            acc.1 ^= u_2;
         }
+        acc
     };
     let (u_0, u_2) = accumulate_msg(n_out.div_ceil(2) * per, f.len() / 2, F192Unreduced::ZERO, task);
     (
