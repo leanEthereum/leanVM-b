@@ -311,25 +311,23 @@ fn fused_butterflies_ext<const N: usize, const P: usize, const T: usize>(
             fused_lane_scalar(rows, t, pairs, lane);
         }
     }
+    // A butterfly at a time, each over whole rows, as the F64 twin's
+    // `radix8_butterflies` does. Holding a tile of every row in registers for
+    // the whole schedule instead (the shape the AVX-512 arm takes, since it has
+    // to transpose anyway) saves the reloads, but the rows never leave L1 and a
+    // tile leaves only its own width of independent work to cover the
+    // reduction's dependent PMULL folds, where a row leaves the whole lane
+    // count: it measures 26% worse here, and 14% worse again on the base
+    // encode.
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     {
-        let n = 3 * rows[0].len();
         let ptrs: [*mut u64; N] = std::array::from_fn(|k| rows[k].as_mut_ptr().cast());
         // SAFETY: `aes` is enabled at compile time, the rows are pairwise
-        // disjoint, and each is `n` contiguous u64 (`F192` is repr(C) over
-        // three). Widest run first, so `n` odd leaves one lane to the tail.
+        // disjoint, and each is `3 * len` contiguous u64 (`F192` is repr(C) over
+        // three).
         unsafe {
-            let mut i = 0;
-            while i + 2 * VEC_RUN <= n {
-                fused_run_neon::<VEC_RUN, N, P, T>(&ptrs, t, pairs, i);
-                i += 2 * VEC_RUN;
-            }
-            while i + 2 <= n {
-                fused_run_neon::<1, N, P, T>(&ptrs, t, pairs, i);
-                i += 2;
-            }
-            if i < n {
-                fused_u64_scalar(&ptrs, t, pairs, i);
+            for &(top, bot, tw) in pairs {
+                butterfly_row_neon(ptrs[top], ptrs[bot], t[tw].0, 3 * rows[0].len());
             }
         }
     }
@@ -339,85 +337,6 @@ fn fused_butterflies_ext<const N: usize, const P: usize, const T: usize>(
     )))]
     for lane in 0..rows[0].len() {
         fused_lane_scalar(rows, t, pairs, lane);
-    }
-}
-
-/// How many 128-bit vectors of every row a fused pass holds at once. A radix-8
-/// schedule is eight rows, so two puts sixteen vectors and their products in
-/// flight against the 32 the register file has.
-#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
-const VEC_RUN: usize = 2;
-
-/// One fused schedule over `W` 128-bit vectors of every row, all held in NEON
-/// registers for the whole pass. Elementwise over u64 like
-/// [`butterfly_row_neon`], so a row is just `W` vectors and none is transposed.
-///
-/// # Safety
-/// Requires `aes`; every `ptrs[k]` must address `i + 2 * W` readable and
-/// writable u64, and the rows must be pairwise disjoint.
-#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
-#[inline]
-#[target_feature(enable = "aes")]
-unsafe fn fused_run_neon<const W: usize, const N: usize, const P: usize, const T: usize>(
-    ptrs: &[*mut u64; N],
-    t: &[F64; T],
-    pairs: &[(usize, usize, usize); P],
-    i: usize,
-) {
-    use core::arch::aarch64::*;
-    use primitives::field::gf2_64::aarch64::{pmull, pmull_hi, reduce_pair_pmull4};
-
-    // SAFETY: forwarded to the caller's obligation; the intrinsics are covered
-    // by this function's target feature.
-    unsafe {
-        let mut v: [[uint64x2_t; W]; N] = std::array::from_fn(|k| {
-            let row = ptrs[k].add(i);
-            std::array::from_fn(|h| vld1q_u64(row.add(2 * h)))
-        });
-        for &(top, bot, tw) in pairs {
-            let k = t[tw].0;
-            let dup = vdupq_n_u64(k);
-            for h in 0..W {
-                let x = v[bot][h];
-                let prod = reduce_pair_pmull4(pmull(vgetq_lane_u64::<0>(x), k), pmull_hi(x, dup));
-                let new_top = veorq_u64(v[top][h], prod);
-                v[bot][h] = veorq_u64(x, new_top);
-                v[top][h] = new_top;
-            }
-        }
-        for k in 0..N {
-            let row = ptrs[k].add(i);
-            for h in 0..W {
-                vst1q_u64(row.add(2 * h), v[k][h]);
-            }
-        }
-    }
-}
-
-/// [`fused_pair_neon`]'s odd tail: the same schedule on one coefficient.
-///
-/// # Safety
-/// Every `ptrs[k]` must address `i + 1` readable and writable u64, the rows
-/// pairwise disjoint.
-#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
-#[inline]
-unsafe fn fused_u64_scalar<const N: usize, const P: usize, const T: usize>(
-    ptrs: &[*mut u64; N],
-    t: &[F64; T],
-    pairs: &[(usize, usize, usize); P],
-    i: usize,
-) {
-    // SAFETY: forwarded to the caller's obligation.
-    unsafe {
-        let mut v: [F64; N] = std::array::from_fn(|k| F64(*ptrs[k].add(i)));
-        for &(top, bot, tw) in pairs {
-            let new_top = v[top] + v[bot] * t[tw];
-            v[bot] += new_top;
-            v[top] = new_top;
-        }
-        for k in 0..N {
-            *ptrs[k].add(i) = v[k].0;
-        }
     }
 }
 
@@ -518,6 +437,10 @@ fn butterfly_ext_lanes(top: &mut [F192], bot: &mut [F192], twiddle: F64) {
 /// # Safety
 /// Requires the `aes` target feature; `top` and `bot` must each address `n`
 /// readable and writable u64 in regions disjoint from each other.
+/// How many 128-bit vectors of the row a butterfly takes at once.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+const ROW_RUN: usize = 4;
+
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 #[inline]
 #[target_feature(enable = "aes")]
@@ -531,15 +454,15 @@ unsafe fn butterfly_row_neon(top: *mut u64, bot: *mut u64, twiddle: u64, n: usiz
         let tw = vdupq_n_u64(twiddle);
         let scale = |v: uint64x2_t| reduce_pair_pmull4(pmull(vgetq_lane_u64::<0>(v), twiddle), pmull_hi(v, tw));
         let mut i = 0;
-        while i + 8 <= n {
-            let v: [uint64x2_t; 4] = std::array::from_fn(|k| vld1q_u64(bot.add(i + 2 * k)));
+        while i + 2 * ROW_RUN <= n {
+            let v: [uint64x2_t; ROW_RUN] = std::array::from_fn(|k| vld1q_u64(bot.add(i + 2 * k)));
             let prod = v.map(scale);
-            for k in 0..4 {
+            for k in 0..ROW_RUN {
                 let new_u = veorq_u64(vld1q_u64(top.add(i + 2 * k)), prod[k]);
                 vst1q_u64(top.add(i + 2 * k), new_u);
                 vst1q_u64(bot.add(i + 2 * k), veorq_u64(v[k], new_u));
             }
-            i += 8;
+            i += 2 * ROW_RUN;
         }
         while i + 2 <= n {
             let v = vld1q_u64(bot.add(i));
