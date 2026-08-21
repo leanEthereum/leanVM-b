@@ -71,8 +71,8 @@ fn leaf_image(row: &[F64], leaf_words: usize) -> Vec<F64> {
 /// The committer's leaf preimage: the image's words, little-endian.
 fn hash_words(image: &[F64]) -> Hash {
     let mut bytes = vec![0u8; 8 * image.len()];
-    for (dst, word) in bytes.chunks_exact_mut(8).zip(image) {
-        dst.copy_from_slice(&word.0.to_le_bytes());
+    for (dst, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(image) {
+        *dst = word.0.to_le_bytes();
     }
     hash_leaf(&bytes)
 }

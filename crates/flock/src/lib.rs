@@ -12,23 +12,22 @@
 //!   4. The PCS binds that family of slices ([`blake2s::SliceClaim`]) to the
 //!      commitment.
 //!
-//! [`blake2s`] is the one circuit: the BLAKE2s compression encoded as a
-//! per-block R1CS (`build_block_r1cs`), plus its witness generation and the
-//! leanVM-facing reduction entry points
+//! [`blake2s`] is the one circuit: the BLAKE2s compression as a per-block R1CS,
+//! plus its witness generation and the leanVM-facing reduction entry points
 //! (`Blake2sSetup::{prove_reduction, verify_reduction, …}`). Steps 2 to 4 above
-//! are circuit-agnostic: they read a [`r1cs::BlockR1cs`] and its packed
-//! witness.
+//! are circuit-agnostic: they take the block shape as plain numbers and reach
+//! the matrices only through [`lincheck::LincheckCircuit`], whose one live impl
+//! walks the circuit rather than reading any matrix.
 //!
 //! BLAKE2s is a 32-bit ARX round whose XORs and rotations are free over GF(2),
 //! so its only nonlinear constraints are the product bits of the modular ADDs.
-//! The private `gf2` module owns that part: the symbolic affine word and the two
-//! adder gadgets, kept separate because the fused three-operand adder's bit
-//! boundaries are the subtlest thing here and deserve their own tests.
+//! The private `gf2` module owns that part: the wire word and the two adder
+//! gadgets, forwards and transposed, kept separate because the fused
+//! three-operand adder's bit boundaries are the subtlest thing here.
 
 pub mod blake2s;
 mod gf2;
 pub mod lincheck;
-pub mod r1cs;
 /// The circuit driven through the whole reduction. A `src` module rather than
 /// its own test binary so it shares the process, and so the ~1.9 s
 /// [`blake2s::matrices`] build, with the unit tests.

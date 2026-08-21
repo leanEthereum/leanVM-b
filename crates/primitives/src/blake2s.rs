@@ -123,8 +123,8 @@ fn block_words(block: &[u8; BLOCK_LEN]) -> [u32; 16] {
 #[inline]
 fn state_bytes(h: &[u32; 8]) -> [u8; OUT_LEN] {
     let mut out = [0u8; OUT_LEN];
-    for (chunk, word) in out.chunks_exact_mut(4).zip(h) {
-        chunk.copy_from_slice(&word.to_le_bytes());
+    for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(h) {
+        *chunk = word.to_le_bytes();
     }
     out
 }
@@ -212,9 +212,9 @@ pub fn hash(data: &[u8]) -> [u8; OUT_LEN] {
     if !data.is_empty() && data.len().is_multiple_of(BLOCK_LEN) {
         let mut h = init_state(0);
         let n = data.len() / BLOCK_LEN;
-        for (b, block) in data.chunks_exact(BLOCK_LEN).enumerate() {
+        for (b, block) in data.as_chunks::<BLOCK_LEN>().0.iter().enumerate() {
             let t = ((b + 1) * BLOCK_LEN) as u64;
-            compress(&mut h, &block_words(block.try_into().unwrap()), t, b + 1 == n);
+            compress(&mut h, &block_words(block), t, b + 1 == n);
         }
         return state_bytes(&h);
     }
@@ -1207,9 +1207,9 @@ pub fn hash_from_state(data: &[u8], state: &[u32; 8], t_offset: u64) -> [u8; OUT
     );
     let mut h = *state;
     let n = data.len() / BLOCK_LEN;
-    for (b, block) in data.chunks_exact(BLOCK_LEN).enumerate() {
+    for (b, block) in data.as_chunks::<BLOCK_LEN>().0.iter().enumerate() {
         let t = t_offset + ((b + 1) * BLOCK_LEN) as u64;
-        compress(&mut h, &block_words(block.try_into().unwrap()), t, b + 1 == n);
+        compress(&mut h, &block_words(block), t, b + 1 == n);
     }
     state_bytes(&h)
 }

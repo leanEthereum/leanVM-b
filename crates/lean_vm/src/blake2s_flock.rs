@@ -281,18 +281,6 @@ pub fn warm_setup(n_blocks: usize) {
     let _ = setup_for(n_blocks.max(1));
 }
 
-/// The flock BLAKE2s R1CS digest: a hash of the per-block R1CS matrices and
-/// shape parameters ([`flock::r1cs::BlockR1cs::r1cs_digest`]), independent
-/// of the instance count. The full instance is block-diagonal (the count is
-/// announced and absorbed with the other sizes), so a transcript seeded with
-/// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement up
-/// front. Baked in flock (test-guarded): recomputing it costs ~200 ms of
-/// hashing on top of building the matrices, which used to land inside the
-/// first `prove`.
-pub fn r1cs_digest() -> [u8; 32] {
-    flock::blake2s::R1CS_DIGEST
-}
-
 /// **Flock reduction only** (prover): run flock's BLAKE2s zerocheck + lincheck
 /// over `blocks` and return the one [`SliceClaim`] on the committed witness
 /// `q_flock`, along with the regenerated packed witness (already flattened to
@@ -438,8 +426,8 @@ mod tests {
                 assert_eq!(slot(j, SLOT_B0 + k), b[k]);
             }
             let mut input = [0u8; 64];
-            for (s, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
-                s.copy_from_slice(&w.0.to_le_bytes());
+            for (s, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
+                *s = w.0.to_le_bytes();
             }
             let h = primitives::blake2s::hash(&input);
             let word = |o: usize| F64(u64::from_le_bytes(h[o..o + 8].try_into().unwrap()));
