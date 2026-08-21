@@ -302,6 +302,32 @@ impl BusForm {
         }
     }
 
+    /// The pointwise sum of several forms over the same columns.
+    ///
+    /// Evaluating the sum is evaluating each and adding, and the constraint batch
+    /// only ever wants a table's total, so its three bus sides collapse to one
+    /// dot product and one product list: the row loop then reads the column
+    /// values once for all three rather than once each.
+    pub fn sum(forms: impl IntoIterator<Item = Self>) -> Self {
+        let mut forms = forms.into_iter();
+        let mut out = forms.next().expect("a table has at least one bus form");
+        for form in forms {
+            assert_eq!(out.coeffs.len(), form.coeffs.len(), "forms over the same columns");
+            for (slot, c) in out.coeffs.iter_mut().zip(form.coeffs) {
+                *slot += c;
+            }
+            out.constant += form.constant;
+            for (a, b, c) in form.prods {
+                match out.prods.iter_mut().find(|p| (p.0, p.1) == (a, b)) {
+                    Some(p) => p.2 += c,
+                    None => out.prods.push((a, b, c)),
+                }
+            }
+        }
+        out.prods.retain(|p| p.2 != F192::ZERO);
+        out
+    }
+
     /// The form at one point, unreduced: `evals` are the columns' values there.
     /// This is what the zerocheck evaluates, per row while a table is unfolded and
     /// at the sumcheck point after, so a table's several forms share one reduction
