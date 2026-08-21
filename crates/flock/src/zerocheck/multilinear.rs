@@ -37,7 +37,7 @@ use crate::zerocheck::PaddingSpec;
 #[cfg(test)]
 use crate::zerocheck::univariate_skip::pack_bits;
 use crate::zerocheck::univariate_skip::{SplitEq, build_eq};
-use primitives::field::{F192, F192Unreduced, PHI_8_TABLE_192 as PHI_8_TABLE};
+use primitives::field::{F192, F192Unreduced, PHI_8_TABLE_192 as PHI_8_TABLE, mul_unreduced4, mul4};
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
@@ -412,36 +412,46 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
                 let pair_idx_base = x_hi * lo_size;
                 let base = x_hi * chunk_size;
 
-                for x_lo in 0..lo_size {
-                    let x0l = 2 * x_lo;
-                    let x1l = x0l + 1;
-                    if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                        // Padding hole: write zero (a_folded/b_folded were alloc'd
-                        // uninit, so we have to write every slot we don't fold into).
-                        a_chunk[x0l] = F192::ZERO;
-                        a_chunk[x1l] = F192::ZERO;
-                        b_chunk[x0l] = F192::ZERO;
-                        b_chunk[x1l] = F192::ZERO;
-                        continue;
+                // Four x_lo per iteration: the message's eight products issue
+                // four to a vector instruction, and the eight outputs are 192
+                // bytes, three whole cache lines to stream. A padding hole folds
+                // to zero and contributes nothing, so it needs no branch of its
+                // own beyond skipping its rows.
+                let stream = Stream::new();
+                let live = |x_lo: usize| ((pair_idx_base + x_lo) & pair_in_block_mask) < useful_pairs_inclusive;
+                let mut a0 = [F192::ZERO; 4];
+                let mut a1 = [F192::ZERO; 4];
+                let mut b0 = [F192::ZERO; 4];
+                let mut b1 = [F192::ZERO; 4];
+                for x_lo0 in (0..lo_size).step_by(4) {
+                    let n = 4.min(lo_size - x_lo0);
+                    for j in 0..n {
+                        let x0g = base + 2 * (x_lo0 + j);
+                        let (fold_a, fold_b) = if live(x_lo0 + j) {
+                            (
+                                [fold_row(table, a_packed, x0g), fold_row(table, a_packed, x0g + 1)],
+                                [fold_row(table, b_packed, x0g), fold_row(table, b_packed, x0g + 1)],
+                            )
+                        } else {
+                            ([F192::ZERO; 2], [F192::ZERO; 2])
+                        };
+                        [a0[j], a1[j]] = fold_a;
+                        [b0[j], b1[j]] = fold_b;
                     }
-                    let x0g = base + 2 * x_lo;
-                    let x1g = x0g + 1;
-
-                    let a0 = fold_row(table, a_packed, x0g);
-                    let b0 = fold_row(table, b_packed, x0g);
-                    let a1 = fold_row(table, a_packed, x1g);
-                    let b1 = fold_row(table, b_packed, x1g);
-
-                    a_chunk[x0l] = a0;
-                    a_chunk[x1l] = a1;
-                    b_chunk[x0l] = b0;
-                    b_chunk[x1l] = b1;
-
-                    let eq_l = eq_lo[x_lo];
-                    let g1 = a1 * b1;
-                    p1_acc ^= eq_l.mul_unreduced(g1);
-                    let g_inf = (a0 + a1) * (b0 + b1);
-                    pinf_acc ^= eq_l.mul_unreduced(g_inf);
+                    let eq_l: [F192; 4] = std::array::from_fn(|j| if j < n { eq_lo[x_lo0 + j] } else { F192::ZERO });
+                    let g_1 = mul4(a1, b1);
+                    let g_inf = mul4(
+                        std::array::from_fn(|j| a0[j] + a1[j]),
+                        std::array::from_fn(|j| b0[j] + b1[j]),
+                    );
+                    for (term1, term_inf) in mul_unreduced4(eq_l, g_1).into_iter().zip(mul_unreduced4(eq_l, g_inf)) {
+                        p1_acc ^= term1;
+                        pinf_acc ^= term_inf;
+                    }
+                    let oi = 2 * x_lo0;
+                    let pack = |lo: [F192; 4], hi: [F192; 4]| [lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], lo[3], hi[3]];
+                    stream.copy(&mut a_chunk[oi..oi + 2 * n], &pack(a0, a1)[..2 * n]);
+                    stream.copy(&mut b_chunk[oi..oi + 2 * n], &pack(b0, b1)[..2 * n]);
                 }
 
                 let p1 = p1_acc.reduce();
@@ -500,20 +510,28 @@ pub fn uni_skip_fold_and_round_single_optimized_packed_padded(
             let pair_idx_base = x_hi * lo_size;
             let base = x_hi * chunk_size;
 
-            for x_lo in 0..lo_size {
-                let x0l = 2 * x_lo;
-                let x1l = x0l + 1;
-                if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                    c_chunk[x0l] = F192::ZERO;
-                    c_chunk[x1l] = F192::ZERO;
-                    continue;
+            // Four x_lo per iteration; see the pair kernel.
+            let stream = Stream::new();
+            let live = |x_lo: usize| ((pair_idx_base + x_lo) & pair_in_block_mask) < useful_pairs_inclusive;
+            let mut c0 = [F192::ZERO; 4];
+            let mut c1 = [F192::ZERO; 4];
+            for x_lo0 in (0..lo_size).step_by(4) {
+                let n = 4.min(lo_size - x_lo0);
+                for j in 0..n {
+                    let x0g = base + 2 * (x_lo0 + j);
+                    [c0[j], c1[j]] = if live(x_lo0 + j) {
+                        [fold_row(table, c_packed, x0g), fold_row(table, c_packed, x0g + 1)]
+                    } else {
+                        [F192::ZERO; 2]
+                    };
                 }
-                let x0g = base + 2 * x_lo;
-                let c0 = fold_row(table, c_packed, x0g);
-                let c1 = fold_row(table, c_packed, x0g + 1);
-                c_chunk[x0l] = c0;
-                c_chunk[x1l] = c1;
-                p1_acc ^= eq_lo[x_lo].mul_unreduced(c1);
+                let eq_l: [F192; 4] = std::array::from_fn(|j| if j < n { eq_lo[x_lo0 + j] } else { F192::ZERO });
+                for term in mul_unreduced4(eq_l, c1) {
+                    p1_acc ^= term;
+                }
+                let oi = 2 * x_lo0;
+                let packed = [c0[0], c1[0], c0[1], c1[1], c0[2], c1[2], c0[3], c1[3]];
+                stream.copy(&mut c_chunk[oi..oi + 2 * n], &packed[..2 * n]);
             }
             eq_hi[x_hi] * p1_acc.reduce()
         },
@@ -598,7 +616,31 @@ pub fn fold_and_compute_round_single_into(c: &[F192], c_out: &mut [F192], r_fold
             let c_out = unsafe { c_chunks.get(x_hi) };
             let c_in = &c[x_hi * chunk_in..(x_hi + 1) * chunk_in];
             let mut p1_acc = F192Unreduced::ZERO;
-            for x_lo in 0..lo_size {
+            // Four x_lo per iteration, as in the pair kernel; see there for why
+            // the outputs stream.
+            let stream = Stream::new();
+            let mut x_lo = 0;
+            while x_lo + 4 <= lo_size {
+                let ci = 4 * x_lo;
+                let quad = |k: usize| -> [F192; 4] { std::array::from_fn(|j| c_in[ci + 4 * j + k]) };
+                let fold = |lo: [F192; 4], hi: [F192; 4]| -> [F192; 4] {
+                    let d = mul4(std::array::from_fn(|j| lo[j] + hi[j]), [r_fold; 4]);
+                    std::array::from_fn(|j| lo[j] + d[j])
+                };
+                let c0 = fold(quad(0), quad(1));
+                let c1 = fold(quad(2), quad(3));
+                for term in mul_unreduced4(std::array::from_fn(|j| eq_lo[x_lo + j]), c1) {
+                    p1_acc ^= term;
+                }
+                let oi = 2 * x_lo;
+                stream.copy(
+                    &mut c_out[oi..oi + 8],
+                    &[c0[0], c1[0], c0[1], c1[1], c0[2], c1[2], c0[3], c1[3]],
+                );
+                x_lo += 4;
+            }
+            // Scalar tail; see the pair kernel.
+            while x_lo < lo_size {
                 let ci = 4 * x_lo;
                 let c0 = c_in[ci] + r_fold * (c_in[ci + 1] + c_in[ci]);
                 let c1 = c_in[ci + 2] + r_fold * (c_in[ci + 3] + c_in[ci + 2]);
@@ -606,6 +648,7 @@ pub fn fold_and_compute_round_single_into(c: &[F192], c_out: &mut [F192], r_fold
                 c_out[oi] = c0;
                 c_out[oi + 1] = c1;
                 p1_acc ^= eq_lo[x_lo].mul_unreduced(c1);
+                x_lo += 1;
             }
             eq_hi[x_hi] * p1_acc.reduce()
         },
@@ -678,110 +721,44 @@ pub fn fold_and_compute_round_pair_into(
             // round, by which time a buffer this size is long evicted.
             let stream = Stream::new();
 
-            // Unroll 4 x_lo's per iteration when lo_size % 4 == 0 (the common
-            // case for the fused path; falls back to 2-wide for lo_size==2 at
-            // the smallest fused round). 16 independent r_fold muls and 8
-            // independent msg muls in flight gives the M4 OoO engine and
-            // 2/cy PMULL throughput maximum ILP.
+            // Four x_lo per iteration where the round is wide enough: the
+            // sixteen fold products and the eight message products then issue
+            // four to a vector instruction, and the eight outputs are 192
+            // bytes, exactly three cache lines to stream.
             let mut x_lo = 0;
-            if lo_size.is_multiple_of(4) {
-                while x_lo + 4 <= lo_size {
-                    let x_lo_a = x_lo;
-                    let x_lo_b = x_lo + 1;
-                    let x_lo_c = x_lo + 2;
-                    let x_lo_d = x_lo + 3;
-                    let ai_a = 4 * x_lo_a;
-                    let ai_b = 4 * x_lo_b;
-                    let ai_c = 4 * x_lo_c;
-                    let ai_d = 4 * x_lo_d;
+            while x_lo + 4 <= lo_size {
+                let ai = 4 * x_lo;
+                let quad = |v: &[F192], k: usize| -> [F192; 4] { std::array::from_fn(|j| v[ai + 4 * j + k]) };
+                let fold = |lo: [F192; 4], hi: [F192; 4]| -> [F192; 4] {
+                    let d = mul4(std::array::from_fn(|j| lo[j] + hi[j]), [r_fold; 4]);
+                    std::array::from_fn(|j| lo[j] + d[j])
+                };
+                let a0 = fold(quad(a_in, 0), quad(a_in, 1));
+                let a1 = fold(quad(a_in, 2), quad(a_in, 3));
+                let b0 = fold(quad(b_in, 0), quad(b_in, 1));
+                let b1 = fold(quad(b_in, 2), quad(b_in, 3));
 
-                    let aa0_a = a_in[ai_a];
-                    let aa1_a = a_in[ai_a + 1];
-                    let aa2_a = a_in[ai_a + 2];
-                    let aa3_a = a_in[ai_a + 3];
-                    let bb0_a = b_in[ai_a];
-                    let bb1_a = b_in[ai_a + 1];
-                    let bb2_a = b_in[ai_a + 2];
-                    let bb3_a = b_in[ai_a + 3];
-                    let aa0_b = a_in[ai_b];
-                    let aa1_b = a_in[ai_b + 1];
-                    let aa2_b = a_in[ai_b + 2];
-                    let aa3_b = a_in[ai_b + 3];
-                    let bb0_b = b_in[ai_b];
-                    let bb1_b = b_in[ai_b + 1];
-                    let bb2_b = b_in[ai_b + 2];
-                    let bb3_b = b_in[ai_b + 3];
-                    let aa0_c = a_in[ai_c];
-                    let aa1_c = a_in[ai_c + 1];
-                    let aa2_c = a_in[ai_c + 2];
-                    let aa3_c = a_in[ai_c + 3];
-                    let bb0_c = b_in[ai_c];
-                    let bb1_c = b_in[ai_c + 1];
-                    let bb2_c = b_in[ai_c + 2];
-                    let bb3_c = b_in[ai_c + 3];
-                    let aa0_d = a_in[ai_d];
-                    let aa1_d = a_in[ai_d + 1];
-                    let aa2_d = a_in[ai_d + 2];
-                    let aa3_d = a_in[ai_d + 3];
-                    let bb0_d = b_in[ai_d];
-                    let bb1_d = b_in[ai_d + 1];
-                    let bb2_d = b_in[ai_d + 2];
-                    let bb3_d = b_in[ai_d + 3];
-
-                    // 16 independent r_fold muls.
-                    let a0_a = aa0_a + r_fold * (aa1_a + aa0_a);
-                    let a1_a = aa2_a + r_fold * (aa3_a + aa2_a);
-                    let b0_a = bb0_a + r_fold * (bb1_a + bb0_a);
-                    let b1_a = bb2_a + r_fold * (bb3_a + bb2_a);
-                    let a0_b = aa0_b + r_fold * (aa1_b + aa0_b);
-                    let a1_b = aa2_b + r_fold * (aa3_b + aa2_b);
-                    let b0_b = bb0_b + r_fold * (bb1_b + bb0_b);
-                    let b1_b = bb2_b + r_fold * (bb3_b + bb2_b);
-                    let a0_c = aa0_c + r_fold * (aa1_c + aa0_c);
-                    let a1_c = aa2_c + r_fold * (aa3_c + aa2_c);
-                    let b0_c = bb0_c + r_fold * (bb1_c + bb0_c);
-                    let b1_c = bb2_c + r_fold * (bb3_c + bb2_c);
-                    let a0_d = aa0_d + r_fold * (aa1_d + aa0_d);
-                    let a1_d = aa2_d + r_fold * (aa3_d + aa2_d);
-                    let b0_d = bb0_d + r_fold * (bb1_d + bb0_d);
-                    let b1_d = bb2_d + r_fold * (bb3_d + bb2_d);
-
-                    // Eight consecutive outputs are 192 bytes, three whole cache
-                    // lines: the unrolled group is exactly a streaming publish.
-                    let oi = 2 * x_lo_a;
-                    stream.copy(
-                        &mut a_out[oi..oi + 8],
-                        &[a0_a, a1_a, a0_b, a1_b, a0_c, a1_c, a0_d, a1_d],
-                    );
-                    stream.copy(
-                        &mut b_out[oi..oi + 8],
-                        &[b0_a, b1_a, b0_b, b1_b, b0_c, b1_c, b0_d, b1_d],
-                    );
-
-                    // 8 independent msg muls.
-                    let eq_l_a = eq_lo[x_lo_a];
-                    let eq_l_b = eq_lo[x_lo_b];
-                    let eq_l_c = eq_lo[x_lo_c];
-                    let eq_l_d = eq_lo[x_lo_d];
-                    let g1_a = a1_a * b1_a;
-                    let g1_b = a1_b * b1_b;
-                    let g1_c = a1_c * b1_c;
-                    let g1_d = a1_d * b1_d;
-                    let g_inf_a = (a0_a + a1_a) * (b0_a + b1_a);
-                    let g_inf_b = (a0_b + a1_b) * (b0_b + b1_b);
-                    let g_inf_c = (a0_c + a1_c) * (b0_c + b1_c);
-                    let g_inf_d = (a0_d + a1_d) * (b0_d + b1_d);
-                    p1_acc ^= eq_l_a.mul_unreduced(g1_a);
-                    p1_acc ^= eq_l_b.mul_unreduced(g1_b);
-                    p1_acc ^= eq_l_c.mul_unreduced(g1_c);
-                    p1_acc ^= eq_l_d.mul_unreduced(g1_d);
-                    pinf_acc ^= eq_l_a.mul_unreduced(g_inf_a);
-                    pinf_acc ^= eq_l_b.mul_unreduced(g_inf_b);
-                    pinf_acc ^= eq_l_c.mul_unreduced(g_inf_c);
-                    pinf_acc ^= eq_l_d.mul_unreduced(g_inf_d);
-
-                    x_lo += 4;
+                let eq_l: [F192; 4] = std::array::from_fn(|j| eq_lo[x_lo + j]);
+                let g_1 = mul4(a1, b1);
+                let g_inf = mul4(
+                    std::array::from_fn(|j| a0[j] + a1[j]),
+                    std::array::from_fn(|j| b0[j] + b1[j]),
+                );
+                for (term1, term_inf) in mul_unreduced4(eq_l, g_1).into_iter().zip(mul_unreduced4(eq_l, g_inf)) {
+                    p1_acc ^= term1;
+                    pinf_acc ^= term_inf;
                 }
+
+                let oi = 2 * x_lo;
+                stream.copy(
+                    &mut a_out[oi..oi + 8],
+                    &[a0[0], a1[0], a0[1], a1[1], a0[2], a1[2], a0[3], a1[3]],
+                );
+                stream.copy(
+                    &mut b_out[oi..oi + 8],
+                    &[b0[0], b1[0], b0[1], b1[1], b0[2], b1[2], b0[3], b1[3]],
+                );
+                x_lo += 4;
             }
             // Scalar tail. `lo_size` is a power of two, so this runs only at
             // `lo_size == 2` (the smallest fused round, at most twice per
