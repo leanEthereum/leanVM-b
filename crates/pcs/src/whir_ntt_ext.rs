@@ -311,14 +311,101 @@ fn fused_butterflies_ext<const N: usize, const P: usize, const T: usize>(
             fused_lane_scalar(rows, t, pairs, lane);
         }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        let n = 3 * rows[0].len();
+        let ptrs: [*mut u64; N] = std::array::from_fn(|k| rows[k].as_mut_ptr().cast());
+        // SAFETY: `aes` is enabled at compile time, the rows are pairwise
+        // disjoint, and each is `n` contiguous u64 (`F192` is repr(C) over
+        // three). Two u64 at a time, so `n` odd leaves one lane to the tail.
+        unsafe {
+            let mut i = 0;
+            while i + 2 <= n {
+                fused_pair_neon(&ptrs, t, pairs, i);
+                i += 2;
+            }
+            if i < n {
+                fused_u64_scalar(&ptrs, t, pairs, i);
+            }
+        }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"),
+        all(target_arch = "aarch64", target_feature = "aes")
+    )))]
     for lane in 0..rows[0].len() {
         fused_lane_scalar(rows, t, pairs, lane);
     }
 }
 
+/// One fused schedule over two coefficients of every row, held in NEON
+/// registers for the whole pass. Elementwise over u64 like
+/// [`butterfly_row_neon`], so `N` rows are `N` vectors and no row is
+/// transposed.
+///
+/// # Safety
+/// Requires `aes`; every `ptrs[k]` must address `i + 2` readable and writable
+/// u64, and the rows must be pairwise disjoint.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+#[inline]
+#[target_feature(enable = "aes")]
+unsafe fn fused_pair_neon<const N: usize, const P: usize, const T: usize>(
+    ptrs: &[*mut u64; N],
+    t: &[F64; T],
+    pairs: &[(usize, usize, usize); P],
+    i: usize,
+) {
+    use core::arch::aarch64::*;
+    use primitives::field::gf2_64::aarch64::{pmull, pmull_hi, reduce_pair_pmull4};
+
+    // SAFETY: forwarded to the caller's obligation; the intrinsics are covered
+    // by this function's target feature.
+    unsafe {
+        let mut v: [uint64x2_t; N] = std::array::from_fn(|k| vld1q_u64(ptrs[k].add(i)));
+        for &(top, bot, tw) in pairs {
+            let k = t[tw].0;
+            let prod = reduce_pair_pmull4(pmull(vgetq_lane_u64::<0>(v[bot]), k), pmull_hi(v[bot], vdupq_n_u64(k)));
+            let new_top = veorq_u64(v[top], prod);
+            v[bot] = veorq_u64(v[bot], new_top);
+            v[top] = new_top;
+        }
+        for k in 0..N {
+            vst1q_u64(ptrs[k].add(i), v[k]);
+        }
+    }
+}
+
+/// [`fused_pair_neon`]'s odd tail: the same schedule on one coefficient.
+///
+/// # Safety
+/// Every `ptrs[k]` must address `i + 1` readable and writable u64, the rows
+/// pairwise disjoint.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+#[inline]
+unsafe fn fused_u64_scalar<const N: usize, const P: usize, const T: usize>(
+    ptrs: &[*mut u64; N],
+    t: &[F64; T],
+    pairs: &[(usize, usize, usize); P],
+    i: usize,
+) {
+    // SAFETY: forwarded to the caller's obligation.
+    unsafe {
+        let mut v: [F64; N] = std::array::from_fn(|k| F64(*ptrs[k].add(i)));
+        for &(top, bot, tw) in pairs {
+            let new_top = v[top] + v[bot] * t[tw];
+            v[bot] += new_top;
+            v[top] = new_top;
+        }
+        for k in 0..N {
+            *ptrs[k].add(i) = v[k].0;
+        }
+    }
+}
+
 /// One lane of [`fused_butterflies_ext`]: the portable path and the AVX-512
-/// path's ragged tail.
+/// path's ragged tail. The NEON arm works a coefficient at a time rather than a
+/// lane, so it has its own tail and does not reach this.
+#[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
 #[inline]
 fn fused_lane_scalar<const N: usize, const P: usize, const T: usize>(
     rows: &mut [&mut [F192]; N],
@@ -370,13 +457,84 @@ fn butterfly_ext_lanes(top: &mut [F192], bot: &mut [F192], twiddle: F64) {
             bot[lane] = v + new_u;
         }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        // SAFETY: `aes` is enabled at compile time, and `F192` is repr(C) over
+        // three u64, so each row is `3 * len` contiguous readable and writable
+        // u64 in a region disjoint from the other's.
+        unsafe {
+            butterfly_row_neon(
+                top.as_mut_ptr().cast(),
+                bot.as_mut_ptr().cast(),
+                twiddle.0,
+                3 * top.len(),
+            );
+        }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"),
+        all(target_arch = "aarch64", target_feature = "aes")
+    )))]
     {
         for lane in 0..top.len() {
             let v = bot[lane];
             let new_u = top[lane] + v.mul_base(twiddle);
             top[lane] = new_u;
             bot[lane] = v + new_u;
+        }
+    }
+}
+
+/// The extension butterfly on NEON, over the coefficients as one flat u64 row.
+///
+/// `mul_base` scales all three coefficients of an `F192` by the same twiddle and
+/// the adds are elementwise, so a butterfly over `n` interleaved F192 lanes is
+/// exactly the base field's over `3n` u64. The AoS layout therefore needs no
+/// transpose here, unlike the AVX-512 arm, whose register holds one coefficient
+/// of eight lanes at a time and so has to gather them.
+///
+/// Four 128-bit pairs an iteration: eight products in flight cover the latency
+/// of the reduction's dependent folds, as the F64 twin's eight-lane kernel does.
+///
+/// # Safety
+/// Requires the `aes` target feature; `top` and `bot` must each address `n`
+/// readable and writable u64 in regions disjoint from each other.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+#[inline]
+#[target_feature(enable = "aes")]
+unsafe fn butterfly_row_neon(top: *mut u64, bot: *mut u64, twiddle: u64, n: usize) {
+    use core::arch::aarch64::*;
+    use primitives::field::gf2_64::aarch64::{pmull, pmull_hi, reduce_pair_pmull4};
+
+    // SAFETY: the caller's regions cover every access below; the intrinsics are
+    // covered by this function's target feature.
+    unsafe {
+        let tw = vdupq_n_u64(twiddle);
+        let scale = |v: uint64x2_t| reduce_pair_pmull4(pmull(vgetq_lane_u64::<0>(v), twiddle), pmull_hi(v, tw));
+        let mut i = 0;
+        while i + 8 <= n {
+            let v: [uint64x2_t; 4] = std::array::from_fn(|k| vld1q_u64(bot.add(i + 2 * k)));
+            let prod = v.map(scale);
+            for k in 0..4 {
+                let new_u = veorq_u64(vld1q_u64(top.add(i + 2 * k)), prod[k]);
+                vst1q_u64(top.add(i + 2 * k), new_u);
+                vst1q_u64(bot.add(i + 2 * k), veorq_u64(v[k], new_u));
+            }
+            i += 8;
+        }
+        while i + 2 <= n {
+            let v = vld1q_u64(bot.add(i));
+            let new_u = veorq_u64(vld1q_u64(top.add(i)), scale(v));
+            vst1q_u64(top.add(i), new_u);
+            vst1q_u64(bot.add(i), veorq_u64(v, new_u));
+            i += 2;
+        }
+        if i < n {
+            // `3 * len` is odd exactly when the lane count is.
+            let v = F64(*bot.add(i));
+            let new_u = F64(*top.add(i)) + v * F64(twiddle);
+            *top.add(i) = new_u.0;
+            *bot.add(i) = (v + new_u).0;
         }
     }
 }
