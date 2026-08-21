@@ -21,7 +21,7 @@ Dependency order, leaves first:
 | ----------------- | ---------------------------------------------------------------------- |
 | `parallel`        | thread pool (below)                                     |
 | `zk_alloc`        | proving arena (below)                                    |
-| `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, `bench` |
+| `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, streaming stores, `bench` |
 | `fiat_shamir`     | VM-native `FiatShamirState` + prover/verifier transcript                |
 | `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
 | `flock`           | batched R1CS over GF(2) for BLAKE2s: zerocheck + lincheck               |
@@ -89,6 +89,8 @@ The third is worth understanding before touching the verifier. `guests/aggregate
 
 ## Conventions that bite
 
+- **The prover is memory-bandwidth bound above four cores.** Four cores to eight buys 1.44x, and `Commit` is slower on sixteen threads than on eight. What pays there is deleting traffic, not instructions. `primitives::stream::Stream` publishes a buffer without the read-for-ownership an ordinary store pays (28 GB/s against 62 GB/s of useful writes on a 16-thread fill), but ONLY where nothing reads the destination again before it is evicted. Where a consumer follows in the same pass, the fetch it avoids becomes that consumer's miss: fold kernels earn it by building their round message from registers, or by folding into an L1 stage first (`whir::fold_and_msg_blocks`).
+- **On Zen 4, 512-bit cross-lane data movement is half-rate** (every 512-bit shuffle is two 256-bit uops), so packing scalars into vector lanes with `vpermi2q`/`vpermq` and extracting with `vextracti64x4` loses to the scalar moves it replaces. Widening the arithmetic still pays: `mul4` is about twice `mul` per product. Prefer kernels where both qwords of every 128-bit lane carry a product and nothing crosses lanes.
 - Use comments only when necessary: uncommented but readable and simple code is better than commented slop. And when you use comments, be concise.
 - Commit tests only that are useful in the future, to prevent regressions / failures. Don't add trivial tests that will always pass.
 - Simpler is better.
