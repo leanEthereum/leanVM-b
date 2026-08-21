@@ -317,11 +317,15 @@ fn fused_butterflies_ext<const N: usize, const P: usize, const T: usize>(
         let ptrs: [*mut u64; N] = std::array::from_fn(|k| rows[k].as_mut_ptr().cast());
         // SAFETY: `aes` is enabled at compile time, the rows are pairwise
         // disjoint, and each is `n` contiguous u64 (`F192` is repr(C) over
-        // three). Two u64 at a time, so `n` odd leaves one lane to the tail.
+        // three). Widest run first, so `n` odd leaves one lane to the tail.
         unsafe {
             let mut i = 0;
+            while i + 2 * VEC_RUN <= n {
+                fused_run_neon::<VEC_RUN, N, P, T>(&ptrs, t, pairs, i);
+                i += 2 * VEC_RUN;
+            }
             while i + 2 <= n {
-                fused_pair_neon(&ptrs, t, pairs, i);
+                fused_run_neon::<1, N, P, T>(&ptrs, t, pairs, i);
                 i += 2;
             }
             if i < n {
@@ -338,18 +342,23 @@ fn fused_butterflies_ext<const N: usize, const P: usize, const T: usize>(
     }
 }
 
-/// One fused schedule over two coefficients of every row, held in NEON
+/// How many 128-bit vectors of every row a fused pass holds at once. A radix-8
+/// schedule is eight rows, so two puts sixteen vectors and their products in
+/// flight against the 32 the register file has.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+const VEC_RUN: usize = 2;
+
+/// One fused schedule over `W` 128-bit vectors of every row, all held in NEON
 /// registers for the whole pass. Elementwise over u64 like
-/// [`butterfly_row_neon`], so `N` rows are `N` vectors and no row is
-/// transposed.
+/// [`butterfly_row_neon`], so a row is just `W` vectors and none is transposed.
 ///
 /// # Safety
-/// Requires `aes`; every `ptrs[k]` must address `i + 2` readable and writable
-/// u64, and the rows must be pairwise disjoint.
+/// Requires `aes`; every `ptrs[k]` must address `i + 2 * W` readable and
+/// writable u64, and the rows must be pairwise disjoint.
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 #[inline]
 #[target_feature(enable = "aes")]
-unsafe fn fused_pair_neon<const N: usize, const P: usize, const T: usize>(
+unsafe fn fused_run_neon<const W: usize, const N: usize, const P: usize, const T: usize>(
     ptrs: &[*mut u64; N],
     t: &[F64; T],
     pairs: &[(usize, usize, usize); P],
@@ -361,16 +370,26 @@ unsafe fn fused_pair_neon<const N: usize, const P: usize, const T: usize>(
     // SAFETY: forwarded to the caller's obligation; the intrinsics are covered
     // by this function's target feature.
     unsafe {
-        let mut v: [uint64x2_t; N] = std::array::from_fn(|k| vld1q_u64(ptrs[k].add(i)));
+        let mut v: [[uint64x2_t; W]; N] = std::array::from_fn(|k| {
+            let row = ptrs[k].add(i);
+            std::array::from_fn(|h| vld1q_u64(row.add(2 * h)))
+        });
         for &(top, bot, tw) in pairs {
             let k = t[tw].0;
-            let prod = reduce_pair_pmull4(pmull(vgetq_lane_u64::<0>(v[bot]), k), pmull_hi(v[bot], vdupq_n_u64(k)));
-            let new_top = veorq_u64(v[top], prod);
-            v[bot] = veorq_u64(v[bot], new_top);
-            v[top] = new_top;
+            let dup = vdupq_n_u64(k);
+            for h in 0..W {
+                let x = v[bot][h];
+                let prod = reduce_pair_pmull4(pmull(vgetq_lane_u64::<0>(x), k), pmull_hi(x, dup));
+                let new_top = veorq_u64(v[top][h], prod);
+                v[bot][h] = veorq_u64(x, new_top);
+                v[top][h] = new_top;
+            }
         }
         for k in 0..N {
-            vst1q_u64(ptrs[k].add(i), v[k]);
+            let row = ptrs[k].add(i);
+            for h in 0..W {
+                vst1q_u64(row.add(2 * h), v[k][h]);
+            }
         }
     }
 }
