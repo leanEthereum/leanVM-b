@@ -2,13 +2,21 @@
 //! until a later pass.
 //!
 //! An ordinary store first fetches the cache line it is about to overwrite, so
-//! such a buffer costs its own size twice in memory traffic. On this class of
-//! machine that halves the write bandwidth: 28 GB/s of useful writes against
-//! 62 GB/s streaming, on a 16-thread fill of a gigabyte.
+//! such a buffer costs its own size twice in memory traffic. On x86 that halves
+//! the write bandwidth: 28 GB/s of useful writes against 62 GB/s streaming, on
+//! a 16-thread fill of a gigabyte.
 //!
 //! The saving is real only where the destination is genuinely cold at its next
 //! read. Where a consumer follows in the same pass, the fetch a streaming store
 //! avoids simply becomes that consumer's miss, and the change is a loss.
+//!
+//! Apple silicon has no such fetch to elide, which is why this degenerates to a
+//! copy there rather than wanting an `STNP` arm. Measured on an M4 Max: a
+//! store-only fill sustains 289 GB/s, exactly what a read-only pass over the
+//! same buffer reaches, where a read-for-ownership would have held useful
+//! writes near half of it; and `STNP` measures identical to `STP` at every
+//! thread count, the hint buying nothing. `DC ZVA` does reach 2x, but it only
+//! zeroes, so it cannot publish a computed buffer.
 
 use std::marker::PhantomData;
 
