@@ -485,20 +485,29 @@ pub mod aarch64 {
         unsafe { transmute::<u128, uint64x2_t>(prod) }
     }
 
-    /// Fold one 128-bit coefficient into GF(2^64): 1 PMULL by 0x1B, then the
-    /// ≤4-bit overflow (high lane of the PMULL) is folded with shift-XORs on
-    /// the scalar side, off the busy PMULL ports.
+    /// Fold one 128-bit coefficient into GF(2^64): 2 PMULL by 0x1B, the second
+    /// folding the first's ≤4-bit overflow exactly, since `ov·0x1B` fits in 8
+    /// bits and lands in lane 0.
+    ///
+    /// The overflow used to be folded with shift-XORs on the scalar side, on the
+    /// premise that the vector pipes were PMULL-saturated and the scalar ports
+    /// free. They are not: PMULL retires at about the rate `eor` does here, so
+    /// the second product is nearly free while the three lane extractions the
+    /// scalar form needs are not. This is the fold
+    /// [`super::gf2_64::aarch64::reduce_pair_pmull4`] already uses.
     ///
     /// # Safety
     /// Requires the `aes` target feature.
     #[inline]
     #[target_feature(enable = "aes")]
     unsafe fn base_reduce(d: uint64x2_t) -> u64 {
+        use crate::field::gf2_64::aarch64::pmull_hi;
         // SAFETY: function carries the aes target feature.
         unsafe {
-            let t = pmull(vgetq_lane_u64::<1>(d), R64);
-            let ov = vgetq_lane_u64::<1>(t); // ≤ 4 bits (deg(hi·0x1B) ≤ 67)
-            vgetq_lane_u64::<0>(d) ^ vgetq_lane_u64::<0>(t) ^ ov ^ (ov << 1) ^ (ov << 3) ^ (ov << 4)
+            let r = vdupq_n_u64(R64);
+            let t = pmull_hi(d, r);
+            let u = pmull_hi(t, r);
+            vgetq_lane_u64::<0>(veorq_u64(veorq_u64(d, t), u))
         }
     }
 
