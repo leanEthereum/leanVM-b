@@ -103,6 +103,34 @@ impl AdditiveNttF64 {
         [t0, a, a + d, c, c + e0, c + e1, c + e0 + e1]
     }
 
+    /// The `2^j - 1` twiddles a radix-`2^j` group needs, breadth-first: sub-layer
+    /// `d` contributes its `2^d` at `out[2^d - 1 ..]`. Generalizes
+    /// [`twiddles_radix8`](Self::twiddles_radix8) to any width.
+    ///
+    /// `span_get` is F_2-linear in the block index, so a sub-layer's twiddles are
+    /// the block's own contribution plus a subset sum of the `d` basis elements
+    /// the sub-index selects: one scan of each basis row, then XOR-doubling.
+    fn twiddles_radix(&self, layer: usize, block: usize, j: usize, out: &mut [F64]) {
+        let l = self.log_domain_size();
+        for d in 0..j {
+            let v = &self.evals[l - layer - d - 1];
+            let mut base = F64::ZERO;
+            for k in 0..layer {
+                if (block >> k) & 1 == 1 {
+                    base += v[1 + d + k];
+                }
+            }
+            let dst = &mut out[(1 << d) - 1..][..1 << d];
+            dst[0] = base;
+            for k in 0..d {
+                let (done, rest) = dst.split_at_mut(1 << k);
+                for (slot, &seen) in rest.iter_mut().zip(done.iter()) {
+                    *slot = seen + v[1 + k];
+                }
+            }
+        }
+    }
+
     /// Forward additive NTT in place (scalar; used directly for tests and as
     /// the small-input path).
     pub fn forward_transform_scalar(&self, data: &mut [F64]) {
@@ -283,10 +311,9 @@ impl AdditiveNttF64 {
             return;
         }
 
-        // Top layers: full-buffer sweeps, rows parallel. Fusing three layers turns
-        // three DRAM round-trips of the whole codeword into one, and the pass count
-        // is what sets the cost up here.
-        self.run_layers(data, log_d, num_ntts, start_layer.min(n_top), n_top, 0, 0, true);
+        // Top layers: whole-buffer sweeps, and the pass count is what sets the cost
+        // up here, so they go as wide as one scratch group allows.
+        self.run_top_layers(data, log_d, num_ntts, start_layer.min(n_top), n_top);
 
         // Deep layers: one sub-NTT per worker, each over a cache-resident
         // sub-block. Layers fuse here for the same reason they do above, only the
@@ -315,6 +342,67 @@ impl AdditiveNttF64 {
     /// widest fused kernel its block size allows, so three layers, or two, cost one
     /// pass. `par_rows` dispatches the row loop across the pool, so a caller that is
     /// already running inside a pool task must pass `false`.
+    /// The whole-buffer layers, in as few passes over the codeword as one scratch
+    /// group allows.
+    ///
+    /// A group of `j` layers touches `2^j` rows spaced `block_size >> j` apart,
+    /// and up here that spacing is megabytes. At 37 lanes a stride of 512 rows or
+    /// more is an exact multiple of 4 KiB, so the rows of a group land in a
+    /// handful of L1 sets and a wide radix applied in place would thrash;
+    /// gathering the group into one contiguous scratch removes the aliasing, and
+    /// the copy is L1 traffic against a whole DRAM pass saved. Six layers cost one
+    /// pass rather than two.
+    fn run_top_layers(&self, buf: &mut [F64], log_d: usize, num_ntts: usize, first_layer: usize, end_layer: usize) {
+        /// Words of scratch per row group, so a group stays inside L1.
+        const GROUP_WORDS: usize = 4096;
+        /// Widest gathered radix, and so the size of a group's twiddle set.
+        const MAX_LOG_RADIX: usize = 6;
+        /// Below this width the gather costs more than the pass it saves, and
+        /// [`run_layers`]'s in-place kernels are the better shape.
+        const MIN_LOG_RADIX: usize = 4;
+
+        let mut layer = first_layer;
+        while layer < end_layer {
+            let j = (end_layer - layer)
+                .min(MAX_LOG_RADIX)
+                .min((GROUP_WORDS / num_ntts).ilog2() as usize)
+                .min(log_d - layer);
+            if j < MIN_LOG_RADIX {
+                self.run_layers(buf, log_d, num_ntts, layer, end_layer, 0, 0, true);
+                return;
+            }
+            let log_step = log_d - layer - j;
+            let (rows, step) = (1usize << j, 1usize << log_step);
+            let base = parallel::SendPtr(buf.as_mut_ptr());
+            parallel::for_each_chunk(1usize << (log_d - j), |lo, hi| {
+                let mut scratch = [F64::ZERO; GROUP_WORDS];
+                let mut tw = [F64::ZERO; (1 << MAX_LOG_RADIX) - 1];
+                let mut built = usize::MAX;
+                for g in lo..hi {
+                    let (block, r) = (g >> log_step, g & (step - 1));
+                    if built != block {
+                        self.twiddles_radix(layer, block, j, &mut tw);
+                        built = block;
+                    }
+                    // The group's rows, `block_size` apart in blocks and `step`
+                    // apart within one.
+                    let row = |i: usize| ((block << (log_d - layer)) + r + i * step) * num_ntts;
+                    // SAFETY: distinct `g` name disjoint row sets (distinct `r`
+                    // within a block, distinct blocks across), every one in
+                    // bounds, and `buf` stays borrowed for the whole dispatch.
+                    for i in 0..rows {
+                        scratch[i * num_ntts..][..num_ntts].copy_from_slice(unsafe { base.slice(row(i), num_ntts) });
+                    }
+                    radix_butterflies(&mut scratch[..rows * num_ntts], num_ntts, j, &tw);
+                    for i in 0..rows {
+                        unsafe { base.slice(row(i), num_ntts) }.copy_from_slice(&scratch[i * num_ntts..][..num_ntts]);
+                    }
+                }
+            });
+            layer += j;
+        }
+    }
+
     fn run_layers(
         &self,
         buf: &mut [F64],
@@ -476,6 +564,23 @@ fn fused_rows<const N: usize>(
 /// layer L+1 (one per half), `t[3..7]` layer L+2 (one per quarter).
 fn butterfly_interleaved_fused_3layer(block: &mut [F64], t: &[F64; 7], eighth: usize, num_ntts: usize, par_rows: bool) {
     fused_rows::<8>(block, eighth, num_ntts, par_rows, |rows| radix8_butterflies(rows, t));
+}
+
+/// The `2^j - 1` butterflies of a gathered radix-`2^j` group, whose `2^j` rows
+/// are contiguous in `rows`. Sub-layer `d` pairs them at distance `2^(j-1-d)`
+/// and takes its twiddle from the breadth-first set
+/// [`twiddles_radix`](AdditiveNttF64::twiddles_radix) built; `j = 3` is exactly
+/// [`radix8_butterflies`] with its rows gathered.
+fn radix_butterflies(rows: &mut [F64], num_ntts: usize, j: usize, tw: &[F64]) {
+    for d in 0..j {
+        let dist = 1usize << (j - 1 - d);
+        let base = (1usize << d) - 1;
+        for i in (0..1usize << j).filter(|i| i & dist == 0) {
+            let (top, bot) = rows.split_at_mut((i + dist) * num_ntts);
+            let top = &mut top[i * num_ntts..(i + 1) * num_ntts];
+            butterfly_lanes(top, &mut bot[..num_ntts], tw[base + (i >> (j - d))]);
+        }
+    }
 }
 
 /// The twelve butterflies of one radix-8 row group: layer L pairs the rows at
