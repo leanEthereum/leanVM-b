@@ -38,6 +38,15 @@ Dependency order, leaves first:
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
 - **One test binary per crate, not one per file:** new `lean_compiler` integration tests go in `tests/suite/main.rs`, one linked executable instead of seventeen. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary. Phases are process-global, so two in one process reclaim each other's `ArenaVec`s and the symptom is a proof that stops verifying, never a crash (`rec_aggregation/tests/arena_prove.rs`).
 
+An x86-only arm never compiles on an Apple dev machine, so a typo in one ships. Type-check the other target before pushing anything `cfg`-gated:
+
+```bash
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+avx512f,+avx512bw,+avx512vl,+vpclmulqdq,+pclmulqdq,+gfni,+avx2,+aes" \
+  cargo check --release --workspace --target x86_64-unknown-linux-gnu
+```
+
+It needs `rustup target add x86_64-unknown-linux-gnu` and nothing else, since `check` does not link. The `apple-m4 is not a recognized processor` and `x87` notes are the pinned `target-cpu=native` and the bare cross ABI, not findings. To confirm an arm is really being reached rather than silently skipped, drop a `compile_error!` in it and watch the check fail.
+
 ```bash
 cargo testall                     # whole suite in seconds
 cargo clippyall                   # clippy, -D warnings
