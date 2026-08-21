@@ -307,25 +307,28 @@ fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem
     debug_assert!(codeword.len().is_multiple_of(msg_len));
     let replicas = codeword.len() / msg_len;
     const COPY_CHUNK: usize = 1 << 16;
-    // Walk the MESSAGE, writing every replica of a chunk before moving on, so the
-    // message is read once and stays in cache across its copies. Walking the
-    // codeword instead re-reads the whole message per replica, and at scale that
-    // is a gigabyte fetched from DRAM again for each one.
+    // One task per (message chunk, replica). Ordering replica-innermost walks the
+    // MESSAGE rather than the codeword, so a worker's run of tasks copies one
+    // chunk into every replica while it is still in cache; walking the codeword
+    // instead re-reads the whole message per replica, and at scale that is a
+    // gigabyte fetched from DRAM again for each one. Chunking the message alone
+    // is not enough to fill the pool: down the recursion the message shrinks by
+    // 2^3 a level while the codeword shrinks by 2^1, so the deep levels would
+    // leave hundreds of megabytes to one thread.
     let n_chunks = msg_len.div_ceil(COPY_CHUNK);
     let dst = parallel::SendPtr(codeword.as_mut_ptr());
-    parallel::for_each(n_chunks, |c| {
+    parallel::for_each(n_chunks * replicas, |t| {
+        let (c, r) = (t / replicas, t % replicas);
         let start = c * COPY_CHUNK;
         let len = COPY_CHUNK.min(msg_len - start);
         // Nothing reads a replica until the transform's first pass, by which
         // time a codeword this size is long evicted.
         let stream = Stream::new();
-        for r in 0..replicas {
-            // SAFETY: chunk `c` owns `[r * msg_len + start, + len)` of the
-            // codeword for every `r`; those ranges are in bounds, disjoint across
-            // `c`, and disjoint from `msg`.
-            unsafe {
-                stream.copy_uninit(dst.add(r * msg_len + start).cast(), &msg[start..start + len]);
-            }
+        // SAFETY: task `(c, r)` owns `[r * msg_len + start, + len)` of the
+        // codeword; those ranges are in bounds, pairwise disjoint, and disjoint
+        // from `msg`.
+        unsafe {
+            stream.copy_uninit(dst.add(r * msg_len + start).cast(), &msg[start..start + len]);
         }
     });
 }
