@@ -191,7 +191,7 @@ def blake2s(
 
     With no keywords this hashes exactly 64 bytes: the parameterized BLAKE2s-256
     initial chaining value, byte counter 64, final-block flag set. That is
-    `blake2s(a || b)`, the form every sponge step and Merkle node uses.
+    `blake2s(a || b)`, the form every Fiat-Shamir step and Merkle node uses.
 
     For a longer message, drive the blocks yourself. `counter` is the CUMULATIVE
     byte count through this block (`64 * whole_blocks_before + bytes_in_this_block`)

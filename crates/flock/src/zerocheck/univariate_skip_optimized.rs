@@ -106,34 +106,6 @@ const fn medium_generator() -> F192 {
     F192::new(0x243f_6a88_85a3_08d3, 0x1319_8a2e_0370_7344, 0xa409_3822_299f_31d0)
 }
 
-/// `C_2 = (1+r_2)(1+r_3)` where `r_2 = φ_8(0x53)` (= `α^2/(1+α^2)`),
-/// `r_3 = φ_8(0xB5)` (= `α^4/(1+α^4)`). This is the residual small-eq
-/// constant after the first small friendly bit (`b_3[0]`, indexed by
-/// `r_rest[0] = φ_8(α)`) has been pulled out for the s_hat_v_c bank split:
-///
-/// ```text
-/// eq([r_rest[1], r_rest[2]], (b_3[1], b_3[2])) = C_2 · α^{2 b_3[1] + 4 b_3[2]}
-/// ```
-///
-/// Used in [`round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`] to
-/// post-scale the raw bank values into canonical `s_hat_v_c` (which
-/// `ring_switch::fold_1b_rows` would produce against suffix `r_rest[1..]`).
-fn c_2_small() -> F192 {
-    let r_2 = phi8(F8(SMALL_CHAL_F8[1]));
-    let r_3 = phi8(F8(SMALL_CHAL_F8[2]));
-    (F192::ONE + r_2) * (F192::ONE + r_3)
-}
-
-/// `α⁻¹` in F192, as a subfield-embedded F_8 element. Used to strip the
-/// extra `α` factor from `s_hat_v_c`'s bank 1 (the K-odd lattice's raw
-/// contribution is `α · α^{2 b_3[1] + 4 b_3[2]}`; canonical wants just
-/// `α^{2 b_3[1] + 4 b_3[2]}`).
-fn alpha_inv() -> F192 {
-    // α in F_8 = byte 0x02 (the polynomial generator). Its inverse is α^254;
-    // F8::inv computes it via the standard extended Euclidean / power table.
-    phi8(F8(0x02).inv())
-}
-
 /// `D = (1+γ)(1+γ^2)(1+γ^4)(1+γ^8)`; `D⁻¹` cancels the medium-eq normalization.
 fn compute_d_inv() -> F192 {
     let g1 = medium_generator();
@@ -610,46 +582,30 @@ fn shift_reduce_inner_ab_scalar(
 // Main optimized round-1 prover message.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Two-bank C accumulator that produces s_hat_v_c alongside round 1.
-//
-// Instead of one `cf_c` accumulator collapsing all 3 small bits, keep
-// `b_3[0]` (= bit `k_skip` of the witness, = `b_7` in ring-switch's
-// packed-prefix index) as a routing dim. Two `cf_c` banks: bank 0 takes
-// the K-even contributions (`v_c & 0x55`), bank 1 takes K-odd (`v_c & 0xAA`).
-// By F_2-linearity of φ_8, `PHI_8(v) == PHI_8(v & 0x55) + PHI_8(v & 0xAA)`,
-// so summing the two banks reconstructs the original `cf_c` → wire `res_c_s`.
-//
-// ---------------------------------------------------------------------------
-
-/// Per-worker scratch and local accumulators, with C split into its two banks.
+/// Per-worker scratch and local accumulators.
 struct WorkerState {
     partial_ab: [F192; ELL],
-    partial_c_0: [F192; ELL],
-    partial_c_1: [F192; ELL],
+    partial_c: [F192; ELL],
     chunk_ab_bytes: [[u8; 64]; 1 << N_MEDIUM],
     chunk_c_bytes: [[u8; 64]; 1 << N_MEDIUM],
     local_res_ab: [F192; ELL],
-    local_res_c_s_0: [F192; ELL],
-    local_res_c_s_1: [F192; ELL],
+    local_res_c_s: [F192; ELL],
 }
 
 impl WorkerState {
-    /// The three result banks, once every claimed `x_hi` has been folded in.
-    fn into_results(self) -> ([F192; ELL], [F192; ELL], [F192; ELL]) {
-        (self.local_res_ab, self.local_res_c_s_0, self.local_res_c_s_1)
+    /// The two accumulators, once every claimed `x_hi` has been folded in.
+    fn into_results(self) -> ([F192; ELL], [F192; ELL]) {
+        (self.local_res_ab, self.local_res_c_s)
     }
 
     fn new() -> Self {
         Self {
             partial_ab: [F192::ZERO; ELL],
-            partial_c_0: [F192::ZERO; ELL],
-            partial_c_1: [F192::ZERO; ELL],
+            partial_c: [F192::ZERO; ELL],
             chunk_ab_bytes: [[0u8; 64]; 1 << N_MEDIUM],
             chunk_c_bytes: [[0u8; 64]; 1 << N_MEDIUM],
             local_res_ab: [F192::ZERO; ELL],
-            local_res_c_s_0: [F192::ZERO; ELL],
-            local_res_c_s_1: [F192::ZERO; ELL],
+            local_res_c_s: [F192::ZERO; ELL],
         }
     }
 }
@@ -691,22 +647,19 @@ fn accumulate_x_outer<const FULL: bool>(
 
     for lane in 0..ELL {
         let mut cf_ab = F192::ZERO;
-        let mut cf_c_0 = F192::ZERO;
-        let mut cf_c_1 = F192::ZERO;
+        let mut cf_c = F192::ZERO;
         for b_med in 0..n_b_med {
             let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
             let v_c = state.chunk_c_bytes[b_med][lane] as usize;
             cf_ab += convert[b_med * 256 + v_ab];
-            cf_c_0 += convert[b_med * 256 + (v_c & 0x55)];
-            cf_c_1 += convert[b_med * 256 + (v_c & 0xAA)];
+            cf_c += convert[b_med * 256 + v_c];
         }
         state.partial_ab[lane] += cf_ab * eq_lo_val;
-        state.partial_c_0[lane] += cf_c_0 * eq_lo_val;
-        state.partial_c_1[lane] += cf_c_1 * eq_lo_val;
+        state.partial_c[lane] += cf_c * eq_lo_val;
     }
 }
 
-/// Process one outer value, maintaining C's two masked convert-table banks.
+/// Process one outer value.
 #[inline]
 fn process_one_x_hi(
     x_hi: usize,
@@ -724,8 +677,7 @@ fn process_one_x_hi(
     state: &mut WorkerState,
 ) {
     state.partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
-    state.partial_c_0.iter_mut().for_each(|p| *p = F192::ZERO);
-    state.partial_c_1.iter_mut().for_each(|p| *p = F192::ZERO);
+    state.partial_c.iter_mut().for_each(|p| *p = F192::ZERO);
 
     let n_lo = n_lo_and_inner - N_INNER;
 
@@ -767,11 +719,10 @@ fn process_one_x_hi(
         }
     }
 
-    // Outer fold by eq_hi (per bank).
+    // Outer fold by eq_hi.
     for lane in 0..ELL {
         state.local_res_ab[lane] += eq_hi_val * state.partial_ab[lane];
-        state.local_res_c_s_0[lane] += eq_hi_val * state.partial_c_0[lane];
-        state.local_res_c_s_1[lane] += eq_hi_val * state.partial_c_1[lane];
+        state.local_res_c_s[lane] += eq_hi_val * state.partial_c[lane];
     }
 }
 
@@ -815,21 +766,13 @@ fn build_b_med_counts(padding: &PaddingSpec) -> (usize, Vec<u8>) {
     (within_outer_mask, counts)
 }
 
-/// The round-1 prover message, padding-aware, **also returning `s_hat_v_c`** — the length-128 vector ring-switch would otherwise produce
-/// via `fold_1b_rows` for the c-claim's PCS opening at suffix `r_rest[1..]`.
+/// The round-1 prover message, padding-aware: the AB and C Λ-vectors, which the
+/// caller sends as one sum.
 ///
 /// Skips 512-bit b_med sub-windows that fall entirely in the zero padding of
 /// every witness block per `padding`, which is byte-identical to the dense
-/// path when those bits are honestly zero. `s_hat_v_c` is `s_hat_v_c` is returned in **canonical form**
-/// in **canonical form** (matches `fold_1b_rows`), with the residual `C_2` and `α⁻¹` scaling
-/// applied internally so the caller can feed it straight into
-/// `pcs::ring_switch::prove_batched_padded_with_precomputed`.
-///
-/// Cost vs the original: per chunk-lane-`b_med`, +1 `vld1q_u8` + +1 `veorq_u8`
-/// (the bank-split convert lookup). bit_transpose, shift_reduce, eq folds
-/// are unchanged. See module-level docs for the F_2-linearity argument that
-/// makes `s_hat_v_c[(λ, 0)] + s_hat_v_c[(λ, 1)] · α == res_c_s_opt[λ]`.
-pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+/// path when those bits are honestly zero.
+pub fn round1_shift_reduce_extract_c_packed_padded(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
@@ -838,7 +781,7 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
     padding: &PaddingSpec,
-) -> (Vec<F192>, Vec<F192>, Vec<F192>) {
+) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(k_skip, K_SKIP, "optimized variant is k_skip=6 only");
     assert!(
         m >= k_skip + N_INNER,
@@ -866,7 +809,7 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
 
     // One `WorkerState` per worker (it carries multi-KB scratch), folded over the
     // `x_hi` values that worker claims and combined at the end.
-    let (res_ab, res_c_s_0, res_c_s_1) = parallel::fold_reduce(
+    let (res_ab, res_c_s) = parallel::fold_reduce(
         hi_size,
         WorkerState::new,
         |state, x_hi| {
@@ -890,34 +833,15 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
         |mut a, b| {
             for i in 0..ELL {
                 a.local_res_ab[i] += b.local_res_ab[i];
-                a.local_res_c_s_0[i] += b.local_res_c_s_0[i];
-                a.local_res_c_s_1[i] += b.local_res_c_s_1[i];
+                a.local_res_c_s[i] += b.local_res_c_s[i];
             }
             a
         },
     )
     .into_results();
 
-    // Wire output: bank_0 + bank_1 reconstructs the original `res_c_s` (by
-    // F_2-linearity of φ_8 over the masked-byte sum).
-    let mut res_c_s_combined = [F192::ZERO; ELL];
-    for i in 0..ELL {
-        res_c_s_combined[i] = res_c_s_0[i] + res_c_s_1[i];
-    }
-    let res_c_lifted = ntt_extend_vec(&res_c_s_combined, inv_table);
-
-    // s_hat_v_c canonical form: apply residual C_2 (small-eq constant for
-    // r_rest[1..3]) and α⁻¹ (strips bank 1's extra α factor).
-    let c_2 = c_2_small();
-    let alpha_inv = alpha_inv();
-    let c_2_alpha_inv = c_2 * alpha_inv;
-    let mut s_hat_v_c = vec![F192::ZERO; 2 * ELL];
-    for lane in 0..ELL {
-        s_hat_v_c[lane] = c_2 * res_c_s_0[lane];
-        s_hat_v_c[ELL + lane] = c_2_alpha_inv * res_c_s_1[lane];
-    }
-
-    (res_ab.to_vec(), res_c_lifted, s_hat_v_c)
+    let res_c_lifted = ntt_extend_vec(&res_c_s, inv_table);
+    (res_ab.to_vec(), res_c_lifted)
 }
 
 #[cfg(test)]
@@ -1053,7 +977,7 @@ mod tests {
             let table = make_inv_table();
 
             let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, K_SKIP, &r);
-            let (opt_ab, opt_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+            let (opt_ab, opt_c) = round1_shift_reduce_extract_c_packed_padded(
                 &pack_bits(&a),
                 &pack_bits(&b),
                 &pack_bits(&c),
@@ -1158,16 +1082,14 @@ mod tests {
             let c_p = pack_bits(&c);
 
             let dense = PaddingSpec::dense(m);
-            let (dense_ab, dense_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &dense,
-            );
+            let (dense_ab, dense_c) =
+                round1_shift_reduce_extract_c_packed_padded(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &dense);
             let padding = PaddingSpec {
                 k_log,
                 useful_bits_per_block: useful_bits,
             };
-            let (padded_ab, padded_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &padding,
-            );
+            let (padded_ab, padded_c) =
+                round1_shift_reduce_extract_c_packed_padded(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &padding);
 
             assert_eq!(
                 dense_ab, padded_ab,
@@ -1220,59 +1142,6 @@ mod tests {
                 assert_eq!(t[b * 256 + v as usize], expected, "b={b}, v={v}");
             }
             g_pow *= medium_generator();
-        }
-    }
-
-    /// The two-bank kernel's `s_hat_v_c` matches the scalar oracle's canonical
-    /// form. Its AB/C outputs are independently checked against the naive
-    /// protocol by `matches_naive_with_c_s_factor`.
-    #[test]
-    fn fused_s_hat_matches_scalar_oracle() {
-        use crate::zerocheck::univariate_skip::round1_extract_c_packed_with_s_hat_v;
-
-        for &m in &[13usize, 14, 15] {
-            let mut rng = Rng::new(0xF00D_u64.wrapping_add(m as u64));
-            let a = pack_bits(&rng.bits(1 << m));
-            let b = pack_bits(&rng.bits(1 << m));
-            let c = pack_bits(&rng.bits(1 << m));
-            let mut r = vec![F192::ZERO; m - K_SKIP];
-            // Friendly inner constants must match the optimization's
-            // expectations: 3 small + 4 medium coordinates.
-            for i in 0..3 {
-                r[i] = phi8(F8(SMALL_CHAL_F8[i]));
-            }
-            let medium = crate::zerocheck::univariate_skip_optimized::medium_challenges();
-            r[3..7].copy_from_slice(&medium);
-            for i in N_INNER..(m - K_SKIP) {
-                r[i] = rng.ext();
-            }
-
-            let inv_table = {
-                let ntt_s = pcs::ntt::AdditiveNttGf8::new(K_SKIP, F8::ZERO);
-                let ntt_l = pcs::ntt::AdditiveNttGf8::new(K_SKIP, F8(1u8 << K_SKIP));
-                InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l)
-            };
-
-            // Scalar oracle (canonical s_hat_v_c).
-            let (_, _, oracle_s_hat_v) = round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &inv_table);
-
-            // System under test.
-            let (_, _, got_s_hat_v) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-                &a,
-                &b,
-                &c,
-                m,
-                K_SKIP,
-                &r,
-                &inv_table,
-                &PaddingSpec::dense(m),
-            );
-
-            assert_eq!(got_s_hat_v.len(), 2 * ELL, "s_hat_v length at m={m}");
-            assert_eq!(
-                got_s_hat_v, oracle_s_hat_v,
-                "s_hat_v_c mismatch vs scalar oracle at m={m}"
-            );
         }
     }
 }

@@ -7,8 +7,8 @@
 //!   transmitted data is **always** bound, and the two sides cannot drift. This is
 //!   the workhorse (GKR layers, constraint round polys, evaluation values, the
 //!   commitment root).
-//! - **The public statement** (the public input) is seeded into the sponge at
-//!   construction ([`Sponge::new`]) by BOTH sides, so it is bound before any
+//! - **The public statement** (the public input) is seeded into the state at
+//!   construction ([`FiatShamirState::new`]) by BOTH sides, so it is bound before any
 //!   challenge. `add_*` transmits AND binds; `observe_scalar` binds WITHOUT
 //!   transmitting, and is only for values both sides derive independently. Never
 //!   re-observe data that already rode the stream: it is bound once already, and
@@ -19,11 +19,11 @@
 //!   Merkle structure itself.
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
-//! The [`Sponge`] itself (the VM-native Merkle–Damgård chaining value, its
-//! domain tags, grinding, and the diagnostic trace) lives in [`crate::sponge`].
+//! The [`FiatShamirState`] state itself (the VM-native Merkle–Damgård chaining
+//! value, its domain tags, and grinding) lives at the crate root.
 
+use crate::FiatShamirState;
 use crate::merkle::{Hash, PrunedMerklePaths, RawMerklePath, hash_to_scalars, scalars_to_hash};
-use crate::sponge::Sponge;
 use primitives::field::{F64, F192};
 
 /// A complete proof: the scalar transcript stream plus the Merkle phases:
@@ -43,7 +43,7 @@ use primitives::field::{F64, F192};
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
 /// an independent verifier process reconstructs it: everything lives in these two
 /// fields, and [`VerifierState`] re-derives every challenge from them via the
-/// shared sponge, so nothing travels out of band.
+/// shared [`FiatShamirState`] state, so nothing travels out of band.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Proof<M = PrunedMerklePaths> {
     /// Every transmitted field scalar, in protocol order (plus flock's scalar
@@ -82,7 +82,7 @@ pub enum Error {
 /// What a protocol step needs from the transcript when it only draws challenges:
 /// one implementation then serves both sides. WHIR's query sampler and every
 /// shared sub-step take `&mut impl Challenger`, so no caller outside this crate
-/// ever holds the sponge itself: it is reachable only through these three
+/// ever holds the [`FiatShamirState`] state itself: it is reachable only through these three
 /// traits and the two states that implement them.
 pub trait Challenger {
     fn sample(&mut self) -> F192;
@@ -137,11 +137,16 @@ pub trait Transmitter: Challenger {
 pub trait Receiver: Challenger {
     /// Pull the next opening phase and authenticate it: see
     /// [`VerifierState::next_merkle_batch`].
+    /// `row_words` is what a stored row holds, `leaf_words` the image it hashes to:
+    /// they differ only for a padding-free L0 commitment, whose absent lanes ride the
+    /// image as a zero prefix rather than the proof. The rows come back as full
+    /// images, so every consumer sees one width.
     fn next_merkle_batch(
         &mut self,
         root: &Hash,
         num_leaves: usize,
         queries: &[usize],
+        row_words: usize,
         leaf_words: usize,
     ) -> Result<Vec<Vec<F64>>, Error>;
     fn next_scalar(&mut self) -> Result<F192, Error>;
@@ -168,16 +173,16 @@ pub trait Receiver: Challenger {
 
 /// Prover side: writes scalars into the stream and opening phases to the side.
 pub struct ProverState {
-    sponge: Sponge,
+    fs: FiatShamirState,
     stream: Vec<F192>,
     merkle: Vec<PrunedMerklePaths>,
 }
 
 impl ProverState {
-    /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
+    /// `statement` is the public input, seeded into the Fiat–Shamir state (see [`FiatShamirState::new`]).
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         Self {
-            sponge: Sponge::new(label, statement),
+            fs: FiatShamirState::new(label, statement),
             stream: Vec::new(),
             merkle: Vec::new(),
         }
@@ -194,7 +199,7 @@ impl ProverState {
 /// Verifier side: reads scalars from a received [`Proof`] (borrowed) and pulls
 /// opening phases in order.
 pub struct VerifierState<'a> {
-    sponge: Sponge,
+    fs: FiatShamirState,
     stream: &'a [F192],
     offset: usize,
     merkle: &'a [PrunedMerklePaths],
@@ -203,11 +208,11 @@ pub struct VerifierState<'a> {
 }
 
 impl<'a> VerifierState<'a> {
-    /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
-    /// It must match the prover's, or the sponges diverge and verification fails.
+    /// `statement` is the public input, seeded into the Fiat–Shamir state (see [`FiatShamirState::new`]).
+    /// It must match the prover's, or the two states diverge and verification fails.
     pub fn new(label: &[u8], proof: &'a Proof, statement: &[F192]) -> Self {
         Self {
-            sponge: Sponge::new(label, statement),
+            fs: FiatShamirState::new(label, statement),
             stream: &proof.stream,
             offset: 0,
             merkle: &proof.merkle,
@@ -228,7 +233,7 @@ impl<'a> VerifierState<'a> {
 
     #[inline]
     fn bind(&mut self, x: F192) {
-        self.sponge.observe(x);
+        self.fs.observe(x);
     }
 
     /// The redundant form of the proof just verified: every scalar it read, plus
@@ -265,11 +270,11 @@ impl Transmitter for ProverState {
         self.merkle.push(paths);
     }
 
-    /// Transmit a scalar into the proof AND bind it into the sponge (the two are
+    /// Transmit a scalar into the proof AND bind it into the state (the two are
     /// inseparable: you cannot send without binding).
     #[inline]
     fn add_scalar(&mut self, x: F192) {
-        self.sponge.observe(x);
+        self.fs.observe(x);
         self.stream.push(x);
     }
 
@@ -282,11 +287,11 @@ impl Transmitter for ProverState {
     /// Proof-of-work grind of `bits` before the next challenge, raising that
     /// challenge's Schwartz–Zippel soundness by `bits` (the prover must redo
     /// the PoW to re-roll the challenge). Grinds, binds the nonce into the
-    /// sponge, and transmits it on the stream as raw transport (already bound
+    /// state, and transmits it on the stream as raw transport (already bound
     /// by the grind, so it is NOT re-absorbed). `bits = 0` is the canonical
     /// no-work nonce `0`.
     fn grind(&mut self, bits: u32) {
-        let nonce = self.sponge.grind_pow(bits);
+        let nonce = self.fs.grind_pow(bits);
         self.stream.push(F192::new(nonce, 0, 0));
     }
 }
@@ -304,19 +309,20 @@ impl<'a> Receiver for VerifierState<'a> {
         root: &Hash,
         num_leaves: usize,
         queries: &[usize],
+        row_words: usize,
         leaf_words: usize,
     ) -> Result<Vec<Vec<F64>>, Error> {
         let paths: &'a PrunedMerklePaths = self.merkle.get(self.phase).ok_or(Error::MissingHint)?;
         self.phase += 1;
         let openings = paths
-            .open(root, num_leaves, queries, leaf_words)
+            .open(root, num_leaves, queries, row_words, leaf_words)
             .ok_or(Error::InvalidMerkleOpening)?;
         let rows = openings.iter().map(|o| o.leaf_data.clone()).collect();
         self.raw_openings.extend(openings);
         Ok(rows)
     }
 
-    /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
+    /// Read the next scalar, binding it into the state (mirrors `add_scalar`).
     #[inline]
     fn next_scalar(&mut self) -> Result<F192, Error> {
         let x = self.take_raw()?;
@@ -347,13 +353,13 @@ impl<'a> Receiver for VerifierState<'a> {
     }
 
     /// Verifier mirror of [`Transmitter::grind`]: read the transmitted nonce and
-    /// check it clears the `bits` proof-of-work, then bind it (so the sponge
+    /// check it clears the `bits` proof-of-work, then bind it (so the state
     /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
     fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
         // Bound by the PoW absorb inside `verify_pow_field` rather than by
         // `observe`, but still a scalar the consumer reads at this position.
         let nonce = self.take_raw()?;
-        if self.sponge.verify_pow_field(nonce, bits) {
+        if self.fs.verify_pow_field(nonce, bits) {
             Ok(())
         } else {
             Err(Error::PowFailed)
@@ -363,28 +369,28 @@ impl<'a> Receiver for VerifierState<'a> {
 
 impl Challenger for ProverState {
     fn sample(&mut self) -> F192 {
-        self.sponge.sample()
+        self.fs.sample()
     }
     fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        self.sponge.sample_vec(n)
+        self.fs.sample_vec(n)
     }
     fn observe_scalar(&mut self, x: F192) {
-        self.sponge.observe(x);
+        self.fs.observe(x);
     }
 }
 
 impl Challenger for VerifierState<'_> {
     fn sample(&mut self) -> F192 {
-        self.sponge.sample()
+        self.fs.sample()
     }
     fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        self.sponge.sample_vec(n)
+        self.fs.sample_vec(n)
     }
     /// Absorb a value both parties compute themselves (never transmitted):
     /// protocol steps that bind derived values before sampling, e.g. the
     /// stacked-bytecode claim reduction (`leaf::verify_balance`).
     fn observe_scalar(&mut self, x: F192) {
-        self.sponge.observe(x);
+        self.fs.observe(x);
     }
 }
 

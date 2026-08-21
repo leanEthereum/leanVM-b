@@ -92,7 +92,7 @@ fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
 }
 
 /// Announce the prover's sizes (`log_mem`, every table's log height, the PCS rate)
-/// by writing them onto the scalar stream, which binds them into the sponge and lets
+/// by writing them onto the scalar stream, which binds them into the state and lets
 /// the verifier reconstruct the layout. The public statement (program + input) is not
 /// announced here; it seeds the transcript at construction (see [`transcript_seed`]).
 /// The boundary states are derived from the program, so they need no binding.
@@ -318,7 +318,7 @@ fn table_spans() -> TableSpans {
 /// value array directly and each table's two bus forms can be
 /// evaluated on the same values. The identities take the air's own `η`-range, its
 /// own first and its count inverses after; the two forms take the shared powers at
-/// [`eta_form_base`], folded into the forms' coefficients once rather than
+/// [`xi_form_base`], folded into the forms' coefficients once rather than
 /// multiplied onto every row's form value.
 fn airs(
     taus: &[usize; tables::N_TABLES],
@@ -368,22 +368,22 @@ fn sigmas(bus: &[Vec<F192>; 2], form_pows: [F192; 2]) -> Vec<F192> {
 /// per table. That sharing is what keeps the batch tied to the bus: with a common
 /// `η^{base+s}` per side, the batch's target is `Σ_s η^{FORM_POWS+s}·R_s` for
 /// the sides' table shares `R_s`, which the verifier DERIVES from the leaf claims
-/// (`eta_form_pows`; a mismatch surfaces as [`Error::Constraint`]). Were the
+/// (`xi_form_pows`; a mismatch surfaces as [`Error::Constraint`]). Were the
 /// powers per table, the target
 /// would not factor through the `R_s` and nothing would pin the tables' share of
 /// the bus.
-pub fn eta_form_base() -> usize {
+pub fn xi_form_base() -> usize {
     tables::tables().iter().map(|t| t.n_constraints()).sum()
 }
 
 /// The two shared form powers `η^{base}, η^{base+1}`.
-fn eta_form_pows(eta: F192) -> [F192; 2] {
-    let base = eta_form_base();
-    let pows = primitives::field::powers(eta, base + 2);
+fn xi_form_pows(xi: F192) -> [F192; 2] {
+    let base = xi_form_base();
+    let pows = primitives::field::powers(xi, base + 2);
     [pows[base], pows[base + 1]]
 }
 
-/// Lift each table's zerocheck evals (at its point `rho`) to global column claims.
+/// Lift each table's zerocheck evals (at its point `chi`) to global column claims.
 /// The batch carries every committed column of a table, so eval `c` is local
 /// column `c`; these are the ONLY claims those columns raise, the bus having been
 /// settled inside the batch.
@@ -394,7 +394,7 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
         for c in 0..table.n_committed_columns() {
             v.push(ColumnClaim {
                 col: sch.base[t] + c,
-                point: table_claims[t].rho.clone(),
+                point: table_claims[t].chi.clone(),
                 value: table_claims[t].evals[c],
             });
         }
@@ -512,7 +512,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.layout.taus, log_inv_rate);
-    let committed = crate::stage!("Commit", || { pcs::commit(&mut ps, &w.q, log_inv_rate) });
+    let committed = crate::stage!("Commit", || {
+        pcs::commit(&mut ps, &w.q, w.layout.shape, log_inv_rate)
+    });
 
     // BLAKE2s to flock (§blake2s_flock), single PCS: q_flock is ALWAYS a column in
     // `w.q` (≥1 instance, a program with no BLAKE2s carries one padding instance,
@@ -540,13 +542,13 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
                 .collect();
             // The eq point is the bus GKR's ζ, not a fresh one: that is what lets the
             // batch settle the bus forms alongside the constraints.
-            let eta = ps.sample();
-            let form_pows = eta_form_pows(eta);
+            let xi = ps.sample();
+            let form_pows = xi_form_pows(xi);
             let sigma = sigmas(&bus.sigmas, form_pows);
             constraints::prove(
                 &airs(&l.taus, &bus.forms, form_pows),
                 &table_cols,
-                eta,
+                xi,
                 &bus.point,
                 &sigma,
                 &mut ps,
@@ -573,9 +575,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
-    // layouts retained from the fused q_flock build pass; it returns the `(ab, c)`
-    // validity claims on the committed `q_flock`, discharged by the PCS below in the
-    // SAME WHIR as every leanVM point claim (the point claims become the
+    // layouts retained from the fused q_flock build pass; it returns the
+    // validity claim on the committed `q_flock`, discharged by the PCS below in
+    // the SAME WHIR as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
     let flock_reduction = w
         .flock_reduction
@@ -673,8 +675,8 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let (owners, spans) = bus_wiring(program, &l);
     let bus = leaf::verify_balance(&l.push, &l.pull, &owners, &spans, &mut vs).map_err(Error::Bus)?;
 
-    let zc_eta = vs.sample();
-    let form_pows = eta_form_pows(zc_eta);
+    let zc_xi = vs.sample();
+    let form_pows = xi_form_pows(zc_xi);
     // THE tie between the batch and the bus, and the reason the batch's target is
     // never transmitted. Each side's leaf claim less what its framework blocks
     // account for is the tables' share `R_s`, which the verifier just derived; the
@@ -685,7 +687,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let target = (0..2).fold(F192::ZERO, |a, s| a + form_pows[s] * bus.totals[s]);
     let table_claims = constraints::verify(
         &airs(&l.taus, &bus.forms, form_pows),
-        zc_eta,
+        zc_xi,
         &bus.point,
         target,
         &mut vs,
@@ -705,7 +707,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_limbs);
 
     // Replay flock's reduction straight off the shared stream (each scalar bound
-    // as it is read) to recover its `(ab, c)` validity claims on q_flock, then
+    // as it is read) to recover its validity claim on q_flock, then
     // verify them alongside every point claim in the ONE WHIR opening
     // (mirroring `prove`). The padding convention always supplies at least one
     // instance, including programs that execute no BLAKE2s instruction.
@@ -713,9 +715,8 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::blake2s_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
     let flock_stream_end = vs.stream_offset();
-    let ring =
-        crate::blake2s_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
-    pcs::verify(&mut vs, &slots, &ring, l.m, log_inv_rate, &root).map_err(Error::Open)?;
+    let ring = crate::blake2s_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
+    pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,

@@ -365,13 +365,13 @@ pub trait Table: Sync {
     }
     /// Identities in all: the table's own, then one `count · inverse = 1` per read
     /// count ([`eval_count_inverses`]). This is what sizes the table's slice of the
-    /// batch's disjoint `eta`-range (§constraints).
+    /// batch's disjoint `xi`-range (§constraints).
     fn n_constraints(&self) -> usize {
         self.n_own_constraints() + self.count_columns().len()
     }
     /// Evaluate the table's degree-2 constraint at one row, reading column values
     /// by local index from `cols` (e.g. `cols[jump::C_LO]`) and weighting identity
-    /// `i` by `pows[i]`, this table's slice of the batch's `eta`-powers. The slice is
+    /// `i` by `pows[i]`, this table's slice of the batch's `xi`-powers. The slice is
     /// is exactly [`n_constraints`](Table::n_constraints) long: an identity indexed
     /// past its end panics rather than silently reaching into the next table's
     /// range. The table sumcheck carries every committed column of a table, in

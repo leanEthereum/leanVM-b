@@ -19,7 +19,7 @@ def challenge_from_state(state):
     return lo[0] + Y * (lo[1] + Y * hi[0])
 
 @inline
-def sponge_compress(state, scalar, tail, out):
+def fs_compress(state, scalar, tail, out):
     limbs = StackBuf(3)
     hint_f192_limbs(limbs, scalar)
     block = StackBuf(2)
@@ -32,7 +32,7 @@ def sponge_compress(state, scalar, tail, out):
 @inline
 def observe(state, scalar):
     out = StackBuf(2)
-    sponge_compress(state, scalar, 13, out)
+    fs_compress(state, scalar, 13, out)
     return out
 
 def main():

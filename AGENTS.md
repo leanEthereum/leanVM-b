@@ -22,7 +22,7 @@ Dependency order, leaves first:
 | `parallel`        | thread pool (below)                                     |
 | `zk_alloc`        | proving arena (below)                                    |
 | `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, `bench` |
-| `fiat_shamir`     | VM-native sponge + prover/verifier transcript                          |
+| `fiat_shamir`     | VM-native `FiatShamirState` + prover/verifier transcript                |
 | `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
 | `flock`           | batched R1CS over GF(2) for BLAKE2s: zerocheck + lincheck               |
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
@@ -51,8 +51,8 @@ Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- -
 ## Benchmarking
 
 The benchmarks we care about:
-- `cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3`
-- `cargo run --release -- recursion --n 2 --xmss-per-leaf 890 --log-inv-rate 2 --repeat 3`
+- `cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- recursion --n 2 --xmss-per-leaf 900 --log-inv-rate 2 --repeat 3`
 
 ## The proving arena (`zk_alloc`)
 
@@ -80,7 +80,7 @@ The same verification algorithm is written out three times, in three languages. 
 2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_vm/tests/verifiers/python_verifier.rs`.
 3. **Recursive verifier**, `crates/rec_aggregation/guests/aggregate.py` (~2.7k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
-The third is worth understanding before touching the verifier. `guests/aggregate.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `PACK64X2`) over write-once memory. So every verifier step, sponge absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~330k instructions (2^19 padded) and why its opcode mix is what the recursion benchmark reports. Two consequences:
+The third is worth understanding before touching the verifier. `guests/aggregate.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's seven-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `PACK64X2`) over write-once memory. So every verifier step, Fiat-Shamir absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~330k instructions (2^19 padded) and why its opcode mix is what the recursion benchmark reports. Two consequences:
 
 - The guest is **self-referential**: it verifies proofs of itself, so `unified_guest` compiles it to a fixed point on its own log size. The digest needs no fixed point, riding the statement instead of the code, which is also what lets one bytecode serve any inner size and PCS rate.
 - It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, flock's A0/B0) are deferred. Each node batches its children's carried claims with the fresh ones its verifications raise, `2n` per polynomial down to one; only the root's are discharged natively, by `AggregateSignature::verify` (explained in `doc/leanvm/`).
@@ -92,11 +92,12 @@ The third is worth understanding before touching the verifier. `guests/aggregate
 - Use comments only when necessary: uncommented but readable and simple code is better than commented slop. And when you use comments, be concise.
 - Commit tests only that are useful in the future, to prevent regressions / failures. Don't add trivial tests that will always pass.
 - Simpler is better.
-- **Fiat-Shamir:** `add_scalar`/`next_scalar` bind into the sponge as a side effect. `observe_*` is only for the public statement. Never re-observe data that rode the stream, which silently desynchronizes the two sides.
+- **Fiat-Shamir:** `add_scalar`/`next_scalar` bind into the Fiat-Shamir state as a side effect. `observe_*` is only for the public statement. Never re-observe data that rode the stream, which silently desynchronizes the two sides.
 - **Prover and verifier derive the layout identically** from announced sizes. Changes to `placements_of` or the schema land on both sides. `col_kappas` is derived from `col_kappa_sources` rather than written out twice, so the two can no longer drift; keep it that way.
+- **The L0 lane fold binds the committed witness's TOP `INITIAL_FOLDING_FACTOR` variables**, because lane `l` of the interleaved commitment is the stack block `q[l·2^(μ-k) ..)`. That makes the witness's zero tail whole lanes, so `whir::commit` encodes only `StackShape::n_lanes` of them, and the opening's dense weight, its first `k` sumcheck rounds and the stack allocation shrink with it. **A leaf image is still `2^k` words**, the absent lanes contributing their codeword's zeros, but those zeros LEAD it (codeword lane `t` is stack block `n_lanes-1-t`): their whole 64-byte blocks are then one shared chaining value (`blake2s::zero_prefix_state`) the committer hashes once rather than per leaf, and only the image's tail rides the proof, so `PrunedMerklePaths` stores `n_lanes` words per L0 row while `RawMerklePath` (what the guest and the Python verifier read) carries the full image. The Rust and Python verifiers therefore derive `n_lanes` from the announced layout to read a row; the guest never needs it, its hints being full images. Since `mu = log2_ceil(placed)`, `n_lanes` is always in `[2^(k-1)+1, 2^k]`: the encode saving caps near half, the hashing saving is quantized to whole blocks of 8 lanes, and both are ~0 just above a power of two. The cost is that fold challenges arrive in round order while every transparent weight is written in witness coordinates, so all three verifiers rotate the terminal point left by `k` before evaluating it (`whir.rs` before `eval_b_at`, `verifier.py` before `evaluate_basis`, `open_stacked` in the guest). Anything else that reads the opening's point (per-level induced weights, the residual) stays in round order.
 - **A failed guest `assert` surfaces as a write-once memory conflict**, not an assertion message, so disassemble around the reported `pc` (`DBG_DISASM`).
 - Guests are single-file; the compiler skips `from snark_lib import *`, which exists only so editors accept the file as Python.
-- **One symbol, one meaning, across the whole leanVM document.** All notation is defined in `doc/leanvm/preamble/macros.tex`; define a new macro there rather than inline, and check the letter is free first. Annex B's symbols were deliberately renamed away from the letters WHIR/Ligerito/BCHKS25 use (rate is `\rate`, not `\rho`, which is a sumcheck point) and its "Symbols" table is the map back, so reintroducing a paper's letter silently collides with the main matter.
+- **One symbol, one meaning, across the whole leanVM document.** All notation is defined in `doc/leanvm/preamble/macros.tex`: define a new macro there rather than inline, and check the letter is free first. Annex B's "Symbols" table maps its letters back to WHIR/Ligerito/BCHKS25, so read it before renaming one. A sumcheck round challenge is `\fc` everywhere, which is what keeps `\rho` free for the rate; `r` is the point a claim is made at, not a challenge. **A rename in the document is a rename in the implementations**: the Rust prover and verifier, `python-verifier/verifier.py`, and `guests/aggregate.py` name their variables after the document's symbols, so the four have to move together.
 - **Doc labels are an API.** `crates/pcs` cites `thm:rbr` and `thm:mca-johnson` by name and several crates cite `doc/leanvm/main.tex` sections, so renaming a label breaks those pointers with nothing to catch it. `doc/leanvm/body/NN-*.tex` prefixes match section numbers, so inserting a section renumbers the rest.
 - **No em-dashes or en-dashes in prose**, anywhere a human reads it: docs, LaTeX, comments, commit messages. Restructure with a comma, colon, parentheses, or two sentences.
 - **Never hard-wrap prose in Markdown or LaTeX.** One paragraph is one line; let the editor wrap it. Artificial line breaks make every later edit a reflow, so diffs show rewrapped lines instead of changed words. Applies to `.md` and `.tex` alike; code blocks, tables and list items keep their own line.

@@ -7,7 +7,7 @@ Suppose we want to commit to $T$ multilinears $P_1,\dots,P_T$ over boolean hyper
 \[
   q \;=\; P_1 \,\Vert\, P_2 \,\Vert\,\dots\,\Vert\, P_T \,\Vert\, 0,
 \]
-zero-padded to length $2^{M}$, with $M=\bigl\lceil\log_2\textstyle\sum_i 2^{\kappa_i}\bigr\rceil$. Placed largest first, $P_i$ starts at an offset that is a multiple of $2^{\kappa_i}$; writing $\mathsf{sel}_i\in\cube{M-\kappa_i}$ for the high bits of that offset,
+zero-padded to length $2^{M}$, with $\nstack:=\textstyle\sum_i 2^{\kappa_i}$ the number of placed field elements and $M=\lceil\log_2\nstack\rceil$. Placed largest first, $P_i$ starts at an offset that is a multiple of $2^{\kappa_i}$; writing $\mathsf{sel}_i\in\cube{M-\kappa_i}$ for the high bits of that offset,
 \[
   \widetilde P_i(z)\;=\;\widetilde q(z,\mathsf{sel}_i)\qquad(z\in\cube{\kappa_i}).
 \]
@@ -25,4 +25,4 @@ via the PCS (Annex~\ref{annex:pcs}).
 
 \subsection{Committing to booleans via Ring-Switching}\label{sec:ringswitch}
 
-Flock's BLAKE2s argument (\S\ref{sec:tab-blake2s}) requires a commitment to a Boolean multilinear in $\nflock+\kskip$ variables. Ring switching~\cite{DP26} lets the prover pack its low $\kskip=6$ coordinates into the $\K$-valued multilinear $\qflock$ in $\nflock$ variables (Annex~\ref{annex:rs}), which occupies one region of the stack in \S\ref{sec:stacking}.
+Flock's BLAKE2s argument (\S\ref{sec:tab-blake2s}) requires a commitment to a Boolean multilinear in $\nflock+\kskip$ variables. Ring switching~\cite{DP24} lets the prover pack its low $\kskip=6$ coordinates into the $\K$-valued multilinear $\qflock$ in $\nflock$ variables (Annex~\ref{annex:rs}), which occupies one region of the stack in \S\ref{sec:stacking}.

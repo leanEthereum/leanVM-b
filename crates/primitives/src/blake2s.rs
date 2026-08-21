@@ -990,12 +990,14 @@ unsafe fn hash_group_pair<S: Lanes32>(
     a: &[*const u8],
     b: &[*const u8],
     len: usize,
+    state: &[u32; 8],
+    t_offset: u64,
     buf: &mut [u32],
     out_a: *mut u8,
     out_b: *mut u8,
 ) {
-    let mut ha: [S; 8] = std::array::from_fn(|i| S::splat(PARAM_IV[i]));
-    let mut hb: [S; 8] = std::array::from_fn(|i| S::splat(PARAM_IV[i]));
+    let mut ha: [S; 8] = std::array::from_fn(|i| S::splat(state[i]));
+    let mut hb: [S; 8] = std::array::from_fn(|i| S::splat(state[i]));
     let n_blocks = len / BLOCK_LEN;
     for blk in 0..n_blocks {
         // SAFETY: `blk < n_blocks` keeps the 64-byte window inside every input,
@@ -1009,7 +1011,7 @@ unsafe fn hash_group_pair<S: Lanes32>(
                 &mut hb,
                 ba.as_ptr(),
                 bb.as_ptr(),
-                ((blk + 1) * BLOCK_LEN) as u64,
+                t_offset + ((blk + 1) * BLOCK_LEN) as u64,
                 blk + 1 == n_blocks,
             );
         }
@@ -1029,15 +1031,27 @@ unsafe fn hash_group_pair<S: Lanes32>(
 /// `S::WIDTH * OUT_LEN` bytes, `buf` must hold `16 * S::WIDTH` words, and `len`
 /// must be a nonzero multiple of 64.
 #[inline(always)]
-unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, buf: &mut [u32], out: *mut u8) {
+unsafe fn hash_group<S: Lanes32>(
+    inputs: &[*const u8],
+    len: usize,
+    state: &[u32; 8],
+    t_offset: u64,
+    buf: &mut [u32],
+    out: *mut u8,
+) {
     debug_assert!(len > 0 && len.is_multiple_of(BLOCK_LEN));
-    let mut h: [S; 8] = std::array::from_fn(|i| S::splat(PARAM_IV[i]));
+    let mut h: [S; 8] = std::array::from_fn(|i| S::splat(state[i]));
     let n_blocks = len / BLOCK_LEN;
     for b in 0..n_blocks {
         // SAFETY: `b < n_blocks` keeps the 64-byte window inside every input.
         unsafe {
             S::transpose(inputs, b * BLOCK_LEN, buf);
-            compress_lanes::<S>(&mut h, buf.as_ptr(), ((b + 1) * BLOCK_LEN) as u64, b + 1 == n_blocks);
+            compress_lanes::<S>(
+                &mut h,
+                buf.as_ptr(),
+                t_offset + ((b + 1) * BLOCK_LEN) as u64,
+                b + 1 == n_blocks,
+            );
         }
     }
     // SAFETY: the caller guarantees `WIDTH * OUT_LEN` writable bytes at `out`.
@@ -1051,7 +1065,7 @@ unsafe fn hash_group<S: Lanes32>(inputs: &[*const u8], len: usize, buf: &mut [u3
 /// `data` must hold `n * len` bytes and `out` `n * OUT_LEN`, with `len` a
 /// nonzero multiple of 64.
 #[inline(always)]
-unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
+unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], t_offset: u64, out: &mut [u8]) {
     let n = out.len() / OUT_LEN;
     let groups = n / S::WIDTH;
     let mut ptrs = [std::ptr::null::<u8>(); 16];
@@ -1077,6 +1091,8 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
                     &ptrs[..S::WIDTH],
                     &ptrs_b[..S::WIDTH],
                     len,
+                    state,
+                    t_offset,
                     &mut buf,
                     out.as_mut_ptr().add(base * OUT_LEN),
                     out.as_mut_ptr().add((base + S::WIDTH) * OUT_LEN),
@@ -1093,11 +1109,19 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, out: &mut [u8]) {
         // SAFETY: each pointer has `len` readable bytes, and the output window
         // `[base, base + WIDTH)` is inside `out`.
         unsafe {
-            hash_group::<S>(&ptrs[..S::WIDTH], len, &mut buf, out.as_mut_ptr().add(base * OUT_LEN));
+            hash_group::<S>(
+                &ptrs[..S::WIDTH],
+                len,
+                state,
+                t_offset,
+                &mut buf,
+                out.as_mut_ptr().add(base * OUT_LEN),
+            );
         }
     }
     for i in groups * S::WIDTH..n {
-        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&hash(&data[i * len..(i + 1) * len]));
+        let d = hash_from_state(&data[i * len..(i + 1) * len], state, t_offset);
+        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&d);
     }
 }
 
@@ -1157,9 +1181,42 @@ pub fn hash_many<const LEN: usize>(data: &[u8], out: &mut [u8]) {
     hash_many_dyn(data, LEN, out);
 }
 
-/// [`hash_many`] with the input length known only at runtime. Same contract:
-/// `len` a nonzero multiple of 64.
-pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
+/// The chaining value after absorbing `n_blocks` all-zero 64-byte blocks from the
+/// unkeyed IV.
+///
+/// A leaf image that starts with whole zero blocks (the PCS's absent interleaving
+/// lanes) shares that prefix with every other leaf, so the committer computes this
+/// once and starts each leaf's chain here. Nothing about the digest changes: a
+/// prefix's compressions depend on nothing after them, so the result is still the
+/// standard BLAKE2s of the whole image.
+pub fn zero_prefix_state(n_blocks: usize) -> [u32; 8] {
+    let mut h = init_state(0);
+    for b in 0..n_blocks {
+        compress(&mut h, &[0u32; 16], ((b + 1) * BLOCK_LEN) as u64, false);
+    }
+    h
+}
+
+/// [`hash`] continued from a chaining value: `data` is the rest of the image, a
+/// nonzero whole number of blocks, and `t_offset` the bytes already absorbed into
+/// `state` (see [`zero_prefix_state`]).
+pub fn hash_from_state(data: &[u8], state: &[u32; 8], t_offset: u64) -> [u8; OUT_LEN] {
+    assert!(
+        !data.is_empty() && data.len().is_multiple_of(BLOCK_LEN),
+        "a continued image is whole blocks"
+    );
+    let mut h = *state;
+    let n = data.len() / BLOCK_LEN;
+    for (b, block) in data.chunks_exact(BLOCK_LEN).enumerate() {
+        let t = t_offset + ((b + 1) * BLOCK_LEN) as u64;
+        compress(&mut h, &block_words(block.try_into().unwrap()), t, b + 1 == n);
+    }
+    state_bytes(&h)
+}
+
+/// [`hash_many_dyn`] continued from one chaining value shared by every input, as
+/// [`hash_from_state`] is to [`hash`]. Byte-identical to hashing each full image.
+pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u32; 8], t_offset: u64, out: &mut [u8]) {
     assert!(
         len > 0 && len.is_multiple_of(BLOCK_LEN),
         "batched inputs are whole blocks"
@@ -1171,25 +1228,64 @@ pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
     // require, and every backend is gated on the feature its intrinsics need.
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     unsafe {
-        hash_many_with::<x86::Avx512>(data, len, out)
+        hash_many_with::<x86::Avx512>(data, len, state, t_offset, out)
     }
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f"), target_feature = "avx2"))]
     unsafe {
-        hash_many_with::<x86::Avx2>(data, len, out)
+        hash_many_with::<x86::Avx2>(data, len, state, t_offset, out)
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        hash_many_with::<arm::Neon>(data, len, out)
+        hash_many_with::<arm::Neon>(data, len, state, t_offset, out)
     }
     #[cfg(not(any(all(target_arch = "x86_64", target_feature = "avx2"), target_arch = "aarch64")))]
     unsafe {
-        hash_many_with::<Scalar8>(data, len, out)
+        hash_many_with::<Scalar8>(data, len, state, t_offset, out)
     }
+}
+
+/// [`hash_many`] with the input length known only at runtime. Same contract:
+/// `len` a nonzero multiple of 64.
+pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
+    hash_many_dyn_from_state(data, len, &PARAM_IV, 0, out);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Starting from a precomputed zero-prefix state must reproduce the standard
+    /// hash of the whole image, one leaf at a time and batched, at leaf counts that
+    /// cross the widest backend's group width and its scalar tail.
+    #[test]
+    fn continued_from_zero_prefix_matches_whole_image() {
+        for zero_blocks in [0usize, 1, 3, 7] {
+            for rest_blocks in [1usize, 2, 5] {
+                let (zlen, rlen) = (zero_blocks * BLOCK_LEN, rest_blocks * BLOCK_LEN);
+                let state = zero_prefix_state(zero_blocks);
+                for n in [1usize, 4, 17, 33] {
+                    let rest: Vec<u8> = (0..n * rlen).map(|i| (i * 31 + zero_blocks) as u8).collect();
+                    let mut got = vec![0u8; n * OUT_LEN];
+                    hash_many_dyn_from_state(&rest, rlen, &state, zlen as u64, &mut got);
+                    for i in 0..n {
+                        let mut whole = vec![0u8; zlen];
+                        whole.extend_from_slice(&rest[i * rlen..(i + 1) * rlen]);
+                        let want = hash(&whole);
+                        assert_eq!(
+                            &got[i * OUT_LEN..(i + 1) * OUT_LEN],
+                            &want[..],
+                            "batched, zero_blocks={zero_blocks} rest_blocks={rest_blocks} n={n} i={i}"
+                        );
+                        assert_eq!(
+                            hash_from_state(&rest[i * rlen..(i + 1) * rlen], &state, zlen as u64),
+                            want,
+                            "scalar, zero_blocks={zero_blocks} rest_blocks={rest_blocks}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -1279,7 +1375,7 @@ mod tests {
                     let data: Vec<u8> = (0..n * len).map(|i| ((i * 37 + 11) & 0xff) as u8).collect();
                     let mut got = vec![0u8; n * OUT_LEN];
                     // SAFETY: `data` holds `n * len` bytes and `got` `n * 32`.
-                    unsafe { hash_many_with::<S>(&data, len, &mut got) };
+                    unsafe { hash_many_with::<S>(&data, len, &PARAM_IV, 0, &mut got) };
                     for i in 0..n {
                         assert_eq!(
                             &got[i * OUT_LEN..(i + 1) * OUT_LEN],

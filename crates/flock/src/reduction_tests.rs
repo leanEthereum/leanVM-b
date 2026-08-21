@@ -51,10 +51,9 @@ fn blocks_for(n: usize, seed: u64) -> Vec<Compression> {
         .collect()
 }
 
-/// Prove, then verify. `tamper` may corrupt the packed witness first, in which
-/// case verification must reject (or the prover must produce a transcript the
-/// verifier refuses).
-fn run(n: usize, tamper: Option<usize>) -> bool {
+/// Prove. `tamper` may corrupt the packed witness first, in which case the
+/// transcript this returns must not verify.
+fn prove(n: usize, tamper: Option<usize>) -> (crate::r1cs::BlockR1cs, fiat_shamir::transcript::Proof) {
     let n_log = min_n_blocks_log(n);
     let r1cs = build_block_r1cs(n_log);
     let m = r1cs.m;
@@ -75,7 +74,7 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
     let inner_rest_len = r1cs.k_log - r1cs.k_skip;
 
     let mut ps = ProverState::new(LABEL, &[]);
-    let (zc, _s_hat_v_c) = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+    let zc = crate::zerocheck::prove_packed_padded(
         packed_bytes(&a),
         packed_bytes(&b),
         packed_bytes(&z), // C = I, so c == z
@@ -94,14 +93,19 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
         &x_ab,
         &mut ps,
     );
-    let transcript = ps.into_proof();
+    (r1cs, ps.into_proof())
+}
 
-    let mut vs = VerifierState::new(LABEL, &transcript, &[]);
+/// Replay a transcript through the reduction verifier.
+fn verify(r1cs: &crate::r1cs::BlockR1cs, transcript: &fiat_shamir::transcript::Proof) -> bool {
+    let m = r1cs.m;
+    let inner_rest_len = r1cs.k_log - r1cs.k_skip;
+    let mut vs = VerifierState::new(LABEL, transcript, &[]);
     let Ok(zc_v) = crate::zerocheck::verify(m, &mut vs) else {
         return false;
     };
     let x_ab_v = x_ab_of(&zc_v, inner_rest_len);
-    let circuit = WalkLincheckCircuit::new(&r1cs);
+    let circuit = WalkLincheckCircuit::new(r1cs);
     if crate::lincheck::verify(
         m,
         r1cs.k_log,
@@ -110,6 +114,7 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
         &x_ab_v,
         zc_v.a_eval,
         zc_v.b_eval,
+        zc_v.c_eval,
         &mut vs,
     )
     .is_err()
@@ -117,6 +122,12 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
         return false;
     }
     vs.finish().is_ok()
+}
+
+/// Prove, then verify.
+fn run(n: usize, tamper: Option<usize>) -> bool {
+    let (r1cs, transcript) = prove(n, tamper);
+    verify(&r1cs, &transcript)
 }
 
 /// Ten rounds of BLAKE2s inside a 2^14 block, proved and verified through the
@@ -140,5 +151,36 @@ fn blake2s_reduction_rejects_tampering() {
             !run(8, Some(bit)),
             "flipping witness bit {bit} must make the reduction reject"
         );
+    }
+}
+
+/// One flipped transcript word in any region must make the reduction reject.
+/// The zerocheck has no terminal check of its own any more: a tampered round
+/// message just moves the ĉ it derives, and it is lincheck, which pins â, b̂
+/// and ĉ against the same witness vector, that catches it. This test is what
+/// stands behind that claim.
+#[test]
+fn blake2s_reduction_rejects_proof_mutations() {
+    let n = 8;
+    let (r1cs, transcript) = prove(n, None);
+    assert!(verify(&r1cs, &transcript), "honest transcript must verify");
+
+    let ell = 1usize << r1cs.k_skip;
+    let n_mlv = r1cs.m - r1cs.k_skip;
+    let zc_len = ell + 2 * n_mlv + 2;
+    let lc_rounds = r1cs.k_log - r1cs.k_skip;
+    let regions: [(&str, usize); 7] = [
+        ("zerocheck round1[0]", 0),
+        ("zerocheck round1[last]", ell - 1),
+        ("zerocheck round[mid].msg_1", ell + 2 * (n_mlv / 2)),
+        ("zerocheck round[mid].msg_inf", ell + 2 * (n_mlv / 2) + 1),
+        ("zerocheck final_a", zc_len - 2),
+        ("lincheck round[0]", zc_len),
+        ("lincheck z_partial[0]", zc_len + 2 * lc_rounds),
+    ];
+    for (label, word) in regions {
+        let mut bad = transcript.clone();
+        bad.stream[word].c0 ^= 1;
+        assert!(!verify(&r1cs, &bad), "flipping {label} must make the reduction reject");
     }
 }

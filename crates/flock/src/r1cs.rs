@@ -136,18 +136,18 @@ impl BlockR1cs {
             .all(|((ai, bi), ci)| (*ai & *bi) == *ci)
     }
 
-    /// BLAKE2s hash of the R1CS itself: the per-block matrices and the shape
-    /// parameters, explicitly WITHOUT the instance count `m`. It therefore
-    /// identifies every block-diagonal instance built from these matrices at
-    /// once, whatever the count. The full instance is `m` copies of them, so a
-    /// protocol that binds this digest and `m` separately has bound the whole
-    /// statement; embedding protocols (leanVM-b) seed their transcript with it
-    /// and announce the count.
+    /// BLAKE2s hash of the R1CS itself: the per-block matrices, the shape
+    /// parameters and the constant-wire pin, explicitly WITHOUT the instance
+    /// count `m`. It therefore identifies every block-diagonal instance built
+    /// from these matrices at once, whatever the count. The full instance is `m`
+    /// copies of them, so a protocol that binds this digest and `m` separately
+    /// has bound the whole statement; embedding protocols (leanVM-b) seed their
+    /// transcript with it and announce the count.
     pub fn r1cs_digest(&self) -> [u8; 32] {
         let mut h = primitives::blake2s::Hasher::new();
-        // v2: v1 absorbed the matrices in sparse form, this one absorbs their
-        // dense bit image (see `absorb_matrix`).
-        h.update(b"flock-r1cs-digest-v2");
+        // v3: v1 absorbed the matrices in sparse form, v2 their dense bit image
+        // (see `absorb_matrix`), and this one adds the constant-wire pin.
+        h.update(b"flock-r1cs-digest-v3");
         h.update(&(self.k_log as u64).to_le_bytes());
         h.update(&(self.k_skip as u64).to_le_bytes());
         // The layout determines which polynomial a given witness commits
@@ -155,6 +155,12 @@ impl BlockR1cs {
         h.update(&[match self.layout {
             WitnessLayout::RowMajor => 0u8,
         }]);
+        // So is the constant-wire pin: it enters the verifier's own equation as
+        // lincheck's `β = α³` term. `useful_bits` stays out, no verifier reads it.
+        match self.const_pin {
+            None => h.update(&[0u8]),
+            Some(col) => h.update(&[1u8]).update(&(col as u64).to_le_bytes()),
+        };
         absorb_matrix(&mut h, &self.a_0);
         absorb_matrix(&mut h, &self.b_0);
         absorb_matrix(&mut h, &self.c_0);

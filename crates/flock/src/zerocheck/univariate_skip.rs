@@ -8,7 +8,7 @@
 //!   The optimized round-1 kernel ([`super::univariate_skip_optimized`]) and the round-2
 //!   kernel ([`super::multilinear`]) are built on these.
 //! - **Test-only oracles**, below the banner and all `#[cfg(test)]`: `pack_bits`,
-//!   `round1_naive` and `round1_extract_c_packed_with_s_hat_v`. They translate the protocol
+//!   `round1_naive` and `round1_extract_c_packed`. They translate the protocol
 //!   formula directly, so the optimized kernels can be diffed against something obviously
 //!   correct.
 //!
@@ -215,39 +215,10 @@ pub fn round1_naive(
     (p_ab, p_c)
 }
 
-/// Packed-input round-1 message in extract_c form, which **also returns `s_hat_v_c`** — the
-/// 128-entry vector ring-switch would otherwise produce via `fold_1b_rows` for
-/// the c-claim's PCS opening at point `r_rest`.
-///
-/// # Trick
-///
-/// Round 1's c-side already does the witness scan needed for `s_hat_v_c`; it
-/// just collapses one too many dims. The first friendly constant `r_rest[0]`
-/// (= φ_8(α)) applies to bit `i_inner[k_skip]` of the witness, which is also
-/// bit 0 of `x_rest` in this function's loop nest. So splitting the `partial_c`
-/// accumulator into **two banks**, one per value of that bit, gives us the
-/// per-`b_7`-slice partial folds that `s_hat_v_c` indexes by.
-///
-/// Specifically, for `b_7 ∈ {0, 1}`:
-/// ```text
-/// res_c_s_{b_7}[lane] = Σ_{x_rest with bit-0 = b_7}
-///                        eq(r_rest, x_rest) · c_bit(lane, x_rest)
-/// ```
-/// The wire output `res_c_s` is recovered by `res_c_s_0 + res_c_s_1` (the eq
-/// factor for `r_rest[0]` is already absorbed in each bank), then NTT-extended
-/// as before to produce `res_c_lifted`.
-///
-/// To get the canonical `s_hat_v_c` (eq weight WITHOUT the `r_rest[0]` factor),
-/// divide bank 0 by `1 + r_rest[0]` (= `eq(r_rest[0], 0)`) and bank 1 by
-/// `r_rest[0]` (= `eq(r_rest[0], 1)`):
-/// ```text
-/// s_hat_v_c[(lane, b_7)] = res_c_s_{b_7}[lane] / eq(r_rest[0], b_7)
-/// ```
-/// Output layout (matches `fold_1b_rows`): `s_hat_v_c[lane | (b_7 << k_skip)]`
-/// for `lane ∈ [0, 2^k_skip)`, `b_7 ∈ {0, 1}`. Length = `2 · 2^k_skip` =
-/// `2^LOG_PACKING = 128` when `k_skip = 6`.
+/// Packed-input round-1 message in extract_c form: the scalar reference the
+/// optimized kernel is cross-checked against.
 #[cfg(test)]
-pub fn round1_extract_c_packed_with_s_hat_v(
+pub fn round1_extract_c_packed(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
@@ -255,7 +226,7 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     k_skip: usize,
     r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F192>, Vec<F192>, Vec<F192>) {
+) -> (Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m);
     let total_bytes = (1usize << m) / 8;
     assert_eq!(a_packed.len(), total_bytes);
@@ -272,27 +243,21 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     let hi_size = 1usize << eq.n_hi;
 
     let mut res_ab = vec![F192::ZERO; ell];
-    // Two C banks, one per value of bit 0 of `x_rest` = bit `k_skip` of the
-    // flat witness index (= `b_7` in ring-switch's parlance).
-    let mut res_c_s_0 = vec![F192::ZERO; ell];
-    let mut res_c_s_1 = vec![F192::ZERO; ell];
+    let mut res_c_s = vec![F192::ZERO; ell];
 
     let mut partial_ab = vec![F192::ZERO; ell];
-    let mut partial_c_0 = vec![F192::ZERO; ell];
-    let mut partial_c_1 = vec![F192::ZERO; ell];
+    let mut partial_c = vec![F192::ZERO; ell];
 
     let mut a_col = vec![F8::ZERO; ell];
     let mut b_col = vec![F8::ZERO; ell];
 
     for x_hi in 0..hi_size {
         partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
-        partial_c_0.iter_mut().for_each(|p| *p = F192::ZERO);
-        partial_c_1.iter_mut().for_each(|p| *p = F192::ZERO);
+        partial_c.iter_mut().for_each(|p| *p = F192::ZERO);
 
         for x_lo in 0..lo_size {
             let x_rest = (x_hi << eq.n_lo) | x_lo;
             let chunk_offset = x_rest * n_chunks;
-            let b_7 = x_rest & 1;
 
             // A, B → Λ-domain via table lookup.
             inv_table.apply(&a_packed[chunk_offset..chunk_offset + n_chunks], &mut a_col);
@@ -306,15 +271,11 @@ pub fn round1_extract_c_packed_with_s_hat_v(
                 partial_ab[lambda] += eq_lo * phi8(ab);
             }
 
-            // C on S — route into bank 0 or bank 1 based on b_7. The eq
-            // factor `eq(r_rest[0], b_7)` is implicit in eq_lo because the
-            // SplitEq builds the tensor for r_rest; we strip that
-            // factor out at the end via division.
-            let target = if b_7 == 0 { &mut partial_c_0 } else { &mut partial_c_1 };
+            // C on S.
             for s in 0..ell {
                 let c_bit = (c_packed[chunk_offset + s / 8] >> (s % 8)) & 1;
                 if c_bit != 0 {
-                    target[s] += eq_lo;
+                    partial_c[s] += eq_lo;
                 }
             }
         }
@@ -322,32 +283,12 @@ pub fn round1_extract_c_packed_with_s_hat_v(
         let eq_hi = eq.hi[x_hi];
         for lambda in 0..ell {
             res_ab[lambda] += eq_hi * partial_ab[lambda];
-            res_c_s_0[lambda] += eq_hi * partial_c_0[lambda];
-            res_c_s_1[lambda] += eq_hi * partial_c_1[lambda];
+            res_c_s[lambda] += eq_hi * partial_c[lambda];
         }
     }
 
-    // Wire output: combined bank sum = original res_c_s. (The eq(r_rest[0], 0)
-    // factor (= 1 + r_rest[0]) is baked into bank 0, eq(r_rest[0], 1) (= r_rest[0])
-    // into bank 1. Summing reconstitutes the eq(r_rest, x_rest) sum.)
-    let mut res_c_s = vec![F192::ZERO; ell];
-    for s in 0..ell {
-        res_c_s[s] = res_c_s_0[s] + res_c_s_1[s];
-    }
     let res_c_lifted = ntt_extend_vec(&res_c_s, inv_table);
-
-    // s_hat_v_c: strip the eq(r_rest[0], ·) factor from each bank by dividing
-    // by 1 + r_rest[0] (bank 0) and r_rest[0] (bank 1). No NTT extension —
-    // lanes are already boolean indices, which is what ring-switch consumes.
-    let inv_zero = (F192::ONE + r_rest[0]).inv();
-    let inv_one = r_rest[0].inv();
-    let mut s_hat_v_c = vec![F192::ZERO; 2 * ell];
-    for lane in 0..ell {
-        s_hat_v_c[lane] = res_c_s_0[lane] * inv_zero;
-        s_hat_v_c[ell + lane] = res_c_s_1[lane] * inv_one;
-    }
-
-    (res_ab, res_c_lifted, s_hat_v_c)
+    (res_ab, res_c_lifted)
 }
 
 // ---------------------------------------------------------------------------
@@ -422,46 +363,6 @@ mod tests {
         InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l)
     }
 
-    /// The `s_hat_v_c` output is byte-identical to what ring-switch's
-    /// `fold_1b_rows` would produce on the C-witness against the canonical
-    /// equality tail `r_rest`. Its two banks leave `r_rest[0]` unfolded, and
-    /// combining them with that coordinate recovers the ordinary packed fold.
-    #[test]
-    fn extract_c_with_s_hat_v_matches_fold_1b_rows() {
-        use pcs::pack::pack_witness;
-        use pcs::ring_switch::fold_1b_rows;
-        // K_SKIP = 6 is the production setup (LOG_PACKING = 7, so 2 · 2^K_SKIP
-        // = 128 matches s_hat_v's length). The kernel needs m >= K_SKIP + 1 =
-        // 7 for pack_witness, plus the SplitEq's n_lo + n_hi machinery
-        // wants m - k_skip >= some floor — tested at m=8..11.
-        const K_SKIP: usize = 6;
-        for &m in &[8usize, 9, 10, 11] {
-            let mut rng = Rng::new(0xC0FFEE_u64.wrapping_add(m as u64));
-            let z_bits = rng.bits(1 << m);
-            let a = pack_bits(&rng.bits(1 << m));
-            let b = pack_bits(&rng.bits(1 << m));
-            let c = pack_bits(&z_bits);
-            let r = rng.ext_vec(m - K_SKIP);
-            let table = make_inv_table(K_SKIP);
-
-            let (_, _, s_hat_v_c) = round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &table);
-
-            // Reference: fold_1b_rows on the packed C-witness against the
-            // complete equality tail.
-            let packed_c = pack_witness(&z_bits, m);
-            let suffix_tensor = build_eq(&r);
-            let want = fold_1b_rows(&packed_c, &suffix_tensor);
-
-            let c = r[0];
-            let folded: Vec<_> = (0..pcs::pack::PACKING_WIDTH)
-                .map(|i| (F192::ONE + c) * s_hat_v_c[i] + c * s_hat_v_c[i + pcs::pack::PACKING_WIDTH])
-                .collect();
-
-            assert_eq!(folded.len(), want.len(), "length mismatch at m={m}");
-            assert_eq!(folded, want, "s_hat_v_c mismatch at m={m}");
-        }
-    }
-
     /// The strongest correctness check: extract_c must produce **identical**
     /// output to the naive round-1 message — same eq weights, same protocol,
     /// just a faster algorithm.
@@ -476,15 +377,8 @@ mod tests {
             let table = make_inv_table(k_skip);
 
             let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
-            let (opt_ab, opt_c, _) = round1_extract_c_packed_with_s_hat_v(
-                &pack_bits(&a),
-                &pack_bits(&b),
-                &pack_bits(&c),
-                m,
-                k_skip,
-                &r,
-                &table,
-            );
+            let (opt_ab, opt_c) =
+                round1_extract_c_packed(&pack_bits(&a), &pack_bits(&b), &pack_bits(&c), m, k_skip, &r, &table);
 
             assert_eq!(naive_ab, opt_ab, "AB mismatch at m={m}, k_skip={k_skip}");
             assert_eq!(naive_c, opt_c, "C mismatch at m={m}, k_skip={k_skip}");

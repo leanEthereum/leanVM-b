@@ -19,10 +19,9 @@
 //! verifications raise (`doc/leanvm/main.tex` §Deferred evaluation claims). Only
 //! the root's are discharged natively, by [`AggregateSignature::verify`].
 //!
-//! The transcript trace of a real `cpu::verify` run
-//! (`transcript::trace_start`/`trace_take`) keeps the native and guest verifiers
-//! synchronized: `gen_verify` walks it structurally, while `cpu::layout`
-//! supplies every compile-time shape.
+//! `gen_verify` derives the guest's whole witness for a child from the real
+//! `cpu::layout` of the inner program and the summary of a real `cpu::verify`
+//! run, so there is no hand-mirrored copy of the protocol to drift.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -30,12 +29,12 @@ use std::ops::Range;
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
-use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
+use lean_vm::transcript::FiatShamirState;
 use primitives::field::{F64, F192, G, g_pow};
 use primitives::multilinear::mle_eval_par;
 use xmss::{XmssPublicKey, XmssSignature};
 
-/// Why the guest reads every `q_flock` slot claim's instance point off `rho`: a
+/// Why the guest reads every `q_flock` slot claim's instance point off `chi`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the table sumcheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
@@ -66,6 +65,9 @@ const _: () = assert!(lean_vm::leaf::N_TUPLE_BITS == lean_vm::leaf::N_BYTECODE_S
 // disagree on where the padding falls.
 const _: () = assert!((2 + xmss::V * (xmss::CHAIN_LENGTH - 1) + xmss::LOG_LIFETIME).is_multiple_of(4));
 const _: () = assert!(xmss::LOG_LIFETIME.is_multiple_of(4));
+// The guest's `WOTS_PK_BLOCKS = (2 + V) / 4` truncates, so a bad `V` would drop
+// the last tips.
+const _: () = assert!((2 + xmss::V).is_multiple_of(4));
 
 /// A count as the guest carries it: in the exponent, `g^n`.
 fn count(n: usize) -> F192 {
@@ -82,7 +84,7 @@ fn f192_literal(f: F192) -> String {
     format!("f192({},{},{})", f.c0, f.c1, f.c2)
 }
 
-/// Pack the sponge's four K lanes as two canonical 128-bit VM cells.
+/// Pack the Fiat-Shamir state's four K lanes as two canonical 128-bit VM cells.
 fn pack_state(s: [F64; 4]) -> [F192; 2] {
     [F192::new(s[0].0, s[1].0, 0), F192::new(s[2].0, s[3].0, 0)]
 }
@@ -104,9 +106,9 @@ fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
 }
 
 /// A domain-separated two-cell IV, so the guest's two plain BLAKE2s chains
-/// cannot be confused with each other or with a sponge state.
+/// cannot be confused with each other or with a Fiat-Shamir state.
 fn chain_iv(label: &[u8]) -> [F192; 2] {
-    pack_state(Sponge::new(label, &[]).state())
+    pack_state(FiatShamirState::new(label, &[]).state())
 }
 
 /// A 16-byte native value as one canonical 128-bit cell.
@@ -557,10 +559,10 @@ fn fold_lsb_base(bt: &[F64], r: F192) -> Vec<F192> {
 /// `Σ_t γ_t · eq(points[t], (r_row, ·))` over the stacking slots, once the row
 /// variables are bound. A closed form, so the row rounds never have to carry the
 /// slot half of a `2^kbcv` weight table.
-fn slot_weights(points: &[Vec<F192>], gammas: &[F192], r_row: &[F192], kbc: usize) -> Vec<F192> {
+fn slot_weights(points: &[Vec<F192>], lambdas: &[F192], r_row: &[F192], kbc: usize) -> Vec<F192> {
     let slots = lean_vm::leaf::N_BYTECODE_SELECTORS;
     let mut out = vec![F192::ZERO; 1 << slots];
-    for (p, &g) in points.iter().zip(gammas) {
+    for (p, &g) in points.iter().zip(lambdas) {
         let row: F192 = (0..kbc).fold(g, |acc, k| acc * (F192::ONE + p[k] + r_row[k]));
         for (s, w) in out.iter_mut().enumerate() {
             let e = (0..slots).fold(row, |acc, b| {
@@ -605,7 +607,7 @@ fn fold_lsb(t: &mut Vec<F192>, r: F192) {
 /// (g1, g∞) with g0 recovered from the running claim.
 fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
     let (mut g1, mut gi) = (F192::ZERO, F192::ZERO);
-    for &(u, m, gamma) in pairs {
+    for &(u, m, lambda) in pairs {
         let half = u.len() / 2;
         let term = |i: usize| {
             let (u0, u1) = (u[2 * i], u[2 * i + 1]);
@@ -629,8 +631,8 @@ fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
                 (acc.0 + x, acc.1 + y)
             })
         };
-        g1 += gamma * a1;
-        gi += gamma * ai;
+        g1 += lambda * a1;
+        gi += lambda * ai;
     }
     (g1, gi)
 }
@@ -640,7 +642,7 @@ fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
 /// both, and advance the running claim through the compressed round polynomial.
 /// Returns the challenge, which the caller folds its tables with.
 fn absorb_round(
-    h: &mut Sponge,
+    h: &mut FiatShamirState,
     msgs: &mut Vec<F192>,
     points: &mut Vec<F192>,
     run: &mut F192,
@@ -663,7 +665,7 @@ fn absorb_round(
 /// the full table is their outer product, one fused multiply-add per entry,
 /// parallel over the high index. Materializing a `2^vars` eq table per claim and
 /// summing them is the same arithmetic done twice, serially.
-fn weighted_eq_table(points: &[Vec<F192>], gammas: &[F192], vars: usize, active: Range<usize>) -> Vec<F192> {
+fn weighted_eq_table(points: &[Vec<F192>], lambdas: &[F192], vars: usize, active: Range<usize>) -> Vec<F192> {
     let lo_vars = vars / 2;
     let lo_len = 1usize << lo_vars;
     debug_assert!(active.start.is_multiple_of(lo_len) && active.end.is_multiple_of(lo_len));
@@ -671,7 +673,7 @@ fn weighted_eq_table(points: &[Vec<F192>], gammas: &[F192], vars: usize, active:
     // and entry `hi * lo_len + lo` is `eq_lo[lo] * eq_hi[hi]`.
     let halves: Vec<(Vec<F192>, Vec<F192>)> = points
         .iter()
-        .zip(gammas)
+        .zip(lambdas)
         .map(|(p, &g)| {
             let lo = pcs::whir::build_eq_table_ext(&p[..lo_vars]);
             let mut hi = pcs::whir::build_eq_table_ext(&p[lo_vars..]);
@@ -791,7 +793,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     let klog = flock::blake2s::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
-    let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
+    let mut h = FiatShamirState::new(RECURSION_AGG_LABEL, &[]);
     h.observe(count(nsub));
     for (d, c) in subs.iter().zip(carried) {
         h.observe(d.public_input[0]);
@@ -921,8 +923,8 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
                 })
                 .collect(),
         );
-        ga.push(gf * d.matrix_a_coefficient);
-        gb.push(gf);
+        ga.push(gf);
+        gb.push(gf * d.matrix_a_coefficient);
         us.push(pcs::whir::build_eq_table_ext(&c.matrix_point[..klog]));
         ws.push(pcs::whir::build_eq_table_ext(&c.matrix_point[klog..]));
         ga.push(cga);
@@ -960,7 +962,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         if t % 2 == 0 {
             let d = &subs[t / 2];
             assert_eq!(
-                d.matrix_a_coefficient * fa + fb,
+                fa + d.matrix_a_coefficient * fb,
                 d.matrix_claim,
                 "fresh matrix claim, child {}",
                 t / 2
@@ -1229,13 +1231,12 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
 }
 
 /// Config + hints for the recursion guest (`guests/aggregate.py`), built
-/// from the REAL `cpu::layout` of the inner program and the transcript trace of
-/// a real `cpu::verify` run (zero hand-mirroring drift).
+/// from the REAL `cpu::layout` of the inner program and the summary of a real
+/// `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
     program: &Program,
     pi: [F192; 2],
     summary: &lean_vm::cpu::VerifySummary,
-    ops: &[TraceOp],
 ) -> Result<(SubHints, DeferredSubproof), AggregateError> {
     let raw = &summary.raw.stream;
     let l = lean_vm::cpu::layout(
@@ -1253,27 +1254,13 @@ fn gen_verify(
     // The guest holds one opening arm per candidate committed size, so a child
     // outside that window has no arm to dispatch to. `min_log_committed` keeps
     // every aggregate above the low end, leaving only the ceiling reachable.
-    if !(MU_MIN..=MU_MAX).contains(&l.m) {
-        return Err(AggregateError::ChildOutOfRange { log_committed: l.m });
+    if !(MU_MIN..=MU_MAX).contains(&l.shape.mu) {
+        return Err(AggregateError::ChildOutOfRange {
+            log_committed: l.shape.mu,
+        });
     }
 
     // ---- typed extraction: proof structs + the verifier's summary ----
-    // Drift check: replaying the recorded trace from the seed must reproduce
-    // every challenge and grind the native run produced.
-    let fs_seed = lean_vm::cpu::fs_seed(program);
-    let seed = Sponge::new(b"leanvm-b", &[fs_seed[0], fs_seed[1], pi[0], pi[1]]);
-    seed.clone().replay(ops);
-
-    // Grinding digests are the only trace-borne data (they are functions of
-    // sponge states): fold grinds carry bits > 0 and query-phase grinds carry
-    // bits = 0.
-    let pows: Vec<(F192, u32, F64)> = ops
-        .iter()
-        .filter_map(|op| match op {
-            TraceOp::Pow { nonce, bits, digest } => Some((*nonce, *bits, *digest)),
-            _ => None,
-        })
-        .collect();
     // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
     let kbc = summary.bytecode_claims[0].point.len() - lean_vm::leaf::N_BYTECODE_SELECTORS;
     let zeta: Vec<F192> = summary.bytecode_claims[0].point[..kbc].to_vec();
@@ -1284,17 +1271,14 @@ fn gen_verify(
     let lcrounds = flock::blake2s::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
-    let zrho = summary.zc_claim.mlv_challenges.clone();
+    let zchi = summary.zc_claim.mlv_challenges.clone();
     let lc_alpha = summary.lc_claim.alpha;
     let lc_beta = summary.lc_claim.beta;
     let lrr = summary.lc_claim.r_rounds.clone();
 
     // ---- the stacked opening: config + the opening summary ----
-    let stack = whir_shape(l.m, summary.log_inv_rate);
-    let (vcfg, shapes) = (&stack.config, &stack.levels);
-    let nlev = shapes.levels;
-    let klvl = &shapes.ks;
-    let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
+    let stack = whir_shape(l.shape.mu, summary.log_inv_rate);
+    let klvl = &stack.levels.ks;
 
     // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
     // scalars start: its last 64 scalars are lincheck's `z_partial` (which the
@@ -1306,8 +1290,12 @@ fn gen_verify(
     let lcz: Vec<F192> = summary.lc_claim.s_hat_v.clone();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
-    // claim minus (= plus, char 2) the const-pin contribution.
-    let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
+    // claim minus (= plus, char 2) the const-pin and c-claim contributions.
+    // α² from α, not from β: `LincheckClaim::beta` (the pin, at α³) is zero for
+    // a circuit with no const-pin column, while every verifier draws the
+    // c-claim's coefficient unconditionally.
+    let lc_sq = lc_alpha.square();
+    let mut lrun = zcf[0] + lc_alpha * zcf[1] + lc_sq * summary.zc_claim.c_eval + lc_beta;
     for i in 0..lcrounds {
         let (c0, c2) = (lcr[2 * i], lcr[2 * i + 1]);
         lrun = primitives::multilinear::poly_eval(&[c0, lrun + c2, c2], lrr[i]);
@@ -1318,26 +1306,17 @@ fn gen_verify(
         pinw *= if bit == 1 { rv } else { F192::ONE + rv };
     }
     pinw *= lcz[flock::blake2s::Z_CONST_POS % 64];
-    let matpart = lrun + pinw;
-
-    // Grind sanity: in transcript order, per level, the fold grinds (bits > 0
-    // per the config schedule) then ONE query-phase
-    // grind. The nonces themselves ride the shared stream now (raw words);
-    // the trace is only cross-checked here.
-    let qbits: Vec<u32> = (0..nlev).map(|lvl| vcfg.grinding_bits[lvl] as u32).collect();
-    let mut grinds = pows.iter();
-    for lvl in 0..nlev {
-        for j in 0..klvl[lvl] {
-            let bits = (fgb(lvl) - j as i64).max(0) as u32;
-            if bits > 0 {
-                let &(_, b2, _) = grinds.next().expect("fold grind recorded");
-                assert_eq!(b2, bits);
-            }
-        }
-        let &(_, b2, _) = grinds.next().expect("query grind recorded");
-        assert_eq!(b2, qbits[lvl], "level {lvl} query grind bits");
+    // The c term: eq(ρ_in, ρ'_in) times the φ8-Lagrange combination of the 64
+    // slices, ρ'_in being the lincheck challenges read back in coordinate order.
+    let mut c_point_eq = F192::ONE;
+    for (t, &rin) in zchi[..lcrounds].iter().enumerate() {
+        c_point_eq *= F192::ONE + rin + lrr[lcrounds - 1 - t];
     }
-    assert!(grinds.next().is_none(), "every grind consumed");
+    let c_slice_value = primitives::multilinear::lagrange_weights_naive(6, zc_z)
+        .iter()
+        .zip(&lcz)
+        .fold(F192::ZERO, |acc, (&w, &s)| acc + w * s);
+    let matpart = lrun + pinw + lc_sq * c_point_eq * c_slice_value;
 
     // ---- hints ----
     // The program's whole share of a bytecode leaf: ONE value, the stacked
@@ -1433,7 +1412,7 @@ fn gen_verify(
         bytecode_value,
         matrix_a_coefficient: lc_alpha,
         skip_point: zc_z,
-        zerocheck_row_point: zrho[..lcrounds].to_vec(),
+        zerocheck_row_point: zchi[..lcrounds].to_vec(),
         lincheck_round_point: lrr.clone(),
         lincheck_terminal_values: lcz.clone(),
         matrix_claim: matpart,
@@ -1493,22 +1472,6 @@ const MU_MAX: usize = 28;
 /// outgrow the buffer the guest was compiled with.
 const MU_CAP: usize = 40;
 const STREAM_CAP: usize = 8192;
-
-/// Verify an inner proof with the transcript tracer on, which is what keeps the
-/// native and guest verifiers synchronized (`gen_verify` walks the recorded ops).
-fn traced_verify(
-    program: &Program,
-    pi: &[F192; 2],
-    proof: &lean_vm::cpu::Proof,
-) -> Result<(lean_vm::cpu::VerifySummary, Vec<TraceOp>), VerifyError> {
-    trace_start();
-    let summary = verify(program, pi, proof);
-    // Take the trace before propagating: a failed child verification would
-    // otherwise leave the thread-local recorder on, and every later sponge
-    // operation in the process would append to it.
-    let ops = trace_take();
-    Ok((summary.map_err(VerifyError::Proof)?, ops))
-}
 
 /// One entry per named hint stream, for a single sub-proof.
 type SubHints = Vec<(String, Vec<F192>)>;
@@ -1690,7 +1653,7 @@ pub(crate) fn aggregate_tampered(
     raw.dedup_by(|(a, _), (b, _)| a == b);
 
     // Verifying a child here is not a courtesy: `gen_verify` derives the guest's
-    // whole witness for it from the trace of a real verification. Its deferred
+    // whole witness for it from a real verification's summary. Its deferred
     // claim is deliberately NOT recomputed, which would cost a full pass over
     // each fixed polynomial per child: the batching sumcheck below already
     // forces every batched value to be the true evaluation, and the root
@@ -1700,8 +1663,9 @@ pub(crate) fn aggregate_tampered(
     for child in children {
         check_signer_set(&child.public_keys).map_err(AggregateError::InvalidChild)?;
         let pi = child.public_input();
-        let (summary, ops) = traced_verify(guest, &pi, &child.proof).map_err(AggregateError::InvalidChild)?;
-        verified.push((pi, summary, ops));
+        let summary =
+            verify(guest, &pi, &child.proof).map_err(|e| AggregateError::InvalidChild(VerifyError::Proof(e)))?;
+        verified.push((pi, summary));
     }
 
     drop(_span);
@@ -1758,8 +1722,8 @@ pub(crate) fn aggregate_tampered(
             hints.push("child_index", pair.iter().map(|&idx| count(idx)).collect());
         }
         hints.push("child_defer", child.defer.cells());
-        let (pi, summary, ops) = &verified[i];
-        let (sub_hints, defer) = gen_verify(guest, *pi, summary, ops)?;
+        let (pi, summary) = &verified[i];
+        let (sub_hints, defer) = gen_verify(guest, *pi, summary)?;
         for (name, entry) in sub_hints {
             hints.push(&name, entry);
         }
@@ -1936,7 +1900,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let qflock_compact = compact_col_pm[lean_vm::cpu::QFLOCK];
     assert_ne!(qflock_compact, usize::MAX, "QFLOCK must be committed");
     let (mut cpbuf, mut cpcol, mut cpqslot): (Vec<usize>, Vec<usize>, Vec<usize>) = (vec![], vec![], vec![]);
-    // `cpbuf` codes are the guest's POINT_BUF_*: 0 zeta, 1 rho, 2 pi, 3 qflock-rho.
+    // `cpbuf` codes are the guest's POINT_BUF_*: 0 zeta, 1 chi, 2 pi, 3 qflock-chi.
     walk_claims(&l, kbc, |site| match site {
         ClaimSite::Framework { column, .. } => {
             let compact = compact_col_pm[column];
@@ -2045,14 +2009,14 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("N_CLAIMS", ncl.to_string());
     ps("N_TABLES", l.taus.len().to_string());
-    // The table sumcheck's eta layout, from the native verifier's own numbers:
+    // The table sumcheck's xi layout, from the native verifier's own numbers:
     // a disjoint range of identities per table, then TWO powers shared by every
     // table, one per bus side. Sharing is what lets the target be derived from the
-    // two leaf claims instead of trusted (lean_vm::cpu::eta_form_base).
+    // two leaf claims instead of trusted (lean_vm::cpu::xi_form_base).
     let n_id: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
-    let form_base = lean_vm::cpu::eta_form_base();
-    let eta_offsets = lean_vm::constraints::eta_offsets(n_id.iter().copied());
-    ps("ETA_OFFSET", ints(&eta_offsets));
+    let form_base = lean_vm::cpu::xi_form_base();
+    let xi_offsets = lean_vm::constraints::xi_offsets(n_id.iter().copied());
+    ps("ETA_OFFSET", ints(&xi_offsets));
     ps("ETA_FORM_BASE", form_base.to_string());
     ps("N_ETA_POWS", (form_base + 2).to_string());
     // The count-inverse identities, flattened in table order: each names the read
@@ -2066,7 +2030,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         for (i, &c) in table.count_columns().iter().enumerate() {
             cnt_col.push(c);
             cnt_inv.push(lean_vm::tables::inverse_column(*table, i));
-            cnt_eta.push(eta_offsets[t] + table.n_own_constraints() + i);
+            cnt_eta.push(xi_offsets[t] + table.n_own_constraints() + i);
         }
     }
     ps("CNT_TABLE_OFF", ints(&cnt_off));
@@ -2116,14 +2080,10 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         }
         d.inv()
     };
-    let ilam: Vec<F192> = (0..64)
-        .map(|i| inv_den(&phi[64..128], phi[64 + i], phi[64 + i]))
-        .collect();
     let icmb: Vec<F192> = (0..64)
         .map(|i| inv_den(&phi[..128], phi[64 + i], phi[64 + i]))
         .collect();
     let isdom: Vec<F192> = (0..64).map(|i| inv_den(&phi[..64], phi[i], phi[i])).collect();
-    ps("LAGRANGE_INV_LAMBDA", flds(&ilam));
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
@@ -2264,6 +2224,14 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         let scal = |f: &dyn Fn(&OpeningShape) -> usize| -> Vec<usize> { cands.iter().map(f).collect() };
         ps("LIG_N_LEVELS", ints(&scal(&|c| c.n_levels)));
         ps("LIG_YR_LEVEL", ints(&scal(&|c| c.yr_level)));
+        // The guest rotates the terminal point by the lane-fold count to index it by
+        // witness coordinate, and the residual segment is what it rotates the last
+        // lane challenges past, so the residual may never be longer than that fold
+        // (`RESIDUAL_MAX_LOG` < `INITIAL_FOLDING_FACTOR` keeps this true by a margin).
+        assert!(
+            cands.iter().all(|c| c.yr_log_len <= c.folds[0]),
+            "residual longer than the lane fold: the guest's point rotation has no room"
+        );
         ps("LIG_YR_LOG_LEN", ints(&scal(&|c| c.yr_log_len)));
         ps("LIG_YR_LEN", ints(&scal(&|c| 1usize << c.yr_log_len)));
         ps("LIG_TOTAL_FOLDS", ints(&scal(&|c| c.folds.iter().sum())));
@@ -2440,10 +2408,10 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
-    let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
+    let label_state = pack_state(FiatShamirState::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    let agg_state = pack_state(Sponge::new(RECURSION_AGG_LABEL, &[]).state());
+    let agg_state = pack_state(FiatShamirState::new(RECURSION_AGG_LABEL, &[]).state());
     ps("AGG_SEED_0", u(agg_state[0]).to_string());
     ps("AGG_SEED_1", u(agg_state[1]).to_string());
     let tag = label_tag(RECURSION_STATEMENT_LABEL);
@@ -2783,6 +2751,13 @@ mod tests {
             }),
             ("rs_nover", &|h: &mut Hints| {
                 h.entries("rs_nover")[0][0] *= F192::from(primitives::field::G);
+            }),
+            // The one hint carrying flock's whole lincheck terminal. Pinned not
+            // by the guest's own assert (which merely defines it) but by the
+            // matrix batching, whose reduced claims the root discharges against
+            // the real A_0/B_0.
+            ("matpart", &|h: &mut Hints| {
+                h.entries("matpart")[0][0] += F192::ONE;
             }),
         ];
         for (what, tamper) in node_cases {

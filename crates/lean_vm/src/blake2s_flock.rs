@@ -33,18 +33,18 @@
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use flock::blake2s::{
-    Blake2sSetup, Compression, K_LOG, PackedWitnessClaims, ReductionReplay, blake2s_compress,
-    generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
+    Blake2sSetup, Compression, K_LOG, ReductionReplay, blake2s_compress, generate_witness_with_ab_packed_and_lincheck,
+    min_n_blocks_log,
 };
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
-use primitives::multilinear::lagrange_weights_naive;
 use zk_alloc::ArenaVec;
 
-/// A `ẑ(point) = value` claim on the committed witness `q_flock`, recovered by the
-/// Flock zerocheck + lincheck reduction (`prove_reduction` / [`verify_reduction`])
-/// and later discharged by the PCS. Re-exported from [`flock::proof`].
-pub use flock::proof::ZClaim;
+/// One side of the Flock reduction's output on the committed witness `q_flock`:
+/// the `2^K_SKIP` bit slices at a point, already transmitted and checked by the
+/// reduction (`prove_reduction` / [`verify_reduction`]), for the PCS to bind.
+/// Re-exported from [`flock::blake2s`].
+pub use flock::blake2s::SliceClaim;
 
 /// BLAKE2s's final-block flag `f0`, which RFC 7693 sets to all ones on the last
 /// block. A hash-shaped compression is one 64-byte final block, so it is always
@@ -69,7 +69,7 @@ impl PreparedReductionWitness {
         self.n_blocks
     }
 
-    pub(crate) fn prove(&self, ps: &mut ProverState) -> PackedWitnessClaims {
+    pub(crate) fn prove(&self, ps: &mut ProverState) -> SliceClaim {
         setup_for(self.n_blocks).prove_reduction_precomputed(
             &self.z_packed,
             &self.a_packed,
@@ -289,15 +289,15 @@ pub fn r1cs_digest() -> [u8; 32] {
 }
 
 /// **Flock reduction only** (prover): run flock's BLAKE2s zerocheck + lincheck
-/// over `blocks` and return the two [`PackedWitnessClaims`] on the committed
-/// witness `q_flock`, `ab` (`A∘B`, lincheck) and `c` (`C`, zerocheck), along
-/// with the regenerated packed witness (already flattened to the committed
-/// `F64` packing). The sub-proof scalars ride the shared transcript stream
-/// (`ps.add_scalar` at the protocol points); flock runs natively in the tower
-/// field on the shared sponge. Does NOT open the PCS: the caller discharges the
-/// returned claims via [`crate::pcs::open`] (as [`crate::cpu`]'s prove does).
+/// over `blocks` and return the one [`SliceClaim`] on the committed witness
+/// `q_flock`, along with the regenerated packed witness (already flattened to
+/// the committed `F64` packing). The sub-proof scalars ride the shared
+/// transcript stream (`ps.add_scalar` at the protocol points); flock runs
+/// natively in the tower field on the shared transcript. Does NOT open the PCS: the
+/// caller discharges the returned claim via [`crate::pcs::open`] (as
+/// [`crate::cpu`]'s prove does).
 #[cfg(test)]
-fn prove_reduction(blocks: &[Compression], ps: &mut ProverState) -> (Vec<F64>, PackedWitnessClaims) {
+fn prove_reduction(blocks: &[Compression], ps: &mut ProverState) -> (Vec<F64>, SliceClaim) {
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
     let mut q_flock = vec![F64::ZERO; z_packed.len()];
     flatten_packed_into(&z_packed, &mut q_flock);
@@ -314,7 +314,7 @@ fn build_qflock(blocks: &[Compression]) -> Vec<F64> {
 
 /// **Flock reduction only** (verifier): mirror of `prove_reduction`. Replay
 /// the zerocheck + lincheck sub-proofs straight off the shared stream (each
-/// scalar bound as it is read), and recover the two `(ab, c)` claims on `q_flock`
+/// scalar bound as it is read), and recover the one claim on `q_flock`
 /// for the PCS to discharge, plus the reassembled reduction claims
 /// ([`ReductionReplay`]). The statement is already bound (the seed, the announced
 /// sizes, and the commitment root on the stream), so nothing else enters here.
@@ -322,88 +322,48 @@ pub fn verify_reduction(n_blocks: usize, vs: &mut VerifierState) -> Result<Reduc
     setup_for(n_blocks).verify_reduction(vs)
 }
 
-/// One flock claim as a tower [`crate::pcs::RingSwitchClaim`]: the quirky point
-/// splits at the packing boundary. Its univariate-skip coordinate `z_skip`
-/// covers exactly the `k_skip = LOG_PACKING = 6` packed variables, so the
-/// packing prefix is the 64 φ8-Lagrange weights at `z_skip`, and the WHOLE
-/// multilinear tail `x_inner_rest ++ x_outer` is the suffix point (`q_flock` has
-/// `2^(K_LOG + n_log − 6)` words, and no coordinate is split off into the
-/// prefix).
-fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
-    let prefix_weights: Vec<F192> = lagrange_weights_naive(LOG_PACKING, z.point.z_skip);
-    let mut suffix_point: Vec<F192> = z.point.x_inner_rest.clone();
-    suffix_point.extend_from_slice(&z.point.x_outer);
-    // Length invariant: prefix (6) + suffix == K_LOG + n_blocks_log, i.e. the
-    // suffix spans exactly the committed q_flock cube.
+/// One reduction claim as a tower [`crate::pcs::RingSwitchClaim`]: the
+/// `2^K_SKIP` bit slices and the suffix point they live at, which is the WHOLE
+/// multilinear tail of the quirky point (`q_flock` has `2^(K_LOG + n_log − 6)`
+/// words, and the packing prefix is exactly the skipped coordinates, so nothing
+/// is split off into it). The family arrives transmitted and checked, by
+/// flock's reduction, so there is nothing to tie here.
+fn ring_claim(claim: &SliceClaim, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
     assert_eq!(
-        suffix_point.len(),
+        claim.suffix_point.len(),
         qflock_vars,
         "ring-switch suffix must span the q_flock cube"
     );
-    // Precomputed s_hat_v (prover side): flock's reduction captures the 128
-    // bit-slice MLEs w.r.t. its OWN 128-bit packing, whose prefix absorbs
-    // z_skip AND the first inner-rest coordinate `c`; the 64-bit packing here
-    // keeps `c` in the suffix. The 64-wide values recombine linearly: 64-word
-    // `y = 2y' + b` is the b-half of 128-word `y'`, and bit `i` of that half
-    // is bit `i + 64b` of the 128-word, so
-    //     s64[i] = (1+c)·s128[i] + c·s128[i+64].
-    // Lincheck already captures the 64 slices expected by the K ring switch.
-    // Zerocheck's fused kernel captures two 64-slice banks around the first
-    // suffix coordinate; fold that coordinate here without rescanning q_flock.
-    let s_hat_v = captured.and_then(|s| match s.len() {
-        PACKING_WIDTH => Some(s.to_vec()),
-        n if n == 2 * PACKING_WIDTH && !z.point.x_inner_rest.is_empty() => {
-            let c = z.point.x_inner_rest[0];
-            Some(
-                (0..PACKING_WIDTH)
-                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH])
-                    .collect(),
-            )
-        }
-        _ => None,
-    });
+    assert_eq!(claim.s_hat_v.len(), PACKING_WIDTH);
     crate::pcs::RingSwitchClaim {
-        prefix_weights,
-        suffix_point,
-        value: z.value,
-        s_hat_v,
+        suffix_point: claim.suffix_point.clone(),
+        s_hat_v: Some(claim.s_hat_v.clone()),
     }
 }
 
-/// Package the prover's reduction claims ([`PackedWitnessClaims`]) as a
-/// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's `(ab, c)`
-/// validity in the same opening as leanVM's point claims. `offset` is `q_flock`'s
-/// slot in the committed stack; the opener slices `q_flock` from there.
-pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessClaims) -> crate::pcs::RingSwitchOpen {
+/// Package the prover's reduction claim ([`SliceClaim`]) as a
+/// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's validity in the
+/// same opening as leanVM's point claims. `offset` is `q_flock`'s slot in the
+/// committed stack; the opener slices `q_flock` from there.
+pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &SliceClaim) -> crate::pcs::RingSwitchOpen {
     let qflock_vars = qflock_kappa(n_blocks);
     crate::pcs::RingSwitchOpen {
         offset,
         qflock_vars,
-        prebound: 1,
-        claims: vec![
-            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qflock_vars),
-            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qflock_vars),
-        ],
+        claims: vec![ring_claim(reduced, qflock_vars)],
     }
 }
 
-/// Verifier counterpart of [`ring_switch_open`]: package the recovered `(ab, c)`
-/// claims (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the
-/// same statement data; the transmitted opening travels separately (read off the
+/// Verifier counterpart of [`ring_switch_open`]: package the recovered claim
+/// (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the same
+/// statement data; the transmitted opening travels separately (read off the
 /// `openings` hint channel by the caller).
-pub fn ring_switch_verify(
-    n_blocks: usize,
-    offset: usize,
-    ab: ZClaim,
-    c: ZClaim,
-    ab_s_hat_v: &[F192],
-) -> crate::pcs::RingSwitchVerify {
+pub fn ring_switch_verify(n_blocks: usize, offset: usize, claim: &SliceClaim) -> crate::pcs::RingSwitchVerify {
     let qflock_vars = qflock_kappa(n_blocks);
     crate::pcs::RingSwitchVerify {
         offset,
         qflock_vars,
-        reconstructed: vec![ab_s_hat_v.to_vec()],
-        claims: vec![ring_claim(&ab, None, qflock_vars), ring_claim(&c, None, qflock_vars)],
+        claims: vec![ring_claim(claim, qflock_vars)],
     }
 }
 
@@ -496,7 +456,7 @@ mod tests {
     }
 
     /// The Flock reduction (zerocheck + lincheck) is a clean, self-contained
-    /// unit: run WITHOUT any PCS open, the prover's `(ab, c)` claims on the
+    /// unit: run WITHOUT any PCS open, the prover's claim on the
     /// committed witness `q_flock` are exactly what the verifier recovers by
     /// replaying the sub-proofs. This is the seam the PCS builds on.
     #[test]
@@ -509,7 +469,7 @@ mod tests {
 
         // Prover: commit, then run ONLY the reduction (no PCS open).
         let mut ps = ProverState::new(b"reduce", &[]);
-        let _committed = crate::pcs::commit(&mut ps, &stacked.q, crate::pcs::LOG_INV_RATE);
+        let _committed = crate::pcs::commit(&mut ps, &stacked.q, stacked.shape, crate::pcs::LOG_INV_RATE);
         let (z_packed, reduced) = prove_reduction(&blocks, &mut ps);
         let bundle = ps.into_proof();
 
@@ -522,18 +482,17 @@ mod tests {
         let _root = crate::pcs::read_commitment(&mut vs).unwrap();
         let replay = verify_reduction(blocks.len(), &mut vs).expect("reduction verifies");
 
-        // Prover and verifier agree on the claims left for the PCS.
-        assert_eq!(reduced.ab.claim, replay.ab, "ab claim mismatch");
-        assert_eq!(reduced.c.claim, replay.c, "c claim mismatch");
+        // Prover and verifier agree on the claim left for the PCS.
+        assert_eq!(reduced, replay.claim, "reduction claim mismatch");
 
-        // A mismatched transcript domain diverges the sponge, so the recovered
+        // A mismatched transcript domain diverges the state, so the recovered
         // claims must NOT match the prover's (the reduction is transcript-bound).
         let mut vs_bad = VerifierState::new(b"different", &bundle, &[]);
         let _root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
         if let Ok(replay_b) = verify_reduction(blocks.len(), &mut vs_bad) {
             assert!(
-                replay_b.ab != replay.ab || replay_b.c != replay.c,
-                "a diverged sponge must not reproduce the prover's claims"
+                replay_b.claim != replay.claim,
+                "a diverged transcript must not reproduce the prover's claim"
             );
         }
     }
@@ -566,7 +525,7 @@ mod tests {
         }];
 
         let mut ps = ProverState::new(b"vstack", &[]);
-        let committed = crate::pcs::commit(&mut ps, &stacked.q, crate::pcs::LOG_INV_RATE);
+        let committed = crate::pcs::commit(&mut ps, &stacked.q, stacked.shape, crate::pcs::LOG_INV_RATE);
         let (_z, reduced) = prove_reduction(&blocks, &mut ps);
         let ring = ring_switch_open(blocks.len(), offset, &reduced);
         crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
@@ -576,15 +535,15 @@ mod tests {
             let mut vs = VerifierState::new(label, &bundle, &[]);
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
-            let ring = ring_switch_verify(blocks.len(), offset, replay.ab, replay.c, &replay.lc_claim.s_hat_v);
-            crate::pcs::verify(&mut vs, points, &ring, stacked.m, crate::pcs::LOG_INV_RATE, &root)
+            let ring = ring_switch_verify(blocks.len(), offset, &replay.claim);
+            crate::pcs::verify(&mut vs, points, &ring, stacked.shape, crate::pcs::LOG_INV_RATE, &root)
                 .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")
         };
 
         run(b"vstack", &points).expect("validity verifies");
 
-        // A mismatched transcript (different domain) diverges the shared sponge,
+        // A mismatched transcript (different domain) diverges the shared state,
         // so the stacked opening must be rejected.
         assert!(
             run(b"different-domain", &points).is_err(),
