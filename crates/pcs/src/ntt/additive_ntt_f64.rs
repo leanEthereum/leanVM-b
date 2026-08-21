@@ -84,7 +84,7 @@ impl AdditiveNttF64 {
     /// `span_get` is F_2-linear in the block index, so the six deeper twiddles are
     /// the block's own contribution plus a fixed correction per sub-block index:
     /// one scan of the three basis rows replaces seven.
-    fn twiddles_radix8(&self, layer: usize, block: usize) -> [F64; 7] {
+    pub(crate) fn twiddles_radix8(&self, layer: usize, block: usize) -> [F64; 7] {
         let l = self.log_domain_size();
         let (v0, v1, v2) = (
             &self.evals[l - layer - 1],

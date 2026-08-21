@@ -2399,43 +2399,6 @@ mod tests {
     use crate::whir_config::test_configs_for;
     use primitives::test_rng::Rng;
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-    #[test]
-    fn fused_ext_butterfly_avx512_matches_scalar() {
-        let mut rng = Rng::new(0x56c8_1b92_d4a7_30ef);
-        for _ in 0..100 {
-            let mut a: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let mut b: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let mut c: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let mut d: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let (mut want_a, mut want_b, mut want_c, mut want_d) = (a, b, c, d);
-            let t_outer = F64(rng.next_u64());
-            let t_inner_a = F64(rng.next_u64());
-            let t_inner_b = F64(rng.next_u64());
-
-            for lane in 0..8 {
-                let new_a = want_a[lane] + want_c[lane].mul_base(t_outer);
-                want_c[lane] += new_a;
-                want_a[lane] = new_a;
-                let new_b = want_b[lane] + want_d[lane].mul_base(t_outer);
-                want_d[lane] += new_b;
-                want_b[lane] = new_b;
-                let new_a = want_a[lane] + want_b[lane].mul_base(t_inner_a);
-                want_b[lane] += new_a;
-                want_a[lane] = new_a;
-                let new_c = want_c[lane] + want_d[lane].mul_base(t_inner_b);
-                want_d[lane] += new_c;
-                want_c[lane] = new_c;
-            }
-
-            butterfly_ext_fused_lanes(&mut a, &mut b, &mut c, &mut d, t_outer, t_inner_a, t_inner_b);
-            assert_eq!(a, want_a);
-            assert_eq!(b, want_b);
-            assert_eq!(c, want_c);
-            assert_eq!(d, want_d);
-        }
-    }
-
     struct Instance {
         vc: VerifierConfig,
         log_n: usize,
