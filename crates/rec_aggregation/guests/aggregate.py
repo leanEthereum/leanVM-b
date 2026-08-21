@@ -298,9 +298,20 @@ MERKLE_TWEAK_IDX = WOTS_PK_TWEAK_IDX + 1     # tweak index of merkle level 0
 MERKLE_BIT_CELLS = WORDS_PER_VALUE * LOG_LIFETIME  # one 1-cell bit word per level
 MERKLE_BIT_BLOCKS = LOG_LIFETIME / 4
 
-# Digits packed per digest lane: W bits each in GF(2^64)'s monomial budget
-# (the lane's leftover top bits are ground to zero by the signer).
+# Lane 0 holds the first DIGITS_PER_WORD digits, W bits each in GF(2^64)'s
+# monomial budget; the next digit straddles the lane boundary and the rest sit in
+# lane 1 (D's leftover top two bits are ground to zero by the signer).
 DIGITS_PER_WORD = V / 2
+# Digit DIGITS_PER_WORD straddles the lane boundary, its low bit at STRADDLE_BIT
+# of lane 0 and its high two at the bottom of lane 1. Multiplying a lane literal
+# by a monomial cannot cross that boundary, so the digit enters the cell as one
+# two-lane constant e·2^STRADDLE_BIT, dispatched from its own value.
+STRADDLE_BIT = W * DIGITS_PER_WORD
+STRADDLE_WEIGHTS = [0, 2 ** STRADDLE_BIT, 2 * 2 ** STRADDLE_BIT, 3 * 2 ** STRADDLE_BIT, 4 * 2 ** STRADDLE_BIT, 5 * 2 ** STRADDLE_BIT, 6 * 2 ** STRADDLE_BIT, 7 * 2 ** STRADDLE_BIT]
+# Lane 1's first digit sits LANE_1_SHIFT bits in, the straddling digit having
+# taken the two below it. Riding the shift on the lane's Y instead of on every
+# weight keeps both lanes on the same 8^j constants, which materialize once.
+LANE_1_SHIFT = W * (DIGITS_PER_WORD + 1) - 2 ** LOG_WORD_BITS
 TIP_CELLS = WORDS_PER_VALUE * V    # the V chain tips, one cell each
 WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE2s block
 
@@ -2278,11 +2289,12 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once; arm k walks the remaining
     # CHAIN_STEPS-k steps and returns the tip cell plus the digit literal. The
-    # product of the digits is the target sum (g^{Σe_i}); the digits, weighted
-    # by CHAIN_LENGTH^i inside each 64-bit lane (DIGITS_PER_WORD digits per
-    # lane, GF(2^64)'s monomial budget, with each lane's leftover top bits
-    # ground to zero by the signer), reconstruct the two lanes of D's first
-    # cell, combined as `acc_lo + acc_hi·Y`.
+    # product of the digits is the target sum (g^{Σe_i}); the digits, weighted by
+    # CHAIN_LENGTH^j within their own 64-bit lane (GF(2^64)'s monomial budget,
+    # with D's leftover top two bits ground to zero by the signer), reconstruct
+    # the two lanes of D's first cell, combined as `acc_lo + acc_hi·Y·2^LANE_1_SHIFT`.
+    # The one digit crossing the lane boundary takes a second dispatch on the
+    # same range-checked value, contributing STRADDLE_WEIGHTS[e] to the cell whole.
     tips = StackBuf(TIP_CELLS)
     digit_product = 1
     chain_tweaks = tweak_table * GEN ** WORDS_PER_VALUE  # chain i's tweaks start at cell (1+CHAIN_STEPS·i)
@@ -2311,12 +2323,15 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         t, e = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: walk(chain_start[0], chain_tweaks, pp, k))
         tips[i] = t
         digit_product = digit_product * digit[0]
-        acc_hi = acc_hi + e * weight  # e_i in its monomial subspace of lane 1
-        weight = weight * CHAIN_LENGTH
+        if i == DIGITS_PER_WORD:
+            straddle = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: STRADDLE_WEIGHTS[k])
+        else:
+            acc_hi = acc_hi + e * weight  # e_i in its monomial subspace of lane 1
+            weight = weight * CHAIN_LENGTH
         chain_tweaks = chain_tweaks * GEN ** (WORDS_PER_VALUE * CHAIN_STEPS)
     assert digit_product == GEN ** TARGET_SUM
-    # Both lanes packed into D's first 128-bit cell.
-    assert acc_lo + acc_hi * Y_TOWER == digest[0]
+    # Both lanes and the straddling digit, packed into D's first 128-bit cell.
+    assert acc_lo + acc_hi * (Y_TOWER * 2 ** LANE_1_SHIFT) + straddle == digest[0]
 
     # WOTS public-key leaf = standard BLAKE2s over prefix + V tips: WOTS_PK_BLOCKS
     # full blocks, carrying the chaining value between instructions.

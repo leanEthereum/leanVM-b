@@ -124,11 +124,11 @@ Define $\IncEnc(P,m,\rho,\ep)$ by computing
 \[
   D=\Th\!\left(P,\mathsf{tweak}_{\mathrm{enc}}(\ep),m\concat\rho\concat 0^{64}\right).
 \]
-Write $D=D_0\concat D_1$, where $D_0$ and $D_1$ are $n/2$-bit strings. For $q\in\{0,1\}$, let $d_q\in\{0,\ldots,2^{n/2}-1\}$ be the integer whose $n/2$-bit little-endian encoding is $D_q$. For $0\leq r<v/2$, set
+Let $d\in\{0,\ldots,2^n-1\}$ be the integer whose $n$-bit little-endian encoding is $D$. For $0\leq i<v$, set
 \[
-  x_{qv/2+r}=\left\lfloor\frac{d_q}{2^{wr}}\right\rfloor\bmod 2^w.
+  x_i=\left\lfloor\frac{d}{2^{wi}}\right\rfloor\bmod 2^w.
 \]
-Return $x=(x_0,\ldots,x_{v-1})$ if bit $wv/2=63$ of both $d_0$ and $d_1$ is zero and $x\in\mathcal C$; otherwise return $\bot$.
+Return $x=(x_0,\ldots,x_{v-1})$ if $d<2^{wv}$, that is if the top $n-wv=2$ bits of $D$ are zero, and $x\in\mathcal C$; otherwise return $\bot$.
 
 \begin{definition}[Hash chain]
 For a chain index $i$, epoch $\ep$, start index $k$, number of steps $s$, and value $x\in\mathcal H$, define $\Chain_{\Th,i,\ep}(P,k,s,x)$ recursively by
