@@ -909,7 +909,7 @@ unsafe fn compress_lanes<S: Lanes32>(h: &mut [S; 8], m: *const u32, t: u64, last
 /// obvious form, a backend twice as wide (two vectors per state word), needs 32
 /// state vectors live across a round, which is the whole NEON register file, so
 /// the allocator spills and the reloads land on the very chain the interleaving
-/// was meant to hide: measured, that form buys 9% where this one buys 24%.
+/// was meant to hide, so it buys back only a fraction of what this one does.
 ///
 /// So the rounds are `#[inline(never)]` instead. Each call loads its 16 state
 /// vectors, does its 128 instructions and stores 16 back, which keeps one
@@ -1130,11 +1130,11 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], 
 /// their groups; the batched entry points handle any count and scalar-tail the
 /// remainder.
 ///
-/// Measured single-threaded on AVX-512, 4.1 to 5.6 GB/s across the leaf sizes
-/// `pcs::merkle` dispatches (`batched_throughput`).
+/// `batched_throughput` reports the rate across the leaf sizes `pcs::merkle`
+/// dispatches.
 ///
 /// Getting there took three fixes, each worth recording because the first
-/// attempt at this measured 1.7 to 1.9 GB/s on the same shapes:
+/// attempt at this ran several times slower on the same shapes:
 ///
 /// - The `SIGMA` index must be a compile-time literal (the unrolled `rounds!`).
 ///   As a runtime index the compiler holds the message in registers and turns
@@ -1151,14 +1151,13 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], 
 /// Four lanes is narrow enough that the round's 4-way parallelism cannot cover
 /// the chain through a G function: a block is 1360 vector instructions, which an
 /// M4 P-core could retire in 340 cycles at 4 per cycle, against 660 cycles of
-/// chain through the ten rounds. So it ran at half the width, 1.39 to 1.54 GB/s.
-/// Choosing each rotation for latency rather than instruction count
-/// (`arm::rot4`, 33 cycles of chain per G down to 28) and interleaving two
-/// independent groups (`compress_pair`) bring it to 1.9 to 2.2 GB/s, 1.36x,
-/// within about 10% of what the instruction count alone allows. Two things that
-/// mattered on AVX-512 do not matter here: the transpose network is worth 1 to
-/// 4% once the chain is covered rather than the factor it was worth there, and
-/// LLVM already places the message correctly for 4 lanes.
+/// chain through the ten rounds. So it ran at half the width. Choosing each
+/// rotation for latency rather than instruction count (`arm::rot4`, 33 cycles of
+/// chain per G down to 28) and interleaving two independent groups
+/// (`compress_pair`) bring it close to what the instruction count alone allows.
+/// Two things that mattered on AVX-512 do not matter here: the transpose network
+/// is worth little once the chain is covered, rather than the factor it was
+/// worth there, and LLVM already places the message correctly for 4 lanes.
 pub const LANES: usize = if cfg!(all(target_arch = "x86_64", target_feature = "avx512f")) {
     16
 } else if cfg!(target_arch = "x86_64") {

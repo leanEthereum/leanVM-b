@@ -15,21 +15,12 @@
 //! # Cooldown
 //!
 //! On a thermally-limited host, back-to-back passes measure the power budget
-//! rather than the prover. Measured on an M4 Max MacBook Pro (16 in, high power
-//! mode, on AC) at the 820-signature XMSS workload:
-//!
-//! | cooldown before each pass | proving |
-//! |---------------------------|---------|
-//! | none                      |  3.14 s |
-//! | 1 s                       |  2.59 s |
-//! | 3 s                       |  1.85 s |
-//! | 6 s                       |  1.72 s |
-//!
-//! That is a 1.8x spread with no code change, and it is *stable* within a run,
-//! so a confidence interval does not reveal it. [`Plan::cooldown`] inserts idle
-//! time before each measured pass; use ~6 s on an Apple laptop and none on a
-//! server-class host. A/B comparisons are only meaningful between runs that
-//! used the same cooldown.
+//! rather than the prover. On an Apple laptop the spread between no cooldown and
+//! a generous one is wider than most changes worth measuring, and it is *stable*
+//! within a run, so a confidence interval does not reveal it. [`Plan::cooldown`]
+//! inserts idle time before each measured pass; use ~6 s on an Apple laptop and
+//! none on a server-class host. A/B comparisons are only meaningful between runs
+//! that used the same cooldown.
 
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};

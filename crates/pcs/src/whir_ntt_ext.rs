@@ -317,8 +317,8 @@ fn fused_butterflies_ext<const N: usize, const P: usize, const T: usize>(
     // to transpose anyway) saves the reloads, but the rows never leave L1 and a
     // tile leaves only its own width of independent work to cover the
     // reduction's dependent PMULL folds, where a row leaves the whole lane
-    // count: it measures 26% worse here, and 14% worse again on the base
-    // encode.
+    // count. Measured both directions: the tile is worse here, and worse again
+    // when the base encode's radix-8 group is given it.
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     {
         let ptrs: [*mut u64; N] = std::array::from_fn(|k| rows[k].as_mut_ptr().cast());

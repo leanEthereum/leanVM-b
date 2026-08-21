@@ -181,8 +181,8 @@ pub mod aarch64 {
     /// PMULL-by-0x1B fold, and a shift-XOR fold of the ≤4-bit overflow (exact:
     /// ov·0x1B fits in 8 bits). LLVM lowers the tail onto the scalar ports,
     /// which run free next to the PMULL-saturated vector pipes: best throughput
-    /// of the variants tried, in both register-chain and array loops, and within
-    /// 3% of the best latency measured.
+    /// of the variants tried, in both register-chain and array loops, and close
+    /// to the best latency of any of them.
     ///
     /// # Safety
     /// Requires the `aes` target feature; see [`pmull`].

@@ -63,11 +63,9 @@ pub fn num_threads() -> usize {
 /// and the OS wants a core. Saturating the cluster means any interference
 /// deschedules a worker mid-dispatch, and every barrier then waits for it.
 ///
-/// Measured at the 820-signature XMSS workload, M4 Max (12 P + 4 E):
-/// 11 performance workers prove in 1.373 s, 12 in 1.578 s, a 13% penalty for
-/// using one more core. On a homogeneous 16-thread Zen 4 host the same
-/// reservation is a wash (4.331 s vs 4.319 s, inside the ±0.5% interval): there
-/// are no efficiency workers to take over the reserved core's share, so the
+/// On an M4 Max, holding one performance worker back beats using it. On a
+/// homogeneous Zen 4 host the same reservation is a wash: there are no
+/// efficiency workers to take over the reserved core's share, so the
 /// barrier-jitter win and the lost core cancel. Hence the condition is "are there
 /// efficiency workers", not a fixed count.
 fn default_topology() -> Topology {
