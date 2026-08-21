@@ -321,18 +321,53 @@ unsafe fn fold_one_row_neon_unchecked_8(table_data: *const F192, bytes_ptr: *con
     }
 }
 
-/// Fold post-URM row `row` of `packed`: the NEON kernel where it exists, the
+/// The NEON kernel's x86 twin: same 128-bit fold of `(c0, c1)` with `c2` in a
+/// scalar register, same unroll. Without it the innermost operation of both
+/// round-two kernels, run once per post-URM row, is a bounds-checked loop with a
+/// trip count the compiler cannot see.
+///
+/// # Safety
+/// Caller must guarantee `table_data` points to >= 8 x 256 valid F192 entries
+/// (an `n_chunks >= 8` table) and `bytes_ptr` to >= 8 valid bytes.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn fold_one_row_x86_unchecked_8(table_data: *const F192, bytes_ptr: *const u8) -> F192 {
+    use core::arch::x86_64::*;
+    unsafe {
+        let entry = |chunk: usize| &*table_data.add(chunk * 256 + (*bytes_ptr.add(chunk)) as usize);
+        let first = entry(0);
+        // Reads `c0` and `c1`; an entry is three u64, so the pair is in bounds.
+        let mut acc = _mm_loadu_si128((&raw const first.c0).cast());
+        let mut c2 = first.c2;
+        for chunk in 1..8 {
+            let e = entry(chunk);
+            acc = _mm_xor_si128(acc, _mm_loadu_si128((&raw const e.c0).cast()));
+            c2 ^= e.c2;
+        }
+        F192 {
+            c0: _mm_cvtsi128_si64(acc) as u64,
+            c1: _mm_cvtsi128_si64(_mm_unpackhi_epi64(acc, acc)) as u64,
+            c2,
+        }
+    }
+}
+
+/// Fold post-URM row `row` of `packed`: the vector kernel where one exists, the
 /// scalar table lookup elsewhere. Requires an 8-chunk `table` (the k_skip=6
 /// protocol size) and `row` within `packed`.
 #[inline(always)]
 fn fold_row(table: &UniSkipFoldTable, packed: &[u8], row: usize) -> F192 {
+    // SAFETY (both arms): the table has 8 chunks and `row` addresses 8 in-bounds
+    // bytes, both asserted by the caller.
     #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: the table has 8 chunks and `row` addresses 8 in-bounds bytes,
-        // both asserted by the caller.
-        unsafe { fold_one_row_neon_unchecked_8(table.data.as_ptr(), packed.as_ptr().add(row * 8)) }
+    unsafe {
+        fold_one_row_neon_unchecked_8(table.data.as_ptr(), packed.as_ptr().add(row * 8))
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        fold_one_row_x86_unchecked_8(table.data.as_ptr(), packed.as_ptr().add(row * 8))
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         let n_chunks = table.n_chunks;
         table.fold_one_row(&packed[row * n_chunks..(row + 1) * n_chunks])
@@ -909,24 +944,20 @@ mod tests {
     // Optimized fused — UniSkipFoldTable + fold_one_row, then naive cross-check.
     // ----------------------------------------------------------------------
 
-    /// NEON `fold_one_row_neon_unchecked_8` matches scalar `fold_one_row`.
-    #[cfg(target_arch = "aarch64")]
+    /// Whichever `fold_row` kernel this target reaches, against the scalar table
+    /// lookup. The vector arms are unchecked and hand-unrolled for eight chunks,
+    /// so this is what stands between a mispaired chunk and a wrong proof.
     #[test]
-    fn fold_one_row_neon_matches_scalar() {
-        let k_skip = 6;
+    fn fold_row_matches_scalar() {
         let mut rng = Rng::new(70);
-        let z = rng.ext();
-        let table = UniSkipFoldTable::new(k_skip, z);
-
+        let table = UniSkipFoldTable::new(6, rng.ext());
         for _ in 0..256 {
-            let mut bytes = [0u8; 8];
-            for byte in bytes.iter_mut() {
-                *byte = (rng.next_u64() & 0xff) as u8;
-            }
-            let scalar = table.fold_one_row(&bytes);
-            // SAFETY: on aarch64; bytes has 8 entries; table has 8 chunks.
-            let neon = unsafe { fold_one_row_neon_unchecked_8(table.data.as_ptr(), bytes.as_ptr()) };
-            assert_eq!(scalar, neon, "fold mismatch bytes={bytes:02x?}");
+            let bytes: [u8; 8] = std::array::from_fn(|_| (rng.next_u64() & 0xff) as u8);
+            assert_eq!(
+                table.fold_one_row(&bytes),
+                fold_row(&table, &bytes, 0),
+                "bytes={bytes:02x?}"
+            );
         }
     }
 
