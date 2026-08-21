@@ -258,7 +258,7 @@ impl QuaternaryLayerState {
             }
         };
         let window = |base: usize, destination: &mut [F192]| {
-            for (row, slot) in destination.chunks_exact_mut(4).enumerate() {
+            for (row, slot) in destination.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 fold_row(base + row, slot);
             }
         };

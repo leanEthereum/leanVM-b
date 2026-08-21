@@ -68,7 +68,7 @@ impl InvNttTableByteSingleGf8 {
             if (w & (w - 1)) == 0 {
                 continue; // skip powers of 2 (already written)
             }
-            let lo_bit = w & w.wrapping_neg(); // w & -w
+            let lo_bit = 1usize << w.trailing_zeros();
             let parent = w ^ lo_bit;
             // Borrow-checker friendly: read parent + bit_v slices, then write entry.
             let (parent_off, bit_off, entry_off) = (parent * ell, lo_bit * ell, w * ell);

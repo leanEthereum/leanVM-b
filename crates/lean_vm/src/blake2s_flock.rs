@@ -433,8 +433,8 @@ mod tests {
                 assert_eq!(slot(j, SLOT_B0 + k), b[k]);
             }
             let mut input = [0u8; 64];
-            for (s, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
-                s.copy_from_slice(&w.0.to_le_bytes());
+            for (s, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
+                *s = w.0.to_le_bytes();
             }
             let h = primitives::blake2s::hash(&input);
             let word = |o: usize| F64(u64::from_le_bytes(h[o..o + 8].try_into().unwrap()));

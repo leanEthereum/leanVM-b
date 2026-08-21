@@ -46,8 +46,8 @@ use primitives::field::{F64, F192};
 /// leak into the in-circuit version.
 pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
-        slot.copy_from_slice(&w.0.to_le_bytes());
+    for (slot, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
+        *slot = w.0.to_le_bytes();
     }
     let d = primitives::blake2s::hash(&input);
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))

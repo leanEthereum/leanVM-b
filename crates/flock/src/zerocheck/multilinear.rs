@@ -272,7 +272,7 @@ impl UniSkipFoldTable {
                 if (v & (v - 1)) == 0 {
                     continue; // skip powers of 2 (already written)
                 }
-                let lo_bit = v & v.wrapping_neg();
+                let lo_bit = 1usize << v.trailing_zeros();
                 let parent = v ^ lo_bit;
                 data[j * 256 + v] = data[j * 256 + parent] + data[j * 256 + lo_bit];
             }

@@ -1685,10 +1685,10 @@ pub(crate) fn aggregate_tampered(
     hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
     hints.push("message", vec![val16(&message[..16]), val16(&message[16..])]);
     // Four cells an entry: one hashed block of the epoch digest.
-    for quad in tweak_table(epoch).chunks_exact(4) {
+    for quad in tweak_table(epoch).as_chunks::<4>().0 {
         hints.push("tweaks", quad.iter().map(|t| val16(t)).collect());
     }
-    for quad in merkle_bit_cells(epoch).chunks_exact(4) {
+    for quad in merkle_bit_cells(epoch).as_chunks::<4>().0 {
         hints.push("merkle_bits", quad.to_vec());
     }
     // Two keys per entry, so the guest can halve its loop frames; the odd key out
