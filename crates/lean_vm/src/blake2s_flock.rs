@@ -38,6 +38,7 @@ use flock::blake2s::{
 };
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
+use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
 /// One side of the Flock reduction's output on the committed witness `q_flock`:
@@ -206,8 +207,12 @@ fn flatten_packed_into(packed: &[u64], out: &mut [F64]) {
     assert_eq!(out.len(), packed.len(), "q_flock's window is the wrong size");
     // In parallel, straight into the committed column's window: at scale this
     // moves 270 MB, so an intermediate buffer copied again afterwards is not
-    // affordable.
-    parallel::fill(out, |i| F64(packed[i]));
+    // affordable. Nothing reads the window until the commitment encodes it, by
+    // which time a column this size is long evicted, so it publishes streamed.
+    // SAFETY: `F64` is `repr(transparent)` over `u64`, so the two slices are the
+    // same bytes.
+    let words: &mut [u64] = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) };
+    parallel::chunks_mut_zip(words, packed, 1 << 14, |_, dst, src| Stream::new().copy(dst, src));
 }
 
 /// Build the committed `q_flock` column (flock's packed witness) for `blocks`, padded
