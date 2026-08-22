@@ -1370,7 +1370,9 @@ fn gen_verify(
 /// candidate `mu` in `MU_MIN..=MU_MAX` (mirrored by the soundness test's
 /// residual-log cap).
 const MU_MIN: usize = 22;
-const MU_MAX: usize = 28;
+const MU_MAX: usize = lean_vm::pcs::MAX_MU;
+
+const _: () = assert!(MU_MIN >= lean_vm::pcs::MIN_MU);
 
 /// The guest's baked buffer caps, which `placeholder_map` compiles in and
 /// `gen_verify` admits against: one definition, so a hinted shape can never

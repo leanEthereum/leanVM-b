@@ -154,6 +154,11 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         return Err(Error::PublicInput);
     }
     let l = layout(&prog.prog, log_mem, taus, *public_input);
+    // The caps bound each announced log on its own; what the PCS is configured for
+    // is the stacked size they imply, which they do not bound.
+    if !(pcs::MIN_MU..=pcs::MAX_MU).contains(&l.shape.mu) {
+        return Err(Error::PublicInput);
+    }
     Ok((l, log_inv_rate))
 }
 
