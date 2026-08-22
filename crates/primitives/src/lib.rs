@@ -6,6 +6,7 @@ pub mod bits;
 pub mod blake2s;
 pub mod field;
 pub mod multilinear;
+pub mod sha3;
 pub mod stream;
 
 #[cfg(feature = "test-util")]
