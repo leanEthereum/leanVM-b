@@ -22,9 +22,9 @@ theorem verifierHashQueryCost_eq_if (input : OracleWorld.Domain) :
 def globalFirstLaneExactFullProjection {α : Type}
     (chainPrefix : RevealProbeOracleSimulation.ActionTrace
       GlobalChainValueIndex)
-    (result : (α × GlobalExactTracedState) ×
+    (result : (α × GlobalHighDirectTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) :
-    (α × GlobalExactTracedState) ×
+    (α × GlobalHighDirectTracedState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
   (result.1, chainPrefix ++ result.2.chainActions)
 
@@ -33,10 +33,10 @@ theorem map_eagerTrace_erasure_eq {α : Type}
     (chainPrefix : RevealProbeOracleSimulation.ActionTrace
       GlobalChainValueIndex)
     (firstLane : OracleComp GlobalFirstLaneWorld
-      (α × GlobalExactTracedState))
+      (α × GlobalHighDirectTracedState))
     (direct : OracleComp
       (RevealProbeOracleSimulation.World GlobalChainValueIndex)
-      (α × GlobalExactTracedState))
+      (α × GlobalHighDirectTracedState))
     (herase : GlobalFirstLaneErases firstLane direct) :
     (fun result => (result.1, chainPrefix ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
@@ -101,7 +101,7 @@ theorem relTriple_globalHighExactMonitored_firstLane_action
   classical
   letI : DecidableEq
       (((OracleWorld + SigningSpec).Range input ×
-        GlobalExactTracedState) ×
+        GlobalHighDirectTracedState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) :=
     Classical.decEq _
   apply relTriple_of_evalDist_map_eq_with_support_general
@@ -150,7 +150,7 @@ def SourceFirstLaneExactGoodStateRelation
     (right : ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest))
     (leftState : SourceExactTracedState)
-    (firstLaneState : GlobalExactTracedState)
+    (firstLaneState : GlobalHighDirectTracedState)
     (trace : FirstLaneOracleSimulation.ActionTrace
       GlobalChainValueIndex) : Prop :=
   ∃ highState : GlobalHighExactMonitoredState,
@@ -217,7 +217,7 @@ theorem relTriple_sourceExact_firstLane_action
       trajectoryProgrammedGlobalChainKeygen)
     (input : (OracleWorld + SigningSpec).Domain)
     (leftState : SourceExactTracedState)
-    (firstLaneState : GlobalExactTracedState)
+    (firstLaneState : GlobalHighDirectTracedState)
     (trace : FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hstate : SourceFirstLaneExactGoodStateRelation left right.1 leftState
       firstLaneState trace)
@@ -459,7 +459,7 @@ theorem map_globalHighExactMonitored_verifier_action_eq_firstLane
           ((keyView, base), edgeHigh) input).run highState =
       (fun result => (result.1, highState.1.1.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-          ((globalHighDirectExactTracedVerifierImpl keyView edgeHigh input).run
+          ((globalHighDirectTracedVerifierImpl keyView edgeHigh input).run
             (globalHighExactStateProjection highState))).run := by
     unfold globalHighExactMonitoredVerifierImpl
     simp only [StateT.run_mk, Functor.map_map]
@@ -494,7 +494,7 @@ theorem relTriple_globalHighExactMonitored_firstLane_verifier_action
               (globalHighExactStateProjection highState))).run)) := by
   classical
   letI : DecidableEq
-      ((OracleWorld.Range input × GlobalExactTracedState) ×
+      ((OracleWorld.Range input × GlobalHighDirectTracedState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) :=
     Classical.decEq _
   apply relTriple_of_evalDist_map_eq_with_support_general
@@ -531,7 +531,7 @@ theorem relTriple_sourceExact_firstLane_verifier_action
       trajectoryProgrammedGlobalChainKeygen)
     (input : OracleWorld.Domain)
     (leftState : SourceExactTracedState)
-    (firstLaneState : GlobalExactTracedState)
+    (firstLaneState : GlobalHighDirectTracedState)
     (trace : FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hstate : SourceFirstLaneExactGoodStateRelation left right.1 leftState
       firstLaneState trace)
@@ -664,7 +664,7 @@ theorem relTriple_sourceExact_firstLane_verifier_boundedHit
     (computation : OracleComp OracleWorld α)
     (hbound : computation.IsQueryBoundP (· matches .inr _) fuel)
     (leftState : SourceExactTracedState)
-    (firstLaneState : GlobalExactTracedState)
+    (firstLaneState : GlobalHighDirectTracedState)
     (trace : FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hstate : SourceFirstLaneExactGoodStateRelation left right.1 leftState
       firstLaneState trace)
@@ -688,9 +688,9 @@ theorem relTriple_sourceExact_firstLane_verifier_boundedHit
             (trace ++ firstLaneResult.2))) := by
   let leftFinish := fun (value : α) (state : SourceExactTracedState) =>
     (pure (value, state) : ProbComp (α × SourceExactTracedState))
-  let rightFinish := fun (value : α) (state : GlobalExactTracedState) =>
+  let rightFinish := fun (value : α) (state : GlobalHighDirectTracedState) =>
     (pure (value, state) : OracleComp GlobalFirstLaneWorld
-      (α × GlobalExactTracedState))
+      (α × GlobalHighDirectTracedState))
   have hgeneric := relTriple_simulateQ_bind_bounded_firstLane right.1.2
     sourceExactTracedVerifierImpl
     (globalFirstLaneExactTracedVerifierImpl right.1.1 right.2)
@@ -741,8 +741,8 @@ def sourceAppendVerificationState
 
 def firstLaneAppendVerificationState
     (_secretKey : SecretKey) (_forgery : Forgery)
-    (_initialState finalState : GlobalExactTracedState) :
-    GlobalExactTracedState :=
+    (_initialState finalState : GlobalHighDirectTracedState) :
+    GlobalHighDirectTracedState :=
   finalState
 
 theorem SourceFirstLaneExactGoodStateRelation.appendVerification
@@ -756,7 +756,7 @@ theorem SourceFirstLaneExactGoodStateRelation.appendVerification
       trajectoryProgrammedGlobalChainKeygen)
     (forgery : Forgery)
     (leftInitial leftFinal : SourceExactTracedState)
-    (firstLaneInitial firstLaneFinal : GlobalExactTracedState)
+    (firstLaneInitial firstLaneFinal : GlobalHighDirectTracedState)
     (initialTrace finalTrace :
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
     (hinitial : SourceFirstLaneExactGoodStateRelation left right.1
@@ -847,7 +847,7 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
       (sourceGlobalExactTracedDetailedExecution adversary left)
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
         ((globalFirstLaneExactTracedDetailedExecution adversary right.1.1
-          right.2).run (GlobalExactTracedState.initial
+          right.2).run (GlobalHighDirectTracedState.initial
             (globalFilteredCausalKeygenState right.1.1)))).run)
       (fun leftResult firstLaneResult =>
         ((leftResult.1 = firstLaneResult.1.1 ∧
@@ -864,8 +864,8 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
   let highInitial : GlobalHighExactMonitoredState :=
     (((⟨globalFilteredCausalKeygenState right.1.1,
       some AdaptiveRevealMonitor.State.empty, []⟩, []), []))
-  let firstLaneInitial : GlobalExactTracedState :=
-    GlobalExactTracedState.initial
+  let firstLaneInitial : GlobalHighDirectTracedState :=
+    GlobalHighDirectTracedState.initial
       (globalFilteredCausalKeygenState right.1.1)
   have hinitial : SourceFirstLaneExactGoodStateRelation left right.1
       sourceInitial firstLaneInitial [] := by
@@ -900,7 +900,7 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
           appendVerificationEncodingObservation secretKey forgery
             initial.1.1.1 verified.2.1.1 initial.1.2), verified.2.2))
   let rightFinish := fun (forgery : Forgery)
-    (initial : GlobalExactTracedState) => do
+    (initial : GlobalHighDirectTracedState) => do
       let verified ← (simulateQ
         (globalFirstLaneExactTracedVerifierImpl right.1.1 right.2)
         (Concrete.scheme.verify left.publicKey forgery.epoch forgery.message
@@ -969,7 +969,7 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
         ((forgery, verified.1),
           sourceAppendVerificationState secretKey forgery state verified.2)
       let firstFinish := fun verified :
-          ((Bool × GlobalExactTracedState) ×
+          ((Bool × GlobalHighDirectTracedState) ×
             FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (((forgery, verified.1.1),
           firstLaneAppendVerificationState right.1.1.secretKey forgery

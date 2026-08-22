@@ -11,7 +11,7 @@ abbrev GlobalFirstLaneExactCoupledProgramResult :=
   (((ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
       (GlobalChainEdgeIndex → Digest)) ×
-    (((Forgery × Bool) × GlobalExactTracedState) ×
+    (((Forgery × Bool) × GlobalHighDirectTracedState) ×
       FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex))
 
 noncomputable def globalFirstLaneExactCoupledProgram
@@ -21,7 +21,7 @@ noncomputable def globalFirstLaneExactCoupledProgram
   let execution ← (simulateQ
     (FirstLaneOracleSimulation.eagerTraceImpl right.1.2)
     ((globalFirstLaneExactTracedDetailedExecution adversary right.1.1
-      right.2).run (GlobalExactTracedState.initial
+      right.2).run (GlobalHighDirectTracedState.initial
         (globalFilteredCausalKeygenState right.1.1)))).run
   pure (right, execution)
 
@@ -89,7 +89,7 @@ noncomputable def globalFirstLaneExactCoupledContinuation
   let execution ← (simulateQ
     (FirstLaneOracleSimulation.eagerTraceImpl base)
     ((globalFirstLaneExactTracedDetailedExecution adversary keyResult.1
-      keyResult.2).run (GlobalExactTracedState.initial
+      keyResult.2).run (GlobalHighDirectTracedState.initial
         (globalFilteredCausalKeygenState keyResult.1)))).run
   pure (base, ((keyResult, execution.1), execution.2))
 
@@ -144,7 +144,7 @@ theorem globalFirstLaneExactCoupledContinuation_eq_eagerAfterBase
         globalHighDirectKeygenAfterParameter parameter)
       (fun keyResult =>
         (globalFirstLaneExactTracedDetailedExecution adversary keyResult.1
-          keyResult.2).run (GlobalExactTracedState.initial
+          keyResult.2).run (GlobalHighDirectTracedState.initial
             (globalFilteredCausalKeygenState keyResult.1))))
 
 theorem evalDist_globalFirstLaneExactCoupledProjection_eq_eagerExperiment

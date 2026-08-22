@@ -183,7 +183,7 @@ theorem globalHighState_eq_of_projection_trace_consistent
     (table : GlobalChainValueIndex → Digest)
     (left : GlobalMonitoredTracedState)
     (right : GlobalHighExactMonitoredState)
-    (hprojection : GlobalExactTracedState.mk left.1.causal left.2 =
+    (hprojection : GlobalHighDirectTracedState.mk left.1.causal left.2 =
       globalHighExactStateProjection right)
     (htrace : left.1.trace = right.1.1.trace)
     (hleft : left.1.TraceConsistent table)
@@ -214,7 +214,7 @@ theorem globalFirstLaneExactCoupledProgram_support_info
       ((simulateQ
         (FirstLaneOracleSimulation.eagerTraceImpl result.1.1.2)
         ((globalFirstLaneExactTracedDetailedExecution adversary result.1.1.1
-          result.1.2).run (GlobalExactTracedState.initial
+          result.1.2).run (GlobalHighDirectTracedState.initial
             (globalFilteredCausalKeygenState result.1.1.1)))).run) := by
   unfold globalFirstLaneExactCoupledProgram at hresult
   rw [mem_support_bind_iff] at hresult
@@ -295,13 +295,13 @@ theorem exists_globalHighMonitored_of_coupled_support
         (simulateQ
           (FirstLaneOracleSimulation.eagerTraceImpl result.1.1.2)
           ((globalFirstLaneExactTracedDetailedExecution adversary
-            result.1.1.1 result.1.2).run (GlobalExactTracedState.initial
+            result.1.1.1 result.1.2).run (GlobalHighDirectTracedState.initial
               (globalFilteredCausalKeygenState result.1.1.1)))).run) := by
     rw [support_map]
     exact ⟨result.2, hexecution, rfl⟩
   rw [simulate_globalFirstLaneEagerTrace_chainProjection] at hmapped
   rw [globalFirstLaneErase_exactTracedDetailedExecution adversary
-    result.1.1.1 result.1.2 (GlobalExactTracedState.initial
+    result.1.1.1 result.1.2 (GlobalHighDirectTracedState.initial
       (globalFilteredCausalKeygenState result.1.1.1))] at hmapped
   rw [← map_globalHighMonitoredDetailedExecution_full_projection]
     at hmapped
@@ -359,7 +359,7 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
     congrArg Prod.fst hprojection
   have hdirect :
       ((highResult.1.1.1, highResult.1.2),
-        (highResult.2.1, GlobalExactTracedState.mk
+        (highResult.2.1, GlobalHighDirectTracedState.mk
           highResult.2.2.1.causal highResult.2.2.2)) =
       ((right.1.1.1, right.1.2),
         (right.2.1.1, right.2.1.2)) :=
@@ -373,7 +373,7 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
   have houtcome : highResult.2.1 = right.2.1.1 :=
     congrArg (fun direct => direct.2.1) hdirect
   have hstateProjection :
-      GlobalExactTracedState.mk highResult.2.2.1.causal highResult.2.2.2 =
+      GlobalHighDirectTracedState.mk highResult.2.2.1.causal highResult.2.2.2 =
         right.2.1.2 :=
     congrArg (fun direct => direct.2.2) hdirect
   have hfullKey : highResult.1 = right.1 := by

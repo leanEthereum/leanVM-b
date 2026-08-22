@@ -660,6 +660,21 @@ theorem validObservedSignEpochs_append
       validObservedSignEpochs left ++ validObservedSignEpochs right := by
   simp [validObservedSignEpochs]
 
+@[simp] theorem validObservedSignEpochs_singleton_query
+    (epoch : Epoch) (output : HashOutput) :
+    validObservedSignEpochs [.query epoch output] = [] := by
+  by_cases hvalid : ActionValid (.query epoch output) <;>
+    simp [validObservedSignEpochs, validActions, hvalid,
+      EncodingMonitor.observedSignEpochs]
+
+theorem validObservedSignEpochs_singleton_sign
+    (epoch : Epoch) (output : HashOutput) :
+    validObservedSignEpochs [.sign epoch output] =
+      if ActionValid (.sign epoch output) then [epoch] else [] := by
+  by_cases hvalid : ActionValid (.sign epoch output) <;>
+    simp [validObservedSignEpochs, validActions, hvalid,
+      EncodingMonitor.observedSignEpochs]
+
 theorem validActions_sublist_of_sublist
     {left right : List EncodingMonitor.ObservedAction}
     (hsub : left.Sublist right) :

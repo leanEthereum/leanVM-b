@@ -9,49 +9,9 @@ namespace XmssSecurity.CappedChain
 set_option maxRecDepth 1000000
 set_option linter.constructorNameAsVariable false
 
-theorem globalHighDirectExactTracedMappedAdversaryImpl_eq_direct
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    globalHighDirectExactTracedMappedAdversaryImpl keyView edgeHigh =
-      globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh := by
-  funext input state
-  rcases input with (worldInput | request)
-  · rcases worldInput with n | hashInput
-    · simp [globalHighDirectExactTracedMappedAdversaryImpl,
-        globalHighDirectExactTracedOracleImpl,
-        globalHighDirectTracedMappedAdversaryImpl,
-        globalHighDirectBaseMappedAdversaryImpl,
-        globalHighDirectOracleExecution,
-        globalExactTracedLift, globalExactTracedNextState,
-        map_eq_bind_pure_comp]
-      rfl
-    · simp [globalHighDirectExactTracedMappedAdversaryImpl,
-        globalHighDirectExactTracedOracleImpl,
-        globalHighDirectTracedMappedAdversaryImpl,
-        globalHighDirectBaseMappedAdversaryImpl,
-        globalHighDirectOracleExecution,
-        globalExactTracedLift, globalExactTracedNextState,
-        map_eq_bind_pure_comp]
-      rfl
-  · simp [globalHighDirectExactTracedMappedAdversaryImpl,
-      globalHighDirectExactTracedSigningImpl,
-      globalHighDirectTracedMappedAdversaryImpl,
-      globalHighDirectBaseMappedAdversaryImpl,
-      globalExactTracedLift,
-      globalExactTracedNextState, map_eq_bind_pure_comp]
-
-theorem globalHighDirectExactTracedVerifierImpl_eq_direct
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    globalHighDirectExactTracedVerifierImpl keyView edgeHigh =
-      globalHighDirectTracedVerifierImpl keyView edgeHigh := by
-  funext input state
-  simp [globalHighDirectExactTracedVerifierImpl,
-    globalHighDirectTracedVerifierImpl, map_eq_bind_pure_comp]
-
 def globalHighExactFullProjection {α : Type}
     (result : α × GlobalHighExactMonitoredState) :
-    (α × GlobalExactTracedState) ×
+    (α × GlobalHighDirectTracedState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
   ((result.1, globalHighExactStateProjection result.2), result.2.1.1.trace)
 
@@ -65,27 +25,17 @@ theorem map_globalHighExactMonitored_adversary_full_query
         (globalHighExactMonitoredMappedAdversaryImpl
           ((keyView, base), edgeHigh) input).run state =
       (fun result : (((OracleWorld + SigningSpec).Range input ×
-          GlobalExactTracedState) ×
+          GlobalHighDirectTracedState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (result.1, state.1.1.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-          ((globalHighDirectExactTracedMappedAdversaryImpl keyView edgeHigh
+          ((globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh
             input).run (globalHighExactStateProjection state))).run := by
-  let augment := fun result :
-      (((OracleWorld + SigningSpec).Range input ×
-        GlobalHighDirectTracedState) ×
-        RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2),
-      result.2)
   have hold := map_globalHighMonitored_adversary_full_query keyView base
     edgeHigh input state.1.1 state.1.2
-  have hlifted := congrArg (fun candidate => augment <$> candidate) hold
   rw [globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
-  rw [globalHighDirectExactTracedMappedAdversaryImpl_eq_direct]
   simpa [globalHighExactFullProjection, globalHighExactQueryResult,
-    globalHighExactStateProjection, augment,
-    Functor.map_map, Function.comp_def, simulateQ_map, bind_map_left] using
-      hlifted
+    globalHighExactStateProjection] using hold
 
 theorem map_globalHighMonitored_adversary_exact_query
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -93,29 +43,19 @@ theorem map_globalHighMonitored_adversary_exact_query
     (edgeHigh : GlobalChainEdgeIndex → Digest)
     (input : (OracleWorld + SigningSpec).Domain)
     (state : GlobalMonitoredTracedState) :
-    (fun result => ((result.1, GlobalExactTracedState.mk
+    (fun result => ((result.1, GlobalHighDirectTracedState.mk
       result.2.1.causal result.2.2), result.2.1.trace)) <$>
         (globalHighMonitoredMappedAdversaryImpl
           ((keyView, base), edgeHigh) input).run state =
       (fun result : (((OracleWorld + SigningSpec).Range input ×
-          GlobalExactTracedState) ×
+          GlobalHighDirectTracedState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (result.1, state.1.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-          ((globalHighDirectExactTracedMappedAdversaryImpl keyView edgeHigh
-            input).run (GlobalExactTracedState.mk state.1.causal state.2))).run := by
-  let augment := fun result :
-      (((OracleWorld + SigningSpec).Range input ×
-        GlobalHighDirectTracedState) ×
-        RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2),
-      result.2)
-  have hold := map_globalHighMonitored_adversary_full_query keyView base
-    edgeHigh input state.1 state.2
-  have hlifted := congrArg (fun candidate => augment <$> candidate) hold
-  rw [globalHighDirectExactTracedMappedAdversaryImpl_eq_direct]
-  simpa [augment, Functor.map_map,
-    Function.comp_def, simulateQ_map, bind_map_left] using hlifted
+          ((globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh
+            input).run (GlobalHighDirectTracedState.mk state.1.causal state.2))).run := by
+  exact map_globalHighMonitored_adversary_full_query keyView base edgeHigh
+    input state.1 state.2
 
 theorem map_simulate_globalHighMonitored_exact_of_query
     {spec : OracleSpec ι}
@@ -123,34 +63,34 @@ theorem map_simulate_globalHighMonitored_exact_of_query
     (left : QueryImpl spec
       (StateT GlobalMonitoredTracedState ProbComp))
     (right : QueryImpl spec
-      (StateT GlobalExactTracedState
+      (StateT GlobalHighDirectTracedState
         (OracleComp
           (RevealProbeOracleSimulation.World GlobalChainValueIndex))))
     (hquery : ∀ (input : spec.Domain)
       (state : GlobalMonitoredTracedState),
       (fun result : spec.Range input × GlobalMonitoredTracedState =>
-        ((result.1, GlobalExactTracedState.mk result.2.1.causal result.2.2),
+        ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
           result.2.1.trace)) <$>
           (left input).run state =
         (fun result : ((spec.Range input ×
-            GlobalExactTracedState) ×
+            GlobalHighDirectTracedState) ×
             RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
           (result.1, state.1.trace ++ result.2)) <$>
           (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
             ((right input).run
-              (GlobalExactTracedState.mk state.1.causal state.2))).run)
+              (GlobalHighDirectTracedState.mk state.1.causal state.2))).run)
     (computation : OracleComp spec α)
     (state : GlobalMonitoredTracedState) :
     (fun result : α × GlobalMonitoredTracedState =>
-      ((result.1, GlobalExactTracedState.mk result.2.1.causal result.2.2),
+      ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
         result.2.1.trace)) <$>
         (simulateQ left computation).run state =
-      (fun result : ((α × GlobalExactTracedState) ×
+      (fun result : ((α × GlobalHighDirectTracedState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (result.1, state.1.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
           ((simulateQ right computation).run
-            (GlobalExactTracedState.mk state.1.causal state.2))).run := by
+            (GlobalHighDirectTracedState.mk state.1.causal state.2))).run := by
   induction computation using OracleComp.inductionOn generalizing state with
   | pure value => simp
   | query_bind input next ih =>
@@ -159,10 +99,10 @@ theorem map_simulate_globalHighMonitored_exact_of_query
       simp_rw [ih]
       let project := fun result :
           spec.Range input × GlobalMonitoredTracedState =>
-        ((result.1, GlobalExactTracedState.mk result.2.1.causal result.2.2),
+        ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
           result.2.1.trace)
       let tail := fun head : ((spec.Range input ×
-          GlobalExactTracedState) ×
+          GlobalHighDirectTracedState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (fun result => (result.1, head.2 ++ result.2)) <$>
           (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl table)
@@ -185,18 +125,18 @@ theorem map_simulate_globalHighMonitored_adversary_exact
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (state : GlobalMonitoredTracedState) :
     (fun result : α × GlobalMonitoredTracedState =>
-      ((result.1, GlobalExactTracedState.mk result.2.1.causal result.2.2),
+      ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
         result.2.1.trace)) <$>
         (simulateQ (globalHighMonitoredMappedAdversaryImpl
           ((keyView, base), edgeHigh)) computation).run state =
-      (fun result : ((α × GlobalExactTracedState) ×
+      (fun result : ((α × GlobalHighDirectTracedState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (result.1, state.1.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
           ((simulateQ
-            (globalHighDirectExactTracedMappedAdversaryImpl keyView edgeHigh)
+            (globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh)
             computation).run
-              (GlobalExactTracedState.mk state.1.causal state.2))).run := by
+              (GlobalHighDirectTracedState.mk state.1.causal state.2))).run := by
   apply map_simulate_globalHighMonitored_exact_of_query
   exact map_globalHighMonitored_adversary_exact_query keyView base edgeHigh
 
@@ -207,27 +147,20 @@ theorem map_simulate_globalHighExactMonitored_verifier_full_projection
     (computation : OracleComp OracleWorld α)
     (state : GlobalHighExactMonitoredState) :
     (fun result : α × GlobalMonitoredTracedState =>
-      ((result.1, GlobalExactTracedState.mk result.2.1.causal
+      ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal
         result.2.2), result.2.1.trace)) <$>
         (simulateQ (globalHighMonitoredVerifierImpl
           ((keyView, base), edgeHigh)) computation).run state.1 =
-      (fun result : ((α × GlobalExactTracedState) ×
+      (fun result : ((α × GlobalHighDirectTracedState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (result.1, state.1.1.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
           ((simulateQ
-            (globalHighDirectExactTracedVerifierImpl keyView edgeHigh)
+            (globalHighDirectTracedVerifierImpl keyView edgeHigh)
             computation).run (globalHighExactStateProjection state))).run := by
-  let augment := fun result : ((α × GlobalHighDirectTracedState) ×
-      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2),
-      result.2)
-  have hold := map_simulate_globalHighMonitored_verifier_full_projection
-    keyView base edgeHigh computation state.1.1 state.1.2
-  have hlifted := congrArg (fun candidate => augment <$> candidate) hold
-  rw [globalHighDirectExactTracedVerifierImpl_eq_direct]
-  simpa [globalHighExactStateProjection, augment, Functor.map_map,
-    Function.comp_def, simulateQ_map, bind_map_left] using hlifted
+  simpa [globalHighExactStateProjection] using
+    map_simulate_globalHighMonitored_verifier_full_projection keyView base
+      edgeHigh computation state.1.1 state.1.2
 
 theorem map_simulate_globalHighMonitored_verifier_exact
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -236,28 +169,20 @@ theorem map_simulate_globalHighMonitored_verifier_exact
     (computation : OracleComp OracleWorld α)
     (state : GlobalMonitoredTracedState) :
     (fun result : α × GlobalMonitoredTracedState =>
-      ((result.1, GlobalExactTracedState.mk result.2.1.causal result.2.2),
+      ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
         result.2.1.trace)) <$>
         (simulateQ (globalHighMonitoredVerifierImpl
           ((keyView, base), edgeHigh)) computation).run state =
-      (fun result : ((α × GlobalExactTracedState) ×
+      (fun result : ((α × GlobalHighDirectTracedState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
         (result.1, state.1.trace ++ result.2)) <$>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
           ((simulateQ
-            (globalHighDirectExactTracedVerifierImpl keyView edgeHigh)
+            (globalHighDirectTracedVerifierImpl keyView edgeHigh)
             computation).run
-              (GlobalExactTracedState.mk state.1.causal state.2))).run := by
-  let augment := fun result : ((α × GlobalHighDirectTracedState) ×
-      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-    ((result.1.1, GlobalExactTracedState.mk result.1.2.1 result.1.2.2),
-      result.2)
-  have hold := map_simulate_globalHighMonitored_verifier_full_projection
-    keyView base edgeHigh computation state.1 state.2
-  have hlifted := congrArg (fun candidate => augment <$> candidate) hold
-  rw [globalHighDirectExactTracedVerifierImpl_eq_direct]
-  simpa [augment, Functor.map_map, Function.comp_def, simulateQ_map,
-    bind_map_left] using hlifted
+              (GlobalHighDirectTracedState.mk state.1.causal state.2))).run := by
+  exact map_simulate_globalHighMonitored_verifier_full_projection keyView
+    base edgeHigh computation state.1 state.2
 
 set_option maxHeartbeats 3000000 in
 theorem map_globalHighMonitoredDetailedExecution_full_projection
@@ -266,27 +191,27 @@ theorem map_globalHighMonitoredDetailedExecution_full_projection
     (base : GlobalChainValueIndex → Digest)
     (edgeHigh : GlobalChainEdgeIndex → Digest) :
     (fun result : (Forgery × Bool) × GlobalMonitoredTracedState =>
-      ((result.1, GlobalExactTracedState.mk result.2.1.causal result.2.2),
+      ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
         result.2.1.trace)) <$>
         globalHighMonitoredDetailedExecution adversary
           ((keyView, base), edgeHigh) =
       (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-        ((globalHighDirectExactTracedDetailedExecution adversary keyView
-          edgeHigh).run (GlobalExactTracedState.initial
+        ((globalHighDirectTracedDetailedExecution adversary keyView
+          edgeHigh).run (GlobalHighDirectTracedState.initial
             (globalFilteredCausalKeygenState keyView)))).run := by
   let initial : GlobalMonitoredTracedState :=
     (⟨globalFilteredCausalKeygenState keyView,
       some AdaptiveRevealMonitor.State.empty, []⟩, [])
   let project := fun result : Forgery × GlobalMonitoredTracedState =>
-    ((result.1, GlobalExactTracedState.mk result.2.1.causal result.2.2),
+    ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
       result.2.1.trace)
-  let tail := fun head : ((Forgery × GlobalExactTracedState) ×
+  let tail := fun head : ((Forgery × GlobalHighDirectTracedState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-    (fun result : ((Bool × GlobalExactTracedState) ×
+    (fun result : ((Bool × GlobalHighDirectTracedState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
       (((head.1.1, result.1.1), result.1.2), head.2 ++ result.2)) <$>
       (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-        ((simulateQ (globalHighDirectExactTracedVerifierImpl keyView edgeHigh)
+        ((simulateQ (globalHighDirectTracedVerifierImpl keyView edgeHigh)
           (Concrete.scheme.verify keyView.publicKey head.1.1.epoch
             head.1.1.message head.1.1.signature)).run head.1.2)).run
   have htail (handled : Forgery × GlobalMonitoredTracedState) :
@@ -296,7 +221,7 @@ theorem map_globalHighMonitoredDetailedExecution_full_projection
           (Concrete.scheme.verify keyView.publicKey handled.1.epoch
             handled.1.message handled.1.signature)).run handled.2
         pure (((handled.1, verified.1),
-          GlobalExactTracedState.mk verified.2.1.causal verified.2.2),
+          GlobalHighDirectTracedState.mk verified.2.1.causal verified.2.2),
             verified.2.1.trace)) = tail (project handled) := by
     have hvertifier :=
       map_simulate_globalHighMonitored_verifier_exact keyView
@@ -306,13 +231,13 @@ theorem map_globalHighMonitoredDetailedExecution_full_projection
     simpa [tail, project, Functor.map_map] using
       congrArg
       (fun candidate =>
-        (fun result : ((Bool × GlobalExactTracedState) ×
+        (fun result : ((Bool × GlobalHighDirectTracedState) ×
             RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
           (((handled.1, result.1.1), result.1.2), result.2)) <$>
           candidate)
         hvertifier
   unfold globalHighMonitoredDetailedExecution
-    globalHighDirectExactTracedDetailedExecution
+    globalHighDirectTracedDetailedExecution
   simp only [map_bind, StateT.run_mk, simulateQ_bind, WriterT.run_bind',
     map_pure]
   simp_rw [htail]
@@ -342,7 +267,7 @@ def globalHighMonitoredFullProjection
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) :=
   (result.1.1.2,
     (((result.1.1.1, result.1.2),
-      (result.2.1, GlobalExactTracedState.mk result.2.2.1.causal
+      (result.2.1, GlobalHighDirectTracedState.mk result.2.2.1.causal
         result.2.2.2)), result.2.2.1.trace))
 
 
