@@ -11,7 +11,7 @@ The prover's nondeterminism enters through write-once cells that are still unset
 
 The zkDSL's single-slash division $q=a/b$ uses write-once back-solving: it emits \texttt{MUL\_NATIVE} with $q$ as the one unset input and $a$ as the already-written output. Witness generation fills $q=a\,b^{-1}$, while the ordinary multiplication table proves $q b=a$. It costs one VM instruction. Division by zero is undefined. Double slash \texttt{//} remains compile-time integer floor division for sizes and indices; it is not a field operation.
 
-The assertion \texttt{assert a != b} computes $x=a+b$ with \texttt{XOR}, takes a hinted $w=x^{-1}$, forms $p=x\,w$ with \texttt{MUL\_NATIVE}, and writes $1$ to $p$ with \texttt{SET\_CONSTANT}. Memory being write-once, the two writes to $p$ agree only if $p=1$, and $x=0$ forces $p=0$ whatever the hint. Three instructions, and no branch: the condition of a \texttt{JUMP} would be the $\E$-valued $x$, whereas every branch a program actually needs compares $\gen$-powers.
+The assertion \texttt{assert a != b} computes $x=a+b$ with \texttt{XOR}, takes a hinted $w=x^{-1}$, forms $p=x\,w$ with \texttt{MUL\_NATIVE}, and writes $1$ to $p$ with \texttt{SET\_CONSTANT}. Memory being write-once, the two writes to $p$ agree only if $p=1$, and $x=0$ forces $p=0$ whatever the hint.
 
 \subsection{Functions}\label{sec:prog-functions}
 
