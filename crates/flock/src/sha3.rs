@@ -1,15 +1,20 @@
 //! Monolithic `Keccak-f[1600]` R1CS: one R1CS instance per permutation call,
 //! encoding all **24** rounds of theta, rho, pi, chi and iota in one system.
 //!
-//! ## The permutation, not the sponge
+//! ## One absorb, not just the permutation
 //!
-//! SHA3-256 is a sponge, but a sponge is XORs into a state plus a fixed pad,
-//! and both are free over GF(2). So this circuit encodes the permutation alone:
-//! 1600 free input bits in, 1600 pinned bits out, and the caller (the VM guest,
-//! or `primitives::sha3` natively) does the absorbing. That keeps `pad10*1` and
-//! the `0x06` domain byte out of the R1CS entirely, since for a message of
-//! KNOWN length they are a constant bit pattern the caller XORs in before the
-//! call.
+//! The circuit is `permute(prev ^ (msg || 0...0))`: one whole sponge step,
+//! taking the running 1600-bit state and a 1088-bit rate block. The XOR is free
+//! over GF(2), which is the whole reason it lives here rather than in the
+//! caller: a guest absorbing a rate block would otherwise spend nine XOR
+//! instructions on it, and seventeen lanes have no 128-bit cell alignment to
+//! spend them on anyway. As it stands ONE VM instruction absorbs 136 bytes,
+//! which is what keeps hashing a long message affordable.
+//!
+//! `pad10*1` and the `0x06` domain byte stay out of the R1CS: for a message of
+//! KNOWN length they are a constant bit pattern in the last rate block, so the
+//! caller supplies them as constants. Every hash in this system has a known
+//! length.
 //!
 //! ## Why the row count is what it is
 //!
@@ -22,9 +27,9 @@
 //!
 //! ```text
 //!   24 rounds x 1,600                                    = 38,400 AND rows
-//!   input state (free) + output state (pinned)           =  3,200
+//!   prev state (free) + rate block (free) + out (pinned) =  4,288
 //!   constant wire                                        =      1
-//!                                              USEFUL_BITS = 41,729 (with pads)
+//!                                              USEFUL_BITS = 42,881 (with pads)
 //! ```
 //!
 //! which needs `K_LOG = 16`. Nothing in the encoding moves that: theta, rho, pi
@@ -46,19 +51,20 @@
 //! with no bit shuffling anywhere.
 //!
 //! ```text
-//!   words   0 ..  25   input state, lanes 0..25 (free)     bits      0 ..  1,600
-//!   word         25    zero pad, so the region is 13 cells bits  1,600 ..  1,664
-//!   words  26 ..  51   output state, lanes 0..25 (pinned)  bits  1,664 ..  3,264
-//!   word         51    zero pad                            bits  3,264 ..  3,328
-//!   words  52 .. 652   24 rounds x 25 lanes of chi ANDs    bits  3,328 .. 41,728
-//!   bit      41,728    constant wire
-//!   bits 41,729 .. 65,536   padding (forced to 0 by empty rows)
+//!   words   0 ..  25   prev state, lanes 0..25   (free)     13 cells
+//!   word         25    zero pad
+//!   words  26 ..  43   rate block, lanes 0..17   (free)       9 cells
+//!   word         43    zero pad
+//!   words  44 ..  69   output state, lanes 0..25 (pinned)    13 cells
+//!   word         69    zero pad
+//!   words  70 .. 670   24 rounds x 25 lanes of chi ANDs
+//!   bit      42,880    constant wire
+//!   bits 42,881 .. 65,536   padding (forced to 0 by empty rows)
 //! ```
 //!
-//! The two pad words keep both state regions exactly thirteen 128-bit VM cells
-//! wide, so the opcode reads and writes whole cells. They are empty rows, so
-//! the R1CS forces them to zero and the bus in turn forces the VM's high lane
-//! of the thirteenth cell to zero.
+//! The pad words keep every region a whole number of 128-bit VM cells, so the
+//! opcode reads and writes whole cells. They are empty rows, so the R1CS forces
+//! them to zero and the bus in turn forces the VM's matching lane to zero.
 //!
 //! ## Constraint shape (`C = I`)
 //!
@@ -115,26 +121,39 @@ pub use primitives::sha3::{PI, RC, RHO};
 /// Words a state region occupies: 25 lanes plus one zero pad, so the region is
 /// thirteen 128-bit VM cells.
 pub const STATE_WORDS: usize = 26;
+/// Lanes of the sponge rate, `1088 / 64`.
+pub const RATE_LANES: usize = primitives::sha3::RATE / 8;
+/// Words the rate block occupies: 17 lanes plus one zero pad, so nine cells.
+pub const RATE_WORDS: usize = RATE_LANES + 1;
 
-pub const W_IN: usize = 0;
-pub const W_OUT: usize = W_IN + STATE_WORDS; // 26
-pub const W_AND: usize = W_OUT + STATE_WORDS; // 52
-pub const W_CONST: usize = W_AND + N_ROUNDS * STATE_LANES; // 652
+pub const W_PREV: usize = 0;
+pub const W_MSG: usize = W_PREV + STATE_WORDS; // 26
+pub const W_OUT: usize = W_MSG + RATE_WORDS; // 44
+pub const W_AND: usize = W_OUT + STATE_WORDS; // 70
+pub const W_CONST: usize = W_AND + N_ROUNDS * STATE_LANES; // 670
 
-pub const IN_BASE: usize = W_IN * LANE_BITS; // 0
-pub const OUT_BASE: usize = W_OUT * LANE_BITS; // 1,664
-pub const AND_BASE: usize = W_AND * LANE_BITS; // 3,328
-pub const Z_CONST_POS: usize = W_CONST * LANE_BITS; // 41,728
-pub const USEFUL_BITS: usize = Z_CONST_POS + 1; // 41,729
+pub const PREV_BASE: usize = W_PREV * LANE_BITS; // 0
+pub const MSG_BASE: usize = W_MSG * LANE_BITS; // 1,664
+pub const OUT_BASE: usize = W_OUT * LANE_BITS; // 2,816
+pub const AND_BASE: usize = W_AND * LANE_BITS; // 4,480
+pub const Z_CONST_POS: usize = W_CONST * LANE_BITS; // 42,880
+pub const USEFUL_BITS: usize = Z_CONST_POS + 1; // 42,881
 
 const _: () = assert!(USEFUL_BITS <= K, "Keccak-f[1600] does not fit the 2^K_LOG block");
 const _: () = assert!(STATE_WORDS.is_multiple_of(2), "a state region must be whole VM cells");
+const _: () = assert!(RATE_WORDS.is_multiple_of(2), "a rate block must be whole VM cells");
 
-/// Bit base of input state lane `i`.
+/// Bit base of previous-state lane `i`.
 #[inline]
-fn in_lane(i: usize) -> usize {
+fn prev_lane(i: usize) -> usize {
     debug_assert!(i < STATE_LANES);
-    IN_BASE + LANE_BITS * i
+    PREV_BASE + LANE_BITS * i
+}
+/// Bit base of rate-block lane `i`.
+#[inline]
+fn msg_lane(i: usize) -> usize {
+    debug_assert!(i < RATE_LANES);
+    MSG_BASE + LANE_BITS * i
 }
 /// Bit base of output state lane `i`.
 #[inline]
@@ -153,17 +172,42 @@ fn and_lane(r: usize, i: usize) -> usize {
 // One permutation input: the 1600-bit state.
 // ---------------------------------------------------------------------------
 
-/// One `Keccak-f[1600]` input: the 25 lanes of the state.
-pub type Compression = [u64; STATE_LANES];
+/// One sponge step: the running state and the rate block absorbed into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Compression {
+    pub prev: [u64; STATE_LANES],
+    pub msg: [u64; RATE_LANES],
+}
 
-/// The permutation this circuit encodes.
+/// The permutation this circuit's absorb ends in.
 pub use primitives::sha3::permute;
 
-/// The padding instance, `f(0)`. Fills unused trailing slots so every batched
-/// block is a valid instance with constant wire 1, as the lincheck const-wire
-/// pin requires.
+impl Compression {
+    /// The permutation's input, `prev ^ (msg || 0...0)`.
+    pub fn absorbed(&self) -> [u64; STATE_LANES] {
+        let mut a = self.prev;
+        for (a, m) in a.iter_mut().zip(&self.msg) {
+            *a ^= m;
+        }
+        a
+    }
+
+    /// The state this step produces.
+    pub fn output(&self) -> [u64; STATE_LANES] {
+        let mut out = self.absorbed();
+        permute(&mut out);
+        out
+    }
+}
+
+/// The padding instance, absorbing a zero block into the zero state. Fills
+/// unused trailing slots so every batched block is a valid instance with
+/// constant wire 1, as the lincheck const-wire pin requires.
 pub fn padding_block() -> Compression {
-    [0u64; STATE_LANES]
+    Compression {
+        prev: [0u64; STATE_LANES],
+        msg: [0u64; RATE_LANES],
+    }
 }
 
 /// Domain separator for this circuit in the Fiat-Shamir seed (`lean_vm::cpu`),
@@ -293,14 +337,26 @@ fn back_pin(u: &[F192], base: usize, side: MatrixSide) -> (Lane, F192) {
 /// row's operand pair.
 fn forward_walk(sink: &mut RowValues, w: &[F192]) {
     sink.bconst(Z_CONST_POS, w[Z_CONST_POS]);
-    // Free-input rows: A = [slot], B = [Z_CONST].
-    for s in IN_BASE..IN_BASE + STATE_LANES * LANE_BITS {
+    // Free-input rows: A = [slot], B = [Z_CONST]. Both the running state and the
+    // rate block are free.
+    for s in PREV_BASE..PREV_BASE + STATE_LANES * LANE_BITS {
+        sink.bconst(s, w[s]);
+    }
+    for s in MSG_BASE..MSG_BASE + RATE_LANES * LANE_BITS {
         sink.bconst(s, w[s]);
     }
 
     // chi's A operand is `1 ^ b1`, so the all-ones lane is a standing operand.
     let ones: Lane = [w[Z_CONST_POS]; LANE_BITS];
-    let mut a: [Lane; STATE_LANES] = std::array::from_fn(|i| from_slot(w, in_lane(i)));
+    // The absorb: `prev ^ (msg || 0...0)`, affine and so free of rows.
+    let mut a: [Lane; STATE_LANES] = std::array::from_fn(|i| {
+        let prev = from_slot(w, prev_lane(i));
+        if i < RATE_LANES {
+            xor(&prev, &from_slot(w, msg_lane(i)))
+        } else {
+            prev
+        }
+    });
 
     for r in 0..N_ROUNDS {
         // theta: C[x] = xor of the column, D[x] = C[x-1] ^ rotl(C[x+1], 1).
@@ -390,7 +446,7 @@ fn marginal_walk_side(side: MatrixSide, u: &[F192]) -> Vec<F192> {
     // Adjoints reaching the constant wire: iota's set bits, and chi's `1 ^ b1`.
     let mut const_adj = F192::ZERO;
 
-    for s in IN_BASE..IN_BASE + STATE_LANES * LANE_BITS {
+    for s in (PREV_BASE..PREV_BASE + STATE_LANES * LANE_BITS).chain(MSG_BASE..MSG_BASE + RATE_LANES * LANE_BITS) {
         let (a, b) = side.split(u[s]);
         m[s] += a;
         u_bconst += b;
@@ -458,11 +514,14 @@ fn marginal_walk_side(side: MatrixSide, u: &[F192]) -> Vec<F192> {
         }
     }
 
-    // The free input state, read as slot lanes.
+    // The absorb, transposed: lane `i` of the permutation's input is
+    // `prev[i] ^ msg[i]`, so its adjoint reaches both free regions.
     for (i, adj) in adj.iter().enumerate() {
-        let base = in_lane(i);
         for (j, &v) in adj.iter().enumerate() {
-            m[base + j] += v;
+            m[prev_lane(i) + j] += v;
+            if i < RATE_LANES {
+                m[msg_lane(i) + j] += v;
+            }
         }
     }
 
@@ -554,13 +613,18 @@ fn build_block_witness_ab_packed_into(input: &Compression, z: &mut [u64], a: &mu
     b[W_CONST] |= 1;
 
     // Free inputs: A = [slot], B = [const], so a == z and b is all ones.
-    for (i, &lane) in input.iter().enumerate() {
-        z[W_IN + i] = lane;
-        a[W_IN + i] = lane;
-        b[W_IN + i] = u64::MAX;
+    for (i, &lane) in input.prev.iter().enumerate() {
+        z[W_PREV + i] = lane;
+        a[W_PREV + i] = lane;
+        b[W_PREV + i] = u64::MAX;
+    }
+    for (i, &lane) in input.msg.iter().enumerate() {
+        z[W_MSG + i] = lane;
+        a[W_MSG + i] = lane;
+        b[W_MSG + i] = u64::MAX;
     }
 
-    let mut s = *input;
+    let mut s = input.absorbed();
     for r in 0..N_ROUNDS {
         // theta
         let mut c = [0u64; 5];
@@ -968,7 +1032,10 @@ mod tests {
     }
 
     fn rand_state(rng: &mut Rng) -> Compression {
-        std::array::from_fn(|_| rng.next_u64())
+        Compression {
+            prev: std::array::from_fn(|_| rng.next_u64()),
+            msg: std::array::from_fn(|_| rng.next_u64()),
+        }
     }
 
     #[test]
@@ -993,7 +1060,8 @@ mod tests {
                 expected[s] = true;
             }
         };
-        claim(IN_BASE, STATE_LANES * LANE_BITS);
+        claim(PREV_BASE, STATE_LANES * LANE_BITS);
+        claim(MSG_BASE, RATE_LANES * LANE_BITS);
         claim(OUT_BASE, STATE_LANES * LANE_BITS);
         claim(AND_BASE, N_ROUNDS * STATE_LANES * LANE_BITS);
         claim(Z_CONST_POS, 1);
@@ -1009,25 +1077,32 @@ mod tests {
         }
         // The two alignment pads sit inside USEFUL_BITS and must be empty rows,
         // which is what forces the VM's thirteenth cell high lane to zero.
-        for pad in [(W_IN + STATE_LANES) * LANE_BITS, (W_OUT + STATE_LANES) * LANE_BITS] {
+        for pad in [
+            (W_PREV + STATE_LANES) * LANE_BITS,
+            (W_MSG + RATE_LANES) * LANE_BITS,
+            (W_OUT + STATE_LANES) * LANE_BITS,
+        ] {
             assert!(!expected[pad], "pad word at bit {pad} must be unclaimed");
         }
     }
 
-    /// The witness's output region holds `permute(input)`. Pins the round
+    /// The witness's output region holds `permute(prev ^ msg)`. Pins the round
     /// constants, the rho offsets, the pi permutation and chi against
-    /// `primitives::sha3`, which is itself pinned by the FIPS 202 vectors.
+    /// `primitives::sha3`, which is itself pinned by the FIPS 202 vectors, and
+    /// pins the absorb.
     #[test]
-    fn witness_encodes_the_permutation() {
+    fn witness_encodes_the_absorb_and_permutation() {
         let mut rng = Rng::new(0x5A3C_0DE5);
         for trial in 0..3 {
             let input = rand_state(&mut rng);
             let z = generate_witness(&[input], 3);
-            let mut expected = input;
-            permute(&mut expected);
+            let expected = input.output();
             for i in 0..STATE_LANES {
                 assert_eq!(read_lane(&z, out_lane(i)), expected[i], "trial {trial}, out lane {i}");
-                assert_eq!(read_lane(&z, in_lane(i)), input[i], "trial {trial}, in lane {i}");
+                assert_eq!(read_lane(&z, prev_lane(i)), input.prev[i], "trial {trial}, prev {i}");
+            }
+            for i in 0..RATE_LANES {
+                assert_eq!(read_lane(&z, msg_lane(i)), input.msg[i], "trial {trial}, msg {i}");
             }
         }
     }
@@ -1099,9 +1174,10 @@ mod tests {
     #[test]
     fn layout_is_the_documented_size() {
         assert_eq!(N_ROUNDS * STATE_LANES * LANE_BITS, 38_400, "chi rows");
-        assert_eq!(USEFUL_BITS, 41_729);
+        assert_eq!(USEFUL_BITS, 42_881);
         assert_eq!(K_LOG, 16);
-        assert_eq!(W_CONST, 652);
+        assert_eq!(W_CONST, 670);
+        assert_eq!(RATE_LANES, 17);
     }
 
     /// The whole reduction, prover and verifier, on one transcript: zerocheck
@@ -1121,7 +1197,13 @@ mod tests {
     /// has: a free input, a chi product, an output pin and the constant wire.
     #[test]
     fn reduction_rejects_tampering() {
-        for bit in [in_lane(3) + 11, and_lane(5, 12) + 40, out_lane(0) + 1, Z_CONST_POS] {
+        for bit in [
+            prev_lane(3) + 11,
+            msg_lane(2) + 5,
+            and_lane(5, 12) + 40,
+            out_lane(0) + 1,
+            Z_CONST_POS,
+        ] {
             let (setup, _, proof) = prove_reduction_for(8, Some(bit));
             let mut vs = fiat_shamir::transcript::VerifierState::new(LABEL, &proof, &[]);
             let rejected = setup.verify_reduction(&mut vs).is_err() || vs.finish().is_err();

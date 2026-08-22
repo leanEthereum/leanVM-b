@@ -239,6 +239,38 @@ pub fn hash_block(block: &[u8; 64]) -> [u8; OUT_LEN] {
     squeeze(&state)
 }
 
+/// Merkle-Damgard chain over [`hash_block`], for the messages the VM cannot
+/// hash in one bite.
+///
+/// `msg` must be a whole number of 32-byte groups, at least two:
+///
+/// ```text
+///   st = sha3_256(msg[0..64])
+///   st = sha3_256(st ‖ group)   for each 32-byte group after the first two
+/// ```
+///
+/// **This is not SHA3-256 of `msg`.** It is a chain of them, and it exists
+/// because the VM's `Keccak` opcode hashes exactly 64 bytes: a guest can chain
+/// that, but it cannot absorb a 136-byte rate block, whose seventeen lanes do
+/// not divide into 128-bit memory cells. Every call site has a fixed length and
+/// a distinct domain tag in its first group, so the encoding stays prefix-free
+/// and the chain is as sound as the compression it iterates. Anything that fits
+/// 64 bytes uses [`hash_block`] and IS plain SHA3-256.
+pub fn hash_md(msg: &[u8]) -> [u8; OUT_LEN] {
+    assert!(
+        msg.len() >= 64 && msg.len().is_multiple_of(32),
+        "hash_md takes whole 32-byte groups"
+    );
+    let mut st = hash_block(msg[..64].try_into().unwrap());
+    for group in msg[64..].chunks_exact(32) {
+        let mut block = [0u8; 64];
+        block[..32].copy_from_slice(&st);
+        block[32..].copy_from_slice(group);
+        st = hash_block(&block);
+    }
+    st
+}
+
 /// Incremental SHA3-256, for the callers that build a message from pieces.
 #[derive(Clone)]
 pub struct Hasher {
@@ -638,6 +670,24 @@ mod tests {
                 assert_eq!(&out[i * OUT_LEN..(i + 1) * OUT_LEN], &want[..], "len {len}, record {i}");
             }
         }
+    }
+
+    /// The chain agrees with itself however the message is grouped, and its
+    /// first link is plain SHA3-256 of the 64 bytes.
+    #[test]
+    fn hash_md_is_a_chain_of_64_byte_hashes() {
+        let msg: Vec<u8> = (0..160u8).collect();
+        assert_eq!(hash_md(&msg[..64]), hash_block(msg[..64].try_into().unwrap()));
+        let mut st = hash_block(msg[..64].try_into().unwrap());
+        for group in msg[64..].chunks_exact(32) {
+            let mut block = [0u8; 64];
+            block[..32].copy_from_slice(&st);
+            block[32..].copy_from_slice(group);
+            st = hash_block(&block);
+        }
+        assert_eq!(hash_md(&msg), st);
+        // A chain is not the sponge over the same bytes: they must not collide.
+        assert_ne!(hash_md(&msg), hash(&msg));
     }
 
     #[test]

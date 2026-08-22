@@ -775,45 +775,47 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Keccak { ins, rest, out } => {
-                    // Lanes 0..8 from four independently-addressed cells, lanes
-                    // 8..26 from the nine consecutive `rest` cells, and the
-                    // permuted state to thirteen consecutive cells at `out`. The
-                    // last cell's high lane is the layout's zero pad.
-                    use crate::sha3_flock::{IN_CELLS, REST_CELLS, STATE_CELLS};
+                Op::Keccak { ins, rest, prev, out } => {
+                    // The rate block: lanes 0..8 from four independently-addressed
+                    // cells, lanes 8..18 from the five consecutive `rest` cells.
+                    // Then thirteen cells of running state, and thirteen of
+                    // result. Each region's last high lane is the layout's pad.
+                    use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
                     let a_in: [u32; IN_CELLS] = ins.map(|o| fp + o);
-                    let (a_rest, a_out) = (fp + rest, fp + out);
-                    let cells: [F192; STATE_CELLS] = std::array::from_fn(|c| {
+                    let (a_rest, a_prev, a_out) = (fp + rest, fp + prev, fp + out);
+                    let msg_cells: [F192; RATE_CELLS] = std::array::from_fn(|c| {
                         if c < IN_CELLS {
                             m.get(a_in[c])
                         } else {
                             m.get(a_rest + (c - IN_CELLS) as u32)
                         }
                     });
+                    let prev_cells: [F192; STATE_CELLS] = std::array::from_fn(|c| m.get(a_prev + c as u32));
                     assert!(
-                        cells.iter().all(|w| w.c2 == 0),
+                        msg_cells.iter().chain(&prev_cells).all(|w| w.c2 == 0),
                         "Keccak state cell must be a canonical 128-bit embedding"
                     );
-                    // Permute, then write the result to the output cells. No table
-                    // constraint covers the permutation (the relation is proven by
-                    // flock, §sha3_flock); the interpreter still computes the
+                    // Absorb and permute, then write the result to the output
+                    // cells. No table constraint covers the relation (it is proven
+                    // by flock, §sha3_flock); the interpreter still computes the
                     // definite state so the output cells are consistent for any
                     // later read.
-                    let state = crate::sha3_flock::permuted(&crate::sha3_flock::compression(&cells));
-                    for (c, &o) in crate::sha3_flock::out_cells(&state).iter().enumerate() {
+                    let step = crate::sha3_flock::compression(&prev_cells, &msg_cells);
+                    for (c, &o) in crate::sha3_flock::out_cells(&step.output()).iter().enumerate() {
                         m.put(a_out + c as u32, o);
                     }
-                    let reads: [F64; 2 * STATE_CELLS] = std::array::from_fn(|i| {
+                    let reads: [F64; crate::sha3_flock::N_CELLS] = std::array::from_fn(|i| {
                         let addr = if i < IN_CELLS {
                             a_in[i]
-                        } else if i < STATE_CELLS {
+                        } else if i < RATE_CELLS {
                             a_rest + (i - IN_CELLS) as u32
+                        } else if i < RATE_CELLS + STATE_CELLS {
+                            a_prev + (i - RATE_CELLS) as u32
                         } else {
-                            a_out + (i - STATE_CELLS) as u32
+                            a_out + (i - RATE_CELLS - STATE_CELLS) as u32
                         };
                         m.bump_access_count(addr)
                     });
-                    let _ = REST_CELLS;
                     keccak.push(Brow {
                         pc,
                         fp,

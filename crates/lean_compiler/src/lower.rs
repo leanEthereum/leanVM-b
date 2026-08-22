@@ -140,6 +140,7 @@ struct Scope {
     /// lazily at the first dominating default-IV compression in this
     /// control-flow scope.
     sha3_pad: Option<Off>,
+    sha3_zero_state: Option<Off>,
 }
 
 struct FnLower<'a> {
@@ -440,6 +441,7 @@ impl FnLower<'_> {
                         FillerOp::Keccak => LOp::Keccak {
                             ins: [fr::ZERO, fr::ZERO, fr::ZERO, fr::ZERO],
                             rest: fr::REST,
+                            prev: fr::PREV,
                             c: fr::PERMUTED,
                         },
                     });
@@ -2159,9 +2161,11 @@ impl FnLower<'_> {
         // two, so the state lands in scratch and the digest is copied over. The
         // copies are the price of a 32-byte answer to a 1600-bit permutation.
         let st = self.alloc_stack(lean_vm::sha3_flock::STATE_CELLS as u32);
+        let prev = self.sha3_zero_state();
         self.emit(LOp::Keccak {
             ins: [a[0], a[1], b[0], b[1]],
             rest,
+            prev,
             c: st,
         });
         for k in 0..2 {
@@ -2174,25 +2178,25 @@ impl FnLower<'_> {
         }
     }
 
-    /// `keccak(state, out)`: the raw permutation, for the sponge sites that
-    /// absorb more than one rate block. Both operands span
-    /// [`lean_vm::sha3_flock::STATE_CELLS`] cells.
+    /// `keccak(prev, block, out)`: one sponge step, for the sites that absorb
+    /// more than one rate block. `prev` and `out` span
+    /// [`lean_vm::sha3_flock::STATE_CELLS`] cells, `block` spans
+    /// [`lean_vm::sha3_flock::RATE_CELLS`].
     fn lower_keccak(&mut self, args: &[Expr]) {
-        assert_eq!(args.len(), 2, "keccak takes two arguments: (state, out)");
-        let cells = lean_vm::sha3_flock::STATE_CELLS as u32;
-        let st_in = self.keccak_state_run(&args[0]);
-        let st_out = self.keccak_state_run(&args[1]);
-        let _ = cells;
+        assert_eq!(args.len(), 3, "keccak takes three arguments: (prev, block, out)");
+        let prev = self.keccak_run(&args[0], lean_vm::sha3_flock::STATE_CELLS);
+        let block = self.keccak_run(&args[1], lean_vm::sha3_flock::RATE_CELLS);
+        let out = self.keccak_run(&args[2], lean_vm::sha3_flock::STATE_CELLS);
         self.emit(LOp::Keccak {
-            ins: [st_in, st_in + 1, st_in + 2, st_in + 3],
-            rest: st_in + lean_vm::sha3_flock::IN_CELLS as u32,
-            c: st_out,
+            ins: [block, block + 1, block + 2, block + 3],
+            rest: block + lean_vm::sha3_flock::IN_CELLS as u32,
+            prev,
+            c: out,
         });
     }
 
-    /// A full 25-lane state operand: thirteen consecutive frame cells.
-    fn keccak_state_run(&mut self, e: &Expr) -> Off {
-        let cells = lean_vm::sha3_flock::STATE_CELLS;
+    /// A consecutive run of `cells` frame cells, bridged from the heap if need be.
+    fn keccak_run(&mut self, e: &Expr, cells: usize) -> Off {
         match self.cell_run(e) {
             CellRun::Stack { base, .. } => base,
             CellRun::Heap { ptr, lo, .. } => {
@@ -2203,6 +2207,18 @@ impl FnLower<'_> {
                 t
             }
         }
+    }
+
+    /// A never-written thirteen-cell run: the zero state a one-block hash starts
+    /// from. Allocated once per scope, and free, since a cell the VM never writes
+    /// reads as zero.
+    fn sha3_zero_state(&mut self) -> Off {
+        if let Some(o) = self.scope.sha3_zero_state {
+            return o;
+        }
+        let o = self.alloc_stack(lean_vm::sha3_flock::STATE_CELLS as u32);
+        self.scope.sha3_zero_state = Some(o);
+        o
     }
 
     fn lower_return(&mut self, exprs: &[Expr]) {

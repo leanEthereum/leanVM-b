@@ -44,7 +44,12 @@ fn sha3_batch_prove_verify() {
     );
 
     let mut rng = Rng::new(0x9E37_79B9_7F4A_7C15 ^ n as u64);
-    let blocks: Vec<Compression> = (0..n).map(|_| std::array::from_fn(|_| rng.next_u64())).collect();
+    let blocks: Vec<Compression> = (0..n)
+        .map(|_| Compression {
+            prev: std::array::from_fn(|_| rng.next_u64()),
+            msg: std::array::from_fn(|_| rng.next_u64()),
+        })
+        .collect();
 
     let t = Instant::now();
     let setup = Sha3Setup::new(n);

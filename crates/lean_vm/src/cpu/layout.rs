@@ -235,11 +235,12 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
             Op::Pack64x2 { a, b, c } => a.max(b).max(c),
-            Op::Keccak { ins, rest, out } => ins
+            Op::Keccak { ins, rest, prev, out } => ins
                 .into_iter()
                 .max()
                 .unwrap()
                 .max(rest + crate::sha3_flock::REST_CELLS as u32 - 1)
+                .max(prev + crate::sha3_flock::STATE_CELLS as u32 - 1)
                 .max(out + crate::sha3_flock::STATE_CELLS as u32 - 1),
         })
         .max()
@@ -283,14 +284,17 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
         Op::Keccak { rest, .. } => g_at(*rest),
         _ => F64::ZERO,
     };
-    // The 6th bytecode operand slot: Keccak's output base. The 7th and 8th are
-    // unused now that the hash opcode carries no immediate; they are kept so the
-    // bytecode table's width is stable.
+    // The 6th and 7th bytecode operand slots: Keccak's running-state base and
+    // its output base. The 8th is unused now that the hash opcode carries no
+    // immediate; it is kept so the bytecode table's width is stable.
     let extra0 = |op: &Op| match op {
+        Op::Keccak { prev, .. } => g_at(*prev),
+        _ => F64::ZERO,
+    };
+    let extra1 = |op: &Op| match op {
         Op::Keccak { out, .. } => g_at(*out),
         _ => F64::ZERO,
     };
-    let extra1 = |_op: &Op| F64::ZERO;
     let extra2 = |_op: &Op| F64::ZERO;
     // The program is PUBLIC (not committed): nine public columns over the
     // program cube, embedded in the bytecode seed/finalize blocks below.
@@ -540,15 +544,18 @@ impl Program {
             let blocks: Vec<_> = parallel::map_collect(tr.keccak.len(), |i| {
                 let r = &tr.keccak[i];
                 let a = tables::keccak_addresses(&self.prog, r);
-                let cells: [F192; crate::sha3_flock::STATE_CELLS] = std::array::from_fn(|c| {
-                    let addr = if c < crate::sha3_flock::IN_CELLS {
+                use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
+                let msg: [F192; RATE_CELLS] = std::array::from_fn(|c| {
+                    let addr = if c < IN_CELLS {
                         a[c]
                     } else {
-                        a[crate::sha3_flock::IN_CELLS] + (c - crate::sha3_flock::IN_CELLS) as u32
+                        a[IN_CELLS] + (c - IN_CELLS) as u32
                     };
                     exec.mem[addr as usize]
                 });
-                crate::sha3_flock::compression(&cells)
+                let prev: [F192; STATE_CELLS] =
+                    std::array::from_fn(|c| exec.mem[(a[IN_CELLS + 1] + c as u32) as usize]);
+                crate::sha3_flock::compression(&prev, &msg)
             });
             crate::sha3_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
         });

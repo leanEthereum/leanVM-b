@@ -7,7 +7,7 @@
 //! [`FiatShamirState`] is a 256-bit chaining value evolved only by the fixed 64→32
 //! SHA3-256 hash, so prover, verifier, and a recursive verifier running on the
 //! VM all derive identical challenges with one hash per step. Hashing exactly 64
-//! bytes is under Keccak's 136-byte rate, so it IS one Keccak-f[1600]
+//! bytes is under Keccak's 136-byte rate, so it IS one `Keccak-f[1600]`
 //! permutation with a constant pad, which is why the VM's single `Keccak`
 //! opcode covers the whole chain.
 //!
@@ -46,7 +46,7 @@ use primitives::field::{F64, F192};
 /// THE primitive; the chain is a chain of these, so a zkDSL program replays it
 /// with one `sha3_64(...)` per step.
 ///
-/// 64 bytes is under the 136-byte rate, so this is one Keccak-f[1600] on the
+/// 64 bytes is under the 136-byte rate, so this is one `Keccak-f[1600]` on the
 /// state `a‖b‖0x06‖0…0‖0x80`. Every byte of that pad is a constant, so the
 /// in-circuit version is the bare permutation and no padding rule can leak
 /// into it.

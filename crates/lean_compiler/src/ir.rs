@@ -64,13 +64,15 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
-    /// `Keccak`: one Keccak-f[1600]. The four 128-bit cells `ins` hold state
-    /// lanes 0..8 and are addressed independently, one frame cell each; `rest`
-    /// is the base of the nine consecutive cells holding lanes 8..26. The
-    /// permuted state occupies the thirteen consecutive cells from `c`.
+    /// `Keccak`: one sponge step. The four 128-bit cells `ins` hold rate lanes
+    /// 0..8 and are addressed independently, one frame cell each; `rest` is the
+    /// base of the five consecutive cells holding lanes 8..18; `prev` is the
+    /// base of the running state's thirteen. The result occupies the thirteen
+    /// consecutive cells from `c`.
     Keccak {
         ins: [Off; 4],
         rest: Off,
+        prev: Off,
         c: Off,
     },
 }

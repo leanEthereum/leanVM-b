@@ -375,18 +375,19 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
 /// Index of the Keccak table in [`tables`].
 pub(crate) const KECCAK_TABLE: usize = 5;
 
-/// The six base addresses a `Keccak` row reads: the four independently-addressed
-/// input cells (lanes 0..8), the `rest` base (lanes 8..26, nine consecutive
-/// cells) and the output base (thirteen consecutive). Recovered from the
-/// instruction, not stored per row.
-pub(crate) fn keccak_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
+/// The seven base addresses a `Keccak` row reads: the four
+/// independently-addressed rate cells (lanes 0..8), the `rest` base (lanes
+/// 8..18, five consecutive), the running-state base and the output base (each
+/// thirteen consecutive). Recovered from the instruction, not stored per row.
+pub(crate) fn keccak_addresses(prog: &[Op], r: &Brow) -> [u32; 7] {
     match prog[r.pc as usize] {
-        Op::Keccak { ins, rest, out } => [
+        Op::Keccak { ins, rest, prev, out } => [
             r.fp + ins[0],
             r.fp + ins[1],
             r.fp + ins[2],
             r.fp + ins[3],
             r.fp + rest,
+            r.fp + prev,
             r.fp + out,
         ],
         op => unreachable!("a Keccak row's pc {} holds {op:?}", r.pc),
@@ -399,8 +400,8 @@ pub(crate) fn keccak_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
 /// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
 /// (`slot_claims`): the value the bus flushes IS the flock-proven word.
-pub const KECCAK_VALUE_COLS: [usize; 2 * crate::sha3_flock::STATE_WORDS] = {
-    let mut cols = [0usize; 2 * crate::sha3_flock::STATE_WORDS];
+pub const KECCAK_VALUE_COLS: [usize; crate::sha3_flock::N_SLOTS] = {
+    let mut cols = [0usize; crate::sha3_flock::N_SLOTS];
     let mut i = 0;
     while i < cols.len() {
         cols[i] = keccakt::V0 + i;
@@ -409,8 +410,8 @@ pub const KECCAK_VALUE_COLS: [usize; 2 * crate::sha3_flock::STATE_WORDS] = {
     cols
 };
 // The value lanes are laid out contiguously from V0, so they map 1:1 onto
-// `sha3_flock::SLOTS`, which is itself the flock layout's word order.
-const _: () = assert!(keccakt::R0 == keccakt::V0 + 2 * crate::sha3_flock::STATE_WORDS);
+// `sha3_flock::SLOTS`, which is the order the cell reads visit them.
+const _: () = assert!(keccakt::R0 == keccakt::V0 + crate::sha3_flock::N_SLOTS);
 
 // ---- XOR / MUL ---------------------------------------------------------------
 
@@ -897,19 +898,20 @@ impl Table for Pack64x2Table {
 struct KeccakTable;
 
 pub(crate) mod keccakt {
-    use crate::sha3_flock::{IN_CELLS, STATE_CELLS, STATE_WORDS};
+    use crate::sha3_flock::{IN_CELLS, N_CELLS, N_SLOTS};
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const O_IN0: usize = 2; // operand g-powers of the four independent input cells …
+    pub const O_IN0: usize = 2; // operand g-powers of the four independent rate cells …
     pub const O_REST: usize = O_IN0 + IN_CELLS; // … the `rest` base …
-    pub const O_OUT: usize = O_REST + 1; // … and the output base
-    /// The fifty-two flock words as value lanes: the input state's thirteen
-    /// cells, lo lane then hi, then the output state's the same way.
+    pub const O_PREV: usize = O_REST + 1; // … the running-state base …
+    pub const O_OUT: usize = O_PREV + 1; // … and the output base
+    /// The seventy flock words as value lanes, in the order the cell reads
+    /// visit them: the rate block's nine cells, lo lane then hi, then the
+    /// previous state's thirteen and the output's thirteen.
     pub const V0: usize = O_OUT + 1;
-    /// Per-cell access counts, thirteen for the input state then thirteen for
-    /// the output.
-    pub const R0: usize = V0 + 2 * STATE_WORDS;
-    pub const RBC: usize = R0 + 2 * STATE_CELLS;
+    /// Per-cell access counts, one per cell in that same order.
+    pub const R0: usize = V0 + N_SLOTS;
+    pub const RBC: usize = R0 + N_CELLS;
     pub const N: usize = RBC + 1;
 }
 
@@ -924,11 +926,11 @@ impl Table for KeccakTable {
         COLS.get_or_init(|| (keccakt::R0..=keccakt::RBC).collect())
     }
     fn flushes(&self, f: &mut FlushBuilder) {
-        use crate::sha3_flock::{IN_CELLS, STATE_CELLS};
+        use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
         use keccakt::*;
         f.state_step(PC, FP);
         // No immediate: a permutation has no counter and no flags, so the
-        // bytecode interaction binds only the two base addresses.
+        // bytecode interaction binds only the base addresses.
         f.bytecode(
             PC,
             RBC,
@@ -939,43 +941,43 @@ impl Table for KeccakTable {
                 Col(O_IN0 + 2),
                 Col(O_IN0 + 3),
                 Col(O_REST),
+                Col(O_PREV),
                 Col(O_OUT),
             ],
         );
-        // Twenty-six cell reads. Each carries its chunk's two lanes with a
-        // literal-zero top limb (`memory_128`), so the canonical embedding is
-        // proof-enforced and the zero limbs are never committed. A consecutive
-        // cell is a free ×g on the product's g-power.
+        // One read per cell, in the slot order. Each carries its chunk's two
+        // lanes with a literal-zero top limb (`memory_128`), so the canonical
+        // embedding is proof-enforced and the zero limbs are never committed. A
+        // consecutive cell is a free ×g on the product's g-power.
+        let cell = |f: &mut FlushBuilder, i: usize, addr| f.memory_128(addr, R0 + i, V0 + 2 * i, V0 + 2 * i + 1);
         for c in 0..IN_CELLS {
-            f.memory_128(Prod(FP, O_IN0 + c, 0), R0 + c, V0 + 2 * c, V0 + 2 * c + 1);
+            cell(f, c, Prod(FP, O_IN0 + c, 0));
         }
-        for c in IN_CELLS..STATE_CELLS {
-            f.memory_128(
-                Prod(FP, O_REST, (c - IN_CELLS) as u32),
-                R0 + c,
-                V0 + 2 * c,
-                V0 + 2 * c + 1,
-            );
+        for c in IN_CELLS..RATE_CELLS {
+            cell(f, c, Prod(FP, O_REST, (c - IN_CELLS) as u32));
         }
         for c in 0..STATE_CELLS {
-            let v = V0 + 2 * (STATE_CELLS + c);
-            f.memory_128(Prod(FP, O_OUT, c as u32), R0 + STATE_CELLS + c, v, v + 1);
+            cell(f, RATE_CELLS + c, Prod(FP, O_PREV, c as u32));
+            cell(f, RATE_CELLS + STATE_CELLS + c, Prod(FP, O_OUT, c as u32));
         }
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use crate::sha3_flock::{IN_CELLS, STATE_CELLS};
+        use crate::sha3_flock::{IN_CELLS, N_CELLS, RATE_CELLS, STATE_CELLS};
         use keccakt::*;
         let rows = &ctx.trace.keccak;
         let ad = |r: &Brow| keccak_addresses(ctx.prog, r);
-        // A row's cell addresses in canonical order: the four independent input
-        // cells, the nine `rest` cells, then the thirteen output cells.
-        let cell_addr = |a: &[u32; 6], i: usize| -> u32 {
+        // A row's cell addresses in slot order: the four independent rate cells,
+        // the five `rest` cells, the thirteen previous-state cells, then the
+        // thirteen output cells.
+        let cell_addr = |a: &[u32; 7], i: usize| -> u32 {
             if i < IN_CELLS {
                 a[i]
-            } else if i < STATE_CELLS {
+            } else if i < RATE_CELLS {
                 a[IN_CELLS] + (i - IN_CELLS) as u32
+            } else if i < RATE_CELLS + STATE_CELLS {
+                a[IN_CELLS + 1] + (i - RATE_CELLS) as u32
             } else {
-                a[IN_CELLS + 1] + (i - STATE_CELLS) as u32
+                a[IN_CELLS + 2] + (i - RATE_CELLS - STATE_CELLS) as u32
             }
         };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
@@ -985,8 +987,8 @@ impl Table for KeccakTable {
         // lanes, the input state first.
         ctx.cols(out, rows, V0, |r| {
             let a = ad(r);
-            let mut v = [F64::ZERO; 2 * crate::sha3_flock::STATE_WORDS];
-            for i in 0..2 * STATE_CELLS {
+            let mut v = [F64::ZERO; crate::sha3_flock::N_SLOTS];
+            for i in 0..N_CELLS {
                 let w = ctx.mem[cell_addr(&a, i) as usize];
                 v[2 * i] = F64(w.c0);
                 v[2 * i + 1] = F64(w.c1);

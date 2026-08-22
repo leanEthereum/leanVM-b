@@ -41,27 +41,33 @@ pub enum Op {
         b: u32,
         c: u32,
     },
-    /// `Keccak`: one Keccak-f[1600] permutation. The 25-lane input state is
-    /// carried as thirteen 128-bit cells, two lanes each, split so that a hash
-    /// pays for none of it:
+    /// `Keccak`: one sponge step, `permute(prev ^ (msg || 0...0))`. Absorbing a
+    /// 136-byte rate block and permuting is ONE instruction, which is what makes
+    /// hashing a long message affordable: the XOR is free over GF(2), so the
+    /// circuit does it.
+    ///
+    /// The rate block is 17 lanes carried as nine 128-bit cells, split so that a
+    /// 64-byte hash pays for none of it:
     ///
     /// - `ins` addresses the four cells holding lanes 0..8 INDEPENDENTLY, with
     ///   no forced contiguity, so a caller hashing `(a, b)` need not copy its
     ///   operands anywhere.
-    /// - `rest` is the base of the nine consecutive cells holding lanes 8..26.
+    /// - `rest` is the base of the five consecutive cells holding lanes 8..18.
     ///   For SHA3-256 of 64 bytes those are the constant `pad10*1`, so a scope
     ///   builds them once and every hash in it shares them.
     ///
-    /// The permuted state lands in the thirteen consecutive cells based at
-    /// `out`. The last cell's high lane of each state is the layout's zero pad,
+    /// `prev` is the base of the thirteen consecutive cells holding the running
+    /// state, all zero to start a hash, which costs nothing: a cell the VM never
+    /// writes reads as zero. The result lands in the thirteen consecutive cells
+    /// based at `out`. Each region's last high lane is the layout's zero pad,
     /// which the R1CS forces to zero.
     ///
     /// There is no immediate: a permutation has no byte counter and no
-    /// finalization flag, and the sponge around it is the caller's, built from
-    /// ordinary XORs and constants. The permutation relation is proven by flock.
+    /// finalization flag. The relation is proven by flock.
     Keccak {
         ins: [u32; 4],
         rest: u32,
+        prev: u32,
         out: u32,
     },
 }

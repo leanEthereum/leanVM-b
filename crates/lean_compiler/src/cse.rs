@@ -214,11 +214,17 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
             map(od);
             map(of);
         }
-        LOp::Keccak { ins: chunks, rest, .. } => {
+        LOp::Keccak {
+            ins: chunks,
+            rest,
+            prev,
+            ..
+        } => {
             for chunk in chunks.iter_mut() {
                 map(chunk);
             }
             map(rest);
+            map(prev);
         }
     }
     for h in &mut ins.hints {

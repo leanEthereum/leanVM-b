@@ -130,16 +130,27 @@ fn key_cells(pk: &XmssPublicKey) -> [F192; 2] {
 /// zero).
 fn tweak_table(epoch: u32) -> Vec<xmss::Tweak> {
     use xmss::*;
-    let mut tweaks = vec![make_tweak(TWEAK_TYPE_ENCODING, 0, epoch)];
+    // Each tweak binds its call site's payload length, which is fixed per site.
+    let mut tweaks = vec![make_tweak(TWEAK_TYPE_ENCODING, 0, epoch, 2 * STATE_LEN)];
     for i in 0..V {
         for s in 0..CHAIN_LENGTH - 1 {
-            tweaks.push(make_tweak(TWEAK_TYPE_CHAIN, (i * CHAIN_LENGTH + s) as u32, epoch));
+            tweaks.push(make_tweak(
+                TWEAK_TYPE_CHAIN,
+                (i * CHAIN_LENGTH + s) as u32,
+                epoch,
+                DIGEST_LEN,
+            ));
         }
     }
-    tweaks.push(make_tweak(TWEAK_TYPE_WOTS_PK, 0, epoch));
+    tweaks.push(make_tweak(TWEAK_TYPE_WOTS_PK, 0, epoch, V * DIGEST_LEN));
     for l in 0..LOG_LIFETIME {
         let parent_index = ((epoch as u64) >> (l + 1)) as u32;
-        tweaks.push(make_tweak(TWEAK_TYPE_MERKLE, (l + 1) as u32, parent_index));
+        tweaks.push(make_tweak(
+            TWEAK_TYPE_MERKLE,
+            (l + 1) as u32,
+            parent_index,
+            2 * DIGEST_LEN,
+        ));
     }
     tweaks
 }

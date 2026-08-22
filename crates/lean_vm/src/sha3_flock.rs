@@ -11,12 +11,13 @@
 //!
 //! ## The mapping
 //!
-//! The VM's `Keccak(st_in) -> st_out` is one Keccak-f[1600] permutation. Both
-//! states are 25 lanes of 64 bits, which the VM carries as thirteen 128-bit
-//! cells with the thirteenth cell's high lane forced to zero. All fifty-two
-//! words are witness values in `q_flock`, and memory binds every one of them:
-//! this opcode has no bytecode-borne immediate at all, a permutation having no
-//! counter and no flags.
+//! The VM's `Keccak(prev, msg) -> out` is one sponge step,
+//! `permute(prev ^ (msg || 0...0))`. The two states are 25 lanes carried as
+//! thirteen 128-bit cells and the rate block is 17 lanes carried as nine, each
+//! region's last high lane forced to zero. All seventy words are witness values
+//! in `q_flock`, and memory binds every one of them: this opcode has no
+//! bytecode-borne immediate at all, a permutation having no counter and no
+//! flags.
 //!
 //! ## The layout (64-bit words, one Keccak lane per word)
 //!
@@ -25,8 +26,9 @@
 //! word at a fixed within-instance slot (bit position / 64):
 //!
 //! ```text
-//!   input  lanes 0..25 = slots  0..25,  slot 25 = zero pad
-//!   output lanes 0..25 = slots 26..51,  slot 51 = zero pad
+//!   prev   lanes 0..25 = slots  0..25,  slot 25 = zero pad
+//!   msg    lanes 0..17 = slots 26..43,  slot 43 = zero pad
+//!   out    lanes 0..25 = slots 44..69,  slot 69 = zero pad
 //! ```
 //!
 //! The pad slots are empty rows in the R1CS, so it forces them to zero, and the
@@ -38,7 +40,7 @@ use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use flock::sha3::{
     Compression, K_LOG, ReductionReplay, STATE_LANES, Sha3Setup, generate_witness_with_ab_packed_and_lincheck,
-    min_n_blocks_log, permute,
+    min_n_blocks_log,
 };
 
 /// Flock words one state region occupies: the 25 lanes plus the alignment pad.
@@ -58,22 +60,25 @@ pub use flock::sha3::SliceClaim;
 /// VM cells one state occupies: thirteen 128-bit cells hold the 25 lanes plus
 /// the zero pad.
 pub const STATE_CELLS: usize = STATE_WORDS / 2;
-/// Cells of the input state the opcode addresses independently, holding lanes
-/// `0..8`: the message half of a 64-byte hash.
+/// VM cells the rate block occupies: nine hold its 17 lanes plus the zero pad.
+pub const RATE_CELLS: usize = flock::sha3::RATE_WORDS / 2;
+/// Cells of the rate block the opcode addresses independently, holding lanes
+/// `0..8`: the 64 bytes of a one-block hash, which the caller already has
+/// wherever it has them.
 pub const IN_CELLS: usize = 4;
-/// Cells of the input state the opcode reads from one base, holding lanes
-/// `8..26`: the constant pad of a 64-byte hash.
-pub const REST_CELLS: usize = STATE_CELLS - IN_CELLS;
+/// Cells of the rate block the opcode reads from one base, holding lanes
+/// `8..18`: for a 64-byte hash, the constant pad.
+pub const REST_CELLS: usize = RATE_CELLS - IN_CELLS;
 
-/// The nine `rest` cells of SHA3-256's 64-byte pad: `0x06` at message byte 64
+/// The five `rest` cells of SHA3-256's 64-byte pad: `0x06` at message byte 64
 /// (lane 8's low byte) and `0x80` at byte 135 (lane 16's high byte), the rest
-/// zero. A cell the VM never writes reads as zero, so only two of the nine
-/// carry an instruction.
+/// zero. A cell the VM never writes reads as zero, so only two of the five
+/// carry an instruction, and a scope shares them across every hash in it.
 pub const PAD64_REST: [F192; REST_CELLS] = {
     let mut cells = [F192::new(0, 0, 0); REST_CELLS];
-    // lane 8 is cell 4's low lane, the first `rest` cell.
+    // lane 8 is the first `rest` cell's low lane.
     cells[0] = F192::new(primitives::sha3::DOMAIN as u64, 0, 0);
-    // lane 16 is cell 8's low lane, the fifth `rest` cell.
+    // lane 16 is the fifth `rest` cell's low lane.
     cells[4] = F192::new(0x80u64 << 56, 0, 0);
     cells
 };
@@ -106,45 +111,57 @@ impl PreparedReductionWitness {
 }
 
 // Within-instance packed-word (slot) indices of the VM-visible words, which
-// are the flock layout's own word indices: the input region is words
-// `0..STATE_WORDS` and the output region the `STATE_WORDS` after it.
-pub const SLOT_IN0: usize = flock::sha3::W_IN;
+// are the flock layout's own word indices, in the order the table reads them:
+// the rate block, then the previous state, then the output.
+pub const SLOT_PREV0: usize = flock::sha3::W_PREV;
+pub const SLOT_MSG0: usize = flock::sha3::W_MSG;
 pub const SLOT_OUT0: usize = flock::sha3::W_OUT;
 
-/// The fifty-two within-instance value slots in canonical order, the input
-/// state's words then the output state's, matching `tables::KECCAK_VALUE_COLS`.
-/// Word `2c + l` is lane `l` of cell `c`, and the last word of each region is
-/// the zero pad.
-pub const SLOTS: [usize; 2 * STATE_WORDS] = {
-    let mut slots = [0usize; 2 * STATE_WORDS];
+/// Words the opcode binds: the rate block, the previous state and the output.
+pub const N_SLOTS: usize = flock::sha3::RATE_WORDS + 2 * STATE_WORDS;
+/// Memory cells the opcode touches, which is `N_SLOTS / 2`.
+pub const N_CELLS: usize = RATE_CELLS + 2 * STATE_CELLS;
+
+/// The seventy within-instance value slots in the order the table's cell reads
+/// visit them: the rate block's nine cells (four independent, five from the
+/// `rest` base), then the previous state's thirteen, then the output's
+/// thirteen. Matches `tables::KECCAK_VALUE_COLS`. Word `2c + l` is lane `l` of
+/// cell `c`, and the last word of each region is the zero pad.
+pub const SLOTS: [usize; N_SLOTS] = {
+    let mut slots = [0usize; N_SLOTS];
     let mut i = 0;
-    while i < STATE_WORDS {
-        slots[i] = SLOT_IN0 + i;
-        slots[STATE_WORDS + i] = SLOT_OUT0 + i;
+    while i < flock::sha3::RATE_WORDS {
+        slots[i] = SLOT_MSG0 + i;
         i += 1;
+    }
+    let mut j = 0;
+    while j < STATE_WORDS {
+        slots[flock::sha3::RATE_WORDS + j] = SLOT_PREV0 + j;
+        slots[flock::sha3::RATE_WORDS + STATE_WORDS + j] = SLOT_OUT0 + j;
+        j += 1;
     }
     slots
 };
 
-/// The flock [`Compression`] (the 25-lane input state) for one VM instruction,
-/// read from the thirteen cells of the state buffer. The thirteenth cell's high
-/// lane is the layout's zero pad and is not part of the state; the R1CS forces
-/// it to zero, so a nonzero one cannot verify.
-pub fn compression(cells: &[F192; STATE_CELLS]) -> Compression {
+/// Read `N` lanes out of `ceil(N/2)` cells, the pad lane discarded. The R1CS
+/// forces every pad lane to zero, so a nonzero one cannot verify.
+fn lanes_of<const N: usize>(cells: &[F192]) -> [u64; N] {
     std::array::from_fn(|i| if i % 2 == 0 { cells[i / 2].c0 } else { cells[i / 2].c1 })
 }
 
-/// The permuted state, which is what the VM writes to the output cells.
-pub fn permuted(block: &Compression) -> Compression {
-    let mut out = *block;
-    permute(&mut out);
-    out
+/// The flock [`Compression`] for one VM instruction: the previous state's
+/// thirteen cells and the rate block's nine.
+pub fn compression(prev: &[F192; STATE_CELLS], msg: &[F192; RATE_CELLS]) -> Compression {
+    Compression {
+        prev: lanes_of(prev),
+        msg: lanes_of(msg),
+    }
 }
 
 /// The output state as the thirteen 192-bit VM memory cells it occupies
 /// (canonical 128-bit chunks, top limbs zero, the last cell's high lane the
 /// layout's zero pad).
-pub fn out_cells(state: &Compression) -> [F192; STATE_CELLS] {
+pub fn out_cells(state: &[u64; STATE_LANES]) -> [F192; STATE_CELLS] {
     std::array::from_fn(|c| {
         let lo = state[2 * c];
         let hi = if 2 * c + 1 < STATE_LANES { state[2 * c + 1] } else { 0 };
@@ -343,31 +360,43 @@ mod tests {
         F64(x)
     }
 
-    /// `n` distinct input states, as the VM would present them: thirteen cells
-    /// with a zero pad in the thirteenth cell's high lane.
+    /// `n` distinct sponge steps, as the VM would present them: thirteen cells
+    /// of running state and nine of rate block, each region's last high lane
+    /// the layout's zero pad.
     fn sample_blocks(n: usize) -> Vec<Compression> {
         (0..n as u64)
             .map(|i| {
-                let cells: [F192; STATE_CELLS] = std::array::from_fn(|c| {
+                let prev: [F192; STATE_CELLS] = std::array::from_fn(|c| {
                     let hi = if 2 * c + 1 < STATE_LANES {
-                        0x1111_1111 * (c as u64 + 1) ^ i
+                        (0x1111_1111 * (c as u64 + 1)) ^ i
                     } else {
                         0
                     };
-                    F192::new(0x0101_0101 * (c as u64 + 1) ^ (i << 8), hi, 0)
+                    F192::new((0x0101_0101 * (c as u64 + 1)) ^ (i << 8), hi, 0)
                 });
-                compression(&cells)
+                let msg: [F192; RATE_CELLS] = std::array::from_fn(|c| {
+                    let hi = if 2 * c + 1 < flock::sha3::RATE_LANES {
+                        (0x2222_2222 * (c as u64 + 1)) ^ i
+                    } else {
+                        0
+                    };
+                    F192::new((0x0303_0303 * (c as u64 + 1)) ^ (i << 4), hi, 0)
+                });
+                compression(&prev, &msg)
             })
             .collect()
     }
 
-    /// A state buffer's thirteen cells and the 25 lanes are the same words, and
-    /// the thirteenth cell's high lane is the pad.
+    /// A buffer's cells and its lanes are the same words, and the last cell's
+    /// high lane is the pad.
     #[test]
     fn cells_and_lanes_are_the_same_words() {
         let block = sample_blocks(1)[0];
-        let cells = out_cells(&block);
-        assert_eq!(compression(&cells), block);
+        let cells = out_cells(&block.prev);
+        assert_eq!(
+            compression(&cells, &out_cells(&block.prev)[..RATE_CELLS].try_into().unwrap()).prev,
+            block.prev
+        );
         assert_eq!(
             cells[STATE_CELLS - 1].c1,
             0,
@@ -376,8 +405,8 @@ mod tests {
     }
 
     /// `q_flock`'s aligned packed slots hold the VM's 64-bit words in our field
-    /// representation, input state then permuted output, and the permutation is
-    /// the one `primitives::sha3` computes.
+    /// representation, and the step is the absorb-and-permute the flock circuit
+    /// encodes.
     #[test]
     fn qflock_words_match_layout() {
         let blocks = sample_blocks(5);
@@ -386,13 +415,25 @@ mod tests {
 
         let slot = |j: usize, s: usize| q_flock[j * (1 << SLOT_STRIDE_LOG) + s];
         for (j, block) in blocks.iter().enumerate() {
-            let out = permuted(block);
+            let out = block.output();
             for lane in 0..STATE_LANES {
-                assert_eq!(slot(j, SLOT_IN0 + lane), f(block[lane]), "instance {j}, in lane {lane}");
-                assert_eq!(slot(j, SLOT_OUT0 + lane), f(out[lane]), "instance {j}, out lane {lane}");
+                assert_eq!(
+                    slot(j, SLOT_PREV0 + lane),
+                    f(block.prev[lane]),
+                    "instance {j}, prev {lane}"
+                );
+                assert_eq!(slot(j, SLOT_OUT0 + lane), f(out[lane]), "instance {j}, out {lane}");
             }
-            // The two alignment pads, which the R1CS forces to zero.
-            assert_eq!(slot(j, SLOT_IN0 + STATE_LANES), F64::ZERO);
+            for lane in 0..flock::sha3::RATE_LANES {
+                assert_eq!(
+                    slot(j, SLOT_MSG0 + lane),
+                    f(block.msg[lane]),
+                    "instance {j}, msg {lane}"
+                );
+            }
+            // The alignment pads, which the R1CS forces to zero.
+            assert_eq!(slot(j, SLOT_PREV0 + STATE_LANES), F64::ZERO);
+            assert_eq!(slot(j, SLOT_MSG0 + flock::sha3::RATE_LANES), F64::ZERO);
             assert_eq!(slot(j, SLOT_OUT0 + STATE_LANES), F64::ZERO);
         }
     }

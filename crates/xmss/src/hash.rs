@@ -6,11 +6,12 @@
 //! (multi-target separation, as in leanVM) and the public parameter separates
 //! users. Standard SHA3-256 binds the exact payload length.
 //!
-//! Permutation counts per call, at Keccak's 136-byte rate: chain step 1
-//! (48 bytes), Merkle node 1 (64), message encoding 1 (128), WOTS public key 6.
-//! A full XMSS verification is a constant 138 permutations: 1 (encoding) +
-//! 99 (chains, fixed by the target sum) + 6 (tips) + 32 (Merkle path). The wide
-//! rate is why the multi-block calls shrank while the narrow ones did not.
+//! The byte string is zero-filled to a whole number of 32-byte groups, because
+//! the VM carries a value as 128-bit memory cells and can only hash whole ones.
+//! Up to 64 bytes that is one [`primitives::sha3::hash_block`], plain SHA3-256;
+//! beyond it the groups chain through [`primitives::sha3::hash_md`], which is
+//! what the VM's 64-byte opcode can reproduce. Every call site has a fixed
+//! length and its own tweak, so the padding costs no separation.
 
 use crate::*;
 
@@ -26,27 +27,32 @@ pub type Tweak = [u8; TWEAK_LEN];
 /// A full 32-byte SHA3-256 output.
 pub const STATE_LEN: usize = 32;
 
-/// `[tweak_type (1) | sub_position (4) | index (4) | zeros (7)]`, little-endian.
-/// `index` is the epoch (chain / wots_pk / encoding) or the Merkle node index;
-/// `sub_position` is the chain position or the Merkle level.
-pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
+/// `[tweak_type (1) | sub_position (4) | index (4) | payload_len (4) | zeros (3)]`,
+/// little-endian. `index` is the epoch (chain / wots_pk / encoding) or the
+/// Merkle node index; `sub_position` is the chain position or the Merkle level.
+///
+/// The payload length is in the tweak because the hashed string is zero-filled
+/// to whole 32-byte groups, so the padding alone would let a short payload and
+/// a longer zero-tailed one collide. Binding it here costs nothing: the tweak
+/// had spare bytes, and it is already the first thing hashed.
+pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32, payload_len: usize) -> Tweak {
     let mut tweak = [0u8; TWEAK_LEN];
     tweak[0] = tweak_type;
     tweak[1..5].copy_from_slice(&sub_position.to_le_bytes());
     tweak[5..9].copy_from_slice(&index.to_le_bytes());
+    tweak[9..13].copy_from_slice(&(payload_len as u32).to_le_bytes());
     tweak
 }
 
-/// Standard SHA3-256 of the exact-length `tweak | pp | payload` byte string.
-/// One permutation for anything up to the 136-byte rate, which covers chain
-/// steps (48 bytes), Merkle nodes (64) and the encoding (128); the WOTS
-/// public-key input is longer and takes several.
+/// `tweak | pp | payload`, zero-filled to whole 32-byte groups and hashed: one
+/// SHA3-256 up to 64 bytes, a [`primitives::sha3::hash_md`] chain beyond it.
 pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, payload: &[u8]) -> Digest {
-    let mut hasher = primitives::sha3::Hasher::new();
-    hasher.update(&make_tweak(tweak_type, sub_position, index));
-    hasher.update(pp);
-    hasher.update(payload);
-    hasher.finalize()[..DIGEST_LEN].try_into().unwrap()
+    let mut msg = Vec::with_capacity(TWEAK_LEN + pp.len() + payload.len() + 32);
+    msg.extend_from_slice(&make_tweak(tweak_type, sub_position, index, payload.len()));
+    msg.extend_from_slice(pp);
+    msg.extend_from_slice(payload);
+    msg.resize(msg.len().next_multiple_of(32).max(64), 0);
+    primitives::sha3::hash_md(&msg)[..DIGEST_LEN].try_into().unwrap()
 }
 
 #[cfg(test)]
@@ -63,21 +69,25 @@ mod tests {
         assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 4, 5, &x));
         assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 6, &x));
         assert_ne!(base, tweak_hash(&[8u8; 16], TWEAK_TYPE_CHAIN, 3, 5, &x));
-        // Standard SHA3-256 binds the exact payload length.
+        // The tweak binds the exact payload length, so a zero-tailed longer
+        // payload is a different hash even though both pad to 64 bytes.
         let mut extended = [0u8; STATE_LEN];
         extended[..DIGEST_LEN].copy_from_slice(&x);
         assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 5, &extended));
     }
 
+    /// A payload that fills 64 bytes exactly is plain SHA3-256; anything longer
+    /// is the chain. Both are pinned here so a change to either shows up.
     #[test]
-    fn multi_block_hash_is_standard_sha3() {
+    fn multi_block_hash_is_the_padded_chain() {
         let pp = [9u8; PUBLIC_PARAM_LEN];
         let data = [5u8; 2 * STATE_LEN];
         let mut input = Vec::new();
-        input.extend_from_slice(&make_tweak(TWEAK_TYPE_WOTS_PK, 0, 42));
+        input.extend_from_slice(&make_tweak(TWEAK_TYPE_WOTS_PK, 0, 42, data.len()));
         input.extend_from_slice(&pp);
         input.extend_from_slice(&data);
-        let expected = primitives::sha3::hash(&input);
+        input.resize(input.len().next_multiple_of(32).max(64), 0);
+        let expected = primitives::sha3::hash_md(&input);
         assert_eq!(
             tweak_hash(&pp, TWEAK_TYPE_WOTS_PK, 0, 42, &data),
             expected[..DIGEST_LEN]

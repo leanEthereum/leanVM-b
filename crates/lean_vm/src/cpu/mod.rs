@@ -32,11 +32,6 @@ pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE2s` compression: the four message cells' eight
-/// words are laid out little-endian into 64 bytes, combined with the supplied
-/// chaining value and metadata, and the 32-byte result is split back into the
-/// four output words `c`. Flock proves this same compression relation
-
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
 /// `MIN_LOG_MEM ≤ h ≤ MAX_LOG_MEM`. The prover pads up to the minimum; the
 /// verifier rejects any announced `h` outside the range. `MIN_LOG_MEM` is also
@@ -772,33 +767,30 @@ mod tests {
         F192::new(x, 0, 0)
     }
 
-    /// Pack two 64-bit flock words into the canonical BLAKE2s subspace of F192.
-    fn cell(lo: F64, hi: F64) -> F192 {
-        F192::new(lo.0, hi.0, 0)
-    }
-
     /// A hand-built straight-line program with one `Keccak` row: set up the
-    /// thirteen input-state cells with SETs, permute them into the thirteen
-    /// output cells, pad with filler SETs so the last executed instruction lands
+    /// nine rate cells with SETs, absorb them into an all-zero running state
+    /// (never-written cells, so free) and land the result in thirteen output
+    /// cells, then pad with filler SETs so the last executed instruction sits
     /// one before the sentinel, and halt there. The flock validity sub-proof
     /// plus the memory / state / bytecode bus interactions are verified
     /// end-to-end (the proof carries the WHIR opening they assert on).
-    fn keccak_program(state: &[u64; 25]) -> Program {
-        use crate::sha3_flock::STATE_CELLS;
-        const IN: u32 = 2;
-        const OUT: u32 = IN + STATE_CELLS as u32;
-        let mut prog: Vec<Op> = (0..STATE_CELLS)
+    fn keccak_program(msg: &[u64; 17]) -> Program {
+        use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
+        const MSG: u32 = 2;
+        const PREV: u32 = MSG + RATE_CELLS as u32;
+        const OUT: u32 = PREV + STATE_CELLS as u32;
+        let mut prog: Vec<Op> = (0..RATE_CELLS)
             .map(|c| Op::Set {
-                o: IN + c as u32,
-                k: F192::new(state[2 * c], if 2 * c + 1 < 25 { state[2 * c + 1] } else { 0 }, 0),
+                o: MSG + c as u32,
+                k: F192::new(msg[2 * c], if 2 * c + 1 < 17 { msg[2 * c + 1] } else { 0 }, 0),
             })
             .collect();
         prog.push(Op::Keccak {
-            ins: [IN, IN + 1, IN + 2, IN + 3],
-            rest: IN + crate::sha3_flock::IN_CELLS as u32,
+            ins: [MSG, MSG + 1, MSG + 2, MSG + 3],
+            rest: MSG + IN_CELLS as u32,
+            prev: PREV,
             out: OUT,
         });
-        // Pad to a power of two, the last slot the never-executed sentinel.
         let executed = prog.len();
         let total = (executed + 1).next_power_of_two();
         for k in 0..total - executed - 1 {
@@ -812,27 +804,40 @@ mod tests {
         Program::from_bytecode(prog, 128)
     }
 
-    /// The opcode's execution semantics: the permuted state lands in the output
-    /// cells, matching `primitives::sha3`. Proving a program is exercised from
-    /// `lean_compiler`'s tests, which can compile one whose tables come out
-    /// powers of two.
+    /// The opcode's execution semantics: absorbing a rate block into the zero
+    /// state and permuting is SHA3-256's first sponge step, so a padded 64-byte
+    /// message gives the same digest `fiat_shamir::compress` does.
     #[test]
-    fn keccak_computes_the_permutation() {
-        use crate::sha3_flock::STATE_CELLS;
-        let state: [u64; 25] = std::array::from_fn(|i| 0x0123_4567_89ab_cdefu64.wrapping_mul(i as u64 + 1));
-        let program = keccak_program(&state);
-        let exec = program.execute([w(7), w(11)]);
+    fn keccak_absorbs_and_permutes() {
+        use crate::sha3_flock::{RATE_CELLS, STATE_CELLS};
+        // A 64-byte message plus `pad10*1`: eight lanes of data, `0x06` at byte
+        // 64 and `0x80` at byte 135.
+        let data: [u64; 8] = std::array::from_fn(|i| 0x0123_4567_89ab_cdefu64.wrapping_mul(i as u64 + 1));
+        let mut msg = [0u64; 17];
+        msg[..8].copy_from_slice(&data);
+        msg[8] = primitives::sha3::DOMAIN as u64;
+        msg[16] |= 0x80u64 << 56;
 
-        let mut want = state;
+        let exec = keccak_program(&msg).execute([w(7), w(11)]);
+        let out_base = 2 + RATE_CELLS + STATE_CELLS;
+
+        let mut want = [0u64; 25];
+        for (i, &m) in msg.iter().enumerate() {
+            want[i] = m;
+        }
         primitives::sha3::permute(&mut want);
         for c in 0..STATE_CELLS {
             let hi = if 2 * c + 1 < 25 { want[2 * c + 1] } else { 0 };
-            assert_eq!(
-                exec.mem[(2 + STATE_CELLS + c) as usize],
-                F192::new(want[2 * c], hi, 0),
-                "output cell {c}"
-            );
+            assert_eq!(exec.mem[out_base + c], F192::new(want[2 * c], hi, 0), "output cell {c}");
         }
+        // And that state's first four lanes are the SHA3-256 digest.
+        let bytes: [u8; 64] = std::array::from_fn(|i| (data[i / 8] >> (8 * (i % 8))) as u8);
+        let d = crate::vmhash::compress(
+            [F64(data[0]), F64(data[1]), F64(data[2]), F64(data[3])],
+            [F64(data[4]), F64(data[5]), F64(data[6]), F64(data[7])],
+        );
+        assert_eq!(d.map(|x| x.0), [want[0], want[1], want[2], want[3]]);
+        assert_eq!(primitives::sha3::hash_block(&bytes)[..8], want[0].to_le_bytes());
     }
 
     /// The opcode consumes the `(c0,c1,0)` embedding. This is not an extra AIR
@@ -841,28 +846,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "Keccak state cell must be a canonical 128-bit embedding")]
     fn keccak_requires_zero_third_limb() {
-        let mut program = keccak_program(&[0u64; 25]);
+        let mut program = keccak_program(&[0u64; 17]);
         program.prog[0] = Op::Set {
             o: 2,
             k: F192::new(0, 0, 1),
         };
         let _ = program.execute([w(7), w(11)]);
-    }
-
-    /// Permuting in place, output base aliasing the input base, is the shape a
-    /// sponge absorb loop wants. The row reads those cells twice; the running
-    /// access counts thread through and the bus still balances.
-    #[test]
-    fn keccak_reads_and_writes_thread_access_counts() {
-        use crate::sha3_flock::STATE_CELLS;
-        let state: [u64; 25] = std::array::from_fn(|i| i as u64 + 1);
-        let program = keccak_program(&state);
-        let exec = program.execute([w(3), w(5)]);
-        // Each of the twenty-six cells was touched exactly once by the row, on
-        // top of the SET that wrote each input cell.
-        let row = &exec.trace.keccak[0];
-        assert_eq!(row.reads.len(), 2 * STATE_CELLS);
-        assert_eq!(exec.trace.keccak.len(), 1);
     }
 
     /// A 192-bit-word MUL: the E-product of two full machine words. Full-limb

@@ -51,9 +51,10 @@ pub(crate) struct Jrow {
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    /// Per-cell access counts, the input state's thirteen cells then the
-    /// output's.
-    pub(crate) reads: [F64; 2 * crate::sha3_flock::STATE_CELLS],
+    /// Per-cell access counts, in the order the table's flushes visit them:
+    /// the rate block's nine cells, the previous state's thirteen, the output's
+    /// thirteen.
+    pub(crate) reads: [F64; crate::sha3_flock::N_CELLS],
     pub(crate) bytecode_read: F64,
 }
 

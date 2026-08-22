@@ -18,7 +18,10 @@ const LABEL: &[u8] = b"flock-sha3-reduction-test";
 fn blocks_for(n: usize, seed: u64) -> Vec<Compression> {
     let mut rng = Rng::new(seed);
     (0..n)
-        .map(|_| std::array::from_fn(|_| rng.next_u64()))
+        .map(|_| Compression {
+            prev: std::array::from_fn(|_| rng.next_u64()),
+            msg: std::array::from_fn(|_| rng.next_u64()),
+        })
         .collect::<Vec<Compression>>()
 }
 
