@@ -4,9 +4,9 @@
 //! folded halves, packed witnesses, Merkle levels) and frees them all before
 //! returning. The system allocator hands the big ones out as fresh mappings and
 //! returns them on free, so every proof re-pays a soft page fault per page on
-//! first touch plus a single-threaded unmap on drop. Measured at the
-//! 820-signature XMSS workload, recycling those blocks instead is worth 16% of
-//! proving time on an M4 Max and 29% on a Zen 4 host.
+//! first touch plus a single-threaded unmap on drop. Recycling those blocks
+//! instead is worth a large fraction of proving time, more on a Zen 4 host than
+//! on an M4 Max.
 //!
 //! This arena buys that back. It is **not** a `#[global_allocator]`: only
 //! [`ArenaVec`] allocates from it, so a library using it does not impose it on

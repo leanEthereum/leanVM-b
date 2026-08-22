@@ -27,23 +27,32 @@
 \newcommand{\eq}{\operatorname{eq}}
 \newcommand{\cube}[1]{\{0,1\}^{#1}}
 \newcommand{\inner}[2]{\langle #1,\, #2 \rangle}
+\newcommand{\fc}{\chi}      % a sumcheck round challenge, everywhere in the document
 \newcommand{\flock}{\mathrm{flock}}
 
 % ---------- Flock protocol (Annex C) ----------
 \newcommand{\qflock}{q_{\flock}}             % packed Boolean Flock witness
 \newcommand{\qext}[1]{#1^{\sharp}}           % 64-point univariate / multilinear extension
-\newcommand{\kblock}{\kappa_{\mathrm{block}}} % variables in one BLAKE3 witness block
-\newcommand{\kbatch}{\kappa_{\mathrm{batch}}} % log number of BLAKE3 instances
+\newcommand{\kblock}{\kappa_{\mathrm{block}}} % variables in one BLAKE2s witness block
+\newcommand{\kbatch}{\kappa_{\mathrm{batch}}} % log number of BLAKE2s instances
 \newcommand{\kbool}{\kappa_{\mathrm{bool}}}   % variables of the unpacked Boolean batch witness
 \newcommand{\kskip}{\kappa_{\mathrm{skip}}}   % variables replaced by the univariate skip
 \newcommand{\skipdom}{\mathcal{H}}            % 64 skip-domain nodes
 \newcommand{\skipcoset}{\mathcal{H}'}         % 64 transmitted round-one nodes
 \newcommand{\fembed}{\varphi_{8}}             % embedding of F_{2^8} into E
 \newcommand{\zskip}{\upsilon_{\mathrm{zc}}}   % zerocheck univariate challenge
-\newcommand{\lskip}{\upsilon_{\mathrm{lc}}}   % lincheck univariate challenge
-\newcommand{\zpartial}{z_{\mathrm{partial}}}  % 64-entry lincheck residual
-\newcommand{\lcab}{\alpha_{\mathrm{AB}}}      % lincheck A/B batching challenge
-\newcommand{\lcpin}{\beta_{\mathrm{pin}}}     % lincheck constant-wire challenge
+\newcommand{\lcalpha}{\alpha_{\mathrm{lc}}}      % lincheck batching challenge (A, B, C, the pin)
+\newcommand{\ksk}{k_{\mathrm{sk}}}              % row index, the skipped half
+\newcommand{\kin}{k_{\mathrm{in}}}              % row index, the within-block half
+\newcommand{\jsk}{j_{\mathrm{sk}}}              % column index, the skipped half
+\newcommand{\jin}{j_{\mathrm{in}}}              % column index, the within-block half
+\newcommand{\jconst}{j_{\mathbf{1}}}            % position of the circuit's constant-one wire
+\newcommand{\posof}[1]{k(#1)}                 % position, equivalently R1CS row, of a committed wire
+\newcommand{\lform}[1]{\mathcal{F}_{#1}}        % a wire's expansion, over the block's positions
+\newcommand{\erow}{e_{\mathrm{row}}}                % lincheck's row weight, the quirky eq table
+\newcommand{\wcol}{w_{\mathrm{col}}}                % lincheck's column weight
+\newcommand{\chg}[1]{\Gamma_{#1}}                 % a wire's coefficient in the backward walk
+\newcommand{\colmar}{M_{\mathrm{col}}}           % alpha-batched column marginal of (A_0, B_0)
 
 % ---------- VM ----------
 \newcommand{\loc}[1]{\mem[\fp\cdot #1]}
@@ -54,7 +63,7 @@
 \newcommand{\addr}{\mathit{addr}}
 \newcommand{\val}{\mathit{val}}
 \newcommand{\cnt}{\mathit{count}}
-\newcommand{\md}{\mathrm{md}}       % BLAKE3 metadata immediate: counter, block length, flags
+\newcommand{\md}{\mathrm{md}}       % BLAKE2s metadata immediate: byte counter, final and last-node flags
 \newcommand{\cntfin}{\mathit{count}^{\mathrm{fin}}}  % committed finalize-count column
 \newcommand{\rcnts}{\mathcal{R}}          % multiset of read counts at one (address, value)
 \newcommand{\mset}[1]{\{\!\{#1\}\!\}}     % a multiset (plain braces stay sets)
@@ -67,10 +76,11 @@
 \newcommand{\dsep}[1]{\mathsf{#1}}
 \newcommand{\opc}[1]{\mathsf{op}_{\mathsf{#1}}}
 \newcommand{\srcsel}[1]{\mathsf{src}(#1)}
-\newcommand{\nprog}{N_{\mathrm{prog}}}   % program length (was N; N is now a block length)
+\newcommand{\nprog}{N_{\mathrm{prog}}}   % program length
 \newcommand{\nread}{N_{\mathrm{read}}}   % total read flushes in a proof
 \newcommand{\kbc}{\kappa_{\mathrm{bc}}}   % log program length: nprog = 2^kbc instructions
 \newcommand{\ntab}{N_{\mathrm{tab}}}     % number of tables (fixed by the arithmetization)
+\newcommand{\taumax}{\tau_{\max}}      % rounds of the table sumcheck: the tallest table's log height
 \newcommand{\ncol}[1]{N_{\mathrm{col},#1}}  % columns of table #1
 \newcommand{\ncons}[1]{N_{\mathrm{cons},#1}}  % constraints of table #1
 \newcommand{\nfl}[1]{N_{\mathrm{flushes},#1}}    % bus flushes per row of table #1
@@ -80,23 +90,24 @@
 % Letters that the main matter already spends on something else are routed
 % through these, so the annex reads with one meaning per symbol.
 \newcommand{\Enc}{\mathrm{Enc}}
-\newcommand{\kdim}{\varkappa}         % message dimension            (was k)
+\newcommand{\kdim}{k}                 % message dimension, the convention
 \newcommand{\RS}{\mathrm{RS}}
 \newcommand{\nv}{M}                      % variable count of a level   (was m_i)
 \newcommand{\nlev}{\Lambda}              % number of levels            (was r)
-\newcommand{\rate}{\varrho}              % code rate                   (was rho)
+\newcommand{\rate}{\rho}                 % code rate, the convention
 \newcommand{\rexp}{\nu}                  % rate exponent, rate = 2^-nu  (was R)
-\newcommand{\rad}{\theta}                % proximity radius            (was gamma)
-\newcommand{\slack}{\xi}                 % Johnson slack               (was eta)
-\newcommand{\mcapar}{\vartheta}          % MCA parameter               (was theta)
+\newcommand{\rad}{\gamma}                % proximity radius, the convention
+\newcommand{\slack}{\eta}                % Johnson slack, the convention
+\newcommand{\mcapar}{\theta}            % MCA parameter, the convention
 \newcommand{\dmin}{\delta_{\min}}        % relative minimum distance   (was delta)
-\newcommand{\fc}{\chi}                   % sumcheck fold challenge     (was s)
 \newcommand{\rc}[1]{c^{(#1)}}            % round-#1 running claim      (was sigma_j)
 \newcommand{\nq}{\omega}                 % query count                 (was t_i)
 \newcommand{\qset}{\mathcal{Q}}          % sampled column indices      (was J_i)
-\newcommand{\blen}{N}                    % code block length           (was n)
+\newcommand{\blen}{n}                    % code block length, the convention
 \newcommand{\dom}{\mathcal{D}}           % evaluation domain           (was S)
 \newcommand{\orc}{Z}                     % oracle / interleaved word   (was C)
+\newcommand{\nrows}{N_{\mathrm{rows}}}    % committed rows of the level-0 oracle (R is the bus root)
+\newcommand{\nstack}{N_{\mathrm{stack}}}  % field elements placed in the stack, before the zero padding
 \newcommand{\lst}{\mathcal{L}}           % list of nearby codewords    (was Lambda)
 \newcommand{\ffinal}{f^{\ast}}           % final plaintext table       (was p)
 \newcommand{\cood}{c_{\mathrm{ood}}}     % out-of-domain answer        (was y)

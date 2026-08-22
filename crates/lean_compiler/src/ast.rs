@@ -64,7 +64,7 @@ pub enum Expr {
     HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)`: allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-2 `StackBuf` is a valid `blake3` operand (the four 64-bit hash
+    /// and a size-2 `StackBuf` is a valid `blake2s` operand (the four 64-bit hash
     /// words live as two lanes in each of two consecutive 128-bit cells).
     StackBuf(u64),
     /// `arr[idx]`: read a cell. For a heap `arr` (a pointer), `m[arr·idx]` (idx a
@@ -74,7 +74,7 @@ pub enum Expr {
     /// `buf[lo:hi]`: a run of cells of a [`Expr::StackBuf`] (frame cells
     /// `base+lo..base+hi`) or of a [`Expr::HeapBuf`] (heap cells
     /// `ptr·g^lo..ptr·g^hi`), with compile-time integer bounds (`hi`
-    /// exclusive). Only meaningful as a `blake3` operand, where it must span
+    /// exclusive). Only meaningful as a `blake2s` operand, where it must span
     /// exactly 2 cells (one 256-bit value).
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `[a, b, …]`: an initialized [`Expr::StackBuf`], so `x = [a, b]` allocates
@@ -101,11 +101,10 @@ pub enum Stmt {
     AssertNe(Expr, Expr),
     /// `assert log X < log Y` (also `assert log X < k` with an integer
     /// exponent), a *range check in the exponent*: with `X = g^x`, proves
-    /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. The bound `Y = g^k` is a
-    /// compile-time power of `GEN` with `1 ≤ k ≤ 2^MIN_LOG_MEM`; see
+    /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. See
     /// `FnLower::lower_assert_lt` for the 3-cycle gadget (leanVM's DEREF
     /// range-check trick, transported to g-powers).
-    AssertLt(Expr, u64),
+    AssertLt(Expr, LtBound),
     /// `f(args)` as a statement (returns discarded).
     Call(String, Vec<Expr>),
     /// `hint_witness(dest, "name")`: fill `dest` (a `StackBuf`, or a
@@ -193,6 +192,21 @@ pub enum Stmt {
 /// loop helper as a parameter).
 #[derive(Clone, Debug)]
 pub enum ForBound {
+    Const(u64),
+    Runtime(Expr),
+}
+
+/// A range-check bound (`assert log X < …`): a compile-time exponent, or a
+/// runtime `g^n`.
+///
+/// The gadget is the same either way, and so is what it proves: only the cell
+/// holding `g^{k-1}` differs (a pooled `SET` against one `MUL` off the runtime
+/// bound). What the compiler can no longer check is the `k ≤ 2^MIN_LOG_MEM` cap,
+/// so the program owes it: range-check the bound itself first. Without that,
+/// `log X < log n` bounds `X` only by the prover-*announced* memory size, and
+/// the honest complement `g^{k-1-log X}` may not even be an address.
+#[derive(Clone, Debug)]
+pub enum LtBound {
     Const(u64),
     Runtime(Expr),
 }

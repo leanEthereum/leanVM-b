@@ -7,20 +7,32 @@
 //!      one stacked [`pcs`] commitment).
 //!   2. [`zerocheck`] reduces `a·b ⊕ c = 0` over the cube to evaluation claims
 //!      on `(â, b̂, ĉ)`.
-//!   3. [`lincheck`] reduces those to a single claim `ẑ(ρ') = v` against the
-//!      per-block matrices.
-//!   4. The PCS discharges the resulting [`proof::ZClaim`]s.
+//!   3. [`lincheck`] reduces those to the `2^k_skip` bit-slice values of `z` at
+//!      one point, against the per-block matrices.
+//!   4. The PCS binds that family of slices ([`blake2s::SliceClaim`]) to the
+//!      commitment.
 //!
-//! [`blake3`] is the one circuit: the BLAKE3 compression encoded as a
-//! per-block R1CS (`build_block_r1cs`), with the pinned root-block
-//! configuration baked into constant rows, plus its witness generation
-//! (`blake3_witness`) and the leanVM-facing reduction entry points
-//! (`Blake3Setup::{prove_reduction, verify_reduction, …}`).
+//! [`blake2s`] is the one circuit: the BLAKE2s compression as a per-block R1CS,
+//! plus its witness generation and the leanVM-facing reduction entry points
+//! (`Blake2sSetup::{prove_reduction, verify_reduction, …}`). Steps 2 to 4 above
+//! are circuit-agnostic: they take the block shape as plain numbers and reach
+//! the matrices only through [`lincheck::LincheckCircuit`], whose one live impl
+//! walks the circuit rather than reading any matrix.
+//!
+//! BLAKE2s is a 32-bit ARX round whose XORs and rotations are free over GF(2),
+//! so its only nonlinear constraints are the product bits of the modular ADDs.
+//! The private `gf2` module owns that part: the wire word and the two adder
+//! gadgets, forwards and transposed, kept separate because the fused
+//! three-operand adder's bit boundaries are the subtlest thing here.
 
-pub mod blake3;
-mod blake3_witness;
+pub mod blake2s;
+mod gf2;
 pub mod lincheck;
-pub mod proof;
-pub mod r1cs;
+/// The circuit driven through the whole reduction. A `src` module rather than
+/// its own test binary so it shares the process, and so the slow
+/// [`blake2s::matrices`] build, with the unit tests.
+#[cfg(test)]
+mod reduction_tests;
 pub mod verifier;
+mod witness;
 pub mod zerocheck;

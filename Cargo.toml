@@ -44,7 +44,6 @@ xmss = { path = "crates/xmss" }
 zk_alloc = { path = "crates/zk_alloc" }
 parallel = { path = "crates/parallel" }
 libc = "0.2"
-blake3 = "1.5"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 rand = "0.9"

@@ -84,8 +84,11 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
     let n_total = data.len();
     let log_d = log2_strict_usize(n_total / num_ntts);
 
-    // Target sub-group ~2 MB; each position is `num_ntts` F192 elements.
-    const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
+    // Target sub-group ~1 MB; each position is `num_ntts` F192 elements. Lower
+    // than the F64 twin's because a 24-byte element makes `log2_ceil` of the row
+    // exact rather than a 1.7x overestimate, so the same budget would buy twice
+    // the sub-group and spill it out of a worker's share of L3.
+    const TARGET_SUBGROUP_LOG_BYTES: usize = 20;
     let log_bytes_per_position = log2_ceil_usize(num_ntts * core::mem::size_of::<F192>());
     let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
     let cache_n_top = log_d.saturating_sub(target_log_positions);
@@ -104,92 +107,133 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
         return;
     }
 
-    // Top layers: full-buffer sweeps, fusing two layers where possible.
-    let mut layer = start_layer.min(n_top);
-    while layer < n_top {
-        let num_blocks = 1usize << layer;
+    // Top layers: full-buffer sweeps, rows fanned out to the pool.
+    run_layers_ext(ntt, data, log_d, num_ntts, start_layer.min(n_top), n_top, 0, 0, true);
+
+    // Deep layers: one sub-NTT per worker over a cache-resident sub-block. Layers
+    // fuse here for the same reason they do above, only the pass being saved is
+    // over L2/L3 rather than DRAM: a sub is about a megabyte, so sweeping it
+    // once per layer re-reads it once per layer. The row loop inside a fused
+    // kernel stays serial, since the parallelism is already spent on the subs and
+    // a nested dispatch would deadlock.
+    let sub_elems = (1usize << (log_d - n_top)) * num_ntts;
+    parallel::chunks_mut(data, sub_elems, |sub_idx, sub_data| {
+        run_layers_ext(
+            ntt,
+            sub_data,
+            log_d,
+            num_ntts,
+            n_top.max(start_layer),
+            log_d,
+            n_top,
+            sub_idx,
+            false,
+        );
+    });
+}
+
+/// Apply layers `first_layer..end_layer` to `buf`, which holds sub-NTT `sub_idx`
+/// of the `2^outer_log` the buffer was split into (`0`/`0` for the whole
+/// codeword). Fuses three layers per pass where the block is wide enough, then
+/// two, then one; the F64 twin's `run_layers` is the same ladder.
+#[allow(clippy::too_many_arguments)]
+fn run_layers_ext(
+    ntt: &AdditiveNttF64,
+    buf: &mut [F192],
+    log_d: usize,
+    num_ntts: usize,
+    first_layer: usize,
+    end_layer: usize,
+    outer_log: usize,
+    sub_idx: usize,
+    par_rows: bool,
+) {
+    let mut layer = first_layer;
+    while layer < end_layer {
+        let num_blocks_in_buf = 1usize << (layer - outer_log);
         let block_size = 1usize << (log_d - layer);
         let block_elems = block_size * num_ntts;
+        let global = |block_in_buf: usize| sub_idx * num_blocks_in_buf + block_in_buf;
 
-        if layer + 1 < n_top && block_size >= 4 {
+        if layer + 2 < end_layer && block_size >= 8 {
+            let eighth = block_size >> 3;
+            for block_in_buf in 0..num_blocks_in_buf {
+                let t = ntt.twiddles_radix8(layer, global(block_in_buf));
+                let start = block_in_buf * block_elems;
+                fused_rows_ext::<8>(
+                    &mut buf[start..start + block_elems],
+                    eighth,
+                    num_ntts,
+                    par_rows,
+                    |rows| radix8_butterflies_ext(rows, &t),
+                );
+            }
+            layer += 3;
+        } else if layer + 1 < end_layer && block_size >= 4 {
             let quarter = block_size >> 2;
-            for block in 0..num_blocks {
-                let t_outer = ntt.twiddle(layer, block);
-                let t_inner_a = ntt.twiddle(layer + 1, 2 * block);
-                let t_inner_b = ntt.twiddle(layer + 1, 2 * block + 1);
-                let start = block * block_elems;
-                butterfly_interleaved_ext_fused_2layer(
-                    &mut data[start..start + block_elems],
-                    t_outer,
-                    t_inner_a,
-                    t_inner_b,
+            for block_in_buf in 0..num_blocks_in_buf {
+                let gb = global(block_in_buf);
+                let t = [
+                    ntt.twiddle(layer, gb),
+                    ntt.twiddle(layer + 1, 2 * gb),
+                    ntt.twiddle(layer + 1, 2 * gb + 1),
+                ];
+                let start = block_in_buf * block_elems;
+                fused_rows_ext::<4>(
+                    &mut buf[start..start + block_elems],
                     quarter,
                     num_ntts,
-                    true,
+                    par_rows,
+                    |rows| radix4_butterflies_ext(rows, &t),
                 );
             }
             layer += 2;
         } else {
             let block_size_half = block_size >> 1;
-            for block in 0..num_blocks {
-                let t = ntt.twiddle(layer, block);
-                let start = block * block_elems;
-                butterfly_interleaved_ext_block_par_rows(
-                    &mut data[start..start + block_elems],
-                    t,
-                    block_size_half,
-                    num_ntts,
-                );
+            for block_in_buf in 0..num_blocks_in_buf {
+                let twiddle = ntt.twiddle(layer, global(block_in_buf));
+                let start = block_in_buf * block_elems;
+                let block = &mut buf[start..start + block_elems];
+                if par_rows {
+                    butterfly_interleaved_ext_block_par_rows(block, twiddle, block_size_half, num_ntts);
+                } else {
+                    butterfly_interleaved_ext_block(block, twiddle, block_size_half, num_ntts);
+                }
             }
             layer += 1;
         }
     }
+}
 
-    // Deep layers: one sub-NTT per worker over a cache-resident sub-block. Layers
-    // fuse here for the same reason they do above, only the pass being saved is
-    // over L2/L3 rather than DRAM: a sub is a couple of megabytes, so sweeping it
-    // once per layer re-reads it once per layer. The row loop inside a fused
-    // kernel stays serial, since the parallelism is already spent on the subs and
-    // a nested dispatch would deadlock.
-    let sub_size_positions = 1usize << (log_d - n_top);
-    let sub_elems = sub_size_positions * num_ntts;
-    parallel::chunks_mut(data, sub_elems, |sub_idx, sub_data| {
-        let mut layer = n_top.max(start_layer);
-        while layer < log_d {
-            let num_blocks_in_sub = 1usize << (layer - n_top);
-            let block_size = 1usize << (log_d - layer);
-            let block_elems = block_size * num_ntts;
-            let global = |b: usize| sub_idx * num_blocks_in_sub + b;
-            if layer + 1 < log_d && block_size >= 4 {
-                let quarter = block_size >> 2;
-                for block_in_sub in 0..num_blocks_in_sub {
-                    let gb = global(block_in_sub);
-                    let t_outer = ntt.twiddle(layer, gb);
-                    let t_inner_a = ntt.twiddle(layer + 1, 2 * gb);
-                    let t_inner_b = ntt.twiddle(layer + 1, 2 * gb + 1);
-                    let start = block_in_sub * block_elems;
-                    butterfly_interleaved_ext_fused_2layer(
-                        &mut sub_data[start..start + block_elems],
-                        t_outer,
-                        t_inner_a,
-                        t_inner_b,
-                        quarter,
-                        num_ntts,
-                        false,
-                    );
-                }
-                layer += 2;
-            } else {
-                for block_in_sub in 0..num_blocks_in_sub {
-                    let twiddle = ntt.twiddle(layer, global(block_in_sub));
-                    let start = block_in_sub * block_elems;
-                    let block = &mut sub_data[start..start + block_elems];
-                    butterfly_interleaved_ext_block(block, twiddle, block_size >> 1, num_ntts);
-                }
-                layer += 1;
-            }
+/// Hand `do_one` the `N` rows `block[i * stride + r * num_ntts ..][..num_ntts]`
+/// for each `r`; see the F64 twin's `fused_rows` for the disjointness argument
+/// that lets one base pointer stand in for `N` nested `split_at_mut`s.
+fn fused_rows_ext<const N: usize>(
+    block: &mut [F192],
+    stride_rows: usize,
+    num_ntts: usize,
+    par_rows: bool,
+    do_one: impl Fn(&mut [&mut [F192]; N]) + Sync,
+) {
+    const PARALLEL_ROW_THRESHOLD: usize = 512;
+    let stride = stride_rows * num_ntts;
+    debug_assert_eq!(block.len(), N * stride);
+
+    let base = parallel::SendPtr(block.as_mut_ptr());
+    let group = |r: usize| {
+        let off = r * num_ntts;
+        // SAFETY: see above; `off + num_ntts <= stride` because `r < stride_rows`.
+        let mut rows: [&mut [F192]; N] = std::array::from_fn(|i| unsafe { base.slice(i * stride + off, num_ntts) });
+        do_one(&mut rows);
+    };
+
+    if !par_rows || stride_rows < PARALLEL_ROW_THRESHOLD {
+        for r in 0..stride_rows {
+            group(r);
         }
-    });
+    } else {
+        parallel::for_each(stride_rows, group);
+    }
 }
 
 fn butterfly_interleaved_ext_block_par_rows(block: &mut [F192], twiddle: F64, block_size_half: usize, num_ntts: usize) {
@@ -210,41 +254,111 @@ fn butterfly_interleaved_ext_block_par_rows(block: &mut [F192], twiddle: F64, bl
     });
 }
 
-/// Fused 2-layer butterfly, row-parallel; see the F64 twin for the shape.
-fn butterfly_interleaved_ext_fused_2layer(
-    block: &mut [F192],
-    t_outer: F64,
-    t_inner_a: F64,
-    t_inner_b: F64,
-    quarter: usize,
-    num_ntts: usize,
-    par_rows: bool,
+/// Which rows each butterfly of a fused pass pairs, and which twiddle it takes:
+/// layer `L` pairs at distance `N/2`, `L+1` at `N/4`, and so on down, with the
+/// twiddles held breadth-first. The F64 twin spells the same schedule out in
+/// `radix8_butterflies`.
+const RADIX4_PAIRS: [(usize, usize, usize); 4] = [(0, 2, 0), (1, 3, 0), (0, 1, 1), (2, 3, 2)];
+const RADIX8_PAIRS: [(usize, usize, usize); 12] = [
+    (0, 4, 0),
+    (1, 5, 0),
+    (2, 6, 0),
+    (3, 7, 0),
+    (0, 2, 1),
+    (1, 3, 1),
+    (4, 6, 2),
+    (5, 7, 2),
+    (0, 1, 3),
+    (2, 3, 4),
+    (4, 5, 5),
+    (6, 7, 6),
+];
+
+#[inline]
+fn radix4_butterflies_ext(rows: &mut [&mut [F192]; 4], t: &[F64; 3]) {
+    fused_butterflies_ext(rows, t, &RADIX4_PAIRS);
+}
+
+#[inline]
+fn radix8_butterflies_ext(rows: &mut [&mut [F192]; 8], t: &[F64; 7]) {
+    fused_butterflies_ext(rows, t, &RADIX8_PAIRS);
+}
+
+/// Run one fused pass's butterflies over `N` rows. The AVX-512 path holds all
+/// `N` rows in SoA registers for the whole schedule, so each row pays the AoS
+/// transpose once per pass rather than once per butterfly; fusing three layers
+/// instead of two therefore buys both a third fewer passes over the codeword and
+/// a third fewer transposes per butterfly.
+#[inline]
+fn fused_butterflies_ext<const N: usize, const P: usize, const T: usize>(
+    rows: &mut [&mut [F192]; N],
+    t: &[F64; T],
+    pairs: &[(usize, usize, usize); P],
 ) {
-    const PARALLEL_ROW_THRESHOLD: usize = 512;
-    let stride = quarter * num_ntts;
-    debug_assert_eq!(block.len(), 4 * stride);
-
-    let do_one = |row_a: &mut [F192], row_b: &mut [F192], row_c: &mut [F192], row_d: &mut [F192]| {
-        butterfly_ext_fused_lanes(row_a, row_b, row_c, row_d, t_outer, t_inner_a, t_inner_b);
-    };
-
-    // Row group `r` owns `block[i·stride + r·num_ntts .. + num_ntts]` for
-    // `i ∈ 0..4`; distinct `r` give disjoint windows within each quarter, and the
-    // quarters are disjoint by construction.
-    let base = parallel::SendPtr(block.as_mut_ptr());
-    let group = |r: usize| {
-        let off = r * num_ntts;
-        // SAFETY: see above; `off + num_ntts <= stride` because `r < quarter`.
-        let [a, b, c, d] = std::array::from_fn(|i| unsafe { base.slice(i * stride + off, num_ntts) });
-        do_one(a, b, c, d);
-    };
-
-    if !par_rows || quarter < PARALLEL_ROW_THRESHOLD {
-        for r in 0..quarter {
-            group(r);
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    {
+        let len = rows[0].len();
+        for i in 0..len / 8 {
+            // SAFETY: target features are enabled at compile time, the rows are
+            // pairwise disjoint, and each holds eight readable and writable F192
+            // values at `8 * i`.
+            unsafe {
+                let ptrs: [*mut F192; N] = std::array::from_fn(|k| rows[k].as_mut_ptr().add(8 * i));
+                fused_lanes_avx512(ptrs, t, pairs);
+            }
         }
-    } else {
-        parallel::for_each(quarter, group);
+        for lane in 8 * (len / 8)..len {
+            fused_lane_scalar(rows, t, pairs, lane);
+        }
+    }
+    // A butterfly at a time, each over whole rows, as the F64 twin's
+    // `radix8_butterflies` does. Holding a tile of every row in registers for
+    // the whole schedule instead (the shape the AVX-512 arm takes, since it has
+    // to transpose anyway) saves the reloads, but the rows never leave L1 and a
+    // tile leaves only its own width of independent work to cover the
+    // reduction's dependent PMULL folds, where a row leaves the whole lane
+    // count. Measured both directions: the tile is worse here, and worse again
+    // when the base encode's radix-8 group is given it.
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        let ptrs: [*mut u64; N] = std::array::from_fn(|k| rows[k].as_mut_ptr().cast());
+        // SAFETY: `aes` is enabled at compile time, the rows are pairwise
+        // disjoint, and each is `3 * len` contiguous u64 (`F192` is repr(C) over
+        // three).
+        unsafe {
+            for &(top, bot, tw) in pairs {
+                butterfly_row_neon(ptrs[top], ptrs[bot], t[tw].0, 3 * rows[0].len());
+            }
+        }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"),
+        all(target_arch = "aarch64", target_feature = "aes")
+    )))]
+    for lane in 0..rows[0].len() {
+        fused_lane_scalar(rows, t, pairs, lane);
+    }
+}
+
+/// One lane of [`fused_butterflies_ext`]: the portable path and the AVX-512
+/// path's ragged tail. The NEON arm works a coefficient at a time rather than a
+/// lane, so it has its own tail and does not reach this.
+#[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+#[inline]
+fn fused_lane_scalar<const N: usize, const P: usize, const T: usize>(
+    rows: &mut [&mut [F192]; N],
+    t: &[F64; T],
+    pairs: &[(usize, usize, usize); P],
+    lane: usize,
+) {
+    let mut v: [F192; N] = std::array::from_fn(|k| rows[k][lane]);
+    for &(top, bot, tw) in pairs {
+        let new_top = v[top] + v[bot].mul_base(t[tw]);
+        v[bot] += new_top;
+        v[top] = new_top;
+    }
+    for (row, value) in rows.iter_mut().zip(v) {
+        row[lane] = value;
     }
 }
 
@@ -281,7 +395,24 @@ fn butterfly_ext_lanes(top: &mut [F192], bot: &mut [F192], twiddle: F64) {
             bot[lane] = v + new_u;
         }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        // SAFETY: `aes` is enabled at compile time, and `F192` is repr(C) over
+        // three u64, so each row is `3 * len` contiguous readable and writable
+        // u64 in a region disjoint from the other's.
+        unsafe {
+            butterfly_row_neon(
+                top.as_mut_ptr().cast(),
+                bot.as_mut_ptr().cast(),
+                twiddle.0,
+                3 * top.len(),
+            );
+        }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"),
+        all(target_arch = "aarch64", target_feature = "aes")
+    )))]
     {
         for lane in 0..top.len() {
             let v = bot[lane];
@@ -292,66 +423,61 @@ fn butterfly_ext_lanes(top: &mut [F192], bot: &mut [F192], twiddle: F64) {
     }
 }
 
+/// The extension butterfly on NEON, over the coefficients as one flat u64 row.
+///
+/// `mul_base` scales all three coefficients of an `F192` by the same twiddle and
+/// the adds are elementwise, so a butterfly over `n` interleaved F192 lanes is
+/// exactly the base field's over `3n` u64. The AoS layout therefore needs no
+/// transpose here, unlike the AVX-512 arm, whose register holds one coefficient
+/// of eight lanes at a time and so has to gather them.
+///
+/// Four 128-bit pairs an iteration: eight products in flight cover the latency
+/// of the reduction's dependent folds, as the F64 twin's eight-lane kernel does.
+///
+/// # Safety
+/// Requires the `aes` target feature; `top` and `bot` must each address `n`
+/// readable and writable u64 in regions disjoint from each other.
+/// How many 128-bit vectors of the row a butterfly takes at once.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+const ROW_RUN: usize = 4;
+
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 #[inline]
-pub(crate) fn butterfly_ext_fused_lanes(
-    row_a: &mut [F192],
-    row_b: &mut [F192],
-    row_c: &mut [F192],
-    row_d: &mut [F192],
-    t_outer: F64,
-    t_inner_a: F64,
-    t_inner_b: F64,
-) {
-    debug_assert_eq!(row_a.len(), row_b.len());
-    debug_assert_eq!(row_a.len(), row_c.len());
-    debug_assert_eq!(row_a.len(), row_d.len());
-    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-    {
-        let vectors = row_a.len() / 8;
-        // SAFETY: target features are enabled at compile time and every call
-        // addresses exactly eight elements in each of four disjoint rows.
-        unsafe {
-            for i in 0..vectors {
-                butterfly_ext_fused_lanes_avx512(
-                    row_a.as_mut_ptr().add(8 * i),
-                    row_b.as_mut_ptr().add(8 * i),
-                    row_c.as_mut_ptr().add(8 * i),
-                    row_d.as_mut_ptr().add(8 * i),
-                    t_outer.0,
-                    t_inner_a.0,
-                    t_inner_b.0,
-                );
+#[target_feature(enable = "aes")]
+unsafe fn butterfly_row_neon(top: *mut u64, bot: *mut u64, twiddle: u64, n: usize) {
+    use core::arch::aarch64::*;
+    use primitives::field::gf2_64::aarch64::{pmull, pmull_hi, reduce_pair_pmull4};
+
+    // SAFETY: the caller's regions cover every access below; the intrinsics are
+    // covered by this function's target feature.
+    unsafe {
+        let tw = vdupq_n_u64(twiddle);
+        let scale = |v: uint64x2_t| reduce_pair_pmull4(pmull(vgetq_lane_u64::<0>(v), twiddle), pmull_hi(v, tw));
+        let mut i = 0;
+        while i + 2 * ROW_RUN <= n {
+            let v: [uint64x2_t; ROW_RUN] = std::array::from_fn(|k| vld1q_u64(bot.add(i + 2 * k)));
+            let prod = v.map(scale);
+            for k in 0..ROW_RUN {
+                let new_u = veorq_u64(vld1q_u64(top.add(i + 2 * k)), prod[k]);
+                vst1q_u64(top.add(i + 2 * k), new_u);
+                vst1q_u64(bot.add(i + 2 * k), veorq_u64(v[k], new_u));
             }
+            i += 2 * ROW_RUN;
         }
-        for lane in 8 * vectors..row_a.len() {
-            let mut a = row_a[lane];
-            let mut b = row_b[lane];
-            let mut c = row_c[lane];
-            let mut d = row_d[lane];
-            let new_a = a + c.mul_base(t_outer);
-            c += new_a;
-            a = new_a;
-            let new_b = b + d.mul_base(t_outer);
-            d += new_b;
-            b = new_b;
-            let new_a2 = a + b.mul_base(t_inner_a);
-            b += new_a2;
-            a = new_a2;
-            let new_c2 = c + d.mul_base(t_inner_b);
-            d += new_c2;
-            c = new_c2;
-            row_a[lane] = a;
-            row_b[lane] = b;
-            row_c[lane] = c;
-            row_d[lane] = d;
+        while i + 2 <= n {
+            let v = vld1q_u64(bot.add(i));
+            let new_u = veorq_u64(vld1q_u64(top.add(i)), scale(v));
+            vst1q_u64(top.add(i), new_u);
+            vst1q_u64(bot.add(i), veorq_u64(v, new_u));
+            i += 2;
         }
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
-    {
-        butterfly_ext_lanes(row_a, row_c, t_outer);
-        butterfly_ext_lanes(row_b, row_d, t_outer);
-        butterfly_ext_lanes(row_a, row_b, t_inner_a);
-        butterfly_ext_lanes(row_c, row_d, t_inner_b);
+        if i < n {
+            // `3 * len` is odd exactly when the lane count is.
+            let v = F64(*bot.add(i));
+            let new_u = F64(*top.add(i)) + v * F64(twiddle);
+            *top.add(i) = new_u.0;
+            *bot.add(i) = (v + new_u).0;
+        }
     }
 }
 
@@ -451,17 +577,49 @@ unsafe fn mul_base_f192x8_avx512(value: F192x8, twiddle: u64) -> F192x8 {
 #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "avx512f")]
-unsafe fn butterfly_f192x8_avx512(top: &mut F192x8, bot: &mut F192x8, twiddle: u64) {
+unsafe fn butterfly_f192x8_avx512(top: F192x8, bot: F192x8, twiddle: u64) -> (F192x8, F192x8) {
     use core::arch::x86_64::_mm512_xor_si512;
 
     unsafe {
-        let product = mul_base_f192x8_avx512(*bot, twiddle);
-        top.c0 = _mm512_xor_si512(top.c0, product.c0);
-        top.c1 = _mm512_xor_si512(top.c1, product.c1);
-        top.c2 = _mm512_xor_si512(top.c2, product.c2);
-        bot.c0 = _mm512_xor_si512(bot.c0, top.c0);
-        bot.c1 = _mm512_xor_si512(bot.c1, top.c1);
-        bot.c2 = _mm512_xor_si512(bot.c2, top.c2);
+        let p = mul_base_f192x8_avx512(bot, twiddle);
+        let top = F192x8 {
+            c0: _mm512_xor_si512(top.c0, p.c0),
+            c1: _mm512_xor_si512(top.c1, p.c1),
+            c2: _mm512_xor_si512(top.c2, p.c2),
+        };
+        let bot = F192x8 {
+            c0: _mm512_xor_si512(bot.c0, top.c0),
+            c1: _mm512_xor_si512(bot.c1, top.c1),
+            c2: _mm512_xor_si512(bot.c2, top.c2),
+        };
+        (top, bot)
+    }
+}
+
+/// One fused pass's butterflies over `N` rows of eight lanes, the rows loaded
+/// into SoA registers once and stored once.
+///
+/// # Safety
+/// Requires VPCLMULQDQ + AVX-512F; the `N` pointers must address pairwise
+/// disjoint runs of eight readable and writable F192 values.
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+#[inline]
+#[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+unsafe fn fused_lanes_avx512<const N: usize, const P: usize, const T: usize>(
+    rows: [*mut F192; N],
+    t: &[F64; T],
+    pairs: &[(usize, usize, usize); P],
+) {
+    unsafe {
+        let mut v: [F192x8; N] = std::array::from_fn(|k| load_f192x8_avx512(rows[k]));
+        for &(top, bot, tw) in pairs {
+            let (x, y) = butterfly_f192x8_avx512(v[top], v[bot], t[tw].0);
+            v[top] = x;
+            v[bot] = y;
+        }
+        for (row, value) in rows.into_iter().zip(v) {
+            store_f192x8_avx512(row, value);
+        }
     }
 }
 
@@ -475,44 +633,50 @@ unsafe fn butterfly_f192x8_avx512(top: &mut F192x8, bot: &mut F192x8, twiddle: u
 #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
 unsafe fn butterfly_ext_lanes_avx512(top: *mut F192, bot: *mut F192, twiddle: u64) {
     unsafe {
-        let mut u = load_f192x8_avx512(top);
-        let mut v = load_f192x8_avx512(bot);
-        butterfly_f192x8_avx512(&mut u, &mut v, twiddle);
+        let (u, v) = butterfly_f192x8_avx512(load_f192x8_avx512(top), load_f192x8_avx512(bot), twiddle);
         store_f192x8_avx512(top, u);
         store_f192x8_avx512(bot, v);
     }
 }
 
-/// Fused two-layer butterfly over eight F192 lanes. Four rows stay in SoA ZMM
-/// form across both layers, so each row pays the AoS transpose only once.
-///
-/// # Safety
-/// Requires VPCLMULQDQ + AVX-512F; each pointer must address eight readable
-/// and writable F192 values, and the four regions must be disjoint.
-#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-#[inline]
-#[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
-unsafe fn butterfly_ext_fused_lanes_avx512(
-    row_a: *mut F192,
-    row_b: *mut F192,
-    row_c: *mut F192,
-    row_d: *mut F192,
-    t_outer: u64,
-    t_inner_a: u64,
-    t_inner_b: u64,
-) {
-    unsafe {
-        let mut a = load_f192x8_avx512(row_a);
-        let mut b = load_f192x8_avx512(row_b);
-        let mut c = load_f192x8_avx512(row_c);
-        let mut d = load_f192x8_avx512(row_d);
-        butterfly_f192x8_avx512(&mut a, &mut c, t_outer);
-        butterfly_f192x8_avx512(&mut b, &mut d, t_outer);
-        butterfly_f192x8_avx512(&mut a, &mut b, t_inner_a);
-        butterfly_f192x8_avx512(&mut c, &mut d, t_inner_b);
-        store_f192x8_avx512(row_a, a);
-        store_f192x8_avx512(row_b, b);
-        store_f192x8_avx512(row_c, c);
-        store_f192x8_avx512(row_d, d);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use primitives::test_rng::Rng;
+
+    /// Both fused schedules against a butterfly-at-a-time oracle. The AVX-512
+    /// path holds every row of a pass in registers at once, so a mispaired row
+    /// or a wrong twiddle shows up here and nowhere else; the ragged lane count
+    /// covers the scalar tail the production width never reaches.
+    #[test]
+    fn fused_butterflies_match_one_at_a_time() {
+        let mut rng = Rng::new(0x56c8_1b92_d4a7_30ef);
+        for lanes in [8, 11] {
+            for _ in 0..50 {
+                check::<4, 4, 3>(&mut rng, &RADIX4_PAIRS, lanes);
+                check::<8, 12, 7>(&mut rng, &RADIX8_PAIRS, lanes);
+            }
+        }
+    }
+
+    fn check<const N: usize, const P: usize, const T: usize>(
+        rng: &mut Rng,
+        pairs: &[(usize, usize, usize); P],
+        lanes: usize,
+    ) {
+        let mut rows: [Vec<F192>; N] = std::array::from_fn(|_| (0..lanes).map(|_| rng.ext()).collect());
+        let t: [F64; T] = std::array::from_fn(|_| F64(rng.next_u64()));
+
+        let mut want = rows.clone();
+        for &(top, bot, tw) in pairs {
+            for lane in 0..lanes {
+                let new_top = want[top][lane] + want[bot][lane].mul_base(t[tw]);
+                want[bot][lane] += new_top;
+                want[top][lane] = new_top;
+            }
+        }
+
+        fused_butterflies_ext(&mut rows.each_mut().map(|row| row.as_mut_slice()), &t, pairs);
+        assert_eq!(rows, want);
     }
 }

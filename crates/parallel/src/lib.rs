@@ -54,17 +54,36 @@ pub use topology::{Topology, num_threads, topology};
 const SPIN_LIMIT: u32 = 1 << 12;
 
 /// Largest claim one guided-self-scheduling step may take. Bounds load imbalance
+/// How many claims per worker guided self-scheduling aims to hand out. A first
+/// claim of `1 / (2 * nt)` is one performance core's whole share, which an
+/// efficiency core takes three times as long to finish, and the dispatch ends
+/// when it does.
+const CLAIM_DIVISOR: usize = 4;
+
 /// while keeping million-item kernels to a few thousand claims.
 const MAX_CLAIM_BATCH: usize = 1 << 12;
 
-/// Chunk size for a flat fan-out: a few chunks per worker, fine enough for the
+/// Chunk size for a flat fan-out: many chunks per worker, fine enough for the
 /// claim counter to rebalance heterogeneous cores, coarse enough to amortize the
 /// dispatch.
+///
+/// A few chunks per worker is what a homogeneous pool wants, and it is what this
+/// was: an efficiency core runs at about a third of a performance core, so with
+/// one claim each the whole dispatch waits on an E core holding a full P core's
+/// share. The floor keeps the small end no finer than it already was.
 #[must_use]
 #[inline]
 pub fn recommended_chunk_size(n_items: usize) -> usize {
-    n_items.div_ceil(num_threads() * 4).max(1)
+    n_items
+        .div_ceil(num_threads() * CHUNK_OVERSUBSCRIBE)
+        .max(CHUNK_FLOOR)
+        .min(n_items.max(1))
 }
+
+/// Claims per worker that [`recommended_chunk_size`] aims for, and the smallest
+/// chunk it will hand out.
+const CHUNK_OVERSUBSCRIBE: usize = 32;
+const CHUNK_FLOOR: usize = 64;
 
 thread_local! {
     /// This thread's stable worker id, `0` on the dispatcher and off-pool threads.
@@ -242,7 +261,7 @@ fn drain(pool: &Pool) {
             if observed >= n {
                 break;
             }
-            let batch = ((n - observed) / (nt * 2)).clamp(1, MAX_CLAIM_BATCH);
+            let batch = ((n - observed) / (nt * CLAIM_DIVISOR)).clamp(1, MAX_CLAIM_BATCH);
             let start = pool.counter.fetch_add(batch, Ordering::Relaxed);
             if start >= n {
                 break;
@@ -517,8 +536,10 @@ pub fn find_first<P: Fn(usize) -> bool + Sync>(n_tasks: usize, pred: P) -> Optio
 }
 
 /// One slot per cache line: a worker writes through its accumulator on the
-/// per-item path, so a dense array would false-share the boundary lines.
-#[repr(align(64))]
+/// per-item path, so a dense array would false-share the boundary lines. 128
+/// rather than 64 for the same reason [`Line`] is, and because that is the line
+/// itself on Apple silicon.
+#[repr(align(128))]
 struct Slot<S>(Option<S>);
 
 /// Give each worker its own persistent `Option<S>` while it drains `0..n_tasks`:

@@ -22,8 +22,8 @@ const PROGRAMS: [&str; 5] = [
     "def main():\n    x = GEN ** 5\n    y = x * x\n    return\n",
     "def main():\n    b = HeapBuf(4)\n    b[1] = GEN\n    y = b[1] * b[1]\n    return\n",
     "def main():\n    for i in mul_range(1, GEN ** 20):\n        z = i * i\n    return\n",
-    // A compression, so BLAKE3 and PACK64X2 are non-empty too.
-    "def main():\n    a = StackBuf(2)\n    a[0] = 5\n    a[1] = 7\n    c = StackBuf(2)\n    blake3(a, a, c)\n    return\n",
+    // A compression, so BLAKE2s and PACK64X2 are non-empty too.
+    "def main():\n    a = StackBuf(2)\n    a[0] = 5\n    a[1] = 7\n    c = StackBuf(2)\n    blake2s(a, a, c)\n    return\n",
     "def main():\n    for i in mul_range(1, GEN ** 300):\n        z = i + GEN\n    return\n",
 ];
 
@@ -46,7 +46,7 @@ fn the_cost_model_is_exact() {
     for src in PROGRAMS {
         let program = compile(&parse(src).expect("parse"));
         let stats = prove(&program, [F192::ZERO, F192::ZERO], lean_vm::pcs::LOG_INV_RATE).1;
-        let plan = filler::solve(stats.base_counts).expect("solvable");
+        let plan = filler::solve(stats.base_counts, filler::NO_FLOORS).expect("solvable");
         assert_eq!(
             filler::filled(stats.base_counts, &plan),
             stats.counts,

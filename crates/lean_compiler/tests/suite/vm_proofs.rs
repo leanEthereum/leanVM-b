@@ -7,7 +7,7 @@
 //! duplicating their knowledge of what a dummy row looks like.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake3_flock::warm_setup;
+use lean_vm::blake2s_flock::warm_setup;
 use lean_vm::cpu::{Error, Proof, prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
@@ -20,7 +20,7 @@ def main():
     a[0] = 5
     a[1] = 7
     c = StackBuf(2)
-    blake3(a, a, c)
+    blake2s(a, a, c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
@@ -44,12 +44,12 @@ fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
 }
 
 /// The stacked WHIR opening rides the proof's Merkle phases. Nothing there is
-/// bound by the sponge (only by the Merkle structure), so tampering an opened
+/// bound by the transcript (only by the Merkle structure), so tampering an opened
 /// row must still be rejected.
 #[test]
 fn a_tampered_opening_is_rejected() {
     let (program, pi, mut proof) = hashing_proof();
-    let phase = proof.merkle_paths.first_mut().expect("stacked WHIR opening");
+    let phase = proof.merkle.first_mut().expect("stacked WHIR opening");
     phase.leaf_data[0][0].0 ^= 1;
     assert!(
         verify(&program, &pi, &proof).is_err(),
@@ -58,8 +58,8 @@ fn a_tampered_opening_is_rejected() {
 }
 
 /// flock's reduction sub-proof (zerocheck, lincheck, ring switch) rides the scalar
-/// stream as raw transport, but its values re-enter the sponge through the verifier's
-/// replay, so a flipped transport word diverges the recovered `(ab, c)` claims.
+/// stream as raw transport, but its values re-enter the transcript through the verifier's
+/// replay, so a flipped transport word diverges the recovered flock claim.
 #[test]
 fn a_tampered_reduction_word_is_rejected() {
     let (program, pi, proof) = hashing_proof();
@@ -76,7 +76,7 @@ fn a_tampered_reduction_word_is_rejected() {
 
 /// A proof is bound to its exact program. The two programs here have the same shape,
 /// so the same layout and announced sizes, and differ in one constant; the program
-/// digest seeds the transcript, so the sponge diverges at the first squeeze. This is
+/// digest seeds the transcript, so it diverges at the first squeeze. This is
 /// the adaptive-statement forgery that the bytecode bus's single-point check does not,
 /// on its own, prevent.
 #[test]
@@ -87,7 +87,7 @@ fn a_proof_does_not_verify_against_another_program() {
     let src = |k: u32| {
         format!(
             "def main():\n    a = StackBuf(2)\n    a[0] = {k}\n    a[1] = 7\n    \
-             c = StackBuf(2)\n    blake3(a, a, c)\n    return\n"
+             c = StackBuf(2)\n    blake2s(a, a, c)\n    return\n"
         )
     };
     let program = compile(&parse(&src(5)).expect("parse"));
@@ -121,13 +121,16 @@ fn a_proof_roundtrips_through_bytes() {
         "the announced PCS rate must be in 1..=4"
     );
 
-    // A BLAKE3 height below flock's instance floor describes a layout the
+    // A BLAKE2s height below flock's instance floor describes a layout the
     // arithmetization cannot express, and all three verifiers reject it there.
-    let blake3 = lean_vm::cpu::Stats::TABLES.iter().position(|&t| t == "BLAKE3").unwrap();
+    let blake2s = lean_vm::cpu::Stats::TABLES
+        .iter()
+        .position(|&t| t == "BLAKE2S")
+        .unwrap();
     let mut sub_floor = decoded;
-    sub_floor.stream[1 + blake3] = F192::new(2, 0, 0);
+    sub_floor.stream[1 + blake2s] = F192::new(2, 0, 0);
     assert!(
         matches!(verify(&program, &pi, &sub_floor), Err(Error::PublicInput)),
-        "the announced BLAKE3 height must reach flock's instance floor"
+        "the announced BLAKE2s height must reach flock's instance floor"
     );
 }

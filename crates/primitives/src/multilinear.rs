@@ -86,7 +86,6 @@ pub fn eq_table_arena(r: &[F192]) -> ArenaVec<F192> {
 fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
     debug_assert_eq!(eq.len(), 1usize << r.len());
     eq[0] = F192::ONE;
-    const PAR_THRESHOLD: usize = 1 << 12;
     for (i, &rk) in r.iter().enumerate() {
         let half = 1usize << i;
         let (lo, hi_rest) = eq.split_at_mut(half);
@@ -108,31 +107,45 @@ fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
     }
 }
 
+/// Below this a parallel dispatch costs more than the fold it replaces.
+const PAR_THRESHOLD: usize = 1 << 12;
+
 /// The mixed fold: bind the lowest variable of a `K`-table to an
 /// `E`-challenge, producing the `E`-table the remaining rounds fold. One
 /// `mul_base` per output entry.
-fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
+fn fold_low_k(table: &[F64], chi: F192) -> Vec<F192> {
     debug_assert_eq!(table.len() % 2, 0);
     (0..table.len() / 2)
-        .map(|i| interp_k(table[2 * i], table[2 * i + 1], rho))
+        .map(|i| interp_k(table[2 * i], table[2 * i + 1], chi))
         .collect()
 }
 
-/// Bind the highest variable of a `K`-table and lift the result into `E`.
-pub fn fold_high_k(table: &[F64], rho: F192) -> ArenaVec<F192> {
-    debug_assert_eq!(table.len() % 2, 0);
-    let half = table.len() / 2;
-    (0..half).map(|i| interp_k(table[i], table[i + half], rho)).collect()
+/// [`fold_low_k`], fanned out over the pool.
+fn fold_low_k_par(table: &[F64], chi: F192) -> Vec<F192> {
+    parallel::map_collect(table.len() / 2, |i| interp_k(table[2 * i], table[2 * i + 1], chi))
 }
 
-/// Bind the highest free variable of `table` to `rho` in place: `table[i] =
-/// interp(table[i], table[i + half], rho)`. Binding from the top down leaves the
-/// low variables, the ones every table of a batch shares, for last.
-pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, rho: F192) {
+/// Bind the highest variable of a `K`-table and lift the result into `E`.
+pub fn fold_high_k(table: &[F64], chi: F192) -> ArenaVec<F192> {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
-    for i in 0..half {
-        table[i] = interp(table[i], table[i + half], rho);
+    (0..half).map(|i| interp_k(table[i], table[i + half], chi)).collect()
+}
+
+/// Bind the highest free variable of `table` to `chi` in place: `table[i] =
+/// interp(table[i], table[i + half], chi)`. Binding from the top down leaves the
+/// low variables, the ones every table of a batch shares, for last.
+pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, chi: F192) {
+    debug_assert_eq!(table.len() % 2, 0);
+    let half = table.len() / 2;
+    {
+        // Split once rather than index twice: indexing reloads the data pointer
+        // and length through the container every iteration, since nothing proves
+        // they do not alias the elements, and pays a bounds check for it.
+        let (lo, hi) = (**table).split_at_mut(half);
+        for (l, h) in lo.iter_mut().zip(&*hi) {
+            *l = interp(*l, *h, chi);
+        }
     }
     table.shrink_to(half);
 }
@@ -142,8 +155,15 @@ pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, rho: F192) {
 /// versus `2^{n-1}` to rebuild the table.
 pub fn shrink_eq_low<B: Shrink<F192>>(table: &mut B) {
     let half = table.len() / 2;
-    for i in 0..half {
-        table[i] = table[2 * i] + table[2 * i + 1];
+    {
+        // Sliced, as in `fold_high_inplace`: reading the pair and writing the
+        // sum through one slice drops the per-iteration reload and its bounds
+        // check. The write index trails the read, so the in-place walk is sound.
+        let t: &mut [F192] = table;
+        for i in 0..half {
+            let (a, b) = (t[2 * i], t[2 * i + 1]);
+            t[i] = a + b;
+        }
     }
     table.shrink_to(half);
 }
@@ -152,9 +172,12 @@ pub fn shrink_eq_low<B: Shrink<F192>>(table: &mut B) {
 /// [`shrink_eq_low`] counterpart for a top-down sumcheck.
 pub fn shrink_eq_high<B: Shrink<F192>>(table: &mut B) {
     let half = table.len() / 2;
-    for i in 0..half {
-        let hi = table[i + half];
-        table[i] += hi;
+    {
+        // Sliced, as in `fold_high_inplace`.
+        let (lo, hi) = (**table).split_at_mut(half);
+        for (l, h) in lo.iter_mut().zip(&*hi) {
+            *l += *h;
+        }
     }
     table.shrink_to(half);
 }
@@ -191,39 +214,27 @@ pub fn lagrange_eval(nodes: &[F192], values: &[F192], p: F192) -> F192 {
         .fold(F192::ZERO, |acc, (&w, &v)| acc + v * w)
 }
 
-/// The 3 nodes {0, 1, g} at which a degree-2 sumcheck round univariate is sent
-/// (the eq weight is factored out); `g` embedded into `E`. Shared by
-/// `lean_vm::constraints` and `lean_vm::gkr`.
+/// A degree-2 polynomial's coefficients from its values at {0, 1, g}.
+///
+/// `p(0) = c0`, `p(1) = c0+c1+c2` and `p(g) = c0+c1·g+c2·g²` invert to a single
+/// multiply by the constant `(g+g²)⁻¹`. Sumcheck rounds travel as coefficients
+/// (`fiat_shamir::Transmitter::add_round_poly`), so this is where the prover's
+/// per-row accumulator, which is evaluations, becomes one.
 #[inline]
-pub fn tri_nodes() -> [F192; 3] {
-    [F192::ZERO, F192::ONE, F192::from(crate::field::G)]
+pub fn tri_coeffs(evals: [F192; 3]) -> [F192; 3] {
+    static INV: std::sync::OnceLock<(F192, F192)> = std::sync::OnceLock::new();
+    let &(g, inv) = INV.get_or_init(|| {
+        let g = F192::from(crate::field::G);
+        (g, (g + g * g).inv())
+    });
+    let c2 = (evals[0] + evals[2] + g * (evals[0] + evals[1])) * inv;
+    [evals[0], evals[0] + evals[1] + c2, c2]
 }
 
-/// The 4 nodes {0, 1, g, g²} at which a degree-3 sumcheck round univariate is sent
-/// WHOLE, eq weight included. Costs one field element more than [`tri_nodes`] and
-/// buys a verifier that reapplies nothing: `h(0) + h(1) = claim`, then interpolate.
+/// A polynomial at `point`, by Horner over its coefficients, constant first.
 #[inline]
-pub fn quad_nodes() -> [F192; 4] {
-    let g = F192::from(crate::field::G);
-    [F192::ZERO, F192::ONE, g, g * g]
-}
-
-/// Evaluate a degree-four eq-trick round from its four independent transcript
-/// coefficients. If `difference = q(0) + q(1)`, the incoming claim fixes the
-/// constant coefficient, and characteristic two fixes the linear coefficient.
-#[inline]
-pub fn quartic_eval_from_eq(
-    claim: F192,
-    eq_point: F192,
-    difference: F192,
-    c2: F192,
-    c3: F192,
-    c4: F192,
-    point: F192,
-) -> F192 {
-    let c0 = claim + eq_point * difference;
-    let c1 = difference + c2 + c3 + c4;
-    c0 + point * (c1 + point * (c2 + point * (c3 + point * c4)))
+pub fn poly_eval(coeffs: &[F192], point: F192) -> F192 {
+    coeffs.iter().rev().fold(F192::ZERO, |acc, &c| acc * point + c)
 }
 
 /// Add two 3-coefficient sumcheck accumulators componentwise.
@@ -253,7 +264,19 @@ pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     if point.is_empty() {
         return F192::from(table[0]);
     }
-    fold_ladder(fold_low_k(table, point[0]), &point[1..])
+    fold_ladder(fold_low_k(table, point[0]), &point[1..], false)
+}
+
+/// [`mle_eval`], fanned out over the pool. For an OUTERMOST caller only: a kernel
+/// already inside a dispatch must use the scalar [`mle_eval`], since nesting
+/// deadlocks. Worth it only for the big fixed tables (the stacked bytecode),
+/// where one evaluation is millions of sequential folds.
+pub fn mle_eval_par(table: &[F64], point: &[F192]) -> F192 {
+    debug_assert_eq!(table.len(), 1 << point.len());
+    if point.is_empty() {
+        return F192::from(table[0]);
+    }
+    fold_ladder(fold_low_k_par(table, point[0]), &point[1..], true)
 }
 
 /// The MLE of the pointwise product `a·b` at an `E`-point, i.e. `Σ_z eq(point,
@@ -266,18 +289,25 @@ pub fn mle_eval_prod(a: &[F64], b: &[F64], point: &[F192]) -> F192 {
     if point.is_empty() {
         return F192::from(a[0] * b[0]);
     }
-    let rho = point[0];
+    let chi = point[0];
     let cur = (0..a.len() / 2)
-        .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], rho))
+        .map(|i| interp_k(a[2 * i] * b[2 * i], a[2 * i + 1] * b[2 * i + 1], chi))
         .collect();
-    fold_ladder(cur, &point[1..])
+    fold_ladder(cur, &point[1..], false)
 }
 
 /// Bind the remaining variables of a half-folded `E`-table, LSB-first.
-fn fold_ladder(mut cur: Vec<F192>, point: &[F192]) -> F192 {
+fn fold_ladder(mut cur: Vec<F192>, point: &[F192], par: bool) -> F192 {
     let mut len = cur.len();
     for &p in point {
         len /= 2;
+        // Out of place while the round is worth a dispatch: an in-place fold
+        // reads `cur[2i]` where another task writes `cur[i]`.
+        if par && len >= PAR_THRESHOLD {
+            let src: &[F192] = &cur;
+            cur = parallel::map_collect(len, |i| interp(src[2 * i], src[2 * i + 1], p));
+            continue;
+        }
         // Deliberately scalar: the fold's mul has the loop-invariant `p` on one
         // side, and pairing outputs through a two-lane multiply measured slower,
         // 1.75 vs 2.14 ns/output.

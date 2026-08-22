@@ -1,10 +1,9 @@
 use lean_compiler::{compile, parse};
-use lean_vm::blake3_flock::warm_setup;
+use lean_vm::blake2s_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192};
 
-mod common;
-use common::mix;
+use crate::common::mix;
 
 #[test]
 fn pack64x2_proves_and_verifies() {

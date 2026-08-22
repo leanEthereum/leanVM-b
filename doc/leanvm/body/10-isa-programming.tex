@@ -17,6 +17,15 @@ The assertion \texttt{assert a != b} computes $x=a+b$ with \texttt{XOR}, takes a
 
 A frame is fp-relative with layout $[\mathit{retpc},\mathit{retfp},\mathrm{args},\mathrm{rets},\mathrm{locals}]$. A call: the callee frame pointer is hinted into a fresh cell $\mathit{nfp}$; the arguments and the caller's $\fp$ are stored through $\mathit{nfp}$ with \texttt{DEREF}s (modes \texttt{cell} and \texttt{fp}); a \texttt{DEREF} in mode \texttt{pc} stores the return address $\gen^{2}\cdot\pc$ (the instruction after the transfer); one \texttt{JUMP} enters the callee. Return is a single \texttt{JUMP} to $\loc{1}$ with frame pointer $\loc{\gen}$. Cost: $n_{\mathrm{args}}+n_{\mathrm{rets}}+4$ instructions per call.
 
+The callee frame pointer being hinted, the following convention is crucial: \textit{a function's internal logic should only depend on its inputs, not on where its frame happens to land}, so that the value of $\mathit{nfp}$ does not impact its execution.
+
+The ISA makes it possible to use values of $\fp$ outside the range $\{\gen^{0},\dots,\gen^{2^{h}-1}\}$. As long as every memory access of the form $\loc{o}$ (for some offset $o$) is in range, i.e.\ $\fp\cdot o=\gen^{i}$ with $i<2^{h}$, the execution is valid. Yet, reasoning about such out-of-range values of $\fp$ is tricky. The initial $\fp$ is in range, since the state boundary condition fixes $\fp_{0}=\gen^{0}$ (\S\ref{sec:state}), but nothing guarantees it for the ones a \texttt{JUMP} sets. We thus suggest the following programming convention: whenever a \texttt{JUMP} updates $\fp$, the program should guarantee that the new value is in range. The calling convention above does it for free:
+
+\begin{itemize}
+\item On a call, $\fp\gets\loc{o_f}$, where $\loc{o_f}=\mathit{nfp}$ is hinted, hence arbitrary. But the callee frame was initialized with the \texttt{DEREF} $\mem[\mathit{nfp}]\gets\gen^{2}\cdot\pc$, whose memory access at address $\mathit{nfp}$ forces $\mathit{nfp}=\gen^{i}$ with $i<2^{h}$ (Corollary~\ref{cor:addrrange}).
+\item On a return, $\fp\gets\loc{\gen}$ reads back what the caller wrote there, i.e.\ its own $\fp$, in range by induction.
+\end{itemize}
+
 \subsection{Loops}\label{sec:prog-loops}
 
 A counted loop keeps its counter in the exponent: it starts at $\gen^{\mathrm{lo}}$, advances by one multiplication $i\gets\gen\cdot i$, and exits on reaching $\gen^{\mathrm{hi}}$. The body is lowered as a tail-recursive helper function whose exit test \emph{is} the recursive call's \texttt{JUMP} condition (the \texttt{XOR} $i+\gen^{\mathrm{hi}}$ is nonzero exactly while the loop must continue), so an iteration costs one call plus two instructions, with no is-zero gadget. Loop state is threaded through captured arguments or a heap buffer.

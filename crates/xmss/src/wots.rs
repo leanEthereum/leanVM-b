@@ -74,12 +74,12 @@ impl WotsSignature {
 }
 
 impl WotsPublicKey {
-    /// The Merkle leaf: standard BLAKE3 over the tweak, public parameter, and
+    /// The Merkle leaf: standard BLAKE2s over the tweak, public parameter, and
     /// 42 concatenated chain tips (704 bytes, 11 compressions in one chunk).
     pub fn hash(&self, public_param: &PublicParam, epoch: u32) -> Digest {
         let mut data = [0u8; V * DIGEST_LEN];
-        for (chunk, tip) in data.chunks_exact_mut(DIGEST_LEN).zip(&self.0) {
-            chunk.copy_from_slice(tip);
+        for (chunk, tip) in data.as_chunks_mut::<DIGEST_LEN>().0.iter_mut().zip(&self.0) {
+            *chunk = *tip;
         }
         tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, epoch, &data)
     }
@@ -123,7 +123,7 @@ pub fn find_randomness_for_wots_encoding(
 }
 
 /// The target-sum encoding. `D = MD(msg | randomness | zeros)` under the
-/// encoding tweak, truncated to 16 bytes: 2 standard BLAKE3 compressions over
+/// encoding tweak, truncated to 16 bytes: 2 standard BLAKE2s compressions over
 /// the 96-byte exact input. `D`'s two little-endian 64-bit words each hold 21
 /// chunks of 3 bits (the VM's word width budgets the monomial encoding at 64
 /// bits per word: `g^k = x^k` only for `k < 64`): digit `i < 21` sits at bits
@@ -133,7 +133,7 @@ pub fn find_randomness_for_wots_encoding(
 /// digest word exactly `sum(e_i * 2^{3i})` of its 21 digits, so both words
 /// decompose into the chunks with no slack term. In-circuit this is checked
 /// over GF(2^64) per word by accumulating the dispatched digit literals against
-/// `8^i` monomial weights (see `tests/xmss_aggregate.py`).
+/// `8^i` monomial weights (see `verify_sig` in `rec_aggregation`'s `guests/aggregate.py`).
 pub fn wots_encode(
     message: &Message,
     epoch: u32,

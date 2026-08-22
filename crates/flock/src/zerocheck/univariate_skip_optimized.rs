@@ -54,13 +54,14 @@ const N_MEDIUM: usize = 4;
 /// The three small-eq challenges (as F_8 values, then embedded via φ_8).
 /// Choosing these specific values is what makes `eq_small[K] = C_s · α^K`.
 ///
-/// **Soundness dependency.** These three constants — together with the
-/// four medium constants returned by [`medium_challenges`] — must be
-/// **F₂-linearly independent** in F₁₉₂. Zerocheck soundness relies on this
-/// (a witness aligned with the friendly subspace would otherwise let the
-/// prover cancel the URM message), and so does WHIR's L0 list-collapse
-/// argument (the SZ bound `(m−7)/|F|` for MLE collisions at `r` requires
-/// the seven friendly coords to span a 7-dim F₂-subspace). Asserted by
+/// **Soundness dependency.** These three constants, with the four medium ones
+/// returned by [`medium_challenges`], are the seven fixed zerocheck coordinates
+/// `a`. `lem:fixed-zerocheck` requires their `2^7` equality WEIGHTS
+/// `{eq(a, b)}` to be **F₂-linearly independent** in F₁₉₂, which is strictly
+/// stronger than independence of the seven coordinates. Zerocheck soundness
+/// relies on it (a witness aligned with the friendly subspace would otherwise
+/// let the prover cancel the URM message), and so does WHIR's L0 list-collapse
+/// argument (the SZ bound `(m-7)/|F|` for MLE collisions at `r`). Asserted by
 /// `tests::friendly_challenges_f2_independent`.
 const SMALL_CHAL_F8: [u8; 3] = [0xF7, 0x53, 0xB5];
 
@@ -105,34 +106,6 @@ const fn medium_generator() -> F192 {
     F192::new(0x243f_6a88_85a3_08d3, 0x1319_8a2e_0370_7344, 0xa409_3822_299f_31d0)
 }
 
-/// `C_2 = (1+r_2)(1+r_3)` where `r_2 = φ_8(0x53)` (= `α^2/(1+α^2)`),
-/// `r_3 = φ_8(0xB5)` (= `α^4/(1+α^4)`). This is the residual small-eq
-/// constant after the first small friendly bit (`b_3[0]`, indexed by
-/// `r_rest[0] = φ_8(α)`) has been pulled out for the s_hat_v_c bank split:
-///
-/// ```text
-/// eq([r_rest[1], r_rest[2]], (b_3[1], b_3[2])) = C_2 · α^{2 b_3[1] + 4 b_3[2]}
-/// ```
-///
-/// Used in [`round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`] to
-/// post-scale the raw bank values into canonical `s_hat_v_c` (which
-/// `ring_switch::fold_1b_rows` would produce against suffix `r_rest[1..]`).
-fn c_2_small() -> F192 {
-    let r_2 = phi8(F8(SMALL_CHAL_F8[1]));
-    let r_3 = phi8(F8(SMALL_CHAL_F8[2]));
-    (F192::ONE + r_2) * (F192::ONE + r_3)
-}
-
-/// `α⁻¹` in F192, as a subfield-embedded F_8 element. Used to strip the
-/// extra `α` factor from `s_hat_v_c`'s bank 1 (the K-odd lattice's raw
-/// contribution is `α · α^{2 b_3[1] + 4 b_3[2]}`; canonical wants just
-/// `α^{2 b_3[1] + 4 b_3[2]}`).
-fn alpha_inv() -> F192 {
-    // α in F_8 = byte 0x02 (the polynomial generator). Its inverse is α^254;
-    // F8::inv computes it via the standard extended Euclidean / power table.
-    phi8(F8(0x02).inv())
-}
-
 /// `D = (1+γ)(1+γ^2)(1+γ^4)(1+γ^8)`; `D⁻¹` cancels the medium-eq normalization.
 fn compute_d_inv() -> F192 {
     let g1 = medium_generator();
@@ -152,27 +125,35 @@ fn d_inv() -> F192 {
 // 16 × 256 × 24 bytes = 96 KB. Computed once, cached via OnceLock.
 // ---------------------------------------------------------------------------
 
-const CONVERT_TABLE_SIZE: usize = 16 * 256;
+const N_MEDIUM_VALUES: usize = 16;
 
-static CONVERT_TABLE_CACHE: OnceLock<Vec<F192>> = OnceLock::new();
+/// The convert table as its shape rather than as a flat run: a `u8` cannot index
+/// a 256-entry row out of bounds and the row index is bounded by the loop, so
+/// the fold's two lookups carry no bounds check and the row stride folds into
+/// the address. Flat, each lookup costs a check, a branch and a multiply by the
+/// 24-byte element stride, and the branches keep the constant-trip loop around
+/// them from unrolling.
+type ConvertTable = [[F192; 256]; N_MEDIUM_VALUES];
 
-fn build_convert_table() -> Vec<F192> {
+static CONVERT_TABLE_CACHE: OnceLock<Box<ConvertTable>> = OnceLock::new();
+
+fn build_convert_table() -> Box<ConvertTable> {
     let mut gamma_pow = [F192::ZERO; 16];
     gamma_pow[0] = F192::ONE;
     for b in 1..16 {
         gamma_pow[b] = gamma_pow[b - 1] * medium_generator();
     }
-    let mut table = vec![F192::ZERO; CONVERT_TABLE_SIZE];
-    for b in 0..16 {
+    let mut table: Box<ConvertTable> = Box::new([[F192::ZERO; 256]; N_MEDIUM_VALUES]);
+    for b in 0..N_MEDIUM_VALUES {
         let g_b = gamma_pow[b];
         for v in 0..256 {
-            table[b * 256 + v] = g_b * PHI_8_TABLE[v];
+            table[b][v] = g_b * PHI_8_TABLE[v];
         }
     }
     table
 }
 
-fn convert_table() -> &'static [F192] {
+fn convert_table() -> &'static ConvertTable {
     CONVERT_TABLE_CACHE.get_or_init(build_convert_table)
 }
 
@@ -208,7 +189,7 @@ fn convert_table() -> &'static [F192] {
 // it out keeps the four loads visibly parallel.
 #[allow(clippy::identity_op)]
 #[inline(always)]
-unsafe fn xor_apply_byte_into_8_regs<const BH: usize, const ODD: bool>(
+unsafe fn xor_apply_byte_into_8_regs<const BH: usize>(
     table_base: *const u8,
     a_byte: u8,
     b_byte: u8,
@@ -233,20 +214,6 @@ unsafe fn xor_apply_byte_into_8_regs<const BH: usize, const ODD: bool>(
         let vb1 = vld1q_u8(rb.add((1 ^ BH) * 16));
         let vb2 = vld1q_u8(rb.add((2 ^ BH) * 16));
         let vb3 = vld1q_u8(rb.add((3 ^ BH) * 16));
-        let (va0, va1, va2, va3, vb0, vb1, vb2, vb3) = if ODD {
-            (
-                vextq_u8::<8>(va0, va0),
-                vextq_u8::<8>(va1, va1),
-                vextq_u8::<8>(va2, va2),
-                vextq_u8::<8>(va3, va3),
-                vextq_u8::<8>(vb0, vb0),
-                vextq_u8::<8>(vb1, vb1),
-                vextq_u8::<8>(vb2, vb2),
-                vextq_u8::<8>(vb3, vb3),
-            )
-        } else {
-            (va0, va1, va2, va3, vb0, vb1, vb2, vb3)
-        };
         *da0 = veorq_u8(*da0, va0);
         *da1 = veorq_u8(*da1, va1);
         *da2 = veorq_u8(*da2, va2);
@@ -278,110 +245,62 @@ unsafe fn fused_apply_one_k<const K: i32>(
     use core::arch::aarch64::*;
     use primitives::field::gf2_8::neon::gf8_mul_vec16;
     unsafe {
-        // b = 0: identity permutation — plain load of the 4 chunks.
-        let ra0 = table_base.add(*a_row as usize * 64);
-        let rb0 = table_base.add(*b_row as usize * 64);
-        let mut da0 = vld1q_u8(ra0);
-        let mut da1 = vld1q_u8(ra0.add(16));
-        let mut da2 = vld1q_u8(ra0.add(32));
-        let mut da3 = vld1q_u8(ra0.add(48));
-        let mut db0 = vld1q_u8(rb0);
-        let mut db1 = vld1q_u8(rb0.add(16));
-        let mut db2 = vld1q_u8(rb0.add(32));
-        let mut db3 = vld1q_u8(rb0.add(48));
+        // `π_b(i') = i' ⊕ 8b` is a chunk-index XOR by `b >> 1`, which is a free
+        // load offset, and for odd `b` a swap of each chunk's two 8-byte halves.
+        // That swap is an involution and distributes over XOR, and it commutes
+        // with the chunk reindexing, so the eight positions need one swap of the
+        // accumulators between the odd group and the even group rather than one
+        // per register per odd position: `E ⊕ S(O)` with the odds accumulated
+        // plainly first. Four times fewer `ext`, and `ext` was the largest
+        // single share of this body's vector work.
+        let ra1 = table_base.add(*a_row.add(1) as usize * 64);
+        let rb1 = table_base.add(*b_row.add(1) as usize * 64);
+        let mut da0 = vld1q_u8(ra1);
+        let mut da1 = vld1q_u8(ra1.add(16));
+        let mut da2 = vld1q_u8(ra1.add(32));
+        let mut da3 = vld1q_u8(ra1.add(48));
+        let mut db0 = vld1q_u8(rb1);
+        let mut db1 = vld1q_u8(rb1.add(16));
+        let mut db2 = vld1q_u8(rb1.add(32));
+        let mut db3 = vld1q_u8(rb1.add(48));
 
-        // b = 1..7: XOR with table row[bytes[b]], permuted per (BH, ODD).
-        xor_apply_byte_into_8_regs::<0, true>(
-            table_base,
-            *a_row.add(1),
-            *b_row.add(1),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<1, false>(
-            table_base,
-            *a_row.add(2),
-            *b_row.add(2),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<1, true>(
-            table_base,
-            *a_row.add(3),
-            *b_row.add(3),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<2, false>(
-            table_base,
-            *a_row.add(4),
-            *b_row.add(4),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<2, true>(
-            table_base,
-            *a_row.add(5),
-            *b_row.add(5),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<3, false>(
-            table_base,
-            *a_row.add(6),
-            *b_row.add(6),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<3, true>(
-            table_base,
-            *a_row.add(7),
-            *b_row.add(7),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
+        // The rest of the odd positions, b = 3, 5, 7.
+        macro_rules! apply {
+            ($bh:literal, $b:literal) => {
+                xor_apply_byte_into_8_regs::<$bh>(
+                    table_base,
+                    *a_row.add($b),
+                    *b_row.add($b),
+                    &mut da0,
+                    &mut da1,
+                    &mut da2,
+                    &mut da3,
+                    &mut db0,
+                    &mut db1,
+                    &mut db2,
+                    &mut db3,
+                )
+            };
+        }
+        apply!(1, 3);
+        apply!(2, 5);
+        apply!(3, 7);
+
+        // One swap for the whole odd group.
+        da0 = vextq_u8::<8>(da0, da0);
+        da1 = vextq_u8::<8>(da1, da1);
+        da2 = vextq_u8::<8>(da2, da2);
+        da3 = vextq_u8::<8>(da3, da3);
+        db0 = vextq_u8::<8>(db0, db0);
+        db1 = vextq_u8::<8>(db1, db1);
+        db2 = vextq_u8::<8>(db2, db2);
+        db3 = vextq_u8::<8>(db3, db3);
+
+        // The even positions, b = 0, 2, 4, 6, which need no swap.
+        apply!(0, 0);
+        apply!(1, 2);
+        apply!(2, 4);
+        apply!(3, 6);
 
         // F_8 multiply lane-wise (4 × 16 lanes = 64 total).
         let y0 = gf8_mul_vec16(da0, db0);
@@ -484,7 +403,12 @@ fn shift_reduce_inner_ab(
     {
         shift_reduce_inner_ab_fused_neon(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out);
     }
-    #[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni", target_feature = "avx512bw"))]
+    {
+        // SAFETY: gfni and avx512bw are statically enabled at compile time.
+        unsafe { shift_reduce_inner_ab_gfni_512(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out) };
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni", not(target_feature = "avx512bw")))]
     {
         // SAFETY: gfni is statically enabled at compile time.
         unsafe { shift_reduce_inner_ab_gfni(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out) };
@@ -492,6 +416,73 @@ fn shift_reduce_inner_ab(
     #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "gfni"))))]
     {
         shift_reduce_inner_ab_scalar(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out);
+    }
+}
+
+/// The GFNI kernel one register wide: `ELL` is 64, so the whole column is one
+/// ZMM and the combine issues a quarter of the instructions the 128-bit arm
+/// does. Byte unpacking and `packus` both work within 128-bit lanes and are
+/// exact inverses there, so the widened accumulators may sit in a different
+/// order than the narrow arm's and still narrow back to the same bytes.
+///
+/// # Safety
+/// Requires the `gfni` and `avx512bw` target features.
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni", target_feature = "avx512bw"))]
+#[target_feature(enable = "gfni", enable = "avx512f", enable = "avx512bw")]
+unsafe fn shift_reduce_inner_ab_gfni_512(
+    a_packed: &[u8],
+    b_packed: &[u8],
+    inv_table: &InvNttTableByteSingleGf8,
+    chunk_byte_base: usize,
+    b_med: usize,
+    out: &mut [u8; 64],
+) {
+    use core::arch::x86_64::*;
+
+    let byte_base_b = chunk_byte_base + b_med * N_CHUNKS * 8;
+    // `inv_table.apply` overwrites every lane, so these need no re-zeroing per K.
+    let mut a_col = [F8::ZERO; ELL];
+    let mut b_col = [F8::ZERO; ELL];
+
+    // SAFETY: the target features are carried by the function; the loads and
+    // stores stay within a_col/b_col/out, each exactly `ELL` bytes.
+    unsafe {
+        let (mut acc_lo, mut acc_hi) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let zero = _mm512_setzero_si512();
+
+        for k in 0..8 {
+            let chunk_off = byte_base_b + k * N_CHUNKS;
+            inv_table.apply(&a_packed[chunk_off..chunk_off + N_CHUNKS], &mut a_col);
+            inv_table.apply(&b_packed[chunk_off..chunk_off + N_CHUNKS], &mut b_col);
+            let y = _mm512_gf2p8mul_epi8(
+                _mm512_loadu_si512(a_col.as_ptr().cast()),
+                _mm512_loadu_si512(b_col.as_ptr().cast()),
+            );
+            let shift = _mm_cvtsi32_si128(k as i32);
+            acc_lo = _mm512_xor_si512(acc_lo, _mm512_sll_epi16(_mm512_unpacklo_epi8(y, zero), shift));
+            acc_hi = _mm512_xor_si512(acc_hi, _mm512_sll_epi16(_mm512_unpackhi_epi8(y, zero), shift));
+        }
+
+        // Vectorized gf8_reduce over u16 lanes: two-step fold of the high byte
+        // h with h ^ (h<<1) ^ (h<<3) ^ (h<<4)  (x^8 = x^4+x^3+x+1).
+        let mask_ff = _mm512_set1_epi16(0xff);
+        let fold = |p: __m512i| -> __m512i {
+            let h = _mm512_srli_epi16::<8>(p);
+            _mm512_xor_si512(
+                _mm512_and_si512(p, mask_ff),
+                _mm512_xor_si512(
+                    _mm512_xor_si512(h, _mm512_slli_epi16::<1>(h)),
+                    _mm512_xor_si512(_mm512_slli_epi16::<3>(h), _mm512_slli_epi16::<4>(h)),
+                ),
+            )
+        };
+        // Two folds bring 15-bit accumulators down to 8 bits; the second fold's
+        // high byte is at most 0x0f, so lanes stay below 256 for `packus`.
+        let reduce = |p: __m512i| _mm512_and_si512(fold(fold(p)), mask_ff);
+        _mm512_storeu_si512(
+            out.as_mut_ptr().cast(),
+            _mm512_packus_epi16(reduce(acc_lo), reduce(acc_hi)),
+        );
     }
 }
 
@@ -508,7 +499,7 @@ fn shift_reduce_inner_ab(
 ///
 /// # Safety
 /// Requires the `gfni` target feature (plus SSE2, baseline on x86_64).
-#[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "gfni", enable = "sse2")]
 unsafe fn shift_reduce_inner_ab_gfni(
     a_packed: &[u8],
@@ -609,46 +600,30 @@ fn shift_reduce_inner_ab_scalar(
 // Main optimized round-1 prover message.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Two-bank C accumulator that produces s_hat_v_c alongside round 1.
-//
-// Instead of one `cf_c` accumulator collapsing all 3 small bits, keep
-// `b_3[0]` (= bit `k_skip` of the witness, = `b_7` in ring-switch's
-// packed-prefix index) as a routing dim. Two `cf_c` banks: bank 0 takes
-// the K-even contributions (`v_c & 0x55`), bank 1 takes K-odd (`v_c & 0xAA`).
-// By F_2-linearity of φ_8, `PHI_8(v) == PHI_8(v & 0x55) + PHI_8(v & 0xAA)`,
-// so summing the two banks reconstructs the original `cf_c` → wire `res_c_s`.
-//
-// ---------------------------------------------------------------------------
-
-/// Per-worker scratch and local accumulators, with C split into its two banks.
+/// Per-worker scratch and local accumulators.
 struct WorkerState {
     partial_ab: [F192; ELL],
-    partial_c_0: [F192; ELL],
-    partial_c_1: [F192; ELL],
+    partial_c: [F192; ELL],
     chunk_ab_bytes: [[u8; 64]; 1 << N_MEDIUM],
     chunk_c_bytes: [[u8; 64]; 1 << N_MEDIUM],
     local_res_ab: [F192; ELL],
-    local_res_c_s_0: [F192; ELL],
-    local_res_c_s_1: [F192; ELL],
+    local_res_c_s: [F192; ELL],
 }
 
 impl WorkerState {
-    /// The three result banks, once every claimed `x_hi` has been folded in.
-    fn into_results(self) -> ([F192; ELL], [F192; ELL], [F192; ELL]) {
-        (self.local_res_ab, self.local_res_c_s_0, self.local_res_c_s_1)
+    /// The two accumulators, once every claimed `x_hi` has been folded in.
+    fn into_results(self) -> ([F192; ELL], [F192; ELL]) {
+        (self.local_res_ab, self.local_res_c_s)
     }
 
     fn new() -> Self {
         Self {
             partial_ab: [F192::ZERO; ELL],
-            partial_c_0: [F192::ZERO; ELL],
-            partial_c_1: [F192::ZERO; ELL],
+            partial_c: [F192::ZERO; ELL],
             chunk_ab_bytes: [[0u8; 64]; 1 << N_MEDIUM],
             chunk_c_bytes: [[0u8; 64]; 1 << N_MEDIUM],
             local_res_ab: [F192::ZERO; ELL],
-            local_res_c_s_0: [F192::ZERO; ELL],
-            local_res_c_s_1: [F192::ZERO; ELL],
+            local_res_c_s: [F192::ZERO; ELL],
         }
     }
 }
@@ -667,7 +642,7 @@ fn accumulate_x_outer<const FULL: bool>(
     b_packed: &[u8],
     c_packed: &[u8],
     inv_table: &InvNttTableByteSingleGf8,
-    convert: &[F192],
+    convert: &ConvertTable,
     state: &mut WorkerState,
 ) {
     let n_b_med = if FULL { 1 << N_MEDIUM } else { n_b_med };
@@ -688,24 +663,22 @@ fn accumulate_x_outer<const FULL: bool>(
         bit_transpose_64bytes(c_in, &mut state.chunk_c_bytes[b_med]);
     }
 
+    // Bounded so the trip count is the constant the protocol size gives it.
+    let n_b_med = n_b_med.min(N_MEDIUM_VALUES);
     for lane in 0..ELL {
         let mut cf_ab = F192::ZERO;
-        let mut cf_c_0 = F192::ZERO;
-        let mut cf_c_1 = F192::ZERO;
+        let mut cf_c = F192::ZERO;
         for b_med in 0..n_b_med {
-            let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
-            let v_c = state.chunk_c_bytes[b_med][lane] as usize;
-            cf_ab += convert[b_med * 256 + v_ab];
-            cf_c_0 += convert[b_med * 256 + (v_c & 0x55)];
-            cf_c_1 += convert[b_med * 256 + (v_c & 0xAA)];
+            let row = &convert[b_med];
+            cf_ab += row[state.chunk_ab_bytes[b_med][lane] as usize];
+            cf_c += row[state.chunk_c_bytes[b_med][lane] as usize];
         }
         state.partial_ab[lane] += cf_ab * eq_lo_val;
-        state.partial_c_0[lane] += cf_c_0 * eq_lo_val;
-        state.partial_c_1[lane] += cf_c_1 * eq_lo_val;
+        state.partial_c[lane] += cf_c * eq_lo_val;
     }
 }
 
-/// Process one outer value, maintaining C's two masked convert-table banks.
+/// Process one outer value.
 #[inline]
 fn process_one_x_hi(
     x_hi: usize,
@@ -719,12 +692,11 @@ fn process_one_x_hi(
     inv_table: &InvNttTableByteSingleGf8,
     eq_lo_scaled: &[F192],
     eq_hi_val: F192,
-    convert: &[F192],
+    convert: &ConvertTable,
     state: &mut WorkerState,
 ) {
     state.partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
-    state.partial_c_0.iter_mut().for_each(|p| *p = F192::ZERO);
-    state.partial_c_1.iter_mut().for_each(|p| *p = F192::ZERO);
+    state.partial_c.iter_mut().for_each(|p| *p = F192::ZERO);
 
     let n_lo = n_lo_and_inner - N_INNER;
 
@@ -766,11 +738,10 @@ fn process_one_x_hi(
         }
     }
 
-    // Outer fold by eq_hi (per bank).
+    // Outer fold by eq_hi.
     for lane in 0..ELL {
         state.local_res_ab[lane] += eq_hi_val * state.partial_ab[lane];
-        state.local_res_c_s_0[lane] += eq_hi_val * state.partial_c_0[lane];
-        state.local_res_c_s_1[lane] += eq_hi_val * state.partial_c_1[lane];
+        state.local_res_c_s[lane] += eq_hi_val * state.partial_c[lane];
     }
 }
 
@@ -814,21 +785,13 @@ fn build_b_med_counts(padding: &PaddingSpec) -> (usize, Vec<u8>) {
     (within_outer_mask, counts)
 }
 
-/// The round-1 prover message, padding-aware, **also returning `s_hat_v_c`** — the length-128 vector ring-switch would otherwise produce
-/// via `fold_1b_rows` for the c-claim's PCS opening at suffix `r_rest[1..]`.
+/// The round-1 prover message, padding-aware: the AB and C Λ-vectors, which the
+/// caller sends as one sum.
 ///
 /// Skips 512-bit b_med sub-windows that fall entirely in the zero padding of
 /// every witness block per `padding`, which is byte-identical to the dense
-/// path when those bits are honestly zero. `s_hat_v_c` is `s_hat_v_c` is returned in **canonical form**
-/// in **canonical form** (matches `fold_1b_rows`), with the residual `C_2` and `α⁻¹` scaling
-/// applied internally so the caller can feed it straight into
-/// `pcs::ring_switch::prove_batched_padded_with_precomputed`.
-///
-/// Cost vs the original: per chunk-lane-`b_med`, +1 `vld1q_u8` + +1 `veorq_u8`
-/// (the bank-split convert lookup). bit_transpose, shift_reduce, eq folds
-/// are unchanged. See module-level docs for the F_2-linearity argument that
-/// makes `s_hat_v_c[(λ, 0)] + s_hat_v_c[(λ, 1)] · α == res_c_s_opt[λ]`.
-pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+/// path when those bits are honestly zero.
+pub fn round1_shift_reduce_extract_c_packed_padded(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
@@ -837,7 +800,7 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     r_rest: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
     padding: &PaddingSpec,
-) -> (Vec<F192>, Vec<F192>, Vec<F192>) {
+) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(k_skip, K_SKIP, "optimized variant is k_skip=6 only");
     assert!(
         m >= k_skip + N_INNER,
@@ -865,7 +828,7 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
 
     // One `WorkerState` per worker (it carries multi-KB scratch), folded over the
     // `x_hi` values that worker claims and combined at the end.
-    let (res_ab, res_c_s_0, res_c_s_1) = parallel::fold_reduce(
+    let (res_ab, res_c_s) = parallel::fold_reduce(
         hi_size,
         WorkerState::new,
         |state, x_hi| {
@@ -889,34 +852,15 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
         |mut a, b| {
             for i in 0..ELL {
                 a.local_res_ab[i] += b.local_res_ab[i];
-                a.local_res_c_s_0[i] += b.local_res_c_s_0[i];
-                a.local_res_c_s_1[i] += b.local_res_c_s_1[i];
+                a.local_res_c_s[i] += b.local_res_c_s[i];
             }
             a
         },
     )
     .into_results();
 
-    // Wire output: bank_0 + bank_1 reconstructs the original `res_c_s` (by
-    // F_2-linearity of φ_8 over the masked-byte sum).
-    let mut res_c_s_combined = [F192::ZERO; ELL];
-    for i in 0..ELL {
-        res_c_s_combined[i] = res_c_s_0[i] + res_c_s_1[i];
-    }
-    let res_c_lifted = ntt_extend_vec(&res_c_s_combined, inv_table);
-
-    // s_hat_v_c canonical form: apply residual C_2 (small-eq constant for
-    // r_rest[1..3]) and α⁻¹ (strips bank 1's extra α factor).
-    let c_2 = c_2_small();
-    let alpha_inv = alpha_inv();
-    let c_2_alpha_inv = c_2 * alpha_inv;
-    let mut s_hat_v_c = vec![F192::ZERO; 2 * ELL];
-    for lane in 0..ELL {
-        s_hat_v_c[lane] = c_2 * res_c_s_0[lane];
-        s_hat_v_c[ELL + lane] = c_2_alpha_inv * res_c_s_1[lane];
-    }
-
-    (res_ab.to_vec(), res_c_lifted, s_hat_v_c)
+    let res_c_lifted = ntt_extend_vec(&res_c_s, inv_table);
+    (res_ab.to_vec(), res_c_lifted)
 }
 
 #[cfg(test)]
@@ -947,55 +891,62 @@ mod tests {
             let mut out_scalar = [0u8; 64];
             shift_reduce_inner_ab_scalar(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_scalar);
             let mut out_gfni = [0u8; 64];
-            // SAFETY: cfg-gated on gfni.
-            unsafe { shift_reduce_inner_ab_gfni(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni) };
+            shift_reduce_inner_ab(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni);
             assert_eq!(out_scalar, out_gfni);
         }
     }
 
-    /// **Soundness assumption.** Zerocheck and the WHIR PCS opening at
-    /// L0 both depend on the seven "friendly" constants — three small
+    /// **Soundness assumption.** Zerocheck and the WHIR PCS opening at L0 both
+    /// depend on the seven "friendly" constants `a`, three small
     /// (`φ_8(SMALL_CHAL_F8[k])`, k ∈ 0..3) and four medium
-    /// (`γ^{2^i}/(1+γ^{2^i})`, i ∈ 0..4) — being **F₂-linearly independent**
-    /// in F₁₉₂.
+    /// (`γ^{2^i}/(1+γ^{2^i})`, i ∈ 0..4), satisfying the hypothesis of
+    /// `lem:fixed-zerocheck` (doc/leanvm/body/03-proving-primitives.tex): the
+    /// `2^7` equality WEIGHTS `{eq(a, b) : b ∈ {0,1}^7}` are **F₂-linearly
+    /// independent** in F₁₉₂, i.e. they have rank 128.
     ///
-    /// Zerocheck needs this so that the prover's URM message can't be
-    /// trivially canceled by a malicious witness aligned with the friendly
-    /// subspace. WHIR's L0 list-collapse argument (which leans on the
-    /// zerocheck `(r, v)` claim as an OOD-equivalent) also depends on it
-    /// — see the soundness writeup. If any subset of these seven values is
-    /// F₂-dependent, the SZ bound `(m−7)/|F|` for collisions between
-    /// distinct candidate codewords' MLEs at `r` no longer holds, and a
-    /// cheating prover could engineer their witness so two candidates'
+    /// That is what the proof consumes, and it is strictly stronger than
+    /// independence of the seven `a_i` themselves: a single relation among their
+    /// products (say `a_1 a_2 = a_3`) drops the weight rank below 128 while
+    /// leaving the coordinates independent. Asserting only rank 7 of the `a_i`
+    /// would pass while the lemma's hypothesis failed.
+    ///
+    /// Zerocheck needs it so that the prover's URM message cannot be trivially
+    /// canceled by a malicious witness aligned with the friendly subspace. WHIR's
+    /// L0 list-collapse argument (which leans on the zerocheck `(r, v)` claim as
+    /// an OOD-equivalent) needs it too: without it the SZ bound `(m-7)/|F|` for
+    /// collisions between distinct candidate codewords' MLEs at `r` no longer
+    /// holds, and a cheating prover could engineer a witness so two candidates'
     /// MLEs agree at the friendly point with probability 1.
-    ///
-    /// The check: form the 7×192 binary matrix whose rows are the bit
-    /// representations of the seven constants, Gauss-eliminate over F₂,
-    /// assert rank = 7.
     #[test]
     fn friendly_challenges_f2_independent() {
-        let mut basis: Vec<[u64; 3]> = small_challenges()
+        let a: Vec<F192> = small_challenges()
             .iter()
             .chain(medium_challenges().iter())
-            .map(|f| [f.c0, f.c1, f.c2])
+            .copied()
             .collect();
-        assert_eq!(basis.len(), 7, "expected 3 small + 4 medium friendly values");
+        assert_eq!(a.len(), N_INNER, "expected 3 small + 4 medium friendly values");
 
-        // Row-reduce over F₂. For each column from MSB to LSB, find a row
-        // with that bit set (a pivot), swap it into place, and XOR it into
-        // every other row to clear that column. Final rank = number of
-        // pivots placed.
+        // One row per b: eq(a, b) = prod_i (b_i ? a_i : 1 + a_i).
+        let mut rows: Vec<[u64; 3]> = (0..1usize << N_INNER)
+            .map(|b| {
+                let w = a.iter().enumerate().fold(F192::ONE, |acc, (i, &ai)| {
+                    acc * if (b >> i) & 1 == 1 { ai } else { F192::ONE + ai }
+                });
+                [w.c0, w.c1, w.c2]
+            })
+            .collect();
+
+        // Row-reduce over F₂: per column from MSB down, find a pivot row, swap it
+        // into place, and XOR it into every other row with that bit set.
         let mut rank = 0usize;
         for col in (0..192).rev() {
-            let limb = col / 64;
-            let mask = 1u64 << (col % 64);
-            let pivot = (rank..basis.len()).find(|&i| basis[i][limb] & mask != 0);
-            if let Some(p) = pivot {
-                basis.swap(rank, p);
-                for i in 0..basis.len() {
-                    if i != rank && basis[i][limb] & mask != 0 {
-                        for limb in 0..3 {
-                            basis[i][limb] ^= basis[rank][limb];
+            let (limb, mask) = (col / 64, 1u64 << (col % 64));
+            if let Some(p) = (rank..rows.len()).find(|&i| rows[i][limb] & mask != 0) {
+                rows.swap(rank, p);
+                for i in 0..rows.len() {
+                    if i != rank && rows[i][limb] & mask != 0 {
+                        for l in 0..3 {
+                            rows[i][l] ^= rows[rank][l];
                         }
                     }
                 }
@@ -1003,9 +954,10 @@ mod tests {
             }
         }
         assert_eq!(
-            rank, 7,
-            "friendly challenges must be F₂-linearly independent in F₁₉₂; \
-             zerocheck and WHIR L0 soundness depend on it"
+            rank,
+            1 << N_INNER,
+            "the 2^7 friendly equality weights must be F₂-linearly independent in F₁₉₂; \
+             zerocheck and WHIR L0 soundness depend on it (lem:fixed-zerocheck)"
         );
     }
 
@@ -1043,7 +995,7 @@ mod tests {
             let table = make_inv_table();
 
             let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, K_SKIP, &r);
-            let (opt_ab, opt_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+            let (opt_ab, opt_c) = round1_shift_reduce_extract_c_packed_padded(
                 &pack_bits(&a),
                 &pack_bits(&b),
                 &pack_bits(&c),
@@ -1098,7 +1050,7 @@ mod tests {
     /// a literal zero to the dense sum (the convert table maps φ_8(0) = 0).
     ///
     /// Covers the three hash padding shapes:
-    ///   - BLAKE3: k_log=14, useful=15409 → b_med_counts ≈ [16, 15]
+    ///   - BLAKE2s: k_log=14, useful=16000 → b_med_counts ≈ [16, 16]
     ///   - SHA-2:  k_log=15, useful=31401 → b_med_counts ≈ [16, 16, 16, 14]
     ///   - Keccak: k_log=16, useful=42560 → b_med_counts = [16, 16, 16, 16, 16, 4, 0, 0]
     ///     (this is the only shape that exercises the full-skip case.)
@@ -1111,7 +1063,7 @@ mod tests {
         // m = k_log + n_blocks_log is small enough to keep the test fast
         // while still exercising the kernel's parallel + boundary paths.
         let cases = [
-            (14usize, 15_409usize, 0usize), // BLAKE3, m=14
+            (14usize, 16_000usize, 0usize), // BLAKE2s, m=14
             (15, 31_401, 0),                // SHA-2,  m=15
             (16, 42_560, 0),                // Keccak, m=16
             (16, 42_560, 3),                // Keccak, m=19 (multiple hashes)
@@ -1148,16 +1100,14 @@ mod tests {
             let c_p = pack_bits(&c);
 
             let dense = PaddingSpec::dense(m);
-            let (dense_ab, dense_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &dense,
-            );
+            let (dense_ab, dense_c) =
+                round1_shift_reduce_extract_c_packed_padded(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &dense);
             let padding = PaddingSpec {
                 k_log,
                 useful_bits_per_block: useful_bits,
             };
-            let (padded_ab, padded_c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &padding,
-            );
+            let (padded_ab, padded_c) =
+                round1_shift_reduce_extract_c_packed_padded(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &padding);
 
             assert_eq!(
                 dense_ab, padded_ab,
@@ -1207,62 +1157,9 @@ mod tests {
         for b in 0..16 {
             for &v in &[0u8, 1, 0x57, 0xFF] {
                 let expected = g_pow * PHI_8_TABLE[v as usize];
-                assert_eq!(t[b * 256 + v as usize], expected, "b={b}, v={v}");
+                assert_eq!(t[b][v as usize], expected, "b={b}, v={v}");
             }
             g_pow *= medium_generator();
-        }
-    }
-
-    /// The two-bank kernel's `s_hat_v_c` matches the scalar oracle's canonical
-    /// form. Its AB/C outputs are independently checked against the naive
-    /// protocol by `matches_naive_with_c_s_factor`.
-    #[test]
-    fn fused_s_hat_matches_scalar_oracle() {
-        use crate::zerocheck::univariate_skip::round1_extract_c_packed_with_s_hat_v;
-
-        for &m in &[13usize, 14, 15] {
-            let mut rng = Rng::new(0xF00D_u64.wrapping_add(m as u64));
-            let a = pack_bits(&rng.bits(1 << m));
-            let b = pack_bits(&rng.bits(1 << m));
-            let c = pack_bits(&rng.bits(1 << m));
-            let mut r = vec![F192::ZERO; m - K_SKIP];
-            // Friendly inner constants must match the optimization's
-            // expectations: 3 small + 4 medium coordinates.
-            for i in 0..3 {
-                r[i] = phi8(F8(SMALL_CHAL_F8[i]));
-            }
-            let medium = crate::zerocheck::univariate_skip_optimized::medium_challenges();
-            r[3..7].copy_from_slice(&medium);
-            for i in N_INNER..(m - K_SKIP) {
-                r[i] = rng.ext();
-            }
-
-            let inv_table = {
-                let ntt_s = pcs::ntt::AdditiveNttGf8::new(K_SKIP, F8::ZERO);
-                let ntt_l = pcs::ntt::AdditiveNttGf8::new(K_SKIP, F8(1u8 << K_SKIP));
-                InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l)
-            };
-
-            // Scalar oracle (canonical s_hat_v_c).
-            let (_, _, oracle_s_hat_v) = round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &inv_table);
-
-            // System under test.
-            let (_, _, got_s_hat_v) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-                &a,
-                &b,
-                &c,
-                m,
-                K_SKIP,
-                &r,
-                &inv_table,
-                &PaddingSpec::dense(m),
-            );
-
-            assert_eq!(got_s_hat_v.len(), 2 * ELL, "s_hat_v length at m={m}");
-            assert_eq!(
-                got_s_hat_v, oracle_s_hat_v,
-                "s_hat_v_c mismatch vs scalar oracle at m={m}"
-            );
         }
     }
 }

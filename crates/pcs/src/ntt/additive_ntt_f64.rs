@@ -84,7 +84,7 @@ impl AdditiveNttF64 {
     /// `span_get` is F_2-linear in the block index, so the six deeper twiddles are
     /// the block's own contribution plus a fixed correction per sub-block index:
     /// one scan of the three basis rows replaces seven.
-    fn twiddles_radix8(&self, layer: usize, block: usize) -> [F64; 7] {
+    pub(crate) fn twiddles_radix8(&self, layer: usize, block: usize) -> [F64; 7] {
         let l = self.log_domain_size();
         let (v0, v1, v2) = (
             &self.evals[l - layer - 1],
@@ -101,6 +101,34 @@ impl AdditiveNttF64 {
         }
         let (d, e0, e1) = (v1[1], v2[1], v2[2]);
         [t0, a, a + d, c, c + e0, c + e1, c + e0 + e1]
+    }
+
+    /// The `2^j - 1` twiddles a radix-`2^j` group needs, breadth-first: sub-layer
+    /// `d` contributes its `2^d` at `out[2^d - 1 ..]`. Generalizes
+    /// [`twiddles_radix8`](Self::twiddles_radix8) to any width.
+    ///
+    /// `span_get` is F_2-linear in the block index, so a sub-layer's twiddles are
+    /// the block's own contribution plus a subset sum of the `d` basis elements
+    /// the sub-index selects: one scan of each basis row, then XOR-doubling.
+    fn twiddles_radix(&self, layer: usize, block: usize, j: usize, out: &mut [F64]) {
+        let l = self.log_domain_size();
+        for d in 0..j {
+            let v = &self.evals[l - layer - d - 1];
+            let mut base = F64::ZERO;
+            for k in 0..layer {
+                if (block >> k) & 1 == 1 {
+                    base += v[1 + d + k];
+                }
+            }
+            let dst = &mut out[(1 << d) - 1..][..1 << d];
+            dst[0] = base;
+            for k in 0..d {
+                let (done, rest) = dst.split_at_mut(1 << k);
+                for (slot, &seen) in rest.iter_mut().zip(done.iter()) {
+                    *slot = seen + v[1 + k];
+                }
+            }
+        }
     }
 
     /// Forward additive NTT in place (scalar; used directly for tests and as
@@ -129,9 +157,14 @@ impl AdditiveNttF64 {
     /// cache-resident sub-NTTs. The split targets a sub-block of about 2 MB and
     /// then, if the transform is big enough to be worth splitting, enough
     /// sub-blocks to keep every worker busy.
+    ///
+    /// `num_ntts` need not be a power of two (a padding-free commitment interleaves
+    /// only the lanes that carry data), so the position size rounds UP to a log:
+    /// rounding down would size the deep phase's sub-block against half the real
+    /// bytes per position and overshoot the cache target by up to 2x.
     fn cache_split(log_d: usize, num_ntts: usize) -> usize {
         const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
-        let log_bytes_per_position = 3 + log2_strict_usize(num_ntts);
+        let log_bytes_per_position = 3 + num_ntts.next_power_of_two().ilog2() as usize;
         let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
         let cache_n_top = log_d.saturating_sub(target_log_positions);
 
@@ -146,28 +179,39 @@ impl AdditiveNttF64 {
         }
     }
 
-    /// RS-encode `msg` into the codeword `data`: `data` is `2^log_inv_rate`
-    /// replicas of `msg`, transformed from layer `log_inv_rate`.
+    /// RS-encode the message already sitting in the codeword's own first replica,
+    /// `data[..data.len() >> log_inv_rate]`: `data` becomes `2^log_inv_rate`
+    /// replicas of it, transformed from layer `log_inv_rate`.
+    ///
+    /// The message is read ROW-major (`data[row * num_ntts + lane]`), which is what
+    /// [`transpose_lane_major`] writes there for a lane-major caller. That transpose
+    /// stays a pass of its own because it wants one long contiguous run per lane
+    /// while a radix-8 group wants eight row windows at once, so fusing the two would
+    /// put `8 * num_ntts` message streams in flight. Separating them costs one extra
+    /// read and write of the message rather than of the whole codeword.
     ///
     /// The replication is fused into the first pass. Each block at layer
-    /// `log_inv_rate` IS one replica, so a block's eight participating rows are
-    /// eight message rows, and the pass can gather them itself instead of reading
-    /// back a codeword someone else just filled. That turns three sweeps of the
-    /// whole codeword (fill it, read it, write it) into one gather and one write:
-    /// at the XMSS scale, three gigabytes moved instead of seven.
+    /// `log_inv_rate` IS one replica, so a block's eight participating rows are eight
+    /// message rows, and the pass can gather them itself instead of reading back a
+    /// codeword someone else just filled. That turns three sweeps of the whole
+    /// codeword (fill it, read it, write it) into one gather and one write: at the
+    /// XMSS scale, three gigabytes moved instead of seven. Replica 0 IS the message,
+    /// so the blocks run in descending order and it is transformed in place last,
+    /// once every other replica has read it.
     ///
-    /// Falls back to filling `data` and transforming it when the first pass is not
-    /// the fused radix-8 group (tiny transforms, or a rate deep enough to leave
-    /// fewer than three whole-buffer layers).
-    pub fn encode_interleaved(&self, data: &mut [F64], msg: &[F64], num_ntts: usize, log_inv_rate: usize) {
-        assert!(num_ntts.is_power_of_two() && num_ntts > 0);
-        assert_eq!(data.len(), msg.len() << log_inv_rate, "codeword is 2^rate messages");
+    /// Falls back to replicating and transforming when the first pass is not the
+    /// fused radix-8 group (tiny transforms, or a rate deep enough to leave fewer
+    /// than three whole-buffer layers).
+    pub fn encode_interleaved_in_place(&self, data: &mut [F64], num_ntts: usize, log_inv_rate: usize) {
+        assert!(num_ntts > 0);
+        assert_eq!(data.len() % num_ntts, 0);
         let log_d = log2_strict_usize(data.len() / num_ntts);
         let n_top = Self::cache_split(log_d, num_ntts);
         let block_rows = 1usize << (log_d - log_inv_rate);
+        let msg_len = data.len() >> log_inv_rate;
 
         if n_top == 0 || log_d < 8 || log_inv_rate + 2 >= n_top || block_rows < 8 {
-            replicate_rows(data, msg);
+            replicate_in_place(data, msg_len);
             self.forward_transform_interleaved_parallel_from_layer(data, num_ntts, log_inv_rate);
             return;
         }
@@ -178,16 +222,22 @@ impl AdditiveNttF64 {
             .collect();
         let dst = parallel::SendPtr(data.as_mut_ptr());
         parallel::for_each(eighth, |r| {
-            for (block, t) in tw.iter().enumerate() {
+            for (block, t) in tw.iter().enumerate().rev() {
                 let base = (block * block_rows + r) * num_ntts;
                 // SAFETY: row group `r` of block `block` owns the eight windows
                 // `base + i * eighth * num_ntts`, disjoint across `r` and across
                 // blocks, and `data` outlives the dispatch.
                 let mut rows: [&mut [F64]; 8] =
                     std::array::from_fn(|i| unsafe { dst.slice(base + i * eighth * num_ntts, num_ntts) });
-                for (i, row) in rows.iter_mut().enumerate() {
-                    let src = (i * eighth + r) * num_ntts;
-                    row.copy_from_slice(&msg[src..src + num_ntts]);
+                if block > 0 {
+                    // Replica 0 still holds the message: read it, and note that this
+                    // loop reaches block 0 last, so no replica reads it transformed.
+                    for (i, row) in rows.iter_mut().enumerate() {
+                        // SAFETY: the message region is `data[..msg_len]`, read-only
+                        // until block 0 transforms it in place below.
+                        let src = unsafe { dst.slice((i * eighth + r) * num_ntts, num_ntts) };
+                        row.copy_from_slice(src);
+                    }
                 }
                 radix8_butterflies(&mut rows, t);
             }
@@ -245,7 +295,10 @@ impl AdditiveNttF64 {
         num_ntts: usize,
         start_layer: usize,
     ) {
-        assert!(num_ntts.is_power_of_two() && num_ntts > 0);
+        // `num_ntts` is a plain interleaving stride here: a padding-free L0
+        // commitment interleaves only the lanes that carry data, so it is not a
+        // power of two, while `n_total / num_ntts` (the transform's domain) still is.
+        assert!(num_ntts > 0);
         let n_total = data.len();
         assert_eq!(n_total % num_ntts, 0);
         let log_d = log2_strict_usize(n_total / num_ntts);
@@ -258,10 +311,9 @@ impl AdditiveNttF64 {
             return;
         }
 
-        // Top layers: full-buffer sweeps, rows parallel. Fusing three layers turns
-        // three DRAM round-trips of the whole codeword into one, and the pass count
-        // is what sets the cost up here.
-        self.run_layers(data, log_d, num_ntts, start_layer.min(n_top), n_top, 0, 0, true);
+        // Top layers: whole-buffer sweeps, and the pass count is what sets the cost
+        // up here, so they go as wide as one scratch group allows.
+        self.run_top_layers(data, log_d, num_ntts, start_layer.min(n_top), n_top);
 
         // Deep layers: one sub-NTT per worker, each over a cache-resident
         // sub-block. Layers fuse here for the same reason they do above, only the
@@ -290,6 +342,67 @@ impl AdditiveNttF64 {
     /// widest fused kernel its block size allows, so three layers, or two, cost one
     /// pass. `par_rows` dispatches the row loop across the pool, so a caller that is
     /// already running inside a pool task must pass `false`.
+    /// The whole-buffer layers, in as few passes over the codeword as one scratch
+    /// group allows.
+    ///
+    /// A group of `j` layers touches `2^j` rows spaced `block_size >> j` apart,
+    /// and up here that spacing is megabytes. At 37 lanes a stride of 512 rows or
+    /// more is an exact multiple of 4 KiB, so the rows of a group land in a
+    /// handful of L1 sets and a wide radix applied in place would thrash;
+    /// gathering the group into one contiguous scratch removes the aliasing, and
+    /// the copy is L1 traffic against a whole DRAM pass saved. Six layers cost one
+    /// pass rather than two.
+    fn run_top_layers(&self, buf: &mut [F64], log_d: usize, num_ntts: usize, first_layer: usize, end_layer: usize) {
+        /// Words of scratch per row group, so a group stays inside L1.
+        const GROUP_WORDS: usize = 4096;
+        /// Widest gathered radix, and so the size of a group's twiddle set.
+        const MAX_LOG_RADIX: usize = 6;
+        /// Below this width the gather costs more than the pass it saves, and
+        /// [`run_layers`]'s in-place kernels are the better shape.
+        const MIN_LOG_RADIX: usize = 4;
+
+        let mut layer = first_layer;
+        while layer < end_layer {
+            let j = (end_layer - layer)
+                .min(MAX_LOG_RADIX)
+                .min((GROUP_WORDS / num_ntts).ilog2() as usize)
+                .min(log_d - layer);
+            if j < MIN_LOG_RADIX {
+                self.run_layers(buf, log_d, num_ntts, layer, end_layer, 0, 0, true);
+                return;
+            }
+            let log_step = log_d - layer - j;
+            let (rows, step) = (1usize << j, 1usize << log_step);
+            let base = parallel::SendPtr(buf.as_mut_ptr());
+            parallel::for_each_chunk(1usize << (log_d - j), |lo, hi| {
+                let mut scratch = [F64::ZERO; GROUP_WORDS];
+                let mut tw = [F64::ZERO; (1 << MAX_LOG_RADIX) - 1];
+                let mut built = usize::MAX;
+                for g in lo..hi {
+                    let (block, r) = (g >> log_step, g & (step - 1));
+                    if built != block {
+                        self.twiddles_radix(layer, block, j, &mut tw);
+                        built = block;
+                    }
+                    // The group's rows, `block_size` apart in blocks and `step`
+                    // apart within one.
+                    let row = |i: usize| ((block << (log_d - layer)) + r + i * step) * num_ntts;
+                    // SAFETY: distinct `g` name disjoint row sets (distinct `r`
+                    // within a block, distinct blocks across), every one in
+                    // bounds, and `buf` stays borrowed for the whole dispatch.
+                    for i in 0..rows {
+                        scratch[i * num_ntts..][..num_ntts].copy_from_slice(unsafe { base.slice(row(i), num_ntts) });
+                    }
+                    radix_butterflies(&mut scratch[..rows * num_ntts], num_ntts, j, &tw);
+                    for i in 0..rows {
+                        unsafe { base.slice(row(i), num_ntts) }.copy_from_slice(&scratch[i * num_ntts..][..num_ntts]);
+                    }
+                }
+            });
+            layer += j;
+        }
+    }
+
     fn run_layers(
         &self,
         buf: &mut [F64],
@@ -453,10 +566,27 @@ fn butterfly_interleaved_fused_3layer(block: &mut [F64], t: &[F64; 7], eighth: u
     fused_rows::<8>(block, eighth, num_ntts, par_rows, |rows| radix8_butterflies(rows, t));
 }
 
+/// The `2^j - 1` butterflies of a gathered radix-`2^j` group, whose `2^j` rows
+/// are contiguous in `rows`. Sub-layer `d` pairs them at distance `2^(j-1-d)`
+/// and takes its twiddle from the breadth-first set
+/// [`twiddles_radix`](AdditiveNttF64::twiddles_radix) built; `j = 3` is exactly
+/// [`radix8_butterflies`] with its rows gathered.
+fn radix_butterflies(rows: &mut [F64], num_ntts: usize, j: usize, tw: &[F64]) {
+    for d in 0..j {
+        let dist = 1usize << (j - 1 - d);
+        let base = (1usize << d) - 1;
+        for i in (0..1usize << j).filter(|i| i & dist == 0) {
+            let (top, bot) = rows.split_at_mut((i + dist) * num_ntts);
+            let top = &mut top[i * num_ntts..(i + 1) * num_ntts];
+            butterfly_lanes(top, &mut bot[..num_ntts], tw[base + (i >> (j - d))]);
+        }
+    }
+}
+
 /// The twelve butterflies of one radix-8 row group: layer L pairs the rows at
 /// distance 4, L+1 at 2, L+2 at 1, with `t` holding the seven twiddles
-/// breadth-first. Shared with [`AdditiveNttF64::encode_interleaved`], whose first
-/// pass gathers its rows from the message rather than finding them in place.
+/// breadth-first. Shared with [`AdditiveNttF64::encode_interleaved_in_place`], whose
+/// first pass gathers its rows from the message rather than finding them in place.
 #[inline(always)]
 fn radix8_butterflies(rows: &mut [&mut [F64]; 8], t: &[F64; 7]) {
     let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
@@ -478,12 +608,70 @@ fn radix8_butterflies(rows: &mut [&mut [F64]; 8], t: &[F64; 7]) {
     butterfly_lanes(r6, r7, t[6]);
 }
 
-/// Fill `data` with `data.len() / msg.len()` copies of `msg`, the un-fused form of
-/// [`AdditiveNttF64::encode_interleaved`]'s first pass.
-fn replicate_rows(data: &mut [F64], msg: &[F64]) {
-    for replica in data.chunks_mut(msg.len()) {
+/// Transpose a **lane-major message** into the interleaved order
+/// [`AdditiveNttF64::encode_interleaved_in_place`] reads, writing it to the
+/// codeword's own message region: lane `l`'s block is
+/// `msg[l << log_rows ..][..1 << log_rows]`, and codeword lane `t` takes block
+/// `n_lanes - 1 - t`. Pure data movement, independent of the transform's domain.
+///
+/// `n_lanes` is arbitrary, because the caller commits only the lanes that carry
+/// data: the stacked witness's zero tail is whole lanes and is simply absent.
+///
+/// The DESCENDING direction is the PCS's leaf-image order: a leaf reads its lanes
+/// from the top interleaving index downwards, so the absent lanes land at the FRONT
+/// of the image, where their hash prefix is one chaining value every leaf shares
+/// ([`crate::merkle::merkle_tree_padded_rows`]) and where they can be left out of
+/// the proof. Which block feeds which lane is free here (each lane is an independent
+/// codeword), so the convention costs nothing.
+///
+/// Blocked by row tile: each lane contributes a burst of contiguous words, and the
+/// tile is written straight into its own contiguous run of `out`, which is
+/// L1-resident while it fills. That is what keeps an `n_lanes`-way gather at
+/// `2^log_rows` stride near bandwidth.
+pub fn transpose_lane_major(out: &mut [F64], msg: &[F64], n_lanes: usize, log_rows: usize) {
+    let rows = 1usize << log_rows;
+    assert!(n_lanes > 0, "a commitment needs at least one lane");
+    assert_eq!(msg.len(), n_lanes * rows, "message is n_lanes contiguous lane blocks");
+    assert_eq!(out.len(), msg.len(), "the transpose is the same words, reordered");
+
+    /// Words per row tile: 32 KiB, so a tile stays in L1 while it is scattered
+    /// into, and each lane's contribution to it is a burst the prefetcher sees.
+    const TILE_WORDS: usize = 4096;
+    assert!(n_lanes <= TILE_WORDS, "a codeword row must fit the transpose tile");
+    // Largest power-of-two row count whose tile fits: both it and `rows` are then
+    // powers of two, so the tiles cover every row. They have to: this is the sole
+    // initializer of an uninitialized codeword's message region, and a truncating
+    // tile count would leave the tail reading the previous phase's plausible bytes,
+    // whose symptom is a proof that stops verifying rather than a crash.
+    let tile_rows = (1usize << (TILE_WORDS / n_lanes).ilog2()).min(rows);
+    assert_eq!(rows % tile_rows, 0, "row tiles must cover every row");
+
+    parallel::chunks_mut(out, tile_rows * n_lanes, |t, tile| {
+        let r0 = t * tile_rows;
+        for lane in 0..n_lanes {
+            let block = n_lanes - 1 - lane;
+            let src = &msg[block * rows + r0..][..tile_rows];
+            for (slot, &word) in tile[lane..].iter_mut().step_by(n_lanes).zip(src) {
+                *slot = word;
+            }
+        }
+    });
+}
+
+/// Fill the rest of `data` with copies of its first `msg_len` elements: the un-fused
+/// form of [`AdditiveNttF64::encode_interleaved_in_place`]'s first pass.
+fn replicate_in_place(data: &mut [F64], msg_len: usize) {
+    let (msg, rest) = data.split_at_mut(msg_len);
+    for replica in rest.chunks_mut(msg_len) {
         replica.copy_from_slice(msg);
     }
+}
+
+/// [`replicate_in_place`] from a message that lives elsewhere. Test oracle.
+#[cfg(test)]
+fn replicate_rows(data: &mut [F64], msg: &[F64]) {
+    data[..msg.len()].copy_from_slice(msg);
+    replicate_in_place(data, msg.len());
 }
 
 /// Fused 2-layer butterfly, row-parallel; see the extension-field twin for the shape.
@@ -544,6 +732,28 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
             bot[lane] = v + new_u;
         }
     }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
+    {
+        let vectors = top.len() / 4;
+        // SAFETY: the target features are enabled at compile time and each
+        // iteration reads and writes exactly four elements from both rows.
+        unsafe {
+            for i in 0..vectors {
+                butterfly_lanes_avx2(top.as_mut_ptr().add(4 * i), bot.as_mut_ptr().add(4 * i), twiddle.0);
+            }
+        }
+        for lane in 4 * vectors..top.len() {
+            let v = bot[lane];
+            let new_u = top[lane] + v * twiddle;
+            top[lane] = new_u;
+            bot[lane] = v + new_u;
+        }
+    }
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     {
         let vectors = top.len() / 8;
@@ -569,7 +779,7 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     }
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "aes"),
-        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2")
     )))]
     {
         for lane in 0..top.len() {
@@ -578,6 +788,54 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
             top[lane] = new_u;
             bot[lane] = v + new_u;
         }
+    }
+}
+
+/// [`butterfly_lanes_avx512`] at half the width, for a machine with VPCLMULQDQ
+/// but no AVX-512. Without it the base encode's innermost loop is scalar there,
+/// which costs it about half again as much.
+///
+/// # Safety
+/// Requires VPCLMULQDQ + AVX2; `top` and `bot` must each address four readable
+/// and writable F64 values.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+#[inline]
+#[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+unsafe fn butterfly_lanes_avx2(top: *mut F64, bot: *mut F64, twiddle: u64) {
+    use core::arch::x86_64::*;
+
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+    unsafe fn reduce(p: __m256i, r: __m256i) -> __m256i {
+        let t = _mm256_clmulepi64_epi128::<0x01>(p, r);
+        let u = _mm256_clmulepi64_epi128::<0x01>(t, r);
+        _mm256_xor_si256(_mm256_xor_si256(p, t), u)
+    }
+
+    // SAFETY: the caller supplies valid four-element rows and the function's
+    // target features cover every intrinsic below.
+    unsafe {
+        let u = _mm256_loadu_si256(top.cast());
+        let v = _mm256_loadu_si256(bot.cast());
+        let tw = _mm256_set1_epi64x(twiddle as i64);
+        let r = _mm256_set1_epi64x(0x1b);
+
+        let even = reduce(_mm256_clmulepi64_epi128::<0x00>(v, tw), r);
+        let odd = reduce(_mm256_clmulepi64_epi128::<0x11>(v, tw), r);
+        // The odd products land in each lane's low half; swap them up, then take
+        // the odd qwords (32-bit elements 2, 3, 6, 7) from them.
+        let odd = _mm256_shuffle_epi32::<0x4e>(odd);
+        let product = _mm256_blend_epi32::<0b1100_1100>(even, odd);
+
+        let new_u = _mm256_xor_si256(u, product);
+        let new_v = _mm256_xor_si256(v, new_u);
+        _mm256_storeu_si256(top.cast(), new_u);
+        _mm256_storeu_si256(bot.cast(), new_v);
     }
 }
 
@@ -792,9 +1050,9 @@ mod tests {
         }
     }
 
-    /// `encode_interleaved` fuses the replication into its first pass, so it must
-    /// land exactly where filling the codeword and transforming it does, including
-    /// on the sizes that take its fallback.
+    /// `encode_interleaved_in_place` fuses the replication into its first pass, so it
+    /// must land exactly where filling the codeword and transforming it does,
+    /// including on the sizes that take its fallback.
     #[test]
     fn fused_encode_matches_replicate_then_transform() {
         let mut rng = Rng::new(0xE0C0DE);
@@ -810,11 +1068,55 @@ mod tests {
                     ntt.forward_transform_interleaved_parallel_from_layer(&mut want, lanes, log_inv_rate);
 
                     let mut got = vec![F64::ZERO; msg_len << log_inv_rate];
-                    ntt.encode_interleaved(&mut got, &msg, lanes, log_inv_rate);
+                    got[..msg_len].copy_from_slice(&msg);
+                    ntt.encode_interleaved_in_place(&mut got, lanes, log_inv_rate);
 
                     assert_eq!(
                         got, want,
                         "fused != replicate+transform at log_d={log_d}, lanes={lanes}, rate={log_inv_rate}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every lane of the codeword must be exactly the single-lane RS codeword of
+    /// that lane's contiguous message block, which is what makes a commitment over
+    /// `n_lanes` lanes equal to the `2^log_batch_size`-lane one with a zero tail.
+    /// The shapes cover the transposing fused first pass, its fallback, and lane
+    /// counts that are not powers of two (the padding-free commit's whole point).
+    #[test]
+    fn lane_major_msg_encode_matches_per_lane_reference() {
+        let mut rng = Rng::new(0x1A2E);
+        for (log_rows, log_inv_rate, n_lanes) in [
+            (2usize, 1usize, 3usize),
+            (3, 1, 1),
+            (5, 2, 7),
+            (9, 1, 5),
+            (12, 2, 37),
+            (14, 1, 64),
+        ] {
+            let log_d = log_rows + log_inv_rate;
+            let ntt = AdditiveNttF64::standard(log_d);
+            let rows = 1usize << log_rows;
+            let msg: Vec<F64> = (0..rows * n_lanes).map(|_| F64(rng.next_u64())).collect();
+
+            let mut got = vec![F64::ZERO; msg.len() << log_inv_rate];
+            transpose_lane_major(&mut got[..msg.len()], &msg, n_lanes, log_rows);
+            ntt.encode_interleaved_in_place(&mut got, n_lanes, log_inv_rate);
+
+            let block_len = 1usize << log_d;
+            for lane in 0..n_lanes {
+                // Lane `lane` encodes message block `n_lanes - 1 - lane`.
+                let block = n_lanes - 1 - lane;
+                let mut want = vec![F64::ZERO; block_len];
+                replicate_rows(&mut want, &msg[block * rows..(block + 1) * rows]);
+                ntt.forward_transform_interleaved_parallel_from_layer(&mut want, 1, log_inv_rate);
+                for pos in 0..block_len {
+                    assert_eq!(
+                        got[pos * n_lanes + lane],
+                        want[pos],
+                        "lane {lane} pos {pos} at log_rows={log_rows}, rate={log_inv_rate}, n_lanes={n_lanes}"
                     );
                 }
             }

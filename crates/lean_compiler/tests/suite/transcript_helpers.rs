@@ -19,20 +19,20 @@ def challenge_from_state(state):
     return lo[0] + Y * (lo[1] + Y * hi[0])
 
 @inline
-def sponge_compress(state, scalar, tail, out):
+def fs_compress(state, scalar, tail, out):
     limbs = StackBuf(3)
     hint_f192_limbs(limbs, scalar)
     block = StackBuf(2)
     pack64x2_into(limbs[0], limbs[1], block[0])
     pack64x2_into(limbs[2], tail, block[1])
     assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
-    blake3(state, block, out)
+    blake2s(state, block, out)
     return
 
 @inline
 def observe(state, scalar):
     out = StackBuf(2)
-    sponge_compress(state, scalar, 13, out)
+    fs_compress(state, scalar, 13, out)
     return out
 
 def main():

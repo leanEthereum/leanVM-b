@@ -39,7 +39,9 @@ pub struct XmssSignature {
     pub merkle_proof: [Digest; LOG_LIFETIME],
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// Ordered lexicographically on `flatten()`, which is what an aggregate's signer
+/// set is sorted and deduplicated by.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct XmssPublicKey {
     pub merkle_root: Digest,
     pub public_param: PublicParam,
@@ -65,7 +67,7 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
     msg[..4].copy_from_slice(&domain.to_le_bytes());
     msg[4..12].copy_from_slice(&a.to_le_bytes());
     msg[12..20].copy_from_slice(&b.to_le_bytes());
-    blake3::keyed_hash(seed, &msg).as_bytes()[..DIGEST_LEN]
+    primitives::blake2s::keyed_hash(seed, &msg)[..DIGEST_LEN]
         .try_into()
         .unwrap()
 }

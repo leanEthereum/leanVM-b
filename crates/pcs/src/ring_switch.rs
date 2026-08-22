@@ -29,27 +29,23 @@
 //!   is exactly the 6-bit skip domain, so every coordinate outside it is an
 //!   ordinary suffix coordinate of the packed witness (which has `2^(m-6)`
 //!   words).
-//! - **Generalized prefix weights**: the consumed claim is
-//!   `claim == sum_{i in 0..64} prefix_weights[i] * s_hat_v[i]`. For a plain
-//!   multilinear point claim the weights are the eq tensor of the 6 prefix
-//!   coords; for flock's univariate-skip claim (whose first coordinate ranges
-//!   over the phi_8 Lagrange domain, not the boolean cube) the caller passes
-//!   the 64 phi_8 Lagrange weights `lagrange_weights_naive(6, z_skip)`.
-//!   This module never looks inside the weights, so flock's `z_skip` flows
-//!   through unchanged.
+//! - **The 64 slices come in bound**: `s_hat_v[i] = sum_y eq(r_suffix, y) *
+//!   bit_i(packed[y])`, the MLE of the i-th bit-slice at the suffix point, is
+//!   supplied by the caller on both sides, which is where it was transmitted
+//!   and checked (flock sends its family itself and pins it in its lincheck
+//!   terminal). This module therefore reads nothing off the stream and only has
+//!   to bind the slices to the commitment.
 //!
 //! ## Protocol (prover)
 //!
-//! 1. Send `s_hat_v[i] = sum_y eq(r_suffix, y) * bit_i(packed[y])`, the MLE
-//!    of the i-th bit-slice at the suffix point (i in 0..64, values in E).
-//! 2. Verifier checks `claim == sum_i prefix_weights[i] * s_hat_v[i]`.
-//! 3. Sample six challenges in E and compose the maps
+//! 1. Take the caller's bound `s_hat_v`.
+//! 2. Sample six challenges in E and compose the maps
 //!    `v <- v + f_t v^(2^d_t)` for `d_t = 32, 16, 8, 4, 2, 1`. For the
 //!    coordinate basis `(b_i)`, define `coord_weights[i] = Phi(b_i)`. Transpose
 //!    `s_hat_v` to `t_i = s_hat_u[i] in K` (see
 //!    `super::tensor_algebra::transpose_s_hat`); the batched target is
 //!    `sumcheck_claim = sum_i Phi(b_i) * t_i` (K x E via `mul_base`).
-//! 4. Both sides define the transparent weights
+//! 3. Both sides define the transparent weights
 //!    `rs_eq_ind[y] = Phi(eq(r_suffix, y))` where `Phi : E -> E` is the
 //!    composed map above. Completeness:
 //!    `sum_y rs_eq_ind[y] * packed[y] == sumcheck_claim`, which is exactly
@@ -71,7 +67,7 @@
 //!
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 
-use fiat_shamir::transcript::{Challenger, Receiver, Transmitter};
+use fiat_shamir::transcript::Challenger;
 use primitives::bits::transpose_8x8_bits;
 use primitives::field::{F64, F192};
 
@@ -380,9 +376,9 @@ const FOLD_TABLE_SIZE: usize = 256;
 /// `table[k * 256 + v] = sum_{bit b set in v} coordinate_weights[k * 8 + b]`.
 /// Byte order: bytes 0..8 are the little-endian bytes of `c0` (bits 0..64),
 /// bytes 8..16 those of `c1` (bits 64..128), and bytes 16..24 those of `c2`.
-fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Vec<F192> {
+fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Box<FoldByteTable> {
     assert_eq!(coordinate_weights.len(), DEGREE_E);
-    let mut tables = vec![F192::ZERO; FOLD_N_BYTES * FOLD_TABLE_SIZE];
+    let mut tables: Box<FoldByteTable> = Box::new([[F192::ZERO; FOLD_TABLE_SIZE]; FOLD_N_BYTES]);
     for byte_idx in 0..FOLD_N_BYTES {
         let bit_base = byte_idx * 8;
         for value in 0..FOLD_TABLE_SIZE {
@@ -392,29 +388,34 @@ fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Vec<F192> {
                     acc += coordinate_weights[bit_base + bit_in_byte];
                 }
             }
-            tables[byte_idx * FOLD_TABLE_SIZE + value] = acc;
+            tables[byte_idx][value] = acc;
         }
     }
     tables
 }
 
-/// One folded output slot: `sum_{k=0..24} tables[k * 256 + byte_k(elem)]`,
-/// tree-reduced (depth 4) so the XORs pipeline. `tables` MUST be a
-/// [`build_fold_byte_table_ext`] output (length 24 * 256).
+/// The byte table as its shape rather than as a flat run: a `u8` cannot index a
+/// 256-entry row out of bounds and the row index is a constant of the unrolled
+/// loop, so neither lookup carries a bounds check and the row stride folds into
+/// the address. Flat, this is 24 bounds checks and 24 stride multiplies per
+/// output slot, and the address registers they force live do not fit.
+type FoldByteTable = [[F192; FOLD_TABLE_SIZE]; FOLD_N_BYTES];
+
+/// One folded output slot: `sum_{k=0..24} tables[k][byte_k(elem)]`, tree-reduced
+/// so the XORs pipeline.
 #[inline(always)]
-fn fold_one_slot_ext(elem: F192, tables: &[F192]) -> F192 {
-    debug_assert_eq!(tables.len(), FOLD_N_BYTES * FOLD_TABLE_SIZE);
+fn fold_one_slot_ext(elem: F192, tables: &FoldByteTable) -> F192 {
     let bytes = [elem.c0.to_le_bytes(), elem.c1.to_le_bytes(), elem.c2.to_le_bytes()];
     let mut acc = F192::ZERO;
     for (word, word_bytes) in bytes.iter().enumerate() {
         for (byte, &value) in word_bytes.iter().enumerate() {
-            acc += tables[(8 * word + byte) * FOLD_TABLE_SIZE + value as usize];
+            acc += tables[8 * word + byte][value as usize];
         }
     }
     acc
 }
 
-/// Deferred, gamma-baked ring-switch output used by the stacked opener.
+/// Deferred, lambda-baked ring-switch output used by the stacked opener.
 ///
 /// Keeping the split eq factors and the tiny byte table avoids materializing
 /// one full `rs_eq_ind` vector per claim.  The table already contains the
@@ -423,7 +424,7 @@ pub(crate) struct DeferredRingSwitchOutput {
     pub(crate) batched_sumcheck_claim: F192,
     eq_lo: Vec<F192>,
     eq_hi: Vec<F192>,
-    table: Vec<F192>,
+    table: Box<FoldByteTable>,
 }
 
 /// Finish a ring-switch claim without materializing its dense weight vector.
@@ -431,13 +432,13 @@ pub(crate) struct DeferredRingSwitchOutput {
 pub(crate) fn prove_finish_deferred(
     state: RingSwitchProveState,
     coordinate_weights: &[F192],
-    gamma: F192,
+    lambda: F192,
 ) -> DeferredRingSwitchOutput {
     let s_hat_u = transpose_s_hat(&state.s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
-    let scaled_weights: Vec<F192> = coordinate_weights.iter().map(|&x| gamma * x).collect();
+    let scaled_weights: Vec<F192> = coordinate_weights.iter().map(|&x| lambda * x).collect();
     DeferredRingSwitchOutput {
-        batched_sumcheck_claim: gamma * sumcheck_claim,
+        batched_sumcheck_claim: lambda * sumcheck_claim,
         eq_lo: state.eq_lo,
         eq_hi: state.eq_hi,
         table: build_fold_byte_table_ext(&scaled_weights),
@@ -517,20 +518,19 @@ pub struct RingSwitchProveState {
     eq_hi: Vec<F192>,
 }
 
-/// Phase 1 of the ring-switch prover: compute and check `s_hat_v`, then send it
-/// unless an earlier protocol phase already put the same values on the stream
-/// (`prebound`, e.g. lincheck's `z_partial`). Returns the scratch for
-/// finalization. The caller samples the possibly shared map afterwards.
+/// Phase 1 of the ring-switch prover: get `s_hat_v`, the 64 bit-slice values at
+/// `suffix_point`, and return the scratch for finalization. The caller samples the
+/// possibly shared map afterwards.
+///
+/// The slices are NOT sent here: the caller has already bound them (flock sends
+/// its family itself, see `flock::blake2s`), which is what lets this
+/// phase touch no transcript at all. `precomputed_s_hat_v` is `None` only for a
+/// caller that wants them folded out of the witness instead.
 pub fn prove_prepare(
     packed_witness: &[F64],
-    prefix_weights: &[F192],
     suffix_point: &[F192],
-    claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
-    prebound: bool,
-    ps: &mut impl Transmitter,
 ) -> RingSwitchProveState {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
         packed_witness.len(),
         1usize << suffix_point.len(),
@@ -549,27 +549,7 @@ pub fn prove_prepare(
             fold_1b_rows(packed_witness, &full)
         }
     };
-    assert_eq!(
-        claim_check(prefix_weights, &s_hat_v),
-        claim,
-        "ring_switch::prove: supplied claim does not match the witness"
-    );
-    if !prebound {
-        ps.add_scalars(&s_hat_v);
-    }
     RingSwitchProveState { s_hat_v, eq_lo, eq_hi }
-}
-
-/// Phase 1 of the ring-switch verifier: read `s_hat_v` off the stream and check
-/// the prefix-weight claim. The caller samples the possibly shared map
-/// afterwards.
-pub fn verify_prepare(claim: F192, prefix_weights: &[F192], vs: &mut impl Receiver) -> Result<Vec<F192>, VerifyError> {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
-    let s_hat_v = vs.next_scalars(PACKING_WIDTH).map_err(|_| VerifyError::Truncated)?;
-    if claim_check(prefix_weights, &s_hat_v) != claim {
-        return Err(VerifyError::ClaimMismatch);
-    }
-    Ok(s_hat_v)
 }
 
 /// Phase 2 of the ring-switch verifier: given the shared coordinate weights,
@@ -661,7 +641,7 @@ mod tests {
         let mut rng = Rng::new(0xdec0_de01_2345_6789);
         let point = rng.ext_vec(10);
         let coordinate_weights = rng.ext_vec(DEGREE_E);
-        let gammas = [rng.ext(), rng.ext()];
+        let lambdas = [rng.ext(), rng.ext()];
         let states = (0..2)
             .map(|_| {
                 let (eq_lo, eq_hi) = build_eq_split_ext(&point);
@@ -675,18 +655,18 @@ mod tests {
 
         // Reference: one dense weight vector per claim, combined afterwards.
         let dense_basis = fold_dense(&build_eq_table_ext(&point), &coordinate_weights);
-        let expected_target = states.iter().zip(gammas).fold(F192::ZERO, |acc, (state, gamma)| {
-            acc + gamma * inner_product_base_ext(&transpose_s_hat(&state.s_hat_v), &coordinate_weights)
+        let expected_target = states.iter().zip(lambdas).fold(F192::ZERO, |acc, (state, lambda)| {
+            acc + lambda * inner_product_base_ext(&transpose_s_hat(&state.s_hat_v), &coordinate_weights)
         });
         let expected_basis = dense_basis
             .iter()
-            .map(|&w| (gammas[0] + gammas[1]) * w)
+            .map(|&w| (lambdas[0] + lambdas[1]) * w)
             .collect::<Vec<_>>();
 
         let deferred = states
             .into_iter()
-            .zip(gammas)
-            .map(|(state, gamma)| prove_finish_deferred(state, &coordinate_weights, gamma))
+            .zip(lambdas)
+            .map(|(state, lambda)| prove_finish_deferred(state, &coordinate_weights, lambda))
             .collect::<Vec<_>>();
         let deferred_target = deferred
             .iter()
@@ -861,10 +841,10 @@ mod tests {
         }
     }
 
-    /// Claim-check completeness (a plain point claim verifies) and soundness
-    /// (a wrong claim value or a tampered s_hat_v is rejected).
+    /// The prefix x suffix split factors the bit-MLE, and `prove_prepare`'s
+    /// witness fold reproduces the reference slice values.
     #[test]
-    fn claim_check_completeness_and_soundness() {
+    fn slices_factor_the_bit_mle() {
         let m = 10;
         let mut rng = Rng::new(2);
         let bits = rng.bits(1usize << m);
@@ -873,10 +853,7 @@ mod tests {
         let prefix_weights = build_eq_table_ext(&point[..LOG_PACKING]);
         let suffix_point = &point[LOG_PACKING..];
 
-        // Honest claim from the reference partials; sanity: it equals the
-        // full bit-MLE evaluated with the full eq table.
         let s_ref = s_hat_v_reference(&packed, suffix_point);
-        let claim = claim_check(&prefix_weights, &s_ref);
         let eq_full = build_eq_table_ext(&point);
         let mut direct = F192::ZERO;
         for (x, &w) in eq_full.iter().enumerate() {
@@ -884,27 +861,16 @@ mod tests {
                 direct += w;
             }
         }
-        assert_eq!(claim, direct, "prefix x suffix split must factor the MLE");
-
-        const DOMAIN: &[u8] = b"rs-claim-test";
-        let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
-        prove_prepare(&packed, &prefix_weights, suffix_point, claim, None, false, &mut ps);
-        let fs = ps.into_proof();
-        let read = |fs: &fiat_shamir::transcript::Proof, claim| {
-            let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
-            verify_prepare(claim, &prefix_weights, &mut vs)
-        };
-
-        assert_eq!(read(&fs, claim).unwrap(), s_ref);
-        assert_eq!(read(&fs, claim + F192::ONE).unwrap_err(), VerifyError::ClaimMismatch);
-
-        let mut bad = fs.clone();
-        bad.stream[17].c0 ^= 1;
-        assert_eq!(read(&bad, claim).unwrap_err(), VerifyError::ClaimMismatch);
-
-        let mut short = fs.clone();
-        short.stream.pop();
-        assert_eq!(read(&short, claim).unwrap_err(), VerifyError::Truncated);
+        assert_eq!(
+            claim_check(&prefix_weights, &s_ref),
+            direct,
+            "prefix x suffix split must factor the MLE"
+        );
+        assert_eq!(
+            prove_prepare(&packed, suffix_point, None).s_hat_v,
+            s_ref,
+            "the witness fold must reproduce the reference slices"
+        );
     }
 
     /// The byte-table fold behind `combine_deferred_into` must match the naive
@@ -963,7 +929,7 @@ mod tests {
         let packed = pack_witness(&bits, m);
         let log_n = m - LOG_PACKING;
         let (pc, vc) = test_configs_for(log_n);
-        let (cm, pd) = commit(&packed, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&packed, log_n, pc.initial_k, pc.log_inv_rates[0]);
 
         let suffix_point = rng.ext_vec(log_n);
         let prefix_weights: Vec<F192> = if generalized_weights {
@@ -975,10 +941,10 @@ mod tests {
         };
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
 
-        // Drive the production two-phase API with a single claim: send s_hat_v,
-        // sample the shared map, then finish with a batching scalar of one.
+        // Drive the production two-phase API with a single claim: prepare the
+        // slices, sample the shared map, finish with a batching scalar of one.
         let mut ps = fiat_shamir::transcript::ProverState::new(E2E_DOMAIN, &[]);
-        let state = prove_prepare(&packed, &prefix_weights, &suffix_point, claim, None, false, &mut ps);
+        let state = prove_prepare(&packed, &suffix_point, None);
         let rs_s_hat_v = state.s_hat_v.clone();
         let coordinate_weights = build_coordinate_weights(&sample_map_challenges(&mut ps));
         let out = prove_finish_deferred(state, &coordinate_weights, F192::ONE);
@@ -988,6 +954,7 @@ mod tests {
         assert_eq!(inner_product_base_ext(&packed, &rs_eq_ind), sumcheck_claim);
         recursive_prover_with_basis(
             &pc,
+            log_n,
             &packed,
             zk_alloc::ArenaVec::from_slice(&rs_eq_ind),
             sumcheck_claim,
@@ -1007,12 +974,15 @@ mod tests {
         }
     }
 
-    /// Read the claim off the stream and finish it against the shared map:
-    /// the verifier's half of the two phases, shared by both paths below.
+    /// Finish the caller-supplied slices against the shared map: the verifier's
+    /// half of the two phases, shared by both paths below. As in production, the
+    /// slices ride the statement, tied to `claim` by the caller.
     fn verify_e2e_reduction(e: &E2e, vs: &mut fiat_shamir::transcript::VerifierState<'_>) -> Option<(Vec<F192>, F192)> {
-        let s_hat_v = verify_prepare(e.claim, &e.prefix_weights, vs).ok()?;
+        if claim_check(&e.prefix_weights, &e.rs_s_hat_v) != e.claim {
+            return None;
+        }
         let coordinate_weights = build_coordinate_weights(&sample_map_challenges(vs));
-        let sumcheck_claim = verify_finish(&s_hat_v, &coordinate_weights);
+        let sumcheck_claim = verify_finish(&e.rs_s_hat_v, &coordinate_weights);
         Some((coordinate_weights, sumcheck_claim))
     }
 
@@ -1024,7 +994,7 @@ mod tests {
             return false;
         };
         let rs_eq_ind = fold_dense(&build_eq_table_ext(&e.suffix_point), &coordinate_weights);
-        recursive_verifier_with_basis(&e.vc, &rs_eq_ind, sumcheck_claim, &e.root, &mut vs)
+        recursive_verifier_with_basis(&e.vc, 1 << e.vc.initial_k, &rs_eq_ind, sumcheck_claim, &e.root, &mut vs)
     }
 
     /// Succinct verification: no `rs_eq_ind`, the succinct whir verifier's
@@ -1038,6 +1008,7 @@ mod tests {
         recursive_verifier_with_basis_succinct(
             &e.vc,
             e.log_n,
+            1 << e.vc.initial_k,
             sumcheck_claim,
             &e.root,
             |point| eval_rs_eq(&z, point, &coordinate_weights),
@@ -1061,46 +1032,46 @@ mod tests {
         assert!(verify_e2e_succinct(&e), "succinct e2e (generalized) rejected");
     }
 
-    /// Tampering: a bit-flip in s_hat_v breaks the claim check; a
-    /// claim-preserving forgery (two entries adjusted so the weighted sum is
-    /// unchanged) passes the claim check but diverges the FS transcript, so
-    /// the whir opening must reject it. A tampered claim value is
-    /// rejected outright. Dense and succinct paths must agree throughout.
+    /// Tampering: a slice flip breaks the caller's claim check; a
+    /// claim-preserving forgery (two slices adjusted so the weighted sum is
+    /// unchanged) passes that check but diverges the ring-switch target, so the
+    /// whir opening must reject it. A tampered claim value, or any whir stream
+    /// word, is rejected too. Dense and succinct paths must agree throughout.
     #[test]
     fn end_to_end_rejects_tampering() {
         let e = prove_e2e(13, 13, false);
-        // s_hat_v is the first thing the reduction sends, so it leads the stream.
-        assert_eq!(e.fs.stream[..PACKING_WIDTH], e.rs_s_hat_v[..]);
-
-        // Plain bit flip: caught by the claim check.
-        let mut bad = E2e {
-            rs_s_hat_v: e.rs_s_hat_v.clone(),
+        let with = |s_hat_v: Vec<F192>, claim: F192, fs: fiat_shamir::transcript::Proof| E2e {
+            rs_s_hat_v: s_hat_v,
             vc: e.vc.clone(),
             log_n: e.log_n,
             prefix_weights: e.prefix_weights.clone(),
             suffix_point: e.suffix_point.clone(),
-            claim: e.claim,
+            claim,
             root: e.root,
-            fs: e.fs.clone(),
+            fs,
         };
-        bad.fs.stream[5].c1 ^= 1;
-        assert!(!verify_e2e_dense(&bad), "bit-flipped s_hat_v accepted");
-        assert!(!verify_e2e_succinct(&bad), "bit-flipped s_hat_v accepted (succinct)");
+
+        // Plain slice flip: caught by the claim check.
+        let mut s = e.rs_s_hat_v.clone();
+        s[5].c1 ^= 1;
+        let bad = with(s, e.claim, e.fs.clone());
+        assert!(!verify_e2e_dense(&bad), "flipped slice accepted");
+        assert!(!verify_e2e_succinct(&bad), "flipped slice accepted (succinct)");
 
         // Claim-preserving forgery: s'_1 = s_1 + d, s'_0 = s_0 + w_1*d/w_0
-        // keeps sum_i w_i s'_i = claim, so the claim check passes; the
-        // downstream opening must still reject (the batching weights and
-        // target diverge from what the whir proof was built for).
+        // keeps sum_i w_i s'_i = claim, so the claim check passes; the ring
+        // switch must still reject, its target and weights diverging from what
+        // the whir proof was built for.
         let mut rng = Rng::new(99);
         let d = rng.ext();
-        let w0 = e.prefix_weights[0];
-        let w1 = e.prefix_weights[1];
+        let (w0, w1) = (e.prefix_weights[0], e.prefix_weights[1]);
         assert!(!w0.is_zero() && !d.is_zero());
-        bad.fs = e.fs.clone();
-        bad.fs.stream[1] += d;
-        bad.fs.stream[0] += w1 * d * w0.inv();
+        let mut s = e.rs_s_hat_v.clone();
+        s[1] += d;
+        s[0] += w1 * d * w0.inv();
+        let bad = with(s, e.claim, e.fs.clone());
         assert_eq!(
-            claim_check(&bad.prefix_weights, &bad.fs.stream[..PACKING_WIDTH]),
+            claim_check(&bad.prefix_weights, &bad.rs_s_hat_v),
             e.claim,
             "forgery must be claim-preserving for this test to bite"
         );
@@ -1111,9 +1082,15 @@ mod tests {
         );
 
         // Tampered claim value.
-        bad.fs = e.fs.clone();
-        bad.claim = e.claim + F192::ONE;
+        let bad = with(e.rs_s_hat_v.clone(), e.claim + F192::ONE, e.fs.clone());
         assert!(!verify_e2e_dense(&bad), "tampered claim accepted");
         assert!(!verify_e2e_succinct(&bad), "tampered claim accepted (succinct)");
+
+        // Tampered whir stream word.
+        let mut fs = e.fs.clone();
+        fs.stream[0] += F192::ONE;
+        let bad = with(e.rs_s_hat_v.clone(), e.claim, fs);
+        assert!(!verify_e2e_dense(&bad), "tampered stream word accepted");
+        assert!(!verify_e2e_succinct(&bad), "tampered stream word accepted (succinct)");
     }
 }

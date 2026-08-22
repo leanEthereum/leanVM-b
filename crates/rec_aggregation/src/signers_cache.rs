@@ -16,7 +16,7 @@
 //! The filename carries a footprint of everything that determines the signers —
 //! not just the declared parameters but a known-answer of the hash construction
 //! itself (see `hash_fingerprint`), so a branch that changes the digests
-//! (e.g. a change to the standard BLAKE3 input encoding) without touching a
+//! (e.g. a change to the standard BLAKE2s input encoding) without touching a
 //! single constant still lands in a fresh file rather than mis-loading the
 //! other branch's signers. The WOTS encoding *predicate* is fingerprinted the
 //! same way (see `encoding_fingerprint`): two branches can agree on every
@@ -44,7 +44,7 @@ use xmss::*;
 type CachedSignature = (XmssPublicKey, XmssSignature);
 
 /// Bump to invalidate every existing cache file by hand.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// The epoch every benchmark signature is produced and verified at.
 pub const EPOCH: u32 = 7;
@@ -61,7 +61,11 @@ pub fn message() -> Message {
 /// benchmark used before caching, so cached and freshly-generated runs are
 /// indistinguishable.
 fn compute_signer(index: usize) -> CachedSignature {
-    let seed = [10 + index as u8; 32];
+    // The index over its full width: a one-byte seed repeats every 256 signers,
+    // and a repeated signer is invisible until something deduplicates the set,
+    // at which point a batch of 900 quietly becomes one of 256.
+    let mut seed = [10u8; 32];
+    seed[..8].copy_from_slice(&(index as u64).to_le_bytes());
     let (sk, pk) = xmss_key_gen(seed, KEY_START, KEY_END).expect("keygen");
     let sig = xmss_sign(&mut StdRng::seed_from_u64(index as u64), &sk, &message(), EPOCH).expect("sign");
     (pk, sig)
@@ -74,7 +78,7 @@ fn hash_fingerprint() -> [Digest; 2] {
     [
         // Single-block path (chain steps, Merkle nodes).
         tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
-        // Multi-block standard BLAKE3 path.
+        // Multi-block standard BLAKE2s path.
         tweak_hash(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
     ]
 }
@@ -210,6 +214,17 @@ pub fn get_signers(n: usize) -> Vec<CachedSignature> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Signers must be distinct past the first 256, which a one-byte seed was
+    /// not. An aggregate deduplicates its signer set, so a repeat shrinks the
+    /// batch instead of failing.
+    #[test]
+    fn cached_signers_are_distinct() {
+        let mut keys: Vec<_> = get_signers(300).into_iter().map(|(pk, _)| pk).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), 300);
+    }
 
     #[test]
     fn cached_signers_verify_and_are_deterministic() {
