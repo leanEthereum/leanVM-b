@@ -23,6 +23,7 @@
 //! `cpu::layout` of the inner program and the summary of a real `cpu::verify`
 //! run, so there is no hand-mirrored copy of the protocol to drift.
 
+use bincode::Options as _;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -374,6 +375,14 @@ pub enum AggregateError {
 /// Everything but the signer set, which a receiver may already hold.
 type WireCore = (xmss::Message, u32, Vec<F192>, Vec<F192>, lean_vm::cpu::Proof);
 
+/// The wire encoding: bincode's fixed-width integers, as the free functions use,
+/// but rejecting trailing bytes, which they do not. Without that an accepted
+/// aggregate has unboundedly many encodings, so anything downstream that dedupes
+/// or indexes on the serialized bytes can be made to see one aggregate as many.
+fn wire() -> impl bincode::Options {
+    bincode::DefaultOptions::new().with_fixint_encoding()
+}
+
 /// Reject a signer set that the coverage argument does not cover: strict sorting
 /// is what makes "every declared key signed" mean `public_keys.len()` distinct
 /// signers rather than one signer counted many times.
@@ -400,18 +409,20 @@ impl AggregateSignature {
     /// points, and the VM proof. The claim *values* are not transmitted;
     /// [`Self::from_bytes`] recomputes them, so there is nothing to lie about.
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(&(&self.public_keys, self.core())).expect("an aggregate serializes")
+        wire()
+            .serialize(&(&self.public_keys, self.core()))
+            .expect("an aggregate serializes")
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let (public_keys, core): (Vec<XmssPublicKey>, WireCore) = bincode::deserialize(bytes).ok()?;
+        let (public_keys, core): (Vec<XmssPublicKey>, WireCore) = wire().deserialize(bytes).ok()?;
         Self::from_parts(public_keys, core)
     }
 
     /// Without the signer set, for a receiver that already knows it. A set other
     /// than the one aggregated fails verification.
     pub fn to_bytes_without_pubkeys(&self) -> Vec<u8> {
-        bincode::serialize(&self.core()).expect("an aggregate serializes")
+        wire().serialize(&self.core()).expect("an aggregate serializes")
     }
 
     pub(crate) fn proof(&self) -> &lean_vm::cpu::Proof {
@@ -419,7 +430,7 @@ impl AggregateSignature {
     }
 
     pub fn from_bytes_without_pubkeys(bytes: &[u8], public_keys: Vec<XmssPublicKey>) -> Option<Self> {
-        Self::from_parts(public_keys, bincode::deserialize(bytes).ok()?)
+        Self::from_parts(public_keys, wire().deserialize(bytes).ok()?)
     }
 
     fn core(&self) -> WireCore {
@@ -434,6 +445,10 @@ impl AggregateSignature {
 
     fn from_parts(public_keys: Vec<XmssPublicKey>, core: WireCore) -> Option<Self> {
         let (message, epoch, bytecode_point, matrix_point, proof) = core;
+        // Cheap rejections first. `recompute` below is a pass over the whole stacked
+        // bytecode plus a walk of the BLAKE2s circuit, on points a peer chose, so
+        // anything decidable without it has to be decided before it.
+        check_signer_set(&public_keys).ok()?;
         Some(Self {
             message,
             epoch,
