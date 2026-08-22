@@ -242,7 +242,10 @@ pub fn hash_block(block: &[u8; 64]) -> [u8; OUT_LEN] {
 /// Merkle-Damgard chain over [`hash_block`], for the messages the VM cannot
 /// hash in one bite.
 ///
-/// `msg` must be a whole number of 32-byte groups, at least two:
+/// `msg` is zero-filled to a whole number of 32-byte groups, at least two,
+/// because a VM cell is 128 bits and the opcode hashes 64 bytes. The caller
+/// binds the length: every call site here has a fixed one, and XMSS's tweak
+/// carries it explicitly. Then:
 ///
 /// ```text
 ///   st = sha3_256(msg[0..64])
@@ -257,18 +260,86 @@ pub fn hash_block(block: &[u8; 64]) -> [u8; OUT_LEN] {
 /// and the chain is as sound as the compression it iterates. Anything that fits
 /// 64 bytes uses [`hash_block`] and IS plain SHA3-256.
 pub fn hash_md(msg: &[u8]) -> [u8; OUT_LEN] {
-    assert!(
-        msg.len() >= 64 && msg.len().is_multiple_of(32),
-        "hash_md takes whole 32-byte groups"
-    );
-    let mut st = hash_block(msg[..64].try_into().unwrap());
-    for group in msg[64..].chunks_exact(32) {
+    let padded = msg.len().next_multiple_of(32).max(64);
+    if padded == msg.len() {
+        return hash_md_from_state(&msg[64..], &hash_block(msg[..64].try_into().unwrap()));
+    }
+    let mut buf = vec![0u8; padded];
+    buf[..msg.len()].copy_from_slice(msg);
+    hash_md_from_state(&buf[64..], &hash_block(buf[..64].try_into().unwrap()))
+}
+
+/// Continue a [`hash_md`] chain over the 32-byte groups of `rest`.
+pub fn hash_md_from_state(rest: &[u8], state: &[u8; OUT_LEN]) -> [u8; OUT_LEN] {
+    debug_assert!(rest.len().is_multiple_of(32));
+    let mut st = *state;
+    for group in rest.chunks_exact(32) {
         let mut block = [0u8; 64];
         block[..32].copy_from_slice(&st);
         block[32..].copy_from_slice(group);
         st = hash_block(&block);
     }
     st
+}
+
+/// The [`hash_md`] state after `n_zero_groups` leading 32-byte groups of zeros,
+/// which is at least two (the chain's first link is 64 bytes). A leading run of
+/// zeros is the same for every leaf, so the PCS committer pays this once rather
+/// than per leaf.
+pub fn md_zero_prefix_state(n_zero_groups: usize) -> [u8; OUT_LEN] {
+    assert!(n_zero_groups >= 2, "the chain's first link is two groups");
+    let mut st = hash_block(&[0u8; 64]);
+    for _ in 2..n_zero_groups {
+        let mut block = [0u8; 64];
+        block[..32].copy_from_slice(&st);
+        st = hash_block(&block);
+    }
+    st
+}
+
+/// [`hash_md`] of each `len`-byte record of `data`, digests written in order.
+pub fn hash_many_md(data: &[u8], len: usize, out: &mut [u8]) {
+    let n = data.len().checked_div(len).unwrap_or(0);
+    assert!(out.len() >= n * OUT_LEN, "digest buffer too small");
+    for i in 0..n {
+        let d = hash_md(&data[i * len..(i + 1) * len]);
+        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&d);
+    }
+}
+
+/// [`hash_md`] of each `len`-byte record of `data`, resuming from a shared
+/// prefix state, digests written in order. `len` counts only what follows the
+/// prefix and must be a whole number of 32-byte groups. The chains are
+/// independent, one per record, so a pair of them shares every permutation on
+/// the batched backend.
+pub fn hash_many_md_from_state(data: &[u8], len: usize, state: &[u8; OUT_LEN], out: &mut [u8]) {
+    let n = data.len().checked_div(len).unwrap_or(0);
+    assert!(out.len() >= n * OUT_LEN, "digest buffer too small");
+    assert!(len.is_multiple_of(32), "a record is whole 32-byte groups");
+    let mut i = 0;
+    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
+    while i + 2 <= n {
+        let (mut s0, mut s1) = (*state, *state);
+        let zero = [0u64; STATE_LANES];
+        for g in 0..len / 32 {
+            let link = |st: &[u8; OUT_LEN], rec: usize| -> [u8; 64] {
+                let mut b = [0u8; 64];
+                b[..32].copy_from_slice(st);
+                b[32..].copy_from_slice(&data[(i + rec) * len + g * 32..][..32]);
+                b
+            };
+            let (b0, b1) = (link(&s0, 0), link(&s1, 1));
+            (s0, s1) = aarch64_sha3::hash_pair_from_state(&b0, &b1, &zero);
+        }
+        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&s0);
+        out[(i + 1) * OUT_LEN..(i + 2) * OUT_LEN].copy_from_slice(&s1);
+        i += 2;
+    }
+    while i < n {
+        let d = hash_md_from_state(&data[i * len..(i + 1) * len], state);
+        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&d);
+        i += 1;
+    }
 }
 
 /// Incremental SHA3-256, for the callers that build a message from pieces.
@@ -688,6 +759,31 @@ mod tests {
         assert_eq!(hash_md(&msg), st);
         // A chain is not the sponge over the same bytes: they must not collide.
         assert_ne!(hash_md(&msg), hash(&msg));
+    }
+
+    /// The shared zero prefix and the batched chain must both agree with the
+    /// plain one, at every record length the PCS may ask for.
+    #[test]
+    fn md_prefix_and_batching_agree_with_the_plain_chain() {
+        for zero_groups in [2usize, 3, 6] {
+            for groups in [1usize, 2, 5] {
+                let len = 32 * groups;
+                let n = 5;
+                let data: Vec<u8> = (0..n * len).map(|i| (i * 29 + 11) as u8).collect();
+                let state = md_zero_prefix_state(zero_groups);
+                let mut out = vec![0u8; n * OUT_LEN];
+                hash_many_md_from_state(&data, len, &state, &mut out);
+                for i in 0..n {
+                    let mut full = vec![0u8; 32 * zero_groups];
+                    full.extend_from_slice(&data[i * len..(i + 1) * len]);
+                    assert_eq!(
+                        &out[i * OUT_LEN..(i + 1) * OUT_LEN],
+                        &hash_md(&full)[..],
+                        "zero_groups {zero_groups}, groups {groups}, record {i}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

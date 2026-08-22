@@ -38,10 +38,12 @@ pub fn scalars_to_hash(scalars: &[F192; 2]) -> Result<Hash, Error> {
     Ok(hash)
 }
 
-/// Hash one leaf with standard SHA3-256.
+/// Hash one leaf with the chain of 64-byte SHA3-256 hashes
+/// ([`primitives::sha3::hash_md`]), which is what the recursion guest can
+/// reproduce with its `Keccak` opcode.
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
-    primitives::sha3::hash(data)
+    primitives::sha3::hash_md(data)
 }
 
 /// Hash a pair of children into a parent node (64 B → 32 B): `f(a, b) =

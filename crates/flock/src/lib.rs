@@ -29,8 +29,7 @@
 mod gf2;
 pub mod lincheck;
 /// The circuit driven through the whole reduction. A `src` module rather than
-/// its own test binary so it shares the process, and so the slow
-/// with the unit tests.
+/// its own test binary so it shares the process with the unit tests.
 #[cfg(test)]
 mod reduction_tests;
 pub mod sha3;

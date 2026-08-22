@@ -270,16 +270,16 @@ fn label_tag(label: &[u8]) -> [u8; 32] {
     tag
 }
 
-/// Plain SHA3-256 over that tag then a lane stream, zero-filled to a whole
-/// number of rate blocks: what the guest gets by absorbing seventeen lanes a
-/// permutation. Filling to the rate is what lets the guest's absorb be a fixed
-/// unrolled sequence with a CONSTANT final pad block, since a full last data
-/// block always pushes `pad10*1` into a block of its own.
+/// The chain of 64-byte SHA3-256 hashes over that tag then a lane stream,
+/// zero-filled to a whole 32-byte group: what the guest gets by feeding two
+/// cells at a time to its `sha3_64` opcode.
 fn tagged_hash(label: &[u8], lanes: impl Iterator<Item = u64>) -> [F192; 2] {
     let mut bytes = label_tag(label).to_vec();
     bytes.extend(lanes.flat_map(u64::to_le_bytes));
-    bytes.resize(bytes.len().next_multiple_of(primitives::sha3::RATE), 0);
-    pack_hash_state(&primitives::sha3::hash(&bytes))
+    // Filled to whole 64-byte blocks, which is what the guest's buffers are: it
+    // holds four 128-bit cells a block and feeds them two at a time.
+    bytes.resize(bytes.len().next_multiple_of(64), 0);
+    pack_hash_state(&primitives::sha3::hash_md(&bytes))
 }
 
 /// A node's public statement, hashed to the two words the VM publishes. The

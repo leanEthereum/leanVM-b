@@ -17,7 +17,10 @@
 //! Total nodes: `2·num_leaves − 1`. The flat layout keeps the tree contiguous
 //! in memory for cheap Merkle-path extraction later.
 //!
-//! Hashing is standard SHA3-256. Independent hashes of equal-length inputs
+//! Hashing is [`primitives::sha3::hash_md`], the chain of 64-byte SHA3-256
+//! hashes the VM's `Keccak` opcode can reproduce, which is what lets the
+//! recursion guest re-hash an opened leaf. A parent, being 64 bytes, is plain
+//! SHA3-256. Independent hashes of equal-length inputs
 //! step their block counters in lockstep, so the batched hasher is
 //! byte-identical to an independent [`hash_leaf`] per input; the leaf-size
 //! dispatch below exists only to make the length a compile-time constant.
@@ -44,7 +47,7 @@ fn hash_many_uninit<const N: usize>(data: &[u8], out: &mut [std::mem::MaybeUnini
     // Hash is [u8; 32] with no padding; expose the contiguous output storage
     // the batched hasher writes 32 bytes per input into.
     let out_bytes = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 32) };
-    primitives::sha3::hash_many::<N>(data, out_bytes);
+    primitives::sha3::hash_many_md(data, N, out_bytes);
 }
 
 /// Dispatch one pool task per `HASH_GROUP`-sized output group, handing each
@@ -149,7 +152,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
 /// lanes contribute the zeros their codeword would have been. They are the image's
 /// LEADING words on purpose: whole 64-byte blocks of leading zeros have a chaining
 /// value every leaf shares, so the committer computes it once
-/// ([`primitives::sha3::zero_prefix_state`]) and each leaf hashes only what
+/// ([`primitives::sha3::md_zero_prefix_state`]) and each leaf hashes only what
 /// follows. A zero SUFFIX could not be shared, since its compressions take
 /// whatever state the real data left, which is why the L0 leaf image is ordered
 /// with the absent lanes first.
@@ -216,9 +219,13 @@ fn hash_leaves_padded_rows_uninit(
     // rate block at a time and a zero block is just a permutation, so the shared
     // prefix is any number of them and the leaf width need not be a multiple of
     // the rate. `staged >= row_words` by construction.
+    // The chain's first link is two groups, so a prefix worth sharing is at
+    // least that; below it every leaf hashes its whole image.
     let zero_blocks = (leaf_words - row_words) / WORDS_PER_BLOCK;
+    let shared = zero_blocks >= 2;
+    let zero_blocks = if shared { zero_blocks } else { 0 };
     let staged = leaf_words - zero_blocks * WORDS_PER_BLOCK;
-    let state = primitives::sha3::zero_prefix_state(zero_blocks);
+    let state = primitives::sha3::md_zero_prefix_state(zero_blocks.max(2));
     // Leaves per tile, in whole hasher batches: the batched hasher sends its
     // remainder below one batch through the scalar path, and a tile boundary is a
     // remainder. `HASH_GROUP` is a multiple of `BATCH_LEAVES`, so a full task's tiles
@@ -250,13 +257,17 @@ fn hash_leaves_padded_rows_uninit(
             // SAFETY: Hash is [u8; 32] with no padding, so the output slots are
             // `len * 32` contiguous writable bytes.
             let out_bytes = unsafe { core::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<u8>(), len * 32) };
-            primitives::sha3::hash_many_dyn_from_state(bytes, staged * 8, &state, out_bytes);
+            if shared {
+                primitives::sha3::hash_many_md_from_state(bytes, staged * 8, &state, out_bytes);
+            } else {
+                primitives::sha3::hash_many_md(bytes, staged * 8, out_bytes);
+            }
         }
     });
 }
 
-/// Words of `F64` per sponge rate block.
-const WORDS_PER_BLOCK: usize = primitives::sha3::RATE / 8;
+/// Words of `F64` per chain link: one link absorbs a 32-byte group.
+const WORDS_PER_BLOCK: usize = 4;
 
 fn internal_levels_uninit(tree: &mut [std::mem::MaybeUninit<Hash>], num_leaves: usize) {
     let mut read_start = 0usize;
