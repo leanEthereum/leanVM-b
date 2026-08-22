@@ -1210,8 +1210,12 @@ BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(T
 
 
 def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequence[int]) -> Layout:
+    log_bytecode = log2_strict(len(bytecode)) - BUS_BITS
     require(
-        16 <= log_memory <= 32 and all(0 <= log_height <= 32 for log_height in table_log_heights) and table_log_heights[BLAKE2S.opcode] >= 3,
+        16 <= log_memory <= 32
+        and all(0 <= log_height <= 32 for log_height in table_log_heights)
+        and table_log_heights[BLAKE2S.opcode] >= 3
+        and 0 <= log_bytecode <= 32,
         "invalid announced table sizes",
     )
     table_log_heights = list(table_log_heights)
