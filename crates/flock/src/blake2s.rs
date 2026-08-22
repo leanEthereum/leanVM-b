@@ -268,8 +268,8 @@ pub fn padding_block() -> Compression {
 /// bit images of `A_0`, `B_0` and `C_0 = I`. That recipe needed the materialized
 /// matrices, which this module no longer builds: nothing on a prove or verify
 /// path reads a matrix entry now (both directions are circuit walks,
-/// `bilinear_walk_pair` and `marginal_walk`), so the ~1.4 GB and the ~200 ms
-/// they cost bought only this constant. To recompute it, check out the last
+/// `bilinear_walk_pair` and `marginal_walk`), so the memory and the time they
+/// cost bought only this constant. To recompute it, check out the last
 /// commit that still had `build_matrices` and run `r1cs_digest_matches_baked`.
 ///
 /// The value is mirrored in `python-verifier/verifier.py`, which never could

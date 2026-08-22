@@ -1,8 +1,8 @@
 //! Every lean_compiler integration test, in ONE binary.
 //!
 //! Each file under `suite/` used to be its own test binary, and each one paid
-//! the BLAKE2s R1CS again: ~1.9 s of sequential symbolic circuit building,
-//! cached per process, so thirteen processes meant thirteen builds. Those
+//! the BLAKE2s R1CS again: a slow sequential symbolic circuit build, cached per
+//! process, so thirteen processes meant thirteen builds. Those
 //! matrices are no longer built at all (the walks of doc/leanvm Annex C
 //! replaced them), so the original reason is gone; one binary still saves
 //! thirteen process startups and thirteen guest compilations. None of these

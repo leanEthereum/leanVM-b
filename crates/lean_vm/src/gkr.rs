@@ -8,86 +8,11 @@
 
 use crate::PAR_THRESHOLD;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
-use primitives::field::{F192, F192Unreduced};
+use primitives::field::{F192, F192Unreduced, mul_unreduced4, mul2, mul4};
 use primitives::multilinear::{eq_table, interp, shrink_eq_low};
+#[cfg(target_arch = "x86_64")]
+use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
-
-#[inline]
-fn mul_pair(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
-    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
-    {
-        // SAFETY: both features are enabled for the whole crate.
-        unsafe { primitives::field::gf2_64x3::x86_64::mul_vec2(a, b) }
-    }
-    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
-    {
-        // SAFETY: PMULL is enabled for the whole crate.
-        unsafe {
-            [
-                primitives::field::gf2_64x3::aarch64::mul_karatsuba(a[0], b[0]),
-                primitives::field::gf2_64x3::aarch64::mul_karatsuba(a[1], b[1]),
-            ]
-        }
-    }
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"),
-        all(target_arch = "aarch64", target_feature = "aes")
-    )))]
-    {
-        [a[0] * b[0], a[1] * b[1]]
-    }
-}
-
-#[inline]
-fn mul_four(a: [F192; 4], b: [F192; 4]) -> [F192; 4] {
-    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-    {
-        // SAFETY: both features are enabled for the whole crate.
-        unsafe { primitives::field::gf2_64x3::x86_64::mul_vec4(a, b) }
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
-    {
-        let low = mul_pair([a[0], a[1]], [b[0], b[1]]);
-        let high = mul_pair([a[2], a[3]], [b[2], b[3]]);
-        [low[0], low[1], high[0], high[1]]
-    }
-}
-
-#[inline]
-fn mul_unreduced_four(a: F192, b: [F192; 4]) -> [F192Unreduced; 4] {
-    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-    {
-        // SAFETY: both features are enabled for the whole crate.
-        unsafe { primitives::field::gf2_64x3::x86_64::mul_unreduced_vec4([a; 4], b) }
-    }
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "vpclmulqdq",
-        target_feature = "avx2",
-        not(target_feature = "avx512f")
-    ))]
-    {
-        // SAFETY: both features are enabled for the whole crate.
-        unsafe {
-            let low = primitives::field::gf2_64x3::x86_64::mul_unreduced_vec2([a; 2], [b[0], b[1]]);
-            let high = primitives::field::gf2_64x3::x86_64::mul_unreduced_vec2([a; 2], [b[2], b[3]]);
-            [low[0], low[1], high[0], high[1]]
-        }
-    }
-    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
-    {
-        // SAFETY: PMULL is enabled for the whole crate.
-        unsafe { b.map(|value| primitives::field::gf2_64x3::aarch64::mul_unreduced_neon(a, value)) }
-    }
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"),
-        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"),
-        all(target_arch = "aarch64", target_feature = "aes")
-    )))]
-    {
-        b.map(|value| a.mul_unreduced(value))
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GkrError {
@@ -98,8 +23,8 @@ pub enum GkrError {
 /// Rows per parallel window: enough tasks to keep every thread fed, but not so few
 /// rows per task that dispatch dominates.
 fn window_rows(total: usize) -> usize {
-    let tasks = parallel::num_threads() * 4;
-    total.div_ceil(tasks).clamp(32, 1 << 12)
+    let tasks = parallel::num_threads() * 16;
+    total.div_ceil(tasks).clamp(64, 1 << 10)
 }
 
 /// Build only the levels consumed by radix four: `0,2,4,…`, plus a final
@@ -116,7 +41,7 @@ fn build_layers(leaves: ArenaVec<F192>, mu: usize) -> Vec<ArenaVec<F192>> {
         let current = &layers[level];
         let full_rows = current.len() / 4;
         let product = |row: usize| {
-            let [left, right] = mul_pair(
+            let [left, right] = mul2(
                 [current[4 * row], current[4 * row + 2]],
                 [current[4 * row + 1], current[4 * row + 3]],
             );
@@ -134,7 +59,7 @@ fn build_layers(leaves: ArenaVec<F192>, mu: usize) -> Vec<ArenaVec<F192>> {
         if !current.len().is_multiple_of(4) && current.len() > 2 {
             let row = full_rows;
             let child = |index| current.get(4 * row + index).copied().unwrap_or(F192::ONE);
-            let [left, right] = mul_pair([child(0), child(2)], [child(1), child(3)]);
+            let [left, right] = mul2([child(0), child(2)], [child(1), child(3)]);
             next.push(left * right);
         }
         level += 2;
@@ -150,25 +75,25 @@ fn build_layers(leaves: ArenaVec<F192>, mu: usize) -> Vec<ArenaVec<F192>> {
     layers
 }
 
-#[inline]
+#[inline(always)]
 fn quartic_summand(lines: [[F192; 2]; 4], equality: F192) -> [F192Unreduced; 4] {
-    let [left0, left2, right0, right2] = mul_four(
+    let [left0, left2, right0, right2] = mul4(
         [lines[0][0], lines[0][1], lines[2][0], lines[2][1]],
         [lines[1][0], lines[1][1], lines[3][0], lines[3][1]],
     );
-    let [left_at_one, right_at_one, c0, c4] = mul_four(
+    let [left_at_one, right_at_one, c0, c4] = mul4(
         [lines[0][0] + lines[0][1], lines[2][0] + lines[2][1], left0, left2],
         [lines[1][0] + lines[1][1], lines[3][0] + lines[3][1], right0, right2],
     );
     let left1 = left_at_one + left0 + left2;
     let right1 = right_at_one + right0 + right2;
-    let [middle, at_one, cross_even, cross_high] = mul_four(
+    let [middle, at_one, cross_even, cross_high] = mul4(
         [left1, left0 + left1 + left2, left0 + left2, left1 + left2],
         [right1, right0 + right1 + right2, right0 + right2, right1 + right2],
     );
     let c2 = cross_even + c0 + c4 + middle;
     let c3 = cross_high + middle + c4;
-    mul_unreduced_four(equality, [c0 + at_one, c2, c3, c4])
+    mul_unreduced4([equality; 4], [c0 + at_one, c2, c3, c4])
 }
 
 /// Two binary product levels contracted into one degree-four layer.
@@ -246,20 +171,37 @@ impl QuaternaryLayerState {
         let rows = stored_rows.div_ceil(2);
         self.next.truncate(4 * rows);
         let (values, next) = (&self.values, &mut self.next);
-        let fold_row = |row: usize, destination: &mut [F192]| {
-            let lo = 8 * row;
-            let hi = lo + 4;
-            let folds = mul_four(
-                [0, 1, 2, 3].map(|child| values[lo + child] + values[hi + child]),
-                [challenge; 4],
-            );
-            for child in 0..4 {
-                destination[child] = values[lo + child] + folds[child];
+        let fold_row = |row: usize| -> [F192; 4] {
+            // One slice, not eight indexes: the bounds checks and the
+            // index-by-24 multiplies fall out.
+            let v = &values[8 * row..8 * row + 8];
+            let folds = mul4(std::array::from_fn(|child| v[child] + v[4 + child]), [challenge; 4]);
+            std::array::from_fn(|child| v[child] + folds[child])
+        };
+        // The next round is what reads the output, and a layer this size is long
+        // evicted by then, so where an ordinary store fetches the line it
+        // overwrites the pair is staged and published with streaming stores.
+        // Where it does not, the stage buys nothing and costs a real call, the
+        // `slot.len()` being one the compiler cannot fold away.
+        #[cfg(target_arch = "x86_64")]
+        let window = |base: usize, destination: &mut [F192]| {
+            let stream = Stream::new();
+            for (pair, slot) in destination.chunks_mut(8).enumerate() {
+                let mut both = [F192::ZERO; 8];
+                both[..4].copy_from_slice(&fold_row(base + 2 * pair));
+                if slot.len() == 8 {
+                    both[4..].copy_from_slice(&fold_row(base + 2 * pair + 1));
+                }
+                stream.copy(slot, &both[..slot.len()]);
             }
         };
+        #[cfg(not(target_arch = "x86_64"))]
         let window = |base: usize, destination: &mut [F192]| {
-            for (row, slot) in destination.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-                fold_row(base + row, slot);
+            for (pair, slot) in destination.chunks_mut(8).enumerate() {
+                slot[..4].copy_from_slice(&fold_row(base + 2 * pair));
+                if slot.len() == 8 {
+                    slot[4..].copy_from_slice(&fold_row(base + 2 * pair + 1));
+                }
             }
         };
         if full_rows >= PAR_THRESHOLD {
@@ -272,7 +214,7 @@ impl QuaternaryLayerState {
         }
         if !stored_rows.is_multiple_of(2) {
             let lo = 8 * full_rows;
-            let folds = mul_four(
+            let folds = mul4(
                 [0, 1, 2, 3].map(|child| self.values[lo + child] + F192::ONE),
                 [challenge; 4],
             );

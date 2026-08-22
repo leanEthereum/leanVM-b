@@ -54,9 +54,8 @@ fn multithreaded_throughput() {
 /// Single-threaded batched throughput, at every leaf size `pcs::merkle`
 /// dispatches.
 ///
-/// 4.1 to 5.6 GB/s on AVX-512, and 1.9 to 2.2 GB/s on 4-lane NEON (M4 Max). The
-/// two backends run into different limits: AVX-512 is bound by issue width, so
-/// its fixes were instruction-count ones, while NEON is bound by the G
+/// The two backends run into different limits: AVX-512 is bound by issue width,
+/// so its fixes were instruction-count ones, while NEON is bound by the G
 /// function's dependency chain and needed latency ones. See `blake2s::LANES`.
 #[test]
 #[ignore = "manual throughput measurement"]

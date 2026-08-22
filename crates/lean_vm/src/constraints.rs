@@ -213,7 +213,10 @@ pub fn prove(
                     table.iter_mut().for_each(|c| fold_high_inplace(c, rk));
                 }
             } else {
-                folded[t] = Some(cols[t].iter().map(|c| fold_high_k(c, rk)).collect());
+                // The round a table joins is the largest fold it ever does, so it
+                // fans out like the in-place ones below rather than running on the
+                // dispatcher alone.
+                folded[t] = Some(parallel::map_collect(cols[t].len(), |ci| fold_high_k(cols[t][ci], rk)));
             }
         }
     }

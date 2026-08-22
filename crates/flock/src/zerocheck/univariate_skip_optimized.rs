@@ -125,27 +125,35 @@ fn d_inv() -> F192 {
 // 16 × 256 × 24 bytes = 96 KB. Computed once, cached via OnceLock.
 // ---------------------------------------------------------------------------
 
-const CONVERT_TABLE_SIZE: usize = 16 * 256;
+const N_MEDIUM_VALUES: usize = 16;
 
-static CONVERT_TABLE_CACHE: OnceLock<Vec<F192>> = OnceLock::new();
+/// The convert table as its shape rather than as a flat run: a `u8` cannot index
+/// a 256-entry row out of bounds and the row index is bounded by the loop, so
+/// the fold's two lookups carry no bounds check and the row stride folds into
+/// the address. Flat, each lookup costs a check, a branch and a multiply by the
+/// 24-byte element stride, and the branches keep the constant-trip loop around
+/// them from unrolling.
+type ConvertTable = [[F192; 256]; N_MEDIUM_VALUES];
 
-fn build_convert_table() -> Vec<F192> {
+static CONVERT_TABLE_CACHE: OnceLock<Box<ConvertTable>> = OnceLock::new();
+
+fn build_convert_table() -> Box<ConvertTable> {
     let mut gamma_pow = [F192::ZERO; 16];
     gamma_pow[0] = F192::ONE;
     for b in 1..16 {
         gamma_pow[b] = gamma_pow[b - 1] * medium_generator();
     }
-    let mut table = vec![F192::ZERO; CONVERT_TABLE_SIZE];
-    for b in 0..16 {
+    let mut table: Box<ConvertTable> = Box::new([[F192::ZERO; 256]; N_MEDIUM_VALUES]);
+    for b in 0..N_MEDIUM_VALUES {
         let g_b = gamma_pow[b];
         for v in 0..256 {
-            table[b * 256 + v] = g_b * PHI_8_TABLE[v];
+            table[b][v] = g_b * PHI_8_TABLE[v];
         }
     }
     table
 }
 
-fn convert_table() -> &'static [F192] {
+fn convert_table() -> &'static ConvertTable {
     CONVERT_TABLE_CACHE.get_or_init(build_convert_table)
 }
 
@@ -181,7 +189,7 @@ fn convert_table() -> &'static [F192] {
 // it out keeps the four loads visibly parallel.
 #[allow(clippy::identity_op)]
 #[inline(always)]
-unsafe fn xor_apply_byte_into_8_regs<const BH: usize, const ODD: bool>(
+unsafe fn xor_apply_byte_into_8_regs<const BH: usize>(
     table_base: *const u8,
     a_byte: u8,
     b_byte: u8,
@@ -206,20 +214,6 @@ unsafe fn xor_apply_byte_into_8_regs<const BH: usize, const ODD: bool>(
         let vb1 = vld1q_u8(rb.add((1 ^ BH) * 16));
         let vb2 = vld1q_u8(rb.add((2 ^ BH) * 16));
         let vb3 = vld1q_u8(rb.add((3 ^ BH) * 16));
-        let (va0, va1, va2, va3, vb0, vb1, vb2, vb3) = if ODD {
-            (
-                vextq_u8::<8>(va0, va0),
-                vextq_u8::<8>(va1, va1),
-                vextq_u8::<8>(va2, va2),
-                vextq_u8::<8>(va3, va3),
-                vextq_u8::<8>(vb0, vb0),
-                vextq_u8::<8>(vb1, vb1),
-                vextq_u8::<8>(vb2, vb2),
-                vextq_u8::<8>(vb3, vb3),
-            )
-        } else {
-            (va0, va1, va2, va3, vb0, vb1, vb2, vb3)
-        };
         *da0 = veorq_u8(*da0, va0);
         *da1 = veorq_u8(*da1, va1);
         *da2 = veorq_u8(*da2, va2);
@@ -251,110 +245,62 @@ unsafe fn fused_apply_one_k<const K: i32>(
     use core::arch::aarch64::*;
     use primitives::field::gf2_8::neon::gf8_mul_vec16;
     unsafe {
-        // b = 0: identity permutation — plain load of the 4 chunks.
-        let ra0 = table_base.add(*a_row as usize * 64);
-        let rb0 = table_base.add(*b_row as usize * 64);
-        let mut da0 = vld1q_u8(ra0);
-        let mut da1 = vld1q_u8(ra0.add(16));
-        let mut da2 = vld1q_u8(ra0.add(32));
-        let mut da3 = vld1q_u8(ra0.add(48));
-        let mut db0 = vld1q_u8(rb0);
-        let mut db1 = vld1q_u8(rb0.add(16));
-        let mut db2 = vld1q_u8(rb0.add(32));
-        let mut db3 = vld1q_u8(rb0.add(48));
+        // `π_b(i') = i' ⊕ 8b` is a chunk-index XOR by `b >> 1`, which is a free
+        // load offset, and for odd `b` a swap of each chunk's two 8-byte halves.
+        // That swap is an involution and distributes over XOR, and it commutes
+        // with the chunk reindexing, so the eight positions need one swap of the
+        // accumulators between the odd group and the even group rather than one
+        // per register per odd position: `E ⊕ S(O)` with the odds accumulated
+        // plainly first. Four times fewer `ext`, and `ext` was the largest
+        // single share of this body's vector work.
+        let ra1 = table_base.add(*a_row.add(1) as usize * 64);
+        let rb1 = table_base.add(*b_row.add(1) as usize * 64);
+        let mut da0 = vld1q_u8(ra1);
+        let mut da1 = vld1q_u8(ra1.add(16));
+        let mut da2 = vld1q_u8(ra1.add(32));
+        let mut da3 = vld1q_u8(ra1.add(48));
+        let mut db0 = vld1q_u8(rb1);
+        let mut db1 = vld1q_u8(rb1.add(16));
+        let mut db2 = vld1q_u8(rb1.add(32));
+        let mut db3 = vld1q_u8(rb1.add(48));
 
-        // b = 1..7: XOR with table row[bytes[b]], permuted per (BH, ODD).
-        xor_apply_byte_into_8_regs::<0, true>(
-            table_base,
-            *a_row.add(1),
-            *b_row.add(1),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<1, false>(
-            table_base,
-            *a_row.add(2),
-            *b_row.add(2),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<1, true>(
-            table_base,
-            *a_row.add(3),
-            *b_row.add(3),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<2, false>(
-            table_base,
-            *a_row.add(4),
-            *b_row.add(4),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<2, true>(
-            table_base,
-            *a_row.add(5),
-            *b_row.add(5),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<3, false>(
-            table_base,
-            *a_row.add(6),
-            *b_row.add(6),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
-        xor_apply_byte_into_8_regs::<3, true>(
-            table_base,
-            *a_row.add(7),
-            *b_row.add(7),
-            &mut da0,
-            &mut da1,
-            &mut da2,
-            &mut da3,
-            &mut db0,
-            &mut db1,
-            &mut db2,
-            &mut db3,
-        );
+        // The rest of the odd positions, b = 3, 5, 7.
+        macro_rules! apply {
+            ($bh:literal, $b:literal) => {
+                xor_apply_byte_into_8_regs::<$bh>(
+                    table_base,
+                    *a_row.add($b),
+                    *b_row.add($b),
+                    &mut da0,
+                    &mut da1,
+                    &mut da2,
+                    &mut da3,
+                    &mut db0,
+                    &mut db1,
+                    &mut db2,
+                    &mut db3,
+                )
+            };
+        }
+        apply!(1, 3);
+        apply!(2, 5);
+        apply!(3, 7);
+
+        // One swap for the whole odd group.
+        da0 = vextq_u8::<8>(da0, da0);
+        da1 = vextq_u8::<8>(da1, da1);
+        da2 = vextq_u8::<8>(da2, da2);
+        da3 = vextq_u8::<8>(da3, da3);
+        db0 = vextq_u8::<8>(db0, db0);
+        db1 = vextq_u8::<8>(db1, db1);
+        db2 = vextq_u8::<8>(db2, db2);
+        db3 = vextq_u8::<8>(db3, db3);
+
+        // The even positions, b = 0, 2, 4, 6, which need no swap.
+        apply!(0, 0);
+        apply!(1, 2);
+        apply!(2, 4);
+        apply!(3, 6);
 
         // F_8 multiply lane-wise (4 × 16 lanes = 64 total).
         let y0 = gf8_mul_vec16(da0, db0);
@@ -457,7 +403,12 @@ fn shift_reduce_inner_ab(
     {
         shift_reduce_inner_ab_fused_neon(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out);
     }
-    #[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni", target_feature = "avx512bw"))]
+    {
+        // SAFETY: gfni and avx512bw are statically enabled at compile time.
+        unsafe { shift_reduce_inner_ab_gfni_512(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out) };
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni", not(target_feature = "avx512bw")))]
     {
         // SAFETY: gfni is statically enabled at compile time.
         unsafe { shift_reduce_inner_ab_gfni(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out) };
@@ -465,6 +416,73 @@ fn shift_reduce_inner_ab(
     #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "gfni"))))]
     {
         shift_reduce_inner_ab_scalar(a_packed, b_packed, inv_table, chunk_byte_base, b_med, out);
+    }
+}
+
+/// The GFNI kernel one register wide: `ELL` is 64, so the whole column is one
+/// ZMM and the combine issues a quarter of the instructions the 128-bit arm
+/// does. Byte unpacking and `packus` both work within 128-bit lanes and are
+/// exact inverses there, so the widened accumulators may sit in a different
+/// order than the narrow arm's and still narrow back to the same bytes.
+///
+/// # Safety
+/// Requires the `gfni` and `avx512bw` target features.
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni", target_feature = "avx512bw"))]
+#[target_feature(enable = "gfni", enable = "avx512f", enable = "avx512bw")]
+unsafe fn shift_reduce_inner_ab_gfni_512(
+    a_packed: &[u8],
+    b_packed: &[u8],
+    inv_table: &InvNttTableByteSingleGf8,
+    chunk_byte_base: usize,
+    b_med: usize,
+    out: &mut [u8; 64],
+) {
+    use core::arch::x86_64::*;
+
+    let byte_base_b = chunk_byte_base + b_med * N_CHUNKS * 8;
+    // `inv_table.apply` overwrites every lane, so these need no re-zeroing per K.
+    let mut a_col = [F8::ZERO; ELL];
+    let mut b_col = [F8::ZERO; ELL];
+
+    // SAFETY: the target features are carried by the function; the loads and
+    // stores stay within a_col/b_col/out, each exactly `ELL` bytes.
+    unsafe {
+        let (mut acc_lo, mut acc_hi) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let zero = _mm512_setzero_si512();
+
+        for k in 0..8 {
+            let chunk_off = byte_base_b + k * N_CHUNKS;
+            inv_table.apply(&a_packed[chunk_off..chunk_off + N_CHUNKS], &mut a_col);
+            inv_table.apply(&b_packed[chunk_off..chunk_off + N_CHUNKS], &mut b_col);
+            let y = _mm512_gf2p8mul_epi8(
+                _mm512_loadu_si512(a_col.as_ptr().cast()),
+                _mm512_loadu_si512(b_col.as_ptr().cast()),
+            );
+            let shift = _mm_cvtsi32_si128(k as i32);
+            acc_lo = _mm512_xor_si512(acc_lo, _mm512_sll_epi16(_mm512_unpacklo_epi8(y, zero), shift));
+            acc_hi = _mm512_xor_si512(acc_hi, _mm512_sll_epi16(_mm512_unpackhi_epi8(y, zero), shift));
+        }
+
+        // Vectorized gf8_reduce over u16 lanes: two-step fold of the high byte
+        // h with h ^ (h<<1) ^ (h<<3) ^ (h<<4)  (x^8 = x^4+x^3+x+1).
+        let mask_ff = _mm512_set1_epi16(0xff);
+        let fold = |p: __m512i| -> __m512i {
+            let h = _mm512_srli_epi16::<8>(p);
+            _mm512_xor_si512(
+                _mm512_and_si512(p, mask_ff),
+                _mm512_xor_si512(
+                    _mm512_xor_si512(h, _mm512_slli_epi16::<1>(h)),
+                    _mm512_xor_si512(_mm512_slli_epi16::<3>(h), _mm512_slli_epi16::<4>(h)),
+                ),
+            )
+        };
+        // Two folds bring 15-bit accumulators down to 8 bits; the second fold's
+        // high byte is at most 0x0f, so lanes stay below 256 for `packus`.
+        let reduce = |p: __m512i| _mm512_and_si512(fold(fold(p)), mask_ff);
+        _mm512_storeu_si512(
+            out.as_mut_ptr().cast(),
+            _mm512_packus_epi16(reduce(acc_lo), reduce(acc_hi)),
+        );
     }
 }
 
@@ -481,7 +499,7 @@ fn shift_reduce_inner_ab(
 ///
 /// # Safety
 /// Requires the `gfni` target feature (plus SSE2, baseline on x86_64).
-#[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "gfni", enable = "sse2")]
 unsafe fn shift_reduce_inner_ab_gfni(
     a_packed: &[u8],
@@ -624,7 +642,7 @@ fn accumulate_x_outer<const FULL: bool>(
     b_packed: &[u8],
     c_packed: &[u8],
     inv_table: &InvNttTableByteSingleGf8,
-    convert: &[F192],
+    convert: &ConvertTable,
     state: &mut WorkerState,
 ) {
     let n_b_med = if FULL { 1 << N_MEDIUM } else { n_b_med };
@@ -645,14 +663,15 @@ fn accumulate_x_outer<const FULL: bool>(
         bit_transpose_64bytes(c_in, &mut state.chunk_c_bytes[b_med]);
     }
 
+    // Bounded so the trip count is the constant the protocol size gives it.
+    let n_b_med = n_b_med.min(N_MEDIUM_VALUES);
     for lane in 0..ELL {
         let mut cf_ab = F192::ZERO;
         let mut cf_c = F192::ZERO;
         for b_med in 0..n_b_med {
-            let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
-            let v_c = state.chunk_c_bytes[b_med][lane] as usize;
-            cf_ab += convert[b_med * 256 + v_ab];
-            cf_c += convert[b_med * 256 + v_c];
+            let row = &convert[b_med];
+            cf_ab += row[state.chunk_ab_bytes[b_med][lane] as usize];
+            cf_c += row[state.chunk_c_bytes[b_med][lane] as usize];
         }
         state.partial_ab[lane] += cf_ab * eq_lo_val;
         state.partial_c[lane] += cf_c * eq_lo_val;
@@ -673,7 +692,7 @@ fn process_one_x_hi(
     inv_table: &InvNttTableByteSingleGf8,
     eq_lo_scaled: &[F192],
     eq_hi_val: F192,
-    convert: &[F192],
+    convert: &ConvertTable,
     state: &mut WorkerState,
 ) {
     state.partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
@@ -872,8 +891,7 @@ mod tests {
             let mut out_scalar = [0u8; 64];
             shift_reduce_inner_ab_scalar(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_scalar);
             let mut out_gfni = [0u8; 64];
-            // SAFETY: cfg-gated on gfni.
-            unsafe { shift_reduce_inner_ab_gfni(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni) };
+            shift_reduce_inner_ab(&a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni);
             assert_eq!(out_scalar, out_gfni);
         }
     }
@@ -1139,7 +1157,7 @@ mod tests {
         for b in 0..16 {
             for &v in &[0u8, 1, 0x57, 0xFF] {
                 let expected = g_pow * PHI_8_TABLE[v as usize];
-                assert_eq!(t[b * 256 + v as usize], expected, "b={b}, v={v}");
+                assert_eq!(t[b][v as usize], expected, "b={b}, v={v}");
             }
             g_pow *= medium_generator();
         }

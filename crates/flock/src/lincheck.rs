@@ -581,8 +581,8 @@ fn partial_fold_packed_z_iblock_padded(
 
     // Partition the useful i_inner range across workers. Each chunk independently
     // rebuilds the per-tile sum tables, so chunk count drives redundant table
-    // work that does NOT scale with cores and dominates the residual at
-    // m=30 (≈3.3 ms/core at 3 chunks/worker). One chunk per worker minimizes that
+    // work that does NOT scale with cores and dominates the residual at the
+    // protocol's m. One chunk per worker minimizes that
     // redundancy; the pool's claim counter then rebalances a straggler (an
     // efficiency core, say) without needing extra chunks to steal from. Each
     // chunk is a BLOCK_K multiple.
@@ -622,15 +622,15 @@ fn partial_fold_packed_z_iblock_padded(
 ///
 /// iblock partitions the length-k **output** across workers, so every worker
 /// rebuilds **all** `n_stripes` tile tables: table work is done `p`× and does not
-/// shrink with cores (≈44 % of the MT wall at m=32). Here we partition the **tiles**
-/// (outer/stripe dim): each worker owns a contiguous tile band, builds each of its
-/// tile tables exactly **once**, folds them into a private length-k partial, and the
-/// `p` partials are XOR-reduced at the end. The partial is the full length-k
-/// (256 KB at k_log=14 ⇒ spills L1 to L2), but the register-tiled inner kernel keeps
-/// 8 F192 accumulators in NEON registers, so the L2 traffic is mild (measured ≈2 %
-/// ST cost at m=32, none at m=30), and far cheaper than iblock's redundant tables:
-/// the fold scales ~8.5× vs iblock's ~6.5× on 10 P-cores at m=32, and the margin
-/// grows with the outer dim (the redundant-table cost it removes is ∝ `n_stripes`).
+/// shrink with cores, taking a large share of the multi-threaded wall. Here we
+/// partition the **tiles** (outer/stripe dim): each worker owns a contiguous tile
+/// band, builds each of its tile tables exactly **once**, folds them into a
+/// private length-k partial, and the `p` partials are XOR-reduced at the end. The
+/// partial is the full length-k (256 KB at k_log=14 ⇒ spills L1 to L2), but the
+/// register-tiled inner kernel keeps 8 F192 accumulators in NEON registers, so the
+/// L2 traffic is mild and far cheaper than iblock's redundant tables: the fold
+/// scales better with cores, and the margin grows with the outer dim (the
+/// redundant-table cost it removes is ∝ `n_stripes`).
 ///
 /// # Safety / preconditions: identical to the iblock kernel.
 #[cfg(any(

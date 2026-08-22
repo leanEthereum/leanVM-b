@@ -12,7 +12,7 @@ use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
-use primitives::multilinear::{eq_eval, mle_eval, mle_eval_prod};
+use primitives::multilinear::{eq_eval, eq_table_arena, mle_eval};
 use std::sync::Arc;
 use zk_alloc::ArenaVec;
 
@@ -302,15 +302,46 @@ impl BusForm {
         }
     }
 
-    /// The form at one point: `evals` are the columns' values there. This is what the
-    /// zerocheck evaluates, per row while a table is unfolded and at the sumcheck
-    /// point after.
+    /// The pointwise sum of several forms over the same columns.
+    ///
+    /// Evaluating the sum is evaluating each and adding, and the constraint batch
+    /// only ever wants a table's total, so its three bus sides collapse to one
+    /// dot product and one product list: the row loop then reads the column
+    /// values once for all three rather than once each.
+    pub fn sum(forms: impl IntoIterator<Item = Self>) -> Self {
+        let mut forms = forms.into_iter();
+        let mut out = forms.next().expect("a table has at least one bus form");
+        for form in forms {
+            assert_eq!(out.coeffs.len(), form.coeffs.len(), "forms over the same columns");
+            for (slot, c) in out.coeffs.iter_mut().zip(form.coeffs) {
+                *slot += c;
+            }
+            out.constant += form.constant;
+            for (a, b, c) in form.prods {
+                match out.prods.iter_mut().find(|p| (p.0, p.1) == (a, b)) {
+                    Some(p) => p.2 += c,
+                    None => out.prods.push((a, b, c)),
+                }
+            }
+        }
+        out.prods.retain(|p| p.2 != F192::ZERO);
+        out
+    }
+
+    /// The form at one point, unreduced: `evals` are the columns' values there.
+    /// This is what the zerocheck evaluates, per row while a table is unfolded and
+    /// at the sumcheck point after, so a table's several forms share one reduction
+    /// rather than paying one per term.
+    pub fn eval_unreduced<T: ColVal>(&self, evals: &[T]) -> T::Unreduced {
+        self.prods.iter().fold(
+            T::dot_unreduced(&self.coeffs, evals) ^ T::lift(self.constant),
+            |acc, &(a, b, c)| acc ^ (evals[a] * evals[b]).mul_e_unreduced(c),
+        )
+    }
+
+    /// [`eval_unreduced`](Self::eval_unreduced) on its own.
     pub fn eval<T: ColVal>(&self, evals: &[T]) -> F192 {
-        self.prods
-            .iter()
-            .fold(T::dot(&self.coeffs, evals, self.constant), |acc, &(a, b, c)| {
-                acc + (evals[a] * evals[b]).mul_e(c)
-            })
+        T::reduce(self.eval_unreduced(evals))
     }
 
     /// What the form sums to over the table's rows against `eq(ζ, ·)`, the target the
@@ -689,7 +720,6 @@ pub fn prove_balance(
     // framework decomposition ([`verify_balance`]) and the batch settles it. A
     // transmitted total would appear in exactly one check, which it could always be
     // solved to satisfy, and would settle nothing.
-    let table_evals = tables_at(cols, tables, &bus_gkr.point);
     let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
     let mut frameworks = [F192::ZERO; 3];
     crate::stage!("Bus decompose", || {
@@ -708,7 +738,7 @@ pub fn prove_balance(
             );
         }
     });
-    let prod_sums = prod_sums_at(cols, tables, &forms, &bus_gkr.point);
+    let (table_evals, prod_sums) = tables_and_prods_at(cols, tables, &forms, &bus_gkr.point);
     let sigmas: [Vec<F192>; 3] = std::array::from_fn(|s| {
         let sigmas: Vec<F192> = forms[s]
             .iter()
@@ -736,33 +766,32 @@ pub fn prove_balance(
     }
 }
 
-/// Every table's committed columns at `ζ[..τ_t]`: one `eq` table per table, then an
-/// inner product per column. `tables[t] = (base, n_cols)` in the global schema.
-fn tables_at(cols: &[&[F64]], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<Vec<F192>> {
-    tables
-        .iter()
-        .map(|&(base, n_cols)| {
-            let tau = crate::log2_strict_usize(cols[base].len());
-            parallel::map_collect(n_cols, |c| mle_eval(cols[base + c], &zeta[..tau]))
-        })
-        .collect()
-}
-
-/// Per table, `Σ_z eq(ζ[..τ], z)·col_a(z)·col_b(z)` for every column pair its forms
-/// multiply. Deduped across the three sides and the several blocks that carry the
-/// same address, so an address costs one pass over the table however often it is
-/// flushed; there are a handful of pairs against a table's dozen-odd columns, all of
-/// which [`tables_at`] folds anyway.
-fn prod_sums_at(
+/// Every table's committed columns at `ζ[..τ_t]`, and, for every column pair its
+/// forms multiply, `Σ_z eq(ζ[..τ], z)·col_a(z)·col_b(z)`.
+///
+/// One eq table per table, streamed once past every column and every pair at
+/// the same time. Evaluated apart these are `n_cols + n_pairs` fold ladders
+/// over the same table at the same point, and a ladder lifts every `K` word it
+/// reads into an `E` it writes and reads again, where a dot against the weights
+/// moves the column's own eight bytes. Pairs are deduped across the three sides
+/// and the several blocks that carry the same address, so an address costs one
+/// pass however often it is flushed. `tables[t] = (base, n_cols)` in the global
+/// schema; a pair names LOCAL column indices.
+#[allow(clippy::type_complexity)]
+fn tables_and_prods_at(
     cols: &[&[F64]],
     tables: &[(usize, usize)],
     forms: &[Vec<BusForm>; 3],
     zeta: &[F192],
-) -> Vec<Vec<(usize, usize, F192)>> {
+) -> (Vec<Vec<F192>>, Vec<Vec<(usize, usize, F192)>>) {
+    /// Rows per task: the eq slice a task reads stays in L2 while every column
+    /// and pair accumulator sweeps past it.
+    const ROWS: usize = 1 << 12;
+
     tables
         .iter()
         .enumerate()
-        .map(|(t, &(base, _))| {
+        .map(|(t, &(base, n_cols))| {
             let tau = crate::log2_strict_usize(cols[base].len());
             let mut pairs: Vec<(usize, usize)> = forms
                 .iter()
@@ -770,12 +799,43 @@ fn prod_sums_at(
                 .collect();
             pairs.sort_unstable();
             pairs.dedup();
-            parallel::map_collect(pairs.len(), |i| {
-                let (a, b) = pairs[i];
-                (a, b, mle_eval_prod(cols[base + a], cols[base + b], &zeta[..tau]))
-            })
+
+            let eq = eq_table_arena(&zeta[..tau]);
+            let n_acc = n_cols + pairs.len();
+            let sums = parallel::fold_reduce(
+                (1usize << tau).div_ceil(ROWS),
+                || vec![F192BaseUnreduced::ZERO; n_acc],
+                |acc, chunk| {
+                    let lo = chunk * ROWS;
+                    let weights = &eq[lo..(lo + ROWS).min(1 << tau)];
+                    let span = |c: usize| &cols[base + c][lo..lo + weights.len()];
+                    for (c, slot) in acc[..n_cols].iter_mut().enumerate() {
+                        for (&w, &v) in weights.iter().zip(span(c)) {
+                            *slot ^= w.mul_base_unreduced(v);
+                        }
+                    }
+                    for (&(a, b), slot) in pairs.iter().zip(&mut acc[n_cols..]) {
+                        for ((&w, &x), &y) in weights.iter().zip(span(a)).zip(span(b)) {
+                            *slot ^= w.mul_base_unreduced(x * y);
+                        }
+                    }
+                },
+                |mut left, right| {
+                    for (slot, part) in left.iter_mut().zip(right) {
+                        *slot ^= part;
+                    }
+                    left
+                },
+            );
+            let evals = sums[..n_cols].iter().map(|s| s.reduce()).collect();
+            let prods = pairs
+                .iter()
+                .zip(&sums[n_cols..])
+                .map(|(&(a, b), s)| (a, b, s.reduce()))
+                .collect();
+            (evals, prods)
         })
-        .collect()
+        .unzip()
 }
 
 /// What [`verify_balance`] establishes: the per-column claims to open, the

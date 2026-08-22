@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::colval::ColVal;
 use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
@@ -332,21 +333,24 @@ fn airs(
         .zip(taus)
         .enumerate()
         .map(|(t, (&table, &tau))| {
-            let bus: Vec<leaf::BusForm> = (0..3).map(|s| forms[s][t].scaled(form_pows[s])).collect();
+            // One form, not three: the batch adds the three sides' evaluations
+            // anyway, and summing them here is a setup cost against a dot product
+            // and a product list per row per node.
+            let bus = leaf::BusForm::sum((0..3).map(|s| forms[s][t].scaled(form_pows[s])));
             let bus_k = bus.clone();
             constraints::Air {
                 tau,
                 n_cols: table.n_committed_columns(),
                 n_constraints: table.n_constraints(),
                 eval: Box::new(move |p, vals| {
-                    let air = table.eval_constraint(p, vals);
-                    bus.iter().fold(air, |acc, form| acc + form.eval(vals))
+                    let air = <F192 as ColVal>::lift(table.eval_constraint(p, vals));
+                    <F192 as ColVal>::reduce(air ^ bus.eval_unreduced(vals))
                 }),
                 // The same expression over K columns: the identity's K-only products
-                // stay 64-bit and each bus form becomes a mixed dot product.
+                // stay 64-bit and the bus form becomes a mixed dot product.
                 eval_k: Box::new(move |p, vals| {
-                    let air = table.eval_constraint_k(p, vals);
-                    bus_k.iter().fold(air, |acc, form| acc + form.eval(vals))
+                    let air = <F64 as ColVal>::lift(table.eval_constraint_k(p, vals));
+                    <F64 as ColVal>::reduce(air ^ bus_k.eval_unreduced(vals))
                 }),
             }
         })

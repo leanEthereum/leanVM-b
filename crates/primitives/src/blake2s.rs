@@ -253,7 +253,7 @@ pub fn keyed_hash(key: &[u8], data: &[u8]) -> [u8; OUT_LEN] {
 //   register file, and the round spills.
 //
 // Whether that is enough depends on how the backend's vectors relate to the
-// chain through one G function, which is what [`Lanes32::PAIR`] exists for: a
+// chain through one G function, which is what [`Lanes32::GROUPS`] exists for: a
 // narrow backend runs out of independent work before it runs out of issue
 // width, and then a second group has to be interleaved by hand.
 // ---------------------------------------------------------------------------
@@ -280,9 +280,9 @@ trait Lanes32: Copy {
     /// third of the width idle; a 16-lane vector carries enough work per
     /// instruction that AVX-512 does not.
     ///
-    /// Pairing requires `32 * WIDTH <= 16 * 16`, since the two groups split the
-    /// one transposed block buffer.
-    const PAIR: bool = false;
+    /// Interleaving requires `16 * GROUPS * WIDTH <= 2 * 16 * 16`, since the
+    /// groups split the one transposed block buffer.
+    const GROUPS: usize = 1;
 
     /// Load `WIDTH` contiguous `u32`.
     ///
@@ -657,14 +657,20 @@ mod arm {
 
     /// NEON: four lanes, which is narrow enough that the G function's
     /// dependency chain, and not the four SIMD pipes, is what bounds this
-    /// backend. Hence [`Lanes32::PAIR`], and hence picking each rotation for
+    /// backend. Hence [`Lanes32::GROUPS`], and hence picking each rotation for
     /// latency in [`rot4`] rather than for instruction count.
     #[derive(Clone, Copy)]
     pub(super) struct Neon(uint32x4_t);
 
     impl Lanes32 for Neon {
         const WIDTH: usize = 4;
-        const PAIR: bool = true;
+        // Two groups reach about 4.6 of the 4 pipes by the count below and still
+        // measure a sixth short of the plateau, because that count ignores the
+        // store-to-load round trip at each round boundary, which the reordering
+        // window is wide enough to cover several of. Four is the plateau here;
+        // six and eight fall back slightly. The rounds being `inline(never)`
+        // means the extra groups cost stack and window, never registers.
+        const GROUPS: usize = 4;
 
         #[inline(always)]
         unsafe fn load(p: *const u32) -> Self {
@@ -909,7 +915,7 @@ unsafe fn compress_lanes<S: Lanes32>(h: &mut [S; 8], m: *const u32, t: u64, last
 /// obvious form, a backend twice as wide (two vectors per state word), needs 32
 /// state vectors live across a round, which is the whole NEON register file, so
 /// the allocator spills and the reloads land on the very chain the interleaving
-/// was meant to hide: measured, that form buys 9% where this one buys 24%.
+/// was meant to hide, so it buys back only a fraction of what this one does.
 ///
 /// So the rounds are `#[inline(never)]` instead. Each call loads its 16 state
 /// vectors, does its 128 instructions and stores 16 back, which keeps one
@@ -922,14 +928,7 @@ unsafe fn compress_lanes<S: Lanes32>(h: &mut [S; 8], m: *const u32, t: u64, last
 /// # Safety
 /// `ma` and `mb` must each be valid for reads of `16 * S::WIDTH` `u32`.
 #[inline(always)]
-unsafe fn compress_pair<S: Lanes32>(
-    ha: &mut [S; 8],
-    hb: &mut [S; 8],
-    ma: *const u32,
-    mb: *const u32,
-    t: u64,
-    last: bool,
-) {
+unsafe fn compress_groups<S: Lanes32, const G: usize>(h: &mut [[S; 8]; G], m: [*const u32; G], t: u64, last: bool) {
     let init = |h: &[S; 8]| {
         [
             h[0],
@@ -950,76 +949,63 @@ unsafe fn compress_pair<S: Lanes32>(
             S::splat(IV[7]),
         ]
     };
-    let (mut va, mut vb) = (init(ha), init(hb));
-    // SAFETY: the caller guarantees both blocks.
+    let mut v: [[S; 16]; G] = std::array::from_fn(|g| init(&h[g]));
+    // SAFETY: the caller guarantees every block.
     unsafe {
-        round_0(&mut va, ma);
-        round_0(&mut vb, mb);
-        round_1(&mut va, ma);
-        round_1(&mut vb, mb);
-        round_2(&mut va, ma);
-        round_2(&mut vb, mb);
-        round_3(&mut va, ma);
-        round_3(&mut vb, mb);
-        round_4(&mut va, ma);
-        round_4(&mut vb, mb);
-        round_5(&mut va, ma);
-        round_5(&mut vb, mb);
-        round_6(&mut va, ma);
-        round_6(&mut vb, mb);
-        round_7(&mut va, ma);
-        round_7(&mut vb, mb);
-        round_8(&mut va, ma);
-        round_8(&mut vb, mb);
-        round_9(&mut va, ma);
-        round_9(&mut vb, mb);
+        macro_rules! round_all {
+            ($($name:ident),*) => { $( for g in 0..G { $name(&mut v[g], m[g]); } )* };
+        }
+        round_all!(
+            round_0, round_1, round_2, round_3, round_4, round_5, round_6, round_7, round_8, round_9
+        );
     }
-    for i in 0..8 {
-        ha[i] = ha[i].xor(va[i]).xor(va[i + 8]);
-        hb[i] = hb[i].xor(vb[i]).xor(vb[i + 8]);
+    for g in 0..G {
+        for i in 0..8 {
+            h[g][i] = h[g][i].xor(v[g][i]).xor(v[g][i + 8]);
+        }
     }
 }
 
-/// [`hash_group`] over two groups at once, interleaved round by round.
+/// [`hash_group`] over `G` groups at once, interleaved round by round.
 ///
 /// # Safety
-/// As [`hash_group`], for both groups; `buf` must hold `32 * S::WIDTH` words,
-/// the two groups' transposed blocks.
+/// As [`hash_group`], for every group; `buf` must hold `16 * G * S::WIDTH`
+/// words, the groups' transposed blocks.
 #[inline(always)]
-unsafe fn hash_group_pair<S: Lanes32>(
-    a: &[*const u8],
-    b: &[*const u8],
+unsafe fn hash_groups<S: Lanes32, const G: usize>(
+    inputs: &[[*const u8; 16]; G],
     len: usize,
     state: &[u32; 8],
     t_offset: u64,
     buf: &mut [u32],
-    out_a: *mut u8,
-    out_b: *mut u8,
+    out: *mut u8,
 ) {
-    let mut ha: [S; 8] = std::array::from_fn(|i| S::splat(state[i]));
-    let mut hb: [S; 8] = std::array::from_fn(|i| S::splat(state[i]));
+    let mut h: [[S; 8]; G] = [std::array::from_fn(|i| S::splat(state[i])); G];
     let n_blocks = len / BLOCK_LEN;
+    let words = 16 * S::WIDTH;
     for blk in 0..n_blocks {
         // SAFETY: `blk < n_blocks` keeps the 64-byte window inside every input,
-        // and the two halves of `buf` are disjoint.
+        // and the `G` windows of `buf` are disjoint.
         unsafe {
-            let (ba, bb) = buf.split_at_mut(16 * S::WIDTH);
-            S::transpose(a, blk * BLOCK_LEN, ba);
-            S::transpose(b, blk * BLOCK_LEN, bb);
-            compress_pair::<S>(
-                &mut ha,
-                &mut hb,
-                ba.as_ptr(),
-                bb.as_ptr(),
+            let mut m = [std::ptr::null::<u32>(); G];
+            for g in 0..G {
+                let b = &mut buf[g * words..(g + 1) * words];
+                S::transpose(&inputs[g][..S::WIDTH], blk * BLOCK_LEN, b);
+                m[g] = b.as_ptr();
+            }
+            compress_groups::<S, G>(
+                &mut h,
+                m,
                 t_offset + ((blk + 1) * BLOCK_LEN) as u64,
                 blk + 1 == n_blocks,
             );
         }
     }
-    // SAFETY: the caller guarantees `WIDTH * OUT_LEN` writable bytes at each.
+    // SAFETY: the caller guarantees `G * WIDTH * OUT_LEN` writable bytes.
     unsafe {
-        S::store_digests(&ha, out_a);
-        S::store_digests(&hb, out_b);
+        for g in 0..G {
+            S::store_digests(&h[g], out.add(g * S::WIDTH * OUT_LEN));
+        }
     }
 }
 
@@ -1064,6 +1050,9 @@ unsafe fn hash_group<S: Lanes32>(
 /// # Safety
 /// `data` must hold `n * len` bytes and `out` `n * OUT_LEN`, with `len` a
 /// nonzero multiple of 64.
+/// The widest interleave any backend asks for.
+const MAX_GROUPS: usize = 4;
+
 #[inline(always)]
 unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], t_offset: u64, out: &mut [u8]) {
     let n = out.len() / OUT_LEN;
@@ -1075,30 +1064,25 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], 
     // loads, without paying to clear it per group.
     let mut buf = [0u32; 2 * 16 * 16];
     let mut g = 0;
-    if S::PAIR {
-        let mut ptrs_b = [std::ptr::null::<u8>(); 16];
-        while g + 2 <= groups {
+    if S::GROUPS > 1 {
+        let mut wide = [[std::ptr::null::<u8>(); 16]; MAX_GROUPS];
+        while g + S::GROUPS <= groups {
             let base = g * S::WIDTH;
-            for (l, slot) in ptrs[..S::WIDTH].iter_mut().enumerate() {
-                *slot = data[(base + l) * len..].as_ptr();
+            for (gi, row) in wide[..S::GROUPS].iter_mut().enumerate() {
+                for (l, slot) in row[..S::WIDTH].iter_mut().enumerate() {
+                    *slot = data[(base + gi * S::WIDTH + l) * len..].as_ptr();
+                }
             }
-            for (l, slot) in ptrs_b[..S::WIDTH].iter_mut().enumerate() {
-                *slot = data[(base + S::WIDTH + l) * len..].as_ptr();
-            }
-            // SAFETY: as the single-group call below, for both groups.
+            // SAFETY: as the single-group call below, for every group.
             unsafe {
-                hash_group_pair::<S>(
-                    &ptrs[..S::WIDTH],
-                    &ptrs_b[..S::WIDTH],
-                    len,
-                    state,
-                    t_offset,
-                    &mut buf,
-                    out.as_mut_ptr().add(base * OUT_LEN),
-                    out.as_mut_ptr().add((base + S::WIDTH) * OUT_LEN),
-                );
+                let out_g = out.as_mut_ptr().add(base * OUT_LEN);
+                match S::GROUPS {
+                    4 => hash_groups::<S, 4>(wide[..4].try_into().unwrap(), len, state, t_offset, &mut buf, out_g),
+                    2 => hash_groups::<S, 2>(wide[..2].try_into().unwrap(), len, state, t_offset, &mut buf, out_g),
+                    _ => unreachable!("GROUPS is 1, 2 or 4"),
+                }
             }
-            g += 2;
+            g += S::GROUPS;
         }
     }
     for g in g..groups {
@@ -1130,11 +1114,11 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], 
 /// their groups; the batched entry points handle any count and scalar-tail the
 /// remainder.
 ///
-/// Measured single-threaded on AVX-512, 4.1 to 5.6 GB/s across the leaf sizes
-/// `pcs::merkle` dispatches (`batched_throughput`).
+/// `batched_throughput` reports the rate across the leaf sizes `pcs::merkle`
+/// dispatches.
 ///
 /// Getting there took three fixes, each worth recording because the first
-/// attempt at this measured 1.7 to 1.9 GB/s on the same shapes:
+/// attempt at this ran several times slower on the same shapes:
 ///
 /// - The `SIGMA` index must be a compile-time literal (the unrolled `rounds!`).
 ///   As a runtime index the compiler holds the message in registers and turns
@@ -1151,14 +1135,13 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], 
 /// Four lanes is narrow enough that the round's 4-way parallelism cannot cover
 /// the chain through a G function: a block is 1360 vector instructions, which an
 /// M4 P-core could retire in 340 cycles at 4 per cycle, against 660 cycles of
-/// chain through the ten rounds. So it ran at half the width, 1.39 to 1.54 GB/s.
-/// Choosing each rotation for latency rather than instruction count
-/// (`arm::rot4`, 33 cycles of chain per G down to 28) and interleaving two
-/// independent groups (`compress_pair`) bring it to 1.9 to 2.2 GB/s, 1.36x,
-/// within about 10% of what the instruction count alone allows. Two things that
-/// mattered on AVX-512 do not matter here: the transpose network is worth 1 to
-/// 4% once the chain is covered rather than the factor it was worth there, and
-/// LLVM already places the message correctly for 4 lanes.
+/// chain through the ten rounds. So it ran at half the width. Choosing each
+/// rotation for latency rather than instruction count (`arm::rot4`, 33 cycles of
+/// chain per G down to 28) and interleaving two independent groups
+/// (`compress_pair`) bring it close to what the instruction count alone allows.
+/// Two things that mattered on AVX-512 do not matter here: the transpose network
+/// is worth little once the chain is covered, rather than the factor it was
+/// worth there, and LLVM already places the message correctly for 4 lanes.
 pub const LANES: usize = if cfg!(all(target_arch = "x86_64", target_feature = "avx512f")) {
     16
 } else if cfg!(target_arch = "x86_64") {

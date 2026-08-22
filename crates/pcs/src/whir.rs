@@ -40,6 +40,7 @@ use primitives::{
     field::{F64, F192, F192BaseUnreduced, F192Unreduced},
     multilinear::eq_eval,
     pretty_integer,
+    stream::Stream,
 };
 use zk_alloc::ArenaVec;
 
@@ -306,22 +307,28 @@ fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem
     debug_assert!(codeword.len().is_multiple_of(msg_len));
     let replicas = codeword.len() / msg_len;
     const COPY_CHUNK: usize = 1 << 16;
-    // Walk the MESSAGE, writing every replica of a chunk before moving on, so the
-    // message is read once and stays in cache across its copies. Walking the
-    // codeword instead re-reads the whole message per replica, and at scale that
-    // is a gigabyte fetched from DRAM again for each one.
+    // One task per (message chunk, replica). Ordering replica-innermost walks the
+    // MESSAGE rather than the codeword, so a worker's run of tasks copies one
+    // chunk into every replica while it is still in cache; walking the codeword
+    // instead re-reads the whole message per replica, and at scale that is a
+    // gigabyte fetched from DRAM again for each one. Chunking the message alone
+    // is not enough to fill the pool: down the recursion the message shrinks by
+    // 2^3 a level while the codeword shrinks by 2^1, so the deep levels would
+    // leave hundreds of megabytes to one thread.
     let n_chunks = msg_len.div_ceil(COPY_CHUNK);
     let dst = parallel::SendPtr(codeword.as_mut_ptr());
-    parallel::for_each(n_chunks, |c| {
+    parallel::for_each(n_chunks * replicas, |t| {
+        let (c, r) = (t / replicas, t % replicas);
         let start = c * COPY_CHUNK;
         let len = COPY_CHUNK.min(msg_len - start);
-        for r in 0..replicas {
-            // SAFETY: chunk `c` owns `[r * msg_len + start, + len)` of the
-            // codeword for every `r`; those ranges are in bounds, disjoint across
-            // `c`, and disjoint from `msg`.
-            unsafe {
-                std::ptr::copy_nonoverlapping(msg.as_ptr().add(start), dst.add(r * msg_len + start).cast(), len);
-            }
+        // Nothing reads a replica until the transform's first pass, by which
+        // time a codeword this size is long evicted.
+        let stream = Stream::new();
+        // SAFETY: task `(c, r)` owns `[r * msg_len + start, + len)` of the
+        // codeword; those ranges are in bounds, pairwise disjoint, and disjoint
+        // from `msg`.
+        unsafe {
+            stream.copy_uninit(dst.add(r * msg_len + start).cast(), &msg[start..start + len]);
         }
     });
 }
@@ -919,54 +926,70 @@ fn fold_and_msg_blocks<T: RoundWitness>(
     let nb_base = parallel::SendPtr(nb.as_mut_ptr());
 
     let per = block.div_ceil(ROUND_CHUNK);
-    let fold_block = |out_blk: usize, x0: usize, len: usize| -> (&mut [F192], &mut [F192]) {
-        // SAFETY: distinct (out_blk, x0) name disjoint in-bounds windows of `nf`
-        // and `nb`, which stay borrowed for the whole dispatch.
-        let (dst_f, dst_b) = unsafe {
-            (
-                nf_base.slice(out_blk * block + x0, len),
-                nb_base.slice(out_blk * block + x0, len),
-            )
-        };
+    // Fold into an L1-resident stage rather than straight into `nf`/`nb`. The
+    // message reads the folded values back, and reading them here instead of out
+    // of the destination is what lets the destination be published with
+    // streaming stores: nothing else touches it until the next round, by which
+    // time a buffer this size is long evicted, so the fetch an ordinary store
+    // would make of every line it overwrites is pure waste.
+    const STAGE: usize = 128;
+    let fold_block = |stage: &mut [F192], stage_b: &mut [F192], out_blk: usize, x0: usize, stream: &Stream| {
+        let len = stage.len();
         let src0 = 2 * out_blk * block + x0;
-        // Sliced, not indexed: four runs of one length let the bounds checks fall out
+        // Sliced, not indexed: runs of one length let the bounds checks fall out
         // and the pair fold vectorise, as the adjacent-pair kernel's do.
         let (f_lo, b_lo) = (&f[src0..src0 + len], &b[src0..src0 + len]);
         if 2 * out_blk + 1 < n_in {
             let src1 = src0 + block;
             let (f_hi, b_hi) = (&f[src1..src1 + len], &b[src1..src1 + len]);
-            for ((d, &x0), &x1) in dst_f.iter_mut().zip(f_lo).zip(f_hi) {
+            for ((d, &x0), &x1) in stage.iter_mut().zip(f_lo).zip(f_hi) {
                 *d = T::fold_pair(x0, x1, r);
             }
-            for ((d, &y0), &y1) in dst_b.iter_mut().zip(b_lo).zip(b_hi) {
+            for ((d, &y0), &y1) in stage_b.iter_mut().zip(b_lo).zip(b_hi) {
                 *d = F192::fold_pair(y0, y1, r);
             }
         } else {
-            for (d, &x0) in dst_f.iter_mut().zip(f_lo) {
+            for (d, &x0) in stage.iter_mut().zip(f_lo) {
                 *d = T::fold_lone(x0, r);
             }
-            for (d, &y0) in dst_b.iter_mut().zip(b_lo) {
+            for (d, &y0) in stage_b.iter_mut().zip(b_lo) {
                 *d = F192::fold_lone(y0, r);
             }
         }
-        (dst_f, dst_b)
+        // SAFETY: distinct (out_blk, x0) name disjoint in-bounds windows of `nf`
+        // and `nb`, which stay borrowed for the whole dispatch.
+        unsafe {
+            stream.copy(nf_base.slice(out_blk * block + x0, len), stage);
+            stream.copy(nb_base.slice(out_blk * block + x0, len), stage_b);
+        }
     };
 
     let task = |t: usize| -> (F192Unreduced, F192Unreduced) {
         let (i, c) = (t / per, t % per);
         let x0 = c * ROUND_CHUNK;
         let len = ROUND_CHUNK.min(block - x0);
-        let (f_lo, b_lo) = fold_block(2 * i, x0, len);
-        if 2 * i + 1 < n_out {
-            let (f_hi, b_hi) = fold_block(2 * i + 1, x0, len);
-            msg_terms_pair(f_lo, f_hi, b_lo, b_hi)
-        } else if last {
-            // `ROUND_CHUNK` and `block` are powers of two, so every chunk has even
-            // length and starts even: no message pair straddles a task.
-            fold_msg_terms(f_lo, b_lo)
-        } else {
-            msg_terms_lone(f_lo, b_lo)
+        let stream = Stream::new();
+        let mut stage = [[F192::ZERO; STAGE]; 4];
+        let mut acc = (F192Unreduced::ZERO, F192Unreduced::ZERO);
+        for s in (0..len).step_by(STAGE) {
+            let n = STAGE.min(len - s);
+            let [lo_f, lo_b, hi_f, hi_b] = &mut stage;
+            fold_block(&mut lo_f[..n], &mut lo_b[..n], 2 * i, x0 + s, &stream);
+            let (u_0, u_2) = if 2 * i + 1 < n_out {
+                fold_block(&mut hi_f[..n], &mut hi_b[..n], 2 * i + 1, x0 + s, &stream);
+                msg_terms_pair(&lo_f[..n], &hi_f[..n], &lo_b[..n], &hi_b[..n])
+            } else if last {
+                // `ROUND_CHUNK`, `STAGE` and `block` are powers of two, so every
+                // slice has even length and starts even: no message pair
+                // straddles one.
+                fold_msg_terms(&lo_f[..n], &lo_b[..n])
+            } else {
+                msg_terms_lone(&lo_f[..n], &lo_b[..n])
+            };
+            acc.0 ^= u_0;
+            acc.1 ^= u_2;
         }
+        acc
     };
     let (u_0, u_2) = accumulate_msg(n_out.div_ceil(2) * per, f.len() / 2, F192Unreduced::ZERO, task);
     (
@@ -2398,43 +2421,6 @@ mod tests {
     use crate::whir::QUERY_GRINDING_BITS;
     use crate::whir_config::test_configs_for;
     use primitives::test_rng::Rng;
-
-    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-    #[test]
-    fn fused_ext_butterfly_avx512_matches_scalar() {
-        let mut rng = Rng::new(0x56c8_1b92_d4a7_30ef);
-        for _ in 0..100 {
-            let mut a: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let mut b: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let mut c: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let mut d: [F192; 8] = std::array::from_fn(|_| rng.ext());
-            let (mut want_a, mut want_b, mut want_c, mut want_d) = (a, b, c, d);
-            let t_outer = F64(rng.next_u64());
-            let t_inner_a = F64(rng.next_u64());
-            let t_inner_b = F64(rng.next_u64());
-
-            for lane in 0..8 {
-                let new_a = want_a[lane] + want_c[lane].mul_base(t_outer);
-                want_c[lane] += new_a;
-                want_a[lane] = new_a;
-                let new_b = want_b[lane] + want_d[lane].mul_base(t_outer);
-                want_d[lane] += new_b;
-                want_b[lane] = new_b;
-                let new_a = want_a[lane] + want_b[lane].mul_base(t_inner_a);
-                want_b[lane] += new_a;
-                want_a[lane] = new_a;
-                let new_c = want_c[lane] + want_d[lane].mul_base(t_inner_b);
-                want_d[lane] += new_c;
-                want_c[lane] = new_c;
-            }
-
-            butterfly_ext_fused_lanes(&mut a, &mut b, &mut c, &mut d, t_outer, t_inner_a, t_inner_b);
-            assert_eq!(a, want_a);
-            assert_eq!(b, want_b);
-            assert_eq!(c, want_c);
-            assert_eq!(d, want_d);
-        }
-    }
 
     struct Instance {
         vc: VerifierConfig,

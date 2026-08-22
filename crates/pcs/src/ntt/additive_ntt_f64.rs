@@ -84,7 +84,7 @@ impl AdditiveNttF64 {
     /// `span_get` is F_2-linear in the block index, so the six deeper twiddles are
     /// the block's own contribution plus a fixed correction per sub-block index:
     /// one scan of the three basis rows replaces seven.
-    fn twiddles_radix8(&self, layer: usize, block: usize) -> [F64; 7] {
+    pub(crate) fn twiddles_radix8(&self, layer: usize, block: usize) -> [F64; 7] {
         let l = self.log_domain_size();
         let (v0, v1, v2) = (
             &self.evals[l - layer - 1],
@@ -101,6 +101,34 @@ impl AdditiveNttF64 {
         }
         let (d, e0, e1) = (v1[1], v2[1], v2[2]);
         [t0, a, a + d, c, c + e0, c + e1, c + e0 + e1]
+    }
+
+    /// The `2^j - 1` twiddles a radix-`2^j` group needs, breadth-first: sub-layer
+    /// `d` contributes its `2^d` at `out[2^d - 1 ..]`. Generalizes
+    /// [`twiddles_radix8`](Self::twiddles_radix8) to any width.
+    ///
+    /// `span_get` is F_2-linear in the block index, so a sub-layer's twiddles are
+    /// the block's own contribution plus a subset sum of the `d` basis elements
+    /// the sub-index selects: one scan of each basis row, then XOR-doubling.
+    fn twiddles_radix(&self, layer: usize, block: usize, j: usize, out: &mut [F64]) {
+        let l = self.log_domain_size();
+        for d in 0..j {
+            let v = &self.evals[l - layer - d - 1];
+            let mut base = F64::ZERO;
+            for k in 0..layer {
+                if (block >> k) & 1 == 1 {
+                    base += v[1 + d + k];
+                }
+            }
+            let dst = &mut out[(1 << d) - 1..][..1 << d];
+            dst[0] = base;
+            for k in 0..d {
+                let (done, rest) = dst.split_at_mut(1 << k);
+                for (slot, &seen) in rest.iter_mut().zip(done.iter()) {
+                    *slot = seen + v[1 + k];
+                }
+            }
+        }
     }
 
     /// Forward additive NTT in place (scalar; used directly for tests and as
@@ -283,10 +311,9 @@ impl AdditiveNttF64 {
             return;
         }
 
-        // Top layers: full-buffer sweeps, rows parallel. Fusing three layers turns
-        // three DRAM round-trips of the whole codeword into one, and the pass count
-        // is what sets the cost up here.
-        self.run_layers(data, log_d, num_ntts, start_layer.min(n_top), n_top, 0, 0, true);
+        // Top layers: whole-buffer sweeps, and the pass count is what sets the cost
+        // up here, so they go as wide as one scratch group allows.
+        self.run_top_layers(data, log_d, num_ntts, start_layer.min(n_top), n_top);
 
         // Deep layers: one sub-NTT per worker, each over a cache-resident
         // sub-block. Layers fuse here for the same reason they do above, only the
@@ -315,6 +342,67 @@ impl AdditiveNttF64 {
     /// widest fused kernel its block size allows, so three layers, or two, cost one
     /// pass. `par_rows` dispatches the row loop across the pool, so a caller that is
     /// already running inside a pool task must pass `false`.
+    /// The whole-buffer layers, in as few passes over the codeword as one scratch
+    /// group allows.
+    ///
+    /// A group of `j` layers touches `2^j` rows spaced `block_size >> j` apart,
+    /// and up here that spacing is megabytes. At 37 lanes a stride of 512 rows or
+    /// more is an exact multiple of 4 KiB, so the rows of a group land in a
+    /// handful of L1 sets and a wide radix applied in place would thrash;
+    /// gathering the group into one contiguous scratch removes the aliasing, and
+    /// the copy is L1 traffic against a whole DRAM pass saved. Six layers cost one
+    /// pass rather than two.
+    fn run_top_layers(&self, buf: &mut [F64], log_d: usize, num_ntts: usize, first_layer: usize, end_layer: usize) {
+        /// Words of scratch per row group, so a group stays inside L1.
+        const GROUP_WORDS: usize = 4096;
+        /// Widest gathered radix, and so the size of a group's twiddle set.
+        const MAX_LOG_RADIX: usize = 6;
+        /// Below this width the gather costs more than the pass it saves, and
+        /// [`run_layers`]'s in-place kernels are the better shape.
+        const MIN_LOG_RADIX: usize = 4;
+
+        let mut layer = first_layer;
+        while layer < end_layer {
+            let j = (end_layer - layer)
+                .min(MAX_LOG_RADIX)
+                .min((GROUP_WORDS / num_ntts).ilog2() as usize)
+                .min(log_d - layer);
+            if j < MIN_LOG_RADIX {
+                self.run_layers(buf, log_d, num_ntts, layer, end_layer, 0, 0, true);
+                return;
+            }
+            let log_step = log_d - layer - j;
+            let (rows, step) = (1usize << j, 1usize << log_step);
+            let base = parallel::SendPtr(buf.as_mut_ptr());
+            parallel::for_each_chunk(1usize << (log_d - j), |lo, hi| {
+                let mut scratch = [F64::ZERO; GROUP_WORDS];
+                let mut tw = [F64::ZERO; (1 << MAX_LOG_RADIX) - 1];
+                let mut built = usize::MAX;
+                for g in lo..hi {
+                    let (block, r) = (g >> log_step, g & (step - 1));
+                    if built != block {
+                        self.twiddles_radix(layer, block, j, &mut tw);
+                        built = block;
+                    }
+                    // The group's rows, `block_size` apart in blocks and `step`
+                    // apart within one.
+                    let row = |i: usize| ((block << (log_d - layer)) + r + i * step) * num_ntts;
+                    // SAFETY: distinct `g` name disjoint row sets (distinct `r`
+                    // within a block, distinct blocks across), every one in
+                    // bounds, and `buf` stays borrowed for the whole dispatch.
+                    for i in 0..rows {
+                        scratch[i * num_ntts..][..num_ntts].copy_from_slice(unsafe { base.slice(row(i), num_ntts) });
+                    }
+                    radix_butterflies(&mut scratch[..rows * num_ntts], num_ntts, j, &tw);
+                    for i in 0..rows {
+                        unsafe { base.slice(row(i), num_ntts) }.copy_from_slice(&scratch[i * num_ntts..][..num_ntts]);
+                    }
+                }
+            });
+            layer += j;
+        }
+    }
+
     fn run_layers(
         &self,
         buf: &mut [F64],
@@ -478,6 +566,23 @@ fn butterfly_interleaved_fused_3layer(block: &mut [F64], t: &[F64; 7], eighth: u
     fused_rows::<8>(block, eighth, num_ntts, par_rows, |rows| radix8_butterflies(rows, t));
 }
 
+/// The `2^j - 1` butterflies of a gathered radix-`2^j` group, whose `2^j` rows
+/// are contiguous in `rows`. Sub-layer `d` pairs them at distance `2^(j-1-d)`
+/// and takes its twiddle from the breadth-first set
+/// [`twiddles_radix`](AdditiveNttF64::twiddles_radix) built; `j = 3` is exactly
+/// [`radix8_butterflies`] with its rows gathered.
+fn radix_butterflies(rows: &mut [F64], num_ntts: usize, j: usize, tw: &[F64]) {
+    for d in 0..j {
+        let dist = 1usize << (j - 1 - d);
+        let base = (1usize << d) - 1;
+        for i in (0..1usize << j).filter(|i| i & dist == 0) {
+            let (top, bot) = rows.split_at_mut((i + dist) * num_ntts);
+            let top = &mut top[i * num_ntts..(i + 1) * num_ntts];
+            butterfly_lanes(top, &mut bot[..num_ntts], tw[base + (i >> (j - d))]);
+        }
+    }
+}
+
 /// The twelve butterflies of one radix-8 row group: layer L pairs the rows at
 /// distance 4, L+1 at 2, L+2 at 1, with `t` holding the seven twiddles
 /// breadth-first. Shared with [`AdditiveNttF64::encode_interleaved_in_place`], whose
@@ -627,6 +732,28 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
             bot[lane] = v + new_u;
         }
     }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
+    {
+        let vectors = top.len() / 4;
+        // SAFETY: the target features are enabled at compile time and each
+        // iteration reads and writes exactly four elements from both rows.
+        unsafe {
+            for i in 0..vectors {
+                butterfly_lanes_avx2(top.as_mut_ptr().add(4 * i), bot.as_mut_ptr().add(4 * i), twiddle.0);
+            }
+        }
+        for lane in 4 * vectors..top.len() {
+            let v = bot[lane];
+            let new_u = top[lane] + v * twiddle;
+            top[lane] = new_u;
+            bot[lane] = v + new_u;
+        }
+    }
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     {
         let vectors = top.len() / 8;
@@ -652,7 +779,7 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     }
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "aes"),
-        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2")
     )))]
     {
         for lane in 0..top.len() {
@@ -661,6 +788,54 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
             top[lane] = new_u;
             bot[lane] = v + new_u;
         }
+    }
+}
+
+/// [`butterfly_lanes_avx512`] at half the width, for a machine with VPCLMULQDQ
+/// but no AVX-512. Without it the base encode's innermost loop is scalar there,
+/// which costs it about half again as much.
+///
+/// # Safety
+/// Requires VPCLMULQDQ + AVX2; `top` and `bot` must each address four readable
+/// and writable F64 values.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+#[inline]
+#[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+unsafe fn butterfly_lanes_avx2(top: *mut F64, bot: *mut F64, twiddle: u64) {
+    use core::arch::x86_64::*;
+
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+    unsafe fn reduce(p: __m256i, r: __m256i) -> __m256i {
+        let t = _mm256_clmulepi64_epi128::<0x01>(p, r);
+        let u = _mm256_clmulepi64_epi128::<0x01>(t, r);
+        _mm256_xor_si256(_mm256_xor_si256(p, t), u)
+    }
+
+    // SAFETY: the caller supplies valid four-element rows and the function's
+    // target features cover every intrinsic below.
+    unsafe {
+        let u = _mm256_loadu_si256(top.cast());
+        let v = _mm256_loadu_si256(bot.cast());
+        let tw = _mm256_set1_epi64x(twiddle as i64);
+        let r = _mm256_set1_epi64x(0x1b);
+
+        let even = reduce(_mm256_clmulepi64_epi128::<0x00>(v, tw), r);
+        let odd = reduce(_mm256_clmulepi64_epi128::<0x11>(v, tw), r);
+        // The odd products land in each lane's low half; swap them up, then take
+        // the odd qwords (32-bit elements 2, 3, 6, 7) from them.
+        let odd = _mm256_shuffle_epi32::<0x4e>(odd);
+        let product = _mm256_blend_epi32::<0b1100_1100>(even, odd);
+
+        let new_u = _mm256_xor_si256(u, product);
+        let new_v = _mm256_xor_si256(v, new_u);
+        _mm256_storeu_si256(top.cast(), new_u);
+        _mm256_storeu_si256(bot.cast(), new_v);
     }
 }
 

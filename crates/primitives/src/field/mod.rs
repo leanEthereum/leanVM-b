@@ -20,7 +20,7 @@ pub mod phi8_tower;
 
 pub use gf2_8::F8;
 pub use gf2_64::F64;
-pub use gf2_64x3::{F192, F192BaseUnreduced, F192Unreduced};
+pub use gf2_64x3::{F192, F192BaseUnreduced, F192Unreduced, mul_unreduced4, mul2, mul4};
 pub use phi8_tower::{PHI_8_TABLE_192, phi8_192};
 
 // ---------------------------------------------------------------------------

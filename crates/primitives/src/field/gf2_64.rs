@@ -177,12 +177,12 @@ pub mod aarch64 {
         }
     }
 
-    /// The default `Mul` kernel on aarch64. 2-PMULL multiply: product,
-    /// PMULL-by-0x1B fold, and a shift-XOR fold of the ≤4-bit overflow (exact:
-    /// ov·0x1B fits in 8 bits). LLVM lowers the tail onto the scalar ports,
-    /// which run free next to the PMULL-saturated vector pipes: best throughput
-    /// of the variants tried, in both register-chain and array loops, and within
-    /// 3% of the best latency measured.
+    /// The default `Mul` kernel on aarch64. 3-PMULL multiply: product, then two
+    /// PMULL-by-0x1B folds, the second taking the first's ≤4-bit overflow
+    /// exactly (`ov·0x1B` fits in 8 bits). The shift-XOR tail this replaced was
+    /// chosen on the premise that the vector pipes were PMULL-saturated and the
+    /// scalar ports free; PMULL retires at about the rate `eor` does here, so
+    /// the extra product costs less than the lane extraction it removes.
     ///
     /// # Safety
     /// Requires the `aes` target feature; see [`pmull`].
@@ -191,14 +191,11 @@ pub mod aarch64 {
     pub unsafe fn mul_shift_tail(a: F64, b: F64) -> F64 {
         // SAFETY: function carries the aes target feature.
         unsafe {
+            let r = vdupq_n_u64(R64);
             let p = pmull(a.0, b.0);
-            let t = pmull_hi(p, vdupq_n_u64(R64));
-            let ov = vdupq_laneq_u64::<1>(t);
-            let f = veorq_u64(
-                veorq_u64(ov, vshlq_n_u64::<1>(ov)),
-                veorq_u64(vshlq_n_u64::<3>(ov), vshlq_n_u64::<4>(ov)),
-            );
-            F64(vgetq_lane_u64::<0>(veorq_u64(veorq_u64(p, t), f)))
+            let t = pmull_hi(p, r);
+            let u = pmull_hi(t, r);
+            F64(vgetq_lane_u64::<0>(veorq_u64(veorq_u64(p, t), u)))
         }
     }
 }
