@@ -163,25 +163,6 @@ theorem eagerExperiment_globalFirstLaneExactTracedPublicProgram_eq_append
   simp [appendGlobalFirstLaneExactPublicTrace, map_eq_bind_pure_comp,
     bind_assoc]
 
-theorem globalHighState_eq_of_projection_trace
-    (left : GlobalMonitoredTracedState)
-    (right : GlobalMonitoredTracedState)
-    (hprojection : GlobalHighDirectTracedState.mk left.1.causal left.2 =
-      GlobalHighDirectTracedState.mk right.1.causal right.2)
-    (htrace : left.1.trace = right.1.trace) :
-    left = right := by
-  rcases left with ⟨⟨leftCausal, leftTrace⟩, leftAttacker⟩
-  rcases right with ⟨⟨rightCausal, rightTrace⟩, rightAttacker⟩
-  change (leftCausal, leftAttacker) = (rightCausal, rightAttacker)
-    at hprojection
-  simp only [Prod.mk.injEq] at hprojection
-  change leftTrace = rightTrace at htrace
-  obtain ⟨hcausal, hattacker⟩ := hprojection
-  subst rightCausal
-  subst rightTrace
-  subst rightAttacker
-  rfl
-
 theorem globalFirstLaneExactCoupledProgram_support_info
     (adversary : Adversary)
     (result : GlobalFirstLaneExactCoupledProgramResult)
@@ -328,8 +309,11 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
   obtain ⟨highResult, hhighSupport, hprojection⟩ :=
     exists_globalHighMonitored_of_coupled_support adversary right
       hrightSupport
-  obtain ⟨witness, hwitnessRelation, hfirstState, hwitnessTrace,
-    hwitnessEncoding, hwitnessValidEpochs⟩ := hgood.2
+  let witness := globalStateOfFirstLane right.2.1.2 right.2.2
+  have hwitnessRelation : GlobalSigningMonitoredTracedStateRelation left.1
+      right.1.1 (sourceExactSigningProjection left.2.2) witness := hgood.2.1
+  have hwitnessEncoding := hgood.2.2.1
+  have hwitnessValidEpochs := hgood.2.2.2
   have hbase : highResult.1.1.2 = right.1.1.2 :=
     congrArg Prod.fst hprojection
   have hdirect :
@@ -358,9 +342,8 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
       · exact hbase
     · exact hedgeHigh
   have hstate : highResult.2.2 = witness := by
-    apply globalHighState_eq_of_projection_trace
-    · rw [hstateProjection, hfirstState]
-    · rw [hchain, hwitnessTrace]
+    exact (globalStateOfFirstLane_eq highResult.2.2 right.2.1.2 right.2.2
+      hstateProjection.symm hchain.symm).symm
   refine ⟨highResult, hhighSupport, ?_, hprojection, ?_, ?_⟩
   · refine ⟨?_, ?_⟩
     · change ProgrammedGlobalChainKeygenBaseHighStableRelation left.1

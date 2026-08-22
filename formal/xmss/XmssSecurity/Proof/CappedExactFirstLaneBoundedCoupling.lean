@@ -115,6 +115,27 @@ theorem relTriple_globalHighMonitored_firstLane_action
     (map_globalHighMonitored_action_eq_firstLane keyView base edgeHigh input
       highState)
 
+def globalStateOfFirstLane
+    (firstLaneState : GlobalHighDirectTracedState)
+    (trace : FirstLaneOracleSimulation.ActionTrace
+      GlobalChainValueIndex) : GlobalMonitoredTracedState :=
+  (⟨firstLaneState.causalState, trace.chainActions⟩,
+    firstLaneState.attackerTrace)
+
+theorem globalStateOfFirstLane_eq
+    (highState : GlobalMonitoredTracedState)
+    (firstLaneState : GlobalHighDirectTracedState)
+    (trace : FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
+    (hstate : firstLaneState = GlobalHighDirectTracedState.mk
+      highState.1.causal highState.2)
+    (htrace : trace.chainActions = highState.1.trace) :
+    globalStateOfFirstLane firstLaneState trace = highState := by
+  subst firstLaneState
+  rcases highState with ⟨⟨causal, chainTrace⟩, attackerTrace⟩
+  change trace.chainActions = chainTrace at htrace
+  subst chainTrace
+  rfl
+
 def SourceFirstLaneExactGoodStateRelation
     (left : ProgrammedGlobalChainKeygenView)
     (right : ProgrammedGlobalChainKeygenView ×
@@ -123,16 +144,13 @@ def SourceFirstLaneExactGoodStateRelation
     (firstLaneState : GlobalHighDirectTracedState)
     (trace : FirstLaneOracleSimulation.ActionTrace
       GlobalChainValueIndex) : Prop :=
-  ∃ highState : GlobalMonitoredTracedState,
-    GlobalSigningMonitoredTracedStateRelation left right
-      (sourceExactSigningProjection leftState) highState ∧
-    firstLaneState = GlobalHighDirectTracedState.mk
-      highState.1.causal highState.2 ∧
-    trace.chainActions = highState.1.trace ∧
+  GlobalSigningMonitoredTracedStateRelation left right
+      (sourceExactSigningProjection leftState)
+      (globalStateOfFirstLane firstLaneState trace) ∧
     List.Sublist leftState.1.2 trace.encodingActions ∧
     List.Sublist
       (CappedEncodingMonitor.validObservedSignEpochs trace.encodingActions)
-      (highState.2.toSigningLog.map fun entry => entry.1.epoch)
+      (firstLaneState.attackerTrace.toSigningLog.map fun entry => entry.1.epoch)
 
 theorem SourceFirstLaneExactGoodStateRelation.validSignEpochs_sublist
     (hrelation : SourceFirstLaneExactGoodStateRelation left right leftState
@@ -141,10 +159,7 @@ theorem SourceFirstLaneExactGoodStateRelation.validSignEpochs_sublist
       (CappedEncodingMonitor.validObservedSignEpochs trace.encodingActions)
       (firstLaneState.attackerTrace.toSigningLog.map
         fun entry => entry.1.epoch) := by
-  rcases hrelation with ⟨highState, _hsource, hfirstLane, _hchain,
-    _hencoding, hvalidEpochs⟩
-  rw [hfirstLane]
-  exact hvalidEpochs
+  exact hrelation.2.2
 
 theorem cappedBothTracedMappedAdversaryImpl_support_unlogged_output
     (publicKey : PublicKey) (secretKey : SecretKey)
@@ -214,9 +229,11 @@ theorem relTriple_sourceExact_firstLane_action
           FirstLaneOracleSimulation.hazardCount
               (trace ++ firstLaneResult.2) ≤
             used + directHashActionCost input)) := by
-  rcases hstate with ⟨highState, hsourceHigh, hfirstLaneState,
-    hchainTrace, hencodingTrace, hvalidEpochs⟩
-  subst firstLaneState
+  let highState := globalStateOfFirstLane firstLaneState trace
+  have hsourceHigh : GlobalSigningMonitoredTracedStateRelation left right.1
+      (sourceExactSigningProjection leftState) highState := hstate.1
+  have hencodingTrace := hstate.2.1
+  have hvalidEpochs := hstate.2.2
   have hsource :=
     relTriple_programmed_globalHighMonitored_sourceExact_action left right hrel
       hleftSupport hrightSupport leftState highState hsourceHigh input
@@ -265,6 +282,16 @@ theorem relTriple_sourceExact_firstLane_action
   have hattackerProjection : highResult.2.2 =
       firstLaneResult.1.2.attackerTrace := by
     exact congrArg (fun result => result.1.2.attackerTrace) hprojection
+  have hchainProjection : highResult.2.1.trace =
+      highState.1.trace ++ firstLaneResult.2.chainActions := by
+    simpa [globalFirstLaneExactFullProjection] using
+      congrArg Prod.snd hprojection
+  have hnextState : globalStateOfFirstLane firstLaneResult.1.2
+      (trace ++ firstLaneResult.2) = highResult.2 := by
+    apply globalStateOfFirstLane_eq
+    · exact congrArg (fun result => result.1.2) hprojection |>.symm
+    · rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append]
+      simpa [highState, globalStateOfFirstLane] using hchainProjection.symm
   have hnextValidEpochs : List.Sublist
       (CappedEncodingMonitor.validObservedSignEpochs
         (trace ++ firstLaneResult.2).encodingActions)
@@ -283,27 +310,23 @@ theorem relTriple_sourceExact_firstLane_action
         rw [hgood.2.2, houtputProjection, hcausalProjection]
         exact hfirstLaneEncodingSub.trans
           (hencodingTrace.append (List.Sublist.refl _))
-      refine ⟨highResult.2, hgood.2.1, ?_, ?_,
-        hnextEncodingTrace, hnextValidEpochs⟩
-      · exact congrArg (fun result => result.1.2) hprojection |>.symm
-      · rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append,
-          hchainTrace]
-        exact congrArg Prod.snd hprojection |>.symm
+      refine ⟨?_, hnextEncodingTrace, ?_⟩
+      · rw [hnextState]
+        exact hgood.2.1
+      · simpa [← hattackerProjection] using hnextValidEpochs
     · have hinitialTrace : leftState.2 = highState.2 := hsourceHigh.2
       have hfinalTrace : leftResult.2.2 = highResult.2.2 := hgood.2.1.2
       rw [hfinalTrace, hhighActionTrace, ← hinitialTrace,
         AttackerActionTrace.hashInputs_append, List.length_append,
         attackerActionFragment_hashInputs_length]
   · apply Or.inr
-    have hchainProjection : highResult.2.1.trace =
-        highState.1.trace ++ firstLaneResult.2.chainActions := by
-      simpa [globalFirstLaneExactFullProjection] using
-          congrArg Prod.snd hprojection
     have hchainHit : RevealProbeOracleSimulation.runObserved right.1.2
         AdaptiveRevealMonitor.State.empty
           (trace ++ firstLaneResult.2).chainActions = true := by
-      rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append,
-        hchainTrace]
+      rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append]
+      change RevealProbeOracleSimulation.runObserved right.1.2
+        AdaptiveRevealMonitor.State.empty
+          (highState.1.trace ++ firstLaneResult.2.chainActions) = true
       rw [← hchainProjection]
       exact highResult.2.1.bad_implies_runObserved right.1.2 hbad
     have hhit : FirstLaneOracleSimulation.CombinedHit right.1.2
@@ -495,9 +518,11 @@ theorem relTriple_sourceExact_firstLane_verifier_action
           FirstLaneOracleSimulation.hazardCount
               (trace ++ firstLaneResult.2) ≤
             used + verifierHashQueryCost input)) := by
-  rcases hstate with ⟨highState, hsourceHigh, hfirstLaneState,
-    hchainTrace, hencodingTrace, hvalidEpochs⟩
-  subst firstLaneState
+  let highState := globalStateOfFirstLane firstLaneState trace
+  have hsourceHigh : GlobalSigningMonitoredTracedStateRelation left right.1
+      (sourceExactSigningProjection leftState) highState := hstate.1
+  have hencodingTrace := hstate.2.1
+  have hvalidEpochs := hstate.2.2
   have hsource :=
     relTriple_programmed_globalHighMonitored_sourceExact_verifier_action
       left right
@@ -538,6 +563,19 @@ theorem relTriple_sourceExact_firstLane_verifier_action
   have hattackerProjection : highResult.2.2 =
       firstLaneResult.1.2.attackerTrace := by
     exact congrArg (fun result => result.1.2.attackerTrace) hprojection
+  have hcausalProjection : highResult.2.1.causal =
+      firstLaneResult.1.2.causalState := by
+    exact congrArg (fun result => result.1.2.causalState) hprojection
+  have hchainProjection : highResult.2.1.trace =
+      highState.1.trace ++ firstLaneResult.2.chainActions := by
+    simpa [globalFirstLaneExactFullProjection] using
+      congrArg Prod.snd hprojection
+  have hnextState : globalStateOfFirstLane firstLaneResult.1.2
+      (trace ++ firstLaneResult.2) = highResult.2 := by
+    apply globalStateOfFirstLane_eq
+    · exact congrArg (fun result => result.1.2) hprojection |>.symm
+    · rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append]
+      simpa [highState, globalStateOfFirstLane] using hchainProjection.symm
   have hfirstAttacker : firstLaneResult.1.2.attackerTrace =
       highState.2 := by
     obtain ⟨baseResult, _hbase, hresultEq⟩ :=
@@ -566,22 +604,19 @@ theorem relTriple_sourceExact_firstLane_verifier_action
         rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
           hgood.2.2]
         exact hencodingTrace.trans (List.sublist_append_left _ _)
-      refine ⟨highResult.2, hgood.2.1, ?_, ?_,
-        hnextEncodingTrace, hnextValidEpochs⟩
-      · exact congrArg (fun result => result.1.2) hprojection |>.symm
-      · rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append,
-          hchainTrace]
-        exact congrArg Prod.snd hprojection |>.symm
+      refine ⟨?_, hnextEncodingTrace, ?_⟩
+      · rw [hnextState]
+        exact hgood.2.1
+      · simpa [← hattackerProjection] using hnextValidEpochs
   · apply Or.inr
-    have hchainProjection : highResult.2.1.trace =
-        highState.1.trace ++ firstLaneResult.2.chainActions := by
-      simpa [globalFirstLaneExactFullProjection] using
-          congrArg Prod.snd hprojection
     have hchainHit : RevealProbeOracleSimulation.runObserved right.1.2
         AdaptiveRevealMonitor.State.empty
           (trace ++ firstLaneResult.2).chainActions = true := by
-      rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append,
-        hchainTrace, ← hchainProjection]
+      rw [FirstLaneOracleSimulation.ActionTrace.chainActions_append]
+      change RevealProbeOracleSimulation.runObserved right.1.2
+        AdaptiveRevealMonitor.State.empty
+          (highState.1.trace ++ firstLaneResult.2.chainActions) = true
+      rw [← hchainProjection]
       exact highResult.2.1.bad_implies_runObserved right.1.2 hbad
     exact ⟨Or.inr hchainHit, htotalCount⟩
 
@@ -708,12 +743,13 @@ theorem SourceFirstLaneExactGoodStateRelation.appendVerification
           forgery leftInitial leftFinal)
       (firstLaneAppendVerificationState right.1.1.secretKey forgery
         firstLaneInitial firstLaneFinal) finalTrace := by
-  rcases hinitial with ⟨highInitial, hsourceInitial, hfirstInitial,
-    _hchainInitial, _hencodingInitial, _hvalidInitial⟩
-  rcases hfinal with ⟨highFinal, hsourceFinal, hfirstFinal,
-    hchainFinal, hencodingFinal, hvalidFinal⟩
-  subst firstLaneInitial
-  subst firstLaneFinal
+  let highInitial := globalStateOfFirstLane firstLaneInitial initialTrace
+  let highFinal := globalStateOfFirstLane firstLaneFinal finalTrace
+  have hsourceInitial : GlobalSigningMonitoredTracedStateRelation left right.1
+      (sourceExactSigningProjection leftInitial) highInitial := hinitial.1
+  have hsourceFinal : GlobalSigningMonitoredTracedStateRelation left right.1
+      (sourceExactSigningProjection leftFinal) highFinal := hfinal.1
+  have hvalidFinal := hfinal.2.2
   obtain ⟨_monitorInitial, _hmonitorInitial, _hagreesInitial,
     _hrevealedInitial, hinitialCausal, _hretainedInitial⟩ :=
       hsourceInitial.1
@@ -740,16 +776,16 @@ theorem SourceFirstLaneExactGoodStateRelation.appendVerification
       leftFinal.1.2
   let nextEncodingTrace := appendVerificationEncodingObservation leftSecret
     forgery leftInitial.1.1.1 leftFinal.1.1.1 leftFinal.1.2
-  refine ⟨highFinal, ?_, ?_, ?_, ?_, ?_⟩
-  · simpa [sourceAppendVerificationState, sourceExactSigningProjection] using
-      hsourceFinal
-  · rfl
-  · exact hchainFinal
+  refine ⟨?_, ?_, ?_⟩
+  · simpa [sourceAppendVerificationState, sourceExactSigningProjection,
+      highFinal, globalStateOfFirstLane,
+      firstLaneAppendVerificationState] using hsourceFinal
   · change List.Sublist nextEncodingTrace finalTrace.encodingActions
     unfold nextEncodingTrace
     rw [happend]
-    simpa [firstLaneAppendVerificationState] using happendSub
-  · exact hvalidFinal
+    simpa [highInitial, highFinal, globalStateOfFirstLane,
+      firstLaneAppendVerificationState] using happendSub
+  · simpa [firstLaneAppendVerificationState] using hvalidFinal
 
 theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
     (countLimit hitLimit : Nat)
@@ -793,13 +829,15 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
       (globalFilteredCausalKeygenState right.1.1)
   have hinitial : SourceFirstLaneExactGoodStateRelation left right.1
       sourceInitial firstLaneInitial [] := by
-    refine ⟨highInitial, ?_, rfl, rfl, ?_, ?_⟩
-    · simpa [sourceInitial, highInitial, sourceExactSigningProjection] using
+    refine ⟨?_, ?_, ?_⟩
+    · simpa [sourceInitial, highInitial, firstLaneInitial,
+        globalStateOfFirstLane, sourceExactSigningProjection,
+        FirstLaneOracleSimulation.ActionTrace.chainActions] using
         globalSigningMonitoredTracedStateRelation_initial left right hrel
           hleftSupport hrightSupport
     · simp [sourceInitial,
         FirstLaneOracleSimulation.ActionTrace.encodingActions]
-    · simp [highInitial, CappedEncodingMonitor.validObservedSignEpochs,
+    · simp [CappedEncodingMonitor.validObservedSignEpochs,
         FirstLaneOracleSimulation.ActionTrace.encodingActions,
         CappedEncodingMonitor.validActions,
         EncodingMonitor.observedSignEpochs]
@@ -948,9 +986,7 @@ theorem relTriple_sourceExact_firstLane_detailedExecution_boundedHit
                       obtain ⟨baseResult, _hbase, heq⟩ := hleftVerifiedSupport
                       subst leftVerified
                       rfl
-                    rcases hstates with ⟨highInitial, hsourceInitial,
-                      _hfirstInitial, _hchainInitial, hencodingInitial,
-                      _hvalidInitial⟩
+                    have hencodingInitial := hstates.2.1
                     have hencodingFinal : List.Sublist leftVerified.2.1.2
                         history.encodingActions := by
                       rw [hleftEncoding]
