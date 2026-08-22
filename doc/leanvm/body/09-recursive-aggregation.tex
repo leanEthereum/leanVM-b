@@ -8,7 +8,7 @@ A node proves it verified $n_{\mathrm{rec}}$ sub-proofs and $n_{\mathrm{raw}}$ X
 Twice during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
 \begin{itemize}
 \item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the bytecode multilinear of \S\ref{sec:e2e-bc}, in $\kbc+4$ variables, in one pass over the whole program;
-\item \textbf{the flock matrices}: the \texttt{BLAKE2S} relation is proven by flock (\S\ref{sec:tab-blake2s}, Annex~\ref{annex:flock}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 89\mathrm{M}$ nonzero Boolean entries between them.
+\item \textbf{the flock matrices}: the \texttt{KECCAK} relation is proven by flock (\S\ref{sec:tab-keccak}, Annex~\ref{annex:flock}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $32$-variable multilinears, far too dense to materialize.
 \end{itemize}
 Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
 

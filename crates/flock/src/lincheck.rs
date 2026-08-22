@@ -135,7 +135,7 @@ use zk_alloc::ArenaVec;
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
 // `&dyn LincheckCircuit` instead of a pair of matrices. The one live impl is
-// `blake2s::WalkLincheckCircuit`, which walks the circuit in both directions
+// `sha3::WalkLincheckCircuit`, which walks the circuit in both directions
 // (forwards for the verifier's `bilinear_form`, backwards for the prover's
 // marginal) and never touches a matrix entry. See doc/leanvm, Annex C
 // "Evaluating the matrices".
@@ -169,7 +169,7 @@ pub trait LincheckCircuit: Sync {
     /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
     /// [`verify`] only ever consumes the marginal through one inner product
     /// against a column-weight vector, so an implementation that can walk its
-    /// circuit (O(circuit) field ops, see `blake2s::bilinear_walk`) answers
+    /// circuit (O(circuit) field ops, see `sha3::bilinear_walk`) answers
     /// here and never pays the ∝ NNZ marginal. Default `None`: the verifier
     /// falls back to `fold_alpha_batched`.
     fn bilinear_form(&self, _alpha: F192, _u: &[F192], _w: &[F192]) -> Option<F192> {
@@ -320,7 +320,7 @@ fn partial_fold_packed_z_fast_padded(
 
     // fold_reduce(): one length-k accumulator per WORKER rather than per chunk.
     // At large k the per-chunk accumulators of a map/reduce dominate MT time
-    // with allocation plus tree-reduce XOR traffic (BLAKE2s's k = 2^14 is
+    // with allocation plus tree-reduce XOR traffic (Keccak's k = 2^14 is
     // 384 KB of accumulator per chunk, across ~128 chunks).
     let n_chunks = z_packed.len().div_ceil(bytes_per_chunk);
     parallel::fold_reduce(
@@ -1348,7 +1348,7 @@ mod tests {
 
     /// Sparse boolean matrix, test-only: the protocol tests below drive lincheck
     /// with random R1CS instances, which is the one place a matrix still exists.
-    /// Nothing on a prove or verify path builds one (see `blake2s`'s walks).
+    /// Nothing on a prove or verify path builds one (see `sha3`'s walks).
     #[derive(Clone)]
     struct SparseBinaryMatrix {
         num_rows: usize,
@@ -1607,7 +1607,7 @@ mod tests {
     fn partial_fold_padded_matches_dense() {
         // (m, k_log, useful_bits)
         let cases: &[(usize, usize, usize)] = &[
-            // BLAKE2s's own shape: k_log = 14, useful = 15409, not byte-aligned.
+            // A small block, not byte-aligned.
             (17, 14, 15_409),
             // A larger block, also not byte-aligned.
             (18, 15, 31_401),

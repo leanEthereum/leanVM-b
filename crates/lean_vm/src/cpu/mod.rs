@@ -3,7 +3,7 @@
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
-//! with each word carried by three committed `K = F64` limbs. `BLAKE2s`
+//! with each word carried by three committed `K = F64` limbs. `Keccak`
 //! adds the memory/state/bytecode plumbing for a 64→32-byte compression
 //! whose relation is discharged by flock (see [`crate::sha3_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
@@ -135,7 +135,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
         || taus.iter().any(|&t| t > MAX_LOG_ROWS)
         // flock sizes its argument to at least `n_blocks_log(1)` instances, and the
-        // BLAKE2s table's value columns share that instance cube, so a height below the
+        // Keccak table's value columns share that instance cube, so a height below the
         // floor describes a layout the arithmetization cannot express. The other two
         // verifiers reject it here too (`python-verifier`, `guests/aggregate.py`).
         || taus[tables::KECCAK_TABLE] < crate::sha3_flock::n_blocks_log(1)
@@ -150,7 +150,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
 #[derive(Clone)]
 pub struct Program {
     pub prog: Vec<Op>, // bytecode (size B, power of two)
-    /// BLAKE2s over the stacked bytecode multilinear, computed once at assembly
+    /// Keccak over the stacked bytecode multilinear, computed once at assembly
     /// so proving and verifying the same program do not rehash it (that table is
     /// 16·2^kbc words, tens of megabytes at production sizes). Trusted to match
     /// `prog`: always set by [`Program::assemble`] from the bytecode, so a
@@ -261,7 +261,7 @@ pub enum Error {
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
-    /// flock's BLAKE2s R1CS validity sub-proof failed to verify. (A missing or
+    /// flock's Keccak R1CS validity sub-proof failed to verify. (A missing or
     /// malformed sub-proof surfaces as [`Error::Transcript`] when the shared
     /// `stream`/`openings` fail to reconstruct or fully consume.)
     Keccak(flock::verifier::VerifyError),
@@ -395,7 +395,7 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
     v
 }
 
-/// If `col` is a BLAKE2s **value** column (global index), its `q_flock` packed slot.
+/// If `col` is a Keccak **value** column (global index), its `q_flock` packed slot.
 /// These columns are virtual (uncommitted): their memory-bus evaluation claims
 /// are re-routed to `q_flock` slot evaluations, which is the whole binding: the
 /// bus-tied value IS the proven `q_flock` word, no separate check needed.
@@ -409,7 +409,7 @@ fn keccak_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE2s, PACK64X2]`, and the
+/// `[XOR, MUL, SET, DEREF, JUMP, Keccak, PACK64X2]`, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -484,7 +484,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
     let exec = crate::stage!("Execute program", || program.execute_to_floor(public_input));
-    // The BLAKE2s R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
+    // The Keccak R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
     // depends only on the compression count (the circuit *shape*), not the witness,
     // but it is otherwise built synchronously inside the final reduction, adding
     // that latency serially with nothing overlapping it. Now that `execute` has
@@ -492,7 +492,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
     // lands in the shared setup cache, so the reduction's `setup_for` is a cache
     // hit. Pure warm-up: the result is fetched from the cache, nothing here joins
-    // the handle. (A no-BLAKE2s program still warms the size-1 padding shape.)
+    // the handle. (A no-Keccak program still warms the size-1 padding shape.)
     let n_keccak_warm = exec.trace.keccak.len().max(1);
     std::thread::spawn(move || crate::sha3_flock::warm_setup(n_keccak_warm));
     let cycles = exec.cycles;
@@ -509,9 +509,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         pcs::commit(&mut ps, &w.q, w.layout.shape, log_inv_rate)
     });
 
-    // BLAKE2s to flock (§sha3_flock), single PCS: q_flock is ALWAYS a column in
-    // `w.q` (≥1 instance, a program with no BLAKE2s carries one padding instance,
-    // so the proof shape is uniform and there is no has/hasn't-BLAKE2s fork). flock's
+    // Keccak to flock (§sha3_flock), single PCS: q_flock is ALWAYS a column in
+    // `w.q` (≥1 instance, a program with no Keccak carries one padding instance,
+    // so the proof shape is uniform and there is no has/hasn't-Keccak fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
     // WHIR over this commitment (below). Message, chaining-value, and output words
     // bind through the memory bus; counter and flags bind through bytecode. Their
@@ -659,9 +659,9 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
-    // BLAKE2s to flock (single PCS): flock's R1CS validity and every leanVM point
+    // Keccak to flock (single PCS): flock's R1CS validity and every leanVM point
     // claim are verified together by ONE WHIR opening at the end. The padded
-    // BLAKE2s table size is public and announced; its flock sub-proof rides the
+    // Keccak table size is public and announced; its flock sub-proof rides the
     // shared stream and openings. Memory and bytecode bind every compression input
     // and output by routing their virtual value-column claims to q_flock.
     let n_keccak = 1usize << l.taus[tables::KECCAK_TABLE];
@@ -704,7 +704,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // as it is read) to recover its validity claim on q_flock, then
     // verify them alongside every point claim in the ONE WHIR opening
     // (mirroring `prove`). The padding convention always supplies at least one
-    // instance, including programs that execute no BLAKE2s instruction.
+    // instance, including programs that execute no Keccak instruction.
     let n_blocks = n_keccak.max(1);
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::sha3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Keccak)?;
@@ -726,7 +726,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in
 /// the slot at `placements[c].offset`, with the claim's point as the low point.
 ///
-/// BLAKE2s value columns are virtual: they have no committed placement. A bus
+/// Keccak value columns are virtual: they have no committed placement. A bus
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
 /// to the equal `q_flock` slot evaluation: an ordinary claim on the committed
 /// `QFLOCK` column at the point freezing the low 8 coords to the slot's bits and
@@ -736,7 +736,7 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
     claims
         .iter()
         .map(|c| {
-            // A virtual BLAKE2s value column (always virtual): its bus claim at
+            // A virtual Keccak value column (always virtual): its bus claim at
             // instance point `c.point` is the q_flock slot value, a boolean-selector
             // (strided) claim on QFLOCK, folded sparsely (2^n_log, not the 2^(8+n_log)
             // dense QFLOCK block).

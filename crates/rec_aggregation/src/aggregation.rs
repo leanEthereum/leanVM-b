@@ -90,13 +90,13 @@ fn pack_state(s: [F64; 4]) -> [F192; 2] {
 }
 
 /// Pack a 32-byte Merkle node as the same canonical 128+128 cell pair used by
-/// the VM's sole BLAKE2s representation.
+/// the VM's sole Keccak representation.
 fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
     let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
     [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
 }
 
-/// Native mirror of the guest's default `blake2s(state, block, out)` over two
+/// Native mirror of the guest's default `sha3_64(state, block, out)` over two
 /// 128-bit cells each: the four `F64` lanes of a two-cell buffer are
 /// `[w0.c0, w0.c1, w1.c0, w1.c1]`, and the output packs back the same way.
 fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
@@ -105,7 +105,7 @@ fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
     [F192::new(out[0].0, out[1].0, 0), F192::new(out[2].0, out[3].0, 0)]
 }
 
-/// A domain-separated two-cell IV, so the guest's two plain BLAKE2s chains
+/// A domain-separated two-cell IV, so the guest's two plain Keccak chains
 /// cannot be confused with each other or with a Fiat-Shamir state.
 fn chain_iv(label: &[u8]) -> [F192; 2] {
     pack_state(FiatShamirState::new(label, &[]).state())
@@ -163,7 +163,7 @@ fn merkle_bit_cells(epoch: u32) -> Vec<F192> {
 }
 
 /// The epoch's whole contribution to the statement: the tweak table and the
-/// Merkle bits, chained through BLAKE2s exactly as the guest absorbs them, two
+/// Merkle bits, chained through Keccak exactly as the guest absorbs them, two
 /// cells per compression. Nothing derives a tweak in-circuit; the guest hints
 /// both tables and checks this digest.
 fn epoch_hash(epoch: u32) -> [F192; 2] {
@@ -262,8 +262,8 @@ impl DeferredClaim {
 /// `STMT_HEADER` is the same count.
 const STATEMENT_HEADER: usize = 9;
 
-/// A 32-byte domain tag: the label, zero-padded. A plain BLAKE2s separates in
-/// the message, not in a custom IV, so any BLAKE2s reproduces the digest.
+/// A 32-byte domain tag: the label, zero-padded. A plain Keccak separates in
+/// the message, not in a custom IV, so any Keccak reproduces the digest.
 fn label_tag(label: &[u8]) -> [u8; 32] {
     let mut tag = [0u8; 32];
     tag[..label.len()].copy_from_slice(label);
@@ -287,7 +287,7 @@ fn tagged_hash(label: &[u8], lanes: impl Iterator<Item = u64>) -> [F192; 2] {
 /// rebuilds a child's, which is what forces a whole tree onto one bytecode,
 /// one message and one epoch.
 ///
-/// Fixed-length preimage, so a plain BLAKE2s: the tag, the header as the
+/// Fixed-length preimage, so a plain Keccak: the tag, the header as the
 /// canonical cells it already is (two lanes each, whence the assert, the guest
 /// being unable to hash a third), then all three lanes of each deferred cell.
 fn statement_digest(
@@ -1022,8 +1022,8 @@ fn whir_shape(mu: usize, log_inv_rate: usize) -> WhirShape {
     }
 }
 
-/// The BLAKE2s table's virtual value columns, in `blake2s_flock::SLOTS` order.
-fn blake2s_value_columns() -> Vec<usize> {
+/// The Keccak table's virtual value columns, in `sha3_flock::SLOTS` order.
+fn keccak_value_columns() -> Vec<usize> {
     let base = lean_vm::cpu::schema().base[5];
     lean_vm::tables::KECCAK_VALUE_COLS.iter().map(|&c| base + c).collect()
 }
@@ -1103,7 +1103,7 @@ fn push_coord_terms(
 /// stay index-aligned by construction rather than by two matching count asserts.
 fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(ClaimSite)) {
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
-    let valcols = blake2s_value_columns();
+    let valcols = keccak_value_columns();
     // Only the framework blocks raise claims: a table's coords are settled inside
     // the table sumcheck.
     let is_framework: Vec<bool> = lean_vm::cpu::block_kappa_sources(kbc)
@@ -1318,7 +1318,7 @@ fn gen_verify(
     });
 
     // The ring-switch weight's own residual overlap: the q_flock claim spans
-    // `qflockv` coordinates, and a BLAKE2s-dominated inner proof pushes that past
+    // `qflockv` coordinates, and a Keccak-dominated inner proof pushes that past
     // the fold rounds. Same quantity as the q_flock point claim's `nover`, but
     // the guest pins it independently, in the rs block.
     let qflockv = lean_vm::sha3_flock::SLOT_STRIDE_LOG + taus[5];
@@ -1806,7 +1806,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let ncl = nclaims + evtot + 3; // bus + constraint + the three PI memory-limb claims
 
     // ---- claim descriptor buffer ids (structural) ----
-    let valcols = blake2s_value_columns();
+    let valcols = keccak_value_columns();
     let col_sources_pm = lean_vm::cpu::col_kappa_sources(kbc);
     let mut compact_col_pm = vec![usize::MAX; col_sources_pm.len()];
     let mut n_committed = 0usize;
@@ -2021,7 +2021,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
                 };
                 bytes <= 1024 && whole_blocks
             }),
-            "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE2s chunk"
+            "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte Keccak chunk"
         );
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
@@ -2219,7 +2219,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
                 maxlev,
             )),
         );
-        // 64-byte BLAKE2s blocks per leaf row: level 0's committed rows are
+        // 64-byte Keccak blocks per leaf row: level 0's committed rows are
         // base-field F64 (8 bytes/lane); deeper levels are native F192
         // (24 bytes/word, received as three embedded K limbs each). Rows are
         // whole blocks only (asserted at candidate construction).

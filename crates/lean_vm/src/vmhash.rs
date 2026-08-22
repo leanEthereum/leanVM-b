@@ -1,12 +1,14 @@
-//! VM-provable standard BLAKE2s hashing.
+//! VM-provable hashing.
 //!
-//! The VM instruction exposes one BLAKE2s compression with a memory-supplied
-//! chaining value and bytecode-supplied byte counter and finalization flags. A
-//! guest can therefore implement the standard sequential compression chain for
-//! any input length, including a zero-padded partial final block.
+//! The VM instruction absorbs one 136-byte rate block into a running
+//! `Keccak-f[1600]` state, so a guest can drive the sponge for any input length.
+//! What every call site here actually needs is the 64-byte case, which is a
+//! single absorb into the zero state and so exactly SHA3-256 of those 64 bytes.
+//! Longer messages take the chain of those ([`primitives::sha3::hash_md`]),
+//! which is what the guest can reproduce a group at a time.
 
-/// Standard BLAKE2s of exactly 64 bytes (two 256-bit halves laid out
-/// little-endian, the `Blake2s` opcode's default metadata), which is also the
-/// PCS Merkle parent. Lives in [`fiat_shamir`] (the shared
-/// [`fiat_shamir::FiatShamirState`] state is built on it).
+/// SHA3-256 of exactly 64 bytes (two 256-bit halves laid out little-endian),
+/// which is the Fiat-Shamir chain step and the PCS Merkle parent. Lives in
+/// [`fiat_shamir`] (the shared [`fiat_shamir::FiatShamirState`] state is built
+/// on it).
 pub use fiat_shamir::compress;

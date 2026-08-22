@@ -43,7 +43,7 @@ pub(crate) struct Jrow {
     pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE2s` row: the eight per-cell memory access counts of the four
+/// `Keccak` row: the eight per-cell memory access counts of the four
 /// message-chunk cells, the chaining value's two cells and the output's two. The
 /// addresses are `fp·g^{ins[i]}`, `fp·g^{cv}`, `fp·g^{out}` and the successors of
 /// the last two; the eighteen flock words are those cells' lanes plus the

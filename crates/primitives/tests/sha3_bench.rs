@@ -1,11 +1,8 @@
-//! Native SHA3-256 throughput, the counterpart of `b2s_bench` so the two can
-//! be read side by side during the migration.
+//! Native SHA3-256 throughput.
 //!
-//! The two hashes are not comparable per call: a BLAKE2s compression absorbs
-//! 64 bytes and a Keccak permutation absorbs up to `RATE = 136`, which is the
-//! whole reason the switch is worth measuring. Both figures are printed, hashes
-//! per second and bytes per second, so the leaf-size choice can be made on the
-//! second one.
+//! A permutation absorbs up to `RATE = 136` bytes, so hashes per second and
+//! bytes per second say different things and both are printed: the leaf-size
+//! choice wants the second one.
 
 use std::time::Instant;
 

@@ -1271,12 +1271,13 @@ mod tests {
     /// zero, then asserts the `_padded` kernel produces the same
     /// `(a_mlv, b_mlv, msg_1, msg_inf)` as the dense path.
     ///
-    /// Covers all three hash padding shapes: BLAKE2s (k_log=14, useful=15409),
-    /// SHA-2 (k_log=15, useful=31401), Keccak (k_log=16, useful=42560).
+    /// Covers three padding shapes, the last of them this system's own:
+    /// (k_log=14, useful=15409), (k_log=15, useful=31401) and Keccak's
+    /// (k_log=16, useful=42881).
     #[test]
     fn uni_skip_fold_round_pair_padded_matches_dense() {
         const K_SKIP: usize = 6;
-        let cases: &[(usize, usize, usize)] = &[(17, 14, 15_409), (18, 15, 31_401), (19, 16, 42_560)];
+        let cases: &[(usize, usize, usize)] = &[(17, 14, 15_409), (18, 15, 31_401), (19, 16, 42_881)];
         for &(m, k_log, useful_bits) in cases {
             let mut rng = Rng::new(0xFADE_F00D_u64.wrapping_add((k_log * 31 + m) as u64));
             let total_bits = 1usize << m;
@@ -1374,7 +1375,7 @@ mod tests {
     /// **The single kernel's padding skip is byte-identical to dense**, the
     /// sibling of `uni_skip_fold_round_pair_padded_matches_dense`. This is the
     /// first place the C witness's padding zeros are load-bearing: round 1's
-    /// coarser skip does not reach them at BLAKE2s's shape.
+    /// coarser skip does not reach them at Keccak's shape.
     #[test]
     fn uni_skip_fold_round_single_padded_matches_dense() {
         const K_SKIP: usize = 6;

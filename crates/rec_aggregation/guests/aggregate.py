@@ -3,7 +3,7 @@ from snark_lib import *
 # The proof stream rides ONE padded witness hint (the guest walks only the
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
-# Per-table tau floor: BLAKE2s is sized to flock's instance count (>= 2^3).
+# Per-table tau floor: Keccak is sized to flock's instance count (>= 2^3).
 FLOORS = [0, 0, 0, 0, 0, 3, 0]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
@@ -101,7 +101,7 @@ TABLE_MUL = 1
 TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
-TABLE_BLAKE2s = 5
+TABLE_KECCAK = 5
 TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
@@ -195,7 +195,7 @@ LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qflock capacity stride.
 # CLAIM_COMMITTED_COL maps each pooled logical claim to the compact index of the
-# committed column it must open. Virtual BLAKE2s value claims map to QFLOCK.
+# committed column it must open. Virtual Keccak value claims map to QFLOCK.
 # CLAIM_QFLOCK_SLOT_BITS contains the fixed packed-slot bits for every logical
 # claim (zero for non-virtual claims), and QFLOCK_COMMITTED_COL identifies the
 # ring-switch target.
@@ -238,7 +238,7 @@ STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
 STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
 STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
-# The epoch digest: a plain BLAKE2s of its tag, the tweak table and the Merkle
+# The epoch digest: a hash_md chain over its tag, the tweak table and the Merkle
 # bits, streamed four cells to a 64-byte block.
 EPOCH_TAG_0 = EPOCH_TAG_0_PLACEHOLDER
 EPOCH_TAG_1 = EPOCH_TAG_1_PLACEHOLDER
@@ -283,7 +283,7 @@ LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER  # Merkle tree height
 CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
 CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
 
-WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE2s cell …
+WORDS_PER_VALUE = 1                 # a 16-byte native value = one cell …
 WORDS_PER_BLOCK = 2                 # … and a 32-byte block = two
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
@@ -302,7 +302,7 @@ MERKLE_BIT_BLOCKS = LOG_LIFETIME / 4
 # (the lane's leftover top bits are ground to zero by the signer).
 DIGITS_PER_WORD = V / 2
 TIP_CELLS = WORDS_PER_VALUE * V    # the V chain tips, one cell each
-WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE2s block
+WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per 64-byte block
 
 # Aggregation bounds. MAX_KEYS caps n_keys + n_dup, which is what the coverage
 # range check needs below 2^MIN_LOG_MEM; MAX_CHILDREN is the recursion arity.
@@ -358,7 +358,7 @@ def fs_compress(state, scalar, tail, out):
 
 
 def canonical_cell(word, out_cell):
-    # Prove a transcript word is a canonical BLAKE2s cell (d, d', 0): PACK64X2
+    # Prove a transcript word is a canonical 128-bit cell (d, d', 0): PACK64X2
     # writes the pack of two hinted K limbs, and the equality pins the word to
     # it, so a nonzero top lane cannot slip through.
     limbs = StackBuf(3)
@@ -1094,7 +1094,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]
-    fs = obs(fs, seed_0)  # the FS seed: H(flock BLAKE2s R1CS, inner program
+    fs = obs(fs, seed_0)  # the FS seed: H(flock Keccak R1CS, inner program
     fs = obs(fs, seed_1)  # bytecode, ...), from the recursion's public input
     fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
     fs = obs(fs, pi_1)
@@ -1133,7 +1133,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for t in unroll(0, N_TABLES):
         g_tau = g_power_of_word(sizes[t + 1], g_squares, LOG_WORD_BITS)
         assert log(g_tau) < COUNT_BITS
-        # A table's floor: flock sizes its BLAKE2s argument to at least 2^3 instances.
+        # A table's floor: flock sizes its Keccak argument to at least 2^3 instances.
         assert log(g_tau / GEN ** FLOORS[t]) < COUNT_BITS
         dims_g[GEN ** (t + 1)] = g_tau
     # kappa_base maps a kappa source index to its certified announced log
@@ -1623,7 +1623,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             b1 = b + 1
             constraint_eval = zc_xi_pows[ETA_OFFSET[t] + 0] * (b + c * w)
             constraint_eval += zc_xi_pows[ETA_OFFSET[t] + 1] * (c * b1)
-        if t == TABLE_BLAKE2s:
+        if t == TABLE_KECCAK:
             constraint_eval = 0
         if t == TABLE_PACK64X2:
             constraint_eval = 0
@@ -1685,7 +1685,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     claim_idx += 1
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-    tau_blake2s_g = dims_g[GEN ** (TABLE_BLAKE2s + 1)]  # the BLAKE2s table's certified tau
+    tau_keccak_g = dims_g[GEN ** (TABLE_KECCAK + 1)]  # the Keccak table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
     # buffers are sized for that), and q_flock's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
@@ -1696,7 +1696,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # N_FIXED_CHALLENGE_ROUNDS fixed inner values followed by sampled outer values.
     # The prover builds round 1 from this equality tail, so its sampled part is
     # squeezed before round 1 is fetched (and round 1 before z, which evaluates it).
-    mr1cs_g = tau_blake2s_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
+    mr1cs_g = tau_keccak_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
     zerocheck_r = HeapBuf(mr1cs_g)
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
@@ -1745,7 +1745,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         zerocheck_chis[GEN ** i] = chi_v
         zc_running = g_0 + chi_v * (g_1 + chi_v * g_2)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
-    nmlv_g = tau_blake2s_g * GEN ** (K_LOG - K_SKIP)
+    nmlv_g = tau_keccak_g * GEN ** (K_LOG - K_SKIP)
     flock_round_size = mr1cs_rounds_g * GEN ** 2
     flock_round_fs0 = HeapBuf(flock_round_size)
     flock_round_fs1 = HeapBuf(flock_round_size)
@@ -1874,7 +1874,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
     zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
     zr_hi = zerocheck_chis * GEN ** LINCHECK_ROUNDS
-    for xt in mul_range(1, tau_blake2s_g):
+    for xt in mul_range(1, tau_keccak_g):
         zv_lo[xt] = zr_hi[xt]
     # Observe every pooled point claim, then ONE batching challenge for all of
     # them: N_CLAIMS - 1 fewer Fiat-Shamir compressions than a challenge per claim.
@@ -2101,10 +2101,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # one contiguous FIELD_BITS-wide product row. Same product formula as the
     # k-major form, but with no stored z-power table (the dominant memory
     # traffic) and no per-level buffer.
-    qflockv_g = tau_blake2s_g * GEN ** SLOT_STRIDE_LOG
+    qflockv_g = tau_keccak_g * GEN ** SLOT_STRIDE_LOG
     # The opening's point, in witness coordinates, is point_fold[0, lenris) ++
     # point_tail[0, yr_log_n), and this claim spans its first qflockv
-    # coordinates. A BLAKE2s
+    # coordinates. A Keccak
     # dominated inner proof (every real XMSS aggregation: qflockv = tau_5 +
     # SLOT_STRIDE_LOG) pushes qflockv past lenris, so the top rs_nover
     # coordinates continue into the residual challenges. rs_nover is hinted and
@@ -2382,9 +2382,9 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     # the very same call, which is what forces the child to be a proof of THIS
     # bytecode against THIS message and epoch.
     #
-    # Fixed-length preimage, so a plain BLAKE2s beats the Fiat-Shamir chain, which spent a
+    # Fixed-length preimage, so a plain hash beats the Fiat-Shamir chain, which spent a
     # compression per scalar re-injecting its state. A header value is already a
-    # canonical cell and needs no check, the BLAKE2s table reading only cells
+    # canonical cell and needs no check, the Keccak table reading only cells
     # whose top limb is zero. A deferred cell is a full field element, so two
     # fill three cells as (s0,s1) (s2,t0) (t1,t2), each top limb derived from the
     # two hinted below it and each PACK64X2 proving its lanes are in K.
@@ -2461,9 +2461,9 @@ def main():
     # Both are hinted and bound by one digest in the statement; the outer
     # verifier rebuilds them from the epoch and rehashes. Nothing derives a
     # tweak in-circuit.
-    # A plain BLAKE2s, four cells a block, where a re-injected state left room
+    # A plain chain, four cells a block, where a re-injected state left room
     # for two. Each block is hashed out of the frame it was hinted into: a
-    # blake2s operand is addressed off `fp`, so a heap one would cost a DEREF
+    # sha3_64 operand is addressed off `fp`, so a heap one would cost a DEREF
     # per cell to read back.
     tag = StackBuf(4)
     tag[0] = EPOCH_TAG_0

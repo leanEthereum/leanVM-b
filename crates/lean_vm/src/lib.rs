@@ -18,7 +18,7 @@
 //! - [`tables`]: the seven instruction tables (columns, flushes, constraints).
 //! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
 //! - [`sha3_flock`]: the `Keccak` glue: flock's R1CS validity proof over the same commitment.
-//! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE2s slice hashing).
+//! - [`vmhash`]: VM-native hashing (one-block compression and standard Keccak slice hashing).
 
 pub mod colval;
 pub mod constraints;

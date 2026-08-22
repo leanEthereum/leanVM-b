@@ -31,7 +31,7 @@ cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3
 XMSS aggregation, 900 signatures
   cycles (VM steps)           : 1,542,617 = 2^20.557
     proven rows               : 1,967,104 = 2^20.908  (filled to powers of two)
-    details                   : DEREF 2^18.988 (33.7%)  SET 2^18.402 (22.4%)  MUL 2^18.198 (19.5%)  BLAKE2S 2^16.995 (8.5%)  XOR 2^16.96 (8.3%)  JUMP 2^16.831 (7.6%)  PACK64X2 2^9.938 (0.1%)  MEMORY 2^21.725  TOTAL_COMMITTED 2^26.195
+    details                   : DEREF 2^18.988 (33.7%)  SET 2^18.402 (22.4%)  MUL 2^18.198 (19.5%)  KECCAK 2^16.995 (8.5%)  XOR 2^16.96 (8.3%)  JUMP 2^16.831 (7.6%)  PACK64X2 2^9.938 (0.1%)  MEMORY 2^21.725  TOTAL_COMMITTED 2^26.195
   signers                     : 900
   proof size                  : 304.4 KiB
   aggregating                 : 0.816 s ± 4.2%      peak memory 13.815 GiB
@@ -50,7 +50,7 @@ cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
 recursion 2→1, over leaves of 900 signatures
   cycles (VM steps)           : 796,006 = 2^19.602
     proven rows               : 1,196,032 = 2^20.19  (filled to powers of two)
-    details                   : DEREF 2^18.168 (37.0%)  MUL 2^17.818 (29.0%)  XOR 2^17.374 (21.3%)  SET 2^15.536 (6.0%)  BLAKE2S 2^14.44 (2.8%)  PACK64X2 2^14.349 (2.6%)  JUMP 2^13.272 (1.2%)  MEMORY 2^19.932  TOTAL_COMMITTED 2^24.863
+    details                   : DEREF 2^18.168 (37.0%)  MUL 2^17.818 (29.0%)  XOR 2^17.374 (21.3%)  SET 2^15.536 (6.0%)  KECCAK 2^14.44 (2.8%)  PACK64X2 2^14.349 (2.6%)  JUMP 2^13.272 (1.2%)  MEMORY 2^19.932  TOTAL_COMMITTED 2^24.863
   signers                     : 1,800
   proof size                  : 213.7 KiB
   aggregating                 : 0.446 s ± 3.1%      peak memory 17.299 GiB
@@ -73,14 +73,14 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   verifying                   : 0.00352 s
 ```
 
-### Batch proving BLAKE2s
+### Batch proving Keccak
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test blake2s_batch -- --ignored --nocapture
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test sha3_batch -- --ignored --nocapture
 ```
 
 ```
-Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
+Flock Keccak-f[1600] batch proving, 262,144 permutations (2^18 slots)
   setup (preprocessing, excluded) :      0.0 ms
   witness-gen                     :     51.2 ms ± 23.3%   8.6%
   commit                          :    100.1 ms ± 0.3%   16.8%
@@ -102,6 +102,6 @@ Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
 
 - Binary field of 192 bits
 - PCS: [WHIR](https://eprint.iacr.org/2024/1586) (aka [Ligerito](https://eprint.iacr.org/2025/1187))
-- Proving BLAKE2s by [Flock](https://github.com/succinctlabs/flock/tree/main)
+- Proving Keccak by [Flock](https://github.com/succinctlabs/flock/tree/main)
 - RingSwitching, M3 arithmetisation, (and more) by [Binius](https://github.com/IrreducibleOSS/binius) / [Binius64](https://github.com/binius-zk/binius64) (see [DP23](https://eprint.iacr.org/2023/1784) and [DP24](https://eprint.iacr.org/2024/504))
 

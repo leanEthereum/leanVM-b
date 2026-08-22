@@ -1,10 +1,9 @@
 //! Standalone batch `Keccak-f[1600]` proving, isolated from the VM.
 //!
-//! The number this exists for: one permutation is a `2^16` flock block against
-//! BLAKE2s's `2^14`, so the per-hash cost is expected to be four times the
-//! `blake2s_batch` figure. What buys it back is the rate, 136 bytes absorbed
-//! per permutation against 64, which this bench cannot see: it proves
-//! permutations, not messages.
+//! The number this exists for: one absorb-and-permute is a `2^16` flock block,
+//! and it takes 136 bytes of message. This bench prices the block; what it
+//! cannot see is how many bytes a call site actually feeds one, which is where
+//! the rate is either used or wasted.
 //!
 //! ```text
 //! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test sha3_batch -- --ignored --nocapture
@@ -27,8 +26,8 @@ use primitives::{field::F64, pretty_integer, test_rng::Rng};
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
 fn sha3_batch_prove_verify() {
-    // A `2^16` block is four times BLAKE2s's, so the same memory holds two
-    // fewer doublings; the default is set accordingly.
+    // A `2^16` block is large, so the same memory holds fewer doublings than a
+    // narrower circuit would; the default is set accordingly.
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))

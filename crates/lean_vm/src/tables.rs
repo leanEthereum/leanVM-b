@@ -356,7 +356,7 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE2S, PACK64X2]`, the
+/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, KECCAK, PACK64X2]`, the
 /// order of `row_counts` / `taus` throughout `cpu`.
 pub const N_TABLES: usize = 7;
 
@@ -876,9 +876,9 @@ impl Table for Pack64x2Table {
     }
 }
 
-// ---- BLAKE2s ------------------------------------------------------------------
+// ---- Keccak ------------------------------------------------------------------
 
-/// `BLAKE2s` (“BLAKE2s” in `doc/leanvm/body/07-instruction-tables.tex`): one standard compression. The four 128-bit message
+/// `Keccak` (“Keccak” in `doc/leanvm/body/07-instruction-tables.tex`): one standard compression. The four 128-bit message
 /// chunks are addressed *independently* at `fp·o_i` (`o_i = g^{ins[i]}`), each a
 /// single cell, with no forced contiguity between chunks, so a caller hashing e.g.
 /// `(tweak, pp)` need not copy them into adjacent cells. The chaining value and the
@@ -886,7 +886,7 @@ impl Table for Pack64x2Table {
 /// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
 /// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
-/// (§blake2s_flock), which leaves this table with no identity of its own.
+/// (§sha3_flock), which leaves this table with no identity of its own.
 ///
 /// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the sixteen
 /// memory-borne flock words are sixteen value LANE columns over eight cells,
@@ -894,7 +894,7 @@ impl Table for Pack64x2Table {
 /// `n_committed_columns` (they need a local index for the flushes and are filled
 /// from the trace for the bus), but `cpu` treats them as VIRTUAL (not committed)
 /// and routes their bus claims to `q_flock`, which already holds those words (see
-/// [`BLAKE2S_VALUE_COLS`]).
+/// [`KECCAK_VALUE_COLS`]).
 struct KeccakTable;
 
 pub(crate) mod keccakt {

@@ -37,7 +37,7 @@ pub const PAD_TABLE: usize = 2;
 /// largest block and then one per set bit of the remainder.
 pub const SIZES: [usize; 8] = [128, 64, 32, 16, 8, 4, 2, 1];
 
-/// Least rows a table can be proven over. Only `BLAKE2s` has one above `1`: flock sizes
+/// Least rows a table can be proven over. Only `Keccak` has one above `1`: flock sizes
 /// its argument to at least eight instances, so filling that table below the floor
 /// would leave it padded up to it, which is the padding this exists to avoid.
 pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8, 1];
@@ -66,7 +66,7 @@ pub struct Block {
 ///
 /// The rest is what the dummies use: a cell that is never written, so the `JUMP` table's
 /// dummy reads a zero condition and falls through instead of leaving the block; the
-/// scratch cell a dummy writes, which doubles as the `BLAKE2s` dummy's chaining value and
+/// scratch cell a dummy writes, which doubles as the `Keccak` dummy's chaining value and
 /// so spans `SCRATCH..SCRATCH+2`; and the digest, placed clear of it so that a digest
 /// never becomes the next traversal's chaining value. `DIGEST+2..DIGEST+6` are the
 /// message cells, never written, so every traversal compresses the same input.
