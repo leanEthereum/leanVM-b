@@ -1118,21 +1118,6 @@ def _flushes_blake2s(table: Table) -> Flushes:
     return flushes
 
 
-def _flushes_pack(table: Table) -> Flushes:
-    pc, fp, o_a, o_b, o_c, v_a, v_b, cnt_a, cnt_b, cnt_c, cnt_bc = table.cols(
-        "pc", "fp", "o_a", "o_b", "o_c", "v_a", "v_b", "cnt_a", "cnt_b", "cnt_c", "cnt_bc"
-    )
-    flushes = Flushes()
-    flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
-    # The literal zeros make the two source range assertions and the destination
-    # packing exact through bus balance.
-    flushes.memory_cols(_prod(fp, o_a), cnt_a, v_a)
-    flushes.memory_cols(_prod(fp, o_b), cnt_b, v_b)
-    flushes.memory_cols(_prod(fp, o_c), cnt_c, v_a, v_b)
-    return flushes
-
-
 # The column names of each table, in the order they are committed. Hand-laid in
 # groups: the state, the operands, the values, then the read counts.
 ARITH_COLUMNS = (
@@ -1163,8 +1148,6 @@ BLAKE2S_COLUMNS = (
     "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_bc",
 )  # fmt: skip
 
-PACK_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "v_a", "v_b", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
-
 TABLES = (
     Table("xor", 0, ARITH_COLUMNS, _flushes_arith),
     Table("mul", 1, ARITH_COLUMNS, _flushes_arith),
@@ -1172,7 +1155,6 @@ TABLES = (
     Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
     Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints),
     Table("blake2s", 5, BLAKE2S_COLUMNS, _flushes_blake2s),
-    Table("pack64x2", 6, PACK_COLUMNS, _flushes_pack),
 )
 BLAKE2S = TABLES[5]
 
@@ -1845,7 +1827,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # decomposition, which leaves each table a degree-2 form and a total.
     bus = verify_bus_balance(layout, transcript)
 
-    # 4] Rows: one back-loaded table sumcheck over all seven tables, at
+    # 4] Rows: one back-loaded table sumcheck over all six tables, at
     # the bus point, starting from the target the three leaf claims derive.
     # Every table takes a disjoint range of xi powers for its constraints; the
     # three bus sides share the three above them (doc sec:air).

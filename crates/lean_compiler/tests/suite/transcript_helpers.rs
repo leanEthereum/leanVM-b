@@ -9,13 +9,18 @@ from snark_lib import *
 Y = f192(0, 1, 0)
 
 @inline
+def pack64x2(a, b):
+    assert_in_k(a, b)
+    return a + Y * b
+
+@inline
 def challenge_from_state(state):
     lo = StackBuf(2)
     hi = StackBuf(2)
     hint_f192_limbs(lo, state[0])
     hint_f192_limbs(hi, state[1])
-    pack64x2_into(lo[0], lo[1], state[0])
-    pack64x2_into(hi[0], hi[1], state[1])
+    state[0] = pack64x2(lo[0], lo[1])
+    state[1] = pack64x2(hi[0], hi[1])
     return lo[0] + Y * (lo[1] + Y * hi[0])
 
 @inline
@@ -23,8 +28,8 @@ def fs_compress(state, scalar, tail, out):
     limbs = StackBuf(3)
     hint_f192_limbs(limbs, scalar)
     block = StackBuf(2)
-    pack64x2_into(limbs[0], limbs[1], block[0])
-    pack64x2_into(limbs[2], tail, block[1])
+    block[0] = pack64x2(limbs[0], limbs[1])
+    block[1] = pack64x2(limbs[2], tail)
     assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
     blake2s(state, block, out)
     return

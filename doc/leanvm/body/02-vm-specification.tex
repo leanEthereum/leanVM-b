@@ -23,7 +23,7 @@ A \emph{memory word}, including a cell value, immediate, or hash value, is an el
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
 
-\paragraph{Instruction set.} The machine implements seven instructions. Below, $o,o_A,\dots$ are fp-relative references, $k$ is an immediate operand, and $\loc{o}$ is the cell at address $\fp\cdot o$.
+\paragraph{Instruction set.} The machine implements six instructions. Below, $o,o_A,\dots$ are fp-relative references, $k$ is an immediate operand, and $\loc{o}$ is the cell at address $\fp\cdot o$.
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
@@ -34,13 +34,10 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $192$-bit immediate)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{PACK64X2}      & $[o_A,o_B,o_C]$ & $\loc{o_C}=a_0+b_0y$ for $\loc{o_A}=a_0,\loc{o_B}=b_0\in\K$\\
 \texttt{BLAKE2S}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\md]$ & standard BLAKE2s compression (below)\\
 \hline
 \end{tabularx}
 \end{center}
-
-\texttt{PACK64X2} groups the low limbs of two $\E$-valued memory cells into one canonical $128$-bit cell.
 
 \texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE2s operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\md$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
 \[
@@ -66,4 +63,3 @@ The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return
 \texttt{JUMP} reads a condition $c=\loc{o_c}$, a $\K$-element, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
 
 \paragraph{Words used as addresses.} A memory word is $192$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Some instructions (\texttt{DEREF}, \texttt{JUMP}) interpret memory words as address or registers. The VM then requires those words to be stricly in $\K$ (i.e. the two top lanes are zero). For \texttt{JUMP} the requirement is unconditional: $\loc{o_d}$ and $\loc{o_f}$ must be in $\K$ on every execution of the instruction, not only when the branch is taken. Its condition is $\K$-valued too, though nothing reads it as an address; all three are committed one lane each, the memory interaction zeroing the rest (\S\ref{sec:tab-jump}).
-

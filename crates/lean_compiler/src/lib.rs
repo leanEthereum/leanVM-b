@@ -242,9 +242,6 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Pack64x2 { a, b, c } => {
-                format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
-            }
             Op::Blake2s { ins, cv, out, metadata } => {
                 format!(
                     "BLAKE2S fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}], meta={})",
@@ -316,7 +313,6 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
         LOp::Blake2s { ins, cv, c, metadata } => Op::Blake2s {
             ins: *ins,
             cv: *cv,

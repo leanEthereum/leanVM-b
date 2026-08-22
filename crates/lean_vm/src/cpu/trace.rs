@@ -11,7 +11,7 @@
 
 use primitives::field::F64;
 
-/// `XOR`, `MUL` and `PACK64X2` row: the three cells are `fp·g^{a,b,c}`.
+/// `XOR` or `MUL` row: the three cells are `fp·g^{a,b,c}`.
 pub(crate) struct Xrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32, // frame base: address = fp + offset, operand = g^offset
@@ -65,7 +65,6 @@ pub(crate) struct Trace {
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
     pub(crate) blake2s: Vec<Brow>,
-    pub(crate) pack64x2: Vec<Xrow>,
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
 }
@@ -80,7 +79,6 @@ impl Trace {
             self.deref.len(),
             self.jump.len(),
             self.blake2s.len(),
-            self.pack64x2.len(),
         ]
     }
 }

@@ -16,7 +16,7 @@
 //!
 //! The four rules that keep this sound:
 //! 1. **Only pure ops are eliminated.** `DEREF` unifies two memory cells (and
-//!    bumps the bus read counts), `BLAKE2s`/`PACK64X2` carry bus effects, `JUMP`
+//!    bumps the bus read counts), `BLAKE2s` carries bus effects, `JUMP`
 //!    is control flow, so all are left alone. They still get their operands
 //!    rewritten.
 //! 2. **Only single-write targets.** An instruction is a candidate only if its
@@ -131,7 +131,7 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
     for ins in code {
         match &ins.op {
             LOp::Set { o, .. } => bump(*o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } | LOp::Pack64x2 { c, .. } => bump(*c),
+            LOp::Xor { c, .. } | LOp::Mul { c, .. } => bump(*c),
             // A `Cell` deref unifies `m[p·g^beta]` with `fp[gamma]`, which writes
             // `fp[gamma]` when it acts as a load. The `Pc`/`Fp` modes take their
             // source from the machine state and leave `gamma` unused.
@@ -198,7 +198,7 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
     };
     match &mut ins.op {
         LOp::Set { .. } => {}
-        LOp::Xor { a, b, .. } | LOp::Mul { a, b, .. } | LOp::Pack64x2 { a, b, .. } => {
+        LOp::Xor { a, b, .. } | LOp::Mul { a, b, .. } => {
             map(a);
             map(b);
         }

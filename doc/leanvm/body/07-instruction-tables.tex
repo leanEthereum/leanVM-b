@@ -100,19 +100,7 @@ When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ 
   \end{itemize}
 \end{itemize}
 
-\subsection{\texttt{PACK64X2}}\label{sec:tab-pack64x2}
-
-Asserts that two source cells are $\K$-valued and packs them into one canonical $128$-bit word.
-\begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; source limbs $v_A,v_B\in\K$; memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} none. 
-\item \textbf{Flushes:}
-  \begin{itemize}
-  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{PACK},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory} ($X\in\{A,B\}$): \pull\ $\tup{\dsep{MEM},\fp\cdot o_X,r_X,v_X,0,0}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_X,\gen\cdot r_X,v_X,0,0}$; and for the destination, \pull\ $\tup{\dsep{MEM},\fp\cdot o_C,r_C,v_A,v_B,0}$, \push\ $\tup{\dsep{MEM},\fp\cdot o_C,\gen\cdot r_C,v_A,v_B,0}$. The literal zeros are what make the two source range assertions and the destination packing exact.
-  \end{itemize}
-\end{itemize}
+\paragraph{Two-at-a-time range check.}\label{sec:tab-pack64x2} An untaken \texttt{JUMP} can assert that two arbitrary cells $a,b$ are $\K$-valued: set its condition cell to zero and use $a,b$ as the destination and frame cells. The row falls through regardless of their values, while the two memory tuples above still carry literal-zero upper limbs. A canonical $128$-bit packing is then computed as $a+y b$ with one \texttt{MUL\_NATIVE} and one \texttt{XOR}. This three-row sequence replaces a dedicated packing instruction.
 
 \subsection{\texttt{BLAKE2S}}\label{sec:tab-blake2s}
 

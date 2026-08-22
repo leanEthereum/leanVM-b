@@ -35,9 +35,6 @@ pub enum FillerOp {
     Mul,
     /// `SET s = 0`.
     Set,
-    /// `PACK64X2 s, s -> s`: `pack(0, 0) = 0`, and the zero upper limbs the instruction
-    /// demands of its sources hold.
-    Pack,
     /// `DEREF` through the frame's pointer cell, which the interpreter sets to `g^0`, so
     /// the address is memory cell `0` and the value read is the public input's.
     Deref,
@@ -51,12 +48,11 @@ pub enum FillerOp {
 
 /// The tables, in `lean_vm::cpu::Stats::TABLES` order, which is how the solver indexes
 /// them.
-pub const TABLES: [(u8, FillerOp); 7] = [
+pub const TABLES: [(u8, FillerOp); 6] = [
     (0, FillerOp::Xor),
     (1, FillerOp::Mul),
     (2, FillerOp::Set),
     (3, FillerOp::Deref),
     (4, FillerOp::Jump),
     (5, FillerOp::Blake2s),
-    (6, FillerOp::Pack),
 ];

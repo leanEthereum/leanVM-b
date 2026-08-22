@@ -218,7 +218,7 @@ impl FnLower<'_> {
         // the equality it names is still unset.
         match op {
             LOp::Set { o, .. } => self.phys.insert(o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } | LOp::Pack64x2 { c, .. } => self.phys.insert(c),
+            LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.phys.insert(c),
             LOp::Deref { gamma, .. } => self.phys.insert(gamma),
             LOp::Blake2s { c, .. } => {
                 self.phys.insert(c);
@@ -496,11 +496,6 @@ impl FnLower<'_> {
                         FillerOp::Set => LOp::Set {
                             o: fr::SCRATCH,
                             k: KVal::Const(F192::ZERO),
-                        },
-                        FillerOp::Pack => LOp::Pack64x2 {
-                            a: fr::SCRATCH,
-                            b: fr::SCRATCH,
-                            c: fr::SCRATCH,
                         },
                         FillerOp::Deref => LOp::Deref {
                             alpha: fr::PTR,
@@ -1153,14 +1148,6 @@ impl FnLower<'_> {
                     floor,
                 }));
                 dst
-            }
-            Expr::Call(f, args) if f == "pack64x2" => {
-                assert_eq!(args.len(), 2, "pack64x2(a, b) takes two scalar cells");
-                let a = self.expr(&args[0]);
-                let b = self.expr(&args[1]);
-                let c = self.fresh();
-                self.emit(LOp::Pack64x2 { a, b, c });
-                c
             }
             Expr::Call(f, args) => {
                 let d = self.call(f, args, 1)[0];
@@ -2257,12 +2244,12 @@ impl FnLower<'_> {
                 }));
             }
             "blake2s" => self.lower_blake2s(args),
-            "pack64x2_into" => {
-                assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
+            "assert_in_k" => {
+                assert_eq!(args.len(), 2, "assert_in_k(a, b) takes two scalar cells");
                 let a = self.expr(&args[0]);
                 let b = self.expr(&args[1]);
-                let c = self.expr(&args[2]);
-                self.emit(LOp::Pack64x2 { a, b, c });
+                let zero = self.zero();
+                self.emit(LOp::Jump { oc: zero, od: a, of: b });
             }
             "hint_f192_limbs" => {
                 assert_eq!(args.len(), 2, "hint_f192_limbs(dest, value)");
@@ -2596,7 +2583,7 @@ fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
         Stmt::Call(f, _) => {
-            f == "blake2s" || f == "pack64x2_into" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
+            f == "blake2s" || f == "assert_in_k" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
         }
         Stmt::If { then, els, .. } => {
             then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))

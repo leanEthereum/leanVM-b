@@ -424,7 +424,7 @@ fn blake2s_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE2s, PACK64X2]`, and the
+/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE2s]`, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -445,7 +445,7 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S", "PACK64X2"];
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S"];
 
     /// One line of run sizes, every one a power of two: the per-table instruction
     /// counts with their share of the run, largest first, then the data memory and
@@ -557,7 +557,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             leaf::prove_balance(&l.push, &l.pull, &l.count, &cols, &owners, &spans, &mut ps)
         });
         let table_claims = crate::stage!("Prove constraints", || {
-            // One sumcheck for all seven tables (§constraints).
+            // One sumcheck for all six tables (§constraints).
             let table_cols: Vec<Vec<&[F64]>> = spans
                 .iter()
                 .map(|&(base, n)| (0..n).map(|c| cols[base + c]).collect())

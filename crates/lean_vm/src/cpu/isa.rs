@@ -32,15 +32,6 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// Read two K-valued (64-bit) cells and pack them canonically into one
-    /// 128-bit cell: `c = (a.c0, b.c0, 0)`. The memory bus reads the sources as
-    /// `(lo, 0, 0)`, so executing this instruction also proves both source
-    /// words lie in K = F64.
-    Pack64x2 {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
     /// `BLAKE2s`: one standard BLAKE2s compression. The four 16-byte
     /// message chunks `ins` (each a canonical 128-bit chunk in ONE 192-bit cell,
     /// top limb zero) form the 64-byte block; the digest lands in the TWO

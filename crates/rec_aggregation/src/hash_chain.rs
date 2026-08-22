@@ -132,7 +132,7 @@ fn blake2s_hash_chain() {
         pretty_integer(unroll)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S", "PACK64X2"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S"]
         .iter()
         .zip(&stats.counts)
     {

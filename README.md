@@ -43,18 +43,18 @@ XMSS aggregation, 900 signatures
 
 
 ```bash
-cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
+cargo run --release -- recursion --n 2 --xmss-per-leaf 900 --log-inv-rate 2 --repeat 3
 ```
 
 ```
 recursion 2→1, over leaves of 900 signatures
-  cycles (VM steps)           : 796,006 = 2^19.602
-    proven rows               : 1,196,032 = 2^20.19  (filled to powers of two)
-    details                   : DEREF 2^18.168 (37.0%)  MUL 2^17.818 (29.0%)  XOR 2^17.374 (21.3%)  SET 2^15.536 (6.0%)  BLAKE2S 2^14.44 (2.8%)  PACK64X2 2^14.349 (2.6%)  JUMP 2^13.272 (1.2%)  MEMORY 2^19.932  TOTAL_COMMITTED 2^24.863
+  cycles (VM steps)           : 807,637 = 2^19.623
+    proven rows               : 1,179,648 = 2^20.17  (filled to powers of two)
+    details                   : DEREF 2^18.108 (35.0%)  MUL 2^17.876 (29.8%)  XOR 2^17.503 (23.0%)  SET 2^15.539 (5.9%)  JUMP 2^14.826 (3.6%)  BLAKE2S 2^14.437 (2.7%)  MEMORY 2^19.911  TOTAL_COMMITTED 2^24.856
   signers                     : 1,800
-  proof size                  : 213.7 KiB
-  aggregating                 : 0.446 s ± 3.1%      peak memory 17.299 GiB
-  verifying                   : 0.015 s
+  proof size                  : 213.4 KiB
+  aggregating                 : 0.453 s ± 5.7%      peak memory 17.292 GiB
+  verifying                   : 0.016 s
 ```
 
 ### Fibonacci
@@ -104,4 +104,3 @@ Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
 - PCS: [WHIR](https://eprint.iacr.org/2024/1586) (aka [Ligerito](https://eprint.iacr.org/2025/1187))
 - Proving BLAKE2s by [Flock](https://github.com/succinctlabs/flock/tree/main)
 - RingSwitching, M3 arithmetisation, (and more) by [Binius](https://github.com/IrreducibleOSS/binius) / [Binius64](https://github.com/binius-zk/binius64) (see [DP23](https://eprint.iacr.org/2023/1784) and [DP24](https://eprint.iacr.org/2024/504))
-

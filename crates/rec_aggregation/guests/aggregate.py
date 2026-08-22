@@ -4,7 +4,7 @@ from snark_lib import *
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
 # Per-table tau floor: BLAKE2s is sized to flock's instance count (>= 2^3).
-FLOORS = [0, 0, 0, 0, 0, 3, 0]
+FLOORS = [0, 0, 0, 0, 0, 3]
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
 
@@ -102,7 +102,6 @@ TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
 TABLE_BLAKE2s = 5
-TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (combined domain,
@@ -314,31 +313,29 @@ def f192_from_limbs(c0, c1, c2):
 
 
 @inline
+def pack64x2(a, b):
+    assert_in_k(a, b)
+    return a + Y_TOWER * b
+
+
+@inline
 def challenge_from_state(state):
     # `hash_state_to_words` with the second word dropped, written out because a
     # tuple-unpacking call is not inlinable and `squeeze` is @inline.
-    # Exact lowering for state = [(d0,d1,0), (d2,d3,0)]:
-    #   hints lo=[d0,d1], hi=[d2,d3]
-    #   PACK64X2(lo[0],lo[1]) -> state[0]  (in-place equality check)
-    #   PACK64X2(hi[0],hi[1]) -> state[1]  (in-place equality check)
-    #   return d0 + d1*Y + d2*Y^2
-    # Write-once memory makes both PACK rows assertions, so all four digest
-    # lanes are proven to be in K; d3 is constrained but not used.
-    lo = StackBuf(2)
-    hi = StackBuf(2)
-    hint_f192_limbs(lo, state[0])
-    hint_f192_limbs(hi, state[1])
-    pack64x2_into(lo[0], lo[1], state[0])
-    pack64x2_into(hi[0], hi[1], state[1])
-    # state[0] IS lo[0] + Y·lo[1], pinned by the pack just above, so the low two
-    # lanes need no reassembly: only the top lane is weighted in.
-    return state[0] + Y_TOWER * Y_TOWER * hi[0]
+    # Both words are BLAKE2s outputs, so their top limbs are already zero. Only
+    # d2 is needed separately: hint it, derive d3 = (state[1] + d2)/Y, then
+    # prove both are in K. Uniqueness of the tower representation binds the hint.
+    d2 = StackBuf(1)
+    hint_f192_limbs(d2, state[1])
+    d3 = (state[1] + d2[0]) * Y_INV
+    assert_in_k(d2[0], d3)
+    return state[0] + Y_TOWER * Y_TOWER * d2[0]
 
 
 @inline
 def fs_compress(state, scalar, tail, out):
     # Serialize scalar.c0, scalar.c1, scalar.c2, tail as two canonical cells.
-    # Only the two LOW limbs are advice: PACK64X2 proves they are in K and makes
+    # Only the two LOW limbs are advice: pack64x2 proves they are in K and makes
     # block[0] their packing lo + Y·hi, which leaves the top limb determined,
     # (scalar + block[0])·Y⁻², with the second pack proving that is in K as well.
     # Three limbs in K that weight to scalar ARE its limbs, the tower
@@ -347,21 +344,21 @@ def fs_compress(state, scalar, tail, out):
     lo = StackBuf(2)
     hint_f192_limbs(lo, scalar)
     block = StackBuf(2)
-    pack64x2_into(lo[0], lo[1], block[0])
+    block[0] = pack64x2(lo[0], lo[1])
     top = (scalar + block[0]) * (Y_INV * Y_INV)
-    pack64x2_into(top, tail, block[1])
+    block[1] = pack64x2(top, tail)
     blake2s(state, block, out)
     return
 
 
-def canonical_cell(word, out_cell):
-    # Prove a transcript word is a canonical BLAKE2s cell (d, d', 0): PACK64X2
-    # writes the pack of two hinted K limbs, and the equality pins the word to
-    # it, so a nonzero top lane cannot slip through.
-    limbs = StackBuf(3)
-    hint_f192_limbs(limbs, word)
-    pack64x2_into(limbs[0], limbs[1], out_cell)
-    assert word == out_cell
+def canonical_cell(word):
+    # Hint the low limb and derive the quotient by Y. Requiring both to be in K
+    # proves `word = lo + Y*hi`, hence that its top limb is zero.
+    lo = StackBuf(1)
+    hint_f192_limbs(lo, word)
+    hi = (word + lo[0]) * Y_INV
+    assert_in_k(lo[0], hi)
+    return word
 
 
 def squeeze_step(state_0, state_1):
@@ -427,8 +424,8 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     # WHIR fold/query grinding: digest = H(H(state, POW_BASE), (nonce, POW_NONCE)), whose
     # low nbits (nbits_g = g^nbits) must be zero. The PoW window of
     # transcript::pow_bits_ok is `digest.0 & ((1 << bits) - 1)`, nbits < 64, so it
-    # lives entirely in the digest's FIRST 64-bit lane: one PACK64X2 pins the
-    # digest cell's two lanes (both proven to be in K, the third zero), and only
+    # lives entirely in the digest's FIRST 64-bit lane: its hinted low lane and
+    # derived high lane are both proven to be in K, and only
     # that lane's BASE_FIELD_BITS coordinates are advice-decomposed and verified
     # (booleanity + reconstruction), not all FIELD_BITS of the cell. The caller
     # absorbs the full field nonce afterwards. The honest prover searches the
@@ -442,9 +439,10 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     out = StackBuf(2)
     # nonce's three F64 limbs followed by DS_POW_NONCE, exactly as the native state.
     fs_compress(base, nonce, DS_POW_NONCE, out)
-    lanes = StackBuf(2)
+    lanes = StackBuf(1)
     hint_f192_limbs(lanes, out[0])
-    pack64x2_into(lanes[0], lanes[1], out[0])  # out[0] == (lanes[0], lanes[1], 0), both in K
+    high = (out[0] + lanes[0]) * Y_INV
+    assert_in_k(lanes[0], high)
     lane_bits = HeapBuf(GEN ** BASE_FIELD_BITS)
     hint_decompose_bits(lane_bits, lanes[0], BASE_FIELD_BITS)
     acc = 0
@@ -776,8 +774,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             fs, next_root_a, msg_cursor = fs_next(fs, msg_cursor)
             fs, next_root_b, msg_cursor = fs_next(fs, msg_cursor)
             next_root = StackBuf(2)
-            canonical_cell(next_root_a, next_root[0])
-            canonical_cell(next_root_b, next_root[1])
+            next_root[0] = canonical_cell(next_root_a)
+            next_root[1] = canonical_cell(next_root_b)
             level_roots_0[GEN ** (lvl + 1)] = next_root[0]
             level_roots_1[GEN ** (lvl + 1)] = next_root[1]
             # OOD binding for the newly observed level-(lvl+1) commitment.
@@ -855,16 +853,16 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 # Level-0 rows are base-field F64, embedded one-per word. Pack
                 # the lanes into a contiguous run of canonical 128-bit cells for
                 # the standard leaf hash; the dot consumes the individual lanes.
-                # PACK64X2 reads both source cells through the memory bus as
-                # `(lo, 0, 0)`, so the packs also prove every hinted lane is
+                # The untaken JUMP reads both source cells through the memory bus as
+                # `(lo, 0, 0)`, so the packing helpers also prove every hinted lane is
                 # genuinely F64 before it enters the hash or row_dot.
                 for jb in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl] // 4):
                     e0 = row_ptr[GEN ** (4 * jb)]
                     e1 = row_ptr[GEN ** (4 * jb + 1)]
                     e2 = row_ptr[GEN ** (4 * jb + 2)]
                     e3 = row_ptr[GEN ** (4 * jb + 3)]
-                    pack64x2_into(e0, e1, packed_row[2 * jb])
-                    pack64x2_into(e2, e3, packed_row[2 * jb + 1])
+                    packed_row[2 * jb] = pack64x2(e0, e1)
+                    packed_row[2 * jb + 1] = pack64x2(e2, e3)
                     row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
             else:
                 # Higher-level F192 rows arrive as flat F64 tower limbs (three
@@ -880,8 +878,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 for jl in unroll(0, 3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
                     lanes[jl] = row_ptr[GEN ** jl]
                 for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
-                    pack64x2_into(lanes[4 * jb], lanes[4 * jb + 1], packed_row[2 * jb])
-                    pack64x2_into(lanes[4 * jb + 2], lanes[4 * jb + 3], packed_row[2 * jb + 1])
+                    packed_row[2 * jb] = pack64x2(lanes[4 * jb], lanes[4 * jb + 1])
+                    packed_row[2 * jb + 1] = pack64x2(lanes[4 * jb + 2], lanes[4 * jb + 3])
                 for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
                     if 3 * jw % 2 == 0:
                         # limbs (3w, 3w+1) are a pack; add Y^2 * limb(3w+2).
@@ -1154,8 +1152,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # `next_root` rejects a non-canonical half (merkle.rs `scalars_to_hash`); the
     # level roots get the same treatment at their own read.
     root_cells = StackBuf(2)
-    canonical_cell(commit_root_0, root_cells[0])
-    canonical_cell(commit_root_1, root_cells[1])
+    root_cells[0] = canonical_cell(commit_root_0)
+    root_cells[1] = canonical_cell(commit_root_1)
 
     # ---- bus challenges (F192 provides the soundness margin without grinding) ----
     # A tuple is fingerprinted multilinearly: slot x weighs eq(alphas, x), so a leaf
@@ -1503,7 +1501,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         bus_table_total[GEN ** s] = acc + gkr_claims[s]
     claim_idx = N_BUS_CLAIMS  # AIR/PI/pin claims pool after the deduped bus claims
 
-    # ---- ONE table sumcheck for all seven tables ----
+    # ---- ONE table sumcheck for all six tables ----
     # Mirrors lean_vm::constraints::verify. zc_xi ONCE, each table folding its own
     # identities with a DISJOINT range of its powers (ETA_OFFSET[t]); one shared
     # point zeta (the bus GKR's); n = max_t tau_t rounds. Rounds bind the HIGHEST
@@ -1615,8 +1613,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             constraint_eval = zc_xi_pows[ETA_OFFSET[t] + 0] * (b + c * w)
             constraint_eval += zc_xi_pows[ETA_OFFSET[t] + 1] * (c * b1)
         if t == TABLE_BLAKE2s:
-            constraint_eval = 0
-        if t == TABLE_PACK64X2:
             constraint_eval = 0
         # The table's three bus forms, evaluated at the SAME column evaluations:
         # Σ_b eq_hi(b) · (γ + Σ_i α^i · coord_i), the coords read off col_evals at
@@ -2257,10 +2253,9 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     blake2s(tweak_pp, msg_block, after_msg, counter=64, final=0)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
-    # The spec's pad: cell 1 is randomness bytes 16..24 then 8 zero bytes. A PACK64X2
+    # The spec's pad: cell 1 is randomness bytes 16..24 then 8 zero bytes. A packing helper
     # source is read as (lo, 0, 0) where BLAKE2s reads (lo, hi, 0); the dest is unused.
-    rand_pad = StackBuf(1)
-    pack64x2_into(rand_block[1], 0, rand_pad[0])
+    assert_in_k(rand_block[1], 0)
     digest = StackBuf(WORDS_PER_BLOCK)
     zero_block = StackBuf(WORDS_PER_BLOCK)
     zero_block[0] = 0
@@ -2381,7 +2376,7 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     # canonical cell and needs no check, the BLAKE2s table reading only cells
     # whose top limb is zero. A deferred cell is a full field element, so two
     # fill three cells as (s0,s1) (s2,t0) (t1,t2), each top limb derived from the
-    # two hinted below it and each PACK64X2 proving its lanes are in K.
+    # two hinted below it and each packing helper proving its lanes are in K.
     cells = StackBuf(4 * STMT_BLOCKS)
     cells[0] = STMT_TAG_0
     cells[1] = STMT_TAG_1
@@ -2400,9 +2395,9 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
         tlo = StackBuf(2)
         hint_f192_limbs(slo, s)
         hint_f192_limbs(tlo, t)
-        pack64x2_into(slo[0], slo[1], cells[STMT_DEFER_OFF + 3 * p])
-        pack64x2_into(((s + slo[0]) * Y_INV + slo[1]) * Y_INV, tlo[0], cells[STMT_DEFER_OFF + 3 * p + 1])
-        pack64x2_into(tlo[1], ((t + tlo[0]) * Y_INV + tlo[1]) * Y_INV, cells[STMT_DEFER_OFF + 3 * p + 2])
+        cells[STMT_DEFER_OFF + 3 * p] = pack64x2(slo[0], slo[1])
+        cells[STMT_DEFER_OFF + 3 * p + 1] = pack64x2(((s + slo[0]) * Y_INV + slo[1]) * Y_INV, tlo[0])
+        cells[STMT_DEFER_OFF + 3 * p + 2] = pack64x2(tlo[1], ((t + tlo[0]) * Y_INV + tlo[1]) * Y_INV)
     for k in unroll(0, STMT_PAD_CELLS):
         cells[STMT_DEFER_OFF + 3 * STMT_PAIRS + k] = 0
     st = StackBuf(2)
