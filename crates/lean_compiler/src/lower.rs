@@ -620,7 +620,10 @@ impl FnLower<'_> {
                                 }
                                 RetBind::Stack(base, size) => {
                                     assert_eq!(size, 1, "a multi-cell StackBuf return cannot cross a match_range join");
-                                    s.copy(base, rc);
+                                    // `copy` reads its source raw, so resolve the arm's
+                                    // deferred alias first (as `take_inline_ret_cell` does).
+                                    let src = s.word_src(base);
+                                    s.copy(src, rc);
                                 }
                                 RetBind::Scalar => {}
                             }
@@ -1608,7 +1611,12 @@ impl FnLower<'_> {
                     size, 1,
                     "a multi-cell StackBuf return needs a `let` binding, not an expression use"
                 );
-                base
+                // Through `word_src`, like every other read of a stack cell: the body may
+                // have filled this cell with a deferred copy or constant, which emits no
+                // instruction, and the raw cell would then be one no instruction writes.
+                // The `let` consumer follows the alias by taking a `Binding::Stack`
+                // ([`ret_binding`]), and an expression use has to agree with it.
+                self.word_src(base)
             }
             _ => dst,
         }

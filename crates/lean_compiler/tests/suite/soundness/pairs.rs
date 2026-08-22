@@ -186,3 +186,47 @@ def main():
 fn one(published: F192, hint: F192) -> Trial {
     Trial::new([published, hint]).stream("w", vec![vec![hint]])
 }
+
+/// An `@inline` function returning a one-cell `StackBuf`, used in expression
+/// position, must hold the value its body stored. `zkDSL.md` §`@inline` makes the
+/// decorator a call-site expansion, and §StackBuf makes `s[0]` the cell the body
+/// wrote, so binding the call with `let` and using it inline are the same program.
+///
+/// Regression test: `take_inline_ret_cell` used to hand back the raw frame cell
+/// rather than following the deferred-copy alias, so the caller read a cell no
+/// instruction ever wrote. The `assert` then compared that cell instead of the
+/// value, which made it vacuous, and the honest runner back-solved the cell to
+/// whatever the public statement demanded.
+#[test]
+fn inline_stackbuf_return_in_expression_position() {
+    let body = "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    ASSERTION
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = v[1]
+    return
+
+
+@inline
+def pick(x):
+    s = StackBuf(1)
+    s[0] = x
+    return s
+";
+    check_pair(&Pair {
+        name: "inline_stackbuf_return_in_expression_position",
+        why: "zkDSL.md §`@inline` + §StackBuf: `pick(x)[0]` is the cell the body stored `x` into, \
+              whether the caller binds the call or writes it inline.",
+        a: &body.replace("ASSERTION", "assert pick(v[0]) != v[1]"),
+        b: &body.replace("ASSERTION", "r = pick(v[0])\n    assert r[0] != v[1]"),
+        trials: vec![
+            two(g(3), g(5)), // distinct: accepted by both
+            two(g(3), g(3)), // equal and nonzero: the inequality must fail for both
+            two(k(1), k(1)),
+            two(g(7), g(2)),
+        ],
+    });
+}
