@@ -6,23 +6,23 @@
 //! a proof that accepts something it should not. So the three checks below all
 //! attack the *absence* of a constraint rather than the presence of a value.
 //!
-//! 1. [`check_case`] — **perturbation**. One valid trial that must run, and a
+//! 1. [`check_case`], **perturbation**: one valid trial that must run, and a
 //!    table of single-cell pokes at the public input or a witness stream, each of
 //!    which must make the run fail. A dropped assertion shows up as a poke that
 //!    is accepted. (This is the shape of `leanVM`'s own soundness suite.)
-//! 2. [`check_pair`] — **equivalence**. Two spellings the language documents as
+//! 2. [`check_pair`], **equivalence**: two spellings the language documents as
 //!    interchangeable must accept exactly the same trials. Every dropped-constraint
 //!    bug found so far is an *asymmetry*: an assertion that survives one spelling
 //!    and vanishes in the other, so comparing the two finds it without anyone
 //!    having to guess which side is wrong.
-//! 3. [`Execution::unconstrained_reads`] — **unconstrained reads**, asserted on
+//! 3. [`Execution::unconstrained_reads`], **unconstrained reads**, asserted on
 //!    every accepting run of both layers above. A cell an instruction read that
 //!    nothing ever wrote is a live value from outside the constraint system.
 //!
 //! The three are complementary, and a fix should land with whichever one catches
 //! it. Layer 3 sees a dropped store whose cell is then *read* (the value came from
 //! nowhere); layer 2 sees a dropped store whose cell is then *ignored* (the value
-//! came from the alias instead, and the physical write is orphaned) — layer 3 is
+//! came from the alias instead, and the physical write is orphaned), and layer 3 is
 //! blind to that one, because nothing reads the orphan. Layer 1 needs a program
 //! whose assertion the poke can violate, and in exchange it needs no second
 //! spelling to compare against.
