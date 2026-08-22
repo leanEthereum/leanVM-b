@@ -180,99 +180,83 @@ What Flock leaves is one family of $64$ claims for Ring-Switching (\S\ref{flock:
 
 \subsection{Evaluating the matrices}\label{flock:matrices}
 
-$A_0$ and $B_0$ are the R1CS of a Boolean circuit. Each row of either matrix sums a handful of the circuit's wires, while what a single wire stands for can already be dense across the columns. So the circuit is the compact form of both matrices, and the matrices are what substituting its linear wires away (\S\ref{flock:statement}) would produce. A traversal of the wires then stands in for every use a proof makes of them. Forwards, against a column weight $W$, it returns $A_0W$ and $B_0W$, indexed by rows. Backwards, against a row weight, it returns the image of that weight under $(A_0+\lcalpha B_0)^{\!\top}$, indexed by columns; running it twice, at $\lcalpha=0$ and $\lcalpha=1$, separates $A_0^{\!\top}$ from $B_0^{\!\top}$.
+$A_0$ and $B_0$ encodes a Boolean circuit, but are never materialized.
 
 \subsubsection{The circuit}\label{flock:circuit}
 
 \begin{definition}[Circuit]\label{def:circuit}
-A \emph{circuit} is a sequence of \emph{wires} $w_1,\dots,w_N$, each a \emph{source}, a $\oplus$ \emph{wire} with a set $S_w$ of earlier wires, possibly empty, or a $\wedge$ \emph{wire} with two earlier wires $u_w,u'_w$. A set of \emph{committed} wires, containing every source and every $\wedge$ wire, is injected into the block's positions $\cube{\kblock}$ by $w\mapsto\posof{w}$; a position outside the image is \emph{empty}. The first wire $w_1$ is a source, the \emph{constant}, at the position $\jconst$ that \eqref{flock:eq:const-one} fixes to $1$, and the other sources are the \emph{free inputs}. Given a bit at each free input and $1$ at the constant, every wire takes a value in $\Ftwo$, a $\oplus$ wire the sum of its inputs' values and a $\wedge$ wire the product of its two: the circuit's \emph{evaluation}.
+A \emph{circuit} is an ordered sequence of wires $w_1,\ldots,w_N$. Each wire is either a \emph{source}, a $\oplus$ wire with a possibly empty set $S_w$ of earlier wires, or a $\wedge$ wire with an ordered pair $(u_w,u'_w)$ of earlier wires. Its value lies in $\Ftwo$: a $\oplus$ wire is the sum of the values in $S_w$, and a $\wedge$ wire is the product of the values of $u_w$ and $u'_w$. The source $w_1$ is the constant $1$ and the other sources are free inputs.
+
+A set of \emph{committed} wires containing all sources, all $\wedge$ wires, and a subset of the $\oplus$ wires (typically the result of the computation) is equipped with an injection $w\mapsto\posof{w}$ into $\cube{\kblock}$. The constant has position $\posof{w_1}=\jconst$. A position $k\in\cube{\kblock}$ is \emph{empty} if $k\neq\posof{w}$ for every committed wire $w$. A witness block $z_t=z(\cdot,t)$ stores each committed wire's value at its position and stores $0$ at empty positions.
 \end{definition}
 
-An uncommitted wire is therefore a $\oplus$ wire. Committing one is optional, and done when something outside the circuit reads it at a fixed position, an output say. Since $w_1$ is earlier than everything, any $S_w$ may list the constant, which is how a hardwired constant enters.
-
-Write $[\,\cdot=p\,]$ for the Boolean vector that is $1$ at position $p$ and $0$ elsewhere. Each wire has an \emph{expansion} $\lform{w}:\cube{\kblock}\to\Ftwo$, its value written out over the committed positions, obtained by a descent that stops at committed wires:
+For $p\in\cube{\kblock}$, write $[\,\cdot=p\,]:\cube{\kblock}\to\Ftwo$ for the function that equals $1$ at $p$ and $0$ at every other position. The \emph{expansion} of a wire over committed positions is
 \begin{equation}\label{flock:eq:expand}
 \lform{w}=[\,\cdot=\posof{w}\,]\ \text{ if $w$ is committed},\qquad \lform{w}=\sum_{u\in S_w}\lform{u}\ \text{ otherwise},
 \end{equation}
-the sum over $\Ftwo$. Call a path $w=x_0,\dots,x_m$, $m\ge 0$, \emph{admissible} when each $x_{i+1}$ lies in $S_{x_i}$, every $x_i$ before the last is uncommitted, and $x_m$ is committed. Then $\lform{w}$ is $1$ at $\posof{x}$ exactly when an odd number of admissible paths lead from $w$ to $x$, even numbers cancelling. Those paths are the linear substitutions of \S\ref{flock:statement}. A committed wire has just the one path, to itself, but an uncommitted wire deep in the circuit has an odd number of them to a large fraction of the committed positions before it, and rows built from those are what make these matrices dense and neither party willing to build them.
+where the second case applies only to uncommitted $\oplus$ wires. By induction, $\inner{\lform{w}}{z_t}$ is the value of $w$.
 
-\subsubsection{The rows}\label{flock:rows}
+\subsubsection{The R1CS matrices}\label{flock:rows}
 
-Because $C_0=I$, a committed position leads a double life: it is a column of $A_0$ and $B_0$, where a wire's value sits in the witness, and it is also the row of the one constraint attached to that value,
-\begin{equation}\label{flock:eq:row-shape}
-\inner{A_0(k,\cdot)}{z_t}\cdot\inner{B_0(k,\cdot)}{z_t}=z_t(k),\qquad k\in\cube{\kblock},
-\end{equation}
-for the block $z_t=z(\cdot,t)$ of the witness. Pairing an expansion with $z_t$ recovers what it expanded: fix an evaluation and let $z_t$ carry each committed wire's value at its own position, and $\inner{\lform{w}}{z_t}$ is the value of $w$ for every wire, by induction along the sequence.
-
-We take every row of either matrix to be a sum of expansions, so that a row is fixed by naming which wires it sums. Give each committed wire $w$ two sets $S^A_w,S^B_w$ of wires, with
+For every committed wire $w$, assign two sets of wires to the corresponding row:
+\[
+(S^A_w,S^B_w)=
+\begin{cases}
+(\{u_w\},\{u'_w\}) & \text{if $w$ is a $\wedge$ wire},\\
+(S_w,\{w_1\}) & \text{if $w$ is a $\oplus$ wire},\\
+(\{w\},\{w_1\}) & \text{if $w$ is a source}.
+\end{cases}
+\]
+and define:
 \begin{equation}\label{flock:eq:row-lists}
 A_0(\posof{w},\cdot)=\sum_{u\in S^A_w}\lform{u},\qquad B_0(\posof{w},\cdot)=\sum_{u\in S^B_w}\lform{u}.
 \end{equation}
-By the double life above, \eqref{flock:eq:row-shape} then reads: what the two sets pair to must multiply to the value stored at the wire's own position. That is what the four cases below arrange.
-\begin{itemize}
-\item A $\wedge$ wire takes $\{u_w\}$ and $\{u'_w\}$, giving exactly the product it is.
-\item A committed $\oplus$ wire takes $S_w$ and $\{w_1\}$, so once $z_t(\jconst)=1$ its constraint is $z_t(\posof{w})=\sum_{u\in S_w}\inner{\lform{u}}{z_t}$: its inputs' sum, which is what it is. Note $S^A_w$ is $S_w$ and not $\{w\}$, whose expansion is the indicator at $\posof{w}$, which would leave the constraint vacuous.
-\item A source takes $\{w\}$ and $\{w_1\}$, so once $z_t(\jconst)=1$ its constraint is the vacuous one the item above had to avoid. That is right: a free input is free, and the constant's own constraint is $z_t(\jconst)^2=z_t(\jconst)$.
-\item An empty position takes both sets empty, so $0\cdot 0=z_t(k)$ forces $z_t(k)=0$.
-\end{itemize}
-Which operand of a $\wedge$ wire goes to $A_0$ is arbitrary but must be pinned: the other choice gives a consistent but different pair of matrices, and prover and verifier must agree on which. That choice, the wire order and the position map are fixed by the implementation, and the digest that leads every transcript (\S\ref{sec:e2e-unrolled}) is what commits to them.
+For every empty position $k$, set $A_0(k,\cdot)=B_0(k,\cdot)=0$. This specifies every row of both matrices.
 
-One check that the assignment is right. Fix bits for the free inputs. Then exactly one $z_t$ carries those bits at their positions, has $z_t(\jconst)=1$, and satisfies every constraint: the evaluation at the committed positions and $0$ at the empty ones. It exists: the evaluation satisfies all four cases above. It is unique because every constraint reads only $\jconst$, its own wire's position, and positions that earlier wires hold, so induction along the wire order pins every committed position, a source's from its given bit and the rest from earlier ones, while the fourth case pins the empty positions to $0$. Nothing pins $z_t(\jconst)=1$, though: the all-zero $z_t$ satisfies every constraint too, and closing that gap is what lincheck's constant-position check \eqref{flock:eq:const-one} is for.
+\vspace{3mm}
 
-\subsubsection{Forwards}\label{flock:forward}
+$A_0$, $B_0$ and $C_0=I$ corresponding R1CS constraints faithfully encode the circuit.
+\subsubsection{Forward algorithm}\label{flock:forward}
 
-Pair \eqref{flock:eq:expand} with a column weight $W:\cube{\kblock}\to\E$. The sum there is over $\Ftwo$, which sits inside $\E$, so
+Given a column vector $W:\cube{\kblock}\to\E$, the forward algorithm computes the two row-indexed vectors $A_0W$ and $B_0W$ without constructing either matrix. The native lincheck verifier uses $W=\wcol$ and retains only the scalar $\inner{\erow}{A_0W}+\lcalpha\inner{\erow}{B_0W}$. The prover of the deferred matrix sumcheck in \S\ref{sec:deferred-claims} instead stores both vectors and folds them through its first $\kblock$ rounds.
+
+To compute them, visit the wires from $w_1$ to $w_N$ and evaluate every expansion against $W$:
 \[
 \inner{\lform{w}}{W}=W(\posof{w})\ \text{ if $w$ is committed},\qquad \inner{\lform{w}}{W}=\sum_{u\in S_w}\inner{\lform{u}}{W}\ \text{ otherwise};
 \]
-taking $w_1$ up to $w_N$ evaluates every expansion against $W$. Pairing \eqref{flock:eq:row-lists} with $W$ then gives each row from values already in hand, a source's own being a single table read,
+then \eqref{flock:eq:row-lists} gives
 \begin{equation}\label{flock:eq:row-pair}
-\inner{A_0(\posof{w},\cdot)}{W}=\sum_{u\in S^A_w}\inner{\lform{u}}{W},
+\inner{A_0(\posof{w},\cdot)}{W}=\sum_{u\in S^A_w}\inner{\lform{u}}{W},\qquad \inner{B_0(\posof{w},\cdot)}{W}=\sum_{u\in S^B_w}\inner{\lform{u}}{W}.
 \end{equation}
-and likewise for $B_0$. Those, with $0$ at every empty position, are $A_0W$ and $B_0W$ row by row. Three things come of them.
+Together with zero at every empty row, these values are the desired vectors.
 
-\emph{Contracting.} At $W=\wcol$, group \eqref{flock:eq:matrix-form}'s double sum by rows, then drop the empty positions, whose rows vanish:
-\begin{align}
-\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,\erow(k)\,\wcol(j)
-&=\sum_{k}\erow(k)\,\inner{A_0(k,\cdot)}{\wcol}\notag\\
-&=\sum_{k\ \mathrm{non\text{-}empty}}\erow(k)\,\inner{A_0(k,\cdot)}{\wcol},\label{flock:eq:walk}
-\end{align}
-and likewise for $B_0$, where every committed non-$\wedge$ wire takes $\{w_1\}$ and so contributes the one shared $\wcol(\jconst)$. Accumulating both sums as the walk proceeds is what \S\ref{flock:native} calls one forward walk, and it is where that section's multiplication count comes from: one per committed wire on the $A$ side, one per $\wedge$ wire on the $B$, and one for the shared factor.
+\subsubsection{Transpose algorithm}\label{flock:backward}
 
-\emph{The two products.} Keeping the pairings \eqref{flock:eq:row-pair} rather than contracting them costs no extra arithmetic and gives $A_0W$ and $B_0W$ themselves, at whatever column weight is in play, which is what \S\ref{sec:deferred-claims} folds.
-
-\emph{Witness generation.} At $W=z_t$ the walk builds its own weight as it goes, writing a committed wire's position instead of reading it: a $\wedge$ wire's as the product of its two pairings, a committed $\oplus$ wire's as its $A_0$ pairing, and a source's as the free input, or the $1$, it is given, the empty positions staying $0$. It runs once per block, and emits $z_t$ and, at every committed position $k$, the pair $\inner{A_0(k,\cdot)}{z_t}$ and $\inner{B_0(k,\cdot)}{z_t}$, which are that block's entries of $a=Az$ and $b=Bz$, the rest being zero.
-
-The walk only adds, one addition per $\oplus$ input and per set entry, apart from the one Boolean product per $\wedge$ wire when it generates the witness; the field multiplications belong to the uses, and only the contraction incurs any. Only the wires still to be read need their values kept, so the storage is a frontier, not all $N$ of them.
-
-\subsubsection{Backwards}\label{flock:backward}
-
-The prover needs one thing more. Its $8$ lincheck rounds fold the $\jin$ half of \eqref{flock:eq:lincheck} only, leaving the $\kskip$ skip coordinates unfolded, so the sum still runs over all $2^{\kblock}$ columns, as $2^{\kskip}$ tables of $2^{\kblock-\kskip}$ entries folded in parallel. The matrix part of the weight on that sum is the \emph{column marginal}
+For $X\in\{A,B\}$, the transpose algorithm computes the complete column-indexed vector $\colmar^{X}=X_0^{\!\top}\erow$ without constructing $X_0$. The prover needs all $2^{\kblock}$ entries of both vectors:
 \begin{equation}\label{flock:eq:marginal}
-\begin{split}
-\colmar(j)&=\qext A_0(\zskip,\fc_{\mathrm{in}},j)+\lcalpha\,\qext B_0(\zskip,\fc_{\mathrm{in}},j)\\
-&=\sum_{k\in\cube{\kblock}}\bigl(A_0(k,j)+\lcalpha\,B_0(k,j)\bigr)\erow(k)=\bigl((A_0+\lcalpha B_0)^{\!\top}\erow\bigr)(j),
-\end{split}
+\colmar^{X}(j)=\qext X_0(\zskip,\fc_{\mathrm{in}},j)=\sum_{k\in\cube{\kblock}}X_0(k,j)\erow(k)=\bigl(X_0^{\!\top}\erow\bigr)(j),\qquad X\in\{A,B\},
 \end{equation}
-the second equality by \eqref{flock:eq:erow}, and the rounds pair it against the witness fold $\mle z(\cdot,\fc_{\mathrm{out}})$. That fold is no tensor, so the sum does not contract; and $\colmar$, unlike the tensor weight of \S\ref{flock:native}'s $c$ term, has no compact form of its own. So the prover must hold the table: every entry of $\colmar$.
-
-One forward walk cannot supply them. Its outputs are indexed by rows while $\colmar$ is indexed by columns, and at the column weight $\wcol$ the most it yields is $A_0\wcol$ and $B_0\wcol$ contracted against $\erow$ at relative weight $\lcalpha$: the hint \eqref{flock:eq:matpart}, one scalar where $2^{\kblock}$ entries are wanted. That weight is not even available yet, being built from $s$ and $\fc'_{\mathrm{in}}$, which the rounds produce only at their end. Reading $\colmar$ off forward walks instead, one per column at an indicator weight, would take $2^{\kblock}$ of them. What works is the same walk read backwards~\cite{Flock26}: the scalar the forward one stops at is $\inner{\colmar}{\wcol}$, linear in $\wcol$, so $\colmar$ is its gradient there, and differentiating a walk in reverse costs what the walk costs, which is why the transpose is as cheap as the map.
-
-\emph{Its input.} Regroup \eqref{flock:eq:marginal} by wire as \eqref{flock:eq:walk} did, and stop before pairing:
+where the second equality uses \eqref{flock:eq:erow}. Viewing each row as a column-indexed vector, empty rows contribute zero, so \eqref{flock:eq:row-lists} gives
+\begin{align*}
+\colmar^{X}
+&=\sum_{w\ \mathrm{committed}}\erow(\posof{w})\sum_{u\in S^X_w}\lform{u}\\
+&=\sum_u\left(\sum_{\substack{w\ \mathrm{committed}\\u\in S^X_w}}\erow(\posof{w})\right)\lform{u}.
+\end{align*}
+The last equality exchanges the finite sums and collects every occurrence of the same expansion $\lform{u}$. Thus, for every circuit wire $u$, define
+\begin{equation*}
+\chg{u}^{X}=\sum_{\substack{w\ \mathrm{committed}\\u\in S^X_w}}\erow(\posof{w}),
+\qquad \text{so that}\qquad
+\colmar^{X}=\sum_u\chg{u}^{X}\lform{u}.
+\end{equation*}
+Run the following procedure independently for $X=A$ and $X=B$. Initialize the output table $\colmar^{X}$ to zero and visit $w_N,\ldots,w_1$. At wire $w$, eliminate the term $\chg{w}^{X}\lform{w}$ using the appropriate case of \eqref{flock:eq:expand}:
+\begin{itemize}
+\item if $w$ is committed, then $\chg{w}^{X}\lform{w}=\chg{w}^{X}[\,\cdot=\posof{w}\,]$, so add $\chg{w}^{X}$ to $\colmar^{X}(\posof{w})$;
+\item otherwise, $w$ is an uncommitted $\oplus$ wire and
 \[
-\colmar=\sum_{w\ \mathrm{committed}}\erow(\posof{w})\,\bigl(A_0(\posof{w},\cdot)+\lcalpha\,B_0(\posof{w},\cdot)\bigr).
+\chg{w}^{X}\lform{w}=\chg{w}^{X}\sum_{u\in S_w}\lform{u}=\sum_{u\in S_w}\chg{w}^{X}\lform{u},
 \]
-Substituting \eqref{flock:eq:row-lists} turns this into a combination of expansions alone, one coefficient $\chg{u}\in\E$ per wire: each committed wire $w$ adds $\erow(\posof{w})$ to $\chg{u}$ for every $u\in S^A_w$, and $\lcalpha\,\erow(\posof{w})$ to $\chg{u}$ for every $u\in S^B_w$. Since every committed non-$\wedge$ wire takes $\{w_1\}$ on the $B$ side, those wires' second contributions all land on the single coefficient $\chg{w_1}$, behind one $\lcalpha$ multiplication, while a $\wedge$ wire's goes to $\chg{u'_w}$ and needs its own. What is left to compute is $\sum_u\chg{u}\lform{u}=\colmar$.
-
-\emph{The walk.} Start $\colmar$ at $0$ and visit $w_N$ down to $w_1$. At $w$, add $\chg{w}$ into $\colmar(\posof{w})$ if $w$ is committed, and into $\chg{u}$ for every $u\in S_w$ if not. Each step rewrites $\chg{w}\lform{w}$ as \eqref{flock:eq:expand} says it is, so with $\colmar$ and the coefficients standing for the values currently held,
-\[
-\colmar+\sum_{u\ \mathrm{unvisited}}\chg{u}\,\lform{u}
-\]
-never changes: it starts as $\sum_u\chg{u}\lform{u}$ and ends as $\colmar$, which is therefore the marginal.
-
-Two order facts make one traversal enough. A push out of $w$ lands in $S_w$, strictly earlier than $w$, so it reaches a wire the descending walk has not visited yet and nothing is dropped. A seed out of $w$ lands in $S^A_w$ or $S^B_w$, at or before $w$, a source naming itself being the only case that is not strict. Turned around, that second fact says every wire adding to $\chg{w}$ is $w$ itself or later, and the later ones a descending walk has already passed: a coefficient is complete when its own wire comes up. So the coefficients may be filled in up front, as the invariant above assumes, or wire by wire as the walk arrives, each $w$ seeding its two sets just before it is visited.
-
-Its additions are the forward walk's, and its multiplications are one $\lcalpha$ per $\wedge$ wire plus the one for $\chg{w_1}$. It runs once for the batch, the matrices being block diagonal, and its output, written at scattered positions and complete only at the end, must be held whole, where the forward walk's streams out row by row; its coefficients, by the same two order facts, are a frontier like the forward walk's values. Every $\chg{u}$ is affine in $\lcalpha$, as $\colmar$ is by \eqref{flock:eq:marginal}: the walk at $\lcalpha=0$ returns $A_0^{\!\top}\erow$, and adding the walk at $\lcalpha=1$ to it returns $B_0^{\!\top}\erow$, which is what \S\ref{sec:deferred-claims} needs at its own row point, for two walks instead of one. Nothing in either walk uses the tensor structure of a weight, so any weight will do. And only the prover walks in reverse, needing all $2^{\kblock}$ entries where a verifier needs just the two numbers of \eqref{flock:eq:walk} and its $B_0$ twin.
+so add $\chg{w}^{X}$ to the existing coefficient $\chg{u}^{X}$ of every predecessor $u\in S_w$.
+\end{itemize}
 
 \subsection{Soundness analysis}\label{flock:soundness}
 

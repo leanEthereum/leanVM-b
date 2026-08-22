@@ -85,8 +85,8 @@
 //! protocol's job, via PCS openings at fixed indices.
 
 use crate::gf2::{
-    ADD3_BITS, CARRY_BITS_PER_ADD, WireWord, back_add, back_add3_fused, walk_add, walk_add3_fused, wire_from_const,
-    wire_from_slot_base, wire_rotl, wire_rotr, wire_xor,
+    ADD3_BITS, CARRY_BITS_PER_ADD, MatrixSide, WireWord, back_add, back_add3_fused, walk_add, walk_add3_fused,
+    wire_from_const, wire_from_slot_base, wire_rotl, wire_rotr, wire_xor,
 };
 use crate::verifier;
 use crate::witness::packed_bytes;
@@ -293,10 +293,8 @@ pub fn min_n_blocks_log(n_blocks: usize) -> usize {
 // encode is specified in doc/leanvm, Annex C "Evaluating the matrices".
 // ---------------------------------------------------------------------------
 
-/// One forward pass of the circuit against column weights `w`, reporting every
-/// row's operand pair to `sink`. [`bilinear_walk_pair`] contracts those pairs,
-/// [`row_values_walk`] keeps them; the traversal is written once here.
-fn forward_walk<S: crate::gf2::RowSink>(sink: &mut S, w: &[F192]) {
+/// One forward pass of the circuit against column weights `w`, storing every row's operand pair.
+fn forward_walk(sink: &mut crate::gf2::RowValues, w: &[F192]) {
     sink.bconst(Z_CONST_POS, w[Z_CONST_POS]);
     // Free-input rows: A = [slot], B = [Z_CONST].
     for (base, len) in [
@@ -362,17 +360,19 @@ fn forward_walk<S: crate::gf2::RowSink>(sink: &mut S, w: &[F192]) {
 pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
     assert_eq!(u.len(), K);
     assert_eq!(w.len(), K);
-    let mut sink = crate::gf2::WalkAcc::new(u, w[Z_CONST_POS]);
-    forward_walk(&mut sink, w);
-    sink.finish()
+    let (a, b) = row_values_walk(w);
+    let mut va = F192::ZERO;
+    let mut vb = F192::ZERO;
+    for ((&ui, &ai), &bi) in u.iter().zip(&a).zip(&b) {
+        va += ui * ai;
+        vb += ui * bi;
+    }
+    (va, vb)
 }
 
 /// The matrix-vector products `(A_0 w, B_0 w)`, i.e. every row's inner product
-/// with `w`, by ONE FORWARD WALK: the same traversal as [`bilinear_walk_pair`],
-/// keeping the per-row values instead of contracting them. O(circuit) additions
-/// against one pass over ~89M nonzeros, and no matrix is materialized. Pinned
-/// by `reduction_tests`, whose prover folds these row values while its verifier
-/// re-derives the same claim through [`bilinear_walk_pair`].
+/// with `w`, by one forward walk. This takes O(circuit) additions instead of one
+/// pass over the nonzeros, and neither matrix is materialized.
 pub fn row_values_walk(w: &[F192]) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(w.len(), K);
     let mut sink = crate::gf2::RowValues::new(K, w[Z_CONST_POS]);
@@ -381,26 +381,19 @@ pub fn row_values_walk(w: &[F192]) -> (Vec<F192>, Vec<F192>) {
 }
 
 /// `(uᵀ A_0 w) + α·(uᵀ B_0 w)`, the α-batched form lincheck's verifier
-/// consumes, by one circuit walk.
+/// consumes.
 pub fn bilinear_walk(alpha: F192, u: &[F192], w: &[F192]) -> F192 {
     let (va, vb) = bilinear_walk_pair(u, w);
     va + alpha * vb
 }
 
-/// The α-batched column marginal
+/// One matrix's column marginal, by one backward walk of the circuit.
 ///
 /// ```text
-///   M[j] = Σ_k (A_0(k,j) + α·B_0(k,j))·u[k],   j < K
+///   M[j] = Σ_k D_0(k,j)·u[k],   j < K
 /// ```
 ///
-/// by ONE BACKWARD WALK of the circuit: the transpose of [`bilinear_walk_pair`]
-/// (see the `gf2` module for why the transpose computes the marginal). Cost is
-/// O(circuit), against the sparse gather's O(NNZ) over ~89M nonzeros, and no
-/// matrix is materialized at all. Pinned by `reduction_tests`: the prover's
-/// lincheck table comes from here and the verifier's terminal check from the
-/// separately written [`bilinear_walk_pair`], so a disagreement at any column
-/// fails the roundtrip.
-pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
+fn marginal_walk_side(side: MatrixSide, u: &[F192]) -> Vec<F192> {
     assert_eq!(u.len(), K);
     let mut m = vec![F192::ZERO; K];
     // Σ u[row] over rows whose B side is the lone constant wire: the free
@@ -414,8 +407,9 @@ pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
         (T_LO_BASE, 4 * WORD_BITS),
     ] {
         for s in base..base + len {
-            m[s] += u[s];
-            u_bconst += u[s];
+            let (a, b) = side.split(u[s]);
+            m[s] += a;
+            u_bconst += b;
         }
     }
 
@@ -425,11 +419,11 @@ pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
     let mut adj: [WireWord; 16] = std::array::from_fn(|_| [F192::ZERO; WORD_BITS]);
     for wd in 0..8 {
         for i in 0..WORD_BITS {
-            let a = u[out_bit(wd, i)];
+            let (a, b) = side.split(u[out_bit(wd, i)]);
             adj[wd][i] += a;
             adj[wd + 8][i] += a;
             m[h_bit(wd, i)] += a;
-            u_bconst += a;
+            u_bconst += b;
         }
     }
 
@@ -447,14 +441,14 @@ pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
             let mut ab1 = t;
             ac2 = wire_xor(&ac2, &t);
             // c_2 = c_1 + d_2
-            let (mut ac1, ad2_c2) = back_add(&mut m, u, &ac2, g_slot(g, G_ADD_C2), alpha);
+            let (mut ac1, ad2_c2) = back_add(&mut m, u, &ac2, g_slot(g, G_ADD_C2), side);
             ad2 = wire_xor(&ad2, &ad2_c2);
             // d_2 = rotr(d_1 ^ a_2, 8)
             let t = wire_rotl(&ad2, 8);
             let mut ad1 = t;
             aa2 = wire_xor(&aa2, &t);
             // a_2 = a_1 + b_1 + my
-            let (mut aa1, ab1_a2, amy) = back_add3_fused(&mut m, u, &aa2, g_slot(g, G_ADD3_A2), alpha);
+            let (mut aa1, ab1_a2, amy) = back_add3_fused(&mut m, u, &aa2, g_slot(g, G_ADD3_A2), side);
             ab1 = wire_xor(&ab1, &ab1_a2);
             let my_base = m_bit(SIGMA[r][2 * g_in_round + 1], 0);
             for i in 0..WORD_BITS {
@@ -465,13 +459,13 @@ pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
             let mut ab = t;
             ac1 = wire_xor(&ac1, &t);
             // c_1 = c + d_1
-            let (ac, ad1_c1) = back_add(&mut m, u, &ac1, g_slot(g, G_ADD_C1), alpha);
+            let (ac, ad1_c1) = back_add(&mut m, u, &ac1, g_slot(g, G_ADD_C1), side);
             ad1 = wire_xor(&ad1, &ad1_c1);
             // d_1 = rotr(d ^ a_1, 16)
             let ad = wire_rotl(&ad1, 16);
             aa1 = wire_xor(&aa1, &ad);
             // a_1 = a + b + mx
-            let (aa, ab_a1, amx) = back_add3_fused(&mut m, u, &aa1, g_slot(g, G_ADD3_A1), alpha);
+            let (aa, ab_a1, amx) = back_add3_fused(&mut m, u, &aa1, g_slot(g, G_ADD3_A1), side);
             ab = wire_xor(&ab, &ab_a1);
             let mx_base = m_bit(SIGMA[r][2 * g_in_round], 0);
             for i in 0..WORD_BITS {
@@ -510,24 +504,27 @@ pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
         }
     }
 
-    // The constant row itself (A = B = [Z_CONST]) plus the factored B-side
-    // constant shared by every non-product row.
-    m[Z_CONST_POS] += const_adj + u[Z_CONST_POS] + alpha * (u_bconst + u[Z_CONST_POS]);
+    // The constant row itself plus the B-side constant shared by every non-product row.
+    m[Z_CONST_POS] += const_adj + u[Z_CONST_POS] + u_bconst;
     m
 }
 
-/// The two column marginals `(A_0ᵀ u, B_0ᵀ u)` separately, by two backward
-/// walks. Every wire adjoint is affine in `α` (it is built from `u` and earlier
-/// adjoints by additions and single `α` multiplications), so `α = 0` isolates
-/// the A side and `α = 1` gives the sum, whose difference over GF(2) is its own
-/// sum. Two walks still beat one pass over the nonzeros by a wide margin.
+/// The two column marginals `(A_0ᵀ u, B_0ᵀ u)`, by one backward walk per matrix.
+/// Neither matrix is materialized.
 pub fn marginal_walk_pair(u: &[F192]) -> (Vec<F192>, Vec<F192>) {
-    let a = marginal_walk(F192::ZERO, u);
-    let mut b = marginal_walk(F192::ONE, u);
-    for (b, a) in b.iter_mut().zip(&a) {
-        *b += *a;
+    (
+        marginal_walk_side(MatrixSide::A, u),
+        marginal_walk_side(MatrixSide::B, u),
+    )
+}
+
+/// The α-batched column marginal `(A_0 + α B_0)ᵀ u` used by lincheck.
+pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
+    let (mut a, b) = marginal_walk_pair(u);
+    for (a, b) in a.iter_mut().zip(b) {
+        *a += alpha * b;
     }
-    (a, b)
+    a
 }
 
 /// Does `z` satisfy the block-diagonal R1CS, `(A_0 z) ⊙ (B_0 z) = z` per block?

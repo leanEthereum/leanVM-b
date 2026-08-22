@@ -70,66 +70,7 @@ pub(crate) fn wire_rotr(x: &WireWord, n: usize) -> WireWord {
     std::array::from_fn(|i| x[(i + n) % WORD_BITS])
 }
 
-/// Where the forward walk sends each row's operand pair
-/// `(⟨A_0(k,·), w⟩, ⟨B_0(k,·), w⟩)`.
-///
-/// [`WalkAcc`] contracts the pairs against row weights as they appear, giving
-/// the two bilinear forms; [`RowValues`] keeps them, giving the matrix-vector
-/// products `(A_0 w, B_0 w)`. One gadget body feeds both, so the two readings of
-/// a row cannot drift.
-pub(crate) trait RowSink {
-    /// A product row: both sides are walked wire values.
-    fn product(&mut self, k: usize, a: F192, b: F192);
-    /// A row whose B side is the lone constant wire: free inputs, lin-id words,
-    /// and the constant row itself, whose A side is that same entry.
-    fn bconst(&mut self, k: usize, a: F192);
-}
-
-/// Contracting sink: accumulates `uᵀ A_0 w` and `uᵀ B_0 w`. Rows whose B side is
-/// the single constant entry share the factor `w[const_pos]`, so their B side
-/// costs one addition here and one multiplication in [`WalkAcc::finish`].
-pub(crate) struct WalkAcc<'a> {
-    u: &'a [F192],
-    wc: F192,
-    a: F192,
-    b: F192,
-    u_bconst: F192,
-}
-
-impl<'a> WalkAcc<'a> {
-    pub(crate) fn new(u: &'a [F192], wc: F192) -> Self {
-        Self {
-            u,
-            wc,
-            a: F192::ZERO,
-            b: F192::ZERO,
-            u_bconst: F192::ZERO,
-        }
-    }
-
-    /// `(uᵀ A_0 w, uᵀ B_0 w)`.
-    pub(crate) fn finish(self) -> (F192, F192) {
-        (self.a, self.b + self.wc * self.u_bconst)
-    }
-}
-
-impl RowSink for WalkAcc<'_> {
-    #[inline]
-    fn product(&mut self, k: usize, a: F192, b: F192) {
-        let ui = self.u[k];
-        self.a += ui * a;
-        self.b += ui * b;
-    }
-    #[inline]
-    fn bconst(&mut self, k: usize, a: F192) {
-        self.a += self.u[k] * a;
-        self.u_bconst += self.u[k];
-    }
-}
-
-/// Storing sink: keeps every row's operand pair, so the walk returns the
-/// matrix-vector products `(A_0 w, B_0 w)` in O(circuit) additions instead of
-/// one pass over the nonzeros. Rows with no wire keep their zeros.
+/// The matrix-vector products `(A_0 w, B_0 w)`. Rows with no wire keep their zeros.
 pub(crate) struct RowValues {
     pub(crate) a: Vec<F192>,
     pub(crate) b: Vec<F192>,
@@ -144,16 +85,15 @@ impl RowValues {
             wc,
         }
     }
-}
 
-impl RowSink for RowValues {
     #[inline]
-    fn product(&mut self, k: usize, a: F192, b: F192) {
+    pub(crate) fn product(&mut self, k: usize, a: F192, b: F192) {
         self.a[k] = a;
         self.b[k] = b;
     }
+
     #[inline]
-    fn bconst(&mut self, k: usize, a: F192) {
+    pub(crate) fn bconst(&mut self, k: usize, a: F192) {
         self.a[k] = a;
         self.b[k] = self.wc;
     }
@@ -166,13 +106,7 @@ impl RowSink for RowValues {
 ///   sum[i]         = X[i] ⊕ Y[i] ⊕ cin[i]
 ///
 /// with `cin[i] = ⊕_{j<i} carry_aux[cb+j]`, a running prefix of `w` reads.
-pub(crate) fn walk_add<S: RowSink>(
-    sink: &mut S,
-    w: &[F192],
-    x: &WireWord,
-    y: &WireWord,
-    carry_base: usize,
-) -> WireWord {
+pub(crate) fn walk_add(sink: &mut RowValues, w: &[F192], x: &WireWord, y: &WireWord, carry_base: usize) -> WireWord {
     let mut out = [F192::ZERO; WORD_BITS];
     let mut cin = F192::ZERO;
     for i in 0..WORD_BITS {
@@ -190,8 +124,8 @@ pub(crate) fn walk_add<S: RowSink>(
 /// Walk one fused three-operand ADD:
 /// report the 31 majority rows and the 30 ripple rows to `sink` and
 /// return the sum-bit wires.
-pub(crate) fn walk_add3_fused<S: RowSink>(
-    sink: &mut S,
+pub(crate) fn walk_add3_fused(
+    sink: &mut RowValues,
     w: &[F192],
     x: &WireWord,
     y: &WireWord,
@@ -222,10 +156,10 @@ pub(crate) fn walk_add3_fused<S: RowSink>(
 // ---------------------------------------------------------------------------
 // Backward walk (the marginal side)
 //
-// The forward walk above evaluates `S(w) = uᵀ(A_0 + α·B_0) w`, which is LINEAR
-// in `w`, so `S(w) = ⟨M, w⟩` for the α-batched column marginal
+// For either matrix `D_0`, the forward walk evaluates `S(w) = uᵀ D_0 w`, which
+// is linear in `w`, so `S(w) = ⟨M, w⟩` for the column marginal
 //
-//   M[j] = Σ_k (A_0(k,j) + α·B_0(k,j))·u[k],   i.e. M = (A_0 + α·B_0)ᵀ u.
+//   M[j] = Σ_k D_0(k,j)·u[k],   i.e. M = D_0ᵀ u.
 //
 // So `M` is the gradient of the forward walk with respect to `w`, and
 // reverse-mode differentiation of that walk produces the WHOLE marginal in
@@ -233,10 +167,26 @@ pub(crate) fn walk_add3_fused<S: RowSink>(
 // matrices materialized. Each `back_*` below is the transpose of the matching
 // `walk_*`: it takes the adjoint of the gadget's sum word, deposits the
 // marginal entries owned by the gadget's own slots, and returns the adjoints of
-// its operands. `blake2s::marginal_walk` threads them in reverse topological
-// order. Since `\alpha` weights the B side, an operand on the B side of a row
-// picks up `α·u[row]` where the A side picks up `u[row]`.
+// its operands. `blake2s::marginal_walk_side` threads them in reverse
+// topological order, selecting either the A or B operand of every row.
 // ---------------------------------------------------------------------------
+
+/// Which matrix operand the backward walk follows in each R1CS row.
+#[derive(Clone, Copy)]
+pub(crate) enum MatrixSide {
+    A,
+    B,
+}
+
+impl MatrixSide {
+    #[inline]
+    pub(crate) fn split(self, value: F192) -> (F192, F192) {
+        match self {
+            Self::A => (value, F192::ZERO),
+            Self::B => (F192::ZERO, value),
+        }
+    }
+}
 
 /// Transpose of [`wire_rotr`]: `wire_rotl(x, n)[i] = x[(i + WORD_BITS - n) % WORD_BITS]`,
 /// so that `⟨wire_rotr(x, n), a⟩ = ⟨x, wire_rotl(a, n)⟩`.
@@ -258,7 +208,7 @@ pub(crate) fn back_add(
     u: &[F192],
     adj: &WireWord,
     carry_base: usize,
-    alpha: F192,
+    side: MatrixSide,
 ) -> (WireWord, WireWord) {
     let mut ax = [F192::ZERO; WORD_BITS];
     let mut ay = [F192::ZERO; WORD_BITS];
@@ -268,10 +218,10 @@ pub(crate) fn back_add(
         if i < CARRY_BITS_PER_ADD {
             m[carry_base + i] += suffix;
             let p = u[carry_base + i];
-            let pa = alpha * p;
-            ax[i] = adj[i] + p;
-            ay[i] = adj[i] + pa;
-            cin_adj += p + pa;
+            let (pa, pb) = side.split(p);
+            ax[i] = adj[i] + pa;
+            ay[i] = adj[i] + pb;
+            cin_adj += pa + pb;
         } else {
             ax[i] = adj[i];
             ay[i] = adj[i];
@@ -296,7 +246,7 @@ pub(crate) fn back_add3_fused(
     u: &[F192],
     adj: &WireWord,
     base: usize,
-    alpha: F192,
+    side: MatrixSide,
 ) -> (WireWord, WireWord, WireWord) {
     let rip_base = base + CARRY_BITS_PER_ADD;
     let mut ax = [F192::ZERO; WORD_BITS];
@@ -311,23 +261,23 @@ pub(crate) fn back_add3_fused(
         }
     };
     // `q_i` is read by `out[i]` and by the ripple row's B side.
-    let q_adj = |i: usize| -> F192 { adj[i] + alpha * rip(i) };
+    let q_adj = |i: usize| -> F192 { adj[i] + side.split(rip(i)).1 };
     let mut suffix = F192::ZERO;
     for i in (0..WORD_BITS).rev() {
         let ri = rip(i);
         if (1..=RIPPLE_BITS_PER_ADD3).contains(&i) {
             m[rip_base + i - 1] += suffix;
         }
-        suffix += adj[i] + ri + alpha * ri;
+        suffix += adj[i] + ri;
         // `p_i = x[i]+y[i]+z[i]` reaches out[i] and the ripple row's A side.
-        let common = adj[i] + ri;
+        let common = adj[i] + side.split(ri).0;
         let (mut xi, mut yi, mut zi) = (common, common, common);
         if i < CARRY_BITS_PER_ADD {
             let mi = u[base + i];
-            let mia = alpha * mi;
-            xi += mi;
-            yi += mia;
-            zi += mi + mia;
+            let (ma, mb) = side.split(mi);
+            xi += ma;
+            yi += mb;
+            zi += ma + mb;
             // maj[i] = maj_aux[i] + z[i] is the ripple layer's q[i+1].
             let qa = q_adj(i + 1);
             m[base + i] += qa;
