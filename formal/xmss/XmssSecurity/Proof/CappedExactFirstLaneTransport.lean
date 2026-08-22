@@ -78,34 +78,6 @@ noncomputable def globalExactTracedLift {ι : Type} {world : OracleSpec ι}
       globalExactTracedNextState keyView input state result.1 result.2)) <$>
       base.run state.causalState
 
-private noncomputable def globalHighDirectExactTracedSigningImpl
-    (keyView : ProgrammedGlobalChainKeygenView) : QueryImpl SigningSpec
-      (StateT GlobalHighDirectTracedState
-        (OracleComp
-          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
-  fun request => globalExactTracedLift keyView (.inr request)
-    (globalHighDirectSigningImpl keyView request)
-
-private noncomputable def globalHighDirectExactTracedOracleImpl
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) : QueryImpl OracleWorld
-      (StateT GlobalHighDirectTracedState
-        (OracleComp
-          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
-  fun input => globalExactTracedLift keyView (.inl input)
-    (StateT.mk fun state =>
-      globalHighDirectOracleExecution keyView edgeHigh input state)
-
-private noncomputable def globalHighDirectExactTracedMappedAdversaryImpl
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    QueryImpl (OracleWorld + SigningSpec)
-      (StateT GlobalHighDirectTracedState
-        (OracleComp
-          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
-  globalHighDirectExactTracedOracleImpl keyView edgeHigh +
-    globalHighDirectExactTracedSigningImpl keyView
-
 noncomputable def globalFirstLaneExactTracedSigningImpl
     (keyView : ProgrammedGlobalChainKeygenView) : QueryImpl SigningSpec
       (StateT GlobalHighDirectTracedState
@@ -130,58 +102,6 @@ noncomputable def globalFirstLaneExactTracedMappedAdversaryImpl
         (OracleComp GlobalFirstLaneWorld)) :=
   globalFirstLaneExactTracedOracleImpl keyView edgeHigh +
     globalFirstLaneExactTracedSigningImpl keyView
-
-private noncomputable def globalHighDirectExactTracedVerifierImpl
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    QueryImpl OracleWorld
-      (StateT GlobalHighDirectTracedState
-        (OracleComp
-          (RevealProbeOracleSimulation.World GlobalChainValueIndex))) :=
-  fun input => StateT.mk fun state =>
-    (fun result => (result.1, state.withCausalState result.2)) <$>
-      (globalHighDirectVerifierImpl keyView edgeHigh input).run
-        state.causalState
-
-private theorem globalHighDirectExactTracedMappedAdversaryImpl_eq_direct
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    globalHighDirectExactTracedMappedAdversaryImpl keyView edgeHigh =
-      globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh := by
-  funext input state
-  rcases input with (worldInput | request)
-  · rcases worldInput with n | hashInput
-    · simp [globalHighDirectExactTracedMappedAdversaryImpl,
-        globalHighDirectExactTracedOracleImpl,
-        globalHighDirectTracedMappedAdversaryImpl,
-        globalHighDirectBaseMappedAdversaryImpl,
-        globalHighDirectOracleExecution,
-        globalExactTracedLift, globalExactTracedNextState,
-        map_eq_bind_pure_comp]
-      rfl
-    · simp [globalHighDirectExactTracedMappedAdversaryImpl,
-        globalHighDirectExactTracedOracleImpl,
-        globalHighDirectTracedMappedAdversaryImpl,
-        globalHighDirectBaseMappedAdversaryImpl,
-        globalHighDirectOracleExecution,
-        globalExactTracedLift, globalExactTracedNextState,
-        map_eq_bind_pure_comp]
-      rfl
-  · simp [globalHighDirectExactTracedMappedAdversaryImpl,
-      globalHighDirectExactTracedSigningImpl,
-      globalHighDirectTracedMappedAdversaryImpl,
-      globalHighDirectBaseMappedAdversaryImpl,
-      globalExactTracedLift, globalExactTracedNextState,
-      map_eq_bind_pure_comp]
-
-private theorem globalHighDirectExactTracedVerifierImpl_eq_direct
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (edgeHigh : GlobalChainEdgeIndex → Digest) :
-    globalHighDirectExactTracedVerifierImpl keyView edgeHigh =
-      globalHighDirectTracedVerifierImpl keyView edgeHigh := by
-  funext input state
-  simp [globalHighDirectExactTracedVerifierImpl,
-    globalHighDirectTracedVerifierImpl, map_eq_bind_pure_comp]
 
 noncomputable def globalFirstLaneExactTracedVerifierImpl
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -265,18 +185,19 @@ theorem globalFirstLaneErase_exactTracedLift
   intro result
   exact GlobalFirstLaneErases.pure _
 
-private theorem globalFirstLaneErase_exactTracedSigningImpl
+theorem globalExactTracedLift_highDirectMapped_eq
     (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest)
+    (edgeHigh : GlobalChainEdgeIndex → Digest)
+    (input : (OracleWorld + SigningSpec).Domain)
     (state : GlobalHighDirectTracedState) :
-    GlobalFirstLaneErases
-      ((globalFirstLaneExactTracedSigningImpl keyView request).run state)
-      ((globalHighDirectExactTracedSigningImpl keyView request).run state) := by
-  exact globalFirstLaneErase_exactTracedLift keyView (.inr request)
-    (globalFirstLaneSigningImpl keyView request)
-    (globalHighDirectSigningImpl keyView request) state
-      (globalFirstLaneErase_directSigningImpl keyView request
-        state.causalState)
+    (globalExactTracedLift keyView input
+      (globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh input)).run
+        state =
+      (globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh input).run
+        state := by
+  simp [globalHighDirectTracedMappedAdversaryImpl,
+    globalExactTracedLift, globalExactTracedNextState,
+    map_eq_bind_pure_comp]
 
 theorem globalFirstLaneErase_exactTracedMappedAdversaryImpl
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -288,20 +209,41 @@ theorem globalFirstLaneErase_exactTracedMappedAdversaryImpl
         ).run state)
       ((globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh input
         ).run state) := by
-  rw [← globalHighDirectExactTracedMappedAdversaryImpl_eq_direct]
-  unfold globalFirstLaneExactTracedMappedAdversaryImpl
-    globalHighDirectExactTracedMappedAdversaryImpl
-  apply globalFirstLaneErases_add
-  · intro worldInput worldState
-    exact globalFirstLaneErase_exactTracedLift keyView (.inl worldInput)
-      (StateT.mk fun state =>
-        globalFirstLaneOracleExecution keyView edgeHigh worldInput state)
-      (StateT.mk fun state =>
-        globalHighDirectOracleExecution keyView edgeHigh worldInput state)
-      worldState
-        (globalFirstLaneOracleErasure keyView edgeHigh worldInput
-          worldState.causalState)
-  · exact globalFirstLaneErase_exactTracedSigningImpl keyView
+  rcases input with worldInput | request
+  · have hbase : GlobalFirstLaneErases
+        ((StateT.mk fun causalState =>
+          globalFirstLaneOracleExecution keyView edgeHigh worldInput
+            causalState).run state.causalState)
+        ((globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh
+          (.inl worldInput)).run state.causalState) := by
+      change GlobalFirstLaneErases
+        (globalFirstLaneOracleExecution keyView edgeHigh worldInput
+          state.causalState)
+        (globalHighDirectOracleExecution keyView edgeHigh worldInput
+          state.causalState)
+      exact globalFirstLaneOracleErasure keyView edgeHigh worldInput
+        state.causalState
+    have herasure := globalFirstLaneErase_exactTracedLift keyView
+      (.inl worldInput)
+      (StateT.mk fun causalState =>
+        globalFirstLaneOracleExecution keyView edgeHigh worldInput causalState)
+      (globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh
+        (.inl worldInput)) state hbase
+    rw [globalExactTracedLift_highDirectMapped_eq] at herasure
+    exact herasure
+  · have hbase : GlobalFirstLaneErases
+        ((globalFirstLaneSigningImpl keyView request).run state.causalState)
+        ((globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh
+          (.inr request)).run state.causalState) := by
+      simpa [globalHighDirectBaseMappedAdversaryImpl] using
+        globalFirstLaneErase_directSigningImpl keyView request
+          state.causalState
+    have herasure := globalFirstLaneErase_exactTracedLift keyView
+      (.inr request) (globalFirstLaneSigningImpl keyView request)
+      (globalHighDirectBaseMappedAdversaryImpl keyView edgeHigh
+        (.inr request)) state hbase
+    rw [globalExactTracedLift_highDirectMapped_eq] at herasure
+    exact herasure
 
 theorem globalFirstLaneErase_exactTracedVerifierImpl
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -313,9 +255,8 @@ theorem globalFirstLaneErase_exactTracedVerifierImpl
         state)
       ((globalHighDirectTracedVerifierImpl keyView edgeHigh input).run
         state) := by
-  rw [← globalHighDirectExactTracedVerifierImpl_eq_direct]
   unfold globalFirstLaneExactTracedVerifierImpl
-    globalHighDirectExactTracedVerifierImpl
+    globalHighDirectTracedVerifierImpl
   simp only [StateT.run_mk]
   apply (globalFirstLaneOracleErasure keyView edgeHigh input
     state.causalState).bind
