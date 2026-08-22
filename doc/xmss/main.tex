@@ -13,6 +13,8 @@
 
 \theoremstyle{definition}
 \newtheorem{definition}{Definition}[section]
+\theoremstyle{plain}
+\newtheorem{theorem}[definition]{Theorem}
 \theoremstyle{remark}
 \newtheorem{remark}[definition]{Remark}
 
@@ -24,6 +26,7 @@
 \newcommand{\Sig}{\mathsf{Sig}}
 \newcommand{\Ver}{\mathsf{Ver}}
 \newcommand{\SIG}{\mathsf{SIG}}
+\newcommand{\Forge}{\mathsf{Forge}}
 \newcommand{\Chain}{\mathsf{Chain}}
 \newcommand{\hash}{\mathsf{H}}
 \newcommand{\LE}{\mathsf{LE}}
@@ -38,6 +41,7 @@
 \newcommand{\lpar}{\ell_{\mathrm{p}}}
 \newcommand{\ltwk}{\ell_{\mathrm{t}}}
 \newcommand{\lrnd}{\ell_{\mathrm{rnd}}}
+\newcommand{\amax}{A_{\max}}
 
 \emergencystretch=1.5em
 
@@ -49,15 +53,17 @@
 \maketitle
 
 \begin{abstract}
-As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS, the signature scheme used by Ethereum validators. Aggregating XMSS requires a post-quantum snark. This technical note specifies an optimized XMSS instance with the following properties:
+As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS \cite{BLS}, the signature scheme used by Ethereum validators. The lack of native aggregation can be mitigated with a post-quantum snark. This technical note specifies an XMSS instance with the following properties:
 \begin{itemize}
-  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, when the hash function is modelled as a (resp. quantum) random oracle.\footnote{The security proof is not yet complete.}
+  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, in the Random Oracle model, ROM (resp. Quantum Random Oracle model, QROM).\footnote{The quantum claim is not fully formalized (yet).}
   \item \textbf{public key: 32 bytes}.
   \item \textbf{signature: 1208 bytes} (smaller than the 1280-byte minimum IPv6 MTU~\cite{RFC8200}).
   \item snark-friendly encoding, optimized for aggregation via leanVM-b~\cite{leanVMb}, requiring 15 bits of grinding on average.
   \item 133 hashes per verification.
 \end{itemize}
 \end{abstract}
+
+The key difference with \cite{DKKW25} is the use of short hash digests, of 16 bytes, following SLH-DSA~\cite{FIPS205} at level 1. The consequence is that the security proof takes place in the ROM, while \cite{DKKW25} is secure in the Standard Model (as a cost of bigger hash digests, close to 32 bytes).
 
 \section{Definitions and notation}
 
@@ -90,6 +96,7 @@ $v$ & $42$ & code length\\
 $T$ & $195$ & target sum\\
 $h$ & $32$ & Merkle tree height\\
 $L$ & $2^{32}$ & lifetime\\
+$\amax$ & $2^{23}$ & maximum encoding attempts per signature\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -152,7 +159,12 @@ The one-time public key and its Merkle leaf are
 
 \section{Key generation}
 
-The algorithm $\Gen$ independently samples $P\getsr\bits{\lpar}$ and $\mathit{sk}_{\ep,i}\getsr\mathcal H$ for $0\leq\ep<L$ and $0\leq i<v$. For $1\leq\ell\leq h$, define
+The algorithm $\Gen$ independently samples $P\getsr\bits{\lpar}$ and $\mathit{sk}_{\ep,i}\getsr\mathcal H$ for $0\leq\ep<L$ and $0\leq i<v$. It computes and stores every chain value
+\[
+  C_{\ep,i,k}=\Chain_{\Th,i,\ep}(P,0,k,\mathit{sk}_{\ep,i}),
+  \qquad 0\leq k<2^w.
+\]
+Thus $C_{\ep,i,0}=\mathit{sk}_{\ep,i}$ and $C_{\ep,i,2^w-1}=\mathit{pk}_{\ep,i}$. For $1\leq\ell\leq h$, define
 \[
   X_{\ell,j}=\Th\!\left(P,\mathsf{tweak}_{\mathrm{merkle}}(\ell,j),X_{\ell-1,2j}\concat X_{\ell-1,2j+1}\right),
   \qquad 0\leq j<2^{h-\ell}.
@@ -161,10 +173,12 @@ Set $\rootnode=X_{h,0}$ and return
 \[
   \pk=(\rootnode,P),
   \qquad
-  \sk=\left(P,(\mathit{sk}_{\ep,i})_{0\leq\ep<L,\,0\leq i<v}\right).
+  \sk=\left(P,(C_{\ep,i,k})_{\substack{0\leq\ep<L,\,0\leq i<v,\\0\leq k<2^w}},(X_{\ell,j})_{\substack{0\leq\ell\leq h,\\0\leq j<2^{h-\ell}}}\right).
 \]
 
 The public key is serialized as $\rootnode\concat P$.
+
+This specification deliberately uses an ideal precomputed secret key. It stores the full Merkle tree and all intermediate one-time-signature chain values so that signing does not recompute them. Repeated access to such a value is a table read, not a fresh random-oracle query. An implementation may represent or derive the same fixed values differently without changing this security model.
 
 \begin{remark}[seed derivation]
 The sampled secret values may instead be generated from a master secret using a pseudorandom function.
@@ -176,9 +190,9 @@ Key generation may be restricted to a smaller interval of epochs by replacing su
 
 \section{Signing}
 
-$\Sig(\sk,\ep,m)$ returns $\bot$ if epoch $\ep$ has already been used and otherwise marks it used. It independently samples $\rho\getsr\bits{\lrnd}$ until $x=\IncEnc(P,m,\rho,\ep)\neq\bot$, then computes
+$\Sig(\sk,\ep,m)$ returns $\bot$ if epoch $\ep$ has already been used and otherwise marks it used. It makes at most $\amax=2^{23}$ attempts. In each attempt it independently samples $\rho\getsr\bits{\lrnd}$ and computes $x=\IncEnc(P,m,\rho,\ep)$. If $x\neq\bot$, it immediately computes
 \[
-  \sigma_{\mathrm{OTS},i}=\Chain_{\Th,i,\ep}(P,0,x_i,\mathit{sk}_{\ep,i}),
+  \sigma_{\mathrm{OTS},i}=C_{\ep,i,x_i},
   \qquad 0\leq i<v,
 \]
 and the authentication path
@@ -186,15 +200,17 @@ and the authentication path
   A_\ell=X_{\ell,\,\left\lfloor\ep/2^\ell\right\rfloor\mathbin{\mathsf{xor}}1},
   \qquad 0\leq\ell<h.
 \]
-It returns
+and returns
 \[
   \sigma=(\rho,\sigma_{\mathrm{OTS}},\mathit{path}_{\ep}),
   \qquad
   \mathit{path}_{\ep}=(A_0,\ldots,A_{h-1}),
 \]
-serialized as $\sigma_{\mathrm{OTS},0}\concat\cdots\concat\sigma_{\mathrm{OTS},v-1}\concat\rho\concat A_0\concat\cdots\concat A_{h-1}$.
+serialized as $\sigma_{\mathrm{OTS},0}\concat\cdots\concat\sigma_{\mathrm{OTS},v-1}\concat\rho\concat A_0\concat\cdots\concat A_{h-1}$. If all $\amax$ attempts produce $x=\bot$, it returns $\bot$.
 
-$\Sig$ is not guaranteed to terminate, but after $2^{23}$ attempts a valid encoding should have been found except with probability less than $2^{-256}$ when $\hash$ is modeled as a random oracle.
+Consequently, signing queries the random oracle only when evaluating $\IncEnc$, once per attempt. Reading the stored chain values and authentication path makes no random-oracle query.
+
+When $\hash$ is modeled as a random oracle, a single attempt succeeds with probability approximately $2^{-14.848}$. Consequently, the probability that all $2^{23}$ attempts fail is less than $2^{-410}$.
 
 \section{Verification}
 
@@ -211,14 +227,38 @@ $\Ver(\pk,\ep,m,\bot)=0$. For $\sigma\neq\bot$, $\Ver(\pk,\ep,m,\sigma)$ parses 
 
 \subsection{Classical security}
 
-The tight classical ROM proof for XMSS as specified in RFC~8391 (with checksum) loses $\log_2$ of the Winternitz chain length~\cite{BDGHMS23}, that is $w=3$ bits of security, and hence gives about 125 bits of classical security. That proof does not cover our target-sum encoding. Further work is needed to translate the proof to our construction.
-\vspace{5mm}
+\begin{definition}[strong unforgeability in the ROM]
+Let $\SIG=(\Gen,\Sig,\Ver)$ be a synchronized signature scheme whose algorithms use a hash function $\hash:\bits{*}\to\bits{256}$. Consider the following game between a signer and an adversary $\mathcal A$ (an arbitrary probabilistic algorithm with unbounded running time and memory), with $\hash$ sampled as a random oracle, that both signer and adversary can query. The signer first runs $(\pk,\sk)\gets\Gen$ and gives $\pk$ to $\mathcal A$. The adversary may then adaptively take any of the following actions:
+\begin{enumerate}[leftmargin=2em]
+  \item Query the random oracle on any input and receive its 256-bit output.
+  \item Submit a message $m\in\bits{256}$ and an epoch $\ep\in\{0,\ldots,L-1\}$ that it has not used in an earlier signing query, and receive $\sigma\gets\Sig(\sk,\ep,m)$ from the signer.
+  \item Terminate with a claimed forgery $(m^*,\ep^*,\sigma^*)$.
+\end{enumerate}
+The adversary wins if $\Ver(\pk,\ep^*,m^*,\sigma^*)=1$ and the signer did not return $\sigma^*$ in response to a signing query for $(m^*,\ep^*)$, meaning:
+\begin{itemize}[leftmargin=2em]
+  \item if the adversary never queried a signature for $(m^*,\ep^*)$;
+  \item or it did, but the signer's answer was not $\sigma^*$.
+\end{itemize}
 
-As a side note, we expect a tighter (fully ROM-based) analysis to give $\geq 127$ bits security. \textbf{TODO: prove this conjecture.}
+For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$. We say that $\SIG$ has $x$ bits of classical strong unforgeability in the ROM if
+\[
+  \max_{q \geq 1}\frac{\Forge_{\SIG}(q)}{q}\leq 2^{-x}.
+\]
+\end{definition}
+
+\begin{theorem}[XMSS security]
+The XMSS specified above has 127 bits of classical strong unforgeability in the ROM.
+\end{theorem}
+
+A formal Lean4 proof of this theorem, using the VCVio framework \cite{VCVio}, can be found in \texttt{./formal/xmss/XmssSecurity/Statement.lean}. The theorem depends only on Lean's three standard axioms.
+
+\begin{proof}[Proof sketch]
+TODO
+\end{proof}
 
 \subsection{Quantum security}
 
-If $\hash$ is modeled as a quantum-accessible random oracle, we claim NIST security category~1 (i.e. $\approx 64$ bits of quantum security), subject to the caveats below. Indeed, FIPS~205 assigns category~1 to the SLH-DSA parameter sets with a 128-bit hash digest~\cite{FIPS205}. The security proof for the XMSS layers of SPHINCS+ applies to random messages~\cite{HK22}. We then apply the reduction of a chosen-message forgery to a random-message forgery from~\cite{GHHM21}.
+If $\hash$ is modeled as a quantum random oracle, we claim NIST security category~1 (i.e. $\approx 64$ bits of quantum security), subject to the caveats below. Indeed, FIPS~205 assigns category~1 to the SLH-DSA parameter sets with a 128-bit hash digest~\cite{FIPS205}. The security proof for the XMSS layers of SPHINCS+ applies to random messages~\cite{HK22}. We then apply the reduction of a chosen-message forgery to a random-message forgery from~\cite{GHHM21}.
 
 This claim has two caveats:
 \begin{enumerate}[leftmargin=2em]
@@ -227,7 +267,7 @@ This claim has two caveats:
   \frac{8(q_s+q_H)^2}{2^{n}}+\frac{3q_s}{2}\sqrt{\frac{q_H+q_s}{2^{\lrnd}}}
 \]
 to the underlying forging probability. For $q_s\leq2^{32}$ the second term stays below $2^{-32}$, but the first term falls $1.5$ bits short of 64.
-\item This specification does not use the WOTS+ encoding standardized in FIPS~205. SLH-DSA appends a Winternitz checksum to the base-$16$ message digits, whereas this specification uses a target-sum encoding. As classically, complete proof with precisely our XMSS remains to be written.
+\item This specification does not use the WOTS+ encoding standardized in FIPS~205. SLH-DSA appends a Winternitz checksum to the base-$16$ message digits, whereas this specification uses a target-sum encoding. A complete quantum security proof for precisely our XMSS remains to be written.
 \end{enumerate}
 
 \bibliographystyle{alphaurl}
