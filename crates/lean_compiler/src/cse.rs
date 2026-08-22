@@ -11,8 +11,8 @@
 //! Why the lowerer leaves duplicates behind: it emits each expression
 //! independently (an address `ptr·index` recomputed per access, a loop counter
 //! advanced once for the body and once for the recursive call, the constant `1`
-//! materialized per use inside a fresh frame). Roughly 5% of the recursion
-//! guest's instructions were exact repeats.
+//! materialized per use inside a fresh frame). A noticeable share of the
+//! recursion guest's instructions were exact repeats.
 //!
 //! The four rules that keep this sound:
 //! 1. **Only pure ops are eliminated.** `DEREF` unifies two memory cells (and

@@ -1616,19 +1616,14 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     return chi_in_prime + zc.chi[FLOCK_NUM_LINCHECK_ROUNDS:], s
 
 
-def sha2_bilinear(
-    alpha: E,
-    row_weights: Sequence[E],
-    column_weights: Sequence[E],
-) -> E:
-    """Both matrix terms at once, `sum_{k,j} (A0 + alpha*B0)(k,j) e_row(k) w_col(j)`,
-    by one forward walk of the circuit instead of touching its million nonzeros.
+def sha2_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
+    """Compute `A0 w` and `B0 w` by one forward walk of the circuit, instead of
+    touching its million nonzeros.
 
-    Mirrors `flock::sha2::bilinear_walk_pair` gadget for gadget; the layout
-    constants below are that module's.
+    Mirrors `flock::sha2::forward_walk` gadget for gadget; the layout constants
+    below are that module's.
     """
     size = 2**SHA2_R1CS_LOG_SIZE
-    require(len(row_weights) == size, "bad SHA2 row-weight vector")
     require(len(column_weights) == size, "bad SHA2 column-weight vector")
     constant = SHA2_CONSTANT_COLUMN
     h_base, out_base, m_base = 0, 256, 512
@@ -1637,9 +1632,8 @@ def sha2_bilinear(
     round_base, round_stride = 6976, 342
     r_ch, r_maj, r_t1a, r_t1b, r_enew, r_anew, r_epin, r_apin = 0, 32, 64, 125, 186, 217, 278, 310
     out_carry_base = 28864
-    left_total = ZERO
-    right_total = ZERO
-    constant_rows = ZERO
+    left_values = [ZERO] * size
+    right_values = [ZERO] * size
 
     def slots(base: int) -> tuple[E, ...]:
         """A word this circuit owns: 32 consecutive slots, bit `j` at `base + j`."""
@@ -1673,22 +1667,18 @@ def sha2_bilinear(
 
     def and_word(x: Sequence[E], y: Sequence[E], base: int) -> tuple[E, ...]:
         """32 AND rows `x[i] * y[i] = z[base + i]`: `Ch` and `Maj`."""
-        nonlocal left_total, right_total
         for bit in range(32):
-            weight = row_weights[base + bit]
-            left_total += weight * x[bit]
-            right_total += weight * y[bit]
+            left_values[base + bit] = x[bit]
+            right_values[base + bit] = y[bit]
         return slots(base)
 
     def add(x: Sequence[E], y: Sequence[E], carry_base: int) -> tuple[E, ...]:
-        nonlocal left_total, right_total
         carry = ZERO
         output = []
         for bit in range(32):
             if bit < 31:
-                weight = row_weights[carry_base + bit]
-                left_total += weight * (x[bit] + carry)
-                right_total += weight * (y[bit] + carry)
+                left_values[carry_base + bit] = x[bit] + carry
+                right_values[carry_base + bit] = y[bit] + carry
             output.append(x[bit] + y[bit] + carry)
             if bit < 31:
                 carry += column_weights[carry_base + bit]
@@ -1703,12 +1693,10 @@ def sha2_bilinear(
         ripple layer's bit 0 needs no row and slot `base + 31 + i - 1` carries
         bit `i`.
         """
-        nonlocal left_total, right_total
         majority = []
         for bit in range(31):
-            weight = row_weights[base + bit]
-            left_total += weight * (x[bit] + z[bit])
-            right_total += weight * (y[bit] + z[bit])
+            left_values[base + bit] = x[bit] + z[bit]
+            right_values[base + bit] = y[bit] + z[bit]
             majority.append(column_weights[base + bit] + z[bit])
         ripple_base = base + 31
         carry = ZERO
@@ -1718,24 +1706,22 @@ def sha2_bilinear(
             left = x[bit] + y[bit] + z[bit] + carry
             output.append(left + q)
             if 1 <= bit <= 30:
-                weight = row_weights[ripple_base + bit - 1]
-                left_total += weight * left
-                right_total += weight * (q + carry)
+                left_values[ripple_base + bit - 1] = left
+                right_values[ripple_base + bit - 1] = q + carry
                 carry += column_weights[ripple_base + bit - 1]
         return tuple(output)
 
     def linear_rows(values: Sequence[E], base: int) -> None:
         """A lin-id pin: 32 rows `<values> * 1 = z[base + i]`."""
-        nonlocal left_total, constant_rows
         for bit in range(32):
-            left_total += row_weights[base + bit] * values[bit]
-            constant_rows += row_weights[base + bit]
+            left_values[base + bit] = values[bit]
+            right_values[base + bit] = column_weights[constant]
 
     # The free inputs: the chaining value and the message block.
     for base, length in ((h_base, 256), (m_base, 512)):
         for row in range(base, base + length):
-            left_total += row_weights[row] * column_weights[row]
-            constant_rows += row_weights[row]
+            left_values[row] = column_weights[row]
+            right_values[row] = column_weights[constant]
 
     h_in = [slots_be(h_base + 32 * word) for word in range(8)]
 
@@ -1776,10 +1762,17 @@ def sha2_bilinear(
         total = add(state[word], h_in[word], out_carry_base + 31 * word)
         linear_rows(byteswap(total), out_base + 32 * word)
 
-    constant_weight = column_weights[constant]
-    left_total += constant_weight * row_weights[constant]
-    right_total += constant_weight * (constant_rows + row_weights[constant])
-    return left_total + alpha * right_total
+    left_values[constant] = column_weights[constant]
+    right_values[constant] = column_weights[constant]
+    return left_values, right_values
+
+
+def sha2_bilinear(alpha: E, row_weights: Sequence[E], column_weights: Sequence[E]) -> E:
+    """Compute `e_row^T (A0 + alpha B0) w_col` from the two forward row vectors."""
+    size = 2**SHA2_R1CS_LOG_SIZE
+    require(len(row_weights) == size, "bad SHA2 row-weight vector")
+    left_values, right_values = sha2_row_values(column_weights)
+    return dot(row_weights, left_values) + alpha * dot(row_weights, right_values)
 
 
 def verify_flock(log_n: int, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:

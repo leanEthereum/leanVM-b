@@ -119,7 +119,6 @@ pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_trac
     if enable_tracing {
         primitives::init_tracing();
     }
-    let trace_span = tracing::info_span!("Recursive aggregation", n, log_inv_rate).entered();
     let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
         aggregate_with_stats(&children, vec![], message, epoch, log_inv_rate).expect("node aggregates")
@@ -128,7 +127,6 @@ pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_trac
         let _quiet = (!last).then(primitives::suppress_tracing);
         sig.verify().expect("the recursive aggregate verifies");
     });
-    drop(trace_span);
 
     println!(
         "aggregation bytecode: {} instructions (2^{} padded), compiled in {} s",

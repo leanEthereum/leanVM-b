@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::colval::ColVal;
 use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
@@ -61,18 +62,21 @@ const MAX_LOG_ROWS: usize = 32;
 /// `2^32` instructions.
 const MAX_LOG_BYTECODE: usize = 32;
 
-/// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing
-/// to everything fixed about the proving environment: the flock SHA-256 R1CS
-/// (its per-block matrices, [`crate::sha2_flock::r1cs_digest`])
-/// and the bytecode, via the hash cached on `Program`: SHA-256 over the stacked
-/// multilinear ([`layout::bytecode_table`]) rather than over an assembler
-/// digest, so a verifier holding only that polynomial reproduces the seed. That
-/// inner hash is cached on the program, so the table is walked once per program
-/// rather than once per proof.
-/// It leads every transcript, so all
-/// challenges depend on the circuit version and the program before anything
-/// else; a recursion guest carries the INNER program's seed in its public
-/// input, pinning both with one word pair.
+/// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing to
+/// everything fixed about the proving environment.
+///
+/// Two things go in. [`crate::sha2_flock::r1cs_digest`] names the flock SHA-256
+/// circuit, independent of the instance count: the full instance is
+/// block-diagonal and the count is announced and absorbed with the other sizes,
+/// so one constant covers every shape. And the bytecode enters through the hash
+/// cached on `Program`, SHA-256 over the stacked multilinear
+/// ([`layout::bytecode_table`]) rather than over an assembler digest, so a
+/// verifier holding only that polynomial reproduces the seed; that inner hash is
+/// cached, so the table is walked once per program rather than once per proof.
+///
+/// The seed leads every transcript, so all challenges depend on the circuit
+/// version and the program before anything else; a recursion guest carries the
+/// INNER program's seed in its public input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
     const LABEL: &[u8] = b"leanvm-b-fs-seed-v3-sha2";
     let mut h = primitives::sha2::Hasher::new(LABEL.len() + 64);
@@ -329,21 +333,24 @@ fn airs(
         .zip(taus)
         .enumerate()
         .map(|(t, (&table, &tau))| {
-            let bus: Vec<leaf::BusForm> = (0..3).map(|s| forms[s][t].scaled(form_pows[s])).collect();
+            // One form, not three: the batch adds the three sides' evaluations
+            // anyway, and summing them here is a setup cost against a dot product
+            // and a product list per row per node.
+            let bus = leaf::BusForm::sum((0..3).map(|s| forms[s][t].scaled(form_pows[s])));
             let bus_k = bus.clone();
             constraints::Air {
                 tau,
                 n_cols: table.n_committed_columns(),
                 n_constraints: table.n_constraints(),
                 eval: Box::new(move |p, vals| {
-                    let air = table.eval_constraint(p, vals);
-                    bus.iter().fold(air, |acc, form| acc + form.eval(vals))
+                    let air = <F192 as ColVal>::lift(table.eval_constraint(p, vals));
+                    <F192 as ColVal>::reduce(air ^ bus.eval_unreduced(vals))
                 }),
                 // The same expression over K columns: the identity's K-only products
-                // stay 64-bit and each bus form becomes a mixed dot product.
+                // stay 64-bit and the bus form becomes a mixed dot product.
                 eval_k: Box::new(move |p, vals| {
-                    let air = table.eval_constraint_k(p, vals);
-                    bus_k.iter().fold(air, |acc, form| acc + form.eval(vals))
+                    let air = <F64 as ColVal>::lift(table.eval_constraint_k(p, vals));
+                    <F64 as ColVal>::reduce(air ^ bus_k.eval_unreduced(vals))
                 }),
             }
         })

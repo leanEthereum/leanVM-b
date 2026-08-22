@@ -25,7 +25,7 @@ We also enforce the position $512$ of every block to be $1$ (preventing the all-
 z(0,0,0,0,0,0,0,0,0,1,0,0,0,0,\,t)=1\qquad\text{for every }t\in\cube{\kbatch}
 \end{equation}
 
-This second condition is enforced by lincheck (\S\ref{flock:lincheck}).
+This second condition is enforced by lincheck (\S\ref{flock:lincheck}), and position $512=\jconst$ is where every circuit below puts its constant wire. Since it is asked of every block, the prover pads the batch out to $2^{\kbatch}$ with copies of a genuine witness block rather than with zeros.
 
 Set $\kskip=6$ and $\nflock=\kbool-\kskip$. The prover commits to $z$ by packing its low $\kskip$ coordinates, $64$ bits, to a $\K$-element, following Ring-Switching (Annex~\ref{annex:rs}). The resulting multilinear $\qflock:\cube{\nflock}\to\K$ is committed as one region of the stack (\S\ref{sec:stacking}).
 
@@ -137,23 +137,23 @@ R_{\mathrm{lc}}\qeq\sum_{i=0}^{63}\Bigl(&\qext A_0(\zskip,\fc_{\mathrm{in}},i,\f
 
 With the row split $k=(\ksk,\kin) \in\cube{\kskip} \times \cube{\kblock-\kskip}$ of the proof above,
 \begin{equation}\label{flock:eq:erow}
-\qext A_0(\zskip,\fc_{\mathrm{in}},j)=\sum_{k\in\cube{\kblock}}e_{\mathrm{row}}(k)\,A_0(k,j),\qquad
-e_{\mathrm{row}}(\ksk,\kin)=\lag_{\ksk}(\zskip)\,\eq(\fc_{\mathrm{in}},\kin),
+\qext A_0(\zskip,\fc_{\mathrm{in}},j)=\sum_{k\in\cube{\kblock}}\erow(k)\,A_0(k,j),\qquad
+\erow(\ksk,\kin)=\lag_{\ksk}(\zskip)\,\eq(\fc_{\mathrm{in}},\kin),
 \end{equation}
 and likewise for $B_0$.
 
-Writing $w_{\mathrm{col}}(\jsk,\jin)=s_{\jsk}\,\eq(\fc'_{\mathrm{in}},\jin)$ with $(\jsk,\jin) \in\cube{\kskip} \times \cube{\kblock-\kskip}$, each matrix term in $\eqref{flock:eq:lincheck-terminal}$ is simplified as follows:
+Writing $\wcol(\jsk,\jin)=s_{\jsk}\,\eq(\fc'_{\mathrm{in}},\jin)$ with $(\jsk,\jin) \in\cube{\kskip} \times \cube{\kblock-\kskip}$, each matrix term in $\eqref{flock:eq:lincheck-terminal}$ is simplified as follows:
 \begin{equation}\label{flock:eq:matrix-form}
-\sum_{i=0}^{63}\qext A_0(\zskip,\fc_{\mathrm{in}},i,\fc'_{\mathrm{in}})\,s_i=\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,e_{\mathrm{row}}(k)\,w_{\mathrm{col}}(j).
+\sum_{i=0}^{63}\qext A_0(\zskip,\fc_{\mathrm{in}},i,\fc'_{\mathrm{in}})\,s_i=\sum_{k,j\in\cube{\kblock}}A_0(k,j)\,\erow(k)\,\wcol(j).
 \end{equation}
 
-One forward walk of the SHA-256 circuit returns \eqref{flock:eq:matrix-form} for both matrices, in $O(\text{circuit})$ field operations, never touching the roughly $1.1$ million nonzero entries they hold. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\langle e_{\mathrm{row}},w_{\mathrm{col}}\rangle$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\fc_{\mathrm{in}},\fc'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
+One forward walk of the SHA-256 circuit returns \eqref{flock:eq:matrix-form} for both matrices (\S\ref{flock:matrices}), never touching the roughly $1.1$ million nonzero entries they hold. Its committed wires are $768$ free inputs, the constant, $5{,}888$ committed $\oplus$ wires (the pins of $W[t]$, $A_{\mathrm{new}}$ and $E_{\mathrm{new}}$, and the output chaining value), and $22{,}456$ $\wedge$ wires: the $4{,}096$ bits of $\mathrm{Ch}$ and $\mathrm{Maj}$ over the $64$ rounds, and one per product bit of the $360$ modular additions of the schedule, the rounds and the feed-forward. At one multiplication per committed wire on the $A$ side, one per $\wedge$ wire on the $B$ side, and one for the constant factor the remaining $B$ rows share, that is $51{,}570$ field multiplications in $O(\text{circuit})$ work. The $c$ term of \eqref{flock:eq:lincheck-terminal} is $\lcalpha^2\inner{\erow}{\wcol}$ in the same notation, and needs no walk: both sides are tensors, so it contracts to $\lcalpha^2\eq(\fc_{\mathrm{in}},\fc'_{\mathrm{in}})\sum_i\lag_i(\zskip)s_i$.
 
 \subsubsection{Concluding Lincheck for a recursive verifier}\label{flock:defer}
 
 To avoid the costly circuit-walk in recursion, the recursion program receives as hint:
 \begin{equation}\label{flock:eq:matpart}
-M_{\mathrm{lc}}=\sum_{k,j\in\cube{\kblock}}\bigl(A_0(k,j)+\lcalpha B_0(k,j)\bigr)e_{\mathrm{row}}(k)\,w_{\mathrm{col}}(j).
+M_{\mathrm{lc}}=\sum_{k,j\in\cube{\kblock}}\bigl(A_0(k,j)+\lcalpha B_0(k,j)\bigr)\erow(k)\,\wcol(j).
 \end{equation}
 This makes it possible to cheaply verify \eqref{flock:eq:lincheck-terminal}. Ensuring validity of the hint is deferred outside of the recursion program, via sumcheck reduction, as described in \S\ref{sec:deferred-claims}.
 
@@ -177,6 +177,86 @@ After the witness $z$ has been committed, and its size announced:
 \end{enumerate}
 What Flock leaves is one family of $64$ claims for Ring-Switching (\S\ref{flock:ringswitch}): $(s_i \qeq \mle z(i, \fc'_{\mathrm{in}},\fc_{\mathrm{out}}))_{0 \leq i \leq 63}$.
 \end{protocol}
+
+\subsection{Evaluating the matrices}\label{flock:matrices}
+
+$A_0$ and $B_0$ encodes a Boolean circuit, but are never materialized.
+
+\subsubsection{The circuit}\label{flock:circuit}
+
+\begin{definition}[Circuit]\label{def:circuit}
+A \emph{circuit} is an ordered sequence of wires $w_1,\ldots,w_N$. Each wire is either a \emph{source}, a $\oplus$ wire with a possibly empty set $S_w$ of earlier wires, or a $\wedge$ wire with an ordered pair $(u_w,u'_w)$ of earlier wires. Its value lies in $\Ftwo$: a $\oplus$ wire is the sum of the values in $S_w$, and a $\wedge$ wire is the product of the values of $u_w$ and $u'_w$. The source $w_1$ is the constant $1$ and the other sources are free inputs.
+
+A set of \emph{committed} wires containing all sources, all $\wedge$ wires, and a subset of the $\oplus$ wires (typically the result of the computation) is equipped with an injection $w\mapsto\posof{w}$ into $\cube{\kblock}$. The constant has position $\posof{w_1}=\jconst$. A position $k\in\cube{\kblock}$ is \emph{empty} if $k\neq\posof{w}$ for every committed wire $w$. A witness block $z_t=z(\cdot,t)$ stores each committed wire's value at its position and stores $0$ at empty positions.
+\end{definition}
+
+For $p\in\cube{\kblock}$, write $[\,\cdot=p\,]:\cube{\kblock}\to\Ftwo$ for the function that equals $1$ at $p$ and $0$ at every other position. The \emph{expansion} of a wire over committed positions is
+\begin{equation}\label{flock:eq:expand}
+\lform{w}=[\,\cdot=\posof{w}\,]\ \text{ if $w$ is committed},\qquad \lform{w}=\sum_{u\in S_w}\lform{u}\ \text{ otherwise},
+\end{equation}
+where the second case applies only to uncommitted $\oplus$ wires. By induction, $\inner{\lform{w}}{z_t}$ is the value of $w$.
+
+\subsubsection{The R1CS matrices}\label{flock:rows}
+
+For every committed wire $w$, assign two sets of wires to the corresponding row:
+\[
+(S^A_w,S^B_w)=
+\begin{cases}
+(\{u_w\},\{u'_w\}) & \text{if $w$ is a $\wedge$ wire},\\
+(S_w,\{w_1\}) & \text{if $w$ is a $\oplus$ wire},\\
+(\{w\},\{w_1\}) & \text{if $w$ is a source}.
+\end{cases}
+\]
+and define:
+\begin{equation}\label{flock:eq:row-lists}
+A_0(\posof{w},\cdot)=\sum_{u\in S^A_w}\lform{u},\qquad B_0(\posof{w},\cdot)=\sum_{u\in S^B_w}\lform{u}.
+\end{equation}
+For every empty position $k$, set $A_0(k,\cdot)=B_0(k,\cdot)=0$. This specifies every row of both matrices.
+
+\vspace{3mm}
+
+$A_0$, $B_0$ and $C_0=I$ corresponding R1CS constraints faithfully encode the circuit.
+\subsubsection{Forward algorithm}\label{flock:forward}
+
+Given a column vector $W:\cube{\kblock}\to\E$, the forward algorithm computes the two row-indexed vectors $A_0W$ and $B_0W$ without constructing either matrix. The native lincheck verifier uses $W=\wcol$ and retains only the scalar $\inner{\erow}{A_0W}+\lcalpha\inner{\erow}{B_0W}$. The prover of the deferred matrix sumcheck in \S\ref{sec:deferred-claims} instead stores both vectors and folds them through its first $\kblock$ rounds.
+
+To compute them, visit the wires from $w_1$ to $w_N$ and evaluate every expansion against $W$:
+\[
+\inner{\lform{w}}{W}=W(\posof{w})\ \text{ if $w$ is committed},\qquad \inner{\lform{w}}{W}=\sum_{u\in S_w}\inner{\lform{u}}{W}\ \text{ otherwise};
+\]
+then \eqref{flock:eq:row-lists} gives
+\begin{equation}\label{flock:eq:row-pair}
+\inner{A_0(\posof{w},\cdot)}{W}=\sum_{u\in S^A_w}\inner{\lform{u}}{W},\qquad \inner{B_0(\posof{w},\cdot)}{W}=\sum_{u\in S^B_w}\inner{\lform{u}}{W}.
+\end{equation}
+Together with zero at every empty row, these values are the desired vectors.
+
+\subsubsection{Transpose algorithm}\label{flock:backward}
+
+For $X\in\{A,B\}$, the transpose algorithm computes the complete column-indexed vector $\colmar^{X}=X_0^{\!\top}\erow$ without constructing $X_0$. The prover needs all $2^{\kblock}$ entries of both vectors:
+\begin{equation}\label{flock:eq:marginal}
+\colmar^{X}(j)=\qext X_0(\zskip,\fc_{\mathrm{in}},j)=\sum_{k\in\cube{\kblock}}X_0(k,j)\erow(k)=\bigl(X_0^{\!\top}\erow\bigr)(j),\qquad X\in\{A,B\},
+\end{equation}
+where the second equality uses \eqref{flock:eq:erow}. Viewing each row as a column-indexed vector, empty rows contribute zero, so \eqref{flock:eq:row-lists} gives
+\begin{align*}
+\colmar^{X}
+&=\sum_{w\ \mathrm{committed}}\erow(\posof{w})\sum_{u\in S^X_w}\lform{u}\\
+&=\sum_u\left(\sum_{\substack{w\ \mathrm{committed}\\u\in S^X_w}}\erow(\posof{w})\right)\lform{u}.
+\end{align*}
+The last equality exchanges the finite sums and collects every occurrence of the same expansion $\lform{u}$. Thus, for every circuit wire $u$, define
+\begin{equation*}
+\chg{u}^{X}=\sum_{\substack{w\ \mathrm{committed}\\u\in S^X_w}}\erow(\posof{w}),
+\qquad \text{so that}\qquad
+\colmar^{X}=\sum_u\chg{u}^{X}\lform{u}.
+\end{equation*}
+Run the following procedure independently for $X=A$ and $X=B$. Initialize the output table $\colmar^{X}$ to zero and visit $w_N,\ldots,w_1$. At wire $w$, eliminate the term $\chg{w}^{X}\lform{w}$ using the appropriate case of \eqref{flock:eq:expand}:
+\begin{itemize}
+\item if $w$ is committed, then $\chg{w}^{X}\lform{w}=\chg{w}^{X}[\,\cdot=\posof{w}\,]$, so add $\chg{w}^{X}$ to $\colmar^{X}(\posof{w})$;
+\item otherwise, $w$ is an uncommitted $\oplus$ wire and
+\[
+\chg{w}^{X}\lform{w}=\chg{w}^{X}\sum_{u\in S_w}\lform{u}=\sum_{u\in S_w}\chg{w}^{X}\lform{u},
+\]
+so add $\chg{w}^{X}$ to the existing coefficient $\chg{u}^{X}$ of every predecessor $u\in S_w$.
+\end{itemize}
 
 \subsection{Soundness analysis}\label{flock:soundness}
 

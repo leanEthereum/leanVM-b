@@ -376,9 +376,9 @@ const FOLD_TABLE_SIZE: usize = 256;
 /// `table[k * 256 + v] = sum_{bit b set in v} coordinate_weights[k * 8 + b]`.
 /// Byte order: bytes 0..8 are the little-endian bytes of `c0` (bits 0..64),
 /// bytes 8..16 those of `c1` (bits 64..128), and bytes 16..24 those of `c2`.
-fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Vec<F192> {
+fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Box<FoldByteTable> {
     assert_eq!(coordinate_weights.len(), DEGREE_E);
-    let mut tables = vec![F192::ZERO; FOLD_N_BYTES * FOLD_TABLE_SIZE];
+    let mut tables: Box<FoldByteTable> = Box::new([[F192::ZERO; FOLD_TABLE_SIZE]; FOLD_N_BYTES]);
     for byte_idx in 0..FOLD_N_BYTES {
         let bit_base = byte_idx * 8;
         for value in 0..FOLD_TABLE_SIZE {
@@ -388,23 +388,28 @@ fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Vec<F192> {
                     acc += coordinate_weights[bit_base + bit_in_byte];
                 }
             }
-            tables[byte_idx * FOLD_TABLE_SIZE + value] = acc;
+            tables[byte_idx][value] = acc;
         }
     }
     tables
 }
 
-/// One folded output slot: `sum_{k=0..24} tables[k * 256 + byte_k(elem)]`,
-/// tree-reduced (depth 4) so the XORs pipeline. `tables` MUST be a
-/// [`build_fold_byte_table_ext`] output (length 24 * 256).
+/// The byte table as its shape rather than as a flat run: a `u8` cannot index a
+/// 256-entry row out of bounds and the row index is a constant of the unrolled
+/// loop, so neither lookup carries a bounds check and the row stride folds into
+/// the address. Flat, this is 24 bounds checks and 24 stride multiplies per
+/// output slot, and the address registers they force live do not fit.
+type FoldByteTable = [[F192; FOLD_TABLE_SIZE]; FOLD_N_BYTES];
+
+/// One folded output slot: `sum_{k=0..24} tables[k][byte_k(elem)]`, tree-reduced
+/// so the XORs pipeline.
 #[inline(always)]
-fn fold_one_slot_ext(elem: F192, tables: &[F192]) -> F192 {
-    debug_assert_eq!(tables.len(), FOLD_N_BYTES * FOLD_TABLE_SIZE);
+fn fold_one_slot_ext(elem: F192, tables: &FoldByteTable) -> F192 {
     let bytes = [elem.c0.to_le_bytes(), elem.c1.to_le_bytes(), elem.c2.to_le_bytes()];
     let mut acc = F192::ZERO;
     for (word, word_bytes) in bytes.iter().enumerate() {
         for (byte, &value) in word_bytes.iter().enumerate() {
-            acc += tables[(8 * word + byte) * FOLD_TABLE_SIZE + value as usize];
+            acc += tables[8 * word + byte][value as usize];
         }
     }
     acc
@@ -419,7 +424,7 @@ pub(crate) struct DeferredRingSwitchOutput {
     pub(crate) batched_sumcheck_claim: F192,
     eq_lo: Vec<F192>,
     eq_hi: Vec<F192>,
-    table: Vec<F192>,
+    table: Box<FoldByteTable>,
 }
 
 /// Finish a ring-switch claim without materializing its dense weight vector.

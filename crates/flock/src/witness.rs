@@ -2,7 +2,6 @@
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
 //! (only `sha2` in this vendored subset).
 
-use crate::r1cs::SparseBinaryMatrix;
 use primitives::bits::transpose_8_u64s_to_64_bytes;
 use zk_alloc::ArenaVec;
 
@@ -86,7 +85,7 @@ pub(crate) fn add_carry_parts(x: u32, y: u32) -> (u32, u32, u32, u32) {
 }
 
 /// One fused three-operand ADD's witness parts (see
-/// `sha2::write_add3_fused_rows` for the row algebra): the sum, then each
+/// `gf2::walk_add3_fused` for the row algebra): the sum, then each
 /// layer's `(left, right, product)` triple.
 ///
 /// The majority triple is masked to bits 0..=30. The ripple triple is masked
@@ -128,15 +127,6 @@ pub(crate) fn packed_bytes(words: &[u64]) -> &[u8] {
     // SAFETY: `u64` has no padding or invalid bit patterns, and `u8`'s
     // alignment divides `u64`'s, so the words are a valid `8 · len` byte slice.
     unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
-}
-
-/// K × K identity sparse matrix.
-pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
-    SparseBinaryMatrix {
-        num_rows: k,
-        num_cols: k,
-        rows: (0..k).map(|i| vec![i]).collect(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,14 +240,4 @@ where
     });
 
     (z, a, b, z_lincheck)
-}
-
-/// Sort `v` and remove pairs of duplicates (GF(2) cancellation). Keeps R1CS
-/// rows in canonical (sorted, square-free) form.
-pub(crate) fn xor_dedup(mut v: Vec<usize>) -> Vec<usize> {
-    v.sort_unstable();
-    v.chunk_by(|a, b| a == b)
-        .filter(|run| run.len() % 2 == 1)
-        .map(|run| run[0])
-        .collect()
 }

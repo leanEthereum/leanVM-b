@@ -12,26 +12,25 @@
 //!   4. The PCS binds that family of slices ([`sha2::SliceClaim`]) to the
 //!      commitment.
 //!
-//! [`sha2`] is the one circuit: the SHA-256 compression encoded as a
-//! per-block R1CS (`build_block_r1cs`), plus its witness generation and the
-//! leanVM-facing reduction entry points
+//! [`sha2`] is the one circuit: the SHA-256 compression as a per-block R1CS,
+//! plus its witness generation and the leanVM-facing reduction entry points
 //! (`Sha2Setup::{prove_reduction, verify_reduction, …}`). Steps 2 to 4 above
-//! are circuit-agnostic: they read a [`r1cs::BlockR1cs`] and its packed
-//! witness.
+//! are circuit-agnostic: they take the block shape as plain numbers and reach
+//! the matrices only through [`lincheck::LincheckCircuit`], whose one live impl
+//! walks the circuit rather than reading any matrix.
 //!
 //! SHA-256's XORs, rotations and shifts are free over GF(2), so its only
-//! nonlinear constraints are `Ch`, `Maj` and the product bits of the modular
-//! ADDs. The private `gf2` module owns that part: the symbolic affine word, the
-//! AND gadget and the two adders, kept separate because the fused
-//! three-operand adder's bit boundaries are the subtlest thing here and deserve
-//! their own tests.
+//! nonlinear constraints are the bitwise ANDs of `Ch` and `Maj` and the product
+//! bits of the modular ADDs. The private `gf2` module owns that part: the wire
+//! word, the AND gadget and the two adders, forwards and transposed, kept
+//! separate because the fused three-operand adder's bit boundaries are the
+//! subtlest thing here.
 
 mod gf2;
 pub mod lincheck;
-pub mod r1cs;
 /// The circuit driven through the whole reduction. A `src` module rather than
-/// its own test binary so it shares the process, and so the
-/// [`sha2::matrices`] build, with the unit tests.
+/// its own test binary so it shares the process, and its guest compilation,
+/// with the unit tests.
 #[cfg(test)]
 mod reduction_tests;
 pub mod sha2;

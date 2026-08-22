@@ -78,8 +78,8 @@ impl WotsPublicKey {
     /// 42 concatenated chain tips (704 bytes, 11 compressions in one chunk).
     pub fn hash(&self, public_param: &PublicParam, epoch: u32) -> Digest {
         let mut data = [0u8; V * DIGEST_LEN];
-        for (chunk, tip) in data.chunks_exact_mut(DIGEST_LEN).zip(&self.0) {
-            chunk.copy_from_slice(tip);
+        for (chunk, tip) in data.as_chunks_mut::<DIGEST_LEN>().0.iter_mut().zip(&self.0) {
+            *chunk = *tip;
         }
         tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, epoch, &data)
     }

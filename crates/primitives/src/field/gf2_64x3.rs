@@ -212,6 +212,68 @@ impl MulAssign for F192 {
 }
 
 // ---------------------------------------------------------------------------
+// Four at a time: the shape every bulk product in the prover is written in.
+// ---------------------------------------------------------------------------
+//
+// A tower product is a chain of carry-less multiplies and a reduction, and a
+// scalar one leaves most of the multiplier idle waiting on it. Four independent
+// products fill the 128-bit lanes of one AVX-512 register, which measures about
+// twice the throughput of four scalar products; AVX2 does two at a time and
+// everything else falls back to the products themselves.
+
+/// Two independent products.
+#[inline(always)]
+pub fn mul2(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    // SAFETY: both features are enabled at compile time.
+    return unsafe { x86_64::mul_vec2(a, b) };
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2")))]
+    [a[0] * b[0], a[1] * b[1]]
+}
+
+/// Four independent products.
+#[inline(always)]
+pub fn mul4(a: [F192; 4], b: [F192; 4]) -> [F192; 4] {
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    // SAFETY: both features are enabled at compile time.
+    return unsafe { x86_64::mul_vec4(a, b) };
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+    {
+        let lo = mul2([a[0], a[1]], [b[0], b[1]]);
+        let hi = mul2([a[2], a[3]], [b[2], b[3]]);
+        [lo[0], lo[1], hi[0], hi[1]]
+    }
+}
+
+/// [`mul4`] without the reduction, for a caller XOR-accumulating many products.
+#[inline(always)]
+pub fn mul_unreduced4(a: [F192; 4], b: [F192; 4]) -> [F192Unreduced; 4] {
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    // SAFETY: both features are enabled at compile time.
+    return unsafe { x86_64::mul_unreduced_vec4(a, b) };
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
+    // SAFETY: both features are enabled at compile time.
+    return unsafe {
+        let lo = x86_64::mul_unreduced_vec2([a[0], a[1]], [b[0], b[1]]);
+        let hi = x86_64::mul_unreduced_vec2([a[2], a[3]], [b[2], b[3]]);
+        [lo[0], lo[1], hi[0], hi[1]]
+    };
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    // SAFETY: PMULL is enabled at compile time.
+    return unsafe { std::array::from_fn(|i| aarch64::mul_unreduced_neon(a[i], b[i])) };
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"),
+        all(target_arch = "aarch64", target_feature = "aes")
+    )))]
+    std::array::from_fn(|i| a[i].mul_unreduced(b[i]))
+}
+
+// ---------------------------------------------------------------------------
 // Deferred reduction: 5 unreduced 128-bit coefficients, XOR-accumulable.
 // ---------------------------------------------------------------------------
 
@@ -423,20 +485,29 @@ pub mod aarch64 {
         unsafe { transmute::<u128, uint64x2_t>(prod) }
     }
 
-    /// Fold one 128-bit coefficient into GF(2^64): 1 PMULL by 0x1B, then the
-    /// ≤4-bit overflow (high lane of the PMULL) is folded with shift-XORs on
-    /// the scalar side, off the busy PMULL ports.
+    /// Fold one 128-bit coefficient into GF(2^64): 2 PMULL by 0x1B, the second
+    /// folding the first's ≤4-bit overflow exactly, since `ov·0x1B` fits in 8
+    /// bits and lands in lane 0.
+    ///
+    /// The overflow used to be folded with shift-XORs on the scalar side, on the
+    /// premise that the vector pipes were PMULL-saturated and the scalar ports
+    /// free. They are not: PMULL retires at about the rate `eor` does here, so
+    /// the second product is nearly free while the three lane extractions the
+    /// scalar form needs are not. This is the fold
+    /// [`super::gf2_64::aarch64::reduce_pair_pmull4`] already uses.
     ///
     /// # Safety
     /// Requires the `aes` target feature.
     #[inline]
     #[target_feature(enable = "aes")]
     unsafe fn base_reduce(d: uint64x2_t) -> u64 {
+        use crate::field::gf2_64::aarch64::pmull_hi;
         // SAFETY: function carries the aes target feature.
         unsafe {
-            let t = pmull(vgetq_lane_u64::<1>(d), R64);
-            let ov = vgetq_lane_u64::<1>(t); // ≤ 4 bits (deg(hi·0x1B) ≤ 67)
-            vgetq_lane_u64::<0>(d) ^ vgetq_lane_u64::<0>(t) ^ ov ^ (ov << 1) ^ (ov << 3) ^ (ov << 4)
+            let r = vdupq_n_u64(R64);
+            let t = pmull_hi(d, r);
+            let u = pmull_hi(t, r);
+            vgetq_lane_u64::<0>(veorq_u64(veorq_u64(d, t), u))
         }
     }
 

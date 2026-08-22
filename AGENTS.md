@@ -21,7 +21,7 @@ Dependency order, leaves first:
 | ----------------- | ---------------------------------------------------------------------- |
 | `parallel`        | thread pool (below)                                     |
 | `zk_alloc`        | proving arena (below)                                    |
-| `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, `bench` |
+| `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, streaming stores, `bench` |
 | `fiat_shamir`     | VM-native `FiatShamirState` + prover/verifier transcript                |
 | `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
 | `flock`           | batched R1CS over GF(2) for SHA-256: zerocheck + lincheck               |
@@ -36,7 +36,16 @@ Dependency order, leaves first:
 
 - `.cargo/config.toml` pins `-C target-cpu=native` and `-D warnings` for rustdoc
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
-- **One test binary per crate, not one per file:** each one rebuilds flock's SHA-256 matrices from scratch. New `lean_compiler` integration tests go in `tests/suite/main.rs`. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary, phases being process-global (`rec_aggregation/tests/arena_prove.rs`).
+- **One test binary per crate, not one per file:** new `lean_compiler` integration tests go in `tests/suite/main.rs`, one linked executable instead of seventeen. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary. Phases are process-global, so two in one process reclaim each other's `ArenaVec`s and the symptom is a proof that stops verifying, never a crash (`rec_aggregation/tests/arena_prove.rs`).
+
+An x86-only arm never compiles on an Apple dev machine, so a typo in one ships. Type-check the other target before pushing anything `cfg`-gated:
+
+```bash
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+avx512f,+avx512bw,+avx512vl,+vpclmulqdq,+pclmulqdq,+gfni,+avx2,+aes" \
+  cargo check --release --workspace --target x86_64-unknown-linux-gnu
+```
+
+It needs `rustup target add x86_64-unknown-linux-gnu` and nothing else, since `check` does not link. The `apple-m4 is not a recognized processor` and `x87` notes are the pinned `target-cpu=native` and the bare cross ABI, not findings. To confirm an arm is really being reached rather than silently skipped, drop a `compile_error!` in it and watch the check fail.
 
 ```bash
 cargo testall                     # whole suite in seconds
@@ -68,7 +77,7 @@ No rayon. Every parallel site is "N independent items, each writing its own disj
 
 - **Nested dispatch panics**, because it would deadlock the dispatch lock.
 - **Both core clusters share one queue** (P at `USER_INTERACTIVE`, E at `UTILITY`); guided self-scheduling means a slow core claims fewer batches. Do not add a second pool: that was `primitives::epool`, now deleted.
-- **The default holds back one performance worker when efficiency workers exist**, because `cpu::prove` also runs a setup-warming thread and a saturated small cluster stalls every barrier on any descheduled worker. Worth 13% on M4 Max, a wash on 16-thread Zen 4, hence the condition rather than a tuned constant.
+- **The default holds back one performance worker when efficiency workers exist**, because `cpu::prove` also runs a setup-warming thread and a saturated small cluster stalls every barrier on any descheduled worker. Worth having on an M4 Max, a wash on a homogeneous Zen 4 host, hence the condition rather than a tuned constant.
 
 `LEANVM_NUM_THREADS` (and `RAYON_NUM_THREADS`) sets the **performance**-worker count, leaving E-workers in place. `1` = strictly sequential.
 
@@ -89,7 +98,12 @@ The third is worth understanding before touching the verifier. `guests/aggregate
 
 ## Conventions that bite
 
+- **The prover is memory-bandwidth bound above four cores.** Doubling four cores to eight buys well under two, and `Commit` is slower on sixteen threads than on eight. What pays there is deleting traffic, not instructions. `primitives::stream::Stream` publishes a buffer without the read-for-ownership an ordinary store pays, but ONLY where nothing reads the destination again before it is evicted. Where a consumer follows in the same pass, the fetch it avoids becomes that consumer's miss: fold kernels earn it by building their round message from registers, or by folding into an L1 stage first (`whir::fold_and_msg_blocks`). That fetch is an x86 cost only: on Apple silicon a store-only fill already sustains what a read-only pass does and `STNP` measures identical to `STP`, so `Stream` is a plain copy there and the L1 stage earns its keep for the read locality alone, which is still better than writing through.
+- **NEON is the width ceiling on Apple silicon**, so an AVX-512 win that is purely width has no counterpart: the M4 has no SVE, and its SME2 is streaming-mode matrix work with no polynomial multiply. What does port is *shape*. A fused NTT pass wants a butterfly at a time over whole rows, not the register-resident tile the AVX-512 arms use: they transpose anyway and want to pay for it once per pass, while NEON transposes nothing and a tile leaves only its own width of independent work to cover the reduction's dependent PMULL folds, where a row leaves the whole lane count. Measured both directions: the tile costs the extension NTT, and costs the base encode's `Commit` again.
+- **A `[F192; N]` in a NEON kernel is a memory object, where on AVX-512 it is the register.** Four tower products are four independent PMULL chains wanting most of the 32 vector registers, so an array of them spills and the spill costs more than batching the products saves; the same array is free on AVX-512, where the quad IS one register. Keep the quad as a tuple or as named values and let arrays exist only inside the batched-product helper, on the target that wants them (`flock::zerocheck::multilinear`'s `mul_quad`). The symptom is indirect, so suspect the shape rather than the arithmetic: the products measure the same either way, destructuring the results changes nothing, and forcing the helper to inline recovers almost none of it.
+- **On Zen 4, 512-bit cross-lane data movement is half-rate** (every 512-bit shuffle is two 256-bit uops), so packing scalars into vector lanes with `vpermi2q`/`vpermq` and extracting with `vextracti64x4` loses to the scalar moves it replaces. Widening the arithmetic still pays: `mul4` beats the same products issued one at a time. Prefer kernels where both qwords of every 128-bit lane carry a product and nothing crosses lanes.
 - Use comments only when necessary: uncommented but readable and simple code is better than commented slop. And when you use comments, be concise.
+- **Never put a measurement in a comment, a doc comment, or this file.** Timings, throughputs, percentages and speedup factors go stale the moment the code, the compiler or the host changes, and nothing ever rechecks them, so they end up asserting something false with the authority of a comment. The commit message is where they belong: it is dated, it is immutable, and it says what was true when the change landed. A comment may say which way a result went and why (that a tile lost to whole rows, that one reduction beat another), never by how much.
 - Commit tests only that are useful in the future, to prevent regressions / failures. Don't add trivial tests that will always pass.
 - Simpler is better.
 - **Fiat-Shamir:** `add_scalar`/`next_scalar` bind into the Fiat-Shamir state as a side effect. `observe_*` is only for the public statement. Never re-observe data that rode the stream, which silently desynchronizes the two sides.
@@ -106,9 +120,11 @@ The third is worth understanding before touching the verifier. `guests/aggregate
 
 `flock::sha2` encodes one compression in `2^15` rows, 29,113 of them useful. That is twice the block BLAKE2s occupied, and the factor is unavoidable: `Ch`, `Maj` and the adds need ~22,000 AND rows however they are encoded, which is already over `2^14`. So a proof's flock share roughly doubled with the switch.
 
-What makes it cheaper than BLAKE2s in every other respect is the pins. BLAKE2s materialized nothing and let all sixteen lanes cascade through ten rounds, at ~89M matrix nonzeros. Here `A_NEW`, `E_NEW` and `W[t]` are materialized, because `a' = T1 + Sigma_0(a) + Maj` reads `a` four times over, so an unpinned bit's affine support quadruples every round and `4^64` is not a number of nonzeros anyone can build. With those three pin families the matrices carry 1.09M nonzeros, eighty times fewer, so building them, the CSC transpose and lincheck's `fold_alpha_batched` all got faster.
+`A_NEW`, `E_NEW` and `W[t]` are pinned (materialized into their own slots), because `a' = T1 + Sigma_0(a) + Maj` reads `a` four times over, so an unpinned bit's affine support quadruples every round: `4^64`. `T1` is deliberately NOT pinned (its operands are all pinned already, so its support stays ~70 terms and inlining it saves 2,048 rows). With those three pin families the substituted matrices would carry 1.09M nonzeros, against BLAKE2s's ~89M for pinning nothing.
 
-`T1` is deliberately NOT pinned (its operands are all pinned already, so its support stays ~70 terms and inlining it saves 2,048 rows). The zk.golf `gf2-sha256-compress-canonical` frontier is 22,215 rows and gets there by dropping every pin, which is fine when the cost model counts rows over a shared expression DAG and nothing ever materializes a sparse matrix. It does not transfer. Reaching it here would first need lincheck's O(nnz) CSC fold replaced by a reverse-mode walk over the circuit DAG, which is worth doing on its own merits and is not on this branch.
+**Neither matrix is ever built.** `flock::sha2` describes the circuit twice, forwards and backwards, and both walks are `O(circuit)`: `forward_walk` threads `WireWord`s to give every row its `(A_0 w, B_0 w)` pair, which answers the verifier's `bilinear_form` and, kept per row, feeds recursion's column contraction; `marginal_walk_side` is its reverse-mode transpose, and gives lincheck's prover the whole column marginal `(A_0 + a B_0)^T u`. `gf2` holds the gadget pair (`walk_*` / `back_*`) and nothing else. The two are cross-checked by the protocol itself, lincheck's terminal identity being exactly the assertion that they agree, and directly by `marginal_walk_transposes_the_forward_walk`.
+
+Density therefore costs nothing on either side, and the pins now buy only the bounded per-row support the layout is tiled around. The zk.golf `gf2-sha256-compress-canonical` frontier is 22,215 rows and gets there by dropping every pin; that would need `K_LOG = 15` all the same (`Ch`, `Maj` and the adds are already over `2^14`), so it would buy slots inside a block that is not shrinking.
 
 ## Soundness
 

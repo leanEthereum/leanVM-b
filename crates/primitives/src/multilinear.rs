@@ -138,8 +138,14 @@ pub fn fold_high_k(table: &[F64], chi: F192) -> ArenaVec<F192> {
 pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, chi: F192) {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
-    for i in 0..half {
-        table[i] = interp(table[i], table[i + half], chi);
+    {
+        // Split once rather than index twice: indexing reloads the data pointer
+        // and length through the container every iteration, since nothing proves
+        // they do not alias the elements, and pays a bounds check for it.
+        let (lo, hi) = (**table).split_at_mut(half);
+        for (l, h) in lo.iter_mut().zip(&*hi) {
+            *l = interp(*l, *h, chi);
+        }
     }
     table.shrink_to(half);
 }
@@ -149,8 +155,15 @@ pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, chi: F192) {
 /// versus `2^{n-1}` to rebuild the table.
 pub fn shrink_eq_low<B: Shrink<F192>>(table: &mut B) {
     let half = table.len() / 2;
-    for i in 0..half {
-        table[i] = table[2 * i] + table[2 * i + 1];
+    {
+        // Sliced, as in `fold_high_inplace`: reading the pair and writing the
+        // sum through one slice drops the per-iteration reload and its bounds
+        // check. The write index trails the read, so the in-place walk is sound.
+        let t: &mut [F192] = table;
+        for i in 0..half {
+            let (a, b) = (t[2 * i], t[2 * i + 1]);
+            t[i] = a + b;
+        }
     }
     table.shrink_to(half);
 }
@@ -159,9 +172,12 @@ pub fn shrink_eq_low<B: Shrink<F192>>(table: &mut B) {
 /// [`shrink_eq_low`] counterpart for a top-down sumcheck.
 pub fn shrink_eq_high<B: Shrink<F192>>(table: &mut B) {
     let half = table.len() / 2;
-    for i in 0..half {
-        let hi = table[i + half];
-        table[i] += hi;
+    {
+        // Sliced, as in `fold_high_inplace`.
+        let (lo, hi) = (**table).split_at_mut(half);
+        for (l, h) in lo.iter_mut().zip(&*hi) {
+            *l += *h;
+        }
     }
     table.shrink_to(half);
 }

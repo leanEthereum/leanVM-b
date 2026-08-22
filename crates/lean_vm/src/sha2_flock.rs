@@ -48,6 +48,7 @@ use flock::sha2::{
 };
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
+use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
 /// One side of the Flock reduction's output on the committed witness `q_flock`:
@@ -223,8 +224,12 @@ fn flatten_packed_into(packed: &[u64], out: &mut [F64]) {
     assert_eq!(out.len(), packed.len(), "q_flock's window is the wrong size");
     // In parallel, straight into the committed column's window: at scale this
     // moves hundreds of MB, so an intermediate buffer copied again afterwards is
-    // not affordable.
-    parallel::fill(out, |i| F64(packed[i]));
+    // not affordable. Nothing reads the window until the commitment encodes it,
+    // by which time a column this size is long evicted, so it publishes streamed.
+    // SAFETY: `F64` is `repr(transparent)` over `u64`, so the two slices are the
+    // same bytes.
+    let words: &mut [u64] = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) };
+    parallel::chunks_mut_zip(words, packed, 1 << 14, |_, dst, src| Stream::new().copy(dst, src));
 }
 
 /// Build the committed `q_flock` column (flock's packed witness) for `blocks`, padded
@@ -293,13 +298,11 @@ pub fn warm_setup(n_blocks: usize) {
     let _ = setup_for(n_blocks.max(1));
 }
 
-/// The flock SHA-256 R1CS digest: a hash of the per-block R1CS matrices and
-/// shape parameters ([`flock::r1cs::BlockR1cs::r1cs_digest`]), independent
-/// of the instance count. The full instance is block-diagonal (the count is
-/// announced and absorbed with the other sizes), so a transcript seeded with
-/// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement up
-/// front. Baked in flock (test-guarded): recomputing it costs a pass over the
-/// matrices' 384 MiB bit image, which used to land inside the first `prove`.
+/// The flock SHA-256 R1CS digest ([`flock::sha2::R1CS_DIGEST`]): the domain
+/// separator naming the per-block circuit, independent of the instance count.
+/// The full instance is block-diagonal (the count is announced and absorbed
+/// with the other sizes), so a transcript seeded with this digest (via
+/// [`crate::cpu::fs_seed`]) binds the whole statement up front.
 pub fn r1cs_digest() -> [u8; 32] {
     flock::sha2::R1CS_DIGEST
 }
@@ -458,8 +461,8 @@ mod tests {
             // The opcode over the default chaining value IS `sha2_eth` of the
             // 64 message bytes.
             let mut input = [0u8; 64];
-            for (s, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
-                s.copy_from_slice(&w.0.to_le_bytes());
+            for (s, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
+                *s = w.0.to_le_bytes();
             }
             let h = primitives::sha2::hash(&input);
             let word = |o: usize| F64(u64::from_le_bytes(h[o..o + 8].try_into().unwrap()));

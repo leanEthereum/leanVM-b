@@ -22,23 +22,21 @@
 //! That is already over `2^14`, so a compression needs `K_LOG = 15` whatever
 //! else is done: it is twice the block BLAKE2s occupied, and that factor is the
 //! price of SHA-256 in this proof system. What the remaining slots buy is the
-//! choice of which intermediate words to **materialize** ("pin"), and unlike
-//! BLAKE2s, where nothing is pinned and every lane cascades through all ten
-//! rounds, here pinning is not optional:
+//! choice of which intermediate words to **materialize** ("pin"):
 //!
 //! - `a' = T1 + Sigma_0(a) + Maj` reads `a` through three rotations plus `Maj`,
 //!   so an unpinned bit's affine support **quadruples every round**. Over 64
-//!   rounds that is `4^64`, not a large constant, and the substituted matrices
-//!   could not be built at all. `A_NEW` and `E_NEW` are pinned for that reason,
-//!   and `W[t]` for the same reason across the schedule's own recurrence.
+//!   rounds that is `4^64`. `A_NEW` and `E_NEW` are pinned for that reason, and
+//!   `W[t]` for the same reason across the schedule's own recurrence.
 //! - `T1` is *not* pinned. Every one of its operands is already a pinned slot,
 //!   so its support stays around 70 terms and inlining it into its two
 //!   consumers saves 2,048 rows with no cascade.
 //!
-//! With those three pin families the matrices carry 1,093,586 nonzeros, eighty
-//! times fewer than the BLAKE2s encoding this replaces (~89M, the price it paid
-//! for pinning nothing), so building them, the CSC transpose and lincheck's
-//! `fold_alpha_batched` all get *cheaper* even as the block doubles.
+//! With those three pin families the substituted matrices would carry 1.09M
+//! nonzeros. They are never built: both directions are circuit walks
+//! ([`bilinear_walk_pair`] forwards, [`marginal_walk`] backwards), each
+//! `O(circuit)`, so density costs nothing on either side and the pins now buy
+//! only the bounded per-row support the layout is tiled around.
 //!
 //! ## Witness layout per compression block (`k_log = 15`, `k = 32,768`)
 //!
@@ -100,11 +98,10 @@
 //! indices.
 
 use crate::gf2::{
-    ADD3_BITS, CARRY_BITS_PER_ADD, WalkAcc, WireWord, Word, walk_add, walk_add3_fused, walk_and, wire_byteswap,
-    wire_from_const, wire_from_slot_base, wire_rotr, wire_shr, wire_xor, write_add_carry_rows, write_add3_fused_rows,
-    write_and_rows, write_lin_word_rows,
+    ADD3_BITS, CARRY_BITS_PER_ADD, MatrixSide, RowValues, WireWord, back_add, back_add3_fused, back_and, back_pin,
+    walk_add, walk_add3_fused, walk_and, walk_pin, wire_byteswap, wire_from_const, wire_from_slot_base, wire_rotl,
+    wire_rotr, wire_shl, wire_shr, wire_xor,
 };
-use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use crate::verifier;
 use crate::witness::packed_bytes;
 use crate::witness::{
@@ -257,160 +254,27 @@ pub fn padding_block() -> Compression {
     pinned_compression([0u32; 16])
 }
 
-// ---------------------------------------------------------------------------
-// Matrix builder
-// ---------------------------------------------------------------------------
-
-fn small_sigma_0(x: &Word) -> Word {
-    x.rotr(7).xor(&x.rotr(18)).xor(&x.shr(3)).dedup()
-}
-fn small_sigma_1(x: &Word) -> Word {
-    x.rotr(17).xor(&x.rotr(19)).xor(&x.shr(10)).dedup()
-}
-fn big_sigma_0(x: &Word) -> Word {
-    x.rotr(2).xor(&x.rotr(13)).xor(&x.rotr(22)).dedup()
-}
-fn big_sigma_1(x: &Word) -> Word {
-    x.rotr(6).xor(&x.rotr(11)).xor(&x.rotr(25)).dedup()
-}
-
-/// The fixed per-block R1CS matrices `(A_0, B_0)`, built once per process and
-/// cached: verifiers and aggregation provers treat them as setup constants,
-/// not per-proof work.
-pub fn matrices() -> &'static (SparseBinaryMatrix, SparseBinaryMatrix) {
-    static MATRICES: std::sync::OnceLock<(SparseBinaryMatrix, SparseBinaryMatrix)> = std::sync::OnceLock::new();
-    MATRICES.get_or_init(build_matrices)
-}
-
-/// Build the per-block base matrices `(A_0, B_0)`. `C_0 = I_k` (circuit-shape
-/// R1CS: every z slot is the output of its row).
-fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
-    let mut a_rows: Vec<Vec<usize>> = vec![Vec::new(); K];
-    let mut b_rows: Vec<Vec<usize>> = vec![Vec::new(); K];
-
-    // Constant z[Z_CONST_POS]: z·z = z. Trivially satisfied for any boolean.
-    a_rows[Z_CONST_POS] = vec![Z_CONST_POS];
-    b_rows[Z_CONST_POS] = vec![Z_CONST_POS];
-
-    // Free-input rows (unconstrained when the constant wire is 1).
-    for base in [H_BASE, M_BASE] {
-        let len = if base == H_BASE { 8 } else { 16 } * WORD_BITS;
-        for s in base..base + len {
-            a_rows[s] = vec![s];
-            b_rows[s] = vec![Z_CONST_POS];
-        }
-    }
-
-    let h_in: [Word; 8] = std::array::from_fn(|w| Word::from_slot_base(h_word(w)).byteswap());
-
-    // Message schedule. `w[t]` for `t < 16` is a message word, read big-endian;
-    // the rest are this circuit's own pins.
-    let mut w: Vec<Word> = (0..16).map(|i| Word::from_slot_base(m_word(i)).byteswap()).collect();
-    for s in 0..N_SCHED {
-        let t = 16 + s;
-        // `W[t-7]` is a single slot, so it takes the fused adder's sparse
-        // operand position; the two sigmas are three terms a bit.
-        let partial = write_add3_fused_rows(
-            &mut a_rows,
-            &mut b_rows,
-            &small_sigma_1(&w[t - 2]),
-            &small_sigma_0(&w[t - 15]),
-            &w[t - 7],
-            s_slot(s, S_ADD3),
-        );
-        let sum = write_add_carry_rows(&mut a_rows, &mut b_rows, &partial, &w[t - 16], s_slot(s, S_ADD));
-        write_lin_word_rows(&mut a_rows, &mut b_rows, &sum, s_slot(s, S_PIN), Z_CONST_POS);
-        w.push(Word::from_slot_base(s_slot(s, S_PIN)));
-    }
-
-    let mut state = h_in.clone();
-    for r in 0..N_ROUNDS {
-        let [a, b, c, d, e, f, g, h] = state;
-        let ch_and = write_and_rows(&mut a_rows, &mut b_rows, &e, &f.xor(&g).dedup(), r_slot(r, R_CH));
-        let ch = ch_and.xor(&g).dedup();
-        let maj_and = write_and_rows(
-            &mut a_rows,
-            &mut b_rows,
-            &a.xor(&b).dedup(),
-            &a.xor(&c).dedup(),
-            r_slot(r, R_MAJ),
-        );
-        let maj = maj_and.xor(&a).dedup();
-
-        // T1 = h + Sigma_1(e) + Ch + W[r] + K[r], as two fused adds. The sparse
-        // operand goes third: `h` is one slot, `K[r]` is the constant wire.
-        let t1a = write_add3_fused_rows(&mut a_rows, &mut b_rows, &big_sigma_1(&e), &ch, &h, r_slot(r, R_T1A));
-        let k_word = Word::from_const(ROUND_CONSTANTS[r], Z_CONST_POS);
-        let t1 = write_add3_fused_rows(&mut a_rows, &mut b_rows, &t1a, &w[r], &k_word, r_slot(r, R_T1B));
-
-        let e_new = write_add_carry_rows(&mut a_rows, &mut b_rows, &d, &t1, r_slot(r, R_ENEW));
-        write_lin_word_rows(&mut a_rows, &mut b_rows, &e_new, r_slot(r, R_EPIN), Z_CONST_POS);
-        // a' = T1 + T2 with T2 = Sigma_0(a) + Maj, fused into one three-operand
-        // add rather than a separate T2.
-        let a_new = write_add3_fused_rows(&mut a_rows, &mut b_rows, &t1, &big_sigma_0(&a), &maj, r_slot(r, R_ANEW));
-        write_lin_word_rows(&mut a_rows, &mut b_rows, &a_new, r_slot(r, R_APIN), Z_CONST_POS);
-
-        // Register shift. Both new words are read from their pins, which is
-        // what stops the support cascade (see the module docs).
-        state = [
-            Word::from_slot_base(r_slot(r, R_APIN)),
-            a,
-            b,
-            c,
-            Word::from_slot_base(r_slot(r, R_EPIN)),
-            e,
-            f,
-            g,
-        ];
-    }
-
-    // Feed-forward: out[w] = state[w] + h[w], the compression's only output.
-    for (wd, (final_word, h_word_in)) in state.iter().zip(&h_in).enumerate() {
-        let sum = write_add_carry_rows(&mut a_rows, &mut b_rows, final_word, h_word_in, out_carry(wd));
-        write_lin_word_rows(&mut a_rows, &mut b_rows, &sum.byteswap(), out_word(wd), Z_CONST_POS);
-    }
-
-    // Padding rows ([USEFUL_BITS, K)) stay empty: the constraint 0·0 = z[i]
-    // forces z[i] = 0.
-
-    let to_mat = |rows| SparseBinaryMatrix {
-        num_rows: K,
-        num_cols: K,
-        rows,
-    };
-    (to_mat(a_rows), to_mat(b_rows))
-}
-
-/// [`BlockR1cs::r1cs_digest`] of this module's circuit, baked as a constant:
-/// recomputing it means building the matrices and hashing their 384 MiB bit
-/// image (three `2^15 × 2^15` matrices at one bit per entry), which embedding
-/// protocols would otherwise pay inside their first prove. The `r1cs_digest_matches_baked` test recomputes and compares: a
-/// circuit change fails it until this constant is updated alongside. The same
-/// digest is mirrored in `python-verifier/verifier.py`, which cannot rebuild
-/// the matrices at all.
+/// Domain separator for this circuit in the Fiat-Shamir seed
+/// (`lean_vm::cpu`), baked as an opaque constant.
+///
+/// **Provenance.** It is the old `BlockR1cs::r1cs_digest` (a since-deleted
+/// struct) at `n_blocks_log = 3`, under the tag `flock-r1cs-digest-v3`,
+/// absorbing in order: `k_log = 15`, `k_skip = 6` (little-endian `u64`s), the
+/// layout byte `0` for `RowMajor`, the pin marker `1` and `const_pin = 29,112`
+/// (little-endian `u64`), then the dense bit images of `A_0`, `B_0` and
+/// `C_0 = I`. That recipe needed the materialized matrices and a pass over
+/// their 384 MiB bit image; this module no longer builds them at all, both
+/// directions being circuit walks, so the memory and the time they cost bought
+/// only this constant. To recompute it, check out the last commit that still
+/// had `build_matrices` and run `r1cs_digest_matches_baked`.
+///
+/// The value is mirrored in `python-verifier/verifier.py`, which never could
+/// rebuild the matrices, and in the recursion guest, so a deliberate circuit
+/// change means bumping all three by hand.
 pub const R1CS_DIGEST: [u8; 32] = [
     0x60, 0x17, 0xe5, 0x5a, 0x27, 0xfa, 0xb6, 0x20, 0xad, 0xed, 0xfc, 0xfb, 0x3e, 0x0d, 0x07, 0x69, 0x69, 0x69, 0x2e,
     0xe8, 0x54, 0x31, 0x57, 0x8e, 0x6b, 0x76, 0x7c, 0x3c, 0xd7, 0x09, 0x87, 0x7e,
 ];
-
-/// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent SHA-256
-/// compressions. `n_blocks_log ≥ 3` is required (lincheck needs `n_outer ≥ 8`).
-pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
-    assert!(n_blocks_log >= 3, "lincheck needs n_outer ≥ 8, pick n_blocks_log ≥ 3");
-    let (a_0, b_0) = matrices().clone();
-    BlockR1cs {
-        m: K_LOG + n_blocks_log,
-        k_log: K_LOG,
-        k_skip: K_SKIP,
-        useful_bits: USEFUL_BITS,
-        a_0,
-        b_0,
-        c_0: crate::witness::identity(K),
-        layout: crate::r1cs::WitnessLayout::RowMajor,
-        const_pin: Some(Z_CONST_POS),
-        csc_cache: std::sync::OnceLock::new(),
-    }
-}
 
 /// Minimum `n_blocks_log` needed to prove `n_blocks` compressions, subject to
 /// the lincheck floor of `n_blocks_log ≥ 3` (`n_outer ≥ 8`).
@@ -421,78 +285,9 @@ pub fn min_n_blocks_log(n_blocks: usize) -> usize {
 
 // ---------------------------------------------------------------------------
 // Circuit-walk evaluation: `(uᵀ A_0 w, uᵀ B_0 w)` in O(circuit) field ops,
-// over the exact matrices `build_matrices` emits, never materialized. See
-// the `gf2` module for why this exists and what it mirrors.
+// over matrices that are never materialized. The row assignment these walks
+// encode is specified in doc/leanvm, Annex C "Evaluating the matrices".
 // ---------------------------------------------------------------------------
-
-pub fn bilinear_walk_pair(u: &[F192], col: &[F192]) -> (F192, F192) {
-    assert_eq!(u.len(), K);
-    assert_eq!(col.len(), K);
-    let mut acc = WalkAcc::zero();
-    // Σ u[row] over rows with A = B = [Z_CONST]: just the constant row.
-    let u_abconst = u[Z_CONST_POS];
-    acc.free_input_rows(u, col, H_BASE, 8 * WORD_BITS);
-    acc.free_input_rows(u, col, M_BASE, 16 * WORD_BITS);
-
-    let h_in: [WireWord; 8] = std::array::from_fn(|wd| wire_byteswap(&wire_from_slot_base(col, h_word(wd))));
-
-    let mut w: Vec<WireWord> = (0..16)
-        .map(|i| wire_byteswap(&wire_from_slot_base(col, m_word(i))))
-        .collect();
-    for s in 0..N_SCHED {
-        let t = 16 + s;
-        let s1 = wire_sigma(&w[t - 2], 17, 19, 10);
-        let s0 = wire_sigma(&w[t - 15], 7, 18, 3);
-        let partial = walk_add3_fused(&mut acc, u, col, &s1, &s0, &w[t - 7], s_slot(s, S_ADD3));
-        let sum = walk_add(&mut acc, u, col, &partial, &w[t - 16], s_slot(s, S_ADD));
-        acc.lin_word_rows(u, &sum, s_slot(s, S_PIN));
-        w.push(wire_from_slot_base(col, s_slot(s, S_PIN)));
-    }
-
-    let mut state = h_in;
-    for r in 0..N_ROUNDS {
-        let [a, b, c, d, e, f, g, h] = state;
-        let ch_and = walk_and(&mut acc, u, col, &e, &wire_xor(&f, &g), r_slot(r, R_CH));
-        let ch = wire_xor(&ch_and, &g);
-        let maj_and = walk_and(&mut acc, u, col, &wire_xor(&a, &b), &wire_xor(&a, &c), r_slot(r, R_MAJ));
-        let maj = wire_xor(&maj_and, &a);
-
-        let t1a = walk_add3_fused(&mut acc, u, col, &wire_rot3(&e, 6, 11, 25), &ch, &h, r_slot(r, R_T1A));
-        let k_word = wire_from_const(col, ROUND_CONSTANTS[r], Z_CONST_POS);
-        let t1 = walk_add3_fused(&mut acc, u, col, &t1a, &w[r], &k_word, r_slot(r, R_T1B));
-
-        let e_new = walk_add(&mut acc, u, col, &d, &t1, r_slot(r, R_ENEW));
-        acc.lin_word_rows(u, &e_new, r_slot(r, R_EPIN));
-        let a_new = walk_add3_fused(
-            &mut acc,
-            u,
-            col,
-            &t1,
-            &wire_rot3(&a, 2, 13, 22),
-            &maj,
-            r_slot(r, R_ANEW),
-        );
-        acc.lin_word_rows(u, &a_new, r_slot(r, R_APIN));
-
-        state = [
-            wire_from_slot_base(col, r_slot(r, R_APIN)),
-            a,
-            b,
-            c,
-            wire_from_slot_base(col, r_slot(r, R_EPIN)),
-            e,
-            f,
-            g,
-        ];
-    }
-
-    for (wd, (final_word, h_word_in)) in state.iter().zip(&h_in).enumerate() {
-        let sum = walk_add(&mut acc, u, col, final_word, h_word_in, out_carry(wd));
-        acc.lin_word_rows(u, &wire_byteswap(&sum), out_word(wd));
-    }
-
-    acc.finish(col, Z_CONST_POS, u_abconst)
-}
 
 /// `Sigma_i`: the XOR of three rotations.
 #[inline]
@@ -500,10 +295,112 @@ fn wire_rot3(x: &WireWord, r1: usize, r2: usize, r3: usize) -> WireWord {
     wire_xor(&wire_xor(&wire_rotr(x, r1), &wire_rotr(x, r2)), &wire_rotr(x, r3))
 }
 
+/// Transpose of [`wire_rot3`].
+#[inline]
+fn back_rot3(x: &WireWord, r1: usize, r2: usize, r3: usize) -> WireWord {
+    wire_xor(&wire_xor(&wire_rotl(x, r1), &wire_rotl(x, r2)), &wire_rotl(x, r3))
+}
+
 /// `sigma_i`: two rotations and a shift.
 #[inline]
 fn wire_sigma(x: &WireWord, r1: usize, r2: usize, sh: usize) -> WireWord {
     wire_xor(&wire_xor(&wire_rotr(x, r1), &wire_rotr(x, r2)), &wire_shr(x, sh))
+}
+
+/// Transpose of [`wire_sigma`].
+#[inline]
+fn back_sigma(x: &WireWord, r1: usize, r2: usize, sh: usize) -> WireWord {
+    wire_xor(&wire_xor(&wire_rotl(x, r1), &wire_rotl(x, r2)), &wire_shl(x, sh))
+}
+
+/// One forward pass of the circuit against column weights `w`, storing every
+/// row's operand pair.
+fn forward_walk(sink: &mut RowValues, w: &[F192]) {
+    // Constant z[Z_CONST_POS]: z·z = z, trivially satisfied for any boolean.
+    sink.bconst(Z_CONST_POS, w[Z_CONST_POS]);
+    // Free-input rows: A = [slot], B = [Z_CONST], unconstrained when the
+    // constant wire is 1.
+    for (base, len) in [(H_BASE, 8 * WORD_BITS), (M_BASE, 16 * WORD_BITS)] {
+        for s in base..base + len {
+            sink.bconst(s, w[s]);
+        }
+    }
+
+    let h_in: [WireWord; 8] = std::array::from_fn(|wd| wire_byteswap(&wire_from_slot_base(w, h_word(wd))));
+
+    // Message schedule. `W[t]` for `t < 16` is a message word, read big-endian;
+    // the rest are this circuit's own pins.
+    let mut sched: Vec<WireWord> = (0..16)
+        .map(|i| wire_byteswap(&wire_from_slot_base(w, m_word(i))))
+        .collect();
+    for s in 0..N_SCHED {
+        let t = 16 + s;
+        // `W[t-7]` is a single slot, so it takes the fused adder's sparse
+        // operand position; the two sigmas are three terms a bit.
+        let s1 = wire_sigma(&sched[t - 2], 17, 19, 10);
+        let s0 = wire_sigma(&sched[t - 15], 7, 18, 3);
+        let partial = walk_add3_fused(sink, w, &s1, &s0, &sched[t - 7], s_slot(s, S_ADD3));
+        let sum = walk_add(sink, w, &partial, &sched[t - 16], s_slot(s, S_ADD));
+        sched.push(walk_pin(sink, w, &sum, s_slot(s, S_PIN)));
+    }
+
+    let mut state = h_in;
+    for r in 0..N_ROUNDS {
+        let [a, b, c, d, e, f, g, h] = state;
+        let ch_and = walk_and(sink, w, &e, &wire_xor(&f, &g), r_slot(r, R_CH));
+        let ch = wire_xor(&ch_and, &g);
+        let maj_and = walk_and(sink, w, &wire_xor(&a, &b), &wire_xor(&a, &c), r_slot(r, R_MAJ));
+        let maj = wire_xor(&maj_and, &a);
+
+        // T1 = h + Sigma_1(e) + Ch + W[r] + K[r], as two fused adds. The sparse
+        // operand goes third: `h` is one slot, `K[r]` is the constant wire.
+        let t1a = walk_add3_fused(sink, w, &wire_rot3(&e, 6, 11, 25), &ch, &h, r_slot(r, R_T1A));
+        let k_word = wire_from_const(w, ROUND_CONSTANTS[r], Z_CONST_POS);
+        let t1 = walk_add3_fused(sink, w, &t1a, &sched[r], &k_word, r_slot(r, R_T1B));
+
+        let e_new = walk_add(sink, w, &d, &t1, r_slot(r, R_ENEW));
+        let e_pin = walk_pin(sink, w, &e_new, r_slot(r, R_EPIN));
+        // a' = T1 + T2 with T2 = Sigma_0(a) + Maj, fused into one three-operand
+        // add rather than a separate T2.
+        let a_new = walk_add3_fused(sink, w, &t1, &wire_rot3(&a, 2, 13, 22), &maj, r_slot(r, R_ANEW));
+        let a_pin = walk_pin(sink, w, &a_new, r_slot(r, R_APIN));
+
+        // Register shift. Both new words are read from their pins, which is
+        // what stops the support cascade (see the module docs).
+        state = [a_pin, a, b, c, e_pin, e, f, g];
+    }
+
+    // Feed-forward: out[w] = state[w] + h[w], the compression's only output.
+    for (wd, (final_word, h_word_in)) in state.iter().zip(&h_in).enumerate() {
+        let sum = walk_add(sink, w, final_word, h_word_in, out_carry(wd));
+        walk_pin(sink, w, &wire_byteswap(&sum), out_word(wd));
+    }
+
+    // Padding rows ([USEFUL_BITS, K)) stay empty: the constraint 0·0 = z[i]
+    // forces z[i] = 0.
+}
+
+pub fn bilinear_walk_pair(u: &[F192], w: &[F192]) -> (F192, F192) {
+    assert_eq!(u.len(), K);
+    assert_eq!(w.len(), K);
+    let (a, b) = row_values_walk(w);
+    let mut va = F192::ZERO;
+    let mut vb = F192::ZERO;
+    for ((&ui, &ai), &bi) in u.iter().zip(&a).zip(&b) {
+        va += ui * ai;
+        vb += ui * bi;
+    }
+    (va, vb)
+}
+
+/// The matrix-vector products `(A_0 w, B_0 w)`, i.e. every row's inner product
+/// with `w`, by one forward walk. This takes O(circuit) additions instead of one
+/// pass over the nonzeros, and neither matrix is materialized.
+pub fn row_values_walk(w: &[F192]) -> (Vec<F192>, Vec<F192>) {
+    assert_eq!(w.len(), K);
+    let mut sink = RowValues::new(K, w[Z_CONST_POS]);
+    forward_walk(&mut sink, w);
+    (sink.a, sink.b)
 }
 
 /// `(uᵀ A_0 w) + α·(uᵀ B_0 w)`, the α-batched form lincheck's verifier
@@ -513,30 +410,178 @@ pub fn bilinear_walk(alpha: F192, u: &[F192], w: &[F192]) -> F192 {
     va + alpha * vb
 }
 
-/// Walk-capable [`crate::lincheck::LincheckCircuit`] over the SHA-256 R1CS:
-/// `bilinear_form` answers lincheck's verifier in O(circuit) field ops, so the
-/// verifier never materializes the substituted matrices' column marginal. The
-/// prover-side `fold_alpha_batched` delegates to the (lazily built) CSC fold;
-/// the verifier's fast path never calls it.
-pub struct WalkLincheckCircuit<'a> {
-    r1cs: &'a BlockR1cs,
-}
+/// One matrix's column marginal, by one backward walk of the circuit.
+///
+/// ```text
+///   M[j] = Σ_k D_0(k,j)·u[k],   j < K
+/// ```
+///
+/// Reverse topological order is the forward walk read bottom-up: the
+/// feed-forward, then the 64 rounds, then the 48 schedule steps, then the
+/// big-endian leaves. Each `back_*` deposits the marginal entries of the slots
+/// its gadget owns and hands back its operands' adjoints, so an operand read
+/// several times accumulates them all before its own producer is transposed.
+fn marginal_walk_side(side: MatrixSide, u: &[F192]) -> Vec<F192> {
+    assert_eq!(u.len(), K);
+    let mut m = vec![F192::ZERO; K];
+    // Σ u[row] over rows whose B side is the lone constant wire: the free
+    // inputs and every lin-id pin, folded in once at the end.
+    let mut u_bconst = F192::ZERO;
+    // Adjoints of the set bits of `K[r]`, which read the constant wire.
+    let mut const_adj = F192::ZERO;
 
-impl<'a> WalkLincheckCircuit<'a> {
-    pub fn new(r1cs: &'a BlockR1cs) -> Self {
-        Self { r1cs }
+    // Free-input rows: A = [slot], B = [Z_CONST].
+    for (base, len) in [(H_BASE, 8 * WORD_BITS), (M_BASE, 16 * WORD_BITS)] {
+        for s in base..base + len {
+            let (a, b) = side.split(u[s]);
+            m[s] += a;
+            u_bconst += b;
+        }
     }
+
+    // Feed-forward, which is where the rounds' final state and `h` are read
+    // last. Nothing inside the block reads `out`, so its pins carry no incoming
+    // adjoint and only their own row weights flow back.
+    let mut adj_state: [WireWord; 8] = std::array::from_fn(|_| [F192::ZERO; WORD_BITS]);
+    let mut adj_h: [WireWord; 8] = std::array::from_fn(|_| [F192::ZERO; WORD_BITS]);
+    for wd in 0..8 {
+        let (a_out, ub) = back_pin(&mut m, u, &[F192::ZERO; WORD_BITS], out_word(wd), side);
+        u_bconst += ub;
+        let (a_final, a_h) = back_add(&mut m, u, &wire_byteswap(&a_out), out_carry(wd), side);
+        adj_state[wd] = a_final;
+        adj_h[wd] = a_h;
+    }
+
+    // The 64 rounds, backwards. Within one round the reverse topological order
+    // is a', a_new, e', e_new, T1, T1a, Ch, Maj: `T1` feeds both new words, so
+    // both must be transposed before it.
+    let mut adj_sched: Vec<WireWord> = vec![[F192::ZERO; WORD_BITS]; N_ROUNDS];
+    for r in (0..N_ROUNDS).rev() {
+        let [a_pin_adj, mut aa, mut ab, mut ac, e_pin_adj, mut ae, mut af, mut ag] = adj_state;
+
+        let (a_new_adj, ub) = back_pin(&mut m, u, &a_pin_adj, r_slot(r, R_APIN), side);
+        u_bconst += ub;
+        let (at1_from_a, as0a, amaj) = back_add3_fused(&mut m, u, &a_new_adj, r_slot(r, R_ANEW), side);
+
+        let (e_new_adj, ub) = back_pin(&mut m, u, &e_pin_adj, r_slot(r, R_EPIN), side);
+        u_bconst += ub;
+        let (ad, at1_from_e) = back_add(&mut m, u, &e_new_adj, r_slot(r, R_ENEW), side);
+
+        let at1 = wire_xor(&at1_from_a, &at1_from_e);
+        let (at1a, aw, ak) = back_add3_fused(&mut m, u, &at1, r_slot(r, R_T1B), side);
+        adj_sched[r] = wire_xor(&adj_sched[r], &aw);
+        for (i, &ak_i) in ak.iter().enumerate() {
+            if (ROUND_CONSTANTS[r] >> i) & 1 == 1 {
+                const_adj += ak_i;
+            }
+        }
+        let (as1e, ach, ah) = back_add3_fused(&mut m, u, &at1a, r_slot(r, R_T1A), side);
+
+        // ch = ch_and ⊕ g, so `g` picks the Ch adjoint up a second time.
+        let (ae_ch, afg) = back_and(&mut m, u, &ach, r_slot(r, R_CH), side);
+        ae = wire_xor(&ae, &ae_ch);
+        af = wire_xor(&af, &afg);
+        ag = wire_xor(&wire_xor(&ag, &afg), &ach);
+
+        // maj = maj_and ⊕ a, and `a` also feeds both AND operands.
+        let (aab, aac) = back_and(&mut m, u, &amaj, r_slot(r, R_MAJ), side);
+        aa = wire_xor(&wire_xor(&wire_xor(&aa, &aab), &aac), &amaj);
+        ab = wire_xor(&ab, &aab);
+        ac = wire_xor(&ac, &aac);
+
+        aa = wire_xor(&aa, &back_rot3(&as0a, 2, 13, 22));
+        ae = wire_xor(&ae, &back_rot3(&as1e, 6, 11, 25));
+
+        adj_state = [aa, ab, ac, ad, ae, af, ag, ah];
+    }
+    // Round 0 reads the initial state straight from `h`.
+    for wd in 0..8 {
+        adj_h[wd] = wire_xor(&adj_h[wd], &adj_state[wd]);
+    }
+
+    // The 48 schedule steps, backwards, so `W[t]`'s adjoint is complete (every
+    // later step and round r = t have contributed) before its pin is transposed.
+    for s in (0..N_SCHED).rev() {
+        let t = 16 + s;
+        let (a_sum, ub) = back_pin(&mut m, u, &adj_sched[t], s_slot(s, S_PIN), side);
+        u_bconst += ub;
+        let (a_partial, a_w16) = back_add(&mut m, u, &a_sum, s_slot(s, S_ADD), side);
+        adj_sched[t - 16] = wire_xor(&adj_sched[t - 16], &a_w16);
+        let (as1, as0, a_w7) = back_add3_fused(&mut m, u, &a_partial, s_slot(s, S_ADD3), side);
+        adj_sched[t - 7] = wire_xor(&adj_sched[t - 7], &a_w7);
+        adj_sched[t - 2] = wire_xor(&adj_sched[t - 2], &back_sigma(&as1, 17, 19, 10));
+        adj_sched[t - 15] = wire_xor(&adj_sched[t - 15], &back_sigma(&as0, 7, 18, 3));
+    }
+
+    // The big-endian leaves: `h` and `m[0..16]` are read through a byteswap,
+    // which is its own transpose.
+    for i in 0..16 {
+        let a = wire_byteswap(&adj_sched[i]);
+        for (j, &v) in a.iter().enumerate() {
+            m[m_word(i) + j] += v;
+        }
+    }
+    for wd in 0..8 {
+        let a = wire_byteswap(&adj_h[wd]);
+        for (j, &v) in a.iter().enumerate() {
+            m[h_word(wd) + j] += v;
+        }
+    }
+
+    // The constant row itself plus the B-side constant shared by every
+    // non-product row.
+    m[Z_CONST_POS] += const_adj + u[Z_CONST_POS] + u_bconst;
+    m
 }
 
-impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit<'_> {
+/// The two column marginals `(A_0ᵀ u, B_0ᵀ u)`, by one backward walk per matrix.
+/// Neither matrix is materialized.
+pub fn marginal_walk_pair(u: &[F192]) -> (Vec<F192>, Vec<F192>) {
+    (
+        marginal_walk_side(MatrixSide::A, u),
+        marginal_walk_side(MatrixSide::B, u),
+    )
+}
+
+/// The α-batched column marginal `(A_0 + α B_0)ᵀ u` used by lincheck.
+pub fn marginal_walk(alpha: F192, u: &[F192]) -> Vec<F192> {
+    let (mut a, b) = marginal_walk_pair(u);
+    for (a, b) in a.iter_mut().zip(b) {
+        *a += alpha * b;
+    }
+    a
+}
+
+/// Does `z` satisfy the block-diagonal R1CS, `(A_0 z) ⊙ (B_0 z) = z` per block?
+///
+/// Checked through [`row_values_walk`], which returns exactly the two row values
+/// `(⟨A_0(k,·), z⟩, ⟨B_0(k,·), z⟩)` that the relation compares, so no matrix is
+/// needed. `z` is the whole batch, `2^n_blocks_log` blocks of `K` bits.
+pub fn satisfies(z: &[bool], n_blocks_log: usize) -> bool {
+    assert_eq!(z.len(), K << n_blocks_log, "z must be one K-bit block per instance");
+    let bit = |b: bool| if b { F192::ONE } else { F192::ZERO };
+    (0..1usize << n_blocks_log).all(|t| {
+        let block: Vec<F192> = z[t * K..(t + 1) * K].iter().map(|&b| bit(b)).collect();
+        let (a, b) = row_values_walk(&block);
+        (0..K).all(|k| a[k] * b[k] == block[k])
+    })
+}
+
+/// Walk-capable [`crate::lincheck::LincheckCircuit`] over the SHA-256 R1CS: it
+/// walks the circuit in both directions, forwards for the verifier's
+/// `bilinear_form` and backwards for the prover's marginal, so neither side
+/// ever reads a matrix entry.
+pub struct WalkLincheckCircuit;
+
+impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit {
     fn n_cols(&self) -> usize {
         K
     }
-    fn const_pin_col(&self) -> Option<usize> {
-        self.r1cs.const_pin
+    fn const_pin_col(&self) -> usize {
+        Z_CONST_POS
     }
     fn fold_alpha_batched(&self, alpha: F192, eq_inner: &[F192]) -> Vec<F192> {
-        self.r1cs.csc_lincheck_circuit().fold_alpha_batched(alpha, eq_inner)
+        marginal_walk(alpha, eq_inner)
     }
     fn bilinear_form(&self, alpha: F192, u: &[F192], w: &[F192]) -> Option<F192> {
         Some(bilinear_walk(alpha, u, w))
@@ -545,8 +590,8 @@ impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit<'_> {
 
 // ---------------------------------------------------------------------------
 // Witness generation: emits the R1CS row-witnesses directly from the SHA-256
-// computation, as bit-packed u64 words. Row-witness semantics match
-// `build_matrices`.
+// computation, as bit-packed u64 words. Row-witness semantics match the row
+// assignment of doc/leanvm, Annex C, the same one the walks above encode.
 // ---------------------------------------------------------------------------
 
 /// One round's rows are composed in a `BitRecord<6>` and one schedule step's in
@@ -712,27 +757,28 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
 /// power-of-two shape that can hold `n_blocks` compressions.
 #[derive(Clone, Debug)]
 pub struct Sha2Setup {
-    pub r1cs: BlockR1cs,
+    /// The only thing a setup varies: `K_LOG`, `K_SKIP` and `USEFUL_BITS` are
+    /// fixed by the circuit, and there is nothing to precompute, both prove and
+    /// verify reading the matrices' forms off the circuit walks. The prove-cycle
+    /// buffers need no pre-faulting either, coming from the arena, which keeps
+    /// its pages resident across proofs (see `zk_alloc`).
+    n_blocks_log: usize,
 }
 
 impl Sha2Setup {
     /// Build a setup for `n_blocks` SHA-256 compressions.
     pub fn new(n_blocks: usize) -> Self {
         assert!(n_blocks >= 1, "n_blocks must be ≥ 1");
-        let n_log = min_n_blocks_log(n_blocks);
-        let r1cs = build_block_r1cs(n_log);
-        // Warm the CSC fold circuit here so its one-time build stays out of the
-        // first prove/verify. The prove-cycle buffers need no pre-faulting: they
-        // come from the arena, which keeps its pages resident across proofs.
-        r1cs.csc_lincheck_circuit();
-        Self { r1cs }
+        Self {
+            n_blocks_log: min_n_blocks_log(n_blocks),
+        }
     }
 
     pub fn m(&self) -> usize {
-        self.r1cs.m
+        K_LOG + self.n_blocks_log
     }
     pub fn n_blocks_log(&self) -> usize {
-        self.r1cs.m - self.r1cs.k_log
+        self.n_blocks_log
     }
     pub fn n_block_slots(&self) -> usize {
         1usize << self.n_blocks_log()
@@ -914,7 +960,7 @@ impl Sha2Setup {
         let t_zerocheck = std::time::Instant::now();
 
         // The fused generator packs 64 Boolean coordinates per word.
-        let packed_len = 1usize << (self.r1cs.m - 6);
+        let packed_len = 1usize << (self.m() - 6);
         assert_eq!(z_packed.len(), packed_len, "wrong packed witness length");
         assert_eq!(a_packed_words.len(), packed_len, "wrong packed A·z length");
         assert_eq!(b_packed_words.len(), packed_len, "wrong packed B·z length");
@@ -925,19 +971,19 @@ impl Sha2Setup {
         // already fully transcript-bound.
 
         let padding = crate::zerocheck::PaddingSpec {
-            k_log: self.r1cs.k_log,
-            useful_bits_per_block: self.r1cs.useful_bits,
+            k_log: K_LOG,
+            useful_bits_per_block: USEFUL_BITS,
         };
         let zc_claim = crate::zerocheck::prove_packed_padded(
             packed_bytes(a_packed_words),
             packed_bytes(b_packed_words),
             packed_bytes(z_packed), // C = I, so c == z
-            self.r1cs.m,
+            self.m(),
             &padding,
             ps,
         );
 
-        let x_ab = x_ab_of(&zc_claim, self.r1cs.k_log - self.r1cs.k_skip);
+        let x_ab = x_ab_of(&zc_claim, K_LOG - K_SKIP);
         trace_stage("zerocheck:", t_zerocheck);
         ZerocheckStage { x_ab }
     }
@@ -952,17 +998,17 @@ impl Sha2Setup {
         ps: &mut fiat_shamir::transcript::ProverState,
     ) -> SliceClaim {
         let t_lincheck = std::time::Instant::now();
-        let packed_len = 1usize << (self.r1cs.m - 6);
+        let packed_len = 1usize << (self.m() - 6);
         assert_eq!(z_packed_lincheck.len(), packed_len * 8, "wrong lincheck stripe length");
 
         let ZerocheckStage { x_ab } = stage;
         let lc_claim = crate::lincheck::prove_padded_capture_s_hat_v(
             z_packed_lincheck,
-            self.r1cs.m,
-            self.r1cs.k_log,
-            self.r1cs.k_skip,
-            self.r1cs.useful_bits,
-            self.r1cs.csc_lincheck_circuit(),
+            self.m(),
+            K_LOG,
+            K_SKIP,
+            USEFUL_BITS,
+            &WalkLincheckCircuit,
             &x_ab,
             ps,
         );
@@ -983,18 +1029,18 @@ impl Sha2Setup {
         // Mirror of prove_reduction: the statement is bound by the embedding
         // protocol's seed (R1CS digest) + announced count + commitment root.
 
-        let zc_claim = crate::zerocheck::verify(self.r1cs.m, vs).map_err(verifier::VerifyError::Zerocheck)?;
+        let zc_claim = crate::zerocheck::verify(self.m(), vs).map_err(verifier::VerifyError::Zerocheck)?;
 
-        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
+        let inner_rest_len = K_LOG - K_SKIP;
         let x_ab = x_ab_of(&zc_claim, inner_rest_len);
         // Walk-capable circuit: the verifier's lincheck consistency check is
         // one circuit walk (O(circuit) field ops) instead of the ∝ NNZ CSC
         // marginal fold. Same transcript, same accept/reject.
         let lc_claim = crate::lincheck::verify(
-            self.r1cs.m,
-            self.r1cs.k_log,
-            self.r1cs.k_skip,
-            &WalkLincheckCircuit::new(&self.r1cs),
+            self.m(),
+            K_LOG,
+            K_SKIP,
+            &WalkLincheckCircuit,
             &x_ab,
             zc_claim.a_eval,
             zc_claim.b_eval,
@@ -1033,13 +1079,10 @@ mod tests {
         (0..WORD_BITS).fold(0u32, |acc, j| acc | ((z[base + 8 * (3 - j / 8) + j % 8] as u32) << j))
     }
 
-    #[test]
-    fn r1cs_digest_matches_baked() {
-        assert_eq!(
-            build_block_r1cs(3).r1cs_digest(),
-            R1CS_DIGEST,
-            "R1CS changed - update R1CS_DIGEST"
-        );
+    fn rand_vec(rng: &mut Rng) -> Vec<F192> {
+        (0..K)
+            .map(|_| F192::new(rng.next_u64(), rng.next_u64(), rng.next_u64()))
+            .collect()
     }
 
     /// Every slot a layout region claims is the output of one non-degenerate
@@ -1048,7 +1091,9 @@ mod tests {
     /// stays non-empty, so only the whole tiling catches it.
     #[test]
     fn constrained_rows_tile_the_layout() {
-        let (a_0, b_0) = matrices();
+        let mut rng = Rng::new(0x7113D);
+        let w = rand_vec(&mut rng);
+        let (va, vb) = row_values_walk(&w);
         let mut expected = vec![false; K];
         let mut claim = |base: usize, len: usize| {
             for s in base..base + len {
@@ -1064,7 +1109,9 @@ mod tests {
         claim(OUT_CARRY_BASE, 8 * CARRY_BITS_PER_ADD);
         claim(Z_CONST_POS, 1);
         for s in 0..K {
-            let constrained = !a_0.rows[s].is_empty() || !b_0.rows[s].is_empty();
+            // A row is empty exactly when it sums nothing; at a random `w` a
+            // non-empty row is nonzero but for a `2^-192` accident.
+            let constrained = va[s] != F192::ZERO || vb[s] != F192::ZERO;
             assert_eq!(
                 constrained, expected[s],
                 "slot {s} constrained={constrained}, want {}",
@@ -1112,7 +1159,6 @@ mod tests {
     #[test]
     fn honest_witness_satisfies_r1cs() {
         let mut rng = Rng::new(0x5A7157);
-        let r1cs = build_block_r1cs(3);
         for n_blocks in [1usize, 5, 8] {
             let blocks: Vec<Compression> = (0..n_blocks)
                 .map(|_| {
@@ -1123,119 +1169,19 @@ mod tests {
                 })
                 .collect();
             let z = generate_witness(&blocks, 3);
-            assert_eq!(z.len(), r1cs.n());
-            assert!(r1cs.satisfies(&z), "witness for {n_blocks} compressions fails R1CS");
-        }
-    }
-
-    /// **The witness is the ONLY one, and it is the right one.** Two halves,
-    /// and both are needed.
-    ///
-    /// First, determinism: seed the determined set with the constant wire and
-    /// the free inputs `h`, `m`, then repeatedly mark a slot determined once
-    /// both its `A` and `B` supports are. Reaching all `2^K_LOG` slots says
-    /// every slot is a function of `(h, m)`, so at most one witness exists per
-    /// input.
-    ///
-    /// Second, correctness: replay that order, computing each slot as
-    /// `(A_i · z) & (B_i · z)` straight off the matrices, and check the result
-    /// is the honest witness bit for bit with `out` decoding to
-    /// `compress(h, m)`. Determinism alone is not enough, because a circuit
-    /// that computes the WRONG function deterministically passes it.
-    ///
-    /// Together they are the soundness statement: no prover can present any
-    /// other witness, in particular not one with a wrong `out`. This is what
-    /// `constrained_rows_tile_the_layout` cannot see, since a second gadget
-    /// overwriting an already-written row leaves both rows non-empty.
-    #[test]
-    fn the_satisfying_witness_is_unique_and_correct() {
-        let (a_0, b_0) = matrices();
-
-        let mut determined = vec![false; K];
-        determined[Z_CONST_POS] = true;
-        for s in H_BASE..H_BASE + 8 * WORD_BITS {
-            determined[s] = true;
-        }
-        for s in M_BASE..M_BASE + 16 * WORD_BITS {
-            determined[s] = true;
-        }
-        assert_eq!(
-            determined.iter().filter(|d| **d).count(),
-            769,
-            "the free bits are h, m and the constant wire"
-        );
-
-        let mut order: Vec<usize> = Vec::with_capacity(K);
-        loop {
-            let before = order.len();
-            for i in 0..K {
-                if determined[i] {
-                    continue;
-                }
-                if a_0.rows[i].iter().chain(&b_0.rows[i]).all(|&c| determined[c]) {
-                    determined[i] = true;
-                    order.push(i);
-                }
-            }
-            if order.len() == before {
-                break;
-            }
-        }
-        let stuck: Vec<usize> = (0..K).filter(|&i| !determined[i]).collect();
-        assert!(
-            stuck.is_empty(),
-            "{} slots are not determined by (h, m); first few: {:?}",
-            stuck.len(),
-            &stuck[..stuck.len().min(8)]
-        );
-        assert_eq!(order.len() + 769, K, "every non-free slot is settled exactly once");
-
-        let mut rng = Rng::new(0x5017_0DE5);
-        for trial in 0..4 {
-            let h: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
-            let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-
-            let mut z = vec![false; K];
-            z[Z_CONST_POS] = true;
-            for (wd, &hw) in h.iter().enumerate() {
-                for j in 0..WORD_BITS {
-                    z[h_word(wd) + j] = (hw.swap_bytes() >> j) & 1 == 1;
-                }
-            }
-            for (i, &mi) in m.iter().enumerate() {
-                for j in 0..WORD_BITS {
-                    z[m_word(i) + j] = (mi.swap_bytes() >> j) & 1 == 1;
-                }
-            }
-            let parity = |row: &[usize], z: &[bool]| row.iter().fold(false, |acc, &c| acc ^ z[c]);
-            for &i in &order {
-                z[i] = parity(&a_0.rows[i], &z) & parity(&b_0.rows[i], &z);
-            }
-
-            let honest = generate_witness(&[(h, m)], 3);
-            assert_eq!(
-                &z[..],
-                &honest[..K],
-                "trial {trial}: solved witness differs from the honest one"
-            );
-            let expected = compress(h, m);
-            for wd in 0..8 {
-                assert_eq!(read_be_word(&z, out_word(wd)), expected[wd], "trial {trial}, out[{wd}]");
-            }
+            assert_eq!(z.len(), K << 3);
+            assert!(satisfies(&z, 3), "witness for {n_blocks} compressions fails R1CS");
         }
     }
 
     #[test]
     fn mutated_witness_fails() {
         let mut rng = Rng::new(0xDEAD);
-        let r1cs = build_block_r1cs(3);
         let blocks = vec![(iv_64(), std::array::from_fn(|_| rng.next_u32()))];
         let mut z = generate_witness(&blocks, 3);
-        assert!(r1cs.satisfies(&z));
-        // One bit in each PRODUCT row kind, in the last round. The pins, the
-        // free inputs, the constant and the padding are not probed here:
-        // `the_satisfying_witness_is_unique` covers the whole family at once,
-        // and this stays as the concrete, readable instance of it.
+        assert!(satisfies(&z, 3));
+        // One bit in each PRODUCT row kind, in the last round, where the affine
+        // cascade between two pins is at its deepest.
         for off in [
             R_CH + 5,
             R_MAJ + 9,
@@ -1245,38 +1191,34 @@ mod tests {
         ] {
             z[r_slot(N_ROUNDS - 1, off)] ^= true;
             assert!(
-                !r1cs.satisfies(&z),
+                !satisfies(&z, 3),
                 "tampered bit at round offset {off} should violate R1CS"
             );
             z[r_slot(N_ROUNDS - 1, off)] ^= true;
         }
-        assert!(r1cs.satisfies(&z), "restoring every bit should re-satisfy");
+        assert!(satisfies(&z, 3), "restoring every bit should re-satisfy");
     }
 
-    /// The circuit walk agrees with the built matrices on random weights. This
-    /// is what pins the two representations of every gadget together.
+    /// The backward walk really is the forward walk's transpose:
+    /// `⟨D_0ᵀu, w⟩ = uᵀ D_0 w` for both matrices, at random weights. This is
+    /// what pins the two directions together now that neither materializes a
+    /// matrix to be compared against; the reduction as a whole relies on it,
+    /// the prover folding with the marginal and the verifier answering with the
+    /// bilinear form.
     #[test]
-    fn bilinear_walk_matches_matrices() {
-        let (a_0, b_0) = matrices();
+    fn marginal_walk_transposes_the_forward_walk() {
         let mut rng = Rng::new(0x11A1C);
-        let rand_vec = |rng: &mut Rng| -> Vec<F192> {
-            (0..K)
-                .map(|_| F192::new(rng.next_u64(), rng.next_u64(), rng.next_u64()))
-                .collect()
-        };
-        let direct = |m: &SparseBinaryMatrix, u: &[F192], w: &[F192]| {
-            m.rows.iter().enumerate().fold(F192::ZERO, |acc, (i, row)| {
-                acc + u[i] * row.iter().fold(F192::ZERO, |s, &j| s + w[j])
-            })
-        };
+        let dot = |x: &[F192], y: &[F192]| x.iter().zip(y).fold(F192::ZERO, |acc, (a, b)| acc + *a * *b);
         for trial in 0..2 {
             let u = rand_vec(&mut rng);
             let w = rand_vec(&mut rng);
             let (va, vb) = bilinear_walk_pair(&u, &w);
-            assert_eq!(va, direct(a_0, &u, &w), "A form, trial {trial}");
-            assert_eq!(vb, direct(b_0, &u, &w), "B form, trial {trial}");
+            let (ma, mb) = marginal_walk_pair(&u);
+            assert_eq!(dot(&ma, &w), va, "A marginal, trial {trial}");
+            assert_eq!(dot(&mb, &w), vb, "B marginal, trial {trial}");
             let alpha = F192::new(rng.next_u64(), rng.next_u64(), rng.next_u64());
             assert_eq!(bilinear_walk(alpha, &u, &w), va + alpha * vb, "batched, trial {trial}");
+            assert_eq!(dot(&marginal_walk(alpha, &u), &w), va + alpha * vb, "batched marginal");
         }
     }
 
@@ -1285,10 +1227,10 @@ mod tests {
     /// compression.
     #[test]
     fn const_pin_all_zero_rejected() {
-        let r1cs = build_block_r1cs(3);
-        assert_eq!(r1cs.const_pin, Some(Z_CONST_POS));
-        let z_zero = vec![false; r1cs.n()];
-        assert!(r1cs.satisfies(&z_zero), "homogeneous rows accept zero without the pin");
+        use crate::lincheck::LincheckCircuit;
+        assert_eq!(WalkLincheckCircuit.const_pin_col(), Z_CONST_POS);
+        let z_zero = vec![false; K << 3];
+        assert!(satisfies(&z_zero, 3), "homogeneous rows accept zero without the pin");
         let z = generate_witness(&[padding_block()], 3);
         assert!(z[Z_CONST_POS], "the pinned constant wire must be 1 in every block");
     }
