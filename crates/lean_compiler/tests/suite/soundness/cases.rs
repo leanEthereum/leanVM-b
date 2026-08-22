@@ -324,3 +324,56 @@ def one(v, k: Const):
 ",
     );
 }
+
+/// A local whose name collides with a top-level constant array must be rejected.
+/// `zkDSL.md` §Global constants reserves the name; a scalar constant enforces that
+/// by construction (the parser substitutes its value, so the shadowing binding
+/// becomes a literal and fails loudly), but a constant array was carried to
+/// lowering, where `const_array_elem` resolved `NAME[i]` against it without
+/// consulting the scope and `expr` folded it before the local could be seen.
+///
+/// The consequence was the catastrophic direction for a hint: the range check
+/// below ran against the baked constant `g^3` and passed, while the actual witness
+/// `g^40` was never bounded and never read.
+#[test]
+#[should_panic(expected = "reserved")]
+fn a_local_may_not_shadow_a_constant_array() {
+    super::build(
+        "\
+Q = [8, 32]
+
+
+def main():
+    Q = StackBuf(2)
+    hint_witness(Q, \"w\")
+    assert log(Q[0]) < 8
+    p = GEN ** 0
+    p[1] = Q[0]
+    p[GEN] = Q[1]
+    return
+",
+    );
+}
+
+/// Same rule for a parameter, which is the other half of what the doc reserves.
+#[test]
+#[should_panic(expected = "reserved")]
+fn a_parameter_may_not_shadow_a_constant_array() {
+    super::build(
+        "\
+Q = [8, 32]
+
+
+def main():
+    r = pick(GEN ** 2)
+    p = GEN ** 0
+    p[1] = r
+    p[GEN] = r
+    return
+
+
+def pick(Q):
+    return Q * GEN
+",
+    );
+}

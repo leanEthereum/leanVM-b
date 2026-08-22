@@ -274,12 +274,32 @@ impl FnLower<'_> {
         self.set_const(o, F192::ZERO);
     }
 
+    /// A top-level constant name is reserved (`zkDSL.md` §Global constants: "do not
+    /// reuse it as a parameter or local name"). A scalar constant enforces that by
+    /// construction, since the parser substitutes its value textually and a
+    /// shadowing binding becomes a literal, which fails loudly. A constant ARRAY is
+    /// carried to lowering instead, and [`Self::const_array_elem`] resolves
+    /// `NAME[i]` against it without consulting the scope, while `expr` folds
+    /// constants before its index arm could see the local. So a colliding local
+    /// silently has its compile-time-indexed reads folded to baked literals,
+    /// including reads of a `hint_witness` destination, whose asserts and range
+    /// checks then run on the constant instead of on the witness. Reject the
+    /// collision rather than pick a winner.
+    fn check_not_reserved(&self, name: &str) {
+        assert!(
+            !self.const_arrays.contains_key(name),
+            "`{name}` is a top-level constant array, so the name is reserved: rename the local \
+             or parameter (zkDSL.md §Global constants)"
+        );
+    }
+
     /// Bind `name` to `b`, dropping whatever the other three maps held for it:
     /// they are consulted independently, so a stale binding of another kind
     /// would shadow this one. `consts` is deliberately NOT touched, since a
     /// name can keep its compile-time index role across such a rebind; callers
     /// that must drop it do so themselves.
     fn rebind(&mut self, name: &str, b: Binding) {
+        self.check_not_reserved(name);
         self.scope.vars.remove(name);
         self.scope.stacks.remove(name);
         self.scope.gaddrs.remove(name);
@@ -1887,6 +1907,7 @@ impl FnLower<'_> {
             std::mem::take(&mut self.scope.fconsts),
         );
         for (p, b) in binds {
+            self.check_not_reserved(&p);
             match b {
                 Bind::Stack(base, size) => {
                     self.scope.stacks.insert(p, (base, size));
@@ -2710,6 +2731,12 @@ pub(crate) fn lower_func(
 ) -> Lowered {
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
+        assert!(
+            !const_arrays.contains_key(p),
+            "`{}`: parameter `{p}` collides with a top-level constant array, whose name is \
+             reserved (zkDSL.md §Global constants)",
+            f.name
+        );
         vars.insert(p.clone(), 2 + i as u32);
     }
     // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
