@@ -20,13 +20,13 @@ theorem relTriple_programmed_monitoredGlobalUniformQuery
     RelTriple
       ((fun output : Fin (n + 1) => (output, leftCache)) <$>
         (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
-      ((monitorGlobalCausalTrace right.2 fun causalState =>
+      ((monitorGlobalCausalTrace fun causalState =>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.2)
           ((globalCausalUniformImpl n).run causalState)).run).run rightState)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredFilteredStateRelation left right leftResult.2
-            rightResult.2) ∨ rightResult.2.bad) := by
+            rightResult.2) ∨ rightResult.2.bad right.2) := by
   rcases hstate with
     ⟨monitor, hmonitor, hmonitorAgrees, hrevealed, hcausal, hretained⟩
   apply relTriple_monitorGlobalCausalTrace_of_filtered_until_hit left right
@@ -83,17 +83,17 @@ noncomputable def globalHighMonitoredBaseMappedAdversaryImpl
       (StateT GlobalMonitoredCausalState ProbComp) := fun input =>
   match input with
   | .inl (.inl n) =>
-      monitorGlobalCausalTrace right.1.2 fun causalState =>
+      monitorGlobalCausalTrace fun causalState =>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
           ((globalCausalUniformImpl n).run causalState)).run
   | .inl (.inr hashInput) =>
-      monitorGlobalCausalTrace right.1.2 fun causalState =>
+      monitorGlobalCausalTrace fun causalState =>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
           ((globalCausalAttackerHashQueryFromHigh
             (globalChainValueHighTableOfEdges right.2)
               right.1.1.secretKey hashInput).run causalState)).run
   | .inr request =>
-      monitorGlobalCausalTrace right.1.2 fun causalState =>
+      monitorGlobalCausalTrace fun causalState =>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
           (globalFilteredCausalSigningQuery right.1.1 request
             causalState)).run
@@ -125,7 +125,7 @@ theorem relTriple_globalActionTracedState_until_bad
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredFilteredStateRelation left right leftResult.2
-            rightResult.2) ∨ rightResult.2.bad)) :
+            rightResult.2) ∨ rightResult.2.bad right.2)) :
     RelTriple
       ((actionTracedStateImpl leftImpl attackerActionFragment input).run
         leftState)
@@ -134,7 +134,7 @@ theorem relTriple_globalActionTracedState_until_bad
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredTracedStateRelation left right leftResult.2
-            rightResult.2) ∨ rightResult.2.1.bad) := by
+            rightResult.2) ∨ rightResult.2.1.bad right.2) := by
   let wrapLeft := fun result : (OracleWorld + SigningSpec).Range input ×
       QueryCache HashSpec => (result.1,
     (result.2, leftState.2 ++ attackerActionFragment input result.1))
@@ -146,7 +146,7 @@ theorem relTriple_globalActionTracedState_until_bad
       (OracleWorld + SigningSpec).Range input × GlobalMonitoredTracedState =>
     (leftResult.1 = rightResult.1 ∧
       GlobalMonitoredTracedStateRelation left right leftResult.2
-        rightResult.2) ∨ rightResult.2.1.bad
+        rightResult.2) ∨ rightResult.2.1.bad right.2
   have hprepared : RelTriple
       ((leftImpl input).run leftState.1)
       ((rightImpl input).run rightState.1)
@@ -186,7 +186,7 @@ theorem relTriple_programmed_globalHighMonitored_action
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredTracedStateRelation left right.1 leftResult.2
-            rightResult.2) ∨ rightResult.2.1.bad) := by
+            rightResult.2) ∨ rightResult.2.1.bad right.1.2) := by
   have liftBase := relTriple_globalActionTracedState_until_bad input left
     right.1 (sourceDirectMappedAdversaryImpl left.publicKey
       (Concrete.materializePrecomputation left.cache left.secretKey))
@@ -215,52 +215,6 @@ theorem relTriple_programmed_globalHighMonitored_action
       (relTriple_programmed_monitoredGlobalSigningQuery left right hrel
         hleftSupport hrightSupport leftState.1 rightState.1 hstate.1 request)
 
-theorem globalHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalMonitoredCausalState)
-    (hconsistent : state.TraceConsistent right.1.2)
-    (result : (OracleWorld + SigningSpec).Range input ×
-      GlobalMonitoredCausalState)
-    (hresult : result ∈ support
-      ((globalHighMonitoredBaseMappedAdversaryImpl right input).run state)) :
-    result.2.TraceConsistent right.1.2 := by
-  rcases input with (worldInput | request)
-  · rcases worldInput with n | hashInput
-    · exact monitorGlobalCausalTrace_preserves_traceConsistent right.1.2 _
-        state hconsistent result
-          (by simpa [globalHighMonitoredBaseMappedAdversaryImpl] using hresult)
-    · exact monitorGlobalCausalTrace_preserves_traceConsistent right.1.2 _
-        state hconsistent result
-          (by simpa [globalHighMonitoredBaseMappedAdversaryImpl] using hresult)
-  · exact monitorGlobalCausalTrace_preserves_traceConsistent right.1.2 _ state
-      hconsistent result
-        (by simpa [globalHighMonitoredBaseMappedAdversaryImpl] using hresult)
-
-theorem globalHighMonitoredMappedAdversaryImpl_preserves_traceConsistent
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest)) :
-    QueryImpl.PreservesInv (globalHighMonitoredMappedAdversaryImpl right)
-      (fun state : GlobalMonitoredTracedState =>
-        state.1.TraceConsistent right.1.2) := by
-  intro input state hconsistent result hresult
-  unfold globalHighMonitoredMappedAdversaryImpl actionTracedStateImpl at hresult
-  change result ∈ support (do
-    let baseResult ←
-      (globalHighMonitoredBaseMappedAdversaryImpl right input).run state.1
-    pure (baseResult.1,
-      (baseResult.2, state.2 ++ attackerActionFragment input baseResult.1)))
-      at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨baseResult, hbaseResult, hfinal⟩ := hresult
-  simp only [support_pure, Set.mem_singleton_iff] at hfinal
-  subst result
-  exact globalHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
-    right input state.1 hconsistent baseResult hbaseResult
-
 noncomputable def globalHighMonitoredVerifierImpl
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -283,14 +237,14 @@ theorem relTriple_keepGlobalAttackerTrace_until_bad
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredFilteredStateRelation left right leftResult.2
-            rightResult.2) ∨ rightResult.2.bad)) :
+            rightResult.2) ∨ rightResult.2.bad right.2)) :
     RelTriple
       ((fun result => (result.1, (result.2, leftTrace))) <$> leftComputation)
       ((fun result => (result.1, (result.2, rightTrace))) <$> rightComputation)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredTracedStateRelation left right leftResult.2
-            rightResult.2) ∨ rightResult.2.1.bad) := by
+            rightResult.2) ∨ rightResult.2.1.bad right.2) := by
   let wrapLeft := fun result : α × QueryCache HashSpec =>
     (result.1, (result.2, leftTrace))
   let wrapRight := fun result : α × GlobalMonitoredCausalState =>
@@ -299,7 +253,7 @@ theorem relTriple_keepGlobalAttackerTrace_until_bad
     fun rightResult : α × GlobalMonitoredTracedState =>
       (leftResult.1 = rightResult.1 ∧
         GlobalMonitoredTracedStateRelation left right leftResult.2
-          rightResult.2) ∨ rightResult.2.1.bad
+          rightResult.2) ∨ rightResult.2.1.bad right.2
   have hprepared : RelTriple leftComputation rightComputation
       (fun leftResult rightResult =>
         post (wrapLeft leftResult) (wrapRight rightResult)) := by
@@ -331,7 +285,7 @@ theorem relTriple_programmed_globalHighMonitored_verifier_query
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredTracedStateRelation left right.1 leftResult.2
-            rightResult.2) ∨ rightResult.2.1.bad) := by
+            rightResult.2) ∨ rightResult.2.1.bad right.1.2) := by
   rw [sourceDirectTracedVerifierImpl_query_run_eq]
   unfold globalHighMonitoredVerifierImpl
   rw [StateT.run_mk]
@@ -351,21 +305,6 @@ theorem relTriple_programmed_globalHighMonitored_verifier_query
         right hrel hleftSupport hrightSupport leftState.1 rightState.1 hstate.1
           hashInput)
 
-theorem globalHighMonitoredVerifierImpl_preserves_traceConsistent
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest)) :
-    QueryImpl.PreservesInv (globalHighMonitoredVerifierImpl right)
-      (fun state : GlobalMonitoredTracedState =>
-        state.1.TraceConsistent right.1.2) := by
-  intro input state hconsistent result hresult
-  unfold globalHighMonitoredVerifierImpl at hresult
-  simp only [StateT.run_mk] at hresult
-  rw [support_map] at hresult
-  obtain ⟨baseResult, hbaseResult, rfl⟩ := hresult
-  exact globalHighMonitoredBaseMappedAdversaryImpl_preserves_traceConsistent
-    right (.inl input) state.1 hconsistent baseResult hbaseResult
-
 theorem globalMonitoredTracedStateRelation_initial
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
@@ -376,8 +315,7 @@ theorem globalMonitoredTracedStateRelation_initial
     (hrightSupport : right.1.1 ∈ support
       trajectoryProgrammedGlobalChainKeygen) :
     GlobalMonitoredTracedStateRelation left right.1 (left.cache, [])
-      (⟨globalFilteredCausalKeygenState right.1.1,
-        some AdaptiveRevealMonitor.State.empty, []⟩, []) := by
+      (⟨globalFilteredCausalKeygenState right.1.1, []⟩, []) := by
   refine ⟨globalMonitoredFilteredStateRelation_initial left right.1 left.cache
     (globalFilteredCausalKeygenState right.1.1) ?_ ?_ ?_, rfl⟩
   · exact programmedGlobal_filteredKeygen_stateRelation left right hrel
@@ -406,49 +344,13 @@ noncomputable def globalHighMonitoredDetailedExecution
       (GlobalChainEdgeIndex → Digest)) :
     ProbComp ((Forgery × Bool) × GlobalMonitoredTracedState) := do
   let initial : GlobalMonitoredTracedState :=
-    (⟨globalFilteredCausalKeygenState right.1.1,
-      some AdaptiveRevealMonitor.State.empty, []⟩, [])
+    (⟨globalFilteredCausalKeygenState right.1.1, []⟩, [])
   let handled ← (simulateQ (globalHighMonitoredMappedAdversaryImpl right)
     (adversary.main right.1.1.publicKey)).run initial
   let verified ← (simulateQ (globalHighMonitoredVerifierImpl right)
     (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
       handled.1.message handled.1.signature)).run handled.2
   pure ((handled.1, verified.1), verified.2)
-
-theorem globalHighMonitoredDetailedExecution_traceConsistent
-    (adversary : Adversary)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (result : (Forgery × Bool) × GlobalMonitoredTracedState)
-    (hresult : result ∈ support
-      (globalHighMonitoredDetailedExecution adversary right)) :
-    result.2.1.TraceConsistent right.1.2 := by
-  unfold globalHighMonitoredDetailedExecution at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨handled, hhandled, hresult⟩ := hresult
-  have hhandledConsistent := OracleComp.simulateQ_run_preservesInv
-    (globalHighMonitoredMappedAdversaryImpl right)
-    (fun state : GlobalMonitoredTracedState =>
-      state.1.TraceConsistent right.1.2)
-    (globalHighMonitoredMappedAdversaryImpl_preserves_traceConsistent right)
-    (adversary.main right.1.1.publicKey)
-    (⟨globalFilteredCausalKeygenState right.1.1,
-      some AdaptiveRevealMonitor.State.empty, []⟩, [])
-    (globalMonitoredCausalState_initial_traceConsistent right.1.2
-      (globalFilteredCausalKeygenState right.1.1)) handled hhandled
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨verified, hvertified, hresult⟩ := hresult
-  simp only [support_pure, Set.mem_singleton_iff] at hresult
-  subst result
-  exact OracleComp.simulateQ_run_preservesInv
-    (globalHighMonitoredVerifierImpl right)
-    (fun state : GlobalMonitoredTracedState =>
-      state.1.TraceConsistent right.1.2)
-    (globalHighMonitoredVerifierImpl_preserves_traceConsistent right)
-    (Concrete.scheme.verify right.1.1.publicKey handled.1.epoch
-      handled.1.message handled.1.signature)
-    handled.2 hhandledConsistent verified hvertified
 
 def sourceGlobalExecutionResult
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -494,7 +396,6 @@ def SourceGlobalHighMonitoredProgramRelation
   ProgrammedGlobalChainKeygenBaseHighStableRelation left.1 right.1 ∧
     ((left.2.1 = right.2.1 ∧
       GlobalMonitoredTracedStateRelation left.1 right.1.1 left.2.2
-        right.2.2) ∨ right.2.2.1.bad) ∧
-    right.2.2.1.TraceConsistent right.1.1.2
+        right.2.2) ∨ right.2.2.1.bad right.1.1.2)
 
 end XmssSecurity.CappedChain

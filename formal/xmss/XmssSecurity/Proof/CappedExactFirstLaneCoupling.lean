@@ -156,7 +156,7 @@ theorem relTriple_programmed_globalHighMonitored_sourceExact_action
             encodingActionTraceUpdate right.1.1.secretKey input
               (rightState.1.causal.cache, []) rightResult.1
               (rightResult.2.1.causal.cache, []) leftState.1.2) ∨
-        rightResult.2.1.bad) := by
+        rightResult.2.1.bad right.1.2) := by
   let leftSecret :=
     Concrete.materializePrecomputation left.cache left.secretKey
   have hbase := relTriple_programmed_globalHighMonitored_signingAction left
@@ -176,7 +176,7 @@ theorem relTriple_programmed_globalHighMonitored_sourceExact_action
             encodingActionTraceUpdate right.1.1.secretKey input
               (rightState.1.causal.cache, []) rightResult.1
               (rightResult.2.1.causal.cache, []) leftState.1.2) ∨
-        rightResult.2.1.bad) := by
+        rightResult.2.1.bad right.1.2) := by
     apply relTriple_map
     apply relTriple_post_mono hbase
     intro leftResult rightResult hresult

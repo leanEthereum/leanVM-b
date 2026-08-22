@@ -96,7 +96,8 @@ theorem relTriple_programmed_globalHighMonitored_signingAction
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalSigningMonitoredTracedStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.bad) := by
+            leftResult.2 rightResult.2) ∨
+          rightResult.2.1.bad right.1.2) := by
   let enrich := sourceSigningTracedQueryResult input leftState
   let project := sourceSigningTracedStateProjection leftState
   have hbase := relTriple_programmed_globalHighMonitored_action left right hrel
@@ -110,7 +111,8 @@ theorem relTriple_programmed_globalHighMonitored_signingAction
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalSigningMonitoredTracedStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.bad) := by
+            leftResult.2 rightResult.2) ∨
+          rightResult.2.1.bad right.1.2) := by
     apply relTriple_map
     apply relTriple_post_mono hbase
     intro leftResult rightResult hresult
@@ -173,7 +175,8 @@ theorem relTriple_programmed_globalHighMonitored_signingVerifierQuery
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalSigningMonitoredTracedStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.bad) := by
+            leftResult.2 rightResult.2) ∨
+          rightResult.2.1.bad right.1.2) := by
   let project := sourceSigningTracedStateProjection leftState
   let enrich := fun result : OracleWorld.Range input × SourceTracedState =>
     (result.1, ((result.2.1, leftState.1.2), result.2.2))
@@ -185,7 +188,8 @@ theorem relTriple_programmed_globalHighMonitored_signingVerifierQuery
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalSigningMonitoredTracedStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.bad) := by
+            leftResult.2 rightResult.2) ∨
+          rightResult.2.1.bad right.1.2) := by
     apply relTriple_map
     apply relTriple_post_mono hbase
     intro leftResult rightResult hresult
@@ -210,8 +214,7 @@ theorem globalSigningMonitoredTracedStateRelation_initial
       trajectoryProgrammedGlobalChainKeygen) :
     GlobalSigningMonitoredTracedStateRelation left right.1
       ((left.cache, []), [])
-      (⟨globalFilteredCausalKeygenState right.1.1,
-        some AdaptiveRevealMonitor.State.empty, []⟩, []) := by
+      (⟨globalFilteredCausalKeygenState right.1.1, []⟩, []) := by
   exact globalMonitoredTracedStateRelation_initial left right hrel
     hleftSupport hrightSupport
 

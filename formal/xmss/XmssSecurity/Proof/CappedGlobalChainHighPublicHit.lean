@@ -157,7 +157,7 @@ theorem sourceGlobal_origin_implies_right_publicObservedHit
       (eraseGlobalChainKeygenView (sourceGlobalProgramResult left)).1.2.1) :
     RevealProbeOracleSimulation.ObservedHit
       (globalHighMonitoredPublicProjection right) := by
-  rcases hrel.2.1 with hgood | hbad
+  rcases hrel.2 with hgood | hbad
   · obtain ⟨chain, hchainOrigin⟩ := horigin
     obtain ⟨encoding, hdecode, hvalue⟩ :=
       winningOutcomeChainValueHasKeygenOrigin_eq_table
@@ -301,6 +301,6 @@ theorem sourceGlobal_origin_implies_right_publicObservedHit
   · unfold RevealProbeOracleSimulation.ObservedHit
     dsimp only [globalHighMonitoredPublicProjection]
     apply RevealProbeOracleSimulation.runObserved_append_eq_true_of_prefix
-    exact right.2.2.1.bad_implies_runObserved right.1.1.2 hrel.2.2 hbad
+    exact right.2.2.1.bad_implies_runObserved right.1.1.2 hbad
 
 end XmssSecurity.CappedChain

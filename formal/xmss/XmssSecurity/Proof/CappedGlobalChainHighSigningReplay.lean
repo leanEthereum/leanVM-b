@@ -148,14 +148,14 @@ theorem relTriple_programmed_monitoredGlobalSigningQuery
         (Concrete.scheme.sign
           (Concrete.materializePrecomputation left.cache left.secretKey)
           request.epoch request.message)).run leftCache)
-      ((monitorGlobalCausalTrace right.1.2 fun causalState =>
+      ((monitorGlobalCausalTrace fun causalState =>
         (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl right.1.2)
           (globalFilteredCausalSigningQuery right.1.1 request
             causalState)).run).run rightState)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredFilteredStateRelation left right.1 leftResult.2
-            rightResult.2) ∨ rightResult.2.bad) := by
+            rightResult.2) ∨ rightResult.2.bad right.1.2) := by
   rcases hstate with
     ⟨monitor, hmonitor, hmonitorAgrees, hrevealed, hcausal, hretained⟩
   apply relTriple_monitorGlobalCausalTrace_of_filtered_until_hit left right.1

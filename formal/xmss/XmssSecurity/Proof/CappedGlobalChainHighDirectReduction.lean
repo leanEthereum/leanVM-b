@@ -167,14 +167,13 @@ theorem coupledGlobalChainKeygenWithBaseHighFull_eq_direct :
     edgeHigh base
 
 theorem map_monitorGlobalCausalTrace_projection
-    (table : GlobalChainValueIndex → Digest)
     (computation : GlobalCausalHashState → ProbComp
       ((α × GlobalCausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
     (state : GlobalMonitoredCausalState) :
     (fun result : α × GlobalMonitoredCausalState =>
       ((result.1, result.2.causal), result.2.trace)) <$>
-        (monitorGlobalCausalTrace table computation).run state =
+        (monitorGlobalCausalTrace computation).run state =
       (fun result : (α × GlobalCausalHashState) ×
           RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex =>
         (result.1, state.trace ++ result.2)) <$>
@@ -290,7 +289,7 @@ theorem map_globalHighMonitored_uniform_erased_projection
           herase
     _ = _ := by
       unfold globalHighMonitoredBaseMappedAdversaryImpl
-      exact map_monitorGlobalCausalTrace_projection base _ state
+      exact map_monitorGlobalCausalTrace_projection _ state
 
 theorem map_globalHighMonitored_hash_erased_projection
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -331,7 +330,7 @@ theorem map_globalHighMonitored_hash_erased_projection
           herase
     _ = _ := by
       unfold globalHighMonitoredBaseMappedAdversaryImpl
-      exact map_monitorGlobalCausalTrace_projection base _ state
+      exact map_monitorGlobalCausalTrace_projection _ state
 
 theorem map_globalHighMonitored_sign_erased_projection
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -370,7 +369,7 @@ theorem map_globalHighMonitored_sign_erased_projection
           herase
     _ = _ := by
       unfold globalHighMonitoredBaseMappedAdversaryImpl
-      exact map_monitorGlobalCausalTrace_projection base _ state
+      exact map_monitorGlobalCausalTrace_projection _ state
 
 theorem map_simulate_globalHighMonitored_verifier_erased_projection
     (keyView : ProgrammedGlobalChainKeygenView)
@@ -397,8 +396,8 @@ theorem map_simulate_globalHighMonitored_verifier_erased_projection
   unfold globalHighMonitoredBaseMappedAdversaryImpl
     globalHighDirectOracleImpl globalHighDirectOracleExecution
   rcases input with n | hashInput
-  · exact map_monitorGlobalCausalTrace_projection base _ current
-  · exact map_monitorGlobalCausalTrace_projection base _ current
+  · exact map_monitorGlobalCausalTrace_projection _ current
+  · exact map_monitorGlobalCausalTrace_projection _ current
 
 def globalHighMonitoredDirectProjection
     (result : GlobalHighMonitoredProgramResult) :

@@ -163,46 +163,24 @@ theorem eagerExperiment_globalFirstLaneExactTracedPublicProgram_eq_append
   simp [appendGlobalFirstLaneExactPublicTrace, map_eq_bind_pure_comp,
     bind_assoc]
 
-theorem globalHighMonitoredProgram_traceConsistent
-    (adversary : Adversary)
-    (result : GlobalHighMonitoredProgramResult)
-    (hresult : result ∈ support
-      (globalHighMonitoredProgram adversary)) :
-    result.2.2.1.TraceConsistent result.1.1.2 := by
-  unfold globalHighMonitoredProgram at hresult
-  rw [mem_support_bind_iff] at hresult
-  obtain ⟨right, _hright, htail⟩ := hresult
-  rw [mem_support_bind_iff] at htail
-  obtain ⟨execution, hexecution, hpure⟩ := htail
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  exact globalHighMonitoredDetailedExecution_traceConsistent adversary right
-    execution hexecution
-
-theorem globalHighState_eq_of_projection_trace_consistent
-    (table : GlobalChainValueIndex → Digest)
+theorem globalHighState_eq_of_projection_trace
     (left : GlobalMonitoredTracedState)
     (right : GlobalMonitoredTracedState)
     (hprojection : GlobalHighDirectTracedState.mk left.1.causal left.2 =
       GlobalHighDirectTracedState.mk right.1.causal right.2)
-    (htrace : left.1.trace = right.1.trace)
-    (hleft : left.1.TraceConsistent table)
-    (hright : right.1.TraceConsistent table) :
+    (htrace : left.1.trace = right.1.trace) :
     left = right := by
-  rcases left with ⟨⟨leftCausal, leftMonitor, leftTrace⟩,
-    leftAttacker⟩
-  rcases right with ⟨⟨rightCausal, rightMonitor, rightTrace⟩,
-    rightAttacker⟩
+  rcases left with ⟨⟨leftCausal, leftTrace⟩, leftAttacker⟩
+  rcases right with ⟨⟨rightCausal, rightTrace⟩, rightAttacker⟩
   change (leftCausal, leftAttacker) = (rightCausal, rightAttacker)
     at hprojection
   simp only [Prod.mk.injEq] at hprojection
   change leftTrace = rightTrace at htrace
-  simp only [GlobalMonitoredCausalState.TraceConsistent] at hleft hright
   obtain ⟨hcausal, hattacker⟩ := hprojection
   subst rightCausal
   subst rightTrace
   subst rightAttacker
-  rw [hleft, hright]
+  rfl
 
 theorem globalFirstLaneExactCoupledProgram_support_info
     (adversary : Adversary)
@@ -351,10 +329,7 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
     exists_globalHighMonitored_of_coupled_support adversary right
       hrightSupport
   obtain ⟨witness, hwitnessRelation, hfirstState, hwitnessTrace,
-    hwitnessConsistent, hwitnessEncoding, hwitnessValidEpochs⟩ := hgood.2
-  have hhighConsistent :=
-    globalHighMonitoredProgram_traceConsistent adversary highResult
-      hhighSupport
+    hwitnessEncoding, hwitnessValidEpochs⟩ := hgood.2
   have hbase : highResult.1.1.2 = right.1.1.2 :=
     congrArg Prod.fst hprojection
   have hdirect :
@@ -383,15 +358,11 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
       · exact hbase
     · exact hedgeHigh
   have hstate : highResult.2.2 = witness := by
-    apply globalHighState_eq_of_projection_trace_consistent
-      right.1.1.2
+    apply globalHighState_eq_of_projection_trace
     · rw [hstateProjection, hfirstState]
     · rw [hchain, hwitnessTrace]
-    · rw [← hbase]
-      exact hhighConsistent
-    · exact hwitnessConsistent
   refine ⟨highResult, hhighSupport, ?_, hprojection, ?_, ?_⟩
-  · refine ⟨?_, ?_, hhighConsistent⟩
+  · refine ⟨?_, ?_⟩
     · change ProgrammedGlobalChainKeygenBaseHighStableRelation left.1
         highResult.1
       rw [hfullKey]

@@ -24,7 +24,6 @@ theorem simulate_eagerTrace_globalCausalUniformImpl_support_state_trace
   exact ⟨rfl, rfl⟩
 
 theorem monitorGlobalCausalTrace_support_covered
-    (table : GlobalChainValueIndex → Digest)
     (computation : GlobalCausalHashState → ProbComp
       ((α × GlobalCausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
@@ -33,7 +32,7 @@ theorem monitorGlobalCausalTrace_support_covered
     (hcovered : GlobalMonitoredCausalStateCovered covered state)
     (result : α × GlobalMonitoredCausalState)
     (hresult : result ∈ support
-      ((monitorGlobalCausalTrace table computation).run state))
+      ((monitorGlobalCausalTrace computation).run state))
     (hstep : ∀ raw ∈ support (computation state.causal),
       GlobalCausalResultCovered covered raw) :
     GlobalMonitoredCausalStateCovered covered result.2 := by
@@ -102,7 +101,7 @@ theorem globalHighMonitoredBaseMappedAdversaryImpl_support_covered_of_final
     GlobalMonitoredCausalStateCovered covered result.2 := by
   rcases input with (n | hashInput) | request
   · unfold globalHighMonitoredBaseMappedAdversaryImpl at hresult
-    apply monitorGlobalCausalTrace_support_covered right.1.2 _ state covered
+    apply monitorGlobalCausalTrace_support_covered _ state covered
       hcovered result hresult
     intro raw hraw
     have hstate :=
@@ -112,7 +111,7 @@ theorem globalHighMonitoredBaseMappedAdversaryImpl_support_covered_of_final
     · simpa [hstate.1] using hcovered.1
     · simp [hstate.2, GlobalCausalTraceRevealsCovered]
   · unfold globalHighMonitoredBaseMappedAdversaryImpl at hresult
-    apply monitorGlobalCausalTrace_support_covered right.1.2 _ state covered
+    apply monitorGlobalCausalTrace_support_covered _ state covered
       hcovered result hresult
     intro raw hraw
     exact
@@ -496,8 +495,7 @@ theorem globalHighMonitoredDetailedExecution_support_returnedCovered
     globalReturnedChainValueCovered_forwardClosed verified.2.1.causal.cache
       right.1.1.secretKey verified.2.2.toSigningLog
   have hinitial : GlobalMonitoredCausalStateCovered covered
-      ⟨globalFilteredCausalKeygenState right.1.1,
-        some AdaptiveRevealMonitor.State.empty, []⟩ := by
+      ⟨globalFilteredCausalKeygenState right.1.1, []⟩ := by
     constructor
     · intro index value hrevealed
       simp [globalFilteredCausalKeygenState] at hrevealed
@@ -511,8 +509,7 @@ theorem globalHighMonitoredDetailedExecution_support_returnedCovered
       handled.2.1 := by
     apply simulate_globalHighMonitoredMappedAdversary_support_covered_of_final
       right (adversary.main right.1.1.publicKey)
-        (⟨globalFilteredCausalKeygenState right.1.1,
-          some AdaptiveRevealMonitor.State.empty, []⟩, [])
+        (⟨globalFilteredCausalKeygenState right.1.1, []⟩, [])
         covered verified.2.1.causal.cache verified.2.2 hinitial hforward
     · intro request signature encoding chain haction hdecode
       exact globalReturnedChainValueCovered_contains_returned

@@ -150,8 +150,7 @@ theorem map_globalHighMonitoredDetailedExecution_full_projection
           edgeHigh).run (GlobalHighDirectTracedState.initial
             (globalFilteredCausalKeygenState keyView)))).run := by
   let initial : GlobalMonitoredTracedState :=
-    (⟨globalFilteredCausalKeygenState keyView,
-      some AdaptiveRevealMonitor.State.empty, []⟩, [])
+    (⟨globalFilteredCausalKeygenState keyView, []⟩, [])
   let project := fun result : Forgery × GlobalMonitoredTracedState =>
     ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal result.2.2),
       result.2.1.trace)

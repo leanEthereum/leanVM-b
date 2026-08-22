@@ -6,104 +6,59 @@ open OracleComp.ProgramLogic.Relational
 
 namespace XmssSecurity.CappedChain
 
+set_option maxRecDepth 1000000
+
 structure GlobalMonitoredCausalState where
   causal : GlobalCausalHashState
-  monitor : Option
-    (AdaptiveRevealMonitor.State GlobalChainValueIndex)
   trace : RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex
 
-def GlobalMonitoredCausalState.bad
-    (state : GlobalMonitoredCausalState) : Prop :=
-  state.monitor = none
-
-def GlobalMonitoredCausalState.TraceConsistent
+def GlobalMonitoredCausalState.observed
     (table : GlobalChainValueIndex → Digest)
-    (state : GlobalMonitoredCausalState) : Prop :=
-  state.monitor = RevealProbeOracleSimulation.advanceObserved table
+    (state : GlobalMonitoredCausalState) :
+    Option (AdaptiveRevealMonitor.State GlobalChainValueIndex) :=
+  RevealProbeOracleSimulation.advanceObserved table
     AdaptiveRevealMonitor.State.empty state.trace
 
-def globalMonitoredCausalResult
+def GlobalMonitoredCausalState.bad
     (table : GlobalChainValueIndex → Digest)
+    (state : GlobalMonitoredCausalState) : Prop :=
+  state.observed table = none
+
+def globalMonitoredCausalResult
     (initial : GlobalMonitoredCausalState)
     (result : (α × GlobalCausalHashState) ×
       RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) :
     α × GlobalMonitoredCausalState :=
   (result.1.1, {
     causal := result.1.2
-    monitor := initial.monitor.bind fun monitor =>
-      RevealProbeOracleSimulation.advanceObserved table monitor result.2
     trace := initial.trace ++ result.2
   })
-
-theorem globalMonitoredCausalResult_traceConsistent
-    (table : GlobalChainValueIndex → Digest)
-    (initial : GlobalMonitoredCausalState)
-    (result : (α × GlobalCausalHashState) ×
-      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hinitial : initial.TraceConsistent table) :
-    (globalMonitoredCausalResult table initial result).2.TraceConsistent
-      table := by
-  unfold GlobalMonitoredCausalState.TraceConsistent at hinitial ⊢
-  change (initial.monitor.bind fun monitor =>
-      RevealProbeOracleSimulation.advanceObserved table monitor result.2) =
-    RevealProbeOracleSimulation.advanceObserved table
-      AdaptiveRevealMonitor.State.empty (initial.trace ++ result.2)
-  rw [hinitial, RevealProbeOracleSimulation.advanceObserved_append]
-
-theorem globalMonitoredCausalState_initial_traceConsistent
-    (table : GlobalChainValueIndex → Digest)
-    (causal : GlobalCausalHashState) :
-    GlobalMonitoredCausalState.TraceConsistent table
-      ⟨causal, some AdaptiveRevealMonitor.State.empty, []⟩ := by
-  simp [GlobalMonitoredCausalState.TraceConsistent,
-    RevealProbeOracleSimulation.advanceObserved,
-    RevealProbeOracleSimulation.tableHits,
-    AdaptiveRevealMonitor.State.empty]
 
 theorem GlobalMonitoredCausalState.bad_implies_runObserved
     (table : GlobalChainValueIndex → Digest)
     (state : GlobalMonitoredCausalState)
-    (hconsistent : state.TraceConsistent table)
-    (hbad : state.bad) :
+    (hbad : state.bad table) :
     RevealProbeOracleSimulation.runObserved table
       AdaptiveRevealMonitor.State.empty state.trace = true := by
   apply (RevealProbeOracleSimulation.advanceObserved_eq_none_iff_runObserved_eq_true
     table AdaptiveRevealMonitor.State.empty state.trace).1
-  rw [← hconsistent]
   exact hbad
 
 noncomputable def monitorGlobalCausalTrace
-    (table : GlobalChainValueIndex → Digest)
     (computation : GlobalCausalHashState → ProbComp
       ((α × GlobalCausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex)) :
     StateT GlobalMonitoredCausalState ProbComp α := fun state =>
-  globalMonitoredCausalResult table state <$> computation state.causal
+  globalMonitoredCausalResult state <$> computation state.causal
 
 theorem monitorGlobalCausalTrace_run
-    (table : GlobalChainValueIndex → Digest)
     (computation : GlobalCausalHashState → ProbComp
       ((α × GlobalCausalHashState) ×
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
     (state : GlobalMonitoredCausalState) :
-    (monitorGlobalCausalTrace table computation).run state =
-      globalMonitoredCausalResult table state <$> computation state.causal :=
+    (monitorGlobalCausalTrace computation).run state =
+      globalMonitoredCausalResult state <$> computation state.causal :=
   rfl
-
-theorem monitorGlobalCausalTrace_preserves_traceConsistent
-    (table : GlobalChainValueIndex → Digest)
-    (computation : GlobalCausalHashState → ProbComp
-      ((α × GlobalCausalHashState) ×
-        RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
-    (state : GlobalMonitoredCausalState)
-    (hconsistent : state.TraceConsistent table)
-    (result : α × GlobalMonitoredCausalState)
-    (hresult : result ∈ support
-      ((monitorGlobalCausalTrace table computation).run state)) :
-    result.2.TraceConsistent table := by
-  rw [monitorGlobalCausalTrace_run, support_map] at hresult
-  obtain ⟨raw, _hraw, rfl⟩ := hresult
-  exact globalMonitoredCausalResult_traceConsistent table state raw hconsistent
 
 def GlobalMonitoredFilteredStateRelation
     (left : ProgrammedGlobalChainKeygenView)
@@ -111,7 +66,7 @@ def GlobalMonitoredFilteredStateRelation
       (GlobalChainValueIndex → Digest))
     (leftCache : QueryCache HashSpec)
     (rightState : GlobalMonitoredCausalState) : Prop :=
-  ∃ monitor, rightState.monitor = some monitor ∧
+  ∃ monitor, rightState.observed right.2 = some monitor ∧
     RevealProbeOracleSimulation.StateAgrees right.2 monitor ∧
     monitor.revealed = rightState.causal.revealed ∧
     GlobalFilteredCausalStateRelation left right leftCache
@@ -130,10 +85,17 @@ theorem globalMonitoredFilteredStateRelation_initial
       rightState)
     (hhidden : ∀ index, rightState.revealed index = none) :
     GlobalMonitoredFilteredStateRelation left right leftCache
-      ⟨rightState, some AdaptiveRevealMonitor.State.empty, []⟩ := by
-  refine ⟨AdaptiveRevealMonitor.State.empty, rfl,
+      ⟨rightState, []⟩ := by
+  have hnoHit : ¬ ∃ index, right.2 index ∈
+      (AdaptiveRevealMonitor.State.empty :
+        AdaptiveRevealMonitor.State GlobalChainValueIndex).pending index := by
+    simp [AdaptiveRevealMonitor.State.empty]
+  refine ⟨AdaptiveRevealMonitor.State.empty, ?_,
     RevealProbeOracleSimulation.stateAgrees_empty right.2, ?_, hstate,
       hretained⟩
+  · simp [GlobalMonitoredCausalState.observed,
+      RevealProbeOracleSimulation.advanceObserved,
+      RevealProbeOracleSimulation.tableHits, hnoHit]
   funext index
   simp [AdaptiveRevealMonitor.State.empty, hhidden index]
 
@@ -160,7 +122,7 @@ theorem relTriple_monitorGlobalCausalTrace_of_filtered_until_hit
         RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex))
     (rightState : GlobalMonitoredCausalState)
     (monitor : AdaptiveRevealMonitor.State GlobalChainValueIndex)
-    (hmonitor : rightState.monitor = some monitor)
+    (hmonitor : rightState.observed right.2 = some monitor)
     (hmonitorAgrees : RevealProbeOracleSimulation.StateAgrees right.2 monitor)
     (hrevealed : monitor.revealed = rightState.causal.revealed)
     (hcouple : RelTriple leftComputation
@@ -179,23 +141,26 @@ theorem relTriple_monitorGlobalCausalTrace_of_filtered_until_hit
       (rightComputation rightState.causal),
       GlobalMerkleKeygenCacheRetained right.1.secretKey result.1.2) :
     RelTriple leftComputation
-      ((monitorGlobalCausalTrace right.2 rightComputation).run rightState)
+      ((monitorGlobalCausalTrace rightComputation).run rightState)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredFilteredStateRelation left right leftResult.2
             rightResult.2) ∨
-          rightResult.2.bad) := by
+          rightResult.2.bad right.2) := by
   rw [monitorGlobalCausalTrace_run]
+  change RevealProbeOracleSimulation.advanceObserved right.2
+    AdaptiveRevealMonitor.State.empty rightState.trace = some monitor
+      at hmonitor
   have hmapped : RelTriple (id <$> leftComputation)
-      (globalMonitoredCausalResult right.2 rightState <$>
+      (globalMonitoredCausalResult rightState <$>
         rightComputation rightState.causal)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
           GlobalMonitoredFilteredStateRelation left right leftResult.2
             rightResult.2) ∨
-          rightResult.2.bad) :=
+          rightResult.2.bad right.2) :=
     relTriple_map (f := id)
-      (g := globalMonitoredCausalResult right.2 rightState)
+      (g := globalMonitoredCausalResult rightState)
       (relTriple_post_mono (relTriple_with_support hcouple)
       (fun leftResult rightResult hresult => by
         have htraceResult := htrace rightResult hresult.2.2
@@ -205,19 +170,21 @@ theorem relTriple_monitorGlobalCausalTrace_of_filtered_until_hit
               monitor rightResult.2 with
           | none =>
               right
-              change (rightState.monitor.bind fun current =>
-                RevealProbeOracleSimulation.advanceObserved right.2 current
-                  rightResult.2) = none
-              rw [hmonitor]
+              change RevealProbeOracleSimulation.advanceObserved right.2
+                AdaptiveRevealMonitor.State.empty
+                  (rightState.trace ++ rightResult.2) = none
+              rw [RevealProbeOracleSimulation.advanceObserved_append,
+                hmonitor]
               exact hadvance
           | some finalMonitor =>
               left
               refine ⟨hexact.1, finalMonitor, ?_, ?_, ?_, hexact.2,
                 hretainedResult⟩
-              · change (rightState.monitor.bind fun current =>
-                    RevealProbeOracleSimulation.advanceObserved right.2 current
-                      rightResult.2) = some finalMonitor
-                rw [hmonitor]
+              · change RevealProbeOracleSimulation.advanceObserved right.2
+                    AdaptiveRevealMonitor.State.empty
+                      (rightState.trace ++ rightResult.2) = some finalMonitor
+                rw [RevealProbeOracleSimulation.advanceObserved_append,
+                  hmonitor]
                 exact hadvance
               · exact RevealProbeOracleSimulation.advanceObserved_preserves_stateAgrees
                   right.2 monitor finalMonitor rightResult.2 hadvance
@@ -227,10 +194,10 @@ theorem relTriple_monitorGlobalCausalTrace_of_filtered_until_hit
                     rightResult.1.2.revealed rightResult.2 hadvance
                       hmonitorAgrees hrevealed htraceResult.1 htraceResult.2
         · right
-          change (rightState.monitor.bind fun current =>
-            RevealProbeOracleSimulation.advanceObserved right.2 current
-              rightResult.2) = none
-          rw [hmonitor]
+          change RevealProbeOracleSimulation.advanceObserved right.2
+            AdaptiveRevealMonitor.State.empty
+              (rightState.trace ++ rightResult.2) = none
+          rw [RevealProbeOracleSimulation.advanceObserved_append, hmonitor]
           exact (RevealProbeOracleSimulation.advanceObserved_eq_none_iff_runObserved_eq_true
             right.2 monitor rightResult.2).2 hhit))
   simpa only [id_map] using hmapped
