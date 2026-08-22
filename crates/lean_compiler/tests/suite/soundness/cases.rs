@@ -245,7 +245,7 @@ def main():
 ";
 
 /// BLAKE2s of the 64-byte block whose four canonical cells are `(5, 7, 0, 0)`.
-const DIGEST_5_7: [F192; 2] = [
+pub const DIGEST_5_7: [F192; 2] = [
     F192::new(0xbbc8_c175_8cb7_7642, 0xf299_5d40_1fad_f4ff, 0),
     F192::new(0x83ea_6ade_289a_53c8, 0x57e6_e523_12ec_734b, 0),
 ];

@@ -230,3 +230,120 @@ def pick(x):
         ],
     });
 }
+
+/// A store into a cell something already gave a value to is the write-once
+/// equality assertion of `zkDSL.md` §Memory ("a second write ... of a different
+/// value a proof failure. This turns stores into equality assertions"), whether
+/// the cell is a `StackBuf` cell or a `HeapBuf` cell.
+///
+/// Regression test: `stack_store` deferred a copy-or-constant RHS as an alias
+/// unconditionally, so a `StackBuf` store never pinned a hint. `hint_witness`
+/// named the raw cells while every read forwarded past them, and the check the
+/// author wrote was applied to nothing.
+#[test]
+fn stack_store_pins_a_hint_like_a_heap_store() {
+    check_pair(&Pair {
+        name: "stack_store_pins_a_hint_like_a_heap_store",
+        why: "zkDSL.md §Memory: a store into an already-written cell IS an equality assertion, \
+              and §Hints: `s[k] = <checked value>` is how a program pins prover advice.",
+        a: "\
+def main():
+    s = StackBuf(2)
+    hint_witness(s, \"w\")
+    s[0] = GEN ** 3
+    p = GEN ** 0
+    p[1] = s[0]
+    p[GEN] = s[1]
+    return
+",
+        b: "\
+def main():
+    s = StackBuf(2)
+    hint_witness(s, \"w\")
+    h = HeapBuf(1)
+    h[1] = s[0]
+    h[1] = GEN ** 3
+    p = GEN ** 0
+    p[1] = s[0]
+    p[GEN] = s[1]
+    return
+",
+        trials: vec![
+            pinned(g(3), g(9)), // the hint agrees with the pin
+            pinned(g(4), g(9)), // it does not: both must reject
+            pinned(F192::ZERO, g(1)),
+            pinned(g(2), g(3)),
+        ],
+    });
+}
+
+/// A trial for the pinning pair above: the public input carries the PIN, not the
+/// hint. Publishing the hint would hide a dropped pin, since the publication then
+/// forwards through the very alias that dropped it and both spellings agree by
+/// accident. Publishing the pin makes a dropped pin visible as a program that
+/// accepts every hint.
+fn pinned(hint0: F192, hint1: F192) -> Trial {
+    Trial::new([g(3), hint1]).stream("w", vec![vec![hint0, hint1]])
+}
+
+/// `zkDSL.md` §BLAKE2s: "If `out` was already written, the statement *asserts*
+/// the digest equals it, write-once turning the hash into a verification, which
+/// is exactly what a signature verifier wants." That has to hold for a `StackBuf`
+/// `out` as much as for a `HeapBuf` one, since the doc recommends the idiom
+/// without qualifying which.
+///
+/// Regression test: the `BLAKE2s` output arm named the raw run, so a `StackBuf`
+/// `out` whose cells had been pre-written by copies or constants had its digest
+/// written where nothing read it. The "verification" checked nothing, and the
+/// prover could put any message under the hash.
+#[test]
+fn prewritten_blake2s_out_asserts_the_digest() {
+    check_pair(&Pair {
+        name: "prewritten_blake2s_out_asserts_the_digest",
+        why: "zkDSL.md §BLAKE2s: a pre-written `out` turns the hash into a verification.",
+        a: "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    m = StackBuf(4)
+    m[0] = 5
+    m[1] = 7
+    m[2] = 0
+    m[3] = 0
+    d = StackBuf(2)
+    d[0] = v[0]
+    d[1] = v[1]
+    blake2s(m[0:2], m[2:4], d)
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = v[1]
+    return
+",
+        b: "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    m = StackBuf(4)
+    m[0] = 5
+    m[1] = 7
+    m[2] = 0
+    m[3] = 0
+    d = HeapBuf(2)
+    d[1] = v[0]
+    d[GEN] = v[1]
+    blake2s(m[0:2], m[2:4], d[0:2])
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = v[1]
+    return
+",
+        trials: vec![
+            // The real digest of the block whose cells are (5, 7, 0, 0).
+            two(super::cases::DIGEST_5_7[0], super::cases::DIGEST_5_7[1]),
+            // Anything else must be rejected by both spellings.
+            two(F192::ZERO, F192::ZERO),
+            two(super::cases::DIGEST_5_7[0], F192::ZERO),
+            two(g(3), g(5)),
+        ],
+    });
+}
