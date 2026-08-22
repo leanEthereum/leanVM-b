@@ -73,32 +73,9 @@ abbrev SourceExactTracedState :=
   (((QueryCache HashSpec × SigningCacheTrace) × EncodingActionTrace) ×
     AttackerActionTrace)
 
-abbrev GlobalHighExactMonitoredState :=
-  GlobalMonitoredTracedState × EncodingActionTrace
-
 def sourceExactSigningProjection
     (state : SourceExactTracedState) : SourceSigningTracedState :=
   ((state.1.1.1, state.1.1.2), state.2)
-
-def GlobalSigningExactMonitoredStateRelation
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest))
-    (leftState : SourceExactTracedState)
-    (rightState : GlobalHighExactMonitoredState) : Prop :=
-  GlobalSigningMonitoredTracedStateRelation left right
-      (sourceExactSigningProjection leftState) rightState.1 ∧
-    leftState.1.2 = rightState.2
-
-noncomputable def globalHighExactMonitoredMappedAdversaryImpl
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest)) :
-    QueryImpl (OracleWorld + SigningSpec)
-      (StateT GlobalHighExactMonitoredState ProbComp) :=
-  fun input => encodingTracedLift right.1.1.secretKey input
-    (fun state : GlobalMonitoredTracedState => state.1.causal.cache)
-    (globalHighMonitoredMappedAdversaryImpl right input)
 
 noncomputable def sourceExactQueryResult
     (secretKey : SecretKey)
@@ -132,33 +109,6 @@ theorem cappedBothTracedMappedAdversaryImpl_query_eq_sourceExactMap
   intro result
   rfl
 
-noncomputable def globalHighExactQueryResult
-    (secretKey : SecretKey)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (initialState : GlobalHighExactMonitoredState)
-    (result : (OracleWorld + SigningSpec).Range input ×
-      GlobalMonitoredTracedState) :
-    (OracleWorld + SigningSpec).Range input × GlobalHighExactMonitoredState :=
-  (result.1, (result.2,
-    encodingActionTraceUpdate secretKey input
-      (initialState.1.1.causal.cache, []) result.1
-      (result.2.1.causal.cache, []) initialState.2))
-
-theorem globalHighExactMonitoredMappedAdversaryImpl_query_eq_map
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (input : (OracleWorld + SigningSpec).Domain)
-    (initialState : GlobalHighExactMonitoredState) :
-    (globalHighExactMonitoredMappedAdversaryImpl right input).run
-        initialState =
-      globalHighExactQueryResult right.1.1.secretKey input initialState <$>
-        (globalHighMonitoredMappedAdversaryImpl right input).run
-          initialState.1 := by
-  unfold globalHighExactMonitoredMappedAdversaryImpl
-    globalHighExactQueryResult
-  simp [map_eq_bind_pure_comp]
-
 theorem encodingActionTraceUpdate_eq_of_parameter_eq
     (leftSecret rightSecret : SecretKey)
     (hparameter : leftSecret.parameter = rightSecret.parameter)
@@ -179,7 +129,7 @@ theorem encodingActionTraceUpdate_eq_of_parameter_eq
     | none => rfl
     | some signature => rw [hparameter]
 
-theorem relTriple_programmed_globalHighExactMonitored_action
+theorem relTriple_programmed_globalHighMonitored_sourceExact_action
     (left : ProgrammedGlobalChainKeygenView)
     (right : (ProgrammedGlobalChainKeygenView ×
       (GlobalChainValueIndex → Digest)) ×
@@ -189,35 +139,44 @@ theorem relTriple_programmed_globalHighExactMonitored_action
     (hrightSupport : right.1.1 ∈ support
       trajectoryProgrammedGlobalChainKeygen)
     (leftState : SourceExactTracedState)
-    (rightState : GlobalHighExactMonitoredState)
-    (hstate : GlobalSigningExactMonitoredStateRelation left right.1
-      leftState rightState)
+    (rightState : GlobalMonitoredTracedState)
+    (hstate : GlobalSigningMonitoredTracedStateRelation left right.1
+      (sourceExactSigningProjection leftState) rightState)
     (input : (OracleWorld + SigningSpec).Domain) :
     RelTriple
       ((cappedBothTracedMappedAdversaryImpl left.publicKey
         (Concrete.materializePrecomputation left.cache left.secretKey)
           input).run leftState)
-      ((globalHighExactMonitoredMappedAdversaryImpl right input).run
-        rightState)
+      ((globalHighMonitoredMappedAdversaryImpl right input).run rightState)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
-          GlobalSigningExactMonitoredStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.1.bad) := by
+          GlobalSigningMonitoredTracedStateRelation left right.1
+            (sourceExactSigningProjection leftResult.2) rightResult.2 ∧
+          leftResult.2.1.2 =
+            encodingActionTraceUpdate right.1.1.secretKey input
+              (rightState.1.causal.cache, []) rightResult.1
+              (rightResult.2.1.causal.cache, []) leftState.1.2) ∨
+        rightResult.2.1.bad) := by
   let leftSecret :=
     Concrete.materializePrecomputation left.cache left.secretKey
   have hbase := relTriple_programmed_globalHighMonitored_signingAction left
     right hrel hleftSupport hrightSupport
-    (sourceExactSigningProjection leftState) rightState.1 hstate.1 input
+    (sourceExactSigningProjection leftState) rightState hstate input
   have hlifted : RelTriple
       (sourceExactQueryResult leftSecret input leftState <$>
         (sourceSigningTracedMappedAdversaryImpl left.publicKey leftSecret
           input).run (sourceExactSigningProjection leftState))
-      (globalHighExactQueryResult right.1.1.secretKey input rightState <$>
-        (globalHighMonitoredMappedAdversaryImpl right input).run rightState.1)
+      (id <$> (globalHighMonitoredMappedAdversaryImpl right input).run
+        rightState)
       (fun leftResult rightResult =>
         (leftResult.1 = rightResult.1 ∧
-          GlobalSigningExactMonitoredStateRelation left right.1
-            leftResult.2 rightResult.2) ∨ rightResult.2.1.1.bad) := by
+          GlobalSigningMonitoredTracedStateRelation left right.1
+            (sourceExactSigningProjection leftResult.2) rightResult.2 ∧
+          leftResult.2.1.2 =
+            encodingActionTraceUpdate right.1.1.secretKey input
+              (rightState.1.causal.cache, []) rightResult.1
+              (rightResult.2.1.causal.cache, []) leftState.1.2) ∨
+        rightResult.2.1.bad) := by
     apply relTriple_map
     apply relTriple_post_mono hbase
     intro leftResult rightResult hresult
@@ -225,23 +184,19 @@ theorem relTriple_programmed_globalHighExactMonitored_action
     · apply Or.inl
       refine ⟨hgood.1, hgood.2, ?_⟩
       obtain ⟨_monitorInitial, _hmonitorInitial, _hagreesInitial,
-        _hrevealedInitial, hinitialCausal, _hretainedInitial⟩ :=
-          hstate.1.1
+        _hrevealedInitial, hinitialCausal, _hretainedInitial⟩ := hstate.1
       obtain ⟨_monitorFinal, _hmonitorFinal, _hagreesFinal,
-        _hrevealedFinal, hfinalCausal, _hretainedFinal⟩ :=
-          hgood.2.1
-      have hinitial := hinitialCausal.1
-      have hfinal := hfinalCausal.1
+        _hrevealedFinal, hfinalCausal, _hretainedFinal⟩ := hgood.2.1
       have hcacheUpdate :=
         encodingActionTraceUpdate_eq_of_globalSigningCachesAgree
-          leftSecret input leftState.1.1.1 rightState.1.1.causal.cache
+          leftSecret input leftState.1.1.1 rightState.1.causal.cache
           leftResult.2.1.1 rightResult.2.1.causal.cache
           (by simpa [leftSecret, Concrete.materializePrecomputation,
             Concrete.precomputedSecretKey, sourceSigningTracedStateProjection,
-            sourceExactSigningProjection] using hinitial)
+            sourceExactSigningProjection] using hinitialCausal.1)
           (by simpa [leftSecret, Concrete.materializePrecomputation,
             Concrete.precomputedSecretKey, sourceSigningTracedStateProjection,
-            sourceExactSigningProjection] using hfinal)
+            sourceExactSigningProjection] using hfinalCausal.1)
           leftResult.1 leftState.1.2
       have hparameter := programmedGlobal_secretKey_parameter_eq left right
         hrel hleftSupport hrightSupport
@@ -249,15 +204,13 @@ theorem relTriple_programmed_globalHighExactMonitored_action
         leftSecret right.1.1.secretKey
         (by simpa [leftSecret, Concrete.materializePrecomputation,
           Concrete.precomputedSecretKey] using hparameter.symm)
-        input rightState.1.1.causal.cache rightResult.2.1.causal.cache
+        input rightState.1.causal.cache rightResult.2.1.causal.cache
         leftResult.1 leftState.1.2
-      simpa [sourceExactQueryResult, globalHighExactQueryResult, hstate.2,
-        hgood.1] using
+      simpa [sourceExactQueryResult, hgood.1] using
         hcacheUpdate.trans hsecretUpdate
     · exact Or.inr hbad
-  rw [cappedBothTracedMappedAdversaryImpl_query_eq_sourceExactMap,
-    globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
-  exact hlifted
+  rw [cappedBothTracedMappedAdversaryImpl_query_eq_sourceExactMap]
+  simpa using hlifted
 
 
 theorem appendVerificationEncodingObservation_eq_of_globalSigningCachesAgree
@@ -317,24 +270,6 @@ noncomputable def sourceGlobalExactTracedDetailedExecution
     handled.1 handled.2.1.1.1 verified.2.1.1 handled.2.1.2
   pure ((handled.1, verified.1),
     ((verified.2.1, finalEncodingTrace), verified.2.2))
-
-theorem globalSigningExactMonitoredStateRelation_initial
-    (left : ProgrammedGlobalChainKeygenView)
-    (right : (ProgrammedGlobalChainKeygenView ×
-      (GlobalChainValueIndex → Digest)) ×
-      (GlobalChainEdgeIndex → Digest))
-    (hrel : ProgrammedGlobalChainKeygenBaseHighStableRelation left right)
-    (hleftSupport : left ∈ support trajectoryProgrammedGlobalChainKeygen)
-    (hrightSupport : right.1.1 ∈ support
-      trajectoryProgrammedGlobalChainKeygen) :
-    GlobalSigningExactMonitoredStateRelation left right.1
-      ((((left.cache, []), []), []))
-      (((⟨globalFilteredCausalKeygenState right.1.1,
-        some AdaptiveRevealMonitor.State.empty, []⟩, []), [])) := by
-  constructor
-  · exact globalSigningMonitoredTracedStateRelation_initial left right hrel
-      hleftSupport hrightSupport
-  · rfl
 
 def sourceGlobalExactErasedExecution
     (result : (Forgery × Bool) × SourceExactTracedState) :

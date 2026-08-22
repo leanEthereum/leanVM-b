@@ -42,10 +42,6 @@ end GlobalHighDirectTracedState
     (causalState : GlobalCausalHashState) : GlobalHighDirectTracedState :=
   (causalState, state.2)
 
-def globalHighExactStateProjection
-    (state : GlobalHighExactMonitoredState) : GlobalHighDirectTracedState :=
-  ⟨state.1.1.causal, state.1.2⟩
-
 def globalExactTracedCausalLens :
     StateLens GlobalHighDirectTracedState GlobalCausalHashState where
   get := GlobalHighDirectTracedState.causalState

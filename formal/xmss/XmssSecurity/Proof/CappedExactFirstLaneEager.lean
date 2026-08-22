@@ -9,34 +9,6 @@ namespace XmssSecurity.CappedChain
 set_option maxRecDepth 1000000
 set_option linter.constructorNameAsVariable false
 
-def globalHighExactFullProjection {α : Type}
-    (result : α × GlobalHighExactMonitoredState) :
-    (α × GlobalHighDirectTracedState) ×
-      RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex :=
-  ((result.1, globalHighExactStateProjection result.2), result.2.1.1.trace)
-
-theorem map_globalHighExactMonitored_adversary_full_query
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (base : GlobalChainValueIndex → Digest)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (input : (OracleWorld + SigningSpec).Domain)
-    (state : GlobalHighExactMonitoredState) :
-    globalHighExactFullProjection <$>
-        (globalHighExactMonitoredMappedAdversaryImpl
-          ((keyView, base), edgeHigh) input).run state =
-      (fun result : (((OracleWorld + SigningSpec).Range input ×
-          GlobalHighDirectTracedState) ×
-          RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-        (result.1, state.1.1.trace ++ result.2)) <$>
-        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-          ((globalHighDirectTracedMappedAdversaryImpl keyView edgeHigh
-            input).run (globalHighExactStateProjection state))).run := by
-  have hold := map_globalHighMonitored_adversary_full_query keyView base
-    edgeHigh input state.1.1 state.1.2
-  rw [globalHighExactMonitoredMappedAdversaryImpl_query_eq_map]
-  simpa [globalHighExactFullProjection, globalHighExactQueryResult,
-    globalHighExactStateProjection] using hold
-
 theorem map_globalHighMonitored_adversary_exact_query
     (keyView : ProgrammedGlobalChainKeygenView)
     (base : GlobalChainValueIndex → Digest)
@@ -139,28 +111,6 @@ theorem map_simulate_globalHighMonitored_adversary_exact
               (GlobalHighDirectTracedState.mk state.1.causal state.2))).run := by
   apply map_simulate_globalHighMonitored_exact_of_query
   exact map_globalHighMonitored_adversary_exact_query keyView base edgeHigh
-
-theorem map_simulate_globalHighExactMonitored_verifier_full_projection
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (base : GlobalChainValueIndex → Digest)
-    (edgeHigh : GlobalChainEdgeIndex → Digest)
-    (computation : OracleComp OracleWorld α)
-    (state : GlobalHighExactMonitoredState) :
-    (fun result : α × GlobalMonitoredTracedState =>
-      ((result.1, GlobalHighDirectTracedState.mk result.2.1.causal
-        result.2.2), result.2.1.trace)) <$>
-        (simulateQ (globalHighMonitoredVerifierImpl
-          ((keyView, base), edgeHigh)) computation).run state.1 =
-      (fun result : ((α × GlobalHighDirectTracedState) ×
-          RevealProbeOracleSimulation.ActionTrace GlobalChainValueIndex) =>
-        (result.1, state.1.1.trace ++ result.2)) <$>
-        (simulateQ (RevealProbeOracleSimulation.eagerTraceImpl base)
-          ((simulateQ
-            (globalHighDirectTracedVerifierImpl keyView edgeHigh)
-            computation).run (globalHighExactStateProjection state))).run := by
-  simpa [globalHighExactStateProjection] using
-    map_simulate_globalHighMonitored_verifier_full_projection keyView base
-      edgeHigh computation state.1.1 state.1.2
 
 theorem map_simulate_globalHighMonitored_verifier_exact
     (keyView : ProgrammedGlobalChainKeygenView)

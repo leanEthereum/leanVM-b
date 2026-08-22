@@ -182,17 +182,17 @@ theorem globalHighMonitoredProgram_traceConsistent
 theorem globalHighState_eq_of_projection_trace_consistent
     (table : GlobalChainValueIndex → Digest)
     (left : GlobalMonitoredTracedState)
-    (right : GlobalHighExactMonitoredState)
+    (right : GlobalMonitoredTracedState)
     (hprojection : GlobalHighDirectTracedState.mk left.1.causal left.2 =
-      globalHighExactStateProjection right)
-    (htrace : left.1.trace = right.1.1.trace)
+      GlobalHighDirectTracedState.mk right.1.causal right.2)
+    (htrace : left.1.trace = right.1.trace)
     (hleft : left.1.TraceConsistent table)
-    (hright : right.1.1.TraceConsistent table) :
-    left = right.1 := by
+    (hright : right.1.TraceConsistent table) :
+    left = right := by
   rcases left with ⟨⟨leftCausal, leftMonitor, leftTrace⟩,
     leftAttacker⟩
-  rcases right with ⟨⟨⟨rightCausal, rightMonitor, rightTrace⟩,
-    rightAttacker⟩, rightEncoding⟩
+  rcases right with ⟨⟨rightCausal, rightMonitor, rightTrace⟩,
+    rightAttacker⟩
   change (leftCausal, leftAttacker) = (rightCausal, rightAttacker)
     at hprojection
   simp only [Prod.mk.injEq] at hprojection
@@ -382,7 +382,7 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
       · exact hkeyView
       · exact hbase
     · exact hedgeHigh
-  have hstate : highResult.2.2 = witness.1 := by
+  have hstate : highResult.2.2 = witness := by
     apply globalHighState_eq_of_projection_trace_consistent
       right.1.1.2
     · rw [hstateProjection, hfirstState]
@@ -407,13 +407,12 @@ theorem sourceFirstLaneExactGood_to_globalHighRelation
               highResult.1.1
               (sourceExactSigningProjection left.2.2) highResult.2.2 by
                 rw [hfullKey, hstate]
-                exact hwitnessRelation.1)
-  · rw [hwitnessRelation.2]
-    exact hwitnessEncoding
-  · have hattacker : left.2.2.2 = witness.1.2 := by
+                exact hwitnessRelation)
+  · exact hwitnessEncoding
+  · have hattacker : left.2.2.2 = witness.2 := by
       simpa [GlobalSigningMonitoredTracedStateRelation,
         sourceExactSigningProjection, sourceSigningTracedStateProjection] using
-          hwitnessRelation.1.2
+          hwitnessRelation.2
     rw [hattacker]
     exact hwitnessValidEpochs
 
