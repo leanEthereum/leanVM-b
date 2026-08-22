@@ -21,6 +21,26 @@ theorem CacheGrowthRepresented.refl
     rw [hfresh] at hfinal
     contradiction
 
+theorem CacheGrowthRepresented.cacheQuery
+    {target : Key → HashInput} {observe : Key → HashOutput → Action}
+    (cache : QueryCache HashSpec) (key : Key) (output : HashOutput)
+    (hfresh : cache (target key) = none)
+    (hobserve : ∀ candidate,
+      target candidate = target key →
+        observe candidate output = observe key output) :
+    CacheGrowthRepresented target observe cache
+      (cache.cacheQuery (target key) output) [observe key output] := by
+  constructor
+  · exact QueryCache.le_cacheQuery cache hfresh
+  · intro candidate targetOutput hcandidate hfinal
+    by_cases heq : target candidate = target key
+    · rw [heq, QueryCache.cacheQuery_self] at hfinal
+      have : output = targetOutput := Option.some.inj hfinal
+      subst targetOutput
+      simp [hobserve candidate heq]
+    · rw [QueryCache.cacheQuery_of_ne _ _ heq, hcandidate] at hfinal
+      contradiction
+
 theorem CacheGrowthRepresented.trans
     {target : Key → HashInput} {observe : Key → HashOutput → Action}
     {initial middle final : QueryCache HashSpec} {head tail : List Action}

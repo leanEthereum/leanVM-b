@@ -848,14 +848,8 @@ theorem CappedEncodingMonitor.runObserved_empty_eq_true_of_query_before_sign_of_
     CappedEncodingMonitor.State.valid_empty]
   have hquery : CappedEncodingMonitor.ActionValid (.query epoch oldOutput) := holdValid
   have hsign : CappedEncodingMonitor.ActionValid (.sign epoch signedOutput) := hsignedValid
-  have hfiltered : CappedEncodingMonitor.validActions
-      (before ++ [.query epoch oldOutput] ++ middle ++
-        [.sign epoch signedOutput] ++ after) =
-      CappedEncodingMonitor.validActions before ++ [.query epoch oldOutput] ++
-        CappedEncodingMonitor.validActions middle ++ [.sign epoch signedOutput] ++
-          CappedEncodingMonitor.validActions after := by
-    simp [CappedEncodingMonitor.validActions, hquery, hsign]
-  rw [hfiltered]
+  rw [CappedEncodingMonitor.validActions_append_two_valid before middle after
+    (.query epoch oldOutput) (.sign epoch signedOutput) hquery hsign]
   apply EncodingMonitor.runObserved_empty_eq_true_of_query_before_sign_of_nodup
     epoch oldOutput signedOutput (CappedEncodingMonitor.validActions before)
       (CappedEncodingMonitor.validActions middle)
@@ -864,7 +858,8 @@ theorem CappedEncodingMonitor.runObserved_empty_eq_true_of_query_before_sign_of_
     (CappedEncodingMonitor.validActions
       (before ++ [.query epoch oldOutput] ++ middle ++
         [.sign epoch signedOutput] ++ after))).Nodup at hnodup
-  rw [hfiltered] at hnodup
+  rw [CappedEncodingMonitor.validActions_append_two_valid before middle after
+    (.query epoch oldOutput) (.sign epoch signedOutput) hquery hsign] at hnodup
   exact hnodup
 
 theorem CappedEncodingMonitor.runObserved_empty_eq_true_of_sign_before_query_of_valid
@@ -883,14 +878,8 @@ theorem CappedEncodingMonitor.runObserved_empty_eq_true_of_sign_before_query_of_
     CappedEncodingMonitor.State.valid_empty]
   have hsign : CappedEncodingMonitor.ActionValid (.sign epoch signedOutput) := hsignedValid
   have hquery : CappedEncodingMonitor.ActionValid (.query epoch forgedOutput) := hforgedValid
-  have hfiltered : CappedEncodingMonitor.validActions
-      (before ++ [.sign epoch signedOutput] ++ middle ++
-        [.query epoch forgedOutput] ++ after) =
-      CappedEncodingMonitor.validActions before ++ [.sign epoch signedOutput] ++
-        CappedEncodingMonitor.validActions middle ++ [.query epoch forgedOutput] ++
-          CappedEncodingMonitor.validActions after := by
-    simp [CappedEncodingMonitor.validActions, hsign, hquery]
-  rw [hfiltered]
+  rw [CappedEncodingMonitor.validActions_append_two_valid before middle after
+    (.sign epoch signedOutput) (.query epoch forgedOutput) hsign hquery]
   apply EncodingMonitor.runObserved_empty_eq_true_of_sign_before_query_of_nodup
     epoch signedOutput forgedOutput (CappedEncodingMonitor.validActions before)
       (CappedEncodingMonitor.validActions middle)
@@ -899,7 +888,8 @@ theorem CappedEncodingMonitor.runObserved_empty_eq_true_of_sign_before_query_of_
     (CappedEncodingMonitor.validActions
       (before ++ [.sign epoch signedOutput] ++ middle ++
         [.query epoch forgedOutput] ++ after))).Nodup at hnodup
-  rw [hfiltered] at hnodup
+  rw [CappedEncodingMonitor.validActions_append_two_valid before middle after
+    (.sign epoch signedOutput) (.query epoch forgedOutput) hsign hquery] at hnodup
   exact hnodup
 
 theorem cappedDetailedGameWithEncodingTrace_freshSigningCollision_monitorHit

@@ -13,6 +13,33 @@ namespace QueryImpl
       (fun result => (result, ∅)) <$> simulateQ impl computation := by
   induction computation using OracleComp.inductionOn <;> simp [*]
 
+theorem mapLog_run_simulateQ_of_query
+    {SourceLog TargetLog : Type}
+    [EmptyCollection SourceLog] [Append SourceLog] [LawfulAppend SourceLog]
+    [EmptyCollection TargetLog] [Append TargetLog] [LawfulAppend TargetLog]
+    (source : QueryImpl spec (WriterT SourceLog ProbComp))
+    (target : QueryImpl spec (WriterT TargetLog ProbComp))
+    (project : SourceLog → TargetLog)
+    (h_empty : project ∅ = ∅)
+    (h_append : ∀ left right,
+      project (left ++ right) = project left ++ project right)
+    (hquery : ∀ input,
+      Prod.map id project <$> (source input).run = (target input).run)
+    (computation : OracleComp spec α) :
+    Prod.map id project <$> (simulateQ source computation).run =
+      (simulateQ target computation).run := by
+  induction computation using OracleComp.inductionOn with
+  | pure result => simp [h_empty]
+  | query_bind input next ih =>
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.cont_query,
+        OracleQuery.input_query, id_map, WriterT.run_bind', map_bind]
+      rw [← hquery input, bind_map_left]
+      apply bind_congr
+      intro result
+      simp only [Prod.map, id_eq]
+      rw [← ih result.1]
+      simp [h_append, Prod.map]
+
 end QueryImpl
 
 namespace XmssSecurity.RevealProbeOracleSimulation

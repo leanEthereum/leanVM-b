@@ -125,7 +125,7 @@ noncomputable def runEagerQuery
               (chainState.addPending index target) remaining
   | .reveal index =>
       match chainState.revealed index with
-      | some value => resume value encodingState chainState fuel
+      | some _ => resume (table index) encodingState chainState fuel
       | none =>
           let value := table index
           if value ∈ chainState.pending index then pure true
@@ -517,7 +517,6 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
     (encodingState : Option EncodingMonitor.State)
     (chainState : AdaptiveRevealMonitor.State Index)
     (fuel : Nat) (computation : OracleComp (World Index) α)
-    (hagrees : RevealProbeOracleSimulation.StateAgrees table chainState)
     (hbound : computation.IsQueryBoundP IsHazardQuery fuel) :
     evalDist ((fun result => runObserved table encodingState chainState result.2) <$>
       (simulateQ (eagerTraceImpl table) computation).run) =
@@ -535,7 +534,7 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
           apply OracleComp.DeferredSampling.evalDist_bind_congr_left
           intro output
           simpa [runObserved] using
-            ih output encodingState chainState fuel hagrees
+            ih output encodingState chainState fuel
               (by simpa [IsHazardQuery] using hbound.2 output)
       | encodingQuery epoch =>
           cases fuel with
@@ -549,7 +548,7 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
                   apply OracleComp.DeferredSampling.evalDist_bind_congr_left
                   intro output
                   simpa [runObserved] using
-                    ih output none chainState remaining hagrees
+                    ih output none chainState remaining
                       (by simpa [IsHazardQuery] using hbound.2 output)
               | some state =>
                   apply OracleComp.DeferredSampling.evalDist_bind_congr_left
@@ -558,7 +557,7 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
                     (.query epoch output) with
                   | none =>
                       simpa [runObserved, happly] using
-                        ih output none chainState remaining hagrees
+                        ih output none chainState remaining
                           (by simpa [IsHazardQuery] using hbound.2 output)
                   | some result =>
                       rcases result with ⟨nextState, hit⟩
@@ -566,7 +565,6 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
                       | false =>
                           simpa [runObserved, happly] using
                             ih output (some nextState) chainState remaining
-                              hagrees
                               (by simpa [IsHazardQuery] using hbound.2 output)
                       | true =>
                           simp [runObserved, happly]
@@ -581,7 +579,7 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
               apply OracleComp.DeferredSampling.evalDist_bind_congr_left
               intro output
               simpa [runObserved] using
-                ih output none chainState fuel hagrees
+                ih output none chainState fuel
                   (by simpa [IsHazardQuery] using hbound.2 output)
           | some state =>
               apply OracleComp.DeferredSampling.evalDist_bind_congr_left
@@ -590,14 +588,14 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
                 (.sign epoch output) with
               | none =>
                   simpa [runObserved, happly] using
-                    ih output none chainState fuel hagrees
+                    ih output none chainState fuel
                       (by simpa [IsHazardQuery] using hbound.2 output)
               | some result =>
                   rcases result with ⟨nextState, hit⟩
                   cases hit with
                   | false =>
                       simpa [runObserved, happly] using
-                        ih output (some nextState) chainState fuel hagrees
+                        ih output (some nextState) chainState fuel
                           (by simpa [IsHazardQuery] using hbound.2 output)
                   | true =>
                       simp [runObserved, happly]
@@ -613,21 +611,20 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
               | none =>
                   simpa [runObserved, hrevealed] using
                     ih () encodingState (chainState.addPending index target)
-                      remaining (hagrees.addPending index target)
+                      remaining
                       (by simpa [IsHazardQuery] using hbound.2 ())
               | some value =>
                   simpa [runObserved, hrevealed] using
-                    ih () encodingState chainState remaining hagrees
+                    ih () encodingState chainState remaining
                       (by simpa [IsHazardQuery] using hbound.2 ())
       | reveal index =>
           rw [eagerTrace_query_bind_run, runStructural_query_bind]
           simp only [eagerImpl, traceFragment, map_bind, runEagerQuery]
           cases hrevealed : chainState.revealed index with
           | some value =>
-              have hvalue := hagrees index value hrevealed
-              simpa [runObserved, hrevealed, hvalue] using
-                ih (table index) encodingState chainState fuel hagrees
-                  (by simpa [hvalue, IsHazardQuery] using hbound.2 value)
+              simpa [runObserved, hrevealed] using
+                ih (table index) encodingState chainState fuel
+                  (by simpa [IsHazardQuery] using hbound.2 (table index))
           | none =>
               by_cases hhit : table index ∈ chainState.pending index
               · simp [runObserved, hrevealed, hhit]
@@ -636,7 +633,6 @@ theorem evalDist_runObserved_eagerTrace_eq_runStructural
               · simpa [runObserved, hrevealed, hhit] using
                   ih (table index) encodingState
                     (chainState.install index (table index)) fuel
-                    (hagrees.install index)
                     (by simpa [IsHazardQuery] using hbound.2 (table index))
 
 noncomputable def structuralExperiment
@@ -846,6 +842,8 @@ theorem structuralExperiment_true_probability_le
           | some value =>
               rw [structuralExperiment_query_bind]
               simp only [runEagerQuery, hrevealed]
+              simp only [RevealProbeOracleSimulation.extendTable, hrevealed,
+                Option.getD_some]
               change Pr[(fun hit : Bool => hit = true) |
                 structuralExperiment encodingState chainState fuel
                   (next value)] ≤ _
@@ -914,8 +912,7 @@ theorem combinedHit_probability_eq_structuralExperiment
     _ = _ := probEvent_congr' (fun _ _ => Iff.rfl)
       (evalDist_runObserved_eagerTrace_eq_runStructural table
         (some EncodingMonitor.State.empty)
-        AdaptiveRevealMonitor.State.empty fuel computation
-        (RevealProbeOracleSimulation.stateAgrees_empty table) hbound)
+        AdaptiveRevealMonitor.State.empty fuel computation hbound)
 
 theorem structuralExperiment_empty_true_probability_le
     (fuel : Nat) (computation : OracleComp (World Index) α) :

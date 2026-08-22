@@ -653,6 +653,15 @@ theorem validActions_append
       by_cases hvalid : ActionValid action <;>
         simp [validActions, hvalid, ih]
 
+theorem validActions_append_two_valid
+    (before middle after : List EncodingMonitor.ObservedAction)
+    (first second : EncodingMonitor.ObservedAction)
+    (hfirst : ActionValid first) (hsecond : ActionValid second) :
+    validActions (before ++ [first] ++ middle ++ [second] ++ after) =
+      validActions before ++ [first] ++ validActions middle ++ [second] ++
+        validActions after := by
+  simp [validActions, hfirst, hsecond]
+
 @[simp]
 theorem validObservedSignEpochs_append
     (left right : List EncodingMonitor.ObservedAction) :

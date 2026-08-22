@@ -3,13 +3,60 @@ import XmssSecurity.Proof.RunObservedAppend
 
 open OracleComp OracleSpec
 
+namespace QueryImpl
+
+theorem simulateQ_stateHandler_trace
+    {ι : Type} {spec : OracleSpec ι}
+    {Log State : Type}
+    [EmptyCollection Log] [Append Log] [LawfulAppend Log]
+    (eager : QueryImpl spec (WriterT Log ProbComp))
+    (handler : QueryImpl spec (StateT State (OracleComp spec)))
+    (advance : State → Log → State)
+    (project : State → Log → Log)
+    (advance_empty : ∀ state, advance state ∅ = state)
+    (advance_append : ∀ state left right,
+      advance state (left ++ right) = advance (advance state left) right)
+    (project_empty : ∀ state, project state ∅ = ∅)
+    (project_append : ∀ state left right,
+      project state (left ++ right) =
+        project state left ++ project (advance state left) right)
+    (hquery : ∀ input state,
+      (simulateQ eager ((handler input).run state)).run =
+        (fun result =>
+          ((result.1, advance state result.2), project state result.2)) <$>
+          (simulateQ eager (liftM (spec.query input))).run)
+    (computation : OracleComp spec α) (state : State) :
+    (simulateQ eager ((simulateQ handler computation).run state)).run =
+      (fun result =>
+        ((result.1, advance state result.2), project state result.2)) <$>
+        (simulateQ eager computation).run := by
+  rw [QueryImpl.simulateQ_mapStateTBase_run]
+  induction computation using OracleComp.inductionOn generalizing state with
+  | pure result => simp [advance_empty, project_empty]
+  | query_bind input next ih =>
+      rw [simulateQ_query_bind, StateT.run_bind]
+      rw [simulateQ_bind, WriterT.run_bind']
+      change (do
+        let head ← (simulateQ eager ((handler input).run state)).run
+        (Prod.map id fun tail => head.2 ++ tail) <$>
+          ((simulateQ (eager.mapStateTBase handler) (next head.1.1)).run
+            head.1.2).run) = _
+      rw [hquery input state]
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      rw [WriterT.run_bind']
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_apply]
+      apply bind_congr
+      intro head
+      rw [ih head.1 (advance state head.2)]
+      simp [advance_append, project_append, Prod.map]
+
+end QueryImpl
+
 namespace XmssSecurity.FirstLaneOracleSimulation
 
 variable {Index : Type} [Fintype Index] [DecidableEq Index]
-
-theorem prodMap_id {Left Right : Type} :
-    Prod.map (id : Left → Left) (fun right : Right => right) = id :=
-  Prod.map_id
 
 noncomputable def hazardEnforcementImpl :
     QueryImpl (World Index) (StateT Nat (OracleComp (World Index))) :=
@@ -265,6 +312,57 @@ theorem CombinedHit.enforce_append_of_prefix
     (enforceHazardTrace (fuel - hazardCount left) right) hhit
 
 omit [Fintype Index] [DecidableEq Index] in
+theorem simulate_eagerTrace_hazardEnforcementImpl_query
+    (table : Index → Digest)
+    (input : (World Index).Domain) (fuel : Nat) :
+    (simulateQ (eagerTraceImpl table)
+      ((hazardEnforcementImpl input).run fuel)).run =
+        (fun result =>
+          ((result.1, fuel - hazardCount result.2),
+            enforceHazardTrace fuel result.2)) <$>
+          (simulateQ (eagerTraceImpl table)
+            (liftM ((World Index).query input))).run := by
+  unfold hazardEnforcementImpl
+  cases input with
+  | uniform n =>
+      simp [StateT.run, uniformQuery, eagerTraceImpl, eagerImpl,
+        traceFragment, QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+        hazardCount, enforceHazardTrace]
+  | encodingQuery epoch =>
+      cases fuel with
+      | zero =>
+          simp [StateT.run, eagerTraceImpl, eagerImpl, traceFragment,
+            QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+            enforceHazardTrace]
+          change (fun x => ((x.1, 0), x.2)) <$>
+              (simulateQ (eagerTraceImpl table)
+                (liftProbComp uniformHashOutput)).run = _
+          rw [simulate_eagerTrace_liftProbComp]
+          simp
+      | succ remaining =>
+          simp [StateT.run, encodingQuery, eagerTraceImpl, eagerImpl,
+            traceFragment, QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+            hazardCount, enforceHazardTrace]
+  | encodingSignAttempt epoch =>
+      simp [StateT.run, encodingSignAttemptQuery, eagerTraceImpl,
+        eagerImpl, traceFragment, QueryImpl.withTraceAppend_apply,
+        WriterT.run_tell, hazardCount, enforceHazardTrace]
+  | probe index target =>
+      cases fuel with
+      | zero =>
+          simp [StateT.run, eagerTraceImpl, eagerImpl, traceFragment,
+            QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+            enforceHazardTrace]
+      | succ remaining =>
+          simp [StateT.run, probeQuery, eagerTraceImpl, eagerImpl,
+            traceFragment, QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+            hazardCount, enforceHazardTrace]
+  | reveal index =>
+      simp [StateT.run, revealQuery, eagerTraceImpl, eagerImpl,
+        traceFragment, QueryImpl.withTraceAppend_apply, WriterT.run_tell,
+        hazardCount, enforceHazardTrace]
+
+omit [Fintype Index] [DecidableEq Index] in
 theorem simulate_eagerTrace_hazardEnforcementImpl_run
     (table : Index → Digest)
     (computation : OracleComp (World Index) α) (fuel : Nat) :
@@ -274,174 +372,17 @@ theorem simulate_eagerTrace_hazardEnforcementImpl_run
           ((result.1, fuel - hazardCount result.2),
             enforceHazardTrace fuel result.2)) <$>
           (simulateQ (eagerTraceImpl table) computation).run := by
-  induction computation using OracleComp.inductionOn generalizing fuel with
-  | pure result => simp [hazardCount, enforceHazardTrace]
-  | query_bind input next ih =>
-      rw [simulateQ_query_bind, StateT.run_bind]
-      cases input with
-      | uniform n =>
-          change
-            (simulateQ (eagerTraceImpl table) (uniformQuery n >>= fun output =>
-              (simulateQ hazardEnforcementImpl (next output)).run fuel)).run =
-            (fun result =>
-              ((result.1, fuel - hazardCount result.2),
-                enforceHazardTrace fuel result.2)) <$>
-              (simulateQ (eagerTraceImpl table)
-                (uniformQuery n >>= next)).run
-          rw [simulateQ_bind, WriterT.run_bind', simulateQ_bind,
-            WriterT.run_bind']
-          simp [uniformQuery, eagerTraceImpl, eagerImpl, traceFragment,
-            QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-          apply bind_congr
-          intro output
-          rw [prodMap_id, id_map]
-          exact ih output fuel
-      | encodingQuery epoch =>
-          cases fuel with
-          | zero =>
-              change
-                (simulateQ (eagerTraceImpl table)
-                  (liftProbComp uniformHashOutput >>= fun output =>
-                    (simulateQ hazardEnforcementImpl (next output)).run 0)).run =
-                (fun result =>
-                  ((result.1, 0 - hazardCount result.2),
-                    enforceHazardTrace 0 result.2)) <$>
-                  (simulateQ (eagerTraceImpl table)
-                    (encodingQuery epoch >>= next)).run
-              rw [simulateQ_bind, WriterT.run_bind',
-                simulate_eagerTrace_liftProbComp]
-              simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind,
-                Function.comp_apply]
-              rw [simulateQ_bind, WriterT.run_bind']
-              simp [encodingQuery, eagerTraceImpl, eagerImpl, traceFragment,
-                QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-              apply bind_congr
-              intro output
-              rw [prodMap_id]
-              simp only [Function.comp_id, bind_pure]
-              simp only [enforceHazardTrace]
-              change
-                (simulateQ (eagerTraceImpl table)
-                  ((simulateQ hazardEnforcementImpl (next output)).run 0)).run =
-                (fun result =>
-                  ((result.1, 0),
-                    enforceHazardTrace 0 result.2)) <$>
-                  (simulateQ (eagerTraceImpl table) (next output)).run
-              rw [ih output 0]
-              simp
-          | succ remaining =>
-              change
-                (simulateQ (eagerTraceImpl table)
-                  (encodingQuery epoch >>= fun output =>
-                    (simulateQ hazardEnforcementImpl (next output)).run
-                      remaining)).run =
-                (fun result =>
-                  ((result.1, remaining + 1 - hazardCount result.2),
-                    enforceHazardTrace (remaining + 1) result.2)) <$>
-                  (simulateQ (eagerTraceImpl table)
-                    (encodingQuery epoch >>= next)).run
-              rw [simulateQ_bind, WriterT.run_bind', simulateQ_bind,
-                WriterT.run_bind']
-              simp [encodingQuery, eagerTraceImpl, eagerImpl, traceFragment,
-                QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-              apply bind_congr
-              intro output
-              change
-                (Prod.map id
-                  (fun trace => .encoding (.query epoch output) :: trace)) <$>
-                    (simulateQ (eagerTraceImpl table)
-                      ((simulateQ hazardEnforcementImpl (next output)).run
-                        remaining)).run = _
-              rw [ih output remaining]
-              simp [hazardCount, enforceHazardTrace]
-              rfl
-      | encodingSignAttempt epoch =>
-          change
-            (simulateQ (eagerTraceImpl table)
-              (encodingSignAttemptQuery epoch >>= fun output =>
-                (simulateQ hazardEnforcementImpl (next output)).run fuel)).run =
-            (fun result =>
-              ((result.1, fuel - hazardCount result.2),
-                enforceHazardTrace fuel result.2)) <$>
-              (simulateQ (eagerTraceImpl table)
-                (encodingSignAttemptQuery epoch >>= next)).run
-          rw [simulateQ_bind, WriterT.run_bind', simulateQ_bind,
-            WriterT.run_bind']
-          simp [encodingSignAttemptQuery, eagerTraceImpl, eagerImpl,
-            traceFragment, QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-          apply bind_congr
-          intro output
-          change
-            (Prod.map id
-              (fun trace => .encoding (.sign epoch output) :: trace)) <$>
-                (simulateQ (eagerTraceImpl table)
-                  ((simulateQ hazardEnforcementImpl (next output)).run fuel)).run = _
-          rw [ih output fuel]
-          simp [hazardCount, enforceHazardTrace]
-          rfl
-      | probe index target =>
-          cases fuel with
-          | zero =>
-              change
-                (simulateQ (eagerTraceImpl table)
-                  ((simulateQ hazardEnforcementImpl (next ())).run 0)).run =
-                (fun result =>
-                  ((result.1, 0 - hazardCount result.2),
-                    enforceHazardTrace 0 result.2)) <$>
-                  (simulateQ (eagerTraceImpl table)
-                    (probeQuery index target >>= next)).run
-              rw [ih () 0]
-              simp [probeQuery, eagerTraceImpl, eagerImpl, traceFragment,
-                QueryImpl.withTraceAppend_apply, WriterT.run_tell,
-                enforceHazardTrace]
-          | succ remaining =>
-              change
-                (simulateQ (eagerTraceImpl table)
-                  (probeQuery index target >>= fun _ =>
-                    (simulateQ hazardEnforcementImpl (next ())).run
-                      remaining)).run =
-                (fun result =>
-                  ((result.1, remaining + 1 - hazardCount result.2),
-                    enforceHazardTrace (remaining + 1) result.2)) <$>
-                  (simulateQ (eagerTraceImpl table)
-                    (probeQuery index target >>= next)).run
-              rw [simulateQ_bind, WriterT.run_bind', simulateQ_bind,
-                WriterT.run_bind']
-              simp [probeQuery, eagerTraceImpl, eagerImpl, traceFragment,
-                QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-              change
-                (Prod.map id
-                  (fun trace => .chain (.probe index target) :: trace)) <$>
-                    (simulateQ (eagerTraceImpl table)
-                      ((simulateQ hazardEnforcementImpl (next ())).run
-                        remaining)).run = _
-              rw [ih () remaining]
-              simp [hazardCount, enforceHazardTrace]
-              rfl
-      | reveal index =>
-          change
-            (simulateQ (eagerTraceImpl table)
-              (revealQuery index >>= fun value =>
-                (simulateQ hazardEnforcementImpl (next value)).run fuel)).run =
-            (fun result =>
-              ((result.1, fuel - hazardCount result.2),
-                enforceHazardTrace fuel result.2)) <$>
-              (simulateQ (eagerTraceImpl table)
-                (revealQuery index >>= next)).run
-          rw [simulateQ_bind, WriterT.run_bind', simulateQ_bind,
-            WriterT.run_bind']
-          simp [revealQuery, eagerTraceImpl, eagerImpl, traceFragment,
-            QueryImpl.withTraceAppend_apply, WriterT.run_tell]
-          change
-            (Prod.map id
-              (fun trace => .chain (.reveal index (table index)) :: trace)) <$>
-                (simulateQ (eagerTraceImpl table)
-                  ((simulateQ hazardEnforcementImpl
-                    (next (table index))).run fuel)).run = _
-          rw [ih (table index) fuel]
-          simp [hazardCount, enforceHazardTrace]
-          rfl
-
+  apply QueryImpl.simulateQ_stateHandler_trace
+    (eagerTraceImpl table) hazardEnforcementImpl
+    (fun fuel trace => fuel - hazardCount trace) enforceHazardTrace
+  · intro state
+    simp [hazardCount]
+  · intro state left right
+    simp [hazardCount_append, Nat.sub_add_eq]
+  · intro state
+    rfl
+  · exact enforceHazardTrace_append
+  · exact simulate_eagerTrace_hazardEnforcementImpl_query table
 omit [Fintype Index] [DecidableEq Index] in
 theorem simulate_eagerTrace_enforceHazardBound
     (table : Index → Digest)

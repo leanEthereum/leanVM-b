@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.CausalTreeTableIndependence
+import XmssSecurity.Proof.CausalTreeCoupling
 import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec

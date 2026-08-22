@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.CausalPairedKeygen
+import XmssSecurity.Proof.CausalTreeCoupling
 import VCVio.ProgramLogic.Relational.Basic
 
 open OracleComp OracleSpec
@@ -80,6 +80,5 @@ theorem relTriple_with_support
         leftResult ∈ support left ∧ rightResult ∈ support right) :=
   relTriple_strengthen_support hrel
     (fun _ hresult => hresult) (fun _ hresult => hresult)
-
 
 end XmssSecurity

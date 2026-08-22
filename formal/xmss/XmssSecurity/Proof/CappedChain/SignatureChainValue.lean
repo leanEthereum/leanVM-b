@@ -1,5 +1,5 @@
 import XmssSecurity.Proof.PrecomputedKeygenCache
-import XmssSecurity.Proof.ChainQueryPresence
+import XmssSecurity.Proof.ChainOraclePresampling
 import XmssSecurity.Proof.CappedChain.ChainHiddenTable
 
 open OracleComp OracleSpec

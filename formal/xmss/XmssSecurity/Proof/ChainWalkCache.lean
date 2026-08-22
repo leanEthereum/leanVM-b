@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.ChainTablePresampling
+import XmssSecurity.Proof.ChainOraclePresampling
 
 open OracleComp OracleSpec
 

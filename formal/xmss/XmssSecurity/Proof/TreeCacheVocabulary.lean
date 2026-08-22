@@ -1,10 +1,14 @@
 import XmssSecurity.Proof.KeygenCache
-import XmssSecurity.Proof.CausalTreeTableIndependence
+import XmssSecurity.Proof.CausalTreeCoupling
 import XmssSecurity.Proof.StatementLemmas
 
 open OracleComp OracleSpec
 
 namespace XmssSecurity
+
+def hashCacheLookup (cache : QueryCache HashSpec) (input : HashInput) :
+    Option HashOutput :=
+  cache input
 
 def MerkleHashInput
     (parameter : PublicParameter) (input : HashInput) : Prop :=
@@ -15,33 +19,20 @@ def LeafCacheOutputsCorrespond
     (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
     (left right : QueryCache HashSpec) : Prop :=
   ∀ epoch,
-    left (Concrete.CacheView.leafInput parameter epoch
+    hashCacheLookup left (Concrete.CacheView.leafInput parameter epoch
       (leftEndpoints epoch)) =
-    right (Concrete.CacheView.leafInput parameter epoch
+    hashCacheLookup right (Concrete.CacheView.leafInput parameter epoch
       (rightEndpoints epoch))
-
-def LeafReplayOutputsCorrespondOn
-    (parameter : PublicParameter)
-    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
-    (indices : List TreeValueIndex)
-    (leftCache rightCache : QueryCache HashSpec) : Prop :=
-  ∀ index ∈ indices,
-    leftCache (Concrete.CacheView.leafInput parameter index.node
-      (Concrete.CacheReplay.oneTimePublicKey leftCache parameter
-        leftSecret index.node)) =
-    rightCache (Concrete.CacheView.leafInput parameter index.node
-      (Concrete.CacheReplay.oneTimePublicKey rightCache parameter
-        rightSecret index.node))
 
 def LeafReplayOutputsCorrespond
     (parameter : PublicParameter)
     (leftSecret rightSecret : Epoch → ChainIndex → Digest)
     (leftCache rightCache : QueryCache HashSpec) : Prop :=
   ∀ epoch,
-    leftCache (Concrete.CacheView.leafInput parameter epoch
+    hashCacheLookup leftCache (Concrete.CacheView.leafInput parameter epoch
       (Concrete.CacheReplay.oneTimePublicKey leftCache parameter
         leftSecret epoch)) =
-    rightCache (Concrete.CacheView.leafInput parameter epoch
+    hashCacheLookup rightCache (Concrete.CacheView.leafInput parameter epoch
       (Concrete.CacheReplay.oneTimePublicKey rightCache parameter
         rightSecret epoch))
 
@@ -54,26 +45,22 @@ def ReplayEndpointsMatch
     endpoints epoch =
       Concrete.CacheReplay.oneTimePublicKey cache parameter secret epoch
 
-theorem leafReplayOutputsCorrespondOn_allLeaves
-    (parameter : PublicParameter)
-    (leftSecret rightSecret : Epoch → ChainIndex → Digest)
-    (leftCache rightCache : QueryCache HashSpec)
-    (hrel : LeafReplayOutputsCorrespondOn parameter leftSecret rightSecret
-      (treeValueIndicesAtHeight 0) leftCache rightCache) :
-    LeafReplayOutputsCorrespond parameter leftSecret rightSecret
-      leftCache rightCache := by
-  intro epoch
-  let index : TreeValueIndex := ⟨0, epoch⟩
-  apply hrel index
-  unfold treeValueIndicesAtHeight index
-  exact List.mem_ofFn.mpr ⟨epoch, rfl⟩
-
 theorem Concrete.CacheView.chainInput_ne_merkleInput
     (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
     (step : ChainStep) (value : Digest) (level : MerkleLevel)
     (node : MerkleNode) (left right : Digest) :
     Concrete.CacheView.chainInput parameter epoch chain step value ≠
       Concrete.CacheView.merkleInput parameter level node left right := by
+  intro heq
+  have hdomain := domain_eq_of_tweakableHashInput_eq parameter heq
+  simp at hdomain
+
+theorem Concrete.CacheView.chainInput_ne_leafInput
+    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
+    (step : ChainStep) (value : Digest) (targetEpoch : Epoch)
+    (endpoints : ChainIndex → Digest) :
+    Concrete.CacheView.chainInput parameter epoch chain step value ≠
+      Concrete.CacheView.leafInput parameter targetEpoch endpoints := by
   intro heq
   have hdomain := domain_eq_of_tweakableHashInput_eq parameter heq
   simp at hdomain
@@ -106,6 +93,24 @@ theorem Concrete.CacheView.chainStep_cacheQuery_merkleInput
       _ value level node left right
   · rfl
 
+theorem Concrete.CacheView.chainStep_cacheQuery_leafInput
+    (cache : QueryCache HashSpec) (output : HashOutput)
+    (parameter : PublicParameter) (epoch : Epoch) (chain : ChainIndex)
+    (targetEpoch : Epoch) (endpoints : ChainIndex → Digest) :
+    Concrete.CacheView.chainStep
+        (cache.cacheQuery
+          (Concrete.CacheView.leafInput parameter targetEpoch endpoints)
+          output) parameter epoch chain =
+      Concrete.CacheView.chainStep cache parameter epoch chain := by
+  funext position value
+  unfold Concrete.CacheView.chainStep
+  split
+  · unfold Concrete.CacheView.digestAt
+    rw [QueryCache.cacheQuery_of_ne]
+    exact Concrete.CacheView.chainInput_ne_leafInput parameter epoch chain
+      _ value targetEpoch endpoints
+  · rfl
+
 theorem Concrete.CacheReplay.oneTimePublicKey_cacheQuery_merkleInput
     (cache : QueryCache HashSpec) (output : HashOutput)
     (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
@@ -119,6 +124,19 @@ theorem Concrete.CacheReplay.oneTimePublicKey_cacheQuery_merkleInput
   unfold Concrete.CacheReplay.oneTimePublicKey
   funext chain
   rw [Concrete.CacheView.chainStep_cacheQuery_merkleInput]
+
+theorem Concrete.CacheReplay.oneTimePublicKey_cacheQuery_leafInput
+    (cache : QueryCache HashSpec) (output : HashOutput)
+    (parameter : PublicParameter) (secret : Epoch → ChainIndex → Digest)
+    (epoch targetEpoch : Epoch) (endpoints : ChainIndex → Digest) :
+    Concrete.CacheReplay.oneTimePublicKey
+        (cache.cacheQuery
+          (Concrete.CacheView.leafInput parameter targetEpoch endpoints)
+          output) parameter secret epoch =
+      Concrete.CacheReplay.oneTimePublicKey cache parameter secret epoch := by
+  unfold Concrete.CacheReplay.oneTimePublicKey
+  funext chain
+  rw [Concrete.CacheView.chainStep_cacheQuery_leafInput]
 
 theorem ReplayEndpointsMatch.cacheQuery_merkleInput
     (parameter : PublicParameter)
@@ -136,6 +154,22 @@ theorem ReplayEndpointsMatch.cacheQuery_merkleInput
   rw [Concrete.CacheReplay.oneTimePublicKey_cacheQuery_merkleInput]
   exact hrel epoch
 
+theorem ReplayEndpointsMatch.cacheQuery_leafInput
+    (parameter : PublicParameter)
+    (secret : Epoch → ChainIndex → Digest)
+    (endpoints : Epoch → ChainIndex → Digest)
+    (cache : QueryCache HashSpec)
+    (hrel : ReplayEndpointsMatch parameter secret endpoints cache)
+    (targetEpoch : Epoch) (targetEndpoints : ChainIndex → Digest)
+    (output : HashOutput) :
+    ReplayEndpointsMatch parameter secret endpoints
+      (cache.cacheQuery
+        (Concrete.CacheView.leafInput parameter targetEpoch targetEndpoints)
+        output) := by
+  intro epoch
+  rw [Concrete.CacheReplay.oneTimePublicKey_cacheQuery_leafInput]
+  exact hrel epoch
+
 theorem LeafCacheOutputsCorrespond.cacheQuery_distinct
     (parameter : PublicParameter)
     (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
@@ -150,6 +184,7 @@ theorem LeafCacheOutputsCorrespond.cacheQuery_distinct
     LeafCacheOutputsCorrespond parameter leftEndpoints rightEndpoints
       (left.cacheQuery leftInput output) (right.cacheQuery rightInput output) := by
   intro epoch
+  unfold hashCacheLookup
   rw [QueryCache.cacheQuery_of_ne left output (hleft epoch).symm,
     QueryCache.cacheQuery_of_ne right output (hright epoch).symm]
   exact hrel epoch
@@ -171,47 +206,33 @@ theorem Concrete.CacheView.leafInput_eq_iff
   · rintro ⟨rfl, rfl⟩
     rfl
 
-theorem LeafCacheOutputsCorrespond.cacheQuery_pair_update
+theorem LeafCacheOutputsCorrespond.cacheQuery_pair
     (parameter : PublicParameter)
     (leftEndpoints rightEndpoints : Epoch → ChainIndex → Digest)
     (left right : QueryCache HashSpec)
     (hrel : LeafCacheOutputsCorrespond parameter leftEndpoints rightEndpoints
       left right)
-    (epoch : Epoch)
-    (newLeft newRight : ChainIndex → Digest) (output : HashOutput) :
-    LeafCacheOutputsCorrespond parameter
-      (Function.update leftEndpoints epoch newLeft)
-      (Function.update rightEndpoints epoch newRight)
+    (epoch : Epoch) (output : HashOutput) :
+    LeafCacheOutputsCorrespond parameter leftEndpoints rightEndpoints
       (left.cacheQuery
-        (Concrete.CacheView.leafInput parameter epoch newLeft) output)
+        (Concrete.CacheView.leafInput parameter epoch (leftEndpoints epoch))
+          output)
       (right.cacheQuery
-        (Concrete.CacheView.leafInput parameter epoch newRight) output) := by
-  classical
+        (Concrete.CacheView.leafInput parameter epoch (rightEndpoints epoch))
+          output) := by
   intro candidate
+  unfold hashCacheLookup
   by_cases hepoch : candidate = epoch
   · subst candidate
-    rw [show Function.update leftEndpoints epoch newLeft epoch = newLeft by
-        simp,
-      show Function.update rightEndpoints epoch newRight epoch = newRight by
-        simp]
     simp only [QueryCache.cacheQuery_self]
-  · have hleftUpdate :
-        Function.update leftEndpoints epoch newLeft candidate =
-          leftEndpoints candidate := by
-      simp [hepoch]
-    have hrightUpdate :
-        Function.update rightEndpoints epoch newRight candidate =
-          rightEndpoints candidate := by
-      simp [hepoch]
-    rw [hleftUpdate, hrightUpdate]
-    rw [QueryCache.cacheQuery_of_ne left output (by
+  · rw [QueryCache.cacheQuery_of_ne left output (by
         intro heq
         exact hepoch ((Concrete.CacheView.leafInput_eq_iff parameter candidate
-          epoch (leftEndpoints candidate) newLeft).mp heq).1),
+          epoch (leftEndpoints candidate) (leftEndpoints epoch)).mp heq).1),
       QueryCache.cacheQuery_of_ne right output (by
         intro heq
         exact hepoch ((Concrete.CacheView.leafInput_eq_iff parameter candidate
-          epoch (rightEndpoints candidate) newRight).mp heq).1)]
+          epoch (rightEndpoints candidate) (rightEndpoints epoch)).mp heq).1)]
     exact hrel candidate
 
 def chainEndpointDigit : Digit :=

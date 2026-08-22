@@ -1,4 +1,4 @@
-import XmssSecurity.Proof.CappedGlobalCausalStrategyProgram
+import XmssSecurity.Proof.CappedGlobalCausalSetup
 import XmssSecurity.Proof.RevealProbeOracleSimulation
 
 open OracleComp OracleSpec
