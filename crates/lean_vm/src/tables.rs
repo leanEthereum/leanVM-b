@@ -958,6 +958,8 @@ impl Table for KeccakTable {
         }
         for c in 0..STATE_CELLS {
             cell(f, RATE_CELLS + c, Prod(FP, O_PREV, c as u32));
+        }
+        for c in 0..STATE_CELLS {
             cell(f, RATE_CELLS + STATE_CELLS + c, Prod(FP, O_OUT, c as u32));
         }
     }
