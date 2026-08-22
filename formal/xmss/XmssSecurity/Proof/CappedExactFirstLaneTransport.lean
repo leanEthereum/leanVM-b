@@ -288,30 +288,6 @@ noncomputable def firstLaneValidEncodingActions
     EncodingActionTrace :=
   CappedEncodingMonitor.validActions trace.encodingActions
 
-theorem encodingActionTraceUpdate_sign_some
-    (secretKey : SecretKey) (request : SignRequest)
-    (signature : Signature)
-    (initialCache finalCache : QueryCache HashSpec)
-    (trace : EncodingActionTrace) :
-    encodingActionTraceUpdate secretKey
-        (.inr request : (OracleWorld + SigningSpec).Domain)
-        (initialCache, []) (some signature) (finalCache, []) trace =
-      let input := Concrete.CacheView.encodingInput secretKey.parameter
-        request.epoch (request.message, signature.randomness)
-      if initialCache input = none then
-        match finalCache input with
-        | none => trace
-        | some output => trace ++ [.sign request.epoch output]
-      else trace := by
-  unfold encodingActionTraceUpdate
-  simp only [encodingObservation?]
-  let input := Concrete.CacheView.encodingInput secretKey.parameter
-    request.epoch (request.message, signature.randomness)
-  by_cases hinitial : initialCache input = none
-  · rw [if_pos hinitial]
-    cases hfinal : finalCache input <;> simp [hinitial, input]
-  · simp [hinitial, input]
-
 theorem globalFirstLaneEncodingHashQuery_validTrace
     (table : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (epoch : Epoch) (message : Message)
@@ -558,107 +534,6 @@ theorem globalFirstLaneSigningAttempt_support_decompose
         ⟨encoding, revealedHead, rfl, hrevealed, hrevealedResult, ?_⟩
       simp [Prod.map]
 
-theorem globalFirstLaneSigningAttempt_cacheGrowth
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSigningAttempt keyView request state)).run)) :
-    CacheGrowthRepresented
-      (fun payload => Concrete.CacheView.encodingInput
-        keyView.secretKey.parameter request.epoch payload)
-      (fun _ output => EncodingMonitor.ObservedAction.sign
-        request.epoch output)
-      state.cache result.1.2.cache result.2.encodingActions := by
-  obtain ⟨randomness, encodedHead, hencoded, hcases⟩ :=
-    globalFirstLaneSigningAttempt_support_decompose table keyView request state
-      result hresult
-  have hencodedGrowth := globalFirstLaneEncodingHashQuery_cacheGrowth table
-    keyView.secretKey request.epoch request.message randomness state
-      encodedHead hencoded
-  rcases hcases with hreject | haccept
-  · rw [hreject.2]
-    constructor
-    · exact hencodedGrowth.1.1
-    · intro payload output hfresh hfinal
-      exact hencodedGrowth.1.2 payload output hfresh hfinal
-  · obtain ⟨encoding, revealedHead, _hdecode, _hrevealed,
-      hrevealedResult, hresultEq⟩ := haccept
-    have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
-      rw [hrevealedResult, globalSignatureRevealResult_cache]
-    rw [hresultEq]
-    constructor
-    · rw [hfinalCache]
-      exact hencodedGrowth.1.1
-    · intro payload output hfresh hfinal
-      rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
-      apply List.mem_append_left
-      apply hencodedGrowth.1.2 payload output hfresh
-      · rw [← hfinalCache]
-        exact hfinal
-
-theorem globalFirstLaneSignBoundedAttempts_cacheGrowth
-    (attempts : Nat)
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSignBoundedAttempts attempts keyView request state)
-        ).run)) :
-    CacheGrowthRepresented
-      (fun payload => Concrete.CacheView.encodingInput
-        keyView.secretKey.parameter request.epoch payload)
-      (fun _ output => EncodingMonitor.ObservedAction.sign
-        request.epoch output)
-      state.cache result.1.2.cache result.2.encodingActions := by
-  induction attempts generalizing state result with
-  | zero =>
-      simp [globalFirstLaneSignBoundedAttempts] at hresult
-      subst result
-      exact CacheGrowthRepresented.refl _ _ _
-  | succ attempts ih =>
-      rw [globalFirstLaneSignBoundedAttempts, simulateQ_bind,
-        WriterT.run_bind', mem_support_bind_iff] at hresult
-      obtain ⟨attemptHead, hattempt, hcontinuation⟩ := hresult
-      rw [support_map] at hcontinuation
-      obtain ⟨tailResult, htail, rfl⟩ := hcontinuation
-      have hhead := globalFirstLaneSigningAttempt_cacheGrowth table keyView
-        request state attemptHead hattempt
-      cases hoption : attemptHead.1.1 with
-      | some signature =>
-          simp [hoption] at htail
-          subst tailResult
-          simpa using hhead
-      | none =>
-          simp only [hoption] at htail
-          have htailGrowth := ih attemptHead.1.2 tailResult htail
-          simpa [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
-            using hhead.trans htailGrowth
-
-theorem globalFirstLaneSigningQuery_cacheGrowth
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSigningQuery keyView request state)).run)) :
-    CacheGrowthRepresented
-      (fun payload => Concrete.CacheView.encodingInput
-        keyView.secretKey.parameter request.epoch payload)
-      (fun _ output => EncodingMonitor.ObservedAction.sign
-        request.epoch output)
-      state.cache result.1.2.cache result.2.encodingActions := by
-  exact globalFirstLaneSignBoundedAttempts_cacheGrowth signingAttemptLimit
-    table keyView request state result hresult
-
 theorem globalFirstLaneAttackerHashQueryAtEpoch_trace
     (table : GlobalChainValueIndex → Digest)
     (secretKey : SecretKey) (input : HashInput)
@@ -745,8 +620,24 @@ theorem globalFirstLaneAttackerHashQueryAtEpoch_cacheGrowth
           simp [FirstLaneOracleSimulation.ActionTrace.encodingActions]
       · exact QueryCache.cacheQuery_self _ _ _
 
-set_option maxRecDepth 1000000 in
-theorem globalFirstLaneSigningAttempt_validTrace
+def GlobalFirstLaneSigningSummary
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (request : SignRequest) (state : GlobalCausalHashState)
+    (result : (Option Signature × GlobalCausalHashState) ×
+      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex) : Prop :=
+  CacheGrowthRepresented
+      (fun payload => Concrete.CacheView.encodingInput
+        keyView.secretKey.parameter request.epoch payload)
+      (fun _ output => EncodingMonitor.ObservedAction.sign
+        request.epoch output)
+      state.cache result.1.2.cache result.2.encodingActions ∧
+    List.Sublist (CappedEncodingMonitor.validObservedSignEpochs
+      result.2.encodingActions) [request.epoch] ∧
+    (result.1.1 = none →
+      CappedEncodingMonitor.validObservedSignEpochs
+        result.2.encodingActions = [])
+
+theorem globalFirstLaneSigningAttempt_summary
     (table : GlobalChainValueIndex → Digest)
     (keyView : ProgrammedGlobalChainKeygenView)
     (request : SignRequest) (state : GlobalCausalHashState)
@@ -755,18 +646,17 @@ theorem globalFirstLaneSigningAttempt_validTrace
     (hresult : result ∈ support
       ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
         (globalFirstLaneSigningAttempt keyView request state)).run)) :
-    firstLaneValidEncodingActions result.2 =
-      CappedEncodingMonitor.validActions
-        (encodingActionTraceUpdate keyView.secretKey
-          (.inr request : (OracleWorld + SigningSpec).Domain)
-          (state.cache, []) result.1.1 (result.1.2.cache, []) []) := by
+    GlobalFirstLaneSigningSummary keyView request state result := by
   obtain ⟨randomness, encodedHead, hencoded, hcases⟩ :=
     globalFirstLaneSigningAttempt_support_decompose table keyView request state
       result hresult
-  have hencodedTrace := globalFirstLaneEncodingHashQuery_validTrace table
+  have hgrowth := globalFirstLaneEncodingHashQuery_cacheGrowth table
     keyView.secretKey request.epoch request.message randomness state
       encodedHead hencoded
-  have hencodedTrace' : CappedEncodingMonitor.validActions
+  have htrace := globalFirstLaneEncodingHashQuery_validTrace table
+    keyView.secretKey request.epoch request.message randomness state
+      encodedHead hencoded
+  have htrace' : CappedEncodingMonitor.validActions
       encodedHead.2.encodingActions =
         CappedEncodingMonitor.validActions
           (if state.cache
@@ -774,7 +664,7 @@ theorem globalFirstLaneSigningAttempt_validTrace
                 request.epoch (request.message, randomness)) = none then
             [.sign request.epoch encodedHead.1.1]
           else []) := by
-    simpa [firstLaneValidEncodingActions] using hencodedTrace
+    simpa [firstLaneValidEncodingActions] using htrace
   rcases hcases with hreject | haccept
   · obtain ⟨hdecode, hresultEq⟩ := hreject
     subst result
@@ -783,59 +673,148 @@ theorem globalFirstLaneSigningAttempt_validTrace
       intro ⟨encoding, hencoding⟩
       rw [hdecode] at hencoding
       contradiction
-    dsimp only [firstLaneValidEncodingActions]
-    change CappedEncodingMonitor.validActions
-        encodedHead.2.encodingActions =
-      CappedEncodingMonitor.validActions []
-    rw [hencodedTrace']
-    by_cases hcache : state.cache
-        (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-          request.epoch (request.message, randomness)) = none
-    · simp [hcache, CappedEncodingMonitor.validActions,
-        CappedEncodingMonitor.ActionValid, hinvalidDigest]
-    · simp [hcache]
-  · obtain ⟨encoding, revealedHead, hdecode, hrevealed,
+    have hepochs : CappedEncodingMonitor.validObservedSignEpochs
+        encodedHead.2.encodingActions = [] := by
+      unfold CappedEncodingMonitor.validObservedSignEpochs
+      rw [htrace']
+      by_cases hcache : state.cache
+          (Concrete.CacheView.encodingInput keyView.secretKey.parameter
+            request.epoch (request.message, randomness)) = none
+      · simp [hcache, CappedEncodingMonitor.validActions,
+          CappedEncodingMonitor.ActionValid, hinvalidDigest,
+          EncodingMonitor.observedSignEpochs]
+      · simp [hcache, CappedEncodingMonitor.validActions,
+          EncodingMonitor.observedSignEpochs]
+    refine ⟨hgrowth.1, ?_, ?_⟩
+    · rw [hepochs]
+      simp
+    · intro _hnone
+      exact hepochs
+  · obtain ⟨encoding, revealedHead, _hdecode, hrevealed,
       hrevealedResult, hresultEq⟩ := haccept
     subst result
-    have hrevealTrace :
-        revealedHead.2.encodingActions = [] := by
-      exact globalFirstLaneLiftRevealProbe_encodingActions_eq_nil table _ _
-        hrevealed
-    have hrandomness : revealedHead.1.1.randomness = randomness := by
-      rw [hrevealedResult, globalSignatureRevealResult_randomness]
-      rfl
+    have hrevealTrace : revealedHead.2.encodingActions = [] :=
+      globalFirstLaneLiftRevealProbe_encodingActions_eq_nil table _ _ hrevealed
     have hfinalCache : revealedHead.1.2.cache = encodedHead.1.2.cache := by
       rw [hrevealedResult, globalSignatureRevealResult_cache]
-    have hencodedCache :=
-      (globalFirstLaneEncodingHashQuery_cacheGrowth table keyView.secretKey
-        request.epoch request.message randomness state encodedHead hencoded).2
-    have hfinalLookup : revealedHead.1.2.cache
-        (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-          request.epoch (request.message, randomness)) =
-          some encodedHead.1.1 := by
-      rw [hfinalCache]
-      exact hencodedCache
-    dsimp only [firstLaneValidEncodingActions]
-    change CappedEncodingMonitor.validActions
-        (encodedHead.2 ++ revealedHead.2).encodingActions =
-      CappedEncodingMonitor.validActions
-        (encodingActionTraceUpdate keyView.secretKey
-          (.inr request : (OracleWorld + SigningSpec).Domain)
-          (state.cache, []) (some revealedHead.1.1)
-          (revealedHead.1.2.cache, []) [])
-    rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-      hrevealTrace, List.append_nil, hencodedTrace']
-    have hupdate := encodingActionTraceUpdate_sign_some keyView.secretKey
-      request revealedHead.1.1 state.cache revealedHead.1.2.cache []
-    dsimp only at hupdate
-    rw [hrandomness] at hupdate
-    by_cases hcache : state.cache
-        (Concrete.CacheView.encodingInput keyView.secretKey.parameter
-          request.epoch (request.message, randomness)) = none
-    · simpa [hcache, hfinalLookup] using congrArg
-        CappedEncodingMonitor.validActions hupdate.symm
-    · simpa [hcache] using congrArg
-        CappedEncodingMonitor.validActions hupdate.symm
+    refine ⟨?_, ?_, ?_⟩
+    · constructor
+      · rw [hfinalCache]
+        exact hgrowth.1.1
+      · intro payload output hfresh hfinal
+        rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+        apply List.mem_append_left
+        apply hgrowth.1.2 payload output hfresh
+        rw [← hfinalCache]
+        exact hfinal
+    · unfold CappedEncodingMonitor.validObservedSignEpochs
+      rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
+        hrevealTrace, List.append_nil, htrace']
+      by_cases hcache : state.cache
+          (Concrete.CacheView.encodingInput keyView.secretKey.parameter
+            request.epoch (request.message, randomness)) = none
+      · simp only [hcache, if_pos]
+        change List.Sublist
+          (CappedEncodingMonitor.validObservedSignEpochs
+            [.sign request.epoch encodedHead.1.1]) [request.epoch]
+        rw [CappedEncodingMonitor.validObservedSignEpochs_singleton_sign]
+        split <;> simp
+      · simp [hcache, CappedEncodingMonitor.validActions,
+          EncodingMonitor.observedSignEpochs]
+    · intro hnone
+      contradiction
+
+theorem globalFirstLaneSignBoundedAttempts_summary
+    (attempts : Nat)
+    (table : GlobalChainValueIndex → Digest)
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (request : SignRequest) (state : GlobalCausalHashState)
+    (result : (Option Signature × GlobalCausalHashState) ×
+      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+        (globalFirstLaneSignBoundedAttempts attempts keyView request state)
+        ).run)) :
+    GlobalFirstLaneSigningSummary keyView request state result := by
+  induction attempts generalizing state result with
+  | zero =>
+      simp [globalFirstLaneSignBoundedAttempts] at hresult
+      subst result
+      refine ⟨CacheGrowthRepresented.refl _ _ _, ?_, ?_⟩ <;>
+        simp [CappedEncodingMonitor.validObservedSignEpochs,
+          FirstLaneOracleSimulation.ActionTrace.encodingActions,
+          CappedEncodingMonitor.validActions,
+          EncodingMonitor.observedSignEpochs]
+  | succ attempts ih =>
+      rw [globalFirstLaneSignBoundedAttempts, simulateQ_bind,
+        WriterT.run_bind', mem_support_bind_iff] at hresult
+      obtain ⟨attemptHead, hattempt, hcontinuation⟩ := hresult
+      rw [support_map] at hcontinuation
+      obtain ⟨tailResult, htail, rfl⟩ := hcontinuation
+      have hhead := globalFirstLaneSigningAttempt_summary table keyView
+        request state attemptHead hattempt
+      cases hoption : attemptHead.1.1 with
+      | some signature =>
+          simp [hoption] at htail
+          subst tailResult
+          simpa [GlobalFirstLaneSigningSummary,
+            FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+              using And.intro hhead.1 hhead.2.1
+      | none =>
+          simp only [hoption] at htail
+          have htailSummary := ih attemptHead.1.2 tailResult htail
+          refine ⟨?_, ?_, ?_⟩
+          · simpa [FirstLaneOracleSimulation.ActionTrace.encodingActions_append]
+              using hhead.1.trans htailSummary.1
+          · change List.Sublist
+              (CappedEncodingMonitor.validObservedSignEpochs
+                (attemptHead.2 ++ tailResult.2).encodingActions)
+              [request.epoch]
+            rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
+              CappedEncodingMonitor.validObservedSignEpochs_append,
+              hhead.2.2 hoption]
+            simpa using htailSummary.2.1
+          · intro hfinal
+            have htailNone : tailResult.1.1 = none := by
+              simpa using hfinal
+            change CappedEncodingMonitor.validObservedSignEpochs
+              (attemptHead.2 ++ tailResult.2).encodingActions = []
+            rw [FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
+              CappedEncodingMonitor.validObservedSignEpochs_append,
+              hhead.2.2 hoption, htailSummary.2.2 htailNone]
+            rfl
+
+theorem globalFirstLaneSigningQuery_cacheGrowth
+    (table : GlobalChainValueIndex → Digest)
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (request : SignRequest) (state : GlobalCausalHashState)
+    (result : (Option Signature × GlobalCausalHashState) ×
+      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+        (globalFirstLaneSigningQuery keyView request state)).run)) :
+    CacheGrowthRepresented
+      (fun payload => Concrete.CacheView.encodingInput
+        keyView.secretKey.parameter request.epoch payload)
+      (fun _ output => EncodingMonitor.ObservedAction.sign
+        request.epoch output)
+      state.cache result.1.2.cache result.2.encodingActions :=
+  (globalFirstLaneSignBoundedAttempts_summary signingAttemptLimit table
+    keyView request state result hresult).1
+
+theorem globalFirstLaneSigningQuery_validSignEpochs_sublist_singleton
+    (table : GlobalChainValueIndex → Digest)
+    (keyView : ProgrammedGlobalChainKeygenView)
+    (request : SignRequest) (state : GlobalCausalHashState)
+    (result : (Option Signature × GlobalCausalHashState) ×
+      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
+    (hresult : result ∈ support
+      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
+        (globalFirstLaneSigningQuery keyView request state)).run)) :
+    List.Sublist (CappedEncodingMonitor.validObservedSignEpochs
+      result.2.encodingActions) [request.epoch] :=
+  (globalFirstLaneSignBoundedAttempts_summary signingAttemptLimit table
+    keyView request state result hresult).2.1
 
 theorem encodingActionTraceUpdate_sublist_of_observation_mem
     (secretKey : SecretKey)
@@ -1643,136 +1622,6 @@ theorem globalFirstLaneExactTracedVerifier_append_trace_sublist
             (List.Sublist.refl initialTrace).append
               (List.singleton_sublist.mpr haction)
   · simp [appendVerificationEncodingObservation, forgedInput, hfresh]
-
-theorem globalFirstLaneSigningAttempt_none_validSignEpochs_eq_nil
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSigningAttempt keyView request state)).run))
-    (hnone : result.1.1 = none) :
-    CappedEncodingMonitor.validObservedSignEpochs
-      result.2.encodingActions = [] := by
-  have hvalid := globalFirstLaneSigningAttempt_validTrace table keyView request
-    state result hresult
-  unfold firstLaneValidEncodingActions at hvalid
-  unfold CappedEncodingMonitor.validObservedSignEpochs
-  rw [hvalid]
-  simp [encodingActionTraceUpdate, encodingObservation?, hnone,
-    CappedEncodingMonitor.validActions, EncodingMonitor.observedSignEpochs]
-
-theorem globalFirstLaneSigningAttempt_validSignEpochs_sublist_singleton
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSigningAttempt keyView request state)).run)) :
-    List.Sublist (CappedEncodingMonitor.validObservedSignEpochs
-      result.2.encodingActions) [request.epoch] := by
-  have hvalid := globalFirstLaneSigningAttempt_validTrace table keyView request
-    state result hresult
-  unfold firstLaneValidEncodingActions at hvalid
-  unfold CappedEncodingMonitor.validObservedSignEpochs
-  rw [hvalid]
-  cases houtput : result.1.1 with
-  | none =>
-      simp [encodingActionTraceUpdate, encodingObservation?,
-        CappedEncodingMonitor.validActions,
-        EncodingMonitor.observedSignEpochs]
-  | some signature =>
-      let input := Concrete.CacheView.encodingInput keyView.secretKey.parameter
-        request.epoch (request.message, signature.randomness)
-      by_cases hfresh : state.cache input = none
-      · cases hfinal : result.1.2.cache input with
-        | none =>
-            simp [encodingActionTraceUpdate, encodingObservation?,
-              input, hfresh, hfinal, CappedEncodingMonitor.validActions,
-              EncodingMonitor.observedSignEpochs]
-        | some output =>
-            rw [encodingActionTraceUpdate_sign_some]
-            simp only [input, hfresh, hfinal, ↓reduceIte]
-            change List.Sublist
-              (CappedEncodingMonitor.validObservedSignEpochs
-                [.sign request.epoch output]) [request.epoch]
-            rw [CappedEncodingMonitor.validObservedSignEpochs_singleton_sign]
-            split <;> simp
-      · simp [encodingActionTraceUpdate, encodingObservation?,
-          input, hfresh, CappedEncodingMonitor.validActions,
-          EncodingMonitor.observedSignEpochs]
-
-theorem globalFirstLaneSignBoundedAttempts_validSignEpochs_sublist_singleton
-    (attempts : Nat) (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSignBoundedAttempts attempts keyView request state)
-        ).run)) :
-    List.Sublist (CappedEncodingMonitor.validObservedSignEpochs
-      result.2.encodingActions) [request.epoch] := by
-  induction attempts generalizing state result with
-  | zero =>
-      simp [globalFirstLaneSignBoundedAttempts] at hresult
-      subst result
-      simp [CappedEncodingMonitor.validObservedSignEpochs,
-        FirstLaneOracleSimulation.ActionTrace.encodingActions,
-        CappedEncodingMonitor.validActions,
-        EncodingMonitor.observedSignEpochs]
-  | succ attempts ih =>
-      rw [globalFirstLaneSignBoundedAttempts, simulateQ_bind,
-        WriterT.run_bind', mem_support_bind_iff] at hresult
-      obtain ⟨attemptHead, hattempt, hcontinuation⟩ := hresult
-      rw [support_map] at hcontinuation
-      obtain ⟨tailResult, htail, hresultEq⟩ := hcontinuation
-      have htraceEq : attemptHead.2 ++ tailResult.2 = result.2 := by
-        simpa using congrArg Prod.snd hresultEq
-      cases hoption : attemptHead.1.1 with
-      | none =>
-          have hattemptNil :=
-            globalFirstLaneSigningAttempt_none_validSignEpochs_eq_nil table
-              keyView request state attemptHead hattempt hoption
-          have htailSub := ih attemptHead.1.2 tailResult (by
-            simpa [hoption] using htail)
-          rw [← htraceEq,
-            FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-            CappedEncodingMonitor.validObservedSignEpochs_append,
-            hattemptNil]
-          simpa using htailSub
-      | some signature =>
-          simp only [hoption] at htail
-          subst tailResult
-          have hattemptSub :=
-            globalFirstLaneSigningAttempt_validSignEpochs_sublist_singleton table
-              keyView request state attemptHead hattempt
-          rw [← htraceEq,
-            FirstLaneOracleSimulation.ActionTrace.encodingActions_append,
-            CappedEncodingMonitor.validObservedSignEpochs_append]
-          simpa [CappedEncodingMonitor.validObservedSignEpochs,
-            FirstLaneOracleSimulation.ActionTrace.encodingActions,
-            CappedEncodingMonitor.validActions,
-            EncodingMonitor.observedSignEpochs] using hattemptSub
-
-theorem globalFirstLaneSigningQuery_validSignEpochs_sublist_singleton
-    (table : GlobalChainValueIndex → Digest)
-    (keyView : ProgrammedGlobalChainKeygenView)
-    (request : SignRequest) (state : GlobalCausalHashState)
-    (result : (Option Signature × GlobalCausalHashState) ×
-      FirstLaneOracleSimulation.ActionTrace GlobalChainValueIndex)
-    (hresult : result ∈ support
-      ((simulateQ (FirstLaneOracleSimulation.eagerTraceImpl table)
-        (globalFirstLaneSigningQuery keyView request state)).run)) :
-    List.Sublist (CappedEncodingMonitor.validObservedSignEpochs
-      result.2.encodingActions) [request.epoch] := by
-  exact globalFirstLaneSignBoundedAttempts_validSignEpochs_sublist_singleton
-    signingAttemptLimit table keyView request state result hresult
 
 theorem globalFirstLaneUniformImpl_run
     (n : Nat) (state : GlobalCausalHashState) :
