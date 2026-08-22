@@ -392,12 +392,24 @@ impl FnLower<'_> {
         // redirect every later read to the source and drop the assertion. This is
         // what makes `s[k] = <checked value>` pin a hint, and what makes a
         // pre-written `blake2s` output assert the digest.
-        if let Some(a) = self.copy_alias(val).filter(|_| !self.phys.contains(&dst)) {
+        let aliased = self.alias.contains_key(&dst);
+        if !aliased
+            && !self.phys.contains(&dst)
+            && let Some(a) = self.copy_alias(val)
+        {
             self.alias.insert(dst, a);
-        } else {
-            self.alias.remove(&dst);
-            self.expr_into(val, dst);
+            return;
         }
+        if aliased {
+            // Give the cell the value it already stood for, so the store below is a
+            // second write of that cell and therefore the assertion. Without this the
+            // second alias would simply replace the first and the two values would
+            // never meet.
+            let src = self.word_src(dst);
+            self.alias.remove(&dst);
+            self.copy(src, dst);
+        }
+        self.expr_into(val, dst);
     }
 
     /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
@@ -554,11 +566,15 @@ impl FnLower<'_> {
         f(self);
         // A deferred store into a buffer declared outside the branch must be
         // materialized on that path before the branch-local aliases are dropped.
-        let branch_outputs: Vec<Off> = self
+        let mut branch_outputs: Vec<Off> = self
             .alias
             .iter()
             .filter_map(|(&dst, alias)| (dst < branch_start && saved_aliases.get(&dst) != Some(alias)).then_some(dst))
             .collect();
+        // Sorted, because the emitted copies must not depend on `HashMap` iteration
+        // order: the bytecode digest leads the Fiat--Shamir transcript, so two builds
+        // of one source have to be the same program.
+        branch_outputs.sort_unstable();
         for dst in branch_outputs {
             let src = self.word_src(dst);
             self.alias.remove(&dst);

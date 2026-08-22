@@ -347,3 +347,105 @@ def main():
         ],
     });
 }
+
+/// Two stores of different values into one cell is the write-once equality
+/// assertion of `zkDSL.md` §Memory, on a `StackBuf` cell as much as on a `HeapBuf`
+/// cell. The doc draws no distinction, and the whole "stores are assertions"
+/// promise rests on there being none.
+#[test]
+fn two_stack_stores_to_one_cell_assert_equality() {
+    check_pair(&Pair {
+        name: "two_stack_stores_to_one_cell_assert_equality",
+        why: "zkDSL.md §Memory: a second write of a different value is a proof failure.",
+        a: "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    s = StackBuf(1)
+    s[0] = v[0]
+    s[0] = v[1]
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = v[1]
+    return
+",
+        b: "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    h = HeapBuf(1)
+    h[1] = v[0]
+    h[1] = v[1]
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = v[1]
+    return
+",
+        trials: vec![two(g(3), g(3)), two(g(3), g(4)), two(g(0), g(0)), two(g(5), g(9))],
+    });
+}
+
+/// A store made inside a runtime branch into a cell that already carried a value
+/// from before the branch is the same assertion whether the cell is a `StackBuf`
+/// cell or a `HeapBuf` cell. `zkDSL.md` §`if`: "branches communicate through
+/// write-once cells: only one branch executes, so both may write the *same* cell",
+/// and §Memory makes a second write of a different value a failure.
+///
+/// Regression test: `scoped` materialized the branch's value into the cell and
+/// then restored the pre-branch alias over it, so post-join reads forwarded to the
+/// pre-branch source on every path and the materialized write was orphaned. The
+/// published value was the pre-branch one whichever arm ran.
+#[test]
+fn store_inside_a_branch_asserts_against_the_pre_branch_value() {
+    check_pair(&Pair {
+        name: "store_inside_a_branch_asserts_against_the_pre_branch_value",
+        why: "zkDSL.md §`if` + §Memory: both arms may write one cell, and a second write \
+              of a different value is a proof failure.",
+        a: "\
+def main():
+    v = StackBuf(3)
+    hint_witness(v, \"w\")
+    s = StackBuf(1)
+    s[0] = v[0]
+    if v[1] == v[2]:
+        s[0] = v[1]
+    else:
+        s[0] = v[2]
+    p = GEN ** 0
+    p[1] = s[0]
+    p[GEN] = v[0]
+    return
+",
+        b: "\
+def main():
+    v = StackBuf(3)
+    hint_witness(v, \"w\")
+    h = HeapBuf(1)
+    h[1] = v[0]
+    if v[1] == v[2]:
+        h[1] = v[1]
+    else:
+        h[1] = v[2]
+    p = GEN ** 0
+    p[1] = h[1]
+    p[GEN] = v[0]
+    return
+",
+        trials: vec![
+            // else arm, and v[0] != v[2]: the assertion must fail for both.
+            branch3(g(1), g(2), g(3)),
+            // else arm, and v[0] == v[2]: accepted by both.
+            branch3(g(1), g(2), g(1)),
+            // then arm, and v[0] == v[1]: accepted by both.
+            branch3(g(1), g(1), g(1)),
+            // then arm, and v[0] != v[1] (v[1] == v[2] picks it): must fail.
+            branch3(g(1), g(4), g(4)),
+        ],
+    });
+}
+
+/// A trial for the branch pair: publishes `s[0]` and `v[0]`, which the assertion
+/// makes equal on every accepting path.
+fn branch3(a: F192, b: F192, c: F192) -> Trial {
+    Trial::new([a, a]).stream("w", vec![vec![a, b, c]])
+}
