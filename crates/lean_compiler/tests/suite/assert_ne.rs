@@ -1,4 +1,4 @@
-//! `assert a != b` — a proof-enforced inequality. It lowers to `XOR x = a + b`,
+//! `assert a != b`: a proof-enforced inequality. It lowers to `XOR x = a + b`,
 //! a hinted `inv = x⁻¹`, `MUL p = x·inv` and `SET p = 1`, the write-once
 //! conflict on `p` being the assertion. Sound whatever the hint: `x = 0` forces
 //! `p = 0`, which cannot then be set to `1`. Three rows and no `JUMP`.

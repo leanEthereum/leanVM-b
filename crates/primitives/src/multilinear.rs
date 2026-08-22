@@ -60,14 +60,7 @@ pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
 /// time: each level writes the new high half from the low half and rewrites
 /// the low half in place.
 ///
-/// One multiply per pair, not two. In characteristic 2,
-/// `e · (1 + r) = e + e · r`, so the low child is the high child XOR the
-/// parent, making the second product redundant. This is orthogonal to lane
-/// batching: `rk` is loop-invariant, and the scalar product still measured
-/// faster than a two-lane one, 3.37 vs 3.73 ns/entry.
-///
-/// A level's pairs are independent, so levels wide enough to cover the
-/// dispatch are split across threads.
+/// In characteristic 2, the low child is the high child plus the parent, so each pair needs one multiplication. Wide levels are split across threads.
 pub fn eq_table(r: &[F192]) -> Vec<F192> {
     let mut eq = vec![F192::ZERO; 1usize << r.len()];
     fill_eq_table(r, &mut eq);
@@ -308,9 +301,7 @@ fn fold_ladder(mut cur: Vec<F192>, point: &[F192], par: bool) -> F192 {
             cur = parallel::map_collect(len, |i| interp(src[2 * i], src[2 * i + 1], p));
             continue;
         }
-        // Deliberately scalar: the fold's mul has the loop-invariant `p` on one
-        // side, and pairing outputs through a two-lane multiply measured slower,
-        // 1.75 vs 2.14 ns/output.
+        // Keep `p` loop-invariant in the scalar product.
         for i in 0..len {
             cur[i] = interp(cur[2 * i], cur[2 * i + 1], p);
         }

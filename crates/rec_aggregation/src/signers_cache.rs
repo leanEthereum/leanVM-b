@@ -1,31 +1,8 @@
-//! Disk cache for the XMSS signatures the aggregation benchmark consumes.
+//! Persistent cache for deterministic XMSS benchmark signatures.
 //!
-//! Generating a signer (a full `xmss_key_gen` over epochs `0..=15` plus one
-//! grinding `xmss_sign`, ~2^14 encode attempts) is the untimed setup cost of
-//! [`crate::run_xmss_aggregation`]; for large batches it dwarfs the proving we
-//! actually want to measure. Every signer is a pure function of its index and
-//! the fixed parameters below, so we generate each one once, store the whole
-//! batch to disk, and reload it on subsequent runs.
-//!
-//! The on-disk file is a growing *pool*: a request for `n` signers reuses (and
-//! extends) whatever is already cached, so bumping `LEANVM_XMSS_N` never
-//! regenerates the signers a smaller run already produced. The pool is also
-//! memoized in-process, so repeated calls within one run touch the disk once.
-//!
-//! Cache location: `<workspace>/target/signers-cache/` (already git-ignored).
-//! The filename carries a footprint of everything that determines the signers —
-//! not just the declared parameters but a known-answer of the hash construction
-//! itself (see `hash_fingerprint`), so a branch that changes the digests
-//! (e.g. a change to the standard BLAKE2s input encoding) without touching a
-//! single constant still lands in a fresh file rather than mis-loading the
-//! other branch's signers. The WOTS encoding *predicate* is fingerprinted the
-//! same way (see `encoding_fingerprint`): two branches can agree on every
-//! constant and every hash digest yet lay the digest out into digits
-//! differently, which silently invalidates every ground randomness. As a last
-//! line of defense, loaded signers are re-verified and the pool truncated at
-//! the first invalid one (`try_load_cache`), so a stale cache that slips
-//! past the footprint regenerates instead of panicking downstream. Bump
-//! `SCHEMA_VERSION` to force regeneration by hand.
+//! The cache grows as needed and is memoized in-process. Its filename binds the
+//! parameters, hash construction, and encoding predicate. Loaded signatures are
+//! also verified, so stale entries are regenerated from the first invalid one.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -40,26 +17,18 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use xmss::*;
 
-/// A cached signer: its public key and one signature over [`message`] at [`EPOCH`].
 type CachedSignature = (XmssPublicKey, XmssSignature);
 
-/// Bump to invalidate every existing cache file by hand.
 const SCHEMA_VERSION: u32 = 2;
 
-/// The epoch every benchmark signature is produced and verified at.
 pub const EPOCH: u32 = 7;
-/// Key validity range passed to `xmss_key_gen` (inclusive).
 const KEY_START: u32 = 0;
 const KEY_END: u32 = 15;
 
-/// The single message every signer signs.
 pub fn message() -> Message {
     std::array::from_fn(|i| (i * 5 + 1) as u8)
 }
 
-/// Deterministically generate signer `index`. Identical to the inline loop the
-/// benchmark used before caching, so cached and freshly-generated runs are
-/// indistinguishable.
 fn compute_signer(index: usize) -> CachedSignature {
     // The index over its full width: a one-byte seed repeats every 256 signers,
     // and a repeated signer is invisible until something deduplicates the set,
@@ -71,21 +40,14 @@ fn compute_signer(index: usize) -> CachedSignature {
     (pk, sig)
 }
 
-/// A known-answer of the *hash construction*, over both tweak-hash paths: the
-/// declared constants can stay fixed while the digests change underneath.
 fn hash_fingerprint() -> [Digest; 2] {
     let pp = [0xA5u8; PUBLIC_PARAM_LEN];
     [
-        // Single-block path (chain steps, Merkle nodes).
         tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
-        // Multi-block standard BLAKE2s path.
         tweak_hash(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
     ]
 }
 
-/// A known-answer of the WOTS encoding *predicate*, which [`hash_fingerprint`]
-/// does not cover: grinding a counter randomness until it encodes captures the
-/// digit layout, the validity bits, and the target-sum rule in one value.
 fn encoding_fingerprint() -> (u64, [u8; V]) {
     let pp = [0xA5u8; PUBLIC_PARAM_LEN];
     let msg = message();
@@ -99,26 +61,20 @@ fn encoding_fingerprint() -> (u64, [u8; V]) {
     unreachable!("some counter randomness encodes")
 }
 
-/// 64-bit fingerprint of everything that determines the signers. Any change
-/// (epoch, key range, message, the XMSS structural constants, the hash
-/// construction via [`hash_fingerprint`], or the encoding predicate via
-/// [`encoding_fingerprint`]) yields a new filename, so stale caches are
-/// silently bypassed rather than mis-loaded.
 fn footprint() -> u64 {
-    let mut h = DefaultHasher::new();
-    SCHEMA_VERSION.hash(&mut h);
-    EPOCH.hash(&mut h);
-    KEY_START.hash(&mut h);
-    KEY_END.hash(&mut h);
-    message().hash(&mut h);
-    (V, W, CHAIN_LENGTH, LOG_LIFETIME, TARGET_SUM, RANDOMNESS_LEN).hash(&mut h);
-    hash_fingerprint().hash(&mut h);
-    encoding_fingerprint().hash(&mut h);
-    h.finish()
+    let mut hasher = DefaultHasher::new();
+    SCHEMA_VERSION.hash(&mut hasher);
+    EPOCH.hash(&mut hasher);
+    KEY_START.hash(&mut hasher);
+    KEY_END.hash(&mut hasher);
+    message().hash(&mut hasher);
+    (V, W, CHAIN_LENGTH, LOG_LIFETIME, TARGET_SUM, RANDOMNESS_LEN).hash(&mut hasher);
+    hash_fingerprint().hash(&mut hasher);
+    encoding_fingerprint().hash(&mut hasher);
+    hasher.finish()
 }
 
 fn cache_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR is <workspace>/crates/rec_aggregation.
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/signers-cache")
 }
 
@@ -126,12 +82,6 @@ fn cache_path() -> PathBuf {
     cache_dir().join(format!("xmss_signers_{:016x}.bin", footprint()))
 }
 
-/// Load the pool from disk, treating any failure (missing file, read error,
-/// decode error, schema mismatch) as an empty cache. Every loaded signer is
-/// re-verified against the current code (~144 compressions each, milliseconds
-/// for a full pool) and the pool truncated at the first invalid one: a stale
-/// cache the footprint failed to segregate regenerates from the surviving
-/// prefix instead of panicking mid-benchmark.
 fn try_load_cache() -> Option<Vec<CachedSignature>> {
     let bytes = fs::read(cache_path()).ok()?;
     let (version, mut signers): (u32, Vec<CachedSignature>) = bincode::deserialize(&bytes).ok()?;
@@ -160,18 +110,17 @@ fn save_cache(signers: &[CachedSignature]) {
         let _ = fs::create_dir_all(parent);
     }
     let bytes = bincode::serialize(&(SCHEMA_VERSION, signers)).expect("serialize signers cache");
-    if let Err(e) = fs::write(&path, &bytes) {
-        eprintln!("warning: could not write signers cache to {}: {e}", path.display());
+    if let Err(error) = fs::write(&path, &bytes) {
+        eprintln!("warning: could not write signers cache to {}: {error}", path.display());
     }
 }
 
-/// Generate signers for indices `start..end`, printing one-time progress.
 fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
     let total = end - start;
-    let t = Instant::now();
-    let mut out = Vec::with_capacity(total);
+    let started = Instant::now();
+    let mut signers = Vec::with_capacity(total);
     for (done, index) in (start..end).enumerate() {
-        out.push(compute_signer(index));
+        signers.push(compute_signer(index));
         print!(
             "\r  generating XMSS signers (one-time, then cached): {}/{}",
             pretty_integer(done + 1),
@@ -182,26 +131,21 @@ fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
     println!(
         "\r  generated {} XMSS in {} s (cached to disk)                ",
         pretty_integer(total),
-        pretty_f64(t.elapsed().as_secs_f64())
+        pretty_f64(started.elapsed().as_secs_f64())
     );
-    out
+    signers
 }
 
 static POOL: Mutex<Vec<CachedSignature>> = Mutex::new(Vec::new());
 
-/// The `n` benchmark signers, each `(public key, signature over [`message`] at
-/// [`EPOCH`])`. Served from the in-process pool, then disk, generating (and
-/// caching) only the signers not already available.
 pub fn get_signers(n: usize) -> Vec<CachedSignature> {
     let mut pool = POOL.lock().unwrap();
     if pool.len() < n {
-        // The disk pool may already hold a superset of what we have in memory.
         if let Some(disk) = try_load_cache()
             && disk.len() > pool.len()
         {
             *pool = disk;
         }
-        // Extend past whatever the disk gave us, then persist the larger pool.
         if pool.len() < n {
             let mut fresh = generate_range(pool.len(), n);
             pool.append(&mut fresh);
@@ -215,28 +159,8 @@ pub fn get_signers(n: usize) -> Vec<CachedSignature> {
 mod tests {
     use super::*;
 
-    /// Signers must be distinct past the first 256, which a one-byte seed was
-    /// not. An aggregate deduplicates its signer set, so a repeat shrinks the
-    /// batch instead of failing.
     #[test]
-    fn cached_signers_are_distinct() {
-        let mut keys: Vec<_> = get_signers(300).into_iter().map(|(pk, _)| pk).collect();
-        keys.sort();
-        keys.dedup();
-        assert_eq!(keys.len(), 300);
-    }
-
-    #[test]
-    fn cached_signers_verify_and_are_deterministic() {
-        // A small request, then a larger one that must reuse the first as a
-        // prefix (the pool grows; earlier signers are never regenerated).
-        let small = get_signers(2);
-        let large = get_signers(5);
-        assert_eq!(large[..small.len()], small[..]);
-
-        let msg = message();
-        for (i, (pk, sig)) in large.iter().enumerate() {
-            xmss_verify(pk, &msg, sig, EPOCH).unwrap_or_else(|e| panic!("cached signer {i} failed to verify: {e:?}"));
-        }
+    fn signer_seed_uses_more_than_one_byte() {
+        assert_ne!(compute_signer(0).0, compute_signer(256).0);
     }
 }

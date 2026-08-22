@@ -31,21 +31,18 @@
 //! eighteen aligned words directly to these slots.
 
 use crate::transcript::{ProverState, VerifierState};
-use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
+use ::pcs::pack::LOG_PACKING;
 use flock::blake2s::{
     Blake2sSetup, Compression, K_LOG, ReductionReplay, blake2s_compress, generate_witness_with_ab_packed_and_lincheck,
-    min_n_blocks_log,
 };
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
-/// One side of the Flock reduction's output on the committed witness `q_flock`:
-/// the `2^K_SKIP` bit slices at a point, already transmitted and checked by the
-/// reduction (`prove_reduction` / [`verify_reduction`]), for the PCS to bind.
-/// Re-exported from [`flock::blake2s`].
-pub use flock::blake2s::SliceClaim;
+pub use flock::blake2s::{
+    SliceClaim, min_n_blocks_log as n_blocks_log, qflock_kappa, ring_switch_open, ring_switch_verify,
+};
 
 /// BLAKE2s's final-block flag `f0`, which RFC 7693 sets to all ones on the last
 /// block. A hash-shaped compression is one 64-byte final block, so it is always
@@ -186,29 +183,12 @@ pub fn digest(block: &Compression) -> [F64; 4] {
     std::array::from_fn(|k| pack_words([h[2 * k], h[2 * k + 1]]))
 }
 
-/// flock's `n_blocks_log` for `n` compressions (lincheck floor `≥ 3`). The VM's
-/// BLAKE2s table is sized to `2^n_blocks_log` rows so its value columns share
-/// `q_flock`'s instance cube.
-pub fn n_blocks_log(n: usize) -> usize {
-    min_n_blocks_log(n)
-}
-
-/// The variable count (`log2` length) of the committed `q_flock` column for `n`
-/// executed compressions: `K_LOG + n_blocks_log(max(n,1)) - 6`. Always ≥ 1
-/// instance: `n = 0` still commits one padding instance (uniform proof shape).
-pub fn qflock_kappa(n: usize) -> usize {
-    K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
-}
-
 /// Lift flock's packed witness (64 bits per word, bit `i` at position `i`) into
 /// the committed `F64` column: word for word, which is exactly `pack_witness`'s
 /// convention on the same bit string.
 fn flatten_packed_into(packed: &[u64], out: &mut [F64]) {
     assert_eq!(out.len(), packed.len(), "q_flock's window is the wrong size");
-    // In parallel, straight into the committed column's window: at scale this
-    // moves 270 MB, so an intermediate buffer copied again afterwards is not
-    // affordable. Nothing reads the window until the commitment encodes it, by
-    // which time a column this size is long evicted, so it publishes streamed.
+    // Write directly into the committed window and publish it with streaming stores.
     // SAFETY: `F64` is `repr(transparent)` over `u64`, so the two slices are the
     // same bytes.
     let words: &mut [u64] = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) };
@@ -242,11 +222,6 @@ pub(crate) fn build_qflock_prepared(blocks: &[Compression], q_flock: &mut [F64])
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
 /// Memoized BLAKE2s R1CS [`Blake2sSetup`], keyed by its power-of-two shape.
-/// Building it (the symbolic constraint walk over `2^K_LOG` slots) costs
-/// ~hundreds of ms, fixed per circuit shape, independent of `N` or the proof.
-/// So we build each shape once and reuse it across `prove`, `verify`, and
-/// repeated proofs; the per-setup caches then stay warm, making verification
-/// milliseconds rather than rebuilding the circuit each time.
 type SetupCell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Blake2sSetup>>>;
 
 fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, SetupCell>> {
@@ -268,15 +243,7 @@ fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake2sSetup> {
     std::sync::Arc::clone(cell.get_or_init(|| std::sync::Arc::new(Blake2sSetup::new(1usize << shape))))
 }
 
-/// Pre-build (and cache) the flock BLAKE2s R1CS setup. This is the fixed,
-/// circuit-shape-only cost (~hundreds of ms, independent of the witness or the
-/// number of proofs): building the `2^K_LOG`-slot R1CS.
-///
-/// Callers pass the number of EXECUTED `BLAKE2s` instructions; it is floored at 1
-/// (the padding instance a no-BLAKE2s program still carries), matching
-/// `cpu::prove`/`verify`. Call it once up front so a subsequent prove/verify
-/// reflects steady-state (repeated-proving) performance: the ~hundreds-of-ms
-/// build is a one-time, program-independent cost, not part of proving. Idempotent.
+/// Pre-build and cache the flock BLAKE2s R1CS setup for the executed compression count.
 pub fn warm_setup(n_blocks: usize) {
     let _ = setup_for(n_blocks.max(1));
 }
@@ -315,63 +282,9 @@ pub fn verify_reduction(n_blocks: usize, vs: &mut VerifierState) -> Result<Reduc
     setup_for(n_blocks).verify_reduction(vs)
 }
 
-/// One reduction claim as a tower [`crate::pcs::RingSwitchClaim`]: the
-/// `2^K_SKIP` bit slices and the suffix point they live at, which is the WHOLE
-/// multilinear tail of the quirky point (`q_flock` has `2^(K_LOG + n_log − 6)`
-/// words, and the packing prefix is exactly the skipped coordinates, so nothing
-/// is split off into it). The family arrives transmitted and checked, by
-/// flock's reduction, so there is nothing to tie here.
-fn ring_claim(claim: &SliceClaim, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
-    assert_eq!(
-        claim.suffix_point.len(),
-        qflock_vars,
-        "ring-switch suffix must span the q_flock cube"
-    );
-    assert_eq!(claim.s_hat_v.len(), PACKING_WIDTH);
-    crate::pcs::RingSwitchClaim {
-        suffix_point: claim.suffix_point.clone(),
-        s_hat_v: Some(claim.s_hat_v.clone()),
-    }
-}
-
-/// Package the prover's reduction claim ([`SliceClaim`]) as a
-/// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's validity in the
-/// same opening as leanVM's point claims. `offset` is `q_flock`'s slot in the
-/// committed stack; the opener slices `q_flock` from there.
-pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &SliceClaim) -> crate::pcs::RingSwitchOpen {
-    let qflock_vars = qflock_kappa(n_blocks);
-    crate::pcs::RingSwitchOpen {
-        offset,
-        qflock_vars,
-        claims: vec![ring_claim(reduced, qflock_vars)],
-    }
-}
-
-/// Verifier counterpart of [`ring_switch_open`]: package the recovered claim
-/// (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the same
-/// statement data; the transmitted opening travels separately (read off the
-/// `openings` hint channel by the caller).
-pub fn ring_switch_verify(n_blocks: usize, offset: usize, claim: &SliceClaim) -> crate::pcs::RingSwitchVerify {
-    let qflock_vars = qflock_kappa(n_blocks);
-    crate::pcs::RingSwitchVerify {
-        offset,
-        qflock_vars,
-        claims: vec![ring_claim(claim, qflock_vars)],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn setup_cache_is_keyed_by_shape() {
-        let one = setup_for(1);
-        let eight = setup_for(8);
-        let nine = setup_for(9);
-        assert!(std::sync::Arc::ptr_eq(&one, &eight));
-        assert!(!std::sync::Arc::ptr_eq(&eight, &nine));
-    }
 
     fn f(x: u64) -> F64 {
         F64(x)

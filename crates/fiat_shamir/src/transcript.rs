@@ -1,57 +1,13 @@
-//! Fiat–Shamir transcript, leanVM-style: a single state object *is* the channel
-//! between prover and verifier. The API is deliberately small, so it is hard to
-//! bind the wrong thing (mirrors leanVM's `FSProver`/`FSVerifier`):
-//!
-//! - **`add_scalar(s)`** (prover) / **`next_scalar(s)`** (verifier): the *only*
-//!   way a scalar enters the proof. It transmits AND absorbs, in one call, so
-//!   transmitted data is **always** bound, and the two sides cannot drift. This is
-//!   the workhorse (GKR layers, constraint round polys, evaluation values, the
-//!   commitment root).
-//! - **The public statement** (the public input) is seeded into the state at
-//!   construction ([`FiatShamirState::new`]) by BOTH sides, so it is bound before any
-//!   challenge. `add_*` transmits AND binds; `observe_scalar` binds WITHOUT
-//!   transmitting, and is only for values both sides derive independently. Never
-//!   re-observe data that already rode the stream: it is bound once already, and
-//!   binding it twice silently desynchronizes the two sides. A challenge is just
-//!   `sample()`d, bound to everything seeded/sent so far.
-//! - **`hint_merkle` (prover) / `next_merkle` (verifier)**: transport that is NOT
-//!   absorbed here, one opening phase of hash-bearing data whose binding is the
-//!   Merkle structure itself.
-//! - **`sample` / `sample_vec`**: squeeze a challenge.
-//!
-//! The [`FiatShamirState`] state itself (the VM-native Merkle–Damgård chaining
-//! value, its domain tags, and grinding) lives at the crate root.
+//! Fiat-Shamir proof transport. `add_scalar` and `next_scalar` transmit and bind together. `observe_scalar` is only for public values both sides derive. Merkle hints are authenticated by their trees and are not absorbed separately.
 
 use crate::FiatShamirState;
 use crate::merkle::{Hash, PrunedMerklePaths, RawMerklePath, hash_to_scalars, scalars_to_hash};
 use primitives::field::{F64, F192};
 
-/// A complete proof: the scalar transcript stream plus the Merkle phases:
-/// **two** channels, no bolted-on side field. The commitment root and every
-/// transmitted scalar ride `stream`; the hash-bearing openings ride `merkle`.
-/// flock's BLAKE2s sub-proof is carried the same way: its zerocheck / lincheck /
-/// ring-switch scalars are ordinary `add_scalar` words on `stream` (transmitted
-/// AND bound at their protocol points, like every other scalar) and its opening
-/// phases append to `merkle`.
-///
-/// The scalars are the same either way, so the ONLY thing a representation
-/// chooses is how the Merkle data is carried, and that is the type parameter:
-/// [`Proof`] prunes it, [`RawProof`] does not. A round polynomial travels as the
-/// coefficients the claim does not fix, so there is nothing else for a consumer
-/// to re-expand and it can be one read-and-absorb loop.
-///
-/// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
-/// an independent verifier process reconstructs it: everything lives in these two
-/// fields, and [`VerifierState`] re-derives every challenge from them via the
-/// shared [`FiatShamirState`] state, so nothing travels out of band.
+/// A scalar stream and its Merkle opening phases. `M` selects pruned or raw paths.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Proof<M = PrunedMerklePaths> {
-    /// Every transmitted field scalar, in protocol order (plus flock's scalar
-    /// sub-proof as trailing raw transport words).
     pub stream: Vec<F192>,
-    /// Pruned: one entry per opening phase, in the order the phases run. Raw: one
-    /// path per query, phases concatenated in that same order. Nothing here names
-    /// WHIR: a phase pushes its rows and siblings, the next pulls them.
     pub merkle: Vec<M>,
 }
 
@@ -64,18 +20,11 @@ pub type RawProof = Proof<RawMerklePath>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The verifier tried to read past the end of the proof stream.
     ExceededStream,
-    /// A required opening hint was missing.
     MissingHint,
-    /// An opening phase did not authenticate against its root, or was malformed.
     InvalidMerkleOpening,
-    /// Verification finished without consuming the whole proof.
     NotFullyConsumed,
-    /// A grinding nonce failed its proof-of-work check.
     PowFailed,
-    /// A transmitted field element used as a narrower encoding had nonzero
-    /// limbs outside that encoding.
     NonCanonicalEncoding,
 }
 
@@ -179,7 +128,7 @@ pub struct ProverState {
 }
 
 impl ProverState {
-    /// `statement` is the public input, seeded into the Fiat–Shamir state (see [`FiatShamirState::new`]).
+    /// `statement` is the public input, seeded into the Fiat-Shamir state (see [`FiatShamirState::new`]).
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         Self {
             fs: FiatShamirState::new(label, statement),
@@ -208,7 +157,7 @@ pub struct VerifierState<'a> {
 }
 
 impl<'a> VerifierState<'a> {
-    /// `statement` is the public input, seeded into the Fiat–Shamir state (see [`FiatShamirState::new`]).
+    /// `statement` is the public input, seeded into the Fiat-Shamir state (see [`FiatShamirState::new`]).
     /// It must match the prover's, or the two states diverge and verification fails.
     pub fn new(label: &[u8], proof: &'a Proof, statement: &[F192]) -> Self {
         Self {
@@ -285,7 +234,7 @@ impl Transmitter for ProverState {
     }
 
     /// Proof-of-work grind of `bits` before the next challenge, raising that
-    /// challenge's Schwartz–Zippel soundness by `bits` (the prover must redo
+    /// challenge's Schwartz-Zippel soundness by `bits` (the prover must redo
     /// the PoW to re-roll the challenge). Grinds, binds the nonce into the
     /// state, and transmits it on the stream as raw transport (already bound
     /// by the grind, so it is NOT re-absorbed). `bits = 0` is the canonical
@@ -402,8 +351,6 @@ mod tests {
         F192::new(k, k ^ 0x1234, k.rotate_left(17))
     }
 
-    /// Prover and verifier stay in lockstep across a mixed transcript
-    /// (observe / sample / grind), and the verifier rejects a mismatched grind.
     #[test]
     fn prover_verifier_lockstep() {
         let stmt = [f(7)];

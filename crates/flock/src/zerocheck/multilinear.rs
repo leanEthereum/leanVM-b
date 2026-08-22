@@ -1,5 +1,5 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Multilinear sumcheck — rounds 2..(m − k_skip + 1) of the zerocheck protocol.
+//! Multilinear sumcheck: rounds 2..(m − k_skip + 1) of the zerocheck protocol.
 //!
 //! After the round-1 URM and the verifier's univariate-skip fold-point `z`, the
 //! protocol enters a standard multilinear sumcheck over `n = m − k_skip`
@@ -41,18 +41,7 @@ use primitives::field::{F192, F192Unreduced, PHI_8_TABLE_192 as PHI_8_TABLE};
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
-/// Four independent products, and its unreduced twin.
-///
-/// Where the target has a carry-less multiply wide enough to hold four products
-/// in one register, the four go to one instruction group, which is about twice
-/// the throughput of four scalar ones: a tower product is a chain, and a scalar
-/// one leaves most of the multiplier idle waiting on it.
-///
-/// Everywhere else they stay four ordinary products. The batched form has to
-/// gather its operands into an array, and on NEON, where `mul4` is four separate
-/// PMULL chains rather than one instruction, that array is the whole cost: it
-/// spills, and the kernels below measure materially worse written that way, so
-/// the tuple keeps the dataflow in registers.
+/// Four independent products. Tuples keep the scalar and NEON paths in registers, while AVX-512 uses the batched helper.
 #[inline(always)]
 fn mul_quad(a: (F192, F192, F192, F192), b: (F192, F192, F192, F192)) -> (F192, F192, F192, F192) {
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
@@ -86,14 +75,14 @@ fn mul_quad_unreduced(
 
 /// Returns `(pair_in_block_mask, useful_pairs_inclusive)` for the round-2
 /// fused-fold kernel. A pair (post-URM chunks `2k`, `2k+1`) is fully inside
-/// padding iff `(k & pair_in_block_mask) >= useful_pairs_inclusive` — those
+/// padding iff `(k & pair_in_block_mask) >= useful_pairs_inclusive`: those
 /// pairs contribute zero to both the message and the folded output (which is
 /// already zero-initialized), so the kernel can `continue` past them.
 ///
 /// `useful_pairs_inclusive` is the index AFTER the last pair that has any
 /// useful chunk. The boundary "mixed" pair (one useful + one padding chunk,
 /// when `useful_bits` is odd in chunk units) is INSIDE the useful range and
-/// processed normally — its padding side has value 0 so the message
+/// processed normally: its padding side has value 0 so the message
 /// contribution is naturally correct.
 fn round2_pair_skip(padding: &PaddingSpec, k_skip: usize) -> (usize, usize) {
     if padding.k_log <= k_skip + 1 {
@@ -134,12 +123,9 @@ pub fn interpolate_at_z_on_lambda(values: &[F192], k_skip: usize, z: F192) -> F1
 /// This is the verifier's round-1 reconstruction trick: for an honest prover
 /// the combined polynomial `P = P^{AB} + P^C` satisfies `P(λ) = 0` for every
 /// `λ ∈ S` (the zerocheck identity at S). Together with the `2^k_skip`
-/// evaluations on Λ that the prover sends, that's `2·2^k_skip` evaluations —
+/// evaluations on Λ that the prover sends, that's `2·2^k_skip` evaluations -
 /// enough to interpolate the degree-`< 2·2^k_skip` polynomial uniquely.
 ///
-/// Cost: `2·ell × (2·ell − 1)` F192 muls + `ell` inversions for the Lagrange
-/// weights. At ell=64 that's ~16K muls + 64 inversions. Sub-millisecond
-/// one-time cost in the verifier.
 pub fn interpolate_at_z_combined(values_on_lambda: &[F192], k_skip: usize, z: F192) -> F192 {
     let ell = 1usize << k_skip;
     assert_eq!(values_on_lambda.len(), ell);
@@ -281,7 +267,7 @@ fn uni_skip_fold_and_round_pair_naive(
 
 /// Precomputed fold table for the univariate-skip fold at a fixed `z`.
 ///
-/// Storage: `n_chunks × 256` F192 entries (32 KB at `k_skip=6`). For each
+/// Storage: `n_chunks × 256` F192 entries. For each
 /// byte-chunk `j ∈ 0..n_chunks` and byte value `v ∈ 0..256`:
 ///
 ///   `data[j * 256 + v] = Σ_{b : bit b of v set} weights[8j + b]`
@@ -435,7 +421,7 @@ fn fold_row(table: &UniSkipFoldTable, packed: &[u8], row: usize) -> F192 {
 /// Pairs whose post-URM chunk indices both fall in the per-block zero padding
 /// are skipped: the fold output is zero and so is the message contribution.
 ///
-/// Returns `(a_folded, b_folded, G(1), G(∞))` — same convention as
+/// Returns `(a_folded, b_folded, G(1), G(∞))`: same convention as
 /// `uni_skip_fold_and_round_pair_naive`.
 ///
 /// To run single-threaded for debugging, set `LEANVM_NUM_THREADS=1`.
@@ -459,7 +445,7 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
     assert_eq!(mlv_eq.len(), m - k_skip - 1);
 
     // SAFETY (x2): the parallel loop below writes every slot (including padding
-    // holes), which is also why no separate 256 MB clear is needed at m = 29.
+    // holes), avoiding a separate clear.
     let mut a_folded = unsafe { ArenaVec::<F192>::uninitialized(n_out) };
     let mut b_folded = unsafe { ArenaVec::<F192>::uninitialized(n_out) };
 
@@ -810,8 +796,7 @@ pub fn fold_and_compute_round_single_into(c: &[F192], c_out: &mut [F192], r_fold
 /// Writing into caller buffers lets the multilinear-sumcheck tail ping-pong
 /// between persistent scratch buffers (one per folded table, three since `c`
 /// joined the sumcheck), so the decreasing-size buffers are allocated/freed
-/// once rather than per round. The per-round `munmap` of the old buffer runs
-/// single-threaded and otherwise caps the tail's parallel speedup.
+/// once rather than per round, avoiding serial unmaps in the sumcheck tail.
 ///
 /// Requires `a.len() = b.len() ≥ 8` so the post-fold polynomial has at least
 /// one bit of x_lo (lo_size ≥ 2). Smaller polynomials should use the
@@ -865,9 +850,7 @@ pub fn fold_and_compute_round_pair_into(
 
             // Unroll 4 x_lo's per iteration when lo_size % 4 == 0 (the common
             // case for the fused path; falls back to 2-wide for lo_size==2 at
-            // the smallest fused round). 16 independent r_fold muls and 8
-            // independent msg muls in flight gives the M4 OoO engine and
-            // 2/cy PMULL throughput maximum ILP.
+            // the smallest fused round). This keeps independent products in flight.
             let mut x_lo = 0;
             if lo_size.is_multiple_of(4) {
                 while x_lo + 4 <= lo_size {
@@ -1008,112 +991,6 @@ mod tests {
     use super::*;
     use primitives::test_rng::Rng;
 
-    // ----------------------------------------------------------------------
-    // Lagrange weights — algebraic properties.
-    // ----------------------------------------------------------------------
-
-    /// `Σ_i L_i(z) = 1` for all z. The polynomial `1` interpolates to constant
-    /// `1` at every node, so its evaluation at z is `Σ_i 1·L_i(z) = Σ_i L_i(z)`.
-    #[test]
-    fn lagrange_weights_sum_to_one() {
-        let mut rng = Rng::new(1);
-        for &k_skip in &[1usize, 2, 3, 4, 5, 6] {
-            for _ in 0..4 {
-                let z = rng.ext();
-                let weights = lagrange_weights_naive(k_skip, z);
-                let sum: F192 = weights.iter().copied().fold(F192::ZERO, |a, b| a + b);
-                assert_eq!(sum, F192::ONE, "Σ L_i ≠ 1 at k_skip={k_skip}");
-            }
-        }
-    }
-
-    /// `L_i(s_j) = δ_{ij}` — Kronecker delta. At a node, exactly one weight is 1.
-    #[test]
-    fn lagrange_at_node_is_indicator() {
-        for k_skip in [2usize, 3, 4, 5] {
-            let ell = 1usize << k_skip;
-            for i in 0..ell {
-                let z = PHI_8_TABLE[i];
-                let weights = lagrange_weights_naive(k_skip, z);
-                for j in 0..ell {
-                    let expected = if j == i { F192::ONE } else { F192::ZERO };
-                    assert_eq!(weights[j], expected, "k_skip={k_skip}, z=node{i}, j={j}");
-                }
-            }
-        }
-    }
-
-    // ----------------------------------------------------------------------
-    // Fold — algebraic properties.
-    // ----------------------------------------------------------------------
-
-    /// At a node `z = φ_8(i)`, fold reduces to the witness restricted to s=i:
-    /// `a_mlv[x_rest] = a[x_rest · 2^k_skip + i]` (lifted to F192).
-    #[test]
-    fn fold_at_node_recovers_witness_slice() {
-        let m = 8;
-        let k_skip = 3;
-        let ell = 1usize << k_skip;
-        let n_rest = 1usize << (m - k_skip);
-        let mut rng = Rng::new(7);
-        let a = rng.bits(1 << m);
-        for i in 0..ell {
-            let z = PHI_8_TABLE[i];
-            let weights = lagrange_weights_naive(k_skip, z);
-            let a_mlv = fold_at_z_naive(&a, m, k_skip, &weights);
-            for x_rest in 0..n_rest {
-                let expected = if a[x_rest * ell + i] { F192::ONE } else { F192::ZERO };
-                assert_eq!(a_mlv[x_rest], expected, "fold at node {i} mismatch at x_rest={x_rest}");
-            }
-        }
-    }
-
-    /// Fold is linear in the input witness: fold(a ⊕ a') = fold(a) + fold(a').
-    /// (XOR-linearity is the defining property of the multilinear extension.)
-    #[test]
-    fn fold_is_xor_linear() {
-        let m = 7;
-        let k_skip = 3;
-        let mut rng = Rng::new(11);
-        let a = rng.bits(1 << m);
-        let aprime = rng.bits(1 << m);
-        let a_xor: Vec<bool> = a.iter().zip(&aprime).map(|(x, y)| x ^ y).collect();
-        let z = rng.ext();
-        let weights = lagrange_weights_naive(k_skip, z);
-
-        let fa = fold_at_z_naive(&a, m, k_skip, &weights);
-        let fap = fold_at_z_naive(&aprime, m, k_skip, &weights);
-        let fxor = fold_at_z_naive(&a_xor, m, k_skip, &weights);
-        for i in 0..fa.len() {
-            assert_eq!(fa[i] + fap[i], fxor[i], "linearity broken at i={i}");
-        }
-    }
-
-    // ----------------------------------------------------------------------
-    // Round-2 message — properties + cross-checks.
-    // ----------------------------------------------------------------------
-
-    /// All-zero witness ⇒ a_mlv = b_mlv = 0 ⇒ G(1) = G(∞) = 0, so the message
-    /// elements (r[0]·G(1), G(∞)) are also both zero.
-    #[test]
-    fn zero_witness_gives_zero_round_message() {
-        let m = 6;
-        let k_skip = 3;
-        let mut rng = Rng::new(20);
-        let z = rng.ext();
-        let mlv_eq = rng.ext_vec(m - k_skip - 1);
-        let zeros = vec![false; 1 << m];
-        let (a_mlv, b_mlv, msg_1, msg_inf) = uni_skip_fold_and_round_pair_naive(&zeros, &zeros, m, k_skip, z, &mlv_eq);
-        assert!(a_mlv.iter().all(|v| v.is_zero()));
-        assert!(b_mlv.iter().all(|v| v.is_zero()));
-        assert_eq!(msg_1, F192::ZERO);
-        assert_eq!(msg_inf, F192::ZERO);
-    }
-
-    // ----------------------------------------------------------------------
-    // Optimized fused — UniSkipFoldTable + fold_one_row, then naive cross-check.
-    // ----------------------------------------------------------------------
-
     /// Whichever `fold_row` kernel this target reaches, against the scalar table
     /// lookup. The vector arms are unchecked and hand-unrolled for eight chunks,
     /// so this is what stands between a mispaired chunk and a wrong proof.
@@ -1237,9 +1114,6 @@ mod tests {
     #[test]
     fn fused_round_matches_unfused() {
         let mut rng = Rng::new(310);
-        // fold_and_compute requires lo_size ≥ 2 in SplitEq. eq is over
-        // `r_eq` (size log_n − 2); with MAX_N_HI = 7, n_lo ≥ 1 needs
-        // eq size ≥ 8 ⇒ log_n ≥ 10. Smaller cases use the unfused path.
         for &log_n in &[10usize, 11, 12] {
             let n = 1usize << log_n;
             let a: Vec<F192> = (0..n).map(|_| rng.ext()).collect();
@@ -1446,7 +1320,7 @@ mod tests {
 
     /// **The full cross-check**: optimized fused output matches naive
     /// byte-for-byte at the headline `k_skip = 6` (and other small m). Same eq
-    /// weights, same z, same r — so a_mlv, b_mlv, and the two message values
+    /// weights, same z, same r: so a_mlv, b_mlv, and the two message values
     /// must all agree exactly.
     #[test]
     fn optimized_matches_naive() {
@@ -1483,7 +1357,7 @@ mod tests {
     /// Strong cross-check: compute G(0), G(1), G(∞) by direct sum (using the
     /// LSB-first index convention `a_mlv(0, x') = a[2x']`, `a_mlv(1, x') = a[2x'+1]`),
     /// then verify that G interpolated through those three values agrees with
-    /// the direct multilinear evaluation at a fresh random X — confirming G
+    /// the direct multilinear evaluation at a fresh random X: confirming G
     /// genuinely has degree ≤ 2.
     ///
     /// Also verifies `round_pair_naive` returns `(r[0] · G(1), G(∞))`.

@@ -8,32 +8,7 @@
 // Port of binius64's `crates/math/src/tensor_algebra.rs` for the 64-bit
 // transition: K = F_{2^64} packing, E = GF(2^192) tower opening field.
 
-//! Tensor-algebra helpers for the rectangular (f = 64, e = 192) ring switch.
-//!
-//! Two pieces live here:
-//!
-//! 1. **The rectangular transpose** [`transpose_s_hat`]: an element of
-//!    `K (x)_F2 E` is a 64x192 F_2 matrix. The prover's message `s_hat_v` is
-//!    its row view: 64 E-elements, `s_hat_v[i]` = the MLE of the i-th
-//!    bit-slice of the witness at the suffix point. The transpose re-packs
-//!    the columns: 192 K-elements `s_hat_u`, where
-//!    ```text
-//!        bit i of s_hat_u[w]  ==  bit w of s_hat_v[i]
-//!    ```
-//!    `s_hat_u[w]` is `t_w` in the ring-switching-generalized note: the
-//!    packed-polynomial claim attached to the w-th E-basis coordinate,
-//!    `t_w = sum_y A(y, w) * P_packed(y)` with `A(y, w)` = the w-th F_2
-//!    coordinate of `eq(r_suffix, y)`.
-//!
-//! 2. **The square E-tensor algebra** [`TensorAlgebraE`] over
-//!    `E (x)_F2 E`: the verifier's polylog `eval_rs_eq` accumulates
-//!    `sum_y eq(query, y) (x) eq(r_suffix, y)`, which is E-valued on BOTH
-//!    factors (the K packing never appears there because `rs_eq_ind` is
-//!    E-valued). The F_2 coordinates of an E element are the bits of its
-//!    `(c0, c1, c2)` representation.
-//!
-//! "Bit w" of an E element means: bit w of `c0` for `w < 64`, bit `w - 64`
-//! of `c1` for `w < 128`, and bit `w - 128` of `c2` otherwise.
+//! Tensor algebra for the rectangular `K ⊗ E` transpose and square `E ⊗ E` operations used by ring switching.
 
 use core::ops::AddAssign;
 use primitives::field::{F64, F192};
@@ -63,9 +38,7 @@ fn ext_bit(e: F192, w: usize) -> u64 {
 ///     bit i of s_hat_u[w]  ==  bit w of s_hat_v[i],   i in 0..64, w in 0..192
 /// ```
 ///
-/// `s_hat_u[w] = t_w` in the ring-switching-generalized note.
-/// Naive O(64 * 192) bit-scan; the input is a fixed 1.5 KiB, so this is never
-/// on a hot path.
+/// `s_hat_u[w] = t_w` in the ring-switching construction.
 pub fn transpose_s_hat(s_hat_v: &[F192]) -> Vec<F64> {
     assert_eq!(
         s_hat_v.len(),
@@ -108,14 +81,6 @@ pub struct TensorAlgebraE {
 }
 
 impl TensorAlgebraE {
-    /// Multiplicative identity: `1 (x) 1`.
-    #[cfg(test)]
-    pub fn one() -> Self {
-        let mut elems = vec![F192::ZERO; DEGREE_E];
-        elems[0] = F192::ONE;
-        Self { elems }
-    }
-
     /// Embed `x` into the vertical subring: returns `1 (x) x`.
     pub fn from_vertical(x: F192) -> Self {
         let mut elems = vec![F192::ZERO; DEGREE_E];
@@ -250,15 +215,5 @@ mod tests {
             }
         }
         assert_eq!(folded, expected);
-    }
-
-    /// `scale_horizontal(1 (x) 1, s) == s (x) 1 == transpose(1 (x) s)`.
-    #[test]
-    fn scale_horizontal_semantics() {
-        let mut rng = Rng::new(4);
-        let x = rng.ext();
-        let lhs = TensorAlgebraE::one().scale_horizontal(x);
-        let rhs = TensorAlgebraE::from_vertical(x).transpose();
-        assert_eq!(lhs, rhs);
     }
 }

@@ -191,9 +191,7 @@ pub fn merkle_tree_padded_rows(data: &[F64], num_leaves: usize, row_words: usize
     unsafe { zk_alloc::assume_init(tree) }
 }
 
-/// Staging tile, in words: 16 KiB, so the staged leaves stay L1-resident and the
-/// tile lives on the task's stack. Also bounds the leaf width, so an L0 leaf
-/// (`2^INITIAL_FOLDING_FACTOR` words) has to fit.
+/// Cache-resident staging tile in words. This also bounds the leaf width.
 const STAGE_TILE_WORDS: usize = 2048;
 const _: () = assert!((1usize << crate::whir_config::INITIAL_FOLDING_FACTOR) <= STAGE_TILE_WORDS);
 

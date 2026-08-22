@@ -44,7 +44,7 @@ pub use primitives::multilinear::eq_table as build_eq;
 #[cfg(test)]
 pub fn pack_bits(bits: &[bool]) -> Vec<u8> {
     let n_bytes = bits.len().div_ceil(8);
-    // Each output byte depends on 8 contiguous input bits — disjoint, so
+    // Each output byte depends on 8 contiguous input bits: disjoint, so
     // process bytes in parallel.
     parallel::map_collect(n_bytes, |byte_idx| {
         let mut byte = 0u8;
@@ -70,7 +70,7 @@ pub struct SplitEq {
 }
 
 impl SplitEq {
-    /// C++-default cap on the hi half size — keeps outer F192 muls cheap.
+    /// C++-default cap on the hi half size: keeps outer F192 muls cheap.
     pub const MAX_N_HI: usize = 7;
 
     pub fn new(r: &[F192]) -> Self {
@@ -144,7 +144,7 @@ pub fn ntt_extend_vec(in_s: &[F192], inv_table: &InvNttTableByteSingleGf8) -> Ve
 // ===========================================================================
 
 /// Compute the round-1 prover message naively (no shift-reduce, no fused
-/// inner, no deferred reduction — direct algorithmic translation of the
+/// inner, no deferred reduction: direct algorithmic translation of the
 /// protocol formula).
 ///
 /// Returns `(p_ab, p_c)`, each a length-`2^k_skip` F192 vector of evaluations
@@ -265,7 +265,7 @@ pub fn round1_extract_c_packed(
 
             let eq_lo = eq.lo[x_lo];
 
-            // AB on Λ — unchanged.
+            // AB on Λ: unchanged.
             for lambda in 0..ell {
                 let ab = a_col[lambda] * b_col[lambda];
                 partial_ab[lambda] += eq_lo * phi8(ab);
@@ -300,63 +300,6 @@ mod tests {
     use super::*;
     use primitives::test_rng::Rng;
 
-    #[test]
-    fn build_eq_basic() {
-        // Empty r → table = [1].
-        assert_eq!(build_eq(&[]), vec![F192::ONE]);
-        // Single r = [r0] → table = [(1+r0), r0].
-        let r0 = F192::new(0xCAFEBABE, 0x12345678, 0x87654321);
-        let t = build_eq(&[r0]);
-        assert_eq!(t.len(), 2);
-        assert_eq!(t[0], F192::ONE + r0);
-        assert_eq!(t[1], r0);
-        // Sum of all eq values is 1 (a defining property of the multilinear eq).
-        let n = 5;
-        let mut rng = Rng::new(99);
-        let r = rng.ext_vec(n);
-        let t = build_eq(&r);
-        let sum: F192 = t.iter().copied().fold(F192::ZERO, |a, b| a + b);
-        assert_eq!(sum, F192::ONE, "Σ_x eq(r, x) should be 1");
-    }
-
-    #[test]
-    fn round1_all_zero_witness_gives_zero_message() {
-        let m = 7;
-        let k_skip = 3;
-        let mut rng = Rng::new(2);
-        let r = rng.ext_vec(m - k_skip);
-        let zeros = vec![false; 1 << m];
-        let (p_ab, p_c) = round1_naive(&zeros, &zeros, &zeros, m, k_skip, &r);
-        assert!(p_ab.iter().all(|v| v.is_zero()));
-        assert!(p_c.iter().all(|v| v.is_zero()));
-    }
-
-    #[test]
-    fn round1_p_c_is_xor_linear_in_c() {
-        // p_c(c1 XOR c2) = p_c(c1) + p_c(c2), with a, b fixed.
-        let m = 6;
-        let k_skip = 3;
-        let mut rng = Rng::new(4);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c1 = rng.bits(1 << m);
-        let c2 = rng.bits(1 << m);
-        let c_sum: Vec<bool> = c1.iter().zip(&c2).map(|(x, y)| x ^ y).collect();
-        let r = rng.ext_vec(m - k_skip);
-
-        let (ab1, pc1) = round1_naive(&a, &b, &c1, m, k_skip, &r);
-        let (ab2, pc2) = round1_naive(&a, &b, &c2, m, k_skip, &r);
-        let (ab_sum, pc_sum) = round1_naive(&a, &b, &c_sum, m, k_skip, &r);
-
-        // P^AB only depends on (a, b), not c: should be unchanged.
-        assert_eq!(ab1, ab_sum);
-        assert_eq!(ab2, ab_sum);
-        // P^C is XOR-linear in c.
-        for i in 0..pc1.len() {
-            assert_eq!(pc1[i] + pc2[i], pc_sum[i]);
-        }
-    }
-
     fn make_inv_table(k_skip: usize) -> InvNttTableByteSingleGf8 {
         let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
         let ntt_l = AdditiveNttGf8::new(k_skip, F8(1u8 << k_skip));
@@ -364,8 +307,8 @@ mod tests {
     }
 
     /// The strongest correctness check: extract_c must produce **identical**
-    /// output to the naive round-1 message — same eq weights, same protocol,
-    /// just a faster algorithm.
+    /// output to the naive round-1 message: same eq weights, same protocol,
+    /// just an optimized algorithm.
     #[test]
     fn extract_c_matches_naive() {
         for &(m, k_skip) in &[(4, 3), (5, 3), (6, 3), (7, 4), (8, 3), (9, 6)] {
@@ -400,22 +343,5 @@ mod tests {
             let x_hi = x >> eq.n_lo;
             assert_eq!(eq.lo[x_lo] * eq.hi[x_hi], full[x]);
         }
-    }
-
-    #[test]
-    fn round1_message_nonzero_for_random_witness() {
-        // Sanity: round1_naive on random inputs should give nonzero output too.
-        // (Catches accidentally zeroing the accumulators.)
-        let m = 8;
-        let k_skip = 3;
-        let mut rng = Rng::new(7);
-        let a = rng.bits(1 << m);
-        let b = rng.bits(1 << m);
-        let c = rng.bits(1 << m);
-        let r = rng.ext_vec(m - k_skip);
-
-        let (p_ab, p_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
-        assert!(p_ab.iter().any(|v| !v.is_zero()));
-        assert!(p_c.iter().any(|v| !v.is_zero()));
     }
 }

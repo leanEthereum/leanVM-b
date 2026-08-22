@@ -1,5 +1,5 @@
 # BLAKE2s over slices: `buf[lo:hi]` (2 cells) is a 256-bit operand under 128-bit
-# machine words, with compile-time bounds — literals, literal-bound names, and
+# machine words, with compile-time bounds: literals, literal-bound names, and
 # their integer arithmetic (`x:x + 2`). Slices work on a large StackBuf (in
 # place) and on a HeapBuf (bridged through the stack, one DEREF per cell), as
 # inputs and as the output. Published: the two 128-bit digest cells of

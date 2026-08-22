@@ -55,19 +55,7 @@ pub fn num_threads() -> usize {
     topology().total()
 }
 
-/// The pool's shape when nothing is pinned.
-///
-/// One performance worker is held back **when there are efficiency workers to
-/// absorb the slack**, i.e. on Apple silicon. The prover does not run alone on
-/// the fast cluster: `cpu::prove` warms the BLAKE2s setup on a background thread,
-/// and the OS wants a core. Saturating the cluster means any interference
-/// deschedules a worker mid-dispatch, and every barrier then waits for it.
-///
-/// On an M4 Max, holding one performance worker back beats using it. On a
-/// homogeneous Zen 4 host the same reservation is a wash: there are no
-/// efficiency workers to take over the reserved core's share, so the
-/// barrier-jitter win and the lost core cancel. Hence the condition is "are there
-/// efficiency workers", not a fixed count.
+/// The pool's shape when nothing is pinned. Leave one performance core free on heterogeneous hosts for setup work and the operating system.
 fn default_topology() -> Topology {
     let efficiency = efficiency_cores();
     let perf = perf_cores();

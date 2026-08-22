@@ -18,9 +18,7 @@ pub type Off = u32;
 /// against the forward table, so a slot is four bytes where a `HashMap` bucket is
 /// sixteen plus a control byte. Keys are field elements, hence effectively
 /// uniform, which is all the placement asks for: one multiplicative mix, then
-/// linear probing. The table stays at most half full, since linear probing
-/// degrades quadratically as it fills (at 7/8 an insert probes ~32 slots) and the
-/// headroom is only four bytes a slot.
+/// linear probing. The table stays at most half full to keep probing short.
 ///
 /// And it indexes only the exponents [`Self::note`] announces: a run addresses
 /// millions of cells but stores only the few thousand bases of its frames and

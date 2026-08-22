@@ -24,12 +24,10 @@
 //! ## No lin-id pins: every lane cascades
 //!
 //! Pinning `b_new`/`d_new` per G (64 slots) would break the affine cascade for
-//! half the lanes and keep the substituted matrices near ~16.7M nonzeros, but it
-//! costs 250 slots per G, i.e. 19,840 at 80 G, which the 2^14-slot block does not
+//! half the lanes, but it costs 250 slots per G, i.e. 19,840 at 80 G, which the 2^14-slot block does not
 //! have. Nor is a cheaper partial break available: resetting the cascade means
 //! materializing all 16 lanes at some round boundary, 512 slots against the 384
-//! spare. So **every** lane cascades through all ten rounds, and the R1CS this
-//! module describes would carry ~89M nonzeros.
+//! spare. So **every** lane cascades through all ten rounds, making materialized matrices impractical.
 //!
 //! It never carries them, because they are never built. The committed block is
 //! 2^14 bits whatever the density, and nothing reads a matrix entry: the two
@@ -544,7 +542,7 @@ pub fn satisfies(z: &[bool], n_blocks_log: usize) -> bool {
 
 /// Walk-capable [`crate::lincheck::LincheckCircuit`] over the BLAKE2s R1CS:
 /// `bilinear_form` answers lincheck's verifier in O(circuit) field ops, so the
-/// verifier never materializes the ~89M-nonzero substituted matrices' column
+/// verifier never materializes the substituted matrices' column
 /// marginal. `fold_alpha_batched` walks the circuit backwards
 /// ([`marginal_walk`]), so this circuit needs no matrices on either side.
 pub struct WalkLincheckCircuit;

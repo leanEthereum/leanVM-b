@@ -1,6 +1,6 @@
 //! zkDSL sources as `.py` files (as in leanVM's `test_data`): the `snark_lib`
 //! stub import makes them valid Python for editors/linters, and the compiler
-//! skips it (single-file programs only — importing anything else is an error).
+//! skips it (single-file programs only: importing anything else is an error).
 //!
 //! The harness is generic: every `tests/programs/*.py` is parsed, compiled,
 //! proven, and verified. A program declares the public input it expects with a
@@ -35,7 +35,7 @@ fn public_input(src: &str) -> [F192; 2] {
     [F192::ZERO; 2]
 }
 
-/// The `# witness <name>: <elt>, …` annotations — one line per *entry*
+/// The `# witness <name>: <elt>, …` annotations: one line per *entry*
 /// (repeated lines with the same name are the stream's successive entries,
 /// popped by successive `hint_witness` calls).
 fn witness(src: &str) -> std::collections::HashMap<String, Vec<Vec<F192>>> {

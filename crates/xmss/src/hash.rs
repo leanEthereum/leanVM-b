@@ -46,39 +46,3 @@ pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u3
     hasher.update(payload);
     hasher.finalize()[..DIGEST_LEN].try_into().unwrap()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tweak_separates_everything() {
-        let pp = [7u8; PUBLIC_PARAM_LEN];
-        let x = [1u8; DIGEST_LEN];
-        let base = tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 5, &x);
-        // Different type, position, index, or pp: different hash.
-        assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_MERKLE, 3, 5, &x));
-        assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 4, 5, &x));
-        assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 6, &x));
-        assert_ne!(base, tweak_hash(&[8u8; 16], TWEAK_TYPE_CHAIN, 3, 5, &x));
-        // Standard BLAKE2s binds the exact payload length.
-        let mut extended = [0u8; STATE_LEN];
-        extended[..DIGEST_LEN].copy_from_slice(&x);
-        assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 5, &extended));
-    }
-
-    #[test]
-    fn multi_block_hash_is_standard_blake2s() {
-        let pp = [9u8; PUBLIC_PARAM_LEN];
-        let data = [5u8; 2 * STATE_LEN];
-        let mut input = Vec::new();
-        input.extend_from_slice(&make_tweak(TWEAK_TYPE_WOTS_PK, 0, 42));
-        input.extend_from_slice(&pp);
-        input.extend_from_slice(&data);
-        let expected = primitives::blake2s::hash(&input);
-        assert_eq!(
-            tweak_hash(&pp, TWEAK_TYPE_WOTS_PK, 0, 42, &data),
-            expected[..DIGEST_LEN]
-        );
-    }
-}

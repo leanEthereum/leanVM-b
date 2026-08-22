@@ -1,4 +1,4 @@
-//! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
+//! `StackBuf`: a run of consecutive frame (stack) cells in the zkDSL. Indexed
 //! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
 //! is a `blake2s` operand: its two canonical 128-bit cells hold the 256-bit value, so
 //! `blake2s(a, b, out)` reads them in place with no copies (a self-hash
@@ -7,7 +7,7 @@
 //!
 //! Since these DSL scalars are K-embedded F192 cells, a `StackBuf(2)` written
 //! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
-//! — the reference `compress` is fed that lane layout.
+//!: the reference `compress` is fed that lane layout.
 
 use lean_compiler::{compile, parse};
 use lean_vm::blake2s_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
@@ -18,7 +18,7 @@ use primitives::field::{F64, F192};
 use crate::common::mix;
 
 /// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
-/// hi = word 1/3) — what a `blake2s(...)` output `StackBuf(2)` holds cell-by-cell.
+/// hi = word 1/3): what a `blake2s(...)` output `StackBuf(2)` holds cell-by-cell.
 fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
     let d = compress(a, b);
     [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)]
@@ -26,7 +26,7 @@ fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
 
 /// A size-2 `StackBuf` fed to `blake2s` as a self-hash `blake2s(h, h)`, then the
 /// digest's two 128-bit cells published to `m[0], m[1]`. Proves and verifies, and
-/// a wrong published digest is rejected — so the whole path (StackBuf load →
+/// a wrong published digest is rejected: so the whole path (StackBuf load →
 /// aliased blake2s → stack read → publish) is exercised end-to-end.
 #[test]
 fn stack_buf_blake2s_self_hash() {
@@ -360,7 +360,7 @@ fn stack_buf_loop_capture_rejected() {
 
 /// An `@inline` may return a `StackBuf` *and* a scalar together (a tuple bind):
 /// the `StackBuf` slot aliases its cell run into the caller (zero copies, usable
-/// as a StackBuf downstream — here fed straight back into a second call, the
+/// as a StackBuf downstream: here fed straight back into a second call, the
 /// MD-chain idiom), while the scalar slot binds a value cell. This is the fused
 /// `state, x = read_obs(state, cursor)` shape the recursion guest relies on.
 #[test]
@@ -491,7 +491,7 @@ def step(state, cursor):
     verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
 }
 
-/// `x = [a, b, c, d]` — the list-literal StackBuf initializer: allocates the run
+/// `x = [a, b, c, d]`: the list-literal StackBuf initializer: allocates the run
 /// and writes the elements in place, sugar for alloc-then-store. The test mixes a
 /// runtime value, a constant, and an expression; feeds the result to blake2s; and
 /// swaps a buffer through itself (`s = [s[1], s[0], …]` reads the OLD binding,

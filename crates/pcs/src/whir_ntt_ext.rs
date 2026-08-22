@@ -84,10 +84,7 @@ pub(crate) fn forward_transform_interleaved_ext_parallel_from_layer(
     let n_total = data.len();
     let log_d = log2_strict_usize(n_total / num_ntts);
 
-    // Target sub-group ~1 MB; each position is `num_ntts` F192 elements. Lower
-    // than the F64 twin's because a 24-byte element makes `log2_ceil` of the row
-    // exact rather than a 1.7x overestimate, so the same budget would buy twice
-    // the sub-group and spill it out of a worker's share of L3.
+    // Keep each worker's subgroup cache-resident. F192 uses three words per position.
     const TARGET_SUBGROUP_LOG_BYTES: usize = 20;
     let log_bytes_per_position = log2_ceil_usize(num_ntts * core::mem::size_of::<F192>());
     let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);

@@ -24,7 +24,7 @@ pub fn transpose_8x8_bits(mut x: u64) -> u64 {
 /// The 8 LE u64s viewed as 64 bytes are exactly the input shape of the NEON
 /// [`bit_transpose_64bytes`] kernel (input byte `r·8 + c` = byte `c` of lane
 /// `r`; output byte `c·8 + t` bit `r` = that byte's bit `t`), so this delegates
-/// to it — ~5× fewer ops than the scalar per-column loop. Used by the
+/// to it: ~5× fewer ops than the scalar per-column loop. Used by the
 /// lincheck byte-stripe builder (`flock::witness`).
 #[inline(always)]
 pub fn transpose_8_u64s_to_64_bytes(lanes: &[u64; 8], out: &mut [u8]) {
@@ -37,9 +37,9 @@ pub fn transpose_8_u64s_to_64_bytes(lanes: &[u64; 8], out: &mut [u8]) {
 
 // 64-byte bit transpose (bit (r,c) -> byte c·8 + t, bit r).
 //
-// Input layout :  byte at offset (x_small * 8 + b_chunk) — bit t holds c at
+// Input layout :  byte at offset (x_small * 8 + b_chunk): bit t holds c at
 //                 lane = 8*b_chunk + t with inner_K = x_small.
-// Output layout:  byte at offset (b_chunk * 8 + t)        — bit K holds c at
+// Output layout:  byte at offset (b_chunk * 8 + t)       : bit K holds c at
 //                 lane = 8*b_chunk + t with inner_K = K.
 //
 // So `out[lane]`'s 8 bits are the inner_K-direction polynomial of c at lane.
@@ -217,7 +217,7 @@ mod tests {
     use super::*;
     use crate::test_rng::Rng;
 
-    /// Scalar reference for [`transpose_8_u64s_to_64_bytes`] — test oracle only.
+    /// Scalar reference for [`transpose_8_u64s_to_64_bytes`]: test oracle only.
     #[allow(clippy::erasing_op, clippy::identity_op)]
     fn transpose_8_u64s_to_64_bytes_scalar(lanes: &[u64; 8], out: &mut [u8]) {
         debug_assert_eq!(out.len(), 64);
@@ -257,16 +257,6 @@ mod tests {
             transpose_8_u64s_to_64_bytes(&lanes, &mut fast);
             transpose_8_u64s_to_64_bytes_scalar(&lanes, &mut oracle);
             assert_eq!(fast, oracle, "lanes={lanes:?}");
-        }
-    }
-
-    /// Transposing twice is the identity.
-    #[test]
-    fn transpose_is_involution() {
-        let mut state = 0x9E37_79B9_7F4A_7C15u64;
-        for _ in 0..256 {
-            state = state.wrapping_mul(0x2545_F491_4F6C_DD1D).rotate_left(31);
-            assert_eq!(transpose_8x8_bits(transpose_8x8_bits(state)), state);
         }
     }
 

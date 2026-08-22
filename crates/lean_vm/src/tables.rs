@@ -786,9 +786,8 @@ impl Table for JumpTable {
                 F64(cell(r, of).c0),
             ]
         });
-        // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in ONE
-        // batched Montgomery inversion: a single field inverse plus ~2 multiplies
-        // per row, instead of an inverse per taken branch. `prefix[i]` is the
+        // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in one
+        // batched Montgomery inversion. `prefix[i]` is the
         // running product of the nonzero conditions before row `i`, so `acc` ends
         // as their full product (nonzero, hence invertible). The taken indicator
         // `b = [c ≠ 0]` falls out of the same pass, so it costs no extra decode.
@@ -967,7 +966,7 @@ mod tests {
     /// [`TOWER_LANES`], and neither can be checked against the field at run time (one
     /// is a bus coordinate, the other a `K` identity), so pin the unrolling here.
     #[test]
-    fn the_unrolled_tower_product_is_the_field_product() {
+    fn unrolled_tower_product_matches_field_product() {
         let lanes = |v: F192| [F64(v.c0), F64(v.c1), F64(v.c2)];
         let (x, y) = (C, C * C + F192::ONE);
         let got = [0, 1, 2].map(|i| tower_lane(i, lanes(x), lanes(y)).0);
@@ -977,7 +976,7 @@ mod tests {
     /// `JUMP`'s two identities vanish on an honest row, taken or not, and reject a
     /// wrong indicator or, for a taken jump, an inverse that is not `cond⁻¹`.
     #[test]
-    fn the_jump_identities_bind_indicator_and_inverse() {
+    fn jump_identities_bind_indicator_and_inverse() {
         let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 2);
         // The condition is K-valued (`memory_k` on its read, §sec:tab-jump), so the
         // pair is single-lane: `w = c⁻¹` in K too.

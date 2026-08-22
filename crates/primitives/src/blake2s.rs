@@ -239,18 +239,7 @@ pub fn keyed_hash(key: &[u8], data: &[u8]) -> [u8; OUT_LEN] {
 // Independent hashes of equal-length inputs step their block counters in
 // lockstep, which is what lets one vector counter serve the whole batch.
 //
-// The compression is written once, generically over [`Lanes32`], and
-// instantiated per backend. Two details are what make it fast, and both were
-// measured the wrong way round first:
-//
-// - **Every `SIGMA` index is a compile-time literal**, via the unrolled
-//   `rounds!` macro. Left as a runtime index, the compiler keeps the sixteen
-//   message vectors in registers and implements the lookup as a cross-lane
-//   permute: 44 `vpermt2d` per round against 112 instructions of real work.
-// - **The message block stays in memory**, reached by literal offset, so each
-//   `add` folds its load (`vpaddd zmm, zmm, mem`). Holding it in registers
-//   instead means 16 state + 16 message vectors, which is the entire AVX-512
-//   register file, and the round spills.
+// The generic compression is instantiated per backend. Literal `SIGMA` indices avoid runtime cross-lane lookup, and keeping message blocks in memory avoids register spills.
 //
 // Whether that is enough depends on how the backend's vectors relate to the
 // chain through one G function, which is what [`Lanes32::GROUPS`] exists for: a
@@ -664,12 +653,7 @@ mod arm {
 
     impl Lanes32 for Neon {
         const WIDTH: usize = 4;
-        // Two groups reach about 4.6 of the 4 pipes by the count below and still
-        // measure a sixth short of the plateau, because that count ignores the
-        // store-to-load round trip at each round boundary, which the reordering
-        // window is wide enough to cover several of. Four is the plateau here;
-        // six and eight fall back slightly. The rounds being `inline(never)`
-        // means the extra groups cost stack and window, never registers.
+        // Interleave independent groups to cover the G function's dependency chain.
         const GROUPS: usize = 4;
 
         #[inline(always)]
@@ -736,15 +720,7 @@ mod arm {
         }
     }
 
-    /// The kernel is bound by the G function's dependency chain, not by issue
-    /// width, so what matters per rotation is cycles of latency rather than
-    /// instruction count. Measured on an M4 P-core, where every vector op here
-    /// is 2 cycles and `usra` is 3:
-    ///
-    /// - `rotr 16` is a 16-bit element reverse, 1 instruction, 2 cycles.
-    /// - `rotr 8` is a byte shuffle, likewise 2 cycles. NEON has no per-element
-    ///   byte rotate, but `tbl` with the value as its own table is one.
-    /// - 12 and 7 are not byte aligned, so they are a shift pair, 4 cycles.
+    /// Choose low-latency NEON rotations because each lies on the G function's dependency chain.
     #[inline(always)]
     fn rot4<const N: u32>(v: uint32x4_t) -> uint32x4_t {
         unsafe {
@@ -764,12 +740,7 @@ mod arm {
         }
     }
 
-    /// `shl` then `sri` (shift right and insert), the 4-cycle rotate.
-    ///
-    /// Written as `asm!` because LLVM rewrites both this and the `vsri`
-    /// intrinsic into `shl` plus `usra`, which is correct (the shifted-out bits
-    /// are zero, so inserting and accumulating agree) but 5 cycles, and this
-    /// sits on the chain twice per G.
+    /// `shl` then `sri`, kept in assembly because LLVM otherwise selects an accumulating form with a longer dependency chain.
     #[inline(always)]
     fn rot_sri<const N: u32, const SHL: i32>(v: uint32x4_t) -> uint32x4_t {
         unsafe {
@@ -1109,39 +1080,7 @@ unsafe fn hash_many_with<S: Lanes32>(data: &[u8], len: usize, state: &[u32; 8], 
     }
 }
 
-/// Independent inputs hashed per batch by the widest backend this build
-/// targets: 16 on AVX-512, 8 on AVX2, 4 on NEON. Public so callers can size
-/// their groups; the batched entry points handle any count and scalar-tail the
-/// remainder.
-///
-/// `batched_throughput` reports the rate across the leaf sizes `pcs::merkle`
-/// dispatches.
-///
-/// Getting there took three fixes, each worth recording because the first
-/// attempt at this ran several times slower on the same shapes:
-///
-/// - The `SIGMA` index must be a compile-time literal (the unrolled `rounds!`).
-///   As a runtime index the compiler holds the message in registers and turns
-///   the lookup into 44 `vpermt2d` per round, against 112 instructions of real
-///   work.
-/// - The transpose must be a shuffle network, not a loop. Word-by-word it
-///   becomes 32 `vpgatherqd` per block, which cost more than the ten rounds
-///   they feed.
-/// - The message block must stay in memory so each `add` folds its load. In
-///   registers it is 16 state plus 16 message vectors, the whole AVX-512
-///   register file, and the round spills.
-///
-/// Those three leave NEON bound by something else, and it took two more fixes.
-/// Four lanes is narrow enough that the round's 4-way parallelism cannot cover
-/// the chain through a G function: a block is 1360 vector instructions, which an
-/// M4 P-core could retire in 340 cycles at 4 per cycle, against 660 cycles of
-/// chain through the ten rounds. So it ran at half the width. Choosing each
-/// rotation for latency rather than instruction count (`arm::rot4`, 33 cycles of
-/// chain per G down to 28) and interleaving two independent groups
-/// (`compress_pair`) bring it close to what the instruction count alone allows.
-/// Two things that mattered on AVX-512 do not matter here: the transpose network
-/// is worth little once the chain is covered, rather than the factor it was
-/// worth there, and LLVM already places the message correctly for 4 lanes.
+/// Inputs handled together by the widest backend. Batched entry points accept any count and process the remainder serially.
 pub const LANES: usize = if cfg!(all(target_arch = "x86_64", target_feature = "avx512f")) {
     16
 } else if cfg!(target_arch = "x86_64") {

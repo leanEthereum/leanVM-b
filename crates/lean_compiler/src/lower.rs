@@ -340,11 +340,7 @@ impl FnLower<'_> {
         o
     }
 
-    /// A frame cell holding the constant `v`, SET lazily once per distinct
-    /// constant and shared by every read of it in scope (`1` shares
-    /// [`Self::one`]'s cell; `main` alone had ~57k duplicated constant `SET`s
-    /// before pooling). Branch-local like the other lazy cells: a cache entry
-    /// made inside an `if`/`match` arm reverts at the join.
+    /// A frame cell holding `v`, shared by every dominated use in the current scope.
     fn const_cell(&mut self, v: F192) -> Off {
         if v == F192::ONE {
             return self.one();
@@ -394,7 +390,7 @@ impl FnLower<'_> {
             // material); anything else that is a compile-time constant defers
             // to the pooled const cell.
             Expr::Var(v) if self.scope.vars.contains_key(v) => self.scope.vars.get(v).map(|&c| Alias::Cell(c)),
-            Expr::Index(arr, idx) if self.stack_of(arr).is_some() => {
+            Expr::Index(arr, idx) => {
                 let (base, _) = self.stack_of(arr)?;
                 Some(Alias::Cell(base + self.try_const_index(idx)?))
             }
@@ -542,8 +538,7 @@ impl FnLower<'_> {
     /// materialized lazily once: a taken `JUMP` reloads the frame pointer
     /// from a cell, so local (`if`/`else`) jumps must name it. The ISA has no
     /// fp-read, so bounce it through a fresh 1-cell heap buffer: a
-    /// `DEREF`-fp writes it there, a `DEREF`-cell copies it back (2 cycles,
-    /// once per function that branches). In `main`, `fp = g^0 = 1`, which is
+    /// `DEREF`-fp writes it there and a `DEREF`-cell copies it back. In `main`, `fp = g^0 = 1`, which is
     /// the [`Self::one`] cell.
     fn self_fp(&mut self) -> Off {
         if self.is_main {
@@ -614,22 +609,7 @@ impl FnLower<'_> {
         });
     }
 
-    /// `match log(x)`: two jumps through a trampoline table (doc §ISA
-    /// programming / Match statements). leanVM's switch jumps to the affine
-    /// `pc = a + b·x`; in the exponent the dispatch is multiplicative:
-    /// `d = g^T · x²` lands on slot `j` of the table at bytecode base `T`,
-    /// which is `n` consecutive two-instruction slots, slot `j` being `SET c =
-    /// g^{block_j}; JUMP c`. The case blocks sit anywhere, unaligned; only
-    /// the fixed-size slots are consecutive. The slots are two instructions
-    /// rather than one because a `JUMP` reads its target from a *cell*: a
-    /// one-instruction slot would need its cell pre-`SET`, i.e. `n` `SET`s
-    /// executed before every dispatch. Folding the `SET` into the slot puts
-    /// it on the taken path only, and the doubled slot stride is absorbed as
-    /// `x²` (one extra `MUL`). Cost ≈ 7 cycles, independent of `n`.
-    ///
-    /// Soundness: nothing here bounds `x`, so a scrutinee outside `[0, n)`
-    /// dispatches to an arbitrary pc, so hinted values must be range-checked
-    /// first (as in leanVM).
+    /// `match log(x)` through a two-instruction trampoline slot per arm. The caller must range-check `x` before dispatch.
     fn lower_match(&mut self, x: &Expr, cases: &[Vec<Stmt>]) {
         let xo = self.expr(x);
         self.lower_match_dispatch(xo, cases.len(), |s, j| s.branch(&cases[j]));
@@ -847,14 +827,7 @@ impl FnLower<'_> {
         self.patch_local(jset, self.code.len());
     }
 
-    /// `if` / `else`: one `XOR` and one conditional `JUMP` (taken ⇔ the
-    /// sides differ). The taken jump goes to whichever block the test
-    /// *doesn't* fall into, so no negation gadget is needed: for `==` the
-    /// fall-through is `then`, for `!=` it is `else`. Local jumps keep the
-    /// frame via [`Self::self_fp`]; targets are backpatched
-    /// [`KVal::Local`]s. Costs 3 cycles, +2 (`SET` + `JUMP`) when a non-empty
-    /// second block must be skipped over, + the amortized `one`/`self_fp`
-    /// materialization.
+    /// Lower `if` / `else`, arranging the blocks so the nonzero `XOR` result jumps to the correct arm.
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
         // Compile-time condition (both sides compile-time integers, e.g. after
         // `Const`-argument substitution): fold to the taken branch, emitting no

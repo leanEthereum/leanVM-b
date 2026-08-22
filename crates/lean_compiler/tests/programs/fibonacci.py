@@ -1,5 +1,5 @@
 # Fibonacci in the exponent: cell fib[g^k] holds GEN ** F_k, and the field
-# product adds exponents — one MUL per Fibonacci step. The evolving state is
+# product adds exponents: one MUL per Fibonacci step. The evolving state is
 # carried through a HeapBuf (a mul_range body cannot capture a StackBuf).
 # public_input: GEN ** 89, GEN ** 89
 from snark_lib import *

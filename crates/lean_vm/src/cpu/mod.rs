@@ -447,10 +447,7 @@ impl Stats {
     /// Table names in `counts` order.
     pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S"];
 
-    /// One line of run sizes, every one a power of two: the per-table instruction
-    /// counts with their share of the run, largest first, then the data memory and
-    /// the committed witness. Reads as
-    /// `"DEREF 2^18.838 (33.6%)  SET 2^18.265 (22.6%)  …  MEMORY 2^21.701  TOTAL_COMMITTED 2^26.364"`.
+    /// One line of per-table instruction counts and shares, largest first, followed by memory and committed-witness sizes.
     ///
     /// The counts are `base_counts`, the work the program itself does, since the proven
     /// `counts` are all exact powers of two once the fill blocks have run (`filler`) and
@@ -513,15 +510,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         exec.unconstrained_reads.len(),
         &exec.unconstrained_reads[..exec.unconstrained_reads.len().min(8)]
     );
-    // The BLAKE2s R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
-    // depends only on the compression count (the circuit *shape*), not the witness,
-    // but it is otherwise built synchronously inside the final reduction, adding
-    // that latency serially with nothing overlapping it. Now that `execute` has
-    // told us the count, build it on a background thread: it constructs
-    // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
-    // lands in the shared setup cache, so the reduction's `setup_for` is a cache
-    // hit. Pure warm-up: the result is fetched from the cache, nothing here joins
-    // the handle. (A no-BLAKE2s program still warms the size-1 padding shape.)
+    // Warm the shape-dependent BLAKE2s R1CS setup concurrently with the earlier proving stages. A no-BLAKE2s program still uses the padding shape.
     let n_blake2s_warm = exec.trace.blake2s.len().max(1);
     std::thread::spawn(move || crate::blake2s_flock::warm_setup(n_blake2s_warm));
     let cycles = exec.cycles;

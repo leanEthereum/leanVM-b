@@ -19,10 +19,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
 
-    // Warm the flock BLAKE2s R1CS setup once up front (Fibonacci runs no BLAKE2s, so
-    // this warms the single padding instance). It is a fixed, one-time,
-    // program-independent circuit build — not part of proving — so timing prove/
-    // verify below reflects steady-state performance.
+    // Fibonacci has one padding BLAKE2s instance.
     lean_vm::blake2s_flock::warm_setup(0);
 
     // Only the final measured pass of each stage is traced (see `run_recursion`).
@@ -65,17 +62,15 @@ fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
         "fib_n must be a positive multiple of {UNROLL}"
     );
-    let k = fib_n / UNROLL; // number of blocks
+    let blocks = fib_n / UNROLL;
 
-    // Run the recurrence in the field (the same one the VM runs in the exponent)
-    // to pin the result g^{F(N)}, the public input.
-    let (mut a, mut b) = (F64::ONE, g_pow(1)); // g^{F(0)}, g^{F(1)}
+    let (mut previous, mut current) = (F64::ONE, g_pow(1));
     for _ in 1..=fib_n {
-        let c = a * b;
-        a = b;
-        b = c; // (a, b) = (g^{F(m)}, g^{F(m+1)})
+        let next = previous * current;
+        previous = current;
+        current = next;
     }
-    let pi = [F192::from(a), F192::ZERO]; // a = g^{F(N)}: the result, then 0
+    let public_input = [F192::from(previous), F192::ZERO];
 
     // `K` blocks: each reads its boundary pair into locals, runs `UNROLL`
     // Fibonacci `MUL`s in registers, and writes the next pair (4 DEREFs per
@@ -92,20 +87,20 @@ fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
     // Publish the result g^{F(N)} = buff[GEN ** {2K}] into cell m[0]: a pointer
     // whose value is g^0 (`p = 1`) addresses m[0] (`p[1] = m[1·g^0] = m[g^0]`),
     // and write-once forces m[0] to equal the seeded public input pi[0].
-    let publish = format!("    p = 1\n    p[1] = buff[GEN ** {}]\n", 2 * k);
+    let publish = format!("    p = 1\n    p[1] = buff[GEN ** {}]\n", 2 * blocks);
 
     let src = format!(
         "def main():\n\
         \x20   buff = HeapBuf({size})\n\
         \x20   buff[1] = 1\n\
         \x20   buff[GEN] = GEN\n\
-        \x20   for x in mul_range(1, GEN ** {k}):\n\
+        \x20   for x in mul_range(1, GEN ** {blocks}):\n\
         {body}\
         {publish}\
         \x20   return\n",
-        size = 2 * k + 2,
+        size = 2 * blocks + 2,
     );
-    (src, pi)
+    (src, public_input)
 }
 
 #[cfg(test)]

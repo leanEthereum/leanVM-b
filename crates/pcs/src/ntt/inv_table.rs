@@ -230,10 +230,7 @@ impl InvNttTableByteSingleGf8 {
     }
 }
 
-/// The four 128-bit primitives `apply_v128` needs. Every method is
-/// `#[inline(always)]`: the generic kernel is one loop body of a function that
-/// runs 16 times per `shift_reduce_inner_ab_gfni` call, so an out-of-line call
-/// here is a measurable end-to-end regression.
+/// The four inlined 128-bit primitives used by `apply_v128`'s inner loop.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 trait Vec128: Copy {
     /// # Safety
@@ -319,57 +316,18 @@ mod tests {
     }
 
     #[test]
-    fn matches_naive_k3() {
-        let ntt_s = AdditiveNttGf8::new(3, F8::ZERO);
-        let ntt_l = AdditiveNttGf8::new(3, F8(1 << 3));
-        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-        assert_eq!(table.ell, 8);
-        assert_eq!(table.n_chunks, 1);
-
-        let mut rng = Rng::new(100);
-        let mut out = vec![F8::ZERO; 8];
-        for _ in 0..64 {
-            let bytes = [(rng.next_u64() & 0xff) as u8];
-            table.apply(&bytes, &mut out);
-            let expected = naive_apply(&ntt_s, &ntt_l, &bytes);
-            assert_eq!(out, expected, "byte={:02x}", bytes[0]);
-        }
-    }
-
-    #[test]
-    fn matches_naive_k4() {
-        let ntt_s = AdditiveNttGf8::new(4, F8::ZERO);
-        let ntt_l = AdditiveNttGf8::new(4, F8(1 << 4));
-        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-        assert_eq!(table.ell, 16);
-        assert_eq!(table.n_chunks, 2);
-
-        let mut rng = Rng::new(101);
-        let mut out = vec![F8::ZERO; 16];
-        for _ in 0..64 {
-            let bytes: [u8; 2] = [(rng.next_u64() & 0xff) as u8, (rng.next_u64() & 0xff) as u8];
-            table.apply(&bytes, &mut out);
-            let expected = naive_apply(&ntt_s, &ntt_l, &bytes);
-            assert_eq!(out, expected, "bytes={:02x?}", bytes);
-        }
-    }
-
-    #[test]
-    fn matches_naive_k6_protocol_size() {
-        // k_skip = 6 is the headline parameter for the m=29 workload.
-        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
-        let ntt_l = AdditiveNttGf8::new(6, F8(1 << 6));
-        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-        assert_eq!(table.ell, 64);
-        assert_eq!(table.n_chunks, 8);
-
-        let mut rng = Rng::new(102);
-        let mut out = vec![F8::ZERO; 64];
-        for _ in 0..16 {
-            let bytes: Vec<u8> = (0..8).map(|_| (rng.next_u64() & 0xff) as u8).collect();
-            table.apply(&bytes, &mut out);
-            let expected = naive_apply(&ntt_s, &ntt_l, &bytes);
-            assert_eq!(out, expected, "bytes={:02x?}", bytes);
+    fn matches_naive() {
+        for k in [3usize, 4, 6] {
+            let ntt_s = AdditiveNttGf8::new(k, F8::ZERO);
+            let ntt_l = AdditiveNttGf8::new(k, F8(1 << k));
+            let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+            let mut rng = Rng::new(100 + k as u64);
+            let mut out = vec![F8::ZERO; table.ell];
+            for _ in 0..32 {
+                let bytes: Vec<u8> = (0..table.n_chunks).map(|_| rng.next_u8()).collect();
+                table.apply(&bytes, &mut out);
+                assert_eq!(out, naive_apply(&ntt_s, &ntt_l, &bytes), "k={k}, bytes={bytes:02x?}");
+            }
         }
     }
 

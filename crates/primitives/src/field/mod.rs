@@ -5,10 +5,10 @@
 //! with `c0,c1,c2 ∈ K`; challenges, sumcheck/GKR values, and transcript scalars
 //! are E-valued.
 //!
-//! - [`F64`]   — GF(2^64), polynomial x^64 + x^4 + x^3 + x + 1
-//! - [`F8`]    — GF(2^8) with AES polynomial x^8 + x^4 + x^3 + x + 1
-//! - [`F192`]  — `K[y]/(y^3 + y + 1)`
-//! - [`F192Unreduced`] — its deferred-reduction accumulator
+//! - [`F64`]: GF(2^64), polynomial x^64 + x^4 + x^3 + x + 1
+//! - [`F8`]: GF(2^8) with AES polynomial x^8 + x^4 + x^3 + x + 1
+//! - [`F192`]: `K[y]/(y^3 + y + 1)`
+//! - [`F192Unreduced`]: its deferred-reduction accumulator
 
 #[cfg(target_arch = "aarch64")]
 pub mod neon;
@@ -38,7 +38,7 @@ pub const fn mul_by_g(a: F64) -> F64 {
 }
 
 /// Multiply an `E`-element by the base generator `g = x ∈ K`: lane-wise
-/// [`mul_by_g`] on all three `K`-coefficients — three shift+folds, no PMULL.
+/// [`mul_by_g`] on all three `K`-coefficients: three shift+folds, no PMULL.
 #[inline]
 pub const fn mul_by_g_e(a: F192) -> F192 {
     F192 {

@@ -15,21 +15,18 @@ use crate::*;
 
 #[derive(Debug)]
 pub struct XmssSecretKey {
-    pub(crate) epoch_start: u32, // inclusive
-    pub(crate) epoch_end: u32,   // inclusive
+    pub(crate) epoch_start: u32,
+    pub(crate) epoch_end: u32,
     pub(crate) public_param: PublicParam,
     pub(crate) seed: [u8; 32],
-    pub(crate) split_level: usize, // bottom-subtree height (2^split_level leaves each)
-    // top[l - split_level] = level-l nodes for indices [epoch_start >> l, epoch_end >> l]
+    pub(crate) split_level: usize,
     pub(crate) top: Vec<Vec<Digest>>,
     pub(crate) cache: Mutex<Option<BottomSubtree>>,
 }
 
-/// Bottom subtree covering the last-signed epoch; its leaf range is derived from
-/// `subtree_index`.
 #[derive(Debug)]
 pub(crate) struct BottomSubtree {
-    subtree_index: u64, // = epoch >> split_level
+    subtree_index: u64,
     layers: Vec<Vec<Digest>>,
 }
 
@@ -81,7 +78,6 @@ fn gen_public_param(seed: &[u8; 32]) -> PublicParam {
     prf(seed, PRF_DOMAINSEP_PUBLIC_PARAM, 0, 0)
 }
 
-/// Deterministic pseudo-random digest for an out-of-range tree node.
 fn gen_random_node(seed: &[u8; 32], level: usize, index: u64) -> Digest {
     prf(seed, PRF_DOMAINSEP_RANDOM_NODE, level as u64, index)
 }
@@ -94,16 +90,12 @@ fn merkle_node(public_param: &PublicParam, level: usize, index: u64, left: &Dige
     tweak_hash(public_param, TWEAK_TYPE_MERKLE, level as u32, index as u32, &data)
 }
 
-fn log2_ceil(n: u64) -> usize {
-    n.next_power_of_two().trailing_zeros() as usize
-}
-
 /// Level-0 layer: WOTS public-key hashes for the in-range leaves `[lo, hi]`.
 ///
 /// Sequential: this runs once per bottom subtree, and the subtrees are what
 /// [`xmss_key_gen`] fans out over.
-fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, lo: u64, hi: u64) -> Vec<Digest> {
-    (lo..=hi)
+fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, first_epoch: u64, last_epoch: u64) -> Vec<Digest> {
+    (first_epoch..=last_epoch)
         .map(|epoch| {
             gen_wots_secret_key(seed, epoch as u32)
                 .public_key(public_param, epoch as u32)
@@ -122,32 +114,31 @@ fn build_up(
     seed: &[u8; 32],
     public_param: &PublicParam,
     layers: &mut Vec<Vec<Digest>>,
-    lo: u64,
-    hi: u64,
+    first_epoch: u64,
+    last_epoch: u64,
     from_level: usize,
     to_level: usize,
 ) {
     for level in (from_level + 1)..=to_level {
-        let (base, top) = (lo >> level, hi >> level);
-        let (prev_base, prev_top) = (lo >> (level - 1), hi >> (level - 1));
-        let prev = layers.last().unwrap();
-        let nodes: Vec<Digest> = (base..=top)
-            .map(|i| {
-                let child = |idx: u64| {
-                    if idx >= prev_base && idx <= prev_top {
-                        prev[(idx - prev_base) as usize]
+        let (first_node, last_node) = (first_epoch >> level, last_epoch >> level);
+        let (first_child, last_child) = (first_epoch >> (level - 1), last_epoch >> (level - 1));
+        let children = layers.last().unwrap();
+        let nodes: Vec<Digest> = (first_node..=last_node)
+            .map(|index| {
+                let child = |child_index: u64| {
+                    if child_index >= first_child && child_index <= last_child {
+                        children[(child_index - first_child) as usize]
                     } else {
-                        gen_random_node(seed, level - 1, idx)
+                        gen_random_node(seed, level - 1, child_index)
                     }
                 };
-                merkle_node(public_param, level, i, &child(2 * i), &child(2 * i + 1))
+                merkle_node(public_param, level, index, &child(2 * index), &child(2 * index + 1))
             })
             .collect();
         layers.push(nodes);
     }
 }
 
-/// In-range leaf bounds of the bottom subtree with the given index.
 fn subtree_bounds(epoch_start: u64, epoch_end: u64, split_level: usize, subtree_index: u64) -> (u64, u64) {
     (
         epoch_start.max(subtree_index << split_level),
@@ -155,16 +146,15 @@ fn subtree_bounds(epoch_start: u64, epoch_end: u64, split_level: usize, subtree_
     )
 }
 
-/// Build Merkle layers `0..=to_level` for the in-range leaves `[lo, hi]`.
 fn build_subtree_layers(
     seed: &[u8; 32],
     public_param: &PublicParam,
-    lo: u64,
-    hi: u64,
+    first_epoch: u64,
+    last_epoch: u64,
     to_level: usize,
 ) -> Vec<Vec<Digest>> {
-    let mut layers = vec![leaf_layer(seed, public_param, lo, hi)];
-    build_up(seed, public_param, &mut layers, lo, hi, 0, to_level);
+    let mut layers = vec![leaf_layer(seed, public_param, first_epoch, last_epoch)];
+    build_up(seed, public_param, &mut layers, first_epoch, last_epoch, 0, to_level);
     layers
 }
 
@@ -182,26 +172,32 @@ pub fn xmss_key_gen(
         return Err(XmssKeyGenError::InvalidRange);
     }
     let public_param = gen_public_param(&seed);
-    let (lo, hi) = (epoch_start as u64, epoch_end as u64);
+    let (first_epoch, last_epoch) = (epoch_start as u64, epoch_end as u64);
 
-    // ~sqrt(R) leaves per bottom subtree; always <= LOG_LIFETIME/2.
-    let split_level = log2_ceil(hi - lo + 1).div_ceil(2);
+    let split_level = primitives::log2_ceil_usize((last_epoch - first_epoch + 1) as usize).div_ceil(2);
 
     // The bottom subtrees are the only fan-out in key generation: `O(sqrt(R))` of
     // them, each independent, each holding only its own `O(sqrt(R))` layers, so
     // peak memory stays `O(sqrt(R))` and one flat dispatch covers the whole tree.
     // Everything below this is sequential by construction.
-    let first_subtree = lo >> split_level;
-    let last_subtree = hi >> split_level;
+    let first_subtree = first_epoch >> split_level;
+    let last_subtree = last_epoch >> split_level;
     let root_layer: Vec<Digest> = parallel::map_collect((last_subtree - first_subtree + 1) as usize, |i| {
         let subtree = first_subtree + i as u64;
-        let (in_lo, in_hi) = subtree_bounds(lo, hi, split_level, subtree);
-        build_subtree_layers(&seed, &public_param, in_lo, in_hi, split_level)[split_level][0]
+        let (first_leaf, last_leaf) = subtree_bounds(first_epoch, last_epoch, split_level, subtree);
+        build_subtree_layers(&seed, &public_param, first_leaf, last_leaf, split_level)[split_level][0]
     });
 
-    // Top part: levels split_level..=LOG_LIFETIME.
     let mut top = vec![root_layer];
-    build_up(&seed, &public_param, &mut top, lo, hi, split_level, LOG_LIFETIME);
+    build_up(
+        &seed,
+        &public_param,
+        &mut top,
+        first_epoch,
+        last_epoch,
+        split_level,
+        LOG_LIFETIME,
+    );
 
     let pub_key = XmssPublicKey {
         merkle_root: top.last().unwrap()[0],
@@ -247,10 +243,10 @@ pub fn xmss_sign(
     if cache.as_ref().is_none_or(|s| s.subtree_index != subtree_index) {
         *cache = Some(secret_key.build_bottom_subtree(subtree_index));
     }
-    let sub = cache.as_ref().unwrap();
+    let subtree = cache.as_ref().unwrap();
     let merkle_proof = std::array::from_fn(|level| {
         let neighbour_index = ((epoch as u64) >> level) ^ 1;
-        secret_key.merkle_sibling(level, neighbour_index, sub)
+        secret_key.merkle_sibling(level, neighbour_index, subtree)
     });
     drop(cache);
     Ok(XmssSignature {
@@ -267,7 +263,6 @@ impl XmssSecretKey {
         }
     }
 
-    /// (Re)build the bottom subtree with the given index.
     fn build_bottom_subtree(&self, subtree_index: u64) -> BottomSubtree {
         let (lo, hi) = subtree_bounds(
             self.epoch_start as u64,
@@ -281,8 +276,8 @@ impl XmssSecretKey {
 
     /// Authentication-path sibling at `level`: from the top part, the cached
     /// subtree, or `gen_random_node`.
-    fn merkle_sibling(&self, level: usize, neighbour_index: u64, sub: &BottomSubtree) -> Digest {
-        let (lo, hi, level_base, layers) = if level >= self.split_level {
+    fn merkle_sibling(&self, level: usize, neighbour_index: u64, subtree: &BottomSubtree) -> Digest {
+        let (first_epoch, last_epoch, level_base, layers) = if level >= self.split_level {
             (
                 self.epoch_start as u64,
                 self.epoch_end as u64,
@@ -290,17 +285,17 @@ impl XmssSecretKey {
                 &self.top,
             )
         } else {
-            let (lo, hi) = subtree_bounds(
+            let (first_epoch, last_epoch) = subtree_bounds(
                 self.epoch_start as u64,
                 self.epoch_end as u64,
                 self.split_level,
-                sub.subtree_index,
+                subtree.subtree_index,
             );
-            (lo, hi, 0, &sub.layers)
+            (first_epoch, last_epoch, 0, &subtree.layers)
         };
-        let base = lo >> level;
-        if neighbour_index >= base && neighbour_index <= (hi >> level) {
-            layers[level - level_base][(neighbour_index - base) as usize]
+        let first_node = first_epoch >> level;
+        if neighbour_index >= first_node && neighbour_index <= (last_epoch >> level) {
+            layers[level - level_base][(neighbour_index - first_node) as usize]
         } else {
             gen_random_node(&self.seed, level, neighbour_index)
         }

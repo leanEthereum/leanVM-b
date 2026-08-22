@@ -1,34 +1,5 @@
 // CREDIT: https://github.com/signalapp/libsignal/blob/main/rust/poksho/src/shosha256.rs, AGPL-3.0-only.
-//! The shared Fiat–Shamir layer: the VM-native [`FiatShamirState`] state, the
-//! [`transcript`] wrapper states (`ProverState`/`VerifierState`) that pair it
-//! with the proof transport channels, and the [`merkle`] data those channels
-//! carry.
-//!
-//! [`FiatShamirState`] is a 256-bit chaining value evolved only by the fixed 64→32
-//! BLAKE2s hash the VM's `Blake2s` opcode computes, so prover, verifier, and a
-//! recursive verifier running on the VM all derive identical challenges with one
-//! hash per step. Hashing exactly 64 bytes IS one BLAKE2s compression (counter
-//! 64, final-block flag set), which is why a single opcode covers the whole
-//! chain.
-//!
-//! Every block has ONE shape: up to three lanes of data, and the domain tag in
-//! the fourth. A scalar is `E = F192` (the tower challenge field), so its three
-//! little-endian `K = F64` limbs fill the data lanes exactly.
-//!
-//! Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
-//! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
-//! AGPL-3.0-only): a chaining value advanced by domain-separated absorb /
-//! squeeze steps. Here the underlying hash is the VM's BLAKE2s compression
-//! rather than SHA-256, inputs are `K = GF(2^64)` field words, and, because
-//! every absorb is domain-tagged per compression, no explicit double-hash
-//! ratchet is needed. It is a Merkle–Damgård chain, NOT a sponge: there is no
-//! rate/capacity split and no permutation, so it is named for the transform it
-//! serves rather than for a construction it is not.
-//!
-//! Each challenge is the random-oracle image of the whole prior transcript;
-//! every absorb is domain-tagged per compression (so a field element, a raw
-//! integer, and a byte string cannot alias), byte strings are length-framed,
-//! and each squeeze ratchets the state (binding challenge order).
+//! Fiat-Shamir state and proof transport. The state is a domain-separated BLAKE2s chain whose 64-byte steps match the VM's hash opcode.
 
 pub mod merkle;
 pub mod transcript;
@@ -49,8 +20,8 @@ pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     for (slot, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
         *slot = w.0.to_le_bytes();
     }
-    let d = primitives::blake2s::hash(&input);
-    std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
+    let digest = primitives::blake2s::hash(&input);
+    std::array::from_fn(|index| F64(u64::from_le_bytes(digest[8 * index..8 * index + 8].try_into().unwrap())))
 }
 
 // Domain-separation tags. EVERY block puts its tag in lane 3 and its data in
@@ -76,12 +47,12 @@ fn pow_bits_ok(base: [F64; 4], nonce: F192, bits: u32) -> bool {
     digest.0 & ((1u64 << bits) - 1) == 0
 }
 
-/// The shared Fiat–Shamir state (see the module docs). Protocol functions take
+/// The shared Fiat-Shamir state (see the module docs). Protocol functions take
 /// `&mut FiatShamirState`; all proof DATA travels on separate transport channels (the
 /// callers'), so the state only ever absorbs and squeezes.
 #[derive(Clone)]
 pub struct FiatShamirState {
-    /// The 256-bit chaining value: a Merkle–Damgård hash of the transcript so far.
+    /// The 256-bit chaining value: a Merkle-Damgård hash of the transcript so far.
     cv: [F64; 4],
 }
 
@@ -114,15 +85,15 @@ impl FiatShamirState {
         for chunk in bytes.chunks(24) {
             let mut buf = [0u8; 24];
             buf[..chunk.len()].copy_from_slice(chunk);
-            let w = |o: usize| F64(u64::from_le_bytes(buf[o..o + 8].try_into().unwrap()));
-            self.cv = compress(self.cv, [w(0), w(8), w(16), DS_BYTE]);
+            let word_at = |offset: usize| F64(u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()));
+            self.cv = compress(self.cv, [word_at(0), word_at(8), word_at(16), DS_BYTE]);
         }
     }
 
     /// Squeeze a challenge and ratchet: the challenge's three limbs are the
     /// first three words of `compress(cv, (0, 0, 0, DS_SQUEEZE))`, whose full output
     /// becomes the new state, domain-separated from absorbs, so a challenge
-    /// cannot be confused with a continued absorb. In Fiat–Shamir everything is
+    /// cannot be confused with a continued absorb. In Fiat-Shamir everything is
     /// public; soundness comes from each challenge being a random-oracle image
     /// of the entire prior transcript.
     pub fn sample(&mut self) -> F192 {
@@ -215,8 +186,6 @@ mod tests {
         F192::new(k, k ^ 0x1234, k.rotate_left(17))
     }
 
-    /// A challenge binds every prior absorbed scalar: flipping one observed value
-    /// changes the next squeeze.
     #[test]
     fn fs_binds_observations() {
         let mut a = FiatShamirState::new(b"t", &[f(1), f(2)]);
@@ -224,7 +193,6 @@ mod tests {
         assert_ne!(a.sample(), b.sample());
     }
 
-    /// Absorb order matters: observe(a) then observe(b) ≠ observe(b) then observe(a).
     #[test]
     fn fs_binds_order() {
         let mut a = FiatShamirState::new(b"t", &[]);
@@ -236,8 +204,6 @@ mod tests {
         assert_ne!(a.sample(), b.sample());
     }
 
-    /// A scalar and a byte string cannot alias (distinct domain tags), so
-    /// observing a scalar vs absorbing its 24-byte encoding diverge.
     #[test]
     fn fs_domain_separation() {
         let x = f(9);
@@ -252,7 +218,6 @@ mod tests {
         assert_ne!(a.sample(), b.sample());
     }
 
-    /// A grind clears its own PoW, and returns the SMALLEST nonce that does.
     #[test]
     fn pow_predicate() {
         let sp = FiatShamirState::new(b"t", &[f(1)]);
@@ -270,8 +235,6 @@ mod tests {
         }
     }
 
-    /// Recursive proofs transport the nonce as one field word. Its high limb is
-    /// therefore part of both the PoW predicate and the subsequent transcript.
     #[test]
     fn pow_accepts_and_binds_full_field_nonce() {
         let mut verifier = FiatShamirState::new(b"t", &[f(1)]);

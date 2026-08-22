@@ -76,9 +76,9 @@ fn count(n: usize) -> F192 {
 }
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
-fn u(f: F192) -> u128 {
-    assert_eq!(f.c2, 0, "u128 DSL literal cannot encode the top F192 limb");
-    (f.c0 as u128) | ((f.c1 as u128) << 64)
+fn dsl_u128(value: F192) -> u128 {
+    assert_eq!(value.c2, 0, "u128 DSL literal cannot encode the top F192 limb");
+    (value.c0 as u128) | ((value.c1 as u128) << 64)
 }
 
 fn f192_literal(f: F192) -> String {
@@ -86,15 +86,21 @@ fn f192_literal(f: F192) -> String {
 }
 
 /// Pack the Fiat-Shamir state's four K lanes as two canonical 128-bit VM cells.
-fn pack_state(s: [F64; 4]) -> [F192; 2] {
-    [F192::new(s[0].0, s[1].0, 0), F192::new(s[2].0, s[3].0, 0)]
+fn pack_state(state: [F64; 4]) -> [F192; 2] {
+    [
+        F192::new(state[0].0, state[1].0, 0),
+        F192::new(state[2].0, state[3].0, 0),
+    ]
 }
 
 /// Pack a 32-byte Merkle node as the same canonical 128+128 cell pair used by
 /// the VM's sole BLAKE2s representation.
 fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
-    let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
-    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
+    let word_at = |offset: usize| u64::from_le_bytes(hash[offset..offset + 8].try_into().unwrap());
+    [
+        F192::new(word_at(0), word_at(8), 0),
+        F192::new(word_at(16), word_at(24), 0),
+    ]
 }
 
 /// Native mirror of the guest's default `blake2s(state, block, out)` over two
@@ -102,8 +108,11 @@ fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
 /// `[w0.c0, w0.c1, w1.c0, w1.c1]`, and the output packs back the same way.
 fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
     let lanes = |c: [F192; 2]| [F64(c[0].c0), F64(c[0].c1), F64(c[1].c0), F64(c[1].c1)];
-    let out = lean_vm::vmhash::compress(lanes(state), lanes(block));
-    [F192::new(out[0].0, out[1].0, 0), F192::new(out[2].0, out[3].0, 0)]
+    let output = lean_vm::vmhash::compress(lanes(state), lanes(block));
+    [
+        F192::new(output[0].0, output[1].0, 0),
+        F192::new(output[2].0, output[3].0, 0),
+    ]
 }
 
 /// A domain-separated two-cell IV, so the guest's two plain BLAKE2s chains
@@ -113,15 +122,15 @@ fn chain_iv(label: &[u8]) -> [F192; 2] {
 }
 
 /// A 16-byte native value as one canonical 128-bit cell.
-fn val16(b: &[u8]) -> F192 {
-    let w = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
-    F192::new(w(0), w(8), 0)
+fn pack_16_bytes(bytes: &[u8]) -> F192 {
+    let word_at = |offset: usize| u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+    F192::new(word_at(0), word_at(8), 0)
 }
 
 /// A public key as the two cells the guest hashes and `verify_sig` reads:
 /// the Merkle root then the public parameter.
 fn key_cells(pk: &XmssPublicKey) -> [F192; 2] {
-    [val16(&pk.merkle_root), val16(&pk.public_param)]
+    [pack_16_bytes(&pk.merkle_root), pack_16_bytes(&pk.public_param)]
 }
 
 /// The 328-entry tweak table at `epoch`, in the order `verify_sig` indexes it:
@@ -138,9 +147,9 @@ fn tweak_table(epoch: u32) -> Vec<xmss::Tweak> {
         }
     }
     tweaks.push(make_tweak(TWEAK_TYPE_WOTS_PK, 0, epoch));
-    for l in 0..LOG_LIFETIME {
-        let parent_index = ((epoch as u64) >> (l + 1)) as u32;
-        tweaks.push(make_tweak(TWEAK_TYPE_MERKLE, (l + 1) as u32, parent_index));
+    for level in 0..LOG_LIFETIME {
+        let parent_index = ((epoch as u64) >> (level + 1)) as u32;
+        tweaks.push(make_tweak(TWEAK_TYPE_MERKLE, (level + 1) as u32, parent_index));
     }
     tweaks
 }
@@ -148,7 +157,7 @@ fn tweak_table(epoch: u32) -> Vec<xmss::Tweak> {
 /// The Merkle direction bits at `epoch`, one 1-cell word per level.
 fn merkle_bit_cells(epoch: u32) -> Vec<F192> {
     (0..xmss::LOG_LIFETIME)
-        .map(|l| F192::new(((epoch >> l) & 1) as u64, 0, 0))
+        .map(|level| F192::new(((epoch >> level) & 1) as u64, 0, 0))
         .collect()
 }
 
@@ -157,7 +166,7 @@ fn merkle_bit_cells(epoch: u32) -> Vec<F192> {
 /// cells per compression. Nothing derives a tweak in-circuit; the guest hints
 /// both tables and checks this digest.
 fn epoch_hash(epoch: u32) -> [F192; 2] {
-    let mut cells: Vec<F192> = tweak_table(epoch).iter().map(|t| val16(t)).collect();
+    let mut cells: Vec<F192> = tweak_table(epoch).iter().map(|tweak| pack_16_bytes(tweak)).collect();
     cells.extend(merkle_bit_cells(epoch));
     // The tag gets a block to itself, keeping both tables block-aligned.
     let pad = std::iter::repeat_n(0u64, 4);
@@ -219,9 +228,9 @@ impl DeferredClaim {
             F192::from(stacked_bytecode()[0])
         } else {
             let sp = tracing::info_span!("bytecode mle").entered();
-            let v = mle_eval_par(stacked_bytecode(), &bytecode_point);
+            let value = mle_eval_par(stacked_bytecode(), &bytecode_point);
             drop(sp);
-            v
+            value
         };
         let sp = tracing::info_span!("matrix walk").entered();
         let eq_r = pcs::whir::build_eq_table_ext(&matrix_point[..klog]);
@@ -291,8 +300,8 @@ fn statement_digest(
         count(n_keys),
         pubkeys_hash[0],
         pubkeys_hash[1],
-        val16(&message[..16]),
-        val16(&message[16..]),
+        pack_16_bytes(&message[..16]),
+        pack_16_bytes(&message[16..]),
         epoch_hash[0],
         epoch_hash[1],
     ];
@@ -531,12 +540,15 @@ fn bytecode_window() -> Range<usize> {
 
 /// One round message against a K-valued table: `bt` is the bytecode itself, so
 /// the products are base-by-extension.
-fn round_msg_base(bt: &[F64], wt: &[F192]) -> (F192, F192) {
-    let half = bt.len() / 2;
+fn round_msg_base(bytecode: &[F64], weights: &[F192]) -> (F192, F192) {
+    let half = bytecode.len() / 2;
     let term = |i: usize| {
-        let (u0, u1) = (bt[2 * i], bt[2 * i + 1]);
-        let (m0, m1) = (wt[2 * i], wt[2 * i + 1]);
-        (m1.mul_base(u1), (m0 + m1).mul_base(u0 + u1))
+        let (bytecode_0, bytecode_1) = (bytecode[2 * i], bytecode[2 * i + 1]);
+        let (weight_0, weight_1) = (weights[2 * i], weights[2 * i + 1]);
+        (
+            weight_1.mul_base(bytecode_1),
+            (weight_0 + weight_1).mul_base(bytecode_0 + bytecode_1),
+        )
     };
     if half >= PAR_MIN {
         parallel::fold_reduce(
@@ -558,10 +570,10 @@ fn round_msg_base(bt: &[F64], wt: &[F192]) -> (F192, F192) {
 }
 
 /// The first fold of a K-valued table, which is where it becomes extension-valued.
-fn fold_lsb_base(bt: &[F64], r: F192) -> Vec<F192> {
-    parallel::map_collect(bt.len() / 2, |i| {
-        let (a, b) = (bt[2 * i], bt[2 * i + 1]);
-        F192::from(a) + r.mul_base(a + b)
+fn fold_lsb_base(table: &[F64], challenge: F192) -> Vec<F192> {
+    parallel::map_collect(table.len() / 2, |i| {
+        let (left, right) = (table[2 * i], table[2 * i + 1]);
+        F192::from(left) + challenge.mul_base(left + right)
     })
 }
 
@@ -570,18 +582,22 @@ fn fold_lsb_base(bt: &[F64], r: F192) -> Vec<F192> {
 /// slot half of a `2^kbcv` weight table.
 fn slot_weights(points: &[Vec<F192>], lambdas: &[F192], r_row: &[F192], kbc: usize) -> Vec<F192> {
     let slots = lean_vm::leaf::N_BYTECODE_SELECTORS;
-    let mut out = vec![F192::ZERO; 1 << slots];
-    for (p, &g) in points.iter().zip(lambdas) {
-        let row: F192 = (0..kbc).fold(g, |acc, k| acc * (F192::ONE + p[k] + r_row[k]));
-        for (s, w) in out.iter_mut().enumerate() {
-            let e = (0..slots).fold(row, |acc, b| {
-                let c = p[kbc + b];
-                acc * if (s >> b) & 1 == 1 { c } else { F192::ONE + c }
+    let mut weights = vec![F192::ZERO; 1 << slots];
+    for (point, &lambda) in points.iter().zip(lambdas) {
+        let row_weight: F192 = (0..kbc).fold(lambda, |acc, k| acc * (F192::ONE + point[k] + r_row[k]));
+        for (slot, weight) in weights.iter_mut().enumerate() {
+            let slot_weight = (0..slots).fold(row_weight, |acc, bit| {
+                let coordinate = point[kbc + bit];
+                acc * if (slot >> bit) & 1 == 1 {
+                    coordinate
+                } else {
+                    F192::ONE + coordinate
+                }
             });
-            *w += e;
+            *weight += slot_weight;
         }
     }
-    out
+    weights
 }
 
 /// Variables of a bytecode claim's point: the log row count plus the stacking
@@ -593,23 +609,21 @@ fn bytecode_vars() -> usize {
 /// Below this a parallel dispatch costs more than the loop it replaces.
 const PAR_MIN: usize = 1 << 16;
 
-fn fold_lsb(t: &mut Vec<F192>, r: F192) {
-    let half = t.len() / 2;
+fn fold_lsb(table: &mut Vec<F192>, challenge: F192) {
+    let half = table.len() / 2;
     if half >= PAR_MIN {
-        // Out of place: folding in place reads `t[2i]` while another task writes
-        // `t[i]`, and the ranges overlap.
-        let src: &[F192] = t;
+        let source: &[F192] = table;
         let folded = parallel::map_collect(half, |i| {
-            let (a, b) = (src[2 * i], src[2 * i + 1]);
-            a + r * (a + b)
+            let (left, right) = (source[2 * i], source[2 * i + 1]);
+            left + challenge * (left + right)
         });
-        *t = folded;
+        *table = folded;
         return;
     }
     for i in 0..half {
-        t[i] = t[2 * i] + r * (t[2 * i] + t[2 * i + 1]);
+        table[i] = table[2 * i] + challenge * (table[2 * i] + table[2 * i + 1]);
     }
-    t.truncate(half);
+    table.truncate(half);
 }
 
 /// Compressed product-sumcheck round message over γ-weighted table pairs:
@@ -651,21 +665,21 @@ fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
 /// both, and advance the running claim through the compressed round polynomial.
 /// Returns the challenge, which the caller folds its tables with.
 fn absorb_round(
-    h: &mut FiatShamirState,
-    msgs: &mut Vec<F192>,
-    points: &mut Vec<F192>,
-    run: &mut F192,
+    transcript: &mut FiatShamirState,
+    messages: &mut Vec<F192>,
+    challenges: &mut Vec<F192>,
+    claim: &mut F192,
     (g1, gi): (F192, F192),
 ) -> F192 {
-    h.observe(g1);
-    h.observe(gi);
-    let r = h.sample();
-    msgs.extend([g1, gi]);
-    points.push(r);
-    let g0 = *run + g1;
+    transcript.observe(g1);
+    transcript.observe(gi);
+    let challenge = transcript.sample();
+    messages.extend([g1, gi]);
+    challenges.push(challenge);
+    let g0 = *claim + g1;
     let c1 = g0 + g1 + gi;
-    *run = (gi * r + c1) * r + g0;
-    r
+    *claim = (gi * challenge + c1) * challenge + g0;
+    challenge
 }
 
 /// `Σ_t γ_t · eq(points[t], ·)`, over the `active` window of `2^vars` entries.
@@ -683,94 +697,98 @@ fn weighted_eq_table(points: &[Vec<F192>], lambdas: &[F192], vars: usize, active
     let halves: Vec<(Vec<F192>, Vec<F192>)> = points
         .iter()
         .zip(lambdas)
-        .map(|(p, &g)| {
-            let lo = pcs::whir::build_eq_table_ext(&p[..lo_vars]);
-            let mut hi = pcs::whir::build_eq_table_ext(&p[lo_vars..]);
-            hi.iter_mut().for_each(|h| *h *= g);
-            (lo, hi)
+        .map(|(point, &lambda)| {
+            let low = pcs::whir::build_eq_table_ext(&point[..lo_vars]);
+            let mut high = pcs::whir::build_eq_table_ext(&point[lo_vars..]);
+            high.iter_mut().for_each(|weight| *weight *= lambda);
+            (low, high)
         })
         .collect();
-    let mut out = vec![F192::ZERO; active.len()];
+    let mut weights = vec![F192::ZERO; active.len()];
     let first = active.start / lo_len;
-    parallel::chunks_mut(&mut out, lo_len, |h, chunk| {
-        for (lo, hi) in &halves {
-            let scale = hi[first + h];
-            for (o, &l) in chunk.iter_mut().zip(lo) {
-                *o += scale * l;
+    parallel::chunks_mut(&mut weights, lo_len, |high_index, chunk| {
+        for (low, high) in &halves {
+            let scale = high[first + high_index];
+            for (output, &low_weight) in chunk.iter_mut().zip(low) {
+                *output += scale * low_weight;
             }
         }
     });
-    out
+    weights
 }
 
 /// Mirror the guest's `aggregate_claims` transcript and prove the two batching
 /// sumchecks: dense for the bytecode, two-phase sparse for the matrices.
 ///
-/// Each child brings two claims per fixed polynomial: the one it deferred
-/// (`carried`) and the fresh one its verification raised (`subs`). They differ
+/// Each child brings two claims per fixed polynomial: the one it deferred and
+/// the fresh one its verification raised. They differ
 /// only in the weight they enter with. A fresh matrix claim carries flock's
 /// zerocheck/lincheck structure; a carried one is a plain point, so its weight
 /// is an eq table on each side. Returns the guest hints and the single claim
 /// per polynomial they reduce to.
-fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim]) -> (SubHints, DeferredClaim) {
-    let nsub = subs.len();
-    assert_eq!(nsub, carried.len(), "one carried claim per child");
+fn aggregate_deferred_claims(
+    subproofs: &[DeferredSubproof],
+    carried_claims: &[DeferredClaim],
+) -> (SubHints, DeferredClaim) {
+    let child_count = subproofs.len();
+    assert_eq!(child_count, carried_claims.len(), "one carried claim per child");
     let kbcv = bytecode_vars();
     let klog = flock::blake2s::K_LOG;
 
-    // ---- the aggregation transcript (mirrors the guest exactly) ----
-    let mut h = FiatShamirState::new(RECURSION_AGG_LABEL, &[]);
-    h.observe(count(nsub));
-    for (d, c) in subs.iter().zip(carried) {
-        h.observe(d.public_input[0]);
-        h.observe(d.public_input[1]);
-        for &v in &d.bytecode_row_point {
-            h.observe(v);
+    let mut transcript = FiatShamirState::new(RECURSION_AGG_LABEL, &[]);
+    transcript.observe(count(child_count));
+    for (subproof, carried) in subproofs.iter().zip(carried_claims) {
+        transcript.observe(subproof.public_input[0]);
+        transcript.observe(subproof.public_input[1]);
+        for &value in &subproof.bytecode_row_point {
+            transcript.observe(value);
         }
-        for &v in &d.bytecode_selector_point {
-            h.observe(v);
+        for &value in &subproof.bytecode_selector_point {
+            transcript.observe(value);
         }
-        h.observe(d.bytecode_value);
-        h.observe(d.matrix_a_coefficient);
-        h.observe(d.skip_point);
-        for &v in &d.zerocheck_row_point {
-            h.observe(v);
+        transcript.observe(subproof.bytecode_value);
+        transcript.observe(subproof.matrix_a_coefficient);
+        transcript.observe(subproof.skip_point);
+        for &value in &subproof.zerocheck_row_point {
+            transcript.observe(value);
         }
-        for &v in &d.lincheck_round_point {
-            h.observe(v);
+        for &value in &subproof.lincheck_round_point {
+            transcript.observe(value);
         }
-        for &v in &d.lincheck_terminal_values {
-            h.observe(v);
+        for &value in &subproof.lincheck_terminal_values {
+            transcript.observe(value);
         }
-        h.observe(d.matrix_claim);
-        for v in c.cells() {
-            h.observe(v);
+        transcript.observe(subproof.matrix_claim);
+        for value in carried.cells() {
+            transcript.observe(value);
         }
     }
 
-    // ---- bytecode batching sumcheck (dense, 2^kbcv; fresh then carried per child) ----
     let _span = tracing::info_span!("Bytecode batch", vars = kbcv).entered();
-    let gbc: Vec<F192> = (0..2 * nsub).map(|_| h.sample()).collect();
-    let points: Vec<Vec<F192>> = subs
+    let gbc: Vec<F192> = (0..2 * child_count).map(|_| transcript.sample()).collect();
+    let points: Vec<Vec<F192>> = subproofs
         .iter()
-        .zip(carried)
-        .flat_map(|(d, c)| {
+        .zip(carried_claims)
+        .flat_map(|(subproof, carried)| {
             [
-                d.bytecode_row_point
+                subproof
+                    .bytecode_row_point
                     .iter()
-                    .chain(&d.bytecode_selector_point)
+                    .chain(&subproof.bytecode_selector_point)
                     .copied()
                     .collect::<Vec<_>>(),
-                c.bytecode_point.clone(),
+                carried.bytecode_point.clone(),
             ]
         })
         .collect();
-    let values: Vec<F192> = subs
+    let values: Vec<F192> = subproofs
         .iter()
-        .zip(carried)
-        .flat_map(|(d, c)| [d.bytecode_value, c.bytecode_value])
+        .zip(carried_claims)
+        .flat_map(|(subproof, carried)| [subproof.bytecode_value, carried.bytecode_value])
         .collect();
-    let mut brun: F192 = (0..2 * nsub).map(|t| gbc[t] * values[t]).fold(F192::ZERO, |a, x| a + x);
+    let mut brun: F192 = (0..2 * child_count)
+        .map(|index| gbc[index] * values[index])
+        .fold(F192::ZERO, |acc, value| acc + value);
     let mut bscr = Vec::new();
     let mut r_bc = Vec::new();
     // The row variables, over the populated slot window only: the rest of the
@@ -793,14 +811,14 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     let bc = &stacked_bytecode()[(slot_window.start << kbc)..(slot_window.end << kbc)];
     let mut bt = {
         let msg = round_msg_base(bc, &wt);
-        let r = absorb_round(&mut h, &mut bscr, &mut r_bc, &mut brun, msg);
+        let r = absorb_round(&mut transcript, &mut bscr, &mut r_bc, &mut brun, msg);
         let folded = fold_lsb_base(bc, r);
         fold_lsb(&mut wt, r);
         folded
     };
     for _ in 1..kbc {
         let msg = round_msg(&[(&bt, &wt, F192::ONE)]);
-        let r = absorb_round(&mut h, &mut bscr, &mut r_bc, &mut brun, msg);
+        let r = absorb_round(&mut transcript, &mut bscr, &mut r_bc, &mut brun, msg);
         fold_lsb(&mut bt, r);
         fold_lsb(&mut wt, r);
     }
@@ -813,7 +831,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     let (mut bt, mut wt) = (bt_slots, wt_slots);
     for _ in 0..lean_vm::leaf::N_BYTECODE_SELECTORS {
         let msg = round_msg(&[(&bt, &wt, F192::ONE)]);
-        let r = absorb_round(&mut h, &mut bscr, &mut r_bc, &mut brun, msg);
+        let r = absorb_round(&mut transcript, &mut bscr, &mut r_bc, &mut brun, msg);
         fold_lsb(&mut bt, r);
         fold_lsb(&mut wt, r);
     }
@@ -822,26 +840,25 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
 
     drop(_span);
     let _span = tracing::info_span!("Matrix batch").entered();
-    // ---- matrix batching sumcheck (two-phase sparse) ----
     // One group per claim: the row weights, the column weights, and the
     // coefficient each matrix enters with. Downstream is shape-blind.
-    let mut us: Vec<Vec<F192>> = Vec::with_capacity(2 * nsub);
-    let mut ws: Vec<Vec<F192>> = Vec::with_capacity(2 * nsub);
-    let mut ga: Vec<F192> = Vec::with_capacity(2 * nsub);
-    let mut gb: Vec<F192> = Vec::with_capacity(2 * nsub);
+    let mut us: Vec<Vec<F192>> = Vec::with_capacity(2 * child_count);
+    let mut ws: Vec<Vec<F192>> = Vec::with_capacity(2 * child_count);
+    let mut ga: Vec<F192> = Vec::with_capacity(2 * child_count);
+    let mut gb: Vec<F192> = Vec::with_capacity(2 * child_count);
     let mut mrun = F192::ZERO;
-    for (d, c) in subs.iter().zip(carried) {
-        let (gf, cga, cgb) = (h.sample(), h.sample(), h.sample());
+    for (subproof, carried) in subproofs.iter().zip(carried_claims) {
+        let (gf, cga, cgb) = (transcript.sample(), transcript.sample(), transcript.sample());
         us.push(flock::lincheck::build_quirky_eq_table(
-            d.skip_point,
-            &d.zerocheck_row_point,
+            subproof.skip_point,
+            &subproof.zerocheck_row_point,
             6,
         ));
         ws.push(
             (0..1usize << klog)
                 .map(|col| {
-                    let mut w = d.lincheck_terminal_values[col & 63];
-                    for (j, &rj) in d.lincheck_round_point.iter().enumerate() {
+                    let mut w = subproof.lincheck_terminal_values[col & 63];
+                    for (j, &rj) in subproof.lincheck_round_point.iter().enumerate() {
                         let bit = (col >> (klog - 1 - j)) & 1;
                         w *= if bit == 1 { rj } else { F192::ONE + rj };
                     }
@@ -850,12 +867,12 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
                 .collect(),
         );
         ga.push(gf);
-        gb.push(gf * d.matrix_a_coefficient);
-        us.push(pcs::whir::build_eq_table_ext(&c.matrix_point[..klog]));
-        ws.push(pcs::whir::build_eq_table_ext(&c.matrix_point[klog..]));
+        gb.push(gf * subproof.matrix_a_coefficient);
+        us.push(pcs::whir::build_eq_table_ext(&carried.matrix_point[..klog]));
+        ws.push(pcs::whir::build_eq_table_ext(&carried.matrix_point[klog..]));
         ga.push(cga);
         gb.push(cgb);
-        mrun += gf * d.matrix_claim + cga * c.matrix_a_value + cgb * c.matrix_b_value;
+        mrun += gf * subproof.matrix_claim + cga * carried.matrix_a_value + cgb * carried.matrix_b_value;
     }
     let _cols = tracing::info_span!("Contract columns").entered();
     // One forward walk of the circuit per claim yields that claim's two row
@@ -870,7 +887,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     drop(_cols);
     // sanity: every claim really is the bilinear form over the matrices.
     #[cfg(debug_assertions)]
-    for t in 0..2 * nsub {
+    for t in 0..2 * child_count {
         let form = |m: &[F192]| {
             m.iter()
                 .zip(&us[t])
@@ -879,23 +896,27 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         };
         let (fa, fb) = (form(&ms[2 * t]), form(&ms[2 * t + 1]));
         if t % 2 == 0 {
-            let d = &subs[t / 2];
+            let subproof = &subproofs[t / 2];
             assert_eq!(
-                fa + d.matrix_a_coefficient * fb,
-                d.matrix_claim,
+                fa + subproof.matrix_a_coefficient * fb,
+                subproof.matrix_claim,
                 "fresh matrix claim, child {}",
                 t / 2
             );
         } else {
-            let c = &carried[t / 2];
-            assert_eq!((fa, fb), (c.matrix_a_value, c.matrix_b_value), "carried matrix claim");
+            let carried = &carried_claims[t / 2];
+            assert_eq!(
+                (fa, fb),
+                (carried.matrix_a_value, carried.matrix_b_value),
+                "carried matrix claim"
+            );
         }
     }
     let mut mscr = Vec::new();
     let mut r_row = Vec::new();
     let _rounds = tracing::info_span!("Row rounds").entered();
     for _ in 0..klog {
-        let pairs: Vec<(&[F192], &[F192], F192)> = (0..2 * nsub)
+        let pairs: Vec<(&[F192], &[F192], F192)> = (0..2 * child_count)
             .flat_map(|t| {
                 [
                     (&us[t][..], &ms[2 * t][..], ga[t]),
@@ -904,7 +925,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
             })
             .collect();
         let msg = round_msg(&pairs);
-        let r = absorb_round(&mut h, &mut mscr, &mut r_row, &mut mrun, msg);
+        let r = absorb_round(&mut transcript, &mut mscr, &mut r_row, &mut mrun, msg);
         for u in us.iter_mut() {
             fold_lsb(u, r);
         }
@@ -921,7 +942,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     drop(_rows);
     let mut wa = vec![F192::ZERO; 1 << klog];
     let mut wb = vec![F192::ZERO; 1 << klog];
-    for t in 0..2 * nsub {
+    for t in 0..2 * child_count {
         let (sa, sb) = (ga[t] * us[t][0], gb[t] * us[t][0]);
         for j in 0..1 << klog {
             wa[j] += sa * ws[t][j];
@@ -932,7 +953,7 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
     for _ in 0..klog {
         let pairs: Vec<(&[F192], &[F192], F192)> = vec![(&acol, &wa, F192::ONE), (&bcol, &wb, F192::ONE)];
         let msg = round_msg(&pairs);
-        let r = absorb_round(&mut h, &mut mscr, &mut r_col, &mut mrun, msg);
+        let r = absorb_round(&mut transcript, &mut mscr, &mut r_col, &mut mrun, msg);
         for tb in [&mut acol, &mut bcol, &mut wa, &mut wb] {
             fold_lsb(tb, r);
         }
@@ -949,21 +970,21 @@ fn aggregate_deferred_claims(subs: &[DeferredSubproof], carried: &[DeferredClaim
         let eqr = pcs::whir::build_eq_table_ext(&r_row[..6]);
         let eqc = pcs::whir::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F192::ZERO, F192::ZERO);
-        for (t, (d, c)) in subs.iter().zip(carried).enumerate() {
-            let lam = primitives::multilinear::lagrange_weights_naive(6, d.skip_point);
+        for (t, (subproof, carried)) in subproofs.iter().zip(carried_claims).enumerate() {
+            let lam = primitives::multilinear::lagrange_weights_naive(6, subproof.skip_point);
             let mut urow: F192 = (0..64).map(|i| lam[i] * eqr[i]).fold(F192::ZERO, |a, x| a + x);
-            for (k, &z) in d.zerocheck_row_point.iter().enumerate() {
+            for (k, &z) in subproof.zerocheck_row_point.iter().enumerate() {
                 urow *= F192::ONE + z + r_row[6 + k];
             }
             let mut wcol: F192 = (0..64)
-                .map(|i| d.lincheck_terminal_values[i] * eqc[i])
+                .map(|i| subproof.lincheck_terminal_values[i] * eqc[i])
                 .fold(F192::ZERO, |a, x| a + x);
-            for (j, &rj) in d.lincheck_round_point.iter().enumerate() {
+            for (j, &rj) in subproof.lincheck_round_point.iter().enumerate() {
                 wcol *= F192::ONE + rj + r_col[klog - 1 - j];
             }
             let fresh = urow * wcol;
             let mut plain = F192::ONE;
-            for (k, &p) in c.matrix_point.iter().enumerate() {
+            for (k, &p) in carried.matrix_point.iter().enumerate() {
                 let r = if k < klog { r_row[k] } else { r_col[k - klog] };
                 plain *= F192::ONE + p + r;
             }
@@ -1092,7 +1113,7 @@ fn push_coord_terms(
         Coord::Index | Coord::Public(_) => unreachable!("a table's bus block carries no virtual coordinate"),
     };
     ty.push(coord_kind(c));
-    val.push(u(coord_scale(c)));
+    val.push(dsl_u128(coord_scale(c)));
     col_a.push(a);
     col_b.push(b);
 }
@@ -1102,8 +1123,8 @@ fn push_coord_terms(
 /// table's committed columns, then the PI memory triple. Both the per-sub hints
 /// and the placeholder map descriptors are built from this one walk, so the two
 /// stay index-aligned by construction rather than by two matching count asserts.
-fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(ClaimSite)) {
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
+fn walk_claims(layout: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(ClaimSite)) {
+    let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
     let valcols = blake2s_value_columns();
     // Only the framework blocks raise claims: a table's coords are settled inside
     // the table sumcheck.
@@ -1141,7 +1162,7 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
             visit(ClaimSite::TableColumn {
                 table: t,
                 column,
-                is_virtual: l.placements[column].is_virtual(),
+                is_virtual: layout.placements[column].is_virtual(),
             });
         }
     }
@@ -1155,28 +1176,28 @@ fn walk_claims(l: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(Claim
 /// `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
     program: &Program,
-    pi: [F192; 2],
+    public_input: [F192; 2],
     summary: &lean_vm::cpu::VerifySummary,
 ) -> Result<(SubHints, DeferredSubproof), AggregateError> {
-    let raw = &summary.raw.stream;
-    let l = lean_vm::cpu::layout(
+    let proof_stream = &summary.raw.stream;
+    let layout = lean_vm::cpu::layout(
         &program.prog,
-        raw[0].c0 as usize,
-        std::array::from_fn(|i| raw[1 + i].c0 as usize),
-        pi,
+        proof_stream[0].c0 as usize,
+        std::array::from_fn(|i| proof_stream[1 + i].c0 as usize),
+        public_input,
     );
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
-    let lays: Vec<lean_vm::leaf::Layout> = sides.iter().map(|b| lean_vm::leaf::layout(b)).collect();
-    let smu: Vec<usize> = lays.iter().map(|x| x.mu).collect();
+    let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
+    let side_layouts: Vec<lean_vm::leaf::Layout> = sides.iter().map(|blocks| lean_vm::leaf::layout(blocks)).collect();
+    let side_mus: Vec<usize> = side_layouts.iter().map(|side| side.mu).collect();
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
-    assert!(*smu.iter().max().unwrap() <= MU_CAP && raw.len() <= STREAM_CAP);
+    assert!(*side_mus.iter().max().unwrap() <= MU_CAP && proof_stream.len() <= STREAM_CAP);
     // The guest holds one opening arm per candidate committed size, so a child
     // outside that window has no arm to dispatch to. `min_log_committed` keeps
     // every aggregate above the low end, leaving only the ceiling reachable.
-    if !(MU_MIN..=MU_MAX).contains(&l.shape.mu) {
+    if !(MU_MIN..=MU_MAX).contains(&layout.shape.mu) {
         return Err(AggregateError::ChildOutOfRange {
-            log_committed: l.shape.mu,
+            log_committed: layout.shape.mu,
         });
     }
 
@@ -1186,7 +1207,7 @@ fn gen_verify(
     let zeta: Vec<F192> = summary.bytecode_claims[0].point[..kbc].to_vec();
     let sb: Vec<F192> = summary.bytecode_claims[0].point[kbc..].to_vec();
 
-    let taus = l.taus;
+    let taus = layout.taus;
     // Flock replay data, all named struct fields.
     let lcrounds = flock::blake2s::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
@@ -1197,7 +1218,7 @@ fn gen_verify(
     let lrr = summary.lc_claim.r_rounds.clone();
 
     // ---- the stacked opening: config + the opening summary ----
-    let stack = whir_shape(l.shape.mu, summary.log_inv_rate);
+    let stack = whir_shape(layout.shape.mu, summary.log_inv_rate);
     let klvl = &stack.levels.ks;
 
     // flock's reduction ends at `flock_stream_end`, where the WHIR opening's own
@@ -1206,7 +1227,7 @@ fn gen_verify(
     // coefficient PAIRS of the `lcrounds` lincheck rounds: the linear one is not
     // sent, the running claim fixing it.
     let ns = summary.flock_stream_end;
-    let lcr: Vec<F192> = raw[ns - 64 - 2 * lcrounds..ns - 64].to_vec();
+    let lcr: Vec<F192> = proof_stream[ns - 64 - 2 * lcrounds..ns - 64].to_vec();
     let lcz: Vec<F192> = summary.lc_claim.s_hat_v.clone();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
@@ -1254,7 +1275,7 @@ fn gen_verify(
     let mut gbase = 0usize;
     for (s, blocks) in sides.iter().enumerate() {
         let mut order: Vec<usize> = (0..blocks.len()).collect();
-        order.sort_by_key(|&i| lays[s].offsets[i]);
+        order.sort_by_key(|&i| side_layouts[s].offsets[i]);
         for &i in &order {
             sort_order.push(F192::new(g_pow(gbase + i).0, 0, 0)); // g^{global block index}
         }
@@ -1275,12 +1296,12 @@ fn gen_verify(
         compact_col[global] = compact;
     }
     let mut col_order = committed_globals.clone();
-    col_order.sort_by_key(|&global| l.placements[global].offset);
+    col_order.sort_by_key(|&global| layout.placements[global].offset);
     let col_sort_order: Vec<F192> = col_order
         .iter()
         .map(|&global| F192::new(g_pow(compact_col[global]).0, 0, 0))
         .collect();
-    let log_mem = raw[0].c0 as usize;
+    let log_mem = proof_stream[0].c0 as usize;
 
     // ---- Phase E2 hints (the stacked WHIR opening) ----
     let lenris: usize = klvl.iter().sum();
@@ -1297,7 +1318,7 @@ fn gen_verify(
     }
     // claim descriptors, in exact clv order.
     let mut nover_v = Vec::new();
-    walk_claims(&l, program.prog.len().trailing_zeros() as usize, |site| {
+    walk_claims(&layout, program.prog.len().trailing_zeros() as usize, |site| {
         // Per claim, `nvt` is the full low span; when it exceeds `lenris` the point
         // overlaps the residual y region by `nover` coords. Stack selectors are not
         // emitted: the guest derives them from the certified committed-column offsets.
@@ -1313,7 +1334,7 @@ fn gen_verify(
             // The three PI memory lanes share one point [r_m, 0, 0, ...]; the coords
             // beyond `lenris` are const zero, so they fold into the y pattern instead
             // of a runtime overlap factor.
-            ClaimSite::MemoryLimb { column } => l.placements[column].n_vars.min(lenris),
+            ClaimSite::MemoryLimb { column } => layout.placements[column].n_vars.min(lenris),
         };
         nover_v.push(nvt.saturating_sub(lenris));
     });
@@ -1326,7 +1347,7 @@ fn gen_verify(
     let rs_nover = qflockv.saturating_sub(lenris);
 
     let deferred = DeferredSubproof {
-        public_input: pi,
+        public_input,
         bytecode_row_point: zeta,
         bytecode_selector_point: sb.clone(),
         bytecode_value,
@@ -1347,10 +1368,14 @@ fn gen_verify(
             // picks it up at `msg_cursor = cursor`, which sits where the flock
             // reduction stopped; the ring-switch messages are struct-observed and
             // still do not advance that cursor.
-            let mut v = raw.clone();
-            assert!(v.len() <= STREAM_CAP, "stream {} exceeds cap {STREAM_CAP}", v.len());
-            v.resize(STREAM_CAP, F192::ZERO);
-            v
+            let mut stream = proof_stream.clone();
+            assert!(
+                stream.len() <= STREAM_CAP,
+                "stream {} exceeds cap {STREAM_CAP}",
+                stream.len()
+            );
+            stream.resize(STREAM_CAP, F192::ZERO);
+            stream
         }),
         ("bytecode_val".to_string(), bcv),
         ("matpart".to_string(), vec![matpart]),
@@ -1507,17 +1532,20 @@ fn push_signature_hints(
     let wots = &sig.wots_signature;
     let mut randomness = [0u8; xmss::STATE_LEN];
     randomness[..xmss::RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
-    hints.push("rand", vec![val16(&randomness[..16]), val16(&randomness[16..])]);
+    hints.push(
+        "rand",
+        vec![pack_16_bytes(&randomness[..16]), pack_16_bytes(&randomness[16..])],
+    );
     let encoding =
         xmss::wots_encode(message, epoch, &pk.public_param, &wots.randomness).expect("a verified signature encodes");
     for &e in &encoding {
         hints.push("digits", vec![count(e as usize)]);
     }
     for tip in &wots.chain_tips {
-        hints.push("chain_starts", vec![val16(tip)]);
+        hints.push("chain_starts", vec![pack_16_bytes(tip)]);
     }
     for sibling in &sig.merkle_proof {
-        hints.push("siblings", vec![val16(sibling)]);
+        hints.push("siblings", vec![pack_16_bytes(sibling)]);
     }
 }
 
@@ -1605,10 +1633,13 @@ pub(crate) fn aggregate_tampered(
     );
     let fs_seed = lean_vm::cpu::fs_seed(guest);
     hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
-    hints.push("message", vec![val16(&message[..16]), val16(&message[16..])]);
+    hints.push(
+        "message",
+        vec![pack_16_bytes(&message[..16]), pack_16_bytes(&message[16..])],
+    );
     // Four cells an entry: one hashed block of the epoch digest.
     for quad in tweak_table(epoch).as_chunks::<4>().0 {
-        hints.push("tweaks", quad.iter().map(|t| val16(t)).collect());
+        hints.push("tweaks", quad.iter().map(|tweak| pack_16_bytes(tweak)).collect());
     }
     for quad in merkle_bit_cells(epoch).as_chunks::<4>().0 {
         hints.push("merkle_bits", quad.to_vec());
@@ -1717,23 +1748,23 @@ struct OpeningShape {
 
 /// The recursion program's placeholder map (the SHAPE-INDEPENDENT constants the
 /// generic guest is compiled from), built from the inner program's STRUCTURE and
-/// bytecode SIZE alone — no proof. Dummy layout sizes are fine: `rep` reads only the
+/// bytecode SIZE alone: no proof. Dummy layout sizes are fine: `rep` reads only the
 /// size-independent block/coord structure and `kbc = log2(bytecode)`, so the guest
 /// can be compiled BEFORE any inner proof exists. Because the map is a function of
 /// the inner bytecode size alone, one compiled guest serves every shape.
 fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
-    // Any valid sizes drive the layout — rep depends only on structure + kbc,
+    // Any valid sizes drive the layout: rep depends only on structure + kbc,
     // and the layout reads a program's length, never its instructions, so a
     // stand-in of the right size is what lets the map exist before the bytecode
     // it describes does.
     let stand_in = vec![lean_vm::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << kbc];
-    let l = lean_vm::cpu::layout(
+    let layout = lean_vm::cpu::layout(
         &stand_in,
         20,
         [1usize << 10; lean_vm::tables::N_TABLES],
         [F192::ZERO, F192::ZERO],
     );
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
+    let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
     let lcrounds = flock::blake2s::K_LOG - 6;
 
     // ---- flattened block/coord descriptors (structural) ----
@@ -1799,7 +1830,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
                 coord_tcount.push(term_type.len() - toff);
                 nbcv += usize::from(matches!(c, Coord::Public(_)));
                 ct.push(coord_kind(c) as u128);
-                cval.push(u(coord_scale(c)));
+                cval.push(dsl_u128(coord_scale(c)));
             }
         }
         sblk.push(nblocks);
@@ -1822,7 +1853,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     assert_ne!(qflock_compact, usize::MAX, "QFLOCK must be committed");
     let (mut cpbuf, mut cpcol, mut cpqslot): (Vec<usize>, Vec<usize>, Vec<usize>) = (vec![], vec![], vec![]);
     // `cpbuf` codes are the guest's POINT_BUF_*: 0 zeta, 1 chi, 2 pi, 3 qflock-chi.
-    walk_claims(&l, kbc, |site| match site {
+    walk_claims(&layout, kbc, |site| match site {
         ClaimSite::Framework { column, .. } => {
             let compact = compact_col_pm[column];
             assert_ne!(compact, usize::MAX, "framework claim must target a committed column");
@@ -1868,9 +1899,9 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     };
     ps("STREAM_CAP", STREAM_CAP.to_string());
     ps("MIN_LOG_MEM", lean_vm::cpu::MIN_LOG_MEM.to_string());
-    ps("INV_GEN", u(F192::new(G.inv().0, 0, 0)).to_string());
+    ps("INV_GEN", dsl_u128(F192::new(G.inv().0, 0, 0)).to_string());
     ps("MU_CAP", MU_CAP.to_string());
-    ps("NO_TABLE", l.taus.len().to_string());
+    ps("NO_TABLE", layout.taus.len().to_string());
     ps("GKR_ROUNDS_CAP", (MU_CAP * (MU_CAP + 1) / 2 + MU_CAP + 2).to_string());
     ps("GKR_POINTS_CAP", ((MU_CAP + 1) * MU_CAP).to_string());
     ps("SIDE_BLOCK_START", ints(&sblk));
@@ -1896,7 +1927,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         "BLOCK_TABLE",
         ints(
             &bks.iter()
-                .map(|&(s, _)| if s >= 2 { s - 2 } else { l.taus.len() })
+                .map(|&(s, _)| if s >= 2 { s - 2 } else { layout.taus.len() })
                 .collect::<Vec<_>>(),
         ),
     );
@@ -1924,12 +1955,12 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             for _ in 0..i {
                 g2k = g2k * g2k;
             }
-            u(F192::ONE + g2k)
+            dsl_u128(F192::ONE + g2k)
         })
         .collect();
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("N_CLAIMS", ncl.to_string());
-    ps("N_TABLES", l.taus.len().to_string());
+    ps("N_TABLES", layout.taus.len().to_string());
     // The table sumcheck's xi layout, from the native verifier's own numbers:
     // a disjoint range of identities per table, then THREE powers shared by every
     // table, one per bus side. Sharing is what lets the target be derived from the
@@ -1961,7 +1992,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     // Tower F192 = F64[Y]/(Y^3+Y+1), Y = new(0,1,0). Y_TOWER embeds Y for
     // AIR lane reassembly; Y_INV helps derive the top PI-memory limb.
     let y_tower = F192::new(0, 1, 0);
-    ps("Y_TOWER", u(y_tower).to_string());
+    ps("Y_TOWER", dsl_u128(y_tower).to_string());
     ps("Y_INV", f192_literal(y_tower.inv()));
     // Coordinate basis e_i of F192 over F2 (spans the whole field): the 64
     // binary basis vectors in each of the three tower limbs. The guest uses
@@ -1975,19 +2006,21 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         })
         .collect();
     ps("COORD_BASIS", flds(&coord_basis));
-    let inv_den = |nodes: &[F192], node: F192, skip: F192| {
-        let mut d = F192::ONE;
-        for &s in nodes {
-            if s != skip {
-                d *= node + s;
+    let inverse_denominator = |nodes: &[F192], node: F192, skipped_node: F192| {
+        let mut denominator = F192::ONE;
+        for &candidate in nodes {
+            if candidate != skipped_node {
+                denominator *= node + candidate;
             }
         }
-        d.inv()
+        denominator.inv()
     };
     let icmb: Vec<F192> = (0..64)
-        .map(|i| inv_den(&phi[..128], phi[64 + i], phi[64 + i]))
+        .map(|i| inverse_denominator(&phi[..128], phi[64 + i], phi[64 + i]))
         .collect();
-    let isdom: Vec<F192> = (0..64).map(|i| inv_den(&phi[..64], phi[i], phi[i])).collect();
+    let isdom: Vec<F192> = (0..64)
+        .map(|i| inverse_denominator(&phi[..64], phi[i], phi[i]))
+        .collect();
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
@@ -2026,13 +2059,13 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE2s chunk"
         );
         let psum = |f: &dyn Fn(usize) -> usize| -> Vec<usize> {
-            let mut o = Vec::with_capacity(cn);
+            let mut offsets = Vec::with_capacity(cn);
             let mut acc = 0;
             for lv in 0..cn {
-                o.push(acc);
+                offsets.push(acc);
                 acc += f(lv);
             }
-            o
+            offsets
         };
         let c_rowoff = psum(&|lv| cq[lv] * cni[lv] * if lv == 0 { 1 } else { 3 });
         let c_pathoff = psum(&|lv| cq[lv] * cd[lv] * 2);
@@ -2108,9 +2141,9 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     );
     {
         let pad = |v: &[usize], stride: usize| -> Vec<usize> {
-            let mut o = v.to_vec();
-            o.resize(stride, 0);
-            o
+            let mut padded = v.to_vec();
+            padded.resize(stride, 0);
+            padded
         };
         let flat = |f: &dyn Fn(&OpeningShape) -> Vec<usize>, stride: usize| -> Vec<usize> {
             cands.iter().flat_map(|c| pad(&f(c), stride)).collect()
@@ -2260,13 +2293,13 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         ps("LIG_VANISH_OFF", ints(&flat(&|c| c.vanish_offsets.clone(), maxlev)));
         let mut svk2 = Vec::new();
         let mut ivk2 = Vec::new();
-        for c in &cands {
-            let mut s = c.vanish_values.clone();
-            let mut iv = c.vanish_inverses.clone();
-            s.resize(maxsvk, F192::ZERO);
-            iv.resize(maxsvk, F192::ZERO);
-            svk2.extend(s);
-            ivk2.extend(iv);
+        for candidate in &cands {
+            let mut values = candidate.vanish_values.clone();
+            let mut inverses = candidate.vanish_inverses.clone();
+            values.resize(maxsvk, F192::ZERO);
+            inverses.resize(maxsvk, F192::ZERO);
+            svk2.extend(values);
+            ivk2.extend(inverses);
         }
         ps("LIG_VANISH_VALS", flds(&svk2));
         ps("LIG_VANISH_INVS", flds(&ivk2));
@@ -2276,7 +2309,10 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("LIG_N_LOG_SIZES", n_log_sizes.to_string());
     ps("LIG_N_RATES", n_rates.to_string());
     ps("LIG_N_CANDIDATES", (n_log_sizes * n_rates).to_string());
-    ps("LIG_MIN_SHIFT_INV", u(F192::new(g_pow(minm).inv().0, 0, 0)).to_string());
+    ps(
+        "LIG_MIN_SHIFT_INV",
+        dsl_u128(F192::new(g_pow(minm).inv().0, 0, 0)).to_string(),
+    );
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
     ps("CLAIM_COMMITTED_COL", ints(&cpcol));
     let slot_stride_log = lean_vm::blake2s_flock::SLOT_STRIDE_LOG;
@@ -2299,14 +2335,14 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = pack_state(FiatShamirState::new(b"leanvm-b", &[]).state());
-    ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
-    ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
+    ps("TRANSCRIPT_SEED_0", dsl_u128(label_state[0]).to_string());
+    ps("TRANSCRIPT_SEED_1", dsl_u128(label_state[1]).to_string());
     let agg_state = pack_state(FiatShamirState::new(RECURSION_AGG_LABEL, &[]).state());
-    ps("AGG_SEED_0", u(agg_state[0]).to_string());
-    ps("AGG_SEED_1", u(agg_state[1]).to_string());
+    ps("AGG_SEED_0", dsl_u128(agg_state[0]).to_string());
+    ps("AGG_SEED_1", dsl_u128(agg_state[1]).to_string());
     let tag = label_tag(RECURSION_STATEMENT_LABEL);
-    ps("STMT_TAG_0", u(val16(&tag[..16])).to_string());
-    ps("STMT_TAG_1", u(val16(&tag[16..])).to_string());
+    ps("STMT_TAG_0", dsl_u128(pack_16_bytes(&tag[..16])).to_string());
+    ps("STMT_TAG_1", dsl_u128(pack_16_bytes(&tag[16..])).to_string());
     let defer_cells = kbc + log2_bc_cols + 1 + 2 * flock::blake2s::K_LOG + 2;
     let (off, pairs) = (2 + STATEMENT_HEADER, defer_cells.div_ceil(2));
     let blocks = (off + 3 * pairs).div_ceil(4);
@@ -2315,11 +2351,11 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("STMT_PAD_CELLS", (4 * blocks - off - 3 * pairs).to_string());
     ps("STMT_BLOCKS", blocks.to_string());
     let etag = label_tag(EPOCH_LABEL);
-    ps("EPOCH_TAG_0", u(val16(&etag[..16])).to_string());
-    ps("EPOCH_TAG_1", u(val16(&etag[16..])).to_string());
+    ps("EPOCH_TAG_0", dsl_u128(pack_16_bytes(&etag[..16])).to_string());
+    ps("EPOCH_TAG_1", dsl_u128(pack_16_bytes(&etag[16..])).to_string());
     let pk_iv = chain_iv(PUBKEYS_LABEL);
-    ps("PK_IV_0", u(pk_iv[0]).to_string());
-    ps("PK_IV_1", u(pk_iv[1]).to_string());
+    ps("PK_IV_0", dsl_u128(pk_iv[0]).to_string());
+    ps("PK_IV_1", dsl_u128(pk_iv[1]).to_string());
 
     // The XMSS instance, from which the guest derives every table width by
     // compile-time integer arithmetic.
@@ -2386,114 +2422,75 @@ fn compile_guest(kbc: usize) -> Program {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::signers_cache::{EPOCH, get_signers, message};
 
-    /// Small enough that the leaf's committed witness needs padding up to the
-    /// floor, which is the case the fill has to handle.
-    const LEAF: usize = 6;
+    const SMALL_LEAF_SIZE: usize = 6;
+    const LOG_INV_RATE: usize = lean_vm::pcs::LOG_INV_RATE;
 
-    /// The smallest possible aggregate. A single signature is far below the
-    /// committed floor, so this is the case where the fill has to do the most
-    /// work, and where a growth schedule that only approaches the floor
-    /// geometrically runs out of rounds.
+    fn prove_leaf(signers: &[(XmssPublicKey, XmssSignature)]) -> AggregateSignature {
+        aggregate(&[], signers.to_vec(), message(), EPOCH, LOG_INV_RATE).expect("leaf aggregates")
+    }
+
     #[test]
     fn aggregate_one_signer() {
         lean_vm::init_prover_pool();
-        let agg = aggregate(&[], get_signers(1), message(), EPOCH, lean_vm::pcs::LOG_INV_RATE).expect("aggregates");
-        agg.verify().expect("verifies");
-        agg.verify_against(&message(), EPOCH)
+        let aggregate = prove_leaf(&get_signers(1));
+        aggregate.verify().expect("verifies");
+        aggregate
+            .verify_against(&message(), EPOCH)
             .expect("verifies against its statement");
         assert_eq!(
-            agg.verify_against(&message(), EPOCH + 1),
+            aggregate.verify_against(&message(), EPOCH + 1),
             Err(VerifyError::UnexpectedStatement)
         );
     }
 
-    /// A leaf: raw signatures only, no children. Exercises the whole node
-    /// machinery except recursion, so it is the fast check that the statement,
-    /// the epoch binding, the signer-set digest and the coverage argument agree
-    /// between the guest and this file.
-    #[test]
-    fn aggregate_leaf() {
-        lean_vm::init_prover_pool();
-        let raw = get_signers(3);
-        let agg = aggregate(&[], raw, message(), EPOCH, lean_vm::pcs::LOG_INV_RATE).expect("leaf aggregates");
-        agg.verify().expect("leaf verifies");
-        assert_eq!(agg.public_keys.len(), 3);
-    }
-
-    /// Two leaves into one node: the real recursion step. The node rebuilds each
-    /// child's statement from indices into its own signer table, verifies both
-    /// proofs in-circuit, and batches four bytecode claims and six matrix claims
-    /// into the one pair it defers.
-    ///
-    /// The two leaves are deliberately different sizes, so one is padded up to the
-    /// committed floor and the other reaches it on its own: the node then
-    /// dispatches a different opening arm per child.
     #[test]
     fn aggregate_two_to_one() {
         lean_vm::init_prover_pool();
-        let rate = lean_vm::pcs::LOG_INV_RATE;
-        let signers = get_signers(LEAF + 60);
-        let left = aggregate(&[], signers[..LEAF].to_vec(), message(), EPOCH, rate).expect("left leaf");
-        let right = aggregate(&[], signers[LEAF..].to_vec(), message(), EPOCH, rate).expect("right leaf");
-        let node = aggregate(&[left, right], vec![], message(), EPOCH, rate).expect("node aggregates");
+        let signers = get_signers(SMALL_LEAF_SIZE + 60);
+        let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
+        let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
+        let node = aggregate(&[left, right], vec![], message(), EPOCH, LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
-        assert_eq!(node.public_keys.len(), LEAF + 60);
+        assert_eq!(node.public_keys.len(), SMALL_LEAF_SIZE + 60);
     }
 
-    /// Overlapping committees, which is the case recursion exists for: the two
-    /// leaves share signers, so the union is smaller than the sum and the
-    /// repeats land in duplicate coverage slots.
     #[test]
     fn aggregate_overlapping_signers() {
         lean_vm::init_prover_pool();
-        let rate = lean_vm::pcs::LOG_INV_RATE;
-        // 25 + 25 signers sharing 10, so ten repeats take duplicate slots.
         let signers = get_signers(40);
-        let left = aggregate(&[], signers[..25].to_vec(), message(), EPOCH, rate).expect("left leaf");
-        let right = aggregate(&[], signers[15..].to_vec(), message(), EPOCH, rate).expect("right leaf");
-        let node = aggregate(&[left, right], vec![], message(), EPOCH, rate).expect("node aggregates");
+        let left = prove_leaf(&signers[..25]);
+        let right = prove_leaf(&signers[15..]);
+        let node = aggregate(&[left, right], vec![], message(), EPOCH, LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
-        assert_eq!(node.public_keys.len(), 40, "the union, not the sum");
+        assert_eq!(node.public_keys.len(), 40);
         assert!(node.public_keys.windows(2).all(|w| w[0] < w[1]));
     }
 
-    /// A node of nodes, plus raw signatures joining at the top: proofs whose
-    /// children are themselves recursive, so the root batches claims that were
-    /// already batched once. Slow enough to keep out of the default run.
     #[test]
     #[ignore]
     fn aggregate_three_levels() {
         lean_vm::init_prover_pool();
-        let rate = lean_vm::pcs::LOG_INV_RATE;
-        let signers = get_signers(4 * LEAF + 2);
-        let leaf = |k: usize| {
-            aggregate(&[], signers[k * LEAF..(k + 1) * LEAF].to_vec(), message(), EPOCH, rate).expect("leaf")
-        };
-        let left = aggregate(&[leaf(0), leaf(1)], vec![], message(), EPOCH, rate).expect("left node");
-        let right = aggregate(&[leaf(2), leaf(3)], vec![], message(), EPOCH, rate).expect("right node");
-        let extra = signers[4 * LEAF..].to_vec();
-        let root = aggregate(&[left, right], extra, message(), EPOCH, rate).expect("root aggregates");
+        let signers = get_signers(4 * SMALL_LEAF_SIZE + 2);
+        let leaf = |index: usize| prove_leaf(&signers[index * SMALL_LEAF_SIZE..(index + 1) * SMALL_LEAF_SIZE]);
+        let left = aggregate(&[leaf(0), leaf(1)], vec![], message(), EPOCH, LOG_INV_RATE).expect("left node");
+        let right = aggregate(&[leaf(2), leaf(3)], vec![], message(), EPOCH, LOG_INV_RATE).expect("right node");
+        let extra = signers[4 * SMALL_LEAF_SIZE..].to_vec();
+        let root = aggregate(&[left, right], extra, message(), EPOCH, LOG_INV_RATE).expect("root aggregates");
         root.verify().expect("root verifies");
-        assert_eq!(root.public_keys.len(), 4 * LEAF + 2);
+        assert_eq!(root.public_keys.len(), 4 * SMALL_LEAF_SIZE + 2);
     }
 
-    /// The statement binds everything an aggregate claims. Each tamper below
-    /// changes one field of an honest node and must stop it verifying; the
-    /// signer set and the deferred points are the interesting ones, being the
-    /// only parts a receiver reads rather than derives.
     #[test]
     #[ignore]
     fn aggregate_statement_binds() {
         lean_vm::init_prover_pool();
-        let rate = lean_vm::pcs::LOG_INV_RATE;
-        let signers = get_signers(2 * LEAF);
-        let left = aggregate(&[], signers[..LEAF].to_vec(), message(), EPOCH, rate).expect("left leaf");
-        let right = aggregate(&[], signers[LEAF..].to_vec(), message(), EPOCH, rate).expect("right leaf");
-        let node = aggregate(&[left, right], vec![], message(), EPOCH, rate).expect("node");
+        let signers = get_signers(2 * SMALL_LEAF_SIZE);
+        let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
+        let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
+        let node = aggregate(&[left, right], vec![], message(), EPOCH, LOG_INV_RATE).expect("node");
         node.verify().expect("the honest node verifies");
 
         assert_eq!(
@@ -2508,12 +2505,12 @@ mod tests {
                 .expect("round trip");
         without.verify().expect("a caller-supplied signer set verifies");
 
-        let tampered = |f: &dyn Fn(&mut AggregateSignature)| {
+        let tampered = |mutate: &dyn Fn(&mut AggregateSignature)| {
             let mut bad = node.clone();
-            f(&mut bad);
+            mutate(&mut bad);
             assert!(bad.verify().is_err(), "a tampered aggregate must not verify");
         };
-        tampered(&|s| s.public_keys[0] = s.public_keys[1].clone()); // duplicate: unsorted
+        tampered(&|s| s.public_keys[0] = s.public_keys[1].clone());
         tampered(&|s| {
             s.public_keys.swap(0, 1);
         });
@@ -2524,8 +2521,7 @@ mod tests {
         tampered(&|s| s.message[0] ^= 1);
         tampered(&|s| s.defer.bytecode_point[0] += F192::ONE);
         tampered(&|s| s.defer.matrix_point[0] += F192::ONE);
-        // A signer set the aggregate never covered, of the right length.
-        tampered(&|s| s.public_keys[0] = get_signers(2 * LEAF + 1)[2 * LEAF].0.clone());
+        tampered(&|s| s.public_keys[0] = get_signers(2 * SMALL_LEAF_SIZE + 1)[2 * SMALL_LEAF_SIZE].0.clone());
     }
 
     /// The all-zeros fast path in `DeferredClaim::recompute` must agree with the
@@ -2539,61 +2535,58 @@ mod tests {
             let bytecode_value = mle_eval_par(stacked_bytecode(), &leaf.bytecode_point);
             let eq_r = pcs::whir::build_eq_table_ext(&leaf.matrix_point[..klog]);
             let eq_c = pcs::whir::build_eq_table_ext(&leaf.matrix_point[klog..]);
-            let (a, b) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
-            (bytecode_value, a, b)
+            let (matrix_a_value, matrix_b_value) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
+            (bytecode_value, matrix_a_value, matrix_b_value)
         };
         assert_eq!((leaf.bytecode_value, leaf.matrix_a_value, leaf.matrix_b_value), general);
     }
 
-    /// A named corruption of one hint stream.
     type Tamper<'a> = (&'a str, &'a dyn Fn(&mut Hints));
 
-    /// The witness binds. Everything the coverage argument and the claim
-    /// batching rest on is a guest assert over prover advice, so the only way to
-    /// test them is to lie in a hint and require the guest to notice. Each
-    /// tamper below must stop the aggregate existing or stop it verifying.
-    ///
-    /// This is the descendant of the deleted `recursion_soundness_binds`, and it
-    /// is the test that covers the coverage bijection, the runtime-bounded index
-    /// range check, and the new `rs_nover` and carried-claim hints.
+    /// Corrupt each security-critical hint and require rejection.
     #[test]
     #[ignore]
     fn aggregate_hints_bind() {
         lean_vm::init_prover_pool();
-        let rate = lean_vm::pcs::LOG_INV_RATE;
-        let signers = get_signers(2 * LEAF);
-        let (msg, ep) = (message(), EPOCH);
+        let signers = get_signers(2 * SMALL_LEAF_SIZE);
+        let statement_message = message();
 
         let rejects = |children: &[AggregateSignature],
-                       raw: Vec<(XmssPublicKey, XmssSignature)>,
-                       what: &str,
+                       raw_signatures: Vec<(XmssPublicKey, XmssSignature)>,
+                       description: &str,
                        tamper: &dyn Fn(&mut Hints)| {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                aggregate_tampered(children, raw, msg, ep, rate, |h| tamper(h)).map(|(sig, _)| sig.verify().is_ok())
+                aggregate_tampered(
+                    children,
+                    raw_signatures,
+                    statement_message,
+                    EPOCH,
+                    LOG_INV_RATE,
+                    |hints| tamper(hints),
+                )
+                .map(|(signature, _)| signature.verify().is_ok())
             }));
-            assert!(!matches!(outcome, Ok(Ok(true))), "tampering {what} must be rejected");
+            assert!(
+                !matches!(outcome, Ok(Ok(true))),
+                "tampering {description} must be rejected"
+            );
         };
 
-        // ---- a leaf: coverage, the signer table, and the leaf's own claim ----
-        let raw = signers[..LEAF].to_vec();
-        aggregate(&[], raw.clone(), msg, ep, rate).expect("the honest leaf aggregates");
+        let raw_signatures = signers[..SMALL_LEAF_SIZE].to_vec();
+        prove_leaf(&raw_signatures);
         let leaf_cases: &[Tamper] = &[
-            // Two signatures covering one slot: write-once sees two different
-            // counter values at one address.
             ("raw_index (duplicate slot)", &|h: &mut Hints| {
-                let e = h.entries("raw_index");
-                e[1] = e[0].clone();
+                let entries = h.entries("raw_index");
+                entries[1] = entries[0].clone();
             }),
-            // An index past the declared set, which only the runtime-bounded
-            // range check stops.
             ("raw_index (out of range)", &|h: &mut Hints| {
-                h.entries("raw_index")[0] = vec![count(LEAF)];
+                h.entries("raw_index")[0] = vec![count(SMALL_LEAF_SIZE)];
             }),
             ("meta (n_keys inflated)", &|h: &mut Hints| {
-                h.entries("meta")[0][0] = count(LEAF + 1);
+                h.entries("meta")[0][0] = count(SMALL_LEAF_SIZE + 1);
             }),
             ("meta (n_raw understated)", &|h: &mut Hints| {
-                h.entries("meta")[0][2] = count(LEAF - 1);
+                h.entries("meta")[0][2] = count(SMALL_LEAF_SIZE - 1);
             }),
             ("meta (a spurious duplicate slot)", &|h: &mut Hints| {
                 h.entries("meta")[0][1] = count(1);
@@ -2611,25 +2604,24 @@ mod tests {
                 h.entries("tweaks")[0][0] += F192::ONE;
             }),
         ];
-        for (what, tamper) in leaf_cases {
-            rejects(&[], raw.clone(), what, *tamper);
+        for (description, tamper) in leaf_cases {
+            rejects(&[], raw_signatures.clone(), description, *tamper);
         }
 
-        // ---- a node: the child statements, the batching, and rs_nover ----
-        let left = aggregate(&[], signers[..LEAF].to_vec(), msg, ep, rate).expect("left leaf");
-        let right = aggregate(&[], signers[LEAF..].to_vec(), msg, ep, rate).expect("right leaf");
+        let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
+        let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
         let children = vec![left, right];
-        aggregate(&children, vec![], msg, ep, rate).expect("the honest node aggregates");
+        aggregate(&children, vec![], statement_message, EPOCH, LOG_INV_RATE).expect("the honest node aggregates");
         let node_cases: &[Tamper] = &[
             ("child_index (duplicate slot)", &|h: &mut Hints| {
-                let e = h.entries("child_index");
-                e[1] = e[0].clone();
+                let entries = h.entries("child_index");
+                entries[1] = entries[0].clone();
             }),
             ("child_index (out of range)", &|h: &mut Hints| {
-                h.entries("child_index")[0] = vec![count(2 * LEAF)];
+                h.entries("child_index")[0] = vec![count(2 * SMALL_LEAF_SIZE)];
             }),
             ("child_n_keys", &|h: &mut Hints| {
-                h.entries("child_n_keys")[0][0] = count(LEAF - 1);
+                h.entries("child_n_keys")[0][0] = count(SMALL_LEAF_SIZE - 1);
             }),
             ("child_defer (a forged carried claim)", &|h: &mut Hints| {
                 h.entries("child_defer")[0][0] += F192::ONE;
@@ -2651,22 +2643,19 @@ mod tests {
                 h.entries("matpart")[0][0] += F192::ONE;
             }),
         ];
-        for (what, tamper) in node_cases {
-            rejects(&children, vec![], what, *tamper);
+        for (description, tamper) in node_cases {
+            rejects(&children, vec![], description, *tamper);
         }
     }
 
-    /// A signature that does not match its public key cannot be aggregated: the
-    /// guest's Merkle-root equality fails during witness generation, which is
-    /// how a failed guest assert surfaces.
     #[test]
     #[ignore]
     fn aggregate_rejects_a_bad_signature() {
         lean_vm::init_prover_pool();
-        let mut raw = get_signers(3);
-        raw[1].1.wots_signature.chain_tips[0][0] ^= 1;
+        let mut raw_signatures = get_signers(3);
+        raw_signatures[1].1.wots_signature.chain_tips[0][0] ^= 1;
         let built = std::panic::catch_unwind(|| {
-            aggregate(&[], raw, message(), EPOCH, lean_vm::pcs::LOG_INV_RATE).map(|s| s.verify().is_ok())
+            aggregate(&[], raw_signatures, message(), EPOCH, LOG_INV_RATE).map(|signature| signature.verify().is_ok())
         });
         assert!(
             !matches!(built, Ok(Ok(true))),

@@ -1,20 +1,4 @@
-//! Streaming (non-temporal) stores, for buffers written once and not read back
-//! until a later pass.
-//!
-//! An ordinary store first fetches the cache line it is about to overwrite, so
-//! such a buffer costs its own size twice in memory traffic. On x86 that roughly
-//! halves the useful write bandwidth of a large multi-threaded fill.
-//!
-//! The saving is real only where the destination is genuinely cold at its next
-//! read. Where a consumer follows in the same pass, the fetch a streaming store
-//! avoids simply becomes that consumer's miss, and the change is a loss.
-//!
-//! Apple silicon has no such fetch to elide, which is why this degenerates to a
-//! copy there rather than wanting an `STNP` arm. A store-only fill there reaches
-//! the same bandwidth as a read-only pass over the same buffer, where a
-//! read-for-ownership would have held useful writes near half of it, and `STNP`
-//! measures identical to `STP` at every thread count. `DC ZVA` does avoid the
-//! fetch, but it only zeroes, so it cannot publish a computed buffer.
+//! Streaming stores for x86 buffers written once and read in a later pass. Other targets use ordinary copies.
 
 use std::marker::PhantomData;
 
@@ -128,7 +112,6 @@ unsafe fn stream_lines(dst: *mut u8, src: *const u8, bytes: usize) {
 mod tests {
     use super::*;
 
-    /// Every alignment and length the head/body/tail split has to get right.
     #[test]
     fn streamed_copy_matches_a_plain_one() {
         let src: Vec<u32> = (0..600u32).collect();

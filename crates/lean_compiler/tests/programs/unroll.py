@@ -1,9 +1,9 @@
 # `for i in unroll(a, b)` replicates the body at compile time, i substituted
-# as the integer literal of each iteration — zero loop overhead (no call, no
+# as the integer literal of each iteration: zero loop overhead (no call, no
 # frame, no counter). Bounds are compile-time integers, including Const
 # parameters: `chain(buf, 3)` specializes and unrolls three BLAKE2s steps over
 # heap slices indexed by `i` (a 256-bit BLAKE2s value is two canonical cells).
-# Published: the two 128-bit digest cells of H^3(5, 7) — same chain as
+# Published: the two 128-bit digest cells of H^3(5, 7): same chain as
 # blake2s_heap_chain.py, unrolled instead of looped.
 # public_input: 64347157528245356000384183465036755063, 163839818445703091465558660402169004232
 from snark_lib import *

@@ -1,10 +1,10 @@
-# `Const` parameters: `def hash_pair(buf, k: Const)` is a template — each call
+# `Const` parameters: `def hash_pair(buf, k: Const)` is a template: each call
 # site passes a compile-time constant and gets a monomorphized copy with `k`
 # substituted as the integer literal, usable in compile-time positions (the
 # slice bounds below). The direct call and match_range arm 0 share the k=0
 # specialization. A 256-bit BLAKE2s value occupies two canonical cells.
 # Published: the two 128-bit digest cells of H(quad0, quad0) XOR H(quad1, quad1)
-# — the direct k=0 digest XORed with the arm the runtime x = GEN selects (k=1).
+#: the direct k=0 digest XORed with the arm the runtime x = GEN selects (k=1).
 # public_input: 252517949230448393340326710819579834691, 263897057969456650752475895236275386743
 from snark_lib import *
 

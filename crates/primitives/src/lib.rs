@@ -260,10 +260,6 @@ mod formatting_tests {
             pretty_integer(u128::MAX),
             "340,282,366,920,938,463,463,374,607,431,768,211,455"
         );
-    }
-
-    #[test]
-    fn pretty_integer_preserves_sign() {
         assert_eq!(pretty_integer(-12_345), "-12,345");
         assert_eq!(pretty_integer("+123456"), "+123,456");
     }
@@ -276,10 +272,6 @@ mod formatting_tests {
         assert_eq!(pretty_f64(-12_345.6), "-12,345.6");
         assert_eq!(pretty_f64(-0.0), "0");
         assert_eq!(pretty_f64(0.000_000_000_012_345), "0.0000000000123");
-    }
-
-    #[test]
-    fn pretty_f64_preserves_non_finite_values() {
         assert_eq!(pretty_f64(f64::INFINITY), "inf");
         assert_eq!(pretty_f64(f64::NEG_INFINITY), "-inf");
         assert_eq!(pretty_f64(f64::NAN), "NaN");
@@ -298,7 +290,7 @@ pub fn log2_ceil_usize(n: usize) -> usize {
 }
 
 /// Arena-backed parallel `(0..n).map(build).collect()`: one allocation on the
-/// calling thread, filled in place by the workers — no per-worker intermediate
+/// calling thread, filled in place by the workers: no per-worker intermediate
 /// vectors to allocate and copy out of. This lives here rather than in
 /// `zk_alloc` so the allocator itself stays free of a thread-pool dependency.
 pub fn par_collect_arena<T: Send>(n: usize, build: impl Fn(usize) -> T + Sync) -> zk_alloc::ArenaVec<T> {

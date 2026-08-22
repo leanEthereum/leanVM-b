@@ -1,11 +1,5 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Merkle data as it appears in a proof: the digest encoding, the leaf and node
-//! hashes, and one opening phase's pruned octopus.
-//!
-//! This is the transport half of the Merkle machinery, so it sits beside the
-//! transcript that carries it. Building a tree over a whole codeword is a
-//! committer concern and lives in `pcs::merkle`; nothing here needs the tree,
-//! only the sibling hashes a phase actually transmits.
+//! Digest encoding and Merkle openings carried by proofs.
 
 use crate::transcript::Error;
 use primitives::field::{F64, F192};
@@ -18,8 +12,11 @@ pub type Hash = [u8; 32];
 /// guest's MD state), so the VM sees one shape everywhere.
 #[inline]
 pub fn hash_to_scalars(hash: &Hash) -> [F192; 2] {
-    let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
-    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
+    let word_at = |offset: usize| u64::from_le_bytes(hash[offset..offset + 8].try_into().unwrap());
+    [
+        F192::new(word_at(0), word_at(8), 0),
+        F192::new(word_at(16), word_at(24), 0),
+    ]
 }
 
 /// Decode [`hash_to_scalars`]. Fallible because both halves come off the proof
@@ -44,9 +41,7 @@ pub fn hash_leaf(data: &[u8]) -> Hash {
     primitives::blake2s::hash(data)
 }
 
-/// Hash a pair of children into a parent node (64 B → 32 B): `f(a, b) =
-/// BLAKE2s(a‖b)`, one compression, which IS leanVM-b's `Blake2s` opcode
-/// (`vmhash::compress`).
+/// Hash two children into their parent.
 #[inline]
 pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     let mut buf = [0u8; 64];
@@ -55,13 +50,7 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     primitives::blake2s::hash(&buf)
 }
 
-/// The full leaf image a stored row stands for: `leaf_words - row.len()` zero words,
-/// then the row.
-///
-/// A padding-free L0 commitment stores only the lanes that carry data, while the
-/// image the tree was built over is the full `leaf_words` wide, the absent lanes
-/// leading (`pcs::merkle::merkle_tree_padded_rows` shares their hash prefix across
-/// every leaf). Every other level stores its full row, so the prefix is empty.
+/// Restore a stored row's omitted zero prefix.
 fn leaf_image(row: &[F64], leaf_words: usize) -> Vec<F64> {
     let mut image = vec![F64::ZERO; leaf_words];
     image[leaf_words - row.len()..].copy_from_slice(row);
@@ -80,10 +69,10 @@ fn hash_words(image: &[F64]) -> Hash {
 /// Query positions with duplicates removed, ascending: the order a phase stores
 /// its rows in, and the order the octopus is built and checked against.
 fn sorted_unique(queries: &[usize]) -> Vec<usize> {
-    let mut s = queries.to_vec();
-    s.sort_unstable();
-    s.dedup();
-    s
+    let mut unique = queries.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    unique
 }
 
 /// One opening phase's Merkle data: the rows opened at each distinct queried
@@ -278,7 +267,6 @@ impl RawMerklePath {
 mod tests {
     use super::*;
 
-    /// A full binary tree over `rows`, in the flat bottom-up layout `prune` reads.
     fn tree_of(rows: &[Vec<F64>]) -> Vec<Hash> {
         let mut tree: Vec<Hash> = rows.iter().map(|r| hash_words(r)).collect();
         let (mut start, mut len) = (0usize, rows.len());
@@ -292,10 +280,6 @@ mod tests {
         tree
     }
 
-    /// `prune` then `open` accepts, re-fans to query order, and hands back each
-    /// query's full path, which authenticates on its own against the root.
-    /// Unsorted queries with duplicates throughout, which is what the query
-    /// sampler actually produces.
     #[test]
     fn prune_open_roundtrip() {
         let (num_leaves, width, height) = (8usize, 4usize, 3usize);
@@ -318,8 +302,6 @@ mod tests {
         }
     }
 
-    /// Every way a phase can be malformed must come back `None`, never a panic
-    /// and never an accept: the octopus is attacker-supplied.
     #[test]
     fn malformed_phases_are_rejected() {
         let (num_leaves, width) = (8usize, 4usize);
@@ -368,8 +350,6 @@ mod tests {
         assert!(open(&good, &queries, width, 7).is_none(), "non-power-of-two tree");
     }
 
-    /// A digest half is 128 bits, so a stream word with a nonzero third limb is
-    /// rejected rather than silently truncated (or asserted on).
     #[test]
     fn non_canonical_digest_halves_are_rejected() {
         let hash: Hash = std::array::from_fn(|i| (i * 7 + 1) as u8);

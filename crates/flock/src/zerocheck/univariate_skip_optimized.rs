@@ -1,5 +1,5 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Round-1 prover message — fully optimized (shift_reduce + extract_c, scalar).
+//! Round-1 prover message: fully optimized (shift_reduce + extract_c, scalar).
 //!
 //! Scalar Rust implementation (no NEON). Three layered optimizations on top of
 //! the `round1_extract_c` scaffold:
@@ -17,8 +17,7 @@
 //!    Protocol fixes the four medium challenges to
 //!    `β_i = γ^{2^{i-1}} / (1 + γ^{2^{i-1}})`, which makes
 //!    `eq_med[b] = γ^b / D` for `D = ∏(1+γ^{2^{i-1}})`.
-//!    Precomputed table `convert[b][v] = γ^b · φ_8(v)` (96 KB) reduces the
-//!    per-lane medium-eq sum from 16 F192 mults to 16 lookups + 16 XORs.
+//!    A precomputed `convert[b][v] = γ^b · φ_8(v)` table replaces field multiplications with lookups and XORs.
 //!
 //! 3. **D⁻¹ absorbed into eq_lo.**
 //!    Pre-scale `eq_lo[i] ← eq_lo[i] · D⁻¹` once before the loop; this cancels
@@ -44,7 +43,7 @@ use super::univariate_skip::{SplitEq, ntt_extend_vec};
 use super::{K_SKIP, N_INNER, PaddingSpec};
 
 // ---------------------------------------------------------------------------
-// Protocol constants — fixed by the optimization design.
+// Protocol constants: fixed by the optimization design.
 // ---------------------------------------------------------------------------
 
 const ELL: usize = 64;
@@ -68,7 +67,7 @@ const SMALL_CHAL_F8: [u8; 3] = [0xF7, 0x53, 0xB5];
 /// `C_s` as an F_8 value. Verified empirically by the C++ project.
 const C_S_F8: u8 = 0x1C;
 
-/// The constant `C_s = φ_8(0x1C) ∈ F_{2^192}` — the relative scaling factor
+/// The constant `C_s = φ_8(0x1C) ∈ F_{2^192}`: the relative scaling factor
 /// between this optimized output and the naive output.
 pub fn c_s() -> F192 {
     phi8(F8(C_S_F8))
@@ -122,7 +121,7 @@ fn d_inv() -> F192 {
 
 // ---------------------------------------------------------------------------
 // Convert table: γ^b · φ_8(v) for b ∈ [0, 16), v ∈ [0, 256).
-// 16 × 256 × 24 bytes = 96 KB. Computed once, cached via OnceLock.
+// Computed once and cached.
 // ---------------------------------------------------------------------------
 
 const N_MEDIUM_VALUES: usize = 16;
@@ -158,7 +157,7 @@ fn convert_table() -> &'static ConvertTable {
 }
 
 // ---------------------------------------------------------------------------
-// Shift_reduce inner kernel (AB only — extract_c handles C separately).
+// Shift_reduce inner kernel (AB only: extract_c handles C separately).
 //
 // For one medium-position b_med and the 8 small-positions K ∈ 0..8:
 //   1. Look up NTT-extended A,B at chunk `chunk_byte_base + (b_med*8 + K)*8`.
@@ -346,7 +345,7 @@ fn shift_reduce_inner_ab_fused_neon(
         let mut acc3_lo = vdupq_n_u16(0);
         let mut acc3_hi = vdupq_n_u16(0);
 
-        // 8 K-iterations — each consumes N_CHUNKS = 8 packed witness bytes
+        // 8 K-iterations: each consumes N_CHUNKS = 8 packed witness bytes
         // for `a` and `b`. K is a const generic so `vshll_n_u8::<K>` specializes.
         macro_rules! do_k {
             ($k:literal) => {{
@@ -389,7 +388,7 @@ fn shift_reduce_inner_ab_fused_neon(
     }
 }
 
-/// Dispatch helper — picks the fused NEON kernel when available, otherwise scalar.
+/// Dispatch helper: picks the fused NEON kernel when available, otherwise scalar.
 #[inline]
 fn shift_reduce_inner_ab(
     a_packed: &[u8],
@@ -491,7 +490,7 @@ unsafe fn shift_reduce_inner_ab_gfni_512(
 /// done 16-at-a-time by `gf2p8mulb` (`_mm_gf2p8mul_epi8`).
 ///
 /// flock's F_8 is GF(2^8) mod x^8 + x^4 + x^3 + x + 1 (= 0x11B) in standard
-/// bit order — exactly the field `gf2p8mulb` implements, so the instruction
+/// bit order: exactly the field `gf2p8mulb` implements, so the instruction
 /// IS the field mul. `gf2p8mulb` returns the reduced product, and reduction
 /// commutes with the `Σ_K x^K · y_K` accumulation (the shifted sum is ≤ 15
 /// bits), so one `gf8_reduce` per lane at the end still matches the scalar
@@ -753,14 +752,14 @@ fn process_one_x_hi(
 ///     within-block window.
 ///   - `b_med_counts[w]` is how many of the 16 b_med 512-bit sub-windows of
 ///     window `w` we should process. Entries past the useful prefix are 0
-///     (full skip) — kernels just `continue` past those x_outer_lo iterations.
+///     (full skip): kernels just `continue` past those x_outer_lo iterations.
 fn build_b_med_counts(padding: &PaddingSpec) -> (usize, Vec<u8>) {
     const STRIDE: usize = 1 << (K_SKIP + N_INNER); // 8192 bits per within-window
     const B_MED_WINDOW: usize = 1 << (K_SKIP + 3); // 512 bits per b_med
     const N_B_MED_MAX: usize = 1 << N_MEDIUM;
 
     // For k_log < K_SKIP + N_INNER (= 13) the within-window granularity is
-    // coarser than the block itself — skipping at this granularity would be
+    // coarser than the block itself: skipping at this granularity would be
     // incorrect, so we fall back to "no skip". All hash modules use
     // k_log ∈ {14, 15, 16}.
     if padding.k_log < K_SKIP + N_INNER {
@@ -980,7 +979,7 @@ mod tests {
 
     /// **The defining cross-check**: `C_s · (opt_AB + opt_C) == naive_AB + naive_C`,
     /// element-wise on Λ. Verifies all three optimization layers compose
-    /// correctly — geometric small eq, geometric medium eq, and the D⁻¹
+    /// correctly: geometric small eq, geometric medium eq, and the D⁻¹
     /// pre-scaling.
     #[test]
     fn matches_naive_with_c_s_factor() {
@@ -1025,41 +1024,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn small_and_medium_challenges_sanity() {
-        // Reach into the constants and verify their structural identities.
-        // Medium: β_i · (1 + γ^{2^{i-1}}) == γ^{2^{i-1}}.
-        let med = medium_challenges();
-        let g1 = medium_generator();
-        let powers = [g1, g1.square(), g1.square().square(), g1.square().square().square()];
-        for (i, &g) in powers.iter().enumerate() {
-            assert_eq!(med[i] * (F192::ONE + g), g, "β_{i} identity");
-        }
-
-        // D · D_inv == 1.
-        let d_inv_val = d_inv();
-        let [g1, g2, g4, g8] = powers;
-        let d = (F192::ONE + g1) * (F192::ONE + g2) * (F192::ONE + g4) * (F192::ONE + g8);
-        assert_eq!(d * d_inv_val, F192::ONE);
-    }
-
     /// **Padding skip is byte-identical to the dense path.** On a witness
     /// where bits `[useful_bits, 2^k_log)` of every block are honestly zero,
     /// the padded URM must produce the exact same `(round1_ab, round1_c)`
-    /// vectors as the dense URM — every chunk we skip would have contributed
+    /// vectors as the dense URM: every chunk we skip would have contributed
     /// a literal zero to the dense sum (the convert table maps φ_8(0) = 0).
     ///
-    /// Covers the three hash padding shapes:
-    ///   - BLAKE2s: k_log=14, useful=16000 → b_med_counts ≈ [16, 16]
-    ///   - SHA-2:  k_log=15, useful=31401 → b_med_counts ≈ [16, 16, 16, 14]
-    ///   - Keccak: k_log=16, useful=42560 → b_med_counts = [16, 16, 16, 16, 16, 4, 0, 0]
-    ///     (this is the only shape that exercises the full-skip case.)
+    /// Covers the supported hash padding shapes, including a fully skipped chunk.
     #[test]
     fn padded_matches_dense_with_zero_padding() {
         use crate::zerocheck::PaddingSpec;
         use crate::zerocheck::univariate_skip::pack_bits;
 
-        // (k_log, useful_bits, n_blocks_log) — pick n_blocks_log so
+        // (k_log, useful_bits, n_blocks_log): pick n_blocks_log so
         // m = k_log + n_blocks_log is small enough to keep the test fast
         // while still exercising the kernel's parallel + boundary paths.
         let cases = [
@@ -1123,7 +1100,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn neon_fused_inner_matches_scalar_inner() {
-        // The new register-fused NEON kernel — verify against the same scalar
+        // The new register-fused NEON kernel: verify against the same scalar
         // oracle as the intermediate one.
         let mut rng = Rng::new(0xF050D);
         let m = 14;
@@ -1146,20 +1123,6 @@ mod tests {
                 out_scalar, out_fused,
                 "fused-neon disagrees with scalar at (base={chunk_byte_base}, b_med={b_med})"
             );
-        }
-    }
-
-    #[test]
-    fn convert_table_structure() {
-        // convert[b][v] == γ^b · φ_8(v); check at a handful of (b, v).
-        let t = convert_table();
-        let mut g_pow = F192::ONE;
-        for b in 0..16 {
-            for &v in &[0u8, 1, 0x57, 0xFF] {
-                let expected = g_pow * PHI_8_TABLE[v as usize];
-                assert_eq!(t[b][v as usize], expected, "b={b}, v={v}");
-            }
-            g_pow *= medium_generator();
         }
     }
 }

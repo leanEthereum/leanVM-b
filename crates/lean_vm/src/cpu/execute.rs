@@ -39,6 +39,34 @@ fn as_addr(v: F192) -> Option<F64> {
     (v.c1 == 0 && v.c2 == 0).then_some(F64(v.c0))
 }
 
+fn pop_witness<'a>(
+    witness: &'a HashMap<String, Vec<Vec<F192>>>,
+    positions: &mut HashMap<&'a str, usize>,
+    name: &'a str,
+    len: u32,
+) -> &'a [F192] {
+    let entries = witness
+        .get(name)
+        .unwrap_or_else(|| panic!("no witness stream `{name}` (Program::set_witness)"));
+    let position = positions.entry(name).or_default();
+    let entry = entries.get(*position).unwrap_or_else(|| {
+        panic!(
+            "witness stream `{name}` exhausted (needs entry {}, has {})",
+            *position + 1,
+            entries.len()
+        )
+    });
+    assert_eq!(
+        entry.len(),
+        len as usize,
+        "witness `{name}` entry {} holds {} values, the destination {len}",
+        *position,
+        entry.len()
+    );
+    *position += 1;
+    entry
+}
+
 impl Program {
     /// Run the program in write-once *fill* mode to produce its [`Execution`]:
     /// the final memory image and the step count. The public input seeds the
@@ -169,7 +197,7 @@ impl Program {
 
         // Per-stream cursor into the named witness data (`hint_witness` pops
         // sequentially).
-        let mut wit_pos: HashMap<String, usize> = HashMap::new();
+        let mut witness_positions: HashMap<&str, usize> = HashMap::new();
         // Baby-step table for `hint_decompose_bits_exponent`, built on first use.
         let mut dlog_cache: Option<(GPow, F64)> = None;
 
@@ -366,31 +394,6 @@ impl Program {
             // Apply the hints scheduled before this instruction.
             if hint_at[pc as usize] != 0 {
                 let hs = hint_lists[hint_at[pc as usize] as usize - 1];
-                // Pop the next entry of witness stream `name`; it must hold
-                // exactly `len` values (the destination run's length).
-                let pop_witness = |wit_pos: &mut HashMap<String, usize>, name: &str, len: u32| {
-                    let entries = self
-                        .witness
-                        .get(name)
-                        .unwrap_or_else(|| panic!("no witness stream `{name}` (Program::set_witness)"));
-                    let pos = wit_pos.entry(name.to_string()).or_insert(0);
-                    let entry = entries.get(*pos).unwrap_or_else(|| {
-                        panic!(
-                            "witness stream `{name}` exhausted (needs entry {}, has {})",
-                            *pos + 1,
-                            entries.len()
-                        )
-                    });
-                    assert_eq!(
-                        entry.len(),
-                        len as usize,
-                        "witness `{name}` entry {} holds {} values, the destination {len}",
-                        *pos,
-                        entry.len()
-                    );
-                    *pos += 1;
-                    entry.clone()
-                };
                 for h in hs {
                     m.dbg_hint = Some(match h {
                         RHint::Alloc { .. } => "Alloc",
@@ -469,9 +472,9 @@ impl Program {
                             }
                         }
                         RHint::WitnessStack { name, base, len } => {
-                            let vals = pop_witness(&mut wit_pos, name, *len);
-                            for (k, v) in vals.into_iter().enumerate() {
-                                m.put(fp + base + k as u32, v);
+                            let values = pop_witness(&self.witness, &mut witness_positions, name, *len);
+                            for (k, &value) in values.iter().enumerate() {
+                                m.put(fp + base + k as u32, value);
                             }
                         }
                         RHint::WitnessHeap { name, ptr, lo, len } => {
@@ -480,9 +483,9 @@ impl Program {
                             let b = g
                                 .log(p)
                                 .unwrap_or_else(|| panic!("hint_witness heap pointer is not a g-power"));
-                            let vals = pop_witness(&mut wit_pos, name, *len);
-                            for (k, v) in vals.into_iter().enumerate() {
-                                m.put(b + lo + k as u32, v);
+                            let values = pop_witness(&self.witness, &mut witness_positions, name, *len);
+                            for (k, &value) in values.iter().enumerate() {
+                                m.put(b + lo + k as u32, value);
                             }
                         }
                         RHint::Log2Ceil {

@@ -318,10 +318,7 @@ fn partial_fold_packed_z_fast_padded(
     let stripes_per_chunk = (n_stripes / 256).max(1);
     let bytes_per_chunk = stripes_per_chunk * k;
 
-    // fold_reduce(): one length-k accumulator per WORKER rather than per chunk.
-    // At large k the per-chunk accumulators of a map/reduce dominate MT time
-    // with allocation plus tree-reduce XOR traffic (BLAKE2s's k = 2^14 is
-    // 384 KB of accumulator per chunk, across ~128 chunks).
+    // Keep one length-k accumulator per worker rather than per chunk.
     let n_chunks = z_packed.len().div_ceil(bytes_per_chunk);
     parallel::fold_reduce(
         n_chunks,
@@ -349,9 +346,7 @@ fn partial_fold_packed_z_fast_padded(
 }
 
 /// Stripes swept per accumulator touch in the NEON tiled partial fold.
-/// Larger ⇒ the length-`k` accumulator is re-streamed fewer times
-/// (`n_stripes / NEON_TILE_T`), but the per-tile sum tables grow
-/// `NEON_TILE_T × 4 KB` and must stay L1-resident.
+/// Larger values re-stream the accumulator less often but grow the tables that must stay in L1.
 const NEON_TILE_T: usize = 8;
 
 /// x86-64 twin of the tiled gather kernel below.
@@ -543,20 +538,7 @@ fn neon_fold_params(
 /// **i_inner-partitioned** NEON partial fold: parallelizes over the
 /// **output** (`i_inner`) instead of over z stripes.
 ///
-/// Why: the stripe-parallel kernel gives every worker its own full length-`k`
-/// accumulator (2 MB at k = 2¹⁷). With P workers that's `P · 2 MB` of live
-/// accumulators. Past ~3 workers it exceeds L2, so each worker's accumulator
-/// spills and gets re-streamed from **main memory** once per stripe-tile
-/// (≈ `n_tiles · 2·k` F192 of memory traffic). Measured: scaling saturates at
-/// ~5× on 10 cores (memory-bound), not ~10×.
-///
-/// Here the workers own **disjoint** slices of a single shared `out`, so the
-/// total live accumulator is just `k` F192 = 2 MB: it stays L2-resident, never
-/// re-streamed from memory, and there is **no final reduction**. Main-memory
-/// traffic drops to one pass over z plus one write of `out`. Each worker still
-/// uses the register-tiled inner kernel (8 accumulators across `TILE_T`
-/// stripes); it just rebuilds the per-tile sum tables for its own slice (a few
-/// % of redundant table-build XORs, far cheaper than the memory re-streaming).
+/// Workers own disjoint output slices, keeping one shared length-`k` accumulator and avoiding a final reduction. Each worker rebuilds the per-tile sum tables for its slice.
 #[cfg(any(
     target_arch = "aarch64",
     all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
@@ -592,7 +574,7 @@ fn partial_fold_packed_z_iblock_padded(
     parallel::chunks_mut(&mut out[..useful], i_chunk, |ci, out_slice| {
         let i_base = ci * i_chunk;
         let n_block = out_slice.len() / BLOCK_K;
-        // TILE_T × 256 F192 = 32 KB tables, L1-resident, rebuilt per tile.
+        // Per-tile tables stay L1-resident.
         let mut tables = vec![F192::ZERO; TILE_T * 256];
         for tile in 0..n_tiles {
             let stripe_base = tile * TILE_T;
@@ -626,11 +608,7 @@ fn partial_fold_packed_z_iblock_padded(
 /// partition the **tiles** (outer/stripe dim): each worker owns a contiguous tile
 /// band, builds each of its tile tables exactly **once**, folds them into a
 /// private length-k partial, and the `p` partials are XOR-reduced at the end. The
-/// partial is the full length-k (256 KB at k_log=14 ⇒ spills L1 to L2), but the
-/// register-tiled inner kernel keeps 8 F192 accumulators in NEON registers, so the
-/// L2 traffic is mild and far cheaper than iblock's redundant tables: the fold
-/// scales better with cores, and the margin grows with the outer dim (the
-/// redundant-table cost it removes is ∝ `n_stripes`).
+/// partial is the full length-k output, while the register-tiled inner kernel keeps its accumulators in NEON registers. This trades reduction traffic for eliminating redundant table construction.
 ///
 /// # Safety / preconditions: identical to the iblock kernel.
 #[cfg(any(
@@ -664,7 +642,7 @@ fn partial_fold_packed_z_oblock_padded(
     parallel::chunks_mut(&mut partials, k, |w, partial| {
         let tile_lo = w * tiles_per_worker;
         let tile_hi = ((w + 1) * tiles_per_worker).min(n_tiles);
-        // TILE_T × 256 F192 = 32 KB tables, L1-resident, built once per tile.
+        // Build each tile's L1-resident tables once.
         let mut tables = vec![F192::ZERO; TILE_T * 256];
         for tile in tile_lo..tile_hi {
             let stripe_base = tile * TILE_T;
@@ -685,7 +663,7 @@ fn partial_fold_packed_z_oblock_padded(
     });
 
     // XOR-reduce the per-worker partials: parallel over columns, sequential over
-    // workers so each 256 KB partial is streamed once (cache-friendly).
+    // workers so each partial is streamed once.
     let (first, rest) = partials.split_at(k);
     let mut out = first.to_vec();
     let col_chunk = parallel::recommended_chunk_size(k);
@@ -716,13 +694,7 @@ fn partial_fold_packed_z_best(
             all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
         ))]
         {
-            // Pick the partition that wins for this size. The outer(tile)-partitioned
-            // `oblock` builds each tile's sum-tables once instead of once per worker,
-            // so it scales the fold far better (≈8.5× vs iblock's ≈6.5× on 10 P-cores
-            // at m=32), BUT its private-partial alloc + XOR-reduce overhead makes it
-            // up to ~1.7× SLOWER on small folds. Empirically (M4 Max, 10 P-cores) the
-            // crossover sits at n_log ≈ 15 to 16 across k_log ∈ {11,14}, so gate oblock at
-            // n_log ≥ 16; below that the L1-resident `iblock` wins.
+            // `oblock` avoids per-worker table construction but adds private partials and a reduction, so use it only above the tuned crossover.
             let n_log = m - k_log;
             if n_log >= OBLOCK_MIN_N_LOG {
                 return partial_fold_packed_z_oblock_padded(z_packed, m, k_log, useful_bits, eq_outer);
@@ -857,8 +829,6 @@ pub fn pack_z_lincheck_from_packed(z_packed_words: &[u64], m: usize, k_log: usiz
 /// index (matches z_packed's stripe layout / zerocheck's LSB-first
 /// univariate-skip variable ordering). The `k_log − k_skip` multilinear
 /// inner-rest dims occupy the next bits.
-///
-/// Cost: 64 (Lagrange) + 32 (eq) + 2048 outer products ≈ tiny.
 pub fn build_quirky_eq_table(z_skip: F192, x_inner_rest: &[F192], k_skip: usize) -> Vec<F192> {
     let lambda_skip = lagrange_weights_naive(k_skip, z_skip);
     let eq_rest = build_eq(x_inner_rest);

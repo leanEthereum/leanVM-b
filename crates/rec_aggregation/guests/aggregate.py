@@ -271,16 +271,16 @@ SIZE_BITS = 34
 LOG_WORD_BITS = 6
 
 # ---- XMSS instance parameters (host-supplied via placeholders) ----
-V = V_PLACEHOLDER                        # number of WOTS hash chains
-W = W_PLACEHOLDER                        # log2 of the Winternitz chain length
-TARGET_SUM = TARGET_SUM_PLACEHOLDER      # fixed encoding digit sum (Σ e_i)
-LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER  # Merkle tree height
+V = V_PLACEHOLDER
+W = W_PLACEHOLDER
+TARGET_SUM = TARGET_SUM_PLACEHOLDER
+LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER
 
-CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
-CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
+CHAIN_LENGTH = 2 ** W
+CHAIN_STEPS = CHAIN_LENGTH - 1
 
-WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE2s cell …
-WORDS_PER_BLOCK = 2                 # … and a 32-byte block = two
+WORDS_PER_VALUE = 1
+WORDS_PER_BLOCK = 2
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
 # wots-pk | merkle. Bound by EPOCH_HASH, which the outer verifier recomputes
@@ -370,17 +370,17 @@ def squeeze_step(state_0, state_1):
     return challenge, next_state[0], next_state[1]
 
 
-def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
+def decode_query_bits(squeezed_word, positions_out, bit_ptrs_out, depth: Const):
     # The squeezed word's bits are advice-decomposed HERE, boolean-constrained,
     # and tied back by reconstruction; each depth-bit group also becomes a query
     # position (little-endian), with a pointer to its bit run (the Merkle
     # direction bits). Each field word packs FIELD_BITS // depth positions.
     per_word = FIELD_BITS // depth
     bits_ptr = HeapBuf(GEN ** FIELD_BITS)
-    hint_decompose_bits(bits_ptr, v, FIELD_BITS)
-    acc = 0
+    hint_decompose_bits(bits_ptr, squeezed_word, FIELD_BITS)
+    reconstructed = 0
     for j in unroll(0, per_word):
-        base_bit = j * depth  # this group's first coordinate of v
+        base_bit = j * depth
         # A group that stays inside one 64-bit limb shifts as a WHOLE: the
         # coordinate basis is the polynomial basis there, so
         # COORD_BASIS[base_bit + b] == COORD_BASIS[base_bit] * COORD_BASIS[b]
@@ -407,16 +407,16 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
         # two runs, since both degrees stay below 64.
         if cut // depth == 0:  # `cut < depth`: this group straddles the boundary
             positions_out[GEN ** j] = p_lo + COORD_BASIS[cut] * p_hi
-            acc += COORD_BASIS[base_bit] * p_lo + COORD_BASIS[base_bit + cut] * p_hi
+            reconstructed += COORD_BASIS[base_bit] * p_lo + COORD_BASIS[base_bit + cut] * p_hi
         else:
             positions_out[GEN ** j] = p_lo
-            acc += COORD_BASIS[base_bit] * p_lo
+            reconstructed += COORD_BASIS[base_bit] * p_lo
         bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** base_bit
     for i in unroll(per_word * depth, FIELD_BITS):
         t = bits_ptr[GEN ** i]
         bits_ptr[GEN ** i] = t * t
-        acc += t * COORD_BASIS[i]
-    assert acc == v
+        reconstructed += t * COORD_BASIS[i]
+    assert reconstructed == squeezed_word
     return
 
 

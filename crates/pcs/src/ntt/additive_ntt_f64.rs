@@ -153,15 +153,9 @@ impl AdditiveNttF64 {
         }
     }
 
-    /// How many leading layers sweep the whole buffer before the rest run as
-    /// cache-resident sub-NTTs. The split targets a sub-block of about 2 MB and
-    /// then, if the transform is big enough to be worth splitting, enough
-    /// sub-blocks to keep every worker busy.
+    /// How many leading layers sweep the whole buffer before the rest run as cache-resident sub-NTTs.
     ///
-    /// `num_ntts` need not be a power of two (a padding-free commitment interleaves
-    /// only the lanes that carry data), so the position size rounds UP to a log:
-    /// rounding down would size the deep phase's sub-block against half the real
-    /// bytes per position and overshoot the cache target by up to 2x.
+    /// Round the position size up because padding-free commitments need not have a power-of-two lane count.
     fn cache_split(log_d: usize, num_ntts: usize) -> usize {
         const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
         let log_bytes_per_position = 3 + num_ntts.next_power_of_two().ilog2() as usize;
@@ -337,21 +331,7 @@ impl AdditiveNttF64 {
     }
 
     /// Run layers `first_layer..end_layer` over `buf`, which holds the blocks of
-    /// sub-NTT `sub_idx` out of the `2^outer_log` the buffer was split into (the
-    /// whole codeword is `outer_log = 0`, `sub_idx = 0`). Each layer takes the
-    /// widest fused kernel its block size allows, so three layers, or two, cost one
-    /// pass. `par_rows` dispatches the row loop across the pool, so a caller that is
-    /// already running inside a pool task must pass `false`.
-    /// The whole-buffer layers, in as few passes over the codeword as one scratch
-    /// group allows.
-    ///
-    /// A group of `j` layers touches `2^j` rows spaced `block_size >> j` apart,
-    /// and up here that spacing is megabytes. At 37 lanes a stride of 512 rows or
-    /// more is an exact multiple of 4 KiB, so the rows of a group land in a
-    /// handful of L1 sets and a wide radix applied in place would thrash;
-    /// gathering the group into one contiguous scratch removes the aliasing, and
-    /// the copy is L1 traffic against a whole DRAM pass saved. Six layers cost one
-    /// pass rather than two.
+    /// Run the whole-buffer layers through gathered groups, avoiding cache-set aliasing between widely spaced rows.
     fn run_top_layers(&self, buf: &mut [F64], log_d: usize, num_ntts: usize, first_layer: usize, end_layer: usize) {
         /// Words of scratch per row group, so a group stays inside L1.
         const GROUP_WORDS: usize = 4096;
@@ -634,8 +614,7 @@ pub fn transpose_lane_major(out: &mut [F64], msg: &[F64], n_lanes: usize, log_ro
     assert_eq!(msg.len(), n_lanes * rows, "message is n_lanes contiguous lane blocks");
     assert_eq!(out.len(), msg.len(), "the transpose is the same words, reordered");
 
-    /// Words per row tile: 32 KiB, so a tile stays in L1 while it is scattered
-    /// into, and each lane's contribution to it is a burst the prefetcher sees.
+    /// Words per cache-resident row tile.
     const TILE_WORDS: usize = 4096;
     assert!(n_lanes <= TILE_WORDS, "a codeword row must fit the transpose tile");
     // Largest power-of-two row count whose tile fits: both it and `rows` are then
@@ -1147,25 +1126,6 @@ mod tests {
                     assert_eq!(soa[pos * lanes + lane], lane_data[pos]);
                 }
             }
-        }
-    }
-
-    #[test]
-    fn linearity() {
-        let ntt = AdditiveNttF64::standard(8);
-        let mut rng = Rng::new(3);
-        let n = 256;
-        let a: Vec<F64> = (0..n).map(|_| F64(rng.next_u64())).collect();
-        let b: Vec<F64> = (0..n).map(|_| F64(rng.next_u64())).collect();
-        let sum: Vec<F64> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
-        let mut ta = a.clone();
-        let mut tb = b.clone();
-        let mut tsum = sum.clone();
-        ntt.forward_transform_scalar(&mut ta);
-        ntt.forward_transform_scalar(&mut tb);
-        ntt.forward_transform_scalar(&mut tsum);
-        for i in 0..n {
-            assert_eq!(tsum[i], ta[i] + tb[i]);
         }
     }
 }

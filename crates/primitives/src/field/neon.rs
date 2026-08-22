@@ -1,14 +1,14 @@
 //! Small AArch64 SIMD helpers shared by the NEON kernels.
 //!
-//! The ARMv8.2 SHA3 extension — present on every Apple M core and enabled by
-//! the workspace's `-C target-cpu=native` — provides `EOR3`, a three-way XOR
+//! The ARMv8.2 SHA3 extension, present on every Apple M core and enabled by
+//! the workspace's `-C target-cpu=native`, provides `EOR3`, a three-way XOR
 //! in one instruction. The binary-field kernels are XOR-dominated, so folding
 //! pairs of dependent `EOR`s into single `EOR3`s cuts both instruction count
 //! and dependency-chain length in the hot loops. Builds without the extension
 //! transparently keep the two-`EOR` form.
 //!
 //! (`sha3` is the name of the ARMv8.2 feature *block* that carries `EOR3`,
-//! not a reference to the hash function — this crate hashes with BLAKE2s.)
+//! not a reference to the hash function. This crate hashes with BLAKE2s.)
 
 use core::arch::aarch64::*;
 
