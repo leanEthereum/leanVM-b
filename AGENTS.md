@@ -38,6 +38,16 @@ Dependency order, leaves first:
 - always run in `--release` mode any test or benchmark touching the VM (the zkDSL compiler stack-overflows in `debug` mode)
 - **One test binary per crate, not one per file:** new `lean_compiler` integration tests go in `tests/suite/main.rs`, one linked executable instead of seventeen. Exception: a test opening an arena phase (`lean_vm::init_prover`) needs its own binary. Phases are process-global, so two in one process reclaim each other's `ArenaVec`s and the symptom is a proof that stops verifying, never a crash (`rec_aggregation/tests/arena_prove.rs`).
 
+## Compiler soundness
+
+A dropped constraint is the compiler's worst failure mode and its quietest: the happy path passes, no diagnostic is emitted, and the only symptom is a proof of something weaker than the source says. Positive tests cannot catch it, so `lean_compiler/tests/suite/soundness/` attacks the *absence* of a constraint from three sides. Every compiler fix in this area lands with a test in whichever layer catches it.
+
+- **Perturbation** (`soundness/cases.rs`): one valid trial per program, then a table of single-cell pokes at the public input or a witness stream, each of which must make the run fail. A poke that is accepted names the missing constraint. Same shape as `../leanVM`'s own `test_soundness_suite`.
+- **Equivalence** (`soundness/pairs.rs`): two spellings `zkDSL.md` documents as interchangeable must accept exactly the same trials. This is the layer that finds dropped stores, because a dropped store is invisible alone and obvious against a spelling that kept it: the more permissive side is the buggy one. Each `Pair` carries the promise it tests in its `why` field.
+- **Unconstrained reads** (`Execution::unconstrained_reads`, asserted in `cpu::prove`): a cell an instruction read that nothing ever wrote. Such a value is ZERO under the interpreter and prover-chosen in a proof, since memory is a committed array and the bus only forces accesses to one address to *agree*, never that the address was written. Scoped to the program's own cells: the fill blocks read cells nobody writes as a matter of course, and are soundness-neutral for it.
+
+The three are complementary. Layer 3 sees a dropped store whose cell is then *read*; layer 2 sees one whose cell is then *ignored*, the value coming from the alias while the physical write is orphaned, which layer 3 cannot see because nothing reads the orphan. Layer 1 needs a program whose assertion a poke can violate, and in exchange needs no second spelling.
+
 An x86-only arm never compiles on an Apple dev machine, so a typo in one ships. Type-check the other target before pushing anything `cfg`-gated:
 
 ```bash

@@ -494,6 +494,20 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
     let exec = crate::stage!("Execute program", || program.execute_to_floor(public_input));
+    // A live value that came from outside the constraint system means the emitted
+    // bytecode asserts less than its source asked for, so the proof would be about a
+    // weaker statement than the program text. That is a compiler bug and never a
+    // program one, so it is caught here, on the one path every proof takes, rather
+    // than left to whichever test happens to look. A hard assert, not a
+    // `debug_assert`: this is what makes the invariant hold in release, which is the
+    // only profile the VM is ever run in.
+    assert!(
+        exec.unconstrained_reads.is_empty(),
+        "the program read {} cell(s) nothing ever writes, first at {:?}: a constraint was \
+         dropped in lowering (see `Execution::unconstrained_reads`)",
+        exec.unconstrained_reads.len(),
+        &exec.unconstrained_reads[..exec.unconstrained_reads.len().min(8)]
+    );
     // The BLAKE2s R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
     // depends only on the compression count (the circuit *shape*), not the witness,
     // but it is otherwise built synchronously inside the final reduction, adding
