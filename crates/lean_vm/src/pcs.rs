@@ -48,6 +48,12 @@ const _: () = assert!(::pcs::whir::SECURITY_BITS == crate::SECURITY_BITS as usiz
 /// one-level margin. `witness::placements_of` zero-pads smaller stacks up to
 /// this floor (256 KB of F64, negligible; real workloads are far above it).
 pub const MIN_MU: usize = 15;
+/// Largest committed size, and the one knob that sets it. A policy cap rather than
+/// the ladder's limit (which is higher, and rate-dependent): every verifier admits
+/// `MIN_MU..=MAX_MU`, the recursion guest compiles one opening arm per size in it,
+/// and `rec_aggregation::MU_MAX` is this constant. Raising it costs guest bytecode,
+/// ~4 arms per size; the test below keeps it inside what the ladder supports.
+pub const MAX_MU: usize = 28;
 
 /// The WHIR (prover, verifier) config pair for a `2^μ`-word witness,
 /// derived from the security analysis and memoized per `(μ, log_inv_rate)`.
@@ -169,4 +175,20 @@ pub fn verify(
     verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, shape.mu, shape.n_lanes, root, points, ring)
         .then_some(())
         .ok_or(Error::Whir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What lets all three verifiers check a plain range instead of re-deriving
+    /// the ladder: every size in the window is configurable at every rate.
+    #[test]
+    fn the_window_is_configurable() {
+        for rate in ::pcs::whir::MIN_LOG_INV_RATE..=::pcs::whir::MAX_LOG_INV_RATE {
+            for mu in MIN_MU..=MAX_MU {
+                assert!(configs_for_rate(mu, rate).is_ok(), "mu={mu} rate={rate}");
+            }
+        }
+    }
 }

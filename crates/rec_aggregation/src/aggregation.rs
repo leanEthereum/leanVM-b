@@ -23,6 +23,7 @@
 //! `cpu::layout` of the inner program and the summary of a real `cpu::verify`
 //! run, so there is no hand-mirrored copy of the protocol to drift.
 
+use bincode::Options as _;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -374,6 +375,14 @@ pub enum AggregateError {
 /// Everything but the signer set, which a receiver may already hold.
 type WireCore = (xmss::Message, u32, Vec<F192>, Vec<F192>, lean_vm::cpu::Proof);
 
+/// The wire encoding: bincode's fixed-width integers, as the free functions use,
+/// but rejecting trailing bytes, which they do not. Without that an accepted
+/// aggregate has unboundedly many encodings, so anything downstream that dedupes
+/// or indexes on the serialized bytes can be made to see one aggregate as many.
+fn wire() -> impl bincode::Options {
+    bincode::DefaultOptions::new().with_fixint_encoding()
+}
+
 /// Reject a signer set that the coverage argument does not cover: strict sorting
 /// is what makes "every declared key signed" mean `public_keys.len()` distinct
 /// signers rather than one signer counted many times.
@@ -400,18 +409,20 @@ impl AggregateSignature {
     /// points, and the VM proof. The claim *values* are not transmitted;
     /// [`Self::from_bytes`] recomputes them, so there is nothing to lie about.
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(&(&self.public_keys, self.core())).expect("an aggregate serializes")
+        wire()
+            .serialize(&(&self.public_keys, self.core()))
+            .expect("an aggregate serializes")
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let (public_keys, core): (Vec<XmssPublicKey>, WireCore) = bincode::deserialize(bytes).ok()?;
+        let (public_keys, core): (Vec<XmssPublicKey>, WireCore) = wire().deserialize(bytes).ok()?;
         Self::from_parts(public_keys, core)
     }
 
     /// Without the signer set, for a receiver that already knows it. A set other
     /// than the one aggregated fails verification.
     pub fn to_bytes_without_pubkeys(&self) -> Vec<u8> {
-        bincode::serialize(&self.core()).expect("an aggregate serializes")
+        wire().serialize(&self.core()).expect("an aggregate serializes")
     }
 
     pub(crate) fn proof(&self) -> &lean_vm::cpu::Proof {
@@ -419,7 +430,7 @@ impl AggregateSignature {
     }
 
     pub fn from_bytes_without_pubkeys(bytes: &[u8], public_keys: Vec<XmssPublicKey>) -> Option<Self> {
-        Self::from_parts(public_keys, bincode::deserialize(bytes).ok()?)
+        Self::from_parts(public_keys, wire().deserialize(bytes).ok()?)
     }
 
     fn core(&self) -> WireCore {
@@ -434,6 +445,10 @@ impl AggregateSignature {
 
     fn from_parts(public_keys: Vec<XmssPublicKey>, core: WireCore) -> Option<Self> {
         let (message, epoch, bytecode_point, matrix_point, proof) = core;
+        // Cheap rejections first. `recompute` below is a pass over the whole stacked
+        // bytecode plus a walk of the BLAKE2s circuit, on points a peer chose, so
+        // anything decidable without it has to be decided before it.
+        check_signer_set(&public_keys).ok()?;
         Some(Self {
             message,
             epoch,
@@ -1370,7 +1385,9 @@ fn gen_verify(
 /// candidate `mu` in `MU_MIN..=MU_MAX` (mirrored by the soundness test's
 /// residual-log cap).
 const MU_MIN: usize = 22;
-const MU_MAX: usize = 28;
+const MU_MAX: usize = lean_vm::pcs::MAX_MU;
+
+const _: () = assert!(MU_MIN >= lean_vm::pcs::MIN_MU);
 
 /// The guest's baked buffer caps, which `placeholder_map` compiles in and
 /// `gen_verify` admits against: one definition, so a hinted shape can never
@@ -1687,7 +1704,6 @@ struct OpeningShape {
     squeezes: Vec<usize>,
     interleaving: Vec<usize>,
     query_grinding_bits: Vec<usize>,
-    fold_grinding_bits: Vec<usize>,
     row_offsets: Vec<usize>,
     path_offsets: Vec<usize>,
     positions_offsets: Vec<usize>,
@@ -2009,13 +2025,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             }),
             "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE2s chunk"
         );
-        let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
-        let mut cfb: Vec<usize> = Vec::new();
-        for (lvl, &k) in ck.iter().enumerate().take(cn) {
-            for j in 0..k {
-                cfb.push((cfgb(lvl) - j as i64).max(0) as usize);
-            }
-        }
         let psum = |f: &dyn Fn(usize) -> usize| -> Vec<usize> {
             let mut o = Vec::with_capacity(cn);
             let mut acc = 0;
@@ -2055,7 +2064,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             squeezes: cs,
             interleaving: cni,
             query_grinding_bits: cqb,
-            fold_grinding_bits: cfb,
             row_offsets: c_rowoff,
             path_offsets: c_pathoff,
             positions_offsets: c_qpoff,
@@ -2074,11 +2082,9 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         .flat_map(|r| (minm..=maxm).map(move |m| oshape(m, r)))
         .collect();
     let maxlev = cands.iter().map(|c| c.n_levels).max().unwrap();
-    let maxfolds = cands.iter().map(|c| c.fold_grinding_bits.len()).max().unwrap();
     let maxsvk = cands.iter().map(|c| c.vanish_values.len()).max().unwrap();
     let maxood = cands.iter().flat_map(|c| &c.ood_samples).copied().max().unwrap_or(0);
     ps("LIG_MAX_LEVELS", maxlev.to_string());
-    ps("LIG_MAX_TOTAL_FOLDS", maxfolds.to_string());
     ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
     ps("LIG_MAX_OOD_SAMPLES", maxood.to_string());
     ps("LIG_MIN_LOG_SIZE", minm.to_string());
@@ -2252,10 +2258,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         ps("LIG_ROWS_OFF", ints(&flat(&|c| c.row_offsets.clone(), maxlev)));
         ps("LIG_PATHS_OFF", ints(&flat(&|c| c.path_offsets.clone(), maxlev)));
         ps("LIG_VANISH_OFF", ints(&flat(&|c| c.vanish_offsets.clone(), maxlev)));
-        ps(
-            "LIG_FOLD_GRIND_BITS",
-            ints(&flat(&|c| c.fold_grinding_bits.clone(), maxfolds)),
-        );
         let mut svk2 = Vec::new();
         let mut ivk2 = Vec::new();
         for c in &cands {

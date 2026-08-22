@@ -1210,8 +1210,12 @@ BASES = tuple(len(GLOBAL_COLUMNS) + sum(WIDTHS[:table]) for table in range(len(T
 
 
 def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequence[int]) -> Layout:
+    log_bytecode = log2_strict(len(bytecode)) - BUS_BITS
     require(
-        16 <= log_memory <= 32 and all(0 <= log_height <= 32 for log_height in table_log_heights) and table_log_heights[BLAKE2S.opcode] >= 3,
+        16 <= log_memory <= 32
+        and all(0 <= log_height <= 32 for log_height in table_log_heights)
+        and table_log_heights[BLAKE2S.opcode] >= 3
+        and 0 <= log_bytecode <= 32,
         "invalid announced table sizes",
     )
     table_log_heights = list(table_log_heights)
@@ -1266,7 +1270,7 @@ RESIDUAL_MAX_LOG = 5
 QUERY_GRINDING_BITS = 17
 
 MIN_STACKED_LOG = 15
-MAX_STACKED_LOG = 32
+MAX_STACKED_LOG = 28
 
 WHIR_QUERIES = (((223,56,36), (223,56,37), (223,56,37), (224,56,37,28), (224,56,37,28), (224,56,38,28), (224,56,38,28,22), (225,56,38,28,23), (225,56,38,28,23), (225,56,38,28,23,19), (226,56,38,28,23,19), (226,56,38,28,23,19), (227,56,38,28,23,19,16), (228,56,38,28,23,19,16), (228,56,38,28,23,19,16), (229,57,38,28,23,19,17,14), (230,57,38,29,23,19,17,14), (232,57,38,29,23,19,17,15)), ((112,45,31), (112,45,32), (112,45,32), (112,45,32,25), (112,45,32,25), (112,45,32,25), (112,45,32,25,20), (112,45,32,25,21), (112,45,32,25,21), (113,45,32,25,21,17), (113,45,32,25,21,18), (113,45,32,25,21,18), (113,45,32,25,21,18,15), (113,45,32,25,21,18,15), (114,45,32,25,21,18,15), (114,45,33,25,21,18,15,14), (114,45,33,25,21,18,16,14), (115,46,33,25,21,18,16,14)), ((75,37,28), (75,37,28), (75,38,28), (75,38,28,22), (75,38,28,23), (75,38,28,23), (75,38,28,23,19), (75,38,28,23,19), (75,38,28,23,19), (75,38,28,23,19,16), (75,38,28,23,19,16), (75,38,28,23,19,16), (75,38,28,23,19,17,14), (76,38,29,23,19,17,14), (76,38,29,23,19,17,15), (76,38,29,23,19,17,15,13), (76,38,29,23,19,17,15,13), (77,38,29,23,19,17,15,13)), ((56,32,25), (56,32,25), (56,32,25), (56,32,25,20), (56,32,25,21), (56,32,25,21), (56,32,25,21,17), (56,32,25,21,18), (56,32,25,21,18), (57,32,25,21,18,15), (57,32,25,21,18,15), (57,32,25,21,18,15), (57,33,25,21,18,15,14), (57,33,25,21,18,16,14), (57,33,25,21,18,16,14), (57,33,26,21,18,16,14,12), (57,33,26,21,18,16,14,13), (58,33,26,21,18,16,14,13)))  # fmt: skip
 
@@ -1827,6 +1831,12 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     log_inverse_rate = int(announced[-1].c0)
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
     layout = build_layout(bytecode, log_memory, table_logs)
+    # The announced sizes bound themselves, but what the PCS has to be configured
+    # for is the stacked size they IMPLY, and the instance caps admit a `stack_log`
+    # far past the largest the WHIR ladder is feasible for. Checked here, before any
+    # reduction runs against the layout, and against the same window the Rust
+    # verifier's `pcs::{MIN_MU, MAX_MU}` and the recursion guest declare.
+    require(MIN_STACKED_LOG <= layout.stack_log <= MAX_STACKED_LOG, "committed size outside the PCS window")
 
     # 2] WHIR commitment: one Merkle root (No OOD, our PCS is only List-binding).
     root = Digest.from_halves(*transcript.scalars(2))

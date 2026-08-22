@@ -16,6 +16,20 @@ pub struct Execution {
     /// Rows per table before the fill blocks ran: the work the program itself does, as
     /// against the power-of-two heights that get proven. Cost measurements want this one.
     pub base_counts: [usize; crate::tables::N_TABLES],
+    /// Cells an instruction read that nothing ever wrote, so the value it read was
+    /// ZERO here and prover-chosen in a proof: memory is a committed array and the
+    /// bus only forces accesses to one address to *agree*, never that the address
+    /// was written. `zkDSL.md` says don't; this is what says whether the emitted
+    /// code did. A non-empty list means a live value came from outside the
+    /// constraint system, so an `assert` on it is vacuous and a published value is
+    /// free, which is a compiler bug and not a program one: the lowering dropped a
+    /// store its source asked for.
+    ///
+    /// Legitimate unconstrained cells are absent by construction, not by
+    /// exemption: a range-check touch's two cells are resolved to ZERO by the
+    /// deferred fixup before this is taken, and an arithmetic back-solve writes its
+    /// operand before reading it.
+    pub unconstrained_reads: Vec<u32>,
     pub(crate) trace: Trace, // rows + final access-count columns, emitted in the same walk
 }
 
@@ -161,6 +175,14 @@ impl Program {
 
         // Rows per table before the fill runs, captured when the chain halts.
         let mut base_counts: Option<[usize; crate::tables::N_TABLES]> = None;
+        // Where the fill's frames begin, captured at the same moment, so
+        // `unconstrained_reads` can speak about the program's own cells only. The
+        // fill's rows exist to reach a power-of-two height and are soundness-neutral
+        // (doc §Filling the tables), so they read cells nobody writes as a matter of
+        // course; the program's own cells are all below this mark, since the
+        // allocator serves them and a range check's absolute write lands under
+        // `2^MIN_LOG_MEM`.
+        let mut fill_base = usize::MAX;
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
@@ -305,6 +327,7 @@ impl Program {
                         pack64x2.len(),
                     ];
                     base_counts = Some(counts);
+                    fill_base = (1usize << crate::cpu::MIN_LOG_MEM).max(next_free as usize);
                     // A frame per cycle, from the same bump allocator that serves `Alloc`
                     // but never below the memory floor: a range check's `DEREF` writes the
                     // absolute cell its bound names, which can be any cell under
@@ -885,6 +908,17 @@ impl Program {
             m.put(a3, F192::ZERO);
         }
 
+        // Cells an instruction touched that nothing ever wrote. Read off the two
+        // dense vectors rather than recorded in `Mem::get`, which is in the opcode
+        // loop: an access bumps the count, so `count != ONE` means touched, and
+        // `written` is already there. Taken AFTER the deferred fixup, so a
+        // range-check touch, whose cells are legitimately unconstrained and were
+        // just fixed to ZERO, does not appear.
+        let unconstrained_reads: Vec<u32> = (0..m.cells.len().min(fill_base))
+            .filter(|&c| !m.written[c] && m.count[c] != F64::ONE)
+            .map(|c| c as u32)
+            .collect();
+
         // Pad memory to a power of two (the boundary tables read a dense image),
         // at least 2^MIN_LOG_MEM cells (doc §Memory).
         let mem_used = m.cells.len();
@@ -910,6 +944,7 @@ impl Program {
             // Taken when the chain halted, which every run does before it can leave the
             // loop at all.
             base_counts: base_counts.expect("the run halted, so its own counts were taken"),
+            unconstrained_reads,
             trace,
         }
     }
