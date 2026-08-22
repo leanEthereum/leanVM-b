@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-890%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 890 XMSS/s"></a>
-  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.58s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.58s"></a>
+  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-1100%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 1100 XMSS/s"></a>
+  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.45s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.45s"></a>
 </p>
 
 Warning: highly experimental.
@@ -33,10 +33,10 @@ XMSS aggregation, 900 signatures
     proven rows               : 1,967,104 = 2^20.908  (filled to powers of two)
     details                   : DEREF 2^18.988 (33.7%)  SET 2^18.402 (22.4%)  MUL 2^18.198 (19.5%)  BLAKE2S 2^16.995 (8.5%)  XOR 2^16.96 (8.3%)  JUMP 2^16.831 (7.6%)  PACK64X2 2^9.938 (0.1%)  MEMORY 2^21.725  TOTAL_COMMITTED 2^26.195
   signers                     : 900
-  proof size                  : 304.3 KiB
-  aggregating                 : 1.01 s ± 5.1%      peak memory 15.994 GiB
-  per signature               : 890.86 XMSS/s
-  verifying                   : 0.0122 s
+  proof size                  : 304.4 KiB
+  aggregating                 : 0.816 s ± 4.2%      peak memory 13.815 GiB
+  per signature               : 1,102.621 XMSS/s
+  verifying                   : 0.0137 s
 ```
 
 ### Recursion
@@ -48,13 +48,13 @@ cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
 
 ```
 recursion 2→1, over leaves of 900 signatures
-  cycles (VM steps)           : 798,657 = 2^19.607
+  cycles (VM steps)           : 796,006 = 2^19.602
     proven rows               : 1,196,032 = 2^20.19  (filled to powers of two)
-    details                   : DEREF 2^18.168 (36.9%)  MUL 2^17.825 (29.1%)  XOR 2^17.383 (21.4%)  SET 2^15.55 (6.0%)  BLAKE2S 2^14.44 (2.8%)  PACK64X2 2^14.349 (2.6%) JUMP 2^13.272 (1.2%)  MEMORY 2^19.938  TOTAL_COMMITTED 2^24.863
+    details                   : DEREF 2^18.168 (37.0%)  MUL 2^17.818 (29.0%)  XOR 2^17.374 (21.3%)  SET 2^15.536 (6.0%)  BLAKE2S 2^14.44 (2.8%)  PACK64X2 2^14.349 (2.6%)  JUMP 2^13.272 (1.2%)  MEMORY 2^19.932  TOTAL_COMMITTED 2^24.863
   signers                     : 1,800
-  proof size                  : 214.7 KiB
-  aggregating                 : 0.588 s ± 6.2%      peak memory 20.775 GiB
-  verifying                   : 0.0142 s
+  proof size                  : 213.7 KiB
+  aggregating                 : 0.446 s ± 3.1%      peak memory 17.299 GiB
+  verifying                   : 0.015 s
 ```
 
 ### Fibonacci
@@ -67,10 +67,10 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 ```
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   cycles (VM steps)           : 2,127,881
-    details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%)  JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
-  proof size                  : 284.6 KiB
-  proving                     : 0.571 s ± 2.0%   3,726,189 cycles/s      peak memory 9.896 GiB
-  verifying                   : 0.00294 s
+    details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%) JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
+  proof size                  : 284.7 KiB
+  proving                     : 0.41 s ± 2.9%   5,191,741 cycles/s      peak memory 7.482 GiB
+  verifying                   : 0.00352 s
 ```
 
 ### Batch proving BLAKE2s
@@ -81,17 +81,17 @@ BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --t
 
 ```
 Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
-  setup (preprocessing, excluded) :   2178.2 ms
-  witness-gen                     :     52.7 ms ± 41.5%   8.0%
-  commit                          :    104.4 ms ± 19.3%  15.9%
-  zerocheck                       :    242.5 ms ± 4.2%   36.9%
-  lincheck                        :     24.5 ms ± 13.8%   3.7%
-  pcs opening                     :    232.4 ms ± 8.1%   35.4%
+  setup (preprocessing, excluded) :      0.0 ms
+  witness-gen                     :     51.2 ms ± 23.3%   8.6%
+  commit                          :    100.1 ms ± 0.3%   16.8%
+  zerocheck                       :    237.0 ms ± 4.2%   39.7%
+  lincheck                        :     19.4 ms ± 10.8%   3.3%
+  pcs opening                     :    188.9 ms ± 7.1%   31.7%
   other                           :      0.0 ms           0.0%
   ------------------------------------------
-  prove TOTAL (witness excluded)  :    603.8 ms ± 1.8%   92.0%
-  verify                          :      2.2 ms
-  throughput                      :        434,176 compressions/s ± 1.8%
+  prove TOTAL (witness excluded)  :    545.5 ms ± 3.9%   91.4%
+  verify                          :      2.0 ms
+  throughput                      :        480,600 compressions/s ± 3.9%
 ```
 
 ## Security
