@@ -709,6 +709,29 @@ impl FnLower<'_> {
     /// per-arm frame setup, call, or return jump.
     fn lower_dispatched_call(&mut self, names: &[String], x: &Expr, callees: &[String], rt_args: &[Expr]) {
         let n_args = rt_args.len() as u32;
+        // The join below reads one return cell per bound name, so every callee has
+        // to declare exactly that many. Unchecked, a name past a callee's arity
+        // `DEREF`s a frame offset nothing on that path writes, and since the shared
+        // frame is sized to the LARGEST callee the offset exists: the surplus name
+        // binds a prover-chosen word. The non-fused path enforces this
+        // ([`Self::call_into`]), so leaving it out here means one source is rejected
+        // by one lowering of `match_range` and silently miscompiled by the other.
+        for callee in callees {
+            let Some(shapes) = self.return_shapes_of(callee) else {
+                continue;
+            };
+            assert_eq!(
+                shapes.len(),
+                names.len(),
+                "`{callee}` returns {} values, dispatched call binds {}",
+                shapes.len(),
+                names.len()
+            );
+            assert!(
+                shapes.iter().all(|s| *s == ReturnShape::Scalar),
+                "`{callee}`: a multi-cell StackBuf return cannot cross a dispatched join"
+            );
+        }
         let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
 
         // Shared callee frame: args, retfp, and retpc = the join (so the callee
@@ -1898,6 +1921,20 @@ impl FnLower<'_> {
     /// arguments (literals, `GEN ** k`, or literal-bound names) substitute into
     /// a copy of the callee, queued once per distinct constant tuple and named
     /// `callee__L5_G3`-style, and only the runtime arguments remain.
+    /// A callee's declared return shapes, looked up wherever it lives: an
+    /// ordinary definition sits in `defs`, while a `Const` specialization is
+    /// registered by [`Self::specialize`] in the queue under its mangled name and
+    /// never reaches `defs`. A dispatched `match_range` names specializations, so a
+    /// check that consults only `defs` silently passes on every one of them.
+    fn return_shapes_of(&self, callee: &str) -> Option<Vec<ReturnShape>> {
+        self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {
+            self.queue
+                .iter()
+                .find(|f| f.name == callee)
+                .map(|f| f.return_shapes.clone())
+        })
+    }
+
     fn specialize(&mut self, callee: &str, args: &[Expr]) -> (String, Vec<Expr>) {
         let defs: &HashMap<String, Func> = self.defs;
         let Some(def) = defs.get(callee) else {

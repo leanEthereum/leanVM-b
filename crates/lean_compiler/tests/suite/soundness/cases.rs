@@ -270,3 +270,57 @@ def main():
     p.set_witness("msg", vec![vec![k(5), k(7), F192::ZERO, F192::ZERO]]);
     p.execute([F192::ZERO, F192::ZERO]);
 }
+
+/// The fused `match_range` path must reject a call that binds more names than
+/// the callee returns, exactly as the non-fused path does. Before this check the
+/// surplus name `DEREF`ed a callee-frame offset nothing on the taken path wrote,
+/// and since the shared frame is sized to the largest callee that offset exists,
+/// so the name bound a prover-chosen word.
+///
+/// Fusion needs every arm to be a call to the same function with identical
+/// runtime arguments, so the two programs below are the fused shape: one over
+/// mixed-arity callees, one over a single over-bound callee.
+#[test]
+#[should_panic(expected = "dispatched call binds")]
+fn dispatched_call_rejects_a_mixed_arity_arm() {
+    super::build(
+        "\
+def main():
+    x = GEN ** 2
+    a, b, c = match_range(log(x), range(0, 2), lambda i: three(x, i), range(2, 4), lambda i: one(x, i))
+    p = GEN ** 0
+    p[1] = b
+    p[GEN] = c
+    return
+
+
+def three(v, k: Const):
+    q = v * GEN ** k
+    return q, q * q, q * q * q
+
+
+def one(v, k: Const):
+    return v * GEN ** k
+",
+    );
+}
+
+#[test]
+#[should_panic(expected = "dispatched call binds")]
+fn dispatched_call_rejects_an_over_bound_callee() {
+    super::build(
+        "\
+def main():
+    x = GEN ** 1
+    a, b = match_range(log(x), range(0, 4), lambda i: one(x, i))
+    p = GEN ** 0
+    p[1] = a
+    p[GEN] = b
+    return
+
+
+def one(v, k: Const):
+    return v * GEN ** k
+",
+    );
+}
