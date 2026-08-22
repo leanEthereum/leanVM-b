@@ -543,31 +543,44 @@ fn johnson_interleaved_list_log2(log_inv_rate: usize, log_msg_cols: usize, eta: 
 /// - the total degree of the GF64-to-GF192 ring-switch batching map (L0 only,
 ///   but included at every level so the bound also dominates the claim batch
 ///   entering the next level's list, whatever its query count);
-/// - `J − 1 = queries + ood_samples`, the batch polynomial's degree in the
-///   level's single lambda (residual + OOD + one claim per query); and
+/// - `J − 1 = prev_queries + ood_samples`, the batch polynomial's degree in the
+///   level's single lambda. The claims it batches are the ones the PREVIOUS
+///   level's query phase raised (`thm:rbr`: `J_i = n_{i-1} + 2`, one per query
+///   plus the residual and the OOD claim), so this level's own query count is
+///   the wrong quantity: query counts fall with depth, so using it would
+///   understate the degree and overstate the bound. At L0 there is no previous
+///   level and `J_0` is set by the outer protocol's claim pool rather than by a
+///   query count, so 0 is passed; that pool is a few hundred claims, orders below
+///   the ring-switch degree the `max` takes anyway; and
 /// - 2 for quadratic sumcheck.
 fn johnson_algebraic_bits_for(
     log_inv_rate: usize,
     log_msg_cols: usize,
     eta: f64,
-    queries: usize,
+    prev_queries: usize,
     ood_samples: usize,
 ) -> f64 {
     let log2_l = johnson_interleaved_list_log2(log_inv_rate, log_msg_cols, eta);
     let degree = crate::ring_switch::RING_SWITCH_SOUNDNESS_DEGREE
-        .max(queries + ood_samples)
+        .max(prev_queries + ood_samples)
         .max(2);
     ANALYSIS_LOG_Q - (degree as f64).log2() - log2_l
 }
 
-fn johnson_algebraic_bits(level: &WhirLevelConfig) -> f64 {
+/// `prev_queries` is `levels[i-1].queries`, and 0 for `i = 0`.
+fn johnson_algebraic_bits(level: &WhirLevelConfig, prev_queries: usize) -> f64 {
     johnson_algebraic_bits_for(
         level.log_inv_rate,
         level.log_msg_cols,
         level.eta,
-        level.queries,
+        prev_queries,
         level.ood_samples,
     )
+}
+
+/// The query count the batch at `levels[i]` carries claims from.
+fn prev_queries_at(levels: &[WhirLevelConfig], i: usize) -> usize {
+    if i == 0 { 0 } else { levels[i - 1].queries }
 }
 
 /// OOD binding bits for a level. `mu_vars` is the level's multilinear
@@ -630,6 +643,7 @@ fn optimize_johnson_level(
     log_num_interleaved: usize,
     target_bits: usize,
     query_grinding_bits: usize,
+    prev_queries: usize,
 ) -> Result<OptimizedJohnsonLevel, String> {
     let target = target_bits as f64;
     let query_target = target_bits.saturating_sub(query_grinding_bits).max(1) as f64;
@@ -670,7 +684,7 @@ fn optimize_johnson_level(
         };
         let eps_ood = paper_ood_bits(log_inv_rate, log_msg_cols, eta, mu, ood_samples);
         if eps_ood + 1e-12 < target
-            || johnson_algebraic_bits_for(log_inv_rate, log_msg_cols, eta, queries, ood_samples) + 1e-12 < target
+            || johnson_algebraic_bits_for(log_inv_rate, log_msg_cols, eta, prev_queries, ood_samples) + 1e-12 < target
         {
             continue;
         }
@@ -863,7 +877,7 @@ impl WhirSecurityConfig {
             // The largest list-unioned algebraic identity test (currently the
             // composed ring-switch batching map) is not grindable and must
             // clear the target.
-            let algebraic = johnson_algebraic_bits(lv);
+            let algebraic = johnson_algebraic_bits(lv, prev_queries_at(&self.levels, i));
             if algebraic + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(
                     "L{i}: list-unioned algebraic soundness ({algebraic:.2} bits) < target ({})",
@@ -928,7 +942,8 @@ impl WhirSecurityConfig {
             let rate = shape.log_inv_rates[i];
             let cols = shape.log_msg_cols[i];
             let ilv = shape.log_num_interleaved[i];
-            let optimized = optimize_johnson_level(i, rate, cols, ilv, target_bits, query_grind)?;
+            let prev_queries = prev_queries_at(&levels, i);
+            let optimized = optimize_johnson_level(i, rate, cols, ilv, target_bits, query_grind, prev_queries)?;
 
             levels.push(WhirLevelConfig {
                 log_inv_rate: rate,
@@ -1007,7 +1022,7 @@ mod tests {
                 for (i, level) in cfg.levels.iter().enumerate() {
                     let (pg_bits, query_bits) = level.paper_predicted_bits();
                     let ood_bits = level.paper_predicted_ood_bits();
-                    let algebraic_bits = johnson_algebraic_bits(level);
+                    let algebraic_bits = johnson_algebraic_bits(level, prev_queries_at(&cfg.levels, i));
                     min_pg_bits = min_pg_bits.min(pg_bits);
                     assert_eq!(level.grinding_bits, QUERY_GRINDING_BITS);
                     assert!(query_bits + level.grinding_bits as f64 >= 128.0);
