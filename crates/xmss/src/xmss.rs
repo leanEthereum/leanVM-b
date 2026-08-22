@@ -67,9 +67,13 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
     msg[..4].copy_from_slice(&domain.to_le_bytes());
     msg[4..12].copy_from_slice(&a.to_le_bytes());
     msg[12..20].copy_from_slice(&b.to_le_bytes());
-    primitives::blake2s::keyed_hash(seed, &msg)[..DIGEST_LEN]
-        .try_into()
-        .unwrap()
+    // A sponge needs no keyed mode: it is indifferentiable from a random
+    // oracle, so prefixing the key is already a PRF, and the message has a fixed
+    // length so the encoding stays prefix-free.
+    let mut input = [0u8; 32 + 20];
+    input[..32].copy_from_slice(seed);
+    input[32..].copy_from_slice(&msg);
+    primitives::sha3::hash(&input)[..DIGEST_LEN].try_into().unwrap()
 }
 
 fn gen_wots_secret_key(seed: &[u8; 32], epoch: u32) -> WotsSecretKey {

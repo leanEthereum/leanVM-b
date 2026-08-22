@@ -138,7 +138,7 @@ def HeapBuf(n) -> _Elt:
 
 def StackBuf(n: int) -> _Elt:
     """Allocate `n` consecutive frame (stack) cells. A size-2 StackBuf holds a
-    256-bit value and is a valid `blake2s` operand."""
+    256-bit value and is a valid `sha3_64` operand."""
     _ = n
     return _Elt()
 
@@ -175,7 +175,7 @@ def hint_f192_limbs(dest, value) -> None:
     _ = dest, value
 
 
-def blake2s(
+def sha3_64(
     a,
     b,
     out,
@@ -185,13 +185,13 @@ def blake2s(
     final: Optional[int] = None,
     last_node: int = 0,
 ) -> None:
-    """One standard BLAKE2s compression of the two 256-bit message operands
+    """One standard SHA3-256 compression of the two 256-bit message operands
     `a`, `b`, written into the 2-cell run `out` (write-once: if `out` was
     already written, this asserts it equals the chaining value).
 
-    With no keywords this hashes exactly 64 bytes: the parameterized BLAKE2s-256
+    With no keywords this hashes exactly 64 bytes: the parameterized SHA3-256-256
     initial chaining value, byte counter 64, final-block flag set. That is
-    `blake2s(a || b)`, the form every Fiat-Shamir step and Merkle node uses.
+    `sha3_64(a || b)`, the form every Fiat-Shamir step and Merkle node uses.
 
     For a longer message, drive the blocks yourself. `counter` is the CUMULATIVE
     byte count through this block (`64 * whole_blocks_before + bytes_in_this_block`)
@@ -200,7 +200,7 @@ def blake2s(
     hash. Setting any of `counter`, `final` or `last_node` makes `final` default
     to 0, so a single short block needs `counter=<len>, final=1`. Bytes past the
     block's real length must be zero-filled by the program. `last_node` is
-    BLAKE2s's tree-mode `f1` and is 0 everywhere here.
+    SHA3-256's tree-mode `f1` and is 0 everywhere here.
 
     Message, chaining-value, and output operands are size-2 StackBufs or
     2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are

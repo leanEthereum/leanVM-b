@@ -41,23 +41,28 @@ pub enum Op {
         b: u32,
         c: u32,
     },
-    /// `BLAKE2s`: one standard BLAKE2s compression. The four 16-byte
-    /// message chunks `ins` (each a canonical 128-bit chunk in ONE 192-bit cell,
-    /// top limb zero) form the 64-byte block; the digest lands in the TWO
-    /// consecutive cells `out, out+1`. Each message chunk is addressed
-    /// independently, with no forced contiguity, so the caller need not assemble
-    /// its operands into adjacent cells. The compression relation is proven by
-    /// flock.
-    Blake2s {
+    /// `Keccak`: one Keccak-f[1600] permutation. The 25-lane input state is
+    /// carried as thirteen 128-bit cells, two lanes each, split so that a hash
+    /// pays for none of it:
+    ///
+    /// - `ins` addresses the four cells holding lanes 0..8 INDEPENDENTLY, with
+    ///   no forced contiguity, so a caller hashing `(a, b)` need not copy its
+    ///   operands anywhere.
+    /// - `rest` is the base of the nine consecutive cells holding lanes 8..26.
+    ///   For SHA3-256 of 64 bytes those are the constant `pad10*1`, so a scope
+    ///   builds them once and every hash in it shares them.
+    ///
+    /// The permuted state lands in the thirteen consecutive cells based at
+    /// `out`. The last cell's high lane of each state is the layout's zero pad,
+    /// which the R1CS forces to zero.
+    ///
+    /// There is no immediate: a permutation has no byte counter and no
+    /// finalization flag, and the sponge around it is the caller's, built from
+    /// ordinary XORs and constants. The permutation relation is proven by flock.
+    Keccak {
         ins: [u32; 4],
-        /// Base of two consecutive cells holding the 256-bit chaining value
-        /// (canonical 128-bit chunks, top limbs zero).
-        cv: u32,
+        rest: u32,
         out: u32,
-        /// `counter:u64 | f0:u32 | f1:u32`, little-endian, in the two low
-        /// K-lanes of a 192-bit immediate (top lane always zero). `f0` is the
-        /// final-block flag and `f1` is the last-node flag.
-        metadata: F192,
     },
 }
 

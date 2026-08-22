@@ -38,21 +38,21 @@ pub fn scalars_to_hash(scalars: &[F192; 2]) -> Result<Hash, Error> {
     Ok(hash)
 }
 
-/// Hash one leaf with standard BLAKE2s-256.
+/// Hash one leaf with standard SHA3-256.
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
-    primitives::blake2s::hash(data)
+    primitives::sha3::hash(data)
 }
 
 /// Hash a pair of children into a parent node (64 B → 32 B): `f(a, b) =
-/// BLAKE2s(a‖b)`, one compression, which IS leanVM-b's `Blake2s` opcode
+/// SHA3-256(a‖b)`, one permutation, which IS leanVM-b's `Keccak` opcode
 /// (`vmhash::compress`).
 #[inline]
 pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
-    primitives::blake2s::hash(&buf)
+    primitives::sha3::hash_block(&buf)
 }
 
 /// The full leaf image a stored row stands for: `leaf_words - row.len()` zero words,

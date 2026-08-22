@@ -1,7 +1,7 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Binary Merkle tree with BLAKE2s, SIMD-batching independent hashes across
+//! Binary Merkle tree with SHA3-256, SIMD-batching independent hashes across
 //! leaves and internal levels through the lane-transposed multi-input hasher in
-//! [`primitives::blake2s`].
+//! [`primitives::sha3`].
 //!
 //! The committer's half. What a proof actually carries (the digest encoding,
 //! the leaf/node hashes, one phase's pruned octopus) lives in
@@ -17,7 +17,7 @@
 //! Total nodes: `2·num_leaves − 1`. The flat layout keeps the tree contiguous
 //! in memory for cheap Merkle-path extraction later.
 //!
-//! Hashing is standard BLAKE2s-256. Independent hashes of equal-length inputs
+//! Hashing is standard SHA3-256. Independent hashes of equal-length inputs
 //! step their block counters in lockstep, so the batched hasher is
 //! byte-identical to an independent [`hash_leaf`] per input; the leaf-size
 //! dispatch below exists only to make the length a compile-time constant.
@@ -34,7 +34,7 @@ use zk_alloc::ArenaVec;
 /// keeping input references and output rows cache-resident.
 const HASH_GROUP: usize = 1024;
 
-/// Batch independent BLAKE2s hashes of contiguous `N`-byte inputs into
+/// Batch independent SHA3-256 hashes of contiguous `N`-byte inputs into
 /// uninitialized output slots.
 fn hash_many_uninit<const N: usize>(data: &[u8], out: &mut [std::mem::MaybeUninit<Hash>]) {
     const {
@@ -44,7 +44,7 @@ fn hash_many_uninit<const N: usize>(data: &[u8], out: &mut [std::mem::MaybeUnini
     // Hash is [u8; 32] with no padding; expose the contiguous output storage
     // the batched hasher writes 32 bytes per input into.
     let out_bytes = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 32) };
-    primitives::blake2s::hash_many::<N>(data, out_bytes);
+    primitives::sha3::hash_many::<N>(data, out_bytes);
 }
 
 /// Dispatch one pool task per `HASH_GROUP`-sized output group, handing each
@@ -131,7 +131,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
     let total_nodes = 2 * num_leaves - 1;
     let mut tree = zk_alloc::alloc_uninit(total_nodes);
 
-    // 1. Leaves: independent standard BLAKE2s hashes.
+    // 1. Leaves: independent standard SHA3-256 hashes.
     hash_leaves_batched_uninit(data, leaf_size, &mut tree[..num_leaves]);
 
     // 2. Internal levels: parallel within a level, sequential across levels.
@@ -149,7 +149,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
 /// lanes contribute the zeros their codeword would have been. They are the image's
 /// LEADING words on purpose: whole 64-byte blocks of leading zeros have a chaining
 /// value every leaf shares, so the committer computes it once
-/// ([`primitives::blake2s::zero_prefix_state`]) and each leaf hashes only what
+/// ([`primitives::sha3::zero_prefix_state`]) and each leaf hashes only what
 /// follows. A zero SUFFIX could not be shared, since its compressions take
 /// whatever state the real data left, which is why the L0 leaf image is ordered
 /// with the absent lanes first.
@@ -197,11 +197,11 @@ pub fn merkle_tree_padded_rows(data: &[F64], num_leaves: usize, row_words: usize
 const STAGE_TILE_WORDS: usize = 2048;
 const _: () = assert!((1usize << crate::whir_config::INITIAL_FOLDING_FACTOR) <= STAGE_TILE_WORDS);
 
-/// Leaves the batched BLAKE2s consumes in one whole batch: the backend's lane
-/// count times the groups it interleaves, which is what it actually consumes
-/// without a scalar tail. Rounding the staging tile to a larger multiple than
-/// that only wastes tile capacity and makes more calls of it.
-const BATCH_LEAVES: usize = primitives::blake2s::LANES * 2;
+/// Leaves the batched hasher consumes in one whole batch: the backend's lane
+/// count, which is what it actually consumes without a scalar tail. Rounding the
+/// staging tile to a larger multiple than that only wastes tile capacity and
+/// makes more calls of it.
+const BATCH_LEAVES: usize = primitives::sha3::LANES;
 const _: () = assert!(HASH_GROUP.is_multiple_of(BATCH_LEAVES));
 
 fn hash_leaves_padded_rows_uninit(
@@ -210,22 +210,16 @@ fn hash_leaves_padded_rows_uninit(
     leaf_words: usize,
     out: &mut [std::mem::MaybeUninit<Hash>],
 ) {
-    // Whole blocks of leading zeros are hashed once, for every leaf, into `state`;
-    // each leaf then hashes the `staged` words that follow, which are the rest of
-    // the zero padding and then its row. Both the sharing and the batched hasher
-    // need whole blocks, so an image that is not one (only the small ring-switch
-    // shapes) shares nothing and takes the scalar arm below. Every real leaf width
-    // is `2^k >= 8`.
-    let whole_blocks = leaf_words.is_multiple_of(WORDS_PER_BLOCK);
-    let zero_blocks = if whole_blocks {
-        (leaf_words - row_words) / WORDS_PER_BLOCK
-    } else {
-        0
-    };
+    // Whole rate blocks of leading zeros are absorbed once, for every leaf, into
+    // `state`; each leaf then hashes the `staged` words that follow, which are
+    // the rest of the zero padding and then its row. The sponge absorbs a whole
+    // rate block at a time and a zero block is just a permutation, so the shared
+    // prefix is any number of them and the leaf width need not be a multiple of
+    // the rate. `staged >= row_words` by construction.
+    let zero_blocks = (leaf_words - row_words) / WORDS_PER_BLOCK;
     let staged = leaf_words - zero_blocks * WORDS_PER_BLOCK;
-    let state = primitives::blake2s::zero_prefix_state(zero_blocks);
-    let t_offset = (zero_blocks * WORDS_PER_BLOCK * 8) as u64;
-    // Leaves per tile, in whole hasher batches: the batched BLAKE2s sends its
+    let state = primitives::sha3::zero_prefix_state(zero_blocks);
+    // Leaves per tile, in whole hasher batches: the batched hasher sends its
     // remainder below one batch through the scalar path, and a tile boundary is a
     // remainder. `HASH_GROUP` is a multiple of `BATCH_LEAVES`, so a full task's tiles
     // are all whole and only a short final task can leave a tail. Below one batch
@@ -253,24 +247,16 @@ fn hash_leaves_padded_rows_uninit(
             let bytes = unsafe { core::slice::from_raw_parts(tile.as_ptr().cast::<u8>(), len * staged * 8) };
             // Hash inline: this already runs inside a pool task, so
             // `hash_leaves_batched_uninit` would dispatch a nested one.
-            if whole_blocks {
-                // SAFETY: Hash is [u8; 32] with no padding, so the output slots are
-                // `len * 32` contiguous writable bytes.
-                let out_bytes = unsafe { core::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<u8>(), len * 32) };
-                primitives::blake2s::hash_many_dyn_from_state(bytes, staged * 8, &state, t_offset, out_bytes);
-            } else {
-                // Nothing was shared, so `staged == leaf_words` and this is the whole
-                // image.
-                for (i, slot) in chunk.iter_mut().enumerate() {
-                    slot.write(hash_leaf(&bytes[i * staged * 8..(i + 1) * staged * 8]));
-                }
-            }
+            // SAFETY: Hash is [u8; 32] with no padding, so the output slots are
+            // `len * 32` contiguous writable bytes.
+            let out_bytes = unsafe { core::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<u8>(), len * 32) };
+            primitives::sha3::hash_many_dyn_from_state(bytes, staged * 8, &state, out_bytes);
         }
     });
 }
 
-/// Words of `F64` per BLAKE2s block.
-const WORDS_PER_BLOCK: usize = 8;
+/// Words of `F64` per sponge rate block.
+const WORDS_PER_BLOCK: usize = primitives::sha3::RATE / 8;
 
 fn internal_levels_uninit(tree: &mut [std::mem::MaybeUninit<Hash>], num_leaves: usize) {
     let mut read_start = 0usize;

@@ -97,7 +97,7 @@ pub(crate) const OP_MUL: F64 = g_pow(1);
 pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
-pub(crate) const OP_BLAKE2S: F64 = g_pow(5);
+pub(crate) const OP_KECCAK: F64 = g_pow(5);
 pub(crate) const OP_PACK64X2: F64 = g_pow(6);
 
 // ---- flush builder -----------------------------------------------------------
@@ -197,8 +197,10 @@ pub struct FillCtx<'a> {
     pub(crate) rows: usize,
     /// Which local columns [`Self::col`] / [`Self::cols`] have written. A fill that
     /// misses one would leave the stacked witness holding uninitialized slots, so
-    /// [`fill_table`] checks the whole set was covered.
-    written: std::sync::atomic::AtomicU64,
+    /// [`fill_table`] checks the whole set was covered. Two words, because the
+    /// `Keccak` table carries a column per lane of both states and so runs past
+    /// sixty-four.
+    written: [std::sync::atomic::AtomicU64; 2],
 }
 
 /// Where one column's values go: its window in the stacked witness, or a private
@@ -213,7 +215,7 @@ impl<'a> FillCtx<'a> {
             gpow,
             prog,
             rows,
-            written: std::sync::atomic::AtomicU64::new(0),
+            written: [const { std::sync::atomic::AtomicU64::new(0) }; 2],
         }
     }
 
@@ -264,8 +266,8 @@ impl<'a> FillCtx<'a> {
         let n = self.rows;
         let dst: [parallel::SendPtr<F64>; N] = std::array::from_fn(|k| {
             assert_eq!(out[at + k].len(), n, "column {} has the wrong window length", at + k);
-            self.written
-                .fetch_or(1 << (at + k), std::sync::atomic::Ordering::Relaxed);
+            let bit = at + k;
+            self.written[bit / 64].fetch_or(1u64 << (bit % 64), std::sync::atomic::Ordering::Relaxed);
             parallel::SendPtr(out[at + k].as_mut_ptr())
         });
         // Every row is a row the program executed: a table's height is its row
@@ -295,10 +297,15 @@ impl<'a> FillCtx<'a> {
 pub(crate) fn fill_table(table: &dyn Table, ctx: &FillCtx, out: &mut [ColumnOut]) {
     table.fill(ctx, out);
     let n = table.n_committed_columns();
-    assert!(n <= 64, "the write mask covers at most 64 columns per table");
-    let all = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
-    let written = ctx.written.load(std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(written, all, "a table left one of its columns unwritten");
+    assert!(n <= 128, "the write mask covers at most 128 columns per table");
+    let all = |w: usize| -> u64 {
+        let bits = n.saturating_sub(64 * w).min(64);
+        if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 }
+    };
+    for w in 0..2 {
+        let written = ctx.written[w].load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(written, all(w), "a table left one of its columns unwritten");
+    }
 }
 
 // ---- the trait ---------------------------------------------------------------
@@ -360,74 +367,50 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
         &SetTable,
         &DerefTable,
         &JumpTable,
-        &Blake2sTable,
+        &KeccakTable,
         &Pack64x2Table,
     ]
 }
 
-/// Index of the BLAKE2s table in [`tables`].
-pub(crate) const BLAKE2S_TABLE: usize = 5;
+/// Index of the Keccak table in [`tables`].
+pub(crate) const KECCAK_TABLE: usize = 5;
 
-/// The six base addresses a `BLAKE2s` row reads: the four message cells, the
-/// chaining-value base and the output base (each of the last two spans that cell
-/// and its successor). Recovered from the instruction, not stored per row.
-pub(crate) fn blake2s_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
+/// The six base addresses a `Keccak` row reads: the four independently-addressed
+/// input cells (lanes 0..8), the `rest` base (lanes 8..26, nine consecutive
+/// cells) and the output base (thirteen consecutive). Recovered from the
+/// instruction, not stored per row.
+pub(crate) fn keccak_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
     match prog[r.pc as usize] {
-        Op::Blake2s { ins, cv, out, .. } => [
+        Op::Keccak { ins, rest, out } => [
             r.fp + ins[0],
             r.fp + ins[1],
             r.fp + ins[2],
             r.fp + ins[3],
-            r.fp + cv,
+            r.fp + rest,
             r.fp + out,
         ],
-        op => unreachable!("a BLAKE2s row's pc {} holds {op:?}", r.pc),
+        op => unreachable!("a Keccak row's pc {} holds {op:?}", r.pc),
     }
 }
 
-/// A `BLAKE2s` row's metadata immediate (`counter | f0‖f1`).
-pub(crate) fn blake2s_metadata(prog: &[Op], pc: u32) -> F192 {
-    match prog[pc as usize] {
-        Op::Blake2s { metadata, .. } => metadata,
-        op => unreachable!("a BLAKE2s row's pc {pc} holds {op:?}"),
-    }
-}
-
-/// BLAKE2s value-column LOCAL indices in canonical slot order
-/// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
-/// `blake2s_flock::SLOTS`). These columns are
+/// Keccak value-column LOCAL indices in canonical slot order, the input state's
+/// twenty-six words then the output state's (matches `sha3_flock::SLOTS`).
+/// These columns are
 /// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
 /// (`slot_claims`): the value the bus flushes IS the flock-proven word.
-pub const BLAKE2S_VALUE_COLS: [usize; 18] = [
-    blake2st::VA0,
-    blake2st::VA0 + 1,
-    blake2st::VA0 + 2,
-    blake2st::VA0 + 3,
-    blake2st::VB0,
-    blake2st::VB0 + 1,
-    blake2st::VB0 + 2,
-    blake2st::VB0 + 3,
-    blake2st::VC0,
-    blake2st::VC0 + 1,
-    blake2st::VC0 + 2,
-    blake2st::VC0 + 3,
-    blake2st::VCV0,
-    blake2st::VCV0 + 1,
-    blake2st::VCV0 + 2,
-    blake2st::VCV0 + 3,
-    blake2st::MD0,
-    blake2st::MD1,
-];
-// The eighteen value lanes are laid out contiguously (VA0..VA0+17), so they map
-// 1:1 onto `blake2s_flock::SLOTS`.
-const _: () = assert!(
-    blake2st::VB0 == blake2st::VA0 + 4
-        && blake2st::VC0 == blake2st::VA0 + 8
-        && blake2st::VCV0 == blake2st::VA0 + 12
-        && blake2st::MD0 == blake2st::VA0 + 16
-        && blake2st::MD1 == blake2st::VA0 + 17
-);
+pub const KECCAK_VALUE_COLS: [usize; 2 * crate::sha3_flock::STATE_WORDS] = {
+    let mut cols = [0usize; 2 * crate::sha3_flock::STATE_WORDS];
+    let mut i = 0;
+    while i < cols.len() {
+        cols[i] = keccakt::V0 + i;
+        i += 1;
+    }
+    cols
+};
+// The value lanes are laid out contiguously from V0, so they map 1:1 onto
+// `sha3_flock::SLOTS`, which is itself the flock layout's word order.
+const _: () = assert!(keccakt::R0 == keccakt::V0 + 2 * crate::sha3_flock::STATE_WORDS);
 
 // ---- XOR / MUL ---------------------------------------------------------------
 
@@ -911,117 +894,106 @@ impl Table for Pack64x2Table {
 /// from the trace for the bus), but `cpu` treats them as VIRTUAL (not committed)
 /// and routes their bus claims to `q_flock`, which already holds those words (see
 /// [`BLAKE2S_VALUE_COLS`]).
-struct Blake2sTable;
+struct KeccakTable;
 
-pub(crate) mod blake2st {
+pub(crate) mod keccakt {
+    use crate::sha3_flock::{IN_CELLS, STATE_CELLS, STATE_WORDS};
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const OA0: usize = 2; // operand g-powers (offsets) of the four message cells …
-    pub const OA1: usize = 3;
-    pub const OB0: usize = 4;
-    pub const OB1: usize = 5;
-    pub const OCV: usize = 6; // … the chaining-value base …
-    pub const OC: usize = 7; // … and the output base
-    // The eighteen flock words as value lanes: a's cells (a0, a1), b's cells
-    // (b0, b1), c's cells (c, g·c), cv's cells (cv, g·cv), two lanes
-    // (lo, hi) each, then the bytecode metadata immediate's two lanes.
-    pub const VA0: usize = 8; // a0.lo, a0.hi, a1.lo, a1.hi
-    pub const VB0: usize = 12; // b0.lo, b0.hi, b1.lo, b1.hi
-    pub const VC0: usize = 16; // c.lo, c.hi, (g·c).lo, (g·c).hi
-    pub const VCV0: usize = 20; // cv.lo, cv.hi, (g·cv).lo, (g·cv).hi
-    pub const MD0: usize = 24; // metadata: the counter lane …
-    pub const MD1: usize = 25; // … and the f0‖f1 lane
-    pub const RA0: usize = 26; // per-cell read counts (two a cells) …
-    pub const RA1: usize = 27;
-    pub const RB0: usize = 28; // … two b cells …
-    pub const RB1: usize = 29;
-    pub const RCV0: usize = 30; // … two cv cells …
-    pub const RCV1: usize = 31;
-    pub const RC0: usize = 32; // … two c cells.
-    pub const RC1: usize = 33;
-    pub const RBC: usize = 34;
-    pub const N: usize = 35;
+    pub const O_IN0: usize = 2; // operand g-powers of the four independent input cells …
+    pub const O_REST: usize = O_IN0 + IN_CELLS; // … the `rest` base …
+    pub const O_OUT: usize = O_REST + 1; // … and the output base
+    /// The fifty-two flock words as value lanes: the input state's thirteen
+    /// cells, lo lane then hi, then the output state's the same way.
+    pub const V0: usize = O_OUT + 1;
+    /// Per-cell access counts, thirteen for the input state then thirteen for
+    /// the output.
+    pub const R0: usize = V0 + 2 * STATE_WORDS;
+    pub const RBC: usize = R0 + 2 * STATE_CELLS;
+    pub const N: usize = RBC + 1;
 }
 
-impl Table for Blake2sTable {
+impl Table for KeccakTable {
     fn n_committed_columns(&self) -> usize {
-        blake2st::N
+        keccakt::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        use blake2st::*;
-        &[RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC]
+        // One per cell read, plus the bytecode read. Built once rather than
+        // written out, the count being a layout constant.
+        static COLS: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
+        COLS.get_or_init(|| (keccakt::R0..=keccakt::RBC).collect())
     }
     fn flushes(&self, f: &mut FlushBuilder) {
-        use blake2st::*;
+        use crate::sha3_flock::{IN_CELLS, STATE_CELLS};
+        use keccakt::*;
         f.state_step(PC, FP);
+        // No immediate: a permutation has no counter and no flags, so the
+        // bytecode interaction binds only the two base addresses.
         f.bytecode(
             PC,
             RBC,
-            OP_BLAKE2S,
+            OP_KECCAK,
             &[
-                Col(OA0),
-                Col(OA1),
-                Col(OB0),
-                Col(OB1),
-                Col(OCV),
-                Col(OC),
-                Col(MD0),
-                Col(MD1),
+                Col(O_IN0),
+                Col(O_IN0 + 1),
+                Col(O_IN0 + 2),
+                Col(O_IN0 + 3),
+                Col(O_REST),
+                Col(O_OUT),
             ],
         );
-        // Eight cell reads: four independent 128-bit message cells, the chaining
-        // value's two consecutive cells (ACV, g·ACV), then the output's two
-        // consecutive cells (AC, g·AC). Each carries its chunk's two lanes with a
+        // Twenty-six cell reads. Each carries its chunk's two lanes with a
         // literal-zero top limb (`memory_128`), so the canonical embedding is
-        // proof-enforced and the zero limbs are never committed.
-        // A consecutive cell is a free ×g on the product's g-power.
-        f.memory_128(Prod(FP, OA0, 0), RA0, VA0, VA0 + 1);
-        f.memory_128(Prod(FP, OA1, 0), RA1, VA0 + 2, VA0 + 3);
-        f.memory_128(Prod(FP, OB0, 0), RB0, VB0, VB0 + 1);
-        f.memory_128(Prod(FP, OB1, 0), RB1, VB0 + 2, VB0 + 3);
-        f.memory_128(Prod(FP, OCV, 0), RCV0, VCV0, VCV0 + 1);
-        f.memory_128(Prod(FP, OCV, 1), RCV1, VCV0 + 2, VCV0 + 3);
-        f.memory_128(Prod(FP, OC, 0), RC0, VC0, VC0 + 1);
-        f.memory_128(Prod(FP, OC, 1), RC1, VC0 + 2, VC0 + 3);
+        // proof-enforced and the zero limbs are never committed. A consecutive
+        // cell is a free ×g on the product's g-power.
+        for c in 0..IN_CELLS {
+            f.memory_128(Prod(FP, O_IN0 + c, 0), R0 + c, V0 + 2 * c, V0 + 2 * c + 1);
+        }
+        for c in IN_CELLS..STATE_CELLS {
+            f.memory_128(
+                Prod(FP, O_REST, (c - IN_CELLS) as u32),
+                R0 + c,
+                V0 + 2 * c,
+                V0 + 2 * c + 1,
+            );
+        }
+        for c in 0..STATE_CELLS {
+            let v = V0 + 2 * (STATE_CELLS + c);
+            f.memory_128(Prod(FP, O_OUT, c as u32), R0 + STATE_CELLS + c, v, v + 1);
+        }
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use blake2st::*;
-        let rows = &ctx.trace.blake2s;
-        let ad = |r: &Brow| blake2s_addresses(ctx.prog, r);
+        use crate::sha3_flock::{IN_CELLS, STATE_CELLS};
+        use keccakt::*;
+        let rows = &ctx.trace.keccak;
+        let ad = |r: &Brow| keccak_addresses(ctx.prog, r);
+        // A row's cell addresses in canonical order: the four independent input
+        // cells, the nine `rest` cells, then the thirteen output cells.
+        let cell_addr = |a: &[u32; 6], i: usize| -> u32 {
+            if i < IN_CELLS {
+                a[i]
+            } else if i < STATE_CELLS {
+                a[IN_CELLS] + (i - IN_CELLS) as u32
+            } else {
+                a[IN_CELLS + 1] + (i - STATE_CELLS) as u32
+            }
+        };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // OA0..OC are the six base addresses' offsets, from the instruction decode.
-        ctx.cols(out, rows, OA0, |r| ad(r).map(|a| ctx.g_at(a - r.fp)));
-        // The sixteen memory-borne flock words are the eight cells' lo/hi lanes:
-        // the four message cells, then the cv pair and the output pair. A cell's
-        // two lanes are one read, so each group of four takes two.
-        let word_pair = |c0: u32, c1: u32| {
-            let (w0, w1) = (ctx.mem[c0 as usize], ctx.mem[c1 as usize]);
-            [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
-        };
-        ctx.cols(out, rows, VA0, |r| {
+        ctx.cols(out, rows, O_IN0, |r| ad(r).map(|a| ctx.g_at(a - r.fp)));
+        // The fifty-two memory-borne flock words are the twenty-six cells' lo/hi
+        // lanes, the input state first.
+        ctx.cols(out, rows, V0, |r| {
             let a = ad(r);
-            word_pair(a[0], a[1])
+            let mut v = [F64::ZERO; 2 * crate::sha3_flock::STATE_WORDS];
+            for i in 0..2 * STATE_CELLS {
+                let w = ctx.mem[cell_addr(&a, i) as usize];
+                v[2 * i] = F64(w.c0);
+                v[2 * i + 1] = F64(w.c1);
+            }
+            v
         });
-        ctx.cols(out, rows, VB0, |r| {
-            let a = ad(r);
-            word_pair(a[2], a[3])
-        });
-        ctx.cols(out, rows, VC0, |r| {
-            let a = ad(r);
-            word_pair(a[5], a[5] + 1)
-        });
-        ctx.cols(out, rows, VCV0, |r| {
-            let a = ad(r);
-            word_pair(a[4], a[4] + 1)
-        });
-        ctx.cols(out, rows, MD0, |r| {
-            let md = blake2s_metadata(ctx.prog, r.pc);
-            [F64(md.c0), F64(md.c1)]
-        });
-        ctx.cols(out, rows, RA0, |r| {
-            [r.ra[0], r.ra[1], r.rb[0], r.rb[1], r.rcv[0], r.rcv[1], r.rc[0], r.rc[1]]
-        });
+        ctx.cols(out, rows, R0, |r| r.reads);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }

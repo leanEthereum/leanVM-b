@@ -80,10 +80,14 @@ pub mod frame {
     pub const ZERO: u32 = 3;
     /// What a dummy writes.
     pub const SCRATCH: u32 = 4;
-    /// The `BLAKE2s` dummy's output pair.
-    pub const DIGEST: u32 = 6;
+    /// The `Keccak` dummy's `rest` base: nine never-written cells, so the whole
+    /// permuted input is zero and every traversal permutes the same state.
+    pub const REST: u32 = 6;
+    /// The `Keccak` dummy's output state: thirteen cells clear of its inputs, so
+    /// write-once accepts the same value on every traversal.
+    pub const PERMUTED: u32 = REST + crate::sha3_flock::REST_CELLS as u32;
     /// Cells a block's frame occupies.
-    pub const CELLS: u32 = 12;
+    pub const CELLS: u32 = PERMUTED + crate::sha3_flock::STATE_CELLS as u32;
 }
 
 /// Traversals per block: `plan[t][k]` is how many times the size-`SIZES[k]` block of

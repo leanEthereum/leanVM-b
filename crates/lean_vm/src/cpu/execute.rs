@@ -169,7 +169,7 @@ impl Program {
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
-        let mut blake2s: Vec<Brow> = Vec::new();
+        let mut keccak: Vec<Brow> = Vec::new();
         let mut pack64x2: Vec<Xrow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
@@ -301,7 +301,7 @@ impl Program {
                         set.len(),
                         deref.len(),
                         jump.len(),
-                        blake2s.len(),
+                        keccak.len(),
                         pack64x2.len(),
                     ];
                     base_counts = Some(counts);
@@ -775,41 +775,49 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Blake2s { ins, cv, out, metadata } => {
-                    // Four independently-addressed 128-bit message chunks, each a
-                    // single cell; the chaining value and the output each span two
-                    // consecutive cells.
-                    let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
-                    let acv = fp + cv;
-                    let ac = fp + out;
-                    let words = [aa0, aa1, ab0, ab1, acv, acv + 1].map(|a| m.get(a));
+                Op::Keccak { ins, rest, out } => {
+                    // Lanes 0..8 from four independently-addressed cells, lanes
+                    // 8..26 from the nine consecutive `rest` cells, and the
+                    // permuted state to thirteen consecutive cells at `out`. The
+                    // last cell's high lane is the layout's zero pad.
+                    use crate::sha3_flock::{IN_CELLS, REST_CELLS, STATE_CELLS};
+                    let a_in: [u32; IN_CELLS] = ins.map(|o| fp + o);
+                    let (a_rest, a_out) = (fp + rest, fp + out);
+                    let cells: [F192; STATE_CELLS] = std::array::from_fn(|c| {
+                        if c < IN_CELLS {
+                            m.get(a_in[c])
+                        } else {
+                            m.get(a_rest + (c - IN_CELLS) as u32)
+                        }
+                    });
                     assert!(
-                        words.iter().all(|w| w.c2 == 0),
-                        "BLAKE2s input cell must be a canonical 128-bit embedding"
+                        cells.iter().all(|w| w.c2 == 0),
+                        "Keccak state cell must be a canonical 128-bit embedding"
                     );
-                    let va = [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)];
-                    let vb = [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)];
-                    let vcv = [F64(words[4].c0), F64(words[4].c1), F64(words[5].c0), F64(words[5].c1)];
-                    // Compress the 64 message bytes to the 32-byte result, then
-                    // write it to c's two cells. No table constraint covers the
-                    // digest (the relation is proven by flock, §blake2s_flock); the
-                    // interpreter still computes the definite digest so the output
-                    // cells are consistent for any later read.
-                    let vc = blake2s_compress(va, vb, vcv, metadata);
-                    let outputs = [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)];
-                    m.put(ac, outputs[0]);
-                    m.put(ac + 1, outputs[1]);
-                    let ra = [m.bump_access_count(aa0), m.bump_access_count(aa1)];
-                    let rb = [m.bump_access_count(ab0), m.bump_access_count(ab1)];
-                    let rcv = [m.bump_access_count(acv), m.bump_access_count(acv + 1)];
-                    let rc = [m.bump_access_count(ac), m.bump_access_count(ac + 1)];
-                    blake2s.push(Brow {
+                    // Permute, then write the result to the output cells. No table
+                    // constraint covers the permutation (the relation is proven by
+                    // flock, §sha3_flock); the interpreter still computes the
+                    // definite state so the output cells are consistent for any
+                    // later read.
+                    let state = crate::sha3_flock::permuted(&crate::sha3_flock::compression(&cells));
+                    for (c, &o) in crate::sha3_flock::out_cells(&state).iter().enumerate() {
+                        m.put(a_out + c as u32, o);
+                    }
+                    let reads: [F64; 2 * STATE_CELLS] = std::array::from_fn(|i| {
+                        let addr = if i < IN_CELLS {
+                            a_in[i]
+                        } else if i < STATE_CELLS {
+                            a_rest + (i - IN_CELLS) as u32
+                        } else {
+                            a_out + (i - STATE_CELLS) as u32
+                        };
+                        m.bump_access_count(addr)
+                    });
+                    let _ = REST_CELLS;
+                    keccak.push(Brow {
                         pc,
                         fp,
-                        ra,
-                        rb,
-                        rcv,
-                        rc,
+                        reads,
                         bytecode_read,
                     });
                     pc += 1;
@@ -898,7 +906,7 @@ impl Program {
             set,
             deref,
             jump,
-            blake2s,
+            keccak,
             pack64x2,
             mem_count: m.count,
             bytecode_count,

@@ -16,7 +16,7 @@
 //!
 //! The four rules that keep this sound:
 //! 1. **Only pure ops are eliminated.** `DEREF` unifies two memory cells (and
-//!    bumps the bus read counts), `BLAKE2s`/`PACK64X2` carry bus effects, `JUMP`
+//!    bumps the bus read counts), `SHA3-256`/`PACK64X2` carry bus effects, `JUMP`
 //!    is control flow, so all are left alone. They still get their operands
 //!    rewritten.
 //! 2. **Only single-write targets.** An instruction is a candidate only if its
@@ -140,10 +140,11 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
                     bump(*gamma);
                 }
             }
-            // The 32-byte digest lands in two consecutive cells.
-            LOp::Blake2s { c, .. } => {
-                bump(*c);
-                bump(*c + 1);
+            // The permuted state lands in thirteen consecutive cells.
+            LOp::Keccak { c, .. } => {
+                for k in 0..lean_vm::sha3_flock::STATE_CELLS as u32 {
+                    bump(*c + k);
+                }
             }
             LOp::Jump { .. } => {}
         }
@@ -213,11 +214,11 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
             map(od);
             map(of);
         }
-        LOp::Blake2s { ins: chunks, cv, .. } => {
+        LOp::Keccak { ins: chunks, rest, .. } => {
             for chunk in chunks.iter_mut() {
                 map(chunk);
             }
-            map(cv);
+            map(rest);
         }
     }
     for h in &mut ins.hints {

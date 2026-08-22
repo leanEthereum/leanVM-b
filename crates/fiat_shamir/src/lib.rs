@@ -5,11 +5,11 @@
 //! carry.
 //!
 //! [`FiatShamirState`] is a 256-bit chaining value evolved only by the fixed 64→32
-//! BLAKE2s hash the VM's `Blake2s` opcode computes, so prover, verifier, and a
-//! recursive verifier running on the VM all derive identical challenges with one
-//! hash per step. Hashing exactly 64 bytes IS one BLAKE2s compression (counter
-//! 64, final-block flag set), which is why a single opcode covers the whole
-//! chain.
+//! SHA3-256 hash, so prover, verifier, and a recursive verifier running on the
+//! VM all derive identical challenges with one hash per step. Hashing exactly 64
+//! bytes is under Keccak's 136-byte rate, so it IS one Keccak-f[1600]
+//! permutation with a constant pad, which is why the VM's single `Keccak`
+//! opcode covers the whole chain.
 //!
 //! Every block has ONE shape: up to three lanes of data, and the domain tag in
 //! the fourth. A scalar is `E = F192` (the tower challenge field), so its three
@@ -18,12 +18,18 @@
 //! Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
 //! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
 //! AGPL-3.0-only): a chaining value advanced by domain-separated absorb /
-//! squeeze steps. Here the underlying hash is the VM's BLAKE2s compression
-//! rather than SHA-256, inputs are `K = GF(2^64)` field words, and, because
-//! every absorb is domain-tagged per compression, no explicit double-hash
-//! ratchet is needed. It is a Merkle–Damgård chain, NOT a sponge: there is no
-//! rate/capacity split and no permutation, so it is named for the transform it
-//! serves rather than for a construction it is not.
+//! squeeze steps. Here the underlying hash is SHA3-256 of 64 bytes, inputs are
+//! `K = GF(2^64)` field words, and, because every absorb is domain-tagged per
+//! block, no explicit double-hash ratchet is needed.
+//!
+//! It is a Merkle-Damgard chain, NOT a sponge, even though SHA3-256 is one.
+//! That is deliberate. A sponge would absorb 1088 bits per permutation instead
+//! of 192, but this transcript alternates absorb and squeeze at single-item
+//! granularity (a sumcheck round absorbs two messages and squeezes one
+//! challenge), and every alternation costs a sponge a full permutation. Two
+//! permutations a round beats nothing when one item per permutation is the same
+//! count. Raising the absorb rate would mean batching the transcript into runs,
+//! which is a protocol change, not a hash change, and is not this migration.
 //!
 //! Each challenge is the random-oracle image of the whole prior transcript;
 //! every absorb is domain-tagged per compression (so a field element, a raw
@@ -35,21 +41,21 @@ pub mod transcript;
 
 use primitives::field::{F64, F192};
 
-/// `f(a, b) = BLAKE2s(a‖b)` on two 256-bit halves laid out little-endian into
-/// 64 bytes, *exactly* the VM's `Blake2s` opcode: 64 input bytes → 32-byte
-/// digest, split back into four field words. THE primitive; the chain is a
-/// chain of these, so a zkDSL program replays it with one `blake2s(...)` per
-/// step.
+/// `f(a, b) = SHA3-256(a‖b)` on two 256-bit halves laid out little-endian into
+/// 64 bytes: 64 input bytes → 32-byte digest, split back into four field words.
+/// THE primitive; the chain is a chain of these, so a zkDSL program replays it
+/// with one `sha3_64(...)` per step.
 ///
-/// A 64-byte input is one compression, so this is `compress(init_state(0), m,
-/// t = 64, last = true)` and nothing about the byte-level padding rules can
-/// leak into the in-circuit version.
+/// 64 bytes is under the 136-byte rate, so this is one Keccak-f[1600] on the
+/// state `a‖b‖0x06‖0…0‖0x80`. Every byte of that pad is a constant, so the
+/// in-circuit version is the bare permutation and no padding rule can leak
+/// into it.
 pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     let mut input = [0u8; 64];
     for (slot, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
         *slot = w.0.to_le_bytes();
     }
-    let d = primitives::blake2s::hash(&input);
+    let d = primitives::sha3::hash_block(&input);
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
@@ -92,7 +98,7 @@ impl FiatShamirState {
     /// wrong (or forget).
     pub fn new(label: &[u8], statement: &[F192]) -> Self {
         let mut s = Self { cv: [F64::ZERO; 4] };
-        s.absorb_bytes(b"leanvm-b/transcript/v4-blake2s");
+        s.absorb_bytes(b"leanvm-b/transcript/v5-sha3");
         s.absorb_bytes(label);
         for &x in statement {
             s.observe(x);

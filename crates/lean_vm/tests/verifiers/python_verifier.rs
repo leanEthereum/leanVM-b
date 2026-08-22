@@ -25,7 +25,7 @@ def mix(value, tag):
 def main():
     seed = [5, 7]
     digest = StackBuf(2)
-    blake2s(seed, seed, digest)
+    sha3_64(seed, seed, digest)
 
     chain = HeapBuf(LOOP_STEPS + 1)
     chain[1] = digest[0]
@@ -41,15 +41,11 @@ def main():
 const LOOP_STEPS: usize = 16_384;
 
 fn public_input() -> [F192; 2] {
-    use lean_vm::blake2s_flock::{FINAL_FLAG, IV, PINNED_T, compression, digest, metadata};
-
+    // The guest hashes its 256-bit seed against itself, which is
+    // `fiat_shamir::compress` and so SHA3-256 of the 64 concatenated bytes.
     let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
-    let metadata = metadata(PINNED_T, FINAL_FLAG, 0);
-    let digest = digest(&compression(seed, seed, IV, metadata));
-    let digest = [
-        F192::new(digest[0].0, digest[1].0, 0),
-        F192::new(digest[2].0, digest[3].0, 0),
-    ];
+    let d = lean_vm::vmhash::compress(seed, seed);
+    let digest = [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)];
     let mut value = digest[0];
     let mut index = F192::ONE;
     let generator = F192::from(g_pow(1));

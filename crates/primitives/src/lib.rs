@@ -3,7 +3,6 @@
 
 pub mod bench;
 pub mod bits;
-pub mod blake2s;
 pub mod field;
 pub mod multilinear;
 pub mod sha3;

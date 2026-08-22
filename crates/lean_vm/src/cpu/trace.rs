@@ -51,10 +51,9 @@ pub(crate) struct Jrow {
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) ra: [F64; 2],  // per-cell counts for the two a input cells
-    pub(crate) rb: [F64; 2],  // … the two b input cells
-    pub(crate) rcv: [F64; 2], // … the two cv input cells
-    pub(crate) rc: [F64; 2],  // … the two c output cells
+    /// Per-cell access counts, the input state's thirteen cells then the
+    /// output's.
+    pub(crate) reads: [F64; 2 * crate::sha3_flock::STATE_CELLS],
     pub(crate) bytecode_read: F64,
 }
 
@@ -64,7 +63,7 @@ pub(crate) struct Trace {
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
-    pub(crate) blake2s: Vec<Brow>,
+    pub(crate) keccak: Vec<Brow>,
     pub(crate) pack64x2: Vec<Xrow>,
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
@@ -79,7 +78,7 @@ impl Trace {
             self.set.len(),
             self.deref.len(),
             self.jump.len(),
-            self.blake2s.len(),
+            self.keccak.len(),
             self.pack64x2.len(),
         ]
     }
