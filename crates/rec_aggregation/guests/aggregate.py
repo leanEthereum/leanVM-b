@@ -136,9 +136,8 @@ SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the
 # match_range. The LIG_* tables carry one row per (rate, m), emitted from the
 # same derive_profile/level_shapes the prover uses.
 # Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl],
-# where m_idx is the flattened (rate, size) configuration index; per-fold grind
-# schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace vanishing constants
-# with the LIG_MAX_VANISH_LEN stride.
+# where m_idx is the flattened (rate, size) configuration index; the subspace
+# vanishing constants with the LIG_MAX_VANISH_LEN stride.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
 LIG_N_LOG_SIZES = LIG_N_LOG_SIZES_PLACEHOLDER
@@ -151,7 +150,6 @@ COL_KAPPA_ADJ = COL_KAPPA_ADJ_PLACEHOLDER
 PCS_MIN_MU = PCS_MIN_MU_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - LIG_MIN_LOG_SIZE) drives that arm.
 LIG_MAX_LEVELS = LIG_MAX_LEVELS_PLACEHOLDER
-LIG_MAX_TOTAL_FOLDS = LIG_MAX_TOTAL_FOLDS_PLACEHOLDER
 LIG_MAX_VANISH_LEN = LIG_MAX_VANISH_LEN_PLACEHOLDER
 LIG_MAX_OOD_SAMPLES = LIG_MAX_OOD_SAMPLES_PLACEHOLDER
 # Global maxima (StackBuf frame sizes are parse-time).
@@ -188,7 +186,6 @@ LIG_FOLDS_OFF = LIG_FOLDS_OFF_PLACEHOLDER
 LIG_ROWS_OFF = LIG_ROWS_OFF_PLACEHOLDER
 LIG_PATHS_OFF = LIG_PATHS_OFF_PLACEHOLDER
 LIG_VANISH_OFF = LIG_VANISH_OFF_PLACEHOLDER
-LIG_FOLD_GRIND_BITS = LIG_FOLD_GRIND_BITS_PLACEHOLDER
 LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
 LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
@@ -764,11 +761,6 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
             fold_idx = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j
-            if LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
-                nonce_v = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW_NONCE absorb below
-                msg_cursor = msg_cursor * GEN
-                grind_check(fs[0], fs[1], nonce_v, GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
-                fs = absorb_nonce(fs, nonce_v)
             fs, fold_challenge = squeeze(fs)
             fold_challenges[GEN ** fold_idx] = fold_challenge
             sumcheck_target = (round_quad_a * fold_challenge + round_quad_b) * fold_challenge + round_quad_c  # evaluate this level's folded quadratic at the fold challenge

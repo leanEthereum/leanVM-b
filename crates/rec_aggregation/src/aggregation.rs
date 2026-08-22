@@ -1704,7 +1704,6 @@ struct OpeningShape {
     squeezes: Vec<usize>,
     interleaving: Vec<usize>,
     query_grinding_bits: Vec<usize>,
-    fold_grinding_bits: Vec<usize>,
     row_offsets: Vec<usize>,
     path_offsets: Vec<usize>,
     positions_offsets: Vec<usize>,
@@ -2026,13 +2025,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             }),
             "recursive WHIR guest supports whole-block Merkle rows of at most one 1024-byte BLAKE2s chunk"
         );
-        let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
-        let mut cfb: Vec<usize> = Vec::new();
-        for (lvl, &k) in ck.iter().enumerate().take(cn) {
-            for j in 0..k {
-                cfb.push((cfgb(lvl) - j as i64).max(0) as usize);
-            }
-        }
         let psum = |f: &dyn Fn(usize) -> usize| -> Vec<usize> {
             let mut o = Vec::with_capacity(cn);
             let mut acc = 0;
@@ -2072,7 +2064,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             squeezes: cs,
             interleaving: cni,
             query_grinding_bits: cqb,
-            fold_grinding_bits: cfb,
             row_offsets: c_rowoff,
             path_offsets: c_pathoff,
             positions_offsets: c_qpoff,
@@ -2091,11 +2082,9 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         .flat_map(|r| (minm..=maxm).map(move |m| oshape(m, r)))
         .collect();
     let maxlev = cands.iter().map(|c| c.n_levels).max().unwrap();
-    let maxfolds = cands.iter().map(|c| c.fold_grinding_bits.len()).max().unwrap();
     let maxsvk = cands.iter().map(|c| c.vanish_values.len()).max().unwrap();
     let maxood = cands.iter().flat_map(|c| &c.ood_samples).copied().max().unwrap_or(0);
     ps("LIG_MAX_LEVELS", maxlev.to_string());
-    ps("LIG_MAX_TOTAL_FOLDS", maxfolds.to_string());
     ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
     ps("LIG_MAX_OOD_SAMPLES", maxood.to_string());
     ps("LIG_MIN_LOG_SIZE", minm.to_string());
@@ -2269,10 +2258,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         ps("LIG_ROWS_OFF", ints(&flat(&|c| c.row_offsets.clone(), maxlev)));
         ps("LIG_PATHS_OFF", ints(&flat(&|c| c.path_offsets.clone(), maxlev)));
         ps("LIG_VANISH_OFF", ints(&flat(&|c| c.vanish_offsets.clone(), maxlev)));
-        ps(
-            "LIG_FOLD_GRIND_BITS",
-            ints(&flat(&|c| c.fold_grinding_bits.clone(), maxfolds)),
-        );
         let mut svk2 = Vec::new();
         let mut ivk2 = Vec::new();
         for c in &cands {

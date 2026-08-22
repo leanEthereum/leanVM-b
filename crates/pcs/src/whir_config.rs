@@ -108,12 +108,6 @@ pub struct ProverConfig {
     /// post-commit/pre-queries. Length = level_steps + 1. Each bit here
     /// substitutes for ~1/log₂(1/(1−γ)) queries at that level.
     pub grinding_bits: Vec<usize>,
-    /// Per-level **fold-challenge** PoW grinding bits (L0, ..., L_r), ground
-    /// immediately before EACH of the level's fold challenges (so a level
-    /// with `k` folds does `k` grinds of this many bits). Boosts the
-    /// proximity-gap term, which lives on the fold challenges. Length =
-    /// level_steps + 1.
-    pub fold_grinding_bits: Vec<usize>,
     /// Per-commit-level out-of-domain samples (L0, ..., L_r), taken right
     /// after the level's Merkle root enters the transcript. `[0]` must be 0:
     /// L0 is bound by the opening's own (post-commit, random-point)
@@ -225,7 +219,6 @@ pub fn default_config(log_n: usize, log_batch_size: usize, log_inv_rate: usize) 
         initial_k,
         level_ks: shape.k_levels[1..].to_vec(),
         grinding_bits: vec![0usize; n_levels],
-        fold_grinding_bits: vec![0usize; n_levels],
         ood_samples: vec![0usize; n_levels],
     })
 }
@@ -328,8 +321,9 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
 // That analysis is always the Johnson radius with explicit slack `eta`
 // (gamma = (1 - sqrt(rho)) - eta) WITH out-of-domain binding (`doc/leanvm/body/b-polynomial-commitment-scheme.tex`,
 // Thm `thm:rbr`). The MCA theorem (`thm:mca-johnson` = BCHKS25 Thm 4.6) gives
-// the proximity-gap exceptional set `a = O_rho(n / eta^5)`, so a level's
-// `fold_grinding_bits` must be at least `target_bits - log2(q/a)`. Binding to a
+// the proximity-gap exceptional set `a = O_rho(n / eta^5)`, and the eta search
+// keeps `log2(q/a)` above the target on its own rather than grinding the fold
+// challenges for it. Binding to a
 // single codeword of the (Johnson-bounded) interleaved list is via
 // `ood_samples` explicit multilinear OOD evaluations, except at L0, where the
 // opening's own post-commit random evaluation claim plays the OOD role (union
@@ -366,11 +360,6 @@ pub struct WhirLevelConfig {
     /// **Query-phase** PoW grinding bits, ground post-commit/pre-queries.
     /// Each bit substitutes for ~1/log₂(1/(1−γ)) queries at this level.
     pub grinding_bits: usize,
-    /// **Fold-challenge** PoW grinding bits, ground immediately before EACH
-    /// of this level's `k` fold challenges. Boosts the
-    /// proximity-gap term (which lives on the fold challenges):
-    /// `eps_pg + fold_grinding_bits ≥ target`.
-    pub fold_grinding_bits: usize,
     /// Out-of-domain samples taken right after this level's commit enters
     /// the transcript. Each binds the prover to a single codeword of the
     /// interleaved list via a multilinear evaluation claim.
@@ -396,8 +385,7 @@ pub struct FinalBlockConfig {
 ///
 /// **Validation invariants** (checked by [`Self::validate`]):
 /// 1. `initial_k + Σ levels[1..].k + final_block.yr_log_n == log_n`.
-/// 2. Each level's proximity-gap bits plus its `fold_grinding_bits` reach
-///    `target_security_bits`.
+/// 2. Each level's proximity-gap bits reach `target_security_bits`.
 /// 3. Each level's query soundness reaches `target_security_bits −
 ///    grinding_bits` (queries cover what grinding doesn't).
 /// 4. `eta` is finite and inside the Johnson range for the level's rate.
@@ -865,10 +853,10 @@ impl WhirSecurityConfig {
             // reach target. (The pg bad event lives on the fold challenges,
             // so only the fold grind (done before each fold challenge)
             // boosts it; the query-phase grind does not.)
-            if pg_pred + lv.fold_grinding_bits as f64 + 1e-12 < lv.target_security_bits as f64 {
+            if pg_pred + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(
-                    "L{i}: proximity-gap soundness ({pg_pred:.2} bits) + fold_grinding ({}) < target ({})",
-                    lv.fold_grinding_bits, lv.target_security_bits
+                    "L{i}: proximity-gap soundness ({pg_pred:.2} bits) < target ({})",
+                    lv.target_security_bits
                 ));
             }
 
@@ -950,7 +938,6 @@ impl WhirSecurityConfig {
                 eta: optimized.eta,
                 queries: optimized.queries,
                 grinding_bits: query_grind,
-                fold_grinding_bits: 0,
                 ood_samples: optimized.ood_samples,
                 target_security_bits: target_bits,
             });
@@ -984,7 +971,6 @@ impl WhirSecurityConfig {
             level_ks: self.levels.iter().skip(1).map(|lv| lv.k).collect(),
             queries: self.levels.iter().map(|lv| lv.queries).collect(),
             grinding_bits: self.levels.iter().map(|lv| lv.grinding_bits).collect(),
-            fold_grinding_bits: self.levels.iter().map(|lv| lv.fold_grinding_bits).collect(),
             ood_samples: self.levels.iter().map(|lv| lv.ood_samples).collect(),
         };
         Ok((config.clone(), config))
@@ -1024,7 +1010,6 @@ mod tests {
                     let algebraic_bits = johnson_algebraic_bits(level);
                     min_pg_bits = min_pg_bits.min(pg_bits);
                     assert_eq!(level.grinding_bits, QUERY_GRINDING_BITS);
-                    assert_eq!(level.fold_grinding_bits, 0);
                     assert!(query_bits + level.grinding_bits as f64 >= 128.0);
                     assert!(pg_bits >= 128.0);
                     assert!(ood_bits >= 128.0);
