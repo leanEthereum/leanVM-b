@@ -11,7 +11,7 @@ use sphincs_params::search::{
 const USAGE: &str = "\
 SPHINCS+ parameter selection: what verifies cheapest, or what one set costs.
 
-usage: sphincs_params --lifetime L [parameters] [budgets] [output]
+usage: sphincs_params --lifetime Q [parameters] [budgets] [output]
 
 Give a parameter to pin it, leave it out to search it. Pin them all and the run
 just costs that one set. Numbers may be written as 2e6.
