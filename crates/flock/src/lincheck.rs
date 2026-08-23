@@ -1318,7 +1318,7 @@ mod tests {
 
     /// Sparse boolean matrix, test-only: the protocol tests below drive lincheck
     /// with random R1CS instances, which is the one place a matrix still exists.
-    /// Nothing on a prove or verify path builds one (see `blake2s`'s walks).
+    /// Nothing on a prove or verify path builds one (see `hash`'s walks).
     #[derive(Clone)]
     struct SparseBinaryMatrix {
         num_rows: usize,
