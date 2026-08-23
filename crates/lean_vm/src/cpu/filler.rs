@@ -84,12 +84,12 @@ pub mod frame {
     /// cells, so it absorbs a zero block into a zero state and every traversal
     /// does the same work.
     pub const REST: u32 = 6;
-    pub const PREV: u32 = REST + crate::sha3_flock::REST_CELLS as u32;
+    pub const PREV: u32 = REST + crate::hash_flock::REST_CELLS as u32;
     /// The `Keccak` dummy's output state: thirteen cells clear of its inputs, so
     /// write-once accepts the same value on every traversal.
-    pub const PERMUTED: u32 = PREV + crate::sha3_flock::STATE_CELLS as u32;
+    pub const PERMUTED: u32 = PREV + crate::hash_flock::STATE_CELLS as u32;
     /// Cells a block's frame occupies.
-    pub const CELLS: u32 = PERMUTED + crate::sha3_flock::STATE_CELLS as u32;
+    pub const CELLS: u32 = PERMUTED + crate::hash_flock::STATE_CELLS as u32;
 }
 
 /// Traversals per block: `plan[t][k]` is how many times the size-`SIZES[k]` block of

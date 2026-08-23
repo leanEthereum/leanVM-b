@@ -198,7 +198,7 @@ def sha3_hash(data: bytes) -> Digest:
 
 def sha3_hash_md(data: bytes) -> Digest:
     """The chain of 64-byte hashes the VM's `Keccak` opcode can reproduce,
-    `primitives::sha3::hash_md`: the first link takes 64 bytes and every later
+    `primitives::hash::hash_md`: the first link takes 64 bytes and every later
     one takes the state and a 32-byte group. `data` is zero-filled to whole
     groups, at least two; the caller binds the length."""
     padded = max(64, (len(data) + 31) // 32 * 32)
@@ -1598,7 +1598,7 @@ KECCAK_ROUNDS = 24
 def keccak_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
     """Compute `A0 w` and `B0 w` by one forward walk of the circuit.
 
-    Mirrors `flock::sha3::forward_walk` gadget for gadget: the absorb
+    Mirrors `flock::hash::forward_walk` gadget for gadget: the absorb
     `prev ^ (msg || 0...0)`, then theta, rho, pi, chi and iota, twenty-four
     times. Only chi emits rows; everything else is affine and so free.
     """

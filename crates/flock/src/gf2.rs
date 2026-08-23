@@ -14,7 +14,7 @@
 //! form. `sha3`'s `marginal_walk_transposes_the_forward_walk` asserts it
 //! directly as well.
 //!
-//! The gadgets themselves live with the circuit, in [`crate::sha3`]: Keccak's
+//! The gadgets themselves live with the circuit, in [`crate::hash`]: Keccak's
 //! word is a 64-bit lane rather than a 32-bit one, and its only nonlinear
 //! gadget is `chi`'s AND, so there is nothing here to share.
 

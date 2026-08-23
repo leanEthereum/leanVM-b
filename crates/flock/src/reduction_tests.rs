@@ -1,15 +1,15 @@
 //! The Keccak circuit driven through flock's actual reduction: zerocheck then
 //! lincheck, prover and verifier, on the shared transcript.
 //!
-//! The unit tests in `flock::sha3` establish that the circuit is the right
+//! The unit tests in `flock::hash` establish that the circuit is the right
 //! circuit (the witness is the permutation, the backward walk transposes the
 //! forward one) and that the reduction round-trips and rejects a tampered
 //! witness. What is left, and what this file is for, is the transcript itself:
 //! a flipped word anywhere in the stream must make the reduction reject. Only
 //! the PCS opening is out of scope, being generic in the claims and covered end
-//! to end by `sha3_batch`.
+//! to end by `hash_batch`.
 
-use crate::sha3::{Compression, K_LOG, K_SKIP, Sha3Setup, min_n_blocks_log};
+use crate::hash::{Compression, K_LOG, K_SKIP, Sha3Setup, min_n_blocks_log};
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use primitives::test_rng::Rng;
 

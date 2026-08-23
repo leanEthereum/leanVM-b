@@ -73,7 +73,7 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
     let mut input = [0u8; 32 + 20];
     input[..32].copy_from_slice(seed);
     input[32..].copy_from_slice(&msg);
-    primitives::sha3::hash(&input)[..DIGEST_LEN].try_into().unwrap()
+    primitives::hash::hash(&input)[..DIGEST_LEN].try_into().unwrap()
 }
 
 fn gen_wots_secret_key(seed: &[u8; 32], epoch: u32) -> WotsSecretKey {

@@ -5,7 +5,7 @@
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
 //! with each word carried by three committed `K = F64` limbs. `Keccak`
 //! adds the memory/state/bytecode plumbing for a 64→32-byte compression
-//! whose relation is discharged by flock (see [`crate::sha3_flock`]). All
+//! whose relation is discharged by flock (see [`crate::hash_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
 use std::collections::HashMap;
@@ -56,7 +56,7 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing to
 /// everything fixed about the proving environment.
 ///
-/// Two things go in. [`flock::sha3::R1CS_DIGEST`] names the flock Keccak
+/// Two things go in. [`flock::hash::R1CS_DIGEST`] names the flock Keccak
 /// circuit, independent of the instance count: the full instance is
 /// block-diagonal and the count is announced and absorbed with the other sizes,
 /// so one constant covers every shape. And the bytecode enters through the hash
@@ -69,9 +69,9 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// version and the program before anything else; a recursion guest carries the
 /// INNER program's seed in its public input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
-    let mut h = primitives::sha3::Hasher::new();
+    let mut h = primitives::hash::Hasher::new();
     h.update(b"leanvm-b-fs-seed-v3-sha3");
-    h.update(&flock::sha3::R1CS_DIGEST);
+    h.update(&flock::hash::R1CS_DIGEST);
     h.update(&program.bytecode_hash);
     let d = h.finalize();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
@@ -138,7 +138,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         // Keccak table's value columns share that instance cube, so a height below the
         // floor describes a layout the arithmetization cannot express. The other two
         // verifiers reject it here too (`python-verifier`, `guests/aggregate.py`).
-        || taus[tables::KECCAK_TABLE] < crate::sha3_flock::n_blocks_log(1)
+        || taus[tables::KECCAK_TABLE] < crate::hash_flock::n_blocks_log(1)
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
@@ -205,7 +205,7 @@ impl Program {
             // exactly the concatenation of its `to_le_bytes` on little-endian targets.
             let bytes: &[u8] =
                 unsafe { core::slice::from_raw_parts(table.as_ptr().cast::<u8>(), core::mem::size_of_val(&table[..])) };
-            primitives::sha3::Hasher::new().update(bytes).finalize()
+            primitives::hash::Hasher::new().update(bytes).finalize()
         };
         Self {
             prog,
@@ -404,7 +404,7 @@ fn keccak_value_slot(col: usize) -> Option<usize> {
     tables::KECCAK_VALUE_COLS
         .iter()
         .position(|&c| base + c == col)
-        .map(|i| crate::sha3_flock::SLOTS[i])
+        .map(|i| crate::hash_flock::SLOTS[i])
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
@@ -494,7 +494,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // hit. Pure warm-up: the result is fetched from the cache, nothing here joins
     // the handle. (A no-Keccak program still warms the size-1 padding shape.)
     let n_keccak_warm = exec.trace.keccak.len().max(1);
-    std::thread::spawn(move || crate::sha3_flock::warm_setup(n_keccak_warm));
+    std::thread::spawn(move || crate::hash_flock::warm_setup(n_keccak_warm));
     let cycles = exec.cycles;
     let mut w = crate::stage!("Build witness", || program.build(&exec));
     let counts = w.layout.taus.map(|t| 1usize << t);
@@ -509,7 +509,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         pcs::commit(&mut ps, &w.q, w.layout.shape, log_inv_rate)
     });
 
-    // Keccak to flock (§sha3_flock), single PCS: q_flock is ALWAYS a column in
+    // Keccak to flock (§hash_flock), single PCS: q_flock is ALWAYS a column in
     // `w.q` (≥1 instance, a program with no Keccak carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-Keccak fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
@@ -580,7 +580,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
     let offset = w.layout.placements[QFLOCK].offset;
-    let ring = crate::sha3_flock::ring_switch_open(n_blocks, offset, &reduced);
+    let ring = crate::hash_flock::ring_switch_open(n_blocks, offset, &reduced);
     crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     (
         ps.into_proof(),
@@ -707,9 +707,9 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // instance, including programs that execute no Keccak instruction.
     let n_blocks = n_keccak.max(1);
     let offset = l.placements[QFLOCK].offset;
-    let replay = crate::sha3_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Keccak)?;
+    let replay = crate::hash_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Keccak)?;
     let flock_stream_end = vs.stream_offset();
-    let ring = crate::sha3_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
+    let ring = crate::hash_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
     pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
@@ -744,7 +744,7 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                 return pcs::SlotClaim::Strided {
                     offset: l.placements[QFLOCK].offset,
                     slot,
-                    stride_log: crate::sha3_flock::SLOT_STRIDE_LOG,
+                    stride_log: crate::hash_flock::SLOT_STRIDE_LOG,
                     point: c.point.clone(),
                     value: c.value,
                 };
@@ -775,7 +775,7 @@ mod tests {
     /// plus the memory / state / bytecode bus interactions are verified
     /// end-to-end (the proof carries the WHIR opening they assert on).
     fn keccak_program(msg: &[u64; 17]) -> Program {
-        use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
+        use crate::hash_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
         const MSG: u32 = 2;
         const PREV: u32 = MSG + RATE_CELLS as u32;
         const OUT: u32 = PREV + STATE_CELLS as u32;
@@ -809,13 +809,13 @@ mod tests {
     /// message gives the same digest `fiat_shamir::compress` does.
     #[test]
     fn keccak_absorbs_and_permutes() {
-        use crate::sha3_flock::{RATE_CELLS, STATE_CELLS};
+        use crate::hash_flock::{RATE_CELLS, STATE_CELLS};
         // A 64-byte message plus `pad10*1`: eight lanes of data, `0x06` at byte
         // 64 and `0x80` at byte 135.
         let data: [u64; 8] = std::array::from_fn(|i| 0x0123_4567_89ab_cdefu64.wrapping_mul(i as u64 + 1));
         let mut msg = [0u64; 17];
         msg[..8].copy_from_slice(&data);
-        msg[8] = primitives::sha3::DOMAIN as u64;
+        msg[8] = primitives::hash::DOMAIN as u64;
         msg[16] |= 0x80u64 << 56;
 
         let exec = keccak_program(&msg).execute([w(7), w(11)]);
@@ -825,7 +825,7 @@ mod tests {
         for (i, &m) in msg.iter().enumerate() {
             want[i] = m;
         }
-        primitives::sha3::permute(&mut want);
+        primitives::hash::permute(&mut want);
         for c in 0..STATE_CELLS {
             let hi = if 2 * c + 1 < 25 { want[2 * c + 1] } else { 0 };
             assert_eq!(exec.mem[out_base + c], F192::new(want[2 * c], hi, 0), "output cell {c}");
@@ -837,7 +837,7 @@ mod tests {
             [F64(data[4]), F64(data[5]), F64(data[6]), F64(data[7])],
         );
         assert_eq!(d.map(|x| x.0), [want[0], want[1], want[2], want[3]]);
-        assert_eq!(primitives::sha3::hash_block(&bytes)[..8], want[0].to_le_bytes());
+        assert_eq!(primitives::hash::hash_block(&bytes)[..8], want[0].to_le_bytes());
     }
 
     /// The opcode consumes the `(c0,c1,0)` embedding. This is not an extra AIR

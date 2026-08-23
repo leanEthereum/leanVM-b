@@ -395,13 +395,13 @@ pub(crate) fn keccak_addresses(prog: &[Op], r: &Brow) -> [u32; 7] {
 }
 
 /// Keccak value-column LOCAL indices in canonical slot order, the input state's
-/// twenty-six words then the output state's (matches `sha3_flock::SLOTS`).
+/// twenty-six words then the output state's (matches `hash_flock::SLOTS`).
 /// These columns are
 /// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
 /// (`slot_claims`): the value the bus flushes IS the flock-proven word.
-pub const KECCAK_VALUE_COLS: [usize; crate::sha3_flock::N_SLOTS] = {
-    let mut cols = [0usize; crate::sha3_flock::N_SLOTS];
+pub const KECCAK_VALUE_COLS: [usize; crate::hash_flock::N_SLOTS] = {
+    let mut cols = [0usize; crate::hash_flock::N_SLOTS];
     let mut i = 0;
     while i < cols.len() {
         cols[i] = keccakt::V0 + i;
@@ -410,8 +410,8 @@ pub const KECCAK_VALUE_COLS: [usize; crate::sha3_flock::N_SLOTS] = {
     cols
 };
 // The value lanes are laid out contiguously from V0, so they map 1:1 onto
-// `sha3_flock::SLOTS`, which is the order the cell reads visit them.
-const _: () = assert!(keccakt::R0 == keccakt::V0 + crate::sha3_flock::N_SLOTS);
+// `hash_flock::SLOTS`, which is the order the cell reads visit them.
+const _: () = assert!(keccakt::R0 == keccakt::V0 + crate::hash_flock::N_SLOTS);
 
 // ---- XOR / MUL ---------------------------------------------------------------
 
@@ -886,7 +886,7 @@ impl Table for Pack64x2Table {
 /// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
 /// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
-/// (§sha3_flock), which leaves this table with no identity of its own.
+/// (§hash_flock), which leaves this table with no identity of its own.
 ///
 /// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the sixteen
 /// memory-borne flock words are sixteen value LANE columns over eight cells,
@@ -898,7 +898,7 @@ impl Table for Pack64x2Table {
 struct KeccakTable;
 
 pub(crate) mod keccakt {
-    use crate::sha3_flock::{IN_CELLS, N_CELLS, N_SLOTS};
+    use crate::hash_flock::{IN_CELLS, N_CELLS, N_SLOTS};
     pub const PC: usize = 0;
     pub const FP: usize = 1;
     pub const O_IN0: usize = 2; // operand g-powers of the four independent rate cells …
@@ -926,7 +926,7 @@ impl Table for KeccakTable {
         COLS.get_or_init(|| (keccakt::R0..=keccakt::RBC).collect())
     }
     fn flushes(&self, f: &mut FlushBuilder) {
-        use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
+        use crate::hash_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
         use keccakt::*;
         f.state_step(PC, FP);
         // No immediate: a permutation has no counter and no flags, so the
@@ -964,7 +964,7 @@ impl Table for KeccakTable {
         }
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use crate::sha3_flock::{IN_CELLS, N_CELLS, RATE_CELLS, STATE_CELLS};
+        use crate::hash_flock::{IN_CELLS, N_CELLS, RATE_CELLS, STATE_CELLS};
         use keccakt::*;
         let rows = &ctx.trace.keccak;
         let ad = |r: &Brow| keccak_addresses(ctx.prog, r);
@@ -989,7 +989,7 @@ impl Table for KeccakTable {
         // lanes, the input state first.
         ctx.cols(out, rows, V0, |r| {
             let a = ad(r);
-            let mut v = [F64::ZERO; crate::sha3_flock::N_SLOTS];
+            let mut v = [F64::ZERO; crate::hash_flock::N_SLOTS];
             for i in 0..N_CELLS {
                 let w = ctx.mem[cell_addr(&a, i) as usize];
                 v[2 * i] = F64(w.c0);

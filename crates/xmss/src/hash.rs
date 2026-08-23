@@ -8,8 +8,8 @@
 //!
 //! The byte string is zero-filled to a whole number of 32-byte groups, because
 //! the VM carries a value as 128-bit memory cells and can only hash whole ones.
-//! Up to 64 bytes that is one [`primitives::sha3::hash_block`], plain SHA3-256;
-//! beyond it the groups chain through [`primitives::sha3::hash_md`], which is
+//! Up to 64 bytes that is one [`primitives::hash::hash_block`], plain SHA3-256;
+//! beyond it the groups chain through [`primitives::hash::hash_md`], which is
 //! what the VM's 64-byte opcode can reproduce. Every call site has a fixed
 //! length and its own tweak, so the padding costs no separation.
 
@@ -45,7 +45,7 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32, payload_len: us
 }
 
 /// `tweak | pp | payload`, zero-filled to whole 32-byte groups and hashed: one
-/// SHA3-256 up to 64 bytes, a [`primitives::sha3::hash_md`] chain beyond it.
+/// SHA3-256 up to 64 bytes, a [`primitives::hash::hash_md`] chain beyond it.
 pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, payload: &[u8]) -> Digest {
     /// The longest string any call site hashes: a WOTS public key's `V` chain
     /// tips. On the stack, because a chain step is one of these and the encoding
@@ -59,7 +59,7 @@ pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u3
     msg[..TWEAK_LEN].copy_from_slice(&make_tweak(tweak_type, sub_position, index, payload.len()));
     msg[TWEAK_LEN..][..PUBLIC_PARAM_LEN].copy_from_slice(pp);
     msg[TWEAK_LEN + PUBLIC_PARAM_LEN..][..payload.len()].copy_from_slice(payload);
-    primitives::sha3::hash_md(&msg[..len])[..DIGEST_LEN].try_into().unwrap()
+    primitives::hash::hash_md(&msg[..len])[..DIGEST_LEN].try_into().unwrap()
 }
 
 #[cfg(test)]
@@ -94,7 +94,7 @@ mod tests {
         input.extend_from_slice(&pp);
         input.extend_from_slice(&data);
         input.resize(input.len().next_multiple_of(32).max(64), 0);
-        let expected = primitives::sha3::hash_md(&input);
+        let expected = primitives::hash::hash_md(&input);
         assert_eq!(
             tweak_hash(&pp, TWEAK_TYPE_WOTS_PK, 0, 42, &data),
             expected[..DIGEST_LEN]

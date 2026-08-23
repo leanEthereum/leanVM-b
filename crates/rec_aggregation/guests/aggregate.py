@@ -899,7 +899,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                         row_word = lanes[3 * jw] + Y_TOWER * packed_row[(3 * jw + 1) // 2]
                     row_dot += row_word * row_eq_weights[GEN ** jw]
             # The leaf hash: the chain of 64-byte SHA3-256 hashes the committer
-            # ran (primitives::sha3::hash_md). The first link takes 64 bytes,
+            # ran (primitives::hash::hash_md). The first link takes 64 bytes,
             # every later one takes the state and a 32-byte group.
             leaf_hash_state = StackBuf(2)
             sha3_64(packed_row[0:2], packed_row[2:4], leaf_hash_state)

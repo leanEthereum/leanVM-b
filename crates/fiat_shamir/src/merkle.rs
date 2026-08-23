@@ -39,11 +39,11 @@ pub fn scalars_to_hash(scalars: &[F192; 2]) -> Result<Hash, Error> {
 }
 
 /// Hash one leaf with the chain of 64-byte SHA3-256 hashes
-/// ([`primitives::sha3::hash_md`]), which is what the recursion guest can
+/// ([`primitives::hash::hash_md`]), which is what the recursion guest can
 /// reproduce with its `Keccak` opcode.
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
-    primitives::sha3::hash_md(data)
+    primitives::hash::hash_md(data)
 }
 
 /// Hash a pair of children into a parent node (64 B → 32 B): `f(a, b) =
@@ -54,7 +54,7 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
-    primitives::sha3::hash_block(&buf)
+    primitives::hash::hash_block(&buf)
 }
 
 /// The full leaf image a stored row stands for: `leaf_words - row.len()` zero words,

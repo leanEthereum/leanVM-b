@@ -76,7 +76,7 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
 ### Batch proving Keccak
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test sha3_batch -- --ignored --nocapture
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test hash_batch -- --ignored --nocapture
 ```
 
 ```

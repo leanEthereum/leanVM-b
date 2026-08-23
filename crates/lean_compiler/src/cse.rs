@@ -142,7 +142,7 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
             }
             // The permuted state lands in thirteen consecutive cells.
             LOp::Keccak { c, .. } => {
-                for k in 0..lean_vm::sha3_flock::STATE_CELLS as u32 {
+                for k in 0..lean_vm::hash_flock::STATE_CELLS as u32 {
                     bump(*c + k);
                 }
             }

@@ -6,13 +6,13 @@
 //! the rate is either used or wasted.
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=16 cargo test --release -p flock --test sha3_batch -- --ignored --nocapture
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=16 cargo test --release -p flock --test hash_batch -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
-use flock::sha3::{
+use flock::hash::{
     Compression, K_LOG, Sha3Setup, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log, ring_switch_open,
     ring_switch_verify,
 };

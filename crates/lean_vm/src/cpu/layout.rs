@@ -19,7 +19,7 @@ pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-Keccak program commits one full padding instance). It is the
 // SOLE copy of the input/output words: the VM's Keccak value columns are
-// virtual and their memory-bus claims route to `q_flock` slots (§sha3_flock), so
+// virtual and their memory-bus claims route to `q_flock` slots (§hash_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
 pub const QFLOCK: usize = 5;
@@ -96,7 +96,7 @@ pub(crate) struct Witness {
     pub(crate) log_mem: usize,
     /// `Option` lets `prove` take and free the large reduction-only buffers
     /// immediately after reduction, before the mixed PCS opening.
-    pub(crate) flock_reduction: Option<crate::sha3_flock::PreparedReductionWitness>,
+    pub(crate) flock_reduction: Option<crate::hash_flock::PreparedReductionWitness>,
 }
 
 impl Witness {
@@ -152,7 +152,7 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     // instance (a no-Keccak program commits one padding instance), and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor), so this
     // reproduces `qflock_kappa`.
-    k[QFLOCK] = Some((2 + tables::KECCAK_TABLE, flock::sha3::K_LOG - ::pcs::LOG_PACKING));
+    k[QFLOCK] = Some((2 + tables::KECCAK_TABLE, flock::hash::K_LOG - ::pcs::LOG_PACKING));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
@@ -239,9 +239,9 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
                 .into_iter()
                 .max()
                 .unwrap()
-                .max(rest + crate::sha3_flock::REST_CELLS as u32 - 1)
-                .max(prev + crate::sha3_flock::STATE_CELLS as u32 - 1)
-                .max(out + crate::sha3_flock::STATE_CELLS as u32 - 1),
+                .max(rest + crate::hash_flock::REST_CELLS as u32 - 1)
+                .max(prev + crate::hash_flock::STATE_CELLS as u32 - 1)
+                .max(out + crate::hash_flock::STATE_CELLS as u32 - 1),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -478,7 +478,7 @@ impl Program {
         });
         assert_eq!(
             taus[tables::KECCAK_TABLE],
-            crate::sha3_flock::n_blocks_log(row_counts[tables::KECCAK_TABLE]),
+            crate::hash_flock::n_blocks_log(row_counts[tables::KECCAK_TABLE]),
             "the Keccak table must be filled to flock's instance floor"
         );
         let pi = [exec.mem[0], exec.mem[1]];
@@ -544,7 +544,7 @@ impl Program {
             let blocks: Vec<_> = parallel::map_collect(tr.keccak.len(), |i| {
                 let r = &tr.keccak[i];
                 let a = tables::keccak_addresses(&self.prog, r);
-                use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
+                use crate::hash_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
                 let msg: [F192; RATE_CELLS] = std::array::from_fn(|c| {
                     let addr = if c < IN_CELLS {
                         a[c]
@@ -555,9 +555,9 @@ impl Program {
                 });
                 let prev: [F192; STATE_CELLS] =
                     std::array::from_fn(|c| exec.mem[(a[IN_CELLS + 1] + c as u32) as usize]);
-                crate::sha3_flock::compression(&prev, &msg)
+                crate::hash_flock::compression(&prev, &msg)
             });
-            crate::sha3_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
+            crate::hash_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
         });
 
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =

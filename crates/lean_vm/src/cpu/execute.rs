@@ -780,7 +780,7 @@ impl Program {
                     // cells, lanes 8..18 from the five consecutive `rest` cells.
                     // Then thirteen cells of running state, and thirteen of
                     // result. Each region's last high lane is the layout's pad.
-                    use crate::sha3_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
+                    use crate::hash_flock::{IN_CELLS, RATE_CELLS, STATE_CELLS};
                     let a_in: [u32; IN_CELLS] = ins.map(|o| fp + o);
                     let (a_rest, a_prev, a_out) = (fp + rest, fp + prev, fp + out);
                     let msg_cells: [F192; RATE_CELLS] = std::array::from_fn(|c| {
@@ -797,14 +797,14 @@ impl Program {
                     );
                     // Absorb and permute, then write the result to the output
                     // cells. No table constraint covers the relation (it is proven
-                    // by flock, §sha3_flock); the interpreter still computes the
+                    // by flock, §hash_flock); the interpreter still computes the
                     // definite state so the output cells are consistent for any
                     // later read.
-                    let step = crate::sha3_flock::compression(&prev_cells, &msg_cells);
-                    for (c, &o) in crate::sha3_flock::out_cells(&step.output()).iter().enumerate() {
+                    let step = crate::hash_flock::compression(&prev_cells, &msg_cells);
+                    for (c, &o) in crate::hash_flock::out_cells(&step.output()).iter().enumerate() {
                         m.put(a_out + c as u32, o);
                     }
-                    let reads: [F64; crate::sha3_flock::N_CELLS] = std::array::from_fn(|i| {
+                    let reads: [F64; crate::hash_flock::N_CELLS] = std::array::from_fn(|i| {
                         let addr = if i < IN_CELLS {
                             a_in[i]
                         } else if i < RATE_CELLS {

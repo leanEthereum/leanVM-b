@@ -104,15 +104,15 @@ const _: () = assert!(
 );
 
 /// Rounds of `Keccak-f[1600]`.
-pub const N_ROUNDS: usize = primitives::sha3::ROUNDS;
+pub const N_ROUNDS: usize = primitives::hash::ROUNDS;
 /// Lanes in the state.
-pub const STATE_LANES: usize = primitives::sha3::STATE_LANES;
+pub const STATE_LANES: usize = primitives::hash::STATE_LANES;
 /// Bits per lane, which is also the flock word width.
 pub const LANE_BITS: usize = 64;
 
 /// The round constants, from the native permutation so the circuit provably
 /// encodes the same ones the prover computes.
-pub use primitives::sha3::{PI, RC, RHO};
+pub use primitives::hash::{PI, RC, RHO};
 
 // ---------------------------------------------------------------------------
 // Layout, in 64-bit words (a Keccak lane is exactly one flock word)
@@ -122,7 +122,7 @@ pub use primitives::sha3::{PI, RC, RHO};
 /// thirteen 128-bit VM cells.
 pub const STATE_WORDS: usize = 26;
 /// Lanes of the sponge rate, `1088 / 64`.
-pub const RATE_LANES: usize = primitives::sha3::RATE / 8;
+pub const RATE_LANES: usize = primitives::hash::RATE / 8;
 /// Words the rate block occupies: 17 lanes plus one zero pad, so nine cells.
 pub const RATE_WORDS: usize = RATE_LANES + 1;
 
@@ -180,7 +180,7 @@ pub struct Compression {
 }
 
 /// The permutation this circuit's absorb ends in.
-pub use primitives::sha3::permute;
+pub use primitives::hash::permute;
 
 impl Compression {
     /// The permutation's input, `prev ^ (msg || 0...0)`.
@@ -1040,7 +1040,7 @@ mod tests {
 
     #[test]
     fn r1cs_digest_names_this_circuit() {
-        assert_eq!(primitives::sha3::hash(R1CS_DIGEST_LABEL), R1CS_DIGEST);
+        assert_eq!(primitives::hash::hash(R1CS_DIGEST_LABEL), R1CS_DIGEST);
     }
 
     /// Every slot a layout region claims is the output of one non-degenerate
@@ -1088,7 +1088,7 @@ mod tests {
 
     /// The witness's output region holds `permute(prev ^ msg)`. Pins the round
     /// constants, the rho offsets, the pi permutation and chi against
-    /// `primitives::sha3`, which is itself pinned by the FIPS 202 vectors, and
+    /// `primitives::hash`, which is itself pinned by the FIPS 202 vectors, and
     /// pins the absorb.
     #[test]
     fn witness_encodes_the_absorb_and_permutation() {

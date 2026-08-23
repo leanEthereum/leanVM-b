@@ -55,7 +55,7 @@ pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     for (slot, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
         *slot = w.0.to_le_bytes();
     }
-    let d = primitives::sha3::hash_block(&input);
+    let d = primitives::hash::hash_block(&input);
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 

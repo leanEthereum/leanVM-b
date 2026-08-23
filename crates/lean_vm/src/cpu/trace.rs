@@ -54,7 +54,7 @@ pub(crate) struct Brow {
     /// Per-cell access counts, in the order the table's flushes visit them:
     /// the rate block's nine cells, the previous state's thirteen, the output's
     /// thirteen.
-    pub(crate) reads: [F64; crate::sha3_flock::N_CELLS],
+    pub(crate) reads: [F64; crate::hash_flock::N_CELLS],
     pub(crate) bytecode_read: F64,
 }
 

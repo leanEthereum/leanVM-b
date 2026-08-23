@@ -1,4 +1,4 @@
-//! Bridge to the flock Keccak prover ([`flock::sha3`]), single-PCS.
+//! Bridge to the flock Keccak prover ([`flock::hash`]), single-PCS.
 //!
 //! `q_flock` (flock's packed Keccak witness, 64 bits per `F64` word) is committed
 //! as a column in leanVM-b's ONE stacked `F64` witness (§sec:stacking), with no separate flock
@@ -38,14 +38,14 @@
 
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
-use flock::sha3::{
+use flock::hash::{
     Compression, K_LOG, ReductionReplay, STATE_LANES, Sha3Setup, generate_witness_with_ab_packed_and_lincheck,
     min_n_blocks_log,
 };
 
 /// Flock words one state region occupies: the 25 lanes plus the alignment pad.
 /// Re-exported so the VM table can size its value columns from it.
-pub use flock::sha3::STATE_WORDS;
+pub use flock::hash::STATE_WORDS;
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
 use primitives::stream::Stream;
@@ -54,14 +54,14 @@ use zk_alloc::ArenaVec;
 /// One side of the Flock reduction's output on the committed witness `q_flock`:
 /// the `2^K_SKIP` bit slices at a point, already transmitted and checked by the
 /// reduction (`prove_reduction` / [`verify_reduction`]), for the PCS to bind.
-/// Re-exported from [`flock::sha3`].
-pub use flock::sha3::SliceClaim;
+/// Re-exported from [`flock::hash`].
+pub use flock::hash::SliceClaim;
 
 /// VM cells one state occupies: thirteen 128-bit cells hold the 25 lanes plus
 /// the zero pad.
 pub const STATE_CELLS: usize = STATE_WORDS / 2;
 /// VM cells the rate block occupies: nine hold its 17 lanes plus the zero pad.
-pub const RATE_CELLS: usize = flock::sha3::RATE_WORDS / 2;
+pub const RATE_CELLS: usize = flock::hash::RATE_WORDS / 2;
 /// Cells of the rate block the opcode addresses independently, holding lanes
 /// `0..8`: the 64 bytes of a one-block hash, which the caller already has
 /// wherever it has them.
@@ -77,7 +77,7 @@ pub const REST_CELLS: usize = RATE_CELLS - IN_CELLS;
 pub const PAD64_REST: [F192; REST_CELLS] = {
     let mut cells = [F192::new(0, 0, 0); REST_CELLS];
     // lane 8 is the first `rest` cell's low lane.
-    cells[0] = F192::new(primitives::sha3::DOMAIN as u64, 0, 0);
+    cells[0] = F192::new(primitives::hash::DOMAIN as u64, 0, 0);
     // lane 16 is the fifth `rest` cell's low lane.
     cells[4] = F192::new(0x80u64 << 56, 0, 0);
     cells
@@ -113,12 +113,12 @@ impl PreparedReductionWitness {
 // Within-instance packed-word (slot) indices of the VM-visible words, which
 // are the flock layout's own word indices, in the order the table reads them:
 // the rate block, then the previous state, then the output.
-pub const SLOT_PREV0: usize = flock::sha3::W_PREV;
-pub const SLOT_MSG0: usize = flock::sha3::W_MSG;
-pub const SLOT_OUT0: usize = flock::sha3::W_OUT;
+pub const SLOT_PREV0: usize = flock::hash::W_PREV;
+pub const SLOT_MSG0: usize = flock::hash::W_MSG;
+pub const SLOT_OUT0: usize = flock::hash::W_OUT;
 
 /// Words the opcode binds: the rate block, the previous state and the output.
-pub const N_SLOTS: usize = flock::sha3::RATE_WORDS + 2 * STATE_WORDS;
+pub const N_SLOTS: usize = flock::hash::RATE_WORDS + 2 * STATE_WORDS;
 /// Memory cells the opcode touches, which is `N_SLOTS / 2`.
 pub const N_CELLS: usize = RATE_CELLS + 2 * STATE_CELLS;
 
@@ -130,14 +130,14 @@ pub const N_CELLS: usize = RATE_CELLS + 2 * STATE_CELLS;
 pub const SLOTS: [usize; N_SLOTS] = {
     let mut slots = [0usize; N_SLOTS];
     let mut i = 0;
-    while i < flock::sha3::RATE_WORDS {
+    while i < flock::hash::RATE_WORDS {
         slots[i] = SLOT_MSG0 + i;
         i += 1;
     }
     let mut j = 0;
     while j < STATE_WORDS {
-        slots[flock::sha3::RATE_WORDS + j] = SLOT_PREV0 + j;
-        slots[flock::sha3::RATE_WORDS + STATE_WORDS + j] = SLOT_OUT0 + j;
+        slots[flock::hash::RATE_WORDS + j] = SLOT_PREV0 + j;
+        slots[flock::hash::RATE_WORDS + STATE_WORDS + j] = SLOT_OUT0 + j;
         j += 1;
     }
     slots
@@ -375,7 +375,7 @@ mod tests {
                     F192::new((0x0101_0101 * (c as u64 + 1)) ^ (i << 8), hi, 0)
                 });
                 let msg: [F192; RATE_CELLS] = std::array::from_fn(|c| {
-                    let hi = if 2 * c + 1 < flock::sha3::RATE_LANES {
+                    let hi = if 2 * c + 1 < flock::hash::RATE_LANES {
                         (0x2222_2222 * (c as u64 + 1)) ^ i
                     } else {
                         0
@@ -424,7 +424,7 @@ mod tests {
                 );
                 assert_eq!(slot(j, SLOT_OUT0 + lane), f(out[lane]), "instance {j}, out {lane}");
             }
-            for lane in 0..flock::sha3::RATE_LANES {
+            for lane in 0..flock::hash::RATE_LANES {
                 assert_eq!(
                     slot(j, SLOT_MSG0 + lane),
                     f(block.msg[lane]),
@@ -433,7 +433,7 @@ mod tests {
             }
             // The alignment pads, which the R1CS forces to zero.
             assert_eq!(slot(j, SLOT_PREV0 + STATE_LANES), F64::ZERO);
-            assert_eq!(slot(j, SLOT_MSG0 + flock::sha3::RATE_LANES), F64::ZERO);
+            assert_eq!(slot(j, SLOT_MSG0 + flock::hash::RATE_LANES), F64::ZERO);
             assert_eq!(slot(j, SLOT_OUT0 + STATE_LANES), F64::ZERO);
         }
     }
