@@ -1,12 +1,16 @@
 //! Exhaustive search for the parameter set with the cheapest verification.
 //!
 //! Every `(scheme, h, d, h_top, chain_bits, dropped_chains, a, k, S_wn)` point
-//! that meets the budgets is costed and compared. Nothing is chosen by an optimality
-//! argument, and nothing is skipped by a monotonicity one: the three tests that
-//! run before the `S_wn` scan reject only points that no `S_wn` could rescue,
-//! because size and keygen do not depend on `S_wn` at all, and the least
+//! that meets the budgets is costed and compared. Nothing is chosen by an
+//! optimality argument, and nothing is skipped by a monotonicity one: the three
+//! tests that run before the `S_wn` scan reject only points that no `S_wn` could
+//! rescue, because size and keygen do not depend on `S_wn` at all, and the least
 //! grinding any `S_wn` can ask for is read off the digit-sum table rather than
 //! assumed to sit anywhere in particular.
+//!
+//! Any axis can be pinned to a single value instead of searched, which is how
+//! one parameter set gets costed: pin them all. Budgets are optional, and an
+//! unset one is no limit.
 //!
 //! The layer heights are `(h, d, h_top)`: the top tree gets `h_top`, the rest
 //! divide what is left as evenly as it goes. [`crate::params::Profile`] argues
@@ -20,11 +24,11 @@
 //! What is assumed is the searched range of each parameter, hardcoded below.
 //! When a result comes out at the top of one of those ranges the range itself
 //! may be what is limiting it, so [`edges`] reports that and names the constant
-//! to raise. Ranges the budgets or the structure already close (`d` over the
-//! layer heights that do not add up to `h`, `S_wn` over the digit sums a code of
-//! `l` chains can reach)
-//! need no such warning and get none.
+//! to raise. Ranges the structure already closes (`d` over layer heights that do
+//! not add up to `h`, `S_wn` over the digit sums a code of `l` chains can reach)
+//! need no such warning and get none, and neither does an axis pinned by hand.
 
+use std::ops::RangeInclusive;
 use std::time::Instant;
 
 use crate::cost::{Cost, NuTable, SCHEMES, Scheme};
@@ -72,14 +76,54 @@ impl Unit {
     }
 }
 
+/// The values of one parameter to try. Pinned when `lo == hi`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub lo: u64,
+    pub hi: u64,
+}
+
+impl Span {
+    pub const fn new(lo: u64, hi: u64) -> Self {
+        Self { lo, hi }
+    }
+    pub const fn pin(v: u64) -> Self {
+        Self { lo: v, hi: v }
+    }
+    pub const fn pinned(&self) -> bool {
+        self.lo >= self.hi
+    }
+    pub const fn iter(&self) -> RangeInclusive<u64> {
+        self.lo..=self.hi
+    }
+    /// The span, further limited by something the parameters imply.
+    pub fn within(&self, hi: u64) -> RangeInclusive<u64> {
+        self.lo..=self.hi.min(hi)
+    }
+}
+
+/// Which target sums to consider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sums {
+    /// Only this one.
+    Pinned(u64),
+    /// Only the mean, where grinding is cheapest. What to use when nothing
+    /// bounds the signer, since then there is no reason to grind harder, and
+    /// what the report's own parameter sets do.
+    Mean,
+    /// All of them, keeping the best the budgets allow.
+    Sweep,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Budgets {
     /// log2 of the signatures allowed under one public key.
     pub lifetime: u32,
-    pub max_keygen: u64,
-    pub max_sign: u64,
-    pub max_sign_cached: u64,
-    pub max_size: u64,
+    /// An unset budget is no limit.
+    pub keygen: Option<u64>,
+    pub sign: Option<u64>,
+    pub sign_cached: Option<u64>,
+    pub size: Option<u64>,
     /// Classical security floor in bits.
     pub security: f64,
     /// Unit of every budget above, and of the objective.
@@ -87,15 +131,31 @@ pub struct Budgets {
 }
 
 impl Budgets {
-    fn of(&self, c: Cost) -> u64 {
+    pub fn max_keygen(&self) -> u64 {
+        self.keygen.unwrap_or(u64::MAX)
+    }
+    pub fn max_sign(&self) -> u64 {
+        self.sign.unwrap_or(u64::MAX)
+    }
+    pub fn max_sign_cached(&self) -> u64 {
+        self.sign_cached.unwrap_or(u64::MAX)
+    }
+    pub fn max_size(&self) -> u64 {
+        self.size.unwrap_or(u64::MAX)
+    }
+    pub fn any_signing_limit(&self) -> bool {
+        self.sign.is_some() || self.sign_cached.is_some()
+    }
+
+    pub fn of(&self, c: Cost) -> u64 {
         self.unit.of(c)
     }
 
-    fn fits(&self, c: &Costs) -> bool {
-        c.sig_bytes <= self.max_size
-            && self.of(c.keygen) <= self.max_keygen
-            && self.of(c.sign) <= self.max_sign
-            && self.of(c.sign_cached) <= self.max_sign_cached
+    pub fn fits(&self, c: &Costs) -> bool {
+        c.sig_bytes <= self.max_size()
+            && self.of(c.keygen) <= self.max_keygen()
+            && self.of(c.sign) <= self.max_sign()
+            && self.of(c.sign_cached) <= self.max_sign_cached()
     }
 }
 
@@ -103,14 +163,15 @@ impl Budgets {
 pub struct Grid {
     pub schemes: Vec<Scheme>,
     pub n: u64,
-    pub h_min: u64,
-    pub h_max: u64,
-    pub a_min: u64,
-    pub a_max: u64,
-    pub k_max: u64,
-    pub d_max: u64,
+    pub h: Span,
+    pub d: Span,
+    /// `None` searches nothing: the classic split, `h/d` on every layer.
+    pub h_top: Option<Span>,
+    pub a: Span,
+    pub k: Span,
+    pub dropped: Span,
     pub chain_bits: Vec<u64>,
-    pub max_dropped: u64,
+    pub sums: Sums,
     pub cache_level_only: bool,
 }
 
@@ -119,14 +180,14 @@ impl Default for Grid {
         Self {
             schemes: SCHEMES.to_vec(),
             n: 16,
-            h_min: 1,
-            h_max: H_MAX,
-            a_min: 1,
-            a_max: A_MAX,
-            k_max: K_MAX,
-            d_max: D_MAX,
+            h: Span::new(1, H_MAX),
+            d: Span::new(1, D_MAX),
+            h_top: Some(Span::new(1, H_MAX)),
+            a: Span::new(1, A_MAX),
+            k: Span::new(1, K_MAX),
+            dropped: Span::new(0, DROPPED_MAX),
             chain_bits: (1..=CHAIN_BITS_MAX).collect(),
-            max_dropped: DROPPED_MAX,
+            sums: Sums::Sweep,
             cache_level_only: false,
         }
     }
@@ -137,6 +198,10 @@ pub struct Candidate {
     pub params: Params,
     pub costs: Costs,
 }
+
+/// Identifies one parameter tuple: everything but the layer profile and the
+/// target sum, neither of which changes what it verifies at.
+pub type Key = (Scheme, u64, u64, u64, u64, u64, u64);
 
 impl Candidate {
     pub fn key(&self) -> Key {
@@ -156,7 +221,7 @@ pub struct Stats {
     pub size_pruned: u64,
     /// `(a, k)` pairs too slow to sign at the least grinding any target sum asks.
     pub sign_pruned: u64,
-    /// `(a, k)` pairs whose whole target-sum range was scanned.
+    /// `(a, k)` pairs whose target sums were scanned.
     pub swept: u64,
     /// Points meeting every budget.
     pub feasible: u64,
@@ -194,10 +259,6 @@ impl std::fmt::Display for Stats {
     }
 }
 
-/// Identifies one parameter tuple: everything but the layer profile and the
-/// target sum, neither of which changes what it verifies at.
-pub type Key = (Scheme, u64, u64, u64, u64, u64, u64);
-
 fn params(g: &Grid, scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, dropped: u64) -> Params {
     Params {
         scheme,
@@ -228,28 +289,34 @@ struct Room {
     slack: u64,
 }
 
-fn room(b: &Budgets, p: &Params) -> Option<Room> {
+fn room(b: &Budgets, g: &Grid, p: &Params) -> Option<Room> {
     let mut profiles = Vec::new();
     let mut slack = 0;
-    // The top tree has 2^h_top leaves and every leaf costs at least one hash,
-    // so a top height past the keygen budget's log is out for any (a, k).
-    let ceiling = 64 - b.max_keygen.max(1).leading_zeros() as u64;
-    for h_top in 1..=(p.h + 1).saturating_sub(p.d).min(ceiling) {
-        let Some(lay) = Layers::new(&Params {
-            h_top: Some(h_top),
-            ..*p
-        }) else {
-            continue;
+    let mut consider = |h_top: Option<u64>| {
+        let Some(lay) = Layers::new(&Params { h_top, ..*p }) else {
+            return;
         };
-        if b.of(lay.keygen) > b.max_keygen {
-            continue;
+        if b.of(lay.keygen) > b.max_keygen() {
+            return;
         }
         let room = b
-            .max_sign
+            .max_sign()
             .saturating_sub(b.of(lay.trees))
-            .min(b.max_sign_cached.saturating_sub(b.of(lay.trees_cached)));
+            .min(b.max_sign_cached().saturating_sub(b.of(lay.trees_cached)));
         slack = slack.max(room);
         profiles.push(lay);
+    };
+    match g.h_top {
+        None => consider(None),
+        Some(span) => {
+            // The top tree has 2^h_top leaves and every leaf costs at least one
+            // hash, so a top height past the keygen budget's log is out for any
+            // (a, k).
+            let ceiling = 64 - b.max_keygen().max(1).leading_zeros() as u64;
+            for h_top in span.within((p.h + 1).saturating_sub(p.d).min(ceiling)) {
+                consider(Some(h_top));
+            }
+        }
     }
     (!profiles.is_empty()).then_some(Room { profiles, slack })
 }
@@ -262,7 +329,7 @@ fn room(b: &Budgets, p: &Params) -> Option<Room> {
 pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
     let started = Instant::now();
     let digest_bits = (8 * g.n) as u32;
-    let mut sec = SecurityTable::new(b.lifetime, b.security, g.n, g.h_max as u32, g.k_max, g.a_max);
+    let mut sec = SecurityTable::new(b.lifetime, b.security, g.n, g.h.hi as u32, g.k.hi, g.a.hi);
     // Every (scheme, h, d, a, k, w, dropped) key is reached exactly once, so
     // rows need no deduplication, only a bound: budgets loose enough to admit
     // millions of them would otherwise be held in memory to print a dozen.
@@ -273,18 +340,18 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
             let w = 1u64 << bits;
             // WOTS-TW has no counter to grind, so it cannot drop chains, and
             // WOTS+C has to keep at least one.
-            let max_dropped = if scheme.wots_c() {
-                g.max_dropped.min((8 * g.n / bits).saturating_sub(1))
+            let dropped_range = if scheme.wots_c() {
+                g.dropped.within((8 * g.n / bits).saturating_sub(1))
             } else {
-                0
+                0..=0
             };
-            for dropped in 0..=max_dropped {
+            for dropped in dropped_range {
                 let probe = params(
                     g,
                     scheme,
-                    g.h_max.max(1),
+                    g.h.hi.max(1),
                     1,
-                    g.a_min,
+                    g.a.lo,
                     if scheme.fors_c() { 2 } else { 1 },
                     w,
                     dropped,
@@ -292,18 +359,18 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
                 let Some(l) = probe.chains() else { continue };
                 let table = scheme.wots_c().then(|| NuTable::new(l, w, digest_bits));
                 let min_trials = table.as_ref().map_or(0, |t| t.min_trials());
-                for h in g.h_min..=g.h_max {
-                    for d in 1..=h.min(g.d_max) {
+                for h in g.h.iter() {
+                    for d in g.d.within(h) {
                         st.grid += 1;
                         // Layer profiles first: they need no a or k, and the
                         // keygen budget alone usually settles the question.
-                        let Some(room) = room(b, &params(g, scheme, h, d, g.a_min, 1, w, dropped)) else {
+                        let Some(room) = room(b, g, &params(g, scheme, h, d, g.a.lo, 1, w, dropped)) else {
                             st.keygen_pruned += 1;
                             continue;
                         };
                         st.profiles += room.profiles.len() as u64;
-                        for a in g.a_min..=g.a_max {
-                            for k in 1..=g.k_max {
+                        for a in g.a.iter() {
+                            for k in g.k.iter() {
                                 if !sec.is_secure(h as u32, k, a) {
                                     st.insecure += 1;
                                     continue;
@@ -313,7 +380,7 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
                                 st.skeletons += 1;
                                 // The signature grows with k, so once it is too
                                 // big it stays too big.
-                                if sk.sig_bytes > b.max_size {
+                                if sk.sig_bytes > b.max_size() {
                                     st.size_pruned += 1;
                                     break;
                                 }
@@ -333,9 +400,14 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
                                     st.sign_pruned += 1;
                                     continue;
                                 }
+                                let sums = match g.sums {
+                                    Sums::Sweep => 0..=sk.max_swn,
+                                    Sums::Mean => sk.default_swn..=sk.default_swn,
+                                    Sums::Pinned(s) => s..=s,
+                                };
                                 st.swept += 1;
                                 let mut winner: Option<(u64, u64)> = None;
-                                for swn in 0..=sk.max_swn {
+                                for swn in sums {
                                     if table.trials(swn) > max_trials {
                                         continue;
                                     }
@@ -377,7 +449,7 @@ fn record(rows: &mut Vec<Candidate>, st: &mut Stats, b: &Budgets, sk: &Skeleton,
         .profiles
         .iter()
         .filter(|lay| {
-            b.of(sk.sign(lay, trials)) <= b.max_sign && b.of(sk.sign_cached(lay, trials)) <= b.max_sign_cached
+            b.of(sk.sign(lay, trials)) <= b.max_sign() && b.of(sk.sign_cached(lay, trials)) <= b.max_sign_cached()
         })
         .min_by_key(|lay| (b.of(sk.sign_cached(lay, trials)), b.of(sk.sign(lay, trials))))
     else {
@@ -398,42 +470,37 @@ fn record(rows: &mut Vec<Candidate>, st: &mut Stats, b: &Budgets, sk: &Skeleton,
     }
 }
 
-/// Axes where a result sits at the top of a hardcoded range.
+/// Axes where a result sits at the top of a searched range.
 ///
 /// Such a result may be limited by the range rather than by the budgets, so it
-/// is worth raising the range and rerunning before believing it.
+/// is worth raising the range and rerunning before believing it. An axis pinned
+/// to one value was pinned deliberately and says nothing.
 pub fn edges(g: &Grid, c: &Candidate) -> Vec<String> {
-    let bits = (
+    let bits = Span::new(
         g.chain_bits.iter().copied().min().unwrap_or(0),
         g.chain_bits.iter().copied().max().unwrap_or(0),
     );
-    // (axis, value, floor, limit, what to raise). An axis with a single value in
-    // range was pinned deliberately, so it gets no warning.
     let at = [
-        ("h", c.params.h, g.h_min, g.h_max, "H_MAX / --h-max"),
-        ("d", c.params.d, 1, g.d_max, "D_MAX / --d-max"),
-        ("a", c.params.a, g.a_min, g.a_max, "A_MAX / --a-max"),
-        ("k", c.params.k, 1, g.k_max, "K_MAX / --k-max"),
-        (
-            "chain_bits",
-            c.costs.chain_bits,
-            bits.0,
-            bits.1,
-            "CHAIN_BITS_MAX / --chain-bits",
-        ),
+        ("h", c.params.h, g.h, "H_MAX / --height"),
+        ("d", c.params.d, g.d, "D_MAX / --layers"),
+        ("a", c.params.a, g.a, "A_MAX / -a"),
+        ("k", c.params.k, g.k, "K_MAX / -k"),
+        ("chain_bits", c.costs.chain_bits, bits, "CHAIN_BITS_MAX / --chain-bits"),
         (
             "dropped_chains",
             c.params.dropped_chains,
-            0,
-            g.max_dropped,
-            "DROPPED_MAX / --max-dropped",
+            g.dropped,
+            "DROPPED_MAX / --drop-chains",
         ),
     ];
     at.iter()
-        .filter(|(_, v, floor, limit, _)| limit > floor && *v + 1 >= *limit)
-        .map(|(axis, v, _, limit, what)| {
-            let where_ = if v >= limit { "at" } else { "one step below" };
-            format!("{axis} = {v} is {where_} the top of the searched range ({limit}): raise {what} and rerun")
+        .filter(|(_, v, span, _)| !span.pinned() && *v + 1 >= span.hi)
+        .map(|(axis, v, span, what)| {
+            let where_ = if *v >= span.hi { "at" } else { "one step below" };
+            format!(
+                "{axis} = {v} is {where_} the top of the searched range ({}): raise {what} and rerun",
+                span.hi
+            )
         })
         .collect()
 }
@@ -449,13 +516,13 @@ pub fn naive_search(b: &Budgets, g: &Grid) -> Vec<Candidate> {
     for &scheme in &g.schemes {
         for &bits in &g.chain_bits {
             let w = 1u64 << bits;
-            let max_dropped = if scheme.wots_c() { g.max_dropped } else { 0 };
-            for dropped in 0..=max_dropped {
-                for h in g.h_min..=g.h_max {
-                    for d in 1..=h.min(g.d_max) {
+            let dropped_range = if scheme.wots_c() { g.dropped.iter() } else { 0..=0 };
+            for dropped in dropped_range {
+                for h in g.h.iter() {
+                    for d in g.d.within(h) {
                         for h_top in 1..=h {
-                            for a in g.a_min..=g.a_max {
-                                for k in 1..=g.k_max {
+                            for a in g.a.iter() {
+                                for k in g.k.iter() {
                                     let p = Params {
                                         h_top: Some(h_top),
                                         ..params(g, scheme, h, d, a, k, w, dropped)

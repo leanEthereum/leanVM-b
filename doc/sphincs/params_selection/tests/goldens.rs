@@ -12,7 +12,7 @@
 
 use sphincs_params::cost::{Convention, Encoding, NuTable, Scheme};
 use sphincs_params::params::{Layers, Params, Profile, Skeleton, costs};
-use sphincs_params::search::{Budgets, Grid, LEVEL1_BITS, Stats, Unit, naive_search, search};
+use sphincs_params::search::{Budgets, Grid, LEVEL1_BITS, Span, Stats, Unit, naive_search, search};
 use sphincs_params::security::{forgery_exponent, security_bits};
 
 fn params(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, cached_midstate: bool) -> Params {
@@ -333,10 +333,10 @@ fn half_top_cache_is_a_saving_and_reduces_to_the_full_tree() {
 fn budgets(lifetime: u32, keygen: u64, sign: u64, cached: u64, size: u64) -> Budgets {
     Budgets {
         lifetime,
-        max_keygen: keygen,
-        max_sign: sign,
-        max_sign_cached: cached,
-        max_size: size,
+        keygen: Some(keygen),
+        sign: Some(sign),
+        sign_cached: Some(cached),
+        size: Some(size),
         security: LEVEL1_BITS,
         unit: Unit::Hashes,
     }
@@ -348,13 +348,12 @@ fn search_agrees_with_a_naive_oracle() {
     let b = budgets(20, 3_000_000, 10_000_000, 10_000_000, 4_000);
     let g = Grid {
         schemes: vec![Scheme::Wc, Scheme::WcFc],
-        h_min: 20,
-        h_max: 20,
-        a_min: 14,
-        a_max: 16,
-        k_max: 14,
+        h: Span::pin(20),
+        a: Span::new(14, 16),
+        k: Span::new(1, 14),
         chain_bits: vec![4],
-        max_dropped: 1,
+        dropped: Span::new(0, 1),
+        h_top: Some(Span::new(1, 20)),
         ..Default::default()
     };
     let mut st = Stats::default();
@@ -386,7 +385,7 @@ fn search_finds_and_improves_on_the_reports_bold_row() {
     let b = budgets(40, 1_100_000, 6_000_000, 6_000_000, 4_400);
     let g = Grid {
         chain_bits: vec![4, 8],
-        max_dropped: 0,
+        dropped: Span::pin(0),
         ..Default::default()
     };
     let mut st = Stats::default();

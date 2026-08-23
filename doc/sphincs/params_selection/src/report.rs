@@ -162,16 +162,17 @@ pub fn table(b: &Budgets, cands: &[Candidate]) -> String {
     lines.join("\n")
 }
 
+/// How much of each budget the candidate uses. Unset budgets say nothing.
 pub fn utilization(b: &Budgets, c: &Candidate) -> String {
     let used = [
-        ("keygen", b.unit.of(c.costs.keygen), b.max_keygen),
-        ("sign", b.unit.of(c.costs.sign), b.max_sign),
-        ("sign cached", b.unit.of(c.costs.sign_cached), b.max_sign_cached),
-        ("size", c.costs.sig_bytes, b.max_size),
+        ("keygen", b.unit.of(c.costs.keygen), b.keygen),
+        ("sign", b.unit.of(c.costs.sign), b.sign),
+        ("sign cached", b.unit.of(c.costs.sign_cached), b.sign_cached),
+        ("size", c.costs.sig_bytes, b.size),
     ];
     used.iter()
-        .filter(|(_, _, limit)| *limit > 0)
-        .map(|(name, v, limit)| format!("{name} {:.0}%", 100.0 * *v as f64 / *limit as f64))
+        .filter_map(|(name, v, limit)| limit.map(|l| (name, v, l)))
+        .map(|(name, v, limit)| format!("{name} {:.0}%", 100.0 * *v as f64 / limit as f64))
         .collect::<Vec<_>>()
         .join(", ")
 }

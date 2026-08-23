@@ -1,64 +1,73 @@
-//! `params`: cost one parameter set. `search`: find the cheapest to verify.
+//! One command: pin the parameters you know, budget the costs you care about,
+//! and everything left over gets searched.
 
 use sphincs_params::cost::{Convention, SCHEMES, Scheme};
-use sphincs_params::params::{Params, costs};
 use sphincs_params::report::{report, table, utilization};
 use sphincs_params::search::{
-    A_MAX, Budgets, CHAIN_BITS_MAX, Candidate, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Stats, Unit, edges,
-    search,
+    A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, Unit,
+    edges, search,
 };
 
 const USAGE: &str = "\
-usage: sphincs_params params [options]      cost one parameter set
-       sphincs_params search [options]      search for the cheapest verification
+SPHINCS+ parameter selection: what verifies cheapest, or what one set costs.
 
-params options (defaults are the report's bold 2^40 row):
-  --scheme S        SPX | W+C | W+C_F+C            [W+C_F+C]
-  --lifetime L      log2 of signatures per key     [40]
-  --height h        hypertree height               [40]
-  --layers d        hypertree layers               [5]
-  --top-height H    height of the top XMSS tree     [h/d, so every layer equal]
-  -a A              log2 leaves per FORS tree      [14]
-  -k K              FORS trees                     [11]
-  -w W              Winternitz parameter           [256]
-  --chain-bits B    log2(w), instead of -w
-  --swn S           WOTS+C target digit sum        [the mean, l*(w-1)/2]
-  --drop-chains C   chains dropped beyond the minimal bit pinning  [0]
-  -n N              hash output in bytes           [16]
-  --cache-height C  cached top-tree level, above the leaves        [h'/2]
-  --cache-level-only  cache one level, not it and everything above
-  --uncached        charge every hash for its full input
+usage: sphincs_params --lifetime L [parameters] [budgets] [output]
 
-search options (all five budgets required):
-  --lifetime L          log2 of signatures per key
-  --max-keygen N        budget for keygen
-  --max-sign N          budget for average signing
-  --max-sign-cached N   budget for average signing, half top cached
-  --max-size B          budget for the signature, in bytes
-  --security BITS       classical security floor   [128, NIST level 1]
-  --unit U              hashes | compressions, for the budgets and objective [hashes]
-  --scheme S            restrict the schemes searched (repeatable)
-  --chain-bits B        restrict log2(w) searched (repeatable)
-  --top N               rows to print              [15]
-  --h-max / --d-max / --a-max / --k-max / --max-dropped   widen or narrow a range
+Give a parameter to pin it, leave it out to search it. Pin them all and the run
+just costs that one set. Numbers may be written as 2e6.
+
+parameters
+  --lifetime L      log2 of the signatures allowed per public key (required)
+  --scheme S        SPX | W+C | W+C_F+C, repeatable       [all three]
+  --height h        total hypertree height                [1..96]
+  --layers d        hypertree layers                      [1..32]
+  --top-height ht   height of the top XMSS tree, the rest
+                    of h splitting evenly below it        [1..h-d+1, or h/d]
+  -a A              log2 of the leaves in a FORS tree     [1..32]
+  -k K              FORS trees                            [1..64]
+  --chain-bits B    log2(w), repeatable                   [1..12]
+  -w W              Winternitz parameter, instead of --chain-bits
+  --drop-chains C   WOTS+C chains dropped beyond the
+                    minimal digest-bit pinning            [0..16, or 0]
+  --swn S           WOTS+C target digit sum               [the most the signing
+                                                           budget allows, or the
+                                                           mean]
+
+The last three trade signer work for cheaper verification, so unpinned they are
+searched only against a budget that bounds it; with none they take the value the
+report's own parameter sets use, shown above after the comma.
+  -n N              hash output in bytes                  [16]
+
+budgets, all optional: an unset one is no limit
+  --max-keygen N        hashes at key generation
+  --max-sign N          hashes at signing
+  --max-sign-cached N   hashes at signing with the top tree's half top cached
+  --max-size B          signature bytes
+  --security BITS       classical security floor          [128, NIST level 1]
+  --unit U              hashes | compressions, for the budgets and the
+                        objective alike                   [hashes]
+
+other
+  --cache-height C      cached top-tree level, above the leaves  [half of h_top]
+  --cache-level-only    cache one level, not it and everything above
+  --uncached            charge every hash for its full input, rather than
+                        caching the PK.seed midstate
+  --top N               rows of the table to print        [15]
   --stats               report how much of the space was visited
-  -n N                  hash output in bytes       [16]
+
+examples
+  sphincs_params --lifetime 30 --max-keygen 2e6 --max-sign 6e6 \\
+                 --max-sign-cached 4e6 --max-size 4000
+  sphincs_params --lifetime 40 --height 40 --layers 5 -a 14 -k 11 -w 256 --swn 2040
 ";
 
 fn main() -> std::process::ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        Some("params") => run(cmd_params(&args[1..])),
-        Some("search") => run(cmd_search(&args[1..])),
-        _ => {
-            print!("{USAGE}");
-            std::process::ExitCode::from(2)
-        }
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{USAGE}");
+        return std::process::ExitCode::SUCCESS;
     }
-}
-
-fn run(r: Result<bool, String>) -> std::process::ExitCode {
-    match r {
+    match run(&argv) {
         Ok(true) => std::process::ExitCode::SUCCESS,
         Ok(false) => std::process::ExitCode::FAILURE,
         Err(e) => {
@@ -68,8 +77,10 @@ fn run(r: Result<bool, String>) -> std::process::ExitCode {
     }
 }
 
-/// Flags and their values, with repeatable flags kept in order.
+/// Flags and their values, repeatable flags kept in order.
 struct Args(Vec<(String, Option<String>)>);
+
+const NO_VALUE: [&str; 4] = ["--uncached", "--cache-level-only", "--stats", "--help"];
 
 impl Args {
     fn parse(argv: &[String]) -> Result<Self, String> {
@@ -80,14 +91,13 @@ impl Args {
             if !flag.starts_with('-') {
                 return Err(format!("unexpected argument {flag}"));
             }
-            let takes_value = !matches!(flag.as_str(), "--uncached" | "--cache-level-only" | "--stats");
-            if takes_value {
+            if NO_VALUE.contains(&flag.as_str()) {
+                out.push((flag.clone(), None));
+                i += 1;
+            } else {
                 let v = argv.get(i + 1).ok_or_else(|| format!("{flag} needs a value"))?;
                 out.push((flag.clone(), Some(v.clone())));
                 i += 2;
-            } else {
-                out.push((flag.clone(), None));
-                i += 1;
             }
         }
         Ok(Args(out))
@@ -109,27 +119,24 @@ impl Args {
         self.all(name).last().copied()
     }
 
-    fn u64(&self, name: &str, default: u64) -> Result<u64, String> {
+    /// Accepts 2e6 as well as 2000000.
+    fn num(&self, name: &str) -> Result<Option<u64>, String> {
         match self.get(name) {
-            None => Ok(default),
-            // accept 2e6 as well as 2000000
+            None => Ok(None),
             Some(s) => s
                 .parse::<f64>()
-                .map(|f| f as u64)
+                .map(|f| Some(f as u64))
                 .map_err(|_| format!("{name}: expected a number, got {s}")),
         }
     }
 
-    fn f64(&self, name: &str, default: f64) -> Result<f64, String> {
-        match self.get(name) {
-            None => Ok(default),
-            Some(s) => s.parse().map_err(|_| format!("{name}: expected a number, got {s}")),
-        }
+    fn u64_or(&self, name: &str, default: u64) -> Result<u64, String> {
+        Ok(self.num(name)?.unwrap_or(default))
     }
 
-    fn required(&self, name: &str) -> Result<u64, String> {
-        self.get(name).ok_or_else(|| format!("{name} is required"))?;
-        self.u64(name, 0)
+    /// A pin if the flag was given, the whole range otherwise.
+    fn span(&self, name: &str, whole: Span) -> Result<Span, String> {
+        Ok(self.num(name)?.map_or(whole, Span::pin))
     }
 
     fn schemes(&self) -> Result<Vec<Scheme>, String> {
@@ -142,88 +149,84 @@ impl Args {
             .map(|s| Scheme::parse(s).ok_or_else(|| format!("unknown scheme {s}")))
             .collect()
     }
+
+    fn chain_bits(&self) -> Result<Vec<u64>, String> {
+        let mut bits: Vec<u64> = self
+            .all("--chain-bits")
+            .iter()
+            .map(|s| {
+                s.parse::<u64>()
+                    .map_err(|_| format!("--chain-bits: expected a number, got {s}"))
+            })
+            .collect::<Result<_, _>>()?;
+        if let Some(w) = self.num("-w")? {
+            if w < 2 || !w.is_power_of_two() {
+                return Err(format!("-w: expected a power of two, got {w}"));
+            }
+            bits.push(w.trailing_zeros() as u64);
+        }
+        if bits.is_empty() {
+            bits = (1..=CHAIN_BITS_MAX).collect();
+        }
+        bits.sort_unstable();
+        bits.dedup();
+        Ok(bits)
+    }
 }
 
-fn cmd_params(argv: &[String]) -> Result<bool, String> {
+fn run(argv: &[String]) -> Result<bool, String> {
     let args = Args::parse(argv)?;
-    let w = match args.get("--chain-bits") {
-        Some(_) => 1u64 << args.u64("--chain-bits", 8)?,
-        None => args.u64("-w", 256)?,
-    };
-    let lifetime = args.u64("--lifetime", 40)? as u32;
-    let p = Params {
-        scheme: match args.get("--scheme") {
-            Some(s) => Scheme::parse(s).ok_or_else(|| format!("unknown scheme {s}"))?,
-            None => Scheme::WcFc,
-        },
-        h: args.u64("--height", 40)?,
-        d: args.u64("--layers", 5)?,
-        h_top: args
-            .get("--top-height")
-            .map(|_| args.u64("--top-height", 0))
-            .transpose()?,
-        a: args.u64("-a", 14)?,
-        k: args.u64("-k", 11)?,
-        w,
-        n: args.u64("-n", 16)?,
-        dropped_chains: args.u64("--drop-chains", 0)?,
-        cache_height: args
-            .get("--cache-height")
-            .map(|_| args.u64("--cache-height", 0))
-            .transpose()?,
-        cache_level_only: args.flag("--cache-level-only"),
-        convention: Convention {
-            cached_midstate: !args.flag("--uncached"),
-        },
-    };
-    let swn = args.get("--swn").map(|_| args.u64("--swn", 0)).transpose()?;
-    let c = costs(p, swn)
-        .ok_or("inconsistent parameters: d must divide h, w must be a power of two, FORS+C needs k >= 2")?;
-    println!("{}", report(&p, &c, lifetime));
-    Ok(true)
-}
-
-fn cmd_search(argv: &[String]) -> Result<bool, String> {
-    let args = Args::parse(argv)?;
-    let bits: Vec<u64> = args
-        .all("--chain-bits")
-        .iter()
-        .map(|s| {
-            s.parse::<u64>()
-                .map_err(|_| format!("--chain-bits: expected a number, got {s}"))
-        })
-        .collect::<Result<_, _>>()?;
+    let lifetime = args.num("--lifetime")?.ok_or("--lifetime is required")?;
     let unit = match args.get("--unit").unwrap_or("hashes") {
         "hashes" => Unit::Hashes,
         "compressions" => Unit::Compressions,
         other => return Err(format!("--unit: expected hashes or compressions, got {other}")),
     };
     let b = Budgets {
-        lifetime: args.required("--lifetime")? as u32,
-        max_keygen: args.required("--max-keygen")?,
-        max_sign: args.required("--max-sign")?,
-        max_sign_cached: args.required("--max-sign-cached")?,
-        max_size: args.required("--max-size")?,
-        security: args.f64("--security", LEVEL1_BITS)?,
+        lifetime: lifetime as u32,
+        keygen: args.num("--max-keygen")?,
+        sign: args.num("--max-sign")?,
+        sign_cached: args.num("--max-sign-cached")?,
+        size: args.num("--max-size")?,
+        security: args.get("--security").map_or(Ok(LEVEL1_BITS), |s| {
+            s.parse().map_err(|_| format!("--security: expected a number, got {s}"))
+        })?,
         unit,
+    };
+    // A higher target sum, dropped chains and a taller top tree all buy cheaper
+    // verification with signer work, so with nothing bounding the signer they
+    // are unbounded and their answer is useless. Unpinned and unbudgeted, they
+    // take their classic value instead: the mean target sum, no dropped chains,
+    // and h/d on every layer.
+    let signing_bounded = b.any_signing_limit();
+    let sums = match (args.num("--swn")?, signing_bounded) {
+        (Some(s), _) => Sums::Pinned(s),
+        (None, true) => Sums::Sweep,
+        (None, false) => Sums::Mean,
+    };
+    let dropped = match (args.num("--drop-chains")?, signing_bounded) {
+        (Some(c), _) => Span::pin(c),
+        (None, true) => Span::new(0, DROPPED_MAX),
+        (None, false) => Span::pin(0),
+    };
+    let h_top = match (args.num("--top-height")?, signing_bounded || b.keygen.is_some()) {
+        (Some(ht), _) => Some(Span::pin(ht)),
+        (None, true) => Some(Span::new(1, H_MAX)),
+        (None, false) => None,
     };
     let g = Grid {
         schemes: args.schemes()?,
-        n: args.u64("-n", 16)?,
-        h_max: args.u64("--h-max", H_MAX)?,
-        a_max: args.u64("--a-max", A_MAX)?,
-        k_max: args.u64("--k-max", K_MAX)?,
-        d_max: args.u64("--d-max", D_MAX)?,
-        chain_bits: if bits.is_empty() {
-            (1..=CHAIN_BITS_MAX).collect()
-        } else {
-            bits
-        },
-        max_dropped: args.u64("--max-dropped", DROPPED_MAX)?,
+        n: args.u64_or("-n", 16)?,
+        h: args.span("--height", Span::new(1, H_MAX))?,
+        d: args.span("--layers", Span::new(1, D_MAX))?,
+        h_top,
+        a: args.span("-a", Span::new(1, A_MAX))?,
+        k: args.span("-k", Span::new(1, K_MAX))?,
+        dropped,
+        chain_bits: args.chain_bits()?,
+        sums,
         cache_level_only: args.flag("--cache-level-only"),
-        ..Default::default()
     };
-    let top = args.u64("--top", 15)? as usize;
 
     let mut stats = Stats::default();
     let found = search(&b, &g, &mut stats);
@@ -232,25 +235,49 @@ fn cmd_search(argv: &[String]) -> Result<bool, String> {
     }
     if found.is_empty() {
         println!(
-            "no parameter set meets these budgets at {:.0}-bit security and q_s = 2^{}",
-            b.security, b.lifetime
+            "nothing meets these constraints at {:.0}-bit security and q_s = 2^{lifetime}",
+            b.security
         );
-        println!("--stats says which budget pruned everything; the binding one is usually size or keygen");
+        println!("--stats says where the space went; the binding budget is usually size or keygen");
         return Ok(false);
     }
-    println!(
-        "{} feasible sets, best {} by verification {}:\n",
-        found.len(),
-        top.min(found.len()),
-        unit.label()
-    );
-    println!("{}\n", table(&b, &found[..top.min(found.len())]));
-    let best: &Candidate = &found[0];
-    println!("budget use of the best: {}", utilization(&b, best));
+
+    if found.len() > 1 {
+        let top = args.u64_or("--top", 15)? as usize;
+        let kept = if stats.rows_dropped > 0 {
+            format!("{} feasible sets, {} kept", stats.rows, found.len())
+        } else {
+            format!("{} feasible sets", found.len())
+        };
+        println!(
+            "{kept}, best {} by verification {}:\n",
+            top.min(found.len()),
+            unit.label()
+        );
+        println!("{}\n", table(&b, &found[..top.min(found.len())]));
+    }
+
+    let best = &found[0];
+    let use_ = utilization(&b, best);
+    if !use_.is_empty() {
+        println!("budget use: {use_}");
+    }
     for w in edges(&g, best) {
         println!("warning: {w}");
     }
-    println!();
-    println!("{}", report(&best.params, &best.costs, b.lifetime));
+    if !use_.is_empty() || !edges(&g, best).is_empty() {
+        println!();
+    }
+    // The convention and the cache split are not searched, so they ride here
+    // rather than in the grid.
+    let shown = sphincs_params::params::Params {
+        cache_height: args.num("--cache-height")?,
+        convention: Convention {
+            cached_midstate: !args.flag("--uncached"),
+        },
+        ..best.params
+    };
+    let costs = sphincs_params::params::costs(shown, best.costs.swn).ok_or("inconsistent parameters")?;
+    println!("{}", report(&shown, &costs, b.lifetime));
     Ok(true)
 }
