@@ -23,15 +23,7 @@ pub(crate) fn or_bit_at(buf: &mut [u64], bit_off: usize) {
     buf[bit_off >> 6] |= 1u64 << (bit_off & 63);
 }
 
-/// A `64·NW`-bit record composed in registers and OR-flushed into the block
-/// buffer once.
-///
-/// Hash witness builders write groups of adjacent sub-word fields (e.g.
-/// 31-bit carry slots) with `or_u32_at_bit`; back-to-back fields hit the
-/// same u64 word, serializing on store-to-load forwarding, with a straddle
-/// branch per call. Composing the group in registers (const positions,
-/// branchless) and flushing with one `NW + 1`-word shifted OR pass turns
-/// ~2 read-modify-writes per field into `NW + 1` per group.
+/// A `64·NW`-bit record composed in registers and flushed into the block once.
 pub(crate) struct BitRecord<const NW: usize> {
     w: [u64; NW],
 }
@@ -173,11 +165,7 @@ where
     );
 
     let total_words = n_total * u64_per_block;
-    // z/a/b are allocated uninitialized and zeroed *inside* the parallel loop
-    // (one memset per 8-block group), so the ~128 MB zero-fill scales with the
-    // thread count instead of running serially on the main thread before the
-    // parallel build. The per-block builders OR 1-bits into pre-zeroed words,
-    // so each group must be zeroed before its `per_block` calls.
+    // Zero inside the parallel loop because the builders OR bits into each group.
     // SAFETY (x3): the parallel loop below writes every element of z/a/b before
     // any is read: each group memsets its own slice, then ORs bits into it.
     let mut z = unsafe { ArenaVec::<u64>::uninitialized(total_words) };

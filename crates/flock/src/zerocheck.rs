@@ -147,16 +147,16 @@ pub fn prove_packed_padded(
     // ---- Construct the equality tail (with fixed constants in the inner 7 dims) ----
     //
     // r_rest layout:
-    //   r_rest[0..3]                — protocol small-eq constants φ_8(0xF7..)
-    //   r_rest[3..7]                — protocol medium-eq constants β_i
-    //   r_rest[7..m-k_skip]         — sampled outer equality coordinates
+    //   r_rest[0..3]               : protocol small-eq constants φ_8(0xF7..)
+    //   r_rest[3..7]               : protocol medium-eq constants β_i
+    //   r_rest[7..m-k_skip]        : sampled outer equality coordinates
     // Prover and verifier use the same tower-valued challenges directly.
     let r_rest = equality_tail(m, |n| ps.sample_vec(n));
 
     // ---- Round 1: URM (extract_c, parallel) ----
     //
     // The optimized URM drops a `C_s = φ_8(0x1C)` scalar from its accumulators
-    // (a prover-side optimization tied to the small-eq trick — see the
+    // (a prover-side optimization tied to the small-eq trick: see the
     // C_s factor analysis in `univariate_skip_optimized`). The wire format
     // must be in "naive" convention so the verifier doesn't need to know
     // about this internal optimization; we restore the C_s factor here.
@@ -306,12 +306,12 @@ pub fn prove_packed_padded(
     // from the round-1 message, whose reconstruction assumes it.
     let final_c_eval = c_running + final_a_eval * final_b_eval;
 
-    // ---- Fiat–Shamir: bind the final â, b̂ claims into the transcript ----
+    // ---- Fiat-Shamir: bind the final â, b̂ claims into the transcript ----
     //
     // The three claims are reduced downstream by lincheck via a *single*
     // random-linear-combination check in powers of α (see `lincheck`). That
     // batching is only sound if α is sampled *after* they are committed to the
-    // transcript — otherwise a prover that knows α can pick them to satisfy the
+    // transcript: otherwise a prover that knows α can pick them to satisfy the
     // one batched equation while violating the individual checks. So observe
     // them here, before any later challenge (the next one drawn is lincheck's
     // α). `final_c_eval` is NOT transmitted: both sides derive it from the
@@ -343,7 +343,7 @@ pub fn prove_packed_padded(
 /// check: `ĉ` is whatever the terminal identity leaves, so no round message can
 /// fail here. The only errors are structural (shape, truncated stream). What
 /// makes the claims meaningful is lincheck, which pins all three against the
-/// committed witness — never call this alone and treat `Ok` as acceptance.
+/// committed witness: never call this alone and treat `Ok` as acceptance.
 ///
 /// On accept: returns the [`ZerocheckClaim`] for lincheck and the PCS.
 /// On reject: returns a [`VerifyError`] indicating which check failed.
@@ -368,7 +368,7 @@ pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim
     // ---- Reconstruct the initial running claim ----
     //
     // `P = P^{AB} + P^C` has degree < 2·ell in λ. The prover sent only ell
-    // evaluations on Λ — not enough on its own. The verifier uses the
+    // evaluations on Λ: not enough on its own. The verifier uses the
     // **zerocheck assumption** `P(λ) = 0` for `λ ∈ S`: together with the ell
     // Λ-evaluations that is 2·ell, enough to interpolate P at z.
     //
@@ -386,7 +386,7 @@ pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim
     //   G_{r-1}(ρ_{r-1}) = (1 + r_eq_r) · G_r(0) + r_eq_r · G_r(1).
     //
     // Round r (0-indexed i = r − 2) binds the i-th rest variable with eq weight
-    // r_rest[i]. The prover sends `(G(1), G(∞))` (Convention A — no
+    // r_rest[i]. The prover sends `(G(1), G(∞))` (Convention A: no
     // factor). Verifier:
     //   1. reconstruct G(0) from consistency `c_running = (1+r_eq)·G(0) + r_eq·G(1)`,
     //   2. observe message, sample ρ_i,
@@ -414,7 +414,7 @@ pub fn verify(log_n: usize, vs: &mut VerifierState<'_>) -> Result<ZerocheckClaim
     //
     // Read + bind the final â, b̂ claims off the stream: binding must land
     // before the next challenge (lincheck's α) is drawn, so the α-batched
-    // reduction of the three claims is sound. `ĉ` is not transmitted — it is
+    // reduction of the three claims is sound. `ĉ` is not transmitted: it is
     // what the identity leaves, so there is nothing to check here. A prover who
     // lies about anything upstream just shifts the lie into `ĉ`, and lincheck,
     // which pins all three against the committed witness, rejects it.
@@ -501,7 +501,7 @@ mod tests {
             assert_eq!(claim.mlv_challenges.len(), m - K_SKIP, "m={m}");
 
             // Claim's eval fields agree with the streamed final evals (both are
-            // now tower values — the prover streams eval).
+            // now tower values: the prover streams eval).
             assert_eq!(claim.a_eval, stream[stream.len() - 2], "m={m}");
             assert_eq!(claim.b_eval, stream[stream.len() - 1], "m={m}");
         }
@@ -533,7 +533,7 @@ mod tests {
 
     /// **The reduction is faithful.** On an honest witness the three claims
     /// the verifier ends up with are the true quirky evaluations of a, b and c
-    /// at the sumcheck point — including `ĉ`, which nobody transmits and both
+    /// at the sumcheck point: including `ĉ`, which nobody transmits and both
     /// sides read off the terminal identity.
     #[test]
     fn claims_are_true_evaluations() {
@@ -655,13 +655,13 @@ mod tests {
         ));
     }
 
-    /// AUDIT (Fiat–Shamir binding of the final â, b̂ claims). Regression test
+    /// AUDIT (Fiat-Shamir binding of the final â, b̂ claims). Regression test
     /// for the gap where `final_a_eval`/`final_b_eval` were not observed into
     /// the transcript.
     ///
     /// Downstream, lincheck reduces the three claims via a *single* random-
     /// linear-combination check in powers of α. That batching is only sound if
-    /// α is sampled *after* the claims are bound — otherwise a prover that
+    /// α is sampled *after* the claims are bound: otherwise a prover that
     /// already knows α can pick them to satisfy the one batched equation while
     /// violating the individual ties.
     ///
@@ -686,7 +686,7 @@ mod tests {
         let proof_t = ch_prove.into_proof();
 
         // Honest verify, then capture the next challenge the transcript feeds
-        // downstream — this is exactly the slot lincheck samples α from.
+        // downstream: this is exactly the slot lincheck samples α from.
         let mut ch_honest = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         assert!(verify(m, &mut ch_honest).is_ok(), "honest verify rejected");
         let alpha_honest = ch_honest.sample();

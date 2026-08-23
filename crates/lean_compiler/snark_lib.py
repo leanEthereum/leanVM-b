@@ -154,24 +154,16 @@ def hint_witness(dest, name: str) -> None:
     _ = dest, name
 
 
-def pack64x2(a, b) -> _Elt:
-    """Prove that `a` and `b` are GF(2^64)-valued machine words and return
-    their canonical 128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word.
-    This is one VM instruction."""
+def assert_in_k(a, b) -> None:
+    """Prove that both machine words are GF(2^64)-valued. This is the sole
+    packing-related intrinsic and lowers to one untaken JUMP."""
     _ = a, b
-    return _Elt()
-
-
-def pack64x2_into(a, b, out) -> None:
-    """The destination-target form of `pack64x2`: assert that `out` is the
-    canonical packing `(a.c0, b.c0, 0)`. All three arguments are scalar cells."""
-    _ = a, b, out
 
 
 def hint_f192_limbs(dest, value) -> None:
     """Computed advice: write the first `len(dest)` GF(2^64) coordinate limbs
     of `value` into a 1-to-3-cell StackBuf. UNCONSTRAINED; callers bind the
-    result with `PACK64X2` and/or field reconstruction."""
+    result with `assert_in_k` and field reconstruction."""
     _ = dest, value
 
 

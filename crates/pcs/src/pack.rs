@@ -1,22 +1,5 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Bit-witness packing into K = F_{2^64} for the 64-bit transition PCS.
-//!
-//! The witness
-//! `z : {0,1}^m -> {0,1}` is laid out as a flat 2^m-length bool array, and
-//! packing groups the **first** `LOG_PACKING = 6` boolean coordinates into
-//! one F_{2^64} element, leaving `2^(m-6)` packed words indexed by the
-//! remaining m-6 outer coords.
-//!
-//! Layout convention: for packed index `i_rest` and bit position `i`,
-//! ```text
-//!     bit i of out[i_rest]  ==  z[i_rest * 64 + i]
-//! ```
-//! where "bit i of an F_{2^64} element" is the i-th coordinate of its
-//! polynomial-basis decomposition (bit i of the u64, little-endian).
-//!
-//! This matches the packing basis of the generalized ring-switching reduction
-//! ([`super::ring_switch`]): `s_hat_v[i]` is the MLE of the i-th bit-slice
-//! of the witness, and the i-th bit-slice is exactly bit i of every word.
+//! Pack each 64 consecutive witness bits into one `F64`, least significant bit first.
 
 use primitives::field::F64;
 
@@ -35,13 +18,13 @@ pub const PACKING_WIDTH: usize = 1 << LOG_PACKING;
 ///
 /// - if `z.len() != 1 << m`
 /// - if `m < LOG_PACKING`
-pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
-    assert_eq!(z.len(), 1usize << m, "z length must be 2^m");
+pub fn pack_witness(witness: &[bool], log_size: usize) -> Vec<F64> {
+    assert_eq!(witness.len(), 1usize << log_size, "witness length must be 2^log_size");
     assert!(
-        m >= LOG_PACKING,
-        "witness too small to pack: m = {m} < LOG_PACKING = {LOG_PACKING}",
+        log_size >= LOG_PACKING,
+        "witness too small to pack: log_size = {log_size} < LOG_PACKING = {LOG_PACKING}",
     );
-    let n_packed = 1usize << (m - LOG_PACKING);
+    let packed_len = 1usize << (log_size - LOG_PACKING);
 
     // `bool` is guaranteed 1 byte holding 0x00/0x01, so 8 bools read as one
     // little-endian u64 pack to an LSB-first byte with one multiply:
@@ -49,45 +32,27 @@ pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
     // product byte sums distinct powers of two <= 0xFE, so nothing carries
     // into byte 7).
     // SAFETY: same length, and any &[bool] is a valid &[u8].
-    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(z.as_ptr() as *const u8, z.len()) };
+    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(witness.as_ptr().cast(), witness.len()) };
     #[inline]
-    fn pack64(b: &[u8]) -> u64 {
-        let mut w = 0u64;
-        for (i, ch) in b.as_chunks::<8>().0.iter().enumerate() {
-            let x = u64::from_le_bytes(*ch);
-            w |= (x.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * i);
+    fn pack64(bytes: &[u8]) -> u64 {
+        let mut packed = 0u64;
+        for (index, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+            let word = u64::from_le_bytes(*chunk);
+            packed |= (word.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * index);
         }
-        w
+        packed
     }
-    let one = |i_rest: usize| {
-        let base = i_rest << LOG_PACKING;
+    let pack_one = |index: usize| {
+        let base = index << LOG_PACKING;
         F64(pack64(&bytes[base..base + PACKING_WIDTH]))
     };
     // Parallel for real witnesses; sequential below the dispatch-overhead
     // floor (tiny test instances).
-    if n_packed >= (1 << 12) {
-        parallel::map_collect(n_packed, one)
+    if packed_len >= (1 << 12) {
+        parallel::map_collect(packed_len, pack_one)
     } else {
-        (0..n_packed).map(one).collect()
+        (0..packed_len).map(pack_one).collect()
     }
-}
-
-/// Inverse of [`pack_witness`]: unpack F_{2^64} elements back to a Boolean
-/// witness of length `2^m`.
-///
-/// Round-trips with [`pack_witness`] by construction.
-#[cfg(test)]
-pub fn unpack_witness(packed: &[F64], m: usize) -> Vec<bool> {
-    let n_packed = 1usize << (m - LOG_PACKING);
-    assert_eq!(packed.len(), n_packed, "packed length must be 2^(m - LOG_PACKING)");
-    let mut out = vec![false; 1usize << m];
-    for (i_rest, elem) in packed.iter().enumerate() {
-        let base = i_rest << LOG_PACKING;
-        for r in 0..PACKING_WIDTH {
-            out[base | r] = (elem.0 >> r) & 1 == 1;
-        }
-    }
-    out
 }
 
 /// Describes zero padding within each logical witness block.
@@ -116,17 +81,6 @@ mod tests {
         Rng::new(seed).bits(1usize << m)
     }
 
-    #[test]
-    fn roundtrip() {
-        for (m, seed) in [(6usize, 1u64), (7, 2), (10, 3), (13, 4)] {
-            let z = rand_bits(m, seed);
-            let packed = pack_witness(&z, m);
-            assert_eq!(packed.len(), 1 << (m - LOG_PACKING));
-            assert_eq!(unpack_witness(&packed, m), z, "roundtrip failed at m={m}");
-        }
-    }
-
-    /// Bit-level layout: bit i of word i_rest is z[i_rest * 64 + i].
     #[test]
     fn bit_layout() {
         let m = 9;

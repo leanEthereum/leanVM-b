@@ -1,4 +1,4 @@
-# `match_range(log(x), range(a, b), lambda i: …, …)` — a match with generated
+# `match_range(log(x), range(a, b), lambda i: …, …)`: a match with generated
 # arms: arm j is the lambda body with i replaced by the integer literal j, and
 # every arm writes its results into the same fresh cells (write-once: exactly
 # one arm executes), bound to the assignment targets. Ranges are contiguous

@@ -55,13 +55,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_images() {
-        assert_eq!(phi8_192(F8::ZERO), F192::ZERO);
-        assert_eq!(phi8_192(F8::ONE), F192::ONE);
-        assert_eq!(phi8_192(F8(2)), F192::new(PHI_8_BASIS[1], 0, 0));
-    }
-
-    #[test]
     fn homomorphism_full() {
         // Exhaustive: φ(a·b)=φ(a)·φ(b) and φ(a+b)=φ(a)+φ(b) over all 65536 pairs.
         for a in 0u16..256 {

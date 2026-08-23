@@ -154,6 +154,11 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         return Err(Error::PublicInput);
     }
     let l = layout(&prog.prog, log_mem, taus, *public_input);
+    // The caps bound each announced log on its own; what the PCS is configured for
+    // is the stacked size they imply, which they do not bound.
+    if !(pcs::MIN_MU..=pcs::MAX_MU).contains(&l.shape.mu) {
+        return Err(Error::PublicInput);
+    }
     Ok((l, log_inv_rate))
 }
 
@@ -419,7 +424,7 @@ fn sha2_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, SHA-256, PACK64X2]`, and the
+/// `[XOR, MUL, SET, DEREF, JUMP, SHA-256]`, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -440,12 +445,9 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "SHA2", "PACK64X2"];
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "SHA2"];
 
-    /// One line of run sizes, every one a power of two: the per-table instruction
-    /// counts with their share of the run, largest first, then the data memory and
-    /// the committed witness. Reads as
-    /// `"DEREF 2^18.838 (33.6%)  SET 2^18.265 (22.6%)  …  MEMORY 2^21.701  TOTAL_COMMITTED 2^26.364"`.
+    /// One line of per-table instruction counts and shares, largest first, followed by memory and committed-witness sizes.
     ///
     /// The counts are `base_counts`, the work the program itself does, since the proven
     /// `counts` are all exact powers of two once the fill blocks have run (`filler`) and
@@ -494,15 +496,21 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
     let exec = crate::stage!("Execute program", || program.execute_to_floor(public_input));
-    // The SHA-256 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
-    // depends only on the compression count (the circuit *shape*), not the witness,
-    // but it is otherwise built synchronously inside the final reduction, adding
-    // that latency serially with nothing overlapping it. Now that `execute` has
-    // told us the count, build it on a background thread: it constructs
-    // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
-    // lands in the shared setup cache, so the reduction's `setup_for` is a cache
-    // hit. Pure warm-up: the result is fetched from the cache, nothing here joins
-    // the handle. (A no-SHA-256 program still warms the size-1 padding shape.)
+    // A live value that came from outside the constraint system means the emitted
+    // bytecode asserts less than its source asked for, so the proof would be about a
+    // weaker statement than the program text. That is a compiler bug and never a
+    // program one, so it is caught here, on the one path every proof takes, rather
+    // than left to whichever test happens to look. A hard assert, not a
+    // `debug_assert`: this is what makes the invariant hold in release, which is the
+    // only profile the VM is ever run in.
+    assert!(
+        exec.unconstrained_reads.is_empty(),
+        "the program read {} cell(s) nothing ever writes, first at {:?}: a constraint was \
+         dropped in lowering (see `Execution::unconstrained_reads`)",
+        exec.unconstrained_reads.len(),
+        &exec.unconstrained_reads[..exec.unconstrained_reads.len().min(8)]
+    );
+    // Warm the shape-dependent SHA-256 R1CS setup concurrently with the earlier proving stages.
     let n_sha2_warm = exec.trace.sha2.len().max(1);
     std::thread::spawn(move || crate::sha2_flock::warm_setup(n_sha2_warm));
     let cycles = exec.cycles;
@@ -538,7 +546,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             leaf::prove_balance(&l.push, &l.pull, &l.count, &cols, &owners, &spans, &mut ps)
         });
         let table_claims = crate::stage!("Prove constraints", || {
-            // One sumcheck for all seven tables (§constraints).
+            // One sumcheck for all six tables (§constraints).
             let table_cols: Vec<Vec<&[F64]>> = spans
                 .iter()
                 .map(|&(base, n)| (0..n).map(|c| cols[base + c]).collect())

@@ -1,26 +1,4 @@
-//! Repetition-averaged timing for the manual benchmarks.
-//!
-//! Every benchmark entry point follows the same shape: one **warmup** pass
-//! whose timing is discarded, then `repeat` measured passes whose wall-clock
-//! samples are averaged. The warmup exists because a cold pass pays one-time
-//! costs that steady-state proving does not — thread-pool spawn, first-touch
-//! page faults, and setup/twiddle table construction. Reporting those as
-//! proving cost understates throughput and makes back-to-back runs
-//! incomparable.
-//!
-//! Samples are summarized as a mean plus a 95% confidence half-width, and each
-//! pass is echoed to stderr, so a reported delta can be read against the noise
-//! (and the drift) that produced it.
-//!
-//! # Cooldown
-//!
-//! On a thermally-limited host, back-to-back passes measure the power budget
-//! rather than the prover. On an Apple laptop the spread between no cooldown and
-//! a generous one is wider than most changes worth measuring, and it is *stable*
-//! within a run, so a confidence interval does not reveal it. [`Plan::cooldown`]
-//! inserts idle time before each measured pass; use ~6 s on an Apple laptop and
-//! none on a server-class host. A/B comparisons are only meaningful between runs
-//! that used the same cooldown.
+//! Repeated benchmark timing with warmup, cooldown, and confidence intervals.
 
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
@@ -35,7 +13,6 @@ use std::time::{Duration, Instant};
 /// redirected output stays readable; the transient parts are simply skipped.
 struct Progress {
     tty: bool,
-    /// Permanent content, i.e. everything after the label.
     parts: String,
 }
 
@@ -56,7 +33,6 @@ impl Progress {
         }
     }
 
-    /// Show `msg` after the passes recorded so far; erased by the next draw.
     fn status(&self, msg: &str) {
         if self.parts.is_empty() {
             self.draw(msg);
@@ -65,7 +41,6 @@ impl Progress {
         }
     }
 
-    /// Record a pass time, permanently.
     fn push(&mut self, secs: f64) {
         let first = self.parts.is_empty();
         if !first {
@@ -85,8 +60,6 @@ impl Progress {
         }
     }
 
-    /// Terminate the line, or erase it entirely (label included) if nothing was
-    /// recorded, so a silent measurement leaves the terminal untouched.
     fn finish(self) {
         if !self.parts.is_empty() {
             eprintln!();
@@ -144,7 +117,7 @@ impl Timing {
         mean_and_ci(&self.samples).0
     }
 
-    /// `" ± 0.4%"` when there is more than one sample, else empty — the suffix
+    /// `" ± 0.4%"` when there is more than one sample, else empty: the suffix
     /// appended to every reported duration and throughput.
     #[must_use]
     pub fn spread(&self) -> String {
@@ -211,8 +184,6 @@ impl Plan {
         self.run(f, progress, true)
     }
 
-    /// Idle for [`Self::cooldown`], counting down in place so a six-second wait
-    /// does not look like a hang.
     fn cool_down(&self, progress: &Progress) {
         let mut left = self.cooldown;
         while !left.is_zero() {
@@ -223,10 +194,7 @@ impl Plan {
         }
     }
 
-    /// Run `f` `self.repeat` times with no warmup pass and no per-pass echo, for
-    /// a stage an earlier one already warmed (verification after proving, say).
-    /// Verification takes milliseconds and nobody tunes it, so echoing every pass
-    /// would bury the numbers that matter.
+    /// Run measured passes without a warmup or per-pass output.
     pub fn measure_quiet<T>(&self, f: impl FnMut(bool) -> T) -> (T, Timing) {
         self.run(f, Progress::new(), false)
     }
@@ -235,15 +203,13 @@ impl Plan {
         let mut timing = Timing::default();
         let mut last = None;
         for pass in 0..self.repeat {
-            drop(last.take()); // free the previous result before the next pass allocates
+            drop(last.take());
             self.cool_down(&progress);
             let t = Instant::now();
             let out = f(pass + 1 == self.repeat);
             let secs = t.elapsed().as_secs_f64();
             timing.push(secs);
             if echo && self.repeat > 1 {
-                // Record each pass: a throttling ramp is visible here and invisible
-                // in the mean.
                 progress.push(secs);
             }
             last = Some(out);
@@ -286,16 +252,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_sample_has_no_spread() {
+    fn spread_edge_cases() {
         let mut t = Timing::default();
         t.push(1.5);
         assert_eq!(t.mean(), 1.5);
         assert_eq!(mean_and_ci(t.samples()).1, 0.0);
         assert_eq!(t.spread(), "");
-    }
 
-    #[test]
-    fn identical_samples_have_zero_width_interval() {
         let mut t = Timing::default();
         for _ in 0..4 {
             t.push(2.0);

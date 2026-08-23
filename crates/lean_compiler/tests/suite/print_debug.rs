@@ -1,4 +1,4 @@
-//! `print(...)`: a prover-side debug print — must compile, execute during
+//! `print(...)`: a prover-side debug print: must compile, execute during
 //! witness generation, and leave proving/verification untouched.
 
 use lean_compiler::{compile, parse};

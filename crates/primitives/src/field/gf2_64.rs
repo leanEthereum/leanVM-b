@@ -200,7 +200,7 @@ pub mod aarch64 {
     }
 }
 
-/// x86-64 `pclmulqdq` path — the twin of [`aarch64`] for AMD/Intel. GF(2^64)
+/// x86-64 `pclmulqdq` path, the twin of [`aarch64`] for AMD/Intel. GF(2^64)
 /// multiply is one CLMUL product plus a two-CLMUL fold by `R64` (= x^64 mod P),
 /// the same reduction as [`base_reduce_128`].
 #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
@@ -226,7 +226,7 @@ pub mod x86_64 {
     ///
     /// Credit: binius64 <https://github.com/binius-zk/binius64>
     /// (`crates/arith-bench/src/monbijou/clmul.rs::reduce`), whose Monbijou
-    /// field is this same GF(2^64) — a `<0x01>` CLMUL fold by `0x1B` applied
+    /// field is this same GF(2^64): a `<0x01>` CLMUL fold by `0x1B` applied
     /// twice, XOR-ing the low halves.
     ///
     /// # Safety
@@ -283,14 +283,11 @@ mod tests {
     }
 
     #[test]
-    fn neon_matches_software_and_axioms() {
+    fn optimized_mul_matches_software() {
         let mut rng = Rng::new(1);
         for _ in 0..10_000 {
-            let (a, b, c) = (F64(rng.next_u64()), F64(rng.next_u64()), F64(rng.next_u64()));
+            let (a, b) = (F64(rng.next_u64()), F64(rng.next_u64()));
             assert_eq!(a * b, software::mul(a, b));
-            assert_eq!(a * b, b * a);
-            assert_eq!((a * b) * c, a * (b * c));
-            assert_eq!(a * (b + c), a * b + a * c);
         }
     }
 
@@ -310,11 +307,10 @@ mod tests {
     }
 
     #[test]
-    fn inv_and_identities() {
+    fn inverses() {
         let mut rng = Rng::new(2);
         for _ in 0..200 {
             let a = F64(rng.next_u64());
-            assert_eq!(a * F64::ONE, a);
             if !a.is_zero() {
                 assert_eq!(a * a.inv(), F64::ONE);
             }

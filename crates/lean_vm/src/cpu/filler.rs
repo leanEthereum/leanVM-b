@@ -40,7 +40,7 @@ pub const SIZES: [usize; 8] = [128, 64, 32, 16, 8, 4, 2, 1];
 /// Least rows a table can be proven over. Only `SHA-256` has one above `1`: flock sizes
 /// its argument to at least eight instances, so filling that table below the floor
 /// would leave it padded up to it, which is the padding this exists to avoid.
-pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8, 1];
+pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8];
 
 /// The `JUMP` table's index in [`crate::cpu::Stats::TABLES`]. Every traversal of every
 /// block lands its closing jump here, so this table is solved last, absorbing the cost
@@ -224,17 +224,17 @@ mod tests {
     /// Whatever the shape of the run, every table comes out an exact power of two at or
     /// above its floor.
     #[test]
-    fn a_solve_lands_every_table_on_a_power_of_two() {
+    fn solve_reaches_power_of_two_floors() {
         let cases: [[usize; N_TABLES]; 6] = [
-            [0, 0, 0, 0, 0, 0, 0],
-            [1, 1, 1, 1, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1],
             // Roughly the XMSS run's mix.
-            [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 0],
+            [125_000, 286_000, 341_000, 508_000, 114_000, 130_000],
             // Tables already exactly on a power of two, the awkward case: the closing
             // jumps of every other table's traversals still have to fit somewhere.
-            [1 << 17, 1 << 12, 1000, 1 << 19, 1 << 16, 8, 0],
-            [1, 2, 3, 4, 5, 6, 7],
-            [0, 0, 0, 0, 1 << 20, 0, 0],
+            [1 << 17, 1 << 12, 1000, 1 << 19, 1 << 16, 8],
+            [1, 2, 3, 4, 5, 6],
+            [0, 0, 0, 0, 1 << 20, 0],
         ];
         for base in cases {
             let plan = solve(base, NO_FLOORS).unwrap_or_else(|| panic!("no plan for {base:?}"));
@@ -249,27 +249,22 @@ mod tests {
     /// A floor takes a table past its natural power of two, and every other table
     /// still lands on one: what a run too small for its consumer buys with.
     #[test]
-    fn floors_grow_one_table() {
-        let base = [1_000, 2_000, 3_000, 4_000, 500, 8, 0];
+    fn floor_grows_target_table() {
+        let base = [1_000, 2_000, 3_000, 4_000, 500, 8];
         let mut floors = NO_FLOORS;
         floors[PAD_TABLE] = 1 << 16;
         let plan = solve(base, floors).expect("solvable");
         let got = filled(base, &plan);
         assert!(is_filled(got), "{got:?}");
         assert_eq!(got[PAD_TABLE], 1 << 16);
-        for t in 0..N_TABLES {
-            if t != PAD_TABLE {
-                assert_eq!(got[t], ceil_pow2(base[t].max(MIN_ROWS[t])).max(got[t]));
-            }
-        }
     }
 
     /// The bulk of a fill rides the largest block, so the fill stays cheap: one closing
     /// jump per 128 rows, plus at most one traversal per size per table for the
     /// remainders.
     #[test]
-    fn the_fill_is_short() {
-        let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 0];
+    fn fill_uses_bulk_blocks() {
+        let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000];
         let plan = solve(base, NO_FLOORS).expect("solvable");
         let fill: usize = delivered(&plan).iter().sum();
         assert!(

@@ -247,7 +247,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 7] {
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
-            Op::Pack64x2 { a, b, c } => a.max(b).max(c),
             Op::Sha2 { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
         })
         .max()
@@ -261,7 +260,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 7] {
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
-        Op::Pack64x2 { .. } => tables::OP_PACK64X2,
         Op::Sha2 { .. } => OP_SHA2,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
@@ -272,7 +270,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 7] {
             Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
-            Op::Pack64x2 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
             // SHA2's first three input-word offsets; the last two ride the
             // fpc/ffp bytecode slots below.
             Op::Sha2 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),

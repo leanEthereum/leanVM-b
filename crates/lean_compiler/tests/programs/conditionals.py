@@ -1,8 +1,8 @@
 # `if` / `elif` / `else` on field equality (`==` / `!=`): one XOR and one
 # conditional JUMP. Bindings made inside a branch are branch-local; branches
-# communicate through write-once memory — only one branch executes, so both
+# communicate through write-once memory: only one branch executes, so both
 # may write the same cell. The loop body's `if` runs in a helper frame (its
-# own fp cell). Published: (5, 13 + 17) = (5, 28) — `+` is XOR.
+# own fp cell). Published: (5, 13 + 17) = (5, 28): `+` is XOR.
 # public_input: 5, 28
 from snark_lib import *
 

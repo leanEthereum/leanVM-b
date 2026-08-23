@@ -2,7 +2,7 @@
 //!
 //! A top-level `NAME = <const-expr>` is a **global constant**: it is evaluated
 //! to its field value and substituted (as one literal) everywhere its name
-//! appears below — so a constant is usable in every position a literal is,
+//! appears below: so a constant is usable in every position a literal is,
 //! including `StackBuf`/`HeapBuf` sizes, `**` exponents, and `assert log _ < _`
 //! bounds. A **placeholder** is any identifier text-replaced before parsing via
 //! [`parse_with_replacements`]; the idiom is a placeholder feeding a constant
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse, parse_with_replacements};
 
-/// A global constant substitutes exactly like writing its value inline — even
+/// A global constant substitutes exactly like writing its value inline: even
 /// in a `StackBuf` size, which demands a parse-time literal. The two programs
 /// produce identical ASTs.
 #[test]
@@ -45,7 +45,7 @@ def main():
     let _ = compile(&ac); // and it lowers to a real program
 }
 
-/// A constant may be used as a `**` exponent and an `assert log _ < _` bound —
+/// A constant may be used as a `**` exponent and an `assert log _ < _` bound -
 /// positions that previously required a bare integer literal.
 #[test]
 fn const_in_literal_only_positions() {

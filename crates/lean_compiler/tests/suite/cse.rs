@@ -86,7 +86,7 @@ def main():
 
 /// The assert idiom is `XOR fp[t] = a ^ b` then `SET fp[t] = 0`, which panics as
 /// a write-once conflict when `a != b`. Both instructions write `fp[t]`, so
-/// neither may be folded away — otherwise a failing assert would silently pass.
+/// neither may be folded away: otherwise a failing assert would silently pass.
 /// Here the compared difference is also computed as an ordinary value, giving the
 /// assert's `XOR` a duplicate to be folded into.
 #[test]

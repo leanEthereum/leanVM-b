@@ -25,6 +25,7 @@ mod pack64x2;
 mod print_debug;
 mod py_source;
 mod range_check;
+mod soundness;
 mod stack_buf;
 mod transcript_helpers;
 mod vm_proofs;

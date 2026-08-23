@@ -1,7 +1,7 @@
-//! `hint_log2_ceil(bits, nbits, floor)` — computed advice returning
+//! `hint_log2_ceil(bits, nbits, floor)`: computed advice returning
 //! `g^max(log2_ceil(v), floor)`, where `v` is the integer the `bits` buffer
 //! decodes to. The prover fills it at witness-generation (the runtime has `v`
-//! concretely); it is unconstrained on its own — `log2_ceil` re-verifies it —
+//! concretely); it is unconstrained on its own: `log2_ceil` re-verifies it -
 //! so this test checks only that the advice computes the right value.
 
 use lean_compiler::{compile, parse};

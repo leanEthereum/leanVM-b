@@ -1,24 +1,4 @@
-//! One column value, `K` while a table is unfolded and `E` once it is not.
-//!
-//! A table's columns are `K`-valued (`F64`, §def:column). The table sumcheck folds
-//! them against an `E` challenge in the round the table joins (§sec:air), so from the
-//! next round on they are `E`-valued. Both phases evaluate the SAME identities,
-//! so each identity is written once against this trait and instantiated twice.
-//! There is no second copy to drift, which matters: the verifier evaluates the
-//! same identity as the prover, and a divergence would be a soundness bug rather
-//! than a wrong number.
-//!
-//! What the `K` instance buys, per operation:
-//!
-//! | operation                     | `K`                     | `E`                  |
-//! |-------------------------------|-------------------------|----------------------|
-//! | column times column           | 1 PMULL                 | 6 PMULL + reduce     |
-//! | column times `η`-power or coeff | 3 PMULL (`mul_base`)  | 6 PMULL + reduce     |
-//! | a dense form over `n` columns | `n` mixed, one reduce   | `n` full, one reduce |
-//!
-//! Both reductions are GF(2)-linear, so they commute with XOR: every product a
-//! constraint forms lands in [`ColVal::Unreduced`] and the caller reduces once, at
-//! the end of the whole batched form rather than once per term.
+//! Column operations shared by the `F64` joining round and subsequent `F192` rounds.
 
 use primitives::field::{F64, F192, F192BaseUnreduced, F192Unreduced, mul_by_g, mul_by_g_e};
 use std::ops::{Add, BitXor, BitXorAssign, Mul};

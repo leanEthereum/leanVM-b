@@ -4,6 +4,7 @@
 use super::*;
 use crate::filler::FillerOp;
 use lean_vm::cpu::filler::Block;
+use std::collections::HashSet;
 
 /// [`FnLower::specialized_body`]'s pieces: runtime param names, runtime args,
 /// the `Const`-substituted body, and the callee's return arity.
@@ -167,6 +168,14 @@ struct FnLower<'a> {
     inline_stack_ret: Option<Vec<RetBind>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
+    /// Stack cells something already gives a real value to: an emitted
+    /// instruction's destination, a `SHA2` output, or a hint destination. A
+    /// store into one of these cannot defer as an [`Alias`], because the store is
+    /// then the write-once equality assertion of `zkDSL.md` §Memory rather than an
+    /// assembly copy, and an alias would drop it. Accumulated monotonically, and
+    /// deliberately NOT restored across a branch: if either arm gives the cell a
+    /// value, a later store to it is an assertion on whichever arm ran.
+    phys: HashSet<Off>,
     /// Where the fill blocks begin in `code`, once emitted.
     filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
@@ -201,8 +210,43 @@ impl FnLower<'_> {
     }
 
     fn emit(&mut self, op: LOp) {
+        // Record the stack cells this instruction gives a real value to, so
+        // [`Self::stack_store`] will not defer an alias onto one of them: the alias
+        // would win every later read and the store's write-once equality assertion,
+        // which is what `zkDSL.md` §Memory promises a second write is, would vanish.
+        // `Deref`'s local cell counts, since the interpreter fills whichever side of
+        // the equality it names is still unset.
+        match op {
+            LOp::Set { o, .. } => self.phys.insert(o),
+            LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.phys.insert(c),
+            LOp::Deref { gamma, .. } => self.phys.insert(gamma),
+            LOp::Sha2 { c, .. } => {
+                self.phys.insert(c);
+                self.phys.insert(c + 1)
+            }
+            LOp::Jump { .. } => false,
+        };
         let hints = std::mem::take(&mut self.pending);
         self.code.push(LInstr { op, hints });
+    }
+
+    /// Prepare a stack run that a consumer is about to name by its *physical*
+    /// cells: a `SHA2` output, or a hint destination. Those consumers do not go
+    /// through [`Self::word_src`], so a cell still carrying a deferred alias would
+    /// have the consumer's write land where nothing reads it, and the equality
+    /// assertion the source wrote would be gone. Materializing the alias first puts
+    /// a real value in the cell, which is what turns the consumer's write back into
+    /// that assertion; marking the run `phys` covers the other order, where the
+    /// store comes after the consumer.
+    fn materialize_run(&mut self, base: Off, len: u32) {
+        for o in base..base + len {
+            if self.alias.contains_key(&o) {
+                let src = self.word_src(o);
+                self.alias.remove(&o);
+                self.copy(src, o);
+            }
+            self.phys.insert(o);
+        }
     }
 
     fn set(&mut self, o: Off, k: KVal) {
@@ -230,12 +274,32 @@ impl FnLower<'_> {
         self.set_const(o, F192::ZERO);
     }
 
+    /// A top-level constant name is reserved (`zkDSL.md` §Global constants: "do not
+    /// reuse it as a parameter or local name"). A scalar constant enforces that by
+    /// construction, since the parser substitutes its value textually and a
+    /// shadowing binding becomes a literal, which fails loudly. A constant ARRAY is
+    /// carried to lowering instead, and [`Self::const_array_elem`] resolves
+    /// `NAME[i]` against it without consulting the scope, while `expr` folds
+    /// constants before its index arm could see the local. So a colliding local
+    /// silently has its compile-time-indexed reads folded to baked literals,
+    /// including reads of a `hint_witness` destination, whose asserts and range
+    /// checks then run on the constant instead of on the witness. Reject the
+    /// collision rather than pick a winner.
+    fn check_not_reserved(&self, name: &str) {
+        assert!(
+            !self.const_arrays.contains_key(name),
+            "`{name}` is a top-level constant array, so the name is reserved: rename the local \
+             or parameter (zkDSL.md §Global constants)"
+        );
+    }
+
     /// Bind `name` to `b`, dropping whatever the other three maps held for it:
     /// they are consulted independently, so a stale binding of another kind
     /// would shadow this one. `consts` is deliberately NOT touched, since a
     /// name can keep its compile-time index role across such a rebind; callers
     /// that must drop it do so themselves.
     fn rebind(&mut self, name: &str, b: Binding) {
+        self.check_not_reserved(name);
         self.scope.vars.remove(name);
         self.scope.stacks.remove(name);
         self.scope.gaddrs.remove(name);
@@ -276,11 +340,7 @@ impl FnLower<'_> {
         o
     }
 
-    /// A frame cell holding the constant `v`, SET lazily once per distinct
-    /// constant and shared by every read of it in scope (`1` shares
-    /// [`Self::one`]'s cell; `main` alone had ~57k duplicated constant `SET`s
-    /// before pooling). Branch-local like the other lazy cells: a cache entry
-    /// made inside an `if`/`match` arm reverts at the join.
+    /// A frame cell holding `v`, shared by every dominated use in the current scope.
     fn const_cell(&mut self, v: F192) -> Off {
         if v == F192::ONE {
             return self.one();
@@ -338,7 +398,7 @@ impl FnLower<'_> {
             // material); anything else that is a compile-time constant defers
             // to the pooled const cell.
             Expr::Var(v) if self.scope.vars.contains_key(v) => self.scope.vars.get(v).map(|&c| Alias::Cell(c)),
-            Expr::Index(arr, idx) if self.stack_of(arr).is_some() => {
+            Expr::Index(arr, idx) => {
                 let (base, _) = self.stack_of(arr)?;
                 Some(Alias::Cell(base + self.try_const_index(idx)?))
             }
@@ -350,12 +410,30 @@ impl FnLower<'_> {
     /// deferred as an [`Alias`] and forwarded at its uses (write-once, so the
     /// source cell keeps its value): the assembling `MUL`/`SET` is never emitted.
     fn stack_store(&mut self, dst: Off, val: &Expr) {
-        if let Some(a) = self.copy_alias(val) {
+        // Deferring is only sound while nothing else has given `dst` a value. Once
+        // something has, the store IS the write-once equality assertion of
+        // `zkDSL.md` §Memory, so it has to be emitted: an alias would silently
+        // redirect every later read to the source and drop the assertion. This is
+        // what makes `s[k] = <checked value>` pin a hint, and what makes a
+        // pre-written `sha2` output assert the digest.
+        let aliased = self.alias.contains_key(&dst);
+        if !aliased
+            && !self.phys.contains(&dst)
+            && let Some(a) = self.copy_alias(val)
+        {
             self.alias.insert(dst, a);
-        } else {
-            self.alias.remove(&dst);
-            self.expr_into(val, dst);
+            return;
         }
+        if aliased {
+            // Give the cell the value it already stood for, so the store below is a
+            // second write of that cell and therefore the assertion. Without this the
+            // second alias would simply replace the first and the two values would
+            // never meet.
+            let src = self.word_src(dst);
+            self.alias.remove(&dst);
+            self.copy(src, dst);
+        }
+        self.expr_into(val, dst);
     }
 
     /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
@@ -423,11 +501,6 @@ impl FnLower<'_> {
                             o: fr::SCRATCH,
                             k: KVal::Const(F192::ZERO),
                         },
-                        FillerOp::Pack => LOp::Pack64x2 {
-                            a: fr::SCRATCH,
-                            b: fr::SCRATCH,
-                            c: fr::SCRATCH,
-                        },
                         FillerOp::Deref => LOp::Deref {
                             alpha: fr::PTR,
                             beta: 0,
@@ -472,8 +545,7 @@ impl FnLower<'_> {
     /// materialized lazily once: a taken `JUMP` reloads the frame pointer
     /// from a cell, so local (`if`/`else`) jumps must name it. The ISA has no
     /// fp-read, so bounce it through a fresh 1-cell heap buffer: a
-    /// `DEREF`-fp writes it there, a `DEREF`-cell copies it back (2 cycles,
-    /// once per function that branches). In `main`, `fp = g^0 = 1`, which is
+    /// `DEREF`-fp writes it there and a `DEREF`-cell copies it back. In `main`, `fp = g^0 = 1`, which is
     /// the [`Self::one`] cell.
     fn self_fp(&mut self) -> Off {
         if self.is_main {
@@ -511,11 +583,15 @@ impl FnLower<'_> {
         f(self);
         // A deferred store into a buffer declared outside the branch must be
         // materialized on that path before the branch-local aliases are dropped.
-        let branch_outputs: Vec<Off> = self
+        let mut branch_outputs: Vec<Off> = self
             .alias
             .iter()
             .filter_map(|(&dst, alias)| (dst < branch_start && saved_aliases.get(&dst) != Some(alias)).then_some(dst))
             .collect();
+        // Sorted, because the emitted copies must not depend on `HashMap` iteration
+        // order: the bytecode digest leads the Fiat--Shamir transcript, so two builds
+        // of one source have to be the same program.
+        branch_outputs.sort_unstable();
         for dst in branch_outputs {
             let src = self.word_src(dst);
             self.alias.remove(&dst);
@@ -540,22 +616,7 @@ impl FnLower<'_> {
         });
     }
 
-    /// `match log(x)`: two jumps through a trampoline table (doc §ISA
-    /// programming / Match statements). leanVM's switch jumps to the affine
-    /// `pc = a + b·x`; in the exponent the dispatch is multiplicative:
-    /// `d = g^T · x²` lands on slot `j` of the table at bytecode base `T`,
-    /// which is `n` consecutive two-instruction slots, slot `j` being `SET c =
-    /// g^{block_j}; JUMP c`. The case blocks sit anywhere, unaligned; only
-    /// the fixed-size slots are consecutive. The slots are two instructions
-    /// rather than one because a `JUMP` reads its target from a *cell*: a
-    /// one-instruction slot would need its cell pre-`SET`, i.e. `n` `SET`s
-    /// executed before every dispatch. Folding the `SET` into the slot puts
-    /// it on the taken path only, and the doubled slot stride is absorbed as
-    /// `x²` (one extra `MUL`). Cost ≈ 7 cycles, independent of `n`.
-    ///
-    /// Soundness: nothing here bounds `x`, so a scrutinee outside `[0, n)`
-    /// dispatches to an arbitrary pc, so hinted values must be range-checked
-    /// first (as in leanVM).
+    /// `match log(x)` through a two-instruction trampoline slot per arm. The caller must range-check `x` before dispatch.
     fn lower_match(&mut self, x: &Expr, cases: &[Vec<Stmt>]) {
         let xo = self.expr(x);
         self.lower_match_dispatch(xo, cases.len(), |s, j| s.branch(&cases[j]));
@@ -627,7 +688,10 @@ impl FnLower<'_> {
                                 }
                                 RetBind::Stack(base, size) => {
                                     assert_eq!(size, 1, "a multi-cell StackBuf return cannot cross a match_range join");
-                                    s.copy(base, rc);
+                                    // `copy` reads its source raw, so resolve the arm's
+                                    // deferred alias first (as `take_inline_ret_cell` does).
+                                    let src = s.word_src(base);
+                                    s.copy(src, rc);
                                 }
                                 RetBind::Scalar => {}
                             }
@@ -647,6 +711,29 @@ impl FnLower<'_> {
     /// per-arm frame setup, call, or return jump.
     fn lower_dispatched_call(&mut self, names: &[String], x: &Expr, callees: &[String], rt_args: &[Expr]) {
         let n_args = rt_args.len() as u32;
+        // The join below reads one return cell per bound name, so every callee has
+        // to declare exactly that many. Unchecked, a name past a callee's arity
+        // `DEREF`s a frame offset nothing on that path writes, and since the shared
+        // frame is sized to the LARGEST callee the offset exists: the surplus name
+        // binds a prover-chosen word. The non-fused path enforces this
+        // ([`Self::call_into`]), so leaving it out here means one source is rejected
+        // by one lowering of `match_range` and silently miscompiled by the other.
+        for callee in callees {
+            let Some(shapes) = self.return_shapes_of(callee) else {
+                continue;
+            };
+            assert_eq!(
+                shapes.len(),
+                names.len(),
+                "`{callee}` returns {} values, dispatched call binds {}",
+                shapes.len(),
+                names.len()
+            );
+            assert!(
+                shapes.iter().all(|s| *s == ReturnShape::Scalar),
+                "`{callee}`: a multi-cell StackBuf return cannot cross a dispatched join"
+            );
+        }
         let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
 
         // Shared callee frame: args, retfp, and retpc = the join (so the callee
@@ -747,14 +834,7 @@ impl FnLower<'_> {
         self.patch_local(jset, self.code.len());
     }
 
-    /// `if` / `else`: one `XOR` and one conditional `JUMP` (taken ⇔ the
-    /// sides differ). The taken jump goes to whichever block the test
-    /// *doesn't* fall into, so no negation gadget is needed: for `==` the
-    /// fall-through is `then`, for `!=` it is `else`. Local jumps keep the
-    /// frame via [`Self::self_fp`]; targets are backpatched
-    /// [`KVal::Local`]s. Costs 3 cycles, +2 (`SET` + `JUMP`) when a non-empty
-    /// second block must be skipped over, + the amortized `one`/`self_fp`
-    /// materialization.
+    /// Lower `if` / `else`, arranging the blocks so the nonzero `XOR` result jumps to the correct arm.
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
         // Compile-time condition (both sides compile-time integers, e.g. after
         // `Const`-argument substitution): fold to the taken branch, emitting no
@@ -901,7 +981,10 @@ impl FnLower<'_> {
     fn lower_hint_witness(&mut self, dest: &Expr, name: &str) {
         let name = name.to_string();
         let hint = match self.cell_run(dest) {
-            CellRun::Stack { base, len } => RHint::WitnessStack { name, base, len },
+            CellRun::Stack { base, len } => {
+                self.materialize_run(base, len);
+                RHint::WitnessStack { name, base, len }
+            }
             CellRun::Heap { ptr, lo, len } => RHint::WitnessHeap { name, ptr, lo, len },
         };
         self.pending.push(Hint::Resolved(hint));
@@ -1045,14 +1128,6 @@ impl FnLower<'_> {
                     floor,
                 }));
                 dst
-            }
-            Expr::Call(f, args) if f == "pack64x2" => {
-                assert_eq!(args.len(), 2, "pack64x2(a, b) takes two scalar cells");
-                let a = self.expr(&args[0]);
-                let b = self.expr(&args[1]);
-                let c = self.fresh();
-                self.emit(LOp::Pack64x2 { a, b, c });
-                c
             }
             Expr::Call(f, args) => {
                 let d = self.call(f, args, 1)[0];
@@ -1615,7 +1690,12 @@ impl FnLower<'_> {
                     size, 1,
                     "a multi-cell StackBuf return needs a `let` binding, not an expression use"
                 );
-                base
+                // Through `word_src`, like every other read of a stack cell: the body may
+                // have filled this cell with a deferred copy or constant, which emits no
+                // instruction, and the raw cell would then be one no instruction writes.
+                // The `let` consumer follows the alias by taking a `Binding::Stack`
+                // ([`ret_binding`]), and an expression use has to agree with it.
+                self.word_src(base)
             }
             _ => dst,
         }
@@ -1791,6 +1871,7 @@ impl FnLower<'_> {
             std::mem::take(&mut self.scope.fconsts),
         );
         for (p, b) in binds {
+            self.check_not_reserved(&p);
             match b {
                 Bind::Stack(base, size) => {
                     self.scope.stacks.insert(p, (base, size));
@@ -1825,6 +1906,20 @@ impl FnLower<'_> {
     /// arguments (literals, `GEN ** k`, or literal-bound names) substitute into
     /// a copy of the callee, queued once per distinct constant tuple and named
     /// `callee__L5_G3`-style, and only the runtime arguments remain.
+    /// A callee's declared return shapes, looked up wherever it lives: an
+    /// ordinary definition sits in `defs`, while a `Const` specialization is
+    /// registered by [`Self::specialize`] in the queue under its mangled name and
+    /// never reaches `defs`. A dispatched `match_range` names specializations, so a
+    /// check that consults only `defs` silently passes on every one of them.
+    fn return_shapes_of(&self, callee: &str) -> Option<Vec<ReturnShape>> {
+        self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {
+            self.queue
+                .iter()
+                .find(|f| f.name == callee)
+                .map(|f| f.return_shapes.clone())
+        })
+    }
+
     fn specialize(&mut self, callee: &str, args: &[Expr]) -> (String, Vec<Expr>) {
         let defs: &HashMap<String, Func> = self.defs;
         let Some(def) = defs.get(callee) else {
@@ -2126,12 +2221,12 @@ impl FnLower<'_> {
                 }));
             }
             "sha2" => self.lower_sha2(args),
-            "pack64x2_into" => {
-                assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
+            "assert_in_k" => {
+                assert_eq!(args.len(), 2, "assert_in_k(a, b) takes two scalar cells");
                 let a = self.expr(&args[0]);
                 let b = self.expr(&args[1]);
-                let c = self.expr(&args[2]);
-                self.emit(LOp::Pack64x2 { a, b, c });
+                let zero = self.zero();
+                self.emit(LOp::Jump { oc: zero, od: a, of: b });
             }
             "hint_f192_limbs" => {
                 assert_eq!(args.len(), 2, "hint_f192_limbs(dest, value)");
@@ -2144,6 +2239,11 @@ impl FnLower<'_> {
                 );
                 let value = self.expr(&args[1]);
                 let value = self.word_src(value);
+                // Names the physical cells, as the two consumers above do, so the run
+                // has to hold real values before the hint fills it. The common
+                // destination is a list literal (`limbs = [0, 0, 0]`), whose every
+                // element goes through `stack_store` and so defers.
+                self.materialize_run(base, len);
                 self.pending
                     .push(Hint::Resolved(RHint::FieldLimbs { value, base, len }));
             }
@@ -2199,7 +2299,10 @@ impl FnLower<'_> {
         let a = self.sha2_input(&args[0]);
         let b = self.sha2_input(&args[1]);
         let (c, heap_out) = match self.sha2_operand(&args[2]) {
-            CellRun::Stack { base, .. } => (base, None),
+            CellRun::Stack { base, .. } => {
+                self.materialize_run(base, 2);
+                (base, None)
+            }
             CellRun::Heap { ptr, lo, .. } => (self.alloc_stack(2), Some((ptr, lo))),
         };
         let cv = if let Some(value) = kwargs.get("cv") {
@@ -2448,7 +2551,7 @@ fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
         Stmt::Call(f, _) => {
-            f == "sha2" || f == "pack64x2_into" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
+            f == "sha2" || f == "assert_in_k" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
         }
         Stmt::If { then, els, .. } => {
             then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))
@@ -2583,6 +2686,12 @@ pub(crate) fn lower_func(
 ) -> Lowered {
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
+        assert!(
+            !const_arrays.contains_key(p),
+            "`{}`: parameter `{p}` collides with a top-level constant array, whose name is \
+             reserved (zkDSL.md §Global constants)",
+            f.name
+        );
         vars.insert(p.clone(), 2 + i as u32);
     }
     // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
@@ -2607,6 +2716,7 @@ pub(crate) fn lower_func(
         inline_ret: None,
         inline_stack_ret: None,
         alias: HashMap::new(),
+        phys: HashSet::new(),
         pending: Vec::new(),
         inline_calls: Vec::new(),
         queue,

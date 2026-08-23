@@ -1,22 +1,9 @@
-//! Proving with the arena engaged, across several phases in one process.
+//! End-to-end proof verification across arena phase resets.
 //!
-//! This is the test that would catch the arena's one real failure mode: a buffer
-//! that outlives the phase that allocated it. A phase reset does not clear or
-//! unmap anything, so a stale `ArenaVec` keeps reading plausible-looking bytes —
-//! the previous proof's — and the symptom is a proof that no longer verifies
-//! rather than a crash. Every assertion below is therefore an end-to-end
-//! verification, not a memory check.
-//!
-//! It lives in its own integration-test binary on purpose: phases are
-//! process-global and refuse to nest, so a test that opens one must not share a
-//! process with another that does.
+//! This has its own binary because arena phases are process-global and cannot nest.
 
 use primitives::bench::Plan;
 
-/// Prove the XMSS aggregation three times over (one warmup plus two measured
-/// passes) with the arena on. Each pass verifies its own proof and checks that a
-/// tampered public input is rejected, so a buffer surviving into the next phase
-/// shows up as a verification failure here.
 #[test]
 fn repeated_proofs_survive_phase_resets() {
     lean_vm::init_prover();

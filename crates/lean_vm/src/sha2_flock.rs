@@ -41,21 +41,18 @@
 //! written through bytes so the two derivations are obviously the same one.
 
 use crate::transcript::{ProverState, VerifierState};
-use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
+use ::pcs::pack::LOG_PACKING;
 use flock::sha2::{
     Compression, K_LOG, ReductionReplay, Sha2Setup, compress, generate_witness_with_ab_packed_and_lincheck,
-    min_n_blocks_log,
 };
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
-/// One side of the Flock reduction's output on the committed witness `q_flock`:
-/// the `2^K_SKIP` bit slices at a point, already transmitted and checked by the
-/// reduction (`prove_reduction` / [`verify_reduction`]), for the PCS to bind.
-/// Re-exported from [`flock::sha2`].
-pub use flock::sha2::SliceClaim;
+pub use flock::sha2::{
+    SliceClaim, min_n_blocks_log as n_blocks_log, qflock_kappa, ring_switch_open, ring_switch_verify,
+};
 
 // Within-instance packed-word (slot) indices of the VM-visible words: `H_BASE
 // = 0` → cv words 0..4, `OUT_BASE = 256` → c words 4..8, `M_BASE = 512` → a
@@ -174,20 +171,6 @@ pub fn compression(a: [F64; 4], b: [F64; 4], cv: [F64; 4]) -> Compression {
 pub fn digest(block: &Compression) -> [F64; 4] {
     let h = compress(block.0, block.1);
     std::array::from_fn(|k| pack_words([h[2 * k], h[2 * k + 1]]))
-}
-
-/// flock's `n_blocks_log` for `n` compressions (lincheck floor `≥ 3`). The VM's
-/// `Sha2` table is sized to `2^n_blocks_log` rows so its value columns share
-/// `q_flock`'s instance cube.
-pub fn n_blocks_log(n: usize) -> usize {
-    min_n_blocks_log(n)
-}
-
-/// The variable count (`log2` length) of the committed `q_flock` column for `n`
-/// executed compressions: `K_LOG + n_blocks_log(max(n,1)) - 6`. Always ≥ 1
-/// instance: `n = 0` still commits one padding instance (uniform proof shape).
-pub fn qflock_kappa(n: usize) -> usize {
-    K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
 }
 
 /// Flock-native reduction buffers emitted in the same fused pass as the
@@ -339,51 +322,6 @@ fn build_qflock(blocks: &[Compression]) -> Vec<F64> {
 /// sizes, and the commitment root on the stream), so nothing else enters here.
 pub fn verify_reduction(n_blocks: usize, vs: &mut VerifierState) -> Result<ReductionReplay, VerifyError> {
     setup_for(n_blocks).verify_reduction(vs)
-}
-
-/// One reduction claim as a tower [`crate::pcs::RingSwitchClaim`]: the
-/// `2^K_SKIP` bit slices and the suffix point they live at, which is the WHOLE
-/// multilinear tail of the quirky point (`q_flock` has `2^(K_LOG + n_log − 6)`
-/// words, and the packing prefix is exactly the skipped coordinates, so nothing
-/// is split off into it). The family arrives transmitted and checked, by
-/// flock's reduction, so there is nothing to tie here.
-fn ring_claim(claim: &SliceClaim, qflock_vars: usize) -> crate::pcs::RingSwitchClaim {
-    assert_eq!(
-        claim.suffix_point.len(),
-        qflock_vars,
-        "ring-switch suffix must span the q_flock cube"
-    );
-    assert_eq!(claim.s_hat_v.len(), PACKING_WIDTH);
-    crate::pcs::RingSwitchClaim {
-        suffix_point: claim.suffix_point.clone(),
-        s_hat_v: Some(claim.s_hat_v.clone()),
-    }
-}
-
-/// Package the prover's reduction claim ([`SliceClaim`]) as a
-/// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's validity in the
-/// same opening as leanVM's point claims. `offset` is `q_flock`'s slot in the
-/// committed stack; the opener slices `q_flock` from there.
-pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &SliceClaim) -> crate::pcs::RingSwitchOpen {
-    let qflock_vars = qflock_kappa(n_blocks);
-    crate::pcs::RingSwitchOpen {
-        offset,
-        qflock_vars,
-        claims: vec![ring_claim(reduced, qflock_vars)],
-    }
-}
-
-/// Verifier counterpart of [`ring_switch_open`]: package the recovered claim
-/// (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the same
-/// statement data; the transmitted opening travels separately (read off the
-/// `openings` hint channel by the caller).
-pub fn ring_switch_verify(n_blocks: usize, offset: usize, claim: &SliceClaim) -> crate::pcs::RingSwitchVerify {
-    let qflock_vars = qflock_kappa(n_blocks);
-    crate::pcs::RingSwitchVerify {
-        offset,
-        qflock_vars,
-        claims: vec![ring_claim(claim, qflock_vars)],
-    }
 }
 
 #[cfg(test)]

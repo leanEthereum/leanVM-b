@@ -57,13 +57,6 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// Pack two K-valued source cells into one canonical 128-bit cell. The VM
-    /// memory bus enforces that both inputs have zero extension limbs.
-    Pack64x2 {
-        a: Off,
-        b: Off,
-        c: Off,
-    },
     /// `SHA2`: the four 128-bit input chunks `ins` are addressed independently,
     /// one frame cell each, and are compressed into the chaining value at
     /// `cv, cv+1`. The 32-byte output occupies the two consecutive 128-bit

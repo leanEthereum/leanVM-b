@@ -1,8 +1,8 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: seven instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `SHA2`, `PACK64X2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA: six instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `SHA2`) over the binary field GF(2^192), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
 
-Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `pack64x2`, and `sha2`, so editors and linters resolve the names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
+Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `assert_in_k`, and `sha2`, so editors and linters resolve the intrinsic names. The compiler skips the import. Ordinary helpers such as `pack64x2` are defined in the single-file guest. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` → `lean_compiler::compile` → `lean_vm::cpu::prove` / `verify`.
 
@@ -186,7 +186,7 @@ Three families of binding are folded and carried **virtually**, costing no instr
 
 - **g-powers and shifted pointers**: a cursor like `s = s * GEN` or a pointer view `p = buf * GEN ** k`. The offset folds into the `DEREF` address of each access; only a scalar use materializes it.
 - **field constants**: a value built from literals / `GEN ** k` by field `+` and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop. The arithmetic that advances it is compile-time (zero instructions); each use is one `SET` of the folded constant.
-- **stack-cell copies and zeros**: a store `sa[k] = other` or `sa[k] = 0` is recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]` forwards to the real source (write-once keeps it valid). This is what makes assembling a `SHA2` operand from scattered values free (see "sha2").
+- **stack-cell copies and zeros**: a store `sa[k] = other` or `sa[k] = 0` is recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]` forwards to the real source (write-once keeps it valid). This makes assembling a `SHA2` operand from scattered values free (see "sha2"). It applies only while **nothing else gives the cell a value**: once an instruction, a `SHA2` output or a hint destination has written `sa[k]`, a store into it is the write-once equality *assertion* below rather than an assembly copy, so it is emitted. This makes `s[k] = <checked value>` pin a hint and a pre-written `sha2` output verify a digest, in either order.
 
 ## Debugging
 
@@ -354,29 +354,36 @@ Cost: **3 cycles** (leanVM's DEREF range-check trick, in the exponent) plus one 
 
 The two `DEREF` target cells are unconstrained touches, back-filled at the end of execution. A failing check surfaces at witness generation as the complement's `DEREF` panic ("not a small g-power … a failed range check").
 
-## Packing two 64-bit cells: `pack64x2`
+## K membership and packing
 
 ```python
-packed = pack64x2(lo, hi)
+assert_in_k(lo, hi)
 ```
 
-`pack64x2(a, b)` is an expression that takes one VM cycle. It proves that both source memory words are in the base field GF(2^64), then returns their canonical 128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word. The proof comes from the memory bus itself: the two source accesses use literal-zero upper limbs, and the destination access uses the tuple `(a.c0, b.c0, 0)`. Consequently a source with either upper limb nonzero cannot satisfy the memory permutation.
+`assert_in_k(a, b)` is the sole packing-related compiler intrinsic. It proves that both source memory words are in the base field GF(2^64) with one untaken `JUMP`: its condition is a known zero, while its destination and frame operands are `a` and `b`. Although neither value affects the successor state, both memory reads carry literal-zero upper limbs, so a source outside GF(2^64) cannot balance the memory permutation.
 
-This is useful before treating values supplied as GF(2^192) hints as serialized 64-bit limbs. The returned packed word may be ignored when only the range assertion is needed.
+Packing is ordinary zkDSL built on that assertion:
+
+```python
+@inline
+def pack64x2(a, b):
+    assert_in_k(a, b)
+    return a + f192(0, 1, 0) * b
+```
+
+The inline helper takes three cycles, one `JUMP`, one `MUL` and one `XOR`, and returns the canonical 128-bit packing `(a.c0, b.c0, 0)`. Assignment-target lowering writes its return directly into the destination, including an already-written cell whose second write is an equality assertion. A caller needing only membership uses `assert_in_k` directly and pays no packing arithmetic.
 
 The recursion transcript uses `challenge_from_state(state)` to reinterpret the first three 64-bit lanes of a canonical two-cell digest as one extension field challenge. For `state = [s0, s1]`, it lowers exactly as follows (the limb hints cost no cycles, but are not trusted):
 
 ```python
-lo = StackBuf(2)
-hi = StackBuf(2)
-hint_f192_limbs(lo, s0)       # advice: [d0, d1]
-hint_f192_limbs(hi, s1)       # advice: [d2, d3]
-pack64x2_into(lo[0], lo[1], s0)
-pack64x2_into(hi[0], hi[1], s1)
-challenge = lo[0] + lo[1] * f192(0, 1, 0) + hi[0] * f192(0, 0, 1)
+d2 = StackBuf(1)
+hint_f192_limbs(d2, state[1])
+d3 = (state[1] + d2[0]) * Y_INV
+assert_in_k(d2[0], d3)
+challenge = state[0] + d2[0] * f192(0, 0, 1)
 ```
 
-The two in-place `PACK64X2` instructions prove through write-once memory that `s0 = (d0,d1,0)` and `s1 = (d2,d3,0)`. Consequently all four digest lanes are really in GF(2^64); the challenge is `d0 + d1·Y + d2·Y²`, while `d3` is checked but deliberately discarded. `challenge_from_state` is not a compiler intrinsic: this is the complete `@inline` helper used by the recursion guest.
+Both state words are SHA-256 outputs, so their top limbs are already zero. Only `d2` must be exposed separately; deriving `d3 = (s1+d2)/Y` and proving both values lie in GF(2^64) binds the one hinted limb by uniqueness of the tower representation. The challenge is `s0+d2·Y² = d0+d1·Y+d2·Y²`, while `d3` is checked but deliberately discarded. `challenge_from_state` is not a compiler intrinsic: this is the complete `@inline` helper used by the recursion guest.
 
 Likewise, the recursion guest's `fs_compress(state, scalar, tail, out)` is ordinary straight-line zkDSL:
 
@@ -384,13 +391,13 @@ Likewise, the recursion guest's `fs_compress(state, scalar, tail, out)` is ordin
 limbs = StackBuf(3)
 hint_f192_limbs(limbs, scalar)  # advice: scalar's three K coordinates
 block = StackBuf(2)
-pack64x2_into(limbs[0], limbs[1], block[0])
-pack64x2_into(limbs[2], tail, block[1])
+block[0] = pack64x2(limbs[0], limbs[1])
+block[1] = pack64x2(limbs[2], tail)
 assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
 sha2(state, block, out)
 ```
 
-The first two rows range-check all four serialized lanes and form the exact 64-byte block `[scalar.c0, scalar.c1, scalar.c2, tail]`; the equality prevents the advice from changing `scalar`. The final row is the VM's sole, canonical `SHA2` instruction.
+The first two packing helpers range-check all four serialized lanes and form the exact 64-byte SHA-256 block `[scalar.c0, scalar.c1, scalar.c2, tail]`; the equality prevents the advice from changing `scalar`. The final row is the VM's sole `SHA2` instruction.
 
 ## sha2
 
@@ -422,7 +429,7 @@ There is no block-length field, so only the last block may be partial and the pr
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place, at zero copies; a self-hash `sha2(h, h, out)` aliases one 2-cell pair into both inputs;
-- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the 128-bit subspace `c2 = 0`), so when a 256-bit operand is *assembled* from values that live in different places (the idiom `p = StackBuf(2); p[0] = t0; p[1] = t1; sha2(p, …)`), the copies vanish: a stack store of a plain copy or a zero is forwarded to its source (see "Variables"), and `SHA2` reads each chunk where it already is;
+- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the 128-bit subspace `c2 = 0`), so when a 256-bit operand is *assembled* from values that live in different places (the idiom `p = StackBuf(2); p[0] = t0; p[1] = t1; sha2(p, …)`), the copies vanish: a stack store of a plain copy or a zero is forwarded to its source (see "Variables"), and `SHA2` reads each chunk where it already is. If `out`'s cells were assembled this way, the compiler materializes them first so the digest has a destination and the store stays an assertion;
 - the chaining value has only one opcode offset and therefore must be consecutive. If a 2-cell `cv` was assembled from non-adjacent copied cells, the compiler materializes those two cells into a fresh consecutive run;
 - **heap slices** are still bridged through the stack for the *input pull* (the operand's words come from the heap): +1 `DEREF` per heap cell, and the output, if a heap slice, is stored after: write-once memory fills whichever side is unset.
 
@@ -504,4 +511,4 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime `b`); precompiles beyond `SHA2` and `PACK64X2`.
+Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime `b`); precompiles beyond `SHA2`.

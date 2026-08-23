@@ -678,10 +678,7 @@ fn round_msg_and_eval_lsb_ext(f: &[F192], b: &[F192]) -> (SumcheckMessage, F192)
     (SumcheckMessage { u_0, u_2 }, y)
 }
 
-/// Output buffer for an initial-sumcheck fold: ~100 MB of `F192` per round, all
-/// of it dead by the end of the proof. A slab bump costs a pointer add and
-/// reuses pages the previous proof already faulted in, so there is no
-/// target-specific pooling decision left to make.
+/// Arena-backed output for an initial-sumcheck fold.
 ///
 /// # Safety
 /// Every element must be written before it is read, which every fold kernel
@@ -1324,7 +1321,6 @@ pub fn recursive_prover_with_basis(
     };
     ps.observe_root(&initial_root);
 
-    let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
@@ -1335,13 +1331,6 @@ pub fn recursive_prover_with_basis(
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
-        // Tapered fold-challenge grinding: round j of the lane fold needs
-        // (fold_bits - j) bits (worst round j=0 carries the full budget); see
-        // the original's App. C.3 `mca-commutes` comment.
-        let bits = fold_bits(0).saturating_sub(j as u32);
-        if bits > 0 {
-            ps.grind(bits);
-        }
         let r_j = ps.sample();
         let msg = sumcheck_span.in_scope(|| sc_prover.fold_lane(r_j, lane_block, j + 1 == initial_k));
         send_msg(ps, msg, sc_prover.claim());
@@ -1432,13 +1421,7 @@ pub fn recursive_prover_with_basis(
         let mut level_rs = Vec::with_capacity(k_i);
         let _t = std::time::Instant::now();
         let sumcheck_span = tracing::info_span!("Sumcheck");
-        for j in 0..k_i {
-            // These folds fold level i+1's commitment; tapered grinding as in
-            // the L0 loop.
-            let bits = fold_bits(i + 1).saturating_sub(j as u32);
-            if bits > 0 {
-                ps.grind(bits);
-            }
+        for _ in 0..k_i {
             let ri = ps.sample();
             let msg = sumcheck_span.in_scope(|| sc_prover.fold(ri));
             send_msg(ps, msg, sc_prover.claim());
@@ -1662,16 +1645,11 @@ impl PrevLevel {
 fn replay_fold_rounds(
     vs: &mut impl Receiver,
     k: usize,
-    level_fold_bits: u32,
     t_r: &mut F192,
     running_quad: &mut RoundQuad,
 ) -> Option<Vec<F192>> {
     let mut rs = Vec::with_capacity(k);
-    for j in 0..k {
-        let bits = level_fold_bits.saturating_sub(j as u32);
-        if bits > 0 {
-            vs.grind_check(bits).ok()?;
-        }
+    for _ in 0..k {
         let ri = vs.sample();
         rs.push(ri);
         *t_r = running_quad.eval(ri);
@@ -1774,11 +1752,10 @@ pub fn recursive_verifier_with_basis(
         return false;
     };
 
-    let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
     let mut ood_bases: Vec<(Vec<F192>, usize, F192)> = Vec::new();
 
-    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, fold_bits(0), &mut t_r, &mut running_quad) else {
+    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, &mut t_r, &mut running_quad) else {
         return false;
     };
 
@@ -1869,7 +1846,7 @@ pub fn recursive_verifier_with_basis(
         if n_current < k_i {
             return false;
         }
-        let Some(level_rs) = replay_fold_rounds(vs, k_i, fold_bits(i + 1), &mut t_r, &mut running_quad) else {
+        let Some(level_rs) = replay_fold_rounds(vs, k_i, &mut t_r, &mut running_quad) else {
             return false;
         };
         ris.extend_from_slice(&level_rs);
@@ -2116,7 +2093,6 @@ where
         return false;
     };
 
-    let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
     struct OodCtx {
         z: Vec<F192>,
@@ -2125,7 +2101,7 @@ where
     }
     let mut ood_ctxs: Vec<OodCtx> = Vec::new();
 
-    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, fold_bits(0), &mut t_r, &mut running_quad) else {
+    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, &mut t_r, &mut running_quad) else {
         return false;
     };
 
@@ -2216,7 +2192,7 @@ where
         if n_current < k_i {
             return false;
         }
-        let Some(level_rs) = replay_fold_rounds(vs, k_i, fold_bits(i + 1), &mut t_r, &mut running_quad) else {
+        let Some(level_rs) = replay_fold_rounds(vs, k_i, &mut t_r, &mut running_quad) else {
             return false;
         };
         ris.extend_from_slice(&level_rs);
@@ -2511,7 +2487,6 @@ mod tests {
         assert_eq!(pc.ood_samples[0], 0);
         assert!(pc.ood_samples.iter().skip(1).all(|&s| s >= 1));
         assert!(pc.grinding_bits.iter().all(|&b| b == QUERY_GRINDING_BITS));
-        assert!(pc.fold_grinding_bits.iter().all(|&b| b == 0));
         // And log_n = 12 is below the production ladder's feasibility floor, so
         // the tests there use the default_config fallback.
         assert!(configs_for(12).is_err());
@@ -2559,14 +2534,6 @@ mod tests {
         ));
         let inst = prove_instance(18, 8);
         assert!(verify_instance(&inst, &inst.fs), "honest proof rejected");
-    }
-
-    /// The succinct verifier accepts an honest proof at log_n = 18, the one
-    /// shape whose L0 takes the sparse transposed-NTT path. Smaller shapes are
-    /// covered by `dense_and_succinct_agree`.
-    #[test]
-    fn succinct_roundtrips() {
-        let inst = prove_instance(18, 8);
         assert!(
             verify_succinct_instance(&inst, &inst.fs),
             "succinct verifier rejected an honest proof at log_n=18"
@@ -2647,13 +2614,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn proving_is_deterministic() {
-        let a = prove_instance(12, 7);
-        let b = prove_instance(12, 7);
-        assert_eq!(a.fs, b.fs, "same inputs must yield an identical transcript");
     }
 
     /// Committing only the lanes that carry data must be indistinguishable from

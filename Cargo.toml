@@ -24,10 +24,7 @@ edition = "2024"
 [workspace]
 members = ["crates/*"]
 
-# Hand-tuned numeric kernels legitimately index by loop variable (26 sites in
-# primitives, pcs, flock, lean_vm) and take many arguments (12 sites in pcs,
-# flock, lean_vm); silence those two style lints workspace-wide rather than
-# annotating every kernel.
+# Numeric kernels legitimately index by loop variable and take many arguments.
 [workspace.lints.clippy]
 needless_range_loop = "allow"
 too_many_arguments = "allow"

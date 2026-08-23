@@ -2,8 +2,8 @@
 //! flock's univariate skip), so its rewrite must be bit-identical to the
 //! two-multiply form, not merely algebraically equal.
 //!
-//! Old: `hi = e · r`, `lo = e · (1 + r)`  — two products.
-//! New: `hi = e · r`, `lo = e + e · r`    — one product.
+//! Old: `hi = e · r`, `lo = e · (1 + r)` : two products.
+//! New: `hi = e · r`, `lo = e + e · r`   : one product.
 //!
 //! These agree by distributivity in characteristic 2, and F192 stores a
 //! canonical reduced `(c0, c1, c2)`, so the bit patterns must match exactly.

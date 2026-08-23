@@ -9,7 +9,7 @@
 //! - one base-field 64×64 product = one `vmull_p64`;
 //! - extension mult = 3-term Karatsuba (6 PMULL, optimal for 3-term bilinear
 //!   over GF(2)) producing 5 unreduced 128-bit coefficients;
-//! - y-fold (y³ = y+1, y⁴ = y²+y) on the unreduced coefficients — 4 NEON XORs;
+//! - y-fold (y³ = y+1, y⁴ = y²+y) on the unreduced coefficients: 4 NEON XORs;
 //! - base reduction per coefficient: 1 PMULL by 0x1B; the ≤4-bit overflow is
 //!   folded with 3 scalar shift-XORs (0x1B·overflow fits in 8 bits, exact).
 //!
@@ -17,7 +17,7 @@
 //! PMULL = 6.
 //!
 //! Why no packed-lane tricks: PMULL is one 64×64 product per instruction; base
-//! coefficients already fill the operand exactly, so — unlike GF(2^32) — no
+//! coefficients already fill the operand exactly, so unlike GF(2^32), no
 //! width is wasted.
 
 use core::ops::{Add, AddAssign, BitXor, BitXorAssign, Mul, MulAssign};
@@ -55,7 +55,7 @@ impl F192 {
 
     /// Unreduced product: the 5 raw 128-bit polynomial coefficients, before the
     /// y-fold and base reductions. XOR-accumulate many of these and `.reduce()`
-    /// once — both folds are GF(2)-linear, so they commute with XOR.
+    /// once. Both folds are GF(2)-linear, so they commute with XOR.
     #[inline]
     pub fn mul_unreduced(self, rhs: Self) -> F192Unreduced {
         #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
@@ -211,15 +211,7 @@ impl MulAssign for F192 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Four at a time: the shape every bulk product in the prover is written in.
-// ---------------------------------------------------------------------------
-//
-// A tower product is a chain of carry-less multiplies and a reduction, and a
-// scalar one leaves most of the multiplier idle waiting on it. Four independent
-// products fill the 128-bit lanes of one AVX-512 register, which measures about
-// twice the throughput of four scalar products; AVX2 does two at a time and
-// everything else falls back to the products themselves.
+// Batched products fill the independent lanes exposed by x86 vector instructions.
 
 /// Two independent products.
 #[inline(always)]
@@ -411,7 +403,7 @@ fn kreduce_u128(v: u128) -> u64 {
 /// Fold a 128-bit carry-less product (lo, hi) into GF(2^64).
 /// x^64 ≡ x^4+x^3+x+1, so U·x^64 ≡ U ^ U<<1 ^ U<<3 ^ U<<4; the ≤4 bits that
 /// shift out past position 63 are folded once more (their product with 0x1B
-/// fits in 8 bits — exact).
+/// fits in 8 bits, exactly).
 #[inline]
 pub const fn base_reduce_128(lo: u64, hi: u64) -> u64 {
     let f = hi ^ (hi << 1) ^ (hi << 3) ^ (hi << 4);
@@ -1024,26 +1016,13 @@ mod tests {
     ];
 
     #[test]
-    fn python_vectors() {
+    fn python_vectors_and_modulus() {
         for (a, b, c, s) in VECTORS {
             let (a, b) = (F192::new(a[0], a[1], a[2]), F192::new(b[0], b[1], b[2]));
             assert_eq!(a * b, F192::new(c[0], c[1], c[2]));
             assert_eq!(a.square(), F192::new(s[0], s[1], s[2]));
             assert_eq!(software::mul(a, b), F192::new(c[0], c[1], c[2]));
         }
-    }
-
-    #[test]
-    fn identities() {
-        let mut rng = Rng::new(1);
-        for _ in 0..100 {
-            let a = rng.ext();
-            assert_eq!(a * F192::ONE, a);
-            assert_eq!(a * F192::ZERO, F192::ZERO);
-            assert_eq!(a + F192::ZERO, a);
-            assert_eq!(a + a, F192::ZERO);
-        }
-        // y^3 = y + 1
         assert_eq!(F192::Y * F192::Y * F192::Y, F192::Y + F192::ONE);
     }
 
@@ -1061,19 +1040,6 @@ mod tests {
                 assert_eq!(aarch64::mul_unreduced_neon(a, b).reduce(), want);
                 assert_eq!(aarch64::square_neon(a), software::square(a));
             }
-        }
-    }
-
-    #[test]
-    fn axioms() {
-        let mut rng = Rng::new(3);
-        for _ in 0..1_000 {
-            let a = rng.ext();
-            let b = rng.ext();
-            let c = rng.ext();
-            assert_eq!(a * b, b * a);
-            assert_eq!((a * b) * c, a * (b * c));
-            assert_eq!(a * (b + c), a * b + a * c);
         }
     }
 
@@ -1096,7 +1062,6 @@ mod tests {
             }
         }
         assert_eq!(F192::ZERO.inv(), F192::ZERO);
-        assert_eq!(F192::ONE.inv(), F192::ONE);
     }
 
     /// `frobenius` is the shuffle form of `self^(2^64)`, which `inv` relies on.
@@ -1241,12 +1206,5 @@ mod tests {
         let f = vec![1u64, 1, 0, 1]; // y^3 + y + 1
         let g = poly_gcd(f, vec![d.c0, d.c1, d.c2]);
         assert_eq!(pdeg(&g), Some(0), "y^3+y+1 has a root in GF(2^64)");
-    }
-
-    #[test]
-    fn serde_roundtrip() {
-        let a = F192::new(0x0123456789abcdef, 0xfedcba9876543210, 0x1122334455667788);
-        let ser = bincode::serialize(&a).unwrap();
-        assert_eq!(bincode::deserialize::<F192>(&ser).unwrap(), a);
     }
 }

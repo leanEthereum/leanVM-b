@@ -16,6 +16,20 @@ pub struct Execution {
     /// Rows per table before the fill blocks ran: the work the program itself does, as
     /// against the power-of-two heights that get proven. Cost measurements want this one.
     pub base_counts: [usize; crate::tables::N_TABLES],
+    /// Cells an instruction read that nothing ever wrote, so the value it read was
+    /// ZERO here and prover-chosen in a proof: memory is a committed array and the
+    /// bus only forces accesses to one address to *agree*, never that the address
+    /// was written. `zkDSL.md` says don't; this is what says whether the emitted
+    /// code did. A non-empty list means a live value came from outside the
+    /// constraint system, so an `assert` on it is vacuous and a published value is
+    /// free, which is a compiler bug and not a program one: the lowering dropped a
+    /// store its source asked for.
+    ///
+    /// Legitimate unconstrained cells are absent by construction, not by
+    /// exemption: a range-check touch's two cells are resolved to ZERO by the
+    /// deferred fixup before this is taken, and an arithmetic back-solve writes its
+    /// operand before reading it.
+    pub unconstrained_reads: Vec<u32>,
     pub(crate) trace: Trace, // rows + final access-count columns, emitted in the same walk
 }
 
@@ -23,6 +37,34 @@ pub struct Execution {
 /// extension limbs are zero (every g-power is a K-element).
 fn as_addr(v: F192) -> Option<F64> {
     (v.c1 == 0 && v.c2 == 0).then_some(F64(v.c0))
+}
+
+fn pop_witness<'a>(
+    witness: &'a HashMap<String, Vec<Vec<F192>>>,
+    positions: &mut HashMap<&'a str, usize>,
+    name: &'a str,
+    len: u32,
+) -> &'a [F192] {
+    let entries = witness
+        .get(name)
+        .unwrap_or_else(|| panic!("no witness stream `{name}` (Program::set_witness)"));
+    let position = positions.entry(name).or_default();
+    let entry = entries.get(*position).unwrap_or_else(|| {
+        panic!(
+            "witness stream `{name}` exhausted (needs entry {}, has {})",
+            *position + 1,
+            entries.len()
+        )
+    });
+    assert_eq!(
+        entry.len(),
+        len as usize,
+        "witness `{name}` entry {} holds {} values, the destination {len}",
+        *position,
+        entry.len()
+    );
+    *position += 1;
+    entry
 }
 
 impl Program {
@@ -155,12 +197,20 @@ impl Program {
 
         // Per-stream cursor into the named witness data (`hint_witness` pops
         // sequentially).
-        let mut wit_pos: HashMap<String, usize> = HashMap::new();
+        let mut witness_positions: HashMap<&str, usize> = HashMap::new();
         // Baby-step table for `hint_decompose_bits_exponent`, built on first use.
         let mut dlog_cache: Option<(GPow, F64)> = None;
 
         // Rows per table before the fill runs, captured when the chain halts.
         let mut base_counts: Option<[usize; crate::tables::N_TABLES]> = None;
+        // Where the fill's frames begin, captured at the same moment, so
+        // `unconstrained_reads` can speak about the program's own cells only. The
+        // fill's rows exist to reach a power-of-two height and are soundness-neutral
+        // (doc §Filling the tables), so they read cells nobody writes as a matter of
+        // course; the program's own cells are all below this mark, since the
+        // allocator serves them and a range check's absolute write lands under
+        // `2^MIN_LOG_MEM`.
+        let mut fill_base = usize::MAX;
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
@@ -170,7 +220,6 @@ impl Program {
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
         let mut sha2: Vec<Brow> = Vec::new();
-        let mut pack64x2: Vec<Xrow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
         // range-check gadget's unconstrained target cells), as `(a2, a3)`,
@@ -295,16 +344,9 @@ impl Program {
             if switch {
                 if left.is_none() {
                     assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
-                    let counts = [
-                        xor.len(),
-                        mul.len(),
-                        set.len(),
-                        deref.len(),
-                        jump.len(),
-                        sha2.len(),
-                        pack64x2.len(),
-                    ];
+                    let counts = [xor.len(), mul.len(), set.len(), deref.len(), jump.len(), sha2.len()];
                     base_counts = Some(counts);
+                    fill_base = (1usize << crate::cpu::MIN_LOG_MEM).max(next_free as usize);
                     // A frame per cycle, from the same bump allocator that serves `Alloc`
                     // but never below the memory floor: a range check's `DEREF` writes the
                     // absolute cell its bound names, which can be any cell under
@@ -352,31 +394,6 @@ impl Program {
             // Apply the hints scheduled before this instruction.
             if hint_at[pc as usize] != 0 {
                 let hs = hint_lists[hint_at[pc as usize] as usize - 1];
-                // Pop the next entry of witness stream `name`; it must hold
-                // exactly `len` values (the destination run's length).
-                let pop_witness = |wit_pos: &mut HashMap<String, usize>, name: &str, len: u32| {
-                    let entries = self
-                        .witness
-                        .get(name)
-                        .unwrap_or_else(|| panic!("no witness stream `{name}` (Program::set_witness)"));
-                    let pos = wit_pos.entry(name.to_string()).or_insert(0);
-                    let entry = entries.get(*pos).unwrap_or_else(|| {
-                        panic!(
-                            "witness stream `{name}` exhausted (needs entry {}, has {})",
-                            *pos + 1,
-                            entries.len()
-                        )
-                    });
-                    assert_eq!(
-                        entry.len(),
-                        len as usize,
-                        "witness `{name}` entry {} holds {} values, the destination {len}",
-                        *pos,
-                        entry.len()
-                    );
-                    *pos += 1;
-                    entry.clone()
-                };
                 for h in hs {
                     m.dbg_hint = Some(match h {
                         RHint::Alloc { .. } => "Alloc",
@@ -455,9 +472,9 @@ impl Program {
                             }
                         }
                         RHint::WitnessStack { name, base, len } => {
-                            let vals = pop_witness(&mut wit_pos, name, *len);
-                            for (k, v) in vals.into_iter().enumerate() {
-                                m.put(fp + base + k as u32, v);
+                            let values = pop_witness(&self.witness, &mut witness_positions, name, *len);
+                            for (k, &value) in values.iter().enumerate() {
+                                m.put(fp + base + k as u32, value);
                             }
                         }
                         RHint::WitnessHeap { name, ptr, lo, len } => {
@@ -466,9 +483,9 @@ impl Program {
                             let b = g
                                 .log(p)
                                 .unwrap_or_else(|| panic!("hint_witness heap pointer is not a g-power"));
-                            let vals = pop_witness(&mut wit_pos, name, *len);
-                            for (k, v) in vals.into_iter().enumerate() {
-                                m.put(b + lo + k as u32, v);
+                            let values = pop_witness(&self.witness, &mut witness_positions, name, *len);
+                            for (k, &value) in values.iter().enumerate() {
+                                m.put(b + lo + k as u32, value);
                             }
                         }
                         RHint::Log2Ceil {
@@ -755,26 +772,6 @@ impl Program {
                         pc += 1;
                     }
                 }
-                Op::Pack64x2 { a, b, c } => {
-                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
-                    let va = m.get(aa);
-                    let vb = m.get(ab);
-                    assert_eq!((va.c1, va.c2), (0, 0), "PACK64X2 first input must be K-valued");
-                    assert_eq!((vb.c1, vb.c2), (0, 0), "PACK64X2 second input must be K-valued");
-                    m.put(ac, F192::new(va.c0, vb.c0, 0));
-                    let ra = m.bump_access_count(aa);
-                    let rb = m.bump_access_count(ab);
-                    let rc = m.bump_access_count(ac);
-                    pack64x2.push(Xrow {
-                        pc,
-                        fp,
-                        ra,
-                        rb,
-                        rc,
-                        bytecode_read,
-                    });
-                    pc += 1;
-                }
                 Op::Sha2 { ins, cv, out } => {
                     // Four independently-addressed 128-bit message chunks, each a
                     // single cell; the chaining value and the output each span two
@@ -885,6 +882,17 @@ impl Program {
             m.put(a3, F192::ZERO);
         }
 
+        // Cells an instruction touched that nothing ever wrote. Read off the two
+        // dense vectors rather than recorded in `Mem::get`, which is in the opcode
+        // loop: an access bumps the count, so `count != ONE` means touched, and
+        // `written` is already there. Taken AFTER the deferred fixup, so a
+        // range-check touch, whose cells are legitimately unconstrained and were
+        // just fixed to ZERO, does not appear.
+        let unconstrained_reads: Vec<u32> = (0..m.cells.len().min(fill_base))
+            .filter(|&c| !m.written[c] && m.count[c] != F64::ONE)
+            .map(|c| c as u32)
+            .collect();
+
         // Pad memory to a power of two (the boundary tables read a dense image),
         // at least 2^MIN_LOG_MEM cells (doc §Memory).
         let mem_used = m.cells.len();
@@ -899,7 +907,6 @@ impl Program {
             deref,
             jump,
             sha2,
-            pack64x2,
             mem_count: m.count,
             bytecode_count,
         };
@@ -910,6 +917,7 @@ impl Program {
             // Taken when the chain halted, which every run does before it can leave the
             // loop at all.
             base_counts: base_counts.expect("the run halted, so its own counts were taken"),
+            unconstrained_reads,
             trace,
         }
     }

@@ -1,4 +1,4 @@
-//! Range checks *in the exponent* — `assert log x < log GEN ** k` (or
+//! Range checks *in the exponent*: `assert log x < log GEN ** k` (or
 //! `assert log x < k`) proves `log_g(x) < k`, i.e. `x ∈ {g^0, g^1, …, g^{k-1}}`,
 //! in 3 cycles: `DEREF x` bounds `log(x)` by the memory size, a `MUL` into the
 //! write-once constant cell `g^{k-1}` back-solves and binds the complement
@@ -110,7 +110,7 @@ def main():
 }
 
 /// `log(g^8) < 8` is false: the complement back-solves to a huge-exponent
-/// element, and its DEREF fails witness generation — the honest-execution
+/// element, and its DEREF fails witness generation: the honest-execution
 /// surface of a failing range check.
 #[test]
 #[should_panic(expected = "failed range check")]
@@ -130,7 +130,7 @@ fn range_check_non_g_power_rejected() {
     program.execute([F192::ZERO, F192::ZERO]);
 }
 
-/// Bound 0 names the empty set — rejected at compile time.
+/// Bound 0 names the empty set: rejected at compile time.
 #[test]
 #[should_panic(expected = "names the empty set")]
 fn range_check_empty_bound_rejected() {
@@ -139,7 +139,7 @@ fn range_check_empty_bound_rejected() {
 }
 
 /// Bounds beyond `2^16` (the minimum memory size) would not be sound for every
-/// prover memory choice — rejected at compile time.
+/// prover memory choice: rejected at compile time.
 #[test]
 #[should_panic(expected = "exceeds 2^16")]
 fn range_check_bound_too_big_rejected() {

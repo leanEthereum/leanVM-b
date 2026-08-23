@@ -98,7 +98,6 @@ pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_SHA2: F64 = g_pow(5);
-pub(crate) const OP_PACK64X2: F64 = g_pow(6);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -223,13 +222,13 @@ impl<'a> FillCtx<'a> {
         self.gpow[i as usize]
     }
 
-    /// The three frame offsets of an `XOR`/`MUL`/`PACK64X2` row. A row records
+    /// The three frame offsets of an `XOR`/`MUL` row. A row records
     /// only its `(pc, fp)`; the operands are the instruction's, so they are read
     /// back from the bytecode rather than copied into every row (§the trace rows
     /// in `cpu::trace`).
     fn ternary_operands(&self, pc: u32) -> (u32, u32, u32) {
         match self.prog[pc as usize] {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::Pack64x2 { a, b, c } => (a, b, c),
+            Op::Xor { a, b, c } | Op::Mul { a, b, c } => (a, b, c),
             op => unreachable!("a three-operand row's pc {pc} holds {op:?}"),
         }
     }
@@ -351,9 +350,9 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, SHA2, PACK64X2]`, the
+/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, SHA2]`, the
 /// order of `row_counts` / `taus` throughout `cpu`.
-pub const N_TABLES: usize = 7;
+pub const N_TABLES: usize = 6;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
@@ -363,7 +362,6 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
         &DerefTable,
         &JumpTable,
         &Sha2Table,
-        &Pack64x2Table,
     ]
 }
 
@@ -774,9 +772,8 @@ impl Table for JumpTable {
                 F64(cell(r, of).c0),
             ]
         });
-        // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in ONE
-        // batched Montgomery inversion: a single field inverse plus ~2 multiplies
-        // per row, instead of an inverse per taken branch. `prefix[i]` is the
+        // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in one
+        // batched Montgomery inversion. `prefix[i]` is the
         // running product of the nonzero conditions before row `i`, so `acc` ends
         // as their full product (nonzero, hence invertible). The taken indicator
         // `b = [c ≠ 0]` falls out of the same pass, so it costs no extra decode.
@@ -805,75 +802,6 @@ impl Table for JumpTable {
         };
         ctx.cols_at(out, rows.len(), W, |i| [F64(w[i].c0), b[i]]);
         ctx.cols(out, rows, RC, |r| [r.rc, r.rd, r.rf]);
-        ctx.col(out, rows, RBC, |r| r.bytecode_read);
-    }
-}
-
-// ---- PACK64X2 ----------------------------------------------------------------
-
-/// Pack two K-valued memory cells into one canonical 128-bit cell. There are
-/// deliberately no source extension-limb columns: `memory_k` puts literal
-/// zeros in those bus coordinates, so the global memory permutation can
-/// balance only when the actual source words are in K. Likewise `memory_128`
-/// writes the destination as `(va, vb, 0)` directly through the bus.
-struct Pack64x2Table;
-
-mod pack64 {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
-    pub const VA: usize = 5;
-    pub const VB: usize = 6;
-    pub const RA: usize = 7;
-    pub const RB: usize = 8;
-    pub const RC: usize = 9;
-    pub const RBC: usize = 10;
-    pub const N: usize = 11;
-}
-
-impl Table for Pack64x2Table {
-    fn n_committed_columns(&self) -> usize {
-        pack64::N
-    }
-
-    fn count_columns(&self) -> &'static [usize] {
-        use pack64::*;
-        &[RA, RB, RC, RBC]
-    }
-
-    fn flushes(&self, f: &mut FlushBuilder) {
-        use pack64::*;
-        f.state_step(PC, FP);
-        f.bytecode(
-            PC,
-            RBC,
-            OP_PACK64X2,
-            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
-        );
-        f.memory_k(Prod(FP, OA, 0), RA, VA);
-        f.memory_k(Prod(FP, OB, 0), RB, VB);
-        f.memory_128(Prod(FP, OC, 0), RC, VA, VB);
-    }
-
-    fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use pack64::*;
-        let rows = &ctx.trace.pack64x2;
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // The offsets and the two source lanes come out of ONE bytecode decode.
-        ctx.cols(out, rows, OA, |r| {
-            let (a, b, c) = ctx.ternary_operands(r.pc);
-            [
-                ctx.g_at(a),
-                ctx.g_at(b),
-                ctx.g_at(c),
-                F64(ctx.mem[(r.fp + a) as usize].c0),
-                F64(ctx.mem[(r.fp + b) as usize].c0),
-            ]
-        });
-        ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -1008,18 +936,17 @@ mod tests {
     /// [`TOWER_LANES`], and neither can be checked against the field at run time (one
     /// is a bus coordinate, the other a `K` identity), so pin the unrolling here.
     #[test]
-    fn the_unrolled_tower_product_is_the_field_product() {
+    fn unrolled_tower_product_matches_field_product() {
         let lanes = |v: F192| [F64(v.c0), F64(v.c1), F64(v.c2)];
         let (x, y) = (C, C * C + F192::ONE);
         let got = [0, 1, 2].map(|i| tower_lane(i, lanes(x), lanes(y)).0);
         assert_eq!(F192::new(got[0], got[1], got[2]), x * y);
     }
 
-    /// `JUMP`'s six identities vanish on an honest row, taken or not, and every lane
-    /// of both relations catches its own forgery: a wrong indicator, and an inverse
-    /// that is not `cond⁻¹`.
+    /// `JUMP`'s two identities vanish on an honest row, taken or not, and reject a
+    /// wrong indicator or, for a taken jump, an inverse that is not `cond⁻¹`.
     #[test]
-    fn the_jump_identities_bind_every_lane() {
+    fn jump_identities_bind_indicator_and_inverse() {
         let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 2);
         // The condition is K-valued (`memory_k` on its read, §sec:tab-jump), so the
         // pair is single-lane: `w = c⁻¹` in K too.

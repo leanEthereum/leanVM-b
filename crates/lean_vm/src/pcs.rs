@@ -42,12 +42,10 @@ pub(crate) const LOG_BATCH: usize = ::pcs::whir::INITIAL_FOLDING_FACTOR;
 pub const LOG_INV_RATE: usize = ::pcs::whir::LOG_INV_RATE_0;
 // The PCS and the unground F192 bus argument both target `SECURITY_BITS`.
 const _: () = assert!(::pcs::whir::SECURITY_BITS == crate::SECURITY_BITS as usize);
-/// Minimum committed-witness log-size: WHIR's level ladder needs every level's
-/// block length to accommodate its Johnson-radius query count, feasible from
-/// `μ = 14`; we set `μ = 15` for a
-/// one-level margin. `witness::placements_of` zero-pads smaller stacks up to
-/// this floor (256 KB of F64, negligible; real workloads are far above it).
+/// Minimum committed-witness log-size accepted by the WHIR level ladder, with one level of margin.
 pub const MIN_MU: usize = 15;
+/// Largest committed size accepted by all verifiers and compiled into the recursion guest.
+pub const MAX_MU: usize = 28;
 
 /// The WHIR (prover, verifier) config pair for a `2^μ`-word witness,
 /// derived from the security analysis and memoized per `(μ, log_inv_rate)`.
@@ -169,4 +167,20 @@ pub fn verify(
     verify_opening_batch_mixed_whir_stacked(vs, &cfg.1, shape.mu, shape.n_lanes, root, points, ring)
         .then_some(())
         .ok_or(Error::Whir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What lets all three verifiers check a plain range instead of re-deriving
+    /// the ladder: every size in the window is configurable at every rate.
+    #[test]
+    fn supported_window_is_configurable() {
+        for rate in ::pcs::whir::MIN_LOG_INV_RATE..=::pcs::whir::MAX_LOG_INV_RATE {
+            for mu in MIN_MU..=MAX_MU {
+                assert!(configs_for_rate(mu, rate).is_ok(), "mu={mu} rate={rate}");
+            }
+        }
+    }
 }

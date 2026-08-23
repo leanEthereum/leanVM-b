@@ -1,29 +1,4 @@
-//! Bump-and-reset arena for the prover's transient buffers.
-//!
-//! One proof allocates tens of gigabytes of short-lived buffers (codewords,
-//! folded halves, packed witnesses, Merkle levels) and frees them all before
-//! returning. The system allocator hands the big ones out as fresh mappings and
-//! returns them on free, so every proof re-pays a soft page fault per page on
-//! first touch plus a single-threaded unmap on drop. Recycling those blocks
-//! instead is worth a large fraction of proving time, more on a Zen 4 host than
-//! on an M4 Max.
-//!
-//! This arena buys that back. It is **not** a `#[global_allocator]`: only
-//! [`ArenaVec`] allocates from it, so a library using it does not impose it on
-//! the rest of the process. One reservation is split into per-thread slabs;
-//! allocation bumps a thread-local cursor, freeing is a no-op, and
-//! [`enter_phase`] resets every slab at once.
-//!
-//! # Lifetime rule
-//!
-//! An `ArenaVec` allocated during a phase is **invalidated by the next
-//! [`enter_phase`]**. Anything that must outlive a phase (a proof, a cache, a
-//! precomputed table) must use the system allocator: a plain `Vec`, or an
-//! `ArenaVec` built while no phase is active (which transparently falls back to
-//! the system allocator, so `ArenaVec` is safe to use anywhere).
-//!
-//! Phases must not nest, and only one proof may be in flight per process;
-//! [`enter_phase`] asserts both.
+//! Bump arena for transient proving buffers. Each thread owns a slab, and [`enter_phase`] resets all slabs. An [`ArenaVec`] allocated in a phase becomes invalid at the next phase; values that outlive a phase must use `Vec`.
 //!
 //! # Usage
 //!
@@ -43,21 +18,13 @@ mod syscall;
 
 pub use arena_vec::{ArenaVec, alloc_uninit, assume_init};
 
-/// Address space reserved per thread. Apart from the LIFO pop in
-/// [`raw_dealloc`], a phase does not reuse a slab byte, so this caps one thread's
-/// *cumulative* allocation within one phase rather than its live set, hence the
-/// generous size. Address space is free; only touched pages are ever backed, and
-/// overflow is not an error (it falls back to the system allocator, and [`stats`]
-/// reports how much did).
+/// Address space reserved per thread. Overflow falls back to the system allocator.
 const SLAB_SIZE: usize = 64 << 30;
 
-/// Slabs beyond the detected parallelism, for threads that are not pool workers
-/// (the caller, a helper pool, a tracing thread) but do allocate in a phase.
+/// Extra slabs for non-pool threads that allocate during a phase.
 const SLACK: usize = 8;
 
-/// Minimum alignment for anything at least this large. Keeps every sizeable
-/// buffer off a split cache line, which the system allocator gives for free at
-/// these sizes and a byte-exact bump pointer would not.
+/// Minimum alignment for allocations at least this large.
 const CACHE_LINE: usize = 64;
 
 /// The alignment a `size`-byte request is actually served at. [`raw_alloc`] and
@@ -71,8 +38,6 @@ const fn effective_align(size: usize, align: usize) -> usize {
     }
 }
 
-/// Round `addr` up to `align`, always a power of two here, so the mask beats the
-/// divide `next_multiple_of` would emit on the allocation hot path.
 #[inline(always)]
 const fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
@@ -111,15 +76,10 @@ static OVERFLOW_BYTES: AtomicUsize = AtomicUsize::new(0);
 static ARENA_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
-    /// This thread's next allocation address.
     static PTR: Cell<usize> = const { Cell::new(0) };
-    /// One past this thread's slab.
     static END: Cell<usize> = const { Cell::new(0) };
-    /// This thread's slab base (`0` while unclaimed); the reset target.
     static BASE: Cell<usize> = const { Cell::new(0) };
-    /// Last [`GENERATION`] seen; a mismatch means this thread must reset.
     static GEN: Cell<usize> = const { Cell::new(0) };
-    /// This thread asked for a slab and there were none left: always use System.
     static NO_SLAB: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -245,11 +205,11 @@ pub fn stats() -> Stats {
 
 impl std::fmt::Display for Stats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let gib = |b: usize| b as f64 / (1u64 << 30) as f64;
+        let bytes_to_gib = |bytes: usize| bytes as f64 / (1u64 << 30) as f64;
         let per_phase = if self.phases == 0 {
             0.0
         } else {
-            gib(self.arena_bytes) / self.phases as f64
+            bytes_to_gib(self.arena_bytes) / self.phases as f64
         };
         write!(
             f,
@@ -258,9 +218,9 @@ impl std::fmt::Display for Stats {
             per_phase,
             self.phases,
             self.threads,
-            gib(self.high_water),
+            bytes_to_gib(self.high_water),
             self.slab_size >> 30,
-            gib(self.overflow),
+            bytes_to_gib(self.overflow),
         )
     }
 }
