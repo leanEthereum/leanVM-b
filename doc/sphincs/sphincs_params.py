@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from decimal import Decimal, getcontext
+from functools import lru_cache
 from math import ceil, floor, log2
 
 getcontext().prec = 120
@@ -186,6 +187,7 @@ def wots_chains(scheme: str, w: int, n: int, dropped_chains: int = 0) -> int:
     return Encoding(w, n, dropped_chains).chains
 
 
+@lru_cache(maxsize=1 << 16)
 def wots_c_encodings(l: int, swn: int, w: int) -> int:
     """nu: number of l-tuples over [0, w-1] summing to exactly swn."""
     from math import comb
@@ -336,6 +338,27 @@ def _fors_verify(trees: int, a: int, n: int, cv: Convention) -> Cost:
 
 
 @dataclass
+class Costs:
+    """Everything about a parameter set that does not depend on q_s."""
+
+    l: int
+    chain_bits: int
+    pinned_bits: int
+    dropped_chains: int
+    swn: int | None
+    sig_bytes: int
+    keygen: Cost
+    sign: Cost
+    sign_cached: Cost
+    verify: Cost
+    verify_worst: Cost
+    wots_c_grinding: int
+    fors_c_grinding: int
+    cache_depth: int
+    cache_bytes: int
+
+
+@dataclass
 class Result:
     scheme: str
     q_s_log2: int
@@ -376,13 +399,12 @@ class Result:
     sign_cached_compressions: int
 
 
-def evaluate(
+def costs(
     h: int,
     d: int,
     a: int,
     k: int,
     w: int,
-    q_s_log2: int,
     scheme: str = "W+C_F+C",
     swn: int | None = None,
     n: int = 16,
@@ -390,13 +412,16 @@ def evaluate(
     cache_height: int | None = None,
     cache_level_only: bool = False,
     convention: Convention | None = None,
-) -> Result:
-    """Evaluate one SPHINCS+ parameter set.
+) -> Costs:
+    """Size and hash counts of one parameter set, without the security level.
+
+    Separate from evaluate() because the security sum is by far the most
+    expensive part and does not depend on any of this; a parameter search wants
+    the costs alone (see search.py).
 
     h, d      hypertree height and number of layers (h' = h/d per XMSS tree)
     a, k      FORS trees of 2^a leaves, k of them
     w         Winternitz parameter
-    q_s_log2  log2 of the signatures allowed under one public key
     scheme    "SPX", "W+C", or "W+C_F+C"
     swn       WOTS+C target digit sum S_{w,n}; defaults to the mean l*(w-1)/2
     dropped_chains  chains dropped on top of the digest bits that have to be
@@ -487,6 +512,42 @@ def evaluate(
         cache_bytes = (2 * stored_level - 1) * n
     sign_cached = sign - tree + cached_tree
 
+    return Costs(
+        l=l,
+        chain_bits=enc.chain_bits,
+        pinned_bits=enc.pinned_bits if wots_c else 0,
+        dropped_chains=dropped_chains,
+        swn=swn_c if wots_c else None,
+        sig_bytes=sig_bytes,
+        keygen=keygen,
+        sign=sign,
+        sign_cached=sign_cached,
+        verify=verify,
+        verify_worst=verify_worst,
+        wots_c_grinding=grinding,
+        fors_c_grinding=fors_grind.hashes if fors_c else 0,
+        cache_depth=hp - c,
+        cache_bytes=cache_bytes,
+    )
+
+
+def evaluate(
+    h: int,
+    d: int,
+    a: int,
+    k: int,
+    w: int,
+    q_s_log2: int,
+    scheme: str = "W+C_F+C",
+    swn: int | None = None,
+    n: int = 16,
+    dropped_chains: int = 0,
+    cache_height: int | None = None,
+    cache_level_only: bool = False,
+    convention: Convention | None = None,
+) -> Result:
+    """costs() plus the classical security level at q_s = 2^q_s_log2."""
+    c = costs(h, d, a, k, w, scheme, swn, n, dropped_chains, cache_height, cache_level_only, convention)
     forgery = fors_forgery_exponent(q_s_log2, h, k, a)
     return Result(
         scheme=scheme,
@@ -494,33 +555,33 @@ def evaluate(
         n=n,
         h=h,
         d=d,
-        h_prime=hp,
+        h_prime=h // d,
         a=a,
         k=k,
         w=w,
-        l=l,
-        chain_bits=enc.chain_bits,
-        pinned_bits=enc.pinned_bits if wots_c else 0,
-        dropped_chains=dropped_chains,
-        swn=swn_c if wots_c else None,
+        l=c.l,
+        chain_bits=c.chain_bits,
+        pinned_bits=c.pinned_bits,
+        dropped_chains=c.dropped_chains,
+        swn=c.swn,
         security_bits=min(8 * n, forgery),
         fors_forgery_bits=forgery,
-        sig_bytes=sig_bytes,
-        keygen_hashes=keygen.hashes,
-        keygen_compressions=keygen.compressions,
-        sign_hashes=sign.hashes,
-        sign_compressions=sign.compressions,
-        sign_grinding_hashes=grinding + fors_grind.hashes - (0 if fors_c else 2),
-        wots_c_grinding_hashes=grinding,
-        fors_c_grinding_hashes=fors_grind.hashes if fors_c else 0,
-        verify_hashes=verify.hashes,
-        verify_compressions=verify.compressions,
-        verify_hashes_worst=verify_worst.hashes,
-        verify_compressions_worst=verify_worst.compressions,
-        cache_depth=hp - c,
-        cache_bytes=cache_bytes,
-        sign_cached_hashes=sign_cached.hashes,
-        sign_cached_compressions=sign_cached.compressions,
+        sig_bytes=c.sig_bytes,
+        keygen_hashes=c.keygen.hashes,
+        keygen_compressions=c.keygen.compressions,
+        sign_hashes=c.sign.hashes,
+        sign_compressions=c.sign.compressions,
+        sign_grinding_hashes=c.wots_c_grinding + c.fors_c_grinding,
+        wots_c_grinding_hashes=c.wots_c_grinding,
+        fors_c_grinding_hashes=c.fors_c_grinding,
+        verify_hashes=c.verify.hashes,
+        verify_compressions=c.verify.compressions,
+        verify_hashes_worst=c.verify_worst.hashes,
+        verify_compressions_worst=c.verify_worst.compressions,
+        cache_depth=c.cache_depth,
+        cache_bytes=c.cache_bytes,
+        sign_cached_hashes=c.sign_cached.hashes,
+        sign_cached_compressions=c.sign_cached.compressions,
     )
 
 
