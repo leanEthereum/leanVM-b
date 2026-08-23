@@ -1,4 +1,4 @@
-//! Bridge to the flock SHA-256 prover ([`flock::sha2`]), single-PCS.
+//! Bridge to the flock SHA-256 prover ([`flock::hash`]), single-PCS.
 //!
 //! `q_flock` (flock's packed SHA-256 witness, 64 bits per `F64` word) is committed
 //! as a column in leanVM-b's ONE stacked `F64` witness (§sec:stacking), with no separate flock
@@ -16,7 +16,7 @@
 //! the BLAKE2s opcode it replaces there is no metadata immediate: the
 //! length-prefixed Merkle-Damgard carries no per-block counter or final flag,
 //! since the length rode the first block and that block is a compile-time
-//! constant ([`primitives::sha2::iv_for_len`]).
+//! constant ([`primitives::hash::iv_for_len`]).
 //!
 //! ## The layout (`H_BASE = 0`, `OUT_BASE = 256`, `M_BASE = 512`, 64-bit words)
 //!
@@ -36,13 +36,13 @@
 //!
 //! SHA-256 reads its block and writes its digest big-endian, and the VM carries
 //! both as little-endian `F64` lanes. flock's bit layout absorbs the difference
-//! (see `flock::sha2`'s "Big-endian, for free"), so a packed slot IS the VM's
+//! (see `flock::hash`'s "Big-endian, for free"), so a packed slot IS the VM's
 //! `u64`; `words_of` and `pack_words` are the same relabeling on this side,
 //! written through bytes so the two derivations are obviously the same one.
 
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::LOG_PACKING;
-use flock::sha2::{
+use flock::hash::{
     Compression, K_LOG, ReductionReplay, Sha2Setup, compress, generate_witness_with_ab_packed_and_lincheck,
 };
 use flock::verifier::VerifyError;
@@ -50,7 +50,7 @@ use primitives::field::{F64, F192};
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
-pub use flock::sha2::{
+pub use flock::hash::{
     SliceClaim, min_n_blocks_log as n_blocks_log, qflock_kappa, ring_switch_open, ring_switch_verify,
 };
 
@@ -58,20 +58,20 @@ pub use flock::sha2::{
 // = 0` → cv words 0..4, `OUT_BASE = 256` → c words 4..8, `M_BASE = 512` → a
 // words 8..12 and b words 12..16. A slot is a 64-bit packed word, so each is
 // its flock bit base over 64, which the asserts below hold it to: move a
-// region in `flock::sha2` and this fails to compile rather than silently
+// region in `flock::hash` and this fails to compile rather than silently
 // routing a bus claim to the wrong slot.
 pub const SLOT_CV0: usize = 0;
 pub const SLOT_C0: usize = 4;
 pub const SLOT_A0: usize = 8;
 pub const SLOT_B0: usize = 12;
 
-const _: () = assert!(SLOT_CV0 * 64 == flock::sha2::H_BASE);
-const _: () = assert!(SLOT_C0 * 64 == flock::sha2::OUT_BASE);
-const _: () = assert!(SLOT_A0 * 64 == flock::sha2::M_BASE);
-const _: () = assert!(SLOT_B0 * 64 == flock::sha2::M_BASE + 8 * flock::sha2::WORD_BITS);
+const _: () = assert!(SLOT_CV0 * 64 == flock::hash::H_BASE);
+const _: () = assert!(SLOT_C0 * 64 == flock::hash::OUT_BASE);
+const _: () = assert!(SLOT_A0 * 64 == flock::hash::M_BASE);
+const _: () = assert!(SLOT_B0 * 64 == flock::hash::M_BASE + 8 * flock::hash::WORD_BITS);
 // The sixteen VM-visible words are exactly the first `[0, 1024)` bits, so
 // nothing else may be placed there.
-const _: () = assert!(SLOT_B0 * 64 + 4 * 64 == flock::sha2::SCHED_BASE);
+const _: () = assert!(SLOT_B0 * 64 + 4 * 64 == flock::hash::SCHED_BASE);
 
 /// The sixteen within-instance value slots in canonical order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3]`, matching `tables::SHA2_VALUE_COLS`.
@@ -117,11 +117,11 @@ const fn pack_words(w: [u32; 2]) -> F64 {
 /// `Sha2` opcode's default, and what makes one opcode a complete hash of 64
 /// bytes.
 ///
-/// Derived from [`primitives::sha2::IV_64`] rather than written out, since a
+/// Derived from [`primitives::hash::IV_64`] rather than written out, since a
 /// hand-copied 32-byte constant is exactly the kind that looks plausible while
 /// being wrong.
 pub const IV: [F64; 4] = {
-    let h = primitives::sha2::IV_64;
+    let h = primitives::hash::IV_64;
     [
         pack_words([h[0], h[1]]),
         pack_words([h[2], h[3]]),
@@ -142,7 +142,7 @@ pub const IV_CELLS: [F192; 2] = [F192::new(IV[0].0, IV[1].0, 0), F192::new(IV[2]
 /// what keeps a known-length hash at `ceil(N / 64)` compressions: the length
 /// block never reaches the VM.
 pub const fn iv_cells_for_len(msg_bytes: u64) -> [F192; 2] {
-    let h = primitives::sha2::iv_for_len(msg_bytes);
+    let h = primitives::hash::iv_for_len(msg_bytes);
     [
         F192::new(pack_words([h[0], h[1]]).0, pack_words([h[2], h[3]]).0, 0),
         F192::new(pack_words([h[4], h[5]]).0, pack_words([h[6], h[7]]).0, 0),
@@ -281,13 +281,13 @@ pub fn warm_setup(n_blocks: usize) {
     let _ = setup_for(n_blocks.max(1));
 }
 
-/// The flock SHA-256 R1CS digest ([`flock::sha2::R1CS_DIGEST`]): the domain
+/// The flock SHA-256 R1CS digest ([`flock::hash::R1CS_DIGEST`]): the domain
 /// separator naming the per-block circuit, independent of the instance count.
 /// The full instance is block-diagonal (the count is announced and absorbed
 /// with the other sizes), so a transcript seeded with this digest (via
 /// [`crate::cpu::fs_seed`]) binds the whole statement up front.
 pub fn r1cs_digest() -> [u8; 32] {
-    flock::sha2::R1CS_DIGEST
+    flock::hash::R1CS_DIGEST
 }
 
 /// **Flock reduction only** (prover): run flock's SHA-256 zerocheck + lincheck
@@ -375,7 +375,7 @@ mod tests {
     }
 
     /// `q_flock`'s aligned packed slots hold the VM's 64-bit words in our field
-    /// representation, and the digest matches `primitives::sha2`.
+    /// representation, and the digest matches `primitives::hash`.
     #[test]
     fn qflock_words_match_layout() {
         let inputs: Vec<([F64; 4], [F64; 4])> = (0..5u64)
@@ -402,7 +402,7 @@ mod tests {
             for (s, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
                 *s = w.0.to_le_bytes();
             }
-            let h = primitives::sha2::hash(&input);
+            let h = primitives::hash::hash(&input);
             let word = |o: usize| F64(u64::from_le_bytes(h[o..o + 8].try_into().unwrap()));
             let d: [F64; 4] = std::array::from_fn(|k| word(8 * k));
             assert_eq!(digest(blk), d);

@@ -417,7 +417,7 @@ sha2(tail[0:2], tail[2:4], out, cv=cv)
 
 The three positional arguments form a **statement**: one SHA-256 compression `C(cv, a || b)` consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes `sha2_eth(a || b)`, the hash of exactly 64 bytes, which is the form every Fiat-Shamir step and Merkle node uses.
 
-Every compression also has a 256-bit chaining value, and that is the only other thing it takes. `sha2_eth` puts the message length in its FIRST block (see `primitives::sha2`), so a block carries no byte counter and no final flag, and the length block itself is a compile-time constant rather than an instruction. The two optional keywords pick the chaining value and are mutually exclusive:
+Every compression also has a 256-bit chaining value, and that is the only other thing it takes. `sha2_eth` puts the message length in its FIRST block (see `primitives::hash`), so a block carries no byte counter and no final flag, and the length block itself is a compile-time constant rather than an instruction. The two optional keywords pick the chaining value and are mutually exclusive:
 
 - `msg_bytes=<int>`: this is the FIRST block of a message of that many bytes, so the chaining value is the constant `iv_for_len(msg_bytes)`;
 - `cv=<pair>`: a consecutive 2-cell chaining value, a previous block's output, so this is a CONTINUATION block.

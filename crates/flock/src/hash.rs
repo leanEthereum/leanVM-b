@@ -132,7 +132,7 @@ const _: () = assert!(
 );
 
 /// Rounds per compression.
-pub const N_ROUNDS: usize = primitives::sha2::ROUNDS;
+pub const N_ROUNDS: usize = primitives::hash::ROUNDS;
 /// Message-schedule steps: `W[16..64]`.
 pub const N_SCHED: usize = N_ROUNDS - 16;
 /// Bits per SHA-256 word.
@@ -140,7 +140,7 @@ pub const WORD_BITS: usize = crate::gf2::WORD_BITS;
 
 /// SHA-256's round constants, from the native hash so the circuit provably
 /// encodes the same ones the prover computes.
-pub use primitives::sha2::K as ROUND_CONSTANTS;
+pub use primitives::hash::K as ROUND_CONSTANTS;
 
 // ---------------------------------------------------------------------------
 // Layout positions (bit indices into the per-block z slice of length K)
@@ -232,12 +232,12 @@ fn out_carry(w: usize) -> usize {
 pub type Compression = ([u32; 8], [u32; 16]);
 
 /// `C`, the compression this circuit encodes.
-pub use primitives::sha2::compress;
+pub use primitives::hash::compress;
 
 /// The chaining value a 64-byte `sha2_eth` starts from, which is what the VM's
 /// `Sha2` opcode and `fiat_shamir::compress` use.
 pub const fn iv_64() -> [u32; 8] {
-    primitives::sha2::IV_64
+    primitives::hash::IV_64
 }
 
 /// A convenient one-block standard hash [`Compression`] of `m`: exactly
@@ -1122,7 +1122,7 @@ mod tests {
 
     /// The witness's `out` slot holds `C(h, m)`, read back through the
     /// big-endian accessor. Pins the whole schedule, the rounds and the
-    /// feed-forward against `primitives::sha2`.
+    /// feed-forward against `primitives::hash`.
     #[test]
     fn witness_encodes_correct_output() {
         let mut rng = Rng::new(0x5A2C_0DE5);
@@ -1153,7 +1153,7 @@ mod tests {
         for (chunk, word) in digest.chunks_exact_mut(4).zip(&out) {
             chunk.copy_from_slice(&word.to_be_bytes());
         }
-        assert_eq!(digest, primitives::sha2::hash(&msg));
+        assert_eq!(digest, primitives::hash::hash(&msg));
     }
 
     #[test]

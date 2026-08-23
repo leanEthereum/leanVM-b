@@ -4,7 +4,7 @@
 # parameters: `chain(buf, 3)` specializes and unrolls three SHA-256 steps over
 # heap slices indexed by `i` (a 256-bit SHA-256 value is two canonical cells).
 # Published: the two 128-bit digest cells of H^3(5, 7): same chain as
-# sha2_heap_chain.py, unrolled instead of looped.
+# hash_heap_chain.py, unrolled instead of looped.
 # public_input: 299794183749101300838813800790429098850, 306400012546318371936741368476884639957
 from snark_lib import *
 

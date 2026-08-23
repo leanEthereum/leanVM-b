@@ -17,7 +17,7 @@
 //!   degree-2 identities plus their three bus forms (§sec:air).
 //! - [`tables`]: the six instruction tables (columns, flushes, constraints).
 //! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
-//! - [`sha2_flock`]: the `SHA-256` glue: flock's R1CS validity proof over the same commitment.
+//! - [`hash_flock`]: the `SHA-256` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard SHA-256 slice hashing).
 
 pub mod colval;
@@ -26,7 +26,7 @@ pub mod cpu;
 pub mod gkr;
 pub mod leaf;
 pub mod pcs;
-pub mod sha2_flock;
+pub mod hash_flock;
 pub mod tables;
 pub mod transcript;
 pub mod vmhash;

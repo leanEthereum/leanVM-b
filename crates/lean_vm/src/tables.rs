@@ -386,7 +386,7 @@ pub(crate) fn sha2_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
 }
 
 /// SHA2 value-column LOCAL indices in canonical slot order
-/// `[a0..a3, b0..b3, c0..c3, cv0..cv3]` (matches `sha2_flock::SLOTS`). These
+/// `[a0..a3, b0..b3, c0..c3, cv0..cv3]` (matches `hash_flock::SLOTS`). These
 /// columns are VIRTUAL (never committed): `q_flock` already holds those words at
 /// fixed packed slots, so `cpu` routes their memory-bus evaluation claims
 /// straight to `q_flock` (`slot_claims`): the value the bus flushes IS the
@@ -410,7 +410,7 @@ pub const SHA2_VALUE_COLS: [usize; 16] = [
     sha2t::VCV0 + 3,
 ];
 // The sixteen value lanes are laid out contiguously (VA0..VA0+15), so they map
-// 1:1 onto `sha2_flock::SLOTS`.
+// 1:1 onto `hash_flock::SLOTS`.
 const _: () = assert!(sha2t::VB0 == sha2t::VA0 + 4 && sha2t::VC0 == sha2t::VA0 + 8 && sha2t::VCV0 == sha2t::VA0 + 12);
 
 // ---- XOR / MUL ---------------------------------------------------------------
@@ -816,7 +816,7 @@ impl Table for JumpTable {
 /// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
 /// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
-/// (§sha2_flock), which leaves this table with no identity of its own.
+/// (§hash_flock), which leaves this table with no identity of its own.
 ///
 /// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the sixteen
 /// memory-borne flock words are sixteen value LANE columns over eight cells.

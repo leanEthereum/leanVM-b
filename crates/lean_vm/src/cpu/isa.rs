@@ -43,8 +43,8 @@ pub enum Op {
     /// There is no per-block metadata. `sha2_eth` puts the message length in
     /// its FIRST block, so a block carries no counter and no final flag, and a
     /// hash of a known length starts from a compile-time chaining value
-    /// (`primitives::sha2::iv_for_len`, the default being
-    /// `sha2_flock::IV_CELLS` for 64 bytes).
+    /// (`primitives::hash::iv_for_len`, the default being
+    /// `hash_flock::IV_CELLS` for 64 bytes).
     Sha2 {
         ins: [u32; 4],
         /// Base of two consecutive cells holding the 256-bit chaining value

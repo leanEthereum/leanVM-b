@@ -37,7 +37,7 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 ### Batch proving SHA-256 compression
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=17 cargo test --release -p flock --test sha2_batch -- --ignored --nocapture
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=17 cargo test --release -p flock --test hash_batch -- --ignored --nocapture
 ```
 
 ## Security

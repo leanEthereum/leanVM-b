@@ -1,7 +1,7 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Binary Merkle tree with `sha2_eth`, SIMD-batching independent hashes across
 //! leaves and internal levels through the multi-input hasher in
-//! [`primitives::sha2`].
+//! [`primitives::hash`].
 //!
 //! The committer's half. What a proof actually carries (the digest encoding,
 //! the leaf/node hashes, one phase's pruned octopus) lives in
@@ -43,7 +43,7 @@ fn hash_many_uninit<const N: usize>(data: &[u8], out: &mut [std::mem::MaybeUnini
     // Hash is [u8; 32] with no padding; expose the contiguous output storage
     // the batched hasher writes 32 bytes per input into.
     let out_bytes = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 32) };
-    primitives::sha2::hash_many::<N>(data, out_bytes);
+    primitives::hash::hash_many::<N>(data, out_bytes);
 }
 
 /// Dispatch one pool task per `HASH_GROUP`-sized output group, handing each
@@ -148,7 +148,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
 /// lanes contribute the zeros their codeword would have been. They are the image's
 /// LEADING words on purpose: whole 64-byte blocks of leading zeros have a chaining
 /// value every leaf shares, so the committer computes it once
-/// ([`primitives::sha2::zero_prefix_state`]) and each leaf hashes only what
+/// ([`primitives::hash::zero_prefix_state`]) and each leaf hashes only what
 /// follows. A zero SUFFIX could not be shared, since its compressions take
 /// whatever state the real data left, which is why the L0 leaf image is ordered
 /// with the absent lanes first.
@@ -197,7 +197,7 @@ const _: () = assert!((1usize << crate::whir_config::INITIAL_FOLDING_FACTOR) <= 
 /// Leaves the batched `sha2_eth` consumes in one whole batch: the widest backend
 /// this build targets, which is also a multiple of the narrower widths and of the
 /// aarch64 crypto path's interleave.
-const BATCH_LEAVES: usize = primitives::sha2::LANES;
+const BATCH_LEAVES: usize = primitives::hash::LANES;
 const _: () = assert!(HASH_GROUP.is_multiple_of(BATCH_LEAVES));
 
 fn hash_leaves_padded_rows_uninit(
@@ -220,7 +220,7 @@ fn hash_leaves_padded_rows_uninit(
         0
     };
     let staged = leaf_words - zero_blocks * WORDS_PER_BLOCK;
-    let state = primitives::sha2::zero_prefix_state(leaf_words * 8, zero_blocks);
+    let state = primitives::hash::zero_prefix_state(leaf_words * 8, zero_blocks);
     // Leaves per tile, in whole hasher batches: the batched hasher sends its
     // remainder below one batch through the scalar path, and a tile boundary is a
     // remainder. `HASH_GROUP` is a multiple of `BATCH_LEAVES`, so a full task's tiles
@@ -253,7 +253,7 @@ fn hash_leaves_padded_rows_uninit(
                 // SAFETY: Hash is [u8; 32] with no padding, so the output slots are
                 // `len * 32` contiguous writable bytes.
                 let out_bytes = unsafe { core::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<u8>(), len * 32) };
-                primitives::sha2::hash_many_dyn_from_state(bytes, staged * 8, &state, out_bytes);
+                primitives::hash::hash_many_dyn_from_state(bytes, staged * 8, &state, out_bytes);
             } else {
                 // Nothing was shared, so `staged == leaf_words` and this is the whole
                 // image.

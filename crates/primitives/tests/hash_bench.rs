@@ -46,29 +46,29 @@ fn multithreaded_mhash_per_s(hash_64: impl Fn(&[u8], &mut [u8]) + Sync) -> f64 {
     (TASKS * K * ITERS) as f64 / s / 1e6
 }
 
-/// cargo test --release -p primitives --test sha2_bench multithreaded_throughput -- --exact --ignored --nocapture
+/// cargo test --release -p primitives --test hash_bench multithreaded_throughput -- --exact --ignored --nocapture
 #[test]
 #[ignore = "manual throughput measurement"]
 fn multithreaded_throughput() {
-    let mhs = multithreaded_mhash_per_s(primitives::sha2::hash_many::<64>);
+    let mhs = multithreaded_mhash_per_s(primitives::hash::hash_many::<64>);
     println!(
         "64B -> 32B, {} threads, LANES={}: {mhs:.0} Mhash/s",
         parallel::num_threads(),
-        primitives::sha2::LANES,
+        primitives::hash::LANES,
     );
 }
 
-/// cargo test --release -p primitives --test sha2_bench multithreaded_throughput_without_hardware_acceleration -- --exact --ignored --nocapture
+/// cargo test --release -p primitives --test hash_bench multithreaded_throughput_without_hardware_acceleration -- --exact --ignored --nocapture
 #[test]
 #[ignore = "manual throughput measurement"]
 fn multithreaded_throughput_without_hardware_acceleration() {
     let mhs = multithreaded_mhash_per_s(|d, sub| {
-        primitives::sha2::hash_many_dyn_from_state_transposed(d, 64, &primitives::sha2::IV_64, sub);
+        primitives::hash::hash_many_dyn_from_state_transposed(d, 64, &primitives::hash::IV_64, sub);
     });
     println!(
         "64B -> 32B, {} threads, LANES={}, no crypto extension: {mhs:.0} Mhash/s",
         parallel::num_threads(),
-        primitives::sha2::LANES,
+        primitives::hash::LANES,
     );
 }
 

@@ -66,7 +66,7 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
     msg[12..20].copy_from_slice(&b.to_le_bytes());
     // `sha2_eth` has no keyed mode; the seed is simply the first 32 bytes of
     // the hashed string. Prover-side only, so nothing in-circuit sees it.
-    let mut hasher = primitives::sha2::Hasher::new(seed.len() + msg.len());
+    let mut hasher = primitives::hash::Hasher::new(seed.len() + msg.len());
     hasher.update(seed);
     hasher.update(&msg);
     hasher.finalize()[..DIGEST_LEN].try_into().unwrap()

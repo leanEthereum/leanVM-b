@@ -5,7 +5,7 @@
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
 //! with each word carried by three committed `K = F64` limbs. `SHA-256`
 //! adds the memory/state/bytecode plumbing for a 64→32-byte compression
-//! whose relation is discharged by flock (see [`crate::sha2_flock`]). All
+//! whose relation is discharged by flock (see [`crate::hash_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
 use std::collections::HashMap;
@@ -36,9 +36,9 @@ pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 /// laid out little-endian into 64 bytes, compressed against the supplied
 /// chaining value, and the 32-byte result is split back into the four output
 /// words `c`. Flock proves this same compression relation
-/// ([`crate::sha2_flock`]).
+/// ([`crate::hash_flock`]).
 fn sha2_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4]) -> [F64; 4] {
-    crate::sha2_flock::digest(&crate::sha2_flock::compression(va, vb, vcv))
+    crate::hash_flock::digest(&crate::hash_flock::compression(va, vb, vcv))
 }
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
@@ -65,7 +65,7 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing to
 /// everything fixed about the proving environment.
 ///
-/// Two things go in. [`crate::sha2_flock::r1cs_digest`] names the flock SHA-256
+/// Two things go in. [`crate::hash_flock::r1cs_digest`] names the flock SHA-256
 /// circuit, independent of the instance count: the full instance is
 /// block-diagonal and the count is announced and absorbed with the other sizes,
 /// so one constant covers every shape. And the bytecode enters through the hash
@@ -79,9 +79,9 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// INNER program's seed in its public input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
     const LABEL: &[u8] = b"leanvm-b-fs-seed-v3-sha2";
-    let mut h = primitives::sha2::Hasher::new(LABEL.len() + 64);
+    let mut h = primitives::hash::Hasher::new(LABEL.len() + 64);
     h.update(LABEL);
-    h.update(&crate::sha2_flock::r1cs_digest());
+    h.update(&crate::hash_flock::r1cs_digest());
     h.update(&program.bytecode_hash);
     let d = h.finalize();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
@@ -148,7 +148,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         // SHA-256 table's value columns share that instance cube, so a height below the
         // floor describes a layout the arithmetization cannot express. The other two
         // verifiers reject it here too (`python-verifier`, `guests/aggregate.py`).
-        || taus[tables::SHA2_TABLE] < crate::sha2_flock::n_blocks_log(1)
+        || taus[tables::SHA2_TABLE] < crate::hash_flock::n_blocks_log(1)
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
@@ -220,7 +220,7 @@ impl Program {
             // exactly the concatenation of its `to_le_bytes` on little-endian targets.
             let bytes: &[u8] =
                 unsafe { core::slice::from_raw_parts(table.as_ptr().cast::<u8>(), core::mem::size_of_val(&table[..])) };
-            primitives::sha2::Hasher::new(bytes.len()).update(bytes).finalize()
+            primitives::hash::Hasher::new(bytes.len()).update(bytes).finalize()
         };
         Self {
             prog,
@@ -419,7 +419,7 @@ fn sha2_value_slot(col: usize) -> Option<usize> {
     tables::SHA2_VALUE_COLS
         .iter()
         .position(|&c| base + c == col)
-        .map(|i| crate::sha2_flock::SLOTS[i])
+        .map(|i| crate::hash_flock::SLOTS[i])
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
@@ -512,7 +512,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     );
     // Warm the shape-dependent SHA-256 R1CS setup concurrently with the earlier proving stages.
     let n_sha2_warm = exec.trace.sha2.len().max(1);
-    std::thread::spawn(move || crate::sha2_flock::warm_setup(n_sha2_warm));
+    std::thread::spawn(move || crate::hash_flock::warm_setup(n_sha2_warm));
     let cycles = exec.cycles;
     let mut w = crate::stage!("Build witness", || program.build(&exec));
     let counts = w.layout.taus.map(|t| 1usize << t);
@@ -527,7 +527,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         pcs::commit(&mut ps, &w.q, w.layout.shape, log_inv_rate)
     });
 
-    // SHA-256 to flock (§sha2_flock), single PCS: q_flock is ALWAYS a column in
+    // SHA-256 to flock (§hash_flock), single PCS: q_flock is ALWAYS a column in
     // `w.q` (≥1 instance, a program with no SHA-256 carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-SHA-256 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
@@ -598,7 +598,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
     let offset = w.layout.placements[QFLOCK].offset;
-    let ring = crate::sha2_flock::ring_switch_open(n_blocks, offset, &reduced);
+    let ring = crate::hash_flock::ring_switch_open(n_blocks, offset, &reduced);
     crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     (
         ps.into_proof(),
@@ -725,9 +725,9 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // instance, including programs that execute no SHA-256 instruction.
     let n_blocks = n_sha2.max(1);
     let offset = l.placements[QFLOCK].offset;
-    let replay = crate::sha2_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Sha2)?;
+    let replay = crate::hash_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Sha2)?;
     let flock_stream_end = vs.stream_offset();
-    let ring = crate::sha2_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
+    let ring = crate::hash_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
     pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
@@ -762,7 +762,7 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                 return pcs::SlotClaim::Strided {
                     offset: l.placements[QFLOCK].offset,
                     slot,
-                    stride_log: crate::sha2_flock::SLOT_STRIDE_LOG,
+                    stride_log: crate::hash_flock::SLOT_STRIDE_LOG,
                     point: c.point.clone(),
                     value: c.value,
                 };

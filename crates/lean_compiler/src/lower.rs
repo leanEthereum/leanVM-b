@@ -380,7 +380,7 @@ impl FnLower<'_> {
             return o;
         }
         let o = self.alloc_stack(2);
-        for (k, value) in lean_vm::sha2_flock::iv_cells_for_len(msg_bytes).into_iter().enumerate() {
+        for (k, value) in lean_vm::hash_flock::iv_cells_for_len(msg_bytes).into_iter().enumerate() {
             self.set_const(o + k as u32, value);
             self.scope
                 .const_cells

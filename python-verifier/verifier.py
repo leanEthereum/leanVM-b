@@ -1606,7 +1606,7 @@ def sha2_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
     """Compute `A0 w` and `B0 w` by one forward walk of the circuit, instead of
     touching its million nonzeros.
 
-    Mirrors `flock::sha2::forward_walk` gadget for gadget; the layout constants
+    Mirrors `flock::hash::forward_walk` gadget for gadget; the layout constants
     below are that module's.
     """
     size = 2**SHA2_R1CS_LOG_SIZE

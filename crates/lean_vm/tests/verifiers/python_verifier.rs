@@ -41,7 +41,7 @@ def main():
 const LOOP_STEPS: usize = 16_384;
 
 fn public_input() -> [F192; 2] {
-    use lean_vm::sha2_flock::{IV, compression, digest};
+    use lean_vm::hash_flock::{IV, compression, digest};
 
     let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
     let digest = digest(&compression(seed, seed, IV));

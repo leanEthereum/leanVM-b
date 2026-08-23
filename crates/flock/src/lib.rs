@@ -9,10 +9,10 @@
 //!      on `(â, b̂, ĉ)`.
 //!   3. [`lincheck`] reduces those to the `2^k_skip` bit-slice values of `z` at
 //!      one point, against the per-block matrices.
-//!   4. The PCS binds that family of slices ([`sha2::SliceClaim`]) to the
+//!   4. The PCS binds that family of slices ([`hash::SliceClaim`]) to the
 //!      commitment.
 //!
-//! [`sha2`] is the one circuit: the SHA-256 compression as a per-block R1CS,
+//! [`hash`] is the one circuit: the SHA-256 compression as a per-block R1CS,
 //! plus its witness generation and the leanVM-facing reduction entry points
 //! (`Sha2Setup::{prove_reduction, verify_reduction, …}`). Steps 2 to 4 above
 //! are circuit-agnostic: they take the block shape as plain numbers and reach
@@ -33,7 +33,7 @@ pub mod lincheck;
 /// with the unit tests.
 #[cfg(test)]
 mod reduction_tests;
-pub mod sha2;
+pub mod hash;
 pub mod verifier;
 mod witness;
 pub mod zerocheck;

@@ -19,7 +19,7 @@ pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-SHA-256 program commits one full padding instance). It is the
 // SOLE copy of the input/output words: the VM's SHA-256 value columns are
-// virtual and their memory-bus claims route to `q_flock` slots (§sha2_flock), so
+// virtual and their memory-bus claims route to `q_flock` slots (§hash_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
 pub const QFLOCK: usize = 5;
@@ -96,7 +96,7 @@ pub(crate) struct Witness {
     pub(crate) log_mem: usize,
     /// `Option` lets `prove` take and free the large reduction-only buffers
     /// immediately after reduction, before the mixed PCS opening.
-    pub(crate) flock_reduction: Option<crate::sha2_flock::PreparedReductionWitness>,
+    pub(crate) flock_reduction: Option<crate::hash_flock::PreparedReductionWitness>,
 }
 
 impl Witness {
@@ -152,7 +152,7 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     // instance (a no-SHA-256 program commits one padding instance), and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor), so this
     // reproduces `qflock_kappa`.
-    k[QFLOCK] = Some((2 + tables::SHA2_TABLE, flock::sha2::K_LOG - ::pcs::LOG_PACKING));
+    k[QFLOCK] = Some((2 + tables::SHA2_TABLE, flock::hash::K_LOG - ::pcs::LOG_PACKING));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
@@ -463,7 +463,7 @@ impl Program {
         });
         assert_eq!(
             taus[tables::SHA2_TABLE],
-            crate::sha2_flock::n_blocks_log(row_counts[tables::SHA2_TABLE]),
+            crate::hash_flock::n_blocks_log(row_counts[tables::SHA2_TABLE]),
             "the SHA-256 table must be filled to flock's instance floor"
         );
         let pi = [exec.mem[0], exec.mem[1]];
@@ -533,9 +533,9 @@ impl Program {
                     let (w0, w1) = (exec.mem[c0 as usize], exec.mem[c1 as usize]);
                     [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
                 };
-                crate::sha2_flock::compression(chunk(a[0], a[1]), chunk(a[2], a[3]), chunk(a[4], a[4] + 1))
+                crate::hash_flock::compression(chunk(a[0], a[1]), chunk(a[2], a[3]), chunk(a[4], a[4] + 1))
             });
-            crate::sha2_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
+            crate::hash_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
         });
 
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =

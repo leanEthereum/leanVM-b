@@ -169,7 +169,7 @@ pub trait LincheckCircuit: Sync {
     /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
     /// [`verify`] only ever consumes the marginal through one inner product
     /// against a column-weight vector, so an implementation that can walk its
-    /// circuit (O(circuit) field ops, see `sha2::bilinear_walk`) answers
+    /// circuit (O(circuit) field ops, see `hash::bilinear_walk`) answers
     /// here and never pays the ∝ NNZ marginal. Default `None`: the verifier
     /// falls back to `fold_alpha_batched`.
     fn bilinear_form(&self, _alpha: F192, _u: &[F192], _w: &[F192]) -> Option<F192> {

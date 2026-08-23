@@ -11,7 +11,7 @@
 //! compressions: 2 (encoding) + 99 (chains, fixed by the target sum) + 11
 //! (tips) + 32 (Merkle path). Those are unchanged from the BLAKE2s scheme this
 //! replaces, because `sha2_eth`'s length block is a compile-time constant at
-//! every one of these fixed sizes (`primitives::sha2::iv_for_len`).
+//! every one of these fixed sizes (`primitives::hash::iv_for_len`).
 
 use crate::*;
 
@@ -42,7 +42,7 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
 /// compression for chain steps (48 bytes total) and Merkle nodes (64 bytes
 /// total), more for the multi-block WOTS public-key and encoding inputs.
 pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, payload: &[u8]) -> Digest {
-    let mut hasher = primitives::sha2::Hasher::new(TWEAK_LEN + PUBLIC_PARAM_LEN + payload.len());
+    let mut hasher = primitives::hash::Hasher::new(TWEAK_LEN + PUBLIC_PARAM_LEN + payload.len());
     hasher.update(&make_tweak(tweak_type, sub_position, index));
     hasher.update(pp);
     hasher.update(payload);

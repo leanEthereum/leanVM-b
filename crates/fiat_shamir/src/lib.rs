@@ -8,7 +8,7 @@
 //! `sha2_eth` hash the VM's `Sha2` opcode computes, so prover, verifier, and a
 //! recursive verifier running on the VM all derive identical challenges with one
 //! hash per step. Hashing exactly 64 bytes IS one SHA-256 compression, from the
-//! precomputed 64-byte chaining value `primitives::sha2::IV_64`, which is why a
+//! precomputed 64-byte chaining value `primitives::hash::IV_64`, which is why a
 //! single opcode covers the whole chain.
 //!
 //! Every block has ONE shape: up to three lanes of data, and the domain tag in
@@ -50,7 +50,7 @@ pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     for (slot, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
         *slot = w.0.to_le_bytes();
     }
-    let digest = primitives::sha2::hash_block(&input);
+    let digest = primitives::hash::hash_block(&input);
     std::array::from_fn(|index| F64(u64::from_le_bytes(digest[8 * index..8 * index + 8].try_into().unwrap())))
 }
 

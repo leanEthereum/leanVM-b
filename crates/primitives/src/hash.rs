@@ -50,13 +50,13 @@
 //! [`hash_block`] exists for the 64-byte case, which is most of the hashing a
 //! proof does, and [`hash`] at any other length pays one hardware compression
 //! for the length block on top of the `ceil(n / 64)`. Measured on an M4 Max
-//! (`tests/sha2_bench.rs`, `serial_throughput`): 33 ns for the 64-byte hash,
+//! (`tests/hash_bench.rs`, `serial_throughput`): 33 ns for the 64-byte hash,
 //! 106 ns at 96 bytes, 346 ns at 704 bytes.
 //!
 //! ## Surfaces
 //!
 //! - [`compress`], the compression. The VM's `Sha2` opcode computes it and
-//!   `flock::sha2` proves it.
+//!   `flock::hash` proves it.
 //! - [`hash`] / [`Hasher`], `sha2_eth` over bytes. The hasher takes the total
 //!   length up front, because the construction needs it in the first block.
 //! - [`hash_block`], `sha2_eth` of exactly 64 bytes at one compression.
@@ -1579,7 +1579,7 @@ pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u32; 8], out: 
 /// aarch64-with-crypto-extension this IS the batched path (x86 transposition
 /// beats two-lane SHA-NI in bulk, so the dispatch never takes it); on aarch64
 /// the extension wins, and this survives publicly as the measurement surface
-/// for what batched hashing costs without it (`sha2_bench.rs`).
+/// for what batched hashing costs without it (`hash_bench.rs`).
 pub fn hash_many_dyn_from_state_transposed(data: &[u8], len: usize, state: &[u32; 8], out: &mut [u8]) {
     assert!(
         len > 0 && len.is_multiple_of(BLOCK_LEN),

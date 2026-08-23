@@ -1,15 +1,15 @@
 //! The SHA-256 circuit driven through flock's actual reduction: zerocheck then
 //! lincheck, prover and verifier, on the shared transcript.
 //!
-//! The unit tests in `flock::sha2` establish that the circuit is the right
+//! The unit tests in `flock::hash` establish that the circuit is the right
 //! circuit (known-answer vectors, honest witness satisfies, the backward walk
 //! transposes the forward one). This establishes that the encoding is *provable* with the
 //! machinery as it stands: same zerocheck, same lincheck, `k_log = 15` and
 //! `k_skip = 6`. Only the PCS opening is left out, which is generic in the
-//! claims and covered end to end by `sha2_batch`.
+//! claims and covered end to end by `hash_batch`.
 
 use crate::lincheck::QuirkyPoint;
-use crate::sha2::{
+use crate::hash::{
     Compression, K_LOG, K_SKIP, USEFUL_BITS, WalkLincheckCircuit, generate_witness_with_ab_packed_and_lincheck, iv_64,
     min_n_blocks_log,
 };
@@ -127,7 +127,7 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
 
 /// A full SHA-256 compression inside a 2^15 block, proved and verified through
 /// the unmodified zerocheck and lincheck. The lincheck verifier here answers via
-/// [`flock::sha2::bilinear_walk`], so this also exercises the forward walk
+/// [`flock::hash::bilinear_walk`], so this also exercises the forward walk
 /// against the same transcript the backward walk's marginal produced.
 #[test]
 fn sha2_reduction_roundtrip() {
@@ -141,7 +141,7 @@ fn sha2_reduction_roundtrip() {
 /// region, so every row kind the block contains is represented.
 #[test]
 fn sha2_reduction_rejects_tampering() {
-    // One bit from each region of the block, per `flock::sha2`'s layout map:
+    // One bit from each region of the block, per `flock::hash`'s layout map:
     // h[0] bit 0; m[5] bit 28; W[29]'s pin; round 63's Ch product and its
     // A_NEW pin; and out[1] bit 12.
     for bit in [0usize, 700, 2_728, 28_540, 28_860, 300] {

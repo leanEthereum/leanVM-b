@@ -223,7 +223,7 @@ pub(crate) fn walk_add3_fused(
 // matrices materialized. Each `back_*` below is the transpose of the matching
 // `walk_*`: it takes the adjoint of the gadget's output word, deposits the
 // marginal entries owned by the gadget's own slots, and returns the adjoints of
-// its operands. `sha2::marginal_walk_side` threads them in reverse topological
+// its operands. `hash::marginal_walk_side` threads them in reverse topological
 // order, selecting either the A or B operand of every row.
 // ---------------------------------------------------------------------------
 
