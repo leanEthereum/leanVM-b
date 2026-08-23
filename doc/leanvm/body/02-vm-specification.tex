@@ -23,7 +23,7 @@ A \emph{memory word}, including a cell value, immediate, or hash value, is an el
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
 
-\paragraph{Instruction set.} The machine implements seven instructions. Below, $o,o_A,\dots$ are fp-relative references, $k$ is an immediate operand, and $\loc{o}$ is the cell at address $\fp\cdot o$.
+\paragraph{Instruction set.} The machine implements six instructions. Below, $o,o_A,\dots$ are fp-relative references, $k$ is an immediate operand, and $\loc{o}$ is the cell at address $\fp\cdot o$.
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
@@ -34,13 +34,10 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $192$-bit immediate)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{PACK64X2}      & $[o_A,o_B,o_C]$ & $\loc{o_C}=a_0+b_0y$ for $\loc{o_A}=a_0,\loc{o_B}=b_0\in\K$\\
 \texttt{KECCAK}        & $[o_0,o_1,o_2,o_3,o_R,o_P,o_C]$ & one Keccak sponge step (below)\\
 \hline
 \end{tabularx}
 \end{center}
-
-\texttt{PACK64X2} groups the low limbs of two $\E$-valued memory cells into one canonical $128$-bit cell.
 
 \texttt{KECCAK} is one sponge step of SHA3-256~\cite{fips202}: it absorbs a $1088$-bit rate block into a running $1600$-bit state and applies $\keccakf$, computing $\keccakf(P\oplus(M\Vert 0^{512}))$. The XOR is free over $\Ftwo$, so folding the absorb into the opcode costs nothing and makes one instruction worth $136$ bytes of message.
 
@@ -62,4 +59,3 @@ The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return
 \texttt{JUMP} reads a condition $c=\loc{o_c}$, a $\K$-element, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
 
 \paragraph{Words used as addresses.} A memory word is $192$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Some instructions (\texttt{DEREF}, \texttt{JUMP}) interpret memory words as address or registers. The VM then requires those words to be stricly in $\K$ (i.e. the two top lanes are zero). For \texttt{JUMP} the requirement is unconditional: $\loc{o_d}$ and $\loc{o_f}$ must be in $\K$ on every execution of the instruction, not only when the branch is taken. Its condition is $\K$-valued too, though nothing reads it as an address; all three are committed one lane each, the memory interaction zeroing the rest (\S\ref{sec:tab-jump}).
-

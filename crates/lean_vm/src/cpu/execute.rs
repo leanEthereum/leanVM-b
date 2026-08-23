@@ -192,7 +192,6 @@ impl Program {
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
         let mut keccak: Vec<Brow> = Vec::new();
-        let mut pack64x2: Vec<Xrow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
         // range-check gadget's unconstrained target cells), as `(a2, a3)`,
@@ -317,15 +316,7 @@ impl Program {
             if switch {
                 if left.is_none() {
                     assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
-                    let counts = [
-                        xor.len(),
-                        mul.len(),
-                        set.len(),
-                        deref.len(),
-                        jump.len(),
-                        keccak.len(),
-                        pack64x2.len(),
-                    ];
+                    let counts = [xor.len(), mul.len(), set.len(), deref.len(), jump.len(), keccak.len()];
                     base_counts = Some(counts);
                     fill_base = (1usize << crate::cpu::MIN_LOG_MEM).max(next_free as usize);
                     // A frame per cycle, from the same bump allocator that serves `Alloc`
@@ -778,26 +769,6 @@ impl Program {
                         pc += 1;
                     }
                 }
-                Op::Pack64x2 { a, b, c } => {
-                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
-                    let va = m.get(aa);
-                    let vb = m.get(ab);
-                    assert_eq!((va.c1, va.c2), (0, 0), "PACK64X2 first input must be K-valued");
-                    assert_eq!((vb.c1, vb.c2), (0, 0), "PACK64X2 second input must be K-valued");
-                    m.put(ac, F192::new(va.c0, vb.c0, 0));
-                    let ra = m.bump_access_count(aa);
-                    let rb = m.bump_access_count(ab);
-                    let rc = m.bump_access_count(ac);
-                    pack64x2.push(Xrow {
-                        pc,
-                        fp,
-                        ra,
-                        rb,
-                        rc,
-                        bytecode_read,
-                    });
-                    pc += 1;
-                }
                 Op::Keccak { ins, rest, prev, out } => {
                     // The rate block: lanes 0..8 from four independently-addressed
                     // cells, lanes 8..18 from the five consecutive `rest` cells.
@@ -943,7 +914,6 @@ impl Program {
             deref,
             jump,
             keccak,
-            pack64x2,
             mem_count: m.count,
             bytecode_count,
         };

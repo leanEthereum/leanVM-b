@@ -57,13 +57,6 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// Pack two K-valued source cells into one canonical 128-bit cell. The VM
-    /// memory bus enforces that both inputs have zero extension limbs.
-    Pack64x2 {
-        a: Off,
-        b: Off,
-        c: Off,
-    },
     /// `Keccak`: one sponge step. The four 128-bit cells `ins` hold rate lanes
     /// 0..8 and are addressed independently, one frame cell each; `rest` is the
     /// base of the five consecutive cells holding lanes 8..18; `prev` is the

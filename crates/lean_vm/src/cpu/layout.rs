@@ -234,7 +234,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
-            Op::Pack64x2 { a, b, c } => a.max(b).max(c),
             Op::Keccak { ins, rest, prev, out } => ins
                 .into_iter()
                 .max()
@@ -254,7 +253,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
-        Op::Pack64x2 { .. } => tables::OP_PACK64X2,
         Op::Keccak { .. } => OP_KECCAK,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
@@ -265,7 +263,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
             Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
-            Op::Pack64x2 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
             // Keccak's first three independently-addressed input cells; the
             // fourth, the `rest` base and the output base ride the slots below.
             Op::Keccak { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),

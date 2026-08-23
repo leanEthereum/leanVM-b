@@ -1,7 +1,7 @@
 % !TeX root = ../drafts/10-isa-programming.tex
 \section{ISA programming}\label{sec:isa-programming}
 
-How the zkDSL compiler (\path{crates/lean_compiler}; surface language in \path{crates/lean_compiler/zkDSL.md}) programs the seven-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
+How the zkDSL compiler (\path{crates/lean_compiler}; surface language in \path{crates/lean_compiler/zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
 
 \subsection{Hints}\label{sec:prog-hints}
 
@@ -35,6 +35,10 @@ A counted loop keeps its counter in the exponent: it starts at $\gen^{\mathrm{lo
 \texttt{if}/\texttt{else} on a field equality is one \texttt{XOR} plus one conditional \texttt{JUMP}: the taken jump goes to whichever block the test should \emph{not} fall into ($=$ falls into \emph{then}, $\neq$ into \emph{else}), so no negation is ever computed. Intra-function jump targets are bytecode addresses $\gen^{\mathrm{entry}+i}$, backpatched at layout.
 
 A taken \texttt{JUMP} reloads $\fp$ from a cell, and the ISA has no $\fp$-read; a branching function therefore materializes its own $\fp$ once: a \texttt{DEREF} in mode \texttt{fp} writes $\fp$ into a fresh one-cell heap buffer, a \texttt{DEREF} in mode \texttt{cell} copies it back into the frame (2 instructions, amortized; in \texttt{main}, $\fp=\gen^{0}=1$ is already a constant). Bindings made inside a branch are local to it; branches communicate through write-once cells: only one branch executes, so both may write the \emph{same} cell.
+
+\subsection{Checking that a value is in the subfield \texorpdfstring{$\K$}{K}}\label{sec:prog-subfield-checks}
+
+To check that $\loc{o_1}$ and $\loc{o_2}$ are both in $\K$, it suffices to emit \texttt{JUMP} $[o_0,o_1,o_2]$ with $\loc{o_0}=0$. Indeed, the jump falls through, while \texttt{JUMP} unconditionally requires all three values it reads to be in $\K$.
 
 \subsection{Range checks}\label{sec:prog-range-checks}
 

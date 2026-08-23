@@ -137,11 +137,6 @@ struct Scope {
     const_cells: HashMap<[u64; 3], Off>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
     zero_off: Option<Off>,
-    /// Two consecutive frame cells holding the standard SHA3-256 IV, emitted
-    /// lazily at the first dominating default-IV compression in this
-    /// control-flow scope.
-    sha3_pad: Option<Off>,
-    sha3_zero_state: Option<Off>,
 }
 
 struct FnLower<'a> {
@@ -178,6 +173,13 @@ struct FnLower<'a> {
     /// value, a later store to it is an assertion on whichever arm ran.
     phys: HashSet<Off>,
     /// Where the fill blocks begin in `code`, once emitted.
+    /// The scope-shared pad and zero state of [`Self::sha3_pad64`] /
+    /// [`Self::sha3_zero_state`], written once in the prologue so that they
+    /// dominate every hash in the function, branches included. Deliberately NOT
+    /// in [`Scope`]: a branch-local copy would be one per branch, and the guest
+    /// hashes inside most of them.
+    sha3_pad: Option<Off>,
+    sha3_zero_state: Option<Off>,
     filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
@@ -219,7 +221,7 @@ impl FnLower<'_> {
         // the equality it names is still unset.
         match op {
             LOp::Set { o, .. } => self.phys.insert(o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } | LOp::Pack64x2 { c, .. } => self.phys.insert(c),
+            LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.phys.insert(c),
             LOp::Deref { gamma, .. } => self.phys.insert(gamma),
             LOp::Keccak { c, .. } => {
                 // The permuted state, all thirteen cells: the digest is the first two
@@ -380,7 +382,7 @@ impl FnLower<'_> {
     /// and shared by every `sha3_64` in it, so the whole pad costs nine `SET`s no
     /// matter how many hashes use it.
     fn sha3_pad64(&mut self) -> Off {
-        if let Some(o) = self.scope.sha3_pad {
+        if let Some(o) = self.sha3_pad {
             return o;
         }
         let o = self.alloc_stack(lean_vm::hash_flock::REST_CELLS as u32);
@@ -391,7 +393,7 @@ impl FnLower<'_> {
         for (k, value) in lean_vm::hash_flock::PAD64_REST.into_iter().enumerate() {
             self.set_const(o + k as u32, value);
         }
-        self.scope.sha3_pad = Some(o);
+        self.sha3_pad = Some(o);
         o
     }
 
@@ -505,11 +507,6 @@ impl FnLower<'_> {
                         FillerOp::Set => LOp::Set {
                             o: fr::SCRATCH,
                             k: KVal::Const(F192::ZERO),
-                        },
-                        FillerOp::Pack => LOp::Pack64x2 {
-                            a: fr::SCRATCH,
-                            b: fr::SCRATCH,
-                            c: fr::SCRATCH,
                         },
                         FillerOp::Deref => LOp::Deref {
                             alpha: fr::PTR,
@@ -1162,14 +1159,6 @@ impl FnLower<'_> {
                     floor,
                 }));
                 dst
-            }
-            Expr::Call(f, args) if f == "pack64x2" => {
-                assert_eq!(args.len(), 2, "pack64x2(a, b) takes two scalar cells");
-                let a = self.expr(&args[0]);
-                let b = self.expr(&args[1]);
-                let c = self.fresh();
-                self.emit(LOp::Pack64x2 { a, b, c });
-                c
             }
             Expr::Call(f, args) => {
                 let d = self.call(f, args, 1)[0];
@@ -2251,12 +2240,12 @@ impl FnLower<'_> {
             }
             "sha3_64" => self.lower_sha3_64(args),
             "keccak" => self.lower_keccak(args),
-            "pack64x2_into" => {
-                assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
+            "assert_in_k" => {
+                assert_eq!(args.len(), 2, "assert_in_k(a, b) takes two scalar cells");
                 let a = self.expr(&args[0]);
                 let b = self.expr(&args[1]);
-                let c = self.expr(&args[2]);
-                self.emit(LOp::Pack64x2 { a, b, c });
+                let zero = self.zero();
+                self.emit(LOp::Jump { oc: zero, od: a, of: b });
             }
             "hint_f192_limbs" => {
                 assert_eq!(args.len(), 2, "hint_f192_limbs(dest, value)");
@@ -2361,7 +2350,7 @@ impl FnLower<'_> {
     /// from. Allocated once per scope, and free, since a cell the VM never writes
     /// reads as zero.
     fn sha3_zero_state(&mut self) -> Off {
-        if let Some(o) = self.scope.sha3_zero_state {
+        if let Some(o) = self.sha3_zero_state {
             return o;
         }
         let o = self.alloc_stack(lean_vm::hash_flock::STATE_CELLS as u32);
@@ -2370,7 +2359,7 @@ impl FnLower<'_> {
         for k in 0..lean_vm::hash_flock::STATE_CELLS as u32 {
             self.set_const(o + k, F192::ZERO);
         }
-        self.scope.sha3_zero_state = Some(o);
+        self.sha3_zero_state = Some(o);
         o
     }
 
@@ -2592,7 +2581,7 @@ fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         Stmt::Call(f, _) => {
             f == "sha3_64"
                 || f == "keccak"
-                || f == "pack64x2_into"
+                || f == "assert_in_k"
                 || f == "hint_f192_limbs"
                 || defs.get(f).is_some_and(|d| d.inline)
         }
@@ -2718,6 +2707,32 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
     }
 }
 
+/// Does lowering `body` emit a hash? Inlined callees lower into this frame and
+/// share its pad, so their bodies count; a called function has its own frame and
+/// its own prologue. Over-approximating costs a prologue nothing reads;
+/// under-approximating is loud, since the hash then reads cells written only on
+/// one path and `cpu::prove` rejects that.
+fn body_hashes(body: &[Stmt], defs: &HashMap<String, Func>, seen: &mut Vec<String>) -> bool {
+    body.iter().any(|s| match s {
+        Stmt::Call(f, _) | Stmt::CallIfNe(_, _, f, _) => {
+            f == "sha3_64"
+                || f == "keccak"
+                || defs.get(f).is_some_and(|d| {
+                    d.inline && !seen.contains(f) && {
+                        seen.push(f.clone());
+                        let hit = body_hashes(&d.body, defs, seen);
+                        seen.pop();
+                        hit
+                    }
+                })
+        }
+        Stmt::If { then, els, .. } => body_hashes(then, defs, seen) || body_hashes(els, defs, seen),
+        Stmt::Match { cases, .. } => cases.iter().any(|c| body_hashes(c, defs, seen)),
+        Stmt::For { body, .. } | Stmt::Unroll { body, .. } => body_hashes(body, defs, seen),
+        _ => false,
+    })
+}
+
 /// Lower one function to its instruction list and frame size.
 pub(crate) fn lower_func(
     f: &Func,
@@ -2742,6 +2757,8 @@ pub(crate) fn lower_func(
     let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
     let next = 2 + f.params.len() as u32 + n_ret_cells;
     let mut lowerer = FnLower {
+        sha3_pad: None,
+        sha3_zero_state: None,
         filler_start: None,
         scope: Scope {
             vars,
@@ -2767,6 +2784,14 @@ pub(crate) fn lower_func(
         defs,
         const_arrays,
     };
+    // The pad and the zero state are read by every hash in the function and have
+    // to be written where they dominate it, which is here: emitted at first use
+    // they would land inside whichever branch hashed first, and every other branch
+    // would need its own copy.
+    if body_hashes(&f.body, defs, &mut Vec::new()) {
+        lowerer.sha3_pad64();
+        lowerer.sha3_zero_state();
+    }
     for (i, s) in f.body.iter().enumerate() {
         // Tail position: a conditional call whose only successor is a bare
         // `return`, in a function that returns nothing. The `mul_range` helper

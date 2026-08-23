@@ -242,9 +242,6 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Pack64x2 { a, b, c } => {
-                format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
-            }
             Op::Keccak { ins, rest, prev, out } => {
                 format!(
                     "KECCAK fp[{out}..]= absorb(fp[{prev}..], fp[{}],fp[{}],fp[{}],fp[{}], rest=fp[{rest}..])",
@@ -312,7 +309,6 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
         LOp::Keccak { ins, rest, prev, c } => Op::Keccak {
             ins: *ins,
             rest: *rest,

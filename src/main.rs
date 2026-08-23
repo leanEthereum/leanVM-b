@@ -5,7 +5,7 @@
 //! cargo run --release -- xmss --n-signatures 820
 //! cargo run --release -- xmss --n-signatures 820 --log-inv-rate 2
 //! cargo run --release -- xmss --n-signatures 820 --repeat 5
-//! cargo run --release -- recursion --n 2 --xmss-per-leaf 900
+//! cargo run --release -- recursion --n 2 --xmss-per-leaf 450
 //! cargo run --release -- fibonacci --n 2000000
 //! cargo run --release -- --tracing fibonacci --n 2000000
 //! ```
@@ -60,7 +60,7 @@ enum Command {
     /// Aggregate XMSS signatures inside the VM and verify the proof.
     Xmss {
         /// Number of signatures to aggregate.
-        #[arg(long, default_value = "820")]
+        #[arg(long, default_value = "450")]
         n_signatures: usize,
     },
     /// Aggregate n previously aggregated signatures into one proof.
@@ -70,7 +70,7 @@ enum Command {
         n: usize,
         /// Signatures in each child. Sets the child proof's committed size,
         /// which is what the recursion cost should be quoted against.
-        #[arg(long, default_value = "900")]
+        #[arg(long, default_value = "450")]
         xmss_per_leaf: usize,
     },
     /// Prove and verify Fibonacci in the exponent (demo).

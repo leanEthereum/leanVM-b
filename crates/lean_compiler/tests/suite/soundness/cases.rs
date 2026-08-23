@@ -163,14 +163,19 @@ def main():
     });
 }
 
-/// `pack64x2`'s range assertion: both sources must lie in K. The interpreter
-/// enforces it directly, and the memory bus enforces it in a proof through the
-/// tuple's literal-zero upper limbs.
+/// `pack64x2`'s range assertion: both sources must lie in K. Its untaken JUMP
+/// puts them in the destination and frame slots, whose memory reads have
+/// literal-zero upper limbs.
 #[test]
 fn pack64x2_range_assertion() {
     check_case(&Case {
         name: "pack64x2_range_assertion",
         src: "\
+@inline
+def pack64x2(a, b):
+    assert_in_k(a, b)
+    return a + f192(0, 1, 0) * b
+
 def main():
     v = StackBuf(2)
     hint_witness(v, \"w\")

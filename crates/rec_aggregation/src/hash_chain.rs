@@ -128,7 +128,7 @@ fn sha3_hash_chain() {
         pretty_integer(unroll)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "KECCAK", "PACK64X2"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "KECCAK"]
         .iter()
         .zip(&stats.counts)
     {
