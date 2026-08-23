@@ -17,7 +17,7 @@ cargo run --release -- --lifetime 2e6 --max-keygen 2e6 --max-sign 200,000 --max-
 
 Every cost is compression calls, one per 64 bytes of hash input: a Merkle node or a WOTS chain step is one, the message digest two, compressing `m` hash values `ceil((2n + mn) / 64)`.
 
-`--max-sign` counts signing with the top XMSS tree's half top already in state, which is `sqrt(2^h_top)` of storage for a `sqrt(2^h_top)`-cost top tree and the steady-state cost of a signer that keeps it. That state is a cache, not state in the XMSS sense: it is a deterministic function of the seed, so losing it costs recomputation and nothing else. A signer holding nothing pays the `cold` column, which nothing here budgets.
+`--max-sign` counts signing with the top XMSS tree's half top already in state, which is `sqrt(2^h_top)` of storage for a `sqrt(2^h_top)`-cost top tree and the steady-state cost of a signer that keeps it. That state is a cache, not state in the XMSS sense: it is a deterministic function of the seed, so losing it costs recomputation and nothing else. A signer holding nothing rebuilds every tree instead, a cost this computes but does not report, since it is paid once after restoring a backup.
 
 Since size and verification depend only on `(h, d)` and not on how the layers divide `h`, a taller top layer is free on both and cheaper to sign with the cache: compare `--top-height 8` against `--top-height 15` at `--height 40 --layers 5`.
 

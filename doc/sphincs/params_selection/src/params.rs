@@ -409,7 +409,10 @@ pub struct Costs {
     /// Signing with the top tree's half top in state, the cost a signer that
     /// keeps `cache_bytes` of it actually pays.
     pub sign: Cost,
-    /// Signing with no state at all: every tree rebuilt from the seed.
+    /// Signing with no state at all, every tree rebuilt from the seed. Not
+    /// reported: a signer pays it once, after restoring a backup. It is the
+    /// projection the upstream sage scripts compute, which have no cache
+    /// notion, so `tests/goldens` checks their fixtures against it.
     pub sign_cold: Cost,
     pub verify: Cost,
     pub verify_worst: Cost,

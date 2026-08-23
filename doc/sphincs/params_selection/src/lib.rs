@@ -34,7 +34,7 @@
 //! top" in state, its nodes at depth `ceil(h_top/2)`, which is `sqrt(2^h_top)`
 //! of storage for a `sqrt(2^h_top)` top-tree cost per signature and the cost a
 //! signer keeping that cache actually pays. What a signer holding nothing pays
-//! is [`params::Costs::sign_cold`], reported but never budgeted.
+//! is [`params::Costs::sign_cold`], computed but not reported.
 //!
 //! Everything is counted in compression calls, one per 64 bytes of hash input:
 //! a Merkle node or a WOTS chain step is one, the message digest two, and

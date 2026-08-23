@@ -64,7 +64,6 @@ pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
     let forgery = forgery_exponent(q_s, p.h as u32, p.k, p.a);
     let cap = 8.0 * p.n as f64;
     let security = forgery.map_or(0.0, |f| f.min(cap));
-    let speedup = c.sign_cold.hashes as f64 / c.sign.hashes.max(1) as f64;
     let row = |label: &str, x: crate::cost::Cost, note: String| format!("{label:<24}{:>12}{note}", si(x.compressions));
 
     let mut lines = vec![
@@ -106,15 +105,7 @@ pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
         row(
             "sign",
             c.sign,
-            format!(
-                "   ({} B of state at depth {}, {speedup:.2}x cheaper than cold)",
-                c.cache_bytes, c.cache_depth
-            ),
-        ),
-        row(
-            "sign (cold)",
-            c.sign_cold,
-            "   (no state: every tree rebuilt)".to_string(),
+            format!("   ({} B of state at depth {})", c.cache_bytes, c.cache_depth),
         ),
         row("verify", c.verify, String::new()),
     ];
@@ -131,7 +122,7 @@ pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
     lines.join("\n")
 }
 
-const COLUMNS: [(&str, usize); 16] = [
+const COLUMNS: [(&str, usize); 15] = [
     ("verify", 9),
     ("scheme", 9),
     ("h", 4),
@@ -146,7 +137,6 @@ const COLUMNS: [(&str, usize); 16] = [
     ("size", 6),
     ("keygen", 8),
     ("sign", 8),
-    ("cold", 8),
     ("cache B", 7),
 ];
 
@@ -167,7 +157,6 @@ fn cells(c: &Candidate) -> Vec<String> {
         x.sig_bytes.to_string(),
         si(x.keygen.compressions),
         si(x.sign.compressions),
-        si(x.sign_cold.compressions),
         x.cache_bytes.to_string(),
     ]
 }
@@ -176,7 +165,7 @@ fn cells(c: &Candidate) -> Vec<String> {
 /// own and not the report's.
 pub fn legend() -> String {
     "every cost in compression calls, one per 64 bytes of hash input; sign = signing with the top tree's half top \
-     in state, cache B of it, and cold = the same with no state at all\nht = top layer height, w = Winternitz parameter, the positions one chain \
+     in state, cache B of it\nht = top layer height, w = Winternitz parameter, the positions one chain \
      has (--chain-bits takes its log2), drop = chains dropped beyond the pinned digest bits, l = chains signed, \
      S_wn = target digit sum"
         .to_string()
