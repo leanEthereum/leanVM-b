@@ -32,18 +32,23 @@ parameters
   --swn S           WOTS+C target digit sum               [the most the signing
                                                            budget allows, or the
                                                            mean]
-
-The last three trade signer work for cheaper verification, so unpinned they are
-searched only against a budget that bounds it; with none they take the value the
-report's own parameter sets use, shown above after the comma.
   -n N              hash output in bytes                  [16]
+
+Three of those buy something only by spending something else, so left unpinned
+they are searched against the budget that bounds what they spend, and take the
+value the report's own parameter sets use when it is unset (the second default
+above). --swn and --drop-chains buy cheaper verification with grinding, bounded
+by --max-sign; --top-height buys cheaper signing with key generation, bounded by
+--max-keygen.
 
 budgets, all optional: an unset one is no limit. Every cost is counted in
 compression calls, one per 64 bytes of hash input.
   --max-keygen N        compressions at key generation
-  --max-sign N          compressions at signing
-  --max-sign-cached N   compressions at signing with the top tree's half top
-                        kept in state
+  --max-sign N          compressions at signing, counting the top XMSS tree's
+                        half top as already in state: the steady-state cost of
+                        a signer that keeps the cache the `cache B` column
+                        sizes. A signer holding nothing pays the `cold` column
+                        instead, which nothing here budgets.
   --max-size B          signature bytes
   --security BITS       classical security floor          [128, NIST level 1]
 
@@ -54,8 +59,7 @@ other
   --stats               report how much of the space was visited
 
 examples
-  sphincs_params --lifetime 1e9 --max-keygen 2e6 --max-sign 6e6 \\
-                 --max-sign-cached 4e6 --max-size 4000
+  sphincs_params --lifetime 1e9 --max-keygen 2e6 --max-sign 4e6 --max-size 4000
   sphincs_params --lifetime 1e12 --height 40 --layers 5 -a 14 -k 11 -w 256 --swn 2040
 ";
 
@@ -189,18 +193,18 @@ fn run(argv: &[String]) -> Result<bool, String> {
         q_s,
         keygen: args.num("--max-keygen")?,
         sign: args.num("--max-sign")?,
-        sign_cached: args.num("--max-sign-cached")?,
         size: args.num("--max-size")?,
         security: args.get("--security").map_or(Ok(LEVEL1_BITS), |s| {
             s.parse().map_err(|_| format!("--security: expected a number, got {s}"))
         })?,
     };
-    // A higher target sum, dropped chains and a taller top tree all buy cheaper
-    // verification with signer work, so with nothing bounding the signer they
-    // are unbounded and their answer is useless. Unpinned and unbudgeted, they
-    // take their classic value instead: the mean target sum, no dropped chains,
-    // and h/d on every layer.
-    let signing_bounded = b.any_signing_limit();
+    // Three axes buy something only by spending something that may be
+    // unbudgeted, and then their answer is useless: the target sum and the
+    // dropped chains buy cheaper verification with grinding, and a taller top
+    // tree buys cheaper signing with key generation and with cold signing.
+    // Unpinned, each is searched only when the budget that bounds it is set,
+    // and otherwise takes the value the report's own parameter sets use.
+    let signing_bounded = b.sign.is_some();
     let sums = match (args.num("--swn")?, signing_bounded) {
         (Some(s), _) => Sums::Pinned(s),
         (None, true) => Sums::Sweep,
@@ -211,7 +215,7 @@ fn run(argv: &[String]) -> Result<bool, String> {
         (None, true) => Span::new(0, DROPPED_MAX),
         (None, false) => Span::pin(0),
     };
-    let h_top = match (args.num("--top-height")?, signing_bounded || b.keygen.is_some()) {
+    let h_top = match (args.num("--top-height")?, b.keygen.is_some()) {
         (Some(ht), _) => Some(Span::pin(ht)),
         (None, true) => Some(Span::new(1, H_MAX)),
         (None, false) => None,

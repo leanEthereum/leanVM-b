@@ -64,7 +64,7 @@ pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
     let forgery = forgery_exponent(q_s, p.h as u32, p.k, p.a);
     let cap = 8.0 * p.n as f64;
     let security = forgery.map_or(0.0, |f| f.min(cap));
-    let speedup = c.sign.hashes as f64 / c.sign_cached.hashes.max(1) as f64;
+    let speedup = c.sign_cold.hashes as f64 / c.sign.hashes.max(1) as f64;
     let row = |label: &str, x: crate::cost::Cost, note: String| format!("{label:<24}{:>12}{note}", si(x.compressions));
 
     let mut lines = vec![
@@ -103,14 +103,18 @@ pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
         String::new(),
         format!("{:<24}{:>12}", "", "compressions"),
         row("keygen", c.keygen, String::new()),
-        row("sign (avg)", c.sign, String::new()),
         row(
-            "sign (half-top cached)",
-            c.sign_cached,
+            "sign",
+            c.sign,
             format!(
-                "   ({speedup:.2}x, {} B of state at depth {})",
+                "   ({} B of state at depth {}, {speedup:.2}x cheaper than cold)",
                 c.cache_bytes, c.cache_depth
             ),
+        ),
+        row(
+            "sign (cold)",
+            c.sign_cold,
+            "   (no state: every tree rebuilt)".to_string(),
         ),
         row("verify", c.verify, String::new()),
     ];
@@ -142,7 +146,7 @@ const COLUMNS: [(&str, usize); 16] = [
     ("size", 6),
     ("keygen", 8),
     ("sign", 8),
-    ("sign-cached", 11),
+    ("cold", 8),
     ("cache B", 7),
 ];
 
@@ -163,7 +167,7 @@ fn cells(c: &Candidate) -> Vec<String> {
         x.sig_bytes.to_string(),
         si(x.keygen.compressions),
         si(x.sign.compressions),
-        si(x.sign_cached.compressions),
+        si(x.sign_cold.compressions),
         x.cache_bytes.to_string(),
     ]
 }
@@ -171,9 +175,9 @@ fn cells(c: &Candidate) -> Vec<String> {
 /// What the abbreviated columns mean, since several of them are this project's
 /// own and not the report's.
 pub fn legend() -> String {
-    "every cost in compression calls, one per 64 bytes of hash input; sign / sign-cached = signing without and \
-     with the top tree's half top in state, cache B of it\nht = top layer height, cb = log2(w), drop = chains \
-     dropped beyond the pinned digest bits, l = chains signed, S_wn = target digit sum"
+    "every cost in compression calls, one per 64 bytes of hash input; sign = signing with the top tree's half top \
+     in state, cache B of it, and cold = the same with no state at all\nht = top layer height, cb = log2(w), \
+     drop = chains dropped beyond the pinned digest bits, l = chains signed, S_wn = target digit sum"
         .to_string()
 }
 
@@ -197,7 +201,6 @@ pub fn utilization(b: &Budgets, c: &Candidate) -> String {
     let used = [
         ("keygen", c.costs.keygen.compressions, b.keygen),
         ("sign", c.costs.sign.compressions, b.sign),
-        ("sign-cached", c.costs.sign_cached.compressions, b.sign_cached),
         ("size", c.costs.sig_bytes, b.size),
     ];
     used.iter()

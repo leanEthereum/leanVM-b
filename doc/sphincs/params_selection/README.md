@@ -12,10 +12,14 @@ cargo run --release -- --lifetime 1e12 --scheme W+C_F+C --height 40 --layers 5 -
 That pins everything, so it just costs that one set: the report's bold 2^40 row, 4356 bytes and 10425 compressions to verify. Size and verification do not depend on the lifetime, only the security line does. Leave axes out and they get searched instead, against whichever budgets you set:
 
 ```sh
-cargo run --release -- --lifetime 16e6 --max-keygen 2e6 --max-sign 6e6 --max-sign-cached 4e6 --max-size 4000
+cargo run --release -- --lifetime 2e6 --max-keygen 2e6 --max-sign 10e6 --max-sign-cached 4e6 --max-size 4000
 ```
 
-Every cost is compression calls, one per 64 bytes of hash input: a Merkle node or a WOTS chain step is one, the message digest two, compressing `m` hash values `ceil((2n + mn) / 64)`. `--max-sign-cached` budgets signing with the top XMSS tree's half top kept as signer state, which costs sqrt storage for a sqrt-cost top tree. Since size and verification depend only on `(h, d)` and not on how the layers divide `h`, a taller top layer is free on both and cheaper to sign with the cache: compare `--top-height 8` against `--top-height 15` at `--height 40 --layers 5`.
+Every cost is compression calls, one per 64 bytes of hash input: a Merkle node or a WOTS chain step is one, the message digest two, compressing `m` hash values `ceil((2n + mn) / 64)`.
+
+`--max-sign` counts signing with the top XMSS tree's half top already in state, which is `sqrt(2^h_top)` of storage for a `sqrt(2^h_top)`-cost top tree and the steady-state cost of a signer that keeps it. That state is a cache, not state in the XMSS sense: it is a deterministic function of the seed, so losing it costs recomputation and nothing else. A signer holding nothing pays the `cold` column, which nothing here budgets.
+
+Since size and verification depend only on `(h, d)` and not on how the layers divide `h`, a taller top layer is free on both and cheaper to sign with the cache: compare `--top-height 8` against `--top-height 15` at `--height 40 --layers 5`.
 
 `cargo run --release --` with no arguments prints every flag and its default. `cargo test --release` runs the goldens: the upstream sage fixtures, the report's own tables, and a naive search oracle that skips nothing.
 

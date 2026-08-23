@@ -345,14 +345,16 @@ impl Skeleton {
         })
     }
 
-    /// Expected signing cost when each layer grinds `trials` counters.
+    /// Expected signing cost, with the top tree's half top in state, when each
+    /// layer grinds `trials` counters.
     pub fn sign(&self, lay: &Layers, trials: u64) -> Cost {
-        lay.trees + self.fors_part + self.grinding(trials)
+        lay.trees_cached + self.fors_part + self.grinding(trials)
     }
 
-    /// The same with the top tree's half top cached.
-    pub fn sign_cached(&self, lay: &Layers, trials: u64) -> Cost {
-        lay.trees_cached + self.fors_part + self.grinding(trials)
+    /// The same for a signer holding no state at all, which has to rebuild the
+    /// top tree along with the rest.
+    pub fn sign_cold(&self, lay: &Layers, trials: u64) -> Cost {
+        lay.trees + self.fors_part + self.grinding(trials)
     }
 
     /// What `trials` counter values per layer cost across the hypertree.
@@ -382,7 +384,7 @@ impl Skeleton {
             sig_bytes: self.sig_bytes,
             keygen: lay.keygen,
             sign: self.sign(lay, trials),
-            sign_cached: self.sign_cached(lay, trials),
+            sign_cold: self.sign_cold(lay, trials),
             verify: self.verify(swn),
             verify_worst: self.verify_worst(swn),
             wots_c_grinding: self.grinding(trials),
@@ -404,8 +406,11 @@ pub struct Costs {
     pub profile: Profile,
     pub sig_bytes: u64,
     pub keygen: Cost,
+    /// Signing with the top tree's half top in state, the cost a signer that
+    /// keeps `cache_bytes` of it actually pays.
     pub sign: Cost,
-    pub sign_cached: Cost,
+    /// Signing with no state at all: every tree rebuilt from the seed.
+    pub sign_cold: Cost,
     pub verify: Cost,
     pub verify_worst: Cost,
     /// Searching for admissible WOTS+C counters, across every layer.

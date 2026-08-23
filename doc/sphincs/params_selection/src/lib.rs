@@ -30,10 +30,11 @@
 //!
 //! For one parameter set [`params::costs`] reports the signature size and the
 //! keygen, signing and verification cost, and [`security::security_bits`] the
-//! classical security. Signing comes in two flavours: vanilla, and with the top
-//! XMSS tree's "half top" cached, meaning its nodes at depth `ceil(h'/2)` kept
-//! as signer state, which is `sqrt(2^h')` of storage for a `sqrt(2^h')` top-tree
-//! cost per signature.
+//! classical security. Signing means signing with the top XMSS tree's "half
+//! top" in state, its nodes at depth `ceil(h_top/2)`, which is `sqrt(2^h_top)`
+//! of storage for a `sqrt(2^h_top)` top-tree cost per signature and the cost a
+//! signer keeping that cache actually pays. What a signer holding nothing pays
+//! is [`params::Costs::sign_cold`], reported but never budgeted.
 //!
 //! Everything is counted in compression calls, one per 64 bytes of hash input:
 //! a Merkle node or a WOTS chain step is one, the message digest two, and

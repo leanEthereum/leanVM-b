@@ -117,7 +117,7 @@ fn matches_the_sage_fixtures() {
         let got = [
             c.sig_bytes,
             c.keygen.compressions,
-            c.sign.compressions,
+            c.sign_cold.compressions,
             c.verify.compressions,
             c.verify_worst.compressions,
         ];
@@ -188,7 +188,7 @@ fn matches_the_report_tables() {
         let c = costs(p, swn).expect("consistent parameters");
         let tag = format!("{} h={h} d={d} a={a} k={k} w={w} S={swn:?}", scheme.label());
         assert_eq!(c.verify.hashes, sigver, "SigVer {tag}");
-        let got = c.sign.hashes as f64 / 1e4;
+        let got = c.sign_cold.hashes as f64 / 1e4;
         assert!(
             (got - sigtime_e4).abs() < 0.55,
             "SigTime {tag}: got {got:.2}e4, want {sigtime_e4}e4"
@@ -312,27 +312,26 @@ fn secure_k_form_an_up_set() {
 fn half_top_cache_is_a_saving_and_reduces_to_the_full_tree() {
     let p = params(Scheme::WcFc, 40, 5, 14, 11, 256);
     let c = costs(p, None).unwrap();
-    assert!(c.sign_cached.hashes < c.sign.hashes);
+    assert!(c.sign.hashes < c.sign_cold.hashes);
     // caching at the leaves is caching the whole tree: nothing left to rebuild
     let whole = Params {
         cache_height: Some(0),
         ..p
     };
-    assert!(costs(whole, None).unwrap().sign_cached.hashes < c.sign_cached.hashes);
-    // caching only the root is caching nothing
+    assert!(costs(whole, None).unwrap().sign.hashes < c.sign.hashes);
+    // caching only the root is caching nothing, so signing goes cold
     let none = Params {
         cache_height: Some(p.profile().unwrap().h_top),
         ..p
     };
-    assert_eq!(costs(none, None).unwrap().sign_cached.hashes, c.sign.hashes);
+    assert_eq!(costs(none, None).unwrap().sign.hashes, c.sign_cold.hashes);
 }
 
-fn budgets(log2_q_s: i32, keygen: u64, sign: u64, cached: u64, size: u64) -> Budgets {
+fn budgets(log2_q_s: i32, keygen: u64, sign: u64, size: u64) -> Budgets {
     Budgets {
         q_s: 2f64.powi(log2_q_s),
         keygen: Some(keygen),
         sign: Some(sign),
-        sign_cached: Some(cached),
         size: Some(size),
         security: LEVEL1_BITS,
     }
@@ -341,7 +340,7 @@ fn budgets(log2_q_s: i32, keygen: u64, sign: u64, cached: u64, size: u64) -> Bud
 #[test]
 fn search_agrees_with_a_naive_oracle() {
     // A grid small enough to sweep with nothing skipped at all.
-    let b = budgets(20, 3_000_000, 10_000_000, 10_000_000, 4_000);
+    let b = budgets(20, 3_000_000, 10_000_000, 4_000);
     let g = Grid {
         schemes: vec![Scheme::Wc, Scheme::WcFc],
         h: Span::pin(20),
@@ -378,7 +377,7 @@ fn search_finds_and_improves_on_the_reports_bold_row() {
     // chain dropping). Its own choice has to come out feasible, and the search
     // has to do at least as well: it spends what is left of the signing budget
     // raising the target sum, which the report's row does not.
-    let b = budgets(40, 1_100_000, 6_000_000, 6_000_000, 4_400);
+    let b = budgets(40, 1_100_000, 6_000_000, 4_400);
     let g = Grid {
         chain_bits: vec![4, 8],
         dropped: Span::pin(0),
@@ -429,11 +428,8 @@ fn a_taller_top_layer_is_free_on_size_and_verification() {
         t.keygen.hashes > u.keygen.hashes,
         "a taller top tree costs more to generate"
     );
-    assert!(t.sign.hashes > u.sign.hashes, "and more to sign without the cache");
-    assert!(
-        t.sign_cached.hashes < u.sign_cached.hashes,
-        "but less with it, which is the point"
-    );
+    assert!(t.sign_cold.hashes > u.sign_cold.hashes, "and more to sign cold");
+    assert!(t.sign.hashes < u.sign.hashes, "but less with it, which is the point");
     // the lower layers come out as equal as they go, never differing by more
     // than one level
     let p = t.profile;

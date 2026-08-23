@@ -100,8 +100,8 @@ pub struct Budgets {
     pub q_s: f64,
     /// An unset budget is no limit.
     pub keygen: Option<u64>,
+    /// Signing with the top tree's half top in state: see [`Costs::sign`].
     pub sign: Option<u64>,
-    pub sign_cached: Option<u64>,
     pub size: Option<u64>,
     /// Classical security floor in bits.
     pub security: f64,
@@ -114,14 +114,8 @@ impl Budgets {
     pub fn max_sign(&self) -> u64 {
         self.sign.unwrap_or(u64::MAX)
     }
-    pub fn max_sign_cached(&self) -> u64 {
-        self.sign_cached.unwrap_or(u64::MAX)
-    }
     pub fn max_size(&self) -> u64 {
         self.size.unwrap_or(u64::MAX)
-    }
-    pub fn any_signing_limit(&self) -> bool {
-        self.sign.is_some() || self.sign_cached.is_some()
     }
 
     /// Everything is counted in compression calls: see [`crate::cost::Blocks`].
@@ -130,10 +124,7 @@ impl Budgets {
     }
 
     pub fn fits(&self, c: &Costs) -> bool {
-        c.sig_bytes <= self.max_size()
-            && self.of(c.keygen) <= self.max_keygen()
-            && self.of(c.sign) <= self.max_sign()
-            && self.of(c.sign_cached) <= self.max_sign_cached()
+        c.sig_bytes <= self.max_size() && self.of(c.keygen) <= self.max_keygen() && self.of(c.sign) <= self.max_sign()
     }
 }
 
@@ -256,10 +247,9 @@ fn params(g: &Grid, scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, drop
 /// The layer profiles worth trying for one `(h, d)`, and how much grinding the
 /// best of them leaves room for.
 ///
-/// `slack` is `max over profiles of min(max_sign - trees, max_sign_cached -
-/// trees_cached)`, in the budget's unit. Both signing costs take the `(a, k)`
-/// part of signing as the same additive offset, so subtracting that offset from
-/// `slack` gives the grinding budget of the best profile for any `(a, k)`,
+/// `slack` is `max over profiles of (max_sign - the profile's trees)`. Signing
+/// takes the `(a, k)` part as an additive offset, so subtracting that offset
+/// from `slack` gives the grinding budget of the best profile for any `(a, k)`,
 /// without re-ranking the profiles per candidate.
 struct Room {
     profiles: Vec<Layers>,
@@ -276,11 +266,7 @@ fn room(b: &Budgets, g: &Grid, p: &Params) -> Option<Room> {
         if b.of(lay.keygen) > b.max_keygen() {
             return;
         }
-        let room = b
-            .max_sign()
-            .saturating_sub(b.of(lay.trees))
-            .min(b.max_sign_cached().saturating_sub(b.of(lay.trees_cached)));
-        slack = slack.max(room);
+        slack = slack.max(b.max_sign().saturating_sub(b.of(lay.trees_cached)));
         profiles.push(lay);
     };
     match g.h_top {
@@ -420,15 +406,13 @@ fn sort_rows(rows: &mut [Candidate], b: &Budgets) {
 }
 
 /// Record this parameter tuple on the cheapest layer profile that fits: they
-/// all verify the same, so the tie goes to cached signing.
+/// all verify the same, so the tie goes to signing.
 fn record(rows: &mut Vec<Candidate>, st: &mut Stats, b: &Budgets, sk: &Skeleton, room: &Room, swn: u64, trials: u64) {
     let Some(lay) = room
         .profiles
         .iter()
-        .filter(|lay| {
-            b.of(sk.sign(lay, trials)) <= b.max_sign() && b.of(sk.sign_cached(lay, trials)) <= b.max_sign_cached()
-        })
-        .min_by_key(|lay| (b.of(sk.sign_cached(lay, trials)), b.of(sk.sign(lay, trials))))
+        .filter(|lay| b.of(sk.sign(lay, trials)) <= b.max_sign())
+        .min_by_key(|lay| (b.of(sk.sign(lay, trials)), b.of(sk.sign_cold(lay, trials))))
     else {
         return;
     };
