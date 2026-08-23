@@ -12,7 +12,7 @@ cargo run --release -- --lifetime 1e12 --scheme W+C_F+C --height 40 --layers 5 -
 That pins everything, so it just costs that one set: the report's bold 2^40 row, 4356 bytes and 10425 compressions to verify. Size and verification do not depend on the lifetime, only the security line does. Leave axes out and they get searched instead, against whichever budgets you set:
 
 ```sh
-cargo run --release -- --lifetime 2e6 --max-keygen 2e6 --max-sign 200,000 --max-size 5000
+cargo run --release -- --lifetime 16,777,216 --max-keygen 2e6 --max-sign 200,000 --max-size 5000
 ```
 
 Every cost is compression calls, one per 64 bytes of hash input: a Merkle node or a WOTS chain step is one, the message digest two, compressing `m` hash values `ceil((2n + mn) / 64)`.
