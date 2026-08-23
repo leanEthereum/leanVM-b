@@ -1,5 +1,5 @@
 # `hint_witness(dest, "name")` pops the next *entry* (a slice of values) of a
-# named prover stream into a StackBuf or a StackBuf/HeapBuf slice — zero
+# named prover stream into a StackBuf or a StackBuf/HeapBuf slice: zero
 # cycles, and completely unconstrained: every hinted value below is pinned
 # down by the program itself (a range check, equality asserts, an XOR
 # relation). The same symbol may be hinted many times: each `# witness` line

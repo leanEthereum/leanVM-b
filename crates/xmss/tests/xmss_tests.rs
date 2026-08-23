@@ -26,28 +26,25 @@ fn serialize_deserialize_and_size() {
     let (sk, pk) = xmss_key_gen(seed, 100, 115).unwrap();
     let sig = xmss_sign(&mut StdRng::seed_from_u64(0), &sk, &message, epoch).unwrap();
 
-    let pk_bytes = bincode::serialize(&pk).unwrap();
-    assert_eq!(pk_bytes.len(), PUB_KEY_FLAT_SIZE); // 32 bytes
-    let pk2: XmssPublicKey = bincode::deserialize(&pk_bytes).unwrap();
-    assert_eq!(pk, pk2);
+    let public_key_bytes = bincode::serialize(&pk).unwrap();
+    assert_eq!(public_key_bytes.len(), PUB_KEY_FLAT_SIZE);
+    let decoded_public_key: XmssPublicKey = bincode::deserialize(&public_key_bytes).unwrap();
+    assert_eq!(pk, decoded_public_key);
 
-    let sig_bytes = bincode::serialize(&sig).unwrap();
-    assert_eq!(sig_bytes.len(), XMSS_SIG_SIZE); // 1208 bytes, below the IPv6 MTU
-    let sig2: XmssSignature = bincode::deserialize(&sig_bytes).unwrap();
-    assert_eq!(sig, sig2);
+    let signature_bytes = bincode::serialize(&sig).unwrap();
+    assert_eq!(signature_bytes.len(), XMSS_SIG_SIZE);
+    let decoded_signature: XmssSignature = bincode::deserialize(&signature_bytes).unwrap();
+    assert_eq!(sig, decoded_signature);
 
-    xmss_verify(&pk2, &message, &sig2, epoch).unwrap();
+    xmss_verify(&decoded_public_key, &message, &decoded_signature, epoch).unwrap();
 }
 
 #[test]
-fn deterministic_keygen() {
+fn key_range_changes_root() {
     let seed = [3u8; 32];
-    let (_, pk1) = xmss_key_gen(seed, 50, 60).unwrap();
-    let (_, pk2) = xmss_key_gen(seed, 50, 60).unwrap();
-    assert_eq!(pk1, pk2);
-    // A different range changes the filler/real split, hence the root.
-    let (_, pk3) = xmss_key_gen(seed, 50, 61).unwrap();
-    assert_ne!(pk1.merkle_root, pk3.merkle_root);
+    let (_, shorter_range) = xmss_key_gen(seed, 50, 60).unwrap();
+    let (_, longer_range) = xmss_key_gen(seed, 50, 61).unwrap();
+    assert_ne!(shorter_range.merkle_root, longer_range.merkle_root);
 }
 
 #[test]
@@ -59,47 +56,34 @@ fn tampered_signatures_rejected() {
     let sig = xmss_sign(&mut StdRng::seed_from_u64(1), &sk, &message, epoch).unwrap();
     xmss_verify(&pk, &message, &sig, epoch).unwrap();
 
-    // Wrong message.
     let mut bad_message = message;
     bad_message[0] ^= 1;
     assert!(xmss_verify(&pk, &bad_message, &sig, epoch).is_err());
 
-    // Wrong epoch.
     assert!(xmss_verify(&pk, &message, &sig, epoch + 1).is_err());
 
-    // Tampered chain tip.
-    let mut bad = sig.clone();
-    bad.wots_signature.chain_tips[5][0] ^= 1;
-    assert!(xmss_verify(&pk, &message, &bad, epoch).is_err());
+    let mut bad_chain_tip = sig.clone();
+    bad_chain_tip.wots_signature.chain_tips[5][0] ^= 1;
+    assert!(xmss_verify(&pk, &message, &bad_chain_tip, epoch).is_err());
 
-    // Tampered randomness (either the encoding no longer hits the target sum,
-    // or the recovered WOTS key changes; both must fail).
-    let mut bad = sig.clone();
-    bad.wots_signature.randomness[0] ^= 1;
-    assert!(xmss_verify(&pk, &message, &bad, epoch).is_err());
+    let mut bad_randomness = sig.clone();
+    bad_randomness.wots_signature.randomness[0] ^= 1;
+    assert!(xmss_verify(&pk, &message, &bad_randomness, epoch).is_err());
 
-    // Tampered Merkle path.
-    let mut bad = sig.clone();
-    bad.merkle_proof[10][3] ^= 1;
+    let mut bad_merkle_path = sig.clone();
+    bad_merkle_path.merkle_proof[10][3] ^= 1;
     assert_eq!(
-        xmss_verify(&pk, &message, &bad, epoch),
+        xmss_verify(&pk, &message, &bad_merkle_path, epoch),
         Err(XmssVerifyError::InvalidMerklePath)
     );
 
-    // Signing outside the key's range.
     assert_eq!(
         xmss_sign(&mut StdRng::seed_from_u64(2), &sk, &message, 16),
         Err(XmssSignatureError::EpochOutOfRange)
     );
 }
 
-/// The signer grinds the randomness until `wots_encode` accepts, so the cost of
-/// producing a signature is set by how rare a valid encoding is. Measure it: the
-/// two leftover digest bits contribute 2 bits, and `sum(e_i) == TARGET_SUM` at
-/// 195 (3.3 sd above the mean of 147, over 42 uniform 3-bit digits) contributes
-/// ~12.8, matching the sub-2^15 cost quoted in the crate docs. The band is ~10 sigma for
-/// 200 samples, so only a real change to the predicate (a dropped validity bit,
-/// a different TARGET_SUM, a different digit layout) moves it out.
+/// Detect changes to the encoding predicate through its grinding cost.
 #[test]
 #[ignore]
 fn encoding_grinding_bits() {

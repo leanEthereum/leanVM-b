@@ -87,22 +87,22 @@ impl WotsPublicKey {
 
 /// One chain step (1 compression). The position `chain_index * CHAIN_LENGTH +
 /// step` identifies the edge from chain value `step` to `step + 1`.
-fn chain_step(public_param: &PublicParam, epoch: u32, chain_index: usize, step: usize, x: &Digest) -> Digest {
+fn chain_step(public_param: &PublicParam, epoch: u32, chain_index: usize, step: usize, value: &Digest) -> Digest {
     let position = (chain_index * CHAIN_LENGTH + step) as u32;
-    tweak_hash(public_param, TWEAK_TYPE_CHAIN, position, epoch, x)
+    tweak_hash(public_param, TWEAK_TYPE_CHAIN, position, epoch, value)
 }
 
 /// Walk chain `chain_index` for `n` steps starting at chain value `start_step`.
 fn iterate_hash(
-    a: &Digest,
-    n: usize,
+    start: &Digest,
+    steps: usize,
     public_param: &PublicParam,
     epoch: u32,
     chain_index: usize,
     start_step: usize,
 ) -> Digest {
-    (0..n).fold(*a, |acc, j| {
-        chain_step(public_param, epoch, chain_index, start_step + j, &acc)
+    (0..steps).fold(*start, |value, offset| {
+        chain_step(public_param, epoch, chain_index, start_step + offset, &value)
     })
 }
 
@@ -148,11 +148,17 @@ pub fn wots_encode(
     if digest[7] >> 7 != 0 || digest[DIGEST_LEN - 1] >> 7 != 0 {
         return None; // the leftover top bit of each 64-bit word must be zero
     }
-    let bit = |j: usize| (digest[j / 8] >> (j % 8)) & 1;
-    let pos = |i: usize| if i < V / 2 { W * i } else { 64 + W * (i - V / 2) };
+    let digest_bit = |index: usize| (digest[index / 8] >> (index % 8)) & 1;
+    let digit_offset = |index: usize| {
+        if index < V / 2 {
+            W * index
+        } else {
+            64 + W * (index - V / 2)
+        }
+    };
     let mut encoding = [0u8; V];
-    for (i, e) in encoding.iter_mut().enumerate() {
-        *e = (0..W).fold(0, |acc, k| acc | (bit(pos(i) + k) << k));
+    for (index, digit) in encoding.iter_mut().enumerate() {
+        *digit = (0..W).fold(0, |value, bit| value | (digest_bit(digit_offset(index) + bit) << bit));
     }
     (encoding.iter().map(|&x| x as usize).sum::<usize>() == TARGET_SUM).then_some(encoding)
 }

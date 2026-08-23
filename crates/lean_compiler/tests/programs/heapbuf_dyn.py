@@ -1,4 +1,4 @@
-# Runtime-sized HeapBuf: the cell count is carried *in the exponent* — the
+# Runtime-sized HeapBuf: the cell count is carried *in the exponent*: the
 # buffer holds k cells where the size value is g^k. So a size derived from a
 # runtime g-power is plain field arithmetic. Here a hinted count m = g^2 gives
 # a buffer of m·m = g^4 = 4 cells; the four cells are filled from a witness

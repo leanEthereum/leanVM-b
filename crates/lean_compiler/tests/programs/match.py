@@ -1,8 +1,8 @@
 # `match log(x)`: x = GEN ** j runs case j. Dispatch is two jumps through a
-# trampoline table in the bytecode — jump to g^T · x², landing on the j-th
+# trampoline table in the bytecode: jump to g^T · x², landing on the j-th
 # two-instruction slot (SET the block address; JUMP to it); case blocks are
 # unaligned. Cases must be consecutive from 0, and a hinted scrutinee must be
-# range-checked first. Published: (21, 5 + 7 + 9) = (21, 11) — `+` is XOR.
+# range-checked first. Published: (21, 5 + 7 + 9) = (21, 11): `+` is XOR.
 # public_input: 21, 11
 from snark_lib import *
 

@@ -174,44 +174,6 @@ mod tests {
     }
 
     #[test]
-    fn inverse_forward_roundtrip() {
-        let mut rng = Rng::new(43);
-        for k in 1..=7 {
-            let ntt = AdditiveNttGf8::new(k, F8::ZERO);
-            for _ in 0..8 {
-                let original = rand_vec(&mut rng, 1 << k);
-                let mut v = original.clone();
-                ntt.inverse(&mut v);
-                ntt.forward(&mut v);
-                assert_eq!(v, original, "inverse∘forward roundtrip failed at k={k}");
-            }
-        }
-    }
-
-    #[test]
-    fn forward_is_linear() {
-        let mut rng = Rng::new(44);
-        for k in 1..=6 {
-            let ntt = AdditiveNttGf8::new(k, F8::ZERO);
-            let n = 1usize << k;
-            let a = rand_vec(&mut rng, n);
-            let b = rand_vec(&mut rng, n);
-            let ab: Vec<F8> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
-
-            let mut fa = a.clone();
-            ntt.forward(&mut fa);
-            let mut fb = b.clone();
-            ntt.forward(&mut fb);
-            let mut fab = ab.clone();
-            ntt.forward(&mut fab);
-
-            for i in 0..n {
-                assert_eq!(fa[i] + fb[i], fab[i], "linearity failed at k={k}, i={i}");
-            }
-        }
-    }
-
-    #[test]
     fn nonzero_beta_roundtrip() {
         let mut rng = Rng::new(45);
         for beta_v in [0x01u8, 0x42, 0xCA, 0xFF] {

@@ -1,40 +1,4 @@
-//! Fixed-size thread pool for flat data-parallel kernels: "split a range, run a
-//! closure on each piece". No work stealing, no per-dispatch allocation.
-//!
-//! # Why not a work-stealing pool
-//!
-//! Every parallel site in the prover has the same shape: a known number of
-//! independent items, each writing its own disjoint slice. That needs a counter,
-//! not a deque per worker. Owning the runtime also buys two things a general pool
-//! cannot give: pinned per-worker scratch (see [`map_reduce_with_state`]) and
-//! control over which cores the workers run on.
-//!
-//! # Heterogeneous cores
-//!
-//! On Apple silicon the pool spans **both** clusters: performance workers at
-//! `USER_INTERACTIVE` and efficiency workers at `UTILITY`, all draining one
-//! shared claim counter. Guided self-scheduling is what makes that safe: a
-//! worker takes `remaining / (2·workers)` items at a time, so a slow efficiency
-//! core simply claims fewer batches, and at the join it holds at most one
-//! outstanding item. A pool that instead handed each worker an equal band would
-//! gate every barrier on the slowest core, which is why the efficiency cores used
-//! to need a separate pool and a separate queue.
-//!
-//! # Protocol
-//!
-//! - `total() - 1` background workers (ids `1..total()`); the dispatcher is
-//!   worker 0 and runs its share inline.
-//! - Dispatch bumps a `generation` counter that idle workers spin on, parking
-//!   after `SPIN_LIMIT` spins. Completion is a `working` countdown the
-//!   dispatcher spins on. `parked` is SeqCst-ordered against `generation`, so on
-//!   each dispatch one side sees the other and no wakeup is lost.
-//! - **No nesting.** A dispatch from inside a task would deadlock on the dispatch
-//!   lock, so an `IN_TASK` guard panics instead. Every kernel fans out over its
-//!   outermost independent unit and is sequential below that, so a nested dispatch
-//!   means a mistake, not a slow path.
-//! - A task panic is caught on its worker and re-raised on the dispatcher once
-//!   the dispatch quiesces; the pool stays usable.
-//! - One dispatcher at a time, serialized by the `dispatch` mutex.
+//! Fixed-size thread pool for flat data-parallel kernels. Workers claim ranges from one shared counter, which also balances heterogeneous cores. Dispatches cannot nest. Task panics are resumed on the dispatcher after all workers stop.
 
 use std::any::Any;
 use std::cell::{Cell, UnsafeCell};
@@ -53,24 +17,16 @@ pub use topology::{Topology, num_threads, topology};
 /// dispatches, short enough to yield the core during a sequential stretch.
 const SPIN_LIMIT: u32 = 1 << 12;
 
-/// Largest claim one guided-self-scheduling step may take. Bounds load imbalance
-/// How many claims per worker guided self-scheduling aims to hand out. A first
-/// claim of `1 / (2 * nt)` is one performance core's whole share, which an
-/// efficiency core takes three times as long to finish, and the dispatch ends
-/// when it does.
+/// How finely guided scheduling divides the remaining work.
 const CLAIM_DIVISOR: usize = 4;
 
-/// while keeping million-item kernels to a few thousand claims.
+/// Largest range claimed in one scheduling step.
 const MAX_CLAIM_BATCH: usize = 1 << 12;
 
 /// Chunk size for a flat fan-out: many chunks per worker, fine enough for the
 /// claim counter to rebalance heterogeneous cores, coarse enough to amortize the
 /// dispatch.
 ///
-/// A few chunks per worker is what a homogeneous pool wants, and it is what this
-/// was: an efficiency core runs at about a third of a performance core, so with
-/// one claim each the whole dispatch waits on an E core holding a full P core's
-/// share. The floor keeps the small end no finer than it already was.
 #[must_use]
 #[inline]
 pub fn recommended_chunk_size(n_items: usize) -> usize {
@@ -86,9 +42,7 @@ const CHUNK_OVERSUBSCRIBE: usize = 32;
 const CHUNK_FLOOR: usize = 64;
 
 thread_local! {
-    /// This thread's stable worker id, `0` on the dispatcher and off-pool threads.
     static WORKER_ID: Cell<usize> = const { Cell::new(0) };
-    /// Set while running a task; a dispatch in this state is forbidden nesting.
     static IN_TASK: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -170,7 +124,7 @@ fn pool() -> &'static Pool {
         let n = topo.total().max(1);
         // The dispatcher is worker 0 and runs on a performance core.
         set_qos(Qos::Interactive);
-        let p: &'static Pool = Box::leak(Box::new(Pool {
+        let pool_ref: &'static Pool = Box::leak(Box::new(Pool {
             job: UnsafeCell::new(None),
             generation: Line(AtomicUsize::new(0)),
             counter: Line(AtomicUsize::new(0)),
@@ -189,10 +143,10 @@ fn pool() -> &'static Pool {
             let qos = if id < topo.perf { Qos::Interactive } else { Qos::Utility };
             std::thread::Builder::new()
                 .name(format!("parallel-{id}"))
-                .spawn(move || worker_main(p, id, qos))
+                .spawn(move || worker_main(pool_ref, id, qos))
                 .expect("failed to spawn a pool worker");
         }
-        p
+        pool_ref
     })
 }
 
@@ -200,11 +154,9 @@ fn worker_main(pool: &'static Pool, id: usize, qos: Qos) {
     WORKER_ID.set(id);
     set_qos(qos);
     let _ = pool.workers[id].handle.set(std::thread::current());
-    // The pool is leaked and lives for the process; workers never shut down. One
-    // loop iteration per dispatch.
-    let mut last_gen = 0usize;
+    let mut last_generation = 0usize;
     loop {
-        last_gen = wait_for_dispatch(pool, id, last_gen);
+        last_generation = wait_for_dispatch(pool, id, last_generation);
         drain(pool);
         pool.working.fetch_sub(1, Ordering::Release);
     }
@@ -214,12 +166,12 @@ fn worker_main(pool: &'static Pool, id: usize, qos: Qos) {
 /// [`SPIN_LIMIT`], then parks: publish `parked = true`, re-check `generation`,
 /// both SeqCst, the same total order the dispatcher's bump and its `parked` load
 /// observe, so a wakeup cannot be lost.
-fn wait_for_dispatch(pool: &Pool, id: usize, last_gen: usize) -> usize {
+fn wait_for_dispatch(pool: &Pool, id: usize, last_generation: usize) -> usize {
     let mut spins = 0u32;
     loop {
-        let g = pool.generation.load(Ordering::Acquire);
-        if g != last_gen {
-            return g;
+        let generation = pool.generation.load(Ordering::Acquire);
+        if generation != last_generation {
+            return generation;
         }
         if spins < SPIN_LIMIT {
             spins += 1;
@@ -229,7 +181,7 @@ fn wait_for_dispatch(pool: &Pool, id: usize, last_gen: usize) -> usize {
         // Announce the intent to park, then re-check: park only if nothing
         // changed, else loop again.
         pool.workers[id].parked.store(true, Ordering::SeqCst);
-        if pool.generation.load(Ordering::SeqCst) == last_gen {
+        if pool.generation.load(Ordering::SeqCst) == last_generation {
             std::thread::park();
         }
         pool.workers[id].parked.store(false, Ordering::SeqCst);
@@ -248,8 +200,8 @@ fn drain(pool: &Pool) {
     let job = unsafe { (*pool.job.get()).as_ref().expect("drain without a published job") };
     // SAFETY: `job.f` borrows a `&dyn Fn` the blocked dispatcher keeps alive.
     let f = unsafe { job.f.as_ref() };
-    let n = job.n_tasks;
-    let nt = num_threads();
+    let task_count = job.n_tasks;
+    let worker_count = num_threads();
     IN_TASK.set(true); // catches nested dispatch; see `for_each_chunk`
     // Catch a task panic so it cannot unwind across `worker_main` (skipping the
     // `working` decrement and hanging the join) or poison the dispatch lock.
@@ -258,15 +210,15 @@ fn drain(pool: &Pool) {
             // A stale read only affects granularity: `fetch_add` tiles `0..n`
             // into disjoint claims regardless.
             let observed = pool.counter.load(Ordering::Relaxed);
-            if observed >= n {
+            if observed >= task_count {
                 break;
             }
-            let batch = ((n - observed) / (nt * CLAIM_DIVISOR)).clamp(1, MAX_CLAIM_BATCH);
+            let batch = ((task_count - observed) / (worker_count * CLAIM_DIVISOR)).clamp(1, MAX_CLAIM_BATCH);
             let start = pool.counter.fetch_add(batch, Ordering::Relaxed);
-            if start >= n {
+            if start >= task_count {
                 break;
             }
-            f(start, (start + batch).min(n));
+            f(start, (start + batch).min(task_count));
         }
     }));
     IN_TASK.set(false);
@@ -289,8 +241,8 @@ fn drain(pool: &Pool) {
 pub fn for_each_chunk<F: Fn(usize, usize) + Sync>(n_tasks: usize, f: F) {
     assert!(!IN_TASK.get(), "nested parallel dispatch from inside a pool task");
 
-    let nt = num_threads();
-    if nt <= 1 || n_tasks <= 1 {
+    let worker_count = num_threads();
+    if worker_count <= 1 || n_tasks <= 1 {
         if n_tasks > 0 {
             f(0, n_tasks);
         }
@@ -312,7 +264,7 @@ pub fn for_each_chunk<F: Fn(usize, usize) + Sync>(n_tasks: usize, f: F) {
     // and the next has not been observed yet.
     unsafe { *pool.job.get() = Some(Job { f: f_erased, n_tasks }) };
     pool.counter.store(0, Ordering::Relaxed);
-    pool.working.store(nt - 1, Ordering::Release);
+    pool.working.store(worker_count - 1, Ordering::Release);
     pool.generation.fetch_add(1, Ordering::SeqCst); // publish; SeqCst guards the park protocol
 
     // Wake only the parked workers; the spinning ones see the bump for free.
@@ -404,12 +356,12 @@ where
     F: Fn(usize, &mut [A], &mut [B]) + Sync,
 {
     assert_eq!(a.len(), b.len(), "chunks_mut2: slices differ in length");
-    let bp = SendPtr(b.as_mut_ptr());
+    let b_ptr = SendPtr(b.as_mut_ptr());
     chunks_mut(a, chunk, |i, sub| {
         let start = i * chunk;
         // SAFETY: `b` has the same length as `a`, so chunk `i` of `b` is the same
         // in-bounds range that chunk `i` of `a` just proved disjoint.
-        let sub_b = unsafe { bp.slice(start, sub.len()) };
+        let sub_b = unsafe { b_ptr.slice(start, sub.len()) };
         f(i, sub, sub_b);
     });
 }
@@ -478,9 +430,9 @@ where
     F: Fn(usize, &mut T) + Sync,
 {
     let chunk = recommended_chunk_size(data.len());
-    chunks_mut(data, chunk, |ci, sub| {
-        for (k, slot) in sub.iter_mut().enumerate() {
-            f(ci * chunk + k, slot);
+    chunks_mut(data, chunk, |chunk_index, values| {
+        for (offset, slot) in values.iter_mut().enumerate() {
+            f(chunk_index * chunk + offset, slot);
         }
     });
 }
@@ -529,10 +481,8 @@ pub fn find_first<P: Fn(usize) -> bool + Sync>(n_tasks: usize, pred: P) -> Optio
             }
         }
     });
-    match best.load(Ordering::Relaxed) {
-        usize::MAX => None,
-        i => Some(i),
-    }
+    let index = best.load(Ordering::Relaxed);
+    (index != usize::MAX).then_some(index)
 }
 
 /// One slot per cache line: a worker writes through its accumulator on the
@@ -573,7 +523,7 @@ where
         // Fold the claim into the worker's partial, seeded by the first `map` so
         // `identity` stays off the per-item path; touch the slot once per claim.
         *slot = (start..end).fold(slot.take(), |acc, i| {
-            Some(acc.map_or_else(|| map(i), |a| reduce(a, map(i))))
+            Some(acc.map_or_else(|| map(i), |partial| reduce(partial, map(i))))
         });
     });
     // `identity()` seeds the combine as a left identity, which makes the empty

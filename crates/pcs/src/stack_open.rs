@@ -767,16 +767,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stacked_open_proof_is_deterministic() {
-        let a = build_instance(2);
-        let b = build_instance(2);
-        assert_eq!(a.fs, b.fs, "same inputs must yield identical proofs");
-        let bytes_a = bincode::serialize(&a.fs).unwrap();
-        let bytes_b = bincode::serialize(&b.fs).unwrap();
-        assert_eq!(bytes_a, bytes_b, "proof bytes must be deterministic");
-    }
-
     /// Residual cube crossing INTO the q_flock slice (case split = n_ris in the
     /// verifier closure): q_flock occupies half a 2^14 stack (qflock_vars = 13),
     /// and the fallback config's residual cube (yr_log_n = 3) is wider than

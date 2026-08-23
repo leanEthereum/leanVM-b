@@ -1,19 +1,4 @@
-//! [`ArenaVec<T>`]: an owning, growable buffer backed by the proving arena.
-//!
-//! Allocation goes through [`raw_alloc`](crate::raw_alloc) (a slab bump inside a
-//! phase, the system allocator outside one) and growth and `Drop` through
-//! [`raw_dealloc`](crate::raw_dealloc), which picks arena-vs-system by address
-//! range. That dynamic choice is what lets `ArenaVec` carry no allocator type
-//! parameter: one type works inside and outside a phase, and a buffer built
-//! outside one can be freed normally.
-//!
-//! Growing leaks the old allocation for the rest of the phase (freeing is a
-//! no-op there), so size the buffer up front ([`ArenaVec::with_capacity`],
-//! [`ArenaVec::zeroed`], [`ArenaVec::uninitialized`]) and reserve for
-//! [`push`](ArenaVec::push) loops.
-//!
-//! See the crate docs for the rule that governs every use: an `ArenaVec`
-//! allocated in a phase dies at the next [`enter_phase`](crate::enter_phase).
+//! Growable buffer backed by the proving arena during a phase and the system allocator otherwise. Size arena-backed buffers up front because growing may leave the old allocation occupied until the phase resets.
 
 use std::alloc::{Layout, handle_alloc_error};
 use std::cmp;
@@ -28,12 +13,8 @@ use crate::{raw_alloc, raw_dealloc};
 
 /// An owning, growable buffer allocated from the proving arena.
 pub struct ArenaVec<T> {
-    /// Always aligned and non-null; dangling (and never read through) while
-    /// `cap == 0`.
     ptr: NonNull<T>,
     len: usize,
-    /// Element capacity. Pinned at `usize::MAX` for a zero-sized `T`, which owns
-    /// no memory.
     cap: usize,
     _marker: PhantomData<T>,
 }
@@ -87,12 +68,7 @@ impl<T> ArenaVec<T> {
         v
     }
 
-    /// `n` zero-filled elements, written with one `memset` rather than an
-    /// element-wise clone loop.
-    ///
-    /// Unlike a fresh system allocation, this cannot be served by demand-zero
-    /// pages: a recycled slab holds the previous phase's bytes, so the `memset`
-    /// is real work. It is still far cheaper than the page faults it replaces.
+    /// `n` zero-filled elements.
     ///
     /// # Safety
     /// The all-zero bit pattern must be a valid, fully initialized `T`, true of
@@ -409,8 +385,6 @@ impl<T: PartialEq> PartialEq<[T]> for ArenaVec<T> {
     }
 }
 
-// Cross-comparison with `Vec`, both ways: reference implementations in the
-// test suites produce a `Vec` where the real path produces an `ArenaVec`.
 impl<T: PartialEq> PartialEq<Vec<T>> for ArenaVec<T> {
     #[inline]
     fn eq(&self, other: &Vec<T>) -> bool {

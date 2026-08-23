@@ -1,5 +1,5 @@
-//! `@inline` calls in EXPRESSION position — embedded in arithmetic, as a heap
-//! store's RHS, or under further ops — must produce the same values as the
+//! `@inline` calls in EXPRESSION position: embedded in arithmetic, as a heap
+//! store's RHS, or under further ops: must produce the same values as the
 //! statement-position form. Regression test for the dropped-RetBind bug: an
 //! inlined tail return of a plain var records a g-address alias, which only
 //! `let`/tuple bindings used to consume; expression positions read the

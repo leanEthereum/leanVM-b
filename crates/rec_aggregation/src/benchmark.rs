@@ -95,13 +95,13 @@ pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_trac
     lean_vm::init_prover_pool();
     let (message, epoch) = (signers_cache::message(), signers_cache::EPOCH);
     let all = signers(0, n * per_leaf);
-    let t = std::time::Instant::now();
+    let started = std::time::Instant::now();
     let guest_instructions: usize = crate::aggregation::unified_guest()
         .fn_ranges
         .iter()
         .map(|(_, _, len)| *len as usize)
         .sum();
-    let compile_time = t.elapsed();
+    let compile_time = started.elapsed();
 
     let children: Vec<AggregateSignature> = (0..n)
         .map(|k| {
@@ -144,17 +144,4 @@ pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_trac
         &prove_time,
     );
     println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
-}
-
-#[cfg(test)]
-mod tests {
-    /// Batch size overridable: `LEANVM_XMSS_N=820 cargo test … -- --nocapture`.
-    #[test]
-    fn aggregate_xmss() {
-        let n = std::env::var("LEANVM_XMSS_N")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(50);
-        super::run_xmss_aggregation(n, lean_vm::pcs::LOG_INV_RATE, primitives::bench::Plan::default());
-    }
 }

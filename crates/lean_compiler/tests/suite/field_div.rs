@@ -1,4 +1,4 @@
-//! Field division `a / b` (single slash) — a runtime `a · b⁻¹`, distinct from
+//! Field division `a / b` (single slash): a runtime `a · b⁻¹`, distinct from
 //! the compile-time floor-division `//`. It lowers to a single `MUL` whose
 //! quotient operand is left unset: the write-once back-solve fills it with
 //! `a · b⁻¹` and the `MUL` constraint `quotient · b == a` binds it, with no

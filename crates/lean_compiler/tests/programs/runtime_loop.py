@@ -1,5 +1,5 @@
 # A runtime mul_range stop bound: the loop walks ×GEN from the start element
-# until it reaches a *runtime* g-power — here a hinted count, range-checked
+# until it reaches a *runtime* g-power: here a hinted count, range-checked
 # first (an unreachable bound would never terminate, so bounding the log is
 # the program's duty). Repeated squaring: buf[g^k] holds g^{2^k}, so after
 # n = 5 iterations buf[n] = g^32. The second loop's hinted bound equals its

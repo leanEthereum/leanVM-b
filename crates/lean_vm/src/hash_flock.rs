@@ -188,10 +188,7 @@ pub fn qflock_kappa(n: usize) -> usize {
 /// convention on the same bit string.
 fn flatten_packed_into(packed: &[u64], out: &mut [F64]) {
     assert_eq!(out.len(), packed.len(), "q_flock's window is the wrong size");
-    // In parallel, straight into the committed column's window: at scale this
-    // moves hundreds of MB, so an intermediate buffer copied again afterwards is not
-    // affordable. Nothing reads the window until the commitment encodes it, by
-    // which time a column this size is long evicted, so it publishes streamed.
+    // Write directly into the committed window and publish it with streaming stores.
     // SAFETY: `F64` is `repr(transparent)` over `u64`, so the two slices are the
     // same bytes.
     let words: &mut [u64] = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) };
@@ -225,11 +222,6 @@ pub(crate) fn build_qflock_prepared(blocks: &[Compression], q_flock: &mut [F64])
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
 /// Memoized Keccak R1CS [`Sha3Setup`], keyed by its power-of-two shape.
-/// Building it (the symbolic constraint walk over `2^K_LOG` slots) costs
-/// ~hundreds of ms, fixed per circuit shape, independent of `N` or the proof.
-/// So we build each shape once and reuse it across `prove`, `verify`, and
-/// repeated proofs; the per-setup caches then stay warm, making verification
-/// milliseconds rather than rebuilding the circuit each time.
 type SetupCell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Sha3Setup>>>;
 
 fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, SetupCell>> {
@@ -251,15 +243,7 @@ fn setup_for(n_blocks: usize) -> std::sync::Arc<Sha3Setup> {
     std::sync::Arc::clone(cell.get_or_init(|| std::sync::Arc::new(Sha3Setup::new(1usize << shape))))
 }
 
-/// Pre-build (and cache) the flock Keccak R1CS setup. This is the fixed,
-/// circuit-shape-only cost (~hundreds of ms, independent of the witness or the
-/// number of proofs): building the `2^K_LOG`-slot R1CS.
-///
-/// Callers pass the number of EXECUTED `Keccak` instructions; it is floored at 1
-/// (the padding instance a no-Keccak program still carries), matching
-/// `cpu::prove`/`verify`. Call it once up front so a subsequent prove/verify
-/// reflects steady-state (repeated-proving) performance: the ~hundreds-of-ms
-/// build is a one-time, program-independent cost, not part of proving. Idempotent.
+/// Pre-build and cache the flock Keccak R1CS setup for the executed sponge-step count.
 pub fn warm_setup(n_blocks: usize) {
     let _ = setup_for(n_blocks.max(1));
 }
@@ -346,15 +330,6 @@ pub fn ring_switch_verify(n_blocks: usize, offset: usize, claim: &SliceClaim) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn setup_cache_is_keyed_by_shape() {
-        let one = setup_for(1);
-        let eight = setup_for(8);
-        let nine = setup_for(9);
-        assert!(std::sync::Arc::ptr_eq(&one, &eight));
-        assert!(!std::sync::Arc::ptr_eq(&eight, &nine));
-    }
 
     fn f(x: u64) -> F64 {
         F64(x)

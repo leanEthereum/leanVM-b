@@ -1,10 +1,10 @@
 # `for i in unroll(a, b)` replicates the body at compile time, i substituted
-# as the integer literal of each iteration — zero loop overhead (no call, no
+# as the integer literal of each iteration: zero loop overhead (no call, no
 # frame, no counter). Bounds are compile-time integers, including Const
 # parameters: `chain(buf, 3)` specializes and unrolls three SHA3-256 steps over
 # heap slices indexed by `i` (a 256-bit SHA3-256 value is two canonical cells).
-# Published: the two 128-bit digest cells of H^3(5, 7) — same chain as
-# sha3_64_heap_chain.py, unrolled instead of looped.
+# Published: the two 128-bit digest cells of H^3(5, 7): same chain as
+# hash_heap_chain.py, unrolled instead of looped.
 # public_input: 330799763916484175684926835473582370726, 51628878753561553425637522044058022333
 from snark_lib import *
 

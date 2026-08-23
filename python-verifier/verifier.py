@@ -4,8 +4,8 @@ import hashlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cache, reduce
-from pathlib import Path
 from operator import mul
+from pathlib import Path
 from struct import pack, unpack
 
 

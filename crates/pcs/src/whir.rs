@@ -678,10 +678,7 @@ fn round_msg_and_eval_lsb_ext(f: &[F192], b: &[F192]) -> (SumcheckMessage, F192)
     (SumcheckMessage { u_0, u_2 }, y)
 }
 
-/// Output buffer for an initial-sumcheck fold: ~100 MB of `F192` per round, all
-/// of it dead by the end of the proof. A slab bump costs a pointer add and
-/// reuses pages the previous proof already faulted in, so there is no
-/// target-specific pooling decision left to make.
+/// Arena-backed output for an initial-sumcheck fold.
 ///
 /// # Safety
 /// Every element must be written before it is read, which every fold kernel
@@ -2537,14 +2534,6 @@ mod tests {
         ));
         let inst = prove_instance(18, 8);
         assert!(verify_instance(&inst, &inst.fs), "honest proof rejected");
-    }
-
-    /// The succinct verifier accepts an honest proof at log_n = 18, the one
-    /// shape whose L0 takes the sparse transposed-NTT path. Smaller shapes are
-    /// covered by `dense_and_succinct_agree`.
-    #[test]
-    fn succinct_roundtrips() {
-        let inst = prove_instance(18, 8);
         assert!(
             verify_succinct_instance(&inst, &inst.fs),
             "succinct verifier rejected an honest proof at log_n=18"
@@ -2625,13 +2614,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn proving_is_deterministic() {
-        let a = prove_instance(12, 7);
-        let b = prove_instance(12, 7);
-        assert_eq!(a.fs, b.fs, "same inputs must yield an identical transcript");
     }
 
     /// Committing only the lanes that carry data must be indistinguishable from

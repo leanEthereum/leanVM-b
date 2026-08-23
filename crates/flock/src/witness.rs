@@ -63,11 +63,7 @@ where
     );
 
     let total_words = n_total * u64_per_block;
-    // z/a/b are allocated uninitialized and zeroed *inside* the parallel loop
-    // (one memset per 8-block group), so the ~128 MB zero-fill scales with the
-    // thread count instead of running serially on the main thread before the
-    // parallel build. The per-block builders OR 1-bits into pre-zeroed words,
-    // so each group must be zeroed before its `per_block` calls.
+    // Zero inside the parallel loop because the builders OR bits into each group.
     // SAFETY (x3): the parallel loop below writes every element of z/a/b before
     // any is read: each group memsets its own slice, then ORs bits into it.
     let mut z = unsafe { ArenaVec::<u64>::uninitialized(total_words) };
